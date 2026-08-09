@@ -353,6 +353,73 @@ async def test_confirm_cloud_forge_debit_omits_proof_for_local_http(monkeypatch)
     }
 
 
+async def test_confirm_cloud_forge_debit_retries_for_loopback_unregistered(monkeypatch):
+    monkeypatch.setenv("NEKO_SOCIAL_BASE_URL", "http://localhost:48911")
+    monkeypatch.setattr(
+        C,
+        "_get_client_credentials",
+        lambda: ("client-id", "client-proof"),
+    )
+    call_log = []
+
+    class FakeAsyncClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def post(self, url, *, json):
+            call_log.append(("post", url, json))
+            if len(call_log) == 1:
+                return httpx.Response(
+                    403,
+                    json={"detail": "client_not_registered"},
+                    request=httpx.Request("POST", url),
+                )
+            return httpx.Response(
+                200,
+                json={
+                    "confirmed": True,
+                    "operation_id": "operation-id",
+                    "credit_id": "credit-id",
+                    "card_id": "card-id",
+                    "confirmed_at": "2026-08-09T00:00:00Z",
+                },
+                request=httpx.Request("POST", url),
+            )
+
+    async def fake_ensure_registered(*args, **kwargs):
+        call_log.append(("ensure_registered", args, kwargs))
+        return True
+
+    monkeypatch.setattr(C.httpx, "AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr(C.client_registration, "ensure_client_registered", fake_ensure_registered)
+
+    result = await C._confirm_cloud_forge_debit(
+        operation_id="operation-id",
+        credit_id="credit-id",
+        card_id="card-id",
+    )
+
+    assert result == {"confirmed": True}
+    assert len(call_log) == 3
+    assert call_log[0][0] == "post"
+    assert call_log[1][0] == "ensure_registered"
+    assert call_log[2][0] == "post"
+    assert call_log[0][2] == {
+        "client_id": "client-id",
+        "credit_id": "credit-id",
+        "card_id": "card-id",
+    }
+    assert call_log[1][1] == ("http://localhost:48911",)
+    assert call_log[1][2] == {"force": True}
+    assert call_log[2][2] == call_log[0][2]
+
+
 def test_packaged_facts_module_exposes_shared_entrypoints():
     shared = importlib.import_module("main_logic.card_forge_facts")
 

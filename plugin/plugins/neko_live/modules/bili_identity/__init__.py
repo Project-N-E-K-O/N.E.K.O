@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+from collections import OrderedDict
 import http.client
 import ipaddress
 import mimetypes
 import socket
 import ssl
+import time
 import urllib.parse
 from pathlib import Path
 from typing import Any
@@ -19,6 +21,8 @@ from .._base import BaseModule
 _MAX_AVATAR_BYTES = 1 * 1024 * 1024
 _MAX_AVATAR_REDIRECTS = 2
 _BILI_AVATAR_HOST_SUFFIX = "hdslb.com"
+_PROFILE_HINT_CACHE_LIMIT = 128
+_PROFILE_HINT_CACHE_SECONDS = 15 * 60.0
 
 
 def _external_http_client():
@@ -53,7 +57,24 @@ class BiliIdentityModule(BaseModule):
     id = "bili_identity"
     title = "B站身份解析"
 
-    async def resolve(self, event: ViewerEvent) -> ViewerIdentity:
+    def __init__(self) -> None:
+        super().__init__()
+        self._profile_hints: OrderedDict[str, tuple[float, dict[str, str]]] = OrderedDict()
+        self._profile_hint_hits = 0
+        self._profile_hint_misses = 0
+
+    async def teardown(self) -> None:
+        self._profile_hints.clear()
+        self._profile_hint_hits = 0
+        self._profile_hint_misses = 0
+        await super().teardown()
+
+    async def resolve(
+        self,
+        event: ViewerEvent,
+        *,
+        fetch_avatar_image: bool = True,
+    ) -> ViewerIdentity:
         uid = str(event.uid or "").strip()
         nickname = str(event.nickname or "").strip()
         avatar_url = str(event.avatar_url or "").strip()
@@ -61,10 +82,14 @@ class BiliIdentityModule(BaseModule):
         email = ""
         pendant = ""
         errors: list[str] = []
+        should_fetch_avatar = self._should_fetch_avatar_image(
+            event,
+            requested=fetch_avatar_image,
+        )
 
-        if uid and uid.isdigit() and (not nickname or not avatar_url):
+        if uid and uid.isdigit() and (not nickname or (should_fetch_avatar and not avatar_url)):
             try:
-                profile = await self._fetch_profile_by_uid(uid)
+                profile = await self._profile_by_uid(uid)
                 display_name = str(profile.get("name") or nickname or uid).strip()
                 email = str(profile.get("email") or profile.get("mail") or "").strip()
                 pendant = str(profile.get("pendant") or "").strip()
@@ -96,15 +121,8 @@ class BiliIdentityModule(BaseModule):
             is_default_avatar=bool(avatar_url) and "noface" in avatar_url.lower(),
             pendant=pendant,
         )
-        if self.ctx is not None:
-            avatar_analysis_enabled = bool(
-                getattr(self.ctx.config, "avatar_analysis_enabled", True)
-            )
-            live_avatar_roast_enabled = bool(
-                getattr(self.ctx.config, "avatar_roast_enabled", True)
-            ) or event.source not in {"live_danmaku", "manual_live_simulation"}
-            if not avatar_analysis_enabled or not live_avatar_roast_enabled:
-                return identity
+        if not should_fetch_avatar:
+            return identity
         if not avatar_url or identity.is_default_avatar:
             return identity
         cached = self.ctx.avatar_cache.get(avatar_url) if self.ctx else None
@@ -141,10 +159,59 @@ class BiliIdentityModule(BaseModule):
                 ctx.audit.record("avatar_fetch_failed", identity.error, level="warning", detail={"uid": uid})
         return identity
 
+    def _should_fetch_avatar_image(
+        self,
+        event: ViewerEvent,
+        *,
+        requested: bool,
+    ) -> bool:
+        if not requested:
+            return False
+        if self.ctx is None:
+            return True
+        if not bool(getattr(self.ctx.config, "avatar_analysis_enabled", True)):
+            return False
+        live_avatar_roast_enabled = bool(
+            getattr(self.ctx.config, "avatar_roast_enabled", True)
+        )
+        return live_avatar_roast_enabled or event.source not in {
+            "live_danmaku",
+            "manual_live_simulation",
+        }
+
+    async def _profile_by_uid(self, uid: str) -> dict[str, str]:
+        now = time.monotonic()
+        self._prune_profile_hints(now)
+        cached = self._profile_hints.get(uid)
+        if cached is not None and cached[0] > now:
+            self._profile_hint_hits += 1
+            return dict(cached[1])
+        self._profile_hint_misses += 1
+        profile = await self._fetch_profile_by_uid(uid)
+        # Only retain the public fields required by the live response path.
+        # Email and other provider payload fields never enter this cache.
+        hint = {
+            "name": str(profile.get("name") or "").strip()[:80],
+            "face": str(profile.get("face") or "").strip()[:512],
+            "pendant": str(profile.get("pendant") or "").strip()[:80],
+        }
+        self._profile_hints[uid] = (now + _PROFILE_HINT_CACHE_SECONDS, hint)
+        self._profile_hints.move_to_end(uid)
+        while len(self._profile_hints) > _PROFILE_HINT_CACHE_LIMIT:
+            self._profile_hints.popitem(last=False)
+        return dict(hint)
+
+    def _prune_profile_hints(self, now: float) -> None:
+        while self._profile_hints:
+            first_uid = next(iter(self._profile_hints))
+            if self._profile_hints[first_uid][0] > now:
+                break
+            self._profile_hints.popitem(last=False)
+
     async def _fetch_profile_by_uid(self, uid: str) -> dict[str, Any]:
         from bilibili_api import user
 
-        # 登录态（若有）让 get_user_info 走登录会话，绕过 -352 风控、恢复头像抓取；未登录=匿名（同现状）。
+        # 直播链路要求登录；开发者查询若没有凭据则由 provider 自身安全降级。
         credential = getattr(self.ctx, "bili_credential", None) if self.ctx else None
         target = user.User(uid=int(uid), credential=credential)
         info = await target.get_user_info()
@@ -343,4 +410,17 @@ class BiliIdentityModule(BaseModule):
         return svg_path.read_bytes(), "image/svg+xml"
 
     def status(self) -> dict[str, Any]:
-        return {"enabled": self.enabled, "avatar_cache": self.ctx.avatar_cache.status() if self.ctx else {}}
+        self._prune_profile_hints(time.monotonic())
+        avatar_cache = getattr(self.ctx, "avatar_cache", None) if self.ctx else None
+        avatar_status = getattr(avatar_cache, "status", None)
+        return {
+            "enabled": self.enabled,
+            "avatar_cache": avatar_status() if callable(avatar_status) else {},
+            "profile_hint_cache": {
+                "items": len(self._profile_hints),
+                "max_items": _PROFILE_HINT_CACHE_LIMIT,
+                "ttl_seconds": _PROFILE_HINT_CACHE_SECONDS,
+                "hits": self._profile_hint_hits,
+                "misses": self._profile_hint_misses,
+            },
+        }

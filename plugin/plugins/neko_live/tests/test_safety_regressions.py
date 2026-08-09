@@ -17,6 +17,7 @@ from plugin.plugins.neko_live.core.permission_gate import PermissionGate
 from plugin.plugins.neko_live.core.pipeline import LivePipeline
 from plugin.plugins.neko_live.core.pipeline_failure_results import fail_dispatcher
 from plugin.plugins.neko_live.core.safety_guard import SafetyGuard
+from plugin.plugins.neko_live.modules import bili_identity as bili_identity_module
 from plugin.plugins.neko_live.modules.bili_identity import BiliIdentityModule
 
 
@@ -217,6 +218,186 @@ async def test_bili_login_check_clears_session_when_credential_save_fails():
 
     assert service._login_session is None
     assert cleanup_calls == 1
+
+
+class _CredentialCheckStub:
+    def __init__(self, *, valid: bool = True, uid: str = "42") -> None:
+        self.valid = valid
+        self.dedeuserid = uid
+        self.validity_checks = 0
+
+    async def check_valid(self) -> bool:
+        self.validity_checks += 1
+        return self.valid
+
+
+def _bili_auth_for_credential(credential: object) -> BiliAuthService:
+    async def provide_credential() -> object:
+        return credential
+
+    return BiliAuthService(
+        credential_provider=provide_credential,
+        credential_saver=lambda _payload: True,
+        credential_reloader=lambda: None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_bili_credential_normal_profile_success_does_not_add_validity_request(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from bilibili_api import user as bili_user_module
+
+    credential = _CredentialCheckStub()
+
+    class User:
+        def __init__(self, *, uid: int, credential: object) -> None:
+            assert uid == 42
+            assert credential is not None
+
+        async def get_user_info(self) -> dict[str, str]:
+            return {"name": "alice"}
+
+    monkeypatch.setattr(bili_user_module, "User", User)
+
+    result = await _bili_auth_for_credential(credential).check_credential()
+
+    assert result["logged_in"] is True
+    assert result["username"] == "alice"
+    assert credential.validity_checks == 0
+
+
+@pytest.mark.asyncio
+async def test_bili_credential_profile_failure_falls_back_to_valid_credential(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from bilibili_api import user as bili_user_module
+
+    credential = _CredentialCheckStub(valid=True)
+
+    class User:
+        def __init__(self, *, uid: int, credential: object) -> None:
+            assert uid == 42
+            assert credential is not None
+
+        async def get_user_info(self) -> dict[str, str]:
+            raise RuntimeError("temporary profile outage with private detail")
+
+    monkeypatch.setattr(bili_user_module, "User", User)
+
+    result = await _bili_auth_for_credential(credential).check_credential()
+
+    assert result == {
+        "logged_in": True,
+        "uid": "42",
+        "username": "",
+        "message": "credential valid; account profile temporarily unavailable",
+    }
+    assert credential.validity_checks == 1
+    assert "private detail" not in repr(result)
+
+
+@pytest.mark.asyncio
+async def test_bili_credential_profile_failure_rejects_invalid_credential(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from bilibili_api import user as bili_user_module
+
+    credential = _CredentialCheckStub(valid=False)
+
+    class User:
+        def __init__(self, *, uid: int, credential: object) -> None:
+            assert uid == 42
+            assert credential is not None
+
+        async def get_user_info(self) -> dict[str, str]:
+            raise RuntimeError("profile unavailable")
+
+    monkeypatch.setattr(bili_user_module, "User", User)
+
+    result = await _bili_auth_for_credential(credential).check_credential()
+
+    assert result == {
+        "logged_in": False,
+        "message": "credential may be invalid; please login again",
+    }
+    assert credential.validity_checks == 1
+
+
+@pytest.mark.asyncio
+async def test_bili_login_profile_failure_keeps_valid_existing_login_without_qr(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from bilibili_api import user as bili_user_module
+
+    credential = _CredentialCheckStub(valid=True)
+
+    class User:
+        def __init__(self, *, uid: int, credential: object) -> None:
+            assert uid == 42
+            assert credential is not None
+
+        async def get_user_info(self) -> dict[str, str]:
+            raise RuntimeError("temporary profile outage")
+
+    monkeypatch.setattr(bili_user_module, "User", User)
+    service = _bili_auth_for_credential(credential)
+    service._require_login_sdk = lambda: (_ for _ in ()).throw(
+        AssertionError("valid existing login must not create a new QR session")
+    )
+
+    result = await service.login()
+
+    assert result == {
+        "status": "already_logged_in",
+        "message": "B站凭据有效；账号资料暂不可用。",
+        "uid": "42",
+        "username": "",
+    }
+    assert credential.validity_checks == 1
+    assert service._login_session is None
+
+
+@pytest.mark.asyncio
+async def test_bili_existing_login_profile_failure_rejects_invalid_credential(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from bilibili_api import user as bili_user_module
+
+    credential = _CredentialCheckStub(valid=False)
+
+    class User:
+        def __init__(self, *, uid: int, credential: object) -> None:
+            assert uid == 42
+            assert credential is not None
+
+        async def get_user_info(self) -> dict[str, str]:
+            raise RuntimeError("profile unavailable")
+
+    monkeypatch.setattr(bili_user_module, "User", User)
+    service = _bili_auth_for_credential(credential)
+
+    assert await service._check_existing_login() is None
+    assert credential.validity_checks == 1
+
+
+@pytest.mark.asyncio
+async def test_bili_existing_login_without_uid_requires_valid_credential():
+    valid = _CredentialCheckStub(valid=True, uid="")
+    invalid = _CredentialCheckStub(valid=False, uid="")
+
+    valid_result = await _bili_auth_for_credential(valid)._check_existing_login()
+    invalid_result = await _bili_auth_for_credential(invalid)._check_existing_login()
+
+    assert valid_result == {
+        "status": "already_logged_in",
+        "message": "B站凭据有效；账号资料暂不可用。",
+        "uid": "",
+        "username": "",
+    }
+    assert invalid_result is None
+    assert valid.validity_checks == 1
+    assert invalid.validity_checks == 1
 
 
 @pytest.mark.asyncio
@@ -488,6 +669,177 @@ async def test_bili_identity_skips_avatar_download_when_analysis_is_disabled():
 
     assert identity.avatar_url == "https://example.test/a.png"
     assert identity.avatar_bytes is None
+
+
+@pytest.mark.asyncio
+async def test_bili_identity_skips_profile_lookup_for_avatar_when_analysis_is_disabled():
+    module = BiliIdentityModule()
+    module.ctx = SimpleNamespace(
+        config=SimpleNamespace(
+            avatar_analysis_enabled=False,
+            avatar_roast_enabled=True,
+            avatar_fetch_timeout_seconds=1,
+        ),
+        audit=SimpleNamespace(record=lambda *args, **kwargs: None),
+    )
+
+    async def fail_profile(_uid: str) -> dict:
+        raise AssertionError("disabled avatar analysis must not fetch an avatar URL")
+
+    module._fetch_profile_by_uid = fail_profile  # type: ignore[method-assign]
+
+    identity = await module.resolve(
+        ViewerEvent(uid="7", nickname="viewer", source="live_danmaku")
+    )
+
+    assert identity.nickname == "viewer"
+    assert identity.avatar_url == ""
+
+
+@pytest.mark.asyncio
+async def test_bili_identity_support_resolution_skips_unneeded_profile_and_image_fetch():
+    module = BiliIdentityModule()
+    module.ctx = SimpleNamespace(
+        avatar_cache=SimpleNamespace(
+            get=lambda _key: (_ for _ in ()).throw(
+                AssertionError("avatar cache must not be read")
+            )
+        ),
+        config=SimpleNamespace(
+            avatar_analysis_enabled=True,
+            avatar_roast_enabled=True,
+            avatar_fetch_timeout_seconds=1,
+        ),
+        audit=SimpleNamespace(record=lambda *args, **kwargs: None),
+    )
+
+    async def fail_profile(_uid: str) -> dict:
+        raise AssertionError("complete support identity must not fetch profile")
+
+    module._fetch_profile_by_uid = fail_profile  # type: ignore[method-assign]
+    module._fetch_avatar = lambda *_args: (_ for _ in ()).throw(
+        AssertionError("support event must not download avatar")
+    )
+
+    identity = await module.resolve(
+        ViewerEvent(uid="7", nickname="supporter", source="live_danmaku"),
+        fetch_avatar_image=False,
+    )
+
+    assert identity.nickname == "supporter"
+    assert identity.avatar_bytes is None
+
+
+@pytest.mark.asyncio
+async def test_bili_identity_support_resolution_may_fetch_name_without_image_bytes():
+    module = BiliIdentityModule()
+    module.ctx = SimpleNamespace(
+        avatar_cache=SimpleNamespace(
+            get=lambda _key: (_ for _ in ()).throw(
+                AssertionError("avatar cache must not be read")
+            )
+        ),
+        config=SimpleNamespace(
+            avatar_analysis_enabled=True,
+            avatar_roast_enabled=True,
+            avatar_fetch_timeout_seconds=1,
+        ),
+        audit=SimpleNamespace(record=lambda *args, **kwargs: None),
+    )
+    profile_calls = 0
+
+    async def fetch_profile(_uid: str) -> dict:
+        nonlocal profile_calls
+        profile_calls += 1
+        return {
+            "name": "supporter",
+            "face": "https://i0.hdslb.com/avatar.png",
+        }
+
+    module._fetch_profile_by_uid = fetch_profile  # type: ignore[method-assign]
+    module._fetch_bili_avatar = lambda *_args: (_ for _ in ()).throw(
+        AssertionError("support event must not download avatar")
+    )
+
+    identity = await module.resolve(
+        ViewerEvent(uid="7", nickname="", source="live_danmaku"),
+        fetch_avatar_image=False,
+    )
+
+    assert profile_calls == 1
+    assert identity.nickname == "supporter"
+    assert identity.avatar_url == "https://i0.hdslb.com/avatar.png"
+    assert identity.avatar_bytes is None
+
+
+@pytest.mark.asyncio
+async def test_bili_identity_profile_hint_cache_is_bounded_public_and_expires(
+    monkeypatch: pytest.MonkeyPatch,
+    patch_module_clock,
+):
+    clock = [100.0]
+    patch_module_clock(
+        monkeypatch,
+        bili_identity_module,
+        monotonic=lambda: clock[0],
+    )
+    module = BiliIdentityModule()
+    module.ctx = SimpleNamespace(
+        config=SimpleNamespace(
+            avatar_analysis_enabled=True,
+            avatar_roast_enabled=True,
+            avatar_fetch_timeout_seconds=1,
+        ),
+        audit=SimpleNamespace(record=lambda *args, **kwargs: None),
+    )
+    profile_calls = 0
+
+    async def fetch_profile(uid: str) -> dict:
+        nonlocal profile_calls
+        profile_calls += 1
+        return {
+            "name": f"viewer-{uid}",
+            "face": f"https://i0.hdslb.com/{uid}.png",
+            "pendant": "public-pendant",
+            "email": "must-not-be-cached@example.invalid",
+        }
+
+    module._fetch_profile_by_uid = fetch_profile  # type: ignore[method-assign]
+
+    first = await module.resolve(
+        ViewerEvent(uid="7", nickname="", source="live_danmaku"),
+        fetch_avatar_image=False,
+    )
+    second = await module.resolve(
+        ViewerEvent(uid="7", nickname="", source="live_danmaku"),
+        fetch_avatar_image=False,
+    )
+
+    assert first.nickname == second.nickname == "viewer-7"
+    assert profile_calls == 1
+    assert module.status()["profile_hint_cache"] == {
+        "items": 1,
+        "max_items": 128,
+        "ttl_seconds": 900.0,
+        "hits": 1,
+        "misses": 1,
+    }
+    assert "email" not in next(iter(module._profile_hints.values()))[1]
+
+    clock[0] += 901.0
+    await module.resolve(
+        ViewerEvent(uid="7", nickname="", source="live_danmaku"),
+        fetch_avatar_image=False,
+    )
+    assert profile_calls == 2
+
+    for index in range(128):
+        await module.resolve(
+            ViewerEvent(uid=str(1000 + index), nickname="", source="live_danmaku"),
+            fetch_avatar_image=False,
+        )
+    assert len(module._profile_hints) == 128
+    assert "7" not in module._profile_hints
 
 
 @pytest.mark.asyncio

@@ -7257,6 +7257,27 @@ describe('App', () => {
     );
   });
 
+  it('keeps link and music cards inside narrow message bubbles', () => {
+    expect(compactChatStyles).toMatch(
+      /\.message-stack\s*\{[\s\S]*?max-width: min\(86%, 320px\);[\s\S]*?min-width: 0;/,
+    );
+    expect(compactChatStyles).toMatch(
+      /\.message-bubble\s*\{[\s\S]*?min-width: 0;[\s\S]*?max-width: 100%;/,
+    );
+    expect(compactChatStyles).toMatch(
+      /\.message-block\s*\{[\s\S]*?min-width: 0;[\s\S]*?max-width: 100%;/,
+    );
+    expect(compactChatStyles).toMatch(
+      /\.message-block-link\s*\{[\s\S]*?grid-template-columns: minmax\(0, 1fr\);[\s\S]*?width: 100%;[\s\S]*?min-width: min\(220px, 100%\);[\s\S]*?max-width: 100%;/,
+    );
+    expect(compactChatStyles).toMatch(
+      /\.message-link-thumb\s*\{[\s\S]*?min-width: 0;[\s\S]*?max-width: 100%;/,
+    );
+    expect(compactChatStyles).toMatch(
+      /\.message-link-copy\s*\{[\s\S]*?min-width: 0;[\s\S]*?max-width: 100%;/,
+    );
+  });
+
   it('keeps compact composer text legible over both light and dark backdrops', () => {
     expect(compactChatStyles).toMatch(
       /\.compact-chat-surface-frame\[data-compact-chat-state="input"\] \.composer-input\s*\{[\s\S]*?color: #2f526b;[\s\S]*?caret-color: #167fbd;[\s\S]*?0 1px 1px rgba\(255, 255, 255, 0\.94\),[\s\S]*?0 0 4px rgba\(255, 255, 255, 0\.72\);/,

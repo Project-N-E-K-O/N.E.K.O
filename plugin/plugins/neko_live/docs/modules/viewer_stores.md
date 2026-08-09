@@ -6,7 +6,7 @@ This store slice keeps viewer profiles, audit events, and encrypted platform cre
 
 ## Ownership And Contracts
 
-- `stores/viewer_store.py` is the only writer for `viewer_profiles.json`. It sanitizes loaded records, serializes writes with an async lock, uses atomic replacement, removes failed-write temporary files, and exposes recent, reset, delete, and clear operations whose results report whether persistence was applied. Storage status follows the file actually in use after a custom-directory fallback and treats a creatable nested directory as writable without creating it during a read-only status check.
+- `stores/viewer_store.py` is the only writer for `viewer_profiles.json`. It sanitizes loaded records, serializes writes with an async lock, uses atomic replacement, removes failed-write temporary files, and exposes recent, reset, delete, and clear operations whose results report whether persistence was applied. Storage status follows the file actually in use after a custom-directory fallback and treats a creatable nested directory as writable without creating it during a read-only status check. The three-second live dashboard poll reuses at most 200 deep-copied public recent-profile projections while the canonical file signature is unchanged; it never caches the complete profile database or bypasses the JSON writer.
 - `stores/audit_store.py` is the only audit-event sink. It bounds text, nesting, and list sizes and redacts sensitive text and structured sensitive keys.
 - `stores/credential_store.py` owns Fernet-encrypted credential files. The default `bili` namespace preserves legacy filenames while other providers use strictly validated, isolated filenames and field allowlists. Audit identity uses `DedeUserID` for Bili fields and `uid` for provider field sets that expose it; missing identities are recorded explicitly as `unidentified`, never as an empty account id.
 - `core/viewer_preferences.py` owns preference inference and the public profile projection returned by `recent_profiles()`.
@@ -45,6 +45,7 @@ Tests cover JSON persistence and fallback, disabled-memory behavior, 90-day rete
 ## Limitations And Rollback
 
 - Viewer profiles are local plugin data and do not provide cross-device synchronization.
+- Profile mutations still read and atomically rewrite the canonical JSON file. The bounded dashboard projection removes repeated read/parse work but does not turn JSON into an indexed database; very large 90-day profile sets may still add latency to an individual selected interaction. A storage-engine migration remains a separate decision.
 - Ordinary profile updates degrade to the plugin data directory when a configured viewer directory cannot be written. Destructive maintenance actions report `applied: false` instead of claiming fallback-only persistence while a stale configured source remains authoritative.
 - Missing or undecryptable credential files degrade to a logged-out state.
 - Rolling back the maintenance APIs leaves existing profile JSON compatible. Rolling back provider namespaces must retain the default `bili_credential.*` files; other namespace files can remain unused without exposing plaintext.

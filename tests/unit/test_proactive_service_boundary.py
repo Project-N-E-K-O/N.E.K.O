@@ -883,6 +883,47 @@ def test_non_user_music_state_is_passive_and_coalesced() -> None:
     manager.submit_proactive_callback.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    ("reported_reason", "expected_reason"),
+    (("load_timeout", "load_timeout"), ("secret conversation", "unknown")),
+)
+def test_music_playback_error_logs_only_sanitized_reason(
+    monkeypatch,
+    reported_reason: str,
+    expected_reason: str,
+) -> None:
+    warning = MagicMock()
+    monkeypatch.setattr(music_playback.logger, "warning", warning)
+    manager = SimpleNamespace(
+        lanlan_name="YUI",
+        submit_proactive_callback=MagicMock(),
+        enqueue_agent_callback=MagicMock(),
+    )
+
+    assert music_playback.handle_music_playback_state(
+        manager,
+        {
+            "state": "error",
+            "reason": reported_reason,
+            "playback_id": "player:error",
+            "playback_window_id": "window:error",
+            "playback_started_at": 250,
+            "source": "proactive",
+            "track": {"name": "Track", "artist": "Artist"},
+        },
+    ) is True
+
+    callback = manager.enqueue_agent_callback.call_args.args[0]
+    assert callback["metadata"]["failure_reason"] == expected_reason
+    warning.assert_called_once_with(
+        "[%s] 音乐播放器报告失败: reason=%s",
+        "YUI",
+        expected_reason,
+    )
+    if expected_reason == "unknown":
+        assert reported_reason not in repr(warning.call_args)
+
+
 def test_music_playback_keeps_current_owner_during_replacement_search() -> None:
     manager = SimpleNamespace(
         lanlan_name="YUI",
@@ -989,6 +1030,66 @@ def test_music_dedupe_is_recorded_only_after_delivery_commit() -> None:
     assert "mark_music_as_played(track)" not in inspect.getsource(
         music_recommendation._select_music_recommendation
     )
+
+
+def test_music_selection_trims_skipped_tracks_before_delivery_fallback() -> None:
+    tracks = [
+        {
+            "name": "easy hiphop",
+            "artist": "VibeDepot",
+            "url": "https://freemusicarchive.org/track/easy-hiphop/stream/",
+        },
+        {
+            "name": "Nocturne in B flat minor",
+            "artist": "Pianist A",
+            "url": "https://dl.musopen.org/nocturne-flat.mp3",
+        },
+        {
+            "name": "Left Track",
+            "artist": "Singer",
+            "url": "/api/music/play/netease/123",
+        },
+        {
+            "name": "calm hiphop",
+            "artist": "VibeDepot",
+            "url": "https://freemusicarchive.org/track/calm-hiphop/stream/",
+        },
+        {
+            "name": "Nocturne in B minor",
+            "artist": "Pianist B",
+            "url": "https://dl.musopen.org/nocturne-minor.mp3",
+        },
+    ]
+    skipped_urls = {track["url"] for track in tracks[:3]}
+    music_content = {
+        "formatted_content": "music candidates",
+        "raw_data": {"success": True, "data": tracks},
+    }
+
+    selection = music_recommendation._select_music_recommendation(
+        music_content,
+        lang="en",
+        source_hash=lambda url, _title: url,
+        should_skip_source=lambda key: key in skipped_urls,
+        lanlan_name="YUI",
+    )
+
+    assert selection.link["title"] == "calm hiphop"
+    assert [
+        track["name"] for track in selection.content["raw_data"]["data"]
+    ] == ["calm hiphop", "Nocturne in B minor"]
+
+    source_links = [selection.link]
+    appended = music_recommendation._append_music_recommendations(
+        source_links,
+        selection.content,
+    )
+
+    assert appended == 1
+    assert [link["title"] for link in source_links] == [
+        "calm hiphop",
+        "Nocturne in B minor",
+    ]
 
 
 def test_proactive_command_parses_music_occupied() -> None:

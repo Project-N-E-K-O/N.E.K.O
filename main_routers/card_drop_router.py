@@ -31,6 +31,8 @@ import httpx
 from fastapi import APIRouter, Body, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
+from main_logic import client_registration
+
 logger = logging.getLogger("neko.card_drop")
 
 router = APIRouter(prefix="/api/card-drop", tags=["card-drop"])
@@ -230,9 +232,8 @@ def _discard_native_delegate(value: object) -> None:
 
 
 def _social_base_url() -> str:
-    """Return the cloud base URL, falling back to the local dev default."""
-    raw = (os.environ.get("NEKO_SOCIAL_BASE_URL", "") or "").strip().rstrip("/")
-    return raw or _DEFAULT_SOCIAL_BASE_URL
+    """Return the cloud base URL, falling back to production."""
+    return client_registration.social_base_url()
 
 
 def _get_client_credentials() -> tuple[str, str] | None:
@@ -311,18 +312,34 @@ async def _confirm_cloud_forge_debit(
     }
     if send_client_proof:
         request_payload["client_proof"] = client_proof
-    try:
-        async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SEC) as client:
-            response = await client.post(
-                url,
-                json=request_payload,
-            )
-    except (httpx.HTTPError, OSError):
+
+    async def _post() -> tuple[httpx.Response | None, dict | None]:
+        try:
+            async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SEC) as client:
+                res = await client.post(url, json=request_payload)
+        except (httpx.HTTPError, OSError):
+            return None, None
+        try:
+            return res, res.json()
+        except (ValueError, TypeError):
+            return res, None
+
+    response, payload = await _post()
+    if response is None:
         return {"confirmed": False, "detail": "cloud_unreachable"}
-    try:
-        payload = response.json()
-    except (ValueError, TypeError):
-        payload = None
+
+    # A rejection naming an unknown client is usually this install's first cloud
+    # call after the cloud lost (or never had) the row. Register, then retry once.
+    # Not gated on send_client_proof: loopback HTTP omits the proof from this
+    # request, yet ensure_client_registered() may still register over it, so
+    # gating here would leave loopback debits unconfirmed until a restart.
+    detail = payload.get("detail") if isinstance(payload, dict) else None
+    if client_registration.looks_unregistered(response.status_code, detail):
+        if await client_registration.ensure_client_registered(base_url, force=True):
+            response, payload = await _post()
+            if response is None:
+                return {"confirmed": False, "detail": "cloud_unreachable"}
+
     if not 200 <= response.status_code < 300 or not isinstance(payload, dict):
         detail = payload.get("detail") if isinstance(payload, dict) else None
         return {
@@ -1472,27 +1489,46 @@ async def bind_client_approve_endpoint(request: Request, payload: dict = Body(..
             {"detail": "client_not_registered"}, status_code=409, headers=cors
         )
     client_id, client_proof = credentials
-    try:
-        async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SEC) as client:
-            response = await client.post(
-                f"{_social_base_url()}/api/clients/bind-approval",
-                json={
-                    "client_id": client_id,
-                    "binding_challenge": challenge,
-                    "client_proof": client_proof,
-                },
-            )
-    except (httpx.HTTPError, OSError):
+    base_url = _social_base_url()
+    approval_payload = {
+        "client_id": client_id,
+        "binding_challenge": challenge,
+        "client_proof": client_proof,
+    }
+
+    async def _approve():
+        try:
+            async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SEC) as client:
+                res = await client.post(
+                    f"{base_url}/api/clients/bind-approval", json=approval_payload
+                )
+        except (httpx.HTTPError, OSError):
+            return None, None
+        try:
+            return res, res.json().get("detail")
+        except (ValueError, TypeError, AttributeError):
+            return res, None
+
+    response, detail = await _approve()
+    if response is None:
         return JSONResponse(
             {"detail": "cloud_unreachable"}, status_code=502, headers=cors
         )
+    # Register-then-retry once: the cloud reports an unknown client_id the same
+    # way it reports a bad proof, and this install may never have registered.
+    if client_registration.looks_unregistered(
+        response.status_code, detail
+    ) and await client_registration.ensure_client_registered(base_url, force=True):
+        response, detail = await _approve()
+        if response is None:
+            return JSONResponse(
+                {"detail": "cloud_unreachable"}, status_code=502, headers=cors
+            )
     if response.status_code >= 400:
-        try:
-            detail = response.json().get("detail") or f"http_{response.status_code}"
-        except (ValueError, TypeError, AttributeError):
-            detail = f"http_{response.status_code}"
         return JSONResponse(
-            {"detail": detail}, status_code=response.status_code, headers=cors
+            {"detail": detail or f"http_{response.status_code}"},
+            status_code=response.status_code,
+            headers=cors,
         )
     return JSONResponse({"ok": True}, headers=cors)
 

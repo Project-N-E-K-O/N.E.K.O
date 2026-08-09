@@ -4,13 +4,13 @@
 >
 > 范围：NEKO Live 插件、宿主 `push_message` 投送桥、实时语音主动回应链路，以及礼物 / SC / 舰长事件在人猫同播模式下的行为。
 >
-> 本文记录的是当前工作区快照。工作区存在大量未提交修改，不能把本文描述直接当作远端主分支、发布版或任一 PR 的既成行为。
+> 本文是日期化的问题证据台账，不是当前分支、发布版或实现计划的权威来源。当前产品边界以 `independent-mode-product-plan.md`、当前运行契约以 `runtime-observability.md` 和对应模块文档为准。
 >
 > **2026-07-27 进展**：宿主侧投送生命周期曾在本地形成原型和离线测试，
 > 后按职责拆分从远端 `neko-live` 移除，转交
 > [RFC #2491](https://github.com/Project-N-E-K-O/N.E.K.O/issues/2491)
-> 独立研究。插件保留前向兼容 metadata 声明，但当前宿主不执行 TTL、生命周期、
-> 话权短形式或补偿。§10 仅保留本地原型证据，不代表远端分支能力。
+> 独立研究。插件当前只保留 TTL 与 `interrupt_policy=drop`，不再透传生命周期、
+> 话权短形式或补偿 metadata。§10 仅保留本地原型证据，不代表远端分支能力。
 >
 > **2026-07-28 收束**：#2491 不再建设插件可见生命周期、播放完成、补偿或
 > `brief_text`。当前核心范围只有 per-cue TTL、发声/播放期间的窄闸门、队列项
@@ -143,8 +143,8 @@ queued -> accepted -> first_audio -> playback_started
 - 不从断点续说，不原样重播长句，而是生成新的短感谢；
 - 新一轮用户话语、直播会话切换或更新的同类事件可以使旧补偿失效。
 
-插件会声明 `interrupt_policy="compensate_once"`、幂等 `delivery_key` 和有界
-补偿 TTL，作为前向兼容接口；当前宿主会安全忽略这些未知字段，不会执行补偿。
+该前向兼容声明已经退役。插件现在明确使用 `interrupt_policy="drop"`，不透传
+幂等键、补偿文本或补偿 TTL。
 
 ### CSL-003：被动上下文可能错误触发语音热切换
 
@@ -444,13 +444,10 @@ intent；真正的被动语义由 `ai_behavior="read"` 保证。
 3. 所有旧会话事件失效；
 4. 新会话不得播出旧礼物感谢或旧弹幕。
 
-## 8. 当前工程状态提醒
+## 8. 工程状态说明
 
-- 当前分支：`fix/passive-read-no-hot-swap`。
-- 当前任务可能存在范围明确的未提交整理修改；提交前必须按任务范围逐项核对。
-- 本文是状态台账，不表示工作树中的其它改动可以整体提交。
-- 在提交或推送前，必须重新核对任务范围、PR head repository、head branch、写入权限和 upstream。
-- 未经用户明确要求，不得 commit 或 push。
+- 本文不记录当前分支、工作树或 PR 状态；这些信息必须从 Git 和 GitHub 实时核对。
+- 这里的历史证据不能覆盖当前模块契约，也不能证明真机播放结果。
 
 ## 9. 完成定义
 
@@ -460,7 +457,7 @@ intent；真正的被动语义由 `ai_behavior="read"` 保证。
 - ⛔ 主播话权优先且无明显竞态抢话；（当前远端无通用话权闸门，转独立宿主能力）
 - ⛔ 主动回应没有插件可见 accepted、generation_done、completed、interrupted 终态；（明确移出 #2491，不再作为本轮验收）
 - ✅ 普通弹幕被打断后不会重播；
-- ⛔ 高价值支持事件补偿；（明确移出 #2491；插件声明只是惰性前向兼容 metadata）
+- ⛔ 高价值支持事件补偿；（明确移出 #2491；插件也已删除惰性补偿 metadata）
 - ✅ deferred candidate 与 overlay 插件路径已退役；被动语义只依赖 `ai_behavior="read"`；
 - ⛔ per-cue TTL 尚待 #2491 宿主改动；priority / FIFO / 显式 coalesce 已是既有能力，不建设第二套队列或 lifecycle；
 - ⛔ `pause` 短形式与 `brief_text` 选择；（独立后续宿主能力 / 产品实验，不在 RFC #2491 当前范围）
@@ -521,20 +518,16 @@ coalesce key 哈希、delivery key 哈希、epoch），不含原始 key 或任�
 
 ### 10.5 插件侧策略声明
 
-插件仍在 request metadata 里声明策略（由
-`adapters/output_contract_bridge.py` 开放透传），但当前远端宿主不执行
-`delivery_ttl_seconds`、`interrupt_policy`、`delivery_key`、
-`compensation_text`、`compensation_ttl_seconds` 或 `brief_text`。未知字段
-会被安全忽略；表中内容仅是插件声明与未来意图：
+插件当前只在 request metadata 中声明 TTL 与显式 drop 策略；补偿、幂等键和
+短形式字段已经从 producer 与 `adapters/output_contract_bridge.py` 透传白名单中
+移除：
 
 | 路径 | 声明内容 |
 | --- | --- |
-| co_stream 高价值 / 里程碑支持事件 | `delivery_ttl_seconds=45`、安全类别限定的 `brief_text`、`interrupt_policy=compensate_once`、`delivery_key=support:<provider_event_id>`、`compensation_text`、`compensation_ttl_seconds=10` |
-| co_stream 轻量 / 中量支持事件 | 正常只进入被动语境；若构造主动 request，则仅声明 `delivery_ttl_seconds=45` 与安全类别限定的 `brief_text`，不声明补偿 |
+| co_stream 全部支持事件 | `delivery_ttl_seconds=45`、`interrupt_policy=drop` |
 | co_stream 普通弹幕 | `delivery_ttl_seconds=20`、`interrupt_policy=drop` |
 | solo_stream 全部路径 | 不声明，沿用宿主默认（打断即丢弃） |
 
-无 `provider_event_id` 时不声明补偿：未来宿主没有幂等键就无法保证「至多一次」。
 契约见 `docs/modules/live_support_events.md`「Delivery Policy」。
 
 ### 10.6 历史原型测试

@@ -3625,7 +3625,8 @@
             "prev": "上一步",
             "done": "完成",
             "close": "关闭",
-            "skip": "跳过"
+            "skip": "跳过",
+            "skipWithEsc": "跳过(ESC)"
         },
         "fullscreenPrompt": {
             "title": "🎓 开始新手引导",

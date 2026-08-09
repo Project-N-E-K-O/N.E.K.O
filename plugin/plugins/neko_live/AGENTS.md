@@ -17,6 +17,7 @@ This file is for IDE agents and future contributors working inside `plugin/plugi
 - All viewer profile writes must go through `stores/viewer_store.py`.
 - All audit records must go through `stores/audit_store.py`.
 - Login credentials must only be stored via `stores/credential_store.py` (Fernet-encrypted on disk). Never write credentials / cookies / tokens to audit, log, config, or UI — only echo uid / username / logged-in state.
+- Bilibili live listening requires a verified login credential at both the runtime and provider boundary. Do not reintroduce an account-free or anonymous-listening fallback in actions, UI, tools, or internal listener startup.
 - Do not write raw private user data, cookies, tokens, or raw payloads to logger.
 - When adding UI text, update all 8 locale files.
 - Python commands must be run through `uv run`.

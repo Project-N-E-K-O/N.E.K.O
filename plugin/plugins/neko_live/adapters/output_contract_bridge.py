@@ -24,6 +24,17 @@ from ..core.live_reply_contract import (
 
 
 def response_module_hint(request: InteractionRequest) -> str:
+    explicit = request.metadata.get("response_module_hint")
+    if isinstance(explicit, str) and explicit.strip() in {
+        "avatar_roast",
+        "danmaku_response",
+        "live_support_events",
+        "warmup_hosting",
+        "idle_hosting",
+        "active_engagement",
+        "developer_sandbox",
+    }:
+        return explicit.strip()
     support_event_type = request.metadata.get("support_event_type")
     if isinstance(support_event_type, str) and support_event_type.strip():
         return "live_support_events"
@@ -133,14 +144,10 @@ def metadata_for_request(
         "meme_hint_ids",
         "meme_hint_tags",
         "delivery_intent",
-        # Forward-compatible delivery declarations. RFC #2491 is narrowed to
-        # generic per-cue TTL plus host-internal safety; it does not make
-        # lifecycle, compensation, delivery-key, or brief-cue fields into a
-        # host contract. Unknown metadata remains safe to ignore.
+        # Conservative co-stream delivery declarations. The plugin has no
+        # playback lifecycle, so it may expire or drop a cue but cannot request
+        # compensation, replay, or floor-dependent short-form selection.
         "interrupt_policy",
-        "compensation_text",
-        "delivery_key",
-        "brief_text",
     ):
         value = request.metadata.get(key)
         if isinstance(value, str) and value.strip():
@@ -148,7 +155,6 @@ def metadata_for_request(
     for key in (
         "candidate_ttl_seconds",
         "delivery_ttl_seconds",
-        "compensation_ttl_seconds",
     ):
         value = request.metadata.get(key)
         if isinstance(value, (int, float)) and not isinstance(value, bool):

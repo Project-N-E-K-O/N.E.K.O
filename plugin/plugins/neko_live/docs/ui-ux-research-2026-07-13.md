@@ -22,7 +22,7 @@ The 2026-07-14 dashboard work resolved the largest information-architecture and 
 
 The remaining high-value work is narrower than the original audit:
 
-1. ~~enforce explicit Bilibili accountless-fallback intent at the runtime connection boundary, not only in React state~~ — completed on 2026-07-15;
+1. ~~enforce explicit Bilibili authentication at both runtime and provider boundaries~~ — the temporary fallback shipped in July was removed on 2026-08-04;
 2. finish the consolidated connection/auth state model, including reconnect and credential-validation failure semantics;
 3. ~~decide familiar-viewer memory enablement, retention, deletion, and reset semantics before adding ordinary-user controls~~ — completed on 2026-07-15 with a default-on preference, fixed 90-day lazy retention, clear-all, per-viewer reset, and per-viewer deletion;
 4. continue splitting read-only sections out of `panel.tsx` only where it reduces measured maintenance or rendering cost; do not redesign navigation again;
@@ -707,7 +707,7 @@ The Console is a stateful live-operation surface. It must not assemble itself fr
 ```mermaid
 stateDiagram-v2
     [*] --> NotReady
-    NotReady --> Ready: account valid or explicit provider fallback, and room confirmed
+    NotReady --> Ready: verified account and confirmed room
     Ready --> Live: start listening succeeds
     Live --> Paused: pause
     Paused --> Live: resume
@@ -742,19 +742,19 @@ Every state retains the same lightweight frame:
 - Show platform selection when more than one platform is available.
 - Show account authorization state and the single required authorization action for the selected platform.
 - Show room link/ID input and Confirm Room.
-- Disable Start Listening with a nearby plain-language reason until room confirmation is complete and the session has either valid authorization or an explicitly confirmed provider-supported fallback.
+- Disable Start Listening with a nearby plain-language reason until room confirmation is complete and the selected platform has verified authorization.
 - Keep interaction test, pause, resume, reconnect, and end hidden.
 - When the user edits the room input, immediately invalidate any previous room-confirmation result.
 
 ### Account authorization model
 
-Authentication is the normal required path for every supported live platform. Accountless connection is a visible, per-session fallback only when the selected provider explicitly supports it; it is not a peer default path and is never silently selected.
+Authentication is required for every supported live platform. Missing, expired, or unverifiable credentials stop the flow at `auth_required`; the console does not expose an account-free fallback.
 
 #### Bilibili
 
 - Require a valid Bilibili login in the normal setup path.
-- Present `Scan to sign in` as the only initial progression action. Reveal `Use limited accountless connection` only after QR generation/check failure, expiry, or an explicit `Having trouble signing in?` disclosure.
-- Accountless fallback requires a one-time confirmation for the current session, is not persisted as the next-run default, and keeps a visible `Limited connection` status with `Sign in now` as the recovery action.
+- Present `Scan to sign in` as the only Bilibili progression action. QR generation/check failure or expiry must show a retryable authentication error, not a reduced connection mode.
+- Keep `auth_required` visible until a verified credential is available; do not persist or synthesize an alternative authentication state.
 - Treat login as product-level reliability policy: it reduces risk-control failures such as `-352` and makes room lookup and identity/avatar behavior predictable.
 - Use the host-provided `Modal` for the QR session. Do not ask for a username, password, or raw cookie.
 - Model the QR session as `generating`, `waiting`, `scanned`, `confirming`, `done`, `expired`, and `failed`.
@@ -763,7 +763,7 @@ Authentication is the normal required path for every supported live platform. Ac
 #### Douyin
 
 - The current read-only integration requires a manually imported cookie, so credential setup is a blocking platform prerequisite.
-- Do not expose an accountless fallback for Douyin until the provider can actually establish and verify a read-only connection without a cookie. A generic UI fallback must not pretend unsupported transport capability exists.
+- Do not expose generic authentication bypasses for any provider. Provider-specific authorization failures must remain explicit and fail closed.
 - Open a medium host-provided `Modal` from `Import Douyin Cookie`; use a multiline `Textarea`, clear it immediately after save, and never prefill or echo the stored cookie.
 - Treat `cookie saved` and `cookie validated for this room` as different states. The runtime currently reports a stored cookie as logged in before room validation, so the UI must not label storage alone as a verified login.
 - Keep UID and nickname optional and collapsed under advanced details; they are not connection prerequisites and should not distract beginners.
@@ -772,10 +772,10 @@ Authentication is the normal required path for every supported live platform. Ac
 #### Shared recovery and management
 
 - `Unable to check account status` is a distinct recoverable error. Do not collapse status-fetch failure into `not signed in`.
-- Fail closed when account status is missing, expired, invalid, or cannot be verified, unless the provider advertises accountless support and the user explicitly activates the per-session fallback.
-- Enforce the policy in the runtime connection boundary as well as the UI. Action/API callers must provide an explicit fallback intent; absence of credentials alone must never silently select anonymous mode.
+- Fail closed when account status is missing, expired, invalid, or cannot be verified.
+- Enforce the policy in the runtime connection boundary as well as the UI. Bilibili action/API callers must have a verified loaded credential; missing, expired, invalid, or unverifiable credentials must stop at `auth_required`.
 - Validate credentials on setup, Start Listening, and reconnect rather than adding permanent high-frequency background polling.
-- In fallback mode, expose capability limits in the projected Console state, suppress features that require identity or authenticated lookup, and route risk-control failures back to `Sign in now` rather than repeatedly retrying anonymously.
+- Expose authentication failures in the projected Console state and route them back to `Sign in now`; do not start the Bilibili listener or retry the connection without a verified credential.
 - During an active or paused session, account replacement and credential deletion require ending the session first. The recommended destructive action is `Stop listening and remove local login data`.
 - Bilibili logout removes the locally encrypted credential files; it does not claim to revoke the platform-side session.
 - Account switching, local credential removal, and saved-status details live in Settings. The Console owns only the setup or recovery action needed for the current session.

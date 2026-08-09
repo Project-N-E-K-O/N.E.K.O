@@ -2,7 +2,7 @@
 
 ## Status
 
-`RoomPulse v0`, its compact prompt projection, solo-only `SceneState v0`, the co-stream passive-context slice, session-scoped `RitualMemory v0`, and `RoomVerdict v0` are implemented in Draft PR #2647 pending maintainer approval. The host has a three-state floor gate, but the managed `pause` short-form path is not yet reachable; RoomVerdict also lacks playback-completion backflow.
+`RoomPulse v0`, its compact prompt projection, solo-only `SceneState v0`, the co-stream passive-context slice, session-scoped `RitualMemory v0`, and `RoomVerdict v0` are implemented in the current plugin baseline. They are tracked through the consolidated live-plugin acceptance work rather than a module-specific PR status. The plugin does not consume host floor state or declare a pause short form; RoomVerdict also lacks playback-completion backflow.
 
 The prompt slices change only the context of an output that the existing selection and scheduling paths already chose. The co-stream passive slice adds one bounded debounce task and same-key queue replacement, but no automatic turn, model call, network request, timer-based expiry, or speaking authority.
 
@@ -99,12 +99,13 @@ The scene renderer assists only already selected solo-stream viewer responses. I
 
 Ordinary co-stream danmaku always refreshes passive room context; when `co_stream_output_policy=auto_low_interrupt`, an independently selected item may also request one bounded active reply through the normal safety/cooldown path. The fixed three-entry session tail and latest two provider-verified support facts are formatted as one hidden `ai_behavior="read"` snapshot. The snapshot uses stable positional labels rather than moving ages, has no freshness timer, and is replaced only by a newer same-key snapshot or session reset. The host-side passive bridge queues it without requesting a response or advancing a hot swap; delivery waits for the next natural user turn or already-occurring safe session swap.
 
+Manual pause suppresses passive publication but does not discard the bounded session facts. When the operator resumes an active co-stream session, the control path asks the existing one-second debounce to refresh the authoritative snapshot. If nothing changed, the normal unchanged-text gate emits no host submission; otherwise exactly one coalesced `read` replacement is submitted. This adds no worker, speaking turn, retry, or provider request.
+
 Support behavior is mode- and tier-aware:
 
 - `solo_stream`: existing proactive selected danmaku and support behavior is unchanged;
 - `co_stream` ordinary danmaku: passive snapshot plus an independently selected bounded active reply when policy permits;
-- `co_stream` light/medium support: passive verified fact only;
-- `co_stream` high/milestone support: at most one bounded active acknowledgement plus a passive shadow marked as requested, never as audibly completed.
+- `co_stream` verified support at every tier: one bounded active acknowledgement attempt through the shared scheduler plus a passive shadow, never a claim of audible completion.
 
 **Delivery-delay tolerance (aligned with the host owner decision).** The host
 delivers a passive snapshot at the next NATURALLY-occurring hot swap and
@@ -129,6 +130,9 @@ A snapshot is now retired only at a session boundary; same-key coalescing keeps
 just the newest one pending. A newly connected co-stream session also queues one
 same-path empty snapshot, so a session with no observed danmaku has an explicit
 fact state instead of inheriting the apparent facts of an older conversation.
+Reset serializes any cancellation-resistant old submission before its tombstone,
+and serializes that tombstone before the new snapshot. A late old completion may
+finish transport submission but cannot reclaim current-session local state.
 
 The snapshot marks viewer text as untrusted data. Every usable danmaku row is
 also explicitly marked `权威`; the live-scene instruction permits current,
@@ -139,7 +143,8 @@ answer. Conversation history, summaries, long-term memory, viewer profiles, and
 old-session content are explicitly excluded as fallback fact sources.
 The positional tail includes selected as well as unselected danmaku so selecting
 an active reply cannot silently relabel the real previous row as latest.
-Selected rows carry the compact `已回复` state and are fact-only: they may answer
+Selected rows carry the compact `已选中` state and are fact-only. The marker
+records active-path selection, not host submission or playback: they may answer
 an explicit positional question but cannot be brought up again during ordinary
 conversation.
 
@@ -170,7 +175,7 @@ characters; truncation receives an ellipsis and cannot be completed from memory.
 It adds no model call, network request, durable storage, dependency, timer, or
 new queue. The only added steady-state cost is one short, invisible, coalesced
 `read` context when a co-stream session starts before any authoritative row.
-Selected rows add at most three compact `已回复` state fields. Because host
+Selected rows add at most three compact `已选中` state fields. Because host
 `read` has no native per-message expiry, replacement is approximated with the same key;
 already-consumed text may remain in host conversation history.
 
@@ -186,7 +191,8 @@ proactive speech.
 - **Approved implementation:** explicit per-row authority plus an explicit empty
   current-session snapshot, using the existing passive dispatcher and
   same-session coalescing key. Selected rows stay in their true position and
-  carry `已回复` so they remain queryable without becoming ordinary pickup.
+  carry `已选中` so they remain queryable without becoming ordinary pickup or
+  claiming that a response was submitted or played.
 - **Expected budget:** one bounded local formatting pass and at most one
   additional short pending context at empty-session start, plus at most three
   short state fields; zero additional model calls, tools, network polling,
@@ -204,7 +210,7 @@ proactive speech.
   the passive context degrades to the live-scene refusal rule, not a tool call or
   forced response.
 - **Required verification:** formatter bounds and source exclusions, empty-state
-  publication, selected-row positional stability and reply-state marking,
+  publication, selected-row positional stability and selection-state marking,
   session-start scheduling, live-scene instruction contract, burst coalescing,
   the full plugin test suite, and plugin package check.
 
@@ -361,12 +367,12 @@ The following decisions require maintainer approval before their corresponding r
 | Co-stream behavior | Enforce with unknown host turn, or remain read-only until a reliable provider exists | Keep `enforced=false`; RoomPulse never grants L3 speaking authority | Existing conservative downgrade remains the fallback |
 | Scene memory | Transcript/RAG, model-authored summaries, or one bounded deterministic state object | Slice 3 uses one runtime-only object, three viewer turns, 120-second lazy expiry, no persistence, and no transcript | Reset on all session/mode boundaries; remove the prompt consumer to revert behavior |
 | UI surface | Add controls now, display read-only diagnostics later, or no UI | No new UI in Slice 1; use tests/status evidence first | Avoids eight-locale and panel compatibility cost until product value is proven |
-| Slice 4A passive context | One bounded renderer plus one coalesced debounce task, or an automatic speaking turn/model summary | Use the renderer and at most one refresh plus one clear task; zero additional model calls or speaking turns | Draft pending maintainer approval; disable the passive publisher and keep active output unchanged |
-| Rollback fact guard | Publish explicit absence/expiry on session boundaries, or allow stale context to linger | Clear with the previous session key before publishing the new authoritative snapshot | Draft pending maintainer approval; remove the fact guard only together with its passive consumer; barrier tests cover ordering |
-| Slice 5 ritual memory | Bounded deterministic session memory, or transcript/model memory | Fixed-size runtime-only candidates, no transcript, persistence, timer, or model call | Draft pending maintainer approval; remove the ritual block consumer and reset state |
-| Slice 6 verdict | Bounded distinct-viewer ballots, or model-generated consensus | Deterministic session-only ballot with combined 520-character context ceiling | Draft pending maintainer approval; remove verdict subscription/rendering; tests and stable counters provide observability |
+| Slice 4A passive context | One bounded renderer plus one coalesced debounce task, or an automatic speaking turn/model summary | Use the renderer and at most one refresh plus one clear task; zero additional model calls or speaking turns | Disable the passive publisher and keep active output unchanged |
+| Rollback fact guard | Publish explicit absence/expiry on session boundaries, or allow stale context to linger | Clear with the previous session key before publishing the new authoritative snapshot | Remove the fact guard only together with its passive consumer; barrier tests cover ordering |
+| Slice 5 ritual memory | Bounded deterministic session memory, or transcript/model memory | Fixed-size runtime-only candidates, no transcript, persistence, timer, or model call | Remove the ritual block consumer and reset state |
+| Slice 6 verdict | Bounded distinct-viewer ballots, or model-generated consensus | Deterministic session-only ballot with combined 520-character context ceiling | Remove verdict subscription/rendering; tests and stable counters provide observability |
 
-The user approved the recommended Slice 1, Slice 2, and Slice 3 verification options on 2026-07-21. Slice 4A, its rollback guard, Slice 5, and Slice 6 remain Draft pending maintainer approval in PR #2647; Slice 4B co-stream enforcement remains open.
+Slices 1 through 6 are present in the current plugin baseline and covered by offline regression tests. Slice 4B co-stream enforcement remains open because the plugin still lacks reliable host-turn and playback-completion backflow; release acceptance stays consolidated with the rest of NEKO Live.
 
 Expected Slice 1 and Slice 2 cost budget:
 

@@ -16,14 +16,20 @@ def build_request_for_route(
     profile: ViewerProfile,
 ) -> InteractionRequest:
     if route.response_module_id == "warmup_hosting":
-        return ctx.warmup_hosting.build_request(event, identity, profile)
-    if route.response_module_id == "active_engagement":
-        return ctx.active_engagement.build_request(event, identity, profile)
-    if route.response_module_id == "idle_hosting":
+        request = ctx.warmup_hosting.build_request(event, identity, profile)
+    elif route.response_module_id == "active_engagement":
+        request = ctx.active_engagement.build_request(event, identity, profile)
+    elif route.response_module_id == "idle_hosting":
         # Idle hosting reuses the avatar roast request shape in this slice.
-        return ctx.avatar_roast.build_request(event, identity, profile)
-    if route.response_module_id == "live_support_events":
-        return ctx.live_support_events.build_request(event, identity, profile)
-    if route.response_module_id == "danmaku_response":
-        return ctx.danmaku_response.build_request(event, identity, profile)
-    return ctx.avatar_roast.build_request(event, identity, profile)
+        request = ctx.avatar_roast.build_request(event, identity, profile)
+    elif route.response_module_id == "live_support_events":
+        request = ctx.live_support_events.build_request(event, identity, profile)
+    elif route.response_module_id == "danmaku_response":
+        request = ctx.danmaku_response.build_request(event, identity, profile)
+    else:
+        request = ctx.avatar_roast.build_request(event, identity, profile)
+    # The pipeline route owns module identity. Visual availability is an input
+    # capability and must never silently reclassify avatar_roast as a normal
+    # danmaku response at the Dispatcher contract boundary.
+    request.metadata["response_module_hint"] = route.response_module_id
+    return request

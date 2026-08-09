@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from .contracts import ViewerEvent
@@ -60,6 +61,50 @@ def is_repeat_live_danmaku(
     return has_uid_lock and is_live_danmaku_with_text(event) and already_roasted
 
 
+def is_explicit_self_avatar_roast_request(event: ViewerEvent) -> bool:
+    """Return whether the viewer explicitly asks NEKO to judge their avatar.
+
+    This intentionally stays narrower than generic roast requests: only a
+    self-referential avatar request may bypass the automatic once-per-viewer
+    entrance gate. Requests about another viewer remain text-only unless a
+    future route can resolve that person's visual identity safely.
+    """
+
+    if not is_live_danmaku_with_text(event):
+        return False
+    text = str(event.danmaku_text or "").strip().casefold()
+    dense = "".join(
+        ch for ch in text if ch.isalnum() or "\u4e00" <= ch <= "\u9fff"
+    )
+    cjk_self_avatar = any(
+        marker in dense
+        for marker in (
+            "我的头像",
+            "我头像",
+            "本人头像",
+            "给我看头像",
+        )
+    )
+    cjk_roast = any(
+        marker in dense
+        for marker in (
+            "锐评",
+            "吐槽",
+            "评价",
+            "点评",
+            "评评",
+            "打分",
+        )
+    )
+    if cjk_self_avatar and cjk_roast:
+        return True
+    return re.search(
+        r"\b(?:roast|rate|review|judge)\s+my\s+"
+        r"(?:avatar|profile\s+(?:picture|pic)|pfp)\b",
+        text,
+    ) is not None
+
+
 def is_entrance_paced_live_danmaku(
     event: ViewerEvent,
     *,
@@ -98,6 +143,17 @@ def route_for_event(
         return PipelineRoute("active_engagement", "active_engagement", False)
     if event.source == "idle_hosting":
         return PipelineRoute("idle_hosting", "idle_hosting", False)
+    explicit_self_avatar_roast = is_explicit_self_avatar_roast_request(event)
+    if explicit_self_avatar_roast:
+        if not avatar_roast_enabled:
+            return PipelineRoute("danmaku_response", "avatar_roast_disabled", False)
+        if not avatar_roast_allowed:
+            return PipelineRoute("danmaku_response", "avatar_roast_pressure", False)
+        return PipelineRoute(
+            "avatar_roast",
+            "explicit_self_avatar_roast",
+            not already_roasted and not is_transient_event_result,
+        )
     if active_hook_answer:
         return PipelineRoute("danmaku_response", "active_hook_answer", False)
     if is_repeat_live_danmaku(

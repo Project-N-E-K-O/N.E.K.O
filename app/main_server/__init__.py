@@ -666,6 +666,7 @@ from .web_app import (  # noqa: F401
 _preload_task: asyncio.Task = None
 _game_cleanup_task: asyncio.Task = None
 _facts_sync_worker_task: asyncio.Task = None
+_client_registration_task: asyncio.Task = None
 _runtime_startup_init_lock = asyncio.Lock()
 _runtime_startup_init_completed = False
 
@@ -696,7 +697,21 @@ async def _sync_memory_server_after_startup_import(import_result):
 
 def _start_neko_servers_integration_workers() -> None:
     """Start storage-backed integration workers after the startup barrier clears."""
-    global _facts_sync_worker_task
+    global _facts_sync_worker_task, _client_registration_task
+
+    # The forge debit callback defaults to the production cloud with no feature
+    # flag, so the matching client_id must be registered unconditionally here.
+    # Leaving this to facts_sync (off by default) left every proof-bearing call
+    # failing 403 against a client_id the cloud had never seen.
+    if _client_registration_task is None or _client_registration_task.done():
+        try:
+            from main_logic.client_registration import ensure_client_registered
+
+            _client_registration_task = asyncio.create_task(
+                ensure_client_registered()
+            )
+        except Exception as exc:
+            logger.warning("[client_registration] bootstrap failed: %s", exc)
 
     if _facts_sync_worker_task is None or _facts_sync_worker_task.done():
         try:
@@ -708,7 +723,7 @@ def _start_neko_servers_integration_workers() -> None:
 
 async def _stop_neko_servers_integration_workers() -> None:
     """Cancel storage-backed integration workers during graceful shutdown."""
-    global _facts_sync_worker_task
+    global _facts_sync_worker_task, _client_registration_task
 
     await _cancel_task_if_running(
         _facts_sync_worker_task,
@@ -716,6 +731,13 @@ async def _stop_neko_servers_integration_workers() -> None:
         timeout=1.0,
     )
     _facts_sync_worker_task = None
+
+    await _cancel_task_if_running(
+        _client_registration_task,
+        name="client registration bootstrap",
+        timeout=1.0,
+    )
+    _client_registration_task = None
 
 
 async def _cancel_task_if_running(

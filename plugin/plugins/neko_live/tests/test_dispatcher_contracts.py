@@ -97,6 +97,75 @@ async def test_dispatcher_uses_replaceable_overlay_for_live_scene_restore():
 
 
 @pytest.mark.asyncio
+async def test_dispatcher_binds_live_scene_and_active_output_to_session_target():
+    class Plugin:
+        def __init__(self):
+            self.messages = []
+            self.ctx = SimpleNamespace(_current_lanlan="OtherCat")
+
+        def push_message(self, **kwargs):
+            self.messages.append(kwargs)
+
+    plugin = Plugin()
+    dispatcher = NekoDispatcher(
+        plugin,
+        runtime=SimpleNamespace(live_target_lanlan="StartCat"),
+    )
+    request = InteractionRequest(
+        event=ViewerEvent(
+            uid="42",
+            nickname="viewer",
+            danmaku_text="hello",
+            source="live_danmaku",
+            live_mode="co_stream",
+            target_lanlan="InjectedCat",
+        ),
+        identity=ViewerIdentity(uid="42", nickname="viewer"),
+        profile=ViewerProfile(uid="42", nickname="viewer"),
+        prompt_text="reply prompt",
+        live_mode="co_stream",
+        strength="normal",
+        allow_avatar_image=False,
+    )
+
+    await dispatcher.push_context_instructions("live scene")
+    await dispatcher.push_roast(request)
+
+    assert [message["target_lanlan"] for message in plugin.messages] == [
+        "StartCat",
+        "StartCat",
+    ]
+    assert plugin.messages[0]["coalesce_key"] == "neko_live:live_scene:StartCat"
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_ambient_clear_keeps_explicit_previous_target():
+    class Plugin:
+        def __init__(self):
+            self.kwargs = None
+            self.ctx = SimpleNamespace(_current_lanlan="OtherCat")
+
+        def push_message(self, **kwargs):
+            self.kwargs = kwargs
+
+    plugin = Plugin()
+    dispatcher = NekoDispatcher(
+        plugin,
+        runtime=SimpleNamespace(live_target_lanlan="OtherCat"),
+    )
+
+    await dispatcher.push_ambient_room_context(
+        "expired",
+        session_key="7:room-42",
+        expired=True,
+        target_lanlan="StartCat",
+    )
+
+    assert plugin.kwargs["target_lanlan"] == "StartCat"
+    assert plugin.kwargs["coalesce_key"] == "neko_live:ambient_room:StartCat"
+
+
+@pytest.mark.asyncio
 async def test_dispatcher_keeps_solo_danmaku_on_immediate_response_path():
     class Plugin:
         def __init__(self):
@@ -255,6 +324,60 @@ def test_output_contract_bridge_rejects_object_support_event_type():
 
     assert response_module_hint(request) == "danmaku_response"
     assert metadata_for_request(request)["response_module_hint"] == "danmaku_response"
+
+
+def test_output_contract_bridge_prefers_pipeline_owned_module_identity_over_image_capability():
+    request = InteractionRequest(
+        event=ViewerEvent(
+            uid="42",
+            nickname="viewer",
+            source="live_danmaku",
+            live_mode="solo_stream",
+        ),
+        identity=ViewerIdentity(uid="42", nickname="viewer"),
+        profile=ViewerProfile(uid="42", nickname="viewer"),
+        prompt_text="[NEKO Live first-appearance roast]",
+        live_mode="solo_stream",
+        strength="normal",
+        allow_avatar_image=False,
+        metadata={"response_module_hint": "avatar_roast"},
+    )
+
+    metadata = metadata_for_request(request)
+
+    assert response_module_hint(request) == "avatar_roast"
+    assert metadata["response_module_hint"] == "avatar_roast"
+    assert metadata["max_reply_chars"] == 32
+
+
+def test_output_channel_status_never_stringifies_or_retains_secret_details():
+    class SecretDetail:
+        def __str__(self) -> str:
+            return "{'token': 'OBJECT-SECRET'}"
+
+    class Plugin:
+        def output_channel_status(self):
+            return {
+                "ready": False,
+                "reason": "output_channel_unavailable",
+                "detail": SecretDetail(),
+            }
+
+    status = NekoDispatcher(Plugin()).output_channel_status()
+
+    assert status["detail"] == ""
+    assert "OBJECT-SECRET" not in str(status)
+
+
+def test_output_channel_status_reports_exception_type_without_exception_text():
+    class Plugin:
+        def output_channel_status(self):
+            raise RuntimeError("{'token': 'CALL-SECRET'}")
+
+    status = NekoDispatcher(Plugin()).output_channel_status()
+
+    assert status["detail"] == "output channel check failed: RuntimeError"
+    assert "CALL-SECRET" not in str(status)
 
 
 @pytest.mark.asyncio

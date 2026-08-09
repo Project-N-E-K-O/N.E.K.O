@@ -169,7 +169,10 @@ class LiveEventsModule(BaseModule):
         self._ambient_refresh_task: asyncio.Task[Any] | None = None
         self._ambient_refresh_requested_revision = 0
         self._ambient_clear_tasks: set[asyncio.Task[Any]] = set()
+        self._ambient_clear_task: asyncio.Task[Any] | None = None
+        self._ambient_pending_clear: tuple[str, str] | None = None
         self._ambient_active_session_key = ""
+        self._ambient_active_target_lanlan = ""
         self._ambient_last_published_text = ""
         self._ambient_publish_count = 0
         self._ambient_expiry_count = 0
@@ -267,7 +270,10 @@ class LiveEventsModule(BaseModule):
 
     def reset(self) -> None:
         """清空缓冲并取消待触发的窗口。断开直播间时调用，避免迟到的择优在断开后误投。"""
-        self._schedule_ambient_context_clear()
+        ambient_refresh_task = self._ambient_refresh_task
+        if ambient_refresh_task is not None and not ambient_refresh_task.done():
+            ambient_refresh_task.cancel()
+        self._schedule_ambient_context_clear(predecessor=ambient_refresh_task)
         flush_task = self._flush_task
         if flush_task is not None and not flush_task.done():
             flush_task.cancel()
@@ -291,6 +297,7 @@ class LiveEventsModule(BaseModule):
         self._ambient_refresh_task = None
         self._ambient_refresh_requested_revision = 0
         self._ambient_active_session_key = ""
+        self._ambient_active_target_lanlan = ""
         self._ambient_last_published_text = ""
         self._ambient_publish_count = 0
         self._ambient_expiry_count = 0
@@ -342,6 +349,9 @@ class LiveEventsModule(BaseModule):
             )
         )
         status["ambient_chat_suppressed_reason"] = self._ambient_chat_suppressed_reason
+        status["ambient_pending_clear_count"] = int(
+            self._ambient_pending_clear is not None
+        )
         status.update(
             {
                 "recent_chat_query_requests": self._recent_chat_query_requests,
@@ -532,6 +542,39 @@ class LiveEventsModule(BaseModule):
 
         self._schedule_ambient_context_refresh()
 
+    def retry_pending_context_clear(self) -> None:
+        """Retry one retained tombstone at an explicit live control boundary."""
+
+        self._schedule_ambient_context_clear()
+
+    def reconcile_live_mode(self, old_mode: str, new_mode: str) -> None:
+        """Retire or establish passive context when the live role changes."""
+
+        old = str(old_mode or "").strip()
+        new = str(new_mode or "").strip()
+        if old == new:
+            return
+        if old == "co_stream":
+            refresh_task = self._ambient_refresh_task
+            if refresh_task is not None and not refresh_task.done():
+                refresh_task.cancel()
+            self._schedule_ambient_context_clear(predecessor=refresh_task)
+            self._ambient_context.reset()
+            self._ambient_refresh_task = None
+            self._ambient_refresh_requested_revision = 0
+            self._ambient_last_published_text = ""
+        if (
+            new == "co_stream"
+            and self.ctx is not None
+            and bool(getattr(self.ctx.config, "live_enabled", False))
+            and bool(getattr(self.ctx, "_accepting_live_events", False))
+        ):
+            # A failed old-target tombstone is retried only at this explicit
+            # mode boundary.  The refresh waits for the same bounded clear task
+            # and fails closed if the submission still cannot be made.
+            self._schedule_ambient_context_clear()
+            self._schedule_ambient_context_refresh()
+
     async def _publish_ambient_context_after_delay(self) -> None:
         try:
             while True:
@@ -566,6 +609,9 @@ class LiveEventsModule(BaseModule):
             if reason:
                 self._record_ambient_publish_suppression(reason)
                 return False
+        if self._ambient_pending_clear is not None:
+            self._record_ambient_publish_suppression("ambient_clear_pending")
+            return False
         # The three-position session tail is the authoritative answer for
         # "latest / previous / the one before that".  Unlike the wider
         # relevance store it is session-bound rather than time-expired, and is
@@ -591,18 +637,39 @@ class LiveEventsModule(BaseModule):
         dispatcher = getattr(self.ctx, "dispatcher", None)
         push = getattr(dispatcher, "push_ambient_room_context", None)
         session_key = self._ambient_session_key()
+        target_lanlan = str(
+            getattr(self.ctx, "live_target_lanlan", "") or ""
+        ).strip()
         if (
             session_key == self._ambient_active_session_key
+            and target_lanlan == self._ambient_active_target_lanlan
             and text == self._ambient_last_published_text
         ):
             self._record_ambient_publish_suppression("unchanged")
             return False
-        await push(
-            text,
-            session_key=session_key,
-            expired=False,
-        )
+        # Register in-flight ownership before awaiting the SDK boundary so a
+        # session reset can serialize a tombstone behind even a cancellation-
+        # resistant submission. A late completion must not reclaim state.
         self._ambient_active_session_key = session_key
+        self._ambient_active_target_lanlan = target_lanlan
+        try:
+            await push(
+                text,
+                session_key=session_key,
+                expired=False,
+                target_lanlan=target_lanlan,
+            )
+        except BaseException:
+            if self._ambient_active_session_key == session_key:
+                self._ambient_active_session_key = ""
+                self._ambient_active_target_lanlan = ""
+            raise
+        if (
+            self._ambient_active_session_key != session_key
+            or self._ambient_active_target_lanlan != target_lanlan
+        ):
+            self._record_ambient_publish_suppression("superseded")
+            return False
         self._ambient_last_published_text = text
         self._ambient_publish_count += 1
         # The SDK boundary is fire-and-forget: this means submitted to the
@@ -660,9 +727,32 @@ class LiveEventsModule(BaseModule):
         )[:48]
         return f"{generation}:{room}"
 
-    def _schedule_ambient_context_clear(self) -> None:
+    def _schedule_ambient_context_clear(
+        self,
+        *,
+        predecessor: asyncio.Task[Any] | None = None,
+    ) -> None:
         session_key = self._ambient_active_session_key
-        if not session_key or self.ctx is None:
+        target_lanlan = self._ambient_active_target_lanlan
+        if session_key:
+            owner = (session_key, target_lanlan)
+            pending_owner = self._ambient_pending_clear
+            if pending_owner is not None and pending_owner != owner:
+                if self.ctx is not None:
+                    self.ctx.audit.record(
+                        "ambient_context_clear_owner_conflict",
+                        "passive context publish blocked behind an older pending clear",
+                        level="warning",
+                    )
+                return
+            self._ambient_pending_clear = owner
+            self._ambient_active_session_key = ""
+            self._ambient_active_target_lanlan = ""
+        owner = self._ambient_pending_clear
+        if owner is None or self.ctx is None:
+            return
+        current_clear = self._ambient_clear_task
+        if current_clear is not None and not current_clear.done():
             return
         dispatcher = getattr(self.ctx, "dispatcher", None)
         push = getattr(dispatcher, "push_ambient_room_context", None)
@@ -672,27 +762,46 @@ class LiveEventsModule(BaseModule):
             loop = asyncio.get_running_loop()
         except RuntimeError:
             return
-        self._ambient_active_session_key = ""
+        session_key, target_lanlan = owner
         task = loop.create_task(
-            self._clear_ambient_context(push, session_key=session_key)
+            self._clear_ambient_context(
+                push,
+                session_key=session_key,
+                target_lanlan=target_lanlan,
+                predecessor=predecessor,
+            )
         )
+        self._ambient_clear_task = task
         self._ambient_clear_tasks.add(task)
-        task.add_done_callback(self._ambient_clear_tasks.discard)
+
+        def clear_task(done_task: asyncio.Task[Any]) -> None:
+            self._ambient_clear_tasks.discard(done_task)
+            if self._ambient_clear_task is done_task:
+                self._ambient_clear_task = None
+
+        task.add_done_callback(clear_task)
 
     async def _clear_ambient_context(
         self,
         push: Any,
         *,
         session_key: str,
+        target_lanlan: str,
+        predecessor: asyncio.Task[Any] | None = None,
     ) -> None:
         try:
+            if predecessor is not None and predecessor is not asyncio.current_task():
+                await asyncio.gather(predecessor, return_exceptions=True)
             await push(
                 self._ambient_context.expiry_marker(),
                 session_key=session_key,
                 expired=True,
+                target_lanlan=target_lanlan,
             )
-            # Session-boundary clears are now the only thing that retires a
-            # snapshot: the 45-second freshness timer is gone, because the
+            if self._ambient_pending_clear == (session_key, target_lanlan):
+                self._ambient_pending_clear = None
+            # Session and live-mode boundaries are the only things that retire
+            # a snapshot: the 45-second freshness timer is gone, because the
             # host delivers passive context at the next natural hot swap and
             # the snapshot is written to stay true under that delay.
             self._ambient_expiry_count += 1

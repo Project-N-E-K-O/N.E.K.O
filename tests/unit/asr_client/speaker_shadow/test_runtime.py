@@ -20,6 +20,7 @@ from main_logic.asr_client.speaker_shadow.contracts import (
 from main_logic.asr_client.speaker_shadow.runtime import (
     SpeakerShadowRuntime,
     _AudioFrame,
+    _BackendProcessHost,
     _CandidateFinished,
     _CandidateToken,
     _backend_host_main,
@@ -167,6 +168,79 @@ class _InspectingHostConnection:
 
     def close(self) -> None:
         self.closed = True
+
+
+class _PollBlindProcess:
+    """A live child whose only job is to keep the request path going."""
+
+    pid = -1
+    exitcode = None
+
+    def is_alive(self) -> bool:
+        return True
+
+    # Reaping hooks, so a host that gives up on the response fails with the
+    # timeout it actually hit instead of an AttributeError that hides it.
+    def terminate(self) -> None:
+        return None
+
+    def kill(self) -> None:
+        return None
+
+    def join(self, timeout: float | None = None) -> None:
+        return None
+
+    def close(self) -> None:
+        return None
+
+
+class _PollBlindConnection:
+    """A pipe end that answers a read but never admits readiness to ``poll``."""
+
+    def __init__(self, response: tuple[object, ...]) -> None:
+        self._response = response
+        self.sent: list[tuple[object, ...]] = []
+        self.polls = 0
+
+    def poll(self, timeout: float = 0.0) -> bool:
+        self.polls += 1
+        return False
+
+    def send(self, message: tuple[object, ...]) -> None:
+        self.sent.append(message)
+
+    def recv(self) -> tuple[object, ...]:
+        return self._response
+
+    def close(self) -> None:
+        return None
+
+
+async def test_host_response_survives_a_pipe_that_never_polls_ready() -> None:
+    # Windows loses a response when the host waits on ``poll(0)``: each poll
+    # starts an overlapped pipe read and cancels it in the same breath, and
+    # that cancellation can swallow the very answer it asked about. The child
+    # stays alive, the answer never comes back, and the request spins to a
+    # false timeout — a live backend reported as "failed" roughly half the
+    # time on a loaded runner. So the request path must not gate the read on
+    # a readiness poll at all: a connection that answers ``recv`` but always
+    # reports "not ready" has to complete the request anyway.
+    host = _BackendProcessHost(
+        factory=_BackendFactory(),
+        terminate_timeout_seconds=0.1,
+    )
+    parent_connection = host._connection
+    child_connection = host._child_connection
+    assert parent_connection is not None and child_connection is not None
+    parent_connection.close()
+    child_connection.close()
+    connection = _PollBlindConnection((True, True))
+    host._connection = connection  # type: ignore[assignment]
+    host._child_connection = None
+    host._process = _PollBlindProcess()  # type: ignore[assignment]
+
+    assert await host.load(timeout_seconds=1.0) is True
+    assert connection.sent == [("load",)]
 
 
 def test_backend_host_wipes_score_pcm_before_waiting_for_next_command() -> None:

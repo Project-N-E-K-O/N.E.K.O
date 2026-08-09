@@ -85,14 +85,20 @@ _REQUIRED_ASSETS: tuple[tuple[str, str | None], ...] = (
     # 漏打则本地端点检测/说话人识别/向量记忆静默降级。CI 另有逐文件深检（Verify bundled
     # offline assets），此处兜住"目录/权重缺失"这类静默漂移。embedding 须查到具体文件：
     # 下载中断会留下只有空 profile 子目录的 data/embedding_models，目录非空判据挡不住。
+    # 只查 int8：CI 备的是 --variant both，本地 Steam 包只装 int8（fp32 权重 810MB，
+    # 压缩后仍给成品加 ~370MB，为极少数 CPU 才走的 fallback 不划算）。这里是两边
+    # 共用的闸，所以只能要求两边都保证的那一份；CI 侧的 fp32 由 build-desktop.yml
+    # 的 "Verify bundled offline assets" 步骤单独硬校验。
     ("data/embedding_models/local-text-retrieval-v1", "tokenizer.json"),
-    ("data/embedding_models/local-text-retrieval-v1/onnx", "model.onnx"),
-    ("data/embedding_models/local-text-retrieval-v1/onnx", "model.onnx_data"),
     ("data/embedding_models/local-text-retrieval-v1/onnx", "model_quantized.onnx"),
     ("data/embedding_models/local-text-retrieval-v1/onnx", "model_quantized.onnx_data"),
     ("main_logic/asr_client/endpointing/models", "silero_vad.onnx"),
     ("main_logic/asr_client/endpointing/models", "smart_turn_v3.onnx"),
     ("main_logic/asr_client/speaker_shadow/models", "campplus-zh-en-advanced.onnx"),
+    # bilibili-api-dev imports PyCryptodomeX through the ``Cryptodome`` namespace.
+    # Its native cipher modules cannot be compiled into the main executable, so
+    # their absence here proves the QR-login dependency closure is incomplete.
+    ("Cryptodome/Cipher", "_raw_aes.*"),
     ("frontend/plugin-manager/dist", "index.html"),
     ("plugin/plugins", None),
     # 应用内 OpenClaw 引导文档 + 图片，agent_router 经 /api/agent/openclaw/guide/* 提供；纯数据目录。

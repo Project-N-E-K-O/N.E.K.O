@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from ..core.contracts import InteractionRequest
+from ..core.contracts_public import public_text
 from ..core.live_output_contract_prompt import render_contract_instruction
 from ..core.live_output_quality import UNVERIFIED_SUPPORT_CLAIM_FALLBACK_REPLIES, choose_fallback_reply
 from ..core.recent_output_families import spent_output_text
@@ -72,9 +73,19 @@ def _clean_target(value: Any) -> str:
     return str(value).strip()
 
 
-def _resolve_target_lanlan(plugin: Any, request: InteractionRequest) -> str:
+def _resolve_target_lanlan(
+    plugin: Any,
+    request: InteractionRequest,
+    *,
+    live_target_lanlan: str = "",
+) -> str:
     event = request.event
     raw = event.raw if isinstance(event.raw, dict) else {}
+
+    if str(getattr(event, "source", "") or "").strip() in _NEKO_LIVE_LIVE_SOURCES:
+        target = _clean_target(live_target_lanlan)
+        if target:
+            return target
 
     for candidate in (
         event.target_lanlan,
@@ -333,8 +344,19 @@ def _force_exact_live_reply_prompt(reply: str, request: InteractionRequest) -> s
 
 
 class NekoDispatcher:
-    def __init__(self, plugin: Any) -> None:
+    def __init__(self, plugin: Any, *, runtime: Any = None) -> None:
         self.plugin = plugin
+        self.runtime = runtime
+
+    def current_target_lanlan(self) -> str:
+        """Resolve the character selected by the action that starts a session."""
+
+        return resolve_plugin_target_lanlan(self.plugin)
+
+    def live_target_lanlan(self) -> str:
+        runtime = self.runtime or getattr(self.plugin, "runtime", None)
+        target = _clean_target(getattr(runtime, "live_target_lanlan", ""))
+        return target or self.current_target_lanlan()
 
     def output_channel_status(self) -> dict[str, Any]:
         checker = getattr(self.plugin, "output_channel_status", None)
@@ -345,17 +367,18 @@ class NekoDispatcher:
                 return {
                     "ready": False,
                     "reason": "output_channel_unavailable",
-                    "detail": str(exc),
+                    "detail": f"output channel check failed: {type(exc).__name__}",
                 }
             if isinstance(data, dict):
                 ready = bool(data.get("ready", data.get("ok", False)))
                 return {
                     "ready": ready,
-                    "reason": str(
+                    "reason": public_text(
                         data.get("reason")
-                        or ("" if ready else "output_channel_unavailable")
+                        or ("" if ready else "output_channel_unavailable"),
+                        max_len=80,
                     ),
-                    "detail": str(data.get("detail") or ""),
+                    "detail": public_text(data.get("detail"), max_len=160),
                 }
 
         explicit_ready = getattr(self.plugin, "output_channel_ready", None)
@@ -385,7 +408,11 @@ class NekoDispatcher:
         context_type: str,
         expired: bool = False,
     ) -> str:
-        target_lanlan = resolve_plugin_target_lanlan(self.plugin)
+        target_lanlan = (
+            self.live_target_lanlan()
+            if context_type == "live_scene"
+            else resolve_plugin_target_lanlan(self.plugin)
+        )
         target_key = "".join(
             char for char in str(target_lanlan or "default")[:48]
             if char.isalnum() or char in "_.:-"
@@ -452,6 +479,7 @@ class NekoDispatcher:
         *,
         session_key: str,
         expired: bool = False,
+        target_lanlan: str | None = None,
     ) -> str:
         """Submit one replaceable, invisible passive live-room snapshot.
 
@@ -463,7 +491,11 @@ class NekoDispatcher:
         the next snapshot.
         """
 
-        target_lanlan = resolve_plugin_target_lanlan(self.plugin)
+        target_lanlan = (
+            self.live_target_lanlan()
+            if target_lanlan is None
+            else _clean_target(target_lanlan)
+        )
         del session_key
         target_key = "".join(
             char for char in str(target_lanlan or "default")[:48]
@@ -545,7 +577,11 @@ class NekoDispatcher:
             else:
                 parts[0]["text"] += "\n头像图片过大，本次先只根据昵称和弹幕锐评。"
         image_part_bytes = len(parts[1]["data"]) if len(parts) > 1 else 0
-        target_lanlan = _resolve_target_lanlan(self.plugin, request)
+        target_lanlan = _resolve_target_lanlan(
+            self.plugin,
+            request,
+            live_target_lanlan=self.live_target_lanlan(),
+        )
         if request.dry_run:
             max_reply_chars = _max_live_reply_chars(request)
             # Safe test mode: the whole pipeline has run, but nothing is delivered to NEKO.

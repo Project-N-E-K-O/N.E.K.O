@@ -37,6 +37,15 @@ logger = get_module_logger(__name__, "Main")
 
 _session_manager_getter: Callable[[str], Any | None] | None = None
 _PLAYBACK_STATES = frozenset({"playing", "paused", "ended", "error"})
+_PLAYBACK_FAILURE_REASONS = frozenset(
+    {
+        "load_timeout",
+        "media_error",
+        "missing_audio",
+        "player_error",
+        "track_too_long",
+    }
+)
 _REPLY_START_GRACE_SECONDS = 1.0
 _REPLY_WAIT_TIMEOUT_SECONDS = 5.0
 _REPLY_WAIT_POLL_SECONDS = 0.05
@@ -250,6 +259,11 @@ def handle_music_playback_state(manager: Any, event: dict[str, Any]) -> bool:
     )
     request_id = _clean_playback_text(event.get("request_id"), 64)
     source = _clean_playback_text(event.get("source"), 16).lower()
+    failure_reason = _clean_playback_text(event.get("reason"), 32).lower()
+    if state != "error":
+        failure_reason = ""
+    elif failure_reason not in _PLAYBACK_FAILURE_REASONS:
+        failure_reason = "unknown"
     if not playback_id or not playback_window_id or playback_started_at is None:
         return False
 
@@ -283,6 +297,13 @@ def handle_music_playback_state(manager: Any, event: dict[str, Any]) -> bool:
     if getattr(manager, "_music_playback_event_key", None) == event_key:
         return False
     manager._music_playback_event_key = event_key
+
+    if state == "error":
+        logger.warning(
+            "[%s] 音乐播放器报告失败: reason=%s",
+            getattr(manager, "lanlan_name", "") or "unknown",
+            failure_reason,
+        )
 
     title = f"《{name}》" if name else "所选歌曲"
     by_artist = f"（{artist}）" if artist else ""
@@ -325,6 +346,7 @@ def handle_music_playback_state(manager: Any, event: dict[str, Any]) -> bool:
             "playback_window_id": playback_window_id,
             "playback_started_at": playback_started_at,
             "request_id": request_id,
+            "failure_reason": failure_reason,
         },
         "context_type": "music_playback",
     }

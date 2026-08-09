@@ -25,7 +25,6 @@ from ..live_events.provider_event import (
     event_avatar_url,
     event_is_current_session,
     event_nickname,
-    event_provider_event_id,
     event_room_id,
     event_room_ref,
     event_session_generation,
@@ -61,7 +60,7 @@ class LiveSupportEventsModule(BaseModule):
         self._scheduler = SupportEventScheduler(
             dispatch=self._handle_payload,
             audit=getattr(ctx, "audit", None),
-            queue_limit=max(8, int(getattr(ctx.config, "queue_limit", 64) or 64)),
+            queue_limit=int(getattr(ctx.config, "queue_limit", 64) or 64),
         )
         bus = getattr(ctx, "event_bus", None)
         if bus is not None:
@@ -93,16 +92,52 @@ class LiveSupportEventsModule(BaseModule):
         self._last_event_at = 0.0
         self._last_event_type = ""
 
+    def update_queue_limit(self, queue_limit: int) -> int:
+        scheduler = self._scheduler
+        if scheduler is None:
+            return max(1, min(100, int(queue_limit)))
+        return scheduler.update_queue_limit(queue_limit)
+
     def status(self) -> dict[str, Any]:
         scheduler_status = self._scheduler.status() if self._scheduler is not None else {}
         return {
             "enabled": self.enabled,
             "subscribed": bool(self._unsubscribes),
             "pending": scheduler_status.get("pending_count", 0),
+            "queue_limit": scheduler_status.get("queue_limit", 0),
             "active_combos": scheduler_status.get("active_combo_count", 0),
             "queue_overflow_count": scheduler_status.get("overflow_count", 0),
             "queue_dropped_count": scheduler_status.get("dropped_count", 0),
             "queue_aggregated_count": scheduler_status.get("aggregated_count", 0),
+            "active_dispatch_count": scheduler_status.get("current_dispatch_count", 0),
+            "dispatch_history_count": scheduler_status.get("dispatched_history_count", 0),
+            "dispatch_current_finalization_count": scheduler_status.get(
+                "current_finalization_count", 0
+            ),
+            "dispatch_retroactive_finalization_count": scheduler_status.get(
+                "retroactive_finalization_count", 0
+            ),
+            "dispatch_stray_finalization_count": scheduler_status.get(
+                "stray_finalization_count", 0
+            ),
+            "dispatch_pipeline_result_queued_count": scheduler_status.get(
+                "pipeline_result_queued_count", 0
+            ),
+            "dispatch_pipeline_result_dry_run_count": scheduler_status.get(
+                "pipeline_result_dry_run_count", 0
+            ),
+            "dispatch_pipeline_result_pushed_count": scheduler_status.get(
+                "pipeline_result_pushed_count", 0
+            ),
+            "dispatch_pipeline_result_skipped_count": scheduler_status.get(
+                "pipeline_result_skipped_count", 0
+            ),
+            "dispatch_pipeline_result_failed_count": scheduler_status.get(
+                "pipeline_result_failed_count", 0
+            ),
+            "dispatch_pipeline_result_unknown_count": scheduler_status.get(
+                "pipeline_result_unknown_count", 0
+            ),
             "last_event_at": self._last_event_at,
             "last_event_type": self._last_event_type,
         }
@@ -237,10 +272,10 @@ class LiveSupportEventsModule(BaseModule):
             payload["gift_total_coin"] = payload["gift_value"]
         return payload
 
-    async def _handle_payload(self, payload: dict[str, Any]) -> None:
+    async def _handle_payload(self, payload: dict[str, Any]) -> Any:
         if self.ctx is None:
             return
-        await self.ctx.handle_live_payload(payload)
+        return await self.ctx.handle_live_payload(payload)
 
     def build_request(
         self,
@@ -281,88 +316,18 @@ class LiveSupportEventsModule(BaseModule):
     @staticmethod
     def _delivery_policy(
         event: ViewerEvent,
-        support: dict[str, str],
+        _support: dict[str, str],
     ) -> dict[str, Any]:
-        """Host proactive-delivery policy for this support event.
-
-        Co-stream only: the human host owns the floor there, so a milestone
-        or high-value acknowledgement is the one output worth re-delivering
-        once if the host talks over it. Solo stream keeps the host defaults
-        (drop on interrupt) because NEKO can simply speak again herself.
-
-        Compensation requires an authoritative `provider_event_id`: without
-        an idempotency key the host cannot bound "at most once", and a
-        duplicate thank-you is worse than a missed one. See the host's
-        docs/design/proactive-delivery-lifecycle.md.
-        """
+        """Bound co-stream lifetime without claiming playback ownership."""
         if str(getattr(event, "live_mode", "") or "") != "co_stream":
             return {}
-        # A stale reply is worse than none while the host is mid-sentence;
-        # this bounds how long a queued acknowledgement stays speakable.
-        policy: dict[str, Any] = {
-            "delivery_ttl_seconds": 45,
-            # Short form for the breath right after the host stops. Thanks is
-            # the one co-stream cue worth taking a gap for — it is owed to a
-            # specific viewer and goes stale fast — so it always offers one.
-            "brief_text": LiveSupportEventsModule._brief_text(support),
-        }
-        if support["tier"] not in {"high", "milestone"}:
-            return policy
-        provider_event_id = event_provider_event_id(event)
-        if not provider_event_id:
-            return policy
-        policy.update(
-            {
-                "interrupt_policy": "compensate_once",
-                "delivery_key": f"support:{provider_event_id}",
-                "compensation_ttl_seconds": 10,
-                "compensation_text": LiveSupportEventsModule._compensation_text(support),
-            }
-        )
-        return policy
-
-    @staticmethod
-    def _brief_text(support: dict[str, str]) -> str:
-        """One breath-sized thanks, used when the host only left a short gap.
-
-        Deliberately tighter than the compensation line: this one is competing
-        with the host's next sentence, so it has to land and hand the floor
-        straight back."""
-        category = LiveSupportEventsModule._safe_ack_category(
-            support.get("event_type", "")
-        )
-        return (
-            "Say one very short thank-you as NEKO for "
-            f"this {category}. "
-            "Under 12 characters of speech, one breath, then stop. "
-            "Do not start a topic, ask a question, or invite more support."
-        )
-
-    @staticmethod
-    def _compensation_text(support: dict[str, str]) -> str:
-        """One short replacement prompt used when the original thanks was cut
-        off. It never references the interruption and never asks for more
-        support. It uses only an allowlisted event category, never viewer text
-        or provider labels."""
-        category = LiveSupportEventsModule._safe_ack_category(
-            support.get("event_type", "")
-        )
-        return (
-            "Say one very short thank-you line as NEKO for "
-            f"this {category}. "
-            "Keep it under 15 characters of speech, do not mention any "
-            "interruption or technical issue, do not repeat an earlier line "
-            "verbatim, and do not ask for more support."
-        )
-
-    @staticmethod
-    def _safe_ack_category(event_type: str) -> str:
-        """Map provider data to fixed control-prompt vocabulary."""
         return {
-            "gift": "gift",
-            "super_chat": "Super Chat",
-            "guard": "membership milestone",
-        }.get(str(event_type or "").strip().lower(), "support event")
+            "delivery_ttl_seconds": 45,
+            # A failed/interrupt return cannot prove whether the host already
+            # accepted or spoke the line, so the plugin must never request a
+            # retry or replacement acknowledgement.
+            "interrupt_policy": "drop",
+        }
 
     @staticmethod
     def _support_context(event: ViewerEvent) -> dict[str, str]:
@@ -420,13 +385,19 @@ class LiveSupportEventsModule(BaseModule):
         viewer_preference_context: str = "",
         live_events_context: str = "",
     ) -> str:
-        nickname = identity.nickname or identity.uid or "this viewer"
+        nickname = safe_text(
+            identity.nickname or identity.uid or "this viewer",
+            max_len=80,
+        ) or "this viewer"
+        public_uid = safe_text(identity.uid, max_len=80) or "unknown"
         strength_hint = {
             "gentle": "warm, appreciative, and compact",
             "sharp": "playfully appreciative, never mocking the support itself",
             "normal": "natural, grateful, lightly playful, and concise",
         }.get(strength, "natural, grateful, lightly playful, and concise")
-        event_type = support["event_type"]
+        event_type = safe_text(support.get("event_type"), max_len=24) or "support"
+        support_label = safe_text(support.get("label"), max_len=80) or "support"
+        support_tier = safe_text(support.get("tier"), max_len=24) or "light"
         event_rules = {
             "super_chat": [
                 "Treat this as a highlighted paid message: acknowledge it before any joke.",
@@ -442,10 +413,10 @@ class LiveSupportEventsModule(BaseModule):
             ],
         }.get(event_type, ["Treat this support event as a brief thanks target."])
         facts = [
-            f"viewer: {nickname} (UID {identity.uid})",
+            f"viewer: {nickname} (UID {public_uid})",
             f"support_event_type: {event_type}",
-            f"support_label: {support['label']}",
-            f"support_tier: {support['tier']}",
+            f"support_label: {support_label}",
+            f"support_tier: {support_tier}",
         ]
         if support.get("gift_num"):
             facts.append(f"gift_num: {support['gift_num']}")

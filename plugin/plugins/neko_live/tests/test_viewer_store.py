@@ -35,6 +35,66 @@ async def test_persists_to_json_in_default_dir(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_recent_profile_projection_cache_avoids_unchanged_dashboard_reload(
+    tmp_path,
+    monkeypatch,
+):
+    store = ViewerStore(_FakePlugin(tmp_path), audit=None)
+    await store.record_live_danmaku(
+        ViewerIdentity(uid="1001", nickname="viewer"),
+        "hello",
+    )
+
+    async def fail_reload(*_args, **_kwargs):
+        raise AssertionError("unchanged dashboard projection must not reload JSON")
+
+    monkeypatch.setattr(store, "_load_all", fail_reload)
+    first = await store.recent_profiles(30)
+    first[0]["nickname"] = "mutated"
+    first[0]["preference_tags"]["question"] = 999
+    second = await store.recent_profiles(30)
+
+    assert second[0]["nickname"] == "viewer"
+    assert second[0]["preference_tags"].get("question") != 999
+    assert len(store._recent_cache) <= 200
+
+
+@pytest.mark.asyncio
+async def test_recent_profile_cache_rebuild_holds_writer_lock(tmp_path, monkeypatch):
+    store = ViewerStore(_FakePlugin(tmp_path), audit=None)
+    original_load_all = store._load_all
+
+    async def load_while_locked():
+        assert store._lock.locked() is True
+        return await original_load_all()
+
+    monkeypatch.setattr(store, "_load_all", load_while_locked)
+
+    assert await store.recent_profiles() == []
+
+
+@pytest.mark.asyncio
+async def test_recent_profile_projection_cache_reloads_external_file_change(tmp_path):
+    store = ViewerStore(_FakePlugin(tmp_path), audit=None)
+    await store.upsert_identity(ViewerIdentity(uid="1", nickname="first"))
+    assert [item["uid"] for item in await store.recent_profiles()] == ["1"]
+
+    file = tmp_path / "viewer_profiles.json"
+    data = json.loads(file.read_text(encoding="utf-8"))
+    data["222222"] = {
+        "uid": "222222",
+        "nickname": "external",
+        "first_seen_at": "2099-01-01T00:00:00+00:00",
+        "last_seen_at": "2099-01-01T00:00:00+00:00",
+    }
+    file.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    recent = await store.recent_profiles()
+
+    assert recent[0]["uid"] == "222222"
+
+
+@pytest.mark.asyncio
 async def test_custom_dir_is_used(tmp_path):
     custom = tmp_path / "custom_here"
     store = ViewerStore(_FakePlugin(tmp_path / "default"), audit=None, dir_provider=lambda: str(custom))

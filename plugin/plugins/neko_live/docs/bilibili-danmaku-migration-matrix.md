@@ -46,7 +46,7 @@
 | 11 | `set_target_lanlan` | 已由 NEKO Live 替代 | 正常输出从宿主上下文解析目标；只有开发者沙盒允许显式 `target_lanlan`，不保留普通用户全局 setter。 |
 | 12 | `set_master_bili_account` | 应吸收 | 吸收为“主播账号身份保护”，但维护者已决定延期。未来只从已验证登录凭据派生 UID，并要求显式确认；不得让 owner/master 关系进入 prompt，也不新增自由文本姓名匹配。详细契约见 `development.md`「延期能力：主播账号身份保护」。 |
 | 13 | `set_danmaku_max_length` | 应拆独立插件 | 该字段只服务 B站发弹幕；跟随未来 `bili_write_tools`，不回流只读 ingest 或直播回复字数契约。 |
-| 14 | `connect` | 已由 NEKO Live 替代 | `connect_live_room` 具备登录/匿名兜底校验、房间 ownership 与监听生命周期保护。 |
+| 14 | `connect` | 已由 NEKO Live 替代 | `connect_live_room` 强制校验登录凭据，并具备房间 ownership 与监听生命周期保护。 |
 | 15 | `disconnect` | 已由 NEKO Live 替代 | `disconnect_live_room` 与会话任务回收已覆盖。 |
 | 16 | `open_ui` | 已由 NEKO Live 替代 | 插件中心 Hosted UI 已提供控制台、互动、观众、设置和开发者工具。 |
 
@@ -125,7 +125,7 @@
 ## 5. 获批迁移的建议顺序
 
 1. ⏭ **主播账号身份保护（已记录，延期）**：产品结果与安全契约已写入 `development.md`；当前不实现。未来只从已验证登录 UID 派生并要求显式确认，作用于 viewer/session gate；不新增“主人姓名”自由文本配置，不把关系信息写入 prompt。
-2. **可信支持事件账本设计（当前下一项）**：先写独立 spec，限定 provider 证据、脱敏字段、容量、保留期、清理、导出和查询；不得直接复用旧 SQLite schema。
+2. **可信支持事件账本（已延期）**：它不属于当前直播插件可靠性或总验收范围。未来若重新立项，必须先写独立 spec，限定 provider 证据、脱敏字段、容量、保留期、清理、导出和查询；不得直接复用旧 SQLite schema。
 3. **通用 B站 工具拆分决策**：只有维护者确认仍需要内容读取或写入时，才分别设计 `bili_content_tools` / `bili_write_tools`；写工具必须带显式确认与权限审计。
 4. **旧插件退役**：上述获批项完成、其余项明确关闭后，再从最新 `main` 建独立删除 PR，并迁移构建注释与通用测试夹具引用。
 

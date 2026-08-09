@@ -131,7 +131,7 @@ def select_ambient_hook(rows: list[dict[str, object]]) -> AmbientHookSelection:
     candidates: list[_Candidate] = []
     for index, row in enumerate(clean_rows):
         if row.get("selected") is True:
-            rejected["already_replied"] += 1
+            rejected["already_selected"] += 1
             continue
         text = _clean_text(row.get("text"))
         dense = _dense(text)
@@ -214,7 +214,7 @@ def select_ambient_hook(rows: list[dict[str, object]]) -> AmbientHookSelection:
 def _empty_reason(rejected: Counter[str]) -> str:
     for reason in (
         "duplicate_or_flood",
-        "already_replied",
+        "already_selected",
         "low_value",
         "fragment",
     ):

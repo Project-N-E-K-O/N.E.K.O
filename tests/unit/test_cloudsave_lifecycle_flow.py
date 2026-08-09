@@ -600,13 +600,24 @@ def test_facts_sync_worker_start_failure_is_logged_as_warning():
             "main_logic.facts_sync.start_facts_sync_worker",
             Mock(return_value=object()),
         ),
+        patch(
+            "main_logic.client_registration.ensure_client_registered",
+            Mock(return_value=object()),
+        ),
         patch.object(main_server.asyncio, "create_task", create_task),
         patch.object(main_server.logger, "warning") as warning,
         patch.object(main_server, "_facts_sync_worker_task", None),
+        patch.object(main_server, "_client_registration_task", None),
     ):
         main_server._start_neko_servers_integration_workers()
 
-    warning.assert_called_once_with(
+    # Both workers share the same create_task mock, both log warnings
+    assert warning.call_count == 2
+    warning.assert_any_call(
+        "[client_registration] bootstrap failed: %s",
+        facts_error,
+    )
+    warning.assert_any_call(
         "[facts_sync] start worker failed: %s",
         facts_error,
     )

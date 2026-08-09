@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import ast
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from plugin.plugins.neko_live.modules.twitch_identity import TwitchIdentityModule
+from plugin.plugins.neko_live.modules import twitch_live_ingest as twitch_ingest_module
 from plugin.plugins.neko_live.modules.twitch_live_ingest import TwitchLiveIngestModule
 from plugin.plugins.neko_live.modules.twitch_live_ingest.helix import lookup_channel_status
 from plugin.plugins.neko_live.modules.twitch_live_ingest import projection as twitch_projection
@@ -27,6 +30,22 @@ class _AsyncItems:
                 yield item
 
         return iterate()
+
+
+def test_twitchio_and_client_implementation_are_not_imported_at_provider_module_load():
+    tree = ast.parse(Path(twitch_ingest_module.__file__).read_text(encoding="utf-8"))
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            assert all(not alias.name.startswith("twitchio") for alias in node.names)
+        if isinstance(node, ast.ImportFrom):
+            assert not (node.module or "").startswith("twitchio")
+            assert not (
+                node.level == 1
+                and (
+                    node.module == "twitch_client"
+                    or any(alias.name == "twitch_client" for alias in node.names)
+                )
+            )
 
 
 class _HelixClient:

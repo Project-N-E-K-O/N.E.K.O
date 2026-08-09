@@ -1410,12 +1410,16 @@ def test_filler_dedup_stays_linear_on_many_directives():
     # ⚠️ 光筛 suspects 不够：话题本身就以填充词结尾时（`成就别提了。` 重复几千遍）
     # 每条都是 suspect，逐条再扫全表又变回 O(n²)——4000 条曾要 1.25 秒。按起点分桶
     # 之后只看邻桶（命中区间长度有上界），这里用时限钉住那个量级差（codex P2）。
+    #
+    # ⚠️ 时限是 4 秒不是 1 秒：桶索引版本本机 0.14 秒，Windows CI 上量到过 1.01 秒
+    # （比本机慢 7 倍），1 秒的线就在那台机器上擦边误红。要钉的是**量级差**——
+    # 退回逐条扫全表本机就要 1.25 秒，同样慢 7 倍就是 9 秒左右，4 秒的线照样拦得住。
     import time
 
     started = time.perf_counter()
     extract_directives("成就别提了。" * 4000)
     elapsed = time.perf_counter() - started
-    assert elapsed < 1.0, f"4000 条以填充词结尾的话题跑了 {elapsed:.2f}s，桶索引失效了"
+    assert elapsed < 4.0, f"4000 条以填充词结尾的话题跑了 {elapsed:.2f}s，桶索引失效了"
 
     hits = [("zh", "ban_topic", f"话题{i}") for i in range(50)]
     spans = [(i * 10, i * 10 + 5) for i in range(50)]
@@ -1641,14 +1645,21 @@ def test_bracket_bodies_are_bounded(pair):
 
 @pytest.mark.parametrize("pair", D._ZH_BRACKET_PAIRS)
 def test_no_bracket_pair_scans_to_the_end(pair):
-    """行为面：每一对括号单独喂 8000 个未配对开括号都必须是线性的。"""  # noqa: DOCSTRING_CJK
+    """行为面：每一对括号单独喂 8000 个未配对开括号都必须是线性的。
+
+    ⚠️ 时限是 10 秒不是 1 秒。有界版本本机 0.14 秒，Windows CI 上量到过 7.37 秒
+    （跑 runner 卡顿时能慢到本机的五十倍），1 秒的线在那种时候纯误红。要拦的是
+    上面那条 docstring 记的量级差——单把一对放成无界，本机就从 0.04 涨到 2.5 秒
+    （六十倍），同样的 CI 上是分钟级，10 秒的线照样拦得住。逐对的**精确**判据在
+    ``test_bracket_bodies_are_bounded``（结构面、全称），这条只是它的行为面兜底。
+    """  # noqa: DOCSTRING_CJK
     import time
 
     lo, _hi = pair
     started = time.perf_counter()
     extract_directives(lo * 8000)
     elapsed = time.perf_counter() - started
-    assert elapsed < 1.0, f"{lo!r} * 8000 跑了 {elapsed:.2f}s"
+    assert elapsed < 10.0, f"{lo!r} * 8000 跑了 {elapsed:.2f}s"
 
 
 def test_unmatched_openers_stay_linear():
@@ -1661,8 +1672,11 @@ def test_unmatched_openers_stay_linear():
         extract_directives(text)
         timings[n] = time.perf_counter() - start
     # 二次方的话 4 倍输入是 16 倍时间；给足余量只要求**远小于**二次方。
+    # ⚠️ 比值那条才是判据，它自带机器归一化。下面的绝对值只是兜底，线放到 10 秒
+    # ——同一段 ``"《" * 8000`` 在 Windows CI 上被 runner 卡顿量到过 7.37 秒
+    #（见 test_no_bracket_pair_scans_to_the_end），1 秒的线在那种时候纯误红。
     assert timings[8000] < timings[2000] * 8 + 0.2, timings
-    assert timings[8000] < 1.0, timings
+    assert timings[8000] < 10.0, timings
 
 
 @pytest.mark.parametrize(

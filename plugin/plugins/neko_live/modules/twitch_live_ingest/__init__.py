@@ -8,8 +8,6 @@ from contextlib import suppress
 from types import SimpleNamespace
 from typing import Any
 
-from twitchio import eventsub
-
 from ...core.contracts import LiveRoomStatus, ViewerEvent
 from ...core.runtime_live_listener import handle_unexpected_live_listener_stop
 from ...core.runtime_timeline import record_timeline
@@ -21,7 +19,6 @@ from .projection import (
     project_chat_notification,
 )
 from .room_ref import parse_twitch_room_ref
-from .twitch_client import create_twitch_client
 
 
 _TWITCH_SUPPORT_EVIDENCE = "twitch_eventsub_typed_event"
@@ -44,7 +41,9 @@ class TwitchLiveIngestModule(BaseModule):
         self._listening = False
         self._room_ref = ""
         self._client: Any = None
-        self._client_factory = client_factory or create_twitch_client
+        # TwitchIO is a comparatively large optional provider dependency.
+        # Keep it out of Bilibili-only processes until Twitch is actually used.
+        self._client_factory = client_factory
         self._client_task: asyncio.Task[Any] | None = None
         self._client_supervisor_task: asyncio.Task[None] | None = None
         self._lifecycle_lock = asyncio.Lock()
@@ -83,7 +82,7 @@ class TwitchLiveIngestModule(BaseModule):
             self._room_ref = parsed.room_ref
             self._state = "connecting"
             try:
-                client = self._client_factory(
+                client = self._create_client(
                     client_id=client_id,
                     on_message=lambda message: self._on_message(message, generation),
                     on_chat_notification=lambda notification: self._on_chat_notification(notification, generation),
@@ -104,7 +103,7 @@ class TwitchLiveIngestModule(BaseModule):
                 status = await lookup_channel_status(client, parsed.room_ref, token_for=account_user_id)
                 if not status.ok or status.room_id <= 0:
                     raise RuntimeError(status.message or "twitch channel was not found")
-                subscription = eventsub.ChatMessageSubscription(
+                subscription = _chat_message_subscription(
                     broadcaster_user_id=str(status.room_id),
                     user_id=account_user_id,
                 )
@@ -113,7 +112,7 @@ class TwitchLiveIngestModule(BaseModule):
                     as_bot=False,
                     token_for=account_user_id,
                 )
-                notification_subscription = eventsub.ChatNotificationSubscription(
+                notification_subscription = _chat_notification_subscription(
                     broadcaster_user_id=str(status.room_id),
                     user_id=account_user_id,
                 )
@@ -122,6 +121,9 @@ class TwitchLiveIngestModule(BaseModule):
                     as_bot=False,
                     token_for=account_user_id,
                 )
+            except asyncio.CancelledError:
+                await self._stop_locked(clear_error=True)
+                raise
             except Exception as exc:
                 self._last_error = _safe_error(exc)
                 await self._stop_locked(clear_error=False)
@@ -238,19 +240,24 @@ class TwitchLiveIngestModule(BaseModule):
     @staticmethod
     async def _wait_for_ready(client: Any, runner: asyncio.Task[Any]) -> None:
         ready = asyncio.create_task(client.wait_until_ready())
-        done, _pending = await asyncio.wait(
-            {ready, runner},
-            timeout=15,
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-        if ready in done:
-            await ready
-            return
-        ready.cancel()
-        if runner in done:
-            await runner
-            raise RuntimeError("twitch client stopped before becoming ready")
-        raise TimeoutError("twitch client ready timeout")
+        try:
+            done, _pending = await asyncio.wait(
+                {ready, runner},
+                timeout=15,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if ready in done:
+                await ready
+                return
+            if runner in done:
+                await runner
+                raise RuntimeError("twitch client stopped before becoming ready")
+            raise TimeoutError("twitch client ready timeout")
+        finally:
+            if not ready.done():
+                ready.cancel()
+                with suppress(asyncio.CancelledError):
+                    await ready
 
     async def lookup_room_status(self, room_ref: Any) -> LiveRoomStatus:
         parsed = parse_twitch_room_ref(room_ref)
@@ -265,13 +272,14 @@ class TwitchLiveIngestModule(BaseModule):
         refresh_token = _safe_secret(credential.get("refresh_token"))
         if not all((client_id, access_token, refresh_token, _safe_numeric_id(token_for))):
             return LiveRoomStatus(room_id=0, ok=False, message="twitch authorization is required")
-        client = self._client_factory(
-            client_id=client_id,
-            on_message=_ignore_event,
-            on_chat_notification=_ignore_event,
-            on_token_refreshed=self._on_temporary_token_refreshed,
-        )
+        client: Any = None
         try:
+            client = self._create_client(
+                client_id=client_id,
+                on_message=_ignore_event,
+                on_chat_notification=_ignore_event,
+                on_token_refreshed=self._on_temporary_token_refreshed,
+            )
             await client.login(token=access_token, load_tokens=False, save_tokens=False)
             await client.add_token(access_token, refresh_token)
             return await lookup_channel_status(client, parsed.room_ref, token_for=token_for)
@@ -283,8 +291,17 @@ class TwitchLiveIngestModule(BaseModule):
                 message=_safe_error(exc),
             )
         finally:
-            with suppress(Exception):
-                await client.close()
+            if client is not None:
+                with suppress(Exception):
+                    await client.close()
+
+    def _create_client(self, **kwargs: Any) -> Any:
+        factory = self._client_factory
+        if factory is None:
+            from .twitch_client import create_twitch_client
+
+            factory = create_twitch_client
+        return factory(**kwargs)
 
     async def _on_message(self, message: Any, generation: int) -> None:
         if not self._owns_target(generation):
@@ -494,6 +511,24 @@ class TwitchLiveIngestModule(BaseModule):
         }
 
 
+def _chat_message_subscription(*, broadcaster_user_id: str, user_id: str) -> Any:
+    from twitchio import eventsub
+
+    return eventsub.ChatMessageSubscription(
+        broadcaster_user_id=broadcaster_user_id,
+        user_id=user_id,
+    )
+
+
+def _chat_notification_subscription(*, broadcaster_user_id: str, user_id: str) -> Any:
+    from twitchio import eventsub
+
+    return eventsub.ChatNotificationSubscription(
+        broadcaster_user_id=broadcaster_user_id,
+        user_id=user_id,
+    )
+
+
 def _safe_text(value: Any, limit: int) -> str:
     return " ".join(value.split()).strip()[:limit] if isinstance(value, str) else ""
 
@@ -542,11 +577,7 @@ def _public_scopes(value: Any) -> list[str]:
 
 
 def _safe_error(exc: Exception) -> str:
-    message = _safe_text(str(exc), 160)
-    lowered = message.lower()
-    if any(marker in lowered for marker in ("token=", "authorization", "bearer ", "access_token", "refresh_token")):
-        message = ""
-    return message or f"twitch listener failed: {type(exc).__name__}"
+    return f"twitch listener failed: {type(exc).__name__}"
 
 
 async def _ignore_event(_payload: Any) -> None:

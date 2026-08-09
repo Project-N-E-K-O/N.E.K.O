@@ -7,6 +7,7 @@
     let tutorialReadyRefreshBound = false;
     let tutorialLoadListenerBound = false;
     let fallbackFirstSeenDate = null;
+    let lastPublishedUnlockStatus = '';
 
     function getLocalDateKey(date = new Date()) {
         const year = date.getFullYear();
@@ -76,6 +77,24 @@
         return getLocalDateKey(unlockedDate);
     }
 
+    function publishUnlockStatus(status) {
+        if (!status || typeof window.dispatchEvent !== 'function'
+            || typeof window.CustomEvent !== 'function') return;
+        const detail = {
+            firstSeenDate: status.firstSeenDate,
+            unlocked: status.unlocked === true,
+            existingUser: status.existingUser === true
+        };
+        const signature = `${detail.firstSeenDate}|${detail.unlocked ? 1 : 0}|${detail.existingUser ? 1 : 0}`;
+        if (signature === lastPublishedUnlockStatus) return;
+        try {
+            window.dispatchEvent(new window.CustomEvent('neko-social-unlock-status', { detail }));
+            lastPublishedUnlockStatus = signature;
+        } catch (_) {
+            // Electron preload 同步只是共享门控的镜像；失败不能影响喵宇宙入口本身。
+        }
+    }
+
     function readUnlockEvidence(todayDate) {
         const today = getLocalDateKey(todayDate);
         const tutorialState = readTutorialState();
@@ -115,12 +134,14 @@
         const firstSeenDate = evidence.firstSeenDate;
         const today = getLocalDateKey(todayDate);
         const dayDelta = getCalendarDayDelta(firstSeenDate, today);
-        return {
+        const status = {
             firstSeenDate,
             dayDelta,
             remainingDays: Math.max(0, LOCK_DAYS - dayDelta),
             unlocked: evidence.existingUser || dayDelta >= LOCK_DAYS
         };
+        publishUnlockStatus({ ...status, existingUser: evidence.existingUser });
+        return status;
     }
 
     function getTitle(status) {

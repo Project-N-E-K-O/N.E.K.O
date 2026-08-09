@@ -14,11 +14,20 @@ from plugin.plugins.neko_live.core.contracts import (
 )
 from plugin.plugins.neko_live.core.runtime import LiveRuntime
 from plugin.plugins.neko_live.core.runtime_live_listener import (
+    refresh_live_room_context,
     start_live_listener,
     stop_live_listener,
 )
 from plugin.plugins.neko_live.core.runtime_live_session import invalidate_live_session
 from plugin.plugins.neko_live.modules.bili_live_ingest import BiliLiveIngestModule
+from plugin.plugins.neko_live.modules.live_events import module as live_events_module
+
+
+@pytest.fixture(autouse=True)
+def _remove_passive_context_debounce(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Session-isolation tests exercise ordering, not wall-clock debounce."""
+
+    monkeypatch.setattr(live_events_module, "AMBIENT_READ_DEBOUNCE_SECONDS", 0.0)
 
 
 @pytest.mark.asyncio
@@ -87,6 +96,65 @@ async def test_start_live_listener_survives_session_context_refresh_failure(
     record = runtime.audit.recent(1)[0]
     assert record["op"] == "live_session_context_refresh_failed"
     assert "RuntimeError" in record["message"]
+
+
+@pytest.mark.asyncio
+async def test_older_start_completion_cannot_overwrite_newer_connected_state(
+    runtime: LiveRuntime,
+) -> None:
+    first_entered = asyncio.Event()
+    release_first = asyncio.Event()
+
+    async def start_listening(room_ref: int) -> bool:
+        if room_ref == 123:
+            first_entered.set()
+            await release_first.wait()
+            return False
+        return True
+
+    runtime.live_provider.start_listening = start_listening  # type: ignore[method-assign]
+    first = asyncio.create_task(start_live_listener(runtime, 123))
+    await first_entered.wait()
+
+    assert await start_live_listener(runtime, 456) is True
+    current_generation = runtime._live_session_generation
+    release_first.set()
+
+    assert await first is True
+    assert runtime.live_connection_state == "connected"
+    assert runtime.config.live_enabled is True
+    assert runtime.safety_guard.connected is True
+    assert runtime._accepting_live_events is True
+    assert runtime._live_session_generation == current_generation
+    assert any(
+        item["op"] == "live_listener_start_superseded"
+        for item in runtime.audit.recent(10)
+    )
+
+
+@pytest.mark.asyncio
+async def test_cancelled_current_start_converges_without_resurrecting_input(
+    runtime: LiveRuntime,
+) -> None:
+    entered = asyncio.Event()
+
+    async def start_listening(_room_ref: int) -> bool:
+        entered.set()
+        await asyncio.Event().wait()
+        return True
+
+    runtime.config.live_enabled = True
+    runtime.live_provider.start_listening = start_listening  # type: ignore[method-assign]
+    pending = asyncio.create_task(start_live_listener(runtime, 123))
+    await entered.wait()
+    pending.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await pending
+    assert runtime.live_connection_state == "disconnected"
+    assert runtime.config.live_enabled is False
+    assert runtime.safety_guard.connected is False
+    assert runtime._accepting_live_events is False
 
 
 @pytest.mark.asyncio
@@ -191,6 +259,47 @@ async def test_room_switch_blocks_old_event_before_dispatch(runtime: LiveRuntime
 
 
 @pytest.mark.asyncio
+async def test_verified_support_route_suppresses_avatar_image_resolution(
+    runtime: LiveRuntime,
+) -> None:
+    fetch_flags: list[bool] = []
+
+    async def resolve_identity(
+        event: ViewerEvent,
+        *,
+        fetch_avatar_image: bool = True,
+    ) -> ViewerIdentity:
+        fetch_flags.append(fetch_avatar_image)
+        return ViewerIdentity(uid=event.uid, nickname=event.nickname)
+
+    class _Dispatcher:
+        async def push_roast(self, _request) -> str:
+            return "pushed"
+
+    runtime.bili_identity.resolve = resolve_identity  # type: ignore[method-assign]
+    runtime.dispatcher = _Dispatcher()
+    runtime.live_room_context = {"live_status": "live"}
+    assert await start_live_listener(runtime, 123) is True
+
+    result = await runtime.pipeline.handle_event(
+        ViewerEvent(
+            uid="42",
+            nickname="supporter",
+            source="live_danmaku",
+            raw={
+                "event_type": "gift",
+                "gift_name": "Small Heart",
+                "gift_count": 1,
+                "support_verified": True,
+            },
+        )
+    )
+
+    assert result.status == "pushed"
+    assert fetch_flags == [False]
+
+
+@pytest.mark.asyncio
 async def test_room_switch_refreshes_context_before_syncing_instructions(
     runtime: LiveRuntime,
     monkeypatch: pytest.MonkeyPatch,
@@ -240,6 +349,81 @@ async def test_room_switch_refreshes_context_before_syncing_instructions(
     assert runtime.live_room_context["title"] == "new room"
     assert runtime.live_room_context["anchor_name"] == "new anchor"
     assert synced_contexts == [(runtime.live_room_context, True)]
+
+
+@pytest.mark.asyncio
+async def test_stale_room_context_lookup_cannot_overwrite_new_target(
+    runtime: LiveRuntime,
+) -> None:
+    old_lookup_started = asyncio.Event()
+    release_old_lookup = asyncio.Event()
+
+    async def lookup_room_status(room_ref: str) -> LiveRoomStatus:
+        if str(room_ref) == "123":
+            old_lookup_started.set()
+            await release_old_lookup.wait()
+            return LiveRoomStatus(
+                room_id=123,
+                ok=True,
+                title="old room",
+                anchor_name="old anchor",
+                live_status="live",
+            )
+        return LiveRoomStatus(
+            room_id=456,
+            ok=True,
+            title="new room",
+            anchor_name="new anchor",
+            live_status="live",
+        )
+
+    runtime.config.live_platform = "bilibili"
+    runtime.config.live_room_ref = "123"
+    runtime.config.live_room_id = 123
+    runtime.live_provider.lookup_room_status = lookup_room_status  # type: ignore[method-assign]
+
+    stale_refresh = asyncio.create_task(refresh_live_room_context(runtime, "123"))
+    await old_lookup_started.wait()
+    runtime.config.live_room_ref = "456"
+    runtime.config.live_room_id = 456
+    current_context = await refresh_live_room_context(runtime, "456")
+
+    release_old_lookup.set()
+    stale_result = await stale_refresh
+
+    assert current_context["room_ref"] == "456"
+    assert current_context["title"] == "new room"
+    assert stale_result == current_context
+    assert runtime.live_room_context == current_context
+
+
+@pytest.mark.asyncio
+async def test_stale_room_context_refresh_does_not_clear_current_context(
+    runtime: LiveRuntime,
+) -> None:
+    lookup_calls: list[str] = []
+
+    async def lookup_room_status(room_ref: str) -> LiveRoomStatus:
+        lookup_calls.append(str(room_ref))
+        return LiveRoomStatus(room_id=int(room_ref), ok=True, title="unexpected")
+
+    runtime.config.live_platform = "bilibili"
+    runtime.config.live_room_ref = "456"
+    runtime.config.live_room_id = 456
+    runtime.live_room_context = {
+        "platform": "bilibili",
+        "room_ref": "456",
+        "room_id": 456,
+        "title": "current room",
+        "live_status": "live",
+    }
+    runtime.live_provider.lookup_room_status = lookup_room_status  # type: ignore[method-assign]
+
+    result = await refresh_live_room_context(runtime, "123")
+
+    assert result == runtime.live_room_context
+    assert result["title"] == "current room"
+    assert lookup_calls == []
 
 
 @pytest.mark.asyncio
@@ -604,6 +788,50 @@ async def test_session_is_revalidated_after_waiting_for_uid_lock(
 
     assert result.reason == "live_session.stale"
     assert has_roasted_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_dispatch_completion_from_old_session_cannot_claim_first_roast(
+    runtime: LiveRuntime,
+) -> None:
+    dispatch_started = asyncio.Event()
+    release_dispatch = asyncio.Event()
+
+    class _Dispatcher:
+        async def push_roast(self, _request) -> str:
+            dispatch_started.set()
+            await release_dispatch.wait()
+            return "queued_to_neko(old session)"
+
+    runtime.config.live_room_id = 123
+    runtime.live_room_context = {"live_status": "live"}
+    assert await start_live_listener(runtime, 123) is True
+    runtime.bili_identity.resolve = lambda event: asyncio.sleep(
+        0,
+        result=ViewerIdentity(uid=event.uid, nickname=event.nickname),
+    )
+    runtime.dispatcher = _Dispatcher()
+    event = ViewerEvent(
+        uid="late-viewer",
+        nickname="late viewer",
+        danmaku_text="please roast me",
+        source="live_danmaku",
+        raw={"_live_session_generation": runtime._live_session_generation},
+    )
+
+    pending = asyncio.create_task(runtime.pipeline.handle_event(event))
+    await asyncio.wait_for(dispatch_started.wait(), timeout=1.0)
+    invalidate_live_session(runtime)
+    release_dispatch.set()
+    result = await pending
+
+    assert result.status == "skipped"
+    assert result.reason == "live_session.stale"
+    assert await runtime.viewer_profile.has_roasted("late-viewer") is False
+    assert list(runtime.recent_results) == []
+    assert not any(
+        step.id == "viewer_profile.mark_roasted" for step in result.steps
+    )
 
 
 @pytest.mark.asyncio

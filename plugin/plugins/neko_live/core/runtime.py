@@ -72,7 +72,7 @@ class LiveRuntime(
         )
         self.permission_gate = PermissionGate(self.config)
         self.safety_guard = SafetyGuard(self.config, self.audit)
-        self.dispatcher = NekoDispatcher(plugin)
+        self.dispatcher = NekoDispatcher(plugin, runtime=self)
         self.event_bus = EventBus(self.audit)  # Keep audit-owned subscriber isolation visible from runtime assembly.
         # Bilibili login state: encrypted credential store plus QR-code login service.
         self.credential_store = runtime_bili_auth.create_credential_store(plugin, self.audit)
@@ -135,6 +135,7 @@ class LiveRuntime(
         self.developer_instructions_injected = False
         self.instructions_injected = False
         self.instructions_signature = ""
+        self.live_target_lanlan = ""
         self.audit.record(
             "runtime_stop",
             "neko_live runtime stopped",
