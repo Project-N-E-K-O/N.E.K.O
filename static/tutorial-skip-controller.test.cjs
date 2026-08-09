@@ -164,6 +164,8 @@ test('tutorial skip source includes hold progress and preserves non-pointer acti
   assert.match(controllerSource, /class TutorialHoldProgressController/);
   assert.match(controllerSource, /neko-tutorial-skip-progress/);
   assert.match(controllerSource, /conic-gradient\(currentColor/);
+  assert.match(controllerSource, /\.neko-tutorial-skip-progress \{[\s\S]*?opacity: 0;/);
+  assert.match(controllerSource, /\.is-holding \.neko-tutorial-skip-progress \{[\s\S]*?opacity: 1;/);
   assert.match(controllerSource, /pointerleave', cancelHold/);
   assert.match(controllerSource, /touchcancel', cancelHold/);
   assert.match(controllerSource, /addListener\(button, 'click', handleClick\)/);

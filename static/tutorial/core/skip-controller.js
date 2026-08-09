@@ -262,7 +262,6 @@ ${selector} {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 10px;
   background: rgba(255, 252, 248, 0.78) !important;
   color: rgba(48, 59, 74, 0.82);
   border: 1px solid rgba(47, 131, 255, 0.28);
@@ -287,19 +286,26 @@ ${selector} {
 ${selector} .neko-tutorial-skip-progress {
   --neko-tutorial-skip-progress-angle: 0deg;
   --neko-tutorial-skip-progress-track: rgba(48, 59, 74, 0.2);
-  width: 18px;
+  width: 0;
   height: 18px;
-  flex: 0 0 18px;
+  flex: 0 0 0;
+  margin-left: 0;
   border-radius: 50%;
   background: conic-gradient(currentColor var(--neko-tutorial-skip-progress-angle), var(--neko-tutorial-skip-progress-track) 0);
   -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 0);
   mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 0);
-  opacity: 0.72;
+  opacity: 0;
+  transform: scale(0.75);
+  transition: width 0.15s ease, flex-basis 0.15s ease, margin-left 0.15s ease, opacity 0.12s ease, transform 0.15s ease;
   pointer-events: none;
 }
 
 ${selector}.is-holding .neko-tutorial-skip-progress {
+  width: 18px;
+  flex-basis: 18px;
+  margin-left: 10px;
   opacity: 1;
+  transform: scale(1);
 }
 
 ${selector}:hover {
