@@ -3238,7 +3238,11 @@ test('skip controller uses scoped resources with a fallback cleanup path', () =>
 
     assert.match(source, /createScopedTutorialResources/);
     assert.match(source, /this\.currentResources\.destroy\(\)/);
-    assert.match(source, /button\.removeEventListener\('pointerdown', handleSkipRequest\)/);
+    assert.match(source, /holdController\.destroy\(\)/);
+    assert.match(
+        source,
+        /localListeners\.forEach\(\(\{ target, type, listener, listenerOptions \}\) => \{[\s\S]*target\.removeEventListener\(type, listener, listenerOptions\)/
+    );
     assert.match(source, /applySafeAreaVariables: function \(options\)/);
     assert.match(source, /portalId = normalizedOptions\.portalId \|\| 'neko-tutorial-fixed-ui-root'/);
     assert.match(source, /document\.documentElement\.appendChild\(portal\)/);

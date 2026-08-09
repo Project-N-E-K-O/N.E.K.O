@@ -1,6 +1,140 @@
 (function () {
     'use strict';
 
+    const DEFAULT_SKIP_HOLD_DURATION_MS = 1000;
+    const SKIP_HOLD_PROGRESS_INTERVAL_MS = 16;
+
+    class TutorialHoldProgressController {
+        constructor(options) {
+            const normalizedOptions = options || {};
+            this.window = normalizedOptions.window || window;
+            this.durationMs = Number.isFinite(normalizedOptions.durationMs)
+                ? Math.max(1, Math.round(normalizedOptions.durationMs))
+                : DEFAULT_SKIP_HOLD_DURATION_MS;
+            this.onProgress = typeof normalizedOptions.onProgress === 'function'
+                ? normalizedOptions.onProgress
+                : function () {};
+            this.onComplete = typeof normalizedOptions.onComplete === 'function'
+                ? normalizedOptions.onComplete
+                : function () {};
+            this.onError = typeof normalizedOptions.onError === 'function'
+                ? normalizedOptions.onError
+                : function () {};
+            this.getNow = typeof normalizedOptions.getNow === 'function'
+                ? normalizedOptions.getNow
+                : function () { return Date.now(); };
+            this.active = false;
+            this.completed = false;
+            this.startedAt = 0;
+            this.completionTimerId = null;
+            this.progressTimerId = null;
+        }
+
+        absorbEvent(event) {
+            if (event && typeof event.preventDefault === 'function') {
+                event.preventDefault();
+            }
+            if (event && typeof event.stopImmediatePropagation === 'function') {
+                event.stopImmediatePropagation();
+            }
+            if (event && typeof event.stopPropagation === 'function') {
+                event.stopPropagation();
+            }
+        }
+
+        clearTimers() {
+            if (this.completionTimerId !== null) {
+                this.window.clearTimeout(this.completionTimerId);
+                this.completionTimerId = null;
+            }
+            if (this.progressTimerId !== null) {
+                this.window.clearInterval(this.progressTimerId);
+                this.progressTimerId = null;
+            }
+        }
+
+        emitProgress(value) {
+            const progress = Math.max(0, Math.min(1, Number(value) || 0));
+            this.onProgress(progress, this.active);
+        }
+
+        updateProgress() {
+            if (!this.active) {
+                return;
+            }
+            const elapsedMs = Math.max(0, this.getNow() - this.startedAt);
+            this.emitProgress(elapsedMs / this.durationMs);
+        }
+
+        start(event) {
+            this.absorbEvent(event);
+            if (this.active || this.completed) {
+                return false;
+            }
+            if (event && Number.isFinite(Number(event.button)) && Number(event.button) !== 0) {
+                return false;
+            }
+
+            this.active = true;
+            this.startedAt = this.getNow();
+            this.emitProgress(0);
+            this.progressTimerId = this.window.setInterval(
+                () => this.updateProgress(),
+                SKIP_HOLD_PROGRESS_INTERVAL_MS
+            );
+            this.completionTimerId = this.window.setTimeout(
+                () => this.complete(event),
+                this.durationMs
+            );
+            return true;
+        }
+
+        cancel(event) {
+            if (!this.active) {
+                return false;
+            }
+            this.absorbEvent(event);
+            this.active = false;
+            this.clearTimers();
+            this.emitProgress(0);
+            return true;
+        }
+
+        complete(event) {
+            if (!this.active || this.completed) {
+                return false;
+            }
+            this.active = false;
+            this.completed = true;
+            this.clearTimers();
+            this.emitProgress(1);
+
+            try {
+                Promise.resolve(this.onComplete(event)).catch((error) => {
+                    this.completed = false;
+                    this.emitProgress(0);
+                    this.onError(error);
+                });
+            } catch (error) {
+                this.completed = false;
+                this.emitProgress(0);
+                this.onError(error);
+            }
+            return true;
+        }
+
+        reset() {
+            this.active = false;
+            this.completed = false;
+            this.clearTimers();
+            this.emitProgress(0);
+        }
+
+        destroy() {
+            this.reset();
+        }
+    }
+
     class TutorialSkipController {
         constructor(options) {
             const normalizedOptions = options || {};
@@ -12,6 +146,9 @@
             this.safeAreaCleanup = null;
             this.styleId = `${this.buttonId}-style`;
             this.portalId = normalizedOptions.portalId || 'neko-tutorial-fixed-ui-root';
+            this.holdDurationMs = Number.isFinite(normalizedOptions.holdDurationMs)
+                ? Math.max(1, Math.round(normalizedOptions.holdDurationMs))
+                : DEFAULT_SKIP_HOLD_DURATION_MS;
         }
 
         getElement() {
@@ -125,6 +262,7 @@ ${selector} {
   display: flex;
   align-items: center;
   justify-content: center;
+  gap: 10px;
   background: rgba(255, 252, 248, 0.78) !important;
   color: rgba(48, 59, 74, 0.82);
   border: 1px solid rgba(47, 131, 255, 0.28);
@@ -144,6 +282,24 @@ ${selector} {
   -webkit-appearance: none;
   -moz-appearance: none;
   appearance: none;
+}
+
+${selector} .neko-tutorial-skip-progress {
+  --neko-tutorial-skip-progress-angle: 0deg;
+  --neko-tutorial-skip-progress-track: rgba(48, 59, 74, 0.2);
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  border-radius: 50%;
+  background: conic-gradient(currentColor var(--neko-tutorial-skip-progress-angle), var(--neko-tutorial-skip-progress-track) 0);
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 0);
+  mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 0);
+  opacity: 0.72;
+  pointer-events: none;
+}
+
+${selector}.is-holding .neko-tutorial-skip-progress {
+  opacity: 1;
 }
 
 ${selector}:hover {
@@ -170,6 +326,11 @@ html.dark ${selector} {
   color: rgba(236, 243, 252, 0.86);
   border-color: rgba(104, 183, 255, 0.34);
   box-shadow: 0 14px 34px rgba(0, 0, 0, 0.26), 0 0 0 1px rgba(255, 255, 255, 0.05) inset;
+}
+
+html[data-theme='dark'] ${selector} .neko-tutorial-skip-progress,
+html.dark ${selector} .neko-tutorial-skip-progress {
+  --neko-tutorial-skip-progress-track: rgba(236, 243, 252, 0.22);
 }
 
 html[data-theme='dark'] ${selector}:hover,
@@ -498,19 +659,35 @@ html.dark ${selector}:hover {
 
             const button = this.document.createElement('button');
             button.id = this.buttonId;
-            button.textContent = label;
+            button.type = 'button';
+            button.setAttribute('aria-label', label);
+            button.setAttribute('data-hold-duration-ms', String(this.holdDurationMs));
             button.style.pointerEvents = 'auto';
             button.style.position = 'fixed';
             button.style.zIndex = '2147483647';
             button.style.touchAction = 'manipulation';
 
+            const labelElement = this.document.createElement('span');
+            labelElement.className = 'neko-tutorial-skip-label';
+            labelElement.textContent = label;
+            const progressElement = this.document.createElement('span');
+            progressElement.className = 'neko-tutorial-skip-progress';
+            progressElement.setAttribute('aria-hidden', 'true');
+            progressElement.style.setProperty('--neko-tutorial-skip-progress-angle', '0deg');
+            button.appendChild(labelElement);
+            button.appendChild(progressElement);
+
             let skipHandled = false;
+            let holdController = null;
             const resetSkipHandled = () => {
                 skipHandled = false;
                 button.disabled = false;
                 button.removeAttribute('aria-disabled');
+                if (holdController) {
+                    holdController.reset();
+                }
             };
-            const handleSkipRequest = (event) => {
+            const completeSkipRequest = (event) => {
                 if (skipHandled) {
                     return;
                 }
@@ -518,44 +695,71 @@ html.dark ${selector}:hover {
                 button.disabled = true;
                 button.setAttribute('aria-disabled', 'true');
 
-                if (event && typeof event.preventDefault === 'function') {
-                    event.preventDefault();
-                }
-                if (event && typeof event.stopImmediatePropagation === 'function') {
-                    event.stopImmediatePropagation();
-                }
-                if (event && typeof event.stopPropagation === 'function') {
-                    event.stopPropagation();
-                }
-
                 if (!onSkip) {
                     return;
                 }
+                return onSkip(event);
+            };
 
-                try {
-                    Promise.resolve(onSkip(event)).catch((error) => {
-                        console.warn('[TutorialSkipController] skip handler failed:', error);
-                        resetSkipHandled();
-                    });
-                } catch (error) {
-                    console.warn('[TutorialSkipController] skip handler threw:', error);
+            holdController = new TutorialHoldProgressController({
+                window: window,
+                durationMs: this.holdDurationMs,
+                onProgress: (progress, active) => {
+                    progressElement.style.setProperty(
+                        '--neko-tutorial-skip-progress-angle',
+                        `${Math.round(progress * 360)}deg`
+                    );
+                    progressElement.setAttribute('data-progress', progress.toFixed(3));
+                    button.classList.toggle('is-holding', active === true);
+                },
+                onComplete: completeSkipRequest,
+                onError: (error) => {
+                    console.warn('[TutorialSkipController] skip handler failed:', error);
                     resetSkipHandled();
                 }
-            };
+            });
 
             const common = window.YuiGuideCommon;
             const resources = common && typeof common.createScopedTutorialResources === 'function'
                 ? common.createScopedTutorialResources({ window: window })
                 : null;
             this.installSafeAreaRefreshHooks(resources);
-            const addListener = resources
-                ? (type, listenerOptions) => resources.addEventListener(button, type, handleSkipRequest, listenerOptions)
-                : (type, listenerOptions) => button.addEventListener(type, handleSkipRequest, listenerOptions);
+            const localListeners = [];
+            const addListener = (target, type, listener, listenerOptions) => {
+                if (resources) {
+                    resources.addEventListener(target, type, listener, listenerOptions);
+                    return;
+                }
+                target.addEventListener(type, listener, listenerOptions);
+                localListeners.push({ target, type, listener, listenerOptions });
+            };
+            const startHold = (event) => holdController.start(event);
+            const cancelHold = (event) => holdController.cancel(event);
+            const absorbClick = (event) => holdController.absorbEvent(event);
+            const cancelHoldOnVisibilityLoss = () => {
+                if (this.document.hidden) {
+                    holdController.cancel();
+                }
+            };
 
-            addListener('pointerdown');
-            addListener('mousedown');
-            addListener('touchstart', { passive: false });
-            addListener('click');
+            if (typeof window.PointerEvent === 'function') {
+                addListener(button, 'pointerdown', startHold);
+                addListener(button, 'pointerleave', cancelHold);
+                addListener(window, 'pointerup', cancelHold, true);
+                addListener(window, 'pointercancel', cancelHold, true);
+            } else {
+                addListener(button, 'mousedown', startHold);
+                addListener(button, 'mouseleave', cancelHold);
+                addListener(window, 'mouseup', cancelHold, true);
+                addListener(button, 'touchstart', startHold, { passive: false });
+                addListener(window, 'touchend', cancelHold, { capture: true, passive: false });
+                addListener(window, 'touchcancel', cancelHold, { capture: true, passive: false });
+            }
+            addListener(button, 'click', absorbClick);
+            addListener(button, 'contextmenu', absorbClick);
+            addListener(button, 'dragstart', absorbClick);
+            addListener(window, 'blur', cancelHold);
+            addListener(this.document, 'visibilitychange', cancelHoldOnVisibilityLoss);
             const host = this.getButtonHost();
             if (host && typeof host.appendChild === 'function') {
                 host.appendChild(button);
@@ -567,15 +771,15 @@ html.dark ${selector}:hover {
             this.applySafeAreaVariables();
             this.currentResources = resources;
             this.currentCleanup = () => {
+                holdController.destroy();
                 if (this.currentResources && typeof this.currentResources.destroy === 'function') {
                     this.currentResources.destroy();
                     this.currentResources = null;
                     return;
                 }
-                button.removeEventListener('pointerdown', handleSkipRequest);
-                button.removeEventListener('mousedown', handleSkipRequest);
-                button.removeEventListener('touchstart', handleSkipRequest, { passive: false });
-                button.removeEventListener('click', handleSkipRequest);
+                localListeners.forEach(({ target, type, listener, listenerOptions }) => {
+                    target.removeEventListener(type, listener, listenerOptions);
+                });
             };
         }
 
@@ -601,8 +805,12 @@ html.dark ${selector}:hover {
     }
 
     window.TutorialSkipController = {
+        DEFAULT_HOLD_DURATION_MS: DEFAULT_SKIP_HOLD_DURATION_MS,
         createController: function (options) {
             return new TutorialSkipController(options);
+        },
+        createHoldController: function (options) {
+            return new TutorialHoldProgressController(options);
         },
         applySafeAreaVariables: function (options) {
             const normalizedOptions = options || {};
