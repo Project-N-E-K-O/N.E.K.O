@@ -167,6 +167,17 @@ def test_catalog_required_domains_match_the_detector():
             assert set(spec.required) == set(detector.required), event_id
 
 
+# --- fact extraction -----------------------------------------------------
+
+def test_visible_enemy_beyond_threat_scan_still_supplies_nearest_distance():
+    facts = BUILDER.build(frame(ships=[ally(x=5000.0), enemy(x=14000.0)]))
+
+    assert facts.nearest_ally_distance_m == pytest.approx(5000.0)
+    assert facts.nearest_enemy is not None
+    assert facts.nearest_enemy.distance_m == pytest.approx(14000.0)
+    assert facts.threats_in_scan_range == ()
+
+
 # --- capability gating ---------------------------------------------------
 
 @pytest.mark.parametrize("detector", all_detectors(), ids=lambda d: d.name)

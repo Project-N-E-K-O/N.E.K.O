@@ -116,6 +116,10 @@ class WowsSchemaAdapter:
         # playerIds seen with alive=False in this battle. Corpses often leave
         # `objects` while remaining on the roster; stubs must not revive them.
         self._dead_player_ids: set[int] = set()
+        # Ships observed alive (or on the roster) this battle. Distant allies and
+        # lost-spot enemies routinely vanish from `objects` for a few frames;
+        # without memory the alive counts dip and look like deaths.
+        self._known_ships: dict[int, dict[str, Any]] = {}
         self._death_battle_key: tuple[str, str | None] | None = None
 
     # ------------------------------------------------------------------
@@ -236,6 +240,7 @@ class WowsSchemaAdapter:
             return
         self._death_battle_key = key
         self._dead_player_ids.clear()
+        self._known_ships.clear()
 
     # ------------------------------------------------------------------
     def _body(self, payload) -> dict[str, Any]:
@@ -396,6 +401,7 @@ class WowsSchemaAdapter:
                 if hp_ratio is None and health is not None and max_health:
                     hp_ratio = max(0.0, min(1.0, health / max_health))
                 relation = entry.get("relation")
+                team_id = entry.get("teamId")
                 tier = (
                     entry.get("tier") if entry.get("tier") is not None
                     else meta.get("shipTier")
@@ -404,26 +410,54 @@ class WowsSchemaAdapter:
                     entry.get("alive") if isinstance(entry.get("alive"), bool)
                     else None
                 )
+                ship_type = _text(entry.get("type")) or _text(meta.get("shipType"))
+                name = _text(entry.get("name")) or _text(meta.get("shipName"))
+                player_name = (
+                    _text(entry.get("playerName")) or _text(meta.get("name"))
+                )
+                tier_value = tier if isinstance(tier, int) else None
+                relation_value = relation if isinstance(relation, int) else None
+                team_value = team_id if isinstance(team_id, int) else None
                 if isinstance(player_id, int):
                     seen_player_ids.add(player_id)
                     if alive is False:
                         self._dead_player_ids.add(player_id)
+                        self._known_ships.pop(player_id, None)
                     elif alive is True:
                         self._dead_player_ids.discard(player_id)
+                        self._remember_known_ship(
+                            player_id,
+                            team_id=team_value,
+                            relation=relation_value,
+                            ship_type=ship_type,
+                            name=name,
+                            player_name=player_name,
+                            tier=tier_value,
+                        )
+                    elif player_id not in self._dead_player_ids:
+                        # Missing alive flag: keep identity sticky only while
+                        # death has not already been observed this battle.
+                        self._remember_known_ship(
+                            player_id,
+                            team_id=team_value,
+                            relation=relation_value,
+                            ship_type=ship_type,
+                            name=name,
+                            player_name=player_name,
+                            tier=tier_value,
+                        )
+                    else:
+                        # Known dead + null alive must not revive the hull.
+                        alive = False
                 ships.append(Ship(
                     ui_id=entry.get("uiId") if isinstance(entry.get("uiId"), int) else None,
                     player_id=player_id if isinstance(player_id, int) else None,
-                    team_id=(
-                        entry.get("teamId") if isinstance(entry.get("teamId"), int)
-                        else None
-                    ),
-                    relation=relation if isinstance(relation, int) else None,
-                    ship_type=_text(entry.get("type")) or _text(meta.get("shipType")),
-                    name=_text(entry.get("name")) or _text(meta.get("shipName")),
-                    player_name=(
-                        _text(entry.get("playerName")) or _text(meta.get("name"))
-                    ),
-                    tier=tier if isinstance(tier, int) else None,
+                    team_id=team_value,
+                    relation=relation_value,
+                    ship_type=ship_type,
+                    name=name,
+                    player_name=player_name,
+                    tier=tier_value,
                     alive=alive,
                     visible=bool(entry.get("visible")),
                     x=_bw_to_m(entry.get("x")),
@@ -435,27 +469,66 @@ class WowsSchemaAdapter:
                     stale_seconds=_number(entry.get("staleSeconds")),
                 ))
 
-        # Roster lists the full match even before anyone is spotted. Emit
-        # position-less stubs so alive counts are not stuck at zero at the
-        # opening, while objects remain authoritative for death/visibility.
+        # Roster lists the full match even before anyone is spotted. Fold it into
+        # sticky memory so a later empty/partial objects frame still has counts.
         for player_id, meta in roster.items():
-            if player_id in seen_player_ids or player_id in self._dead_player_ids:
+            if player_id in self._dead_player_ids:
                 continue
             relation = meta.get("relation")
             team_id = meta.get("teamId")
             tier = meta.get("shipTier")
-            ships.append(Ship(
-                player_id=player_id,
+            self._remember_known_ship(
+                player_id,
                 team_id=team_id if isinstance(team_id, int) else None,
                 relation=relation if isinstance(relation, int) else None,
                 ship_type=_text(meta.get("shipType")),
                 name=_text(meta.get("shipName")),
                 player_name=_text(meta.get("name")),
                 tier=tier if isinstance(tier, int) else None,
+            )
+
+        # Emit position-less stubs for anyone remembered but absent this frame.
+        # Objects remain authoritative for death/visibility; stubs only preserve
+        # alive counts across temporary culls (range, lost spot, roster flicker).
+        for player_id, meta in self._known_ships.items():
+            if player_id in seen_player_ids or player_id in self._dead_player_ids:
+                continue
+            ships.append(Ship(
+                player_id=player_id,
+                team_id=meta.get("team_id"),
+                relation=meta.get("relation"),
+                ship_type=meta.get("ship_type"),
+                name=meta.get("name"),
+                player_name=meta.get("player_name"),
+                tier=meta.get("tier"),
                 alive=None,
                 visible=False,
             ))
         return tuple(ships)
+
+    def _remember_known_ship(
+        self,
+        player_id: int,
+        *,
+        team_id: int | None,
+        relation: int | None,
+        ship_type: str | None,
+        name: str | None,
+        player_name: str | None,
+        tier: int | None,
+    ) -> None:
+        """Merge identity for a ship still believed alive this battle."""
+        existing = self._known_ships.get(player_id, {})
+        self._known_ships[player_id] = {
+            "team_id": team_id if team_id is not None else existing.get("team_id"),
+            "relation": (
+                relation if relation is not None else existing.get("relation")
+            ),
+            "ship_type": ship_type or existing.get("ship_type"),
+            "name": name or existing.get("name"),
+            "player_name": player_name or existing.get("player_name"),
+            "tier": tier if tier is not None else existing.get("tier"),
+        }
 
     @staticmethod
     def _fingerprint(payload: Mapping[str, Any]) -> str:

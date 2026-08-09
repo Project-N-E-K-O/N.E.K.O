@@ -150,8 +150,16 @@ class FactBuilder:
         nearest_enemy: ThreatBearing | None = None
         nearest_ally_distance: float | None = None
         if own is not None and own.has_position and objects_ok:
-            threats = self._threats(own, visible_enemies)
-            nearest_enemy = threats[0] if threats else None
+            visible_enemy_bearings = self._enemy_bearings(own, visible_enemies)
+            # Exact telemetry covers every visible enemy; only tactical threat
+            # consumers are intentionally capped by the configured scan range.
+            nearest_enemy = (
+                visible_enemy_bearings[0] if visible_enemy_bearings else None
+            )
+            threats = tuple(
+                bearing for bearing in visible_enemy_bearings
+                if bearing.distance_m <= self.cfg.threat_scan_range_m
+            )
             nearest_ally_distance = self._nearest_ally_distance(own, visible_allies)
 
         bearings = tuple(t.bearing_deg for t in threats)
@@ -212,14 +220,13 @@ class FactBuilder:
         )
 
     # ------------------------------------------------------------------
-    def _threats(self, own, enemies) -> tuple[ThreatBearing, ...]:
+    def _enemy_bearings(self, own, enemies) -> tuple[ThreatBearing, ...]:
+        """Return every positioned visible enemy, nearest first."""
         found: list[ThreatBearing] = []
         for enemy in enemies:
             if not enemy.has_position:
                 continue
             distance = _distance(own.x, own.z, enemy.x, enemy.z)
-            if distance > self.cfg.threat_scan_range_m:
-                continue
             found.append(ThreatBearing(
                 ship=enemy,
                 distance_m=distance,

@@ -700,5 +700,6 @@ def test_context_instructions_follow_the_screenshot_switch():
 
 def test_base_instructions_distinguish_visible_from_alive_counts():
     assert "visible_enemies" in BASE_INSTRUCTIONS
-    assert "失去视野" in BASE_INSTRUCTIONS
+    assert "失去联系" in BASE_INSTRUCTIONS
     assert "团灭" in BASE_INSTRUCTIONS
+    assert "似了" in BASE_INSTRUCTIONS

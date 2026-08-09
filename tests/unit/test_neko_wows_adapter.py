@@ -431,6 +431,130 @@ def test_roster_counts_survive_when_objects_domain_is_stale():
     assert facts.visible_enemies is None
 
 
+def test_distant_ally_flicker_does_not_drop_alive_count_without_roster():
+    """远距离队友从 objects 短暂消失时，不能把存活数当成阵亡。"""
+    adapter = WowsSchemaAdapter()
+    own = {
+        "uiId": 1, "playerId": 2000, "teamId": 0, "relation": 0,
+        "type": "Battleship", "name": "OwnShip", "playerName": "Master",
+        "tier": 10, "alive": True, "visible": True,
+        "x": 0.0, "z": 0.0, "yaw": 0.0,
+        "health": 80000.0, "maxHealth": 80000.0, "hpRatio": 1.0,
+    }
+    ally = {
+        "uiId": 2, "playerId": 2101, "teamId": 0, "relation": 1,
+        "type": "Cruiser", "name": "AllyCA", "playerName": "AllyA",
+        "tier": 10, "alive": True, "visible": True,
+        "x": 500.0, "z": 0.0, "yaw": 0.0,
+        "health": 30000.0, "maxHealth": 40000.0, "hpRatio": 0.75,
+    }
+    self_body = {
+        "playerId": 2000, "teamId": 0, "health": 80000.0,
+        "maxHealth": 80000.0, "yaw": 0.0, "speed": 25.0,
+        "position": [0.0, 0.0, 0.0],
+    }
+    seen = adapter.parse(v1_payload(
+        self=self_body, objects=[own, ally], roster=[]))
+    assert FactBuilder(WowsConfig()).build(seen).alive_allies == 2
+
+    flickered = adapter.parse(v1_payload(
+        seq=2, self=self_body, objects=[own], roster=[]))
+    facts = FactBuilder(WowsConfig()).build(flickered)
+    assert facts.alive_allies == 2
+    assert {s.player_id for s in flickered.own_side(visible_only=False)} == {2000, 2101}
+    assert {s.player_id for s in flickered.allies(visible_only=True)} == set()
+
+
+def test_lost_spot_enemy_flicker_keeps_alive_but_not_visible():
+    """灭点/未再点亮的敌人从 objects 消失时，存活仍在，点亮数为 0。"""
+    adapter = WowsSchemaAdapter()
+    own = {
+        "uiId": 1, "playerId": 2000, "teamId": 0, "relation": 0,
+        "type": "Battleship", "name": "OwnShip", "playerName": "Master",
+        "tier": 10, "alive": True, "visible": True,
+        "x": 0.0, "z": 0.0, "yaw": 0.0,
+        "health": 80000.0, "maxHealth": 80000.0, "hpRatio": 1.0,
+    }
+    enemy = {
+        "uiId": 2, "playerId": 3001, "teamId": 1, "relation": 2,
+        "type": "Destroyer", "name": "Shimakaze", "playerName": "FoeA",
+        "tier": 10, "alive": True, "visible": True,
+        "x": 100.0, "z": 0.0, "yaw": 1.57,
+        "health": 10000.0, "maxHealth": 20000.0, "hpRatio": 0.5,
+    }
+    self_body = {
+        "playerId": 2000, "teamId": 0, "health": 80000.0,
+        "maxHealth": 80000.0, "yaw": 0.0, "speed": 25.0,
+        "position": [0.0, 0.0, 0.0],
+    }
+    seen = adapter.parse(v1_payload(
+        self=self_body, objects=[own, enemy], roster=[]))
+    assert FactBuilder(WowsConfig()).build(seen).alive_enemies == 1
+
+    lost = adapter.parse(v1_payload(
+        seq=2, self=self_body, objects=[own], roster=[]))
+    facts = FactBuilder(WowsConfig()).build(lost)
+    assert facts.alive_enemies == 1
+    assert facts.visible_enemies == 0
+    assert facts.nearest_enemy is None
+
+
+def test_sticky_memory_does_not_block_death_without_roster():
+    """无 roster 时：粘住 → 死亡 → 尸体离开，存活数必须落下且保持落下。"""
+    adapter = WowsSchemaAdapter()
+    own = {
+        "uiId": 1, "playerId": 2000, "teamId": 0, "relation": 0,
+        "type": "Battleship", "name": "OwnShip", "playerName": "Master",
+        "tier": 10, "alive": True, "visible": True,
+        "x": 0.0, "z": 0.0, "yaw": 0.0,
+        "health": 80000.0, "maxHealth": 80000.0, "hpRatio": 1.0,
+    }
+    ally = {
+        "uiId": 2, "playerId": 2101, "teamId": 0, "relation": 1,
+        "type": "Cruiser", "name": "AllyCA", "playerName": "AllyA",
+        "tier": 10, "alive": True, "visible": True,
+        "x": 500.0, "z": 0.0, "yaw": 0.0,
+        "health": 30000.0, "maxHealth": 40000.0, "hpRatio": 0.75,
+    }
+    self_body = {
+        "playerId": 2000, "teamId": 0, "health": 80000.0,
+        "maxHealth": 80000.0, "yaw": 0.0, "speed": 25.0,
+        "position": [0.0, 0.0, 0.0],
+    }
+    builder = FactBuilder(WowsConfig())
+
+    seen = adapter.parse(v1_payload(
+        self=self_body, objects=[own, ally], roster=[]))
+    assert builder.build(seen).alive_allies == 2
+
+    sticky = adapter.parse(v1_payload(
+        seq=2, self=self_body, objects=[own], roster=[]))
+    assert builder.build(sticky).alive_allies == 2
+
+    dead = {**ally, "alive": False, "visible": False, "health": 0.0, "hpRatio": 0.0}
+    seen_dead = adapter.parse(v1_payload(
+        seq=3, self=self_body, objects=[own, dead], roster=[]))
+    assert builder.build(seen_dead).alive_allies == 1
+
+    corpse_gone = adapter.parse(v1_payload(
+        seq=4, self=self_body, objects=[own], roster=[]))
+    facts = builder.build(corpse_gone)
+    assert facts.alive_allies == 1
+    assert {s.player_id for s in corpse_gone.own_side(visible_only=False)} == {2000}
+
+    # Missing alive on a known corpse must not re-seed sticky memory.
+    null_alive_corpse = {**dead}
+    null_alive_corpse.pop("alive")
+    flickered_corpse = adapter.parse(v1_payload(
+        seq=5, self=self_body, objects=[own, null_alive_corpse], roster=[]))
+    assert builder.build(flickered_corpse).alive_allies == 1
+    assert 2101 not in adapter._known_ships
+
+    still_gone = adapter.parse(v1_payload(
+        seq=6, self=self_body, objects=[own], roster=[]))
+    assert builder.build(still_gone).alive_allies == 1
+
+
 def test_unknown_major_version_is_refused():
     adapter = WowsSchemaAdapter()
     with pytest.raises(UnsupportedApiVersion):
