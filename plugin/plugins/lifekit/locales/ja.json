@@ -61,6 +61,7 @@
     "city_not_found": "都市が見つかりません — 都市名を確認してください",
     "geocode_timeout": "都市の検索がタイムアウトしました - 再試行するか、都市名を指定してください",
     "geocode_failed": "都市の検索に失敗しました - ネットワークを確認してください",
+    "poi_search_failed": "周辺スポットの検索に失敗しました。しばらくしてからもう一度お試しください",
     "location_ambiguous": "場所名が曖昧です。市区町村、地域、または国を追加してください",
     "location_confirmation_required": "利用できる位置情報の精度が不足しています。市区町村、地区、住所、または確認済みの保存場所を指定してください",
     "fetch_failed": "気象データの取得に失敗しました ({city})",
@@ -76,125 +77,12 @@
   "nearby": {
     "no_query": "検索キーワードを入力してください (例: レストラン、カフェ、公園)",
     "list_separator": "、",
-    "intent_choice_ids": [
-      "park",
-      "attraction",
-      "restaurant",
-      "shopping_mall"
-    ],
-    "intent_broad_phrases": [
-      "近くでできること",
-      "近くの行き先",
-      "どこか行きたい"
-    ],
-    "intent_dialogue_markers": [
-      "近く",
-      "周辺",
-      "おすすめ",
-      "探して"
-    ],
-    "category_labels": {
-      "pet_hospital": "動物病院",
-      "coffee_shop": "カフェ",
-      "convenience_store": "コンビニ",
-      "shopping_mall": "ショッピングモール",
-      "movie_theater": "映画館",
-      "museum": "博物館",
-      "parking": "駐車場",
-      "gas_station": "ガソリンスタンド",
-      "subway_station": "地下鉄駅",
-      "restaurant": "レストラン",
-      "supermarket": "スーパーマーケット",
-      "attraction": "観光スポット",
-      "park": "公園",
-      "bookstore": "書店",
-      "hospital": "病院",
-      "pharmacy": "薬局"
-    },
-    "category_queries": {
-      "pet_hospital": "動物病院",
-      "coffee_shop": "カフェ",
-      "convenience_store": "コンビニ",
-      "shopping_mall": "ショッピングモール",
-      "movie_theater": "映画館",
-      "museum": "博物館",
-      "parking": "駐車場",
-      "gas_station": "ガソリンスタンド",
-      "subway_station": "地下鉄駅",
-      "restaurant": "レストラン",
-      "supermarket": "スーパーマーケット",
-      "attraction": "観光スポット",
-      "park": "公園",
-      "bookstore": "書店",
-      "hospital": "病院",
-      "pharmacy": "薬局"
-    },
-    "intent_aliases": {
-      "pet_hospital": [
-        "ペット病院",
-        "動物病院"
-      ],
-      "coffee_shop": [
-        "コーヒーショップ",
-        "カフェ",
-        "カフェ"
-      ],
-      "convenience_store": [
-        "コンビニエンスストア"
-      ],
-      "shopping_mall": [
-        "ショッピングモール",
-        "モール"
-      ],
-      "movie_theater": [
-        "映画館",
-        "映画"
-      ],
-      "museum": [
-        "博物館"
-      ],
-      "parking": [
-        "駐車場",
-        "駐車場"
-      ],
-      "gas_station": [
-        "ガソリンスタンド",
-        "ガソリンスタンド"
-      ],
-      "subway_station": [
-        "地下鉄の駅",
-        "地下鉄駅"
-      ],
-      "restaurant": [
-        "レストラン",
-        "食べ物"
-      ],
-      "supermarket": [
-        "スーパーマーケット"
-      ],
-      "attraction": [
-        "アトラクション",
-        "観光"
-      ],
-      "bookstore": [
-        "本屋",
-        "本屋"
-      ],
-      "hospital": [
-        "病院"
-      ],
-      "pharmacy": [
-        "薬局",
-        "ドラッグストア"
-      ],
-      "park": [
-        "公園"
-      ]
-    },
-    "clarify_category": "どの種類の場所を探していますか？次から選んでください：{choices}。",
     "clarify_location": "{detail}。検索の中心地点を指定してください。例：「吉林市周辺の公園」、または確認済みの保存場所を使用してください。",
-    "clarify_both": "検索の中心地点と場所の種類が必要です。「吉林市周辺の公園」と入力するか、種類を選んでください：{choices}。",
     "no_results": "{location} の近くに「{query}」は見つかりませんでした",
+    "ambiguous_summary": "「{location}」に対応する {candidate_count} 件の候補地をすべて検索し、{count} 件見つかりました。",
+    "searched_terms_summary": "検索語：{terms}。",
+    "group_summary": "- {location}：{detail}",
+    "ambiguity_suggestion": "結果は候補地別に分類されています。都市・地域・国を追加すると精度が上がります。",
     "summary": "{location} の近くで {count} '{query}' が見つかりました: {top}",
     "rain_tip": "🌂 雨が降っています — 屋内の選択肢を検討してください"
   },

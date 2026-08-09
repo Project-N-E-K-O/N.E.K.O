@@ -99,6 +99,18 @@ class FoodRecommendRouter(PluginRouter):
         svc = POIService(plugin._cfg)
         poi_result = await svc.search(query, loc["lat"], loc["lon"], radius=radius, limit=8)
 
+        if poi_result.error:
+            plugin.logger.warning(
+                "Food search failed: provider_count={}",
+                len(poi_result.provider.split(",")) if poi_result.provider else 0,
+            )
+            return Err(
+                SdkError(
+                    i18n.t("error.poi_search_failed"),
+                    details=poi_result.error,
+                )
+            )
+
         if not poi_result.items:
             return Ok({
                 "status": "ready",

@@ -6,6 +6,8 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field, RootModel, field_validator
 
+from ._nearby_discovery import MAX_SEARCH_TERMS, normalize_search_terms
+
 
 def _blankable_text(value: Any) -> str:
     if value is None:
@@ -34,6 +36,21 @@ class ClarificationResult(LifeKitModel):
 
 class ClarifiableResult(RootModel[Any]):
     """Validated union of a complete ready result and a clarification result."""
+
+    @classmethod
+    def model_json_schema(cls, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        """Expose the fields shared by every union branch to LLM projection."""
+        schema = super().model_json_schema(*args, **kwargs)
+        schema["properties"] = {
+            "status": {
+                "enum": ["ready", "clarify"],
+                "title": "Status",
+                "type": "string",
+            },
+            "summary": {"title": "Summary", "type": "string"},
+        }
+        schema["required"] = ["status", "summary"]
+        return schema
 
     @property
     def status(self) -> str:
@@ -82,6 +99,7 @@ class AddLocationParams(LifeKitModel):
 
 class _AddLocationReadyResult(LifeKitModel):
     status: Literal["ready"]
+    summary: str
     message: str
     location: dict[str, Any]
 
@@ -132,23 +150,44 @@ class HourlyForecastResult(ClarifiableResult):
 
 
 class NearbyParams(LifeKitModel):
-    query: str = Field(..., min_length=1, description="搜索关键词或用户原始附近需求")
+    request: str = Field(..., min_length=1, description="用户的原始附近搜索需求，保留完整语义")
+    search_terms: list[str] = Field(
+        ...,
+        min_length=1,
+        max_length=MAX_SEARCH_TERMS,
+        description=(
+            "根据用户需求生成 1 到 4 个简短的地图召回词，按具体到宽泛排序，"
+            "可以跨类别且不要写完整句子；不要要求用户先明确地点类别"
+        ),
+    )
     location: str = Field("", description="搜索中心（地点标签或城市名，留空用默认位置）")
     radius: int = Field(3000, ge=500, le=50000, description="搜索半径（米，默认 3000）")
 
-    @field_validator("query", "location", mode="before")
+    @field_validator("request", "location", mode="before")
     @classmethod
     def _clean_text(cls, value: Any) -> str:
         return _blankable_text(value)
+
+    @field_validator("search_terms", mode="before")
+    @classmethod
+    def _clean_search_terms(cls, value: Any) -> list[str]:
+        if not isinstance(value, (list, tuple)):
+            raise ValueError("search_terms must be a list")
+        return list(normalize_search_terms(value))
 
 
 class _NearbyReadyResult(LifeKitModel):
     status: Literal["ready"]
     summary: str
+    request: str
+    searched_terms: list[str]
     results: list[dict[str, Any]]
     count: int
     provider: str | None = None
     weather_tip: str = ""
+    location_groups: list[dict[str, Any]] = Field(default_factory=list)
+    ambiguity_warning: str = ""
+    suggestion: str = ""
 
 
 class NearbyResult(ClarifiableResult):
@@ -156,6 +195,37 @@ class NearbyResult(ClarifiableResult):
         _NearbyReadyResult | ClarificationResult,
         Field(discriminator="status"),
     ]
+
+    @classmethod
+    def model_json_schema(cls, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        schema = super().model_json_schema(*args, **kwargs)
+        schema["properties"].update({
+            "request": {"title": "Request", "type": "string"},
+            "searched_terms": {
+                "items": {"type": "string"},
+                "title": "Searched Terms",
+                "type": "array",
+            },
+            "results": {
+                "items": {"type": "object"},
+                "title": "Results",
+                "type": "array",
+            },
+            "location_groups": {
+                "items": {"type": "object"},
+                "title": "Location Groups",
+                "type": "array",
+            },
+        })
+        schema["required"] = [
+            "status",
+            "summary",
+            "request",
+            "searched_terms",
+            "results",
+            "location_groups",
+        ]
+        return schema
 
 
 class FoodRecommendParams(LifeKitModel):

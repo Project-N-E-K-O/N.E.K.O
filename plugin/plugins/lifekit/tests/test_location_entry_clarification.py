@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 from typing import Any
 
@@ -106,6 +107,10 @@ class _Logger:
 
 class _LocationStorePlugin(_AmbiguousLocationPlugin):
     logger = _Logger()
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._locations_lock = asyncio.Lock()
 
 
 @pytest.mark.asyncio
@@ -397,6 +402,39 @@ async def test_add_location_entry_keeps_provider_failure_as_error(
     assert isinstance(result, Err)
 
 
+@pytest.mark.asyncio
+async def test_add_location_success_uses_localized_summary(monkeypatch: Any) -> None:
+    async def resolved(*_: Any, **__: Any):
+        return {
+            "city": "上海",
+            "lat": 31.2,
+            "lon": 121.5,
+            "country": "CN",
+        }
+
+    async def load_locations() -> list[dict[str, Any]]:
+        return []
+
+    async def save_locations(_: list[dict[str, Any]]) -> bool:
+        return True
+
+    monkeypatch.setattr(
+        "plugin.plugins.lifekit.routers.locations.geocode_city",
+        resolved,
+    )
+    plugin = _LocationStorePlugin()
+    router = LocationsRouter()
+    router._bind(plugin)
+    monkeypatch.setattr(router, "_load", load_locations)
+    monkeypatch.setattr(router, "_save", save_locations)
+
+    result = await router.add_location(label="家", city="上海")
+
+    assert isinstance(result, Ok)
+    assert result.value["summary"] == "已添加：家（上海）"
+    assert result.value["message"] == result.value["summary"]
+
+
 @pytest.mark.parametrize("outcome", [None, RuntimeError("unexpected provider error")])
 @pytest.mark.asyncio
 async def test_add_location_entry_classifies_untyped_geocode_outcomes(
@@ -494,7 +532,11 @@ def test_location_result_contracts_reject_clarification_without_summary(
     [
         (
             AddLocationResult,
-            {"message": "已保存", "location": {"city": "上海"}},
+            {
+                "summary": "已保存",
+                "message": "已保存",
+                "location": {"city": "上海"},
+            },
         ),
         (
             GetWeatherResult,
@@ -523,7 +565,13 @@ def test_location_result_contracts_reject_clarification_without_summary(
         ),
         (
             NearbyResult,
-            {"summary": "未找到", "results": [], "count": 0},
+            {
+                "summary": "未找到",
+                "request": "附近有什么值得逛的",
+                "searched_terms": ["商店", "书店", "咖啡馆"],
+                "results": [],
+                "count": 0,
+            },
         ),
         (
             TripAdviceResult,

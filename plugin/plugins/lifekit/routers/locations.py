@@ -129,7 +129,7 @@ class LocationsRouter(PluginRouter):
         except GeocodeError as exc:
             error_key = location_error_key_from_cause(exc.cause)
             if not is_location_clarification(error_key):
-                plugin.logger.warning("geocode failed for {}: {}", clean_city, exc)
+                plugin.logger.warning("Geocode failed: cause={}", exc.cause)
             return location_failure_result(
                 error_key,
                 plugin._i18n,
@@ -142,7 +142,10 @@ class LocationsRouter(PluginRouter):
                 },
             )
         except Exception as exc:
-            plugin.logger.warning("geocode failed for {}: {}", clean_city, exc)
+            plugin.logger.warning(
+                "Geocode failed with unexpected error: type={}",
+                type(exc).__name__,
+            )
             return location_failure_result(
                 "error.geocode_failed",
                 plugin._i18n,
@@ -203,9 +206,15 @@ class LocationsRouter(PluginRouter):
             if not await self._save(locations):
                 return Err(SdkError("Save failed. Please check whether plugin storage is enabled."))
 
+        summary = plugin._i18n.t(
+            "panel.messages.locationAdded",
+            label=new_loc["label"],
+            city=new_loc["city"],
+        )
         return Ok({
             "status": "ready",
-            "message": f"Added location: {new_loc['label']} ({new_loc['city']})",
+            "summary": summary,
+            "message": summary,
             "location": new_loc,
         })
 

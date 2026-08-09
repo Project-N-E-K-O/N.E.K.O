@@ -1,12 +1,31 @@
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 
 from plugin.sdk.plugin import Err, Ok
 
 from plugin.plugins.lifekit._i18n import I18n
+from plugin.plugins.lifekit import _poi
+from plugin.plugins.lifekit._contracts import NearbyResult
+from plugin.plugins.lifekit._location import (
+    LocationCandidate,
+    LocationProblem,
+    LocationPurpose,
+)
 from plugin.plugins.lifekit.routers.nearby import NearbyRouter
+
+
+class _CapturingLogger:
+    def __init__(self) -> None:
+        self.messages: list[str] = []
+
+    def info(self, template: str, *args: object) -> None:
+        self.messages.append(template.format(*args))
+
+    def warning(self, template: str, *args: object) -> None:
+        self.messages.append(template.format(*args))
 
 
 class _NearbyPlugin:
@@ -14,13 +33,18 @@ class _NearbyPlugin:
 
     def __init__(self) -> None:
         self._i18n = I18n(Path(__file__).resolve().parents[1] / "locales")
+        self._cfg: dict[str, Any] = {}
         self.messages: list[dict[str, Any]] = []
+        self.logger = _CapturingLogger()
 
     def _resolve_locale(self) -> None:
         self._i18n.set_locale("zh-CN")
 
     async def _resolve_location(self, *_: Any, **__: Any):
         return {"city": "吉林市", "lat": 43.8, "lon": 126.5}, None
+
+    async def _get_weather_data(self, *_: Any, **__: Any):
+        return None, None
 
     def push_message(self, **kwargs: Any) -> dict[str, bool]:
         self.messages.append(kwargs)
@@ -37,24 +61,210 @@ class _AmbiguousLocationPlugin(_NearbyPlugin):
         return None, "error.location_ambiguous"
 
 
+class _AmbiguousCandidatePlugin(_NearbyPlugin):
+    async def _resolve_location(self, *_: Any, **__: Any):
+        return None, LocationProblem(
+            error_key="error.location_ambiguous",
+            requested_location="南京东路",
+            purpose=LocationPurpose.NEARBY,
+            candidates=(
+                LocationCandidate(
+                    display_name="南京东路",
+                    latitude=31.235,
+                    longitude=121.475,
+                    country_code="CN",
+                    admin1="上海市",
+                    admin2="上海市",
+                    precision="address",
+                    source="nominatim",
+                ),
+                LocationCandidate(
+                    display_name="南京东路",
+                    latitude=31.45,
+                    longitude=121.10,
+                    country_code="CN",
+                    admin1="江苏省",
+                    admin2="太仓市",
+                    precision="address",
+                    source="nominatim",
+                ),
+            ),
+        )
+
+
 @pytest.mark.asyncio
-async def test_broad_request_returns_one_host_managed_clarification() -> None:
+async def test_nearby_logs_do_not_include_raw_request_or_location() -> None:
+    plugin = _AmbiguousLocationPlugin()
+    router = NearbyRouter()
+    router._bind(plugin)
+
+    result = await router.search_nearby(
+        request="和客户谈机密项目",
+        search_terms=["咖啡馆"],
+        location="私人会所地址",
+        _ctx={"latest_user_request": "和客户谈机密项目"},
+    )
+
+    assert isinstance(result, Ok)
+    logged = "\n".join(plugin.logger.messages)
+    assert "和客户谈机密项目" not in logged
+    assert "私人会所地址" not in logged
+
+
+@pytest.mark.asyncio
+async def test_natural_language_discovery_searches_without_category_clarification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _ShopClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_: object) -> None:
+            return None
+
+        async def post(self, url: str, **kwargs: object) -> httpx.Response:
+            query = str(kwargs.get("data", {}).get("data", ""))
+            is_shanghai = "31.235,121.475" in query
+            return httpx.Response(
+                200,
+                json={
+                    "elements": [
+                        {
+                            "type": "node",
+                            "id": 11 if is_shanghai else 12,
+                            "lat": 31.236 if is_shanghai else 31.451,
+                            "lon": 121.476 if is_shanghai else 121.101,
+                            "tags": {
+                                "name": "上海沿街商店" if is_shanghai else "太仓沿街商店",
+                                "shop": "clothes",
+                            },
+                        }
+                    ]
+                },
+                request=httpx.Request("POST", url),
+            )
+
+    monkeypatch.setattr(_poi.httpx, "AsyncClient", lambda **_: _ShopClient())
+    router = NearbyRouter()
+    router._bind(_AmbiguousCandidatePlugin())
+
+    result = await router.search_nearby(
+        request="南京东路有什么商店",
+        search_terms=["商店", "便利店", "超市", "购物中心"],
+        location="南京东路",
+        _ctx={"latest_user_request": "南京东路有什么商店"},
+    )
+
+    assert isinstance(result, Ok)
+    assert result.value["status"] == "ready"
+    assert result.value["searched_terms"] == ["商店", "便利店", "超市", "购物中心"]
+    assert [group["searched_terms"] for group in result.value["location_groups"]] == [
+        ["商店", "便利店", "超市", "购物中心"],
+        ["商店", "便利店", "超市", "购物中心"],
+    ]
+    assert result.value["count"] == 2
+    assert "choices" not in result.value
+
+
+@pytest.mark.asyncio
+async def test_exploratory_request_searches_across_multiple_retrieval_terms(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _PlaceClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_: object) -> None:
+            return None
+
+        async def post(self, url: str, **_: object) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "elements": [
+                        {
+                            "type": "node",
+                            "id": 21,
+                            "lat": 43.801,
+                            "lon": 126.501,
+                            "tags": {"name": "安静空间", "amenity": "cafe"},
+                        }
+                    ]
+                },
+                request=httpx.Request("POST", url),
+            )
+
+    monkeypatch.setattr(_poi.httpx, "AsyncClient", lambda **_: _PlaceClient())
     plugin = _NearbyPlugin()
     router = NearbyRouter()
     router._bind(plugin)
 
     result = await router.search_nearby(
-        query="公园",
-        _ctx={"latest_user_request": "我附近有啥地方可去吗？"},
+        request="找个适合聊天但别太吵的地方",
+        search_terms=["咖啡馆", "茶馆", "书店", "公园"],
+        _ctx={"latest_user_request": "找个适合聊天但别太吵的地方"},
     )
 
     assert isinstance(result, Ok)
-    assert result.value["status"] == "clarify"
-    assert result.value["choices"] == ["公园", "景点", "餐厅", "商场"]
-    assert result.value["context"]["kind"] == "nearby"
-    assert result.value["context"]["location"] == ""
-    assert result.value["context"]["radius"] == 3000
-    assert plugin.messages == []
+    assert result.value["status"] == "ready"
+    assert result.value["searched_terms"] == ["咖啡馆", "茶馆", "书店", "公园"]
+    assert result.value["count"] == 1
+    assert result.value["results"][0]["matched_term"] == "咖啡馆"
+    assert "choices" not in result.value
+
+
+@pytest.mark.parametrize(
+    ("user_request", "search_terms"),
+    [
+        ("下雨天能带孩子去哪", ["室内游乐场", "博物馆", "商场"]),
+        ("附近有没有卖相机配件的", ["相机店", "电子产品店", "摄影器材"]),
+        ("随便找几个值得逛的小店", ["商店", "书店", "咖啡馆", "精品店"]),
+    ],
+)
+@pytest.mark.asyncio
+async def test_open_ended_needs_execute_the_llm_retrieval_plan(
+    monkeypatch: pytest.MonkeyPatch,
+    user_request: str,
+    search_terms: list[str],
+) -> None:
+    class _DiscoveryClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_: object) -> None:
+            return None
+
+        async def post(self, url: str, **_: object) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "elements": [
+                        {
+                            "type": "node",
+                            "id": 31,
+                            "lat": 43.801,
+                            "lon": 126.501,
+                            "tags": {"name": "召回结果", "shop": "yes"},
+                        }
+                    ]
+                },
+                request=httpx.Request("POST", url),
+            )
+
+    monkeypatch.setattr(_poi.httpx, "AsyncClient", lambda **_: _DiscoveryClient())
+    router = NearbyRouter()
+    router._bind(_NearbyPlugin())
+
+    result = await router.search_nearby(
+        request=user_request,
+        search_terms=search_terms,
+        _ctx={"latest_user_request": user_request},
+    )
+
+    assert isinstance(result, Ok)
+    assert result.value["status"] == "ready"
+    assert result.value["searched_terms"] == search_terms
+    assert result.value["count"] == 1
 
 
 @pytest.mark.asyncio
@@ -64,7 +274,8 @@ async def test_broad_request_keeps_provider_failure_as_error() -> None:
     router._bind(plugin)
 
     result = await router.search_nearby(
-        query="公园",
+        request="我附近有啥地方可去吗？",
+        search_terms=["公园", "景点", "咖啡馆", "书店"],
         _ctx={"latest_user_request": "我附近有啥地方可去吗？"},
     )
 
@@ -78,7 +289,8 @@ async def test_specific_request_keeps_provider_failure_as_error() -> None:
     router._bind(plugin)
 
     result = await router.search_nearby(
-        query="公园",
+        request="附近的公园",
+        search_terms=["公园"],
         _ctx={"latest_user_request": "附近的公园"},
     )
 
@@ -86,12 +298,46 @@ async def test_specific_request_keeps_provider_failure_as_error() -> None:
 
 
 @pytest.mark.asyncio
-async def test_location_clarification_preserves_resolved_nearby_query() -> None:
+async def test_nearby_provider_outage_is_not_reported_as_zero_results(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _RejectingClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_: object) -> None:
+            return None
+
+        async def post(self, url: str, **_: object) -> httpx.Response:
+            return httpx.Response(
+                503,
+                text="provider unavailable",
+                request=httpx.Request("POST", url),
+            )
+
+    monkeypatch.setattr(_poi.httpx, "AsyncClient", lambda **_: _RejectingClient())
+    router = NearbyRouter()
+    router._bind(_NearbyPlugin())
+
+    result = await router.search_nearby(
+        request="上海南京东路附近的餐厅",
+        search_terms=["餐厅"],
+        location="上海南京东路",
+        _ctx={"latest_user_request": "上海南京东路附近的餐厅"},
+    )
+
+    assert isinstance(result, Err)
+    assert "附近地点搜索失败" in str(result.error)
+
+
+@pytest.mark.asyncio
+async def test_location_clarification_preserves_discovery_request() -> None:
     router = NearbyRouter()
     router._bind(_AmbiguousLocationPlugin())
 
     result = await router.search_nearby(
-        query="公园",
+        request="吉林附近的公园",
+        search_terms=["公园"],
         location="吉林",
         radius=2500,
         _ctx={"latest_user_request": "吉林附近的公园"},
@@ -99,7 +345,138 @@ async def test_location_clarification_preserves_resolved_nearby_query() -> None:
 
     assert isinstance(result, Ok)
     assert result.value["status"] == "clarify"
-    assert result.value["context"]["query"] == "公园"
-    assert result.value["context"]["category_id"] == "park"
+    assert result.value["context"]["request"] == "吉林附近的公园"
+    assert result.value["context"]["search_terms"] == ["公园"]
     assert result.value["context"]["location"] == "吉林"
     assert result.value["context"]["radius"] == 2500
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_locations_are_searched_and_returned_in_labeled_groups(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _SuccessfulClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_: object) -> None:
+            return None
+
+        async def post(self, url: str, **kwargs: object) -> httpx.Response:
+            query = str(kwargs.get("data", {}).get("data", ""))
+            is_shanghai = "31.235,121.475" in query
+            return httpx.Response(
+                200,
+                json={
+                    "elements": [
+                        {
+                            "type": "node",
+                            "id": 1 if is_shanghai else 2,
+                            "lat": 31.236 if is_shanghai else 31.451,
+                            "lon": 121.476 if is_shanghai else 121.101,
+                            "tags": {
+                                "name": "上海餐厅" if is_shanghai else "太仓餐厅",
+                                "amenity": "restaurant",
+                            },
+                        }
+                    ]
+                },
+                request=httpx.Request("POST", url),
+            )
+
+    monkeypatch.setattr(_poi.httpx, "AsyncClient", lambda **_: _SuccessfulClient())
+    router = NearbyRouter()
+    router._bind(_AmbiguousCandidatePlugin())
+
+    result = await router.search_nearby(
+        request="南京东路附近的餐厅",
+        search_terms=["餐厅"],
+        location="南京东路",
+        _ctx={"latest_user_request": "南京东路附近的餐厅"},
+    )
+
+    assert isinstance(result, Ok)
+    assert result.value["status"] == "ready"
+    assert result.value["count"] == 2
+    assert [group["location"]["admin2"] for group in result.value["location_groups"]] == [
+        "上海市",
+        "太仓市",
+    ]
+    assert [item["name"] for item in result.value["results"]] == [
+        "上海餐厅",
+        "太仓餐厅",
+    ]
+    assert [item["location"]["admin2"] for item in result.value["results"]] == [
+        "上海市",
+        "太仓市",
+    ]
+    assert "位置名称有歧义" in result.value["ambiguity_warning"]
+    assert "补充城市" in result.value["suggestion"]
+    assert result.value["ambiguity_warning"] in result.value["summary"]
+    assert "南京东路 · 上海市 · CN" in result.value["summary"]
+    assert "上海餐厅" in result.value["summary"]
+    assert "南京东路 · 江苏省 · 太仓市 · CN" in result.value["summary"]
+    assert "太仓餐厅" in result.value["summary"]
+    assert result.value["suggestion"] in result.value["summary"]
+    NearbyResult.model_validate(result.value)
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_search_keeps_successful_locations_when_one_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _PartiallyAvailableClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_: object) -> None:
+            return None
+
+        async def post(self, url: str, **kwargs: object) -> httpx.Response:
+            query = str(kwargs.get("data", {}).get("data", ""))
+            if "31.45,121.1" in query:
+                return httpx.Response(
+                    503,
+                    text="provider unavailable",
+                    request=httpx.Request("POST", url),
+                )
+            return httpx.Response(
+                200,
+                json={
+                    "elements": [
+                        {
+                            "type": "node",
+                            "id": 1,
+                            "lat": 31.236,
+                            "lon": 121.476,
+                            "tags": {"name": "上海餐厅", "amenity": "restaurant"},
+                        }
+                    ]
+                },
+                request=httpx.Request("POST", url),
+            )
+
+    monkeypatch.setattr(
+        _poi.httpx,
+        "AsyncClient",
+        lambda **_: _PartiallyAvailableClient(),
+    )
+    router = NearbyRouter()
+    router._bind(_AmbiguousCandidatePlugin())
+
+    result = await router.search_nearby(
+        request="南京东路附近的餐厅",
+        search_terms=["餐厅"],
+        location="南京东路",
+        _ctx={"latest_user_request": "南京东路附近的餐厅"},
+    )
+
+    assert isinstance(result, Ok)
+    assert result.value["count"] == 1
+    assert [group["status"] for group in result.value["location_groups"]] == [
+        "ready",
+        "error",
+    ]
+    assert result.value["results"][0]["name"] == "上海餐厅"
+    assert "太仓市" in result.value["summary"]
+    assert "附近地点搜索失败" in result.value["summary"]

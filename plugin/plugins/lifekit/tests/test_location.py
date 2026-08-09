@@ -21,21 +21,19 @@ from plugin.plugins.lifekit._location import (
 pytestmark = pytest.mark.asyncio
 
 
-async def test_ambiguous_chinese_city_is_not_silently_resolved() -> None:
+async def test_administrative_context_breaks_cross_country_name_tie() -> None:
     async def open_meteo(query: str, **_kwargs: object) -> list[LocationCandidate]:
-        if query == "吉林市":
-            return [
-                LocationCandidate(
-                    display_name="吉林市",
-                    latitude=43.85,
-                    longitude=126.56,
-                    country_code="CN",
-                    admin1="吉林省",
-                    precision="city",
-                    source="open_meteo",
-                )
-            ]
+        assert query == "吉林"
         return [
+            LocationCandidate(
+                display_name="吉林市",
+                latitude=43.85,
+                longitude=126.56,
+                country_code="CN",
+                admin1="吉林省",
+                precision="city",
+                source="open_meteo",
+            ),
             LocationCandidate(
                 display_name="吉林",
                 latitude=25.00,
@@ -56,9 +54,10 @@ async def test_ambiguous_chinese_city_is_not_silently_resolved() -> None:
         LocationRequest(text="吉林", purpose=LocationPurpose.NEARBY)
     )
 
-    assert result.status is LocationStatus.AMBIGUOUS
-    assert result.location is None
-    assert {item.country_code for item in result.candidates} == {"CN", "TW"}
+    assert result.status is LocationStatus.RESOLVED
+    assert result.location is not None
+    assert result.location.country_code == "CN"
+    assert result.location.admin1 == "吉林省"
 
 
 async def test_ineligible_foreign_locality_does_not_make_nearby_city_ambiguous() -> (
@@ -250,6 +249,60 @@ async def test_default_city_failure_preserves_effective_requested_location() -> 
     assert location is None
     assert problem is not None
     assert problem.requested_location == "Osaka"
+
+
+async def test_unresolved_location_log_uses_only_non_sensitive_metadata() -> None:
+    candidates = (
+        LocationCandidate(
+            display_name="南京东路",
+            latitude=31.235,
+            longitude=121.475,
+            country_code="CN",
+            admin1="上海市",
+            admin2="上海市",
+            precision="address",
+            source="nominatim",
+        ),
+        LocationCandidate(
+            display_name="南京东路",
+            latitude=31.45,
+            longitude=121.10,
+            country_code="CN",
+            admin1="江苏省",
+            admin2="太仓市",
+            precision="address",
+            source="nominatim",
+        ),
+    )
+
+    class _AmbiguousResolver:
+        async def resolve(self, _request: LocationRequest) -> LocationResolution:
+            return LocationResolution(LocationStatus.AMBIGUOUS, candidates=candidates)
+
+    class _CapturingLogger:
+        def __init__(self) -> None:
+            self.messages: list[str] = []
+
+        def info(self, template: str, *args: object) -> None:
+            self.messages.append(template.format(*args))
+
+    plugin = object.__new__(LifeKitPlugin)
+    plugin._cfg = {"enable_geoip": False}
+    plugin._i18n = SimpleNamespace(locale="zh-CN")
+    plugin._location_resolver = _AmbiguousResolver()
+    plugin.logger = _CapturingLogger()
+
+    await plugin._resolve_location("上海南京东路", purpose=LocationPurpose.NEARBY)
+
+    rendered = "\n".join(plugin.logger.messages)
+    assert "purpose=nearby" in rendered
+    assert "status=ambiguous" in rendered
+    assert "candidate_count=2" in rendered
+    assert "南京东路" not in rendered
+    assert "上海市" not in rendered
+    assert "太仓市" not in rendered
+    assert "31.235" not in rendered
+    assert "121.475" not in rendered
 
 
 async def test_weather_can_use_legacy_saved_default() -> None:
@@ -597,7 +650,7 @@ async def test_country_hint_selects_city_over_region_and_locality() -> None:
     assert result.location.display_name == "吉林市"
 
 
-async def test_short_chinese_name_always_uses_disambiguation_provider() -> None:
+async def test_explicit_location_uses_independent_disambiguation_provider() -> None:
     city = LocationCandidate(
         display_name="朝阳市",
         latitude=41.58,
@@ -681,7 +734,7 @@ async def test_explicit_country_suffix_becomes_hard_country_hint() -> None:
     async def open_meteo(query: str, **kwargs: object) -> list[LocationCandidate]:
         country = str(kwargs.get("country_code") or "")
         seen.append((query, country))
-        if query == "吉林市":
+        if query == "吉林":
             return [
                 LocationCandidate(
                     display_name="吉林市",
@@ -704,10 +757,45 @@ async def test_explicit_country_suffix_becomes_hard_country_hint() -> None:
     )
 
     assert result.status is LocationStatus.RESOLVED
-    assert ("吉林市", "CN") in seen
+    assert seen == [("吉林", "CN")]
 
 
-async def test_required_disambiguation_failure_never_confirms_first_hit() -> None:
+async def test_location_text_is_sent_to_providers_without_invented_city_suffix() -> None:
+    seen: list[tuple[str, str]] = []
+
+    async def open_meteo(query: str, **_kwargs: object) -> list[LocationCandidate]:
+        seen.append(("open_meteo", query))
+        return []
+
+    async def nominatim(query: str, **_kwargs: object) -> list[LocationCandidate]:
+        seen.append(("nominatim", query))
+        return [
+            LocationCandidate(
+                display_name="南京东路",
+                latitude=31.235,
+                longitude=121.475,
+                country_code="CN",
+                admin1="上海市",
+                admin2="上海市",
+                precision="address",
+                source="nominatim",
+            )
+        ]
+
+    resolver = LocationResolver(open_meteo=open_meteo, nominatim=nominatim)
+
+    result = await resolver.resolve(
+        LocationRequest(text="上海南京东路", purpose=LocationPurpose.NEARBY)
+    )
+
+    assert result.status is LocationStatus.RESOLVED
+    assert seen == [
+        ("open_meteo", "上海南京东路"),
+        ("nominatim", "上海南京东路"),
+    ]
+
+
+async def test_secondary_provider_failure_keeps_usable_primary_hit() -> None:
     city = LocationCandidate(
         display_name="朝阳市",
         latitude=41.58,
@@ -729,9 +817,59 @@ async def test_required_disambiguation_failure_never_confirms_first_hit() -> Non
         LocationRequest(text="朝阳", country_hint="CN", purpose=LocationPurpose.NEARBY)
     )
 
-    assert result.status is LocationStatus.PROVIDER_FAILED
-    assert result.location is None
-    assert result.candidates == (city,)
+    assert result.status is LocationStatus.RESOLVED
+    assert result.location is not None
+    assert result.location.display_name == "朝阳市"
+
+
+async def test_administrative_context_selects_matching_same_named_address() -> None:
+    shanghai_first = LocationCandidate(
+        display_name="南京东路",
+        latitude=31.235,
+        longitude=121.475,
+        country_code="CN",
+        admin1="上海市",
+        admin2="上海市",
+        precision="address",
+        source="nominatim",
+    )
+    shanghai_duplicate = LocationCandidate(
+        display_name="南京东路",
+        latitude=31.236,
+        longitude=121.476,
+        country_code="CN",
+        admin1="上海市",
+        admin2="上海市",
+        precision="address",
+        source="nominatim",
+    )
+    taicang = LocationCandidate(
+        display_name="南京东路",
+        latitude=31.45,
+        longitude=121.10,
+        country_code="CN",
+        admin1="江苏省",
+        admin2="太仓市",
+        precision="address",
+        source="nominatim",
+    )
+
+    async def empty(*_args: object, **_kwargs: object) -> list[LocationCandidate]:
+        return []
+
+    async def nominatim(*_args: object, **_kwargs: object) -> list[LocationCandidate]:
+        return [shanghai_first, shanghai_duplicate, taicang]
+
+    resolver = LocationResolver(open_meteo=empty, nominatim=nominatim)
+
+    result = await resolver.resolve(
+        LocationRequest(text="上海南京东路", purpose=LocationPurpose.NEARBY)
+    )
+
+    assert result.status is LocationStatus.RESOLVED
+    assert result.location is not None
+    assert result.location.admin1 == "上海市"
+    assert len(result.candidates) == 1
 
 
 async def test_geocode_city_preserves_timeout_cause(

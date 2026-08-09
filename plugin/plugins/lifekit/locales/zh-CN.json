@@ -61,6 +61,7 @@
     "city_not_found": "找不到该城市，请检查城市名是否正确",
     "geocode_timeout": "城市查询超时，请稍后重试或直接指定城市名",
     "geocode_failed": "城市查询失败，请检查网络连接",
+    "poi_search_failed": "附近地点搜索失败，请稍后重试",
     "location_ambiguous": "位置名称有歧义，请补充城市、省份或国家",
     "location_confirmation_required": "现有位置不够精确，请指定城市、区县、地址或已确认的保存地点",
     "fetch_failed": "获取天气数据失败 ({city})",
@@ -76,164 +77,12 @@
   "nearby": {
     "no_query": "请输入搜索关键词（如：火锅、咖啡、超市）",
     "list_separator": "、",
-    "intent_choice_ids": [
-      "park",
-      "attraction",
-      "restaurant",
-      "shopping_mall"
-    ],
-    "intent_broad_phrases": [
-      "有啥地方可去",
-      "有什么地方可去",
-      "哪里可以去",
-      "去哪玩",
-      "好玩的地方",
-      "随便逛逛"
-    ],
-    "intent_dialogue_markers": [
-      "帮我",
-      "幫我",
-      "麻烦",
-      "麻煩",
-      "附近",
-      "周边",
-      "周邊",
-      "周围",
-      "周圍",
-      "我附近",
-      "附近有",
-      "有没有",
-      "有沒有",
-      "有什么",
-      "有什麼",
-      "有啥",
-      "哪里",
-      "哪裡",
-      "哪儿",
-      "哪兒",
-      "推荐",
-      "推薦",
-      "可以",
-      "吗",
-      "嗎",
-      "呢",
-      "么",
-      "麼"
-    ],
-    "category_labels": {
-      "pet_hospital": "宠物医院",
-      "coffee_shop": "咖啡店",
-      "convenience_store": "便利店",
-      "shopping_mall": "商场",
-      "movie_theater": "电影院",
-      "museum": "博物馆",
-      "parking": "停车场",
-      "gas_station": "加油站",
-      "subway_station": "地铁站",
-      "restaurant": "餐厅",
-      "supermarket": "超市",
-      "attraction": "景点",
-      "park": "公园",
-      "bookstore": "书店",
-      "hospital": "医院",
-      "pharmacy": "药店"
-    },
-    "category_queries": {
-      "pet_hospital": "宠物医院",
-      "coffee_shop": "咖啡店",
-      "convenience_store": "便利店",
-      "shopping_mall": "购物中心",
-      "movie_theater": "电影院",
-      "museum": "博物馆",
-      "parking": "停车场",
-      "gas_station": "加油站",
-      "subway_station": "地铁站",
-      "restaurant": "餐厅",
-      "supermarket": "超市",
-      "attraction": "景点",
-      "park": "公园",
-      "bookstore": "书店",
-      "hospital": "医院",
-      "pharmacy": "药店"
-    },
-    "intent_aliases": {
-      "pet_hospital": [
-        "宠物医院",
-        "寵物醫院"
-      ],
-      "coffee_shop": [
-        "咖啡店",
-        "咖啡馆",
-        "咖啡廳",
-        "咖啡"
-      ],
-      "convenience_store": [
-        "便利店"
-      ],
-      "shopping_mall": [
-        "购物中心",
-        "購物中心",
-        "商场",
-        "商場"
-      ],
-      "movie_theater": [
-        "电影院",
-        "電影院",
-        "影院"
-      ],
-      "museum": [
-        "博物馆",
-        "博物館"
-      ],
-      "parking": [
-        "停车场",
-        "停車場"
-      ],
-      "gas_station": [
-        "加油站"
-      ],
-      "subway_station": [
-        "地铁站",
-        "地鐵站"
-      ],
-      "restaurant": [
-        "餐厅",
-        "餐廳",
-        "饭店",
-        "飯店",
-        "吃什么",
-        "吃什麼"
-      ],
-      "supermarket": [
-        "超市"
-      ],
-      "attraction": [
-        "景点",
-        "景點",
-        "景区",
-        "景區"
-      ],
-      "park": [
-        "公园",
-        "公園"
-      ],
-      "bookstore": [
-        "书店",
-        "書店"
-      ],
-      "hospital": [
-        "医院",
-        "醫院"
-      ],
-      "pharmacy": [
-        "药店",
-        "藥店"
-      ]
-    },
-    "clarify_category": "你更想找哪类地方？请选择：{choices}。",
     "clarify_location": "{detail}。请补充搜索中心，例如“吉林市附近的公园”，或使用已确认的保存地点。",
-    "clarify_both": "还缺少搜索中心和地点类型。可以直接说“吉林市附近的公园”，或选择：{choices}。",
     "no_results": "在 {location} 附近没有找到「{query}」相关的地点",
+    "ambiguous_summary": "已分别查询“{location}”对应的 {candidate_count} 个候选位置，共找到 {count} 个结果。",
+    "searched_terms_summary": "搜索词：{terms}。",
+    "group_summary": "- {location}：{detail}",
+    "ambiguity_suggestion": "结果已按候选位置分组；补充城市、省份或国家可以提高准确度。",
     "summary": "在 {location} 附近找到 {count} 个「{query}」: {top}",
     "rain_tip": "🌂 当前有雨，建议选择室内场所"
   },

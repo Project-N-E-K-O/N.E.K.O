@@ -214,8 +214,7 @@ class LifeKitPlugin(NekoPluginBase):
             loc = result.location
             if loc.source == "geoip" and detect_vpn_conflict(loc.timezone, get_system_timezone()):
                 self.logger.info(
-                    "IP location requires confirmation because timezone differs: ip_tz={}",
-                    loc.timezone,
+                    "IP location requires confirmation because timezone differs",
                 )
                 return None, LocationProblem(
                     error_key="error.location_confirmation_required",
@@ -227,12 +226,10 @@ class LifeKitPlugin(NekoPluginBase):
 
         if result.candidates:
             self.logger.info(
-                "Location unresolved: status={}, candidates={}",
+                "Location unresolved: purpose={}, status={}, candidate_count={}",
+                purpose.value,
                 result.status.value,
-                [
-                    {"country": item.country_code, "precision": item.precision}
-                    for item in result.candidates[:5]
-                ],
+                len(result.candidates),
             )
         return None, location_problem_from_resolution(
             result,

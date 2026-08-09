@@ -61,6 +61,7 @@
     "city_not_found": "找不到該城市，請檢查城市名是否正確",
     "geocode_timeout": "城市查詢逾時，請稍後重試或直接指定城市名",
     "geocode_failed": "城市查詢失敗，請檢查網路連線",
+    "poi_search_failed": "附近地點搜尋失敗，請稍後重試",
     "location_ambiguous": "位置名稱有歧義，請補充城市、省份或國家",
     "location_confirmation_required": "現有位置不夠精確，請指定城市、區縣、地址或已確認的儲存地點",
     "fetch_failed": "獲取天氣資料失敗 ({city})",
@@ -76,137 +77,12 @@
   "nearby": {
     "no_query": "請輸入搜尋關鍵詞（如：火鍋、咖啡、超市）",
     "list_separator": "、",
-    "intent_choice_ids": [
-      "park",
-      "attraction",
-      "restaurant",
-      "shopping_mall"
-    ],
-    "intent_broad_phrases": [
-      "有啥地方可去",
-      "有什麼地方可去",
-      "哪裡可以去",
-      "去哪玩",
-      "好玩的地方",
-      "隨便逛逛"
-    ],
-    "intent_dialogue_markers": [
-      "幫我",
-      "麻煩",
-      "附近",
-      "周邊",
-      "周圍",
-      "我附近",
-      "附近有",
-      "有沒有",
-      "有什麼",
-      "有啥",
-      "哪裡",
-      "哪兒",
-      "推薦",
-      "可以",
-      "嗎",
-      "呢",
-      "麼"
-    ],
-    "category_labels": {
-      "pet_hospital": "寵物醫院",
-      "coffee_shop": "咖啡店",
-      "convenience_store": "便利店",
-      "shopping_mall": "商場",
-      "movie_theater": "電影院",
-      "museum": "博物館",
-      "parking": "停車場",
-      "gas_station": "加油站",
-      "subway_station": "地鐵站",
-      "restaurant": "餐廳",
-      "supermarket": "超市",
-      "attraction": "景點",
-      "park": "公園",
-      "bookstore": "書店",
-      "hospital": "醫院",
-      "pharmacy": "藥店"
-    },
-    "category_queries": {
-      "pet_hospital": "寵物醫院",
-      "coffee_shop": "咖啡店",
-      "convenience_store": "便利店",
-      "shopping_mall": "購物中心",
-      "movie_theater": "電影院",
-      "museum": "博物館",
-      "parking": "停車場",
-      "gas_station": "加油站",
-      "subway_station": "地鐵站",
-      "restaurant": "餐廳",
-      "supermarket": "超市",
-      "attraction": "景點",
-      "park": "公園",
-      "bookstore": "書店",
-      "hospital": "醫院",
-      "pharmacy": "藥店"
-    },
-    "intent_aliases": {
-      "pet_hospital": [
-        "寵物醫院"
-      ],
-      "coffee_shop": [
-        "咖啡店",
-        "咖啡館",
-        "咖啡廳",
-        "咖啡"
-      ],
-      "convenience_store": [
-        "便利店"
-      ],
-      "shopping_mall": [
-        "購物中心",
-        "商場"
-      ],
-      "movie_theater": [
-        "電影院",
-        "影院"
-      ],
-      "museum": [
-        "博物館"
-      ],
-      "parking": [
-        "停車場"
-      ],
-      "gas_station": [
-        "加油站"
-      ],
-      "subway_station": [
-        "地鐵站"
-      ],
-      "restaurant": [
-        "餐廳",
-        "飯店",
-        "吃什麼"
-      ],
-      "supermarket": [
-        "超市"
-      ],
-      "attraction": [
-        "景點",
-        "景區"
-      ],
-      "park": [
-        "公園"
-      ],
-      "bookstore": [
-        "書店"
-      ],
-      "hospital": [
-        "醫院"
-      ],
-      "pharmacy": [
-        "藥店"
-      ]
-    },
-    "clarify_category": "你更想找哪類地方？請選擇：{choices}。",
     "clarify_location": "{detail}。請補充搜尋中心，例如「吉林市附近的公園」，或使用已確認的儲存地點。",
-    "clarify_both": "還缺少搜尋中心和地點類型。可以直接說「吉林市附近的公園」，或選擇：{choices}。",
     "no_results": "在 {location} 附近沒有找到「{query}」相關的地點",
+    "ambiguous_summary": "已分別查詢「{location}」對應的 {candidate_count} 個候選位置，共找到 {count} 個結果。",
+    "searched_terms_summary": "搜尋詞：{terms}。",
+    "group_summary": "- {location}：{detail}",
+    "ambiguity_suggestion": "結果已按候選位置分組；補充城市、省份或國家可以提高準確度。",
     "summary": "在 {location} 附近找到 {count} 個「{query}」: {top}",
     "rain_tip": "🌂 目前有雨，建議選擇室內場所"
   },

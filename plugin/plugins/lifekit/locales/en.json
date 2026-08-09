@@ -61,6 +61,7 @@
     "city_not_found": "City not found — please check the city name",
     "geocode_timeout": "City lookup timed out — please try again or specify a city name",
     "geocode_failed": "City lookup failed — please check your network",
+    "poi_search_failed": "Nearby place search failed — please try again later",
     "location_ambiguous": "That location name is ambiguous — please add a city, region, or country",
     "location_confirmation_required": "The available location is not precise enough — please specify a city, district, address, or verified saved place",
     "fetch_failed": "Failed to fetch weather data ({city})",
@@ -76,129 +77,12 @@
   "nearby": {
     "no_query": "Please enter a search keyword (e.g. restaurant, cafe, park)",
     "list_separator": ", ",
-    "intent_choice_ids": [
-      "park",
-      "attraction",
-      "restaurant",
-      "shopping_mall"
-    ],
-    "intent_broad_phrases": [
-      "things to do nearby",
-      "places to go nearby",
-      "somewhere to go"
-    ],
-    "intent_dialogue_markers": [
-      "find me",
-      "can you",
-      "are there",
-      "is there",
-      "what ",
-      "where ",
-      "recommend ",
-      "nearby"
-    ],
-    "category_labels": {
-      "pet_hospital": "pet hospital",
-      "coffee_shop": "coffee shop",
-      "convenience_store": "convenience store",
-      "shopping_mall": "shopping mall",
-      "movie_theater": "movie theater",
-      "museum": "museum",
-      "parking": "parking",
-      "gas_station": "gas station",
-      "subway_station": "subway station",
-      "restaurant": "restaurant",
-      "supermarket": "supermarket",
-      "attraction": "attraction",
-      "park": "park",
-      "bookstore": "bookstore",
-      "hospital": "hospital",
-      "pharmacy": "pharmacy"
-    },
-    "category_queries": {
-      "pet_hospital": "pet hospital",
-      "coffee_shop": "coffee shop",
-      "convenience_store": "convenience store",
-      "shopping_mall": "shopping mall",
-      "movie_theater": "movie theater",
-      "museum": "museum",
-      "parking": "parking",
-      "gas_station": "gas station",
-      "subway_station": "subway station",
-      "restaurant": "restaurant",
-      "supermarket": "supermarket",
-      "attraction": "attraction",
-      "park": "park",
-      "bookstore": "bookstore",
-      "hospital": "hospital",
-      "pharmacy": "pharmacy"
-    },
-    "intent_aliases": {
-      "pet_hospital": [
-        "pet hospital",
-        "veterinary hospital"
-      ],
-      "coffee_shop": [
-        "coffee shop",
-        "cafe",
-        "café"
-      ],
-      "convenience_store": [
-        "convenience store"
-      ],
-      "shopping_mall": [
-        "shopping mall",
-        "mall"
-      ],
-      "movie_theater": [
-        "movie theater",
-        "cinema"
-      ],
-      "museum": [
-        "museum"
-      ],
-      "parking": [
-        "parking lot",
-        "parking"
-      ],
-      "gas_station": [
-        "gas station",
-        "petrol station"
-      ],
-      "subway_station": [
-        "subway station",
-        "metro station"
-      ],
-      "restaurant": [
-        "restaurant",
-        "food"
-      ],
-      "supermarket": [
-        "supermarket"
-      ],
-      "attraction": [
-        "attraction",
-        "sightseeing"
-      ],
-      "bookstore": [
-        "bookstore",
-        "book shop"
-      ],
-      "hospital": [
-        "hospital"
-      ],
-      "pharmacy": [
-        "pharmacy",
-        "drugstore"
-      ],
-      "park": [
-        "park"
-      ]
-    },
-    "clarify_category": "What kind of place do you want? Choose one: {choices}.",
     "clarify_location": "{detail}. Please provide a search center, for example 'parks near Jilin City', or use a verified saved place.",
-    "clarify_both": "I still need a search center and place type. Try 'parks near Jilin City', or choose a type: {choices}.",
     "no_results": "No '{query}' found near {location}",
+    "ambiguous_summary": "Searched all {candidate_count} candidate locations for '{location}' and found {count} results.",
+    "searched_terms_summary": "Search terms: {terms}.",
+    "group_summary": "- {location}: {detail}",
+    "ambiguity_suggestion": "Results are grouped by candidate location; add a city, region, or country for better accuracy.",
     "summary": "Found {count} '{query}' near {location}: {top}",
     "rain_tip": "🌂 It's raining — consider indoor options"
   },

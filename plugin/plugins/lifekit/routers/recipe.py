@@ -144,7 +144,10 @@ class RecipeRouter(PluginRouter):
             "recipes": recipes_data,
             "query": q,
             "count": len(results),
-            "next_actions": [f"food_recommend cuisine={q} — 附近{q}餐厅", "search_nearby query=超市 — 附近超市买食材"],
+            "next_actions": [
+                f"food_recommend cuisine={q} — 附近{q}餐厅",
+                "search_nearby request=附近超市买食材 search_terms=[超市] — 附近超市买食材",
+            ],
         })
 
     @plugin_entry(
@@ -184,5 +187,8 @@ class RecipeRouter(PluginRouter):
         return Ok({
             "summary": summary,
             "recipe": recipe_data,
-            "next_actions": [f"food_recommend cuisine={meal.name} — 附近类似餐厅", "search_nearby query=超市 — 附近超市买食材"],
+            "next_actions": [
+                f"food_recommend cuisine={meal.name} — 附近类似餐厅",
+                "search_nearby request=附近超市买食材 search_terms=[超市] — 附近超市买食材",
+            ],
         })

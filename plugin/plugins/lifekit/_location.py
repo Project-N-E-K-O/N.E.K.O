@@ -86,14 +86,7 @@ def location_clarification_payload(
         }
         for item in candidates
     ]
-    choice_labels = [
-        " · ".join(
-            part
-            for part in (item.display_name, item.admin1, item.country_code)
-            if part
-        )
-        for item in candidates
-    ]
+    choice_labels = [item.display_label() for item in candidates]
     duplicate_labels = {
         label for label in choice_labels if choice_labels.count(label) > 1
     }
@@ -101,6 +94,8 @@ def location_clarification_payload(
         f"{label} · #{_candidate_id(item)}" if label in duplicate_labels else label
         for label, item in zip(choice_labels, candidates)
     ]
+    if candidate_choices:
+        summary = "\n".join((summary, *(f"- {item}" for item in candidate_choices)))
     clarification_context: dict[str, object] = {
         "kind": "location",
         "field": field_name,
@@ -149,6 +144,22 @@ class LocationCandidate:
     source: str = ""
     verified: bool = False
     timezone: str = ""
+
+    def display_label(self) -> str:
+        parts: list[str] = []
+        seen: set[str] = set()
+        for raw_part in (
+            self.display_name,
+            self.admin1,
+            self.admin2,
+            self.country_code,
+        ):
+            part = raw_part.strip()
+            key = part.casefold()
+            if part and key not in seen:
+                parts.append(part)
+                seen.add(key)
+        return " · ".join(parts)
 
     def as_legacy_dict(self) -> dict[str, object]:
         return {
@@ -234,7 +245,6 @@ class SavedLocation:
     is_default: bool = False
 
 
-_ZH_NAME = re.compile(r"^[\u3400-\u9fff]{2,6}$")
 _ADMIN_SUFFIXES = ("市", "省", "区", "县", "州", "旗")
 _COUNTRY_ALIASES = {
     "cn": "CN",
@@ -361,38 +371,32 @@ class LocationResolver:
         candidates: list[LocationCandidate] = []
         provider_succeeded = False
         provider_failures: list[str] = []
-        disambiguation_required = _has_implicit_city_variant(text)
-        for query in _query_variants(text):
-            try:
-                candidates.extend(
-                    await self._open_meteo(
-                        query,
-                        country_code=request.country_hint.strip().upper(),
-                        locale=request.locale,
-                    )
+        try:
+            candidates.extend(
+                await self._open_meteo(
+                    text,
+                    country_code=request.country_hint.strip().upper(),
+                    locale=request.locale,
                 )
-                provider_succeeded = True
-            except Exception as exc:
-                provider_failures.append(_provider_failure_cause(exc))
-                continue
+            )
+            provider_succeeded = True
+        except Exception as exc:
+            provider_failures.append(_provider_failure_cause(exc))
 
-        candidates = _normalise_candidates(candidates, request.country_hint)
         disambiguation_succeeded = False
-        primary_eligible = _eligible_candidates(candidates, request.purpose)
-        if len(primary_eligible) != 1 or disambiguation_required:
-            try:
-                candidates.extend(
-                    await self._nominatim(
-                        text,
-                        country_code=request.country_hint.strip().upper(),
-                        locale=request.locale,
-                    )
+        try:
+            candidates.extend(
+                await self._nominatim(
+                    text,
+                    country_code=request.country_hint.strip().upper(),
+                    locale=request.locale,
                 )
-                provider_succeeded = True
-                disambiguation_succeeded = True
-            except Exception as exc:
-                provider_failures.append(_provider_failure_cause(exc))
-            candidates = _normalise_candidates(candidates, request.country_hint)
+            )
+            provider_succeeded = True
+            disambiguation_succeeded = True
+        except Exception as exc:
+            provider_failures.append(_provider_failure_cause(exc))
+        candidates = _normalise_candidates(candidates, request.country_hint)
 
         eligible = _preferred_candidates(
             _eligible_candidates(candidates, request.purpose),
@@ -403,18 +407,6 @@ class LocationResolver:
             return LocationResolution(
                 LocationStatus.AMBIGUOUS,
                 candidates=tuple(eligible),
-            )
-
-        if disambiguation_required and not disambiguation_succeeded:
-            if len(eligible) > 1:
-                return LocationResolution(
-                    LocationStatus.AMBIGUOUS,
-                    candidates=tuple(eligible),
-                )
-            return LocationResolution(
-                LocationStatus.PROVIDER_FAILED,
-                candidates=tuple(candidates),
-                cause=_preferred_failure_cause(provider_failures),
             )
 
         if len(eligible) == 1:
@@ -458,12 +450,6 @@ class LocationResolver:
             return []
 
 
-def _query_variants(text: str) -> tuple[str, ...]:
-    if _has_implicit_city_variant(text):
-        return (f"{text}市", text)
-    return (text,)
-
-
 def _extract_country_hint(text: str) -> tuple[str, str]:
     match = re.fullmatch(r"(.+?)(?:\s*[,，]\s*|\s+)([^,，\s]+)", text)
     if not match:
@@ -472,10 +458,6 @@ def _extract_country_hint(text: str) -> tuple[str, str]:
     if not country:
         return text, ""
     return match.group(1).strip(), country
-
-
-def _has_implicit_city_variant(text: str) -> bool:
-    return bool(_ZH_NAME.fullmatch(text) and not text.endswith(_ADMIN_SUFFIXES))
 
 
 def _normalise_candidates(
@@ -524,10 +506,17 @@ def _same_administrative_place(
     second: LocationCandidate,
 ) -> bool:
     administrative_precisions = {"city", "district"}
-    if (
-        first.precision not in administrative_precisions
-        or second.precision not in administrative_precisions
-    ):
+    detailed_precisions = {"address", "locality"}
+    both_administrative = (
+        first.precision in administrative_precisions
+        and second.precision in administrative_precisions
+    )
+    both_detailed = (
+        first.precision in detailed_precisions
+        and second.precision in detailed_precisions
+        and first.precision == second.precision
+    )
+    if not both_administrative and not both_detailed:
         return False
     if first.country_code != second.country_code:
         return False
@@ -540,6 +529,11 @@ def _same_administrative_place(
     second_admin = _admin_key(second.admin1)
     if first_admin and second_admin and first_admin != second_admin:
         return False
+    if both_detailed:
+        first_admin2 = _admin_key(first.admin2)
+        second_admin2 = _admin_key(second.admin2)
+        if first_admin2 and second_admin2 and first_admin2 != second_admin2:
+            return False
     return _distance_km(first, second) <= 10.0
 
 
@@ -635,6 +629,18 @@ def _preferred_candidates(
         if rank == best_match
     ]
 
+    context_ranks = [
+        _candidate_context_match_rank(candidate, requested_name)
+        for candidate in matched
+    ]
+    best_context = max(context_ranks)
+    if best_context > 0:
+        matched = [
+            candidate
+            for candidate, rank in zip(matched, context_ranks)
+            if rank == best_context
+        ]
+
     precision_ranks = [_place_kind_rank(candidate.precision) for candidate in matched]
     best_precision = max(precision_ranks)
     return [
@@ -656,6 +662,32 @@ def _candidate_name_match_rank(candidate_name: str, requested_name: str) -> int:
     if requested in candidate or candidate in requested:
         return 1
     return 0
+
+
+def _candidate_context_match_rank(
+    candidate: LocationCandidate,
+    requested_name: str,
+) -> int:
+    """Score administrative names already present in the user's text.
+
+    This is deliberately data-driven: it uses the provider's own admin fields
+    and never contains a table of special cities or streets.  For example, an
+    address result whose ``admin1`` is present in ``上海南京东路`` outranks the
+    otherwise identical street name returned for another province.
+    """
+    requested = _normalise_place_name(requested_name)
+    if not requested:
+        return 0
+    matches: set[str] = set()
+    for value in (candidate.admin1, candidate.admin2):
+        normalised = _normalise_place_name(value)
+        if not normalised:
+            continue
+        for variant in (normalised, _without_admin_suffix(normalised)):
+            if variant and variant in requested:
+                matches.add(variant)
+                break
+    return len(matches)
 
 
 def _normalise_place_name(value: str) -> str:

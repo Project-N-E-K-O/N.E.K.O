@@ -61,6 +61,7 @@
     "city_not_found": "도시를 찾을 수 없습니다. 도시 이름을 확인하세요.",
     "geocode_timeout": "도시 조회 시간이 초과되었습니다. 다시 시도하거나 도시 이름을 지정하세요.",
     "geocode_failed": "도시 조회 실패 - 네트워크를 확인하세요",
+    "poi_search_failed": "주변 장소 검색에 실패했습니다. 잠시 후 다시 시도해 주세요",
     "location_ambiguous": "위치 이름이 모호합니다. 도시, 지역 또는 국가를 추가해 주세요",
     "location_confirmation_required": "사용 가능한 위치 정보가 충분히 정확하지 않습니다. 도시, 구역, 주소 또는 확인된 저장 위치를 지정해 주세요",
     "fetch_failed": "날씨 데이터를 가져오지 못했습니다({city}).",
@@ -76,125 +77,12 @@
   "nearby": {
     "no_query": "검색어를 입력해주세요. (예: 레스토랑, 카페, 공원)",
     "list_separator": ", ",
-    "intent_choice_ids": [
-      "park",
-      "attraction",
-      "restaurant",
-      "shopping_mall"
-    ],
-    "intent_broad_phrases": [
-      "근처에서 할 일",
-      "근처 갈 곳",
-      "어디 갈까"
-    ],
-    "intent_dialogue_markers": [
-      "근처",
-      "주변",
-      "추천",
-      "찾아"
-    ],
-    "category_labels": {
-      "pet_hospital": "동물병원",
-      "coffee_shop": "카페",
-      "convenience_store": "편의점",
-      "shopping_mall": "쇼핑몰",
-      "movie_theater": "영화관",
-      "museum": "박물관",
-      "parking": "주차장",
-      "gas_station": "주유소",
-      "subway_station": "지하철역",
-      "restaurant": "식당",
-      "supermarket": "슈퍼마켓",
-      "attraction": "관광지",
-      "park": "공원",
-      "bookstore": "서점",
-      "hospital": "병원",
-      "pharmacy": "약국"
-    },
-    "category_queries": {
-      "pet_hospital": "동물병원",
-      "coffee_shop": "카페",
-      "convenience_store": "편의점",
-      "shopping_mall": "쇼핑몰",
-      "movie_theater": "영화관",
-      "museum": "박물관",
-      "parking": "주차장",
-      "gas_station": "주유소",
-      "subway_station": "지하철역",
-      "restaurant": "식당",
-      "supermarket": "슈퍼마켓",
-      "attraction": "관광지",
-      "park": "공원",
-      "bookstore": "서점",
-      "hospital": "병원",
-      "pharmacy": "약국"
-    },
-    "intent_aliases": {
-      "pet_hospital": [
-        "애완동물 병원",
-        "동물병원"
-      ],
-      "coffee_shop": [
-        "커피숍",
-        "카페",
-        "카페"
-      ],
-      "convenience_store": [
-        "편의점"
-      ],
-      "shopping_mall": [
-        "쇼핑몰",
-        "쇼핑몰"
-      ],
-      "movie_theater": [
-        "영화관",
-        "영화관"
-      ],
-      "museum": [
-        "박물관"
-      ],
-      "parking": [
-        "주차장",
-        "주차"
-      ],
-      "gas_station": [
-        "주유소",
-        "주유소"
-      ],
-      "subway_station": [
-        "지하철역",
-        "지하철역"
-      ],
-      "restaurant": [
-        "레스토랑",
-        "음식"
-      ],
-      "supermarket": [
-        "슈퍼마켓"
-      ],
-      "attraction": [
-        "매력",
-        "관광"
-      ],
-      "bookstore": [
-        "서점",
-        "서점"
-      ],
-      "hospital": [
-        "병원"
-      ],
-      "pharmacy": [
-        "약국",
-        "약국"
-      ],
-      "park": [
-        "공원"
-      ]
-    },
-    "clarify_category": "어떤 종류의 장소를 찾으시나요? 다음 중에서 선택해 주세요: {choices}.",
     "clarify_location": "{detail}. 검색 중심 위치를 알려 주세요. 예: ‘지린시 근처 공원’, 또는 확인된 저장 위치를 사용하세요.",
-    "clarify_both": "검색 중심 위치와 장소 유형이 모두 필요합니다. ‘지린시 근처 공원’이라고 입력하거나 유형을 선택해 주세요: {choices}.",
     "no_results": "{location} 근처에서 '{query}'을(를) 찾을 수 없습니다.",
+    "ambiguous_summary": "'{location}'에 해당하는 후보 위치 {candidate_count}곳을 모두 검색하여 {count}개의 결과를 찾았습니다.",
+    "searched_terms_summary": "검색어: {terms}.",
+    "group_summary": "- {location}: {detail}",
+    "ambiguity_suggestion": "결과는 후보 위치별로 그룹화되었습니다. 도시, 지역 또는 국가를 추가하면 정확도가 높아집니다.",
     "summary": "{location} 근처에서 {count} '{query}'을(를) 찾았습니다. {top}",
     "rain_tip": "🌂 비가 내립니다. 실내 옵션을 고려하세요."
   },

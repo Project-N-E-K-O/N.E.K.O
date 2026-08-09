@@ -61,6 +61,7 @@
     "city_not_found": "Cidade não encontrada — verifique o nome da cidade",
     "geocode_timeout": "A pesquisa de cidade expirou. Tente novamente ou especifique o nome de uma cidade",
     "geocode_failed": "Falha na pesquisa de cidade. Verifique sua rede",
+    "poi_search_failed": "Falha ao pesquisar locais próximos. Tente novamente mais tarde.",
     "location_ambiguous": "O nome do local é ambíguo. Adicione uma cidade, região ou país",
     "location_confirmation_required": "A localização disponível não é precisa o suficiente. Informe uma cidade, distrito, endereço ou local salvo e verificado",
     "fetch_failed": "Falha ao buscar dados meteorológicos ({city})",
@@ -76,125 +77,12 @@
   "nearby": {
     "no_query": "Insira uma palavra-chave de pesquisa (por exemplo, restaurante, café, parque)",
     "list_separator": ", ",
-    "intent_choice_ids": [
-      "park",
-      "attraction",
-      "restaurant",
-      "shopping_mall"
-    ],
-    "intent_broad_phrases": [
-      "o que fazer perto",
-      "lugares próximos para ir",
-      "algum lugar para ir"
-    ],
-    "intent_dialogue_markers": [
-      "perto",
-      "próximo",
-      "recomende",
-      "buscar"
-    ],
-    "category_labels": {
-      "pet_hospital": "clínica veterinária",
-      "coffee_shop": "cafeteria",
-      "convenience_store": "loja de conveniência",
-      "shopping_mall": "shopping center",
-      "movie_theater": "cinema",
-      "museum": "museu",
-      "parking": "estacionamento",
-      "gas_station": "posto de combustível",
-      "subway_station": "estação de metrô",
-      "restaurant": "restaurante",
-      "supermarket": "supermercado",
-      "attraction": "atração",
-      "park": "parque",
-      "bookstore": "livraria",
-      "hospital": "hospital",
-      "pharmacy": "farmácia"
-    },
-    "category_queries": {
-      "pet_hospital": "clínica veterinária",
-      "coffee_shop": "cafeteria",
-      "convenience_store": "loja de conveniência",
-      "shopping_mall": "shopping center",
-      "movie_theater": "cinema",
-      "museum": "museu",
-      "parking": "estacionamento",
-      "gas_station": "posto de combustível",
-      "subway_station": "estação de metrô",
-      "restaurant": "restaurante",
-      "supermarket": "supermercado",
-      "attraction": "atração",
-      "park": "parque",
-      "bookstore": "livraria",
-      "hospital": "hospital",
-      "pharmacy": "farmácia"
-    },
-    "intent_aliases": {
-      "pet_hospital": [
-        "hospital para animais de estimação",
-        "hospital veterinário"
-      ],
-      "coffee_shop": [
-        "cafeteria",
-        "café",
-        "cafeteria"
-      ],
-      "convenience_store": [
-        "loja de conveniência"
-      ],
-      "shopping_mall": [
-        "shopping",
-        "shopping"
-      ],
-      "movie_theater": [
-        "cinema",
-        "cinema"
-      ],
-      "museum": [
-        "museu"
-      ],
-      "parking": [
-        "estacionamento",
-        "estacionamento"
-      ],
-      "gas_station": [
-        "posto de gasolina",
-        "posto de gasolina"
-      ],
-      "subway_station": [
-        "estação de metrô",
-        "estação de metrô"
-      ],
-      "restaurant": [
-        "restaurante",
-        "comida"
-      ],
-      "supermarket": [
-        "supermercado"
-      ],
-      "attraction": [
-        "atração",
-        "passeios turísticos"
-      ],
-      "bookstore": [
-        "livraria",
-        "livraria"
-      ],
-      "hospital": [
-        "hospital"
-      ],
-      "pharmacy": [
-        "farmácia",
-        "drogaria"
-      ],
-      "park": [
-        "parque"
-      ]
-    },
-    "clarify_category": "Que tipo de lugar você procura? Escolha: {choices}.",
     "clarify_location": "{detail}. Informe o centro da busca, por exemplo, “parques perto da cidade de Jilin”, ou use um local salvo e verificado.",
-    "clarify_both": "Ainda faltam o centro da busca e o tipo de lugar. Tente “parques perto da cidade de Jilin” ou escolha um tipo: {choices}.",
     "no_results": "Nenhum '{query}' encontrado perto de {location}",
+    "ambiguous_summary": "Todas as {candidate_count} localizações possíveis de '{location}' foram pesquisadas, com {count} resultados.",
+    "searched_terms_summary": "Termos de busca: {terms}.",
+    "group_summary": "- {location}: {detail}",
+    "ambiguity_suggestion": "Os resultados estão agrupados por localização possível; adicione cidade, região ou país para maior precisão.",
     "summary": "Encontrado {count} '{query}' perto de {location}: {top}",
     "rain_tip": "🌂 Está chovendo — considere opções internas"
   },

@@ -26,20 +26,20 @@ pytestmark = [
 ]
 
 
-async def test_real_providers_do_not_silently_resolve_ambiguous_jilin() -> None:
+async def test_real_providers_use_administrative_context_without_rewriting_query() -> None:
     resolver = LocationResolver(
         open_meteo=open_meteo_candidates,
         nominatim=nominatim_candidates,
     )
 
-    exact = await resolver.resolve(
-        LocationRequest(text="吉林市", purpose=LocationPurpose.NEARBY)
-    )
-    ambiguous = await resolver.resolve(
+    jilin = await resolver.resolve(
         LocationRequest(text="吉林", purpose=LocationPurpose.NEARBY)
     )
+    road = await resolver.resolve(
+        LocationRequest(text="上海南京东路", purpose=LocationPurpose.NEARBY)
+    )
 
-    assert exact.status is LocationStatus.RESOLVED
-    assert exact.location is not None and exact.location.country_code == "CN"
-    assert ambiguous.status is LocationStatus.AMBIGUOUS
-    assert {item.country_code for item in ambiguous.candidates} >= {"CN", "TW"}
+    assert jilin.status is LocationStatus.RESOLVED
+    assert jilin.location is not None and jilin.location.country_code == "CN"
+    assert road.status is LocationStatus.RESOLVED
+    assert road.location is not None and road.location.admin1 == "上海市"
