@@ -84,7 +84,8 @@
     "group_summary": "- {location}: {detail}",
     "ambiguity_suggestion": "Results are grouped by candidate location; add a city, region, or country for better accuracy.",
     "summary": "Found {count} '{query}' near {location}: {top}",
-    "rain_tip": "🌂 It's raining — consider indoor options"
+    "rain_tip": "🌂 It's raining — consider indoor options",
+    "provider_unavailable": "The map service is temporarily unavailable or timed out. Please try again shortly."
   },
   "tz_city": {
     "Asia/Shanghai": "Shanghai",

@@ -95,6 +95,22 @@ async def test_overpass_search_recovers_when_one_public_instance_rejects_request
 
 
 @pytest.mark.asyncio
+async def test_default_overpass_order_uses_the_responsive_instance_first() -> None:
+    requested_hosts: list[str] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        requested_hosts.append(str(request.url.host))
+        if request.url.host == "overpass.private.coffee":
+            return httpx.Response(200, json={"elements": []})
+        raise httpx.ReadTimeout("slow instance", request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        await OverpassPOI(http_client=client).search("商场", 31.18, 121.42)
+
+    assert requested_hosts == ["overpass.private.coffee"]
+
+
+@pytest.mark.asyncio
 async def test_overpass_failure_log_does_not_include_request_details(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

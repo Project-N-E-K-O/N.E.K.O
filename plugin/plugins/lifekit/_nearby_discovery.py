@@ -90,24 +90,15 @@ class NearbyDiscovery:
                     error="nearby discovery search budget exhausted",
                     searched_terms=(),
                 )
-            try:
-                return await asyncio.wait_for(
-                    self._poi_service.search_many(
-                        center_terms,
-                        center.latitude,
-                        center.longitude,
-                        radius=request.radius,
-                        limit=limit_per_center,
-                        semaphore=semaphore,
-                    ),
-                    timeout=self._timeout_seconds,
-                )
-            except TimeoutError:
-                return POIResult(
-                    query=" / ".join(center_terms),
-                    error="nearby discovery timed out",
-                    searched_terms=center_terms,
-                )
+            return await self._poi_service.search_many(
+                center_terms,
+                center.latitude,
+                center.longitude,
+                radius=request.radius,
+                limit=limit_per_center,
+                semaphore=semaphore,
+                timeout_seconds=self._timeout_seconds,
+            )
 
         results = await asyncio.gather(
             *(

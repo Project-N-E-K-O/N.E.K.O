@@ -15,6 +15,17 @@ from ._coordinates import gcj02_to_wgs84, wgs84_to_gcj02
 
 logger = logging.getLogger(__name__)
 
+UPSTREAM_TIMEOUT = "UPSTREAM_TIMEOUT"
+UPSTREAM_UNAVAILABLE = "UPSTREAM_UNAVAILABLE"
+
+
+class POIProviderError(RuntimeError):
+    """Expected failure at a POI provider boundary."""
+
+    def __init__(self, message: str, *, code: str = UPSTREAM_UNAVAILABLE) -> None:
+        super().__init__(message)
+        self.code = code
+
 
 @dataclass
 class POIItem:
@@ -37,6 +48,7 @@ class POIResult:
     items: List[POIItem] = field(default_factory=list)
     provider: str = ""
     error: str = ""
+    error_code: str = ""
     searched_terms: tuple[str, ...] = ()
 
 
@@ -67,7 +79,7 @@ class AMapPOI:
             r.raise_for_status()
             data = r.json()
         if data.get("status") != "1":
-            raise RuntimeError(data.get("info") or "AMap POI search failed")
+            raise POIProviderError(data.get("info") or "AMap POI search failed")
         items: List[POIItem] = []
         for poi in (data.get("pois") or []):
             try:
@@ -119,7 +131,7 @@ class BaiduPOI:
             r.raise_for_status()
             data = r.json()
         if data.get("status") != 0:
-            raise RuntimeError(data.get("message") or "Baidu POI search failed")
+            raise POIProviderError(data.get("message") or "Baidu POI search failed")
         items: List[POIItem] = []
         for poi in (data.get("results") or []):
             try:
@@ -151,8 +163,8 @@ class OverpassPOI:
     name = "osm"
 
     _PUBLIC_ENDPOINTS = (
-        "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
         "https://overpass.private.coffee/api/interpreter",
+        "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
         "https://overpass-api.de/api/interpreter",
     )
 
@@ -257,6 +269,7 @@ class OverpassPOI:
         overpass_query: str,
     ) -> dict[str, Any]:
         errors: list[str] = []
+        error_codes: list[str] = []
         for endpoint_index, endpoint in enumerate(self._endpoints):
             try:
                 response = await client.post(endpoint, data={"data": overpass_query})
@@ -265,15 +278,28 @@ class OverpassPOI:
                 if not isinstance(data, dict):
                     raise ValueError("Overpass response is not an object")
                 return data
-            except Exception as exc:
+            except (httpx.HTTPError, ValueError, POIProviderError) as exc:
                 message = f"{endpoint}: {type(exc).__name__}: {exc}"
                 errors.append(message)
+                error_codes.append(
+                    UPSTREAM_TIMEOUT
+                    if isinstance(exc, (httpx.TimeoutException, TimeoutError))
+                    else getattr(exc, "code", UPSTREAM_UNAVAILABLE)
+                )
                 logger.warning(
                     "Overpass instance failed: endpoint_index=%s error_type=%s",
                     endpoint_index,
                     type(exc).__name__,
                 )
-        raise RuntimeError("all Overpass instances failed: " + "; ".join(errors))
+        code = (
+            UPSTREAM_TIMEOUT
+            if error_codes and all(value == UPSTREAM_TIMEOUT for value in error_codes)
+            else UPSTREAM_UNAVAILABLE
+        )
+        raise POIProviderError(
+            "all Overpass instances failed: " + "; ".join(errors),
+            code=code,
+        )
 
 
 def _deduplicate_items(items: List[POIItem]) -> List[POIItem]:
@@ -326,6 +352,7 @@ class POIService:
     ) -> POIResult:
         result = POIResult(query=query)
         errors: list[str] = []
+        error_codes: list[str] = []
         successful_provider = ""
         for provider in self._providers:
             try:
@@ -335,9 +362,14 @@ class POIService:
                     result.items = items
                     result.provider = provider.name
                     return result
-            except Exception as exc:
+            except (httpx.HTTPError, ValueError, POIProviderError) as exc:
                 message = f"{provider.name}: {type(exc).__name__}: {exc}"
                 errors.append(message)
+                error_codes.append(
+                    UPSTREAM_TIMEOUT
+                    if isinstance(exc, (httpx.TimeoutException, TimeoutError))
+                    else getattr(exc, "code", UPSTREAM_UNAVAILABLE)
+                )
                 logger.debug(
                     "POI provider failed: provider=%s error_type=%s",
                     provider.name,
@@ -348,6 +380,11 @@ class POIService:
             result.provider = successful_provider
         elif errors:
             result.error = "; ".join(errors)
+            result.error_code = (
+                UPSTREAM_TIMEOUT
+                if all(value == UPSTREAM_TIMEOUT for value in error_codes)
+                else UPSTREAM_UNAVAILABLE
+            )
         return result
 
     async def search_many(
@@ -359,6 +396,7 @@ class POIService:
         radius: int = 3000,
         limit: int = 10,
         semaphore: asyncio.Semaphore | None = None,
+        timeout_seconds: float | None = None,
     ) -> POIResult:
         """Search a semantic retrieval plan and merge results across its terms."""
         clean_queries = tuple(queries)
@@ -371,7 +409,7 @@ class POIService:
             return result
 
         async def search_term(query: str) -> POIResult:
-            if semaphore is None:
+            async def perform_search() -> POIResult:
                 return await self.search(
                     query,
                     lat,
@@ -379,13 +417,23 @@ class POIService:
                     radius=radius,
                     limit=min(limit, 8),
                 )
-            async with semaphore:
-                return await self.search(
-                    query,
-                    lat,
-                    lon,
-                    radius=radius,
-                    limit=min(limit, 8),
+
+            async def execute() -> POIResult:
+                if semaphore is None:
+                    return await perform_search()
+                async with semaphore:
+                    return await perform_search()
+
+            try:
+                if timeout_seconds is None:
+                    return await execute()
+                return await asyncio.wait_for(execute(), timeout=timeout_seconds)
+            except TimeoutError:
+                return POIResult(
+                    query=query,
+                    error="nearby discovery timed out",
+                    error_code=UPSTREAM_TIMEOUT,
+                    searched_terms=(query,),
                 )
 
         term_results = await asyncio.gather(
@@ -410,9 +458,21 @@ class POIService:
             )
         )
         result.provider = ",".join(providers)
-        errors = [term_result.error for term_result in term_results if term_result.error]
-        if not result.items and len(errors) == len(term_results):
+        errors = list(dict.fromkeys(
+            term_result.error
+            for term_result in term_results
+            if term_result.error
+        ))
+        if not result.items and all(term_result.error for term_result in term_results):
             result.error = "; ".join(errors)
+            result.error_code = (
+                UPSTREAM_TIMEOUT
+                if all(
+                    term_result.error_code == UPSTREAM_TIMEOUT
+                    for term_result in term_results
+                )
+                else UPSTREAM_UNAVAILABLE
+            )
         return result
 
 

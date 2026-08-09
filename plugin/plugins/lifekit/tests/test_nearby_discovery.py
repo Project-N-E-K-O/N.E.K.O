@@ -9,7 +9,7 @@ from plugin.plugins.lifekit._nearby_discovery import (
     NearbyDiscovery,
     SearchCenter,
 )
-from plugin.plugins.lifekit._poi import POIItem, POIService
+from plugin.plugins.lifekit._poi import POIItem, POIService, UPSTREAM_TIMEOUT
 
 
 @pytest.mark.asyncio
@@ -88,6 +88,41 @@ async def test_discovery_timeout_is_returned_as_a_result_error(
 
     assert len(results) == 1
     assert results[0].error == "nearby discovery timed out"
+    assert results[0].error_code == UPSTREAM_TIMEOUT
+
+
+@pytest.mark.asyncio
+async def test_discovery_keeps_fast_results_when_another_term_times_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = POIService({})
+
+    async def mixed_speed_search(
+        query: str,
+        lat: float,
+        lon: float,
+        radius: int = 3000,
+        limit: int = 10,
+    ):
+        from plugin.plugins.lifekit._poi import POIResult
+
+        if query == "商场":
+            return POIResult(
+                query=query,
+                items=[POIItem(name="已找到的商场", lat=lat, lon=lon)],
+                provider="fake",
+            )
+        await asyncio.sleep(0.05)
+        return POIResult(query=query, provider="fake")
+
+    monkeypatch.setattr(service, "search", mixed_speed_search)
+    results = await NearbyDiscovery(service, timeout_seconds=0.01).discover(
+        DiscoveryRequest(search_terms=("商场", "购物中心"), radius=3000),
+        (SearchCenter(31.18, 121.42),),
+    )
+
+    assert results[0].error == ""
+    assert [item.name for item in results[0].items] == ["已找到的商场"]
 
 
 @pytest.mark.asyncio

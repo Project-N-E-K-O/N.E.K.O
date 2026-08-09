@@ -298,7 +298,7 @@ async def test_specific_request_keeps_provider_failure_as_error() -> None:
 
 
 @pytest.mark.asyncio
-async def test_nearby_provider_outage_is_not_reported_as_zero_results(
+async def test_nearby_provider_timeout_returns_a_meaningful_retriable_result(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class _RejectingClient:
@@ -309,11 +309,8 @@ async def test_nearby_provider_outage_is_not_reported_as_zero_results(
             return None
 
         async def post(self, url: str, **_: object) -> httpx.Response:
-            return httpx.Response(
-                503,
-                text="provider unavailable",
-                request=httpx.Request("POST", url),
-            )
+            request = httpx.Request("POST", url)
+            raise httpx.ReadTimeout("private upstream detail", request=request)
 
     monkeypatch.setattr(_poi.httpx, "AsyncClient", lambda **_: _RejectingClient())
     router = NearbyRouter()
@@ -326,8 +323,40 @@ async def test_nearby_provider_outage_is_not_reported_as_zero_results(
         _ctx={"latest_user_request": "上海南京东路附近的餐厅"},
     )
 
-    assert isinstance(result, Err)
-    assert "附近地点搜索失败" in str(result.error)
+    assert isinstance(result, Ok)
+    assert result.value["status"] == "unavailable"
+    assert result.value["error_code"] == "UPSTREAM_TIMEOUT"
+    assert result.value["retriable"] is True
+    assert "地图服务" in result.value["summary"]
+    assert "private upstream detail" not in str(result.value)
+    NearbyResult.model_validate(result.value)
+
+
+@pytest.mark.asyncio
+async def test_nearby_does_not_disguise_programming_errors_as_upstream_outages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _BrokenClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_: object) -> None:
+            return None
+
+        async def post(self, url: str, **_: object) -> httpx.Response:
+            raise AssertionError("provider adapter bug")
+
+    monkeypatch.setattr(_poi.httpx, "AsyncClient", lambda **_: _BrokenClient())
+    router = NearbyRouter()
+    router._bind(_NearbyPlugin())
+
+    with pytest.raises(AssertionError, match="provider adapter bug"):
+        await router.search_nearby(
+            request="上海南京东路附近的餐厅",
+            search_terms=["餐厅"],
+            location="上海南京东路",
+            _ctx={"latest_user_request": "上海南京东路附近的餐厅"},
+        )
 
 
 @pytest.mark.asyncio

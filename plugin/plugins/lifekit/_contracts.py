@@ -190,9 +190,21 @@ class _NearbyReadyResult(LifeKitModel):
     suggestion: str = ""
 
 
+class _NearbyUnavailableResult(LifeKitModel):
+    status: Literal["unavailable"]
+    summary: str
+    request: str
+    searched_terms: list[str]
+    results: list[dict[str, Any]] = Field(default_factory=list)
+    count: int = 0
+    error_code: Literal["UPSTREAM_TIMEOUT", "UPSTREAM_UNAVAILABLE"]
+    retriable: Literal[True] = True
+    location_groups: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class NearbyResult(ClarifiableResult):
     root: Annotated[
-        _NearbyReadyResult | ClarificationResult,
+        _NearbyReadyResult | _NearbyUnavailableResult | ClarificationResult,
         Field(discriminator="status"),
     ]
 
@@ -200,6 +212,11 @@ class NearbyResult(ClarifiableResult):
     def model_json_schema(cls, *args: Any, **kwargs: Any) -> dict[str, Any]:
         schema = super().model_json_schema(*args, **kwargs)
         schema["properties"].update({
+            "status": {
+                "enum": ["ready", "clarify", "unavailable"],
+                "title": "Status",
+                "type": "string",
+            },
             "request": {"title": "Request", "type": "string"},
             "searched_terms": {
                 "items": {"type": "string"},
@@ -216,6 +233,12 @@ class NearbyResult(ClarifiableResult):
                 "title": "Location Groups",
                 "type": "array",
             },
+            "error_code": {
+                "enum": ["UPSTREAM_TIMEOUT", "UPSTREAM_UNAVAILABLE"],
+                "title": "Error Code",
+                "type": "string",
+            },
+            "retriable": {"title": "Retriable", "type": "boolean"},
         })
         schema["required"] = [
             "status",

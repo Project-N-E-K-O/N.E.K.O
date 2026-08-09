@@ -84,7 +84,8 @@
     "group_summary": "- {location}: {detail}",
     "ambiguity_suggestion": "Os resultados estão agrupados por localização possível; adicione cidade, região ou país para maior precisão.",
     "summary": "Encontrado {count} '{query}' perto de {location}: {top}",
-    "rain_tip": "🌂 Está chovendo — considere opções internas"
+    "rain_tip": "🌂 Está chovendo — considere opções internas",
+    "provider_unavailable": "O serviço de mapas está temporariamente indisponível ou excedeu o tempo de resposta. Tente novamente em breve."
   },
   "tz_city": {
     "Asia/Shanghai": "Xangai",

@@ -84,7 +84,8 @@
     "group_summary": "- {location}：{detail}",
     "ambiguity_suggestion": "結果は候補地別に分類されています。都市・地域・国を追加すると精度が上がります。",
     "summary": "{location} の近くで {count} '{query}' が見つかりました: {top}",
-    "rain_tip": "🌂 雨が降っています — 屋内の選択肢を検討してください"
+    "rain_tip": "🌂 雨が降っています — 屋内の選択肢を検討してください",
+    "provider_unavailable": "地図サービスが一時的に利用できないか、応答がタイムアウトしました。しばらくしてから再試行してください。"
   },
   "tz_city": {
     "Asia/Shanghai": "上海",

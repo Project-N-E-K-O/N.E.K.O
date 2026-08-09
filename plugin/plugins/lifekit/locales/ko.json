@@ -84,7 +84,8 @@
     "group_summary": "- {location}: {detail}",
     "ambiguity_suggestion": "결과는 후보 위치별로 그룹화되었습니다. 도시, 지역 또는 국가를 추가하면 정확도가 높아집니다.",
     "summary": "{location} 근처에서 {count} '{query}'을(를) 찾았습니다. {top}",
-    "rain_tip": "🌂 비가 내립니다. 실내 옵션을 고려하세요."
+    "rain_tip": "🌂 비가 내립니다. 실내 옵션을 고려하세요.",
+    "provider_unavailable": "지도 서비스를 일시적으로 사용할 수 없거나 응답 시간이 초과되었습니다. 잠시 후 다시 시도해 주세요."
   },
   "tz_city": {
     "Asia/Shanghai": "상하이",

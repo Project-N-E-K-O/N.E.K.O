@@ -7,7 +7,7 @@ from typing import Any, Dict, List
 from plugin.sdk.plugin import plugin_entry, quick_action, Ok, Err, SdkError
 from plugin.sdk.shared.core.router import PluginRouter
 
-from .._poi import POIService
+from .._poi import POIService, UPSTREAM_TIMEOUT, UPSTREAM_UNAVAILABLE
 from .._api import RAIN_CODES
 from .._coerce import clamp_int, clean_text
 from .._contracts import NearbyParams, NearbyResult
@@ -139,9 +139,12 @@ class NearbyRouter(PluginRouter):
                 len(terms),
                 len(poi_result.provider.split(",")) if poi_result.provider else 0,
             )
-            return Err(
-                SdkError(i18n.t("error.poi_search_failed"))
-            )
+            return Ok(_upstream_unavailable_payload(
+                i18n=i18n,
+                request=request_text,
+                searched_terms=executed_terms,
+                error_code=poi_result.error_code,
+            ))
 
         if not poi_result.items:
             plugin.logger.info(
@@ -267,7 +270,20 @@ class NearbyRouter(PluginRouter):
 
         successful_groups = [group for group in groups if group["status"] == "ready"]
         if not successful_groups:
-            return Err(SdkError(i18n.t("error.poi_search_failed")))
+            return Ok(_upstream_unavailable_payload(
+                i18n=i18n,
+                request=request,
+                searched_terms=executed_terms,
+                error_code=(
+                    UPSTREAM_TIMEOUT
+                    if all(
+                        poi_result.error_code == UPSTREAM_TIMEOUT
+                        for poi_result in poi_results
+                    )
+                    else UPSTREAM_UNAVAILABLE
+                ),
+                location_groups=groups,
+            ))
 
         ambiguity_warning = i18n.t("error.location_ambiguous")
         suggestion = i18n.t("nearby.ambiguity_suggestion")
@@ -360,3 +376,28 @@ def _poi_item_payload(item: Any) -> dict[str, Any]:
 
 def _clean_search_terms(values: list[str] | None) -> tuple[str, ...]:
     return normalize_search_terms(values)
+
+
+def _upstream_unavailable_payload(
+    *,
+    i18n: Any,
+    request: str,
+    searched_terms: tuple[str, ...],
+    error_code: str,
+    location_groups: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    return {
+        "status": "unavailable",
+        "summary": i18n.t("nearby.provider_unavailable"),
+        "request": request,
+        "searched_terms": list(searched_terms),
+        "results": [],
+        "count": 0,
+        "error_code": (
+            error_code
+            if error_code in {UPSTREAM_TIMEOUT, UPSTREAM_UNAVAILABLE}
+            else UPSTREAM_UNAVAILABLE
+        ),
+        "retriable": True,
+        "location_groups": location_groups or [],
+    }

@@ -84,7 +84,8 @@
     "group_summary": "- {location}：{detail}",
     "ambiguity_suggestion": "結果已按候選位置分組；補充城市、省份或國家可以提高準確度。",
     "summary": "在 {location} 附近找到 {count} 個「{query}」: {top}",
-    "rain_tip": "🌂 目前有雨，建議選擇室內場所"
+    "rain_tip": "🌂 目前有雨，建議選擇室內場所",
+    "provider_unavailable": "地圖服務暫時無法使用或回應逾時，請稍後再試。"
   },
   "tz_city": {
     "Asia/Shanghai": "上海",
