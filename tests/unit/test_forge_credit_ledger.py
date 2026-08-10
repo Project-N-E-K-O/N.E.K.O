@@ -205,6 +205,10 @@ def test_pending_key_retries_interrupted_legacy_migration() -> None:
     assert ledger._signing_key_path().read_bytes().startswith(
         ledger._KEY_ESTABLISHED_PREFIX
     )
+    migrated = json.loads(ledger._ledger_path().read_text(encoding="utf-8"))
+    assert migrated["version"] == ledger.LEDGER_VERSION
+    assert migrated["integrity"]["algorithm"] == "hmac-sha256"
+    assert ledger.list_credits(now)["count"] == 1
 
 
 def test_reserve_commit_and_replay_are_idempotent() -> None:
