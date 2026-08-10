@@ -6,6 +6,7 @@ from typing import Any
 
 from plugin.sdk.plugin import Err, Ok, SdkError
 
+from ._entry_errors import unavailable_error
 from ._location import (
     LocationAssumption,
     LocationError,
@@ -72,17 +73,24 @@ def apply_location_assumptions(
 
 
 def location_unavailable_result(error: LocationError, i18n: Any):
-    """Return a non-blocking result when no read-only query can be executed."""
-    detail = i18n.t(location_error_key(error))
-    return Ok(
-        {
-            "status": "unavailable",
-            "summary": i18n.t("location.unavailable", detail=detail),
-            "assumed": False,
-            "assumed_location": "",
-            "ambiguity_warning": "",
-        }
+    """Fail the entry when no read-only query could be executed."""
+    error_key = location_error_key(error)
+    error_code = (
+        "LOCATION_PROVIDER_UNAVAILABLE"
+        if error_key in {"error.geocode_timeout", "error.geocode_failed"}
+        else "LOCATION_REQUIRED"
     )
+    detail = i18n.t(error_key)
+    payload = {
+        "status": "unavailable",
+        "summary": i18n.t("location.unavailable", detail=detail),
+        "assumed": False,
+        "assumed_location": "",
+        "ambiguity_warning": "",
+        "error_code": error_code,
+        "retriable": True,
+    }
+    return unavailable_error(payload["summary"], code=error_code, details=payload)
 
 
 def upstream_unavailable_result(
@@ -91,17 +99,23 @@ def upstream_unavailable_result(
     *,
     location: dict[str, Any] | None = None,
 ):
-    """Complete a read-only entry even when an upstream provider is down."""
+    """Fail the entry when its upstream query could not be completed."""
     payload: dict[str, Any] = {
         "status": "unavailable",
         "summary": detail,
         "assumed": False,
         "assumed_location": "",
         "ambiguity_warning": "",
+        "error_code": "UPSTREAM_UNAVAILABLE",
+        "retriable": True,
     }
     if location:
         apply_location_assumption(payload, location, i18n)
-    return Ok(payload)
+    return unavailable_error(
+        payload["summary"],
+        code="UPSTREAM_UNAVAILABLE",
+        details=payload,
+    )
 
 
 def location_failure_result(

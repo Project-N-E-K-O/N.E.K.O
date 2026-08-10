@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import re
+from dataclasses import dataclass
 from typing import Literal, Sequence
 
 from ._nearby_discovery import normalize_search_terms
-
 
 MAX_PREFERENCE_HINTS = 4
 
@@ -16,6 +15,10 @@ _ZH_LOCATION_PREFIX = re.compile(
 )
 _ZH_NEARBY_PARTS = re.compile(
     r"^(?P<location>.*?)(?:附近|周边|旁边|一带)(?P<target>.*)$"
+)
+_ZH_ON_LOCATION_PARTS = re.compile(
+    r"^(?P<location>.+?(?:大道|公路|高速|路|街|道|巷|弄))上?"
+    r"(?:有什么|有哪些|哪里有|哪有|有|找|推荐)(?P<target>.*)$"
 )
 _EN_NEARBY_PARTS = re.compile(
     r"^(?P<target>.*?)\b(?:near|around|close\s+to)\s+"
@@ -44,6 +47,16 @@ class PlaceIntentDefinition:
     request_keywords: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True)
+class NearbyRequestPlan:
+    """Resolved retrieval inputs after reconciling raw and projected hints."""
+
+    location: str
+    intent: str
+    preferences: tuple[str, ...]
+    search_terms: tuple[str, ...]
+
+
 PLACE_INTENTS: dict[str, PlaceIntentDefinition] = {
     "food": PlaceIntentDefinition(
         search_terms=("餐厅",),
@@ -57,7 +70,7 @@ PLACE_INTENTS: dict[str, PlaceIntentDefinition] = {
             "日本料理": "日料",
             "素食": "素食餐厅",
         },
-        request_keywords=("好吃", "吃饭", "餐厅", "饭店", "美食", "restaurant", "restaurants", "food", "eat"),
+        request_keywords=("好吃", "吃的", "吃饭", "餐厅", "饭店", "美食", "restaurant", "restaurants", "food", "eat"),
     ),
     "coffee": PlaceIntentDefinition(
         search_terms=("咖啡馆", "茶馆"),
@@ -149,8 +162,8 @@ def has_explicit_nearby_relation(request: object) -> bool:
     text = str(request or "").strip()
     if not text:
         return False
-    zh_text = _ZH_LOCATION_PREFIX.sub("", text).strip()
-    return bool(_ZH_NEARBY_PARTS.match(zh_text) or _EN_NEARBY_PARTS.match(text))
+    location, _ = _zh_request_parts(text)
+    return bool(location or _EN_NEARBY_PARTS.match(text))
 
 
 def _request_parts(request: object) -> tuple[str, str]:
@@ -158,18 +171,50 @@ def _request_parts(request: object) -> tuple[str, str]:
     text = str(request or "").strip()
     if not text:
         return "", ""
-    zh_text = _ZH_LOCATION_PREFIX.sub("", text).strip()
-    if match := _ZH_NEARBY_PARTS.match(zh_text):
-        return (
-            match.group("location").strip(" ，,。.!！？?"),
-            match.group("target").lstrip(" 的").strip(" ，,。.!！？?"),
-        )
+    location, target = _zh_request_parts(text)
+    if location or target:
+        return location, target
     if match := _EN_NEARBY_PARTS.match(text):
         location = match.group("location").strip(" ,.!?。！？")
         if location.casefold() in {"me", "my location", "here"}:
             location = ""
         return location, match.group("target").strip(" ,.!?。！？")
     return "", text
+
+
+def _zh_request_parts(text: str) -> tuple[str, str]:
+    candidates = _zh_nearby_candidates(text)
+    fallback_target = ""
+    for candidate in candidates:
+        candidate = _ZH_LOCATION_PREFIX.sub("", candidate).strip()
+        match = _ZH_NEARBY_PARTS.match(candidate) or _ZH_ON_LOCATION_PARTS.match(
+            candidate
+        )
+        if match:
+            location = match.group("location").strip(" ，,。.!！？?")
+            target = match.group("target").lstrip(" 的").strip(" ，,。.!！？?")
+            if not location:
+                fallback_target = fallback_target or target
+                continue
+            return location, target
+    return "", fallback_target
+
+
+def _zh_nearby_candidates(text: str) -> tuple[str, ...]:
+    """Try complete clauses, then one punctuation-split center/relation pair.
+
+    Chinese conversational requests often put a polite preamble in one clause
+    or split ``漕宝路上，找餐厅`` across two adjacent clauses.  Restricting the
+    recombination to one adjacent pair avoids joining unrelated sentences.
+    """
+    clauses = tuple(
+        part.strip() for part in re.split(r"[，,]", text) if part.strip()
+    )
+    adjacent_pairs = tuple(
+        "".join(clauses[index : index + 2])
+        for index in range(len(clauses) - 2, -1, -1)
+    )
+    return (*reversed(clauses), *adjacent_pairs)
 
 
 def _keyword_matches(text: str, keyword: str) -> bool:
@@ -281,3 +326,73 @@ def search_terms_for_hints(
         if (key := str(hint).strip().casefold()) in definition.preference_terms
     )
     return normalize_search_terms(preference_terms or definition.search_terms)
+
+
+def build_nearby_request_plan(
+    *,
+    request_text: str,
+    raw_request: str,
+    projected_params: bool,
+    location_hint: str,
+    legacy_location: str,
+    place_intent: str,
+    preference_hints: Sequence[object] | None,
+    search_terms: Sequence[object] | None,
+) -> NearbyRequestPlan:
+    """Reconcile host projections with decisive details in the user's words."""
+    raw_has_relation = projected_params and has_explicit_nearby_relation(raw_request)
+    raw_intent = infer_place_intent(raw_request) if projected_params else "explore"
+    raw_explicit_terms = (
+        infer_explicit_search_terms(raw_request) if projected_params else ()
+    )
+    raw_fallback_term = (
+        infer_fallback_search_term(raw_request) if raw_has_relation else ""
+    )
+    raw_has_decisive_target = bool(
+        raw_explicit_terms or raw_fallback_term or raw_intent != "explore"
+    )
+
+    intent = normalize_place_intent(place_intent)
+    if raw_has_decisive_target:
+        intent = raw_intent
+    elif intent == "explore":
+        intent = infer_place_intent(request_text)
+    preferences = normalize_preference_hints((
+        *(preference_hints or ()),
+        *infer_preference_hints(request_text, intent),
+    ))
+
+    terms = normalize_search_terms(search_terms)
+    if raw_has_decisive_target:
+        terms = (
+            raw_explicit_terms
+            or ((raw_fallback_term,) if raw_fallback_term else ())
+            or search_terms_for_hints(intent, preferences)
+        )
+    elif not terms:
+        explicit_terms = infer_explicit_search_terms(request_text)
+        fallback_term = infer_fallback_search_term(request_text)
+        terms = (
+            explicit_terms
+            or (
+                (fallback_term,)
+                if fallback_term and intent == "explore"
+                else search_terms_for_hints(intent, preferences)
+            )
+        )
+
+    selected_location = (
+        infer_location_hint(raw_request)
+        if raw_has_relation
+        else (
+            str(location_hint).strip()
+            or str(legacy_location).strip()
+            or infer_location_hint(request_text)
+        )
+    )
+    return NearbyRequestPlan(
+        location=selected_location,
+        intent=intent,
+        preferences=preferences,
+        search_terms=terms,
+    )

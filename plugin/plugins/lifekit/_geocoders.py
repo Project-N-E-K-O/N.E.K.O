@@ -13,6 +13,8 @@ _OPEN_METEO_URL = "https://geocoding-api.open-meteo.com/v1/search"
 _NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 _USER_AGENT = "NEKO-LifeKit-Plugin/0.3"
 _NOMINATIM_LOCK = asyncio.Lock()
+CITY_GEOCODER_TIMEOUT_SECONDS = 3.0
+ADDRESS_GEOCODER_TIMEOUT_SECONDS = 5.0
 
 
 class GeocoderError(Exception):
@@ -26,7 +28,7 @@ async def open_meteo_candidates(
     *,
     locale: str = "zh-CN",
     country_code: str = "",
-    timeout: float = 2.0,
+    timeout: float = CITY_GEOCODER_TIMEOUT_SECONDS,
 ) -> list[LocationCandidate]:
     params: dict[str, Any] = {
         "name": query,
@@ -69,7 +71,7 @@ async def nominatim_candidates(
     *,
     locale: str = "zh-CN",
     country_code: str = "",
-    timeout: float = 2.0,
+    timeout: float = ADDRESS_GEOCODER_TIMEOUT_SECONDS,
 ) -> list[LocationCandidate]:
     params: dict[str, Any] = {
         "q": query,

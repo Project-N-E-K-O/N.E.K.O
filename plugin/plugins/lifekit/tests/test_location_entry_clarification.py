@@ -3,17 +3,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from pydantic import ValidationError
-
-from app.agent_server.channels.user_plugin import _plugin_terminal_status
-from plugin.sdk.plugin import Err, Ok
-
 from plugin.plugins.lifekit import LifeKitPlugin
-from plugin.plugins.lifekit._i18n import I18n
-from plugin.plugins.lifekit._location import (
-    LocationCandidate,
-    LocationResolver,
-)
 from plugin.plugins.lifekit._api import GeocodeError
 from plugin.plugins.lifekit._contracts import (
     AddLocationResult,
@@ -25,6 +15,12 @@ from plugin.plugins.lifekit._contracts import (
     TravelAdviceResult,
     TripAdviceResult,
 )
+from plugin.plugins.lifekit._i18n import I18n
+from plugin.plugins.lifekit._location import (
+    LocationCandidate,
+    LocationResolver,
+)
+from plugin.plugins.lifekit._routing import Route, RouteStep, RoutingResult
 from plugin.plugins.lifekit.routers.air_quality import AirQualityRouter
 from plugin.plugins.lifekit.routers.current import CurrentWeatherRouter
 from plugin.plugins.lifekit.routers.food import FoodRecommendRouter
@@ -32,7 +28,8 @@ from plugin.plugins.lifekit.routers.hourly import HourlyForecastRouter
 from plugin.plugins.lifekit.routers.locations import LocationsRouter
 from plugin.plugins.lifekit.routers.travel import TravelAdviceRouter
 from plugin.plugins.lifekit.routers.trip import TripRouter
-from plugin.plugins.lifekit._routing import Route, RouteStep, RoutingResult
+from plugin.sdk.plugin import Err, Ok
+from pydantic import ValidationError
 
 
 class _AmbiguousLocationPlugin:
@@ -302,17 +299,15 @@ async def test_weather_reports_timezone_mismatch_without_claiming_proxy() -> Non
 
 
 @pytest.mark.asyncio
-async def test_weather_without_any_location_returns_completed_unavailable() -> None:
+async def test_weather_without_any_location_fails_before_query() -> None:
     router = CurrentWeatherRouter()
     router._bind(_AmbiguousLocationPlugin())
 
     result = await router.get_weather(city="不存在的模糊地点")
 
-    assert isinstance(result, Ok)
-    assert result.value["status"] == "unavailable"
-    assert result.value["summary"]
-    assert _plugin_terminal_status(True, result.value) == "completed"
-    GetWeatherResult.model_validate(result.value)
+    assert isinstance(result, Err)
+    assert result.error.code == "LOCATION_REQUIRED"
+    assert result.error.details["summary"]
 
 
 @pytest.mark.parametrize(
@@ -323,7 +318,7 @@ async def test_weather_without_any_location_returns_completed_unavailable() -> N
     ],
 )
 @pytest.mark.asyncio
-async def test_weather_provider_failures_are_completed_unavailable(
+async def test_weather_provider_failures_fail_the_entry(
     router_type: type,
     entry_name: str,
     result_model: type,
@@ -333,10 +328,9 @@ async def test_weather_provider_failures_are_completed_unavailable(
 
     result = await getattr(router, entry_name)(city="上海")
 
-    assert isinstance(result, Ok)
-    assert result.value["status"] == "unavailable"
-    assert _plugin_terminal_status(True, result.value) == "completed"
-    result_model.model_validate(result.value)
+    assert isinstance(result, Err)
+    assert result.error.code == "UPSTREAM_UNAVAILABLE"
+    assert result.error.details["summary"]
 
 
 @pytest.mark.parametrize(
@@ -358,7 +352,7 @@ async def test_weather_provider_failures_are_completed_unavailable(
     ],
 )
 @pytest.mark.asyncio
-async def test_read_only_location_entries_return_unavailable_instead_of_blocking(
+async def test_read_only_location_entries_fail_when_location_is_ambiguous(
     router_type: type,
     method_name: str,
     kwargs: dict[str, Any],
@@ -368,10 +362,9 @@ async def test_read_only_location_entries_return_unavailable_instead_of_blocking
 
     result = await getattr(router, method_name)(**kwargs)
 
-    assert isinstance(result, Ok)
-    assert result.value["status"] == "unavailable"
-    assert result.value["summary"]
-    assert _plugin_terminal_status(True, result.value) == "completed"
+    assert isinstance(result, Err)
+    assert result.error.code == "LOCATION_REQUIRED"
+    assert result.error.details["summary"]
 
 
 @pytest.mark.parametrize(
@@ -402,7 +395,7 @@ async def test_read_only_location_entries_return_unavailable_instead_of_blocking
     ],
 )
 @pytest.mark.asyncio
-async def test_read_only_entries_complete_for_every_unusable_location_outcome(
+async def test_read_only_entries_fail_for_every_unusable_location_outcome(
     error_key: str,
     router_type: type,
     method_name: str,
@@ -413,22 +406,20 @@ async def test_read_only_entries_complete_for_every_unusable_location_outcome(
 
     result = await getattr(router, method_name)(**kwargs)
 
-    assert isinstance(result, Ok)
-    assert result.value["status"] == "unavailable"
-    assert result.value["summary"]
-    assert _plugin_terminal_status(True, result.value) == "completed"
+    assert isinstance(result, Err)
+    assert result.error.code == "LOCATION_REQUIRED"
+    assert result.error.details["summary"]
 
 
 @pytest.mark.asyncio
-async def test_weather_provider_failure_returns_completed_unavailable() -> None:
+async def test_weather_location_provider_failure_fails_the_entry() -> None:
     router = CurrentWeatherRouter()
     router._bind(_FailedLocationPlugin())
 
     result = await router.get_weather(city="上海")
 
-    assert isinstance(result, Ok)
-    assert result.value["status"] == "unavailable"
-    assert _plugin_terminal_status(True, result.value) == "completed"
+    assert isinstance(result, Err)
+    assert result.error.code == "LOCATION_PROVIDER_UNAVAILABLE"
 
 
 @pytest.mark.parametrize(
@@ -450,7 +441,7 @@ async def test_weather_provider_failure_returns_completed_unavailable() -> None:
     ],
 )
 @pytest.mark.asyncio
-async def test_read_only_entries_complete_on_location_provider_failure(
+async def test_read_only_entries_fail_on_location_provider_failure(
     router_type: type,
     method_name: str,
     kwargs: dict[str, Any],
@@ -460,13 +451,12 @@ async def test_read_only_entries_complete_on_location_provider_failure(
 
     result = await getattr(router, method_name)(**kwargs)
 
-    assert isinstance(result, Ok)
-    assert result.value["status"] == "unavailable"
-    assert _plugin_terminal_status(True, result.value) == "completed"
+    assert isinstance(result, Err)
+    assert result.error.code == "LOCATION_PROVIDER_UNAVAILABLE"
 
 
 @pytest.mark.asyncio
-async def test_trip_with_no_usable_destination_returns_completed_unavailable() -> None:
+async def test_trip_with_no_usable_destination_fails_before_routing() -> None:
     router = TripRouter()
     router._bind(_AmbiguousDestinationPlugin())
 
@@ -476,13 +466,12 @@ async def test_trip_with_no_usable_destination_returns_completed_unavailable() -
         mode="transit",
     )
 
-    assert isinstance(result, Ok)
-    assert result.value["status"] == "unavailable"
-    assert _plugin_terminal_status(True, result.value) == "completed"
+    assert isinstance(result, Err)
+    assert result.error.code == "LOCATION_REQUIRED"
 
 
 @pytest.mark.asyncio
-async def test_trip_route_provider_failure_returns_completed_unavailable(
+async def test_trip_route_provider_failure_fails_the_entry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class _TripPlugin(_WeatherProviderFailurePlugin):
@@ -507,9 +496,8 @@ async def test_trip_route_provider_failure_returns_completed_unavailable(
 
     result = await router.trip_advice(origin="上海", destination="北京")
 
-    assert isinstance(result, Ok)
-    assert result.value["status"] == "unavailable"
-    assert _plugin_terminal_status(True, result.value) == "completed"
+    assert isinstance(result, Err)
+    assert result.error.code == "UPSTREAM_UNAVAILABLE"
 
 
 @pytest.mark.asyncio
@@ -763,6 +751,32 @@ def test_read_only_location_contracts_reject_blocking_clarification(
         result_model.model_validate(
             {"status": "clarify", "summary": "请补充位置", "choices": []}
         )
+
+
+@pytest.mark.parametrize(
+    "result_model",
+    [
+        GetWeatherResult,
+        HourlyForecastResult,
+        AirQualityResult,
+        TravelAdviceResult,
+        FoodRecommendResult,
+        NearbyResult,
+        TripAdviceResult,
+    ],
+)
+def test_read_only_result_contracts_reject_failures_disguised_as_results(
+    result_model: type,
+) -> None:
+    with pytest.raises(ValidationError):
+        result_model.model_validate(
+            {"status": "unavailable", "summary": "上游服务不可用"}
+        )
+    assert result_model.model_json_schema()["properties"]["status"] == {
+        "enum": ["ready"],
+        "title": "Status",
+        "type": "string",
+    }
 
 
 @pytest.mark.parametrize(

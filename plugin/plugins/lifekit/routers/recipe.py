@@ -8,12 +8,13 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Dict, List
 
-from plugin.sdk.plugin import plugin_entry, quick_action, tr, Ok, Err, SdkError
+from plugin.sdk.plugin import Err, Ok, SdkError, plugin_entry, quick_action, tr
 from plugin.sdk.shared.core.router import PluginRouter
 
 from .. import _recipe as recipe_api
 from .._chat import push_lifekit_content
 from .._contracts import RandomRecipeResult, SearchRecipeParams, SearchRecipeResult
+from .._entry_errors import unavailable_error
 
 
 def _format_recipe_summary(r: recipe_api.Recipe) -> str:
@@ -113,12 +114,11 @@ class RecipeRouter(PluginRouter):
             else:
                 results = await recipe_api.search_by_name(q)
         except recipe_api.RecipeAPIError:
-            return Ok({
-                "status": "unavailable",
-                "summary": i18n.t("recipe.provider_unavailable"),
-                "recipes": [],
-                "query": q,
-            })
+            return unavailable_error(
+                i18n.t("recipe.provider_unavailable"),
+                code="UPSTREAM_UNAVAILABLE",
+                details={"recipes": [], "query": q},
+            )
 
         if not results:
             return Ok({
@@ -183,17 +183,17 @@ class RecipeRouter(PluginRouter):
         try:
             meal = await recipe_api.random_meal()
         except recipe_api.RecipeAPIError:
-            return Ok({
-                "status": "unavailable",
-                "summary": i18n.t("recipe.random_fail"),
-                "recipe": None,
-            })
+            return unavailable_error(
+                i18n.t("recipe.random_fail"),
+                code="UPSTREAM_UNAVAILABLE",
+                details={"recipe": None},
+            )
         if not meal:
-            return Ok({
-                "status": "unavailable",
-                "summary": i18n.t("recipe.random_fail"),
-                "recipe": None,
-            })
+            return unavailable_error(
+                i18n.t("recipe.random_fail"),
+                code="UPSTREAM_UNAVAILABLE",
+                details={"recipe": None},
+            )
 
         recipe_data = _recipe_to_dict(meal)
         summary = i18n.t("recipe.random_summary", recipe=_format_recipe_summary(meal))

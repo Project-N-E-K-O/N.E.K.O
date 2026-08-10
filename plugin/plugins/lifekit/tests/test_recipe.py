@@ -1,15 +1,12 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
 import pytest
-
-from plugin.sdk.plugin import Ok
-
 from plugin.plugins.lifekit import _recipe
 from plugin.plugins.lifekit._i18n import I18n
 from plugin.plugins.lifekit.routers.recipe import RecipeRouter
+from plugin.sdk.plugin import Err, Ok
 
 
 class _Plugin:
@@ -44,7 +41,7 @@ async def test_chinese_dish_name_is_not_replaced_with_a_generic_ingredient(
 
 
 @pytest.mark.asyncio
-async def test_recipe_provider_failure_returns_unavailable(
+async def test_recipe_provider_failure_fails_the_entry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async def failed(_: str) -> list[_recipe.Recipe]:
@@ -56,9 +53,8 @@ async def test_recipe_provider_failure_returns_unavailable(
 
     result = await router.search_recipe(query="chicken")
 
-    assert isinstance(result, Ok)
-    assert result.value["status"] == "unavailable"
-    assert result.value["recipes"] == []
+    assert isinstance(result, Err)
+    assert result.error.code == "UPSTREAM_UNAVAILABLE"
 
 
 def test_recipe_parser_tolerates_non_text_provider_fields() -> None:

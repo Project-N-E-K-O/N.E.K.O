@@ -3,11 +3,9 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
-
 from plugin.plugins.lifekit import LifeKitPlugin, _api, _geocoders
 from plugin.plugins.lifekit._api import GeocodeError
-from plugin.plugins.lifekit._geocoders import GeocoderError
-from plugin.plugins.lifekit._geocoders import open_meteo_candidates
+from plugin.plugins.lifekit._geocoders import GeocoderError, open_meteo_candidates
 from plugin.plugins.lifekit._location import (
     LocationCandidate,
     LocationPurpose,
@@ -849,7 +847,7 @@ async def test_explicit_country_suffix_becomes_hard_country_hint() -> None:
     assert seen == [("吉林", "CN")]
 
 
-async def test_location_text_is_sent_to_providers_without_invented_city_suffix() -> None:
+async def test_address_text_is_sent_verbatim_to_address_provider() -> None:
     seen: list[tuple[str, str]] = []
 
     async def open_meteo(query: str, **_kwargs: object) -> list[LocationCandidate]:
@@ -878,10 +876,7 @@ async def test_location_text_is_sent_to_providers_without_invented_city_suffix()
     )
 
     assert result.status is LocationStatus.RESOLVED
-    assert seen == [
-        ("open_meteo", "上海南京东路"),
-        ("nominatim", "上海南京东路"),
-    ]
+    assert seen == [("nominatim", "上海南京东路")]
 
 
 async def test_secondary_provider_failure_keeps_usable_primary_hit() -> None:

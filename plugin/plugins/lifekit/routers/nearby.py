@@ -5,36 +5,28 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Dict, List
 
-from plugin.sdk.plugin import plugin_entry, quick_action, Ok, Err, SdkError, tr
+from plugin.sdk.plugin import Err, Ok, SdkError, plugin_entry, quick_action, tr
 from plugin.sdk.shared.core.router import PluginRouter
 
-from .._poi import POIService, UPSTREAM_TIMEOUT, UPSTREAM_UNAVAILABLE
 from .._api import RAIN_CODES
 from .._coerce import clamp_int, clean_text
 from .._contracts import NearbyParams, NearbyResult
-from .._nearby_discovery import (
-    DiscoveryRequest,
-    NearbyDiscovery,
-    SearchCenter,
-    normalize_search_terms,
-)
-from .._nearby_intent import (
-    has_explicit_nearby_relation,
-    infer_location_hint,
-    infer_fallback_search_term,
-    infer_explicit_search_terms,
-    infer_place_intent,
-    infer_preference_hints,
-    normalize_place_intent,
-    normalize_preference_hints,
-    search_terms_for_hints,
-)
-from .._routing import format_distance
+from .._entry_errors import unavailable_error
 from .._location import (
     LocationPurpose,
     location_error_key,
 )
 from .._location_entry import apply_location_assumption
+from .._nearby_discovery import (
+    DiscoveryRequest,
+    NearbyDiscovery,
+    SearchCenter,
+)
+from .._nearby_intent import (
+    build_nearby_request_plan,
+)
+from .._poi import UPSTREAM_TIMEOUT, UPSTREAM_UNAVAILABLE, POIService
+from .._routing import format_distance
 
 LOCATION_REQUIRED = "LOCATION_REQUIRED"
 LOCATION_PROVIDER_UNAVAILABLE = "LOCATION_PROVIDER_UNAVAILABLE"
@@ -81,63 +73,24 @@ class NearbyRouter(PluginRouter):
 
         raw_request = clean_text((_ctx or {}).get("latest_user_request"))
         request_text = raw_request or clean_text(request)
-        raw_has_relation = projected_params and has_explicit_nearby_relation(
-            raw_request
+        plan = build_nearby_request_plan(
+            request_text=request_text,
+            raw_request=raw_request,
+            projected_params=projected_params,
+            location_hint=location_hint,
+            legacy_location=location,
+            place_intent=place_intent,
+            preference_hints=preference_hints,
+            search_terms=search_terms,
         )
-        raw_intent = infer_place_intent(raw_request) if projected_params else "explore"
-        raw_explicit_terms = (
-            infer_explicit_search_terms(raw_request) if projected_params else ()
-        )
-        raw_fallback_term = (
-            infer_fallback_search_term(raw_request)
-            if raw_has_relation
-            else ""
-        )
-        raw_has_decisive_target = bool(
-            raw_explicit_terms or raw_fallback_term or raw_intent != "explore"
-        )
-        intent = normalize_place_intent(place_intent)
-        if raw_has_decisive_target:
-            intent = raw_intent
-        elif intent == "explore":
-            intent = infer_place_intent(request_text)
-        preferences = normalize_preference_hints((
-            *(preference_hints or ()),
-            *infer_preference_hints(request_text, intent),
-        ))
-        terms = _clean_search_terms(search_terms)
-        if raw_has_decisive_target:
-            terms = (
-                raw_explicit_terms
-                or ((raw_fallback_term,) if raw_fallback_term else ())
-                or search_terms_for_hints(intent, preferences)
-            )
-        elif not terms:
-            explicit_terms = infer_explicit_search_terms(request_text)
-            fallback_term = infer_fallback_search_term(request_text)
-            terms = (
-                explicit_terms
-                or (
-                    (fallback_term,)
-                    if fallback_term and intent == "explore"
-                    else search_terms_for_hints(intent, preferences)
-                )
-            )
+        terms = plan.search_terms
         if not request_text or not terms:
             return Err(SdkError(i18n.t("nearby.no_query")))
-        if raw_has_relation:
-            clean_location = infer_location_hint(raw_request)
-        else:
-            clean_location = (
-                clean_text(location_hint)
-                or clean_text(location)
-                or infer_location_hint(request_text)
-            )
         radius = clamp_int(radius, 3000, 500, 50000)
 
         # 解析搜索中心
         loc, loc_err = await plugin._resolve_location(
-            clean_location or None,
+            plan.location or None,
             purpose=LocationPurpose.NEARBY,
         )
         if not loc:
@@ -152,13 +105,16 @@ class NearbyRouter(PluginRouter):
                 "Nearby search has no usable location: reason={}",
                 error_key,
             )
-            return Ok(_upstream_unavailable_payload(
+            payload = _upstream_unavailable_payload(
                 i18n=i18n,
                 request=request_text,
                 searched_terms=terms,
                 error_code=error_code,
                 summary=i18n.t("location.unavailable", detail=detail),
-            ))
+            )
+            return unavailable_error(
+                payload["summary"], code=error_code, details=payload
+            )
 
         discovery = NearbyDiscovery(POIService(plugin._cfg))
         weather_task = asyncio.create_task(plugin._get_weather_data(loc))
@@ -183,12 +139,17 @@ class NearbyRouter(PluginRouter):
                 len(terms),
                 len(poi_result.provider.split(",")) if poi_result.provider else 0,
             )
-            return Ok(apply_location_assumption(_upstream_unavailable_payload(
+            payload = apply_location_assumption(_upstream_unavailable_payload(
                 i18n=i18n,
                 request=request_text,
                 searched_terms=executed_terms,
                 error_code=poi_result.error_code,
-            ), loc, i18n))
+            ), loc, i18n)
+            return unavailable_error(
+                payload["summary"],
+                code=payload["error_code"],
+                details=payload,
+            )
 
         if not poi_result.items:
             weather_task.cancel()
@@ -265,10 +226,6 @@ def _poi_item_payload(item: Any) -> dict[str, Any]:
     if item.matched_term:
         entry["matched_term"] = item.matched_term
     return entry
-
-
-def _clean_search_terms(values: list[str] | None) -> tuple[str, ...]:
-    return normalize_search_terms(values)
 
 
 def _upstream_unavailable_payload(

@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
-from enum import Enum
 import hashlib
 import re
-from typing import Awaitable, Callable, Optional
 import unicodedata
+from dataclasses import dataclass, field, replace
+from enum import Enum
+from typing import Awaitable, Callable, Optional
 
 from ._geodesy import haversine_km
 
@@ -439,31 +439,37 @@ class LocationResolver:
         candidates: list[LocationCandidate] = []
         provider_succeeded = False
         provider_failures: list[str] = []
-        try:
-            candidates.extend(
-                await self._open_meteo(
-                    text,
-                    country_code=request.country_hint.strip().upper(),
-                    locale=request.locale,
-                )
-            )
-            provider_succeeded = True
-        except Exception as exc:
-            provider_failures.append(_provider_failure_cause(exc))
-
         disambiguation_succeeded = False
-        try:
-            candidates.extend(
-                await self._nominatim(
+        address_first = request.purpose in {
+            LocationPurpose.NEARBY,
+            LocationPurpose.FOOD,
+            LocationPurpose.ROUTE_ORIGIN,
+            LocationPurpose.ROUTE_DESTINATION,
+        }
+        providers = (
+            ((self._nominatim, True), (self._open_meteo, False))
+            if address_first
+            else ((self._open_meteo, False), (self._nominatim, True))
+        )
+        for geocoder, is_disambiguation in providers:
+            try:
+                provider_candidates = await geocoder(
                     text,
                     country_code=request.country_hint.strip().upper(),
                     locale=request.locale,
                 )
-            )
-            provider_succeeded = True
-            disambiguation_succeeded = True
-        except Exception as exc:
-            provider_failures.append(_provider_failure_cause(exc))
+                candidates.extend(provider_candidates)
+                provider_succeeded = True
+                if is_disambiguation:
+                    disambiguation_succeeded = True
+                if address_first and any(
+                    candidate.precision in {"address", "locality"}
+                    and _candidate_is_eligible(candidate, request.purpose)
+                    for candidate in provider_candidates
+                ):
+                    break
+            except Exception as exc:
+                provider_failures.append(_provider_failure_cause(exc))
         candidates = _normalise_candidates(candidates, request.country_hint)
 
         eligible = _preferred_candidates(

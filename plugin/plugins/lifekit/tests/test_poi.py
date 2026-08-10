@@ -7,13 +7,11 @@ from urllib.parse import parse_qs
 
 import httpx
 import pytest
-
-from plugin.sdk.plugin import Ok
-
 from plugin.plugins.lifekit import _poi
-from plugin.plugins.lifekit._i18n import I18n
 from plugin.plugins.lifekit._coordinates import wgs84_to_gcj02
+from plugin.plugins.lifekit._i18n import I18n
 from plugin.plugins.lifekit._poi import (
+    UPSTREAM_TIMEOUT,
     AMapPOI,
     BaiduPOI,
     OverpassPOI,
@@ -21,9 +19,9 @@ from plugin.plugins.lifekit._poi import (
     POIProviderError,
     POIResult,
     POIService,
-    UPSTREAM_TIMEOUT,
 )
 from plugin.plugins.lifekit.routers.food import FoodRecommendRouter
+from plugin.sdk.plugin import Err, Ok
 
 
 @pytest.mark.asyncio
@@ -382,9 +380,9 @@ async def test_food_provider_outage_is_not_reported_as_zero_results(
         location="上海南京东路",
     )
 
-    assert isinstance(result, Ok)
-    assert result.value["status"] == "unavailable"
-    assert "附近地点搜索失败" in result.value["summary"]
+    assert isinstance(result, Err)
+    assert result.error.code == "UPSTREAM_UNAVAILABLE"
+    assert "附近地点搜索失败" in str(result.error)
 
 
 @pytest.mark.asyncio

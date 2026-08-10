@@ -34,11 +34,6 @@ class LocationRiskFields(LifeKitModel):
     ambiguity_warning: str = ""
 
 
-class LocationUnavailableResult(LifeKitModel):
-    status: Literal["unavailable"]
-    summary: str = Field(..., min_length=1)
-
-
 class ClarificationResult(LifeKitModel):
     status: Literal["clarify"]
     summary: str = Field(..., min_length=1)
@@ -123,9 +118,9 @@ class ClarifiableResult(ProjectedResult):
 
 
 class ReadOnlyLocationResult(ProjectedResult):
-    """A location query either executes or returns a non-blocking outcome."""
+    """Successful output from a location query that actually executed."""
 
-    projected_statuses = ("ready", "unavailable")
+    projected_statuses = ("ready",)
 
     @classmethod
     def model_json_schema(cls, *args: Any, **kwargs: Any) -> dict[str, Any]:
@@ -293,10 +288,7 @@ class _HourlyForecastReadyResult(LocationRiskFields):
 
 class HourlyForecastResult(ReadOnlyLocationResult):
     projected_model = _HourlyForecastReadyResult
-    root: Annotated[
-        _HourlyForecastReadyResult | LocationUnavailableResult,
-        Field(discriminator="status"),
-    ]
+    root: _HourlyForecastReadyResult
 
 
 class NearbyParams(LifeKitModel):
@@ -346,35 +338,15 @@ class _NearbyReadyResult(LocationRiskFields):
     suggestion: str = ""
 
 
-class _NearbyUnavailableResult(LocationRiskFields):
-    status: Literal["unavailable"]
-    summary: str
-    request: str
-    searched_terms: list[str]
-    results: list[dict[str, Any]] = Field(default_factory=list)
-    count: int = 0
-    error_code: Literal[
-        "UPSTREAM_TIMEOUT",
-        "UPSTREAM_UNAVAILABLE",
-        "LOCATION_REQUIRED",
-        "LOCATION_PROVIDER_UNAVAILABLE",
-    ]
-    retriable: bool = True
-    location_groups: list[dict[str, Any]] = Field(default_factory=list)
-
-
 class NearbyResult(ReadOnlyLocationResult):
-    root: Annotated[
-        _NearbyReadyResult | _NearbyUnavailableResult,
-        Field(discriminator="status"),
-    ]
+    root: _NearbyReadyResult
 
     @classmethod
     def model_json_schema(cls, *args: Any, **kwargs: Any) -> dict[str, Any]:
         schema = super().model_json_schema(*args, **kwargs)
         schema["properties"].update({
             "status": {
-                "enum": ["ready", "unavailable"],
+                "enum": ["ready"],
                 "title": "Status",
                 "type": "string",
             },
@@ -394,17 +366,6 @@ class NearbyResult(ReadOnlyLocationResult):
                 "title": "Location Groups",
                 "type": "array",
             },
-            "error_code": {
-                "enum": [
-                    "UPSTREAM_TIMEOUT",
-                    "UPSTREAM_UNAVAILABLE",
-                    "LOCATION_REQUIRED",
-                    "LOCATION_PROVIDER_UNAVAILABLE",
-                ],
-                "title": "Error Code",
-                "type": "string",
-            },
-            "retriable": {"title": "Retriable", "type": "boolean"},
         })
         schema["required"] = [
             "status",
@@ -444,10 +405,7 @@ class _FoodRecommendReadyResult(LocationRiskFields):
 
 class FoodRecommendResult(ReadOnlyLocationResult):
     projected_model = _FoodRecommendReadyResult
-    root: Annotated[
-        _FoodRecommendReadyResult | LocationUnavailableResult,
-        Field(discriminator="status"),
-    ]
+    root: _FoodRecommendReadyResult
 
 
 class UnitConvertParams(LifeKitModel):
@@ -488,10 +446,7 @@ class _GetWeatherReadyResult(LocationRiskFields):
 
 class GetWeatherResult(ReadOnlyLocationResult):
     projected_model = _GetWeatherReadyResult
-    root: Annotated[
-        _GetWeatherReadyResult | LocationUnavailableResult,
-        Field(discriminator="status"),
-    ]
+    root: _GetWeatherReadyResult
 
 
 class _AirQualityReadyResult(LocationRiskFields):
@@ -505,10 +460,7 @@ class _AirQualityReadyResult(LocationRiskFields):
 
 class AirQualityResult(ReadOnlyLocationResult):
     projected_model = _AirQualityReadyResult
-    root: Annotated[
-        _AirQualityReadyResult | LocationUnavailableResult,
-        Field(discriminator="status"),
-    ]
+    root: _AirQualityReadyResult
 
 
 class _TravelAdviceReadyResult(LocationRiskFields):
@@ -524,10 +476,7 @@ class _TravelAdviceReadyResult(LocationRiskFields):
 
 class TravelAdviceResult(ReadOnlyLocationResult):
     projected_model = _TravelAdviceReadyResult
-    root: Annotated[
-        _TravelAdviceReadyResult | LocationUnavailableResult,
-        Field(discriminator="status"),
-    ]
+    root: _TravelAdviceReadyResult
 
 
 class CurrencyConvertParams(LifeKitModel):
@@ -585,7 +534,7 @@ class SearchRecipeParams(LifeKitModel):
 
 
 class SearchRecipeResult(LifeKitModel):
-    status: Literal["ready", "unavailable"]
+    status: Literal["ready"]
     summary: str
     recipes: list[dict[str, Any]]
     query: str = ""
@@ -594,7 +543,7 @@ class SearchRecipeResult(LifeKitModel):
 
 
 class RandomRecipeResult(LifeKitModel):
-    status: Literal["ready", "unavailable"]
+    status: Literal["ready"]
     summary: str
     recipe: dict[str, Any] | None = None
     next_actions: list[str] = Field(default_factory=list)
@@ -629,7 +578,4 @@ class _TripAdviceReadyResult(LocationRiskFields):
 
 class TripAdviceResult(ReadOnlyLocationResult):
     projected_model = _TripAdviceReadyResult
-    root: Annotated[
-        _TripAdviceReadyResult | LocationUnavailableResult,
-        Field(discriminator="status"),
-    ]
+    root: _TripAdviceReadyResult

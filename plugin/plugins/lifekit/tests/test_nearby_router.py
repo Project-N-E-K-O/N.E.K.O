@@ -1,22 +1,18 @@
+import asyncio
 from pathlib import Path
 from typing import Any
 
 import httpx
 import pytest
-
-from app.agent_server.channels.user_plugin import _plugin_terminal_status
-from plugin.sdk.plugin import Err, Ok
-
-from plugin.plugins.lifekit import LifeKitPlugin
+from plugin.plugins.lifekit import LifeKitPlugin, _geocoders, _poi
+from plugin.plugins.lifekit._contracts import NearbyParams, NearbyResult
 from plugin.plugins.lifekit._i18n import I18n
-from plugin.plugins.lifekit._contracts import NearbyParams
-from plugin.plugins.lifekit import _poi
-from plugin.plugins.lifekit._contracts import NearbyResult
 from plugin.plugins.lifekit._location import (
     LocationCandidate,
     LocationResolver,
 )
 from plugin.plugins.lifekit.routers.nearby import NearbyRouter
+from plugin.sdk.plugin import Err, Ok
 
 
 class _CapturingLogger:
@@ -91,7 +87,8 @@ async def test_nearby_logs_do_not_include_raw_request_or_location() -> None:
         _ctx={"latest_user_request": "和客户谈机密项目"},
     )
 
-    assert isinstance(result, Ok)
+    assert isinstance(result, Err)
+    assert result.error.code == "LOCATION_REQUIRED"
     logged = "\n".join(plugin.logger.messages)
     assert "和客户谈机密项目" not in logged
     assert "私人会所地址" not in logged
@@ -239,6 +236,166 @@ async def test_raw_request_corrects_conflicting_projected_nearby_hints(
     assert isinstance(result, Ok)
     assert resolved == ["南京东路"]
     assert result.value["searched_terms"] == ["火锅"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "request_text",
+    [
+        "再帮我试试这个插件嘛，上海漕宝路上有什么吃的",
+        "上海漕宝路上，找点好吃的",
+        "麻烦看看，上海漕宝路，附近有什么餐厅",
+    ],
+)
+async def test_road_wording_recovers_center_and_food_from_original_request(
+    monkeypatch: pytest.MonkeyPatch,
+    request_text: str,
+) -> None:
+    resolved: list[str | None] = []
+
+    class _RawRequestPlugin(_NearbyPlugin):
+        async def _resolve_location(self, location: str | None, **_: object):
+            resolved.append(location)
+            return await super()._resolve_location(location)
+
+    monkeypatch.setattr(_poi.httpx, "AsyncClient", lambda **_: _EmptyPOIClient())
+    router = NearbyRouter()
+    router._bind(_RawRequestPlugin())
+    result = await router.search_nearby(
+        params=NearbyParams(request=request_text),
+        _ctx={"latest_user_request": request_text},
+    )
+
+    assert isinstance(result, Ok)
+    assert resolved == ["上海漕宝路"]
+    assert result.value["searched_terms"] == ["餐厅"]
+
+
+@pytest.mark.asyncio
+async def test_address_search_is_not_blocked_by_a_slow_city_geocoder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    never_finishes = asyncio.Event()
+
+    async def slow_city_geocoder(*_: Any, **__: Any):
+        await never_finishes.wait()
+        raise AssertionError("unreachable")
+
+    async def address_geocoder(*_: Any, **__: Any):
+        return [
+            LocationCandidate(
+                display_name="漕宝路",
+                latitude=31.1671257,
+                longitude=121.4108375,
+                country_code="CN",
+                admin1="上海市",
+                admin2="徐汇区",
+                precision="address",
+                source="nominatim",
+            )
+        ]
+
+    class _AddressPlugin(_NearbyPlugin):
+        _resolve_location = LifeKitPlugin._resolve_location
+
+        def __init__(self) -> None:
+            super().__init__()
+            self._cfg = {"enable_geoip": False}
+            self._location_resolver = LocationResolver(
+                open_meteo=slow_city_geocoder,
+                nominatim=address_geocoder,
+            )
+
+    monkeypatch.setattr(_poi.httpx, "AsyncClient", lambda **_: _EmptyPOIClient())
+    router = NearbyRouter()
+    router._bind(_AddressPlugin())
+    request = "上海漕宝路上有什么吃的"
+
+    result = await asyncio.wait_for(
+        router.search_nearby(
+            params=NearbyParams(request=request),
+            _ctx={"latest_user_request": request},
+        ),
+        timeout=0.2,
+    )
+
+    assert isinstance(result, Ok)
+    assert result.value["status"] == "ready"
+    assert result.value["searched_terms"] == ["餐厅"]
+
+
+@pytest.mark.asyncio
+async def test_address_search_uses_a_realistic_geocoder_timeout_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _BudgetClient:
+        def __init__(self, *, timeout: float = 0, **_: object) -> None:
+            self.timeout = float(timeout)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_: object) -> None:
+            return None
+
+        async def get(
+            self,
+            url: str,
+            **_: object,
+        ) -> httpx.Response:
+            request = httpx.Request("GET", url)
+            if "nominatim" in url:
+                if self.timeout < 4.5:
+                    raise httpx.ReadTimeout("budget too short", request=request)
+                return httpx.Response(
+                    200,
+                    json=[
+                        {
+                            "lat": "31.1671257",
+                            "lon": "121.4108375",
+                            "name": "漕宝路",
+                            "type": "road",
+                            "address": {
+                                "country_code": "cn",
+                                "state": "上海市",
+                                "city": "上海市",
+                            },
+                        }
+                    ],
+                    request=request,
+                )
+            return httpx.Response(200, json={"results": []}, request=request)
+
+        async def post(self, url: str, **_: object) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={"elements": []},
+                request=httpx.Request("POST", url),
+            )
+
+    class _AddressPlugin(_NearbyPlugin):
+        _resolve_location = LifeKitPlugin._resolve_location
+
+        def __init__(self) -> None:
+            super().__init__()
+            self._cfg = {"enable_geoip": False}
+            self._location_resolver = LocationResolver(
+                open_meteo=_geocoders.open_meteo_candidates,
+                nominatim=_geocoders.nominatim_candidates,
+            )
+
+    monkeypatch.setattr(_geocoders.httpx, "AsyncClient", _BudgetClient)
+    router = NearbyRouter()
+    router._bind(_AddressPlugin())
+    request = "上海漕宝路上有什么吃的"
+
+    result = await router.search_nearby(
+        params=NearbyParams(request=request),
+        _ctx={"latest_user_request": request},
+    )
+
+    assert isinstance(result, Ok)
+    assert result.value["status"] == "ready"
 
 
 @pytest.mark.asyncio
@@ -502,7 +659,7 @@ async def test_open_ended_needs_execute_the_llm_retrieval_plan(
 
 
 @pytest.mark.asyncio
-async def test_broad_request_returns_unavailable_on_location_provider_failure() -> None:
+async def test_broad_request_fails_on_location_provider_failure() -> None:
     plugin = _FailedLocationPlugin()
     router = NearbyRouter()
     router._bind(plugin)
@@ -513,14 +670,13 @@ async def test_broad_request_returns_unavailable_on_location_provider_failure() 
         _ctx={"latest_user_request": "我附近有啥地方可去吗？"},
     )
 
-    assert isinstance(result, Ok)
-    assert result.value["status"] == "unavailable"
-    assert result.value["error_code"] == "LOCATION_PROVIDER_UNAVAILABLE"
-    assert result.value["retriable"] is True
+    assert isinstance(result, Err)
+    assert result.error.code == "LOCATION_PROVIDER_UNAVAILABLE"
+    assert result.error.details["retriable"] is True
 
 
 @pytest.mark.asyncio
-async def test_specific_request_returns_unavailable_on_location_provider_failure() -> None:
+async def test_specific_request_fails_when_location_provider_prevents_query() -> None:
     plugin = _FailedLocationPlugin()
     router = NearbyRouter()
     router._bind(plugin)
@@ -531,14 +687,14 @@ async def test_specific_request_returns_unavailable_on_location_provider_failure
         _ctx={"latest_user_request": "附近的公园"},
     )
 
-    assert isinstance(result, Ok)
-    assert result.value["status"] == "unavailable"
-    assert result.value["error_code"] == "LOCATION_PROVIDER_UNAVAILABLE"
-    assert result.value["retriable"] is True
+    assert isinstance(result, Err)
+    assert result.error.code == "LOCATION_PROVIDER_UNAVAILABLE"
+    assert result.error.details["retriable"] is True
+    assert "没有执行位置查询" in str(result.error)
 
 
 @pytest.mark.asyncio
-async def test_nearby_provider_timeout_returns_a_meaningful_retriable_result(
+async def test_nearby_provider_timeout_returns_a_meaningful_retriable_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class _RejectingClient:
@@ -563,13 +719,11 @@ async def test_nearby_provider_timeout_returns_a_meaningful_retriable_result(
         _ctx={"latest_user_request": "上海南京东路附近的餐厅"},
     )
 
-    assert isinstance(result, Ok)
-    assert result.value["status"] == "unavailable"
-    assert result.value["error_code"] == "UPSTREAM_TIMEOUT"
-    assert result.value["retriable"] is True
-    assert "地图服务" in result.value["summary"]
-    assert "private upstream detail" not in str(result.value)
-    NearbyResult.model_validate(result.value)
+    assert isinstance(result, Err)
+    assert result.error.code == "UPSTREAM_TIMEOUT"
+    assert result.error.details["retriable"] is True
+    assert "地图服务" in str(result.error)
+    assert "private upstream detail" not in str(result.error)
 
 
 @pytest.mark.asyncio
@@ -600,7 +754,7 @@ async def test_nearby_does_not_disguise_programming_errors_as_upstream_outages(
 
 
 @pytest.mark.asyncio
-async def test_nearby_without_a_usable_location_returns_completed_unavailable() -> None:
+async def test_nearby_without_a_usable_location_fails_before_query() -> None:
     router = NearbyRouter()
     router._bind(_AmbiguousLocationPlugin())
 
@@ -613,15 +767,12 @@ async def test_nearby_without_a_usable_location_returns_completed_unavailable() 
         _ctx={"latest_user_request": "吉林附近的公园"},
     )
 
-    assert isinstance(result, Ok)
-    assert result.value["status"] == "unavailable"
-    assert result.value["request"] == "吉林附近的公园"
-    assert result.value["searched_terms"] == ["公园"]
-    assert result.value["results"] == []
-    assert result.value["error_code"] == "LOCATION_REQUIRED"
-    assert result.value["retriable"] is True
-    assert _plugin_terminal_status(True, result.value) == "completed"
-    NearbyResult.model_validate(result.value)
+    assert isinstance(result, Err)
+    assert result.error.code == "LOCATION_REQUIRED"
+    assert result.error.details["request"] == "吉林附近的公园"
+    assert result.error.details["searched_terms"] == ["公园"]
+    assert result.error.details["results"] == []
+    assert result.error.details["retriable"] is True
 
 
 @pytest.mark.asyncio
@@ -675,9 +826,8 @@ async def test_nearby_does_not_execute_an_ineligible_region_candidate(
         _ctx={"latest_user_request": "吉林省附近有什么"},
     )
 
-    assert isinstance(result, Ok)
-    assert result.value["status"] == "unavailable"
-    assert result.value["error_code"] == "LOCATION_REQUIRED"
+    assert isinstance(result, Err)
+    assert result.error.code == "LOCATION_REQUIRED"
 
 
 @pytest.mark.asyncio
