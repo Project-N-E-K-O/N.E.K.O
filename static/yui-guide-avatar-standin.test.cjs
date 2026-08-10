@@ -974,6 +974,25 @@ test('daily opening reveal keeps a bounded fallback while preserving explicit ov
     assert.match(directorSource, /daily-intro-avatar-reveal-timeout/);
 });
 
+test('cancelled opening corner peek stays hidden when the Live2D context is unavailable', async () => {
+    const api = loadAvatarStageApi();
+    let revealCount = 0;
+
+    const result = await api.playAvatarMotion({
+        preset: 'corner-peek',
+        isOpeningProbe: true,
+        readyWaitMs: 0,
+        isCancelled: () => true,
+        revealPrepared() {
+            revealCount += 1;
+        }
+    });
+
+    assert.equal(result.result, 'cancelled');
+    assert.equal(result.reason, 'cancelled');
+    assert.equal(revealCount, 0);
+});
+
 test('Live2D corner peek can continue across scene boundaries until its cue duration ends', () => {
     const showBlock = directorSource
         .split('        showAvatarStandIn(cue, token) {')[1]

@@ -6479,6 +6479,9 @@
             onPeekReady: () => revealPrepared('avatar_motion_corner_peek_ready')
         }));
         if (!handle || typeof handle.stop !== 'function') {
+            if (typeof normalizedOptions.isCancelled === 'function' && normalizedOptions.isCancelled()) {
+                return { result: 'cancelled', reason: 'cancelled' };
+            }
             revealPrepared('corner_peek_unavailable');
             return { result: 'fallback', reason: 'corner_peek_unavailable' };
         }

@@ -1169,14 +1169,31 @@ def test_daily_intro_avatar_motion_presets_are_fixed_per_day():
 def test_day3_intro_bottom_rise_uses_shared_two_second_opening_motion_after_day_swap():
     source = DAY3_GUIDE_PATH.read_text(encoding="utf-8")
     avatar_stage_source = (ROOT / "static" / "tutorial/avatar/yui-stage.js").read_text(encoding="utf-8")
+    director_source = read_director_source(ROOT)
     scene_block = source.split("id: 'day3_intro_context'", 1)[1].split(
         "id: 'day3_personalization_space'",
+        1,
+    )[0]
+    daily_intro_block = director_source.split("async runDailyIntroAvatarPerformance(scene, day, options)", 1)[1].split(
+        "async runIntroGreetingHugPerformance()",
+        1,
+    )[0]
+    probe_motion_block = avatar_stage_source.split(
+        "async function playTutorialAvatarProbeFrameMotion(options, preset)",
+        1,
+    )[1].split("async function playAvatarMotion(options)", 1)[0]
+    play_motion_block = avatar_stage_source.split("async function playAvatarMotion(options)", 1)[1].split(
+        "async function playSettingsPeekPanic(options)",
         1,
     )[0]
 
     assert "preset: 'bottom-rise'" in scene_block
     assert "approachMs:" not in scene_block
+    assert "narrationBudgeted: tutorialDay >= 2 && tutorialDay <= 7" in daily_intro_block
+    assert "if (normalizedOptions.narrationBudgeted === true)" in play_motion_block
+    assert "return playTutorialAvatarProbeFrameMotion(normalizedOptions, preset);" in play_motion_block
     assert "const TUTORIAL_AVATAR_PROBE_APPROACH_MS = 2000;" in avatar_stage_source
+    assert "enterMs: TUTORIAL_AVATAR_PROBE_APPROACH_MS" in probe_motion_block
     assert "restore: 'half-body'" in scene_block
 
 
