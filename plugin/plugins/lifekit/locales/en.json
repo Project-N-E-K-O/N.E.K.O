@@ -41,7 +41,9 @@
     "uv_extreme": "🧴 Extreme UV — sunscreen is a must",
     "uv_high": "🕶️ High UV — sunscreen recommended",
     "wind_strong": "💨 Strong winds — be careful outdoors",
-    "rain_forecast": "📅 Rain expected on: {dates}"
+    "rain_forecast": "📅 Rain expected on: {dates}",
+    "bring_umbrella": "Bring an umbrella",
+    "bring_sunscreen": "Apply sunscreen"
   },
   "clothing": {
     "heavy": "Heavy",

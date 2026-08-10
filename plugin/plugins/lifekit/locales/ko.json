@@ -41,7 +41,9 @@
     "uv_extreme": "🧴 극한 UV — 자외선 차단제는 필수입니다",
     "uv_high": "🕶️ 높은 자외선 — 자외선 차단제 권장",
     "wind_strong": "💨 강한 바람 — 야외에서는 조심하세요",
-    "rain_forecast": "📅 비 예상 날짜: {dates}"
+    "rain_forecast": "📅 비 예상 날짜: {dates}",
+    "bring_umbrella": "우산을 챙기세요",
+    "bring_sunscreen": "자외선 차단제를 바르세요"
   },
   "clothing": {
     "heavy": "두꺼운 옷",

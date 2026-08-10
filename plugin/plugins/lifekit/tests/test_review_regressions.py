@@ -118,3 +118,47 @@ def test_english_nearby_location_accepts_sentence_punctuation() -> None:
     )
 
     assert plan.location == "Times Square"
+
+
+def test_english_nearby_location_preserves_comma_qualifier() -> None:
+    request = "restaurants near Springfield, IL"
+
+    plan = build_nearby_request_plan(
+        request_text=request,
+        raw_request=request,
+        projected_params=True,
+        location_hint="",
+        legacy_location="",
+        place_intent="explore",
+        preference_hints=(),
+        search_terms=(),
+    )
+
+    assert plan.location == "Springfield, IL"
+
+
+@pytest.mark.parametrize(
+    ("request_text", "expected_term"),
+    [
+        ("parks near Times Square", "公园"),
+        ("museums near Trafalgar Square", "博物馆"),
+        ("bars near Shibuya Station", "酒吧"),
+        ("pharmacies near Central Station", "药店"),
+    ],
+)
+def test_plural_english_nearby_categories_map_to_specific_terms(
+    request_text: str,
+    expected_term: str,
+) -> None:
+    plan = build_nearby_request_plan(
+        request_text=request_text,
+        raw_request=request_text,
+        projected_params=True,
+        location_hint="",
+        legacy_location="",
+        place_intent="explore",
+        preference_hints=(),
+        search_terms=(),
+    )
+
+    assert plan.search_terms == (expected_term,)

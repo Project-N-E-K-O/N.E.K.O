@@ -22,7 +22,7 @@ _ZH_ON_LOCATION_PARTS = re.compile(
 )
 _EN_NEARBY_PARTS = re.compile(
     r"^(?P<target>.*?)\b(?:near|around|close\s+to)\s+"
-    r"(?P<location>[^,;!?。！？]+?)[.!?。！？]*$",
+    r"(?P<location>[^;!?。！？]+?)[.!?。！？]*$",
     re.IGNORECASE,
 )
 
@@ -82,6 +82,7 @@ PLACE_INTENTS: dict[str, PlaceIntentDefinition] = {
             "甜品": "甜品店",
             "coffee": "咖啡馆",
             "cafe": "咖啡馆",
+            "cafes": "咖啡馆",
         },
         request_keywords=("咖啡", "茶馆", "coffee", "cafe", "tea"),
     ),
@@ -92,13 +93,17 @@ PLACE_INTENTS: dict[str, PlaceIntentDefinition] = {
             "便利店": "便利店",
             "商场": "购物中心",
             "书店": "书店",
+            "mall": "购物中心",
+            "malls": "购物中心",
+            "shop": "商店",
+            "shops": "商店",
         },
-        request_keywords=("购物", "商场", "商店", "超市", "shopping", "mall", "shop"),
+        request_keywords=("购物", "商场", "商店", "超市", "shopping", "mall", "malls", "shop", "shops"),
     ),
     "outdoors": PlaceIntentDefinition(
         search_terms=("公园", "景点"),
-        preference_terms={},
-        request_keywords=("公园", "户外", "徒步", "park", "outdoor", "hiking"),
+        preference_terms={"park": "公园", "parks": "公园"},
+        request_keywords=("公园", "户外", "徒步", "park", "parks", "outdoor", "hiking"),
     ),
     "culture": PlaceIntentDefinition(
         search_terms=("博物馆", "美术馆", "书店"),
@@ -107,9 +112,11 @@ PLACE_INTENTS: dict[str, PlaceIntentDefinition] = {
             "美术馆": "美术馆",
             "书店": "书店",
             "museum": "博物馆",
+            "museums": "博物馆",
             "gallery": "美术馆",
+            "galleries": "美术馆",
         },
-        request_keywords=("博物馆", "美术馆", "文化", "museum", "gallery"),
+        request_keywords=("博物馆", "美术馆", "文化", "museum", "museums", "gallery", "galleries"),
     ),
     "family": PlaceIntentDefinition(
         search_terms=("室内游乐场", "公园", "博物馆"),
@@ -123,23 +130,33 @@ PLACE_INTENTS: dict[str, PlaceIntentDefinition] = {
     ),
     "nightlife": PlaceIntentDefinition(
         search_terms=("酒吧", "夜店"),
-        preference_terms={"酒吧": "酒吧", "夜店": "夜店"},
-        request_keywords=("酒吧", "夜店", "bar", "nightclub", "nightlife"),
+        preference_terms={
+            "酒吧": "酒吧",
+            "夜店": "夜店",
+            "bar": "酒吧",
+            "bars": "酒吧",
+            "nightclub": "夜店",
+            "nightclubs": "夜店",
+        },
+        request_keywords=("酒吧", "夜店", "bar", "bars", "nightclub", "nightclubs", "nightlife"),
     ),
     "service": PlaceIntentDefinition(
         search_terms=("医院", "药店", "银行", "停车场"),
         preference_terms={
             "医院": "医院",
             "hospital": "医院",
+            "hospitals": "医院",
             "药店": "药店",
             "pharmacy": "药店",
+            "pharmacies": "药店",
             "银行": "银行",
             "bank": "银行",
+            "banks": "银行",
             "停车": "停车场",
             "停车场": "停车场",
             "parking": "停车场",
         },
-        request_keywords=("医院", "药店", "银行", "停车", "hospital", "pharmacy", "bank", "parking"),
+        request_keywords=("医院", "药店", "银行", "停车", "hospital", "hospitals", "pharmacy", "pharmacies", "bank", "banks", "parking"),
     ),
     "explore": PlaceIntentDefinition(
         search_terms=("景点", "公园", "咖啡馆", "书店"),

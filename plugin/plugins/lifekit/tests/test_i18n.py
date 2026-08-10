@@ -94,6 +94,18 @@ def test_nearby_list_separator_is_localized(locale: str, expected: str) -> None:
     assert I18n(_LOCALES_DIR).t("nearby.list_separator", locale=locale) == expected
 
 
+@pytest.mark.parametrize("locale", SUPPORTED_LOCALES)
+@pytest.mark.parametrize(
+    "key",
+    ["advice.bring_umbrella", "advice.bring_sunscreen"],
+)
+def test_travel_reminder_labels_exist_in_every_supported_locale(
+    locale: str,
+    key: str,
+) -> None:
+    assert I18n(_LOCALES_DIR).t(key, locale=locale) != key
+
+
 def test_settings_and_geocoders_expose_every_supported_locale() -> None:
     locale_schema = LifeKitPlugin.Settings.model_json_schema()["properties"]["locale"]
 

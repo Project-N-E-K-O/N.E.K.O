@@ -41,7 +41,9 @@
     "uv_extreme": "🧴 極度の紫外線 — 日焼け止めは必須です",
     "uv_high": "🕶️ 紫外線が強い — 日焼け止めをお勧めします",
     "wind_strong": "💨強風 - 屋外では注意してください",
-    "rain_forecast": "📅 雨が降る予定です: {dates}"
+    "rain_forecast": "📅 雨が降る予定です: {dates}",
+    "bring_umbrella": "傘を持っていきましょう",
+    "bring_sunscreen": "日焼け止めを塗りましょう"
   },
   "clothing": {
     "heavy": "厚手",

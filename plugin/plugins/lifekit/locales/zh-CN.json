@@ -41,7 +41,9 @@
     "uv_extreme": "🧴 紫外线极强，务必防晒",
     "uv_high": "🕶️ 紫外线较强，建议涂防晒",
     "wind_strong": "💨 风力较大，外出注意安全",
-    "rain_forecast": "📅 未来有雨的日期: {dates}"
+    "rain_forecast": "📅 未来有雨的日期: {dates}",
+    "bring_umbrella": "记得带伞",
+    "bring_sunscreen": "记得涂防晒"
   },
   "clothing": {
     "heavy": "厚",
