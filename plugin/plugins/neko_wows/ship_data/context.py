@@ -82,6 +82,11 @@ class BattleShipContextManager:
         self._client_game_version = ""
         self._version_status = "unknown"
         self._seen_objects: set[tuple[Any, ...]] = set()
+        # Alias → primary object key. Stubs after an objects flicker may only
+        # keep player_id while the first sighting also had ui_id; membership
+        # checks consult this map, but ``_seen_objects`` stays one entry per hull
+        # so ``observed_objects`` does not inflate.
+        self._object_aliases: dict[tuple[Any, ...], tuple[Any, ...]] = {}
         self._resolutions: dict[int, ShipResolution] = {}
         self._counts: dict[int, ShipCounts] = {}
         self._submitted: set[int] = set()
@@ -336,11 +341,10 @@ class BattleShipContextManager:
             if not isinstance(ship.name, str) or not ship.name.strip():
                 continue
             object_keys = self._object_keys(ship, fallback_occurrences)
-            if any(key in self._seen_objects for key in object_keys):
-                # A remembered stub may only carry player_id after the ui_id
-                # flicker; alias every known key so the same hull is not counted
-                # again under a different identity.
-                self._seen_objects.update(object_keys)
+            if self._object_is_seen(object_keys):
+                # Register any newly observed alias (e.g. stub that only has
+                # player_id after a ui_id flicker) without recounting the hull.
+                self._remember_object_keys(object_keys)
                 continue
             object_key = object_keys[0]
             resolution = resolver.resolve(
@@ -352,7 +356,7 @@ class BattleShipContextManager:
                 }))
                 continue
             self._set_unresolved_reason(object_key, None)
-            self._seen_objects.update(object_keys)
+            self._remember_object_keys(object_keys)
             ship_id = resolution.ship.ship_id
             self._resolutions.setdefault(ship_id, resolution)
             counts = self._counts.get(ship_id, ShipCounts())
@@ -367,6 +371,31 @@ class BattleShipContextManager:
                 counts = replace(counts, enemy_count=counts.enemy_count + 1)
             self._counts[ship_id] = counts
             events.append(ShipCatalogEvent("resolved", {"ship_id": ship_id}))
+
+    def _object_is_seen(self, object_keys: list[tuple[Any, ...]]) -> bool:
+        for key in object_keys:
+            primary = self._object_aliases.get(key, key)
+            if primary in self._seen_objects or key in self._seen_objects:
+                return True
+        return False
+
+    def _remember_object_keys(
+        self,
+        object_keys: list[tuple[Any, ...]],
+    ) -> tuple[Any, ...]:
+        primary = object_keys[0]
+        for key in object_keys:
+            existing = self._object_aliases.get(key)
+            if existing is not None:
+                primary = existing
+                break
+            if key in self._seen_objects:
+                primary = key
+                break
+        for key in object_keys:
+            self._object_aliases[key] = primary
+        self._seen_objects.add(primary)
+        return primary
 
     def _set_unresolved_reason(
         self,
@@ -563,6 +592,7 @@ class BattleShipContextManager:
         self._client_game_version = ""
         self._version_status = "unknown"
         self._seen_objects.clear()
+        self._object_aliases.clear()
         self._resolutions.clear()
         self._counts.clear()
         self._submitted.clear()
