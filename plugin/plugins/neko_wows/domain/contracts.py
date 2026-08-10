@@ -130,6 +130,10 @@ class WowsConfig:
     broadside_angle_deg: float = 25.0
     low_hp_target_ratio: float = 0.2
     damage_milestone_step: float = 50000.0
+    damage_burst_window_seconds: float = 5.0
+    high_damage_absolute_threshold: float = 20_000.0
+    high_damage_ratio_threshold: float = 0.25
+    devastating_strike_ratio_threshold: float = 0.50
     outnumbered_margin: int = 2
 
     # --- offline ship catalog and explicit official lookup ---
@@ -264,6 +268,14 @@ class WowsConfig:
         cfg.low_hp_target_ratio = number("low_hp_target_ratio", 0.2, 0.01, 0.9)
         cfg.damage_milestone_step = number(
             "damage_milestone_step", 50000.0, 1000.0, 1000000.0)
+        cfg.damage_burst_window_seconds = number(
+            "damage_burst_window_seconds", 5.0, 0.2, 30.0)
+        cfg.high_damage_absolute_threshold = number(
+            "high_damage_absolute_threshold", 20_000.0, 1_000.0, 1_000_000.0)
+        cfg.high_damage_ratio_threshold = number(
+            "high_damage_ratio_threshold", 0.25, 0.01, 1.0)
+        cfg.devastating_strike_ratio_threshold = number(
+            "devastating_strike_ratio_threshold", 0.50, 0.01, 1.0)
         cfg.outnumbered_margin = int(number("outnumbered_margin", 2, 1, 12))
 
         cfg.ship_catalog_enabled = flag("ship_catalog_enabled", True)

@@ -427,6 +427,10 @@ class NekoWowsPlugin(NekoPluginBase):
             cfg.broadside_angle_deg,
             cfg.low_hp_target_ratio,
             cfg.damage_milestone_step,
+            cfg.damage_burst_window_seconds,
+            cfg.high_damage_absolute_threshold,
+            cfg.high_damage_ratio_threshold,
+            cfg.devastating_strike_ratio_threshold,
             cfg.outnumbered_margin,
         )
 

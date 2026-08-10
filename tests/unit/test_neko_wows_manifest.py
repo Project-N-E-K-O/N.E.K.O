@@ -230,6 +230,10 @@ def test_the_manifest_section_parses_into_the_config(manifest):
     assert cfg.user_chat_quiet_window_seconds == 10.0
     assert cfg.ttl_for(LANE_URGENT) == 8.0
     assert cfg.min_gap_for(LANE_NORMAL) == 18.0
+    assert cfg.damage_burst_window_seconds == 5.0
+    assert cfg.high_damage_absolute_threshold == 20_000.0
+    assert cfg.high_damage_ratio_threshold == 0.25
+    assert cfg.devastating_strike_ratio_threshold == 0.50
 
 
 def test_ship_catalog_config_defaults_are_offline_safe():
@@ -310,6 +314,20 @@ def test_reconnect_window_bounds_stay_ordered():
 def test_low_health_thresholds_are_sorted_high_to_low():
     cfg = WowsConfig.from_mapping({"low_health_ratios": [0.1, 0.5, 0.3, "bad"]})
     assert cfg.low_health_ratios == (0.5, 0.3, 0.1)
+
+
+def test_damage_burst_thresholds_are_clamped():
+    cfg = WowsConfig.from_mapping({
+        "damage_burst_window_seconds": 0,
+        "high_damage_absolute_threshold": 10**9,
+        "high_damage_ratio_threshold": -1,
+        "devastating_strike_ratio_threshold": 4,
+    })
+
+    assert cfg.damage_burst_window_seconds == 0.2
+    assert cfg.high_damage_absolute_threshold == 1_000_000.0
+    assert cfg.high_damage_ratio_threshold == 0.01
+    assert cfg.devastating_strike_ratio_threshold == 1.0
 
 
 def test_the_manifest_declares_every_key_the_config_reads(manifest):
