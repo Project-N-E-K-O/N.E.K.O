@@ -80,7 +80,7 @@
         casualTalkSuppressedByEmotion: 0, processingFailures: 0
     };
 
-    async function fetchWithTimeout(url, options) {
+    async function fetchWithTimeout(url, options, consumeResponse) {
         const controller = typeof AbortController === 'function' ? new AbortController() : null;
         const requestOptions = Object.assign({}, options || {});
         let timeoutId = null;
@@ -89,7 +89,8 @@
             timeoutId = setTimeout(function () { controller.abort(); }, FETCH_TIMEOUT_MS);
         }
         try {
-            return await fetch(url, requestOptions);
+            const response = await fetch(url, requestOptions);
+            return consumeResponse ? await consumeResponse(response) : response;
         } finally {
             if (timeoutId !== null) clearTimeout(timeoutId);
         }
@@ -200,11 +201,12 @@
         let preset = '';
         if (name) {
             try {
-                const response = await fetchWithTimeout('/api/characters/character/' + encodeURIComponent(name) + '/persona-selection', {
+                const payload = await fetchWithTimeout('/api/characters/character/' + encodeURIComponent(name) + '/persona-selection', {
                     cache: 'no-store'
+                }, async function (response) {
+                    return response.ok ? response.json() : null;
                 });
-                if (response.ok) {
-                    const payload = await response.json();
+                if (payload) {
                     const selection = payload && payload.selection || {};
                     preset = String(selection.preset_id || '').trim();
                     if (!preset) {
@@ -403,9 +405,11 @@
     async function initialize() {
         if (readyPromise) return readyPromise;
         readyPromise = (async function () {
-            const response = await fetchWithTimeout(SEMANTICS_URL, { cache: 'no-store' });
-            if (!response.ok) throw new Error('Motion semantics HTTP ' + response.status);
-            core = new window.NekoMotionCore(await response.json());
+            const semantics = await fetchWithTimeout(SEMANTICS_URL, { cache: 'no-store' }, async function (response) {
+                if (!response.ok) throw new Error('Motion semantics HTTP ' + response.status);
+                return response.json();
+            });
+            core = new window.NekoMotionCore(semantics);
             player = new window.NekoMotionPlayer();
             await player.load();
             syncSavedRestAnimations();
