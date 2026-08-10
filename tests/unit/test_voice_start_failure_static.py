@@ -806,6 +806,9 @@ def test_mic_main_action_matches_settings_chevron_and_hover_expands():
     assert "button.dataset.nekoMicMainAction = actionKey;" in action_button
     assert "openMicActionPanel(actionKey, onClick)" in action_button
     assert "button.addEventListener('mouseenter'" in action_button
+    assert "interactionOptions.openOnHover !== false" in action_button
+    assert "xdg-desktop-portal" in action_button
+    assert "button.addEventListener('click'" in action_button
     assert "scheduleMicActionHoverCollapse()" in action_button
     assert "createMainActionButton(" in source
     assert "'screen'" in source
@@ -816,6 +819,11 @@ def test_mic_main_action_matches_settings_chevron_and_hover_expands():
     assert "if (iconText) {" in action_button
     assert "screenActionButton.querySelector('.neko-mic-action-text')" in source
     assert "var screenActionButton = createMainActionButton(\n                null," in source
+    screen_action = source.split(
+        "var screenActionButton = createMainActionButton(", 1
+    )[1].split(");", 1)[0]
+    assert "openScreenSourceSubwindow" in screen_action
+    assert "{ openOnHover: false }" in screen_action
     assert "var micActionButton = createMainActionButton(\n                null," in source
     assert "asrActionButton = createMainActionButton(\n                null," in source
     assert "'voice-recognition'" in source
