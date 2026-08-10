@@ -6,6 +6,7 @@ import re
 import unicodedata
 from typing import Any
 
+from ..domain.snapshot import looks_like_ship_index
 from .models import CatalogShip, ShipResolution
 
 _SPACE_RE = re.compile(r"\s+")
@@ -45,6 +46,14 @@ def _canonical_ship_class(value: Any) -> str | None:
     return _CLASS_ALIASES.get(normalized)
 
 
+def _ship_index_head_alias(value: Any) -> str:
+    """Short catalog index for ModsAPI wire names like ``PJSB018_Yamato_1944``."""
+    if not isinstance(value, str) or not looks_like_ship_index(value):
+        return ""
+    head, _tail = value.strip().split("_", 1)
+    return normalize_ship_alias(head)
+
+
 class ShipResolver:
     """Resolve only exact aliases, using tier/class solely for disambiguation."""
 
@@ -66,6 +75,13 @@ class ShipResolver:
 
         candidates = self._unique_candidates(
             self.snapshot.alias_candidates(normalized))
+        if not candidates:
+            # Telemetry roster/objects emit full ModsAPI keys; the catalog only
+            # stores the short index head. Fall back without fuzzy matching.
+            head = _ship_index_head_alias(query)
+            if head and head != normalized:
+                candidates = self._unique_candidates(
+                    self.snapshot.alias_candidates(head))
         if not candidates:
             return ShipResolution(query, normalized, "alias_not_found", meta=meta)
 

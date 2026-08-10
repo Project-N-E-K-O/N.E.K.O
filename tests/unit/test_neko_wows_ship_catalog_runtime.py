@@ -198,6 +198,7 @@ def snapshot(
         aliases={
             "yamato": (yamato,),
             "大 和": (yamato,),
+            "pjsb018": (yamato,),
             "duplicate": (destroyer, cruiser),
         },
         profiles=profiles,
@@ -220,6 +221,25 @@ def test_resolver_collapses_internal_whitespace(snapshot):
     assert result.reason == "resolved"
     assert result.ship is not None
     assert result.ship.ship_id == 4276041424
+
+
+def test_resolver_falls_back_to_short_ship_index_head(snapshot):
+    result = ShipResolver(snapshot).resolve(
+        "PJSB018_Yamato_1944", tier=10, ship_type="Battleship")
+
+    assert result.reason == "resolved"
+    assert result.query == "PJSB018_Yamato_1944"
+    assert result.normalized_query == "pjsb018_yamato_1944"
+    assert result.ship is not None
+    assert result.ship.ship_id == 4276041424
+    assert result.profile is not None
+
+
+def test_resolver_does_not_strip_non_ship_index_underscores(snapshot):
+    result = ShipResolver(snapshot).resolve("not_a_ship_index")
+
+    assert result.reason == "alias_not_found"
+    assert result.ship is None
 
 
 def test_resolver_never_fuzzy_guesses(snapshot):

@@ -16,7 +16,7 @@
 """Session lifecycle, anti-repeat, avatar, omni, and proactive search limits."""
 
 # ---- Main: session / avatar / omni ----
-VOICE_SILENCE_TIMEOUT_SECONDS = 90
+VOICE_SILENCE_TIMEOUT_SECONDS = 0
 """Realtime 语音会话静默超时（秒）。
 
 - 用途：``OmniRealtimeClient`` 在长时间无语音输入时自动关麦 / 结束 session
