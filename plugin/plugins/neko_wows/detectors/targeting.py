@@ -58,7 +58,7 @@ class PriorityTargetDetector(Detector):
             severity=30,
             facts=facts,
             detail={
-                "ship_name": best.ship.name,
+                "ship_name": best.ship.spoken_name,
                 "ship_type": best.ship.ship_type,
                 "tier": best.ship.tier,
                 "distance_m": round(best.distance_m),
@@ -94,7 +94,7 @@ class LowHpTargetDetector(Detector):
             severity=int(45 + (self.cfg.low_hp_target_ratio - target.ship.hp_ratio) * 60),
             facts=facts,
             detail={
-                "ship_name": target.ship.name,
+                "ship_name": target.ship.spoken_name,
                 "ship_type": target.ship.ship_type,
                 "hp_ratio": round(target.ship.hp_ratio, 3),
                 "distance_m": round(target.distance_m),
@@ -182,7 +182,7 @@ class AmmoRecheckDetector(Detector):
                 "selected_ammo": ammo,
                 "penetration_mm": facts.penetration_mm,
                 "target_class": target_class,
-                "target_name": target.ship.name,
+                "target_name": target.ship.spoken_name,
                 "distance_m": round(target.distance_m),
                 # No reload timer and no confirmed aim point exist in the data,
                 # so this can only ever be a prompt to look, not a conclusion.
@@ -210,11 +210,9 @@ class SituationAdviceDetector(Detector):
 
     @staticmethod
     def _shape(snapshot, facts) -> tuple:
-        balance = None
-        if facts.alive_allies is not None and facts.alive_enemies is not None:
-            balance = facts.alive_enemies - facts.alive_allies
-        return (snapshot.own_ship_type, snapshot.map_name,
-                snapshot.game_mode, balance)
+        # Force balance belongs to outnumbered (visible counts). Including it
+        # here would chatter whenever ships flicker dark in fog of war.
+        return (snapshot.own_ship_type, snapshot.map_name, snapshot.game_mode)
 
     def observe(self, snapshot, facts) -> None:
         self._signature = self._shape(snapshot, facts)
@@ -225,7 +223,7 @@ class SituationAdviceDetector(Detector):
         # Nothing to compare against yet, so the very first shape is not a change.
         if self._signature is None or signature == self._signature:
             return ()
-        own_class, _map_name, _game_mode, balance = signature
+        own_class, _map_name, _game_mode = signature
         return (self._event(
             SITUATION_ADVICE,
             severity=20,
@@ -234,7 +232,6 @@ class SituationAdviceDetector(Detector):
                 "own_class": own_class,
                 "map_name": snapshot.map_name,
                 "game_mode": snapshot.game_mode,
-                "force_balance": balance,
                 "hp_ratio": round(facts.own_hp_ratio, 3) if facts.own_hp_ratio else None,
             },
         ),)

@@ -53,7 +53,7 @@ class EnemyClosingDetector(Detector):
                 "distance_m": round(nearest.distance_m),
                 "bearing_deg": round(nearest.bearing_deg),
                 "ship_type": nearest.ship.ship_type,
-                "ship_name": nearest.ship.name,
+                "ship_name": nearest.ship.spoken_name,
                 "tier": nearest.ship.tier,
                 "closing_m_per_s": closing_rate,
             },

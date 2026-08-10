@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-SERVICE_ID = "8111-for-wows"
+SERVICE_ID = "8111_for_wows"
 SUPPORTED_API_MAJOR = 1
 
 MODE_EXTERNAL = "external"
@@ -32,6 +32,10 @@ MODE_MANAGED = "managed"
 MODE_OFFLINE = "offline"
 MODE_CONFLICT = "conflict"
 MODE_DISABLED = "disabled"
+
+CONFLICT_CAUSE_IDENTITY_MISMATCH = "identity_mismatch"
+CONFLICT_CAUSE_API_VERSION_MISMATCH = "api_version_mismatch"
+CONFLICT_CAUSE_PORT = "port_conflict"
 
 # Crash backoff: 1s, 2s, 4s, then hold at 4s.
 _BACKOFF_SECONDS = (1.0, 2.0, 4.0)
@@ -54,6 +58,16 @@ class ServiceHealth:
     @property
     def usable(self) -> bool:
         return self.reachable and self.ours
+
+    @property
+    def conflict_cause(self) -> str:
+        if not self.reachable or self.ours:
+            return ""
+        if not self.service_id:
+            return CONFLICT_CAUSE_PORT
+        if self.service_id != SERVICE_ID:
+            return CONFLICT_CAUSE_IDENTITY_MISMATCH
+        return CONFLICT_CAUSE_API_VERSION_MISMATCH
 
 
 @dataclass
@@ -96,6 +110,19 @@ def api_major(version: str) -> int | None:
         return int(head)
     except ValueError:
         return None
+
+
+def _conflict_detail(health: ServiceHealth) -> str:
+    if health.conflict_cause == CONFLICT_CAUSE_IDENTITY_MISMATCH:
+        reason = (
+            f"serviceId mismatch: expected {SERVICE_ID}, "
+            f"got {health.service_id}"
+        )
+    elif health.conflict_cause == CONFLICT_CAUSE_API_VERSION_MISMATCH:
+        reason = health.error or f"unsupported apiVersion: {health.api_version}"
+    else:
+        reason = "unidentified service is using this port"
+    return f"{reason}; not starting and not stopping anything"
 
 
 def is_loopback_url(url: str) -> bool:
@@ -159,7 +186,10 @@ def probe_health(base_url: str, timeout: float) -> ServiceHealth:
         service_id=service_id,
         api_version=version,
         instance_id=str(payload.get("instanceId") or ""),
-        source_status=str(payload.get("sourceStatus") or ""),
+        # /healthz publishes ``status``; accept the older ``sourceStatus`` key
+        # so a mixed-version pair still fills the overview card.
+        source_status=str(
+            payload.get("status") or payload.get("sourceStatus") or ""),
         error=error,
     )
 
@@ -226,8 +256,7 @@ class WowsServiceManager:
             return self.snapshot()
 
         if health.reachable:
-            self._set_detail(
-                "port busy with a different service; not starting and not stopping anything")
+            self._set_detail(_conflict_detail(health))
             return self.snapshot()
 
         if not self.cfg.service_auto_start:

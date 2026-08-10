@@ -46,7 +46,12 @@ export function OverviewSection(props: {
   const cursor = state.cursor || {}
   const config = state.config || {}
   const counters = state.counters || {}
+  const arbiter = state.arbiter || {}
   const hasSnapshot = snapshot.seq !== undefined
+  const quietRemainingSeconds =
+    arbiter.quiet_until && arbiter.quiet_until > (state.runtime_now || 0)
+      ? Math.ceil(arbiter.quiet_until - (state.runtime_now || 0))
+      : 0
   const findAction = (id: string) =>
     (props.actions || []).find((action) => action.id === id)
 
@@ -77,6 +82,14 @@ export function OverviewSection(props: {
       {state.reconnect_required ? (
         <Alert tone="warning">
           {t("overview.reconnectRequired")}
+        </Alert>
+      ) : null}
+
+      {quietRemainingSeconds > 0 ? (
+        <Alert tone="info">
+          {t("overview.output.quietWindow", {
+            seconds: quietRemainingSeconds,
+          })}
         </Alert>
       ) : null}
 
@@ -253,11 +266,25 @@ export function OverviewSection(props: {
                 [t("overview.battle.mode")]: snapshot.game_mode
                   || snapshot.battle_type || t("common.unknown"),
                 [t("overview.battle.health")]: formatPercent(snapshot.own_hp_ratio, t),
-                [t("overview.battle.allies")]: formatCount(snapshot.allies_alive, t),
-                [t("overview.battle.enemies")]: formatCount(snapshot.enemies_alive, t),
+                [t("overview.battle.allies")]: formatCount(
+                  snapshot.allies_not_confirmed_sunk, t
+                ),
+                [t("overview.battle.enemies")]: formatCount(
+                  snapshot.enemies_not_confirmed_sunk, t
+                ),
+                [t("overview.battle.confirmedVisibleAllies")]: formatCount(
+                  snapshot.confirmed_visible_allies, t
+                ),
+                [t("overview.battle.confirmedVisibleEnemies")]: formatCount(
+                  snapshot.confirmed_visible_enemies, t
+                ),
+                [t("overview.battle.visibleEnemies")]: formatCount(
+                  snapshot.visible_enemies, t
+                ),
                 [t("overview.battle.nearest")]: formatMetres(snapshot.nearest_enemy_m, t),
               }}
             />
+            <Text>{t("overview.battle.countsHelp")}</Text>
             <Divider />
             <Text>{t("overview.battle.availability")}</Text>
             <Inline gap={6} wrap>

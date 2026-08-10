@@ -259,9 +259,9 @@ class Arbiter:
     ) -> tuple[str, str] | None:
         """Hold back a call-out while the user is mid-conversation.
 
-        The host applies its own short activity gate independently. This is the
-        longer, user-tunable layer, and it names itself in the reason so the two
-        cannot be confused when nothing gets said.
+        The host applies its own short activity gate independently. This
+        user-tunable layer overlaps it by default, and names itself in the
+        reason so the two cannot be confused when nothing gets said.
         """
         mode = self.cfg.dialogue_intrusion_mode
         if mode == INTRUSION_ALLOW_INTERRUPT:

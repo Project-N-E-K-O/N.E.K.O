@@ -135,7 +135,7 @@ class TargetBroadsideDetector(Detector):
                 "broadside_angle_deg": round(angle),
                 "distance_m": round(target.distance_m),
                 "ship_type": target.ship.ship_type,
-                "ship_name": target.ship.name,
+                "ship_name": target.ship.spoken_name,
                 "hp_ratio": round(target.ship.hp_ratio, 3) if target.ship.hp_ratio else None,
             },
         ),)

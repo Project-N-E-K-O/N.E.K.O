@@ -7,7 +7,7 @@
   "instance_id": "replay-inst",
   "frames": [
     {
-      "serviceId": "8111-for-wows",
+      "serviceId": "8111_for_wows",
       "apiVersion": "1.0",
       "instanceId": "replay-inst",
       "seq": 1,
@@ -43,7 +43,7 @@
       "diag": null
     },
     {
-      "serviceId": "8111-for-wows",
+      "serviceId": "8111_for_wows",
       "apiVersion": "1.0",
       "instanceId": "replay-inst",
       "seq": 2,
@@ -156,7 +156,7 @@
       "diag": {}
     },
     {
-      "serviceId": "8111-for-wows",
+      "serviceId": "8111_for_wows",
       "apiVersion": "1.0",
       "instanceId": "replay-inst",
       "seq": 3,
@@ -302,7 +302,7 @@
       "diag": {}
     },
     {
-      "serviceId": "8111-for-wows",
+      "serviceId": "8111_for_wows",
       "apiVersion": "1.0",
       "instanceId": "replay-inst",
       "seq": 4,
@@ -450,7 +450,7 @@
       "diag": {}
     },
     {
-      "serviceId": "8111-for-wows",
+      "serviceId": "8111_for_wows",
       "apiVersion": "1.0",
       "instanceId": "replay-inst",
       "seq": 5,
@@ -507,7 +507,7 @@
       "diag": {}
     },
     {
-      "serviceId": "8111-for-wows",
+      "serviceId": "8111_for_wows",
       "apiVersion": "1.0",
       "instanceId": "replay-inst",
       "seq": 6,

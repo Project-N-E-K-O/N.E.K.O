@@ -234,7 +234,7 @@ def _candidate() -> AdviceCandidate:
         battle_id="battle-1",
         summary="血量偏低",
         detail={"own_hp_ratio": 0.3},
-        context={"alive_enemies": 4},
+        context={"visible_enemies": 4},
     )
 
 

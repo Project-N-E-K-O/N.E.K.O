@@ -38,11 +38,15 @@ export function PreferencesSection(props: {
   const disabledCategories = new Set(config.disabled_categories || [])
   const disabledLanes = new Set(config.disabled_lanes || [])
   const [quiet, setQuiet] = useState<number | "">(
-    config.user_chat_quiet_window_seconds ?? 60
+    config.user_chat_quiet_window_seconds ?? 10
   )
+  const quietRemainingSeconds =
+    arbiter.quiet_until && arbiter.quiet_until > props.runtimeNow
+      ? Math.ceil(arbiter.quiet_until - props.runtimeNow)
+      : 0
 
   useEffect(() => {
-    setQuiet(config.user_chat_quiet_window_seconds ?? 60)
+    setQuiet(config.user_chat_quiet_window_seconds ?? 10)
   }, [config.user_chat_quiet_window_seconds])
 
   return (
@@ -94,11 +98,13 @@ export function PreferencesSection(props: {
             </ActionButton>
           </Inline>
           <Alert tone="info">{t("preferences.intrusion.help")}</Alert>
-          {arbiter.quiet_until && arbiter.quiet_until > props.runtimeNow ? (
+          {quietRemainingSeconds > 0 ? (
             <Inline gap={8} wrap>
               <StatusBadge
                 tone="warning"
-                label={t("preferences.intrusion.active")}
+                label={t("preferences.intrusion.active", {
+                  seconds: quietRemainingSeconds,
+                })}
               />
               <StatusBadge
                 tone="default"

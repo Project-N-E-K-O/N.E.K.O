@@ -41,8 +41,9 @@ WOWS_VISION_PROMPT = (
     "3. 自身状态图标：着火、进水、主炮/舵机损坏、消耗品冷却；\n"
     "4. 主画面里队友的相对位置，自己是不是脱队或被包夹；\n"
     "5. 准星附近有没有可打的目标，弹着散布大概情况。\n"
-    "血量、距离、存活数这些数字以随附文本中的遥测为准，不要从画面上估读，"
-    "也不要复述它们。只说画面里看得见而数据里没有的东西。"
+    "血量、距离与当前点亮数以随附文本中的遥测为准；未确认沉没数量只是花名册"
+    "与最后已知记录的上限，不代表确认存活。不要从画面上估读或复述这些数字。"
+    "只说画面里看得见而数据里没有的东西。"
 )
 
 
@@ -222,8 +223,12 @@ def facts_to_telemetry(facts) -> dict[str, Any]:
     put("own_alive", facts.own_alive)
     put("own_speed_kn", _rounded(facts.own_speed, 1))
     put("own_heading_deg", _rounded(facts.own_heading_deg, 1))
-    put("alive_allies", facts.alive_allies)
-    put("alive_enemies", facts.alive_enemies)
+    put("allies_not_confirmed_sunk", facts.allies_not_confirmed_sunk)
+    put("enemies_not_confirmed_sunk", facts.enemies_not_confirmed_sunk)
+    put("confirmed_visible_allies", facts.confirmed_visible_allies)
+    put("confirmed_visible_enemies", facts.confirmed_visible_enemies)
+    if facts.confirmed_visible_allies is not None:
+        put("team_counts_confirmed", facts.team_counts_confirmed)
     # Spotted now — not the same as alive. 0 means nobody lit up, not a wipe.
     put("visible_enemies", facts.visible_enemies)
     put("nearest_ally_distance_m", _rounded(facts.nearest_ally_distance_m, 0))
@@ -241,8 +246,10 @@ def facts_to_telemetry(facts) -> dict[str, Any]:
 
 def _bearing(threat) -> dict[str, Any]:
     ship = getattr(threat, "ship", None)
+    spoken = getattr(ship, "spoken_name", None) if ship is not None else None
+    raw_name = getattr(ship, "name", "") or ""
     return {
-        "name": getattr(ship, "name", "") or "",
+        "name": spoken or raw_name,
         "distance_m": _rounded(threat.distance_m, 0),
         "bearing_deg": _rounded(threat.bearing_deg, 0),
     }

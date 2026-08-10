@@ -55,10 +55,8 @@ class BattleLifecycleDetector(Detector):
                     "battle_type": snapshot.battle_type,
                     "game_mode": snapshot.game_mode,
                     "map_name": snapshot.map_name,
-                    "own_ship": snapshot.own_ship_name,
+                    "own_ship": snapshot.own_ship_spoken_name,
                     "ship_type": snapshot.own_ship_type,
-                    "allies": facts.alive_allies,
-                    "enemies": facts.alive_enemies,
                 },
             ))
 

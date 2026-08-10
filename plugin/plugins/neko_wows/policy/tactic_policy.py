@@ -14,6 +14,7 @@ from ..domain.catalog import (
     AMMO_RECHECK_HINT,
     EventSpec,
     MULTI_DIRECTION_THREAT,
+    OUTNUMBERED,
     OWN_BROADSIDE_EXPOSED,
     POST_BATTLE_SUMMARY,
     RAPID_DAMAGE,
@@ -28,6 +29,10 @@ from ..detectors._base import GameEvent
 _CLAIM_LIMITS: dict[str, tuple[str, ...]] = {
     RAPID_DAMAGE: (
         "只能说“掉血很快 / 正在快速受伤”，不能说“被集火”或推断攻击者数量。",
+    ),
+    OUTNUMBERED: (
+        "只按事件中的 confirmed_visible_*（当前点亮且明确存活）描述视野内人数劣势；"
+        "不要把未确认沉没上限说成存活数，也不能据此说团灭或全灭。",
     ),
     MULTI_DIRECTION_THREAT: (
         "只能说“威胁来自多个方向”，不能断言交叉火力或敌方在配合。",
@@ -127,8 +132,6 @@ class WowsTacticPolicy:
         nearest = facts.nearest_enemy
         return {
             "own_hp_ratio": round(facts.own_hp_ratio, 3) if facts.own_hp_ratio else None,
-            "allies_alive": facts.alive_allies,
-            "enemies_alive": facts.alive_enemies,
             "visible_enemies": facts.visible_enemies,
             "nearest_enemy_m": round(nearest.distance_m) if nearest else None,
             "damage_inflicted": round(facts.damage_inflicted) if facts.damage_inflicted else None,

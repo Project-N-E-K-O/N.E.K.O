@@ -55,7 +55,7 @@ dry_run = false
 service_url = "http://127.0.0.1:8111"
 service_auto_start = true
 # 8111_for_wows 仓库根目录；留空则不自动拉起，只连已在跑的服务。
-service_source_dir = ""
+service_source_dir = "D:/8111_for_wows"
 # World_of_Warships 安装目录，转交给服务端自动定位 state.json。
 game_dir = ""
 service_startup_timeout_seconds = 10.0
@@ -138,10 +138,10 @@ tactics_tag_weight = 2.5
 # 无标签命中时，一个段落至少要命中这么多个不同查询词才会被注入。
 tactics_min_term_hits = 2
 
-# 播报偏好。这一层叠在宿主自己的「用户 10 秒内活跃就不放行」之上，
-# 时间线会标明是插件还是宿主压住的。
+# 播报偏好。默认静默窗与宿主自己的「用户约 10 秒内活跃就不放行」重叠，
+# 不再额外延长沉默；手动调大时才会继续压住常规播报。时间线会标明来源。
 dialogue_intrusion_mode = "critical_only"
-user_chat_quiet_window_seconds = 60.0
+user_chat_quiet_window_seconds = 10.0
 disabled_categories = []
 disabled_lanes = []
 prompt_revisions_kept = 20

@@ -29,7 +29,7 @@ from plugin.plugins.neko_wows.adapters.service_manager import (
     probe_health,
 )
 from plugin.plugins.neko_wows.domain.contracts import WowsConfig
-from plugin.plugins.neko_wows import NekoWowsPlugin
+from plugin.plugins.neko_wows import NekoWowsPlugin, _mod_hint
 
 
 class FakeResponse:
@@ -75,7 +75,7 @@ def healthy_payload(**overrides):
         "serviceId": SERVICE_ID,
         "apiVersion": "1.0",
         "instanceId": "inst-a",
-        "sourceStatus": "waiting",
+        "status": "waiting",
     }
     payload.update(overrides)
     return payload
@@ -116,6 +116,37 @@ def test_our_service_is_recognized(monkeypatch):
     health = probe_health("http://127.0.0.1:8111", 1.0)
     assert health.usable is True
     assert health.instance_id == "inst-a"
+    assert health.source_status == "waiting"
+
+
+def test_healthz_status_is_preferred_over_legacy_source_status(monkeypatch):
+    patch_urlopen(monkeypatch, healthy_payload(
+        status="live", sourceStatus="waiting"))
+    health = probe_health("http://127.0.0.1:8111", 1.0)
+    assert health.source_status == "live"
+
+
+def test_legacy_source_status_still_fills_the_card(monkeypatch):
+    patch_urlopen(monkeypatch, {
+        "ok": True,
+        "serviceId": SERVICE_ID,
+        "apiVersion": "1.0",
+        "instanceId": "inst-a",
+        "sourceStatus": "stale",
+    })
+    health = probe_health("http://127.0.0.1:8111", 1.0)
+    assert health.source_status == "stale"
+
+
+def test_published_8111_for_wows_identity_is_recognized(monkeypatch):
+    patch_urlopen(
+        monkeypatch,
+        healthy_payload(serviceId="8111_for_wows"),
+    )
+
+    health = probe_health("http://127.0.0.1:8111", 1.0)
+
+    assert health.usable is True
 
 
 def test_a_foreign_service_on_the_port_is_not_ours(monkeypatch):
@@ -190,11 +221,37 @@ def test_a_foreign_service_blocks_both_launch_and_shutdown(monkeypatch):
     manager = WowsServiceManager(cfg(service_source_dir="D:/8111_for_wows"))
     status = manager.start_if_needed()
     assert status.mode == MODE_CONFLICT
+    assert "unidentified service" in status.detail
     assert "not stopping anything" in status.detail
 
     # And stopping must be a no-op: we own nothing here.
     stopped = manager.stop()
     assert "nothing to stop" in stopped.detail
+
+
+def test_identity_mismatch_detail_does_not_claim_the_port_is_busy(monkeypatch):
+    patch_urlopen(
+        monkeypatch,
+        healthy_payload(serviceId="8111-for-wows"),
+    )
+    manager = WowsServiceManager(cfg(service_source_dir="D:/8111_for_wows"))
+
+    status = manager.start_if_needed()
+
+    assert status.mode == MODE_CONFLICT
+    assert "serviceId mismatch" in status.detail
+    assert "port busy" not in status.detail
+
+
+def test_api_version_mismatch_detail_does_not_claim_the_port_is_busy(monkeypatch):
+    patch_urlopen(monkeypatch, healthy_payload(apiVersion="2.0"))
+    manager = WowsServiceManager(cfg(service_source_dir="D:/8111_for_wows"))
+
+    status = manager.start_if_needed()
+
+    assert status.mode == MODE_CONFLICT
+    assert "unsupported apiVersion: 2.0" in status.detail
+    assert "port busy" not in status.detail
 
 
 def test_a_conflicting_service_is_not_safe_for_transport():
@@ -203,6 +260,49 @@ def test_a_conflicting_service_is_not_safe_for_transport():
         health=ServiceHealth(reachable=True, ours=False),
     )
     assert status.transport_allowed is False
+
+
+def test_identity_mismatch_conflict_gets_an_identity_hint():
+    status = ServiceStatus(
+        mode=MODE_CONFLICT,
+        health=ServiceHealth(
+            reachable=True,
+            ours=False,
+            service_id="8111-for-wows",
+            api_version="1.0",
+            error="foreign service: 8111-for-wows",
+        ),
+    )
+
+    assert _mod_hint(status, {}) == "identity_mismatch"
+
+
+def test_supported_identity_with_wrong_api_major_gets_a_version_hint():
+    status = ServiceStatus(
+        mode=MODE_CONFLICT,
+        health=ServiceHealth(
+            reachable=True,
+            ours=False,
+            service_id=SERVICE_ID,
+            api_version="2.0",
+            error="unsupported apiVersion: 2.0",
+        ),
+    )
+
+    assert _mod_hint(status, {}) == "api_version_mismatch"
+
+
+def test_unidentified_service_conflict_keeps_the_port_hint():
+    status = ServiceStatus(
+        mode=MODE_CONFLICT,
+        health=ServiceHealth(
+            reachable=True,
+            ours=False,
+            error="unidentified service on this port",
+        ),
+    )
+
+    assert _mod_hint(status, {}) == "port_conflict"
 
 
 @pytest.mark.parametrize("mode", [MODE_EXTERNAL, MODE_MANAGED, MODE_OFFLINE, MODE_DISABLED])

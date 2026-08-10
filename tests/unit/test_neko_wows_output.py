@@ -43,6 +43,7 @@ from plugin.plugins.neko_wows.presentation.instructions import (
     URGENT_OVERLAY,
     VISION_LOOK_BEFORE_SPEAK,
     WOWS_CONTEXT_INSTRUCTIONS,
+    WOWS_CONTEXT_WITH_LIVE_VISION_INSTRUCTIONS,
     WOWS_CONTEXT_WITH_VISION_INSTRUCTIONS,
     context_instructions,
     instructions_for,
@@ -564,7 +565,8 @@ def test_channel_mode_does_not_touch_priority_or_ttl():
 
 def facts(**overrides):
     base = dict(seq=1, at=100.0, battle_id="b-1", own_hp_ratio=0.5,
-                alive_allies=5, alive_enemies=6)
+                allies_not_confirmed_sunk=5,
+                enemies_not_confirmed_sunk=6)
     base.update(overrides)
     return WowsFacts(**base)
 
@@ -576,6 +578,60 @@ def build_candidate(event_id, **detail):
         battle_id="b-1", detail=detail,
     )
     return policy.expand([event], facts())[0]
+
+
+def test_shared_prompt_context_omits_unconfirmed_team_counts():
+    candidate = build_candidate(LOW_HEALTH, hp_ratio=0.12)
+
+    assert "allies_alive" not in candidate.context
+    assert "enemies_alive" not in candidate.context
+
+
+def test_dashboard_names_uncertain_counts_and_includes_spotted_enemies():
+    plugin = object.__new__(NekoWowsPlugin)
+    plugin._state_lock = threading.RLock()
+    plugin.cfg = WowsConfig()
+    plugin._latest = (
+        SimpleNamespace(
+            instance_id="inst", seq=7, battle_id="battle", status="live",
+            legacy=False, api_version="1.0", transport="ws", active=True,
+            battle_type="RandomBattle", game_mode="Domination",
+            map_name="New Dawn", availability={}, capabilities={},
+        ),
+        facts(visible_enemies=2),
+    )
+    plugin._frames_seen = 7
+    plugin._events_seen = 1
+    plugin._running = True
+    plugin._reconnect_required = False
+    plugin._prompt_bundle = SimpleNamespace()
+    service_status = SimpleNamespace(
+        mode="external",
+        health=SimpleNamespace(reachable=True),
+        as_dict=lambda: {},
+    )
+    plugin.service = SimpleNamespace(snapshot=lambda: service_status)
+    plugin.transport = SimpleNamespace(stats=lambda: {})
+    plugin.gate = SimpleNamespace(as_dict=lambda: {})
+    plugin.arbiter = SimpleNamespace(stats=lambda: {})
+    plugin.dispatcher = SimpleNamespace(stats=lambda: {})
+    plugin.context_injector = SimpleNamespace(injected=True)
+    plugin.screenshots = SimpleNamespace(status=lambda: {})
+    plugin.timeline = SimpleNamespace(recent=lambda _limit: [])
+    plugin._live_vision_payload = lambda _cfg: {}
+    plugin._ship_catalog_payload = lambda: {}
+    plugin._documents_payload = lambda: {}
+    plugin._prompts_payload = lambda _bundle: {}
+
+    snapshot = plugin._dashboard_payload()["snapshot"]
+
+    assert snapshot["allies_not_confirmed_sunk"] == 5
+    assert snapshot["enemies_not_confirmed_sunk"] == 6
+    assert snapshot["visible_enemies"] == 2
+    assert "confirmed_visible_allies" in snapshot
+    assert "confirmed_visible_enemies" in snapshot
+    assert "allies_alive" not in snapshot
+    assert "enemies_alive" not in snapshot
 
 
 def test_the_request_carries_the_event_facts():
@@ -698,8 +754,19 @@ def test_context_instructions_follow_the_screenshot_switch():
     assert "看不到屏幕画面" not in enabled
 
 
+def test_live_vision_context_describes_team_counts_as_upper_bounds():
+    text = WOWS_CONTEXT_WITH_LIVE_VISION_INSTRUCTIONS
+    assert "存活数" not in text
+    assert "未确认沉没" in text
+    assert "点亮" in text
+
+
 def test_base_instructions_distinguish_visible_from_alive_counts():
     assert "visible_enemies" in BASE_INSTRUCTIONS
+    assert "confirmed_visible_allies" in BASE_INSTRUCTIONS
+    assert "未确认沉没" in BASE_INSTRUCTIONS
+    assert "已知仍存活" not in BASE_INSTRUCTIONS
     assert "失去联系" in BASE_INSTRUCTIONS
     assert "团灭" in BASE_INSTRUCTIONS
     assert "似了" in BASE_INSTRUCTIONS
+    assert "index" in BASE_INSTRUCTIONS

@@ -55,8 +55,12 @@ export type SnapshotState = {
   availability?: Record<string, string>
   unsupported?: string[]
   own_hp_ratio?: number | null
-  allies_alive?: number | null
-  enemies_alive?: number | null
+  allies_not_confirmed_sunk?: number | null
+  enemies_not_confirmed_sunk?: number | null
+  confirmed_visible_allies?: number | null
+  confirmed_visible_enemies?: number | null
+  team_counts_confirmed?: boolean
+  visible_enemies?: number | null
   nearest_enemy_m?: number | null
 }
 

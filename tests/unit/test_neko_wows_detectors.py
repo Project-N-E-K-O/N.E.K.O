@@ -26,7 +26,9 @@ from plugin.plugins.neko_wows.domain.catalog import (
     OWN_BROADSIDE_EXPOSED,
     OWN_SHIP_SUNK,
     POST_BATTLE_SUMMARY,
+    PRIORITY_TARGET,
     RAPID_DAMAGE,
+    SITUATION_ADVICE,
 )
 from plugin.plugins.neko_wows.domain.contracts import WowsConfig
 from plugin.plugins.neko_wows.domain.facts import FactBuilder
@@ -112,7 +114,7 @@ def frame(
             max_health=80000.0, yaw=yaw, speed=25.0, x=x, z=z,
         )
     return WowsSnapshot(
-        service_id="8111-for-wows",
+        service_id="8111_for_wows",
         api_version="1.0",
         instance_id=instance_id,
         seq=seq,
@@ -361,6 +363,45 @@ def test_sinking_needs_two_real_health_readings():
     assert OWN_SHIP_SUNK in fired(results)
 
 
+def test_sinking_attaches_visible_team_counts_after_own_hull_dies():
+    """Death frames drop own from confirmed-visible; detail must still attach."""
+    registry = DetectorRegistry(build_survival_detectors(CFG))
+    living = (
+        Ship(
+            ui_id=1, player_id=2000, team_id=0, relation=0,
+            name="OwnShip", alive=True, visible=True,
+            x=0.0, z=0.0, health=32000.0, max_health=80000.0, hp_ratio=0.4,
+        ),
+        ally(ui_id=10),
+        enemy(ui_id=2),
+        enemy(ui_id=3),
+    )
+    dead = (
+        Ship(
+            ui_id=1, player_id=2000, team_id=0, relation=0,
+            name="OwnShip", alive=False, visible=True,
+            x=0.0, z=0.0, health=0.0, max_health=80000.0, hp_ratio=0.0,
+        ),
+        ally(ui_id=10),
+        enemy(ui_id=2),
+        enemy(ui_id=3),
+    )
+    results = feed(registry, [
+        frame(seq=1, at=100.0, hp_ratio=0.4, ships=living),
+        frame(seq=2, at=101.0, hp_ratio=0.0, ships=dead),
+    ])
+    sunk = [
+        event for result in results for event in result.events
+        if event.event_id == OWN_SHIP_SUNK
+    ]
+    assert len(sunk) == 1
+    assert BUILDER.build(frame(hp_ratio=0.0, ships=dead)).team_counts_confirmed is False
+    assert sunk[0].detail == {
+        "confirmed_visible_allies": 1,
+        "confirmed_visible_enemies": 2,
+    }
+
+
 def test_self_going_absent_is_not_a_sinking():
     registry = DetectorRegistry(build_survival_detectors(CFG))
     results = feed(registry, [
@@ -559,23 +600,87 @@ def test_low_hp_target_is_reported_once_per_ship():
 
 # --- outnumbered / isolation --------------------------------------------
 
-def test_outnumbered_uses_visible_alive_counts():
+def test_team_counts_are_not_confirmed_without_own_visible_object():
+    facts = BUILDER.build(frame(ships=(
+        ally(ui_id=10),
+        enemy(ui_id=2),
+        enemy(ui_id=3),
+        enemy(ui_id=4),
+    )))
+
+    assert facts.team_counts_confirmed is False
+    assert facts.confirmed_visible_allies == 1
+    assert facts.confirmed_visible_enemies == 3
+
+
+def test_outnumbered_uses_only_confirmed_visible_team_counts():
     registry = DetectorRegistry(build_survival_detectors(CFG))
     ships = (
+        Ship(
+            ui_id=1, player_id=2000, team_id=0, relation=0,
+            name="OwnShip", alive=True, visible=True,
+        ),
         ally(ui_id=10),
         enemy(ui_id=2, x=6000.0),
         enemy(ui_id=3, x=6500.0),
         enemy(ui_id=4, x=7000.0),
+        enemy(ui_id=5, x=7500.0),
     )
     results = feed(registry, [
         frame(seq=1, at=100.0, ships=ships),
         frame(seq=2, at=101.0, ships=ships),
     ])
-    assert "outnumbered" in fired(results)
+    events = [
+        event
+        for result in results
+        for event in result.events
+        if event.event_id == OUTNUMBERED
+    ]
+    assert len(events) == 1
+    assert events[0].detail == {
+        "confirmed_visible_allies": 2,
+        "confirmed_visible_enemies": 4,
+        "gap": 2,
+    }
 
 
-def test_outnumbered_fires_from_roster_when_objects_stale():
-    """Roster-backed alive counts must still drive outnumbered mid-battle."""
+def test_outnumbered_still_fires_when_some_enemies_are_dark():
+    """Fog-of-war must not require every remaining hull to stay lit."""
+    registry = DetectorRegistry(build_survival_detectors(CFG))
+    ships = (
+        Ship(
+            ui_id=1, player_id=2000, team_id=0, relation=0,
+            name="OwnShip", alive=True, visible=True,
+        ),
+        ally(ui_id=10),
+        enemy(ui_id=2, x=6000.0),
+        enemy(ui_id=3, x=6500.0),
+        enemy(ui_id=4, x=7000.0),
+        enemy(ui_id=5, x=7500.0),
+        Ship(
+            ui_id=6, player_id=3006, team_id=1, relation=2,
+            ship_type="Destroyer", name="DarkFoe", tier=10,
+            alive=True, visible=False, x=9000.0, z=0.0,
+            health=20000.0, max_health=20000.0, hp_ratio=1.0,
+        ),
+    )
+    results = feed(registry, [
+        frame(seq=1, at=100.0, ships=ships),
+        frame(seq=2, at=101.0, ships=ships),
+    ])
+    events = [
+        event
+        for result in results
+        for event in result.events
+        if event.event_id == OUTNUMBERED
+    ]
+    assert len(events) == 1
+    assert events[0].detail["confirmed_visible_enemies"] == 4
+    assert events[0].detail["gap"] == 2
+
+
+def test_outnumbered_does_not_fire_from_roster_only_counts():
+    """Roster/last-known upper bounds must not be spoken as a real disadvantage."""
     registry = DetectorRegistry(build_survival_detectors(CFG))
     ships = (
         Ship(
@@ -603,10 +708,82 @@ def test_outnumbered_fires_from_roster_when_objects_stale():
         frame(seq=1, at=100.0, ships=ships, avail=avail),
         frame(seq=2, at=101.0, ships=ships, avail=avail),
     ])
-    assert OUTNUMBERED in fired(results)
-    assert not any(
-        block.detector == "outnumbered" for result in results for block in result.blocked
+    assert OUTNUMBERED not in fired(results)
+
+
+def test_outnumbered_does_not_fire_from_populated_but_stale_objects():
+    registry = DetectorRegistry(build_survival_detectors(CFG))
+    ships = (
+        Ship(
+            ui_id=1, player_id=2000, team_id=0, relation=0,
+            name="OwnShip", alive=True, visible=True,
+        ),
+        enemy(ui_id=2),
+        enemy(ui_id=3),
+        enemy(ui_id=4),
     )
+    avail = availability(**{
+        DOMAIN_OBJECTS: AVAIL_STALE,
+        DOMAIN_ROSTER: AVAIL_AVAILABLE,
+    })
+
+    results = feed(registry, [
+        frame(seq=1, at=100.0, ships=ships, avail=avail),
+        frame(seq=2, at=101.0, ships=ships, avail=avail),
+    ])
+
+    assert BUILDER.build(frame(ships=ships, avail=avail)).team_counts_confirmed is False
+    assert OUTNUMBERED not in fired(results)
+
+
+def test_situation_advice_ignores_visibility_flicker():
+    """Force-balance chatter belongs to outnumbered, not situation_advice."""
+    registry = DetectorRegistry(build_targeting_detectors(CFG))
+    own = Ship(
+        ui_id=1, player_id=2000, team_id=0, relation=0,
+        name="OwnShip", alive=True, visible=True,
+    )
+    lit = (
+        own,
+        ally(ui_id=10),
+        enemy(ui_id=2),
+        enemy(ui_id=3),
+        enemy(ui_id=4),
+        enemy(ui_id=5),
+    )
+    dimmed = (*lit[:-1], Ship(
+        **{**lit[-1].__dict__, "visible": False},
+    ))
+
+    results = feed(registry, [
+        frame(seq=1, at=100.0, ships=lit),
+        frame(seq=2, at=101.0, ships=dimmed),
+        frame(seq=3, at=102.0, ships=lit),
+    ])
+
+    assert SITUATION_ADVICE not in fired(results)
+
+
+def test_priority_target_speaks_humanized_ship_index():
+    registry = DetectorRegistry(build_targeting_detectors(CFG))
+    results = feed(registry, [
+        frame(seq=1, at=100.0, ships=()),
+        frame(seq=2, at=101.0, ships=(
+            enemy(
+                ui_id=2, x=5000.0, hp_ratio=0.4,
+                name="PJSB018_Yamato_1944", ship_type="Battleship",
+            ),
+        )),
+    ])
+    events = [
+        event
+        for result in results
+        for event in result.events
+        if event.event_id == PRIORITY_TARGET
+    ]
+    assert events
+    assert events[0].detail["ship_name"] == "Yamato"
+    assert "PJSB018" not in events[0].detail["ship_name"]
 
 
 def test_isolation_needs_a_known_ally_position():

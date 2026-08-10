@@ -91,7 +91,7 @@ def v1_payload(*, seq=1, instance_id="inst-a", battle_id="b-1",
                status=STATUS_LIVE, availability=None, **overrides):
     payload = flat_body(**overrides)
     payload.update({
-        "serviceId": "8111-for-wows",
+        "serviceId": "8111_for_wows",
         "apiVersion": "1.0",
         "instanceId": instance_id,
         "seq": seq,
@@ -130,6 +130,15 @@ def test_v1_envelope_is_read_verbatim():
     assert snapshot.battle_id == "b-1"
     assert snapshot.status == STATUS_LIVE
     assert snapshot.cursor == ("inst-a", 7)
+
+
+def test_published_8111_for_wows_snapshot_identity_is_accepted():
+    payload = v1_payload()
+    payload["serviceId"] = "8111_for_wows"
+
+    snapshot = WowsSchemaAdapter().parse(payload)
+
+    assert snapshot.service_id == "8111_for_wows"
 
 
 def test_v1_game_version_is_preserved_when_service_supplies_it():
@@ -207,8 +216,8 @@ def test_adapter_converts_bigworld_wire_coords_to_meters():
     assert facts.distance_to_boundary_m == pytest.approx(800.0 * BW_TO_METERS)
 
 
-def test_alive_enemies_keep_last_known_ships_after_they_go_dark():
-    """灭点后仍在 objects 里、visible=false 的敌舰不能从存活数里消失。"""
+def test_not_confirmed_sunk_enemies_keep_last_known_ships_after_they_go_dark():
+    """灭点舰仍计入未确认沉没上限，但不计入当前点亮。"""
     own = {
         "uiId": 1, "playerId": 2000, "teamId": 0, "relation": 0,
         "type": "Battleship", "name": "OwnShip", "playerName": "Master",
@@ -239,7 +248,9 @@ def test_alive_enemies_keep_last_known_ships_after_they_go_dark():
         objects=[own, spotted, dark],
     ))
     facts = FactBuilder(WowsConfig()).build(snapshot)
-    assert facts.alive_enemies == 2
+    assert facts.enemies_not_confirmed_sunk == 2
+    assert facts.confirmed_visible_enemies == 1
+    assert facts.team_counts_confirmed is True
     assert facts.visible_enemies == 1
 
 
@@ -277,7 +288,7 @@ def test_threat_geometry_uses_visible_enemies_not_dark_last_known():
         objects=[own, spotted, dark],
     ))
     facts = FactBuilder(WowsConfig()).build(snapshot)
-    assert facts.alive_enemies == 2
+    assert facts.enemies_not_confirmed_sunk == 2
     assert facts.visible_enemies == 1
     assert facts.nearest_enemy is not None
     assert facts.nearest_enemy.ship.player_id == 3001
@@ -316,17 +327,17 @@ def test_roster_stub_does_not_resurrect_ship_after_corpse_leaves_objects():
     }
     seen_dead = adapter.parse(v1_payload(
         self=self_body, objects=[own, dead], roster=roster))
-    assert FactBuilder(WowsConfig()).build(seen_dead).alive_enemies == 1
+    assert FactBuilder(WowsConfig()).build(seen_dead).enemies_not_confirmed_sunk == 1
 
     corpse_gone = adapter.parse(v1_payload(
         seq=2, self=self_body, objects=[own], roster=roster))
     facts = FactBuilder(WowsConfig()).build(corpse_gone)
-    assert facts.alive_enemies == 1
+    assert facts.enemies_not_confirmed_sunk == 1
     assert {s.player_id for s in corpse_gone.enemies(visible_only=False)} == {3002}
 
 
-def test_roster_only_enemies_count_as_alive_before_anyone_is_spotted():
-    """开局对面还没人亮过时，roster 里的敌舰仍应计入存活，而不是 0。"""
+def test_roster_only_counts_are_not_presented_as_confirmed_alive():
+    """花名册能给出未确认沉没上限，但不能证明舰船仍然存活。"""
     own = {
         "uiId": 1, "playerId": 2000, "teamId": 0, "relation": 0,
         "type": "Battleship", "name": "OwnShip", "playerName": "Master",
@@ -351,8 +362,46 @@ def test_roster_only_enemies_count_as_alive_before_anyone_is_spotted():
         ],
     ))
     facts = FactBuilder(WowsConfig()).build(snapshot)
-    assert facts.alive_enemies == 2
+    assert facts.enemies_not_confirmed_sunk == 2
+    assert facts.confirmed_visible_enemies == 0
+    assert facts.team_counts_confirmed is True
     assert facts.visible_enemies == 0
+
+
+def test_full_roster_with_explicit_alive_flags_confirms_visible_team_counts():
+    payload = v1_payload(roster=[
+        {"playerId": 2000, "teamId": 0, "relation": 0, "name": "Master",
+         "shipName": "Yamato", "shipType": "Battleship", "shipTier": 10},
+        {"playerId": 3000, "teamId": 1, "relation": 2, "name": "Foe",
+         "shipName": "Shimakaze", "shipType": "Destroyer", "shipTier": 10},
+    ])
+
+    facts = FactBuilder(WowsConfig()).build(WowsSchemaAdapter().parse(payload))
+
+    assert facts.allies_not_confirmed_sunk == 1
+    assert facts.enemies_not_confirmed_sunk == 1
+    assert facts.confirmed_visible_allies == 1
+    assert facts.confirmed_visible_enemies == 1
+    assert facts.team_counts_confirmed is True
+
+
+def test_spoken_ship_name_humanizes_wire_indexes():
+    from plugin.plugins.neko_wows.domain.snapshot import Ship, spoken_ship_name
+
+    indexed = Ship(
+        name="PJSB018_Yamato_1944", ship_type="Battleship", tier=10,
+        player_name="Foe",
+    )
+    friendly = Ship(name="Zao", ship_type="Cruiser", tier=10)
+    class_only = Ship(
+        name="PRSB999_UnknownHull_1999", ship_type="Battleship", tier=9,
+    )
+
+    assert spoken_ship_name(indexed) == "Yamato"
+    assert spoken_ship_name(friendly) == "Zao"
+    assert spoken_ship_name(Ship(name="PRSB999_UnknownHull_1999")) == "UnknownHull"
+    assert spoken_ship_name(Ship(ship_type="Cruiser", tier=8)) == "Cruiser 8级"
+    assert class_only.spoken_name == "UnknownHull"
 
 
 def test_dead_object_enemy_is_not_revived_by_roster_entry():
@@ -386,7 +435,7 @@ def test_dead_object_enemy_is_not_revived_by_roster_entry():
         ],
     ))
     facts = FactBuilder(WowsConfig()).build(snapshot)
-    assert facts.alive_enemies == 0
+    assert facts.enemies_not_confirmed_sunk == 0
     assert facts.visible_enemies == 0
 
 
@@ -426,8 +475,8 @@ def test_roster_counts_survive_when_objects_domain_is_stale():
     facts = FactBuilder(WowsConfig()).build(snapshot)
     assert snapshot.is_available(DOMAIN_OBJECTS) is False
     assert snapshot.is_available(DOMAIN_ROSTER) is True
-    assert facts.alive_allies == 2
-    assert facts.alive_enemies == 2
+    assert facts.allies_not_confirmed_sunk == 2
+    assert facts.enemies_not_confirmed_sunk == 2
     assert facts.visible_enemies is None
 
 
@@ -455,12 +504,12 @@ def test_distant_ally_flicker_does_not_drop_alive_count_without_roster():
     }
     seen = adapter.parse(v1_payload(
         self=self_body, objects=[own, ally], roster=[]))
-    assert FactBuilder(WowsConfig()).build(seen).alive_allies == 2
+    assert FactBuilder(WowsConfig()).build(seen).allies_not_confirmed_sunk == 2
 
     flickered = adapter.parse(v1_payload(
         seq=2, self=self_body, objects=[own], roster=[]))
     facts = FactBuilder(WowsConfig()).build(flickered)
-    assert facts.alive_allies == 2
+    assert facts.allies_not_confirmed_sunk == 2
     assert {s.player_id for s in flickered.own_side(visible_only=False)} == {2000, 2101}
     assert {s.player_id for s in flickered.allies(visible_only=True)} == set()
 
@@ -489,12 +538,12 @@ def test_lost_spot_enemy_flicker_keeps_alive_but_not_visible():
     }
     seen = adapter.parse(v1_payload(
         self=self_body, objects=[own, enemy], roster=[]))
-    assert FactBuilder(WowsConfig()).build(seen).alive_enemies == 1
+    assert FactBuilder(WowsConfig()).build(seen).enemies_not_confirmed_sunk == 1
 
     lost = adapter.parse(v1_payload(
         seq=2, self=self_body, objects=[own], roster=[]))
     facts = FactBuilder(WowsConfig()).build(lost)
-    assert facts.alive_enemies == 1
+    assert facts.enemies_not_confirmed_sunk == 1
     assert facts.visible_enemies == 0
     assert facts.nearest_enemy is None
 
@@ -525,21 +574,21 @@ def test_sticky_memory_does_not_block_death_without_roster():
 
     seen = adapter.parse(v1_payload(
         self=self_body, objects=[own, ally], roster=[]))
-    assert builder.build(seen).alive_allies == 2
+    assert builder.build(seen).allies_not_confirmed_sunk == 2
 
     sticky = adapter.parse(v1_payload(
         seq=2, self=self_body, objects=[own], roster=[]))
-    assert builder.build(sticky).alive_allies == 2
+    assert builder.build(sticky).allies_not_confirmed_sunk == 2
 
     dead = {**ally, "alive": False, "visible": False, "health": 0.0, "hpRatio": 0.0}
     seen_dead = adapter.parse(v1_payload(
         seq=3, self=self_body, objects=[own, dead], roster=[]))
-    assert builder.build(seen_dead).alive_allies == 1
+    assert builder.build(seen_dead).allies_not_confirmed_sunk == 1
 
     corpse_gone = adapter.parse(v1_payload(
         seq=4, self=self_body, objects=[own], roster=[]))
     facts = builder.build(corpse_gone)
-    assert facts.alive_allies == 1
+    assert facts.allies_not_confirmed_sunk == 1
     assert {s.player_id for s in corpse_gone.own_side(visible_only=False)} == {2000}
 
     # Missing alive on a known corpse must not re-seed sticky memory.
@@ -547,12 +596,12 @@ def test_sticky_memory_does_not_block_death_without_roster():
     null_alive_corpse.pop("alive")
     flickered_corpse = adapter.parse(v1_payload(
         seq=5, self=self_body, objects=[own, null_alive_corpse], roster=[]))
-    assert builder.build(flickered_corpse).alive_allies == 1
+    assert builder.build(flickered_corpse).allies_not_confirmed_sunk == 1
     assert 2101 not in adapter._known_ships
 
     still_gone = adapter.parse(v1_payload(
         seq=6, self=self_body, objects=[own], roster=[]))
-    assert builder.build(still_gone).alive_allies == 1
+    assert builder.build(still_gone).allies_not_confirmed_sunk == 1
 
 
 def test_unknown_major_version_is_refused():

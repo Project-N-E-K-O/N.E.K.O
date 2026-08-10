@@ -41,14 +41,23 @@ class SinkingDetector(Detector):
         if previous_facts.own_health <= 0 or facts.own_health > 0:
             return ()
         self._fired = True
+        # Own hull is usually alive=False on this frame, so team_counts_confirmed
+        # (which requires our own object still lit-and-alive) is false. Visible
+        # force counts for the rest of the field remain trustworthy when present.
+        detail = {}
+        if (
+            facts.confirmed_visible_allies is not None
+            and facts.confirmed_visible_enemies is not None
+        ):
+            detail = {
+                "confirmed_visible_allies": facts.confirmed_visible_allies,
+                "confirmed_visible_enemies": facts.confirmed_visible_enemies,
+            }
         return (self._event(
             OWN_SHIP_SUNK,
             severity=100,
             facts=facts,
-            detail={
-                "allies_left": facts.alive_allies,
-                "enemies_left": facts.alive_enemies,
-            },
+            detail=detail,
         ),)
 
 
@@ -135,18 +144,19 @@ class RapidDamageDetector(Detector):
 class OutnumberedDetector(Detector):
     name = "outnumbered"
     events = (OUTNUMBERED,)
-    # Alive counts are valid from objects and/or roster; either is enough.
-    required = ()
-    required_any = (DOMAIN_OBJECTS, DOMAIN_ROSTER)
-    optional = (DOMAIN_OBJECTS, DOMAIN_ROSTER)
+    # Speak from currently lit, explicitly-alive hulls only. Dark last-known /
+    # roster upper bounds stay on the panel and must not drive this claim.
+    required = (DOMAIN_OBJECTS,)
+    optional = (DOMAIN_ROSTER,)
 
     def reset(self) -> None:
         self._announced_gap = 0
 
     def detect(self, previous, current, context: DetectorContext) -> Sequence[GameEvent]:
         _snapshot, facts = current
-        allies, enemies = facts.alive_allies, facts.alive_enemies
-        if allies is None or enemies is None:
+        allies = facts.confirmed_visible_allies
+        enemies = facts.confirmed_visible_enemies
+        if not facts.team_counts_confirmed or allies is None or enemies is None:
             return ()
         gap = enemies - allies
         if gap < self.cfg.outnumbered_margin or gap <= self._announced_gap:
@@ -156,7 +166,11 @@ class OutnumberedDetector(Detector):
             OUTNUMBERED,
             severity=int(40 + min(30, gap * 6)),
             facts=facts,
-            detail={"allies": allies, "enemies": enemies, "gap": gap},
+            detail={
+                "confirmed_visible_allies": allies,
+                "confirmed_visible_enemies": enemies,
+                "gap": gap,
+            },
         ),)
 
 

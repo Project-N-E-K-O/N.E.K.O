@@ -227,6 +227,13 @@ def test_the_default_policy_is_critical_only():
     assert WowsConfig().dialogue_intrusion_mode == INTRUSION_CRITICAL_ONLY
 
 
+def test_default_quiet_window_matches_the_host_short_gate():
+    assert WowsConfig().user_chat_quiet_window_seconds == 10.0
+    assert WowsConfig.from_mapping({
+        "dry_run": False,
+    }).user_chat_quiet_window_seconds == 10.0
+
+
 def test_an_unknown_mode_falls_back_to_critical_only():
     cfg = WowsConfig.from_mapping({"dialogue_intrusion_mode": "whatever"})
     assert cfg.dialogue_intrusion_mode == INTRUSION_CRITICAL_ONLY
@@ -266,6 +273,22 @@ def test_critical_only_lets_urgent_through_but_holds_normal():
     urgent = arbiter.decide([candidate(LOW_HEALTH, at=111.0, cfg=cfg)], 111.0)
     assert urgent.chosen is not None
     assert urgent.chosen.lane == LANE_URGENT
+
+
+def test_default_normal_callout_reopens_before_its_ttl_expires():
+    cfg = WowsConfig()
+    arbiter = Arbiter(cfg)
+    arbiter.note_user_activity(100.0)
+
+    held = arbiter.decide([
+        candidate(DAMAGE_MILESTONE, at=101.0, cfg=cfg)
+    ], 101.0)
+    assert held.chosen is None
+    assert REASON_QUIET_WINDOW in outcomes(held, DAMAGE_MILESTONE)
+
+    reopened = arbiter.decide([], 111.0)
+    assert reopened.chosen is not None
+    assert reopened.chosen.event_id == DAMAGE_MILESTONE
 
 
 def test_allow_interrupt_ignores_the_window_entirely():
@@ -609,7 +632,7 @@ def test_live_preference_actions_change_runtime_only_under_pipeline_lock(
         "quiet_window_seconds": 25.0,
     }, {
         "dialogue_intrusion_mode": INTRUSION_CRITICAL_ONLY,
-        "user_chat_quiet_window_seconds": 60.0,
+        "user_chat_quiet_window_seconds": 10.0,
     }),
     ("set_category_enabled", {
         "category": CATEGORY_SURVIVAL,
@@ -630,11 +653,11 @@ def test_live_preference_actions_change_runtime_only_under_pipeline_lock(
     }),
     ("set_connection", {
         "service_url": "http://127.0.0.1:18111",
-        "service_source_dir": "D:/8111_for_wows",
+        "service_source_dir": "D:/other_8111",
         "game_dir": "D:/Games/WoWs",
     }, {
         "service_url": "http://127.0.0.1:8111",
-        "service_source_dir": "",
+        "service_source_dir": "D:/8111_for_wows",
         "game_dir": "",
     }),
     ("set_screenshot_settings", {

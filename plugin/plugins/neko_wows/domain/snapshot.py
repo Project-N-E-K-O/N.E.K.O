@@ -12,8 +12,13 @@ like "all enemies disappeared".
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any
+
+# Wire ship indexes look like ``PJSB018_Yamato_1944``. Spoken call-outs must
+# never read that string aloud when a human label can be derived.
+_SHIP_INDEX_HEAD = re.compile(r"^[A-Z]{2,4}[A-Z]*\d+[A-Z]?$", re.IGNORECASE)
 
 # --- source status -------------------------------------------------------
 STATUS_WAITING = "waiting"
@@ -67,6 +72,43 @@ RELATION_ALLY = 1
 RELATION_ENEMY = 2
 
 
+def looks_like_ship_index(name: str | None) -> bool:
+    """True when ``name`` is a ModsAPI hull index, not a display label."""
+    text = (name or "").strip()
+    if "_" not in text:
+        return False
+    head, _tail = text.split("_", 1)
+    return bool(_SHIP_INDEX_HEAD.match(head))
+
+
+def spoken_ship_name(ship: "Ship") -> str | None:
+    """Label safe to put in a call-out detail.
+
+    Preference: already-friendly ``name`` → humanized index tail → class+tier →
+    player nick → raw name last.
+    """
+    name = (ship.name or "").strip() or None
+    if name and not looks_like_ship_index(name):
+        return name
+    if name and looks_like_ship_index(name):
+        rest = name.split("_", 1)[1]
+        parts = [
+            part for part in rest.split("_")
+            if not (part.isdigit() and len(part) >= 4)
+        ]
+        if parts:
+            return " ".join(parts)
+    class_bits: list[str] = []
+    if ship.ship_type:
+        class_bits.append(ship.ship_type)
+    if ship.tier is not None:
+        class_bits.append(f"{ship.tier}级")
+    if class_bits:
+        return " ".join(class_bits)
+    player = (ship.player_name or "").strip() or None
+    return player or name
+
+
 @dataclass(frozen=True)
 class Ship:
     """One ship on the minimap, ally or enemy, visible or last-known."""
@@ -100,6 +142,10 @@ class Ship:
     @property
     def has_position(self) -> bool:
         return self.x is not None and self.z is not None
+
+    @property
+    def spoken_name(self) -> str | None:
+        return spoken_ship_name(self)
 
 
 @dataclass(frozen=True)
@@ -214,8 +260,14 @@ class WowsSnapshot:
 
     @property
     def own_ship_name(self) -> str | None:
+        """Wire/catalog identity (may be an index). Prefer for retrieval tags."""
         ship = self.own_ship
         return ship.name if ship is not None else None
+
+    @property
+    def own_ship_spoken_name(self) -> str | None:
+        ship = self.own_ship
+        return ship.spoken_name if ship is not None else None
 
     def enemies(self, *, visible_only: bool = True) -> tuple[Ship, ...]:
         return tuple(

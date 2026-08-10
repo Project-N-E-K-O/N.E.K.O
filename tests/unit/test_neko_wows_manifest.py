@@ -130,6 +130,26 @@ def test_preference_inputs_follow_refreshed_props_and_quiet_deadline():
     assert "quiet_until > props.runtimeNow" in source
 
 
+def test_quiet_window_countdown_is_visible_without_opening_the_timeline():
+    overview = (PLUGIN_DIR / "ui" / "overview.tsx").read_text(encoding="utf-8")
+    preferences = (
+        PLUGIN_DIR / "ui" / "preferences.tsx").read_text(encoding="utf-8")
+
+    assert "quietRemainingSeconds" in overview
+    assert "state.arbiter" in overview
+    assert 't("overview.output.quietWindow"' in overview
+    assert "quietRemainingSeconds" in preferences
+    assert 't("preferences.intrusion.active"' in preferences
+
+    catalogs = {
+        name: json.loads((PLUGIN_DIR / "i18n" / name).read_text(encoding="utf-8"))
+        for name in ("zh-CN.json", "zh-TW.json", "en.json")
+    }
+    assert "链路故障" in catalogs["zh-CN.json"]["overview.output.quietWindow"]
+    assert "鏈路故障" in catalogs["zh-TW.json"]["overview.output.quietWindow"]
+    assert "telemetry failure" in catalogs["en.json"]["overview.output.quietWindow"]
+
+
 def test_diagnostics_declares_and_renders_ship_catalog_state():
     types = (PLUGIN_DIR / "ui" / "types.ts").read_text(encoding="utf-8")
     diagnostics = (
@@ -203,7 +223,11 @@ def test_the_manifest_section_parses_into_the_config(manifest):
     cfg = WowsConfig.from_mapping(manifest["neko_wows"])
     assert cfg.dry_run is False
     assert cfg.service_url == "http://127.0.0.1:8111"
+    assert manifest["neko_wows"]["service_source_dir"] == "D:/8111_for_wows"
+    assert cfg.service_source_dir == "D:/8111_for_wows"
     assert cfg.channel_mode in ALL_CHANNEL_MODES
+    assert manifest["neko_wows"]["user_chat_quiet_window_seconds"] == 10.0
+    assert cfg.user_chat_quiet_window_seconds == 10.0
     assert cfg.ttl_for(LANE_URGENT) == 8.0
     assert cfg.min_gap_for(LANE_NORMAL) == 18.0
 
@@ -337,6 +361,85 @@ def test_panel_translation_keys_exist_in_both_catalogs():
     ]
     for key in sorted(used):
         assert all(key in catalog for catalog in catalogs), key
+
+
+def test_conflict_hints_distinguish_identity_version_and_port_causes():
+    catalogs = {
+        name: json.loads((PLUGIN_DIR / "i18n" / name).read_text(encoding="utf-8"))
+        for name in ("zh-CN.json", "zh-TW.json", "en.json")
+    }
+    keys = {
+        "overview.hint.identity_mismatch",
+        "overview.hint.api_version_mismatch",
+        "overview.hint.port_conflict",
+    }
+
+    expectations = {
+        "zh-CN.json": {
+            "badge": "服务冲突",
+            "identity_forbidden": ("War Thunder", "占用"),
+            "version_required": ("apiVersion", "无需更换端口"),
+            "port_required": ("War Thunder", "占用"),
+        },
+        "zh-TW.json": {
+            "badge": "服務衝突",
+            "identity_forbidden": ("War Thunder", "佔用"),
+            "version_required": ("apiVersion", "無需更換埠"),
+            "port_required": ("War Thunder", "佔用"),
+        },
+        "en.json": {
+            "badge": "Service conflict",
+            "identity_forbidden": ("War Thunder", "owns"),
+            "version_required": ("apiVersion", "changing ports is unnecessary"),
+            "port_required": ("War Thunder", "owns"),
+        },
+    }
+
+    for name, expected in expectations.items():
+        catalog = catalogs[name]
+        assert keys <= set(catalog)
+        assert catalog["format.service.conflict"] == expected["badge"]
+        identity_hint = catalog["overview.hint.identity_mismatch"]
+        version_hint = catalog["overview.hint.api_version_mismatch"]
+        port_hint = catalog["overview.hint.port_conflict"]
+        assert "serviceId" in identity_hint
+        assert all(text not in identity_hint for text in expected["identity_forbidden"])
+        assert all(text in version_hint for text in expected["version_required"])
+        assert all(text in port_hint for text in expected["port_required"])
+
+
+def test_battle_overview_distinguishes_unconfirmed_and_spotted_counts():
+    catalogs = {
+        name: json.loads((PLUGIN_DIR / "i18n" / name).read_text(encoding="utf-8"))
+        for name in ("zh-CN.json", "zh-TW.json", "en.json")
+    }
+    overview = (PLUGIN_DIR / "ui" / "overview.tsx").read_text(encoding="utf-8")
+    types = (PLUGIN_DIR / "ui" / "types.ts").read_text(encoding="utf-8")
+
+    for field in (
+        "allies_not_confirmed_sunk",
+        "enemies_not_confirmed_sunk",
+        "visible_enemies",
+    ):
+        assert f"snapshot.{field}" in overview
+        assert field in types
+    assert "snapshot.allies_alive" not in overview
+    assert "snapshot.enemies_alive" not in overview
+
+    expectations = {
+        "zh-CN.json": ("未确认沉没", "当前点亮", "全灭"),
+        "zh-TW.json": ("未確認沉沒", "目前點亮", "全滅"),
+        "en.json": ("not confirmed sunk", "currently spotted", "wipe"),
+    }
+    for name, required in expectations.items():
+        catalog = catalogs[name]
+        copy = " ".join((
+            catalog["overview.battle.allies"],
+            catalog["overview.battle.enemies"],
+            catalog["overview.battle.visibleEnemies"],
+            catalog["overview.battle.countsHelp"],
+        )).lower()
+        assert all(text.lower() in copy for text in required)
 
 
 def test_dynamic_panel_statuses_are_localized_instead_of_exposing_codes():

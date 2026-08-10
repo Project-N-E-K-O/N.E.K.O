@@ -22,12 +22,13 @@ CHANNEL_DUAL = "dual"
 CHANNEL_SINGLE = "single"
 ALL_CHANNEL_MODES = (CHANNEL_DUAL, CHANNEL_SINGLE)
 
-# How willing the companion is to speak over an ongoing conversation. This sits
-# on top of the host's own gate (which already refuses when the user spoke in the
-# last ~10 seconds); the plugin-side window is the longer, user-tunable one.
+# How willing the companion is to speak over an ongoing conversation. The
+# default window overlaps the host's own ~10-second activity gate instead of
+# extending it; users can still choose a longer plugin-side window explicitly.
 INTRUSION_NO_INTERRUPT = "no_interrupt"
 INTRUSION_CRITICAL_ONLY = "critical_only"
 INTRUSION_ALLOW_INTERRUPT = "allow_interrupt"
+DEFAULT_USER_CHAT_QUIET_WINDOW_SECONDS = 10.0
 ALL_INTRUSION_MODES = (
     INTRUSION_NO_INTERRUPT,
     INTRUSION_CRITICAL_ONLY,
@@ -96,7 +97,7 @@ class WowsConfig:
 
     service_url: str = "http://127.0.0.1:8111"
     service_auto_start: bool = True
-    service_source_dir: str = ""
+    service_source_dir: str = "D:/8111_for_wows"
     game_dir: str = ""
     service_startup_timeout_seconds: float = 10.0
     service_health_timeout_seconds: float = 1.5
@@ -173,7 +174,7 @@ class WowsConfig:
 
     # --- broadcast preferences ---
     dialogue_intrusion_mode: str = INTRUSION_CRITICAL_ONLY
-    user_chat_quiet_window_seconds: float = 60.0
+    user_chat_quiet_window_seconds: float = DEFAULT_USER_CHAT_QUIET_WINDOW_SECONDS
     disabled_categories: tuple[str, ...] = ()
     disabled_lanes: tuple[str, ...] = ()
     prompt_revisions_kept: int = 20
@@ -209,7 +210,8 @@ class WowsConfig:
 
         cfg.service_url = text("service_url", cfg.service_url).rstrip("/")
         cfg.service_auto_start = flag("service_auto_start", cfg.service_auto_start)
-        cfg.service_source_dir = text("service_source_dir", "")
+        cfg.service_source_dir = text(
+            "service_source_dir", cfg.service_source_dir)
         cfg.game_dir = text("game_dir", "")
         cfg.service_startup_timeout_seconds = number(
             "service_startup_timeout_seconds", 10.0, 1.0, 120.0)
@@ -317,7 +319,11 @@ class WowsConfig:
         cfg.dialogue_intrusion_mode = (
             intrusion if intrusion in ALL_INTRUSION_MODES else INTRUSION_CRITICAL_ONLY)
         cfg.user_chat_quiet_window_seconds = number(
-            "user_chat_quiet_window_seconds", 60.0, 0.0, 1800.0)
+            "user_chat_quiet_window_seconds",
+            DEFAULT_USER_CHAT_QUIET_WINDOW_SECONDS,
+            0.0,
+            1800.0,
+        )
         cfg.disabled_categories = _string_tuple(
             data.get("disabled_categories"), ALL_CATEGORIES)
         cfg.disabled_lanes = _string_tuple(data.get("disabled_lanes"), ALL_LANES)

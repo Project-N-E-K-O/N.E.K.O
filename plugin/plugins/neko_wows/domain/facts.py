@@ -45,8 +45,19 @@ class WowsFacts:
     own_speed: float | None = None
     own_heading_deg: float | None = None
 
-    alive_allies: int | None = None
-    alive_enemies: int | None = None
+    # Upper bounds assembled from the roster and last-known objects. A hull
+    # remains here until telemetry explicitly reports it sunk, so these values
+    # must never be presented as confirmed survivors.
+    allies_not_confirmed_sunk: int | None = None
+    enemies_not_confirmed_sunk: int | None = None
+    # Currently lit hulls with an explicit alive=True flag. Safe for relative
+    # "视野里谁更多" claims; dark last-known positions are excluded.
+    confirmed_visible_allies: int | None = None
+    confirmed_visible_enemies: int | None = None
+    # True when the objects domain is available and our own hull is among the
+    # confirmed-visible ally count. Fog-of-war may hide ships; that must not
+    # block a visible-force claim the way a full-roster lit check would.
+    team_counts_confirmed: bool = False
     visible_enemies: int | None = None
 
     nearest_enemy: ThreatBearing | None = None
@@ -135,14 +146,39 @@ class FactBuilder:
         if roster_ok:
             sourced.append(DOMAIN_ROSTER)
 
-        # Alive counts come from objects (incl. last-known) and/or the full
-        # match roster in meta. Threat geometry stays visible-only: a dark
-        # last-known x/z must not become nearest_enemy or a closing edge.
+        # Team upper bounds come from objects (incl. last-known) and/or the full
+        # match roster in meta. Force-balance speech uses only hulls that are
+        # explicitly alive and currently visible. Threat geometry stays
+        # visible-only: a dark last-known x/z must not become nearest_enemy.
         count_ok = objects_ok or roster_ok
         known_enemies = snapshot.enemies(visible_only=False) if count_ok else ()
         own_side = snapshot.own_side(visible_only=False) if count_ok else ()
         visible_enemies = snapshot.enemies(visible_only=True) if objects_ok else ()
         visible_allies = snapshot.allies(visible_only=True) if objects_ok else ()
+        confirmed_visible_allies = None
+        confirmed_visible_enemies = None
+        if objects_ok:
+            confirmed_visible_allies = sum(
+                1 for ship in snapshot.own_side(visible_only=True)
+                if ship.alive is True
+            )
+            confirmed_visible_enemies = sum(
+                1 for ship in visible_enemies if ship.alive is True
+            )
+        own_player_id = own.player_id if own is not None else None
+        own_confirmed_visible = bool(
+            own_player_id is not None
+            and any(
+                ship.player_id == own_player_id and ship.alive is True and ship.visible
+                for ship in snapshot.own_side(visible_only=True)
+            )
+        )
+        team_counts_confirmed = bool(
+            objects_ok
+            and own_confirmed_visible
+            and confirmed_visible_allies is not None
+            and confirmed_visible_enemies is not None
+        )
 
         own_heading = _yaw_to_deg(own.yaw) if own is not None else None
 
@@ -199,8 +235,11 @@ class FactBuilder:
             own_alive=(own.health is not None and own.health > 0) if own is not None else None,
             own_speed=own.speed if own is not None else None,
             own_heading_deg=own_heading,
-            alive_allies=len(own_side) if count_ok else None,
-            alive_enemies=len(known_enemies) if count_ok else None,
+            allies_not_confirmed_sunk=len(own_side) if count_ok else None,
+            enemies_not_confirmed_sunk=len(known_enemies) if count_ok else None,
+            confirmed_visible_allies=confirmed_visible_allies,
+            confirmed_visible_enemies=confirmed_visible_enemies,
+            team_counts_confirmed=team_counts_confirmed,
             visible_enemies=len(visible_enemies) if objects_ok else None,
             nearest_enemy=nearest_enemy,
             nearest_ally_distance_m=nearest_ally_distance,

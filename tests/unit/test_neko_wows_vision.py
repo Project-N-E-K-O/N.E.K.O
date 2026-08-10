@@ -612,17 +612,27 @@ def test_facts_are_flattened_and_rounded():
     facts = WowsFacts(
         own_hp_ratio=0.4237,
         own_health=21456.7,
-        alive_allies=5,
-        alive_enemies=7,
+        allies_not_confirmed_sunk=5,
+        enemies_not_confirmed_sunk=7,
+        confirmed_visible_allies=2,
+        confirmed_visible_enemies=3,
+        team_counts_confirmed=True,
         nearest_enemy=ThreatBearing(
-            ship=Ship(name="Yamato"), distance_m=8123.4, bearing_deg=47.6,
+            ship=Ship(name="PJSB018_Yamato_1944", ship_type="Battleship", tier=10),
+            distance_m=8123.4, bearing_deg=47.6,
         ),
     )
     telemetry = facts_to_telemetry(facts)
     assert telemetry["in_battle"] is True
     assert telemetry["own_hp_ratio"] == 0.424
     assert telemetry["own_health"] == 21457
-    assert telemetry["alive_allies"] == 5
+    assert telemetry["allies_not_confirmed_sunk"] == 5
+    assert telemetry["enemies_not_confirmed_sunk"] == 7
+    assert telemetry["confirmed_visible_allies"] == 2
+    assert telemetry["confirmed_visible_enemies"] == 3
+    assert telemetry["team_counts_confirmed"] is True
+    assert "alive_allies" not in telemetry
+    assert "alive_enemies" not in telemetry
     assert telemetry["nearest_enemy"] == {
         "name": "Yamato", "distance_m": 8123, "bearing_deg": 48,
     }
@@ -654,6 +664,17 @@ def test_both_screenshot_tools_are_declared():
     names = _declared_tools()
     assert "wows_look_at_battle" in names
     assert "wows_recall_screenshot" in names
+
+
+def test_vision_surfaces_do_not_call_uncertain_counts_alive():
+    surfaces = (
+        tool_module.WOWS_VISION_PROMPT,
+        _declared_tools()["wows_look_at_battle"].description,
+    )
+    for text in surfaces:
+        assert "存活数" not in text
+        assert "未确认沉没" in text
+        assert "点亮" in text
 
 
 def test_look_takes_no_arguments():

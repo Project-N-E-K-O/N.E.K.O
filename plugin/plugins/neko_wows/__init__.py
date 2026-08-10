@@ -70,6 +70,7 @@ from .domain.contracts import (
     ALL_INTRUSION_MODES,
     ALL_LANES,
     ALL_OFFICIAL_API_REGIONS,
+    DEFAULT_USER_CHAT_QUIET_WINDOW_SECONDS,
     INTRUSION_CRITICAL_ONLY,
     LANE_URGENT,
     OFFICIAL_API_REGION_ASIA,
@@ -811,8 +812,12 @@ class NekoWowsPlugin(NekoPluginBase):
                     if not supported
                 ),
                 "own_hp_ratio": facts.own_hp_ratio,
-                "allies_alive": facts.alive_allies,
-                "enemies_alive": facts.alive_enemies,
+                "allies_not_confirmed_sunk": facts.allies_not_confirmed_sunk,
+                "enemies_not_confirmed_sunk": facts.enemies_not_confirmed_sunk,
+                "confirmed_visible_allies": facts.confirmed_visible_allies,
+                "confirmed_visible_enemies": facts.confirmed_visible_enemies,
+                "team_counts_confirmed": facts.team_counts_confirmed,
+                "visible_enemies": facts.visible_enemies,
                 "nearest_enemy_m": (
                     round(facts.nearest_enemy.distance_m)
                     if facts.nearest_enemy else None
@@ -939,12 +944,12 @@ class NekoWowsPlugin(NekoPluginBase):
         return self._dashboard_payload()
 
     # ------------------------------------------------------------------ 动作
-    @ui.action(id="set_dry_run", label="设置 dry_run", tone="primary",
+    @ui.action(id="set_dry_run", label="设置预览模式", tone="primary",
                group="runtime", order=10, refresh_context=True)
     @plugin_entry(
         id="set_dry_run",
-        name="设置 dry_run",
-        description="开/关 dry_run。开=只跑链路不真投给猫娘。",
+        name="设置预览模式",
+        description="开/关预览模式。开=只跑链路不真投给猫娘。",
         input_schema={
             "type": "object",
             "properties": {"value": {"type": "boolean", "default": True}},
@@ -1535,19 +1540,23 @@ class NekoWowsPlugin(NekoPluginBase):
     @plugin_entry(
         id="set_intrusion_mode",
         name="设置插话策略",
-        description="决定战斗播报是否打断当前对话。宿主自己的活跃门始终生效，这一层是更长的可调窗口。",
+        description="决定战斗播报是否打断当前对话。默认窗口与宿主活跃门重叠，也可手动调长。",
         input_schema={
             "type": "object",
             "properties": {
                 "mode": {"type": "string", "enum": list(ALL_INTRUSION_MODES),
                          "default": "critical_only"},
-                "quiet_window_seconds": {"type": "number", "default": 60.0},
+                "quiet_window_seconds": {
+                    "type": "number",
+                    "default": DEFAULT_USER_CHAT_QUIET_WINDOW_SECONDS,
+                },
             },
         },
     )
     async def set_intrusion_mode(
         self, mode: str = INTRUSION_CRITICAL_ONLY,
-        quiet_window_seconds: float = 60.0, **_,
+        quiet_window_seconds: float = DEFAULT_USER_CHAT_QUIET_WINDOW_SECONDS,
+        **_,
     ):
         if mode not in ALL_INTRUSION_MODES:
             return Err(SdkError(f"unknown intrusion mode: {mode!r}"))
@@ -1754,7 +1763,8 @@ class NekoWowsPlugin(NekoPluginBase):
         description=(
             "截取当前战舰世界画面看一眼战局。主动截屏开启时，每次发言前都要先调"
             "用本工具；读图时先看小地图再看主画面。"
-            "返回画面解读加上精确遥测（血量、存活数、最近敌舰方位距离）。"
+            "返回画面解读加上遥测（血量、未确认沉没上限、当前点亮数、"
+            "最近敌舰方位距离）。"
             "有最短间隔，冷却中或失败时不要卡住，按已有事实开口；别连着调。"
         ),
         parameters={"type": "object", "properties": {}},
@@ -1857,7 +1867,7 @@ def _sample_candidate(lane: str, cfg) -> AdviceCandidate:
         detail={"hp_ratio": 0.18, "threshold": 0.2, "nearest_enemy_m": 6200}
         if lane == LANE_URGENT
         else {"damage_inflicted": 102000, "milestone": 100000},
-        context={"own_hp_ratio": 0.18, "allies_alive": 4, "enemies_alive": 6},
+        context={"own_hp_ratio": 0.18, "visible_enemies": 2},
         expires_at=cfg.ttl_for(spec.lane),
     )
 
@@ -1869,7 +1879,7 @@ def _mod_hint(service, snapshot_view: dict[str, Any]) -> str:
     the symptoms and say which of them it sees.
     """
     if service.mode == "conflict":
-        return "conflict"
+        return service.health.conflict_cause or "port_conflict"
     if not service.health.reachable:
         return "unreachable"
     if not snapshot_view:
