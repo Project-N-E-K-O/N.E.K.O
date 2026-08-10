@@ -2223,11 +2223,12 @@ async def commit_credit_endpoint(
     except (ValueError, LookupError, RuntimeError) as exc:
         error = _credit_error(exc)
         return JSONResponse({"detail": error.detail}, status_code=error.status_code, headers=cors)
+    committed_credit = result["credit"]
     confirmation = await _confirm_cloud_forge_debit(
-        operation_id=operation_id,
-        credit_id=credit_id,
-        card_id=str(payload.get("card_id") or ""),
-        credit=result["credit"],
+        operation_id=committed_credit["operation_id"],
+        credit_id=committed_credit["id"],
+        card_id=committed_credit["card_id"],
+        credit=committed_credit,
     )
     return JSONResponse(
         {

@@ -80,20 +80,26 @@ def test_unsigned_legacy_ledger_is_migrated_only_before_signing_key_exists() -> 
         "version": 1,
         "credits": [
             {
-                "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                "id": "AAAAAAAAAAAA4AAA8AAAAAAAAAAAAAAA",
                 "rarity": "R",
                 "trigger_type": "emotion_combo",
                 "idem_key": "legacy-credit-idem",
-                "status": "active",
+                "status": "reserved",
                 "created_at": ledger._iso(now),
                 "expires_at": ledger._iso(now + timedelta(hours=16)),
+                "operation_id": "BBBBBBBBBBBB4BBB8BBBBBBBBBBBBBBB",
+                "reservation_owner_id": OWNER_A_ID.replace("-", "").upper(),
+                "reserved_at": ledger._iso(now),
             }
         ],
     }
     path = ledger._ledger_path()
     path.write_text(json.dumps(legacy), encoding="utf-8")
 
-    assert ledger.list_credits(now)["count"] == 1
+    snapshot = ledger.list_credits(now, reservation_owner_id=OWNER_A_ID)
+    assert snapshot["count"] == 0
+    assert snapshot["reservations"][0]["id"] == "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    assert snapshot["reservations"][0]["operation_id"] == "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
     migrated = json.loads(path.read_text(encoding="utf-8"))
     assert migrated["version"] == ledger.LEDGER_VERSION
     assert migrated["integrity"]["algorithm"] == "hmac-sha256"
@@ -168,7 +174,37 @@ def test_pending_key_without_ledger_retries_initial_save() -> None:
     )
 
     assert result["granted"] is True
+    assert ledger._signing_key_path().read_bytes().startswith(
+        ledger._KEY_ESTABLISHED_PREFIX
+    )
     assert ledger.list_credits(now)["count"] == 1
+
+
+def test_pending_key_retries_interrupted_legacy_migration() -> None:
+    now = datetime(2026, 7, 13, 8, tzinfo=UTC)
+    legacy = {
+        "version": 1,
+        "credits": [
+            {
+                "id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+                "rarity": "N",
+                "trigger_type": "emotion_combo",
+                "idem_key": "interrupted-legacy-migration",
+                "status": "active",
+                "created_at": ledger._iso(now),
+                "expires_at": ledger._iso(now + timedelta(hours=16)),
+            }
+        ],
+    }
+    ledger._ledger_path().write_text(json.dumps(legacy), encoding="utf-8")
+    _key, created, established = ledger._read_or_create_signing_key()
+    assert created is True
+    assert established is False
+
+    assert ledger.list_credits(now)["count"] == 1
+    assert ledger._signing_key_path().read_bytes().startswith(
+        ledger._KEY_ESTABLISHED_PREFIX
+    )
 
 
 def test_reserve_commit_and_replay_are_idempotent() -> None:

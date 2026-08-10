@@ -1311,18 +1311,18 @@ def test_refreshed_desktop_bearer_keeps_same_owner_reservation(
     )
     committed = client.post(
         (
-            f"/api/card-drop/credits/{credit_id}/reservations/"
-            f"{operation_id}/commit"
+            f"/api/card-drop/credits/{credit_id.upper()}/reservations/"
+            f"{operation_id.replace('-', '').upper()}/commit"
         ),
-        json={"card_id": card_id},
+        json={"card_id": card_id.replace("-", "").upper()},
         headers=bearer_headers("browser-token-after-refresh"),
     )
     commit_replay = client.post(
         (
-            f"/api/card-drop/credits/{credit_id}/reservations/"
-            f"{operation_id}/commit"
+            f"/api/card-drop/credits/{credit_id.upper()}/reservations/"
+            f"{operation_id.replace('-', '').upper()}/commit"
         ),
-        json={"card_id": card_id},
+        json={"card_id": card_id.replace("-", "").upper()},
         headers=bearer_headers("browser-token-after-refresh"),
     )
 

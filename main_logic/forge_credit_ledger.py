@@ -134,6 +134,28 @@ def _valid_uuid(value: object) -> bool:
         return False
 
 
+def _normalize_legacy_credit(credit: object) -> object:
+    if not isinstance(credit, dict):
+        return credit
+    normalized = dict(credit)
+    for field in (
+        "id",
+        "operation_id",
+        "reservation_owner_id",
+        "card_id",
+        "last_released_operation_id",
+        "last_released_owner_id",
+    ):
+        if field not in normalized:
+            continue
+        try:
+            normalized[field] = str(uuid.UUID(str(normalized[field]).strip()))
+        except (ValueError, AttributeError, TypeError):
+            # Preserve invalid legacy values so schema validation still fails closed.
+            pass
+    return normalized
+
+
 def _validate_ledger(data: dict) -> None:
     if not isinstance(data, dict) or not isinstance(data.get("credits"), list):
         raise LedgerIntegrityError("ledger_schema_invalid")
@@ -183,10 +205,20 @@ def _load() -> dict:
 
     key, key_created, key_established = _read_or_create_signing_key()
     version = data.get("version") if isinstance(data, dict) else None
-    if version == 1 and key_created:
+    if version == 1 and (key_created or not key_established):
         # One-time upgrade path. Once the key exists, an unsigned/version-1
-        # ledger is a downgrade attempt and must fail closed.
-        migrated = {"version": LEDGER_VERSION, "credits": data.get("credits")}
+        # ledger is a downgrade attempt and must fail closed. A pending key is
+        # also accepted here because it means the first migration was interrupted
+        # before the signed ledger and established-key marker were both durable.
+        legacy_credits = data.get("credits")
+        migrated = {
+            "version": LEDGER_VERSION,
+            "credits": (
+                [_normalize_legacy_credit(credit) for credit in legacy_credits]
+                if isinstance(legacy_credits, list)
+                else legacy_credits
+            ),
+        }
         _validate_ledger(migrated)
         _save(migrated, signing_key=key)
         return migrated
