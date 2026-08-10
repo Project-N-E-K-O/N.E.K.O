@@ -118,9 +118,10 @@ async def get_window_title_api():
 async def backend_screenshot(request: Request):
     """
     One-shot backend screenshot fallback for explicit screenshot/proactive-vision
-    requests. Continuous screen sharing must use a persistent MediaStream and
-    must not poll this endpoint because system screenshot helpers can produce
-    visible/audible feedback and cannot preserve a selected-window boundary.
+    requests. Continuous screen sharing must keep using the user-selected
+    client-side capture path and must not poll this endpoint because system
+    screenshot helpers can produce visible/audible feedback and cannot preserve a
+    selected-window boundary.
     Security restriction: only requests from loopback addresses are allowed. Returns a JPEG base64 DataURL.
     """
     validation_error = _validate_local_mutation_request(
