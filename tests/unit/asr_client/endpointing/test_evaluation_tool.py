@@ -272,6 +272,26 @@ def test_evaluation_rejects_audio_replaced_after_manifest_validation(
         evaluate_manifest(manifest, _Predictor([0.9]))
 
 
+def test_evaluation_preflights_every_wav_before_first_prediction(
+    tmp_path: Path,
+) -> None:
+    manifest = load_manifest(_manifest(tmp_path, [_case(0), _case(1)]))
+    _wav(manifest.cases[1].path, marker=999)
+    prediction_calls = 0
+
+    class _MustNotPredict:
+        def predict_probability(self, audio: np.ndarray) -> float:
+            nonlocal prediction_calls
+            prediction_calls += 1
+            del audio
+            return 0.9
+
+    with pytest.raises(ValueError, match="changed|hash|digest"):
+        evaluate_manifest(manifest, _MustNotPredict())
+
+    assert prediction_calls == 0
+
+
 def test_manifest_rejects_truncated_pcm_that_claims_a_longer_duration(
     tmp_path: Path,
 ) -> None:

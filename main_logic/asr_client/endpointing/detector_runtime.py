@@ -202,7 +202,25 @@ class _VoiceTurnAdapter:
                 max_frames=queue_maxsize,
             )
         )
-        self._evaluation_tail_capacity_us = queue_capacity_ms * 1_000
+        queue_capacity_us = queue_capacity_ms * 1_000
+        confirmation_capacity_us = 0
+        if smart_turn_required:
+            confirmation_capacity_us = math.ceil(
+                max(
+                    candidate_complete_confirmation_seconds,
+                    strict_complete_confirmation_seconds,
+                )
+                * 1_000_000
+            )
+        # Retained audio can already occupy one queue-capacity window while an
+        # evaluation is in flight. A configured confirmation then needs its own
+        # full window plus one bounded queue window for frame granularity and
+        # event-loop scheduling before the confirmation control item is handled.
+        self._evaluation_tail_capacity_us = (
+            queue_capacity_us
+            + confirmation_capacity_us
+            + (queue_capacity_us if confirmation_capacity_us else 0)
+        )
         self._evaluation_tail: list[_AudioItem] = []
         self._evaluation_tail_duration_us = 0
         self._confirmation_tail: list[_AudioItem] = []
@@ -1015,7 +1033,13 @@ class _VoiceTurnAdapter:
         )
         self._pending_complete_confirmation = pending
         for item in evaluation_tail:
-            self._retain_confirmation_audio(item)
+            if pending.detector_identity is None and item.detector_identity is None:
+                # The internal ASR path has no completion fence that can move
+                # these samples to a successor identity. Attribute them now so
+                # the deferred evaluation interval cannot leave an evidence gap.
+                self._attribute_accepted_audio(item)
+            else:
+                self._retain_confirmation_audio(item)
 
         async def confirm_complete() -> None:
             await asyncio.sleep(delay_seconds)

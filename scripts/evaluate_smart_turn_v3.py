@@ -1217,9 +1217,8 @@ def evaluate_manifest(
         selected_threshold, criteria.decision_threshold, rel_tol=0.0, abs_tol=1e-12
     ):
         raise ValueError("evaluation threshold must match the pre-registered criteria")
-    records: list[dict[str, Any]] = []
-    public_results: list[dict[str, Any]] = []
-    for inference_index, case in enumerate(manifest.cases):
+    validated_audio: list[np.ndarray] = []
+    for case in manifest.cases:
         audio, duration_ms, audio_sha256, pcm_sha256 = _read_wav_contract(
             case.path, enforce_max_duration=manifest.path is not None
         )
@@ -1231,6 +1230,13 @@ def evaluate_manifest(
             raise ValueError(
                 f"case {case.id}: WAV changed after manifest or labels validation"
             )
+        validated_audio.append(audio)
+
+    records: list[dict[str, Any]] = []
+    public_results: list[dict[str, Any]] = []
+    for inference_index, (case, audio) in enumerate(
+        zip(manifest.cases, validated_audio, strict=True)
+    ):
         started = time.perf_counter()
         raw_probability = predictor.predict_probability(audio)
         latency_ms = (time.perf_counter() - started) * 1000.0

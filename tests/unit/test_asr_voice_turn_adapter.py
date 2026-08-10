@@ -723,6 +723,57 @@ async def test_confirmation_observes_evaluation_tail_without_refeeding_audio() -
         await adapter.close()
 
 
+async def test_confirmation_preserves_unscoped_evaluation_tail_in_evidence() -> None:
+    first_pcm = b"\x01\x00" * 160
+    evaluation_tail_pcm = b"\x02\x00" * 160
+    observed: list[bytes] = []
+    coordinator = _FakeCoordinator([_complete()], block_evaluation=True)
+    adapter = _VoiceTurnAdapter(
+        vad=_FakeVad(),
+        gate=_FakeGate([(SpeechActivityEvent.CANDIDATE_PAUSE,), ()]),
+        coordinator=coordinator,
+        on_commit=_noop_commit,
+        on_accepted_audio=lambda pcm16, *_args: observed.append(pcm16),
+        candidate_complete_confirmation_seconds=10.0,
+        smart_turn_required=True,
+    )
+    evidence = _EvidenceSpy()
+    adapter._smart_turn_audio_evidence = evidence
+    await adapter.start()
+    try:
+        await adapter.push_audio(
+            generation=1,
+            buffer_epoch=1,
+            utterance_id=1,
+            pcm16=first_pcm,
+        )
+        await asyncio.wait_for(coordinator.evaluate_started.wait(), 1)
+        await adapter.push_audio(
+            generation=1,
+            buffer_epoch=1,
+            utterance_id=1,
+            pcm16=evaluation_tail_pcm,
+        )
+        await _eventually(lambda: len(coordinator.pushed_audio) == 2)
+
+        coordinator.evaluate_release.set()
+        await adapter.wait_idle()
+        pending = adapter._pending_complete_confirmation
+        assert pending is not None
+        assert observed == [first_pcm, evaluation_tail_pcm]
+        assert evidence.accepted == [first_pcm, evaluation_tail_pcm]
+
+        assert await adapter._publish_pending_complete_confirmation(pending)
+
+        assert observed == [first_pcm, evaluation_tail_pcm]
+        assert evidence.accepted == [first_pcm, evaluation_tail_pcm]
+        assert evidence.completed == [(first_pcm, evaluation_tail_pcm)]
+        assert coordinator.pushed_audio == [first_pcm, evaluation_tail_pcm]
+    finally:
+        coordinator.evaluate_release.set()
+        await adapter.close()
+
+
 async def test_confirmation_expiry_waits_for_inflight_continuation() -> None:
     commits: list[tuple[int, int, int]] = []
     first_pcm = b"\x01\x00"
@@ -958,13 +1009,66 @@ async def test_confirmation_tail_overflow_uses_shared_backpressure_budget() -> N
                 generation=1,
                 buffer_epoch=1,
                 utterance_id=1,
-                pcm16=b"\x04\x00" * 160,
+                pcm16=b"\x04\x00" * (10_030 * 16),
                 detector_identity=DetectorIngressIdentity(ingress, 1, 4),
             )
 
         assert adapter.failed is False
         assert len(coordinator.pushed_audio) == 3
     finally:
+        await adapter.close()
+
+
+async def test_default_confirmation_window_fits_evaluation_and_confirmation_tail() -> (
+    None
+):
+    frame = b"\x01\x00" * 1_600  # 100 ms of 16 kHz mono PCM16.
+    ingress = VoiceIngressToken(1, "socket", 1, 1, 1)
+    coordinator = _FakeCoordinator([_complete()], block_evaluation=True)
+    adapter = _VoiceTurnAdapter(
+        vad=_FakeVad(),
+        gate=_FakeGate([(SpeechActivityEvent.CANDIDATE_PAUSE,)]),
+        coordinator=coordinator,
+        on_commit=_noop_commit,
+        candidate_complete_confirmation_seconds=1.0,
+        smart_turn_required=True,
+    )
+    await adapter.start()
+    try:
+        await adapter.push_audio(
+            generation=1,
+            buffer_epoch=1,
+            utterance_id=1,
+            pcm16=frame,
+            detector_identity=DetectorIngressIdentity(ingress, 1, 1),
+        )
+        await asyncio.wait_for(coordinator.evaluate_started.wait(), 1)
+        await adapter.push_audio(
+            generation=1,
+            buffer_epoch=1,
+            utterance_id=1,
+            pcm16=frame,
+            detector_identity=DetectorIngressIdentity(ingress, 1, 2),
+        )
+        await _eventually(lambda: len(coordinator.pushed_audio) == 2)
+        coordinator.evaluate_release.set()
+        await adapter.wait_idle()
+        assert adapter._pending_complete_confirmation is not None
+
+        for sequence_no in range(3, 13):
+            await adapter.push_audio(
+                generation=1,
+                buffer_epoch=1,
+                utterance_id=1,
+                pcm16=frame,
+                detector_identity=DetectorIngressIdentity(ingress, 1, sequence_no),
+            )
+            await adapter.wait_idle()
+
+        assert adapter._pending_complete_confirmation is not None
+        assert len(coordinator.pushed_audio) == 12
+    finally:
+        coordinator.evaluate_release.set()
         await adapter.close()
 
 
