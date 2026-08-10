@@ -1109,6 +1109,69 @@ async def test_close_bounds_stalled_pending_completion_callback() -> None:
     assert (vad.close_calls, coordinator.close_calls) == (1, 1)
 
 
+async def test_close_processes_admitted_continuation_before_pending_complete() -> None:
+    commits: list[tuple[int, int, int]] = []
+    first_pcm = b"\x01\x00" * 160
+    blocker_pcm = b"\x02\x00" * 160
+    continuation_pcm = b"\x03\x00" * 160
+    gate = _BlockingGate(
+        [
+            (SpeechActivityEvent.CANDIDATE_PAUSE,),
+            (),
+            (SpeechActivityEvent.SPEECH_RESUMED,),
+        ],
+        blocked_indices=(1,),
+    )
+    coordinator = _FakeCoordinator([_complete()])
+
+    async def commit(generation: int, buffer_epoch: int, utterance_id: int) -> None:
+        commits.append((generation, buffer_epoch, utterance_id))
+
+    adapter = _VoiceTurnAdapter(
+        vad=_FakeVad(),
+        gate=gate,
+        coordinator=coordinator,
+        on_commit=commit,
+        candidate_complete_confirmation_seconds=10.0,
+        smart_turn_required=True,
+    )
+    await adapter.start()
+    try:
+        await adapter.push_audio(
+            generation=1,
+            buffer_epoch=1,
+            utterance_id=1,
+            pcm16=first_pcm,
+        )
+        await adapter.wait_idle()
+        assert adapter._pending_complete_confirmation is not None
+
+        await adapter.push_audio(
+            generation=1,
+            buffer_epoch=1,
+            utterance_id=1,
+            pcm16=blocker_pcm,
+        )
+        await asyncio.to_thread(gate.started[1].wait, 1)
+        await adapter.push_audio(
+            generation=1,
+            buffer_epoch=1,
+            utterance_id=1,
+            pcm16=continuation_pcm,
+        )
+        close_task = asyncio.create_task(adapter.close())
+        await _eventually(lambda: adapter._queue.qsize() == 2)
+        gate.release[1].set()
+        await asyncio.wait_for(close_task, 1)
+
+        assert gate.feed_calls == [first_pcm, blocker_pcm, continuation_pcm]
+        assert SpeechActivityEvent.SPEECH_RESUMED in coordinator.activity_events
+        assert commits == []
+    finally:
+        gate.release[1].set()
+        await adapter.close()
+
+
 async def test_multiple_pauses_coalesce_to_one_followup_evaluation() -> None:
     coordinator = _FakeCoordinator(
         [_failed_evaluation(EvaluationStatus.STALE), _complete()],

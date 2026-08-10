@@ -453,7 +453,10 @@ class _VoiceTurnAdapter:
             await self._close_resources()
             return
         completed = asyncio.get_running_loop().create_future()
-        self._queue.put_control_nowait(_CloseItem(completed), priority=True)
+        # Preserve FIFO for PCM that push_audio() already admitted. In
+        # particular, continuation audio must be allowed to cancel a pending
+        # provisional COMPLETE before shutdown resolves it.
+        self._queue.put_control_nowait(_CloseItem(completed))
         await completed
         await task
 

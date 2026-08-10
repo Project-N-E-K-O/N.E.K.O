@@ -17,6 +17,7 @@ from scripts.evaluate_smart_turn_v3 import (
     load_cases,
     load_manifest,
     main,
+    read_pcm16_wav,
     render_markdown_report,
 )
 
@@ -308,6 +309,24 @@ def test_manifest_rejects_truncated_pcm_that_claims_a_longer_duration(
 
     with pytest.raises(ValueError, match="truncated|PCM|frames"):
         load_manifest(manifest_path)
+
+
+def test_oversized_wav_is_rejected_before_full_file_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    audio_path = tmp_path / "oversized.wav"
+    _wav(audio_path, np.zeros(9 * 16_000, dtype="<i2"))
+    real_read_bytes = Path.read_bytes
+
+    def reject_full_read(path: Path) -> bytes:
+        if path == audio_path:
+            raise AssertionError("oversized WAV payload must not be loaded")
+        return real_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", reject_full_read)
+
+    with pytest.raises(ValueError, match="exceeds the SmartTurn 8 second"):
+        read_pcm16_wav(audio_path)
 
 
 @pytest.mark.parametrize("pause_ms", [299, 900])
@@ -671,6 +690,23 @@ def test_runtime_provenance_marks_dirty_checkout_and_library_versions(
     assert provenance["runtime"]["numpy"] == np.__version__
     assert provenance["runtime"]["onnxruntime"]
     assert provenance["evaluator_sha256"]
+
+
+def test_runtime_provenance_does_not_claim_clean_when_git_status_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _Completed:
+        stdout = "abc123\n"
+
+    def fake_run(command, **kwargs):
+        del kwargs
+        if command[1] == "rev-parse":
+            return _Completed()
+        raise TimeoutError("git status timed out")
+
+    monkeypatch.setattr("scripts.evaluate_smart_turn_v3.subprocess.run", fake_run)
+
+    assert _runtime_provenance(tmp_path)["git_revision"] == "unknown"
 
 
 @pytest.mark.parametrize(

@@ -11,7 +11,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import importlib.metadata
-import io
 import json
 import math
 import platform
@@ -299,8 +298,7 @@ def _read_wav_contract(
     path: Path, *, enforce_max_duration: bool = True
 ) -> tuple[np.ndarray, int, str, str]:
     try:
-        encoded = path.read_bytes()
-        with wave.open(io.BytesIO(encoded), "rb") as wav_file:
+        with path.open("rb") as encoded_file, wave.open(encoded_file, "rb") as wav_file:
             if wav_file.getnchannels() != 1:
                 raise ValueError(f"{path}: expected mono WAV")
             if wav_file.getframerate() != 16_000:
@@ -308,13 +306,19 @@ def _read_wav_contract(
             if wav_file.getsampwidth() != 2:
                 raise ValueError(f"{path}: expected signed PCM16 WAV")
             frames = wav_file.getnframes()
+            if frames <= 0:
+                raise ValueError(f"{path}: WAV must contain audio")
+            if enforce_max_duration and frames > MAX_AUDIO_FRAMES:
+                raise ValueError(
+                    f"{path}: WAV exceeds the SmartTurn 8 second input window"
+                )
             pcm = wav_file.readframes(frames)
+            encoded_file.seek(0)
+            audio_digest = hashlib.sha256()
+            for chunk in iter(lambda: encoded_file.read(1024 * 1024), b""):
+                audio_digest.update(chunk)
     except (OSError, wave.Error, EOFError) as exc:
         raise ValueError(f"{path}: unreadable WAV") from exc
-    if frames <= 0:
-        raise ValueError(f"{path}: WAV must contain audio")
-    if enforce_max_duration and frames > MAX_AUDIO_FRAMES:
-        raise ValueError(f"{path}: WAV exceeds the SmartTurn 8 second input window")
     if len(pcm) != frames * 2:
         raise ValueError(f"{path}: truncated PCM frames")
     duration_ms = frames * 1_000 // 16_000
@@ -322,7 +326,7 @@ def _read_wav_contract(
     return (
         audio,
         duration_ms,
-        hashlib.sha256(encoded).hexdigest(),
+        audio_digest.hexdigest(),
         hashlib.sha256(pcm).hexdigest(),
     )
 
@@ -1140,6 +1144,7 @@ def _runtime_provenance(asset_dir: Path) -> dict[str, Any]:
         )
     except (OSError, subprocess.SubprocessError):
         dirty = False
+        revision = "unknown"
     if dirty and revision != "unknown":
         revision = f"{revision}-dirty"
     return {
