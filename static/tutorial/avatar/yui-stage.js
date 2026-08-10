@@ -3325,7 +3325,7 @@
                 return Promise.resolve();
             }
             if (this.reducedMotion || !animateReturn || !this.isCurrentModel()) {
-                this.finish(reason || 'stopped');
+                this.finish(reason || 'stopped', animateReturn);
                 return Promise.resolve();
             }
             if (this.phase === 'exit') {
@@ -3344,7 +3344,7 @@
             return this.waitForFinish();
         }
 
-        finish(reason) {
+        finish(reason, keepVisible) {
             this.active = false;
             this.finished = true;
             this.phase = 'finished';
@@ -3362,7 +3362,10 @@
             this.restoreFloatingButtonsRotation();
             this.restoreContainerZIndex();
             this.restoreModelFrame();
-            this.restoreDisplayOpacity(this.restoreMode === 'half-body');
+            const forceVisible = typeof keepVisible === 'boolean'
+                ? keepVisible
+                : this.restoreMode === 'half-body';
+            this.restoreDisplayOpacity(forceVisible);
             if (this.faceForwardLock && typeof this.faceForwardLock.release === 'function') {
                 this.faceForwardLock.release(reason || 'stopped');
                 this.faceForwardLock = null;
@@ -6645,14 +6648,36 @@
         if (isOpeningProbe) {
             return { result: 'played', reason: '' };
         }
+        const restoreToHalfBody = normalizedOptions.restore === 'half-body'
+            || normalizedOptions.restoreMode === 'half-body'
+            || (!normalizedOptions.restore && !normalizedOptions.restoreMode);
         const finalFadedOut = await fadeOutAvatarMotionVisibleLayer(Object.assign({}, normalizedOptions, {
             halfBodyFadeOutMs: TUTORIAL_AVATAR_PROBE_FADE_OUT_MS
         }));
         if (!finalFadedOut) {
+            const currentModel = context.manager ? getCurrentLive2DModel(context.manager) : context.model;
+            if (currentModel === context.model && !context.model.destroyed) {
+                if (restoreToHalfBody) {
+                    await fadeInAvatarMotionHalfBodyPlacement(Object.assign({}, normalizedOptions, {
+                        reducedMotion: true,
+                        halfBodyFadeInMs: 0,
+                        baseFrame: originalFrame || session.initialModelFrame
+                    }));
+                } else {
+                    if (originalFrame) {
+                        writeIntroGreetingHugModelFrame(context.model, originalFrame);
+                    }
+                    writeAvatarMotionVisibleOpacity(context, originalTargets, originalAlpha, originalDisplayAlpha);
+                    originalTargets.forEach((target) => {
+                        if (target.element && target.element.style) {
+                            target.element.style.transition = target.transition || '';
+                        }
+                    });
+                }
+            }
             return { result: 'cancelled', reason: 'avatar_motion_fade_out_cancelled' };
         }
-        if (normalizedOptions.restore === 'half-body' || normalizedOptions.restoreMode === 'half-body'
-                || (!normalizedOptions.restore && !normalizedOptions.restoreMode)) {
+        if (restoreToHalfBody) {
             await fadeInAvatarMotionHalfBodyPlacement(Object.assign({}, normalizedOptions, {
                 halfBodyFadeInMs: TUTORIAL_AVATAR_PROBE_RETURN_MS,
                 baseFrame: originalFrame || session.initialModelFrame

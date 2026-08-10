@@ -229,6 +229,43 @@ function createFrameMotionSession(options) {
     };
 }
 
+function createControlledNonOpeningFramePlayback() {
+    const frameCallbacks = [];
+    let cancelled = false;
+    const context = createFrameMotionSession({
+        container: { style: { opacity: '1', transition: 'opacity 900ms ease' } },
+        canvas: { style: { opacity: '1', transition: 'opacity 900ms ease' } },
+        configureWindow(targetWindow) {
+            targetWindow.requestAnimationFrame = (callback) => {
+                frameCallbacks.push(callback);
+                return frameCallbacks.length;
+            };
+            targetWindow.cancelAnimationFrame = () => {};
+        }
+    });
+    const playback = context.api.playAvatarMotion({
+        preset: 'bottom-rise',
+        narrationBudgeted: true,
+        isOpeningProbe: false,
+        isCancelled: () => cancelled
+    });
+
+    return Object.assign({}, context, {
+        playback,
+        cancel() {
+            cancelled = true;
+        },
+        async flushFrameAt(now) {
+            await Promise.resolve();
+            await Promise.resolve();
+            context.window.__setNow(now);
+            frameCallbacks.splice(0).forEach((callback) => callback());
+            await Promise.resolve();
+            await Promise.resolve();
+        }
+    });
+}
+
 function createHeadAnchoredCornerPeekSession(position) {
     const api = loadAvatarStageApi();
     const coreModel = {};
@@ -702,6 +739,29 @@ test('Live2D opening corner peek uses one compositor layer and completes the ful
     assert.equal(canvas.style.opacity, '1');
 });
 
+test('Live2D cancelled hidden opening corner peek preserves the prepared opacity snapshot', () => {
+    const canvas = { style: { opacity: '0', transition: 'opacity 900ms ease' } };
+    const container = { style: { opacity: '0', transition: 'opacity 900ms ease' } };
+    const { session } = createCornerPeekSession('bottom-left', {
+        startFromHidden: true,
+        restoreMode: 'half-body',
+        container,
+        elements: {
+            'live2d-canvas': canvas
+        }
+    });
+
+    assert.equal(session.start(), true);
+    session.cancel('cancelled');
+
+    assert.equal(session.finished, true);
+    assert.equal(session.result, 'cancelled');
+    assert.equal(container.style.opacity, '0');
+    assert.equal(canvas.style.opacity, '0');
+    assert.equal(container.style.transition, 'opacity 900ms ease');
+    assert.equal(canvas.style.transition, 'opacity 900ms ease');
+});
+
 test('Live2D non-opening corner peek uses one compositor layer for the full probe cycle', () => {
     const canvas = { style: { opacity: '1', transition: 'opacity 900ms ease' } };
     const container = { style: { opacity: '1', transition: 'opacity 900ms ease' } };
@@ -824,44 +884,39 @@ test('Live2D opening frame motion restores its original state when reveal fallba
 });
 
 test('Live2D non-opening frame motion restores display opacity when cancelled', async () => {
-    const frameCallbacks = [];
-    let cancelled = false;
-    const { api, model, container, canvas, window } = createFrameMotionSession({
-        container: { style: { opacity: '1', transition: 'opacity 900ms ease' } },
-        canvas: { style: { opacity: '1', transition: 'opacity 900ms ease' } },
-        configureWindow(targetWindow) {
-            targetWindow.requestAnimationFrame = (callback) => {
-                frameCallbacks.push(callback);
-                return frameCallbacks.length;
-            };
-            targetWindow.cancelAnimationFrame = () => {};
-        }
-    });
+    const context = createControlledNonOpeningFramePlayback();
+    const { model, container, canvas, playback } = context;
 
-    const playback = api.playAvatarMotion({
-        preset: 'bottom-rise',
-        narrationBudgeted: true,
-        isOpeningProbe: false,
-        isCancelled: () => cancelled
-    });
-
-    await Promise.resolve();
-    await Promise.resolve();
-    window.__setNow(1500);
-    frameCallbacks.splice(0).forEach((callback) => callback());
-    await Promise.resolve();
-    await Promise.resolve();
+    await context.flushFrameAt(1500);
     assert.equal(container.style.opacity, '0');
 
-    cancelled = true;
-    window.__setNow(1600);
-    frameCallbacks.splice(0).forEach((callback) => callback());
-    await Promise.resolve();
-    await Promise.resolve();
+    context.cancel();
+    await context.flushFrameAt(1600);
 
     const result = await playback;
     assert.equal(result.result, 'cancelled');
     assert.equal(model.alpha, 0.8);
+    assert.equal(container.style.opacity, '1');
+    assert.equal(canvas.style.opacity, '1');
+    assert.equal(container.style.transition, 'opacity 900ms ease');
+    assert.equal(canvas.style.transition, 'opacity 900ms ease');
+});
+
+test('Live2D non-opening frame motion restores half-body visibility when final fade is cancelled', async () => {
+    const context = createControlledNonOpeningFramePlayback();
+    const { model, container, canvas, playback } = context;
+
+    await context.flushFrameAt(1500);
+    await context.flushFrameAt(6001);
+    context.cancel();
+    await context.flushFrameAt(6100);
+
+    const result = await playback;
+    assert.equal(result.result, 'cancelled');
+    assert.equal(result.reason, 'avatar_motion_fade_out_cancelled');
+    assert.equal(model.alpha, 1);
+    assert.equal(model.scale.x, 1.38);
+    assert.equal(model.scale.y, 1.38);
     assert.equal(container.style.opacity, '1');
     assert.equal(canvas.style.opacity, '1');
     assert.equal(container.style.transition, 'opacity 900ms ease');
