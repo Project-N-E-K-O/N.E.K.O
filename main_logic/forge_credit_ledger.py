@@ -19,6 +19,8 @@ RARITY_WEIGHTS = {"UR": 0, "SSR": 0.5, "SR": 3.5, "R": 26, "N": 70}
 LEDGER_VERSION = 2
 _INTEGRITY_ALGORITHM = "hmac-sha256"
 _SIGNING_KEY_BYTES = 32
+_KEY_PENDING_PREFIX = b"\x00"
+_KEY_ESTABLISHED_PREFIX = b"\x01"
 _LOCK = threading.RLock()
 
 
@@ -58,7 +60,7 @@ def _empty() -> dict:
     return {"version": LEDGER_VERSION, "credits": []}
 
 
-def _read_or_create_signing_key() -> tuple[bytes, bool]:
+def _read_or_create_signing_key() -> tuple[bytes, bool, bool]:
     path = _signing_key_path()
     try:
         key = path.read_bytes()
@@ -67,19 +69,45 @@ def _read_or_create_signing_key() -> tuple[bytes, bool]:
         key = secrets.token_bytes(_SIGNING_KEY_BYTES)
         try:
             with path.open("xb") as handle:
-                handle.write(key)
+                handle.write(_KEY_PENDING_PREFIX + key)
             try:
                 path.chmod(0o600)
             except OSError:
                 pass
-            return key, True
+            return key, True, False
         except FileExistsError:
             key = path.read_bytes()
     except OSError as exc:
         raise LedgerIntegrityError("ledger_signing_key_unavailable") from exc
-    if len(key) != _SIGNING_KEY_BYTES:
+    if len(key) == _SIGNING_KEY_BYTES:
+        # Compatibility with the original v2 key format. Any such key already
+        # authenticated a successfully persisted ledger.
+        return key, False, True
+    if len(key) != _SIGNING_KEY_BYTES + 1 or key[:1] not in {
+        _KEY_PENDING_PREFIX,
+        _KEY_ESTABLISHED_PREFIX,
+    }:
         raise LedgerIntegrityError("ledger_signing_key_invalid")
-    return key, False
+    return key[1:], False, key[:1] == _KEY_ESTABLISHED_PREFIX
+
+
+def _mark_signing_key_established(key: bytes) -> None:
+    path = _signing_key_path()
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
+    try:
+        tmp.write_bytes(_KEY_ESTABLISHED_PREFIX + key)
+        try:
+            tmp.chmod(0o600)
+        except OSError:
+            pass
+        tmp.replace(path)
+    except OSError as exc:
+        raise LedgerIntegrityError("ledger_signing_key_unavailable") from exc
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def _canonical_ledger(data: dict) -> bytes:
@@ -146,12 +174,14 @@ def _load() -> dict:
         data = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         if _signing_key_path().exists():
-            raise LedgerIntegrityError("ledger_missing")
+            _key, _created, established = _read_or_create_signing_key()
+            if established:
+                raise LedgerIntegrityError("ledger_missing")
         return _empty()
     except (OSError, ValueError, TypeError) as exc:
         raise LedgerIntegrityError("ledger_unreadable") from exc
 
-    key, key_created = _read_or_create_signing_key()
+    key, key_created, key_established = _read_or_create_signing_key()
     version = data.get("version") if isinstance(data, dict) else None
     if version == 1 and key_created:
         # One-time upgrade path. Once the key exists, an unsigned/version-1
@@ -170,6 +200,8 @@ def _load() -> dict:
     if not isinstance(digest, str) or not hmac.compare_digest(digest, expected):
         raise LedgerIntegrityError("ledger_integrity_failed")
     _validate_ledger(data)
+    if not key_established:
+        _mark_signing_key_established(key)
     return data
 
 
@@ -191,6 +223,7 @@ def _save(data: dict, *, signing_key: bytes | None = None) -> None:
         except OSError:
             pass
         tmp.replace(path)
+        _mark_signing_key_established(key)
     finally:
         try:
             tmp.unlink(missing_ok=True)

@@ -126,6 +126,51 @@ def test_deleting_a_signed_ledger_does_not_reset_the_daily_cap() -> None:
         )
 
 
+def test_interrupted_first_save_recovers_from_pending_key(monkeypatch) -> None:
+    now = datetime(2026, 7, 13, 8, tzinfo=UTC)
+    original_mark = ledger._mark_signing_key_established
+    interrupted = True
+
+    def fail_before_established(key):
+        nonlocal interrupted
+        if interrupted:
+            interrupted = False
+            raise ledger.LedgerIntegrityError("simulated_interruption")
+        original_mark(key)
+
+    monkeypatch.setattr(ledger, "_mark_signing_key_established", fail_before_established)
+    with pytest.raises(ledger.LedgerIntegrityError, match="simulated_interruption"):
+        ledger.grant_credit(
+            {"trigger_type": "emotion_combo", "idem_key": "interrupted-first-save"},
+            now=now,
+            rarity="N",
+        )
+
+    # The signed ledger was already replaced before the simulated interruption.
+    # A pending key must authenticate it and promote itself instead of bricking
+    # the installation as an apparent deleted-ledger event.
+    assert ledger.list_credits(now)["count"] == 1
+    raw_key = ledger._signing_key_path().read_bytes()
+    assert raw_key[:1] == ledger._KEY_ESTABLISHED_PREFIX
+
+
+def test_pending_key_without_ledger_retries_initial_save() -> None:
+    now = datetime(2026, 7, 13, 8, tzinfo=UTC)
+    _key, created, established = ledger._read_or_create_signing_key()
+    assert created is True
+    assert established is False
+    assert not ledger._ledger_path().exists()
+
+    result = ledger.grant_credit(
+        {"trigger_type": "emotion_combo", "idem_key": "pending-key-retry"},
+        now=now,
+        rarity="N",
+    )
+
+    assert result["granted"] is True
+    assert ledger.list_credits(now)["count"] == 1
+
+
 def test_reserve_commit_and_replay_are_idempotent() -> None:
     now = datetime(2026, 7, 13, 8, tzinfo=UTC)
     ledger.grant_credit(
