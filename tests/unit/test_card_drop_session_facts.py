@@ -34,6 +34,21 @@ def _voucher_credit(**over):
     return credit
 
 
+def _fixed_expected_voucher():
+    return {
+        "version": 1,
+        "operation_id": "operation-id",
+        "credit_id": "credit-id",
+        "card_id": "card-id",
+        "rarity": "R",
+        "created_at": "2026-08-09T00:00:00.000000Z",
+        "expires_at": "2026-08-10T00:00:00.000000Z",
+        "reserved_at": "2026-08-09T01:00:00.000000Z",
+        "consumed_at": "2026-08-09T01:01:00.000000Z",
+        "signature": "5e95eb9dfe25de5ad5ee661e7e47817f1ce4f4a91103572dcc574961c6ec98ab",
+    }
+
+
 @pytest.mark.parametrize(
     "malformed_origin",
     [
@@ -56,7 +71,7 @@ def _main_server_request(
     if origin:
         headers.append((b"origin", origin.encode("ascii")))
     for name, value in (extra_headers or {}).items():
-        headers.append((name.lower().encode("ascii"), value.encode("ascii")))
+        headers.append((name.lower().encode("ascii"), value.encode("latin-1")))
     return Request(
         {
             "type": "http",
@@ -81,16 +96,65 @@ def test_forge_grant_requires_the_electron_runtime_secret(monkeypatch):
         C._require_forge_grant_secret(request)
     assert unavailable.value.status_code == 503
 
+    monkeypatch.setenv("NEKO_FORGE_GRANT_SECRET", "é" * 32)
+    with pytest.raises(C.HTTPException) as non_ascii_config:
+        C._require_forge_grant_secret(request)
+    assert non_ascii_config.value.status_code == 503
+
     secret = "a" * 64
     monkeypatch.setenv("NEKO_FORGE_GRANT_SECRET", secret)
     with pytest.raises(C.HTTPException) as rejected:
         C._require_forge_grant_secret(request)
     assert rejected.value.status_code == 403
 
+    non_ascii_header = _main_server_request(
+        extra_headers={"x-neko-forge-grant-secret": "é" * 32},
+    )
+    with pytest.raises(C.HTTPException) as non_ascii_supplied:
+        C._require_forge_grant_secret(non_ascii_header)
+    assert non_ascii_supplied.value.status_code == 403
+
     authorized = _main_server_request(
         extra_headers={"x-neko-forge-grant-secret": secret},
     )
     C._require_forge_grant_secret(authorized)
+
+
+def test_forge_grant_endpoint_authenticates_before_ledger_mutation(
+    client, monkeypatch
+):
+    from main_logic import forge_credit_ledger
+
+    calls = []
+
+    def fake_grant(payload):
+        calls.append(payload)
+        return {"granted": True, "reason": "ok"}
+
+    monkeypatch.setattr(forge_credit_ledger, "grant_credit", fake_grant)
+    monkeypatch.delenv("NEKO_FORGE_GRANT_SECRET", raising=False)
+    payload = {"trigger_type": "emotion_combo", "idem_key": "endpoint-auth"}
+    endpoint = "/api/card-drop/credits/grant"
+
+    missing = client.post(endpoint, json=payload)
+    secret = "a" * 64
+    monkeypatch.setenv("NEKO_FORGE_GRANT_SECRET", secret)
+    incorrect = client.post(
+        endpoint,
+        json=payload,
+        headers={"x-neko-forge-grant-secret": "b" * 64},
+    )
+    accepted = client.post(
+        endpoint,
+        json=payload,
+        headers={"x-neko-forge-grant-secret": secret},
+    )
+
+    assert missing.status_code == 503
+    assert incorrect.status_code == 403
+    assert calls == [payload]
+    assert accepted.status_code == 200
+    assert accepted.json() == {"granted": True, "reason": "ok"}
 
 
 @pytest.mark.asyncio
@@ -392,14 +456,7 @@ async def test_confirm_cloud_forge_debit_includes_signed_voucher_for_local_http(
         "client_proof": "client-proof",
         "credit_id": "credit-id",
         "card_id": "card-id",
-        "voucher": C._forge_voucher_attestation(
-            client_id="client-id",
-            client_proof="client-proof",
-            operation_id="operation-id",
-            credit_id="credit-id",
-            card_id="card-id",
-            credit=_voucher_credit(),
-        ),
+        "voucher": _fixed_expected_voucher(),
     }
 
 
@@ -466,14 +523,7 @@ async def test_confirm_cloud_forge_debit_retries_for_loopback_unregistered(monke
         "client_proof": "client-proof",
         "credit_id": "credit-id",
         "card_id": "card-id",
-        "voucher": C._forge_voucher_attestation(
-            client_id="client-id",
-            client_proof="client-proof",
-            operation_id="operation-id",
-            credit_id="credit-id",
-            card_id="card-id",
-            credit=_voucher_credit(),
-        ),
+        "voucher": _fixed_expected_voucher(),
     }
     assert call_log[1][1] == ("http://localhost:48911",)
     assert call_log[1][2] == {"force": True}

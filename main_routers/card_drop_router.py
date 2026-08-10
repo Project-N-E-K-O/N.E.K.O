@@ -483,9 +483,17 @@ def _require_forge_grant_secret(request: Request) -> None:
     """Authenticate the private Electron dropper before mutating the ledger."""
     expected = str(os.environ.get(_FORGE_GRANT_SECRET_ENV) or "").strip()
     supplied = (request.headers.get("x-neko-forge-grant-secret") or "").strip()
-    if len(expected) < 32:
+    try:
+        expected_bytes = expected.encode("ascii")
+    except UnicodeEncodeError:
+        expected_bytes = b""
+    if len(expected_bytes) < 32:
         raise HTTPException(status_code=503, detail="forge_grant_secret_unavailable")
-    if not supplied or not secrets.compare_digest(supplied, expected):
+    try:
+        supplied_bytes = supplied.encode("ascii")
+    except UnicodeEncodeError:
+        supplied_bytes = b""
+    if not supplied_bytes or not secrets.compare_digest(supplied_bytes, expected_bytes):
         raise HTTPException(status_code=403, detail="invalid_forge_grant_secret")
 
 

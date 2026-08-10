@@ -356,8 +356,8 @@ def reserve_credit(
     current = now or _now()
     owner_id = _require_owner_id(reservation_owner_id)
     try:
-        uuid.UUID(credit_id)
-        uuid.UUID(operation_id)
+        credit_id = str(uuid.UUID(credit_id))
+        operation_id = str(uuid.UUID(operation_id))
     except ValueError as exc:
         raise ValueError("invalid_credit_or_operation_id") from exc
     with _LOCK:
@@ -402,7 +402,9 @@ def commit_credit(
     current = now or _now()
     owner_id = _require_owner_id(reservation_owner_id)
     try:
-        uuid.UUID(card_id)
+        credit_id = str(uuid.UUID(credit_id))
+        operation_id = str(uuid.UUID(operation_id))
+        card_id = str(uuid.UUID(card_id))
     except ValueError as exc:
         raise ValueError("invalid_card_id") from exc
     with _LOCK:
@@ -433,6 +435,11 @@ def release_credit(
 ) -> dict:
     current = now or _now()
     owner_id = _require_owner_id(reservation_owner_id)
+    try:
+        credit_id = str(uuid.UUID(credit_id))
+        operation_id = str(uuid.UUID(operation_id))
+    except ValueError as exc:
+        raise ValueError("invalid_credit_or_operation_id") from exc
     with _LOCK:
         data = _load()
         if _expire(data, current):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -96,7 +97,8 @@ def test_unsigned_legacy_ledger_is_migrated_only_before_signing_key_exists() -> 
     migrated = json.loads(path.read_text(encoding="utf-8"))
     assert migrated["version"] == ledger.LEDGER_VERSION
     assert migrated["integrity"]["algorithm"] == "hmac-sha256"
-    assert ledger._signing_key_path().stat().st_mode & 0o777 == 0o600
+    if os.name != "nt":
+        assert ledger._signing_key_path().stat().st_mode & 0o777 == 0o600
 
     migrated.pop("integrity")
     migrated["version"] = 1
@@ -160,6 +162,36 @@ def test_reserve_commit_and_replay_are_idempotent() -> None:
         OWNER_A_ID,
         now=now,
     )["committed"]
+
+
+def test_operation_uuid_inputs_are_canonicalized_before_signing() -> None:
+    now = datetime(2026, 7, 13, 8, tzinfo=UTC)
+    ledger.grant_credit(
+        {"trigger_type": "emotion_combo", "idem_key": "uuid-normalization"},
+        now=now,
+        rarity="R",
+    )
+    credit_id = ledger.list_credits(now)["credits"][0]["id"]
+    operation_id = "33333333-3333-4333-8333-333333333333"
+    card_id = "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"
+
+    reserved = ledger.reserve_credit(
+        credit_id.replace("-", ""),
+        operation_id.replace("-", ""),
+        OWNER_A_ID.replace("-", ""),
+        now=now,
+    )
+    committed = ledger.commit_credit(
+        credit_id.upper(),
+        operation_id.upper(),
+        card_id.replace("-", ""),
+        OWNER_A_ID,
+        now=now,
+    )
+
+    assert reserved["operation_id"] == operation_id
+    assert reserved["credit"]["operation_id"] == operation_id
+    assert committed["credit"]["card_id"] == card_id.lower()
     assert ledger.commit_credit(
         credit_id,
         operation_id,
