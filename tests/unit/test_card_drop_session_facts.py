@@ -22,6 +22,18 @@ USER_A_ID = "11111111-1111-4111-8111-111111111111"
 USER_B_ID = "22222222-2222-4222-8222-222222222222"
 
 
+def _voucher_credit(**over):
+    credit = {
+        "rarity": "R",
+        "created_at": "2026-08-09T00:00:00Z",
+        "expires_at": "2026-08-10T00:00:00Z",
+        "reserved_at": "2026-08-09T01:00:00Z",
+        "consumed_at": "2026-08-09T01:01:00Z",
+    }
+    credit.update(over)
+    return credit
+
+
 @pytest.mark.parametrize(
     "malformed_origin",
     [
@@ -316,6 +328,7 @@ async def test_confirm_cloud_forge_debit_rejects_redirect_response(monkeypatch):
         operation_id="operation-id",
         credit_id="credit-id",
         card_id="card-id",
+        credit=_voucher_credit(),
     )
 
     assert result == {"confirmed": False, "detail": "http_302"}
@@ -345,13 +358,14 @@ async def test_confirm_cloud_forge_debit_rejects_unsafe_cloud_base_url(
         operation_id="operation-id",
         credit_id="credit-id",
         card_id="card-id",
+        credit=_voucher_credit(),
     )
 
     assert result == {"confirmed": False, "detail": "invalid_cloud_base_url"}
 
 
 @pytest.mark.asyncio
-async def test_confirm_cloud_forge_debit_omits_proof_for_local_http(monkeypatch):
+async def test_confirm_cloud_forge_debit_includes_signed_voucher_for_local_http(monkeypatch):
     monkeypatch.setenv("NEKO_SOCIAL_BASE_URL", "http://localhost:48911")
     monkeypatch.setattr(
         C,
@@ -381,13 +395,23 @@ async def test_confirm_cloud_forge_debit_omits_proof_for_local_http(monkeypatch)
         operation_id="operation-id",
         credit_id="credit-id",
         card_id="card-id",
+        credit=_voucher_credit(),
     )
 
     assert result == {"confirmed": False, "detail": "http_204"}
     assert captured["json"] == {
         "client_id": "client-id",
+        "client_proof": "client-proof",
         "credit_id": "credit-id",
         "card_id": "card-id",
+        "voucher": C._forge_voucher_attestation(
+            client_id="client-id",
+            client_proof="client-proof",
+            operation_id="operation-id",
+            credit_id="credit-id",
+            card_id="card-id",
+            credit=_voucher_credit(),
+        ),
     }
 
 
@@ -441,6 +465,7 @@ async def test_confirm_cloud_forge_debit_retries_for_loopback_unregistered(monke
         operation_id="operation-id",
         credit_id="credit-id",
         card_id="card-id",
+        credit=_voucher_credit(),
     )
 
     assert result == {"confirmed": True}
@@ -450,8 +475,17 @@ async def test_confirm_cloud_forge_debit_retries_for_loopback_unregistered(monke
     assert call_log[2][0] == "post"
     assert call_log[0][2] == {
         "client_id": "client-id",
+        "client_proof": "client-proof",
         "credit_id": "credit-id",
         "card_id": "card-id",
+        "voucher": C._forge_voucher_attestation(
+            client_id="client-id",
+            client_proof="client-proof",
+            operation_id="operation-id",
+            credit_id="credit-id",
+            card_id="card-id",
+            credit=_voucher_credit(),
+        ),
     }
     assert call_log[1][1] == ("http://localhost:48911",)
     assert call_log[1][2] == {"force": True}
@@ -1266,11 +1300,13 @@ def test_refreshed_desktop_bearer_keeps_same_owner_reservation(
             "operation_id": operation_id,
             "credit_id": credit_id,
             "card_id": card_id,
+            "credit": committed.json()["credit"],
         },
         {
             "operation_id": operation_id,
             "credit_id": credit_id,
             "card_id": card_id,
+            "credit": commit_replay.json()["credit"],
         },
     ]
 
