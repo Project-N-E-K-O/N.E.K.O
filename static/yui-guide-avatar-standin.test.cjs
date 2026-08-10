@@ -7,6 +7,7 @@ const vm = require('node:vm');
 const { readJsParts } = require('./app-part-test-utils.cjs');
 
 const standIn = require('./tutorial/avatar/yui-standin.js');
+const standInController = require('./tutorial/avatar/standin-controller.js');
 const directorSource = readDirectorSource(__dirname);
 const avatarStageSource = fs.readFileSync(path.join(__dirname, 'tutorial/avatar/yui-stage.js'), 'utf8');
 const controllerSource = fs.readFileSync(path.join(__dirname, 'tutorial/avatar/standin-controller.js'), 'utf8');
@@ -115,6 +116,15 @@ function createCornerPeekSession(position, options) {
     }, {
         position,
         isCancelled: normalizedOptions.isCancelled,
+        onPeekReady: normalizedOptions.onPeekReady,
+        startFromHidden: normalizedOptions.startFromHidden,
+        hideMs: normalizedOptions.hideMs,
+        appearMs: normalizedOptions.appearMs,
+        holdMs: normalizedOptions.holdMs,
+        restoreMode: normalizedOptions.restoreMode,
+        useCompositorOpacity: normalizedOptions.useCompositorOpacity,
+        frameScale: normalizedOptions.frameScale,
+        frameY: normalizedOptions.frameY,
         container: normalizedOptions.container || {
             style: {}
         }
@@ -127,6 +137,8 @@ function createCornerPeekSession(position, options) {
         rotation: 0
     };
     session.initialAlpha = model.alpha;
+    session.restoreModelTargetFrame = session.initialModelFrame;
+    session.restoreAlpha = session.initialAlpha;
     session.initialBounds = model.getBounds();
     session.hiddenFrame = session.resolveHiddenFrame();
     session.peekRegionBounds = session.resolvePeekRegionBounds();
@@ -135,6 +147,78 @@ function createCornerPeekSession(position, options) {
     return {
         session,
         model,
+        window: context.window
+    };
+}
+
+function createFrameMotionSession(options) {
+    const normalizedOptions = options || {};
+    const container = normalizedOptions.container || { style: {} };
+    const canvas = normalizedOptions.canvas || { style: {} };
+    const context = loadAvatarStageContext({
+        elements: {
+            'live2d-container': container,
+            'live2d-canvas': canvas
+        }
+    });
+    const coreModel = {};
+    const model = {
+        x: 512,
+        y: 384,
+        rotation: 0,
+        alpha: 0.8,
+        destroyed: false,
+        scale: {
+            x: 1,
+            y: 1,
+            set(x, y) {
+                this.x = x;
+                this.y = y;
+            }
+        },
+        internalModel: {
+            coreModel
+        },
+        getBounds() {
+            return {
+                x: 362,
+                y: 84,
+                width: 300,
+                height: 600
+            };
+        }
+    };
+    const manager = {
+        currentModel: model,
+        pixi_app: {
+            renderer: {
+                screen: {
+                    width: 1024,
+                    height: 768
+                }
+            }
+        }
+    };
+    const session = new context.api.Live2DFrameMotionSession({
+        manager,
+        model,
+        coreModel
+    }, {
+        container,
+        from: 'offscreen-bottom',
+        to: 'close-up',
+        enterMs: 2000,
+        holdMs: 2500,
+        motionFromAlpha: 0,
+        motionToAlpha: 1,
+        restoreMode: 'half-body',
+        useCompositorOpacity: true
+    });
+    return {
+        session,
+        model,
+        container,
+        canvas,
         window: context.window
     };
 }
@@ -335,13 +419,46 @@ test('avatar stage exposes reusable motion core and preset playback entry', () =
     assert.match(avatarStageSource, /Live2DFrameMotionSession: Live2DFrameMotionSession/);
 });
 
+test('day two through seven avatar probes keep fixed phases and move short-line cues earlier', () => {
+    assert.match(avatarStageSource, /const TUTORIAL_AVATAR_PROBE_FADE_OUT_MS = 1500;/);
+    assert.match(avatarStageSource, /const TUTORIAL_AVATAR_PROBE_APPROACH_MS = 2000;/);
+    assert.match(avatarStageSource, /const TUTORIAL_AVATAR_PROBE_HOLD_MS = 2500;/);
+    assert.match(avatarStageSource, /startFromHidden: isOpeningProbe/);
+    assert.match(avatarStageSource, /holdMs: TUTORIAL_AVATAR_PROBE_HOLD_MS/);
+    assert.match(directorSource, /isOpeningProbe: tutorialDay >= 2[\s\S]*resolveOnReveal/);
+
+    const resolvedCue = standInController.resolveCueTiming(
+        { delay: 900, duration: 5000, position: 'top-right' },
+        { voiceKey: 'day2_galgame_entry', text: 'test' },
+        { getAvatarFloatingNarrationDurationMs: () => 4500 }
+    );
+    assert.equal(resolvedCue.delay, 0);
+    assert.equal(resolvedCue.hideMs, 1500);
+    assert.equal(resolvedCue.appearMs, 2000);
+    assert.equal(resolvedCue.holdMs, 2500);
+    assert.equal(resolvedCue.totalDurationMs, 6000);
+    assert.equal(resolvedCue.fullDurationMs, 9500);
+
+    const longLineCue = standInController.resolveCueTiming(
+        { delay: 900, duration: 5000, position: 'top-right' },
+        { voiceKey: 'day2_galgame_entry', text: 'test' },
+        { getAvatarFloatingNarrationDurationMs: () => 12000 }
+    );
+    assert.equal(longLineCue.delay, 900);
+});
+
 test('bottom-rise intro avatar motion approaches and holds the first-day half-body frame', () => {
-    assert.match(avatarStageSource, /to:\s*isBottomRise\s*\?\s*'close-up'\s*:/);
+    assert.match(avatarStageSource, /from:\s*'offscreen-bottom'/);
+    assert.match(avatarStageSource, /to:\s*'close-up'/);
     assert.match(avatarStageSource, /frameScale[\s\S]*:\s*INTRO_GREETING_HUG_CLOSE_SCALE/);
     assert.match(avatarStageSource, /frameY[\s\S]*resolveIntroGreetingHugFrameShift\(this\.container\)/);
     assert.match(avatarStageSource, /frameY[\s\S]*:\s*undefined/);
     assert.match(avatarStageSource, /restoreMode[\s\S]*normalizedOptions\.restore[\s\S]*\|\|\s*'half-body'/);
-    assert.match(avatarStageSource, /this\.restoreMode === 'half-body'[\s\S]*this\.applyFrame\(this\.toFrame, this\.initialAlpha\)/);
+    assert.match(avatarStageSource, /this\.restoreMode === 'half-body'[\s\S]*this\.applyFrame\(this\.toFrame, this\.toAlpha\)/);
+    assert.match(avatarStageSource, /initialAlphaOverride/);
+    assert.match(avatarStageSource, /motionFromAlpha/);
+    assert.match(avatarStageSource, /const originalFrame = readIntroGreetingHugModelFrame\(context\.model\)/);
+    assert.match(avatarStageSource, /baseFrame: originalFrame \|\| session\.initialModelFrame/);
 });
 
 test('corner and top peek intro avatar motions settle on the first-day half-body frame', () => {
@@ -349,7 +466,8 @@ test('corner and top peek intro avatar motions settle on the first-day half-body
     assert.match(avatarStageSource, /INTRO_GREETING_HUG_CLOSE_SCALE/);
     assert.match(avatarStageSource, /const container = getLive2DContainer/);
     assert.match(avatarStageSource, /resolveIntroGreetingHugFrameShift\(container\)/);
-    assert.match(avatarStageSource, /await handle\.stop\('avatar_motion_complete', \{ animateReturn: false \}\);[\s\S]*if \(restoreMode === 'half-body'\)/);
+    assert.match(avatarStageSource, /restoreMode: normalizedOptions\.restore \|\| normalizedOptions\.restoreMode \|\| 'half-body'/);
+    assert.match(avatarStageSource, /await handle\.stop\('avatar_motion_complete'\);/);
     assert.match(avatarStageSource, /applyAvatarMotionHalfBodyPlacement\(normalizedOptions\)/);
 });
 
@@ -380,10 +498,10 @@ test('corner and top peek intro avatar motions fade in the half-body handoff', (
     assert.match(avatarStageSource, /async function fadeInAvatarMotionHalfBodyPlacement\(options\)/);
     assert.match(avatarStageSource, /const targetAlpha = 1;/);
     assert.match(avatarStageSource, /const targetDisplayAlpha = 1;/);
-    assert.match(avatarStageSource, /await fadeOutAvatarMotionVisibleLayer\(normalizedOptions\)/);
+    assert.match(avatarStageSource, /await fadeOutAvatarMotionVisibleLayer\(/);
     assert.match(avatarStageSource, /writeAvatarMotionVisibleOpacity\(context, targets, 0, 0\)/);
     assert.match(avatarStageSource, /writeAvatarMotionVisibleOpacity\(context, targets, lerp\(0, targetAlpha, eased\), displayAlpha\)/);
-    assert.match(avatarStageSource, /await fadeInAvatarMotionHalfBodyPlacement\(normalizedOptions\)/);
+    assert.match(avatarStageSource, /await fadeInAvatarMotionHalfBodyPlacement\(/);
 });
 
 test('soft approach intro avatar motion uses the first-day half-body scale', () => {
@@ -397,6 +515,7 @@ test('Live2D corner peek keeps center model still while fading and uses one seco
     assert.equal(session.hideMs, 1000);
     assert.equal(session.appearMs, 1000);
     assert.equal(session.totalDurationMs, 2000);
+    assert.equal(session.exitDurationMs, 2000);
 
     session.tickEnter(500);
     assert.equal(model.x, 512);
@@ -421,7 +540,232 @@ test('Live2D corner peek keeps center model still while fading and uses one seco
     assert.ok(model.alpha < 0.8);
 });
 
-test('Live2D corner peek fades the visible layer and centers look-at during playback', () => {
+test('Live2D corner peek notifies reveal only after preparing the corner-hidden frame', () => {
+    let readyFrame = null;
+    let readyAlpha = null;
+    const { session, model } = createCornerPeekSession('bottom-left', {
+        onPeekReady: () => {
+            readyFrame = {
+                x: model.x,
+                y: model.y,
+                rotation: model.rotation
+            };
+            readyAlpha = model.alpha;
+        }
+    });
+
+    assert.equal(session.start(), true);
+    assert.equal(readyFrame, null);
+
+    session.tickEnter(500);
+    assert.equal(readyFrame, null);
+
+    session.tickEnter(1001);
+    assert.deepEqual(readyFrame, {
+        x: session.cornerHiddenFrame.x,
+        y: session.cornerHiddenFrame.y,
+        rotation: session.cornerHiddenFrame.rotation
+    });
+    assert.equal(readyAlpha, 0);
+});
+
+test('Live2D corner peek can start from the screen-out frame while fully transparent', () => {
+    let readyFrame = null;
+    let readyAlpha = null;
+    const { session, model } = createCornerPeekSession('bottom-left', {
+        startFromHidden: true,
+        onPeekReady: () => {
+            readyFrame = {
+                x: model.x,
+                y: model.y,
+                rotation: model.rotation
+            };
+            readyAlpha = model.alpha;
+        }
+    });
+
+    assert.equal(session.start(), true);
+    assert.equal(model.x, session.cornerHiddenFrame.x);
+    assert.equal(model.y, session.cornerHiddenFrame.y);
+    assert.equal(model.alpha, 0);
+
+    session.tickEnter(0);
+    assert.deepEqual(readyFrame, {
+        x: session.cornerHiddenFrame.x,
+        y: session.cornerHiddenFrame.y,
+        rotation: session.cornerHiddenFrame.rotation
+    });
+    assert.equal(readyAlpha, 0);
+
+    session.tickEnter(500);
+    assert.notEqual(model.x, session.cornerHiddenFrame.x);
+    assert.notEqual(model.y, session.cornerHiddenFrame.y);
+    assert.ok(model.alpha > 0);
+    assert.ok(model.alpha < 1);
+});
+
+test('Live2D opening corner peek uses one compositor layer and completes the full return fade', () => {
+    const canvas = { style: { opacity: '0' } };
+    const container = { style: { opacity: '0' } };
+    const { session, model } = createCornerPeekSession('bottom-left', {
+        startFromHidden: true,
+        hideMs: 1500,
+        appearMs: 2000,
+        restoreMode: 'half-body',
+        container,
+        elements: {
+            'live2d-canvas': canvas
+        }
+    });
+
+    assert.equal(session.totalDurationMs, 2000);
+    assert.equal(session.exitDurationMs, 3500);
+    assert.equal(session.start(), true);
+    container.style.transition = '';
+    canvas.style.transition = '';
+
+    session.tickEnter(1000);
+    assert.equal(model.alpha, 1);
+    assert.ok(Number(container.style.opacity) > 0);
+    assert.ok(Number(container.style.opacity) < 1);
+    assert.equal(canvas.style.opacity, '1');
+    assert.equal(container.style.transition, 'none');
+    assert.equal(canvas.style.transition, 'none');
+
+    session.tickExit(750);
+    assert.equal(model.alpha, 1);
+    assert.ok(Number(container.style.opacity) > 0);
+    assert.ok(Number(container.style.opacity) < 1);
+    assert.equal(canvas.style.opacity, '1');
+
+    session.tickExit(2000);
+    assert.equal(session.finished, false);
+    assert.equal(model.x, session.restoreModelTargetFrame.x);
+    assert.equal(model.y, session.restoreModelTargetFrame.y);
+    assert.equal(model.scale.x, session.initialModelFrame.scaleX * 1.38);
+    assert.equal(model.scale.y, session.initialModelFrame.scaleY * 1.38);
+    assert.equal(model.rotation, session.initialModelFrame.rotation);
+    assert.equal(model.alpha, 1);
+    assert.ok(Number(container.style.opacity) > 0);
+    assert.ok(Number(container.style.opacity) < 1);
+    assert.equal(canvas.style.opacity, '1');
+
+    session.tickExit(3500);
+    assert.equal(session.finished, false);
+    assert.equal(model.alpha, session.restoreAlpha);
+
+    session.tickExit(3501);
+    assert.equal(session.finished, true);
+    assert.equal(model.x, session.restoreModelTargetFrame.x);
+    assert.equal(model.y, session.restoreModelTargetFrame.y);
+    assert.equal(model.scale.x, session.initialModelFrame.scaleX * 1.38);
+    assert.equal(model.scale.y, session.initialModelFrame.scaleY * 1.38);
+    assert.equal(model.alpha, session.restoreAlpha);
+    assert.equal(container.style.opacity, '1');
+    assert.equal(canvas.style.opacity, '1');
+});
+
+test('Live2D non-opening corner peek uses one compositor layer for the full probe cycle', () => {
+    const canvas = { style: { opacity: '1', transition: 'opacity 900ms ease' } };
+    const container = { style: { opacity: '1', transition: 'opacity 900ms ease' } };
+    const { session, model } = createCornerPeekSession('top-left', {
+        hideMs: 1500,
+        appearMs: 2000,
+        holdMs: 2500,
+        useCompositorOpacity: true,
+        container,
+        elements: {
+            'live2d-canvas': canvas
+        }
+    });
+    model.alpha = 1;
+
+    assert.equal(session.totalDurationMs, 3500);
+    assert.equal(session.holdMs, 2500);
+    assert.equal(session.exitDurationMs, 3500);
+    assert.equal(session.start(), true);
+    container.style.transition = '';
+    canvas.style.transition = '';
+
+    session.tickEnter(750);
+    assert.equal(model.alpha, 1);
+    assert.equal(container.style.opacity, '0.5');
+    assert.equal(canvas.style.opacity, '1');
+    assert.equal(container.style.transition, 'none');
+    assert.equal(canvas.style.transition, 'none');
+
+    session.tickEnter(2500);
+    assert.notEqual(model.x, session.initialModelFrame.x);
+    assert.notEqual(model.y, session.initialModelFrame.y);
+    assert.ok(Number(container.style.opacity) > 0);
+    assert.ok(Number(container.style.opacity) < 1);
+    assert.equal(canvas.style.opacity, '1');
+
+    session.tickExit(750);
+    assert.equal(model.alpha, 1);
+    assert.equal(container.style.opacity, '0.5');
+    assert.equal(canvas.style.opacity, '1');
+
+    session.tickExit(1750);
+    assert.equal(model.x, session.initialModelFrame.x);
+    assert.equal(model.y, session.initialModelFrame.y);
+    assert.ok(Number(container.style.opacity) > 0);
+    assert.ok(Number(container.style.opacity) < 1);
+    assert.equal(canvas.style.opacity, '1');
+
+    session.tickExit(3501);
+    assert.equal(session.finished, true);
+    assert.equal(model.x, session.initialModelFrame.x);
+    assert.equal(model.y, session.initialModelFrame.y);
+    assert.equal(model.alpha, 1);
+    assert.equal(container.style.opacity, '1');
+    assert.equal(canvas.style.opacity, '1');
+    assert.equal(container.style.transition, 'opacity 900ms ease');
+    assert.equal(canvas.style.transition, 'opacity 900ms ease');
+    assert.match(directorSource, /startAvatarCornerPeek[\s\S]*useCompositorOpacity: true/);
+});
+
+test('Live2D opening frame motion reuses the corner peek compositor fade', () => {
+    const { session, model, container, canvas, window } = createFrameMotionSession();
+
+    assert.equal(session.start(), true);
+    const hiddenY = model.y;
+    assert.equal(model.alpha, 1);
+    assert.equal(container.style.opacity, '0');
+    assert.equal(canvas.style.opacity, '1');
+
+    container.style.transition = '';
+    canvas.style.transition = '';
+    window.__setNow(1000);
+    session.tick();
+
+    assert.equal(model.alpha, 1);
+    assert.ok(model.y < hiddenY);
+    assert.ok(Number(container.style.opacity) > 0);
+    assert.ok(Number(container.style.opacity) < 1);
+    assert.equal(canvas.style.opacity, '1');
+    assert.equal(container.style.transition, 'none');
+    assert.equal(canvas.style.transition, 'none');
+
+    window.__setNow(4501);
+    session.tick();
+    assert.equal(session.finished, true);
+    assert.equal(model.alpha, 1);
+    assert.equal(model.scale.x, 1.38);
+    assert.equal(model.scale.y, 1.38);
+    assert.equal(container.style.opacity, '1');
+    assert.equal(canvas.style.opacity, '1');
+});
+
+test('tutorial opening frame motion stays at the default placement without a fade handoff', () => {
+    assert.match(avatarStageSource, /useCompositorOpacity: isOpeningProbe/);
+    assert.match(
+        avatarStageSource,
+        /if \(isOpeningProbe\) \{\s*return \{ result: 'played', reason: '' \};\s*\}/
+    );
+});
+
+test('Live2D corner peek fades only the model and centers look-at during playback', () => {
     const acquiredLocks = [];
     const releasedLocks = [];
     const paramWrites = [];
@@ -468,8 +812,9 @@ test('Live2D corner peek fades the visible layer and centers look-at during play
     ]);
 
     session.tickEnter(500);
-    assert.equal(container.style.opacity, '0.4');
-    assert.equal(canvas.style.opacity, '0.4');
+    assert.equal(session.model.alpha, 0.4);
+    assert.equal(container.style.opacity, '1');
+    assert.equal(canvas.style.opacity, '1');
 
     session.finish('test_complete');
     assert.equal(window.nekoYuiGuideAvatarCornerPeekActive, false);
@@ -492,8 +837,8 @@ test('Live2D corner peek disables opacity transitions while it owns the visible 
     assert.equal(session.start(), true);
     session.tickEnter(500);
 
-    assert.equal(container.style.opacity, '0.4');
-    assert.equal(canvas.style.opacity, '0.4');
+    assert.equal(container.style.opacity, '1');
+    assert.equal(canvas.style.opacity, '1');
     assert.equal(container.style.transition, 'none');
     assert.equal(canvas.style.transition, 'none');
 
@@ -528,6 +873,7 @@ test('Live2D corner peek does not self-cancel its return fade after stand-in tok
 
 test('Live2D visibility recovery preserves opacity while avatar corner peek is active', () => {
     assert.match(live2dInitSource, /nekoYuiGuideAvatarCornerPeekActive[\s\S]{0,120}return;/);
+    assert.match(live2dInitSource, /nekoYuiGuideLive2dPreparing[\s\S]{0,220}yui-guide-live2d-preparing/);
     assert.match(appUiSource, /preserveAvatarCornerPeekOpacity[\s\S]{0,240}model\.alpha = 1;/);
     assert.match(appInterpageSource, /preserveAvatarCornerPeekOpacity[\s\S]{0,240}currentModel\.alpha = 1;/);
     assert.match(universalManagerSource, /preserveAvatarCornerPeekOpacity[\s\S]{0,360}restoreTutorialLive2dDisplayState/);

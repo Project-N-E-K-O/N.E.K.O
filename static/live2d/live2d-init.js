@@ -138,6 +138,14 @@ function _nekoIsLive2DContainerHidden() {
 function ensureLive2DVisibleOnce(reason) {
     try {
         if (window.nekoYuiGuideAvatarCornerPeekActive === true) return;
+        if (
+            window.nekoYuiGuideLive2dPreparing === true
+            || (
+                document.body
+                && document.body.classList
+                && document.body.classList.contains('yui-guide-live2d-preparing')
+            )
+        ) return;
         if (!_nekoShouldSelfHealLive2D()) return;
         // goodbye / 切换中属于合法隐藏，交给各自链路，不打扰。
         if (window.live2dManager && window.live2dManager._goodbyeClicked) return;
@@ -168,6 +176,16 @@ function revealInitialLive2DModelWhenUiReady(reason) {
     const reveal = () => {
         if (revealed) {
             return true;
+        }
+        if (
+            window.nekoYuiGuideLive2dPreparing === true
+            || (
+                document.body
+                && document.body.classList
+                && document.body.classList.contains('yui-guide-live2d-preparing')
+            )
+        ) {
+            return false;
         }
         if (typeof window.showLive2d !== 'function') {
             return false;

@@ -11,6 +11,48 @@
 })(typeof window !== 'undefined' ? window : globalThis, function (root) {
     'use strict';
 
+    const TUTORIAL_STAND_IN_FADE_OUT_MS = 1500;
+    const TUTORIAL_STAND_IN_APPROACH_MS = 2000;
+    const TUTORIAL_STAND_IN_HOLD_MS = 2500;
+    const TUTORIAL_STAND_IN_RETURN_MS = 2000;
+
+    function resolveCueDuration(value, fallback) {
+        return Number.isFinite(Number(value))
+            ? Math.max(0, Math.floor(Number(value)))
+            : fallback;
+    }
+
+    function resolveCueTiming(cue, scene, director) {
+        const narrationDurationMs = director && typeof director.getAvatarFloatingNarrationDurationMs === 'function'
+            ? resolveCueDuration(director.getAvatarFloatingNarrationDurationMs(
+                scene && scene.voiceKey,
+                scene && scene.text
+            ), 0)
+            : 0;
+        const hideMs = TUTORIAL_STAND_IN_FADE_OUT_MS;
+        const appearMs = TUTORIAL_STAND_IN_APPROACH_MS;
+        const holdMs = TUTORIAL_STAND_IN_HOLD_MS;
+        const entryMs = hideMs + appearMs;
+        const exitMs = hideMs + TUTORIAL_STAND_IN_RETURN_MS;
+        const totalDurationMs = entryMs + holdMs;
+        const fullDurationMs = totalDurationMs + exitMs;
+        const rawDelayMs = Number.isFinite(Number(cue.delay))
+            ? Number(cue.delay)
+            : Number(cue.delayMs);
+        const preferredDelayMs = Math.max(0, Number.isFinite(rawDelayMs) ? rawDelayMs : 0);
+        const delayMs = narrationDurationMs > 0
+            ? Math.min(preferredDelayMs, Math.max(0, narrationDurationMs - fullDurationMs))
+            : preferredDelayMs;
+        return Object.assign({}, cue, {
+            delay: delayMs,
+            hideMs: hideMs,
+            appearMs: appearMs,
+            holdMs: holdMs,
+            totalDurationMs: totalDurationMs,
+            fullDurationMs: fullDurationMs
+        });
+    }
+
     class AvatarStandInController {
         constructor(director) {
             this.director = director;
@@ -33,10 +75,11 @@
                 this.clear({ clearPending: true, restoreModel: true });
                 return false;
             }
-            const cue = this.getCue(day, scene.id);
-            if (!cue) {
+            const rawCue = this.getCue(day, scene.id);
+            if (!rawCue) {
                 return false;
             }
+            const cue = resolveCueTiming(rawCue, scene, director);
             this.clear({ clearPending: true, restoreModel: true });
             const token = director.avatarStandInToken + 1;
             director.avatarStandInToken = token;
@@ -86,6 +129,7 @@
     }
 
     return {
-        AvatarStandInController
+        AvatarStandInController,
+        resolveCueTiming
     };
 });

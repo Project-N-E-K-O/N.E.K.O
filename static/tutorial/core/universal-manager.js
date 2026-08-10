@@ -2128,7 +2128,7 @@ class UniversalTutorialManager {
             window.LanLan1.live2dModel = loadedModel;
             window.LanLan1.currentModel = loadedModel;
         }
-        if (typeof window.showLive2d === 'function') {
+        if (!deferRevealPrepared && typeof window.showLive2d === 'function') {
             window.showLive2d();
         }
         if (window.live2dManager && typeof window.live2dManager.resumeRendering === 'function') {
