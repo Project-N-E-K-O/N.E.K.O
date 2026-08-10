@@ -563,7 +563,12 @@
             const isCornerPeekPerformance = normalizedPreset === 'corner-peek'
                 || normalizedPreset === 'top-peek';
             let revealed = false;
+            let revealReadyTimedOut = false;
             const resolveOnReveal = normalizedOptions.isFirstDailyScene === true;
+            const externalCancelCheck = typeof normalizedOptions.isCancelled === 'function'
+                ? normalizedOptions.isCancelled
+                : () => this.isStopping();
+            const isMotionCancelled = () => revealReadyTimedOut || externalCancelCheck();
             let revealReadyResolve = null;
             let revealReadySettled = false;
             let revealReadyFallbackTimer = 0;
@@ -648,13 +653,12 @@
                 reducedMotion: typeof normalizedOptions.reducedMotion === 'boolean'
                     ? normalizedOptions.reducedMotion
                     : this.shouldReduceTutorialMotion(),
-                isCancelled: typeof normalizedOptions.isCancelled === 'function'
-                    ? normalizedOptions.isCancelled
-                    : () => this.isStopping()
+                isCancelled: isMotionCancelled
             });
             if (resolveOnReveal) {
                 if (!revealReadySettled && revealReadyFallbackMs > 0 && typeof window.setTimeout === 'function') {
                     revealReadyFallbackTimer = window.setTimeout(() => {
+                        revealReadyTimedOut = true;
                         if (revealPrepared) {
                             revealPrepared('daily-intro-avatar-reveal-timeout');
                             return;

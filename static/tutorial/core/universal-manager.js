@@ -2485,6 +2485,7 @@ class UniversalTutorialManager {
         if (typeof document === 'undefined' || typeof document.getElementById !== 'function') {
             return;
         }
+        const preserveAvatarMotionOpacity = window.nekoYuiGuideAvatarCornerPeekActive === true;
         if (document.body && document.body.classList) {
             document.body.classList.remove('yui-guide-return-petal-fade');
         }
@@ -2512,8 +2513,10 @@ class UniversalTutorialManager {
             ) {
                 element.style.removeProperty('display');
             }
-            element.style.removeProperty('opacity');
-            element.style.removeProperty('transition');
+            if (!preserveAvatarMotionOpacity || (id !== 'live2d-container' && id !== 'live2d-canvas')) {
+                element.style.removeProperty('opacity');
+                element.style.removeProperty('transition');
+            }
             element.style.removeProperty('visibility');
             element.style.removeProperty('pointer-events');
         });

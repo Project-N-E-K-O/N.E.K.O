@@ -19,6 +19,7 @@ const modelDisplaySource = fs.readFileSync(path.join(__dirname, 'app/app-ui/mode
 const appUiSource = readJsParts(path.join(__dirname, 'app/app-ui'));
 const appInterpageSource = readJsParts(path.join(__dirname, 'app/app-interpage'));
 const universalManagerSource = fs.readFileSync(path.join(__dirname, 'tutorial/core/universal-manager.js'), 'utf8');
+const wakeupSource = fs.readFileSync(path.join(__dirname, 'tutorial/yui-guide/wakeup.js'), 'utf8');
 
 function loadAvatarStageContext(options) {
     const normalizedOptions = options || {};
@@ -213,6 +214,7 @@ function createFrameMotionSession(options) {
         motionFromAlpha: 0,
         motionToAlpha: 1,
         restoreMode: 'half-body',
+        isCancelled: normalizedOptions.isCancelled,
         useCompositorOpacity: true
     });
     return {
@@ -516,7 +518,8 @@ test('corner peek can rotate floating buttons only when intro motion opts in', (
     assert.match(avatarStageSource, /this\.syncFloatingButtonsRotation\(frame\)/);
     assert.match(avatarStageSource, /manager\._floatingButtonsRotationRadians = rotation;/);
     assert.match(live2dButtonsSource, /const rotation = Number\(this\._floatingButtonsRotationRadians\) \|\| 0;/);
-    assert.match(live2dButtonsSource, /buttonsContainer\.style\.transform = `scale\(\$\{scale\}\)\$\{rotateTransform\}`;/);
+    assert.match(live2dButtonsSource, /const nextTransform = `scale\(\$\{scale\}\)\$\{rotateTransform\}`;/);
+    assert.match(live2dButtonsSource, /buttonsContainer\.style\.transform = nextTransform;/);
     assert.match(directorSource, /rotateFloatingButtons: performance\.rotateFloatingButtons === true/);
 });
 
@@ -759,6 +762,7 @@ test('Live2D opening frame motion reuses the corner peek compositor fade', () =>
     const { session, model, container, canvas, window } = createFrameMotionSession();
 
     assert.equal(session.start(), true);
+    assert.equal(window.nekoYuiGuideAvatarCornerPeekActive, true);
     const hiddenY = model.y;
     assert.equal(model.alpha, 1);
     assert.equal(container.style.opacity, '0');
@@ -785,6 +789,35 @@ test('Live2D opening frame motion reuses the corner peek compositor fade', () =>
     assert.equal(model.scale.y, 1.38);
     assert.equal(container.style.opacity, '1');
     assert.equal(canvas.style.opacity, '1');
+    assert.equal(window.nekoYuiGuideAvatarCornerPeekActive, false);
+});
+
+test('Live2D opening frame motion restores its original state when reveal fallback cancels it', () => {
+    let cancelled = false;
+    const { session, model, container, window } = createFrameMotionSession({
+        isCancelled: () => cancelled
+    });
+    const originalFrame = {
+        x: model.x,
+        y: model.y,
+        scaleX: model.scale.x,
+        scaleY: model.scale.y,
+        alpha: model.alpha
+    };
+
+    assert.equal(session.start(), true);
+    cancelled = true;
+    session.tick();
+
+    assert.equal(session.finished, true);
+    assert.equal(session.result, 'cancelled');
+    assert.equal(model.x, originalFrame.x);
+    assert.equal(model.y, originalFrame.y);
+    assert.equal(model.scale.x, originalFrame.scaleX);
+    assert.equal(model.scale.y, originalFrame.scaleY);
+    assert.equal(model.alpha, originalFrame.alpha);
+    assert.equal(container.style.opacity, '1');
+    assert.equal(window.nekoYuiGuideAvatarCornerPeekActive, false);
 });
 
 test('tutorial frame motion keeps one visible compositor and opening motion skips the fade handoff', () => {
@@ -909,6 +942,9 @@ test('Live2D visibility recovery preserves opacity while avatar corner peek is a
     const showLive2dSource = modelDisplaySource
         .split('I.showLive2d = function showLive2d() {')[1]
         .split('I.mod.showLive2d = I.showLive2d;')[0];
+    const wakeupRevealSource = wakeupSource
+        .split('function revealPreparedTutorialLive2D(reason) {')[1]
+        .split('function normalizeDuration(value, fallback) {')[0];
     const preparingCommentIndex = showLive2dSource.indexOf('// 教程准备/探身演出期间');
     const preparingFastPathIndex = showLive2dSource.lastIndexOf(
         'if (preserveYuiGuidePreparing || preserveYuiGuideAvatarMotion)',
@@ -920,10 +956,16 @@ test('Live2D visibility recovery preserves opacity while avatar corner peek is a
     assert.match(live2dInitSource, /nekoYuiGuideLive2dPreparing[\s\S]{0,220}yui-guide-live2d-preparing/);
     assert.match(live2dInitSource, /neko:yui-guide:live2d-prepared-revealed/);
     assert.match(live2dInitSource, /new MutationObserver\(revealAfterPreparing\)/);
+    assert.match(wakeupRevealSource, /window\.nekoYuiGuideLive2dPreparing = false;/);
+    assert.ok(
+        wakeupRevealSource.indexOf('window.nekoYuiGuideLive2dPreparing = false;')
+        < wakeupRevealSource.indexOf('neko:yui-guide:live2d-prepared-revealed')
+    );
     assert.match(appUiSource, /preserveAvatarCornerPeekOpacity[\s\S]{0,240}model\.alpha = 1;/);
     assert.match(appInterpageSource, /preserveAvatarCornerPeekOpacity[\s\S]{0,240}currentModel\.alpha = 1;/);
     assert.match(universalManagerSource, /preserveAvatarCornerPeekOpacity[\s\S]{0,360}restoreTutorialLive2dDisplayState/);
     assert.match(universalManagerSource, /preserveOpacity[\s\S]{0,360}live2dCanvas\.style\.setProperty\('opacity', '1', 'important'\)/);
+    assert.match(universalManagerSource, /preserveAvatarMotionOpacity[\s\S]{0,500}id !== 'live2d-container'[\s\S]{0,120}id !== 'live2d-canvas'/);
 });
 
 test('daily opening reveal keeps a bounded fallback while preserving explicit overrides', () => {

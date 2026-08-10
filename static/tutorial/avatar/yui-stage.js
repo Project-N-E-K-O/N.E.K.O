@@ -850,7 +850,13 @@
         );
     }
 
-    function waitForLive2DContext(timeoutMs) {
+    function waitForLive2DContext(timeoutMs, isCancelled) {
+        const cancelCheck = typeof isCancelled === 'function'
+            ? isCancelled
+            : function () { return false; };
+        if (cancelCheck()) {
+            return Promise.resolve(null);
+        }
         const immediate = getLive2DContext();
         if (immediate) {
             return Promise.resolve(immediate);
@@ -864,6 +870,10 @@
         return new Promise((resolve) => {
             const startedAt = performance.now();
             const check = () => {
+                if (cancelCheck()) {
+                    resolve(null);
+                    return;
+                }
                 const context = getLive2DContext();
                 if (context) {
                     resolve(context);
@@ -1888,6 +1898,7 @@
             this.initialAlpha = 1;
             this.useCompositorOpacity = normalizedOptions.useCompositorOpacity === true;
             this.compositorOpacityTargets = [];
+            this.previousAvatarMotionActiveValue = false;
             this.startedAt = 0;
             this.active = false;
             this.finished = false;
@@ -2004,6 +2015,7 @@
                 });
                 this.compositorOpacityTargets = [];
             }
+            setAvatarCornerPeekActiveFlag(this.previousAvatarMotionActiveValue);
             if (this.performanceLock && typeof this.performanceLock.release === 'function') {
                 this.performanceLock.release(reason || 'stopped');
                 this.performanceLock = null;
@@ -2118,6 +2130,8 @@
             this.fromFrame = this.resolveTargetFrame(this.fromKind);
             this.toFrame = this.resolveTargetFrame(this.toKind);
             this.acquirePerformanceLock();
+            this.previousAvatarMotionActiveValue = window.nekoYuiGuideAvatarCornerPeekActive === true;
+            setAvatarCornerPeekActiveFlag(true);
             this.active = true;
             this.startedAt = performance.now();
             if (this.reducedMotion) {
@@ -6073,7 +6087,7 @@
     async function startAvatarCornerPeek(options) {
         const normalizedOptions = options || {};
         const waitMs = normalizeDuration(normalizedOptions.readyWaitMs, PLUGIN_DASHBOARD_CORNER_READY_WAIT_MS);
-        const context = await waitForLive2DContext(waitMs);
+        const context = await waitForLive2DContext(waitMs, normalizedOptions.isCancelled);
         if (!context) {
             return null;
         }
@@ -6538,9 +6552,14 @@
     async function playTutorialAvatarProbeFrameMotion(options, preset) {
         const normalizedOptions = options || {};
         const waitMs = normalizeDuration(normalizedOptions.readyWaitMs, PLUGIN_DASHBOARD_CORNER_READY_WAIT_MS);
-        const context = await waitForLive2DContext(waitMs);
+        const context = await waitForLive2DContext(waitMs, normalizedOptions.isCancelled);
         if (!context) {
-            return { result: 'fallback', reason: 'live2d_unavailable' };
+            const cancelled = typeof normalizedOptions.isCancelled === 'function'
+                && normalizedOptions.isCancelled();
+            return {
+                result: cancelled ? 'cancelled' : 'fallback',
+                reason: cancelled ? 'cancelled' : 'live2d_unavailable'
+            };
         }
         if (activeAvatarMotionSession && activeAvatarMotionSession.active) {
             await activeAvatarMotionSession.stop('replaced');
