@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 from plugin.plugins.lifekit._i18n import I18n
+from plugin.plugins.lifekit._nearby_intent import build_nearby_request_plan
 from plugin.plugins.lifekit.routers.travel import build_travel_advice
 from plugin.plugins.lifekit.routers.unit_convert import UnitConvertRouter
 from plugin.sdk.plugin import Ok
@@ -66,3 +67,37 @@ def test_travel_advice_tolerates_null_uv_and_wind() -> None:
     )
 
     assert advice["sunscreen"] is False
+
+
+def test_mixed_nearby_categories_preserve_each_requested_target() -> None:
+    request = "restaurants and coffee near Times Square"
+
+    plan = build_nearby_request_plan(
+        request_text=request,
+        raw_request=request,
+        projected_params=True,
+        location_hint="",
+        legacy_location="",
+        place_intent="explore",
+        preference_hints=(),
+        search_terms=(),
+    )
+
+    assert plan.search_terms == ("餐厅", "咖啡馆")
+
+
+def test_mixed_culture_categories_keep_museum_and_gallery_distinct() -> None:
+    request = "museum and gallery near Trafalgar Square"
+
+    plan = build_nearby_request_plan(
+        request_text=request,
+        raw_request=request,
+        projected_params=True,
+        location_hint="",
+        legacy_location="",
+        place_intent="explore",
+        preference_hints=(),
+        search_terms=(),
+    )
+
+    assert plan.search_terms == ("博物馆", "美术馆")
