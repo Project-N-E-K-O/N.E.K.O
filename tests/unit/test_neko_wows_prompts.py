@@ -259,6 +259,10 @@ def test_damage_event_claim_limits_do_not_invent_awards_or_salvos():
         "勋带" in line or "成就" in line
         for line in devastating.claim_limits
     )
+    assert any(
+        "一发" in line and "单轮齐射" in line
+        for line in devastating.claim_limits
+    )
     assert devastating.lane == LANE_NORMAL
 
 

@@ -66,6 +66,7 @@ def frame(
     *ships: Ship,
     battle_id: str = "b-1",
     objects_available: bool = True,
+    epoch: int = 1,
 ) -> WowsSnapshot:
     availability = {domain: AVAIL_AVAILABLE for domain in CORE_DOMAINS}
     availability.update({domain: AVAIL_UNSUPPORTED for domain in FUTURE_DOMAINS})
@@ -93,7 +94,7 @@ def frame(
         damage_inflicted_by_victim=dict(damage_by_victim),
         received_at=at,
         transport="ws",
-        epoch=1,
+        epoch=epoch,
     )
 
 
@@ -136,6 +137,16 @@ def test_absolute_high_damage_waits_until_five_seconds_after_last_damage():
     assert event.detail["window_damage"] == 20_000
     assert event.detail["window_seconds"] == pytest.approx(5.0)
     assert event.detail["target_sunk"] is False
+
+
+def test_high_damage_omits_target_sunk_when_objects_are_unavailable():
+    results = run_frames(
+        frame(1, 100.0, {3002: 0}, objects_available=False),
+        frame(2, 101.0, {3002: 20_000}, objects_available=False),
+        frame(3, 106.0, {3002: 20_000}, objects_available=False),
+    )
+
+    assert "target_sunk" not in emitted(results, HIGH_DAMAGE).detail
 
 
 def test_ratio_threshold_is_or_with_absolute_threshold():
@@ -216,6 +227,39 @@ def test_counter_rollback_discards_the_pending_burst():
         frame(2, 101.0, {3002: 20_000}, target),
         frame(3, 102.0, {3002: 5_000}, target),
         frame(4, 107.0, {3002: 5_000}, target),
+    )
+
+    assert event_ids(results) == []
+
+
+def test_transport_epoch_change_rebaselines_cumulative_damage():
+    target = enemy(max_health=100_000.0)
+    results = run_frames(
+        frame(1, 100.0, {3002: 0}, target, epoch=1),
+        frame(2, 101.0, {3002: 20_000}, target, epoch=2),
+        frame(3, 106.0, {3002: 20_000}, target, epoch=2),
+    )
+
+    assert event_ids(results) == []
+
+
+def test_received_time_rollback_rebaselines_cumulative_damage():
+    target = enemy(max_health=100_000.0)
+    results = run_frames(
+        frame(1, 100.0, {3002: 0}, target),
+        frame(2, 99.0, {3002: 20_000}, target),
+        frame(3, 104.0, {3002: 20_000}, target),
+    )
+
+    assert event_ids(results) == []
+
+
+def test_frame_gap_longer_than_window_rebaselines_cumulative_damage():
+    target = enemy(max_health=100_000.0)
+    results = run_frames(
+        frame(1, 100.0, {3002: 0}, target),
+        frame(2, 105.1, {3002: 20_000}, target),
+        frame(3, 110.1, {3002: 20_000}, target),
     )
 
     assert event_ids(results) == []

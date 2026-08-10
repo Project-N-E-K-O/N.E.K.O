@@ -26,7 +26,7 @@ class _ResolvedBurst:
     victim_id: int
     damage: float
     ratio: float | None
-    sunk: bool
+    sunk: bool | None
 
 
 class DamageBurstDetector(Detector):
@@ -63,8 +63,17 @@ class DamageBurstDetector(Detector):
 
     def detect(self, previous, current, context: DetectorContext) -> Sequence[GameEvent]:
         snapshot, facts = current
-        now = facts.at
+        previous_snapshot, previous_facts = previous
         window = self.cfg.damage_burst_window_seconds
+        if (
+            snapshot.epoch != previous_snapshot.epoch
+            or facts.at < previous_facts.at
+            or facts.at - previous_facts.at > window
+        ):
+            self.reset()
+            return ()
+
+        now = facts.at
         current_totals = dict(facts.damage_inflicted_by_victim)
         resolved: list[_ResolvedBurst] = []
 
@@ -98,7 +107,11 @@ class DamageBurstDetector(Detector):
 
             burst = self._bursts.get(victim_id)
             if burst is not None and now - burst.last_damage_at > window:
-                old = self._resolve_high(victim_id, burst, sunk=False)
+                old = self._resolve_high(
+                    victim_id,
+                    burst,
+                    sunk=self._known_sunk_state(snapshot, victim_id),
+                )
                 if old is not None:
                     resolved.append(old)
                 self._bursts.pop(victim_id, None)
@@ -128,7 +141,11 @@ class DamageBurstDetector(Detector):
             if now - burst.last_damage_at < window:
                 continue
             self._bursts.pop(victim_id, None)
-            high = self._resolve_high(victim_id, burst, sunk=False)
+            high = self._resolve_high(
+                victim_id,
+                burst,
+                sunk=self._known_sunk_state(snapshot, victim_id),
+            )
             if high is not None:
                 resolved.append(high)
 
@@ -176,7 +193,7 @@ class DamageBurstDetector(Detector):
         victim_id: int,
         burst: _Burst,
         *,
-        sunk: bool,
+        sunk: bool | None,
     ) -> _ResolvedBurst | None:
         damage = burst.peak_damage
         maximum = self._target_max_health.get(victim_id)
@@ -218,6 +235,15 @@ class DamageBurstDetector(Detector):
         }
 
     @staticmethod
+    def _known_sunk_state(snapshot, victim_id: int) -> bool | None:
+        if not snapshot.is_available(DOMAIN_OBJECTS):
+            return None
+        for ship in snapshot.ships:
+            if ship.player_id == victim_id and isinstance(ship.alive, bool):
+                return not ship.alive
+        return None
+
+    @staticmethod
     def _resolved_rank(item: _ResolvedBurst) -> tuple[int, float, float, int]:
         event_rank = 0 if item.event_id == DEVASTATING_STRIKE else 1
         ratio = item.ratio if item.ratio is not None else -1.0
@@ -227,8 +253,9 @@ class DamageBurstDetector(Detector):
         detail = {
             "window_damage": round(item.damage),
             "window_seconds": self.cfg.damage_burst_window_seconds,
-            "target_sunk": item.sunk,
         }
+        if item.sunk is not None:
+            detail["target_sunk"] = item.sunk
         target_name = self._target_names.get(item.victim_id)
         if target_name:
             detail["target_name"] = target_name

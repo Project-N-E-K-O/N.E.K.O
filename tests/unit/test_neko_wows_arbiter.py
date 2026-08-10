@@ -253,6 +253,17 @@ def test_same_round_coalescing_keeps_the_strongest_candidate():
     assert REASON_COALESCED in outcomes(decision, DAMAGE_MILESTONE)
 
 
+def test_expired_strong_candidate_cannot_hide_an_eligible_sibling():
+    arbiter = Arbiter(CFG)
+    decision = arbiter.decide([
+        candidate(HIGH_DAMAGE, at=100.0, severity=55, ttl=-1.0),
+        candidate(DAMAGE_MILESTONE, at=100.0, severity=25),
+    ], 100.0)
+
+    assert decision.chosen.event_id == DAMAGE_MILESTONE
+    assert REASON_EXPIRED in outcomes(decision, HIGH_DAMAGE)
+
+
 def test_a_newer_candidate_replaces_a_queued_sibling():
     arbiter = Arbiter(CFG)
     # Both sit in the survival coalesce group; only the newest should survive.

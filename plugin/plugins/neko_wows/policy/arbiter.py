@@ -147,13 +147,19 @@ class Arbiter:
     # ------------------------------------------------------------------
     def submit(self, candidates: Sequence[AdviceCandidate], now: float) -> list[DecisionStep]:
         """Queue new candidates, collapsing by coalesce key and honouring preempt."""
-        incoming, steps = self._collapse_incoming(candidates)
-        for candidate in incoming:
+        steps: list[DecisionStep] = []
+        eligible: list[AdviceCandidate] = []
+        for candidate in candidates:
             if candidate.is_expired(now):
                 steps.append(DecisionStep(
                     candidate.event_id, candidate.lane, REASON_EXPIRED,
                     "expired before it reached the queue"))
                 continue
+            eligible.append(candidate)
+
+        incoming, collapsed = self._collapse_incoming(eligible)
+        steps.extend(collapsed)
+        for candidate in incoming:
 
             key = candidate.coalesce_key
             if key:
