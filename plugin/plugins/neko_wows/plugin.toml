@@ -55,7 +55,7 @@ dry_run = false
 service_url = "http://127.0.0.1:8111"
 service_auto_start = true
 # 8111_for_wows 仓库根目录；留空则不自动拉起，只连已在跑的服务。
-service_source_dir = "D:/8111_for_wows"
+service_source_dir = ""
 # World_of_Warships 安装目录，转交给服务端自动定位 state.json。
 game_dir = ""
 service_startup_timeout_seconds = 10.0

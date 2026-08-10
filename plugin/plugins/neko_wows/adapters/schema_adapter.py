@@ -618,6 +618,10 @@ def _inflicted_damage(
         if total is None and by_victim:
             total = sum(by_victim.values())
         return total, by_victim
+    if own is not None:
+        # Flat `{playerId: amount}` table: our own entry is the answer.
+        # Summing the whole table would fold in teammates' damage.
+        return _damage_amount(own), {}
     return _sum_table(raw), {}
 
 

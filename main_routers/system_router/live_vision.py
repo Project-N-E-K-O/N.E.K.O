@@ -102,7 +102,10 @@ async def get_live_vision_state(
         "native_vision": bool(state.get("native_vision")),
     }
 
-    if include_frame and payload["active"]:
+    # Camera shares the user's room, not a desktop. The SDK documents
+    # ``include_frame`` as a desktop image, and game companions reject camera
+    # frames for the same reason — report liveness/source but withhold pixels.
+    if include_frame and payload["active"] and payload["source"] == "screen":
         frame_fn = getattr(mgr, "live_vision_frame_b64", None)
         frame = ""
         if callable(frame_fn):

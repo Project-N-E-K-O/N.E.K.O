@@ -1328,10 +1328,10 @@ class ProactiveMixin:
                 callbacks_snapshot[:] = []
                 self.proactive_manager.release_inflight_noop()
                 return False
-            _proactive_images: list = []
-            for _cb in active_callbacks:
-                if isinstance(_cb, dict):
-                    _proactive_images.extend(_cb.get("media_images") or [])
+            # Offline prompt_ephemeral never calls stream_image; resolve
+            # attach_live_frame onto the explicit images list so a vision-
+            # capable text turn actually receives the share it was promised.
+            _proactive_images = self._collect_text_proactive_images(active_callbacks)
             # 同 trigger_agent_callbacks：字形要留到 _build_callback_instruction。
             _lang = normalize_language_code(self.user_language, format='full')
             instruction = _build_callback_instruction(
@@ -1895,6 +1895,53 @@ class ProactiveMixin:
                 session._inject_rejection_handlers.pop(event_id, None)
         return all_ok
 
+    def _resolve_cb_live_frame_b64(self, cb: dict) -> str:
+        """Return the screen-share frame a callback asked for, or ``""``.
+
+        Shared by the voice ``stream_image`` path and the offline text path
+        that passes images explicitly into ``prompt_ephemeral``. Camera shares
+        are rejected: that is the user's room, not their desktop.
+        """
+        if not isinstance(cb, dict) or not cb.get("attach_live_frame"):
+            return ""
+        state = self.live_vision_snapshot()
+        if not state["active"] or state["source"] != "screen":
+            return ""
+        # The manager's own slot, not the session's ambient ``_latest_image_b64``:
+        # that one is also written by avatar drops, pasted images and other
+        # plugins' pictures, any of which would otherwise be delivered here as
+        # though it were the user's screen.
+        return self.live_vision_frame_b64() or ""
+
+    def _collect_text_proactive_images(self, callbacks: list) -> list:
+        """Build the image list for offline ``prompt_ephemeral``.
+
+        Voice delivery streams the live frame via ``stream_image``; text mode
+        must put that same frame on the explicit ``images`` argument or the
+        model is told a share is attached when none was sent.
+        """
+        images: list = []
+        live_frame_added = False
+        for cb in callbacks:
+            if not isinstance(cb, dict):
+                continue
+            if not live_frame_added:
+                frame = self._resolve_cb_live_frame_b64(cb)
+                if frame:
+                    # Offline sessions usually lack native multimodal on the
+                    # base model; prompt_ephemeral switches to vision_model
+                    # when images are present. Skip when neither path exists.
+                    session = getattr(self, "session", None)
+                    can_vision = bool(
+                        getattr(session, "_supports_native_image", False)
+                        or getattr(session, "vision_model", None)
+                    )
+                    if can_vision:
+                        images.append(frame)
+                        live_frame_added = True
+            images.extend(cb.get("media_images") or [])
+        return images
+
     async def _stream_cb_live_frame(self, cb: dict, session, si) -> bool:
         """Give one callback's turn the live screen-share frame it asked for.
 
@@ -1912,23 +1959,12 @@ class ProactiveMixin:
         this path to avoid — and the plugin still has its own screenshot tool
         for that case.
         """
-        if not cb.get("attach_live_frame"):
-            return False
         # Read native support off the session actually being streamed to, not
         # off ``self.session``: the caller may be delivering into a session it
         # captured earlier in the release path.
         if not getattr(session, "_supports_native_image", False):
             return False
-        state = self.live_vision_snapshot()
-        # A camera share is somebody's room, not their screen; a plugin asking
-        # to see what the user sees has no use for it.
-        if not state["active"] or state["source"] != "screen":
-            return False
-        # The manager's own slot, not the session's ambient ``_latest_image_b64``:
-        # that one is also written by avatar drops, pasted images and other
-        # plugins' pictures, any of which would otherwise be delivered here as
-        # though it were the user's screen.
-        frame = self.live_vision_frame_b64()
+        frame = self._resolve_cb_live_frame_b64(cb)
         if not frame:
             return False
         try:
@@ -1939,9 +1975,10 @@ class ProactiveMixin:
                 self.lanlan_name, e,
             )
             return False
+        state = self.live_vision_snapshot()
         logger.debug(
             "[%s] attached live share frame to proactive cue (age=%.1fs)",
-            self.lanlan_name, state["age_seconds"] or 0.0,
+            self.lanlan_name, state.get("age_seconds") or 0.0,
         )
         return True
 

@@ -81,6 +81,20 @@ def test_the_frame_comes_only_when_asked_for(monkeypatch):
     assert body["frame_mime"] == "image/jpeg"
 
 
+def test_camera_share_never_returns_pixels(monkeypatch):
+    """Camera is the user's room; screen-share probes must not leak it."""
+    client = _client(
+        {"lanlan": _Manager("lanlan", _sharing(source="camera"), frame="room")},
+        monkeypatch,
+    )
+
+    body = client.get(ENDPOINT, params={"include_frame": "true"}).json()
+
+    assert body["active"] is True
+    assert body["source"] == "camera"
+    assert "frame_b64" not in body
+
+
 def test_no_frame_is_handed_out_when_nothing_is_shared(monkeypatch):
     client = _client({"lanlan": _Manager("lanlan", _idle())}, monkeypatch)
 

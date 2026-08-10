@@ -39,9 +39,21 @@ def test_known_vision_models(model):
     "glm-4",
     "glm-4-plus",
     "moonshot-v1-8k",
+    # ``vl`` must be a bounded token; these only contain the letters.
+    "avl-router",
+    "evolved-chat",
 ])
 def test_text_only_models(model):
     assert model_supports_vision(model) is False
+
+
+@pytest.mark.parametrize("model", [
+    "foo-vl-bar",
+    "vl-7b",
+    "model.vl.1",
+])
+def test_bounded_vl_token_still_counts_as_vision(model):
+    assert model_supports_vision(model) is True
 
 
 @pytest.mark.parametrize("model", ["", "   ", None, 123])

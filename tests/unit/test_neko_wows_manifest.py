@@ -223,8 +223,8 @@ def test_the_manifest_section_parses_into_the_config(manifest):
     cfg = WowsConfig.from_mapping(manifest["neko_wows"])
     assert cfg.dry_run is False
     assert cfg.service_url == "http://127.0.0.1:8111"
-    assert manifest["neko_wows"]["service_source_dir"] == "D:/8111_for_wows"
-    assert cfg.service_source_dir == "D:/8111_for_wows"
+    assert manifest["neko_wows"]["service_source_dir"] == ""
+    assert cfg.service_source_dir == ""
     assert cfg.channel_mode in ALL_CHANNEL_MODES
     assert manifest["neko_wows"]["user_chat_quiet_window_seconds"] == 10.0
     assert cfg.user_chat_quiet_window_seconds == 10.0

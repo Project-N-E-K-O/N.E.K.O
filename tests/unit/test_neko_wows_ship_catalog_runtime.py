@@ -474,6 +474,22 @@ def test_context_submits_each_resolved_type_once_with_team_counts(context_parts)
     assert len(plugin.calls) == 1
 
 
+def test_remembered_stub_with_only_player_id_does_not_double_count(context_parts):
+    """Objects flicker: first frame has ui+player, later stub keeps player only."""
+    context, plugin, _, _ = context_parts
+    full = battle_snapshot(yamato_ship(10, 30, RELATION_ENEMY))
+    stub = battle_snapshot(
+        replace(yamato_ship(10, 30, RELATION_ENEMY), ui_id=None),
+    )
+
+    context.observe(full, dry_run=False)
+    again = context.observe(stub, dry_run=False)
+
+    assert again.updated_ship_ids == ()
+    assert "敌军1" in plugin.calls[0]["parts"][0]["text"]
+    assert "敌军2" not in plugin.calls[-1]["parts"][0]["text"]
+
+
 def test_context_retries_unresolved_ui_object_when_identity_details_arrive(
     context_parts,
 ):

@@ -657,7 +657,7 @@ def test_live_preference_actions_change_runtime_only_under_pipeline_lock(
         "game_dir": "D:/Games/WoWs",
     }, {
         "service_url": "http://127.0.0.1:8111",
-        "service_source_dir": "D:/8111_for_wows",
+        "service_source_dir": "",
         "game_dir": "",
     }),
     ("set_screenshot_settings", {

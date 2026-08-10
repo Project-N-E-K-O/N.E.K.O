@@ -97,7 +97,9 @@ class WowsConfig:
 
     service_url: str = "http://127.0.0.1:8111"
     service_auto_start: bool = True
-    service_source_dir: str = "D:/8111_for_wows"
+    # Empty means "do not auto-launch"; point this at a local 8111_for_wows
+    # checkout (panel or TOML) when the companion should start the service.
+    service_source_dir: str = ""
     game_dir: str = ""
     service_startup_timeout_seconds: float = 10.0
     service_health_timeout_seconds: float = 1.5

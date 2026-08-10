@@ -194,10 +194,18 @@ class TelemetryTransport:
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
                 return False
+            # Each run captures its own Event. ``stop()`` may time out while the
+            # old thread is still draining; a fresh unset Event on restart must
+            # not revive that older loop via ``self._stop_flag``.
             self._stop_flag = threading.Event()
+            stop_flag = self._stop_flag
             self._mode = MODE_STARTING
             self._thread = threading.Thread(
-                target=self._thread_main, name="wows-transport", daemon=True)
+                target=self._thread_main,
+                args=(stop_flag,),
+                name="wows-transport",
+                daemon=True,
+            )
             thread = self._thread
         thread.start()
         return True
@@ -210,16 +218,20 @@ class TelemetryTransport:
         self._stop_flag.set()
         if loop is not None:
             # The loop is blocked on an asyncio primitive; poke it from here.
-            loop.call_soon_threadsafe(lambda: None)
+            try:
+                loop.call_soon_threadsafe(lambda: None)
+            except RuntimeError:
+                # Already closed: the thread is on its way out anyway.
+                pass
         if thread is not None and thread.is_alive():
             thread.join(timeout=timeout)
         with self._lock:
             self._mode = MODE_STOPPED
 
     # ------------------------------------------------------------------
-    def _thread_main(self) -> None:
+    def _thread_main(self, stop_flag: threading.Event) -> None:
         try:
-            asyncio.run(self._run())
+            asyncio.run(self._run(stop_flag))
         except Exception as exc:  # pragma: no cover - transport thread guard
             self._note_error(f"transport thread crashed: {exc}")
         finally:
@@ -227,41 +239,46 @@ class TelemetryTransport:
                 self._mode = MODE_STOPPED
                 self._loop = None
 
-    async def _run(self) -> None:
+    async def _run(self, stop_flag: threading.Event) -> None:
         loop = asyncio.get_running_loop()
         with self._lock:
             self._loop = loop
         timeout = aiohttp.ClientTimeout(total=self.cfg.http_timeout_seconds)
         async with aiohttp.ClientSession(timeout=timeout) as session:
-            tasks = [asyncio.create_task(self._rest_loop(session))]
+            tasks = [asyncio.create_task(self._rest_loop(session, stop_flag))]
             if self.cfg.transport_prefer_ws:
-                tasks.append(asyncio.create_task(self._ws_loop(session)))
+                tasks.append(
+                    asyncio.create_task(self._ws_loop(session, stop_flag)))
             else:
                 self._switch_mode(MODE_REST)
             try:
-                await self._wait_for_stop()
+                await self._wait_for_stop(stop_flag)
             finally:
                 for task in tasks:
                     task.cancel()
                 await asyncio.gather(*tasks, return_exceptions=True)
 
-    async def _wait_for_stop(self) -> None:
-        while not self._stop_flag.is_set():
+    async def _wait_for_stop(self, stop_flag: threading.Event) -> None:
+        while not stop_flag.is_set():
             await asyncio.sleep(0.05)
 
     # ------------------------------------------------------------------
-    async def _ws_loop(self, session: aiohttp.ClientSession) -> None:
+    async def _ws_loop(
+        self,
+        session: aiohttp.ClientSession,
+        stop_flag: threading.Event,
+    ) -> None:
         """Keep trying to hold a socket open; REST covers the gaps."""
         delay = self.cfg.ws_reconnect_min_seconds
         url = self.cfg.service_url.rstrip("/") + "/ws"
-        while not self._stop_flag.is_set():
+        while not stop_flag.is_set():
             try:
                 async with session.ws_connect(url, heartbeat=20.0) as ws:
                     with self._lock:
                         self._stats.ws_connects += 1
                     self._switch_mode(MODE_WS)
                     delay = self.cfg.ws_reconnect_min_seconds
-                    await self._pump_ws(ws)
+                    await self._pump_ws(ws, stop_flag)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -269,7 +286,7 @@ class TelemetryTransport:
                     self._stats.ws_failures += 1
                 self._note_error(f"ws: {type(exc).__name__}")
 
-            if self._stop_flag.is_set():
+            if stop_flag.is_set():
                 return
             # Socket is gone: polling takes over while we back off and retry.
             self._switch_mode(MODE_REST)
@@ -278,10 +295,14 @@ class TelemetryTransport:
             await asyncio.sleep(delay)
             delay = min(delay * 2.0, self.cfg.ws_reconnect_max_seconds)
 
-    async def _pump_ws(self, ws: aiohttp.ClientWebSocketResponse) -> None:
+    async def _pump_ws(
+        self,
+        ws: aiohttp.ClientWebSocketResponse,
+        stop_flag: threading.Event,
+    ) -> None:
         epoch = self.epoch
         async for message in ws:
-            if self._stop_flag.is_set():
+            if stop_flag.is_set():
                 return
             if message.type is aiohttp.WSMsgType.TEXT:
                 payload = _decode(message.data)
@@ -294,11 +315,15 @@ class TelemetryTransport:
             elif message.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
                 return
 
-    async def _rest_loop(self, session: aiohttp.ClientSession) -> None:
+    async def _rest_loop(
+        self,
+        session: aiohttp.ClientSession,
+        stop_flag: threading.Event,
+    ) -> None:
         url = self.cfg.service_url.rstrip("/") + "/all"
-        while not self._stop_flag.is_set():
+        while not stop_flag.is_set():
             await asyncio.sleep(self.cfg.rest_poll_interval_seconds)
-            if self._stop_flag.is_set():
+            if stop_flag.is_set():
                 return
             if self.mode == MODE_WS:
                 continue

@@ -32,13 +32,17 @@ import re
 # also matching plain ``glm-4``.
 _GLM_VISION_SUFFIX = re.compile(r"(?:^|[-_.])\d+(?:\.\d+)?v(?:[-_.]|$)")
 
+# Bare ``"vl" in name`` is too short: any model whose name happens to contain
+# those two letters (``avl-…``, ``evolved-…``) would be treated as vision and
+# then fail at the provider. Bound the token like the GLM suffix.
+_VL_TOKEN = re.compile(r"(?:^|[-_.])vl(?:[-_.\d]|$)")
+
 _VISION_NAME_MARKERS = (
     "gpt-4o",
     "gpt-4.1",
     "gpt-4.5",
     "gpt-5",
     "vision",
-    "vl",
     "qwen2.5-vl",
     "qwen-vl",
     "gemini",
@@ -53,6 +57,8 @@ def model_supports_vision(model: object) -> bool:
     if not normalized:
         return False
     if normalized.startswith("glm-") and _GLM_VISION_SUFFIX.search(normalized):
+        return True
+    if _VL_TOKEN.search(normalized):
         return True
     return any(marker in normalized for marker in _VISION_NAME_MARKERS)
 

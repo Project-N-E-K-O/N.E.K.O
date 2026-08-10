@@ -115,11 +115,22 @@ from main_routers.tool_router import (  # noqa: E402
     _MAX_TOOL_IMAGES,
     _MAX_TOOL_IMAGE_B64_BYTES,
     _parse_tool_images,
+    _tool_result_output_payload,
+)
+
+# 1x1 PNG — valid base64 that survives decode checks without needing a file.
+_TINY_PNG_B64 = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQ"
+    "AAAABJRU5ErkJggg=="
 )
 
 
 def _image_entry(**overrides) -> dict:
-    entry = {"data_b64": "QUJD", "mime": "image/jpeg", "vision_prompt": "look"}
+    entry = {
+        "data_b64": _TINY_PNG_B64,
+        "mime": "image/png",
+        "vision_prompt": "look",
+    }
     entry.update(overrides)
     return entry
 
@@ -136,17 +147,40 @@ def test_valid_entry_is_parsed():
     images, warnings = _parse_tool_images({"images": [_image_entry()]})
     assert warnings == []
     assert len(images) == 1
-    assert images[0].data_b64 == "QUJD"
-    assert images[0].mime == "image/jpeg"
+    assert images[0].data_b64 == _TINY_PNG_B64
+    assert images[0].mime == "image/png"
     assert images[0].vision_prompt == "look"
 
 
-def test_png_is_accepted():
+def test_jpeg_is_accepted():
+    # Minimal JFIF-ish payload: decodeable base64 that starts with JPEG SOI.
+    import base64
+
+    jpeg_b64 = base64.b64encode(b"\xff\xd8\xff\xd9").decode("ascii")
     images, warnings = _parse_tool_images(
-        {"images": [_image_entry(mime="image/png")]}
+        {"images": [_image_entry(data_b64=jpeg_b64, mime="image/jpeg")]}
     )
     assert warnings == []
-    assert images[0].mime == "image/png"
+    assert images[0].mime == "image/jpeg"
+
+
+def test_malformed_base64_is_dropped_with_a_warning():
+    images, warnings = _parse_tool_images(
+        {"images": [_image_entry(data_b64="%%%not-base64%%%")]}
+    )
+    assert images == []
+    assert any("base64" in w.lower() or "invalid" in w.lower() for w in warnings)
+
+
+def test_images_only_body_strips_pixels_from_model_output():
+    body = {"images": [_image_entry()], "ok": True}
+    images, warnings = _parse_tool_images(body)
+    output = _tool_result_output_payload(body)
+    assert warnings == []
+    assert len(images) == 1
+    assert "images" not in output
+    assert output["ok"] is True
+    assert _TINY_PNG_B64 not in str(output)
 
 
 def test_oversized_image_is_dropped_with_a_warning():
@@ -191,7 +225,7 @@ def test_non_dict_entry_is_dropped():
 
 
 def test_missing_mime_defaults_to_jpeg():
-    entry = {"data_b64": "QUJD"}
+    entry = {"data_b64": _TINY_PNG_B64}
     images, warnings = _parse_tool_images({"images": [entry]})
     assert warnings == []
     assert images[0].mime == "image/jpeg"

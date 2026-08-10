@@ -335,9 +335,14 @@ class BattleShipContextManager:
         for ship in snapshot.ships:
             if not isinstance(ship.name, str) or not ship.name.strip():
                 continue
-            object_key = self._object_key(ship, fallback_occurrences)
-            if object_key in self._seen_objects:
+            object_keys = self._object_keys(ship, fallback_occurrences)
+            if any(key in self._seen_objects for key in object_keys):
+                # A remembered stub may only carry player_id after the ui_id
+                # flicker; alias every known key so the same hull is not counted
+                # again under a different identity.
+                self._seen_objects.update(object_keys)
                 continue
+            object_key = object_keys[0]
             resolution = resolver.resolve(
                 ship.name, tier=ship.tier, ship_type=ship.ship_type)
             if not resolution.resolved or resolution.ship is None:
@@ -347,7 +352,7 @@ class BattleShipContextManager:
                 }))
                 continue
             self._set_unresolved_reason(object_key, None)
-            self._seen_objects.add(object_key)
+            self._seen_objects.update(object_keys)
             ship_id = resolution.ship.ship_id
             self._resolutions.setdefault(ship_id, resolution)
             counts = self._counts.get(ship_id, ShipCounts())
@@ -381,14 +386,23 @@ class BattleShipContextManager:
             self._unresolved_reasons[reason] += 1
 
     @staticmethod
-    def _object_key(
+    def _object_keys(
         ship: Ship,
         fallback_occurrences: Counter[tuple[Any, ...]],
-    ) -> tuple[Any, ...]:
-        if isinstance(ship.ui_id, int) and not isinstance(ship.ui_id, bool):
-            return ("ui", ship.ui_id)
+    ) -> list[tuple[Any, ...]]:
+        """Stable identities for one hull across object/stub frames.
+
+        Prefer ``player_id`` when present: remembered stubs after an objects
+        flicker often keep only that field. Also alias ``ui_id`` so a later
+        full frame of the same ship is recognised.
+        """
+        keys: list[tuple[Any, ...]] = []
         if isinstance(ship.player_id, int) and not isinstance(ship.player_id, bool):
-            return ("player", ship.player_id)
+            keys.append(("player", ship.player_id))
+        if isinstance(ship.ui_id, int) and not isinstance(ship.ui_id, bool):
+            keys.append(("ui", ship.ui_id))
+        if keys:
+            return keys
         base = (
             "fallback",
             ship.team_id,
@@ -397,7 +411,7 @@ class BattleShipContextManager:
         )
         ordinal = fallback_occurrences[base]
         fallback_occurrences[base] += 1
-        return base + (ordinal,)
+        return [base + (ordinal,)]
 
     def _pending_blocks(
         self,

@@ -64,6 +64,8 @@ enforced by ``scripts/check_api_trailing_slash.py``.
 """
 from __future__ import annotations
 
+import base64
+import binascii
 from typing import Any, Dict, List, Optional, Tuple
 
 import ipaddress
@@ -88,6 +90,33 @@ from .shared_state import get_session_manager
 _MAX_TOOL_IMAGE_B64_BYTES = 2 * 1024 * 1024
 _MAX_TOOL_IMAGES = 2
 _ALLOWED_TOOL_IMAGE_MIMES = frozenset({"image/jpeg", "image/png"})
+_JPEG_MAGIC = b"\xff\xd8"
+_PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+
+
+def _tool_result_output_payload(body: Dict[str, Any]) -> Any:
+    """Pick the model-readable ``output`` from a tool callback body.
+
+    When the plugin omits ``output``, fall back to the rest of the body — but
+    never the ``images`` channel. Those pixels ride ``ToolResult.images``; if
+    they also land in ``output``, ``output_as_json_string()`` would serialize
+    base64 into the text the model reads.
+    """
+    if "output" in body:
+        return body["output"]
+    return {k: v for k, v in body.items() if k != "images"}
+
+
+def _decode_tool_image_b64(data_b64: str) -> bytes | None:
+    try:
+        raw = base64.b64decode(data_b64, validate=True)
+    except (binascii.Error, ValueError):
+        return None
+    if not raw:
+        return None
+    if raw.startswith(_JPEG_MAGIC) or raw.startswith(_PNG_MAGIC):
+        return raw
+    return None
 
 
 def _parse_tool_images(body: Dict[str, Any]) -> Tuple[List[ToolImage], List[str]]:
@@ -124,6 +153,11 @@ def _parse_tool_images(body: Dict[str, Any]) -> Tuple[List[ToolImage], List[str]
             warnings.append(
                 f"image #{index} is too large "
                 f"({len(data_b64)} > {_MAX_TOOL_IMAGE_B64_BYTES} base64 bytes); dropped"
+            )
+            continue
+        if _decode_tool_image_b64(data_b64) is None:
+            warnings.append(
+                f"image #{index} has invalid base64 or non-image bytes; dropped"
             )
             continue
         mime = entry.get("mime") or "image/jpeg"
@@ -451,7 +485,7 @@ async def _remote_dispatch(call: ToolCall, metadata: Dict[str, Any]) -> ToolResu
     result = ToolResult(
         call_id=call.call_id,
         name=call.name,
-        output=body.get("output", body),
+        output=_tool_result_output_payload(body),
         is_error=bool(body.get("is_error", False)),
         error_message=str(body.get("error") or "") if body.get("is_error") else "",
         images=images,

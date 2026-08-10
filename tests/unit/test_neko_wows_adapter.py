@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import threading
+
 import pytest
 
 from plugin.plugins.neko_wows.adapters.schema_adapter import (
@@ -194,6 +197,23 @@ def test_current_8111_damage_selects_only_the_local_attacker():
         3000: 21_000.0,
         3001: 4_000.0,
     }
+
+
+def test_flat_inflicted_table_keeps_only_the_local_scalar():
+    """`{playerId: amount}` must not fold teammates into our total."""
+    payload = v1_payload(damage={
+        "inflicted": {
+            "2000": 15_000.0,
+            "9999": 80_000.0,
+        },
+        "received": {},
+        "teamTotal": {},
+    })
+
+    snapshot = WowsSchemaAdapter().parse(payload)
+
+    assert snapshot.damage_inflicted == pytest.approx(15_000.0)
+    assert snapshot.damage_inflicted_by_victim == {}
 
 
 def test_nested_damage_without_local_identity_is_not_guessed():
@@ -892,3 +912,34 @@ def test_a_successful_poll_clears_the_failure_run():
         transport._stall_is_due()
     transport._rest_failures_in_a_row = 0
     assert transport._stall_is_due() is False
+
+
+def test_stop_swallows_a_closed_event_loop():
+    transport = _transport(lambda: 1000.0)
+
+    class _ClosedLoop:
+        def call_soon_threadsafe(self, _cb):
+            raise RuntimeError("Event loop is closed")
+
+    transport._loop = _ClosedLoop()
+    transport._thread = None
+    transport.stop()
+
+
+@pytest.mark.asyncio
+async def test_wait_for_stop_uses_the_captured_flag_not_self():
+    """A restarted transport replaces ``self._stop_flag``; old loops must ignore it."""
+    transport = _transport(lambda: 1000.0)
+    captured = threading.Event()
+    transport._stop_flag = threading.Event()  # unset replacement — must not matter
+
+    async def finish():
+        await asyncio.sleep(0.05)
+        # Replacing self mid-wait must not unblock the captured flag's waiter.
+        transport._stop_flag = threading.Event()
+        await asyncio.sleep(0.05)
+        captured.set()
+
+    task = asyncio.create_task(finish())
+    await asyncio.wait_for(transport._wait_for_stop(captured), timeout=1.0)
+    await task

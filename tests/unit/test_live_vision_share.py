@@ -53,6 +53,12 @@ def _mgr(session, *, snapshot, frame="cached-frame"):
         live_vision_snapshot=lambda: snapshot,
         live_vision_frame_b64=lambda: frame if snapshot.get("active") else "",
     )
+    mgr._resolve_cb_live_frame_b64 = (
+        lambda cb: ProactiveMixin._resolve_cb_live_frame_b64(mgr, cb)
+    )
+    mgr._collect_text_proactive_images = (
+        lambda cbs: ProactiveMixin._collect_text_proactive_images(mgr, cbs)
+    )
     mgr._stream_cb_live_frame = (
         lambda cb, sess, si: ProactiveMixin._stream_cb_live_frame(mgr, cb, sess, si)
     )
@@ -170,6 +176,26 @@ async def test_a_batch_shares_one_frame_rather_than_one_each():
     await ProactiveMixin._stream_cb_media(mgr, cbs, session)
 
     assert len(session.sent) == 1
+
+
+def test_text_path_collects_the_live_frame_before_media_images():
+    """Offline prompt_ephemeral never calls stream_image; the frame must ride
+    the explicit images list instead of being promised but omitted."""
+    session = SimpleNamespace(
+        _supports_native_image=False,
+        vision_model="vision-model",
+    )
+    mgr = _mgr(session, snapshot=_sharing(), frame="shared-screen")
+    cbs = [
+        {
+            "attach_live_frame": True,
+            "media_images": ["plugin-shot"],
+        }
+    ]
+
+    images = mgr._collect_text_proactive_images(cbs)
+
+    assert images == ["shared-screen", "plugin-shot"]
 
 
 # ------------------------------------------------------------- the liveness
