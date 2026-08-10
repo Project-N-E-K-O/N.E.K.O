@@ -5,10 +5,16 @@ from __future__ import annotations
 import pytest
 
 from plugin.plugins.neko_wows.detectors._base import GameEvent
-from plugin.plugins.neko_wows.domain.catalog import DAMAGE_MILESTONE, LOW_HEALTH
+from plugin.plugins.neko_wows.domain.catalog import (
+    DAMAGE_MILESTONE,
+    DEVASTATING_STRIKE,
+    HIGH_DAMAGE,
+    LOW_HEALTH,
+)
 from plugin.plugins.neko_wows.domain.contracts import (
     CHANNEL_DUAL,
     CHANNEL_SINGLE,
+    LANE_NORMAL,
     WowsConfig,
 )
 from plugin.plugins.neko_wows.domain.facts import WowsFacts
@@ -242,6 +248,18 @@ def test_channel_mode_does_not_change_timing():
     for lane in ("urgent", "normal"):
         assert dual.ttl_for(lane) == single.ttl_for(lane)
         assert dual.min_gap_for(lane) == single.min_gap_for(lane)
+
+
+def test_damage_event_claim_limits_do_not_invent_awards_or_salvos():
+    high = candidate(HIGH_DAMAGE)
+    devastating = candidate(DEVASTATING_STRIKE)
+
+    assert any("单轮齐射" in line for line in high.claim_limits)
+    assert any(
+        "勋带" in line or "成就" in line
+        for line in devastating.claim_limits
+    )
+    assert devastating.lane == LANE_NORMAL
 
 
 # --- preview -------------------------------------------------------------

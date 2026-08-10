@@ -12,7 +12,9 @@ from typing import Any, Sequence
 
 from ..domain.catalog import (
     AMMO_RECHECK_HINT,
+    DEVASTATING_STRIKE,
     EventSpec,
+    HIGH_DAMAGE,
     MULTI_DIRECTION_THREAT,
     OUTNUMBERED,
     OWN_BROADSIDE_EXPOSED,
@@ -27,6 +29,12 @@ from ..detectors._base import GameEvent
 # Constraints attached per event so the prompt cannot drift into claims the
 # telemetry does not support. Keyed by event id.
 _CLAIM_LIMITS: dict[str, tuple[str, ...]] = {
+    HIGH_DAMAGE: (
+        "只能说同一目标在短时间内承受了较高伤害；不能说成一发、单轮齐射、特定弹种或击杀。",
+    ),
+    DEVASTATING_STRIKE: (
+        "只能说达到毁灭打击级别；不能声称游戏已授予毁灭打击成就、勋带或奖章，也不能虚构武器来源。",
+    ),
     RAPID_DAMAGE: (
         "只能说“掉血很快 / 正在快速受伤”，不能说“被集火”或推断攻击者数量。",
     ),

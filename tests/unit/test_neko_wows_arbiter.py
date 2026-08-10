@@ -5,9 +5,13 @@ from __future__ import annotations
 import pytest
 
 from plugin.plugins.neko_wows.domain.catalog import (
+    BATTLE_ENDED,
     BATTLE_STARTED,
+    BOUNDARY_RISK,
     DAMAGE_MILESTONE,
+    DEVASTATING_STRIKE,
     ENEMY_CLOSING,
+    HIGH_DAMAGE,
     LOW_HEALTH,
     OWN_SHIP_SUNK,
     PRIORITY_TARGET,
@@ -85,6 +89,12 @@ def test_ranking_is_reproducible_regardless_of_input_order():
     first = Arbiter(CFG).decide([candidate(e) for e in events], 100.0)
     second = Arbiter(CFG).decide([candidate(e) for e in reversed(events)], 100.0)
     assert first.chosen.event_id == second.chosen.event_id
+
+
+def test_devastating_is_below_urgent_but_above_normal_events():
+    assert spec_for(BOUNDARY_RISK).priority > spec_for(DEVASTATING_STRIKE).priority
+    assert spec_for(DEVASTATING_STRIKE).priority > spec_for(BATTLE_ENDED).priority
+    assert spec_for(HIGH_DAMAGE).priority > spec_for(DAMAGE_MILESTONE).priority
 
 
 # --- TTL -----------------------------------------------------------------
@@ -231,6 +241,17 @@ def test_clearing_shadow_state_reopens_everything():
 
 
 # --- coalescing and preemption ------------------------------------------
+
+def test_same_round_coalescing_keeps_the_strongest_candidate():
+    arbiter = Arbiter(CFG)
+    decision = arbiter.decide([
+        candidate(HIGH_DAMAGE, at=100.0, severity=55),
+        candidate(DAMAGE_MILESTONE, at=100.0, severity=25),
+    ], 100.0)
+
+    assert decision.chosen.event_id == HIGH_DAMAGE
+    assert REASON_COALESCED in outcomes(decision, DAMAGE_MILESTONE)
+
 
 def test_a_newer_candidate_replaces_a_queued_sibling():
     arbiter = Arbiter(CFG)

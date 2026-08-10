@@ -58,6 +58,7 @@ from .adapters.schema_adapter import (
 from .adapters.service_manager import WowsServiceManager
 from .adapters.transport import CursorGate, RawFrame, TelemetryTransport
 from .detectors._base import DetectorRegistry
+from .detectors.damage import build_damage_detectors
 from .detectors.geometry import build_geometry_detectors
 from .detectors.lifecycle import build_lifecycle_detectors
 from .detectors.survival import build_survival_detectors
@@ -243,6 +244,7 @@ class NekoWowsPlugin(NekoPluginBase):
             *build_survival_detectors(self.cfg),
             *build_threat_detectors(self.cfg),
             *build_geometry_detectors(self.cfg),
+            *build_damage_detectors(self.cfg),
             *build_targeting_detectors(self.cfg),
         ))
 

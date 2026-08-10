@@ -147,8 +147,8 @@ class Arbiter:
     # ------------------------------------------------------------------
     def submit(self, candidates: Sequence[AdviceCandidate], now: float) -> list[DecisionStep]:
         """Queue new candidates, collapsing by coalesce key and honouring preempt."""
-        steps: list[DecisionStep] = []
-        for candidate in candidates:
+        incoming, steps = self._collapse_incoming(candidates)
+        for candidate in incoming:
             if candidate.is_expired(now):
                 steps.append(DecisionStep(
                     candidate.event_id, candidate.lane, REASON_EXPIRED,
@@ -177,6 +177,53 @@ class Arbiter:
             self._queue.append(candidate)
             steps.append(DecisionStep(candidate.event_id, candidate.lane, REASON_QUEUED))
         return steps
+
+    @staticmethod
+    def _collapse_incoming(
+        candidates: Sequence[AdviceCandidate],
+    ) -> tuple[tuple[AdviceCandidate, ...], list[DecisionStep]]:
+        """Keep the strongest sibling inside one arbitration round.
+
+        Later rounds still replace older queued siblings in ``submit`` below;
+        this pre-pass only prevents a weaker item later in one already-ranked
+        batch from overwriting the stronger item that preceded it.
+        """
+        indexed = tuple(enumerate(candidates))
+        groups: dict[str, list[tuple[int, AdviceCandidate]]] = {}
+        for index, candidate in indexed:
+            if candidate.coalesce_key:
+                groups.setdefault(candidate.coalesce_key, []).append(
+                    (index, candidate))
+
+        discarded: set[int] = set()
+        steps: list[DecisionStep] = []
+        for siblings in groups.values():
+            if len(siblings) < 2:
+                continue
+            winner_index, winner = min(
+                siblings,
+                key=lambda entry: (
+                    -entry[1].priority,
+                    -entry[1].severity,
+                    -entry[1].at,
+                    entry[1].event_id,
+                    entry[0],
+                ),
+            )
+            for index, candidate in siblings:
+                if index == winner_index:
+                    continue
+                discarded.add(index)
+                steps.append(DecisionStep(
+                    candidate.event_id,
+                    candidate.lane,
+                    REASON_COALESCED,
+                    f"same-round sibling kept {winner.event_id}",
+                ))
+
+        retained = tuple(
+            candidate for index, candidate in indexed if index not in discarded)
+        return retained, steps
 
     def decide(
         self,

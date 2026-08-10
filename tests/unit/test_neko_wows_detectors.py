@@ -7,6 +7,7 @@ import math
 import pytest
 
 from plugin.plugins.neko_wows.detectors._base import DetectorRegistry
+from plugin.plugins.neko_wows.detectors.damage import build_damage_detectors
 from plugin.plugins.neko_wows.detectors.geometry import build_geometry_detectors
 from plugin.plugins.neko_wows.detectors.lifecycle import build_lifecycle_detectors
 from plugin.plugins.neko_wows.detectors.survival import build_survival_detectors
@@ -60,6 +61,7 @@ def all_detectors(cfg=CFG):
         *build_survival_detectors(cfg),
         *build_threat_detectors(cfg),
         *build_geometry_detectors(cfg),
+        *build_damage_detectors(cfg),
         *build_targeting_detectors(cfg),
     )
 
