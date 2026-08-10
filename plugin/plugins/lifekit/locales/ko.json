@@ -21,7 +21,7 @@
     "71": "가벼운 눈",
     "73": "보통 눈",
     "75": "폭설",
-    "77": "눈알",
+    "77": "싸락눈",
     "80": "약한 소나기",
     "81": "보통 정도의 소나기",
     "82": "폭우",
@@ -79,7 +79,7 @@
     "no_destination": "목적지를 지정해주세요",
     "invalid_mode": "여행 모드 '{mode}'이(가) 잘못되었습니다. 허용됨: {valid}",
     "mode_transit": "🚇 Transit", "mode_walking": "🚶 Walking", "mode_bicycling": "🚲 Cycling", "mode_driving": "🚗 Driving",
-    "near_walk": "🚶 Very close; walking is recommended", "rain_transit": "🚇 Rain expected; use transit", "good_bike": "🚲 Moderate distance and good weather; cycling is suitable", "transit_advice": "🚇 Transit is recommended", "step_take": "{line} 탑승", "step_walk": "{distance} 걷기"
+    "near_walk": "🚶 매우 가까우므로 도보를 권장합니다", "rain_transit": "🚇 비가 예상되므로 대중교통을 이용하세요", "good_bike": "🚲 거리와 날씨가 자전거 이동에 적합합니다", "transit_advice": "🚇 대중교통을 권장합니다", "step_take": "{line} 탑승", "step_walk": "{distance} 걷기", "route_unavailable": "현재 경로를 가져올 수 없습니다. 잠시 후 다시 시도해 주세요."
   },
   "nearby": {
     "no_query": "검색어를 입력해주세요. (예: 레스토랑, 카페, 공원)",
@@ -153,7 +153,7 @@
   "panel.add.tip": "위치를 추가하면 도시 지오코딩이 수행되므로 네트워크 액세스가 필요합니다.",
   "panel.store.enabled": "활성화됨",
   "panel.store.disabled": "플러그인 저장소가 비활성화되었습니다. 저장된 위치는 비어 있으며 새 위치를 저장할 수 없습니다.",
-  "panel.store.disabledShort": "장애인",
+  "panel.store.disabledShort": "비활성화",
   "panel.stats.savedLocations": "저장된 위치",
   "panel.stats.defaultLocation": "기본 위치",
   "panel.stats.locale": "로케일",
@@ -169,7 +169,7 @@
   "panel.fields.enableGeoip": "IP 자동 위치 허용",
   "config.confirm_update": "LifeKit 설정 변경 사항을 저장할까요?",
   "config.no_valid": "No valid configuration fields to update", "config.forecast_range": "Forecast days must be between 1 and 7", "config.cache_nonnegative": "Cache lifetime cannot be negative", "config.locale_supported": "Locale must be one of: {values}", "config.invalid_value": "Invalid configuration value: {detail}", "config.update_failed": "Configuration update failed: {detail}",
-  "config.secret_ui_only": "Map API keys can only be updated in the LifeKit settings panel.",
+  "config.secret_ui_only": "지도 API 키는 LifeKit 설정 패널에서만 변경할 수 있으며 채팅 응답에는 표시되지 않습니다.",
   "panel.configured": "설정됨",
   "panel.notConfigured": "설정되지 않음",
   "panel.keepSecret": "비워 두면 현재 키를 유지합니다",

@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple
 
-from plugin.sdk.plugin import plugin_entry, quick_action, Ok, Err, SdkError, tr
+from plugin.sdk.plugin import Err, Ok, SdkError, plugin_entry, quick_action, tr
 from plugin.sdk.shared.core.router import PluginRouter
 
 from .._chat import push_lifekit_content
@@ -52,6 +52,32 @@ _CONVERSIONS: Dict[Tuple[str, str], Tuple[float, str, str]] = {
     ("mph", "kmh"):    (1.60934,  "mph", "km/h"),
 }
 
+_UNIT_LABELS: Dict[str, str] = {
+    "cm": "厘米",
+    "inch": "英寸",
+    "m": "米",
+    "ft": "英尺",
+    "km": "公里",
+    "mile": "英里",
+    "kg": "公斤",
+    "lb": "磅",
+    "g": "克",
+    "oz": "盎司",
+    "c": "°C",
+    "f": "°F",
+    "l": "升",
+    "gal": "加仑",
+    "ml": "毫升",
+    "oz_fl": "液体盎司",
+    "cup": "杯",
+    "tbsp": "汤匙",
+    "tsp": "茶匙",
+    "sqm": "平方米",
+    "sqft": "平方英尺",
+    "kmh": "km/h",
+    "mph": "mph",
+}
+
 # 单位别名 → 标准 key
 _ALIASES: Dict[str, str] = {
     "厘米": "cm", "cm": "cm", "centimeter": "cm",
@@ -95,8 +121,8 @@ def _convert(value: float, from_key: str, to_key: str) -> Optional[Tuple[float, 
     entry = _CONVERSIONS.get((from_key, to_key))
     if entry is None:
         return None
-    mult, _, _ = entry
-    return (value * mult, from_key, to_key)
+    mult, from_label, to_label = entry
+    return (value * mult, from_label, to_label)
 
 
 class UnitConvertRouter(PluginRouter):
@@ -142,11 +168,23 @@ class UnitConvertRouter(PluginRouter):
         if numeric_value is None:
             return Err(SdkError(i18n.t("unit.invalid_value")))
         if fk == tk:
+            label = _UNIT_LABELS.get(fk, fk)
+            push_lifekit_content(self.main_plugin, [
+                {
+                    "type": "text",
+                    "text": f"📐 {numeric_value} {label} → {numeric_value} {label}",
+                },
+            ])
             return Ok({
                 "summary": i18n.t(
                     "unit.same", value=numeric_value, source=from_unit, target=to_unit,
                 ),
-                "conversion": {"value": numeric_value, "result": numeric_value},
+                "conversion": {
+                    "value": numeric_value,
+                    "from_unit": label,
+                    "result": numeric_value,
+                    "to_unit": label,
+                },
             })
 
         result = _convert(numeric_value, fk, tk)

@@ -5,10 +5,9 @@ from datetime import date
 from pathlib import Path
 
 import pytest
-
-from plugin.sdk.plugin import Ok
 from plugin.plugins.lifekit._i18n import I18n
 from plugin.plugins.lifekit.routers.countdown import CountdownRouter
+from plugin.sdk.plugin import Ok
 
 
 class _Plugin:
@@ -116,4 +115,37 @@ async def test_slow_default_location_does_not_block_ambiguous_holiday_result() -
     )
 
     assert isinstance(result, Ok)
+    assert result.value["detail"]["holiday_alternatives"]
+
+
+@pytest.mark.asyncio
+async def test_invalid_weekday_translation_falls_back_safely() -> None:
+    plugin = _Plugin("en")
+    router = CountdownRouter()
+    router._bind(plugin)
+    original_value = plugin._i18n.value
+    plugin._i18n.value = (
+        lambda key, **kwargs: ["broken"]
+        if key == "date.weekdays"
+        else original_value(key, **kwargs)
+    )
+
+    result = await router.countdown(target_date="2030-01-02")
+
+    assert isinstance(result, Ok)
+    assert result.value["detail"]["weekday"]
+
+
+@pytest.mark.asyncio
+async def test_unknown_country_hint_keeps_a_best_effort_holiday_result() -> None:
+    router = CountdownRouter()
+    router._bind(_Plugin("en"))
+
+    result = await router.countdown(
+        target_date="national day",
+        country_hint="unknown-country",
+    )
+
+    assert isinstance(result, Ok)
+    assert result.value["detail"]["target"]
     assert result.value["detail"]["holiday_alternatives"]

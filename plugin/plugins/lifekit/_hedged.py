@@ -7,7 +7,6 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import Generic, TypeVar
 
-
 T = TypeVar("T")
 
 
@@ -30,6 +29,7 @@ async def ordered_hedged_first(
     if not attempts:
         return HedgedOutcome(None, None, (), ())
 
+    hedge_delay = max(0.0, hedge_delay)
     tasks: dict[asyncio.Task[T], int] = {}
     pending: set[asyncio.Task[T]] = set()
     completed: list[tuple[int, T]] = []
@@ -56,17 +56,23 @@ async def ordered_hedged_first(
             remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
                 break
+            has_more_attempts = next_index < len(attempts)
+            wait_timeout = (
+                min(remaining, hedge_delay)
+                if has_more_attempts
+                else remaining
+            )
             done, pending = await asyncio.wait(
                 pending,
-                timeout=min(remaining, hedge_delay),
+                timeout=wait_timeout,
                 return_when=asyncio.FIRST_COMPLETED,
             )
             if not done:
                 start_next()
                 continue
             for task in sorted(done, key=tasks.__getitem__):
-                value = task.result()
                 index = tasks[task]
+                value = task.result()
                 completed.append((index, value))
                 if accept(value):
                     winner = value

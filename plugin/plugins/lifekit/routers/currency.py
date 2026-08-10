@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict
-
-from plugin.sdk.plugin import plugin_entry, quick_action, Ok, Err, SdkError, tr
+from plugin.sdk.plugin import Err, Ok, SdkError, plugin_entry, quick_action, tr
 from plugin.sdk.shared.core.router import PluginRouter
 
 from .. import _currency as currency_api

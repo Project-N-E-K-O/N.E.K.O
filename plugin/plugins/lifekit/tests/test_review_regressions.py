@@ -1,0 +1,68 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+from plugin.plugins.lifekit._i18n import I18n
+from plugin.plugins.lifekit.routers.travel import build_travel_advice
+from plugin.plugins.lifekit.routers.unit_convert import UnitConvertRouter
+from plugin.sdk.plugin import Ok
+
+
+class _Plugin:
+    plugin_id = "lifekit"
+
+    def __init__(self) -> None:
+        self._i18n = I18n(Path(__file__).resolve().parents[1] / "locales")
+
+    def _resolve_locale(self) -> None:
+        self._i18n.set_locale("zh-CN")
+
+    def push_message(self, **_: object) -> dict[str, bool]:
+        return {"ok": True}
+
+
+@pytest.mark.asyncio
+async def test_same_unit_conversion_keeps_complete_public_contract() -> None:
+    router = UnitConvertRouter()
+    router._bind(_Plugin())
+
+    result = await router.unit_convert(value=2, from_unit="kg", to_unit="kg")
+
+    assert isinstance(result, Ok)
+    assert result.value["conversion"] == {
+        "value": 2.0,
+        "from_unit": "公斤",
+        "result": 2.0,
+        "to_unit": "公斤",
+    }
+
+
+@pytest.mark.asyncio
+async def test_generic_conversion_returns_display_labels() -> None:
+    router = UnitConvertRouter()
+    router._bind(_Plugin())
+
+    result = await router.unit_convert(value=1, from_unit="ml", to_unit="fl oz")
+
+    assert isinstance(result, Ok)
+    assert result.value["conversion"]["from_unit"] == "毫升"
+    assert result.value["conversion"]["to_unit"] == "液体盎司"
+
+
+def test_travel_advice_tolerates_null_uv_and_wind() -> None:
+    i18n = I18n(Path(__file__).resolve().parents[1] / "locales")
+    i18n.set_locale("en")
+
+    advice = build_travel_advice(
+        {
+            "temperature_2m": 20,
+            "weather_code": 0,
+            "uv_index": None,
+            "wind_speed_10m": None,
+        },
+        {},
+        i18n,
+    )
+
+    assert advice["sunscreen"] is False

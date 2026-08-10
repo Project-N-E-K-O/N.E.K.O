@@ -79,7 +79,7 @@
     "no_destination": "Por favor especifica un destino",
     "invalid_mode": "Modo de viaje no válido '{mode}'. Permitido: {valid}",
     "mode_transit": "🚇 Transit", "mode_walking": "🚶 Walking", "mode_bicycling": "🚲 Cycling", "mode_driving": "🚗 Driving",
-    "near_walk": "🚶 Very close; walking is recommended", "rain_transit": "🚇 Rain expected; use transit", "good_bike": "🚲 Moderate distance and good weather; cycling is suitable", "transit_advice": "🚇 Transit is recommended", "step_take": "Toma {line}", "step_walk": "Camina {distance}"
+    "near_walk": "🚶 Está muy cerca; se recomienda ir a pie", "rain_transit": "🚇 Se espera lluvia; usa transporte público", "good_bike": "🚲 La distancia y el tiempo son adecuados para ir en bicicleta", "transit_advice": "🚇 Se recomienda el transporte público", "step_take": "Toma {line}", "step_walk": "Camina {distance}", "route_unavailable": "No se puede obtener una ruta ahora. Inténtalo de nuevo en breve."
   },
   "nearby": {
     "no_query": "Introduzca una palabra clave de búsqueda (por ejemplo, restaurante, cafetería, parque)",
@@ -95,7 +95,7 @@
     "provider_unavailable": "El servicio de mapas no está disponible temporalmente o agotó el tiempo de espera. Inténtelo de nuevo en breve."
   },
   "tz_city": {
-    "Asia/Shanghai": "Shangai",
+    "Asia/Shanghai": "Shanghái",
     "Asia/Chongqing": "Chongqing",
     "Asia/Hong_Kong": "hong kong",
     "Asia/Taipei": "Taipéi",
@@ -110,7 +110,7 @@
     "Europe/Berlin": "Berlín",
     "Europe/Moscow": "Moscú",
     "America/New_York": "Nueva York",
-    "America/Chicago": "chicago",
+    "America/Chicago": "Chicago",
     "America/Denver": "Denver",
     "America/Los_Angeles": "Los Ángeles",
     "America/Sao_Paulo": "São Paulo",
@@ -153,7 +153,7 @@
   "panel.add.tip": "Agregar una ubicación realiza una codificación geográfica de la ciudad, por lo que se requiere acceso a la red.",
   "panel.store.enabled": "Habilitado",
   "panel.store.disabled": "El almacenamiento de complementos está deshabilitado. Las ubicaciones guardadas estarán vacías y no se podrán guardar ubicaciones nuevas.",
-  "panel.store.disabledShort": "Discapacitado",
+  "panel.store.disabledShort": "Desactivado",
   "panel.stats.savedLocations": "Ubicaciones guardadas",
   "panel.stats.defaultLocation": "Ubicación predeterminada",
   "panel.stats.locale": "Localidad",
@@ -169,7 +169,7 @@
   "panel.fields.enableGeoip": "Permitir ubicación automática por IP",
   "config.confirm_update": "¿Guardar estos cambios de configuración de LifeKit?",
   "config.no_valid": "No valid configuration fields to update", "config.forecast_range": "Forecast days must be between 1 and 7", "config.cache_nonnegative": "Cache lifetime cannot be negative", "config.locale_supported": "Locale must be one of: {values}", "config.invalid_value": "Invalid configuration value: {detail}", "config.update_failed": "Configuration update failed: {detail}",
-  "config.secret_ui_only": "Map API keys can only be updated in the LifeKit settings panel.",
+  "config.secret_ui_only": "Las claves API de mapas solo se pueden actualizar en el panel de configuración de LifeKit; nunca se muestran en respuestas del chat.",
   "panel.configured": "Configurado",
   "panel.notConfigured": "No configurado",
   "panel.keepSecret": "Déjelo vacío para conservar la clave actual",
@@ -180,7 +180,7 @@
   "panel.fields.setDefault": "Establecer como predeterminado",
   "panel.placeholders.defaultCity": "Dejar vacío para la detección automática",
   "panel.placeholders.label": "p.ej. Hogar, oficina, escuela",
-  "panel.placeholders.city": "p.ej. Shangai, Tokio",
+  "panel.placeholders.city": "p. ej., Shanghái, Tokio",
   "panel.placeholders.address": "p.ej. Pudong Lujiazui",
   "panel.options.auto": "Automático",
   "panel.options.zhCN": "简体中文",

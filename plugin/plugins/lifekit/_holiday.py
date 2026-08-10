@@ -7,7 +7,6 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Any, Callable, Mapping, Sequence
 
-
 DEFAULT_CONTEXT_TIMEOUT_SECONDS = 0.25
 
 _FIXED_DATES: Mapping[str, tuple[int, int]] = {
@@ -89,14 +88,11 @@ class HolidayResolver:
                 (item for item in candidates if item.country == country),
                 None,
             )
-            return (
-                HolidayResolution(
+            if selected:
+                return HolidayResolution(
                     target=selected.target,
                     assumed_country=selected.country,
                 )
-                if selected
-                else HolidayResolution()
-            )
 
         ordered = sorted(candidates, key=lambda item: (item.target, item.country))
         selected = ordered[0]
@@ -144,7 +140,7 @@ async def default_saved_country(
         records = await asyncio.wait_for(loader(), timeout=timeout_seconds)
     except Exception:
         return ""
-    if not isinstance(records, Sequence):
+    if not isinstance(records, Sequence) or isinstance(records, (str, bytes)):
         return ""
     default = next(
         (

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import httpx
 import pytest
-
 from plugin.plugins.lifekit import _api
 
 

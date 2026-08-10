@@ -97,6 +97,11 @@ function unwrapActionResult(envelope: any): Record<string, any> {
   return {}
 }
 
+function requireReady(result: Record<string, any>): Record<string, any> {
+  if (result.status === "ready") return result
+  throw new Error(String(result.summary || result.message || result.status || "Action failed"))
+}
+
 export default function LifeKitPanel(props: PluginSurfaceProps<LifeKitDashboardState>) {
   const { state, actions, t } = props
   const safeState = state || {}
@@ -120,13 +125,14 @@ export default function LifeKitPanel(props: PluginSurfaceProps<LifeKitDashboardS
     const context = first.context
     const confirmationToken = String(first.confirmation_token || context?.confirmation_token || "")
     if (first.status === "clarify" && confirmationToken) {
-      return props.api.call(actionId, {
+      const confirmed = unwrapActionResult(await props.api.call(actionId, {
         ...context,
         confirmed: true,
         confirmation_token: confirmationToken,
-      })
+      }))
+      return requireReady(confirmed)
     }
-    return first
+    return requireReady(first)
   }
 
   useEffect(() => {
@@ -149,13 +155,17 @@ export default function LifeKitPanel(props: PluginSurfaceProps<LifeKitDashboardS
       return
     }
     try {
+      const cacheTtl = Number(configForm.values.cache_ttl_seconds)
+      if (!Number.isInteger(cacheTtl) || cacheTtl < 0) {
+        throw new Error(t("config.cache_nonnegative"))
+      }
       await callConfirmed("update_config", {
         default_city: configForm.values.default_city.trim(),
         timezone: configForm.values.timezone.trim() || "Asia/Shanghai",
         forecast_days: Number(configForm.values.forecast_days) || 3,
         locale: configForm.values.locale,
         force_locale: !!configForm.values.force_locale,
-        cache_ttl_seconds: Number(configForm.values.cache_ttl_seconds) || 0,
+        cache_ttl_seconds: cacheTtl,
         enable_geoip: !!configForm.values.enable_geoip,
         ...(configForm.values.amap_key.trim()
           ? { amap_key: configForm.values.amap_key.trim() }

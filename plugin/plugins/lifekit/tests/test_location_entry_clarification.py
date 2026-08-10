@@ -693,6 +693,7 @@ async def test_add_location_success_uses_localized_summary(monkeypatch: Any) -> 
     assert result.value["message"] == result.value["summary"]
     assert geocode_queries == ["上海 南京东路 1 号"]
     assert result.value["location"]["timezone"] == "Asia/Shanghai"
+    assert result.value["location"]["country_code"] == "CN"
     assert result.value["location"]["verified"] is False
 
 

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import pytest
-
 from plugin.plugins.lifekit._coordinates import gcj02_to_wgs84, wgs84_to_gcj02
 
 

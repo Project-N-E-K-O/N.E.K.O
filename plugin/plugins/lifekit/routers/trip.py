@@ -5,21 +5,21 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Dict, List
 
-from plugin.sdk.plugin import plugin_entry, quick_action, Ok, Err, SdkError, tr
+from plugin.sdk.plugin import Ok, plugin_entry, quick_action, tr
 from plugin.sdk.shared.core.router import PluginRouter
 
-from .._geodesy import haversine_km
 from .._advice_policy import DEFAULT_ADVICE_POLICY
-from .._routing import RoutingService, format_duration, format_distance, suggest_modes
 from .._api import RAIN_CODES
 from .._chat import push_lifekit_content
 from .._contracts import TripAdviceParams, TripAdviceResult
+from .._geodesy import haversine_km
 from .._location import LocationPurpose
 from .._location_entry import (
     apply_location_assumptions,
     location_unavailable_result,
     upstream_unavailable_result,
 )
+from .._routing import RoutingService, format_distance, format_duration
 
 
 class TripRouter(PluginRouter):
@@ -118,7 +118,7 @@ class TripRouter(PluginRouter):
         )
         if routing.error and not routing.routes:
             return upstream_unavailable_result(
-                i18n.t("nearby.provider_unavailable"),
+                i18n.t("trip.route_unavailable"),
                 i18n,
                 location=dest_loc,
             )

@@ -5,13 +5,12 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Optional
 
-from plugin.sdk.plugin import plugin_entry, quick_action, Ok, Err, SdkError, tr
+from plugin.sdk.plugin import Err, Ok, SdkError, plugin_entry, quick_action, tr
 from plugin.sdk.shared.core.router import PluginRouter
 
 from .._chat import push_lifekit_content
 from .._contracts import CountdownParams, DateDetailResult, DaysBetweenParams
 from .._holiday import HolidayResolution, HolidayResolver, default_saved_country
-
 
 _HOLIDAYS = HolidayResolver()
 
@@ -124,7 +123,9 @@ class CountdownRouter(PluginRouter):
             emoji = "📅"
 
         weeks = abs(delta) // 7
-        weekdays = i18n.value("date.weekdays") or ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+        weekdays = i18n.value("date.weekdays")
+        if not isinstance(weekdays, list) or len(weekdays) != 7:
+            weekdays = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
         detail = {
             "target": parsed.isoformat(),
             "days": delta,

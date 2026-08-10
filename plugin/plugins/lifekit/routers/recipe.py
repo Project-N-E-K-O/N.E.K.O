@@ -100,9 +100,9 @@ class RecipeRouter(PluginRouter):
         q = query.strip()
         try:
             if by_ingredient:
-                results = await recipe_api.search_by_ingredient(q)
+                brief_results = await recipe_api.search_by_ingredient(q)
                 details = await asyncio.gather(
-                    *(recipe_api.get_by_id(brief.id) for brief in results[:3]),
+                    *(recipe_api.get_by_id(brief.id) for brief in brief_results[:3]),
                     return_exceptions=True,
                 )
                 detailed = [
@@ -110,9 +110,11 @@ class RecipeRouter(PluginRouter):
                     for recipe in details
                     if isinstance(recipe, recipe_api.Recipe)
                 ]
-                results = detailed if detailed else results
+                results = detailed if detailed else brief_results
+                result_count = len(brief_results)
             else:
                 results = await recipe_api.search_by_name(q)
+                result_count = len(results)
         except recipe_api.RecipeAPIError:
             return unavailable_error(
                 i18n.t("recipe.provider_unavailable"),
@@ -134,7 +136,7 @@ class RecipeRouter(PluginRouter):
 
         # 摘要
         names = "、".join(_format_recipe_summary(r) for r in top)
-        summary = i18n.t("recipe.found", count=len(results), names=names)
+        summary = i18n.t("recipe.found", count=result_count, names=names)
 
         # 推送卡片 — 只展示第一个的详情
         first = top[0]
@@ -159,7 +161,7 @@ class RecipeRouter(PluginRouter):
             "summary": summary,
             "recipes": recipes_data,
             "query": q,
-            "count": len(results),
+            "count": result_count,
             "next_actions": [
                 i18n.t("recipe.action_food", query=q),
                 i18n.t("recipe.action_market"),

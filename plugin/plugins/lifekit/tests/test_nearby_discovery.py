@@ -3,13 +3,12 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-
 from plugin.plugins.lifekit._nearby_discovery import (
     DiscoveryRequest,
     NearbyDiscovery,
     SearchCenter,
 )
-from plugin.plugins.lifekit._poi import POIItem, POIService, UPSTREAM_TIMEOUT
+from plugin.plugins.lifekit._poi import UPSTREAM_TIMEOUT, POIItem, POIResult, POIService
 
 
 @pytest.mark.asyncio
@@ -34,7 +33,6 @@ async def test_discovery_caps_total_searches_and_global_concurrency(
         calls.append((query, lat))
         await asyncio.sleep(0.01)
         active -= 1
-        from plugin.plugins.lifekit._poi import POIResult
 
         return POIResult(
             query=query,
@@ -104,7 +102,6 @@ async def test_discovery_keeps_fast_results_when_another_term_times_out(
         radius: int = 3000,
         limit: int = 10,
     ):
-        from plugin.plugins.lifekit._poi import POIResult
 
         if query == "商场":
             return POIResult(
@@ -135,7 +132,6 @@ async def test_discovery_never_exceeds_eight_searches(
     async def fake_search(*args: object, **kwargs: object):
         nonlocal call_count
         call_count += 1
-        from plugin.plugins.lifekit._poi import POIResult
 
         return POIResult(query="商场", provider="fake")
 

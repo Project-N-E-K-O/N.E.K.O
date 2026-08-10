@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import unicodedata
 from dataclasses import dataclass, field, replace
 from typing import Any, Dict, List, Optional, Protocol, Sequence
-import unicodedata
 
 import httpx
 
-from ._geodesy import haversine_km
 from ._coordinates import gcj02_to_wgs84, wgs84_to_gcj02
+from ._geodesy import haversine_km
 from ._hedged import ordered_hedged_first
 
 logger = logging.getLogger(__name__)

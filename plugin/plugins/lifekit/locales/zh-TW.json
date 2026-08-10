@@ -79,7 +79,7 @@
     "no_destination": "請指定目的地",
     "invalid_mode": "出行方式 '{mode}' 無效，可選：{valid}",
     "mode_transit": "🚇 公車/捷運", "mode_walking": "🚶 步行", "mode_bicycling": "🚲 騎行", "mode_driving": "🚗 駕車",
-    "near_walk": "🚶 距離很近，建議步行", "rain_transit": "🚇 有雨，建議搭乘大眾運輸", "good_bike": "🚲 距離適中，天氣好適合騎行", "transit_advice": "🚇 建議搭乘大眾運輸", "step_take": "搭乘 {line}", "step_walk": "步行 {distance}"
+    "near_walk": "🚶 距離很近，建議步行", "rain_transit": "🚇 有雨，建議搭乘大眾運輸", "good_bike": "🚲 距離適中，天氣好適合騎行", "transit_advice": "🚇 建議搭乘大眾運輸", "step_take": "搭乘 {line}", "step_walk": "步行 {distance}", "route_unavailable": "暫時無法取得路線，請稍後再試。"
   },
   "nearby": {
     "no_query": "請輸入搜尋關鍵詞（如：火鍋、咖啡、超市）",

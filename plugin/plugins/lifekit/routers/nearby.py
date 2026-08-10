@@ -118,15 +118,20 @@ class NearbyRouter(PluginRouter):
 
         discovery = NearbyDiscovery(POIService(plugin._cfg))
         weather_task = asyncio.create_task(plugin._get_weather_data(loc))
-        poi_results = await discovery.discover(
-            DiscoveryRequest(search_terms=terms, radius=radius),
-            (
-                SearchCenter(
-                    latitude=float(loc["lat"]),
-                    longitude=float(loc["lon"]),
+        try:
+            poi_results = await discovery.discover(
+                DiscoveryRequest(search_terms=terms, radius=radius),
+                (
+                    SearchCenter(
+                        latitude=float(loc["lat"]),
+                        longitude=float(loc["lon"]),
+                    ),
                 ),
-            ),
-        )
+            )
+        except BaseException:
+            weather_task.cancel()
+            await asyncio.gather(weather_task, return_exceptions=True)
+            raise
         poi_result = poi_results[0]
         executed_terms = poi_result.searched_terms
         query_label = i18n.t("nearby.list_separator").join(executed_terms)

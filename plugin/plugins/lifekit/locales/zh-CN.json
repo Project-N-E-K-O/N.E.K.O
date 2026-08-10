@@ -79,7 +79,7 @@
     "no_destination": "请指定目的地",
     "invalid_mode": "出行方式 '{mode}' 无效，可选：{valid}",
     "mode_transit": "🚇 公交/地铁", "mode_walking": "🚶 步行", "mode_bicycling": "🚲 骑行", "mode_driving": "🚗 驾车",
-    "near_walk": "🚶 距离很近，建议步行", "rain_transit": "🚇 有雨，建议公交/地铁", "good_bike": "🚲 距离适中，天气好适合骑行", "transit_advice": "🚇 建议公交/地铁", "step_take": "乘坐 {line}", "step_walk": "步行 {distance}"
+    "near_walk": "🚶 距离很近，建议步行", "rain_transit": "🚇 有雨，建议公交/地铁", "good_bike": "🚲 距离适中，天气好适合骑行", "transit_advice": "🚇 建议公交/地铁", "step_take": "乘坐 {line}", "step_walk": "步行 {distance}", "route_unavailable": "暂时无法获取路线，请稍后重试。"
   },
   "nearby": {
     "no_query": "请输入搜索关键词（如：火锅、咖啡、超市）",

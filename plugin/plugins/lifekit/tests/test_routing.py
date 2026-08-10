@@ -4,7 +4,6 @@ import asyncio
 
 import httpx
 import pytest
-
 from plugin.plugins.lifekit import _routing
 from plugin.plugins.lifekit._routing import AMapProvider, OSRMProvider, Route, RoutingService
 

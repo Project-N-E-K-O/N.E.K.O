@@ -9,11 +9,10 @@ from typing import Any, Dict, List, Optional, Protocol
 
 import httpx
 
-from ._coordinates import wgs84_to_gcj02
 from ._advice_policy import DEFAULT_ADVICE_POLICY
+from ._coordinates import wgs84_to_gcj02
 from ._geodesy import haversine_km
 from ._hedged import ordered_hedged_first
-
 
 logger = logging.getLogger(__name__)
 ROUTING_TOTAL_TIMEOUT_SECONDS = 8.0
@@ -174,7 +173,6 @@ class AMapProvider:
                     buslines = bus.get("buslines") or []
                     for bl in buslines[:1]:
                         name = bl.get("name", "")
-                        via = bl.get("via_num", 0)
                         bd = float(bl.get("distance", 0))
                         bt = float(bl.get("duration", 0))
                         m = _transit_mode(bl.get("type"))

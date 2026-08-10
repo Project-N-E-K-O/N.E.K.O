@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 
 import pytest
-
 from plugin.plugins.lifekit._geocoders import (
     nominatim_candidates,
     open_meteo_candidates,

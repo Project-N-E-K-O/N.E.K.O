@@ -21,7 +21,7 @@ from .._contracts import (
 )
 from .._location import is_location_clarification, location_error_key_from_cause
 from .._location_entry import location_failure_result
-from .._write_confirmation import WriteConfirmationGate
+from .._write_confirmation import WriteConfirmationGate, confirmation_scope
 
 _STORE_KEY = "saved_locations"
 
@@ -141,6 +141,7 @@ class LocationsRouter(PluginRouter):
             payload=confirmation_payload,
             confirmed=confirmed,
             token=confirmation_token,
+            scope=confirmation_scope(_ctx),
         )
         if not authorized:
             return Ok({
@@ -209,6 +210,10 @@ class LocationsRouter(PluginRouter):
                 if loc.get("label") == clean_label:
                     return Err(SdkError(i18n.t("locations.duplicate", label=clean_label)))
 
+            country = clean_text(geo.get("country"))
+            country_code = clean_text(geo.get("country_code"))
+            if not country_code and len(country) == 2 and country.isalpha():
+                country_code = country.upper()
             new_loc: Dict[str, Any] = {
                 "id": self._new_location_id(locations),
                 "label": clean_label,
@@ -217,8 +222,8 @@ class LocationsRouter(PluginRouter):
                 "address": clean_address,
                 "lat": geo["lat"],
                 "lon": geo["lon"],
-                "country": geo.get("country", ""),
-                "country_code": geo.get("country", ""),
+                "country": country,
+                "country_code": country_code,
                 "admin1": geo.get("admin1", ""),
                 "admin2": geo.get("admin2", ""),
                 "precision": geo.get("_location_precision", "city"),
@@ -292,6 +297,7 @@ class LocationsRouter(PluginRouter):
             payload=confirmation_payload,
             confirmed=confirmed,
             token=confirmation_token,
+            scope=confirmation_scope(_ctx),
         )
         if not authorized:
             return Ok({
@@ -364,6 +370,7 @@ class LocationsRouter(PluginRouter):
             payload=confirmation_payload,
             confirmed=confirmed,
             token=confirmation_token,
+            scope=confirmation_scope(_ctx),
         )
         if not authorized:
             return Ok({

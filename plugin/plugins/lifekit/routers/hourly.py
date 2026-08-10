@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from plugin.sdk.plugin import plugin_entry, quick_action, Ok, tr
+from plugin.sdk.plugin import Ok, plugin_entry, quick_action, tr
 from plugin.sdk.shared.core.router import PluginRouter
 
-from .._api import fetch_forecast, ForecastError, RAIN_CODES, SNOW_CODES
+from .._api import RAIN_CODES, ForecastError, fetch_forecast
 from .._chat import push_lifekit_content
-from .._coerce import clamp_int, clean_text
+from .._coerce import clamp_int, timezone_name
 from .._contracts import HourlyForecastParams, HourlyForecastResult
 from .._location import LocationPurpose
 from .._location_entry import (
@@ -58,9 +58,7 @@ class HourlyForecastRouter(PluginRouter):
         if not loc:
             return location_unavailable_result(loc_err, i18n)
 
-        tz = clean_text(loc.get("timezone")) or str(
-            plugin._cfg.get("timezone", "Asia/Shanghai")
-        )
+        tz = timezone_name(loc.get("timezone"), plugin._cfg.get("timezone"))
 
         try:
             data = await fetch_forecast(

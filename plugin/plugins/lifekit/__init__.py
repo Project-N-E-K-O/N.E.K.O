@@ -19,34 +19,27 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from plugin.sdk.plugin import (
+    Err,
     NekoPluginBase,
+    Ok,
+    PluginSettings,
+    SdkError,
+    SettingsField,
+    lifecycle,
     neko_plugin,
     plugin_entry,
-    lifecycle,
-    ui,
     tr,
-    Ok,
-    Err,
-    SdkError,
-    PluginSettings,
-    SettingsField,
+    ui,
 )
 
-from ._i18n import I18n, LRUCache, SUPPORTED_LOCALES
-from ._coerce import clamp_int, clean_text, finite_float
-from ._geo import get_system_timezone, detect_timezone_mismatch
-from ._api import geoip_locate, fetch_forecast, ForecastError
-from ._geocoders import nominatim_candidates, open_meteo_candidates
-from ._write_confirmation import WriteConfirmationGate
+from ._api import ForecastError, fetch_forecast, geoip_locate
+from ._coerce import clamp_int, clean_text, finite_float, timezone_name
 from ._contracts import UpdateConfigResult
-from .routers import (
-    CurrentWeatherRouter, TravelAdviceRouter, HourlyForecastRouter,
-    LocationsRouter, TripRouter, NearbyRouter,
-    FoodRecommendRouter, RecipeRouter,
-    AirQualityRouter, CurrencyRouter,
-    CountdownRouter, UnitConvertRouter,
-)
+from ._geo import detect_timezone_mismatch, get_system_timezone
+from ._geocoders import nominatim_candidates, open_meteo_candidates
+from ._i18n import SUPPORTED_LOCALES, I18n, LRUCache
 from ._location import (
+    READ_ONLY_LOCATION_PURPOSES,
     LocationCandidate,
     LocationError,
     LocationProblem,
@@ -54,11 +47,25 @@ from ._location import (
     LocationRequest,
     LocationResolver,
     LocationStatus,
-    READ_ONLY_LOCATION_PURPOSES,
     SavedLocation,
     assumed_location_payload,
     location_problem_from_resolution,
     select_primary_candidate,
+)
+from ._write_confirmation import WriteConfirmationGate, confirmation_scope
+from .routers import (
+    AirQualityRouter,
+    CountdownRouter,
+    CurrencyRouter,
+    CurrentWeatherRouter,
+    FoodRecommendRouter,
+    HourlyForecastRouter,
+    LocationsRouter,
+    NearbyRouter,
+    RecipeRouter,
+    TravelAdviceRouter,
+    TripRouter,
+    UnitConvertRouter,
 )
 
 _LOCALES_DIR = Path(__file__).parent / "locales"
@@ -327,9 +334,7 @@ class LifeKitPlugin(NekoPluginBase):
         """获取天气数据。返回 (data, error_key)。"""
         ttl = clamp_int(self._cfg.get("cache_ttl_seconds", 1800), 1800, 0, 86400)
         days = clamp_int(self._cfg.get("forecast_days", 3), 3, 1, 7)
-        tz = clean_text(loc.get("timezone")) or str(
-            self._cfg.get("timezone", "Asia/Shanghai")
-        )
+        tz = timezone_name(loc.get("timezone"), self._cfg.get("timezone"))
         cache_key = f"{loc['lat']:.2f},{loc['lon']:.2f},days={days},tz={tz}"
         cached = self._cache.get(cache_key, ttl)
         if cached is not None:
@@ -460,15 +465,23 @@ class LifeKitPlugin(NekoPluginBase):
             if key in _EDITABLE_CONFIG_SCHEMA and not key.startswith("_")
         }
         if not updates:
+            if not (confirmed and confirmation_token):
+                return Err(SdkError(self._i18n.t("config.no_valid")))
+        if call_context is not None and _SECRET_CONFIG_KEYS.intersection(updates):
+            return Err(SdkError(self._i18n.t("config.secret_ui_only")))
+        authorized, next_token, updates = (
+            self._write_confirmations.authorize_or_issue_opaque(
+                action="update_config",
+                payload=updates,
+                confirmed=confirmed,
+                token=confirmation_token,
+                scope=confirmation_scope(call_context),
+            )
+        )
+        if not updates:
             return Err(SdkError(self._i18n.t("config.no_valid")))
         if call_context is not None and _SECRET_CONFIG_KEYS.intersection(updates):
             return Err(SdkError(self._i18n.t("config.secret_ui_only")))
-        authorized, next_token = self._write_confirmations.authorize_or_issue(
-            action="update_config",
-            payload=updates,
-            confirmed=confirmed,
-            token=confirmation_token,
-        )
         if not authorized:
             return Ok({
                 "status": "clarify",
@@ -479,7 +492,11 @@ class LifeKitPlugin(NekoPluginBase):
                 ],
                 "confirmation_token": next_token,
                 "context": {
-                    **updates,
+                    **{
+                        key: value
+                        for key, value in updates.items()
+                        if key not in _SECRET_CONFIG_KEYS
+                    },
                     "confirmed": True,
                     "confirmation_token": next_token,
                 },

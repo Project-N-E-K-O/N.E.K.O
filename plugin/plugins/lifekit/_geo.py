@@ -63,3 +63,8 @@ def detect_timezone_mismatch(ip_timezone: str, system_tz: Optional[str]) -> bool
     if ip_off is None or sys_off is None:
         return False
     return abs(ip_off - sys_off) >= 2.0
+
+
+def detect_vpn_conflict(ip_timezone: str, system_tz: Optional[str]) -> bool:
+    """Compatibility alias; a timezone mismatch alone does not prove VPN use."""
+    return detect_timezone_mismatch(ip_timezone, system_tz)

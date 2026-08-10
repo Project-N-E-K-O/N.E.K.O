@@ -5,21 +5,22 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Dict, List
 
-from plugin.sdk.plugin import plugin_entry, quick_action, Ok, tr
+from plugin.sdk.plugin import Ok, plugin_entry, quick_action, tr
 from plugin.sdk.shared.core.router import PluginRouter
 
-from .._poi import POIService
 from .._api import RAIN_CODES
 from .._chat import push_lifekit_content
 from .._coerce import clamp_int, clean_text
 from .._contracts import FoodRecommendParams, FoodRecommendResult
-from .._routing import format_distance
 from .._location import LocationPurpose
 from .._location_entry import (
     apply_location_assumption,
     location_unavailable_result,
     upstream_unavailable_result,
 )
+from .._poi import POIService
+from .._routing import format_distance
+
 
 class FoodRecommendRouter(PluginRouter):
     """food_recommend entry：基于位置和天气的美食推荐。"""

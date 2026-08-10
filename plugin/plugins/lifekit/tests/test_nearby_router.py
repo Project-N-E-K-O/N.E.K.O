@@ -922,3 +922,37 @@ async def test_ambiguous_location_searches_one_primary_center_without_mixing_res
     assert result.value["ambiguity_warning"] in result.value["summary"]
     assert "上海餐厅" not in str(result.value)
     NearbyResult.model_validate(result.value)
+
+
+@pytest.mark.asyncio
+async def test_nearby_cancels_weather_task_when_discovery_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cancelled = asyncio.Event()
+
+    class _Plugin(_NearbyPlugin):
+        async def _get_weather_data(self, *_: Any, **__: Any):
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+
+    async def broken_discovery(*_: Any, **__: Any):
+        await asyncio.sleep(0)
+        raise RuntimeError("discovery bug")
+
+    monkeypatch.setattr(
+        "plugin.plugins.lifekit.routers.nearby.NearbyDiscovery.discover",
+        broken_discovery,
+    )
+    router = NearbyRouter()
+    router._bind(_Plugin())
+
+    with pytest.raises(RuntimeError, match="discovery bug"):
+        await router.search_nearby(
+            request="附近餐厅",
+            location="吉林市",
+            search_terms=["餐厅"],
+        )
+
+    assert cancelled.is_set()

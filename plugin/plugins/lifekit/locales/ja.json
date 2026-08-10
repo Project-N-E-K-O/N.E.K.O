@@ -79,7 +79,7 @@
     "no_destination": "目的地を指定してください",
     "invalid_mode": "無効なトリップ モード '{mode}'。許可: {valid}",
     "mode_transit": "🚇 公共交通", "mode_walking": "🚶 徒歩", "mode_bicycling": "🚲 自転車", "mode_driving": "🚗 車",
-    "near_walk": "🚶 とても近いため徒歩がおすすめです", "rain_transit": "🚇 雨のため公共交通がおすすめです", "good_bike": "🚲 適度な距離で天気も良く、自転車向きです", "transit_advice": "🚇 公共交通がおすすめです", "step_take": "{line} に乗車", "step_walk": "{distance} 徒歩"
+    "near_walk": "🚶 とても近いため徒歩がおすすめです", "rain_transit": "🚇 雨のため公共交通がおすすめです", "good_bike": "🚲 適度な距離で天気も良く、自転車向きです", "transit_advice": "🚇 公共交通がおすすめです", "step_take": "{line} に乗車", "step_walk": "{distance} 徒歩", "route_unavailable": "現在ルートを取得できません。しばらくしてから再試行してください。"
   },
   "nearby": {
     "no_query": "検索キーワードを入力してください (例: レストラン、カフェ、公園)",
@@ -180,7 +180,7 @@
   "panel.add.tip": "場所を追加すると都市のジオコーディングが実行されるため、ネットワーク アクセスが必要です。",
   "panel.store.enabled": "有効",
   "panel.store.disabled": "プラグインのストレージが無効になっています。保存された場所は空になり、新しい場所を保存することはできません。",
-  "panel.store.disabledShort": "障害者",
+  "panel.store.disabledShort": "無効",
   "panel.stats.savedLocations": "保存された場所",
   "panel.stats.defaultLocation": "デフォルトの場所",
   "panel.stats.locale": "ロケール",
@@ -196,7 +196,7 @@
   "panel.fields.enableGeoip": "IP による自動位置情報を許可",
   "config.confirm_update": "これらの LifeKit 設定変更を保存しますか？",
   "config.no_valid": "更新可能な設定項目がありません", "config.forecast_range": "予報日数は 1〜7 の範囲で指定してください", "config.cache_nonnegative": "キャッシュ期間を負の値にはできません", "config.locale_supported": "言語は次のいずれかです: {values}", "config.invalid_value": "設定値が無効です: {detail}", "config.update_failed": "設定の更新に失敗しました: {detail}",
-  "config.secret_ui_only": "地図 API キーは LifeKit 設定パネルでのみ更新できます。",
+  "config.secret_ui_only": "地図 API キーは LifeKit 設定パネルでのみ更新でき、チャットの応答には表示されません。",
   "panel.configured": "設定済み",
   "panel.notConfigured": "未設定",
   "panel.keepSecret": "空欄の場合は現在のキーを保持します",

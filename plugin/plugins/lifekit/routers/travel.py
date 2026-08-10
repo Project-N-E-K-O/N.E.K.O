@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from plugin.sdk.plugin import plugin_entry, quick_action, Ok, tr
+from plugin.sdk.plugin import Ok, plugin_entry, quick_action, tr
 from plugin.sdk.shared.core.router import PluginRouter
 
-from .._api import RAIN_CODES, SNOW_CODES
 from .._advice_policy import DEFAULT_ADVICE_POLICY
+from .._api import RAIN_CODES, SNOW_CODES
 from .._chat import push_lifekit_content
 from .._contracts import CityParams, TravelAdviceResult
 from .._i18n import I18n
@@ -28,8 +28,10 @@ def build_travel_advice(
     temp = current.get("temperature_2m")
     ref = feels if feels is not None else temp
     code = current.get("weather_code", -1)
-    uv = current.get("uv_index", 0)
-    wind = current.get("wind_speed_10m", 0)
+    uv = current.get("uv_index")
+    wind = current.get("wind_speed_10m")
+    uv = uv if isinstance(uv, (int, float)) else 0
+    wind = wind if isinstance(wind, (int, float)) else 0
 
     tips: List[str] = []
     policy = DEFAULT_ADVICE_POLICY

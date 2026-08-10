@@ -6,11 +6,10 @@ import json
 from pathlib import Path
 
 import pytest
-
 from plugin.plugins.lifekit import LifeKitPlugin
 from plugin.plugins.lifekit._api import LOCALE_TO_GEOIP_LANG
 from plugin.plugins.lifekit._geocoders import _language
-from plugin.plugins.lifekit._i18n import I18n, SUPPORTED_LOCALES
+from plugin.plugins.lifekit._i18n import SUPPORTED_LOCALES, I18n
 
 _LOCALES_DIR = Path(__file__).resolve().parents[1] / "locales"
 

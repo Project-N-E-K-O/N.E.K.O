@@ -79,7 +79,7 @@
     "no_destination": "Please specify a destination",
     "invalid_mode": "Invalid trip mode '{mode}'. Allowed: {valid}",
     "mode_transit": "🚇 Transit", "mode_walking": "🚶 Walking", "mode_bicycling": "🚲 Cycling", "mode_driving": "🚗 Driving",
-    "near_walk": "🚶 Very close; walking is recommended", "rain_transit": "🚇 Rain expected; use transit", "good_bike": "🚲 Moderate distance and good weather; cycling is suitable", "transit_advice": "🚇 Transit is recommended", "step_take": "Take {line}", "step_walk": "Walk {distance}"
+    "near_walk": "🚶 Very close; walking is recommended", "rain_transit": "🚇 Rain expected; use transit", "good_bike": "🚲 Moderate distance and good weather; cycling is suitable", "transit_advice": "🚇 Transit is recommended", "step_take": "Take {line}", "step_walk": "Walk {distance}", "route_unavailable": "No route could be retrieved right now. Please try again shortly."
   },
   "nearby": {
     "no_query": "Please enter a search keyword (e.g. restaurant, cafe, park)",

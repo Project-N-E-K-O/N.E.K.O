@@ -13,6 +13,8 @@ _OPEN_METEO_URL = "https://geocoding-api.open-meteo.com/v1/search"
 _NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 _USER_AGENT = "NEKO-LifeKit-Plugin/0.3"
 _NOMINATIM_LOCK = asyncio.Lock()
+_NOMINATIM_LAST_REQUEST_AT = 0.0
+_NOMINATIM_MIN_INTERVAL_SECONDS = 1.0
 CITY_GEOCODER_TIMEOUT_SECONDS = 3.0
 ADDRESS_GEOCODER_TIMEOUT_SECONDS = 5.0
 
@@ -73,6 +75,7 @@ async def nominatim_candidates(
     country_code: str = "",
     timeout: float = ADDRESS_GEOCODER_TIMEOUT_SECONDS,
 ) -> list[LocationCandidate]:
+    global _NOMINATIM_LAST_REQUEST_AT
     params: dict[str, Any] = {
         "q": query,
         "format": "jsonv2",
@@ -90,6 +93,17 @@ async def nominatim_candidates(
     except TimeoutError as exc:
         raise GeocoderError("geocoder queue timed out", cause="timeout") from exc
     try:
+        wait_seconds = max(
+            0.0,
+            _NOMINATIM_MIN_INTERVAL_SECONDS
+            - (loop.time() - _NOMINATIM_LAST_REQUEST_AT),
+        )
+        remaining = timeout - (loop.time() - started_at)
+        if wait_seconds >= remaining:
+            raise GeocoderError("geocoder rate-limit wait timed out", cause="timeout")
+        if wait_seconds:
+            await asyncio.sleep(wait_seconds)
+        _NOMINATIM_LAST_REQUEST_AT = loop.time()
         remaining = max(0.01, timeout - (loop.time() - started_at))
         payload = await _get_json(
             _NOMINATIM_URL,

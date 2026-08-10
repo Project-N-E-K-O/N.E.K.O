@@ -79,7 +79,7 @@
     "no_destination": "Пожалуйста, укажите пункт назначения",
     "invalid_mode": "Недопустимый режим поездки «{mode}». Допустимые варианты: {valid}",
     "mode_transit": "🚇 Transit", "mode_walking": "🚶 Walking", "mode_bicycling": "🚲 Cycling", "mode_driving": "🚗 Driving",
-    "near_walk": "🚶 Very close; walking is recommended", "rain_transit": "🚇 Rain expected; use transit", "good_bike": "🚲 Moderate distance and good weather; cycling is suitable", "transit_advice": "🚇 Transit is recommended", "step_take": "Сесть на {line}", "step_walk": "Пройти {distance}"
+    "near_walk": "🚶 Совсем близко; рекомендуется идти пешком", "rain_transit": "🚇 Ожидается дождь; воспользуйтесь общественным транспортом", "good_bike": "🚲 Расстояние и погода подходят для велосипеда", "transit_advice": "🚇 Рекомендуется общественный транспорт", "step_take": "Сесть на {line}", "step_walk": "Пройти {distance}", "route_unavailable": "Сейчас не удалось получить маршрут. Повторите попытку позже."
   },
   "nearby": {
     "no_query": "Введите ключевое слово для поиска (например, ресторан, кафе, парк)",
@@ -169,7 +169,7 @@
   "panel.fields.enableGeoip": "Разрешить определение по IP",
   "config.confirm_update": "Сохранить изменения конфигурации LifeKit?",
   "config.no_valid": "No valid configuration fields to update", "config.forecast_range": "Forecast days must be between 1 and 7", "config.cache_nonnegative": "Cache lifetime cannot be negative", "config.locale_supported": "Locale must be one of: {values}", "config.invalid_value": "Invalid configuration value: {detail}", "config.update_failed": "Configuration update failed: {detail}",
-  "config.secret_ui_only": "Map API keys can only be updated in the LifeKit settings panel.",
+  "config.secret_ui_only": "Ключи API карт можно менять только в панели настроек LifeKit; они никогда не отображаются в ответах чата.",
   "panel.configured": "Настроено",
   "panel.notConfigured": "Не настроено",
   "panel.keepSecret": "Оставьте пустым, чтобы сохранить текущий ключ",

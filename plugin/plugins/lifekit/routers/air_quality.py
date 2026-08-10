@@ -7,10 +7,10 @@ from typing import Any
 from plugin.sdk.plugin import Ok, plugin_entry, quick_action, tr
 from plugin.sdk.shared.core.router import PluginRouter
 
-from .._api import AirQualityError, fetch_air_quality
 from .._advice_policy import DEFAULT_ADVICE_POLICY
+from .._api import AirQualityError, fetch_air_quality
 from .._chat import push_lifekit_content
-from .._coerce import clean_text, finite_float
+from .._coerce import finite_float, timezone_name
 from .._contracts import AirQualityResult, CityParams
 from .._location import LocationPurpose
 from .._location_entry import (
@@ -79,9 +79,7 @@ class AirQualityRouter(PluginRouter):
         if not loc:
             return location_unavailable_result(loc_err, i18n)
 
-        tz = clean_text(loc.get("timezone")) or str(
-            plugin._cfg.get("timezone", "Asia/Shanghai")
-        )
+        tz = timezone_name(loc.get("timezone"), plugin._cfg.get("timezone"))
 
         try:
             data = await fetch_air_quality(loc["lat"], loc["lon"], tz=tz)

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import math
 
-
 _GCJ_SEMI_MAJOR_AXIS_M = 6378245.0
 _GCJ_ECCENTRICITY_SQUARED = 0.006693421622965943
 

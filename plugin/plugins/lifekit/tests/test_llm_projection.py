@@ -7,26 +7,24 @@ from typing import Any
 
 import httpx
 import pytest
-
-from plugin.sdk.plugin import Ok
-from utils.result_parser import parse_plugin_result
-
-from plugin.plugins.lifekit._i18n import I18n
 from plugin.plugins.lifekit import _poi
+from plugin.plugins.lifekit._i18n import I18n
 from plugin.plugins.lifekit._location import (
     LocationCandidate,
     LocationProblem,
     LocationPurpose,
     assumed_location_payload,
 )
-from plugin.plugins.lifekit.routers.nearby import NearbyRouter
 from plugin.plugins.lifekit.routers.air_quality import AirQualityRouter
 from plugin.plugins.lifekit.routers.current import CurrentWeatherRouter
 from plugin.plugins.lifekit.routers.food import FoodRecommendRouter
 from plugin.plugins.lifekit.routers.hourly import HourlyForecastRouter
 from plugin.plugins.lifekit.routers.locations import LocationsRouter
+from plugin.plugins.lifekit.routers.nearby import NearbyRouter
 from plugin.plugins.lifekit.routers.travel import TravelAdviceRouter
 from plugin.plugins.lifekit.routers.trip import TripRouter
+from plugin.sdk.plugin import Ok
+from utils.result_parser import parse_plugin_result
 
 
 class _AmbiguousRoadPlugin:

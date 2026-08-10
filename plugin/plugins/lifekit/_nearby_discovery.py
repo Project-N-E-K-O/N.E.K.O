@@ -8,7 +8,6 @@ from typing import Sequence
 
 from ._poi import POIResult, POIService
 
-
 MAX_SEARCH_TERMS = 4
 MAX_CENTER_TERM_SEARCHES = 8
 MAX_CONCURRENT_SEARCHES = 2
@@ -88,6 +87,7 @@ class NearbyDiscovery:
                 return POIResult(
                     query="",
                     error="nearby discovery search budget exhausted",
+                    error_code="SEARCH_BUDGET_EXHAUSTED",
                     searched_terms=(),
                 )
             return await self._poi_service.search_many(

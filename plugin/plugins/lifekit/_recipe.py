@@ -27,6 +27,10 @@ def _text(value: Any) -> str:
     return value.strip() if isinstance(value, str) else ""
 
 
+def _identifier(value: Any) -> str:
+    return "" if value is None else str(value).strip()
+
+
 async def _request_json(path: str, *, params: dict[str, str] | None = None) -> dict[str, Any]:
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
@@ -72,7 +76,7 @@ def _parse_meal(meal: Dict[str, Any]) -> Recipe:
     tags = [t.strip() for t in tags_raw.split(",") if t.strip()] if tags_raw else []
 
     return Recipe(
-        id=str(meal.get("idMeal", "")),
+        id=_identifier(meal.get("idMeal")),
         name=_text(meal.get("strMeal")),
         category=_text(meal.get("strCategory")),
         area=_text(meal.get("strArea")),
@@ -102,7 +106,7 @@ async def search_by_ingredient(ingredient: str) -> List[Recipe]:
         return []
     return [
         Recipe(
-            id=str(m.get("idMeal", "")),
+            id=_identifier(m.get("idMeal")),
             name=_text(m.get("strMeal")),
             thumbnail=_text(m.get("strMealThumb")),
         )

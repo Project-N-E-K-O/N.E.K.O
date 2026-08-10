@@ -72,3 +72,7 @@ def test_recipe_parser_tolerates_non_text_provider_fields() -> None:
     assert recipe.ingredients == []
     assert recipe.instructions == ""
     assert recipe.tags == []
+
+
+def test_recipe_parser_does_not_turn_null_id_into_text() -> None:
+    assert _recipe._parse_meal({"idMeal": None}).id == ""
