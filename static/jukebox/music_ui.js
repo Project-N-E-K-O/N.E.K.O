@@ -35,7 +35,9 @@
         titleOverflowRatio: 1,
         // 域名白名单
         allowlist: [
-            'i.scdn.co', 'p.scdn.co', 'a.scdn.co', 'i.imgur.com', 'y.qq.com',
+            'i.scdn.co', 'p.scdn.co', 'a.scdn.co', 'i.imgur.com',
+            'y.qq.com', 'u.y.qq.com', 'dl.stream.qqmusic.com', 'dl.stream.qqmusic.qq.com',
+            'isure.stream.qqmusic.qq.com',
             'music.126.net', 'p1.music.126.net', 'p2.music.126.net', 'p3.music.126.net',
             'm7.music.126.net', 'm8.music.126.net', 'm9.music.126.net',
             'mmusic.spriteapp.cn', 'gg.spriteapp.cn',

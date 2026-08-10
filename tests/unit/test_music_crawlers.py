@@ -11,7 +11,7 @@ import httpx
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
 from utils.music_crawlers import (
-    NeteaseCrawler, iTunesCrawler, SoundCloudCrawler, 
+    NeteaseCrawler, QQMusicCrawler, iTunesCrawler, SoundCloudCrawler,
     MusopenCrawler, FMACrawler, BandcampCrawler, MusicCache, fetch_music_content,
     music_cache, close_all_crawlers, _select_requested_song,
     _sample_distinct_background_sources,
@@ -63,6 +63,33 @@ MOCK_ITUNES_JSON = {
             "artworkUrl100": "http://artwork.url/100x100bb.jpg"
         }
     ]
+}
+
+MOCK_QQMUSIC_SEARCH_JSON = {
+    "music.search.SearchCgiService": {
+        "data": {
+            "body": {
+                "song": {
+                    "list": [
+                        {
+                            "mid": "song_mid_1",
+                            "name": "QQ Music Song",
+                            "interval": 180,
+                            "singer": [{"name": "QQ Artist"}, {"name": "Featured Artist"}],
+                            "album": {"mid": "album_mid_1"},
+                        },
+                        {
+                            "mid": "too_long",
+                            "name": "Long DJ Set",
+                            "interval": 601,
+                            "singer": [{"name": "DJ"}],
+                            "album": {"mid": "album_mid_2"},
+                        },
+                    ]
+                }
+            }
+        }
+    }
 }
 
 MOCK_FMA_HTML = """
@@ -138,6 +165,58 @@ async def test_netease_crawler_parsing():
         assert post.await_args.kwargs['headers'] == {'Cookie': ''}
         assert post.await_args.kwargs['data']['limit'] == 5
         assert post.await_args.kwargs['timeout'] == 5.0
+    await crawler.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_qqmusic_crawler_returns_only_resolved_playable_tracks():
+    crawler = QQMusicCrawler()
+    search_response = MagicMock(status_code=200)
+    search_response.json.return_value = MOCK_QQMUSIC_SEARCH_JSON
+    search_response.raise_for_status.return_value = None
+
+    with (
+        patch.object(httpx.AsyncClient, 'post', new=AsyncMock(return_value=search_response)) as post,
+        patch.object(
+            crawler,
+            '_resolve_playable_url',
+            new=AsyncMock(return_value='https://dl.stream.qqmusic.qq.com/C400song_mid_1.m4a'),
+        ) as resolve,
+    ):
+        results = await crawler.search('测试歌曲', limit=2)
+
+    assert len(results) == 1
+    assert results[0]['name'] == 'QQ Music Song'
+    assert results[0]['artist'] == 'QQ Artist / Featured Artist'
+    assert results[0]['url'].startswith('https://dl.stream.qqmusic.qq.com/')
+    assert results[0]['cover'].endswith('album_mid_1.jpg')
+    assert results[0]['duration'] == 180
+    assert resolve.await_args.args == ('song_mid_1',)
+    assert post.await_args.kwargs['json']['music.search.SearchCgiService']['module'] == 'music.search.SearchCgiService'
+    await crawler.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_qqmusic_crawler_resolves_https_stream_url():
+    crawler = QQMusicCrawler()
+    stream_response = MagicMock(status_code=200)
+    stream_response.raise_for_status.return_value = None
+    stream_response.json.return_value = {
+        'req_0': {
+            'data': {
+                'sip': ['https://dl.stream.qqmusic.qq.com/'],
+                'midurlinfo': [{'purl': 'C400song_mid_1.m4a?vkey=temporary'}],
+            }
+        }
+    }
+
+    with patch.object(httpx.AsyncClient, 'post', new=AsyncMock(return_value=stream_response)) as post:
+        result = await crawler._resolve_playable_url('song_mid_1')
+
+    assert result == 'https://dl.stream.qqmusic.qq.com/C400song_mid_1.m4a?vkey=temporary'
+    assert post.await_args.kwargs['json']['req_0']['module'] == 'vkey.GetVkeyServer'
     await crawler.close()
 
 

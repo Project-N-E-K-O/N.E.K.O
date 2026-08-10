@@ -37,6 +37,15 @@ const PLATFORM_CONFIG_DATA = {
             { key: 'NMTID', labelKey: 'cookiesLogin.fields.NMTID.label', descKey: 'cookiesLogin.fields.NMTID.desc', required: false }
         ]
     },
+    'qqmusic': {
+        name: 'QQ音乐',
+        theme: '#31c27c',
+        instruction: '<b>目标：</b> 请前往 <code>y.qq.com</code> 获取这些 Cookies。',
+        fields: [
+            { key: 'uin', label: 'uin', desc: 'QQ 账号标识（Cookie 中通常以 o 加数字开头）', required: true },
+            { key: 'qqmusic_key', label: 'qqmusic_key', desc: 'QQ 音乐登录凭证', required: true }
+        ]
+    },
     'bilibili': {
         name: 'Bilibili', 
         nameKey: 'cookiesLogin.bilibili',
@@ -258,7 +267,7 @@ function initPlatformConfig() {
 
         // 如果是微博，教程里的目标网址显示为 m.weibo.cn
         // 如果是其他平台，教程里的目标名称使用翻译后的名字 (例如 "TikTok")
-        const targetDisplay = key === 'weibo' ? 'm.weibo.cn' : translatedName;
+        const targetDisplay = data.targetDisplay || (key === 'weibo' ? 'm.weibo.cn' : translatedName);
 
         PLATFORM_CONFIG[key] = {
             name: translatedName, // 界面上显示的名称 (Tabs, 列表) 现在支持多语言了！
@@ -267,7 +276,9 @@ function initPlatformConfig() {
             // 附带默认中文提示，自动填入正确的域名或名称
             // 如果字典里有 instructionKey，直接用字典的（字典通常自带了网址）
             // 如果字典没有，则使用这里的模板，并填入 m.weibo.cn 或 翻译后的平台名
-            instruction: data.instructionKey ? safeT(data.instructionKey, `<b>目标：</b> 请前往 <code>${targetDisplay}</code> 获取这些 Cookies。`) : '',
+            instruction: data.instructionKey
+                ? safeT(data.instructionKey, data.instruction || `<b>目标：</b> 请前往 <code>${targetDisplay}</code> 获取这些 Cookies。`)
+                : (data.instruction || ''),
             cookieStringMode: data.cookieStringMode === true,
             cookieStringLabel: data.cookieStringLabelKey ? safeT(data.cookieStringLabelKey, '完整 Cookie') : '',
             cookieStringDesc: data.cookieStringDescKey ? safeT(data.cookieStringDescKey, '粘贴 Request Headers 中完整的 Cookie 值') : '',
@@ -275,8 +286,8 @@ function initPlatformConfig() {
             fields: data.fields.map(field => ({
                 key: field.key,
                 mapKey: field.mapKey,
-                label: field.labelKey ? safeT(field.labelKey, field.key) : field.key,
-                desc: field.descKey ? safeT(field.descKey) : '',
+                label: field.labelKey ? safeT(field.labelKey, field.label || field.key) : (field.label || field.key),
+                desc: field.descKey ? safeT(field.descKey, field.desc || '') : (field.desc || ''),
                 required: field.required
             }))
         };

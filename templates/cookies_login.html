@@ -1300,6 +1300,7 @@
         <!-- Platform tab bar (uses same class names as JS expects) -->
         <div class="platform-bar tabs" role="tablist">
             <button class="tab-btn active" onclick="switchTab('netease', this)" data-platform="netease" data-i18n="cookiesLogin.netease" role="tab" aria-controls="main-panel" aria-selected="true">网易云音乐</button>
+            <button class="tab-btn" onclick="switchTab('qqmusic', this)" data-platform="qqmusic" role="tab" aria-controls="main-panel" aria-selected="false">QQ音乐</button>
             <button class="tab-btn" onclick="switchTab('bilibili', this)" data-platform="bilibili" data-i18n="cookiesLogin.bilibili" role="tab" aria-controls="main-panel" aria-selected="false">Bilibili</button>
             <button class="tab-btn" onclick="switchTab('xhh', this)" data-platform="xhh" data-i18n="cookiesLogin.xhh" role="tab" aria-controls="main-panel" aria-selected="false">小黑盒</button>
             <button class="tab-btn" onclick="switchTab('youtube', this)" data-platform="youtube" data-i18n="cookiesLogin.youtube" role="tab" aria-controls="main-panel" aria-selected="false">YouTube</button>
@@ -1384,6 +1385,7 @@
     (function(){
       var platformIcons = {
         'netease': '<svg viewBox="0 0 24 24" fill="none" stroke="#D43C33" stroke-width="1.5"><circle cx="12" cy="12" r="9"/><path d="M15 9l-5 4 5 4" stroke-linecap="round" stroke-linejoin="round"/><path d="M9 9v6" stroke-linecap="round"/></svg>',
+        'qqmusic': '<svg viewBox="0 0 24 24" fill="none" stroke="#31C27C" stroke-width="1.5"><circle cx="12" cy="12" r="9"/><path d="M10 8v8l6-4-6-4z" fill="#31C27C" stroke-linejoin="round"/></svg>',
         'bilibili': '<svg viewBox="0 0 24 24" fill="none" stroke="#00A1D6" stroke-width="1.5"><rect x="4" y="6" width="16" height="13" rx="2"/><path d="M9 3l2 3h2l2-3" stroke-linecap="round" stroke-linejoin="round"/><path d="M9 12l2 2 4-3" stroke-linecap="round" stroke-linejoin="round"/></svg>',
         'xhh': '<svg viewBox="0 0 24 24" fill="none" stroke="#5E8B3C" stroke-width="1.5"><path d="M4 20V7l8-5 8 5v13H4z" stroke-linejoin="round"/><path d="M12 7v6" stroke-linecap="round"/><circle cx="12" cy="16" r="1" fill="#5E8B3C"/></svg>',
         'youtube': '<svg viewBox="0 0 24 24" fill="none" stroke="#FF0000" stroke-width="1.5"><rect x="3" y="6" width="18" height="12" rx="2"/><path d="M10 9l5 3-5 3V9z" fill="#FF0000"/></svg>',
@@ -1396,7 +1398,7 @@
       };
       function platKey(name) {
         var m = {
-          '网易云音乐': 'netease', 'bilibili': 'bilibili', 'Bilibili': 'bilibili',
+          '网易云音乐': 'netease', 'QQ音乐': 'qqmusic', 'bilibili': 'bilibili', 'Bilibili': 'bilibili',
           '小黑盒': 'xhh', 'youtube': 'youtube', 'YouTube': 'youtube',
           'twitch': 'twitch', 'Twitch': 'twitch',
           '抖音': 'douyin', 'douyin': 'douyin',
