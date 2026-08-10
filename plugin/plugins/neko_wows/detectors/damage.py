@@ -1,0 +1,248 @@
+"""Outgoing damage bursts derived from cumulative per-victim telemetry."""
+
+from __future__ import annotations
+
+from collections import deque
+from dataclasses import dataclass, field
+import math
+from typing import Sequence
+
+from ..domain.catalog import DEVASTATING_STRIKE, HIGH_DAMAGE
+from ..domain.snapshot import DOMAIN_DAMAGE, DOMAIN_OBJECTS, DOMAIN_SELF
+from ._base import Detector, DetectorContext, GameEvent
+
+
+@dataclass
+class _Burst:
+    samples: deque[tuple[float, float]] = field(default_factory=deque)
+    rolling_damage: float = 0.0
+    peak_damage: float = 0.0
+    last_damage_at: float = 0.0
+
+
+@dataclass(frozen=True)
+class _ResolvedBurst:
+    event_id: str
+    victim_id: int
+    damage: float
+    ratio: float | None
+    sunk: bool
+
+
+class DamageBurstDetector(Detector):
+    """Classify large five-second damage windows without replaying counters."""
+
+    name = "damage_burst"
+    events = (HIGH_DAMAGE, DEVASTATING_STRIKE)
+    required = (DOMAIN_SELF, DOMAIN_DAMAGE)
+    optional = (DOMAIN_OBJECTS,)
+
+    def reset(self) -> None:
+        self._last_totals: dict[int, float] = {}
+        self._bursts: dict[int, _Burst] = {}
+        self._target_names: dict[int, str] = {}
+        self._target_max_health: dict[int, float] = {}
+        self._explicit_alive: dict[int, bool] = {}
+        self._objects_ready = False
+
+    def observe(self, snapshot, facts) -> None:
+        self._last_totals = dict(facts.damage_inflicted_by_victim)
+        if not snapshot.is_available(DOMAIN_OBJECTS):
+            self._explicit_alive.clear()
+            self._objects_ready = False
+            return
+
+        self._cache_target_metadata(snapshot)
+        for ship in snapshot.ships:
+            player_id = ship.player_id
+            if player_id is None or not isinstance(ship.alive, bool):
+                continue
+            self._explicit_alive[player_id] = ship.alive
+        self._objects_ready = True
+
+    def detect(self, previous, current, context: DetectorContext) -> Sequence[GameEvent]:
+        snapshot, facts = current
+        now = facts.at
+        window = self.cfg.damage_burst_window_seconds
+        current_totals = dict(facts.damage_inflicted_by_victim)
+        resolved: list[_ResolvedBurst] = []
+
+        objects_available = snapshot.is_available(DOMAIN_OBJECTS)
+        if objects_available:
+            self._cache_target_metadata(snapshot)
+        sunk_ids = self._sunk_targets(snapshot) if objects_available else set()
+
+        for victim_id in self._last_totals.keys() - current_totals.keys():
+            self._bursts.pop(victim_id, None)
+
+        for victim_id in sorted(current_totals):
+            current_total = self._valid_total(current_totals[victim_id])
+            previous_total = self._valid_total(self._last_totals.get(victim_id))
+            if current_total is None:
+                self._bursts.pop(victim_id, None)
+                continue
+            if previous_total is None:
+                continue
+            if current_total < previous_total:
+                self._bursts.pop(victim_id, None)
+                continue
+            delta = current_total - previous_total
+            if delta <= 0:
+                continue
+
+            burst = self._bursts.get(victim_id)
+            if burst is not None and now - burst.last_damage_at > window:
+                old = self._resolve_high(victim_id, burst, sunk=False)
+                if old is not None:
+                    resolved.append(old)
+                self._bursts.pop(victim_id, None)
+            self._record_damage(victim_id, now, delta, window)
+
+        for victim_id in sorted(sunk_ids):
+            burst = self._bursts.pop(victim_id, None)
+            if burst is None:
+                continue
+            window_damage = self._window_damage(burst, now, window)
+            maximum = self._target_max_health.get(victim_id)
+            ratio = window_damage / maximum if maximum else None
+            if ratio is not None and ratio >= self.cfg.devastating_strike_ratio_threshold:
+                resolved.append(_ResolvedBurst(
+                    event_id=DEVASTATING_STRIKE,
+                    victim_id=victim_id,
+                    damage=window_damage,
+                    ratio=ratio,
+                    sunk=True,
+                ))
+                continue
+            high = self._resolve_high(victim_id, burst, sunk=True)
+            if high is not None:
+                resolved.append(high)
+
+        for victim_id, burst in tuple(self._bursts.items()):
+            if now - burst.last_damage_at < window:
+                continue
+            self._bursts.pop(victim_id, None)
+            high = self._resolve_high(victim_id, burst, sunk=False)
+            if high is not None:
+                resolved.append(high)
+
+        if not resolved:
+            return ()
+        chosen = min(resolved, key=self._resolved_rank)
+        return (self._to_event(chosen, facts),)
+
+    @staticmethod
+    def _valid_total(value) -> float | None:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        total = float(value)
+        if not math.isfinite(total) or total < 0:
+            return None
+        return total
+
+    def _record_damage(
+        self,
+        victim_id: int,
+        at: float,
+        damage: float,
+        window: float,
+    ) -> None:
+        burst = self._bursts.setdefault(victim_id, _Burst())
+        self._prune(burst, at, window)
+        burst.samples.append((at, damage))
+        burst.rolling_damage += damage
+        burst.peak_damage = max(burst.peak_damage, burst.rolling_damage)
+        burst.last_damage_at = at
+
+    @staticmethod
+    def _prune(burst: _Burst, now: float, window: float) -> None:
+        cutoff = now - window
+        while burst.samples and burst.samples[0][0] < cutoff:
+            _at, damage = burst.samples.popleft()
+            burst.rolling_damage -= damage
+
+    def _window_damage(self, burst: _Burst, now: float, window: float) -> float:
+        self._prune(burst, now, window)
+        return max(0.0, burst.rolling_damage)
+
+    def _resolve_high(
+        self,
+        victim_id: int,
+        burst: _Burst,
+        *,
+        sunk: bool,
+    ) -> _ResolvedBurst | None:
+        damage = burst.peak_damage
+        maximum = self._target_max_health.get(victim_id)
+        ratio = damage / maximum if maximum else None
+        qualifies = damage >= self.cfg.high_damage_absolute_threshold
+        if ratio is not None:
+            qualifies = qualifies or ratio >= self.cfg.high_damage_ratio_threshold
+        if not qualifies:
+            return None
+        return _ResolvedBurst(
+            event_id=HIGH_DAMAGE,
+            victim_id=victim_id,
+            damage=damage,
+            ratio=ratio,
+            sunk=sunk,
+        )
+
+    def _cache_target_metadata(self, snapshot) -> None:
+        for ship in snapshot.ships:
+            player_id = ship.player_id
+            if player_id is None:
+                continue
+            spoken_name = ship.spoken_name
+            if spoken_name:
+                self._target_names[player_id] = spoken_name
+            maximum = self._valid_total(ship.max_health)
+            if maximum:
+                self._target_max_health[player_id] = maximum
+
+    def _sunk_targets(self, snapshot) -> set[int]:
+        if not self._objects_ready:
+            return set()
+        return {
+            ship.player_id
+            for ship in snapshot.ships
+            if ship.player_id is not None
+            and ship.alive is False
+            and self._explicit_alive.get(ship.player_id) is True
+        }
+
+    @staticmethod
+    def _resolved_rank(item: _ResolvedBurst) -> tuple[int, float, float, int]:
+        event_rank = 0 if item.event_id == DEVASTATING_STRIKE else 1
+        ratio = item.ratio if item.ratio is not None else -1.0
+        return (event_rank, -ratio, -item.damage, item.victim_id)
+
+    def _to_event(self, item: _ResolvedBurst, facts) -> GameEvent:
+        detail = {
+            "window_damage": round(item.damage),
+            "window_seconds": self.cfg.damage_burst_window_seconds,
+            "target_sunk": item.sunk,
+        }
+        target_name = self._target_names.get(item.victim_id)
+        if target_name:
+            detail["target_name"] = target_name
+        maximum = self._target_max_health.get(item.victim_id)
+        if maximum:
+            detail["target_max_health"] = round(maximum)
+        if item.ratio is not None:
+            detail["damage_ratio"] = round(item.ratio, 3)
+        if item.event_id == DEVASTATING_STRIKE:
+            detail["classification"] = "telemetry_estimate"
+        return self._event(
+            item.event_id,
+            severity=80 if item.event_id == DEVASTATING_STRIKE else 55,
+            facts=facts,
+            detail=detail,
+        )
+
+
+def build_damage_detectors(cfg) -> tuple[Detector, ...]:
+    return (DamageBurstDetector(cfg),)
+
+
+__all__ = ["DamageBurstDetector", "build_damage_detectors"]

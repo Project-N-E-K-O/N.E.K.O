@@ -60,6 +60,8 @@ TARGET_BROADSIDE_WINDOW = "target_broadside_window"
 PRIORITY_TARGET = "priority_target"
 LOW_HP_TARGET = "low_hp_target"
 DAMAGE_MILESTONE = "damage_milestone"
+HIGH_DAMAGE = "high_damage"
+DEVASTATING_STRIKE = "devastating_strike"
 AMMO_RECHECK_HINT = "ammo_recheck_hint"
 
 # --- situation -----------------------------------------------------------
@@ -224,6 +226,28 @@ _SPECS: tuple[EventSpec, ...] = (
         cooldown_seconds=30.0,
         coalesce_key="wows_progress",
         required=(DOMAIN_DAMAGE,),
+    ),
+    EventSpec(
+        event_id=HIGH_DAMAGE,
+        lane=LANE_NORMAL,
+        priority=52,
+        summary="高额伤害",
+        cooldown_seconds=20.0,
+        coalesce_key="wows_progress",
+        required=(DOMAIN_SELF, DOMAIN_DAMAGE),
+        optional=(DOMAIN_OBJECTS,),
+        ttl_seconds=12.0,
+    ),
+    EventSpec(
+        event_id=DEVASTATING_STRIKE,
+        lane=LANE_NORMAL,
+        priority=68,
+        summary="毁灭打击级别",
+        cooldown_seconds=10.0,
+        coalesce_key="wows_progress",
+        required=(DOMAIN_SELF, DOMAIN_DAMAGE),
+        optional=(DOMAIN_OBJECTS,),
+        ttl_seconds=12.0,
     ),
     EventSpec(
         event_id=AMMO_RECHECK_HINT,
