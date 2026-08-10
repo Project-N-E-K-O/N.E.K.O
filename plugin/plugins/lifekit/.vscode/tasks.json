@@ -2,21 +2,38 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "label": "LifeKit: test",
+      "label": "N.E.K.O: check lifekit",
       "type": "shell",
-      "command": "uv run pytest -q plugin/plugins/lifekit/tests",
+      "command": "uv run python -m plugin.neko_plugin_cli.cli check lifekit",
       "options": {
-        "cwd": "${workspaceFolder}/../../.."
+        "cwd": "${config:nekoPlugin.repoRoot}"
       },
-      "group": "test",
       "problemMatcher": []
     },
     {
-      "label": "LifeKit: release check",
+      "label": "N.E.K.O: sync lifekit",
       "type": "shell",
-      "command": "uv run python neko_plugin_cli/cli.py check lifekit --release",
+      "command": "uv run --with pip python -m plugin.neko_plugin_cli.cli sync lifekit --clean",
       "options": {
-        "cwd": "${workspaceFolder}/../.."
+        "cwd": "${config:nekoPlugin.repoRoot}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "N.E.K.O: check -r lifekit",
+      "type": "shell",
+      "command": "uv run python -m plugin.neko_plugin_cli.cli check -r lifekit",
+      "options": {
+        "cwd": "${config:nekoPlugin.repoRoot}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "N.E.K.O: build lifekit",
+      "type": "shell",
+      "command": "uv run python -m plugin.neko_plugin_cli.cli build lifekit",
+      "options": {
+        "cwd": "${config:nekoPlugin.repoRoot}"
       },
       "problemMatcher": []
     }
