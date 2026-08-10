@@ -144,6 +144,7 @@ class _LifecycleMixin:
         completion_mode: str = "proactive",
         persist_response: bool = True,
         on_committed: Optional[Callable[[], None]] = None,
+        on_committed_text: Optional[Callable[[str], None]] = None,
     ) -> bool:
         """Send a fire-and-forget instruction to the LLM and stream the response.
 
@@ -176,12 +177,25 @@ class _LifecycleMixin:
         - ``on_committed``:
           Called after visible text is confirmed but before completion
           callbacks flush proactive state.
+        - ``on_committed_text``:
+          Called at the same commit boundary with the sanitized visible text
+          (nonverbal directives removed). Callback failures never fail the turn.
 
         Returns True if any user-visible text was generated, False if aborted
         or only nonverbal directives were emitted.
         """
         if not instruction or not instruction.strip():
             return False
+
+        # A regular visible response stages anti-repeat memory immediately
+        # before terminal callbacks. That commit boundary cannot gain an await,
+        # so perform the first disk-backed load before generation starts.
+        if completion_mode == "response" and persist_response:
+            try:
+                from memory.anti_repeat import get_anti_repeat_corpus
+                await get_anti_repeat_corpus().apreload(self.lanlan_name)
+            except Exception as exc:  # pragma: no cover - best-effort cache
+                logger.debug("[AntiRepeat] response preload skipped: %s", exc)
 
         # 临时注入：instruction 已由调用方用 ======== 格式封装，作为 HumanMessage 发送，
         # 不持久化到 _conversation_history，避免污染长期上下文。
@@ -388,13 +402,6 @@ class _LifecycleMixin:
             return False
         finally:
             self._is_responding = False
-            # Clear the thinking bubble if this proactive/greeting/avatar turn
-            # pulsed it but committed no visible text — unlike stream_text, there
-            # is no external unconditional clear bracketing this call (Codex P2).
-            # Passing the owner seq suppresses the clear when a newer user turn
-            # interleaved and re-pulsed. No-op when nothing pulsed or it was
-            # already cleared on the first visible token (idempotent).
-            await self._notify_reasoning_done(_reasoning_owner_seq)
             # Token usage 由 _AsyncStreamWrapper hook 在流结束时自动记录，
             # 此处不再手动调用 TokenTracker.record() 避免双重计数。
             committed_text = _strip_nonverbal_directives(assistant_message).strip()
@@ -425,29 +432,58 @@ class _LifecycleMixin:
                     getattr(self, "model", None),
                     completion_mode,
                 )
-            elif on_committed:
-                try:
-                    on_committed()
-                except Exception:
-                    logger.exception("prompt_ephemeral on_committed callback failed")
+            else:
+                if on_committed_text:
+                    try:
+                        on_committed_text(committed_text)
+                    except Exception:
+                        logger.exception(
+                            "prompt_ephemeral on_committed_text callback failed"
+                        )
+                if on_committed:
+                    try:
+                        on_committed()
+                    except Exception:
+                        logger.exception("prompt_ephemeral on_committed callback failed")
             if content_committed and persist_response:
                 self._conversation_history.append(AIMessage(content=assistant_message))
-                # 防复读 corpus：只录常规 reply（completion_mode == "response"）。
-                # proactive 路径已经在 ``core.finish_proactive_delivery`` 上录，
-                # 这里再录会双写——这两条路径都接得到同一段 assistant 文本。
-                if completion_mode == "response":
-                    try:
-                        from memory.anti_repeat import get_anti_repeat_corpus
-                        get_anti_repeat_corpus().record_output(
-                            self.lanlan_name, committed_text, is_proactive=False,
-                        )
-                    except Exception as _exc:  # pragma: no cover
-                        logger.debug(
-                            "[AntiRepeat] record reply skipped: %s", _exc,
-                        )
+            # 防复读 corpus 拆成两半：内存更新在收尾信号**之前**（同步，不含 await，
+            # 所以不是取消点），落盘在**之后**。客户端看到 turn end 就可能立刻发下一
+            # 条，那一轮的打分必须已经看得到刚提交的这句；而落盘那个 await 一旦被取消
+            # 就会跳过 on_response_done 里的 TTS 收尾 / turn 结束 / request-id 清理。
+            # 两个要求方向相反，只有拆开才能同时满足。
+            staged_anti_repeat = None
+            if completion_mode == "response" and content_committed and persist_response:
+                try:
+                    from memory.anti_repeat import get_anti_repeat_corpus
+                    staged_anti_repeat = get_anti_repeat_corpus().stage_output(
+                        self.lanlan_name, committed_text, is_proactive=False,
+                    )
+                except Exception as _exc:  # pragma: no cover
+                    logger.debug("[AntiRepeat] stage reply skipped: %s", _exc)
+            # Everything above is synchronous commit-point bookkeeping.  Keep it
+            # before the first cleanup await so cancellation cannot make visible
+            # text disappear from callbacks/history while still reaching the user.
+            # Passing the owner seq suppresses the reasoning-bubble clear when a
+            # newer user turn interleaved and re-pulsed; the call is otherwise
+            # idempotent when nothing pulsed or the first token already cleared it.
+            await self._notify_reasoning_done(_reasoning_owner_seq)
             if completion_mode == "response":
                 if self.on_response_done:
                     await self.on_response_done()
+                # 只录常规 reply（completion_mode == "response"）。proactive 路径
+                # 已经在 ``core.finish_proactive_delivery`` 上录，这里再录会双写。
+                # 与 core.finish_proactive_delivery 同因同治：摘下来不 await。下面的
+                # `return content_committed` 是调用方判断这轮有没有提交的依据，在它
+                # 之前留一个取消点，就会让一次已经发出去的回复被记成没发。
+                if staged_anti_repeat is not None:
+                    try:
+                        from memory.anti_repeat import get_anti_repeat_corpus
+                        get_anti_repeat_corpus().flush_staged_detached(staged_anti_repeat)
+                    except Exception as _exc:  # pragma: no cover
+                        logger.debug(
+                            "[AntiRepeat] flush reply skipped: %s", _exc,
+                        )
             else:
                 proactive_done_cb = getattr(self, "on_proactive_done", None)
                 if proactive_done_cb:

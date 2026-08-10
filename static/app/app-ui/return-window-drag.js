@@ -223,7 +223,11 @@
                 return;
             }
 
-            const rect = container.getBoundingClientRect();
+            // The return container lives in the virtual body. Under Niri
+            // physical crop its DOMRect is crop-local, while the saved model
+            // anchor and model movement deltas are virtual viewport values.
+            const rect = I.toNekoVirtualTransitionRect(container.getBoundingClientRect())
+                || container.getBoundingClientRect();
             const dispatchClickEvent = () => {
                 window.dispatchEvent(new CustomEvent(`${match[1]}-return-click`, {
                     detail: {

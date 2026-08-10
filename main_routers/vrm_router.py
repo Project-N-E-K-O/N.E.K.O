@@ -407,8 +407,10 @@ def get_vrm_animations():
                     # 默认使用 /user_vrm/animation
                     url_prefix = "/user_vrm/animation"
                 
-                # 查找.vrma文件
-                for anim_file in anim_dir.glob('*.vrma'):
+                # 用户导入动作保持标准 .vrma；内置动作使用 .vrma.gz，首次播放时
+                # 由前端统一解压。两种传输格式都必须出现在动作选择器中。
+                animation_files = list(anim_dir.glob('*.vrma')) + list(anim_dir.glob('*.vrma.gz'))
+                for anim_file in animation_files:
                     try:
                         if not anim_file.exists() or not anim_file.is_file():
                             continue
@@ -420,8 +422,10 @@ def get_vrm_animations():
                         seen_urls.add(url)
                         
                         # 移除绝对路径，只返回公共 URL 和相对信息
+                        display_name = anim_file.name[:-len('.vrma.gz')] \
+                            if anim_file.name.endswith('.vrma.gz') else anim_file.stem
                         animations.append({
-                            "name": anim_file.stem,
+                            "name": display_name,
                             "filename": anim_file.name,
                             "url": url,
                             "type": "vrma",

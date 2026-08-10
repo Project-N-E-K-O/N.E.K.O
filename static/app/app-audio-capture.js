@@ -35,9 +35,19 @@
     // compares equal again and commits -- re-claiming through refreshMicLease()
     // the exact lease this counter exists to protect.
     let micStartGeneration = 0;
+    // Device ids are not a sufficient change token: a rapid A -> B -> A
+    // sequence ends at the same id while still superseding the in-flight
+    // selection attempt. Increment this on every authoritative selection write
+    // so async ownership checks cannot lose intermediate changes.
+    let microphoneSelectionGeneration = 0;
 
     function invalidatePendingMicStart() {
         micStartGeneration += 1;
+    }
+
+    function setSelectedMicrophoneId(deviceId) {
+        S.selectedMicrophoneId = deviceId;
+        microphoneSelectionGeneration += 1;
     }
 
     function currentVoiceInputControlState() {
@@ -161,7 +171,7 @@
 
     // ======================== 屏幕共享开关按钮（设置面板内嵌） ========================
     // 开关按钮从屏幕源子窗口底部移到「屏幕共享」与「选择麦克风」两个设置项中间；
-    // 启用时播放像素扫过动画（参考视频按钮的像素填充效果）。
+    // 启用时由滑块起点扩散蓝色波面，填满后浮出少量四角星光。
     // 共享状态以隐藏的 #screenButton 的 .active class 为准（见 common_ui.js）。
 
     var shareToggleButtonRegistry = [];
@@ -179,196 +189,150 @@
         style.id = 'neko-share-toggle-styles';
         style.textContent = [
             // 未启用：白色胶囊轨道（仿参考视频）
-            '.neko-share-toggle-btn{position:relative;overflow:hidden;width:100%;box-sizing:border-box;min-height:44px;padding:10px 48px;margin:4px 0 6px;border:1px solid rgba(0,0,0,.07);border-radius:999px;background:#f4f4f7;color:var(--neko-popup-text,#333);cursor:pointer;font-size:14px;font-weight:600;pointer-events:auto;transition:color .2s ease,box-shadow .2s ease,transform .1s ease;}',
+            '.neko-share-toggle-btn{position:relative;isolation:isolate;overflow:visible;width:100%;box-sizing:border-box;min-height:44px;padding:10px 48px;margin:4px 0 6px;border:1px solid rgba(0,0,0,.07);border-radius:999px;background:#f4f4f7;color:var(--neko-popup-text,#333);cursor:pointer;font-size:14px;font-weight:600;pointer-events:auto;transition:color .2s ease,box-shadow .2s ease,transform .1s ease;--neko-share-wave-x:20px;--neko-share-wave-radius:148%;}',
             '.neko-share-toggle-btn:hover{box-shadow:inset 0 0 0 1px rgba(0,0,0,.05);}',
+            '.neko-share-toggle-btn:focus-visible{outline:2px solid var(--neko-popup-accent,#44b7fe);outline-offset:2px;}',
             '.neko-share-toggle-btn:active{transform:scale(.97);}',
             '.neko-share-toggle-btn:disabled{opacity:.6;cursor:default;}',
             // 未开语音会话时点击的抖动提示（明确反馈「点到了但不能用」）
             '@keyframes nekoShareToggleNudge{0%,100%{transform:translateX(0);}25%{transform:translateX(-3px);}75%{transform:translateX(3px);}}',
             '.neko-share-toggle-btn.is-nudged{animation:nekoShareToggleNudge .12s ease 2;}',
             '.neko-share-toggle-btn.is-active{color:#fff;}',
-            // 右端的紫色目标点
-            '.neko-share-toggle-btn .neko-share-toggle-goal{position:absolute;z-index:0;top:50%;right:16px;width:6px;height:6px;margin-top:-3px;border-radius:50%;background:#8a5ce8;pointer-events:none;}',
+            // 蓝色波面：以未开启时滑块中心为圆心，向外扩散并填满整个胶囊。
+            '.neko-share-toggle-btn .neko-share-toggle-wave{position:absolute;inset:0;z-index:0;border-radius:inherit;background:linear-gradient(105deg,#61ccff 0%,#44b7fe 52%,#269fe8 100%);clip-path:circle(0 at var(--neko-share-wave-x) 50%);pointer-events:none;transition:clip-path .64s cubic-bezier(.4,0,.2,1);}',
+            '.neko-share-toggle-btn.is-active .neko-share-toggle-wave{clip-path:circle(var(--neko-share-wave-radius) at var(--neko-share-wave-x) 50%);}',
             '.neko-share-toggle-btn .neko-share-toggle-label{position:relative;z-index:1;display:block;text-align:center;pointer-events:none;transition:color .2s ease;}',
-            // 文字延迟变白：等像素填充波前扫到中部再切换，避免白字落在白轨道上
-            '.neko-share-toggle-btn.is-active .neko-share-toggle-label{transition:color .3s ease .35s;}',
-            // 白色滑块：默认在左端，启用后滑到右端（始终盖在像素层之上）
-            '.neko-share-toggle-btn .neko-share-toggle-knob{position:absolute;z-index:2;top:4px;bottom:4px;left:4px;width:32px;border-radius:10px;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.18);pointer-events:none;transition:left .4s ease;}',
+            '.neko-share-toggle-btn.is-active .neko-share-toggle-label{transition:color .2s ease .16s;}',
+            // 白色滑块：默认在左端，启用后滑到右端。
+            '.neko-share-toggle-btn .neko-share-toggle-knob{position:absolute;z-index:3;top:4px;bottom:4px;left:4px;width:32px;border-radius:10px;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.18);pointer-events:none;transition:left .46s cubic-bezier(.4,0,.2,1);}',
             '.neko-share-toggle-btn.is-active .neko-share-toggle-knob{left:calc(100% - 36px);}',
-            // 像素填充画布：低分辨率画布经 CSS 放大 + pixelated，呈现马赛克块感
-            '.neko-share-toggle-btn canvas.neko-share-toggle-fill{position:absolute;inset:0;z-index:0;width:100%;height:100%;pointer-events:none;opacity:0;transition:opacity .12s linear;image-rendering:pixelated;}',
-            '.neko-share-toggle-btn.is-active canvas.neko-share-toggle-fill{opacity:1;}',
+            // 四角星光：波面填满后从背景中向上浮出，SVG 轮廓参考产品给定的星型。
+            '.neko-share-toggle-btn .neko-share-toggle-sparkles{position:absolute;inset:0;z-index:2;overflow:visible;pointer-events:none;}',
+            '.neko-share-toggle-btn .neko-share-toggle-spark{position:absolute;left:var(--neko-spark-x);bottom:var(--neko-spark-y);width:var(--neko-spark-size);height:var(--neko-spark-size);opacity:0;pointer-events:none;}',
+            '.neko-share-toggle-btn .neko-share-toggle-spark svg{display:block;width:100%;height:100%;overflow:visible;}',
+            '@keyframes nekoShareSparkRise{0%{opacity:0;transform:translate3d(0,4px,0) scale(.2) rotate(0deg);}18%{opacity:1;}68%{opacity:.92;}100%{opacity:0;transform:translate3d(var(--neko-spark-drift),var(--neko-spark-rise),0) scale(.92) rotate(18deg);}}',
+            '.neko-share-toggle-btn.is-sparkling .neko-share-toggle-spark{animation:nekoShareSparkRise var(--neko-spark-duration) cubic-bezier(.16,.8,.25,1) var(--neko-spark-delay) both;}',
             // 迷你版：嵌在「屏幕共享」设置行右侧的行内胶囊开关（未开启为灰色轨道 + 白色旋钮）
-            '.neko-share-toggle-btn.neko-share-toggle-mini{display:inline-block;width:64px;min-height:26px;height:26px;padding:0;margin:0;flex-shrink:0;align-self:center;cursor:pointer;background:#e2e2e8;border-color:rgba(0,0,0,.05);}',
+            '.neko-share-toggle-btn.neko-share-toggle-mini{display:inline-block;width:64px;min-height:26px;height:26px;padding:0;margin:0;flex-shrink:0;align-self:center;cursor:pointer;background:#e2e2e8;border-color:rgba(0,0,0,.05);--neko-share-wave-x:12px;--neko-share-wave-radius:116%;}',
             '.neko-share-toggle-mini .neko-share-toggle-label{display:none;}',
             '.neko-share-toggle-mini .neko-share-toggle-knob{width:18px;top:3px;bottom:3px;left:3px;border-radius:7px;}',
             '.neko-share-toggle-mini.is-active .neko-share-toggle-knob{left:calc(100% - 21px);}',
-            '.neko-share-toggle-mini .neko-share-toggle-goal{right:8px;width:5px;height:5px;margin-top:-2.5px;}',
+            '.neko-share-toggle-btn.is-instant .neko-share-toggle-wave,.neko-share-toggle-btn.is-instant .neko-share-toggle-label,.neko-share-toggle-btn.is-instant .neko-share-toggle-knob{transition:none!important;}',
+            '@media (prefers-reduced-motion:reduce){.neko-share-toggle-btn .neko-share-toggle-wave,.neko-share-toggle-btn .neko-share-toggle-label,.neko-share-toggle-btn .neko-share-toggle-knob{transition:none!important;}.neko-share-toggle-btn.is-sparkling .neko-share-toggle-spark{animation:none!important;}}',
             '.neko-share-toggle-btn.is-busy{opacity:.6;cursor:default;}'
         ].join('\n');
         document.head.appendChild(style);
     }
 
-    // ---- 像素溶解引擎：仿参考视频的随机马赛克扫过效果 ----
-    // 色板以中深紫为主，浅紫仅作零星高光（与参考视频一致）
-    var SHARE_PIXEL_PALETTE = ['#8a5ce8', '#8f63ec', '#9772f0', '#9772f0', '#a181f5', '#a181f5', '#b79fff', '#cdbdff'];
-    var SHARE_PIXEL_CELL_PX = 3;      // 每个像素块的 CSS 尺寸
-    var SHARE_PIXEL_JITTER = 0.2;     // 填充前沿的随机抖动幅度（产生锯齿边缘与前置散点）
-    var SHARE_PIXEL_FADE = 0.15;      // 前沿软过渡宽度（像素透明度渐显，形成渐变边）
-    var SHARE_PIXEL_MIN_ALPHA = 0.3;  // 左端最终透明度上限（形成视频的浅紫渐变尾）
-    var SHARE_PIXEL_FILL_MS = 1300;   // 启用扫过时长
-    var SHARE_PIXEL_SHIMMER_MS = 100; // 填满后像素闪烁间隔
+    var SHARE_WAVE_FILL_MS = 640;
+    var SHARE_SPARKLE_LIFETIME_MS = 1200;
+    var SHARE_SPARKLE_CONFIGS = [
+        { x: '8%', y: '4px', size: '8px', drift: '-4px', rise: '-21px', delay: '0ms', duration: '760ms' },
+        { x: '28%', y: '10px', size: '6px', drift: '1px', rise: '-28px', delay: '110ms', duration: '800ms' },
+        { x: '48%', y: '3px', size: '10px', drift: '-2px', rise: '-24px', delay: '40ms', duration: '820ms' },
+        { x: '68%', y: '7px', size: '7px', drift: '3px', rise: '-30px', delay: '150ms', duration: '780ms' },
+        { x: '88%', y: '4px', size: '9px', drift: '1px', rise: '-22px', delay: '80ms', duration: '840ms' }
+    ];
 
-    function createSharePixelFx(canvas) {
-        var ctx = canvas.getContext('2d');
-        var cols = 0;
-        var rows = 0;
-        var seeds = null;   // 前沿抖动随机数
-        var tints = null;   // 每格颜色索引
-        var spans = null;   // 少量格子画成 2x2，模拟视频里大小不一的块
-        var progress = 0;
-        var rafId = null;
-        var shimmerTimer = null;
+    function createShareSparkleLayer() {
+        var layer = document.createElement('span');
+        layer.className = 'neko-share-toggle-sparkles';
+        layer.setAttribute('aria-hidden', 'true');
 
-        function resize() {
-            var host = canvas.parentElement;
-            var w = host ? host.clientWidth : 0;
-            var h = host ? host.clientHeight : 0;
-            var nextCols = Math.max(1, Math.round(w / SHARE_PIXEL_CELL_PX));
-            var nextRows = Math.max(1, Math.round(h / SHARE_PIXEL_CELL_PX));
-            if (nextCols === cols && nextRows === rows && seeds) return;
-            cols = nextCols;
-            rows = nextRows;
-            canvas.width = cols;
-            canvas.height = rows;
-            var count = cols * rows;
-            seeds = new Float32Array(count);
-            tints = new Uint8Array(count);
-            spans = new Uint8Array(count);
-            for (var i = 0; i < count; i++) {
-                seeds[i] = Math.random();
-                tints[i] = (Math.random() * SHARE_PIXEL_PALETTE.length) | 0;
-                spans[i] = Math.random() < 0.12 ? 1 : 0;
+        SHARE_SPARKLE_CONFIGS.forEach(function (config) {
+            var sparkle = document.createElement('span');
+            sparkle.className = 'neko-share-toggle-spark';
+            sparkle.style.setProperty('--neko-spark-x', config.x);
+            sparkle.style.setProperty('--neko-spark-y', config.y);
+            sparkle.style.setProperty('--neko-spark-size', config.size);
+            sparkle.style.setProperty('--neko-spark-drift', config.drift);
+            sparkle.style.setProperty('--neko-spark-rise', config.rise);
+            sparkle.style.setProperty('--neko-spark-delay', config.delay);
+            sparkle.style.setProperty('--neko-spark-duration', config.duration);
+
+            var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+            svg.setAttribute('viewBox', '0 0 24 24');
+            var path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+            path.setAttribute('d', 'M12 1.5C13.6 7.9 16.1 10.4 22.5 12C16.1 13.6 13.6 16.1 12 22.5C10.4 16.1 7.9 13.6 1.5 12C7.9 10.4 10.4 7.9 12 1.5Z');
+            path.setAttribute('fill', 'rgba(255,255,255,0.96)');
+            path.setAttribute('stroke', '#00aeef');
+            path.setAttribute('stroke-width', '0.9');
+            path.setAttribute('stroke-linejoin', 'round');
+            path.setAttribute('vector-effect', 'non-scaling-stroke');
+            svg.appendChild(path);
+            sparkle.appendChild(svg);
+            layer.appendChild(sparkle);
+        });
+
+        return layer;
+    }
+
+    function createShareWaveFx(button) {
+        var sparkleStartTimer = null;
+        var sparkleCleanupTimer = null;
+
+        function prefersReducedMotion() {
+            return typeof window.matchMedia === 'function'
+                && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        }
+
+        function stopSparkles() {
+            if (sparkleStartTimer) { clearTimeout(sparkleStartTimer); sparkleStartTimer = null; }
+            if (sparkleCleanupTimer) { clearTimeout(sparkleCleanupTimer); sparkleCleanupTimer = null; }
+            button.classList.remove('is-sparkling');
+        }
+
+        function startSparkles() {
+            sparkleStartTimer = null;
+            if (!button.isConnected || !button._nekoShareActive || prefersReducedMotion()) return;
+            button.classList.remove('is-sparkling');
+            void button.offsetWidth;
+            button.classList.add('is-sparkling');
+            sparkleCleanupTimer = setTimeout(function () {
+                sparkleCleanupTimer = null;
+                button.classList.remove('is-sparkling');
+            }, SHARE_SPARKLE_LIFETIME_MS);
+        }
+
+        function setActiveClass(active, instant) {
+            if (instant) button.classList.add('is-instant');
+            button.classList.toggle('is-active', active);
+            if (instant) {
+                void button.offsetWidth;
+                button.classList.remove('is-instant');
             }
-        }
-
-        function draw() {
-            resize();
-            ctx.clearRect(0, 0, cols, rows);
-            if (progress <= 0) return;
-            var spread = 1 - SHARE_PIXEL_JITTER;
-            for (var y = 0; y < rows; y++) {
-                for (var x = 0; x < cols; x++) {
-                    var i = y * cols + x;
-                    var xNorm = cols <= 1 ? 1 : x / (cols - 1);
-                    // 从右向左推进；阈值叠加随机抖动形成不规则前沿
-                    var threshold = (1 - xNorm) * spread + seeds[i] * SHARE_PIXEL_JITTER;
-                    // 前沿软过渡：刚越线的像素半透明，逐渐加深（视频的渐变边）
-                    var fade = (progress - threshold) / SHARE_PIXEL_FADE;
-                    if (fade > 0) {
-                        var alpha = fade >= 1 ? 1 : fade;
-                        // 越靠左透明度越低，填满后左端保留浅紫渐变尾
-                        alpha *= SHARE_PIXEL_MIN_ALPHA + (1 - SHARE_PIXEL_MIN_ALPHA) * xNorm;
-                        ctx.globalAlpha = alpha;
-                        ctx.fillStyle = SHARE_PIXEL_PALETTE[tints[i]];
-                        var big = spans[i];
-                        ctx.fillRect(x, y, big ? 2 : 1, big ? 2 : 1);
-                    }
-                }
-            }
-            ctx.globalAlpha = 1;
-        }
-
-        function stopShimmer() {
-            if (shimmerTimer) { clearInterval(shimmerTimer); shimmerTimer = null; }
-        }
-
-        function startShimmer() {
-            stopShimmer();
-            // 闪烁点随机出现，但整体沿一个从右向左移动的波前依次点亮（仿参考视频）
-            var sweepX = cols - 1;
-            var band = Math.max(2, Math.round(cols * 0.15));
-            shimmerTimer = setInterval(function () {
-                if (!canvas.isConnected) { stopShimmer(); return; }
-                // 随机改写少量格子的色阶，形成填满后的闪烁感（位置集中在波前附近）
-                var twinkles = Math.max(1, Math.round(cols * rows * 0.025));
-                for (var n = 0; n < twinkles; n++) {
-                    var x = sweepX + ((Math.random() * band) | 0);
-                    if (x >= cols) x = cols - 1;
-                    var y = (Math.random() * rows) | 0;
-                    var i = y * cols + x;
-                    tints[i] = (Math.random() * SHARE_PIXEL_PALETTE.length) | 0;
-                }
-                draw();
-                sweepX -= Math.max(1, Math.round(cols * 0.12));
-                if (sweepX < 0) sweepX = cols - 1;
-            }, SHARE_PIXEL_SHIMMER_MS);
-        }
-
-        function cancelAnimation() {
-            if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
-        }
-
-        function animateTo(target, done) {
-            cancelAnimation();
-            var from = progress;
-            var distance = Math.abs(target - from);
-            if (distance <= 0) { if (done) done(); return; }
-            var duration = SHARE_PIXEL_FILL_MS * distance;
-            var startTime = null;
-            function frame(now) {
-                if (!canvas.isConnected) { rafId = null; return; }
-                if (startTime === null) startTime = now;
-                var t = Math.min(1, (now - startTime) / duration);
-                progress = from + (target - from) * t;
-                draw();
-                if (t < 1) {
-                    rafId = requestAnimationFrame(frame);
-                } else {
-                    rafId = null;
-                    if (done) done();
-                }
-            }
-            rafId = requestAnimationFrame(frame);
         }
 
         return {
             activate: function (instant) {
-                resize();
-                stopShimmer();
-                if (instant) {
-                    cancelAnimation();
-                    progress = 1;
-                    draw();
-                    startShimmer();
-                } else {
-                    animateTo(1, startShimmer);
+                stopSparkles();
+                setActiveClass(true, instant);
+                if (!instant && !prefersReducedMotion()) {
+                    sparkleStartTimer = setTimeout(startSparkles, SHARE_WAVE_FILL_MS);
                 }
             },
-            deactivate: function (instant, done) {
-                stopShimmer();
-                if (instant) {
-                    cancelAnimation();
-                    progress = 0;
-                    draw();
-                    if (done) done();
-                } else {
-                    animateTo(0, done);
-                }
+            deactivate: function (instant) {
+                stopSparkles();
+                setActiveClass(false, instant);
             },
-            // 已处于开启状态时再次点击：从头重播一次开启扫过动画
-            replay: function () {
-                resize();
-                stopShimmer();
-                progress = 0;
-                draw();
-                animateTo(1, startShimmer);
-            }
+            cleanup: stopSparkles
         };
     }
 
+    function pruneShareToggleButtons() {
+        var connectedButtons = [];
+        shareToggleButtonRegistry.forEach(function (btn) {
+            if (btn.isConnected) {
+                connectedButtons.push(btn);
+            } else if (typeof btn._nekoShareFxCleanup === 'function') {
+                btn._nekoShareFxCleanup();
+            }
+        });
+        shareToggleButtonRegistry = connectedButtons;
+    }
+
     function syncShareToggleButtons(instant) {
-        shareToggleButtonRegistry = shareToggleButtonRegistry.filter(function (btn) { return btn.isConnected; });
+        pruneShareToggleButtons();
         var active = isScreenShareActive();
         shareToggleButtonRegistry.forEach(function (btn) {
             if (typeof btn._nekoSetShareActive === 'function') btn._nekoSetShareActive(active, !!instant);
@@ -396,65 +360,99 @@
         ensureShareToggleStateObserver();
 
         var mini = !!(options && options.mini);
-        // 用 span + role=button：迷你版会嵌在设置行 <button> 内，原生 button 嵌套是非法 HTML
-        var button = document.createElement('span');
+        // The control is a sibling of the action trigger in the shared row, so
+        // it can use native button semantics without nesting interactive UI.
+        var button = document.createElement('button');
+        button.type = 'button';
         button.className = 'neko-share-toggle-btn' + (mini ? ' neko-share-toggle-mini' : '');
-        button.setAttribute('role', 'button');
-        button.setAttribute('tabindex', '0');
+        button.setAttribute('aria-busy', 'false');
         button.dataset.nekoScreenShareAction = 'toggle';
 
-        var fill = document.createElement('canvas');
-        fill.className = 'neko-share-toggle-fill';
-        fill.setAttribute('aria-hidden', 'true');
-
-        var goal = document.createElement('span');
-        goal.className = 'neko-share-toggle-goal';
-        goal.setAttribute('aria-hidden', 'true');
+        var wave = document.createElement('span');
+        wave.className = 'neko-share-toggle-wave';
+        wave.setAttribute('aria-hidden', 'true');
 
         var label = document.createElement('span');
         label.className = 'neko-share-toggle-label';
+
+        var sparkles = createShareSparkleLayer();
 
         var knob = document.createElement('span');
         knob.className = 'neko-share-toggle-knob';
         knob.setAttribute('aria-hidden', 'true');
 
-        button.appendChild(fill);
-        button.appendChild(goal);
+        button.appendChild(wave);
         button.appendChild(label);
+        button.appendChild(sparkles);
         button.appendChild(knob);
 
         function shareLabel() { return window.t ? window.t('buttons.screenShare') : 'Screen Share'; }
         function stopLabel() { return window.t ? window.t('voiceControl.stopShare') : 'Stop Sharing'; }
 
-        var pixelFx = createSharePixelFx(fill);
+        var waveFx = createShareWaveFx(button);
+        button._nekoShareFxCleanup = waveFx.cleanup;
         button._nekoSetShareActive = function (active, instant) {
-            label.textContent = active ? stopLabel() : shareLabel();
+            var accessibleLabel = active ? stopLabel() : shareLabel();
+            label.textContent = accessibleLabel;
+            button.title = accessibleLabel;
+            button.setAttribute('aria-label', accessibleLabel);
             button.setAttribute('aria-pressed', active ? 'true' : 'false');
             if (button._nekoShareActive === active) return;
             button._nekoShareActive = active;
             if (active) {
-                button.classList.add('is-active');
-                pixelFx.activate(!!instant);
+                waveFx.activate(!!instant);
             } else {
-                // 反向溶解期间保持画布可见，结束后再隐藏
-                pixelFx.deactivate(!!instant, function () {
-                    if (!button._nekoShareActive) button.classList.remove('is-active');
-                });
-                if (instant) button.classList.remove('is-active');
+                waveFx.deactivate(!!instant);
             }
         };
 
+        var shareToggleOperationGeneration = 0;
+
+        function setShareToggleBusy(busy) {
+            button._nekoShareBusy = busy;
+            if (busy) {
+                button.classList.add('is-busy');
+                button.setAttribute('aria-busy', 'true');
+            } else {
+                button.classList.remove('is-busy');
+                button.setAttribute('aria-busy', 'false');
+            }
+        }
+
+        function finishShareToggleOperation(generation) {
+            // A cancelled browser picker can settle after a replacement start.
+            // Its old finally must not clear the replacement operation's state.
+            if (shareToggleOperationGeneration !== generation) return;
+            setShareToggleBusy(false);
+            syncShareToggleButtons(false);
+        }
+
         async function handleToggleClick(event) {
             event.stopPropagation();
+            var startPending = typeof window.isScreenSharingStartPending === 'function'
+                && window.isScreenSharingStartPending();
+            if (startPending && typeof window.stopScreenSharing === 'function') {
+                if (button._nekoShareCancelBusy) return;
+                var cancelGeneration = ++shareToggleOperationGeneration;
+                button._nekoShareCancelBusy = true;
+                setShareToggleBusy(true);
+                try {
+                    await window.stopScreenSharing();
+                } catch (e) {
+                    console.warn('[屏幕共享开关] 取消待处理启动失败:', e);
+                } finally {
+                    if (shareToggleOperationGeneration === cancelGeneration) {
+                        button._nekoShareCancelBusy = false;
+                    }
+                    finishShareToggleOperation(cancelGeneration);
+                }
+                return;
+            }
             if (button._nekoShareBusy) return;
             var active = isScreenShareActive();
             console.log('[屏幕共享开关] 点击, 当前状态:', active ? '共享中' : '未共享', ', 语音会话:', !!window.isRecording);
-            if (active) {
-                // 开启状态下每次点击都重播一次开启时的像素扫过动画
-                pixelFx.replay();
-            }
-            button._nekoShareBusy = true;
-            button.classList.add('is-busy');
+            var operationGeneration = ++shareToggleOperationGeneration;
+            setShareToggleBusy(true);
             try {
                 if (active && typeof window.stopScreenSharing === 'function') {
                     await window.stopScreenSharing();
@@ -476,21 +474,13 @@
                     await window.startScreenSharing();
                 }
             } finally {
-                button._nekoShareBusy = false;
-                button.classList.remove('is-busy');
-                syncShareToggleButtons(false);
+                finishShareToggleOperation(operationGeneration);
             }
         }
 
         button.addEventListener('click', handleToggleClick);
-        button.addEventListener('keydown', function (event) {
-            if (event.key === 'Enter' || event.key === ' ') {
-                event.preventDefault();
-                handleToggleClick(event);
-            }
-        });
 
-        shareToggleButtonRegistry = shareToggleButtonRegistry.filter(function (btn) { return btn.isConnected; });
+        pruneShareToggleButtons();
         shareToggleButtonRegistry.push(button);
         // 每次重新显示（弹窗重渲染）时，若共享处于开启状态则重播一次开启动画；未开启则直接落位
         button._nekoSetShareActive(isScreenShareActive(), !isScreenShareActive());
@@ -840,7 +830,7 @@
     // ======================== 麦克风设备选择 ========================
 
     async function selectMicrophone(deviceId) {
-        S.selectedMicrophoneId = deviceId;
+        setSelectedMicrophoneId(deviceId);
 
         // 获取设备名称用于状态提示
         let deviceName = '系统默认麦克风';
@@ -940,7 +930,28 @@
                 }
 
                 if (wasRecording) {
-                    await startMicCapture();
+                    while (true) {
+                        const selectionGenerationForRestart = microphoneSelectionGeneration;
+                        // startMicCapture claims the next generation
+                        // synchronously, before its first await. If anything
+                        // else advances the counter, a stop/takeover occurred
+                        // and this switch must not reopen the microphone.
+                        const expectedRestartGeneration = micStartGeneration + 1;
+                        const microphoneStarted = await startMicCapture();
+                        if (microphoneStarted === true) {
+                            break;
+                        }
+                        const latestSelectionNeedsRetry = (
+                            microphoneSelectionGeneration !== selectionGenerationForRestart
+                            && micStartGeneration === expectedRestartGeneration
+                            && S.voiceInputRouteBlocked !== true
+                        );
+                        if (!latestSelectionNeedsRetry) {
+                            console.log('[App] microphone switch restart was cancelled before commit');
+                            return;
+                        }
+                        console.log('[App] microphone selection changed while opening; retrying the latest device');
+                    }
 
                     // 重启屏幕共享（如果之前正在共享）
                     if (shouldRestartScreening) {
@@ -1083,11 +1094,11 @@
         try {
             const saved = localStorage.getItem('neko_selected_microphone');
             if (saved) {
-                S.selectedMicrophoneId = saved;
+                setSelectedMicrophoneId(saved);
                 console.log(`已加载麦克风设置: ${saved}`);
             }
         } catch (e) {
-            S.selectedMicrophoneId = null;
+            setSelectedMicrophoneId(null);
         }
     }
 
@@ -1132,13 +1143,13 @@
         try {
             localStorage.setItem('neko_noise_reduction', S.noiseReductionEnabled ? '1' : '0');
         } catch (e) { }
-        // 同步到后端 conversation-settings
+        // Route through the shared CAS client so cross-window toggles carry
+        // If-Match and reconcile 412 snapshots instead of bypassing ordering.
         try {
-            fetch('/api/config/conversation-settings', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ noiseReductionEnabled: S.noiseReductionEnabled })
-            });
+            if (window.appSettings
+                && typeof window.appSettings.saveSettings === 'function') {
+                window.appSettings.saveSettings();
+            }
         } catch (e) { }
     }
 
@@ -1283,7 +1294,12 @@
      * That is deliberate: this whole subsystem is fail-closed, and the only
      * consumer is startMicCapture below (the module export exists for tests).
      */
-    async function startAudioWorklet(mediaStream, startToken) {
+    async function startAudioWorklet(
+        mediaStream,
+        startToken,
+        selectedMicrophoneIdAtStart,
+        microphoneSelectionGenerationAtStart
+    ) {
         // Entry gate, before ANY shared state is touched. An attempt can be
         // superseded while it is still in startMicCapture's getUserMedia (a
         // cold device open is slow; the newer attempt hits a warm one and
@@ -1294,7 +1310,12 @@
         // and a microphone that has stopped producing, while the UI still says
         // recording. Nothing has been allocated yet at this point, so bailing
         // costs only this attempt's own device handle.
-        if (startToken !== micStartGeneration || S.voiceInputRouteBlocked === true) {
+        if (
+            startToken !== micStartGeneration
+            || S.voiceInputRouteBlocked === true
+            || S.selectedMicrophoneId !== selectedMicrophoneIdAtStart
+            || microphoneSelectionGeneration !== microphoneSelectionGenerationAtStart
+        ) {
             console.log('[App] microphone start was superseded before opening; unwinding');
             try {
                 if (mediaStream && typeof mediaStream.getTracks === 'function') {
@@ -1547,7 +1568,12 @@
             // stopRecording() early-returned and could not prevent this. Unwind
             // instead of committing: without this the pending start re-claims a
             // lease the backend just revoked and feeds a blocked route.
-            if (startToken !== micStartGeneration || S.voiceInputRouteBlocked === true) {
+            if (
+                startToken !== micStartGeneration
+                || S.voiceInputRouteBlocked === true
+                || S.selectedMicrophoneId !== selectedMicrophoneIdAtStart
+                || microphoneSelectionGeneration !== microphoneSelectionGenerationAtStart
+            ) {
                 console.log('[App] microphone start was superseded while opening; unwinding');
                 // Nothing above was published, so this tears down ONLY what
                 // this attempt built. There is no re-entrancy guard on
@@ -1671,6 +1697,173 @@
         refreshMicLease();
     }
 
+    function stopMicrophoneStreamTracks(stream) {
+        try {
+            if (stream && typeof stream.getTracks === 'function') {
+                stream.getTracks().forEach(track => track.stop());
+            }
+        } catch (_) {
+            // best-effort teardown
+        }
+    }
+
+    function hasLiveMicrophoneTrack(stream) {
+        if (!stream || typeof stream.getAudioTracks !== 'function') {
+            return false;
+        }
+        return stream.getAudioTracks().some(track => track && track.readyState !== 'ended');
+    }
+
+    function hasLiveCommittedMicrophonePipeline() {
+        return (
+            S.isRecording === true
+            && S.voiceInputRouteBlocked !== true
+            && hasLiveMicrophoneTrack(S.stream)
+            && !!S.audioContext
+            && S.audioContext.state !== 'closed'
+            && !!S.workletNode
+        );
+    }
+
+    async function requestUsableMicrophoneStream(constraints) {
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        if (hasLiveMicrophoneTrack(stream)) {
+            return stream;
+        }
+
+        stopMicrophoneStreamTracks(stream);
+        const error = new Error(
+            window.t ? window.t('app.micAccessDenied') : 'Cannot access microphone'
+        );
+        error.name = 'NotReadableError';
+        throw error;
+    }
+
+    function isSelectedMicrophoneFallbackEligibleError(error) {
+        const errorName = error && error.name;
+        return (
+            errorName === 'NotFoundError'
+            || errorName === 'OverconstrainedError'
+            || errorName === 'NotReadableError'
+        );
+    }
+
+    function applySystemDefaultMicrophoneSelection() {
+        setSelectedMicrophoneId(null);
+        updateMicListSelection();
+
+        const defaultLabel = window.t
+            ? window.t('microphone.defaultDevice')
+            : 'System Default Microphone';
+        document.querySelectorAll('[data-neko-mic-action="device"] .neko-mic-action-sub-label').forEach(labelEl => {
+            labelEl.textContent = defaultLabel;
+        });
+
+        // localStorage is updated synchronously before saveSelectedMicrophone's
+        // network await. The backend write is best-effort and must not delay an
+        // already-open default microphone stream.
+        void saveSelectedMicrophone(null);
+    }
+
+    async function openMicrophoneStreamWithFallback(
+        baseAudioConstraints,
+        micStartToken,
+        selectedMicrophoneId,
+        microphoneSelectionGenerationAtStart
+    ) {
+        const defaultConstraints = { audio: baseAudioConstraints };
+        const startStillOwnsMicrophoneRequest = () => (
+            micStartToken === micStartGeneration
+            && S.voiceInputRouteBlocked !== true
+            && S.selectedMicrophoneId === selectedMicrophoneId
+            && microphoneSelectionGeneration === microphoneSelectionGenerationAtStart
+        );
+        const cancelledOpenResult = () => ({
+            stream: null,
+            fallbackFromMicrophoneId: null,
+            cancelled: true
+        });
+        const requestOwnedMicrophoneStream = async (constraints) => {
+            try {
+                const stream = await requestUsableMicrophoneStream(constraints);
+                if (!startStillOwnsMicrophoneRequest()) {
+                    stopMicrophoneStreamTracks(stream);
+                    return null;
+                }
+                return stream;
+            } catch (error) {
+                if (!startStillOwnsMicrophoneRequest()) {
+                    return null;
+                }
+                throw error;
+            }
+        };
+
+        if (!selectedMicrophoneId) {
+            const defaultStream = await requestOwnedMicrophoneStream(defaultConstraints);
+            if (!defaultStream) {
+                return cancelledOpenResult();
+            }
+            return {
+                stream: defaultStream,
+                fallbackFromMicrophoneId: null
+            };
+        }
+
+        try {
+            const selectedStream = await requestOwnedMicrophoneStream({
+                audio: {
+                    ...baseAudioConstraints,
+                    deviceId: { exact: selectedMicrophoneId }
+                }
+            });
+            if (!selectedStream) {
+                return cancelledOpenResult();
+            }
+            return {
+                stream: selectedStream,
+                fallbackFromMicrophoneId: null
+            };
+        } catch (selectedMicrophoneError) {
+            // A superseded/blocked attempt must not change the user's saved
+            // device choice or open another hardware device.
+            if (
+                micStartToken !== micStartGeneration
+                || S.voiceInputRouteBlocked === true
+                || S.selectedMicrophoneId !== selectedMicrophoneId
+                || microphoneSelectionGeneration !== microphoneSelectionGenerationAtStart
+            ) {
+                return cancelledOpenResult();
+            }
+
+            // Permission, security-context, abort and programming errors apply
+            // to the capture request itself, not just the selected device.
+            // Retrying those against the default device would prompt/open
+            // unnecessarily and could erase a still-valid saved selection.
+            if (!isSelectedMicrophoneFallbackEligibleError(selectedMicrophoneError)) {
+                throw selectedMicrophoneError;
+            }
+
+            console.warn(
+                '[App] selected microphone unavailable; trying the system default microphone',
+                selectedMicrophoneError
+            );
+
+            const fallbackStream = await requestOwnedMicrophoneStream(defaultConstraints);
+            if (!fallbackStream) {
+                return cancelledOpenResult();
+            }
+
+            // Commit the selection change and notification only after the
+            // worklet pipeline also commits. Otherwise an important fallback
+            // toast could hide a later, more accurate setup error.
+            return {
+                stream: fallbackStream,
+                fallbackFromMicrophoneId: selectedMicrophoneId
+            };
+        }
+    }
+
     async function startMicCapture() {
         // Refuse to open the hardware microphone onto a route the backend has
         // already fail-closed. This is THE guard that closes the startup-failure
@@ -1686,7 +1879,7 @@
         // the mic on a dead route, and one guard covers all five.
         if (S.voiceInputRouteBlocked === true) {
             console.log('[App] voice route is fail-closed; refusing to open the microphone');
-            return;
+            return false;
         }
         // Claim this attempt BEFORE the first await. Anything that invalidates
         // pending starts from here on makes the commit at the end of
@@ -1741,12 +1934,6 @@
                 channelCount: 1
             };
 
-            const constraints = {
-                audio: S.selectedMicrophoneId
-                    ? { ...baseAudioConstraints, deviceId: { exact: S.selectedMicrophoneId } }
-                    : baseAudioConstraints
-            };
-
             // Attempt-local, for the same reason the audio graph is: publishing
             // the stream here put it OUTSIDE the single publish point in
             // startAudioWorklet, and this write lands after an await, so it is
@@ -1759,7 +1946,41 @@
             // for the life of the page, and the `S.stream && S.audioContext &&
             // S.workletNode` liveness probes read dead against a live pipeline
             // and open a second microphone on top of it.
-            ownStream = await navigator.mediaDevices.getUserMedia(constraints);
+            const selectedMicrophoneIdAtStart = S.selectedMicrophoneId;
+            const microphoneSelectionGenerationAtStart = microphoneSelectionGeneration;
+            const microphoneOpenResult = await openMicrophoneStreamWithFallback(
+                baseAudioConstraints,
+                micStartToken,
+                selectedMicrophoneIdAtStart,
+                microphoneSelectionGenerationAtStart
+            );
+            if (microphoneOpenResult.cancelled === true) {
+                // A newer attempt can commit while this one is still awaiting
+                // getUserMedia. Its pipeline and UI are shared globals, so the
+                // late loser must report the live winner instead of painting
+                // "not recording" over it.
+                if (hasLiveCommittedMicrophonePipeline()) {
+                    return true;
+                }
+                S.isRecording = false;
+                window.isRecording = false;
+                if (_mic) {
+                    _mic.classList.remove('recording');
+                    _mic.classList.remove('active');
+                }
+                const cancelledTextInputArea = document.getElementById('text-input-area');
+                if (cancelledTextInputArea) {
+                    cancelledTextInputArea.classList.remove('hidden');
+                }
+                if (typeof window.syncVoiceChatComposerHidden === 'function') {
+                    window.syncVoiceChatComposerHidden(false);
+                }
+                if (typeof window.syncFloatingMicButtonState === 'function') {
+                    window.syncFloatingMicButtonState(false);
+                }
+                return false;
+            }
+            ownStream = microphoneOpenResult.stream;
 
             // 检查音频轨道状态
             const audioTracks = ownStream.getAudioTracks();
@@ -1787,7 +2008,12 @@
                 throw new Error('没有可用的音频轨道');
             }
 
-            const micStartCommitted = await startAudioWorklet(ownStream, micStartToken);
+            const micStartCommitted = await startAudioWorklet(
+                ownStream,
+                micStartToken,
+                selectedMicrophoneIdAtStart,
+                microphoneSelectionGenerationAtStart
+            );
             if (!micStartCommitted) {
                 // Superseded or fail-closed while opening: the hardware is
                 // already torn down, so restore the pre-start UI and leave
@@ -1798,9 +2024,11 @@
                 // global, same as the S.* fields the unwind is careful about,
                 // and painting "not recording" over a window that is recording
                 // is the display-plane half of the same bug.
-                if (S.isRecording === true) {
-                    return;
+                if (hasLiveCommittedMicrophonePipeline()) {
+                    return true;
                 }
+                S.isRecording = false;
+                window.isRecording = false;
                 if (_mic) {
                     _mic.classList.remove('recording');
                     _mic.classList.remove('active');
@@ -1815,7 +2043,25 @@
                 if (typeof window.syncFloatingMicButtonState === 'function') {
                     window.syncFloatingMicButtonState(false);
                 }
-                return;
+                // A normal cancellation has no device/worklet error to
+                // propagate, but the outer voice starter must distinguish it
+                // from a committed capture before publishing session success.
+                return false;
+            }
+            if (
+                microphoneOpenResult.fallbackFromMicrophoneId
+                && S.selectedMicrophoneId === microphoneOpenResult.fallbackFromMicrophoneId
+            ) {
+                applySystemDefaultMicrophoneSelection();
+                if (typeof window.showStatusToast === 'function') {
+                    window.showStatusToast(
+                        window.t
+                            ? window.t('app.microphoneFallbackToDefault')
+                            : '所选麦克风无法使用，已自动切换到系统默认麦克风',
+                        6000,
+                        { important: true }
+                    );
+                }
             }
             if (S.gameVoiceSttGateActive) {
                 startGameVoiceSttGate();
@@ -1843,6 +2089,7 @@
             if (typeof window.stopProactiveChatSchedule === 'function') {
                 window.stopProactiveChatSchedule();
             }
+            return true;
         } catch (err) {
             console.error(window.t('console.getMicrophonePermissionFailed'), err);
             // A worklet setup failure already showed its own, more accurate
@@ -2386,6 +2633,8 @@
 
     var micPermissionGranted = false;
     var cachedMicDevices = null;
+    var disposeVoiceRecognitionPopover = null;
+    var voiceRecognitionPopoverRenderGeneration = 0;
 
     function ensureMicPopupScrollbarStyle() {
         if (document.getElementById('neko-mic-popup-scrollbar-style')) return;
@@ -2503,6 +2752,13 @@
     window.renderFloatingMicList = async function (popupArg) {
         var micPopup = popupArg || document.getElementById('live2d-popup-mic') || document.getElementById('vrm-popup-mic') || document.getElementById('mmd-popup-mic');
         if (!micPopup) return false;
+        var renderGeneration = ++voiceRecognitionPopoverRenderGeneration;
+        var coreApiCapabilityRefreshedAt = 0;
+        if (disposeVoiceRecognitionPopover) {
+            var previousDispose = disposeVoiceRecognitionPopover;
+            disposeVoiceRecognitionPopover = null;
+            previousDispose();
+        }
         var popupId = micPopup.id;
         var isPopupAvailable = function () {
             if (!micPopup || !micPopup.isConnected) return false;
@@ -2512,6 +2768,16 @@
         if (!isPopupAvailable()) return false;
 
         try {
+            if (typeof window.refreshCoreApiCapability === 'function') {
+                coreApiCapabilityRefreshedAt = Date.now();
+                // Capability is tri-state and null is deliberately fail-open.
+                // Refresh in the background so a slow config endpoint can
+                // never hold the microphone device list hostage; the helper's
+                // change event updates this panel when the response arrives.
+                Promise.resolve(
+                    window.refreshCoreApiCapability({ force: true })
+                ).catch(function () { /* refresh helper owns reporting */ });
+            }
             ensureMicPopupScrollbarStyle();
             micPopup.classList.add('neko-mic-popup-surface');
             micPopup.style.minWidth = '220px';
@@ -2523,7 +2789,10 @@
             if (!audioInputs || audioInputs.length === 0 || !micPermissionGranted) {
                 audioInputs = await ensureMicrophonePermission();
             }
-            if (!isPopupAvailable()) return false;
+            if (
+                renderGeneration !== voiceRecognitionPopoverRenderGeneration
+                || !isPopupAvailable()
+            ) return false;
 if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 micPopup.__nekoMicScrollbarCleanup();
                 micPopup.__nekoMicScrollbarCleanup = null;
@@ -2738,149 +3007,443 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
             Object.assign(sep1.style, { height: '1px', backgroundColor: 'var(--neko-popup-separator)', margin: '8px 0' });
             leftColumn.appendChild(sep1);
 
-            // ===== 左栏 1.5. 降噪开关 =====
-            var nrContainer = document.createElement('div');
-            nrContainer.style.padding = '8px 12px';
+            // Voice recognition uses the same main-action/subwindow pipeline as
+            // screen sharing and microphone selection. The trigger is assembled
+            // with those actions after the shared helpers are defined below.
+            var asrSummary = null;
 
-            var nrRow = document.createElement('div');
-            Object.assign(nrRow.style, { display: 'flex', justifyContent: 'space-between', alignItems: 'center' });
-
-            var nrLabel = document.createElement('span');
-            nrLabel.textContent = window.t ? window.t('microphone.noiseReduction') : '降噪';
-            nrLabel.setAttribute('data-i18n', 'microphone.noiseReduction');
-            Object.assign(nrLabel.style, { fontSize: '13px', color: 'var(--neko-popup-text)', fontWeight: '500' });
-
-            var nrToggle = document.createElement('label');
-            Object.assign(nrToggle.style, { position: 'relative', display: 'inline-block', width: '36px', height: '20px', flexShrink: '0' });
-            var nrInput = document.createElement('input');
-            nrInput.type = 'checkbox';
-            nrInput.checked = S.noiseReductionEnabled;
-            Object.assign(nrInput.style, { opacity: '0', width: '0', height: '0' });
-            var nrSlider = document.createElement('span');
-            Object.assign(nrSlider.style, { position: 'absolute', cursor: 'pointer', top: '0', left: '0', right: '0', bottom: '0', backgroundColor: S.noiseReductionEnabled ? '#4f8cff' : '#ccc', borderRadius: '10px', transition: 'background-color 0.2s' });
-            var nrKnob = document.createElement('span');
-            Object.assign(nrKnob.style, { position: 'absolute', content: '""', height: '16px', width: '16px', left: S.noiseReductionEnabled ? '18px' : '2px', bottom: '2px', backgroundColor: 'white', borderRadius: '50%', transition: 'left 0.2s' });
-            nrSlider.appendChild(nrKnob);
-            nrToggle.appendChild(nrInput);
-            nrToggle.appendChild(nrSlider);
-
-            nrInput.addEventListener('change', function () {
-                S.noiseReductionEnabled = nrInput.checked;
-                nrSlider.style.backgroundColor = nrInput.checked ? '#4f8cff' : '#ccc';
-                nrKnob.style.left = nrInput.checked ? '18px' : '2px';
-                saveNoiseReductionSetting();
-            });
-
-            nrRow.appendChild(nrLabel);
-            nrRow.appendChild(nrToggle);
-            nrContainer.appendChild(nrRow);
-
-            var nrHint = document.createElement('div');
-            nrHint.textContent = window.t ? window.t('microphone.noiseReductionHint') : 'RNNoise AI 降噪';
-            nrHint.setAttribute('data-i18n', 'microphone.noiseReductionHint');
-            Object.assign(nrHint.style, { fontSize: '11px', color: 'var(--neko-popup-text-sub)', marginTop: '6px' });
-            nrContainer.appendChild(nrHint);
-            leftColumn.appendChild(nrContainer);
-
-            // ===== 独立 ASR 开关（下次语音 session 生效） =====
-            var asrContainer = document.createElement('div');
-            asrContainer.style.padding = '8px 12px';
-
-            var asrRow = document.createElement('div');
-            Object.assign(asrRow.style, { display: 'flex', justifyContent: 'space-between', alignItems: 'center' });
-
-            var asrLabel = document.createElement('span');
-            asrLabel.textContent = window.t ? window.t('microphone.independentAsr') : 'Independent ASR';
-            asrLabel.setAttribute('data-i18n', 'microphone.independentAsr');
-            Object.assign(asrLabel.style, { fontSize: '13px', color: 'var(--neko-popup-text)', fontWeight: '500' });
-
-            var asrToggle = document.createElement('label');
-            Object.assign(asrToggle.style, { position: 'relative', display: 'inline-block', width: '36px', height: '20px', flexShrink: '0' });
-            var asrInput = document.createElement('input');
-            asrInput.type = 'checkbox';
-            asrInput.checked = S.independentAsrEnabled === true;
-            Object.assign(asrInput.style, { opacity: '0', width: '0', height: '0' });
-            var asrSlider = document.createElement('span');
-            Object.assign(asrSlider.style, { position: 'absolute', cursor: 'pointer', top: '0', left: '0', right: '0', bottom: '0', backgroundColor: asrInput.checked ? '#4f8cff' : '#ccc', borderRadius: '10px', transition: 'background-color 0.2s' });
-            var asrKnob = document.createElement('span');
-            Object.assign(asrKnob.style, { position: 'absolute', content: '""', height: '16px', width: '16px', left: asrInput.checked ? '18px' : '2px', bottom: '2px', backgroundColor: 'white', borderRadius: '50%', transition: 'left 0.2s' });
-            asrSlider.appendChild(asrKnob);
-            asrToggle.appendChild(asrInput);
-            asrToggle.appendChild(asrSlider);
-
-            function renderAsrHint() {
-                if (!asrHint) return;
-                var hintKey = S.independentAsrActive
-                    ? 'microphone.independentAsrActive'
-                    : (S.independentAsrEnabled ? 'microphone.independentAsrNextSession' : 'microphone.independentAsrNative');
-                var hintParams = { providerKey: S.independentAsrProvider || 'unknown' };
-                asrHint.setAttribute('data-i18n', hintKey);
-                asrHint.setAttribute('data-i18n-params', JSON.stringify(hintParams));
-                asrHint.textContent = window.t
-                    ? window.t(hintKey, hintParams)
-                    : (S.independentAsrActive ? 'Independent ASR active' : (S.independentAsrEnabled ? 'Takes effect next voice session' : 'Using Omni native recognition'));
+            function createVoiceSettingToggle(checked, onChange) {
+                var focusStyle = document.getElementById(
+                    'neko-voice-setting-toggle-focus-style'
+                );
+                if (!focusStyle) {
+                    focusStyle = document.createElement('style');
+                    focusStyle.id = 'neko-voice-setting-toggle-focus-style';
+                    focusStyle.textContent = [
+                        '.neko-voice-setting-toggle-input:focus-visible',
+                        '+ .neko-voice-setting-toggle-slider{',
+                        'box-shadow:0 0 0 2px #4f8cff;',
+                        '}'
+                    ].join('');
+                    document.head.appendChild(focusStyle);
+                }
+                var toggle = document.createElement('label');
+                Object.assign(toggle.style, {
+                    position: 'relative',
+                    display: 'inline-block',
+                    width: '36px',
+                    height: '20px',
+                    flexShrink: '0',
+                    cursor: 'pointer'
+                });
+                var input = document.createElement('input');
+                input.className = 'neko-voice-setting-toggle-input';
+                input.type = 'checkbox';
+                input.checked = checked;
+                Object.assign(input.style, {
+                    position: 'absolute',
+                    inset: '0',
+                    width: '100%',
+                    height: '100%',
+                    margin: '0',
+                    opacity: '0',
+                    cursor: 'pointer',
+                    zIndex: '2'
+                });
+                var slider = document.createElement('span');
+                slider.className = 'neko-voice-setting-toggle-slider';
+                Object.assign(slider.style, {
+                    position: 'absolute',
+                    inset: '0',
+                    backgroundColor: checked ? '#4f8cff' : '#9aa0a6',
+                    borderRadius: '10px',
+                    transition: 'background-color 0.2s'
+                });
+                var knob = document.createElement('span');
+                Object.assign(knob.style, {
+                    position: 'absolute',
+                    height: '16px',
+                    width: '16px',
+                    left: checked ? '18px' : '2px',
+                    bottom: '2px',
+                    backgroundColor: 'white',
+                    borderRadius: '50%',
+                    transition: 'left 0.2s'
+                });
+                slider.appendChild(knob);
+                toggle.appendChild(input);
+                toggle.appendChild(slider);
+                toggle.addEventListener('click', function (event) {
+                    event.stopPropagation();
+                });
+                toggle.addEventListener('pointerup', function (event) {
+                    event.stopPropagation();
+                });
+                input.addEventListener('change', function () {
+                    slider.style.backgroundColor = input.checked
+                        ? '#4f8cff'
+                        : '#9aa0a6';
+                    knob.style.left = input.checked ? '18px' : '2px';
+                    onChange(input.checked);
+                });
+                return {
+                    element: toggle,
+                    input: input,
+                    setDisabled: function (disabled) {
+                        input.disabled = disabled;
+                        toggle.style.cursor = disabled ? 'not-allowed' : 'pointer';
+                        input.style.cursor = disabled ? 'not-allowed' : 'pointer';
+                        toggle.style.opacity = disabled ? '0.5' : '1';
+                    },
+                    setChecked: function (value) {
+                        input.checked = value;
+                        slider.style.backgroundColor = value
+                            ? '#4f8cff'
+                            : '#9aa0a6';
+                        knob.style.left = value ? '18px' : '2px';
+                    }
+                };
             }
 
-            asrInput.addEventListener('change', function () {
-                S.independentAsrEnabled = asrInput.checked;
-                asrSlider.style.backgroundColor = asrInput.checked ? '#4f8cff' : '#ccc';
-                asrKnob.style.left = asrInput.checked ? '18px' : '2px';
-                // The confirmation text has to follow the switch it confirms.
-                renderAsrHint();
-                if (window.appSettings && typeof window.appSettings.saveSettings === 'function') {
-                    if (typeof window.appSettings.syncSettingsToServer === 'function') {
-                        // Session start reads the SERVER-persisted value (asr_runtime.py
-                        // _start_independent_asr_if_enabled -> aload_global_conversation_settings),
-                        // so the fire-and-forget POST inside saveSettings() can race a
-                        // mic start and silently keep the previous route. Persist
-                        // locally first, then run the POST ourselves and publish it as
-                        // S.pendingSettingsSyncPromise; ensureWebSocketOpen()
-                        // (app-websocket.js) awaits it before any start_session send.
-                        // userInitiated: true marks settings hydrated so the
-                        // start_session handshake stamps this explicit choice
-                        // even while the settings GET is failing.
-                        // syncSettingsToServer serializes its POSTs internally
-                        // and snapshots settings at send time, so flipping the
-                        // toggle twice quickly cannot let the older request
-                        // finish last and persist the stale value; the newer
-                        // promise published below also resolves only after any
-                        // predecessor POST completed.
-                        window.appSettings.saveSettings({ skipServerSync: true });
-                        var syncPromise = Promise.resolve(window.appSettings.syncSettingsToServer({ userInitiated: true }))
-                            .catch(function () { /* syncSettingsToServer already logs failures */ })
-                            .then(function () {
-                                if (S.pendingSettingsSyncPromise === syncPromise) {
-                                    S.pendingSettingsSyncPromise = null;
-                                }
-                            });
-                        S.pendingSettingsSyncPromise = syncPromise;
-                    } else {
-                        window.appSettings.saveSettings();
-                    }
+            function persistVoiceSettingChange() {
+                if (
+                    !window.appSettings
+                    || typeof window.appSettings.saveSettings !== 'function'
+                ) return;
+                if (typeof window.appSettings.syncSettingsToServer !== 'function') {
+                    window.appSettings.saveSettings();
+                    return;
                 }
+                // Preserve the existing session-start ownership fence: persist
+                // locally now, then expose the serialized server sync promise
+                // for ensureWebSocketOpen() to await before start_session.
+                window.appSettings.saveSettings({ skipServerSync: true });
+                var syncPromise = Promise.resolve(
+                    window.appSettings.syncSettingsToServer({ userInitiated: true })
+                )
+                    .catch(function () {
+                        // syncSettingsToServer owns failure reporting.
+                    })
+                    .then(function () {
+                        if (S.pendingSettingsSyncPromise === syncPromise) {
+                            S.pendingSettingsSyncPromise = null;
+                        }
+                    });
+                S.pendingSettingsSyncPromise = syncPromise;
+            }
+
+            function markVoiceSettingsPending(activeRouteSnapshot) {
+                var targetEpoch = (Number(S.voiceSessionStartEpoch) || 0) + 1;
+                if (
+                    activeRouteSnapshot !== undefined
+                    && (
+                        S.voiceSettingsPendingUntilEpoch !== targetEpoch
+                        || S.pendingVoiceRouteIndependentAsr === null
+                    )
+                ) {
+                    S.pendingVoiceRouteIndependentAsr = activeRouteSnapshot;
+                }
+                S.voiceSettingsPendingUntilEpoch = targetEpoch;
+            }
+
+            function coreApiDisablesIndependentAsr() {
+                return S.coreApiSupportsIndependentAsr === false;
+            }
+
+            var asrToggle = createVoiceSettingToggle(
+                !coreApiDisablesIndependentAsr()
+                    && S.independentAsrEnabled === true,
+                function (enabled) {
+                    // The disabled switch is an effective view only. Keep the
+                    // persisted preference untouched so switching back to a
+                    // capable Core restores the user's previous choice.
+                    if (coreApiDisablesIndependentAsr()) {
+                        updateVoiceRecognitionUi();
+                        return;
+                    }
+                    var activeRouteSnapshot = S.voiceChatActive === true
+                        ? (
+                            S.independentAsrActive === true
+                            || (
+                                S.voiceInputLifecycleState === 'blocked'
+                                && S.independentAsrEnabled === true
+                            )
+                        )
+                        : null;
+                    S.independentAsrEnabled = enabled;
+                    markVoiceSettingsPending(activeRouteSnapshot);
+                    updateVoiceRecognitionUi();
+                    persistVoiceSettingChange();
+                }
+            );
+            var voicePanelId = (popupId || 'neko-mic')
+                + '-voice-recognition-settings';
+            var voicePanel = null;
+            var voicePopupObserver = null;
+            var noiseToggle = null;
+            var optimizationToggle = null;
+            var optimizationHint = null;
+            var voiceStatus = null;
+
+            function providerDisplayName(provider) {
+                var value = String(provider || '').trim();
+                if (!value) return '';
+                var known = {
+                    qwen: 'Qwen',
+                    soniox: 'Soniox',
+                    glm: 'GLM',
+                    gemini: 'Gemini',
+                    openai: 'OpenAI',
+                    step: 'Step',
+                    grok: 'Grok'
+                };
+                return known[value.toLowerCase()] || value;
+            }
+
+            function appendVoicePanelSetting(
+                panelBody,
+                labelKey,
+                fallbackLabel,
+                hintKey,
+                fallbackHint,
+                toggle
+            ) {
+                var block = document.createElement('div');
+                block.style.marginBottom = '14px';
+                var row = document.createElement('div');
+                Object.assign(row.style, {
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    gap: '12px'
+                });
+                var label = document.createElement('span');
+                var settingId = (
+                    voicePanelId + '-' + labelKey
+                ).replace(/[^a-z0-9_-]+/gi, '-');
+                label.id = settingId + '-label';
+                label.textContent = window.t ? window.t(labelKey) : fallbackLabel;
+                label.setAttribute('data-i18n', labelKey);
+                Object.assign(label.style, {
+                    fontSize: '13px',
+                    fontWeight: '500'
+                });
+                row.appendChild(label);
+                row.appendChild(toggle.element);
+                var hint = document.createElement('div');
+                hint.id = settingId + '-hint';
+                hint.textContent = window.t ? window.t(hintKey) : fallbackHint;
+                hint.setAttribute('data-i18n', hintKey);
+                Object.assign(hint.style, {
+                    fontSize: '11px',
+                    color: 'var(--neko-popup-text-sub)',
+                    marginTop: '5px',
+                    lineHeight: '1.45'
+                });
+                block.appendChild(row);
+                block.appendChild(hint);
+                toggle.input.setAttribute('aria-labelledby', label.id);
+                toggle.input.setAttribute('aria-describedby', hint.id);
+                panelBody.appendChild(block);
+                return hint;
+            }
+
+            function updateVoiceRecognitionUi() {
+                var capabilityUnavailable = coreApiDisablesIndependentAsr();
+                var enabled = !capabilityUnavailable
+                    && S.independentAsrEnabled === true;
+                if (
+                    S.voiceSettingsPendingUntilEpoch !== null
+                    && (Number(S.voiceSessionStartEpoch) || 0)
+                        >= S.voiceSettingsPendingUntilEpoch
+                ) {
+                    S.voiceSettingsPendingUntilEpoch = null;
+                    S.pendingVoiceRouteIndependentAsr = null;
+                }
+                var summaryUsesIndependentAsr = capabilityUnavailable
+                    ? false
+                    : (
+                        S.voiceSettingsPendingUntilEpoch !== null
+                        && S.pendingVoiceRouteIndependentAsr !== null
+                            ? S.pendingVoiceRouteIndependentAsr
+                            : enabled
+                    );
+                var provider = providerDisplayName(S.independentAsrProvider);
+                var blocked = S.voiceInputLifecycleState === 'blocked';
+                asrToggle.setChecked(enabled);
+                asrToggle.setDisabled(capabilityUnavailable);
+                if (asrSummary) {
+                    asrSummary.textContent = summaryUsesIndependentAsr
+                        ? (
+                            window.t
+                                ? window.t(
+                                    provider
+                                        ? 'microphone.independentAsrSummary'
+                                        : 'microphone.independentAsrSummaryGeneric',
+                                    { provider: provider }
+                                )
+                                : ('独立 ASR' + (provider ? ' · ' + provider : ''))
+                        )
+                        : (
+                            window.t
+                                ? window.t('microphone.voiceRecognitionDisabled')
+                                : '当前使用 Omni 原生语音识别'
+                        );
+                }
+                if (
+                    !voicePanel
+                    || !voicePanel.isConnected
+                    || !noiseToggle
+                    || !optimizationToggle
+                    || !optimizationHint
+                    || !voiceStatus
+                ) return;
+                // RNNoise is local PCM preprocessing shared by both the
+                // independent-ASR and Omni-native routes.
+                noiseToggle.setDisabled(false);
+                optimizationToggle.setDisabled(!enabled);
+                if (capabilityUnavailable) {
+                    voiceStatus.textContent = window.t
+                        ? window.t('microphone.voiceRecognitionNativeCoreHint')
+                        : '当前核心使用免费API；独立 ASR 相关开关不适用';
+                } else if (S.voiceSettingsPendingUntilEpoch !== null) {
+                    voiceStatus.textContent = window.t
+                        ? window.t('microphone.voiceRecognitionSettingsPending')
+                        : '◐ 设置将在下次语音会话生效';
+                } else if (!enabled) {
+                    voiceStatus.textContent = window.t
+                        ? window.t('microphone.voiceRecognitionDisabledHint')
+                        : '独立 ASR 已关闭；语音输入使用 Omni 原生语音识别';
+                } else if (blocked) {
+                    voiceStatus.textContent = window.t
+                        ? window.t('microphone.voiceRecognitionUnavailable')
+                        : '本次独立语音识别已停止，不会切换到其他 Provider 或 Omni';
+                } else if (S.independentAsrActive) {
+                    voiceStatus.textContent = window.t
+                        ? window.t('microphone.voiceRecognitionStatusReady')
+                        : '● 当前运行正常';
+                } else {
+                    voiceStatus.textContent = window.t
+                        ? window.t('microphone.voiceRecognitionSettingsPending')
+                        : '◐ 设置将在下次语音会话生效';
+                }
+                var optimizationEnabled = !capabilityUnavailable
+                    && S.voiceInputResourceOptimizationEnabled !== false;
+                optimizationToggle.setChecked(optimizationEnabled);
+                optimizationHint.textContent = window.t
+                    ? window.t(
+                        capabilityUnavailable
+                            ? 'microphone.voiceRecognitionNativeCoreHint'
+                            : (
+                                optimizationEnabled
+                                    ? 'microphone.voiceResourceOptimizationHintOn'
+                                    : 'microphone.voiceResourceOptimizationHintOff'
+                            )
+                    )
+                    : (
+                        capabilityUnavailable
+                            ? '当前核心使用免费API；独立 ASR 相关开关不适用'
+                            : (
+                                optimizationEnabled
+                                    ? '空闲时减少连接和音频上传'
+                                    : '持续保持语音识别，可能增加网络和资源占用'
+                            )
+                    );
+            }
+
+            function onVoiceLifecycleChanged() {
+                updateVoiceRecognitionUi();
+            }
+
+            function onVoiceSessionStarted() {
+                if (
+                    S.voiceSettingsPendingUntilEpoch === null
+                    || (Number(S.voiceSessionStartEpoch) || 0)
+                        < S.voiceSettingsPendingUntilEpoch
+                ) return;
+                S.voiceSettingsPendingUntilEpoch = null;
+                S.pendingVoiceRouteIndependentAsr = null;
+                updateVoiceRecognitionUi();
+            }
+
+            function onVoiceSettingsPendingChanged() {
+                updateVoiceRecognitionUi();
+            }
+
+            function onCoreApiCapabilityChanged() {
+                updateVoiceRecognitionUi();
+            }
+
+            var voiceControlsDisposed = false;
+            var voiceWindowListeners = [];
+
+            function addVoiceWindowListener(type, listener) {
+                voiceWindowListeners.push([type, listener]);
+                window.addEventListener(type, listener);
+            }
+
+            function destroyVoiceRecognitionControls() {
+                if (voiceControlsDisposed) return;
+                voiceControlsDisposed = true;
+                if (voicePopupObserver) {
+                    voicePopupObserver.disconnect();
+                    voicePopupObserver = null;
+                }
+                voiceWindowListeners.forEach(function (entry) {
+                    window.removeEventListener(entry[0], entry[1]);
+                });
+                voiceWindowListeners = [];
+                // Tear down the shared action state as well as its DOM. This
+                // clears an old render's pending hover-collapse timer so it
+                // cannot remove a subwindow created by the next render.
+                closeMicSubwindow();
+                voicePanel = null;
+                noiseToggle = null;
+                optimizationToggle = null;
+                optimizationHint = null;
+                voiceStatus = null;
+                asrSummary = null;
+                if (
+                    disposeVoiceRecognitionPopover
+                    === destroyVoiceRecognitionControls
+                ) {
+                    disposeVoiceRecognitionPopover = null;
+                }
+            }
+
+            disposeVoiceRecognitionPopover = destroyVoiceRecognitionControls;
+            addVoiceWindowListener(
+                'voice-input-lifecycle-changed',
+                onVoiceLifecycleChanged
+            );
+            addVoiceWindowListener(
+                'neko:voice-session-started',
+                onVoiceSessionStarted
+            );
+            addVoiceWindowListener(
+                'neko:core-api-capability-changed',
+                onCoreApiCapabilityChanged
+            );
+            addVoiceWindowListener(
+                'neko:voice-settings-pending-changed',
+                onVoiceSettingsPendingChanged
+            );
+            voicePopupObserver = new MutationObserver(function () {
+                if (!isPopupAvailable()) destroyVoiceRecognitionControls();
             });
+            var popupAncestor = micPopup.parentNode;
+            while (popupAncestor) {
+                voicePopupObserver.observe(popupAncestor, {
+                    childList: true
+                });
+                popupAncestor = popupAncestor.parentNode;
+            }
+            voicePopupObserver.observe(micPopup, {
+                attributes: true,
+                attributeFilter: ['style', 'class']
+            });
+            updateVoiceRecognitionUi();
 
-            asrRow.appendChild(asrLabel);
-            asrRow.appendChild(asrToggle);
-            asrContainer.appendChild(asrRow);
-
-            var asrHint = document.createElement('div');
-            // Single renderer, called at build time AND from the toggle's change
-            // handler above (function declarations hoist, so it is reachable
-            // there). The hint used to be computed once here, so flipping the
-            // switch with the popup open left "Using Omni native speech
-            // recognition" on screen after enabling -- and the inverse stale
-            // text after disabling -- until the popup was rebuilt: the
-            // confirmation contradicted the choice the user had just made
-            // (Codex P2).
-            renderAsrHint();
-            Object.assign(asrHint.style, { fontSize: '11px', color: 'var(--neko-popup-text-sub)', marginTop: '6px' });
-            asrContainer.appendChild(asrHint);
-            leftColumn.appendChild(asrContainer);
-
-            var sep1b = document.createElement('div');
-            Object.assign(sep1b.style, { height: '1px', backgroundColor: 'var(--neko-popup-separator)', margin: '8px 0' });
-            leftColumn.appendChild(sep1b);
 
             // ===== 左栏 2. 麦克风增益 =====
             var gainContainer = document.createElement('div');
@@ -2999,6 +3562,10 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
             }
 
             function isMicActionHoverSurfaceActive() {
+                var hoveredActionRow = leftColumn.querySelector(
+                    '[data-neko-mic-main-action-row]:hover'
+                );
+                if (hoveredActionRow) return true;
                 var hoveredAction = leftColumn.querySelector('[data-neko-mic-main-action]:hover');
                 if (hoveredAction) return true;
                 var panel = getOwnedMicSubwindow();
@@ -3007,6 +3574,7 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
 
             function closeMicSubwindow() {
                 clearMicActionHoverCollapseTimer();
+                micActionHoverOpenGeneration += 1;
                 activeMicActionKey = null;
                 var ownerSelector = micPopup.id ? '[data-neko-sidepanel-owner="' + micPopup.id + '"]' : '.neko-mic-subwindow';
                 document.querySelectorAll(ownerSelector + '.neko-mic-subwindow').forEach(function (panel) {
@@ -3020,8 +3588,10 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                     micActionHoverCollapseTimer = null;
                     if (isMicActionHoverSurfaceActive()) return;
                     closeMicSubwindow();
-                    leftColumn.querySelectorAll('[data-neko-mic-main-action]').forEach(function (btn) {
-                        btn.style.background = 'transparent';
+                    leftColumn.querySelectorAll(
+                        '[data-neko-mic-main-action-row], [data-neko-mic-main-action]'
+                    ).forEach(function (surface) {
+                        surface.style.background = 'transparent';
                     });
                 }, MIC_ACTION_HOVER_COLLAPSE_MS);
             }
@@ -3129,13 +3699,15 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
 
                 var titleWrap = document.createElement('div');
                 Object.assign(titleWrap.style, { display: 'flex', alignItems: 'center', gap: '6px', minWidth: '0', color: '#4f8cff', fontSize: '13px', fontWeight: '600' });
-                var icon = document.createElement('span');
-                icon.textContent = iconText;
-                icon.style.fontSize = '14px';
                 var titleEl = document.createElement('span');
                 titleEl.textContent = title;
                 Object.assign(titleEl.style, { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' });
-                titleWrap.appendChild(icon);
+                if (iconText) {
+                    var icon = document.createElement('span');
+                    icon.textContent = iconText;
+                    icon.style.fontSize = '14px';
+                    titleWrap.appendChild(icon);
+                }
                 titleWrap.appendChild(titleEl);
 
                 var closeBtn = document.createElement('button');
@@ -3182,7 +3754,7 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 return panel;
             }
 
-            function createMainActionButton(iconText, label, subLabel, actionKey, onClick, hoverGuard) {
+            function createMainActionButton(iconText, label, subLabel, actionKey, onClick) {
                 var button = document.createElement('button');
                 button.type = 'button';
                 button.dataset.nekoMicMainAction = actionKey;
@@ -3203,17 +3775,15 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                     textAlign: 'left',
                     transition: 'background 0.2s ease'
                 });
-                var icon = document.createElement('span');
-                icon.textContent = iconText;
-                icon.style.fontSize = '15px';
                 var textWrap = document.createElement('span');
+                textWrap.className = 'neko-mic-action-text';
                 Object.assign(textWrap.style, { display: 'flex', flexDirection: 'column', minWidth: '0', width: '0', maxWidth: '100%', flex: '1 1 0%', overflow: 'hidden' });
                 var labelEl = document.createElement('span');
                 labelEl.textContent = label;
                 Object.assign(labelEl.style, { display: 'block', maxWidth: '100%', fontSize: '13px', fontWeight: '600', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' });
                 var subEl = document.createElement('span');
                 subEl.className = 'neko-mic-action-sub-label';
-                subEl.textContent = subLabel || '';
+                subEl.textContent = subLabel == null ? '' : String(subLabel);
                 Object.assign(subEl.style, { display: 'block', maxWidth: '100%', fontSize: '11px', color: 'var(--neko-popup-text-sub)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' });
                 // Match settings menu chevron (Chat Settings / Animation / Advanced).
                 var arrow = document.createElement('span');
@@ -3225,35 +3795,78 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                     flexShrink: '0'
                 });
                 textWrap.appendChild(labelEl);
-                if (subLabel) textWrap.appendChild(subEl);
-                button.appendChild(icon);
+                if (subLabel != null) textWrap.appendChild(subEl);
+                if (iconText) {
+                    var icon = document.createElement('span');
+                    icon.textContent = iconText;
+                    icon.style.fontSize = '15px';
+                    button.appendChild(icon);
+                }
                 button.appendChild(textWrap);
                 button.appendChild(arrow);
 
-                function openActionPanel() {
-                    // 悬停守卫：指针在内嵌开关（如屏幕共享开关）上时不展开子面板，避免干扰点击
-                    if (typeof hoverGuard === 'function' && hoverGuard()) {
-                        return Promise.resolve(null);
-                    }
-                    button.style.background = 'var(--neko-popup-hover)';
+                function actionSurface() {
+                    return button._nekoMicActionRow || button;
+                }
+
+                function openActionPanel(event) {
+                    actionSurface().style.background = 'var(--neko-popup-hover)';
                     return openMicActionPanel(actionKey, onClick).catch(function (error) {
                         console.error('[麦克风弹窗] 子窗口打开失败:', error);
                     });
                 }
 
                 // Hover-to-expand like settings side panels.
-                button.addEventListener('mouseenter', function () {
-                    openActionPanel();
+                button.addEventListener('mouseenter', function (event) {
+                    openActionPanel(event);
                 });
                 button.addEventListener('mouseleave', function () {
-                    button.style.background = 'transparent';
+                    // Shared rows own the full hover surface, including any
+                    // sibling toggle. Their mouseleave handler closes the panel.
+                    if (button._nekoMicActionRow) return;
+                    actionSurface().style.background = 'transparent';
                     scheduleMicActionHoverCollapse();
                 });
                 button.addEventListener('click', function (e) {
                     e.stopPropagation();
-                    openActionPanel();
+                    openActionPanel(e);
                 });
                 return button;
+            }
+
+            function createMainActionRow(actionButton, trailingControl) {
+                var row = document.createElement('div');
+                row.className = 'neko-mic-main-action-row';
+                row.dataset.nekoMicMainActionRow = actionButton.dataset.nekoMicMainAction;
+                Object.assign(row.style, {
+                    width: '100%',
+                    minWidth: '0',
+                    maxWidth: '100%',
+                    boxSizing: 'border-box',
+                    display: 'flex',
+                    alignItems: 'center',
+                    borderRadius: '6px',
+                    background: 'transparent',
+                    transition: 'background 0.2s ease'
+                });
+                actionButton._nekoMicActionRow = row;
+                actionButton.style.width = '0';
+                actionButton.style.flex = '1 1 0%';
+                row.appendChild(actionButton);
+                if (trailingControl) {
+                    var arrow = actionButton.lastElementChild;
+                    if (arrow) arrow.remove();
+                    trailingControl.style.marginRight = '10px';
+                    row.appendChild(trailingControl);
+                }
+                row.addEventListener('mouseenter', function () {
+                    clearMicActionHoverCollapseTimer();
+                });
+                row.addEventListener('mouseleave', function () {
+                    row.style.background = 'transparent';
+                    scheduleMicActionHoverCollapse();
+                });
+                return row;
             }
 
             function createMicDeviceOption(label, deviceId) {
@@ -3278,10 +3891,91 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 return option;
             }
 
+            function openVoiceRecognitionSubwindow() {
+                var panel = createMicSubwindow(
+                    window.t
+                        ? window.t('microphone.voiceRecognitionSettings')
+                        : '语音识别设置',
+                    null,
+                    '280px'
+                );
+                panel.id = voicePanelId;
+                panel.classList.add('neko-mic-voice-subwindow');
+                voicePanel = panel;
+                var panelBody = panel._nekoMicSubwindowBody || panel;
+
+                noiseToggle = createVoiceSettingToggle(
+                    S.noiseReductionEnabled === true,
+                    function (enabled) {
+                        S.noiseReductionEnabled = enabled;
+                        saveNoiseReductionSetting();
+                    }
+                );
+                appendVoicePanelSetting(
+                    panelBody,
+                    'microphone.noiseReduction',
+                    '降噪',
+                    'microphone.noiseReductionHint',
+                    '让输入语音更加清晰',
+                    noiseToggle
+                );
+
+                optimizationToggle = createVoiceSettingToggle(
+                    S.voiceInputResourceOptimizationEnabled !== false,
+                    function (enabled) {
+                        S.voiceInputResourceOptimizationEnabled = enabled;
+                        markVoiceSettingsPending();
+                        updateVoiceRecognitionUi();
+                        persistVoiceSettingChange();
+                    }
+                );
+                optimizationHint = appendVoicePanelSetting(
+                    panelBody,
+                    'microphone.voiceResourceOptimization',
+                    '智能资源优化',
+                    'microphone.voiceResourceOptimizationHintOn',
+                    '空闲时减少连接和音频上传',
+                    optimizationToggle
+                );
+
+                voiceStatus = document.createElement('div');
+                voiceStatus.className = 'neko-voice-recognition-status';
+                voiceStatus.setAttribute('role', 'status');
+                voiceStatus.setAttribute('aria-live', 'polite');
+                Object.assign(voiceStatus.style, {
+                    borderTop: '1px solid var(--neko-popup-separator)',
+                    paddingTop: '11px',
+                    fontSize: '11px',
+                    lineHeight: '1.45',
+                    color: 'var(--neko-popup-text-sub)'
+                });
+                panelBody.appendChild(voiceStatus);
+
+                updateVoiceRecognitionUi();
+                if (
+                    typeof window.refreshCoreApiCapability === 'function'
+                    && Date.now() - coreApiCapabilityRefreshedAt >= 1000
+                ) {
+                    var openedPanel = panel;
+                    Promise.resolve(
+                        window.refreshCoreApiCapability({ force: true })
+                    ).then(function () {
+                        coreApiCapabilityRefreshedAt = Date.now();
+                        if (
+                            voicePanel === openedPanel
+                            && openedPanel.isConnected
+                        ) updateVoiceRecognitionUi();
+                    }).catch(function () {
+                        // refreshCoreApiCapability owns failure reporting.
+                    });
+                }
+                return panel;
+            }
+
             async function openMicDeviceSubwindow() {
                 var panel = createMicSubwindow(
                     window.t ? window.t('microphone.deviceTitle') : 'Select Microphone',
-                    '\uD83C\uDFA4',
+                    null,
                     '280px'
                 );
                 panel.classList.add('neko-mic-device-subwindow');
@@ -3328,7 +4022,7 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
             async function openScreenSourceSubwindow() {
                 var panel = createMicSubwindow(
                     window.t ? window.t('buttons.screenShare') : 'Screen Share',
-                    '\uD83D\uDDA5\uFE0F',
+                    null,
                     '360px'
                 );
                 var panelBody = panel._nekoMicSubwindowBody || panel;
@@ -3358,43 +4052,59 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
             var screenButtonLabel = window.t ? window.t('buttons.screenShare') : 'Screen Share';
 
             var firstContent = leftColumn.firstChild;
-            // 悬停守卫：指针落在行内开关上时不展开屏幕源面板，避免面板弹出干扰点击开关
-            var shareToggleButtonHolder = { current: null };
-            function screenRowHoverGuard() {
-                var toggle = shareToggleButtonHolder.current;
-                return !!(toggle && toggle.matches(':hover'));
-            }
             var screenActionButton = createMainActionButton(
-                '\uD83D\uDDA5\uFE0F',
+                null,
                 screenButtonLabel,
                 window.t ? window.t('app.screenSource.screens') : 'Screens',
                 'screen',
-                openScreenSourceSubwindow,
-                screenRowHoverGuard
+                openScreenSourceSubwindow
             );
-            leftColumn.insertBefore(screenActionButton, firstContent);
-            // 合并为一行：行右侧嵌入迷你胶囊开关（替换原来的 chevron 箭头），
-            // 点击行其余位置仍展开屏幕源选择，点击开关本身开始/停止共享
             var shareToggleButton = createScreenShareToggleButton({ mini: true });
-            shareToggleButtonHolder.current = shareToggleButton;
-            screenActionButton.replaceChild(shareToggleButton, screenActionButton.lastChild);
+            var screenActionRow = createMainActionRow(
+                screenActionButton,
+                shareToggleButton
+            );
+            leftColumn.insertBefore(screenActionRow, firstContent);
+            // 主按钮展开屏幕源，右侧独立按钮开始/停止共享；二者共用行级悬停生命周期。
             // 屏幕共享行：标题允许换行显示（去掉省略号截断），
             // 保证葡语 "Compartilhamento de tela"、俄语 "Демонстрация экрана" 等长文案也能完整显示
-            var screenTextWrap = screenActionButton.children[1];
+            var screenTextWrap = screenActionButton.querySelector('.neko-mic-action-text');
             if (screenTextWrap && screenTextWrap.firstChild) {
                 screenTextWrap.firstChild.style.whiteSpace = 'normal';
                 screenTextWrap.firstChild.style.lineHeight = '1.2';
                 screenTextWrap.firstChild.style.overflow = 'visible';
             }
             var micActionButton = createMainActionButton(
-                '\uD83C\uDFA4',
+                null,
                 deviceButtonLabel,
                 currentMicLabel,
                 'device',
                 openMicDeviceSubwindow
             );
             micActionButton.dataset.nekoMicAction = 'device';
-            leftColumn.insertBefore(micActionButton, firstContent);
+            var micActionRow = createMainActionRow(micActionButton, null);
+            leftColumn.insertBefore(micActionRow, firstContent);
+
+            var voiceButtonLabel = window.t
+                ? window.t('microphone.independentAsr')
+                : '语音识别';
+            var asrActionButton = createMainActionButton(
+                null,
+                voiceButtonLabel,
+                '',
+                'voice-recognition',
+                openVoiceRecognitionSubwindow
+            );
+            asrToggle.input.setAttribute('aria-label', voiceButtonLabel);
+            asrSummary = asrActionButton.querySelector(
+                '.neko-mic-action-sub-label'
+            );
+            var asrActionRow = createMainActionRow(
+                asrActionButton,
+                asrToggle.element
+            );
+            leftColumn.insertBefore(asrActionRow, firstContent);
+            updateVoiceRecognitionUi();
 
             // 组装
             micPopup.appendChild(leftColumn);
@@ -3402,8 +4112,14 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
             startMicVolumeVisualization();
             return true;
         } catch (error) {
-            if (!isPopupAvailable()) return false;
+            if (
+                renderGeneration !== voiceRecognitionPopoverRenderGeneration
+                || !isPopupAvailable()
+            ) return false;
             console.error('渲染麦克风列表失败:', error);
+            if (disposeVoiceRecognitionPopover) {
+                disposeVoiceRecognitionPopover();
+            }
             micPopup.innerHTML = '';
             var errorItem = document.createElement('div');
             errorItem.textContent = window.t ? window.t('microphone.loadFailed') : '获取麦克风列表失败';

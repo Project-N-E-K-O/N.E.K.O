@@ -1,16 +1,23 @@
 from __future__ import annotations
 
+import ast
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from plugin.plugins.neko_live.modules.twitch_identity import TwitchIdentityModule
+from plugin.plugins.neko_live.modules import twitch_live_ingest as twitch_ingest_module
 from plugin.plugins.neko_live.modules.twitch_live_ingest import TwitchLiveIngestModule
 from plugin.plugins.neko_live.modules.twitch_live_ingest.helix import lookup_channel_status
 from plugin.plugins.neko_live.modules.twitch_live_ingest import projection as twitch_projection
 from plugin.plugins.neko_live.modules.twitch_live_ingest.projection import project_chat_message
-from plugin.plugins.neko_live.modules.live_events.provider_event import event_support_fields
+from plugin.plugins.neko_live.modules.live_events.provider_event import (
+    event_provider_event_id,
+    event_support_fields,
+)
+from plugin.plugins.neko_live.core.runtime_live_session import event_live_session_generation
 
 
 class _AsyncItems:
@@ -23,6 +30,22 @@ class _AsyncItems:
                 yield item
 
         return iterate()
+
+
+def test_twitchio_and_client_implementation_are_not_imported_at_provider_module_load():
+    tree = ast.parse(Path(twitch_ingest_module.__file__).read_text(encoding="utf-8"))
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            assert all(not alias.name.startswith("twitchio") for alias in node.names)
+        if isinstance(node, ast.ImportFrom):
+            assert not (node.module or "").startswith("twitchio")
+            assert not (
+                node.level == 1
+                and (
+                    node.module == "twitch_client"
+                    or any(alias.name == "twitch_client" for alias in node.names)
+                )
+            )
 
 
 class _HelixClient:
@@ -103,8 +126,10 @@ def test_chat_message_projection_contains_only_pipeline_fields() -> None:
         "danmaku_text": "hello NEKO",
         "text": "hello NEKO",
         "message_id": "message-1",
+        "provider_event_id": "message-1",
         "room_ref": "target_channel",
     }
+    assert event_provider_event_id(event) == "message-1"
     assert "must-not-leak" not in str(event.to_dict())
 
 
@@ -312,6 +337,35 @@ async def test_module_normalize_and_identity_keep_twitch_uid_namespace() -> None
     assert viewer.danmaku_text == "hello NEKO"
     assert identity.uid == "twitch:200"
     assert identity.source_url == "https://www.twitch.tv/viewer_login"
+
+
+def test_module_normalize_preserves_public_delivery_and_session_fields() -> None:
+    module = TwitchLiveIngestModule()
+
+    viewer = module.normalize(
+        {
+            "event_type": "danmaku",
+            "uid": "twitch:200",
+            "nickname": "Viewer Name",
+            "chatter_login": "viewer_login",
+            "danmaku_text": "hello NEKO",
+            "room_ref": "target_channel",
+            "provider_event_id": "message-1",
+            "_live_session_generation": 31,
+            "access_token": "must-not-leak",
+        }
+    )
+
+    assert viewer.raw == {
+        "event_type": "danmaku",
+        "chatter_login": "viewer_login",
+        "room_ref": "target_channel",
+        "provider_event_id": "message-1",
+        "_live_session_generation": 31,
+    }
+    assert event_provider_event_id(viewer) == "message-1"
+    assert event_live_session_generation(viewer) == 31
+    assert "must-not-leak" not in str(viewer.raw)
 
 
 def test_module_normalize_preserves_only_public_verified_support_fields() -> None:

@@ -21,6 +21,7 @@ from ._shared import (
     Optional,
     asyncio,
     logger,
+    response_arbiter_fail_open_enabled,
     time,
     uuid,
 )
@@ -60,6 +61,8 @@ class _ResponseMixin:
             arbiter = RealtimeResponseArbiter(
                 self.send_event,
                 abort_transport=getattr(self, "_abort_failed_transport", None),
+                fail_open=response_arbiter_fail_open_enabled(),
+                on_stuck_release=getattr(self, "_on_arbiter_stuck_release", None),
             )
             self._response_arbiter = arbiter
         return arbiter
@@ -268,16 +271,10 @@ class _ResponseMixin:
         # turn is present, so queued proactive work cannot win the race. An
         # older completed turn may still be ahead of a newer paused turn in
         # the serial transcript dispatcher; let that ticket through, then
-        # restore the newer pause before lower-priority work can run.
-        # NOTE(py3.11): the resume -> await sent -> re-pause hand-off below
-        # relies on the arbiter worker suspending between resolving
-        # ``ticket.sent`` and dequeuing its next queued item, so the re-pause
-        # lands before lower-priority work can pass the dispatch gate. That
-        # holds on the pinned Python 3.11 event loop (3.11's ``wait_for``
-        # always yields once even on a done future) but is not a documented
-        # asyncio guarantee on 3.12+ (the rewritten ``wait_for`` awaits a done
-        # future without suspending). A structural fix needs the arbiter
-        # itself to gate every dequeue on the active external-turn pause.
+        # restore the newer pause. Before selecting again, the arbiter
+        # explicitly yields to this ticket's waiter; its post-selection gate
+        # then returns any concurrently blocked work without charging the
+        # fairness allowance.
         active_pause_id = getattr(self, "_external_voice_turn_pause_id", None)
         if active_pause_id == stable_turn_id:
             self._external_voice_turn_pause_id = None

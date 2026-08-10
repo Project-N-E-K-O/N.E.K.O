@@ -18,7 +18,7 @@ uv sync
 ./build_frontend.sh
 ```
 
-脚本校验/解压 `assets/yui-origin.tar.gz`，运行 `npm ci`，将 Vue plugin manager 构建到 `frontend/plugin-manager/dist/`，React chat 构建到 `static/react/neko-chat/`。
+脚本校验/解压 `assets/yui-lolita.tar.gz` 与 `assets/yui-origin.tar.gz`，运行 `npm ci`，将 Vue plugin manager 构建到 `frontend/plugin-manager/dist/`，React chat 构建到 `static/react/neko-chat/`。
 
 迭代时在对应 frontend 目录运行 `npm ci && npm run dev`。Plugin manager 使用 5173，并代理到 `VITE_BACKEND_URL` 或 48916；React 使用 5174。生产 React bundle 同时由 `index.html` 和 `chat.html` 挂载。
 

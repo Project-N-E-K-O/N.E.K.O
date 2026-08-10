@@ -18,17 +18,15 @@
     // 周期同步因「设置未水合」被跳过时只 log 一次，避免 GET 持续失败刷屏
     let _periodicSyncSkippedUnhydratedLogged = false;
     // Field-level user authority (Codex P2): _dirtySettingsKeys records which
-    // conversation-settings keys the user explicitly changed since boot. Every
-    // userInitiated sync diffs the current settings against _settingsBaseline
-    // (snapshotted right before the boot GET, rolled forward on every diff and
-    // after the server merge) and adds the keys that diverged. The boot GET's
-    // merge callback applies server values to NON-dirty keys only and
-    // preserves the dirty ones, so changing one unrelated preference while
-    // the GET is in flight no longer makes the whole boot-default snapshot
-    // authoritative (the earlier whole-merge-drop design let a boot-default
-    // independentAsrEnabled clobber the server-persisted ASR choice and later
-    // handshakes then stamped the wrong route).
+    // conversation-settings keys the user explicitly changed since boot.
+    // _pendingSettingsKeys is narrower: it contains only changes not yet
+    // acknowledged by a successful POST. A delayed boot GET preserves pending
+    // keys unconditionally and preserves acknowledged dirty keys only when the
+    // returned revision does not supersede the POST that acknowledged them.
     const _dirtySettingsKeys = new Set();
+    const _pendingSettingsKeys = new Set();
+    let _crossWindowMutationVersion = 0;
+    const _crossWindowKeyMutationVersions = Object.create(null);
     let _settingsBaseline = null;
     // Cross-window write metadata (Codex P2): saveSettings() writes EVERY
     // conversation key into the shared localStorage snapshot, so a receiving
@@ -42,8 +40,20 @@
     // the keys the writing user EXPLICITLY changed plus a monotonic write id,
     // and the listener grants ASR authority only on that evidence.
     const _SHARED_WRITE_META_KEY = '_sharedWriteMeta';
+    const _ASR_WRITE_ID_MAX_FUTURE_SKEW_MS = 365 * 24 * 60 * 60 * 1000;
     let _lastSharedWriteId = 0;
     let _lastAppliedSharedWriteId = 0;
+    // Latest explicit non-ASR write token this window has incorporated per
+    // shared key. A server-merge snapshot gets a fresh envelope writeId, but
+    // that does not prove its field values observed every earlier user edit.
+    // Carrying these per-key source tokens lets receivers compare the data's
+    // actual provenance instead of mistaking the envelope timestamp for it.
+    const _knownSharedKeyWrites = Object.create(null);
+    // Server revision floors are deliberately separate from per-key browser
+    // write provenance. A GET/merge can prove that a server revision won, but
+    // its freshly minted localStorage envelope did not produce that field and
+    // must not become the field's source token.
+    const _knownServerKeyRevisions = Object.create(null);
     // Window-unique second sort key for concurrent shared-settings writes. Per
     // document load; stability across reloads is not needed because every
     // comparison reads the id off the write itself, and sessionStorage would be
@@ -58,41 +68,409 @@
     // other each adopt the other and stay swapped forever. That needs no
     // millisecond tie at all -- a strictly older foreign write still wins.
     let _lastAsrDecision = null;
-    function _noteAsrDecision(writeId, writerId, value) {
+    let _asrDecisionWriteIdFloor = 0;
+    function _isValidAsrWriteId(value, serverAuthoritative) {
+        if (!Number.isSafeInteger(value) || value < 0
+            || value > Number.MAX_SAFE_INTEGER - 1) return false;
+        // The server is the clock authority for persisted decision tuples.
+        // Rechecking its accepted ceiling against this browser's Date.now()
+        // makes a lagging browser reject a valid winner. Keep the clock-relative
+        // bound only for untrusted localStorage/write metadata.
+        if (serverAuthoritative === true) return true;
+        const maxAccepted = Math.min(
+            Number.MAX_SAFE_INTEGER - 1,
+            Date.now() + _ASR_WRITE_ID_MAX_FUTURE_SKEW_MS
+        );
+        return value <= maxAccepted;
+    }
+    function _noteSettingDecision(
+        current,
+        writeId,
+        writerId,
+        value,
+        isFreshChoice
+    ) {
         // A write that merely re-asserts the value already decided is not a new
         // choice: _dirtySettingsKeys is monotone, so every later save from a
         // window that once toggled declares the key explicit, and treating those
         // as fresh intent would shield this window from a genuinely newer toggle.
-        if (_lastAsrDecision && _lastAsrDecision.value === value) return;
-        if (_lastAsrDecision
-            && !(writeId > _lastAsrDecision.writeId
-                || (writeId === _lastAsrDecision.writeId && writerId > _lastAsrDecision.writerId))) {
-            return;
+        if (
+            current
+            && current.value === value
+            && isFreshChoice !== true
+        ) return current;
+        if (current
+            && !(writeId > current.writeId
+                || (writeId === current.writeId && writerId > current.writerId))) {
+            return current;
         }
-        _lastAsrDecision = { writeId: writeId, writerId: writerId || '', value: value };
+        return { writeId: writeId, writerId: writerId || '', value: value };
     }
-    function _asrWriteOutranksLocalChoice(meta) {
-        if (!_lastAsrDecision) return true;
+    let _lastOptimizationDecision = null;
+    // Durable write-ahead bit for the optimization handshake. A localStorage
+    // decision can outlive the page that issued its POST; keep it authoritative
+    // across reloads until the exact decision is acknowledged by the server.
+    let _optimizationDecisionPendingSync = false;
+    function _noteAsrDecision(
+        writeId,
+        writerId,
+        value,
+        isFreshChoice
+    ) {
+        const nextDecision = _noteSettingDecision(
+            _lastAsrDecision,
+            writeId,
+            writerId,
+            value,
+            isFreshChoice
+        );
+        _lastAsrDecision = nextDecision;
+        if (nextDecision) {
+            _asrDecisionWriteIdFloor = Math.max(
+                _asrDecisionWriteIdFloor,
+                nextDecision.writeId
+            );
+        }
+    }
+    function _noteOptimizationDecision(
+        writeId,
+        writerId,
+        value,
+        isFreshChoice
+    ) {
+        _lastOptimizationDecision = _noteSettingDecision(
+            _lastOptimizationDecision,
+            writeId,
+            writerId,
+            value,
+            isFreshChoice
+        );
+    }
+    function _settingWriteOutranksLocalChoice(
+        meta,
+        settingKey,
+        decisionKey,
+        localDecision
+    ) {
+        if (!localDecision) return true;
         // Order on the DECISION that produced this value, not on the id of the
         // write that happens to carry it. _dirtySettingsKeys is monotone and
-        // every save copies independentAsrEnabled, so once a window has toggled
-        // once, each later UNRELATED save re-declares the key explicit with a
-        // fresh id -- and would outrank a genuinely newer toggle in another
-        // window. That needs no race at all, which makes it strictly more
-        // reachable than the same-millisecond tie this ordering was added for.
-        const decision = meta.asrDecision
-            || (meta.changedKeys.indexOf('independentAsrEnabled') !== -1 ? meta : null);
+        // every save copies shared settings, so once a window has toggled once,
+        // each later unrelated save re-declares the dirty key with a fresh id.
+        const decision = meta[decisionKey]
+            || (meta.changedKeys.indexOf(settingKey) !== -1 ? meta : null);
         // No tuple AND not declared explicit: an incidental copy of whatever
         // this writer happened to hold. It must never outrank an explicit local
         // choice. Previous-build snapshots that DO declare the key keep today's
         // writeId ordering through the fallback above.
         if (!decision) return false;
-        if (decision.writeId > _lastAsrDecision.writeId) return true;
-        if (decision.writeId < _lastAsrDecision.writeId) return false;
+        if (decision.writeId > localDecision.writeId) return true;
+        if (decision.writeId < localDecision.writeId) return false;
         // Equal ids are unordered in time; break on the window-unique key so
         // both windows pick the SAME winner. An absent writerId (previous
         // build) reads as '' and loses, keeping this window's own choice.
-        return (decision.writerId || '') > _lastAsrDecision.writerId;
+        return (decision.writerId || '') > localDecision.writerId;
+    }
+    function _asrWriteOutranksLocalChoice(meta) {
+        return _settingWriteOutranksLocalChoice(
+            meta,
+            'independentAsrEnabled',
+            'asrDecision',
+            _lastAsrDecision
+        );
+    }
+    function _optimizationWriteOutranksLocalChoice(meta) {
+        return _settingWriteOutranksLocalChoice(
+            meta,
+            'voiceInputResourceOptimizationEnabled',
+            'optimizationDecision',
+            _lastOptimizationDecision
+        );
+    }
+    function _normalizeServerAsrDecision(value, serverAuthoritative) {
+        if (!value || typeof value !== 'object') return null;
+        if (!_isValidAsrWriteId(value.writeId, serverAuthoritative)) return null;
+        if (typeof value.writerId !== 'string'
+            || !/^[\x20-\x7E]{1,128}$/.test(value.writerId)) return null;
+        if (typeof value.value !== 'boolean') return null;
+        return {
+            writeId: value.writeId,
+            writerId: value.writerId,
+            value: value.value
+        };
+    }
+    function _asrDecisionOutranks(candidate, current) {
+        if (!candidate) return false;
+        if (!current) return true;
+        if (candidate.writeId > current.writeId) return true;
+        if (candidate.writeId < current.writeId) return false;
+        return candidate.writerId > current.writerId;
+    }
+    function _asrDecisionsEqual(left, right) {
+        return !!left && !!right
+            && left.writeId === right.writeId
+            && left.writerId === right.writerId
+            && left.value === right.value;
+    }
+    function _sharedWriteTokenOutranks(candidate, current) {
+        if (!candidate) return false;
+        if (!current) return true;
+        if (candidate.writeId > current.writeId) return true;
+        if (candidate.writeId < current.writeId) return false;
+        return (candidate.writerId || '') > (current.writerId || '');
+    }
+    function _sharedWriteTokensEqual(left, right) {
+        return !!left && !!right
+            && left.writeId === right.writeId
+            && (left.writerId || '') === (right.writerId || '');
+    }
+    function _rememberSharedKeyWrites(keys, token, acceptedSettings) {
+        if (!Array.isArray(keys) || !token) return;
+        for (const key of keys) {
+            if (key === 'independentAsrEnabled') continue;
+            if (_SHARED_SETTINGS_KEYS.indexOf(key) === -1) continue;
+            if (acceptedSettings
+                && !Object.prototype.hasOwnProperty.call(acceptedSettings, key)) continue;
+            const candidate = {
+                writeId: token.writeId,
+                writerId: token.writerId || ''
+            };
+            if (Number.isInteger(token.confirmedRevision)
+                && token.confirmedRevision >= 0) {
+                candidate.confirmedRevision = token.confirmedRevision;
+            }
+            if (_sharedWriteTokenOutranks(candidate, _knownSharedKeyWrites[key])) {
+                _knownSharedKeyWrites[key] = candidate;
+            } else if (_sharedWriteTokensEqual(
+                candidate,
+                _knownSharedKeyWrites[key]
+            ) && Number.isInteger(candidate.confirmedRevision)
+                && (!Number.isInteger(
+                    _knownSharedKeyWrites[key].confirmedRevision
+                ) || candidate.confirmedRevision
+                    > _knownSharedKeyWrites[key].confirmedRevision)) {
+                _knownSharedKeyWrites[key].confirmedRevision =
+                    candidate.confirmedRevision;
+            }
+        }
+    }
+    function _rememberKnownSharedKeyWrites(knownWrites, acceptedSettings) {
+        if (!knownWrites) return;
+        for (const key of Object.keys(knownWrites)) {
+            _rememberSharedKeyWrites([key], knownWrites[key], acceptedSettings);
+        }
+    }
+    function _knownSharedKeyWritesSnapshot() {
+        const snapshot = {};
+        for (const key of Object.keys(_knownSharedKeyWrites)) {
+            snapshot[key] = {
+                writeId: _knownSharedKeyWrites[key].writeId,
+                writerId: _knownSharedKeyWrites[key].writerId
+            };
+            if (Number.isInteger(
+                _knownSharedKeyWrites[key].confirmedRevision
+            )) {
+                snapshot[key].confirmedRevision =
+                    _knownSharedKeyWrites[key].confirmedRevision;
+            }
+        }
+        return snapshot;
+    }
+    function _rememberServerKeyRevisions(revisions, acceptedSettings) {
+        if (!revisions || typeof revisions !== 'object') return;
+        for (const key of Object.keys(revisions)) {
+            if (_SHARED_SETTINGS_KEYS.indexOf(key) === -1) continue;
+            if (acceptedSettings
+                && !Object.prototype.hasOwnProperty.call(acceptedSettings, key)) continue;
+            const revision = revisions[key];
+            if (!Number.isInteger(revision) || revision < 0) continue;
+            _knownServerKeyRevisions[key] = Math.max(
+                Number.isInteger(_knownServerKeyRevisions[key])
+                    ? _knownServerKeyRevisions[key]
+                    : 0,
+                revision
+            );
+        }
+    }
+    function _knownServerKeyRevisionsSnapshot() {
+        return Object.assign({}, _knownServerKeyRevisions);
+    }
+    function _confirmSharedKeyWrites(
+        payload,
+        serverSettings,
+        revision
+    ) {
+        if (!Number.isInteger(revision) || !serverSettings
+            || typeof serverSettings !== 'object') return;
+        const currentSettings = getConversationSettings();
+        for (const key of Object.keys(payload || {})) {
+            if (key === 'independentAsrEnabled') continue;
+            if (payload[key] !== serverSettings[key]) continue;
+            if (currentSettings[key] !== serverSettings[key]) continue;
+            const currentToken = _knownSharedKeyWrites[key];
+            if (!currentToken) continue;
+            currentToken.confirmedRevision = Math.max(
+                Number.isInteger(currentToken.confirmedRevision)
+                    ? currentToken.confirmedRevision
+                    : 0,
+                revision
+            );
+        }
+    }
+    function _serverAsrDecision(data) {
+        const decisions = data && data.decisions;
+        return _normalizeServerAsrDecision(
+            decisions && decisions.independentAsrEnabled,
+            true
+        );
+    }
+    function _adoptAsrDecisionTuple(value, serverAuthoritative) {
+        const decision = _normalizeServerAsrDecision(value, serverAuthoritative);
+        const alreadyCurrent = _asrDecisionsEqual(
+            decision,
+            _lastAsrDecision
+        );
+        if (!alreadyCurrent
+            && !_asrDecisionOutranks(decision, _lastAsrDecision)) return false;
+        if (!alreadyCurrent) {
+            _lastAsrDecision = decision;
+        }
+        _asrDecisionWriteIdFloor = Math.max(
+            _asrDecisionWriteIdFloor,
+            decision.writeId
+        );
+        return true;
+    }
+    function _rebaseAsrDecisionForReset(serverDecision, resetValue) {
+        let floor = _asrDecisionWriteIdFloor;
+        if (_lastAsrDecision) {
+            floor = Math.max(floor, _lastAsrDecision.writeId);
+        }
+        if (serverDecision) {
+            floor = Math.max(floor, serverDecision.writeId);
+        }
+        if (floor >= Number.MAX_SAFE_INTEGER - 1) {
+            _asrDecisionWriteIdFloor = floor;
+            _lastAsrDecision = null;
+            return;
+        }
+        const writeId = Math.max(Date.now(), floor + 1);
+        // Materialize reset authority as a matching decision tuple. The reset
+        // writeback sends this tuple instead of asking the server to mint a
+        // potentially later legacy tuple; a user toggle made while that
+        // request is in flight therefore mints strictly above the response.
+        _lastAsrDecision = {
+            writeId,
+            writerId: _SHARED_WRITER_ID,
+            value: resetValue
+        };
+        _asrDecisionWriteIdFloor = writeId;
+    }
+    function _responseEtag(response) {
+        try {
+            return response && response.headers && typeof response.headers.get === 'function'
+                ? response.headers.get('ETag')
+                : null;
+        } catch (_) {
+            return null;
+        }
+    }
+    function _adoptServerAsrDecision(data) {
+        const decision = _serverAsrDecision(data);
+        if (!_adoptAsrDecisionTuple(decision, true)) return false;
+        // Decision ordering is independent from localStorage envelope ordering.
+        // In particular, a server clock ahead of this browser must not raise the
+        // shared-write floor and make later envelopes invalid to sibling windows.
+        const serverSettings = data && data.settings;
+        if (serverSettings
+            && typeof serverSettings.independentAsrEnabled === 'boolean'
+            && serverSettings.independentAsrEnabled === decision.value) {
+            applySharedRuntimeSettings({
+                independentAsrEnabled: serverSettings.independentAsrEnabled
+            });
+            S.settingsHydrated = true;
+            if (_settingsBaseline) {
+                _settingsBaseline.independentAsrEnabled = S.independentAsrEnabled;
+            }
+        }
+        return true;
+    }
+    function _mergeConversationSettingsSnapshot(data, preservedKeys) {
+        const serverSettings = _serverSettingsForMerge(data);
+        if (!serverSettings || typeof serverSettings !== 'object') return;
+        const protectedKeys = preservedKeys || _pendingSettingsKeys;
+        const resetSnapshot = !!(data && data.reset === true);
+        const rawServerAsrDecision = _serverAsrDecision(data);
+        const resetReplacesAsrDecision = resetSnapshot
+            && !protectedKeys.has('independentAsrEnabled')
+            && typeof serverSettings.independentAsrEnabled === 'boolean';
+        if (resetReplacesAsrDecision) {
+            _rebaseAsrDecisionForReset(
+                rawServerAsrDecision,
+                serverSettings.independentAsrEnabled
+            );
+        }
+        // A reset tombstone invalidates the persisted tuple. Preserve a pending
+        // local choice, or adopt the materialized reset default without
+        // re-adopting the stale pre-reset tuple.
+        const adoptedAsr = resetSnapshot
+            ? false
+            : _adoptServerAsrDecision(data);
+        const serverAsrDecision = resetSnapshot ? null : rawServerAsrDecision;
+        const preserveLocalAsrDecision = resetSnapshot
+            ? !resetReplacesAsrDecision
+            : !!(_lastAsrDecision
+            && (!serverAsrDecision
+                || _asrDecisionOutranks(_lastAsrDecision, serverAsrDecision)));
+        const acceptedSettings = {};
+        for (const key of Object.keys(serverSettings)) {
+            if (key === 'independentAsrEnabled'
+                && (adoptedAsr || preserveLocalAsrDecision)) continue;
+            if (protectedKeys.has(key)) continue;
+            if (serverSettings[key] !== undefined) {
+                acceptedSettings[key] = serverSettings[key];
+            }
+        }
+        let changed = applySharedRuntimeSettings(acceptedSettings);
+        // Preserve server-only conversation keys that are intentionally not in
+        // the cross-window shared-settings list.
+        for (const key of Object.keys(acceptedSettings)) {
+            if (_SHARED_SETTINGS_KEYS.indexOf(key) !== -1 || key === 'userLanguage') continue;
+            if (S[key] !== acceptedSettings[key]) changed = true;
+            S[key] = acceptedSettings[key];
+            if (Object.prototype.hasOwnProperty.call(window, key)) {
+                window[key] = S[key];
+            }
+        }
+        _settingsMergedFromServer = true;
+        S.settingsHydrated = true;
+        S.independentAsrAuthoritative = true;
+        if (_settingsBaseline) {
+            for (const key of Object.keys(serverSettings)) {
+                if (protectedKeys.has(key)) continue;
+                if (serverSettings[key] !== undefined) {
+                    _settingsBaseline[key] = S[key];
+                }
+            }
+        }
+        // Persist the reconciled runtime snapshot for offline restarts and
+        // notify sibling windows, but do not advertise server winners as fresh
+        // user intent or enqueue another POST.
+        saveSettings({
+            skipServerSync: true,
+            serverMerged: true,
+            serverAuthoritativeKeys: Object.keys(acceptedSettings).filter(
+                (key) => _SHARED_SETTINGS_KEYS.indexOf(key) !== -1
+            )
+        });
+        if (changed) {
+            if (typeof window.appProactive !== 'undefined'
+                && window.appProactive.scheduleProactiveChat) {
+                window.appProactive.scheduleProactiveChat();
+            } else if (typeof window.scheduleProactiveChat === 'function') {
+                window.scheduleProactiveChat();
+            }
+        }
     }
     // Bounded gate for the boot settings GET: settings POST bodies are built
     // at send time AFTER awaiting this gate, so once the GET settled the merge
@@ -137,19 +515,20 @@
     // sync now queues behind this tail; runSync never rejects, so the tail
     // can never become a permanently rejected promise that stalls the chain.
     //
-    // Scope, so this is not read as more than it is (Codex P2, acknowledged and
-    // deliberately NOT fixed in this PR): the tail is per-JS-realm, so it
-    // orders one window's POSTs only. Two windows toggling during each other's
-    // in-flight request still overlap, and save_global_conversation_settings is
-    // an unversioned read-modify-write, so the older choice can land last. The
-    // windows themselves still converge on the newer choice through the
-    // localStorage decision tuple (asrDecision) -- which is localStorage
-    // metadata only: the POST body carries plain values, and the storage
-    // listener deliberately issues no corrective POST -- so the divergence
-    // surfaces only after a reload. Closing it needs a versioned write protocol
-    // on an endpoint shared by every preference and every client build, which
-    // is a wider change than this PR should carry.
+    // The tail remains per-JS-realm, so cross-window requests can overlap.
+    // Their server persistence is ordered separately by the ETag CAS protocol
+    // below plus the same ASR decision tuple localStorage already uses.
     let _syncChainTail = Promise.resolve();
+    let _conversationSettingsEtag = null;
+    let _conversationSettingsRevision = null;
+    // Cross-window mutation version represented by the current ETag. A field
+    // explicitly edited after this watermark is absent from that server
+    // revision even when the edit arrived before the next CAS request began.
+    // Preserve such fields across a 412; mutationVersionAtSend alone only sees
+    // edits that arrive after the request snapshot.
+    const _conversationSettingsEtagKeyMutationVersions = Object.create(null);
+    const _CONVERSATION_SETTINGS_MAX_ATTEMPTS = 3;
+    const _CONVERSATION_SETTINGS_REQUEST_TIMEOUT_MS = 15000;
     // 同步间隔（毫秒）：60秒
     const SYNC_INTERVAL_MS = 60000;
     // 「首启等 settings/telemetry 决议」专属 marker：只有 localStorage 走过首启分支才会写
@@ -170,15 +549,61 @@
         'mergeMessagesEnabled',
         'focusModeEnabled',
         'focusCognitionEnabled',
+        'noiseReductionEnabled',
         'independentAsrEnabled',
+        'voiceInputResourceOptimizationEnabled',
         'avatarReactionBubbleEnabled',
         'slopFilterEnabled',
         'proactiveChatInterval',
         'proactiveVisionInterval',
+        'subtitleEnabled',
+        'userLanguage',
         'textGuardMaxLength',
         'renderQuality',
         'targetFrameRate'
     ];
+
+    function _defaultConversationSettingsForReset() {
+        return {
+            proactiveChatEnabled: true,
+            proactiveVisionEnabled: _isUserRegionChina(),
+            proactiveVisionChatEnabled: true,
+            proactiveNewsChatEnabled: false,
+            proactiveVideoChatEnabled: true,
+            proactivePersonalChatEnabled: false,
+            proactiveMusicEnabled: true,
+            proactiveMemeEnabled: true,
+            proactiveMiniGameInviteEnabled: true,
+            mergeMessagesEnabled: false,
+            focusModeEnabled: false,
+            focusCognitionEnabled: true,
+            noiseReductionEnabled: true,
+            independentAsrEnabled: false,
+            voiceInputResourceOptimizationEnabled: true,
+            avatarReactionBubbleEnabled: true,
+            slopFilterEnabled: true,
+            proactiveChatInterval: Number.isFinite(C.DEFAULT_PROACTIVE_CHAT_INTERVAL)
+                ? C.DEFAULT_PROACTIVE_CHAT_INTERVAL
+                : 15,
+            proactiveVisionInterval: Number.isFinite(C.DEFAULT_PROACTIVE_VISION_INTERVAL)
+                ? C.DEFAULT_PROACTIVE_VISION_INTERVAL
+                : 10,
+            subtitleEnabled: false,
+            userLanguage: null,
+            textGuardMaxLength: 300
+        };
+    }
+
+    function _serverSettingsForMerge(data) {
+        const settings = data && data.settings;
+        if (data && data.reset === true) {
+            return Object.assign(
+                _defaultConversationSettingsForReset(),
+                settings && typeof settings === 'object' ? settings : {}
+            );
+        }
+        return settings;
+    }
 
     function getDefaultRenderQuality() {
         return S.renderQuality || 'medium';
@@ -211,7 +636,9 @@
             mergeMessagesEnabled: S.mergeMessagesEnabled,
             focusModeEnabled: S.focusModeEnabled,
             focusCognitionEnabled: S.focusCognitionEnabled,
+            noiseReductionEnabled: S.noiseReductionEnabled,
             independentAsrEnabled: S.independentAsrEnabled,
+            voiceInputResourceOptimizationEnabled: S.voiceInputResourceOptimizationEnabled,
             avatarReactionBubbleEnabled: S.avatarReactionBubbleEnabled,
             slopFilterEnabled: S.slopFilterEnabled,
             proactiveChatInterval: S.proactiveChatInterval,
@@ -248,6 +675,7 @@
                     : undefined;
                 if (cur !== base) {
                     _dirtySettingsKeys.add(key);
+                    _pendingSettingsKeys.add(key);
                 }
             });
         }
@@ -282,10 +710,26 @@
         return _lastSharedWriteId;
     }
 
+    function _nextAsrDecisionWriteId(envelopeWriteId) {
+        const decisionFloor = Math.max(
+            _asrDecisionWriteIdFloor,
+            _lastAsrDecision
+            && Number.isSafeInteger(_lastAsrDecision.writeId)
+            ? _lastAsrDecision.writeId
+            : 0
+        );
+        if (decisionFloor >= Number.MAX_SAFE_INTEGER - 1) {
+            return envelopeWriteId;
+        }
+        return Math.max(envelopeWriteId, decisionFloor + 1);
+    }
+
     /**
      * Keys of `snapshot` this window may claim explicit user authority over:
-     * the monotone _dirtySettingsKeys set plus keys that diverge from the
-     * current dirty-diff baseline. The divergence term matters because the
+     * still-pending keys plus keys that diverge from the current dirty-diff
+     * baseline. Do not use the monotone _dirtySettingsKeys set here: after an
+     * acknowledged edit, a later unrelated save must not mint a fresh per-key
+     * token for an old value. The divergence term matters because the
      * independent-ASR toggle handler persists locally (saveSettings with
      * skipServerSync) BEFORE its userInitiated sync runs _markUserDirtySettings,
      * so at write time the diff is the only evidence the key was just toggled.
@@ -297,11 +741,17 @@
             const divergedFromBaseline = !!_settingsBaseline
                 && Object.prototype.hasOwnProperty.call(_settingsBaseline, key)
                 && _settingsBaseline[key] !== snapshot[key];
-            if (_dirtySettingsKeys.has(key) || divergedFromBaseline) {
+            if (_pendingSettingsKeys.has(key) || divergedFromBaseline) {
                 keys.push(key);
             }
         });
         return keys;
+    }
+
+    function _settingDivergedFromBaseline(snapshot, key) {
+        return !!_settingsBaseline
+            && Object.prototype.hasOwnProperty.call(_settingsBaseline, key)
+            && _settingsBaseline[key] !== snapshot[key];
     }
 
     /**
@@ -318,18 +768,76 @@
      * window that HAD merged the server value adopts it, mis-stamps its next
      * handshake, and POSTs the wrong value back on its next full sync.
      */
-    function _writeSharedSettings(snapshot, explicitKeys) {
+    function _writeSharedSettings(
+        snapshot,
+        explicitKeys,
+        pendingRecovery,
+        serverAuthoritativeKeys
+    ) {
         const payload = Object.assign({}, snapshot);
         payload[_SHARED_WRITE_META_KEY] = {
             writeId: _nextSharedWriteId(),
             writerId: _SHARED_WRITER_ID,
             changedKeys: explicitKeys || [],
             hydrated: S.settingsHydrated === true,
-            asrAuthoritative: S.independentAsrAuthoritative === true
+            asrAuthoritative: S.independentAsrAuthoritative === true,
+            // A recovery write reasserts this window's pending values after it
+            // filtered an incidental copy from another full snapshot. Another
+            // pending window must not answer it with another recovery write,
+            // or conflicting snapshots can bounce through localStorage forever.
+            pendingRecovery: pendingRecovery === true
         };
         const ownMeta = payload[_SHARED_WRITE_META_KEY];
+        _rememberSharedKeyWrites(ownMeta.changedKeys, ownMeta);
+        // Server authority and browser write tokens are separate clocks. A
+        // server winner must carry its real revision instead of borrowing this
+        // broadcast envelope's fresh writeId, which could make an old GET look
+        // newer than an explicit edit the sender never observed.
+        if (Array.isArray(serverAuthoritativeKeys)
+            && serverAuthoritativeKeys.length > 0
+            && Number.isInteger(_conversationSettingsRevision)) {
+            ownMeta.serverRevision = _conversationSettingsRevision;
+            ownMeta.serverAuthoritativeKeys =
+                serverAuthoritativeKeys.slice();
+            // Persist the server floor independently from source provenance. A
+            // reloaded window may need the revision before its boot GET returns,
+            // but the merge envelope did not produce any of these field values.
+            for (const key of ownMeta.serverAuthoritativeKeys) {
+                _knownServerKeyRevisions[key] = Math.max(
+                    Number.isInteger(_knownServerKeyRevisions[key])
+                        ? _knownServerKeyRevisions[key]
+                        : 0,
+                    ownMeta.serverRevision
+                );
+            }
+        }
+        ownMeta.knownKeyWrites = _knownSharedKeyWritesSnapshot();
+        ownMeta.serverKeyRevisions = _knownServerKeyRevisionsSnapshot();
         if (ownMeta.changedKeys.indexOf('independentAsrEnabled') !== -1) {
-            _noteAsrDecision(ownMeta.writeId, ownMeta.writerId, snapshot.independentAsrEnabled);
+            _noteAsrDecision(
+                _nextAsrDecisionWriteId(ownMeta.writeId),
+                ownMeta.writerId,
+                snapshot.independentAsrEnabled,
+                _settingDivergedFromBaseline(
+                    snapshot,
+                    'independentAsrEnabled'
+                )
+            );
+        }
+        if (ownMeta.changedKeys.indexOf('voiceInputResourceOptimizationEnabled') !== -1) {
+            const isFreshOptimizationChoice = _settingDivergedFromBaseline(
+                snapshot,
+                'voiceInputResourceOptimizationEnabled'
+            );
+            _noteOptimizationDecision(
+                ownMeta.writeId,
+                ownMeta.writerId,
+                snapshot.voiceInputResourceOptimizationEnabled,
+                isFreshOptimizationChoice
+            );
+            if (isFreshOptimizationChoice) {
+                _optimizationDecisionPendingSync = true;
+            }
         }
         // Stamp the ASR key with the id of the decision that PRODUCED this
         // value. _noteAsrDecision already refuses to advance the LOCAL decision
@@ -346,7 +854,25 @@
                 value: _lastAsrDecision.value
             };
         }
-        localStorage.setItem('project_neko_settings', JSON.stringify(payload));
+        if (_lastOptimizationDecision
+            && _lastOptimizationDecision.value
+                === snapshot.voiceInputResourceOptimizationEnabled) {
+            ownMeta.optimizationDecision = {
+                writeId: _lastOptimizationDecision.writeId,
+                writerId: _lastOptimizationDecision.writerId,
+                value: _lastOptimizationDecision.value
+            };
+            ownMeta.optimizationDecisionPendingSync =
+                _optimizationDecisionPendingSync === true;
+        }
+        try {
+            localStorage.setItem('project_neko_settings', JSON.stringify(payload));
+        } catch (error) {
+            // Local persistence/cross-window fan-out is best-effort. Do not
+            // abort saveSettings before its CAS sync can persist and apply the
+            // user's choice to the backend and active runtime.
+            console.warn('[app-settings] 本地设置持久化失败，继续服务器同步:', error);
+        }
     }
 
     /**
@@ -357,7 +883,73 @@
     function _readSharedWriteMeta(settings) {
         const meta = settings ? settings[_SHARED_WRITE_META_KEY] : null;
         if (!meta || typeof meta !== 'object') return null;
-        if (typeof meta.writeId !== 'number' || !isFinite(meta.writeId)) return null;
+        if (!_isValidAsrWriteId(meta.writeId)) return null;
+        const knownKeyWrites = {};
+        const serverKeyRevisions = {};
+        const rawKnownKeyWrites = meta.knownKeyWrites;
+        const knownKeyWritesPresent = !!rawKnownKeyWrites
+            && typeof rawKnownKeyWrites === 'object';
+        if (knownKeyWritesPresent) {
+            for (const key of Object.keys(rawKnownKeyWrites)) {
+                const token = rawKnownKeyWrites[key];
+                if (!token || typeof token !== 'object') continue;
+                if (!_isValidAsrWriteId(token.writeId)) continue;
+                knownKeyWrites[key] = {
+                    writeId: token.writeId,
+                    writerId: typeof token.writerId === 'string'
+                        ? token.writerId
+                        : ''
+                };
+                if (Number.isInteger(token.confirmedRevision)
+                    && token.confirmedRevision >= 0) {
+                    knownKeyWrites[key].confirmedRevision =
+                        token.confirmedRevision;
+                }
+            }
+        }
+        const rawServerKeyRevisions = meta.serverKeyRevisions;
+        if (rawServerKeyRevisions
+            && typeof rawServerKeyRevisions === 'object') {
+            for (const key of Object.keys(rawServerKeyRevisions)) {
+                const revision = rawServerKeyRevisions[key];
+                if (_SHARED_SETTINGS_KEYS.indexOf(key) !== -1
+                    && Number.isInteger(revision)
+                    && revision >= 0) {
+                    serverKeyRevisions[key] = revision;
+                }
+            }
+        }
+        const serverRevision = Number.isInteger(meta.serverRevision)
+            && meta.serverRevision >= 0
+            ? meta.serverRevision
+            : null;
+        const serverAuthoritativeKeys =
+            Array.isArray(meta.serverAuthoritativeKeys)
+                ? meta.serverAuthoritativeKeys.filter(
+                    (key) => _SHARED_SETTINGS_KEYS.indexOf(key) !== -1
+                )
+                : [];
+        if (serverRevision !== null) {
+            for (const key of serverAuthoritativeKeys) {
+                serverKeyRevisions[key] = Math.max(
+                    Number.isInteger(serverKeyRevisions[key])
+                        ? serverKeyRevisions[key]
+                        : 0,
+                    serverRevision
+                );
+                // Upgrade snapshots written by the previous implementation:
+                // it stamped the merge envelope itself as field provenance.
+                const token = knownKeyWrites[key];
+                if (token
+                    && token.writeId === meta.writeId
+                    && token.writerId === (
+                        typeof meta.writerId === 'string' ? meta.writerId : ''
+                    )
+                    && token.confirmedRevision === serverRevision) {
+                    delete knownKeyWrites[key];
+                }
+            }
+        }
         return {
             writeId: meta.writeId,
             // Absent on snapshots written by the previous build: '' sorts below
@@ -372,12 +964,20 @@
             // from that build still carries independentAsrEnabled in
             // changedKeys and keeps flowing through asrChangedByOtherWindow.
             asrAuthoritative: meta.asrAuthoritative === true,
+            pendingRecovery: meta.pendingRecovery === true,
+            serverRevision,
+            serverAuthoritativeKeys,
+            knownKeyWrites,
+            knownKeyWritesPresent,
+            serverKeyRevisions,
             // Absent on previous-build snapshots and on writers with no
             // matching decision: null routes the comparison back to
             // (writeId, writerId), i.e. today's behaviour.
             asrDecision: (meta.asrDecision
-                && typeof meta.asrDecision.writeId === 'number'
-                && isFinite(meta.asrDecision.writeId))
+                && _isValidAsrWriteId(
+                    meta.asrDecision.writeId,
+                    Number.isInteger(meta.serverRevision)
+                ))
                 ? {
                     writeId: meta.asrDecision.writeId,
                     writerId: typeof meta.asrDecision.writerId === 'string'
@@ -385,7 +985,25 @@
                         : '',
                     value: meta.asrDecision.value
                 }
-                : null
+                : null,
+            optimizationDecision: (meta.optimizationDecision
+                && _isValidAsrWriteId(
+                    meta.optimizationDecision.writeId,
+                    Number.isInteger(meta.serverRevision)
+                ))
+                ? {
+                    writeId: meta.optimizationDecision.writeId,
+                    writerId: typeof meta.optimizationDecision.writerId === 'string'
+                        ? meta.optimizationDecision.writerId
+                        : '',
+                    value: meta.optimizationDecision.value
+                }
+                : null,
+            // Snapshots from the previous PR head already carry the decision
+            // tuple but not this bit. Treat those as pending so an interrupted
+            // POST cannot be forgotten during rollout.
+            optimizationDecisionPendingSync: !!meta.optimizationDecision
+                && meta.optimizationDecisionPendingSync !== false
         };
     }
 
@@ -403,12 +1021,96 @@
      */
     function _pickDirtySettings(settings) {
         const partial = {};
-        _dirtySettingsKeys.forEach((key) => {
+        _pendingSettingsKeys.forEach((key) => {
             if (Object.prototype.hasOwnProperty.call(settings, key)) {
                 partial[key] = settings[key];
             }
         });
         return partial;
+    }
+
+    function _clearAcknowledgedPendingSettings(payload) {
+        const current = getConversationSettings();
+        for (const key of Object.keys(payload)) {
+            // A later local edit may have happened while this POST was in
+            // flight. Clear only keys whose current value is still exactly the
+            // value the server just acknowledged.
+            if (Object.prototype.hasOwnProperty.call(current, key)
+                && current[key] === payload[key]) {
+                _pendingSettingsKeys.delete(key);
+            }
+        }
+    }
+
+    function _settingsChangedSince(snapshot, mutationVersion) {
+        const changedKeys = new Set();
+        const current = getConversationSettings();
+        const keys = new Set(Object.keys(snapshot).concat(Object.keys(current)));
+        keys.forEach((key) => {
+            const before = Object.prototype.hasOwnProperty.call(snapshot, key)
+                ? snapshot[key]
+                : undefined;
+            const now = Object.prototype.hasOwnProperty.call(current, key)
+                ? current[key]
+                : undefined;
+            if (before !== now
+                || (_crossWindowKeyMutationVersions[key] || 0) > mutationVersion) {
+                changedKeys.add(key);
+            }
+        });
+        return changedKeys;
+    }
+
+    function _etagKeyMutationVersionsSnapshot() {
+        const snapshot = {};
+        _SHARED_SETTINGS_KEYS.forEach((key) => {
+            snapshot[key] =
+                _conversationSettingsEtagKeyMutationVersions[key] || 0;
+        });
+        return snapshot;
+    }
+
+    function _crossWindowSettingsNewerThanEtag(etagKeyMutationVersions) {
+        const changedKeys = new Set();
+        _SHARED_SETTINGS_KEYS.forEach((key) => {
+            if ((_crossWindowKeyMutationVersions[key] || 0)
+                > (etagKeyMutationVersions[key] || 0)) {
+                changedKeys.add(key);
+            }
+        });
+        return changedKeys;
+    }
+
+    function _markEtagConfirmedSharedSettings(
+        settingsAtSend,
+        serverSettings,
+        mutationVersionAtSend
+    ) {
+        if (!serverSettings || typeof serverSettings !== 'object') return;
+        _SHARED_SETTINGS_KEYS.forEach((key) => {
+            if (!Object.prototype.hasOwnProperty.call(serverSettings, key)) return;
+            if (!Object.prototype.hasOwnProperty.call(settingsAtSend, key)
+                || settingsAtSend[key] !== serverSettings[key]) return;
+            _conversationSettingsEtagKeyMutationVersions[key] =
+                mutationVersionAtSend;
+        });
+    }
+
+    function _noteCrossWindowMutations(settings, explicitKeys) {
+        _SHARED_SETTINGS_KEYS.forEach((key) => {
+            if (!Object.prototype.hasOwnProperty.call(settings, key)) return;
+            // Metadata declares user intent per key, including a same-value
+            // choice made while a request is in flight. Server-merge broadcasts
+            // carry an empty list; metadata-less previous-build writers retain
+            // their value-change fallback.
+            if (explicitKeys) {
+                if (explicitKeys.indexOf(key) === -1) return;
+            } else if (S[key] === settings[key]) {
+                return;
+            }
+            _crossWindowMutationVersion += 1;
+            _crossWindowKeyMutationVersions[key] = _crossWindowMutationVersion;
+        });
     }
 
     function applySharedRuntimeSettings(settings) {
@@ -420,20 +1122,27 @@
                 S[key] = settings[key];
                 changed = true;
             }
+            // saveSettings() prefers several window.* mirrors over S. Keep every
+            // mirror already present on this window aligned with the accepted
+            // shared value so a later save cannot roll the merge back.
+            if (Object.prototype.hasOwnProperty.call(window, key)) {
+                window[key] = S[key];
+            }
         });
+        if (Object.prototype.hasOwnProperty.call(settings, 'noiseReductionEnabled')) {
+            try {
+                localStorage.setItem(
+                    'neko_noise_reduction',
+                    S.noiseReductionEnabled ? '1' : '0'
+                );
+            } catch (_) { }
+        }
         if (
             Object.prototype.hasOwnProperty.call(settings, 'userLanguage') &&
             S.userLanguage !== settings.userLanguage
         ) {
             S.userLanguage = settings.userLanguage;
             changed = true;
-        }
-        // saveSettings() builds currentSlopFilter from window.slopFilterEnabled ?? S,
-        // so a cross-window storage sync that only touched S would let a later save in
-        // this tab revert the switch from a stale window value. Mirror it here.
-        // (The other shared bool keys carry the same latent gap — pre-existing.)
-        if (Object.prototype.hasOwnProperty.call(settings, 'slopFilterEnabled')) {
-            window.slopFilterEnabled = S.slopFilterEnabled;
         }
         if (changed && S.renderQuality) {
             window.cursorFollowPerformanceLevel = U.mapRenderQualityToFollowPerf(S.renderQuality);
@@ -504,15 +1213,55 @@
             if (!data.success) return null;
             const hasSettings = data.settings && Object.keys(data.settings).length > 0;
             const telemetryBranch = (typeof data.telemetryBranch === 'string' && data.telemetryBranch) || null;
-            if (!hasSettings && !telemetryBranch) return null;
+            const etag = _responseEtag(response);
+            if (!hasSettings && !telemetryBranch && !etag) return null;
             return {
                 settings: hasSettings ? data.settings : null,
-                telemetryBranch
+                telemetryBranch,
+                etag,
+                revision: Number.isInteger(data.revision) ? data.revision : null,
+                decisions: data.decisions || null,
+                reset: data.reset === true
             };
         } catch (e) {
             console.warn('[app-settings] 从服务器加载设置失败:', e);
         }
         return null;
+    }
+
+    function _fetchConversationSettingsJsonWithTimeout(url, options) {
+        const AbortControllerCtor =
+            (typeof window.AbortController === 'function'
+                && window.AbortController)
+            || (typeof AbortController === 'function' && AbortController)
+            || null;
+        const abortController = AbortControllerCtor
+            ? new AbortControllerCtor()
+            : null;
+        const requestOptions = Object.assign({}, options);
+        if (abortController) {
+            requestOptions.signal = abortController.signal;
+        }
+        let timeoutId = null;
+        const timeoutPromise = new Promise((_, reject) => {
+            timeoutId = setTimeout(() => {
+                if (abortController) abortController.abort();
+                reject(new Error('conversation settings request timed out'));
+            }, _CONVERSATION_SETTINGS_REQUEST_TIMEOUT_MS);
+            if (timeoutId && typeof timeoutId.unref === 'function') {
+                timeoutId.unref();
+            }
+        });
+        const requestPromise = (async () => {
+            const response = await fetch(url, requestOptions);
+            const data = await response.json();
+            return { response, data };
+        })();
+        return Promise.race([requestPromise, timeoutPromise]).finally(() => {
+            if (timeoutId !== null && typeof clearTimeout === 'function') {
+                clearTimeout(timeoutId);
+            }
+        });
     }
 
     /**
@@ -552,6 +1301,9 @@
             // touched the ASR key, synchronously before any await so the very
             // next start_session already carries it.
             if (_dirtySettingsKeys.has('independentAsrEnabled')) S.independentAsrAuthoritative = true;
+            if (_dirtySettingsKeys.has('voiceInputResourceOptimizationEnabled')) {
+                S.voiceInputResourceOptimizationAuthoritative = true;
+            }
         }
         // Serialize the POST behind any in-flight sync (Codex P2): the
         // settings snapshot is built inside runSync, at SEND time — after the
@@ -579,38 +1331,151 @@
             } catch (_) {
                 // keep settings sync best-effort if the tutorial controller is unavailable
             }
-            const settings = getConversationSettings();
-            // Full snapshot only once server values were actually merged. If
-            // the gate opened on its timeout instead — or the GET resolved to
-            // null and merged nothing — a full body would clobber every
-            // untouched server-persisted preference with this boot's values
-            // (and a still-pending GET would then read the overwritten file
-            // back, so the merge could not restore them). Send the dirty keys
-            // alone — the backend merges partial payloads — and let the merge
-            // writeback converge the rest if/once the GET lands.
-            const payload = _settingsMergedFromServer ? settings : _pickDirtySettings(settings);
-            if (Object.keys(payload).length === 0) {
-                // Nothing the user explicitly changed yet, and no server truth
-                // to echo back: writing anything here could only overwrite
-                // persisted preferences with pre-merge values.
-                return;
-            }
-            try {
-                const response = await fetch('/api/config/conversation-settings', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
-                });
-                if (!response.ok) {
-                    console.error('[app-settings] 同步设置到服务器失败: HTTP', response.status);
+            for (let attempt = 0; attempt < _CONVERSATION_SETTINGS_MAX_ATTEMPTS; attempt += 1) {
+                const settings = getConversationSettings();
+                const mutationVersionAtSend = _crossWindowMutationVersion;
+                const etagKeyMutationVersionsAtSend =
+                    _etagKeyMutationVersionsSnapshot();
+                const mergedAtSend = _settingsMergedFromServer;
+                // Full snapshot only once server values were actually merged. If
+                // the gate opened on its timeout instead — or the GET resolved to
+                // null and merged nothing — a full body would clobber every
+                // untouched server-persisted preference with this boot's values.
+                // Rebuild on every CAS retry so a newer cross-window ASR decision
+                // adopted from the conflict response replaces the stale body.
+                const payload = _settingsMergedFromServer ? settings : _pickDirtySettings(settings);
+                if (Object.keys(payload).length === 0) {
                     return;
                 }
-                const data = await response.json();
-                if (!data.success) {
-                    console.error('[app-settings] 同步设置到服务器失败:', data.error || '未知错误');
+                const requestDecision = (
+                    Object.prototype.hasOwnProperty.call(payload, 'independentAsrEnabled')
+                    && _lastAsrDecision
+                    && _lastAsrDecision.value === payload.independentAsrEnabled
+                ) ? {
+                    writeId: _lastAsrDecision.writeId,
+                    writerId: _lastAsrDecision.writerId,
+                    value: _lastAsrDecision.value
+                } : null;
+                const optimizationDecisionAtSend = (
+                    Object.prototype.hasOwnProperty.call(
+                        payload,
+                        'voiceInputResourceOptimizationEnabled'
+                    )
+                    && _lastOptimizationDecision
+                    && _lastOptimizationDecision.value
+                        === payload.voiceInputResourceOptimizationEnabled
+                )
+                    ? Object.assign({}, _lastOptimizationDecision)
+                    : null;
+                const headers = { 'Content-Type': 'application/json' };
+                if (_conversationSettingsEtag) {
+                    headers['If-Match'] = _conversationSettingsEtag;
                 }
-            } catch (err) {
-                console.error('[app-settings] 同步设置到服务器失败:', err);
+                if (mergedAtSend) {
+                    headers['X-Conversation-Settings-Full-Snapshot'] = '1';
+                }
+                if (requestDecision) {
+                    headers['X-Conversation-Settings-ASR-Decision'] =
+                        JSON.stringify(requestDecision);
+                }
+                try {
+                    const { response, data } =
+                        await _fetchConversationSettingsJsonWithTimeout(
+                            '/api/config/conversation-settings',
+                            {
+                                method: 'POST',
+                                headers,
+                                body: JSON.stringify(payload)
+                            }
+                        );
+                    const nextEtag = _responseEtag(response);
+                    if (nextEtag) _conversationSettingsEtag = nextEtag;
+                    if (Number.isInteger(data.revision)) {
+                        _conversationSettingsRevision = data.revision;
+                    }
+                    if (response.status === 412) {
+                        const preservedKeys = new Set(_pendingSettingsKeys);
+                        _crossWindowSettingsNewerThanEtag(
+                            etagKeyMutationVersionsAtSend
+                        ).forEach((key) => {
+                            preservedKeys.add(key);
+                        });
+                        _settingsChangedSince(settings, mutationVersionAtSend).forEach((key) => {
+                            preservedKeys.add(key);
+                        });
+                        _mergeConversationSettingsSnapshot(data, preservedKeys);
+                        if (attempt + 1 < _CONVERSATION_SETTINGS_MAX_ATTEMPTS) {
+                            continue;
+                        }
+                    }
+                    if (!response.ok) {
+                        console.error('[app-settings] 同步设置到服务器失败: HTTP', response.status);
+                        return;
+                    }
+                    if (!data.success) {
+                        console.error('[app-settings] 同步设置到服务器失败:', data.error || '未知错误');
+                        return;
+                    }
+                    if (
+                        optimizationDecisionAtSend
+                        && _lastOptimizationDecision
+                        && optimizationDecisionAtSend.writeId
+                            === _lastOptimizationDecision.writeId
+                        && optimizationDecisionAtSend.writerId
+                            === _lastOptimizationDecision.writerId
+                        && optimizationDecisionAtSend.value
+                            === _lastOptimizationDecision.value
+                        && S.voiceInputResourceOptimizationEnabled
+                            === optimizationDecisionAtSend.value
+                    ) {
+                        _optimizationDecisionPendingSync = false;
+                        _writeSharedSettings(getConversationSettings(), []);
+                    }
+                    _confirmSharedKeyWrites(
+                        payload,
+                        data.settings,
+                        data.revision
+                    );
+                    if (nextEtag) {
+                        _markEtagConfirmedSharedSettings(
+                            settings,
+                            data.settings,
+                            mutationVersionAtSend
+                        );
+                    }
+                    const changedWhileInFlight = _settingsChangedSince(
+                        settings,
+                        mutationVersionAtSend
+                    );
+                    _clearAcknowledgedPendingSettings(payload);
+                    const adoptedServerAsrDecision =
+                        _adoptServerAsrDecision(data);
+                    // A successful dirty-only write returns the complete
+                    // authoritative snapshot. If the boot GET failed or lost
+                    // the gate race, hydrate untouched fields from this response
+                    // while preserving edits made after the request was sent.
+                    if (!mergedAtSend) {
+                        _crossWindowSettingsNewerThanEtag(
+                            _conversationSettingsEtagKeyMutationVersions
+                        ).forEach((key) => {
+                            changedWhileInFlight.add(key);
+                        });
+                        _mergeConversationSettingsSnapshot(data, changedWhileInFlight);
+                    } else if (adoptedServerAsrDecision) {
+                        // Re-broadcast a server-generated/confirmed tuple with
+                        // serverRevision authority. Its decision clock may be
+                        // ahead of a sibling browser's local Date.now() bound.
+                        saveSettings({
+                            skipServerSync: true,
+                            serverMerged: true,
+                            serverAuthoritativeKeys: ['independentAsrEnabled']
+                        });
+                    }
+                    return;
+                } catch (err) {
+                    console.error('[app-settings] 同步设置到服务器失败:', err);
+                    return;
+                }
             }
         };
         // runSync swallows its own failures, so chaining with it on both
@@ -686,12 +1551,29 @@
      * 将当前设置保存到 localStorage
      * 从 window 全局变量读取最新值（确保同步 live2d.js 中的更改）
      *
-     * @param {{ skipServerSync?: boolean }} [options] 传 skipServerSync 跳过 POST，
+     * @param {{
+     *   skipServerSync?: boolean,
+     *   serverMerged?: boolean,
+     *   pendingRecovery?: boolean,
+     *   explicitSharedKeys?: string[],
+     *   serverAuthoritativeKeys?: string[]
+     * }} [options]
+     *   传 skipServerSync 跳过 POST；
+     *   serverMerged 表示共享快照来自服务端合并，不得标记成新的用户修改。
      *   首启用——避免在 loadSettingsFromServer 拿到 telemetryBranch 之前就把首启本地
      *   默认值写到服务器、回头被自己的 GET 当成「云端已有偏好」，干扰首启决议时序
      */
     function saveSettings(options) {
         const skipServerSync = !!(options && options.skipServerSync);
+        const serverMerged = !!(options && options.serverMerged);
+        const pendingRecovery = !!(options && options.pendingRecovery);
+        const explicitSharedKeys = options && Array.isArray(options.explicitSharedKeys)
+            ? options.explicitSharedKeys
+            : null;
+        const serverAuthoritativeKeys =
+            options && Array.isArray(options.serverAuthoritativeKeys)
+                ? options.serverAuthoritativeKeys
+                : [];
         // 从全局变量读取最新值（确保同步 live2d.js 中的更改）
         const currentProactive = typeof window.proactiveChatEnabled !== 'undefined'
             ? window.proactiveChatEnabled
@@ -718,6 +1600,8 @@
             ? window.focusCognitionEnabled
             : S.focusCognitionEnabled;
         const currentIndependentAsr = S.independentAsrEnabled === true;
+        const currentVoiceResourceOptimization =
+            S.voiceInputResourceOptimizationEnabled !== false;
         const currentProactiveChatInterval = typeof window.proactiveChatInterval !== 'undefined'
             ? window.proactiveChatInterval
             : S.proactiveChatInterval;
@@ -789,7 +1673,9 @@
             mergeMessagesEnabled: currentMerge,
             focusModeEnabled: currentFocus,
             focusCognitionEnabled: currentFocusCognition,
+            noiseReductionEnabled: S.noiseReductionEnabled,
             independentAsrEnabled: currentIndependentAsr,
+            voiceInputResourceOptimizationEnabled: currentVoiceResourceOptimization,
             avatarReactionBubbleEnabled: currentAvatarReactionBubble,
             slopFilterEnabled: currentSlopFilter,
             proactiveChatInterval: currentProactiveChatInterval,
@@ -808,7 +1694,14 @@
         // into the shared snapshot: every save copies independentAsrEnabled
         // along, so the receiving window needs this metadata to tell a real
         // cross-window toggle from an unrelated save's incidental copy.
-        _writeSharedSettings(settings, _collectExplicitSharedKeys(settings));
+        _writeSharedSettings(
+            settings,
+            explicitSharedKeys !== null
+                ? explicitSharedKeys
+                : (serverMerged ? [] : _collectExplicitSharedKeys(settings)),
+            pendingRecovery,
+            serverAuthoritativeKeys
+        );
 
         // 同步回共享状态，保持一致性
         S.proactiveChatEnabled = currentProactive;
@@ -824,6 +1717,7 @@
         S.focusModeEnabled = currentFocus;
         S.focusCognitionEnabled = currentFocusCognition;
         S.independentAsrEnabled = currentIndependentAsr;
+        S.voiceInputResourceOptimizationEnabled = currentVoiceResourceOptimization;
         S.avatarReactionBubbleEnabled = currentAvatarReactionBubble;
         S.slopFilterEnabled = currentSlopFilter;
         S.proactiveChatInterval = currentProactiveChatInterval;
@@ -876,9 +1770,75 @@
                 if (bootMeta && bootMeta.writeId > _lastAppliedSharedWriteId) {
                     _lastAppliedSharedWriteId = bootMeta.writeId;
                 }
-                if (bootMeta && bootMeta.changedKeys.indexOf('independentAsrEnabled') !== -1) {
+                if (bootMeta) {
+                    _rememberKnownSharedKeyWrites(bootMeta.knownKeyWrites, settings);
+                    _rememberServerKeyRevisions(
+                        bootMeta.serverKeyRevisions,
+                        settings
+                    );
+                    _rememberSharedKeyWrites(bootMeta.changedKeys, bootMeta, settings);
+                    if (Number.isInteger(bootMeta.serverRevision)) {
+                        _conversationSettingsRevision =
+                            bootMeta.serverRevision;
+                        _conversationSettingsEtag =
+                            `"conversation-settings-${bootMeta.serverRevision}"`;
+                        for (const key of bootMeta.serverAuthoritativeKeys) {
+                            if (!Object.prototype.hasOwnProperty.call(
+                                settings,
+                                key
+                            )) continue;
+                            _rememberServerKeyRevisions({
+                                [key]: bootMeta.serverRevision
+                            }, settings);
+                        }
+                    }
+                }
+                if (bootMeta && bootMeta.asrDecision
+                    && settings.independentAsrEnabled === bootMeta.asrDecision.value) {
+                    // A server-merge snapshot intentionally has no changedKeys:
+                    // it carries authority, not a fresh user action. Restore its
+                    // matching decision tuple anyway so reloads retain both the
+                    // ordering token and the floor for the next local choice.
+                    _adoptAsrDecisionTuple(
+                        bootMeta.asrDecision,
+                        Number.isInteger(bootMeta.serverRevision)
+                    );
+                } else if (bootMeta
+                    && bootMeta.changedKeys.indexOf('independentAsrEnabled') !== -1) {
                     const bootDecision = bootMeta.asrDecision || bootMeta;
                     _noteAsrDecision(bootDecision.writeId, bootDecision.writerId, settings.independentAsrEnabled);
+                }
+                if (
+                    bootMeta
+                    && (
+                        bootMeta.optimizationDecision
+                        || bootMeta.changedKeys.indexOf(
+                            'voiceInputResourceOptimizationEnabled'
+                        ) !== -1
+                    )
+                ) {
+                    const optimizationDecision =
+                        bootMeta.optimizationDecision || bootMeta;
+                    _noteOptimizationDecision(
+                        optimizationDecision.writeId,
+                        optimizationDecision.writerId,
+                        settings.voiceInputResourceOptimizationEnabled
+                    );
+                    if (
+                        bootMeta.optimizationDecisionPendingSync
+                        && typeof settings.voiceInputResourceOptimizationEnabled
+                            === 'boolean'
+                    ) {
+                        _optimizationDecisionPendingSync = true;
+                        _dirtySettingsKeys.add(
+                            'voiceInputResourceOptimizationEnabled'
+                        );
+                        _pendingSettingsKeys.add(
+                            'voiceInputResourceOptimizationEnabled'
+                        );
+                        S.settingsHydrated = true;
+                        S.voiceInputResourceOptimizationAuthoritative = true;
+                    }
                 }
 
                 // 迁移逻辑：检测旧版设置并迁移到新字段
@@ -937,6 +1897,8 @@
                 S.focusModeEnabled = settings.focusModeEnabled ?? false;
                 S.focusCognitionEnabled = settings.focusCognitionEnabled ?? true;
                 S.independentAsrEnabled = settings.independentAsrEnabled ?? false;
+                S.voiceInputResourceOptimizationEnabled =
+                    settings.voiceInputResourceOptimizationEnabled ?? true;
                 S.avatarReactionBubbleEnabled = settings.avatarReactionBubbleEnabled ?? true;
                 S.slopFilterEnabled = settings.slopFilterEnabled ?? true;
                 S.proactiveChatInterval = settings.proactiveChatInterval ?? C.DEFAULT_PROACTIVE_CHAT_INTERVAL;
@@ -1087,6 +2049,7 @@
         // Until the first merge lands, POST bodies stay restricted to the
         // user-dirty keys so they cannot overwrite the server-persisted
         // preferences this client has not read yet.
+        const mutationVersionAtGetStart = _crossWindowMutationVersion;
         try {
             const mergeSettled = loadSettingsFromServer().then(serverResult => {
                 if (!serverResult) return;
@@ -1099,6 +2062,7 @@
                 // now holds either server truth or a user change the field-level
                 // merge preserved — authoritative for the handshake either way.
                 S.independentAsrAuthoritative = true;
+                S.voiceInputResourceOptimizationAuthoritative = true;
                 // Distinct from the hydration mark above (which a user action
                 // also sets, because a user choice is authoritative for the
                 // handshake even before any GET): THIS flag means server values
@@ -1111,8 +2075,67 @@
                 // nothing a full write could clobber (and the first-launch
                 // forced push below depends on it).
                 _settingsMergedFromServer = true;
-                const serverSettings = serverResult.settings;
+                const serverSnapshotOlderThanCurrent =
+                    Number.isInteger(serverResult.revision)
+                    && Number.isInteger(_conversationSettingsRevision)
+                    && serverResult.revision < _conversationSettingsRevision;
+                const serverSettings = serverSnapshotOlderThanCurrent
+                    ? null
+                    : _serverSettingsForMerge(serverResult);
                 const telemetryBranch = serverResult.telemetryBranch;
+                const rawServerAsrDecision = serverSnapshotOlderThanCurrent
+                    ? null
+                    : _serverAsrDecision(serverResult);
+                const resetReplacesAsrDecision =
+                    !serverSnapshotOlderThanCurrent
+                    && serverResult.reset === true
+                    && serverSettings
+                    && typeof serverSettings.independentAsrEnabled === 'boolean'
+                    && !_pendingSettingsKeys.has('independentAsrEnabled')
+                    && (_crossWindowKeyMutationVersions.independentAsrEnabled || 0)
+                        <= mutationVersionAtGetStart;
+                if (resetReplacesAsrDecision) {
+                    _rebaseAsrDecisionForReset(
+                        rawServerAsrDecision,
+                        serverSettings.independentAsrEnabled
+                    );
+                }
+                const serverAsrDecision = serverResult.reset === true
+                    ? null
+                    : rawServerAsrDecision;
+                // A cross-window toggle can reach localStorage before its POST
+                // reaches the server. In that window the local decision tuple is
+                // newer than the GET snapshot, so the generic field merge must
+                // not copy the older server value into S before the decision
+                // merge gets a chance to reject it.
+                const preserveLocalAsrDecision =
+                    !serverSnapshotOlderThanCurrent
+                    && serverResult.reset === true
+                    ? !resetReplacesAsrDecision
+                    : !!(_lastAsrDecision
+                    && (!serverAsrDecision
+                        || _asrDecisionOutranks(_lastAsrDecision, serverAsrDecision)));
+                const serverSnapshotNewerThanCurrent =
+                    (!serverSnapshotOlderThanCurrent
+                        && serverResult.reset === true)
+                    || (Number.isInteger(serverResult.revision)
+                        && Number.isInteger(_conversationSettingsRevision)
+                        && serverResult.revision > _conversationSettingsRevision);
+                const shouldAdoptServerVersion =
+                    !Number.isInteger(_conversationSettingsRevision)
+                    || (Number.isInteger(serverResult.revision)
+                        && serverResult.revision
+                            >= _conversationSettingsRevision);
+                if (serverResult.etag && shouldAdoptServerVersion) {
+                    _conversationSettingsEtag = serverResult.etag;
+                    if (Number.isInteger(serverResult.revision)) {
+                        _conversationSettingsRevision = serverResult.revision;
+                    }
+                    _SHARED_SETTINGS_KEYS.forEach((key) => {
+                        _conversationSettingsEtagKeyMutationVersions[key] =
+                            mutationVersionAtGetStart;
+                    });
+                }
                 let hasUpdate = false;
 
                 // 只要 server 给了 branch，本次首启决议就算完成，清掉 pending marker；下次
@@ -1131,6 +2154,7 @@
                     hasUpdate = true;
                 }
 
+                const acceptedSharedSettings = {};
                 if (serverSettings) {
                     // Field-level merge (Codex P2): apply server values to the
                     // keys the user never touched, preserve the dirty ones. A
@@ -1141,19 +2165,51 @@
                     // snapshot into the POSTed truth.
                     for (const key of Object.keys(serverSettings)) {
                         if (serverSettings[key] === undefined) continue;
-                        if (_dirtySettingsKeys.has(key)) continue;
-                        if (S[key] !== serverSettings[key]) {
+                        if (_pendingSettingsKeys.has(key)) continue;
+                        if (_dirtySettingsKeys.has(key)
+                            && !serverSnapshotNewerThanCurrent) continue;
+                        if ((_crossWindowKeyMutationVersions[key] || 0)
+                            > mutationVersionAtGetStart) continue;
+                        if (key === 'independentAsrEnabled' && preserveLocalAsrDecision) continue;
+                        if (_SHARED_SETTINGS_KEYS.indexOf(key) !== -1
+                            || key === 'userLanguage') {
+                            acceptedSharedSettings[key] = serverSettings[key];
+                        } else if (S[key] !== serverSettings[key]) {
                             S[key] = serverSettings[key];
                             hasUpdate = true;
                         }
                     }
+                    if (applySharedRuntimeSettings(acceptedSharedSettings)) {
+                        hasUpdate = true;
+                    }
                     // Subtitle bridge mirrors follow the same dirty gating so
                     // a user-changed subtitle preference survives the merge.
-                    if (serverSettings.subtitleEnabled !== undefined && !_dirtySettingsKeys.has('subtitleEnabled') && window.subtitleBridge) {
+                    if (serverSettings.subtitleEnabled !== undefined
+                        && !_pendingSettingsKeys.has('subtitleEnabled')
+                        && (!_dirtySettingsKeys.has('subtitleEnabled')
+                            || serverSnapshotNewerThanCurrent)
+                        && window.subtitleBridge) {
                         window.subtitleBridge.setSubtitleEnabled(serverSettings.subtitleEnabled);
                     }
-                    if (serverSettings.userLanguage !== undefined && !_dirtySettingsKeys.has('userLanguage') && window.subtitleBridge) {
+                    if (serverSettings.userLanguage !== undefined
+                        && !_pendingSettingsKeys.has('userLanguage')
+                        && (!_dirtySettingsKeys.has('userLanguage')
+                            || serverSnapshotNewerThanCurrent)
+                        && window.subtitleBridge) {
                         window.subtitleBridge.setUserLanguage(serverSettings.userLanguage);
+                    }
+                }
+                if (!serverSnapshotOlderThanCurrent
+                    && serverResult.reset !== true
+                    && serverResult.decisions) {
+                    const previousAsr = S.independentAsrEnabled;
+                    const adoptedAsrDecision = _adoptServerAsrDecision({
+                        settings: serverSettings,
+                        decisions: serverResult.decisions
+                    });
+                    if (adoptedAsrDecision
+                        || S.independentAsrEnabled !== previousAsr) {
+                        hasUpdate = true;
                     }
                 }
 
@@ -1183,7 +2239,12 @@
                     window.proactiveVisionInterval = S.proactiveVisionInterval;
                     window.textGuardMaxLength = S.textGuardMaxLength;
                     // 同步回 localStorage
-                    saveSettings();
+                    saveSettings({
+                        serverMerged: true,
+                        serverAuthoritativeKeys: Object.keys(
+                            acceptedSharedSettings
+                        )
+                    });
                     // 重新初始化主动搭话调度器（使用最新标志）
                     if (typeof window.appProactive !== 'undefined' && window.appProactive.scheduleProactiveChat) {
                         window.appProactive.scheduleProactiveChat();
@@ -1246,6 +2307,10 @@
             // Cross-window independent-ASR flips are authoritative (Codex P2):
             // detect the flip BEFORE applySharedRuntimeSettings mutates S.
             const meta = _readSharedWriteMeta(settings);
+            const writeIdFloorBeforeIncoming = Math.max(
+                _lastSharedWriteId,
+                _lastAppliedSharedWriteId
+            );
             const asrValueDiffers =
                 Object.prototype.hasOwnProperty.call(settings, 'independentAsrEnabled') &&
                 S.independentAsrEnabled !== settings.independentAsrEnabled;
@@ -1279,6 +2344,54 @@
                 ? (asrValueDiffers && asrMarkedExplicit && asrWriteIsNewer
                     && asrOutranksLocalChoice)
                 : asrValueDiffers;
+            const optimizationKey = 'voiceInputResourceOptimizationEnabled';
+            const optimizationValueDiffers =
+                Object.prototype.hasOwnProperty.call(settings, optimizationKey)
+                && S[optimizationKey] !== settings[optimizationKey];
+            const optimizationMarkedExplicit = !!meta
+                && meta.changedKeys.indexOf(optimizationKey) !== -1;
+            const optimizationWriteIsNewer = !meta
+                || meta.writeId > _lastAppliedSharedWriteId
+                || (
+                    meta.writeId === _lastAppliedSharedWriteId
+                    && optimizationMarkedExplicit
+                );
+            const optimizationOutranksLocalChoice =
+                !meta || _optimizationWriteOutranksLocalChoice(meta);
+            // Like independentAsrEnabled, this key is copied into every shared
+            // snapshot. With metadata, only an explicit user change may alter
+            // another window; otherwise an unhydrated writer's boot default
+            // could overwrite a server-merged preference incidentally.
+            const optimizationChangedByOtherWindow = meta
+                ? (
+                    optimizationValueDiffers
+                    && optimizationMarkedExplicit
+                    && optimizationWriteIsNewer
+                    && optimizationOutranksLocalChoice
+                )
+                : optimizationValueDiffers;
+            const optimizationSyncAcknowledgesLocalDecision = !!meta
+                && !!meta.optimizationDecision
+                && meta.optimizationDecisionPendingSync === false
+                && !!_lastOptimizationDecision
+                && meta.optimizationDecision.writeId
+                    === _lastOptimizationDecision.writeId
+                && meta.optimizationDecision.writerId
+                    === _lastOptimizationDecision.writerId
+                && meta.optimizationDecision.value
+                    === _lastOptimizationDecision.value;
+            if (optimizationSyncAcknowledgesLocalDecision) {
+                _optimizationDecisionPendingSync = false;
+            }
+            const activeRouteBeforeSharedVoiceChange = S.voiceChatActive === true
+                ? (
+                    S.independentAsrActive === true
+                    || (
+                        S.voiceInputLifecycleState === 'blocked'
+                        && S.independentAsrEnabled === true
+                    )
+                )
+                : null;
             // Drop the key from the apply set when the snapshot's ASR value
             // carries neither user intent nor trustworthy server truth: an
             // already-superseded write, or one made before its own window
@@ -1290,15 +2403,199 @@
                 && !asrChangedByOtherWindow
                 && (!asrWriteIsNewer || !asrOutranksLocalChoice
                     || (!meta.asrAuthoritative && S.settingsHydrated === true));
+            const optimizationValueIsStale = !!meta
+                && optimizationValueDiffers
+                && (
+                    !optimizationChangedByOtherWindow
+                    || !optimizationOutranksLocalChoice
+                );
             if (meta && meta.writeId > _lastAppliedSharedWriteId) {
                 _lastAppliedSharedWriteId = meta.writeId;
             }
             let incoming = settings;
-            if (asrValueIsStale) {
+            if (asrValueIsStale || optimizationValueIsStale) {
                 incoming = Object.assign({}, settings);
-                delete incoming.independentAsrEnabled;
+                if (asrValueIsStale) delete incoming.independentAsrEnabled;
+                if (optimizationValueIsStale) delete incoming[optimizationKey];
             }
+            if (meta) {
+                for (const key of meta.changedKeys) {
+                    if (key === 'independentAsrEnabled') continue;
+                    if (!Object.prototype.hasOwnProperty.call(
+                        incoming,
+                        key
+                    )) continue;
+                    const localToken = _knownSharedKeyWrites[key];
+                    const incomingToken = meta.knownKeyWrites[key];
+                    const localServerRevision =
+                        _knownServerKeyRevisions[key];
+                    const incomingPredatesServerFloor =
+                        Number.isInteger(localServerRevision)
+                        && incomingToken
+                        && Number.isInteger(
+                            incomingToken.confirmedRevision
+                        )
+                        && incomingToken.confirmedRevision
+                            < localServerRevision;
+                    if (incomingPredatesServerFloor
+                        || (localToken
+                            && !_sharedWriteTokenOutranks(meta, localToken)
+                            && !_sharedWriteTokensEqual(meta, localToken))) {
+                        if (incoming === settings) {
+                            incoming = Object.assign({}, settings);
+                        }
+                        delete incoming[key];
+                    }
+                }
+            }
+            const serverMergePredatesLocalWrite = !!meta
+                && meta.changedKeys.length === 0
+                && !meta.knownKeyWritesPresent
+                && meta.writeId <= writeIdFloorBeforeIncoming;
+            if (serverMergePredatesLocalWrite) {
+                if (incoming === settings) incoming = Object.assign({}, settings);
+                // Compatibility for snapshots written before knownKeyWrites:
+                // once this window has written a newer snapshot, an older merge
+                // arriving late must not roll confirmed local values back. New
+                // peers use the per-key provenance check below instead. ASR
+                // keeps its independent decision-tuple ordering above.
+                for (const key of _SHARED_SETTINGS_KEYS) {
+                    if (key === 'independentAsrEnabled') continue;
+                    delete incoming[key];
+                }
+            }
+            if (meta && meta.knownKeyWritesPresent) {
+                for (const key of _SHARED_SETTINGS_KEYS) {
+                    if (key === 'independentAsrEnabled') continue;
+                    if (!Object.prototype.hasOwnProperty.call(incoming, key)) continue;
+                    const localToken = _knownSharedKeyWrites[key];
+                    const mergeToken = meta.knownKeyWrites[key];
+                    const serverAuthoritative =
+                        Number.isInteger(meta.serverRevision)
+                        && meta.serverAuthoritativeKeys.indexOf(key) !== -1;
+                    if (serverAuthoritative) {
+                        let confirmedRevision = localToken
+                            && Number.isInteger(localToken.confirmedRevision)
+                            ? localToken.confirmedRevision
+                            : null;
+                        if (_sharedWriteTokensEqual(localToken, mergeToken)
+                            && Number.isInteger(
+                                mergeToken.confirmedRevision
+                            )) {
+                            confirmedRevision = Math.max(
+                                Number.isInteger(confirmedRevision)
+                                    ? confirmedRevision
+                                    : 0,
+                                mergeToken.confirmedRevision
+                            );
+                        }
+                        const localServerRevision =
+                            _knownServerKeyRevisions[key];
+                        const serverSnapshotIsOlder =
+                            (Number.isInteger(_conversationSettingsRevision)
+                                && meta.serverRevision
+                                    < _conversationSettingsRevision)
+                            || (localToken
+                                && !Number.isInteger(confirmedRevision))
+                            || (Number.isInteger(confirmedRevision)
+                                && meta.serverRevision
+                                    < confirmedRevision)
+                            || (Number.isInteger(localServerRevision)
+                                && meta.serverRevision
+                                    < localServerRevision);
+                        if (serverSnapshotIsOlder) {
+                            if (incoming === settings) {
+                                incoming = Object.assign({}, settings);
+                            }
+                            delete incoming[key];
+                        }
+                        continue;
+                    }
+                    // The merge envelope may be newer while this particular
+                    // field still predates an explicit write already accepted
+                    // here. Apply only when the sender's per-key provenance is
+                    // at least as new as ours.
+                    if (localToken
+                        && !_sharedWriteTokenOutranks(mergeToken, localToken)
+                        && !(mergeToken
+                            && mergeToken.writeId === localToken.writeId
+                            && mergeToken.writerId === localToken.writerId)) {
+                        if (incoming === settings) incoming = Object.assign({}, settings);
+                        delete incoming[key];
+                    }
+                }
+            }
+            const pendingKeysToReassert = [];
+            if (meta) {
+                // Keep this as for...of: static listener-contract tests slice
+                // at the first callback terminator.
+                for (const key of _pendingSettingsKeys) {
+                    // A full snapshot carries incidental copies of every other
+                    // key. A sender-declared edit supersedes local pending
+                    // intent only when its per-key token is at least as new.
+                    const localToken = _knownSharedKeyWrites[key];
+                    const incomingIsExplicit =
+                        meta.changedKeys.indexOf(key) !== -1;
+                    const incomingCanSupersede = incomingIsExplicit
+                        && (!localToken
+                            || _sharedWriteTokenOutranks(meta, localToken)
+                            || (meta.writeId === localToken.writeId
+                                && meta.writerId === localToken.writerId));
+                    if (incomingCanSupersede) continue;
+                    if (!Object.prototype.hasOwnProperty.call(settings, key)) continue;
+                    if (Object.prototype.hasOwnProperty.call(incoming, key)) {
+                        if (incoming === settings) incoming = Object.assign({}, settings);
+                        delete incoming[key];
+                    }
+                    pendingKeysToReassert.push(key);
+                }
+            }
+            _noteCrossWindowMutations(incoming, meta ? meta.changedKeys : null);
             const changed = applySharedRuntimeSettings(incoming);
+            if (meta) {
+                _rememberKnownSharedKeyWrites(meta.knownKeyWrites, incoming);
+                _rememberServerKeyRevisions(
+                    meta.serverKeyRevisions,
+                    incoming
+                );
+                _rememberSharedKeyWrites(meta.changedKeys, meta, incoming);
+                for (const key of meta.serverAuthoritativeKeys) {
+                    if (Object.prototype.hasOwnProperty.call(incoming, key)) {
+                        _rememberServerKeyRevisions({
+                            [key]: meta.serverRevision
+                        }, incoming);
+                    }
+                }
+                if (Number.isInteger(meta.serverRevision)) {
+                    if (!Number.isInteger(_conversationSettingsRevision)
+                        || meta.serverRevision > _conversationSettingsRevision) {
+                        _conversationSettingsRevision = meta.serverRevision;
+                        _conversationSettingsEtag =
+                            `"conversation-settings-${meta.serverRevision}"`;
+                    }
+                    if (meta.serverRevision === _conversationSettingsRevision) {
+                        for (const key of meta.serverAuthoritativeKeys) {
+                            if (!Object.prototype.hasOwnProperty.call(
+                                incoming,
+                                key
+                            )) continue;
+                            _conversationSettingsEtagKeyMutationVersions[key] =
+                                _crossWindowKeyMutationVersions[key] || 0;
+                        }
+                    }
+                }
+            }
+            if (meta && meta.asrDecision
+                && Object.prototype.hasOwnProperty.call(
+                    incoming,
+                    'independentAsrEnabled'
+                )
+                && incoming.independentAsrEnabled === meta.asrDecision.value) {
+                _adoptAsrDecisionTuple(
+                    meta.asrDecision,
+                    Number.isInteger(meta.serverRevision)
+                );
+            }
             // Roll the dirty-diff baseline for every key just adopted from
             // another window. _markUserDirtySettings diffs against this
             // baseline, so without the roll a value this window merely
@@ -1349,9 +2646,58 @@
                     _noteAsrDecision(adopted.writeId, adopted.writerId, settings.independentAsrEnabled);
                 }
             }
+            if (optimizationChangedByOtherWindow) {
+                // Preserve a genuine cross-window toggle across this window's
+                // still-pending server merge without granting unrelated fields
+                // handshake authority or emitting a duplicate POST.
+                S.settingsHydrated = true;
+                S.voiceInputResourceOptimizationAuthoritative = true;
+                _dirtySettingsKeys.add(optimizationKey);
+                _optimizationDecisionPendingSync = !meta
+                    || meta.optimizationDecisionPendingSync;
+                if (meta) {
+                    const adopted = meta.optimizationDecision || meta;
+                    _noteOptimizationDecision(
+                        adopted.writeId,
+                        adopted.writerId,
+                        settings[optimizationKey]
+                    );
+                }
+            }
+            if (asrChangedByOtherWindow || optimizationChangedByOtherWindow) {
+                const targetEpoch = (Number(S.voiceSessionStartEpoch) || 0) + 1;
+                if (
+                    asrChangedByOtherWindow
+                    && (
+                        S.voiceSettingsPendingUntilEpoch !== targetEpoch
+                        || S.pendingVoiceRouteIndependentAsr === null
+                    )
+                ) {
+                    S.pendingVoiceRouteIndependentAsr =
+                        activeRouteBeforeSharedVoiceChange;
+                }
+                S.voiceSettingsPendingUntilEpoch = targetEpoch;
+                window.dispatchEvent(new CustomEvent(
+                    'neko:voice-settings-pending-changed'
+                ));
+            }
             stopVisionAfterPrivacyEnabled();
             if (changed && typeof window.scheduleProactiveChat === 'function') {
                 window.scheduleProactiveChat();
+            }
+            if (pendingKeysToReassert.length > 0 && !(meta && meta.pendingRecovery)) {
+                // A server-merge broadcast can have been built before this
+                // window's latest pending edit reached its sender. Restore the
+                // local full snapshot without claiming a NEW user edit. Mark it
+                // as a one-hop recovery: another pending window still filters
+                // its own values, but does not answer with another recovery and
+                // start a localStorage ping-pong. The already queued user sync
+                // remains the sole server writer.
+                saveSettings({
+                    skipServerSync: true,
+                    serverMerged: true,
+                    pendingRecovery: true
+                });
             }
         } catch (error) {
             console.warn('[app-settings] 跨窗口设置同步失败:', error);

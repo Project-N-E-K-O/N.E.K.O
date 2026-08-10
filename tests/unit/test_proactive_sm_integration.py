@@ -205,6 +205,74 @@ def _make_voice_sess(*, is_responding=False, inject=None):
     return sess
 
 
+def _make_voice_sess_with_real_gate():
+    """``_make_voice_sess`` variant that keeps the REAL ``is_active_response``.
+
+    The stock fixture pins ``is_active_response`` to ``_is_responding`` alone,
+    which silently erases the other half of the production gate — since #2345
+    it is ``bool(self._is_responding or self._ensure_response_arbiter()
+    .is_busy)``. Every test built on the stock fixture is structurally blind
+    to arbiter-held busyness (queued tickets, a live server response, a
+    pending server-VAD response). Keep using the stock fixture for SM contract
+    tests; use THIS variant when the assertion is about the gate itself.
+
+    Deleting the instance attribute re-exposes the class method, whose
+    ``_ensure_response_arbiter()`` lazily builds a real arbiter on the
+    ``__new__``-built double (its ``send_event`` bound method exists and is
+    never called by these tests).
+    """
+    sess = _make_voice_sess()
+    del sess.is_active_response
+    return sess
+
+
+async def test_voice_gate_sees_arbiter_busyness_not_just_the_responding_flag():
+    """A live server-side response makes the arbiter busy while
+    ``_is_responding`` is still False (the flag flips on response.created via
+    the transport, which these doubles never run). The proactive gate must
+    defer on arbiter busyness alone — and deliver once the lane clears, so
+    the deferral is attributable to the gate rather than to any other
+    precondition. Mutation check: reverting ``is_active_response`` to
+    ``bool(self._is_responding)`` turns the first half red while every test
+    on the stock fixture stays green — that enduring green is the fixture
+    blind spot documented on ``_make_voice_sess_with_real_gate``."""
+    sess = _make_voice_sess_with_real_gate()
+    mgr = _make_mgr(session=sess)
+    cb = {
+        "_callback_delivery_id": "id-arbiter-busy",
+        "status": "completed",
+        "summary": "task done",
+    }
+    mgr.pending_agent_callbacks = [cb]
+
+    assert sess._is_responding is False
+    sess._ensure_response_arbiter().notify_response_created(
+        {"type": "response.created", "response": {"id": "srv-1"}}
+    )
+    assert sess.is_active_response() is True
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+
+    assert delivered is False
+    assert sess.inject_calls == 0, (
+        "the gate must defer while the arbiter holds a live server response"
+    )
+    assert mgr.pending_agent_callbacks == [cb], "deferred callbacks must be retained"
+
+    # The dual: once the lane clears the very same delivery goes through,
+    # proving the deferral above was the arbiter gate and nothing else.
+    sess._response_arbiter.notify_response_terminal(
+        {"type": "response.done", "response": {"id": "srv-1"}}
+    )
+    assert sess.is_active_response() is False
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+
+    assert delivered is True
+    assert sess.inject_calls == 1
+    assert mgr.pending_agent_callbacks == []
+
+
 async def test_voice_nudge_waits_for_callback_inject_lock():
     sess = _make_voice_sess()
     sess._proactive_inject_awaiting_outcome = False
@@ -1635,7 +1703,9 @@ def test_start_session_success_path_clears_goodbye_silent_gate():
     normalized_source = re.sub(r"\s+", " ", _read_core_package_source())
     success_marker = "self._session_start_circuit_open = False"
     clear_marker = "if self.is_goodbye_silent(): self.set_goodbye_silent(False)"
-    notify_marker = "await self.send_session_started(input_mode)"
+    # The ack now names the start it answers (#2539), so match the call opener
+    # rather than the whole call: the args are not what this guard is about.
+    notify_marker = "await self.send_session_started(input_mode"
 
     clear_pos = normalized_source.index(clear_marker)
     success_pos = normalized_source.rindex(success_marker, 0, clear_pos)

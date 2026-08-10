@@ -1,51 +1,83 @@
-# NEKO Live 文档索引
+# NEKO Live 文档
 
-这里是 `neko_live` 的文档地图。每类事实只保留一个权威来源；其他文档只做摘要和链接，避免同一状态在多处逐渐失真。
+本文是 `neko_live` 文档地图和维护路由。它只说明“去哪份文档找权威信息”，不复制架构规范、运行步骤或路线图细节。
 
-## 从哪里开始
+## 使用文档
 
-| 读者 | 先读 | 用途 |
+- [快速开始](quickstart.md)：主播和开发者的实际使用流程。用户可见步骤、按钮、操作顺序、运行注意事项以这里为准。
+- [猫猫独播体验指南](solo-stream-test-guide.md)：给组长、内测主播或接手开发者的 `solo_stream` 试播 runbook。只保留启动、连接、dry_run、真实输出、监控和通过标准。
+- [人猫同播验收 Runbook](co-stream-verification-runbook.md)：真机测试恢复时逐条验收同播行为的 runbook，覆盖话权三态、打断与有界补偿、被动上下文投递和房间共识字段。
+- [人猫同播正确性问题台账](co-stream-correctness-issue-ledger-2026-07-26.md)：CSL-001~014 的在途问题记录与验收场景 A–F；记录问题证据，不代表已全部修复。
+- [直播效果文献与案例研究](live-effect-literature-research-report.md)：文献与热门 VTuber 案例归纳的效果机制，作为研究记录；不是当前实现契约。
+
+## 开发文档
+
+- [开发者指南（从这里开始）](developer-guide.md)：新开发者入口。负责心智模型、最短阅读路径、第一周建议和常见入口导航。
+- [开发文档](development.md)：长期开发规范和架构契约的权威来源。负责模块边界、pipeline、数据边界、测试门禁、协作规范和文档更新要求。
+- [Independent Mode Product Plan](independent-mode-product-plan.md)：Independent Mode 的产品路线权威来源。负责产品命题、当前阶段开发分工、Slice 顺序、MVP、非目标和内测节奏。
+- [贡献指南](contributing.md)：给第一次参与 NEKO Live 开发者的一页式入口。负责分支 / PR 起步、低风险任务、高风险 review gate 和提交前检查的短路径；完整规则仍链接到 `development.md` 与 `AGENTS.md`。
+- [Runtime Observability](runtime-observability.md)：运行态观测语言的权威来源。负责 Runtime Timeline、Stage、Event Outcome、Skip Reason、Monitor Signal 和 Dashboard Visibility。
+- [开发总结与路线图](live-center-roadmap.md)：阶段目标、已完成进度和下一阶段路线。只记录“做到哪、接下来做什么”，不维护详细架构规范或运行 runbook。
+- [旧 `bilibili_danmaku` 能力迁移矩阵](bilibili-danmaku-migration-matrix.md)：逐项记录旧插件 47 个公开入口和内部能力的替代、吸收、独立插件或废弃决策；旧插件退役前必须以此关闭前置项。
+- [UI 与模块贡献架构基线](ui-architecture.md)：面板 UI、模块贡献模型、`config_schema`、Hosted UI 约束和渐进组件化规则。
+- [2026-07-13 UI / UX 研究记录](ui-ux-research-2026-07-13.md)：重构前问题证据、外部案例和重构后的落实状态；只作为研究记录，当前 UI 规范仍以 `ui-architecture.md` 为准。
+- [2026-07-13 UI 设计验收记录](ui-design-qa-2026-07-13.md)：主播控制台重构的历史截图验收结论；只作为验收证据，不覆盖当前 UI 规范或后续实现状态。
+- [开发日志](devlog.md)：宿主 / SDK 侧历史问题、跨层事故、迁移原因和兼容取舍。
+- [Pipeline Split](pipeline-split.md)：已完成的 pipeline 兼容拆分说明；记录 facade 与 helper 模块之间必须持续保持的契约。
+- [输出契约与弹幕回复模块](modules/output_contract.md)：普通弹幕分类、提示词、回复质量、长度整形和 dispatcher 输出边界。
+- [直播主持流程](modules/live_hosting.md)：暖场、冷场、主动营业的选择、门禁、去重和 pipeline 边界。
+- [直播间上下文与导播](modules/live_room_context.md)：近期弹幕事实、RoomPulse、SceneState、联播被动上下文、RoomVerdict 与仍待可靠宿主信号的同播发言权边界。
+- [主动话题材料](modules/active_topic_materials.md)：话题 family、profile、pack、轮换 shape 的归属、契约和降级边界。
+- [主动营业内容目录](modules/active_content_catalogs.md)：静态 fallback 话题目录、公共访问器以及 host 目录未落地时的降级边界。
+- [AI/IDE 开发规则](../AGENTS.md)：面向 IDE agent、自动化 reviewer 和贡献者的硬性维护规则。
+
+## 模块文档
+
+- [live_events](modules/live_events.md)：直播事件窗口择优、冷却期候选选择、弹幕低质过滤、主题凝练、回复技巧提示和运行期观众偏好提示。
+- [live_room_context](modules/live_room_context.md)：在 `live_events` 既有有界窗口上实现 RoomPulse、独播 SceneState、同播被动上下文、RitualMemory 与 RoomVerdict，并记录可靠 host-turn / playback backflow 的后续边界。
+- [live_support_events](modules/live_support_events.md)：Gift / SC / Guard 的可信证据、有界优先调度、原子派发所有权、短句致谢和“提交不等于播放完成”边界。
+- [douyin_live_ingest](modules/douyin_live_ingest.md)：抖音只读 live provider、公开投影脱敏、内置托管 douyinLive bridge、事件归一化、bridge-only 可替换后端边界，以及未纳入 v1 的自动登录/签名边界。
+- [宿主内容目录](modules/host_content_catalogs.md)：静态 idle-hosting beat、数据回退与共享素材接口。
+- [直播状态助手](modules/live_status_helpers.md)：连接与活跃状态的就绪度、计时、主持状态判定、导播下一步投影与主题上下文投影，纯计算无副作用。
+- [本场观众统计](modules/live_audience_session.md)：单次监听会话的互动人数、弹幕、支持事件、NEKO 发言和最近互动观众的有界内存投影。
+- [观众与安全存储](modules/viewer_stores.md)：观众档案、审计脱敏与加密凭据命名空间。
+
+## Canonical Source
+
+
+同一种事实只能有一个权威来源；其他文档只链接引用，不复制规范。
+
+| 事实类型 | 权威文档 | 其他文档如何处理 |
 |---|---|---|
-| 第一次使用的主播 | [快速开始](quickstart.md) | 登录、确认直播间、开始与结束直播 |
-| 内测主播 | [猫猫独播体验指南](solo-stream-test-guide.md) | 低风险真机试播、观察点和关停步骤 |
-| 第一次接手的开发者 | [开发者指南](developer-guide.md) | 五分钟建立架构心智模型并找到代码入口 |
-| 准备贡献代码的人 | [贡献指南](contributing.md) | 选任务、建分支、提交 PR 和必查清单 |
+| 项目定位、用户入口、当前不做 | `../README.md` | 只链接，不复述完整定位 |
+| 用户/主播操作流程 | `quickstart.md` | 只给入口链接 |
+| 猫猫独播试播 runbook | `solo-stream-test-guide.md` | quickstart 只给入口链接 |
+| 同播真机验收步骤 | `co-stream-verification-runbook.md` | 其他文档只给入口链接 |
+| 同播正确性在途问题 | `co-stream-correctness-issue-ledger-2026-07-26.md` | 修复完成后须同步清理模块文档与测试名 |
+| Independent Mode 产品路线、当前阶段开发分工、MVP、内测节奏 | `independent-mode-product-plan.md` | roadmap 只保留阶段指针 |
+| 新开发者阅读路径 | `developer-guide.md` | 不在 roadmap 中重复 onboarding |
+| 新贡献者分支 / PR 起步、任务选择和交付检查 | `contributing.md` | 完整协作规则仍以 `development.md` / `AGENTS.md` 为准 |
+| 架构边界、模块边界、数据边界 | `development.md` | roadmap / guide 只写摘要并链接 |
+| 运行态观测语言、Skip Reason、Monitor Signal | `runtime-observability.md` | development / AGENTS 只写入口和必查项 |
+| 协作规范、PR 规则、测试门禁、文档要求 | `development.md` | `AGENTS.md` 保留可执行硬规则摘要 |
+| Agent 硬规则和 Reviewer Checklist | `../AGENTS.md` | `development.md` 解释背景和理由 |
+| UI 架构、模块 UI 贡献、Hosted UI 限制、`panel_compat.tsx` 兼容入口策略 | `ui-architecture.md` | `development.md` 只保留测试门禁和短约束 |
+| 阶段目标、完成状态、下一阶段顺序 | `live-center-roadmap.md` | 不承载详细开发规范 |
+| 宿主 / SDK 历史事故和取舍 | `devlog.md` | roadmap 只保留状态链接 |
 
-## 权威文档
+## 文档更新路由
 
-| 事实类型 | 权威来源 |
-|---|---|
-| 产品定位、当前能力、明确不做 | [`../README.md`](../README.md) |
-| 主播操作流程 | [quickstart.md](quickstart.md) |
-| 架构、不变量、模块边界、隐私、安全、测试门禁 | [development.md](development.md) |
-| UI 分区、Hosted UI 兼容入口、刷新与交互约束 | [ui-architecture.md](ui-architecture.md) |
-| Timeline、Outcome、Skip Reason、Dashboard/monitor 投影 | [runtime-observability.md](runtime-observability.md) |
-| Independent Mode 的产品目标、范围和验收 | [independent-mode-product-plan.md](independent-mode-product-plan.md) |
-| 当前阶段、下一步、延期项 | [live-center-roadmap.md](live-center-roadmap.md) |
-| 旧 `bilibili_danmaku` 能力去留 | [bilibili-danmaku-migration-matrix.md](bilibili-danmaku-migration-matrix.md) |
-
-## 模块参考
-
-- [live_events](modules/live_events.md)：事件窗口、候选选择和低价值过滤。
-- [live_support_events](modules/live_support_events.md)：可信礼物 / SC / Guard 的去重、连击和短句致谢。
-- [live_audience_session](modules/live_audience_session.md)：本场直播的有界、脱敏统计。
-- [live_hosting](modules/live_hosting.md)：暖场、冷场与主动营业。
-- [output_contract](modules/output_contract.md)：回复长度、质量与唯一输出边界。
-- [viewer_stores](modules/viewer_stores.md)：观众档案、审计与凭据边界。
-- [douyin_live_ingest](modules/douyin_live_ingest.md)：实验性抖音只读 bridge 接入。
-- [twitch_live_ingest](modules/twitch_live_ingest.md)：TwitchIO Helix/EventSub 只读接入、Device Code Flow、加密 token、账号与目标频道分离，以及首阶段明确不做的首页/写能力边界。
-
-模块文档只描述该模块拥有的契约、数据、安全边界、测试和降级策略。跨模块总规则仍以 `development.md` 为准。
-
-## 更新路由
-
-- 改按钮、页面或主播操作顺序：更新 `quickstart.md`。
-- 改架构、数据、安全、协作或测试门禁：更新 `development.md`。
-- 改 UI 分区、状态刷新或 `panel_compat.tsx`：更新 `ui-architecture.md`。
-- 改运行态字段、跳过原因或监控语义：更新 `runtime-observability.md`。
-- 改产品范围或验收口径：更新 `independent-mode-product-plan.md`。
-- 改当前优先级或延期决定：更新 `live-center-roadmap.md`。
-- 改某个模块的输入、输出、存储或降级：更新对应 `modules/*.md`。
+- 改用户流程、按钮、操作顺序：更新 `quickstart.md`。
+- 改猫猫独播试播步骤、dry_run 使用和可执行 runbook：更新 `solo-stream-test-guide.md`；改 30 分钟发布验收的产品判定标准：更新 `independent-mode-product-plan.md`。
+- 改 Independent Mode 产品路线、当前阶段开发分工、MVP、非目标或内测节奏：更新 `independent-mode-product-plan.md`。
+- 改模块边界、pipeline、数据边界、协作规范、测试门禁：更新 `development.md`。
+- 改 Runtime Timeline、Stage、Event Outcome、Skip Reason、Monitor Signal 或 Dashboard Visibility：更新 `runtime-observability.md`。
+- 改新开发者入口或第一周路径：更新 `developer-guide.md`。
+- 改新贡献者的分支 / PR 起步、任务选择或交付检查短路径：更新 `contributing.md`；规则本身仍更新 `development.md` / `AGENTS.md`。
+- 改阶段目标、完成状态、下一阶段顺序：更新 `live-center-roadmap.md`。
+- 改面板结构、模块 UI 贡献模型、Hosted UI 约束或 `panel_compat.tsx` 兼容入口策略：更新 `ui-architecture.md`。
+- 发现宿主 / SDK 侧历史问题或跨层取舍：更新 `devlog.md`。
+- 改硬规则、禁止事项、Reviewer Checklist、必跑命令：更新 `../AGENTS.md`。
 
 不要把日期化的工作日志、聊天记录、截图验收过程或单次测试数字写进长期规范。需要保留的证据应放在 PR、issue 或发布记录中；文档只保留仍然有效的结论。
 

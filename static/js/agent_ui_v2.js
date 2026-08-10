@@ -654,7 +654,15 @@
         window.addEventListener('neko-popup-opening', async () => {
             state.popupOpen = true;
             render('popup');
-            refreshOpenClawAvailability().catch(() => {});
+            refreshOpenClawAvailability()
+                .catch(() => {})
+                .finally(() => {
+                    // The initial state request can beat the availability probe
+                    // and preserve its startup PENDING value.  Fetch the terminal
+                    // snapshot once the probe settles instead of requiring the
+                    // user to close and reopen the popup.
+                    if (state.popupOpen) fetchSnapshot().catch(() => {});
+                });
             if (!state.snapshot) {
                 await fetchSnapshot().catch(() => render('popup'));
                 return;

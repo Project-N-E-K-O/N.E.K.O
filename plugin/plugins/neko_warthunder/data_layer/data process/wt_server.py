@@ -105,7 +105,12 @@ _SPAWN_SUPPRESS_SEC = 10.0
 #   1) game_time_sec 在同一局内明显倒退（时间轴往回跳）——回放独有，实战恒单调递增；
 #   2) 进局 grace 秒后 mission_status 始终未出现 'running'，却已是终局/未定义态。
 _REPLAY_TIME_BACK_SEC = 5.0
+# 只有旧值在午夜前一小时、且新值在午夜后一小时，才按座舱时钟回绕处理。
+# 单凭“大幅倒退”会把回放从晚间拖到凌晨（例如 20:00 -> 01:00）误判为正常跨日。
+_SECONDS_PER_DAY = 86400.0
+_MIDNIGHT_WRAP_EDGE_SEC = 3600.0
 _REPLAY_MISSION_GRACE_SEC = 8.0
+_WORKER_JOIN_TIMEOUT_SECONDS = 2.0
 _TERMINAL_MISSION_STATUSES = frozenset({
     "win", "won", "victory", "success",
     "fail", "failed", "lost", "defeat",
@@ -235,6 +240,10 @@ class TelemetryService:
         self._last_deaths = 0                        # 上次见到的 combat.my.deaths（检测增量=新阵亡）
 
         self._running = False
+        # 关停信号：worker 用 wait() 代替 sleep()，stop() 才能在毫秒级唤醒线程，
+        # 而不是等到最长 5s(mapimg) 的睡眠自然结束——否则 join(2s) 必然超时返回，
+        # "stop() 已返回但线程还在跑"会让后续任何清理逻辑踩到竞态。
+        self._stop_event = threading.Event()
         self._threads: list[threading.Thread] = []
         self._battle_generation = 0
         # 8111 不提供官方 match/session id。每次确认 false->true 进入战局时生成本地 ID；
@@ -247,6 +256,15 @@ class TelemetryService:
     def start(self) -> None:
         if self._running:
             return
+        alive = [thread for thread in self._threads if thread.is_alive()]
+        if alive:
+            names = ", ".join(sorted({thread.name for thread in alive}))
+            raise RuntimeError(f"telemetry_workers_still_stopping: {names}")
+        self._threads = []
+        # 每一代 worker 捕获自己的停止事件。即使 stop() 在阻塞 I/O 上等待超时，
+        # 后续 start 也不能 clear 旧事件把遗留 worker 重新唤醒。
+        self._stop_event = threading.Event()
+        stop_event = self._stop_event
         self._running = True
         workers: list[tuple[str, Callable[..., None], bool]] = [
             ("fast", self._poll_fast, False),     # 状态探针，始终运行
@@ -257,7 +275,7 @@ class TelemetryService:
         for name, fn, require_battle in workers:
             th = threading.Thread(
                 target=self._worker,
-                args=(name, fn, require_battle),
+                args=(name, fn, require_battle, stop_event),
                 name=f"wt-{name}",
                 daemon=True,
             )
@@ -266,16 +284,26 @@ class TelemetryService:
 
     def stop(self) -> None:
         self._running = False
+        self._stop_event.set()
         for th in self._threads:
-            th.join(timeout=2.0)
+            th.join(timeout=_WORKER_JOIN_TIMEOUT_SECONDS)
+        # 保留尚未退出的线程引用，start() 会拒绝与它们重叠运行；线程从阻塞
+        # I/O 返回后会看到自己那一代已 set 的 Event 并自然退出。
+        self._threads = [thread for thread in self._threads if thread.is_alive()]
         if self.recorder.recording:
             self.recorder.stop()
 
     # -- 通用轮询循环 ------------------------------------------------------
 
-    def _worker(self, name: str, fn: Callable[[], None], require_battle: bool) -> None:
+    def _worker(
+        self,
+        name: str,
+        fn: Callable[[], None],
+        require_battle: bool,
+        stop_event: threading.Event,
+    ) -> None:
         interval = self.intervals[name]
-        while self._running:
+        while not stop_event.is_set():
             t0 = time.time()
             try:
                 if (not require_battle) or self._state is ConnectionState.IN_BATTLE:
@@ -293,7 +321,9 @@ class TelemetryService:
             except Exception as exc:  # 单组异常不影响其它组与整体循环
                 print(f"[{name}] 轮询出错（已忽略）：{exc!r}", file=sys.stderr)
             elapsed = time.time() - t0
-            time.sleep(max(0.0, interval - elapsed))
+            # 可中断等待：stop() set 事件后立刻返回，不必等满 interval。
+            if stop_event.wait(max(0.0, interval - elapsed)):
+                return
 
     # -- 各组采集（网络 IO 在锁外，仅缓存更新在锁内） ----------------------
 
@@ -382,9 +412,6 @@ class TelemetryService:
                 self._dead_crew_depleted_seen = False
                 self._dead_source = None
                 self._last_deaths = 0
-            # 回放检测（仅战局内；锁定式，命中后保持到离开战局）
-            if state is ConnectionState.IN_BATTLE and not self._replay:
-                self._detect_replay_locked(ind, now)
             # 阵亡待命态检测（仅战局内）
             respawned = False
             if state is ConnectionState.IN_BATTLE:
@@ -395,6 +422,13 @@ class TelemetryService:
                 self.processor.reset()
                 self._life_entry_ts = now
                 processed = None
+            # 回放检测（仅战局内；锁定式，命中后保持到离开战局）。
+            # 娱乐模式重生会换载具，座舱时钟可能跳变；确认重生后必须先建立新生命
+            # 的时钟基线，不能把跨生命的倒退误认为回放拖动时间轴。
+            if state is ConnectionState.IN_BATTLE and not self._replay:
+                if respawned:
+                    self._last_game_time = None
+                self._detect_replay_locked(ind, now)
             # 开局抑制窗口：进局前 _SPAWN_SUPPRESS_SEC 秒清空告警（保留派生量/数值），
             # 压掉 air RB 空中生成的失速/低高度等瞬态假警。
             # 阵亡待命态同样抑制告警（死车残骸/观战冻结会刷失速/乘员损失等假警）。
@@ -402,7 +436,10 @@ class TelemetryService:
                     self._dead
                     or (self._life_entry_ts is not None
                         and now - self._life_entry_ts < _SPAWN_SUPPRESS_SEC))):
-                processed = {**processed, "alerts": [], "flags": {}}
+                # level 由 alerts 的最高等级派生，清空 alerts 时必须一并降级；
+                # 否则 /api/processed、/api/alerts 会返回 {"level": "critical", "alerts": []}，
+                # 按 level 判断紧急程度的下游会读到被抑制掉的假警等级。
+                processed = {**processed, "alerts": [], "flags": {}, "level": "info"}
             self._processed = processed
         # 录制（调试开关）：按记录间隔转存一帧快照；未开启录制时近乎零开销
         self.recorder.offer_frame(self._build_record_frame)
@@ -422,7 +459,7 @@ class TelemetryService:
             self.processor.profiles,
             domain,
             getattr(ind, "vehicle_type", None),
-            getattr(self.processor, "_family_rules", []),
+            self.processor.resolve_profile,
         )
         now = time.time()
         # 阵亡待命态：地图“自身”坐标会漂到被观战者身上，敌距/接近全部失真，不再生成接近告警。
@@ -487,10 +524,16 @@ class TelemetryService:
                     poll_hud = False
                     if hud_recovery_cursor is None:
                         self.client.restore_hud_cursors(cursors_before)
-                        self._hud_recovery_cursor = {
-                            "last_evt": cursors_before.get("last_evt", 0),
-                            "last_dmg": cursors_before.get("last_dmg", 0),
-                        }
+                        last_evt = cursors_before.get("last_evt", 0)
+                        last_dmg = cursors_before.get("last_dmg", 0)
+                        # 冷启动（服务在对局中途启动）时客户端游标仍是初始 0，不构成
+                        # 可信的"进局前边界"。此时若保存 {0, 0} 作为恢复游标，重试会从
+                        # 8111 跨局滚动缓冲的最开头读取，把上一局残留当本局击杀/阵亡喂入
+                        # ——正是 drain 机制要消除的污染。没有可信边界就退回普通 drain。
+                        if last_evt or last_dmg:
+                            self._hud_recovery_cursor = {"last_evt": last_evt, "last_dmg": last_dmg}
+                        else:
+                            self._hud_recovery_cursor = None
                 elif drain_hud:
                     self._hud_recovery_cursor = None
                 if drain_chat and not chat_ok:
@@ -592,9 +635,17 @@ class TelemetryService:
              ——回放一进场 mission 就直接返回终局结果，从不经历 running。
         """
         gt = getattr(ind, "game_time_sec", None)
-        if (gt is not None and self._last_game_time is not None
-                and gt < self._last_game_time - _REPLAY_TIME_BACK_SEC):
-            self._replay = True
+        if gt is not None and self._last_game_time is not None:
+            # game_time_sec 是座舱时钟换算的"当日秒数"(0~86399)，不是单调计时器：
+            # 夜战跨越 00:00 时它会从 ~86399 跳回 0；只有跳变两端都接近午夜，
+            # 才是正常回绕。其他明显倒退（即使超过半天）仍属于回放拖动。
+            backwards = self._last_game_time - gt
+            midnight_wrap = (
+                self._last_game_time >= _SECONDS_PER_DAY - _MIDNIGHT_WRAP_EDGE_SEC
+                and gt <= _MIDNIGHT_WRAP_EDGE_SEC
+            )
+            if backwards > _REPLAY_TIME_BACK_SEC and not midnight_wrap:
+                self._replay = True
         if gt is not None:
             self._last_game_time = gt
         if self._mission_status == "running":

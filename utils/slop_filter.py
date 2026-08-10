@@ -125,7 +125,7 @@ _RULE_CACHE = _CompiledRuleCache()
 # Rule lookup
 # ────────────────────────────────────────────────────────────────
 def get_rules_for_language(lang: str) -> list[dict]:
-    """Return the static slop rules for a short language code (``zh``/``en``/...).
+    """Return the static slop rules for a rule-set key (``zh``/``zh-TW``/``en``/...).
 
     Unknown or empty languages return ``[]`` — we never fall back to another
     language's rules, because English clichés do not match Korean prose and
@@ -661,9 +661,9 @@ def _resolve_short_lang(raw: Optional[str]) -> str:
 
 def _is_traditional_chinese(raw: Optional[str]) -> bool:
     """True for Traditional variants (zh-TW / zh-Hant / zh-HK …), which
-    ``normalize_language_code`` collapses to a full code of ``zh-TW``. The shared
-    ``zh`` rule set is Simplified, so these are skipped (see
-    ``resolve_dialog_slop_lang``)."""
+    ``normalize_language_code`` collapses to a full code of ``zh-TW``. These get
+    their own rule set rather than the Simplified ``zh`` one (see
+    ``_resolve_slop_lang_key``)."""
     if not raw:
         return False
     try:
@@ -672,6 +672,23 @@ def _is_traditional_chinese(raw: Optional[str]) -> bool:
         return (normalize_language_code(raw, format="full") or "") == "zh-TW"
     except Exception:
         return False
+
+
+def _resolve_slop_lang_key(raw: Optional[str]) -> str:
+    """Map a raw language tag to a ``SLOP_RULES`` key.
+
+    Traditional Chinese has to branch *before* short normalization:
+    ``format="short"`` collapses zh-TW / zh-Hant / zh-HK / tchinese to ``zh``,
+    which would hand Traditional conversations the Simplified rule set.
+
+    Only the Traditional branch is special-cased on purpose. Switching the whole
+    function to ``format="full"`` would silently disable Simplified Chinese —
+    that returns ``zh-CN``, while the Simplified rule set is keyed ``zh``, so the
+    empty-rules guard in ``resolve_dialog_slop_lang`` would skip every zh-CN turn.
+    """
+    if _is_traditional_chinese(raw):
+        return "zh-TW"
+    return _resolve_short_lang(raw)
 
 
 def is_slop_filter_enabled() -> bool:
@@ -690,12 +707,12 @@ def is_slop_filter_enabled() -> bool:
 def resolve_dialog_slop_lang(
     user_language_provider: Optional[Callable[[], Optional[str]]],
 ) -> Optional[str]:
-    """Resolve the short language code to use for slop reduction on THIS dialog
+    """Resolve the ``SLOP_RULES`` key to use for slop reduction on THIS dialog
     turn, or ``None`` to skip.
 
     Returns ``None`` when the master switch is off, no language could be
     resolved, or that language has no rule set. The dialog entry points call
-    this once per turn and, when it returns a code, arm the ``_dialog_slop_lang``
+    this once per turn and, when it returns a key, arm the ``_dialog_slop_lang``
     context var so ``ChatOpenAI._params`` rewrites the assistant history on the
     wire. Never raises.
     """
@@ -703,12 +720,11 @@ def resolve_dialog_slop_lang(
         if not is_slop_filter_enabled():
             return None
         raw_lang = user_language_provider() if user_language_provider else None
-        # The shared 'zh' rule set is written in Simplified Chinese. Feeding
-        # Simplified rewrites into a Traditional (zh-TW / Hant) conversation
-        # would nudge the model's script, so skip until a Traditional set exists.
-        if _is_traditional_chinese(raw_lang):
-            return None
-        lang = _resolve_short_lang(raw_lang)
+        # Traditional conversations route to the 'zh-TW' rule set, never to the
+        # Simplified 'zh' one — feeding Simplified rewrites into a Traditional
+        # turn would nudge the model's script. The empty-rules guard below still
+        # skips the turn entirely if that rule set is ever emptied out.
+        lang = _resolve_slop_lang_key(raw_lang)
         if not lang or not get_rules_for_language(lang):
             return None
         return lang

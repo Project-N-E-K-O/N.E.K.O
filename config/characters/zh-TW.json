@@ -27,7 +27,7 @@
         "突如其來的變故或混亂"
       ],
       "一句話台詞": "哼，盯著碳基生物別亂來的，當然只有本喵啦~",
-      "live2d": "yui-origin",
+      "live2d": "yui-lolita",
       "voice_id": "voice-tone-RcH2svtsrw",
       "_reserved": {
         "avatar": {
@@ -45,11 +45,11 @@
               "toneMapping": 1.0
             },
             "idle_animation": [
-              "/static/vrm/animation/wait01.vrma",
-              "/static/vrm/animation/wait02.vrma",
-              "/static/vrm/animation/wait03.vrma",
-              "/static/vrm/animation/wait04.vrma",
-              "/static/vrm/animation/wait05.vrma"
+              "/static/vrm/animation/wait01.vrma.gz",
+              "/static/vrm/animation/wait02.vrma.gz",
+              "/static/vrm/animation/wait03.vrma.gz",
+              "/static/vrm/animation/wait04.vrma.gz",
+              "/static/vrm/animation/wait05.vrma.gz"
             ]
           },
           "mmd": {

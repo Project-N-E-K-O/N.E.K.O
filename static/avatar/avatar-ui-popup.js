@@ -20,6 +20,7 @@ function isAvatarFramedSettingsWindowUrl(finalUrl) {
             finalUrl.startsWith('/character_card_manager')
             || finalUrl.startsWith('/chara_manager')
             || finalUrl.startsWith('/api_key')
+            || finalUrl.startsWith('/voice_identity')
             || finalUrl.startsWith('/memory_browser')
         );
 }
@@ -61,6 +62,7 @@ function clearAvatarSidePanelHoverState(panel) {
     if (!panel) return;
     if (panel._collapseTimeout) { clearTimeout(panel._collapseTimeout); panel._collapseTimeout = null; }
     if (panel._hoverCollapseTimer) { clearTimeout(panel._hoverCollapseTimer); panel._hoverCollapseTimer = null; }
+    if (panel._visibilitySettledTimer) { clearTimeout(panel._visibilitySettledTimer); panel._visibilitySettledTimer = null; }
     if (typeof panel._stopHoverPointerTracking === 'function') panel._stopHoverPointerTracking();
 }
 
@@ -230,6 +232,40 @@ function injectPopupStyles(prefix) {
         }
         .${prefix}-toggle-indicator[aria-checked="true"] .${prefix}-toggle-checkmark {
             opacity: 1;
+        }
+        .${prefix}-toggle-item.${prefix}-toggle-item-slider {
+            gap: 12px;
+        }
+        .${prefix}-toggle-item-slider .${prefix}-toggle-label {
+            flex: 1 1 auto;
+            min-width: 0;
+        }
+        .${prefix}-toggle-indicator.${prefix}-toggle-slider {
+            box-sizing: border-box;
+            width: 36px;
+            min-width: 36px;
+            height: 20px;
+            border-width: 1px;
+            border-radius: 999px;
+            background-color: var(--neko-popup-accent-bg, rgba(42, 123, 196, 0.05));
+            overflow: visible;
+            transition: background-color 0.2s ease, border-color 0.2s ease;
+        }
+        .${prefix}-toggle-slider .${prefix}-toggle-thumb {
+            position: absolute;
+            top: 1px;
+            left: 1px;
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            background: #fff;
+            box-shadow: 0 1px 3px rgba(15, 23, 42, 0.24);
+            opacity: 1;
+            transform: translateX(0);
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+        }
+        .${prefix}-toggle-slider[aria-checked="true"] .${prefix}-toggle-thumb {
+            transform: translateX(16px);
         }
         .${prefix}-toggle-label {
             cursor: pointer;
@@ -414,8 +450,8 @@ function createSettingsPopupContent(manager, prefix, popup) {
 
     // 4. 主动搭话和自主视觉（角色设置已移至分隔线下方的导航菜单区域）
     const settingsToggles = [
-        { id: 'proactive-chat', label: window.t ? window.t('settings.toggles.proactiveChat') : '主动搭话', labelKey: 'settings.toggles.proactiveChat', storageKey: 'proactiveChatEnabled', hasInterval: true, intervalKey: 'proactiveChatInterval', defaultInterval: 15 },
-        { id: 'proactive-vision', label: window.t ? window.t('settings.toggles.proactiveVision') : '隐私模式', labelKey: 'settings.toggles.proactiveVision', tooltipKey: 'settings.toggles.proactiveVisionTooltip', storageKey: 'proactiveVisionEnabled', hasInterval: true, intervalKey: 'proactiveVisionInterval', defaultInterval: 15, inverted: true }
+        { id: 'proactive-chat', label: window.t ? window.t('settings.toggles.proactiveChat') : '主动搭话', labelKey: 'settings.toggles.proactiveChat', storageKey: 'proactiveChatEnabled', hasInterval: true, intervalKey: 'proactiveChatInterval', defaultInterval: 15, controlStyle: 'slider' },
+        { id: 'proactive-vision', label: window.t ? window.t('settings.toggles.proactiveVision') : '隐私模式', labelKey: 'settings.toggles.proactiveVision', tooltipKey: 'settings.toggles.proactiveVisionTooltip', storageKey: 'proactiveVisionEnabled', hasInterval: true, intervalKey: 'proactiveVisionInterval', defaultInterval: 15, inverted: true, controlStyle: 'slider' }
     ];
 
     settingsToggles.forEach(toggle => {
@@ -523,6 +559,35 @@ function dispatchAvatarPopupLifecycleEvent(eventName, buttonId, popup, prefix) {
             }
         }));
     } catch (_) {}
+    dispatchAvatarOverlayVisibilityChanged(prefix);
+}
+
+function dispatchAvatarOverlayVisibilityChanged(prefix) {
+    if (typeof window === 'undefined' || typeof window.dispatchEvent !== 'function') return;
+    try {
+        window.dispatchEvent(new CustomEvent('neko-avatar-overlay-visibility-changed', {
+            detail: { prefix: prefix || '' }
+        }));
+    } catch (_) {}
+}
+
+function dispatchAvatarSidePanelVisibilityChanged(sidePanel) {
+    const ownerId = sidePanel && typeof sidePanel.getAttribute === 'function'
+        ? (sidePanel.getAttribute('data-neko-sidepanel-owner') || '')
+        : '';
+    const popupMarkerIndex = ownerId.indexOf('-popup-');
+    const prefix = popupMarkerIndex > 0 ? ownerId.slice(0, popupMarkerIndex) : '';
+    dispatchAvatarOverlayVisibilityChanged(prefix);
+}
+
+function scheduleAvatarSidePanelVisibilitySettled(sidePanel, visibilityRevision) {
+    if (!sidePanel) return;
+    if (sidePanel._visibilitySettledTimer) clearTimeout(sidePanel._visibilitySettledTimer);
+    sidePanel._visibilitySettledTimer = setTimeout(() => {
+        sidePanel._visibilitySettledTimer = null;
+        if (sidePanel._visibilityRevision !== visibilityRevision) return;
+        dispatchAvatarSidePanelVisibilityChanged(sidePanel);
+    }, AVATAR_POPUP_ANIMATION_DURATION_MS);
 }
 
 function dispatchAvatarPopupNavigateEvent(item, finalUrl, windowName, source) {
@@ -945,6 +1010,8 @@ function createSidePanelMenuItem(manager, prefix, item) {
                         windowName = 'neko_chara_manager';
                     } else if (typeof finalUrl === 'string' && finalUrl.startsWith('/api_key')) {
                         windowName = 'neko_api_key';
+                    } else if (typeof finalUrl === 'string' && finalUrl.startsWith('/voice_identity')) {
+                        windowName = 'neko_voice_identity';
                     } else if (typeof finalUrl === 'string' && finalUrl.startsWith('/memory_browser')) {
                         windowName = 'neko_memory_browser';
                     }
@@ -1601,6 +1668,7 @@ function createSidePanelContainer(manager, prefix, options = {}) {
         }
         if (container._collapseTimeout) { clearTimeout(container._collapseTimeout); container._collapseTimeout = null; }
         if (container._interactionGuardTimer) { clearTimeout(container._interactionGuardTimer); container._interactionGuardTimer = null; }
+        if (container._visibilitySettledTimer) { clearTimeout(container._visibilitySettledTimer); container._visibilitySettledTimer = null; }
 
         container.style.display = 'flex';
         container.style.pointerEvents = alreadyVisible ? 'auto' : 'none';
@@ -1621,6 +1689,7 @@ function createSidePanelContainer(manager, prefix, options = {}) {
             container.style.display = 'none';
             container.style.pointerEvents = 'none';
             container._visibilityRevision = visibilityRevision + 1;
+            dispatchAvatarSidePanelVisibilityChanged(container);
             return false;
         }
 
@@ -1631,6 +1700,8 @@ function createSidePanelContainer(manager, prefix, options = {}) {
             }
             container.style.opacity = '1';
             applyAvatarSidePanelTransform(container, 'none');
+            dispatchAvatarSidePanelVisibilityChanged(container);
+            scheduleAvatarSidePanelVisibilitySettled(container, visibilityRevision);
             if (alreadyVisible) {
                 container.style.pointerEvents = 'auto';
                 return;
@@ -1658,12 +1729,15 @@ function createSidePanelContainer(manager, prefix, options = {}) {
         }
         if (container._collapseTimeout) { clearTimeout(container._collapseTimeout); container._collapseTimeout = null; }
         if (container._interactionGuardTimer) { clearTimeout(container._interactionGuardTimer); container._interactionGuardTimer = null; }
+        if (container._visibilitySettledTimer) { clearTimeout(container._visibilitySettledTimer); container._visibilitySettledTimer = null; }
         container.style.pointerEvents = 'none';
         container.style.opacity = '0';
         applyAvatarSidePanelTransform(container, getAvatarSidePanelExitMotion(container));
+        dispatchAvatarSidePanelVisibilityChanged(container);
         container._collapseTimeout = setTimeout(() => {
             if (container._visibilityRevision === visibilityRevision && container.style.opacity === '0') {
                 container.style.display = 'none';
+                dispatchAvatarSidePanelVisibilityChanged(container);
             }
             container._collapseTimeout = null;
         }, AVATAR_POPUP_ANIMATION_DURATION_MS);
@@ -1953,6 +2027,7 @@ function createIntervalControl(manager, prefix, toggle) {
             container._expandFrameId = null;
         }
         if (container._collapseTimeout) { clearTimeout(container._collapseTimeout); container._collapseTimeout = null; }
+        if (container._visibilitySettledTimer) { clearTimeout(container._visibilitySettledTimer); container._visibilitySettledTimer = null; }
 
         container.style.display = 'flex';
         container.style.pointerEvents = 'none';
@@ -1979,6 +2054,8 @@ function createIntervalControl(manager, prefix, toggle) {
             container.style.pointerEvents = 'auto';
             container.style.opacity = '1';
             applyAvatarSidePanelTransform(container, 'none');
+            dispatchAvatarSidePanelVisibilityChanged(container);
+            scheduleAvatarSidePanelVisibilitySettled(container, visibilityRevision);
         });
     };
 
@@ -1991,10 +2068,16 @@ function createIntervalControl(manager, prefix, toggle) {
             container._expandFrameId = null;
         }
         if (container._collapseTimeout) { clearTimeout(container._collapseTimeout); container._collapseTimeout = null; }
+        if (container._visibilitySettledTimer) { clearTimeout(container._visibilitySettledTimer); container._visibilitySettledTimer = null; }
+        container.style.pointerEvents = 'none';
         container.style.opacity = '0';
         applyAvatarSidePanelTransform(container, getAvatarSidePanelExitMotion(container));
+        dispatchAvatarSidePanelVisibilityChanged(container);
         container._collapseTimeout = setTimeout(() => {
-            if (container._visibilityRevision === visibilityRevision && container.style.opacity === '0') container.style.display = 'none';
+            if (container._visibilityRevision === visibilityRevision && container.style.opacity === '0') {
+                container.style.display = 'none';
+                dispatchAvatarSidePanelVisibilityChanged(container);
+            }
             container._collapseTimeout = null;
         }, AVATAR_POPUP_ANIMATION_DURATION_MS);
     };
@@ -2060,8 +2143,12 @@ function createCheckIndicator(manager, prefix) {
  * 创建Agent开关项
  */
 function createToggleItem(manager, prefix, toggle, popup) {
+    const usesSliderControl = toggle.controlStyle === 'slider';
     const toggleItem = document.createElement('div');
     toggleItem.className = `${prefix}-toggle-item`;
+    if (usesSliderControl) {
+        toggleItem.classList.add(`${prefix}-toggle-item-slider`);
+    }
     toggleItem.id = `${prefix}-toggle-${toggle.id}`;
     markAvatarPopupActionElement(toggleItem, 'toggle');
     toggleItem.setAttribute('role', 'switch');
@@ -2089,12 +2176,18 @@ function createToggleItem(manager, prefix, toggle, popup) {
 
     const indicator = document.createElement('div');
     indicator.className = `${prefix}-toggle-indicator`;
+    if (usesSliderControl) {
+        indicator.classList.add(`${prefix}-toggle-slider`);
+    }
     indicator.setAttribute('role', 'presentation');
     indicator.setAttribute('aria-hidden', 'true');
 
     const checkmark = document.createElement('div');
     checkmark.className = `${prefix}-toggle-checkmark`;
-    checkmark.innerHTML = '✓';
+    if (usesSliderControl) {
+        checkmark.classList.add(`${prefix}-toggle-thumb`);
+    }
+    checkmark.textContent = usesSliderControl ? '' : '✓';
     indicator.appendChild(checkmark);
 
     const label = document.createElement('label');
@@ -2114,10 +2207,23 @@ function createToggleItem(manager, prefix, toggle, popup) {
         toggleItem._updateLabelText = updateLabelText;
     }
 
+    const updateIndicatorStyle = (checked) => {
+        if (!usesSliderControl) return;
+        const activeColor = 'var(--neko-popup-accent, #44b7fe)';
+        indicator.style.backgroundColor = checked
+            ? activeColor
+            : 'var(--neko-popup-accent-bg, rgba(42, 123, 196, 0.05))';
+        indicator.style.borderColor = checked
+            ? activeColor
+            : 'var(--neko-popup-indicator-border, #ccc)';
+        checkmark.style.opacity = '1';
+    };
+
     const updateStyle = () => {
         const isChecked = checkbox.checked;
         toggleItem.setAttribute('aria-checked', isChecked ? 'true' : 'false');
         indicator.setAttribute('aria-checked', isChecked ? 'true' : 'false');
+        updateIndicatorStyle(isChecked);
     };
 
     const updateDisabledStyle = () => {
@@ -2147,8 +2253,13 @@ function createToggleItem(manager, prefix, toggle, popup) {
     disabledObserver.observe(checkbox, { attributes: true, attributeFilter: ['disabled', 'title'] });
 
     toggleItem.appendChild(checkbox);
-    toggleItem.appendChild(indicator);
-    toggleItem.appendChild(label);
+    if (usesSliderControl) {
+        toggleItem.appendChild(label);
+        toggleItem.appendChild(indicator);
+    } else {
+        toggleItem.appendChild(indicator);
+        toggleItem.appendChild(label);
+    }
     checkbox._updateStyle = () => {
         updateStyle();
         updateDisabledStyle();
@@ -2189,11 +2300,15 @@ function createToggleItem(manager, prefix, toggle, popup) {
  * 创建设置开关项
  */
 function createSettingsToggleItem(manager, prefix, toggle) {
+    const usesSliderControl = toggle.controlStyle === 'slider';
     const toggleItem = document.createElement('div');
     toggleItem.className = `${prefix}-toggle-item`;
     markAvatarPopupActionElement(toggleItem, 'settings-toggle');
     if (toggle.alwaysTinted) {
         toggleItem.classList.add(`${prefix}-toggle-item-static`);
+    }
+    if (usesSliderControl) {
+        toggleItem.classList.add(`${prefix}-toggle-item-slider`);
     }
     toggleItem.id = `${prefix}-toggle-${toggle.id}`;
     toggleItem.setAttribute('role', 'switch');
@@ -2252,16 +2367,33 @@ function createSettingsToggleItem(manager, prefix, toggle) {
 
     const indicator = document.createElement('div');
     indicator.className = `${prefix}-toggle-indicator`;
+    if (usesSliderControl) {
+        indicator.classList.add(`${prefix}-toggle-slider`);
+    }
     indicator.setAttribute('role', 'presentation');
     indicator.setAttribute('aria-hidden', 'true');
 
     const checkmark = document.createElement('div');
     checkmark.className = `${prefix}-toggle-checkmark`;
+    if (usesSliderControl) {
+        checkmark.classList.add(`${prefix}-toggle-thumb`);
+    }
     checkmark.setAttribute('aria-hidden', 'true');
-    checkmark.innerHTML = '✓';
+    checkmark.textContent = usesSliderControl ? '' : '✓';
     indicator.appendChild(checkmark);
 
     const updateIndicatorStyle = (checked) => {
+        if (usesSliderControl) {
+            const activeColor = 'var(--neko-popup-accent, #44b7fe)';
+            indicator.style.backgroundColor = checked
+                ? activeColor
+                : 'var(--neko-popup-accent-bg, rgba(42, 123, 196, 0.05))';
+            indicator.style.borderColor = checked
+                ? activeColor
+                : 'var(--neko-popup-indicator-border, #ccc)';
+            checkmark.style.opacity = '1';
+            return;
+        }
         if (checked) {
             const activeColor = 'var(--neko-popup-accent, #44b7fe)';
             indicator.style.backgroundColor = activeColor;
@@ -2275,6 +2407,7 @@ function createSettingsToggleItem(manager, prefix, toggle) {
     };
 
     const label = document.createElement('label');
+    label.className = `${prefix}-toggle-label`;
     label.innerText = toggle.label;
     if (toggle.labelKey) {
         label.setAttribute('data-i18n', toggle.labelKey);
@@ -2324,8 +2457,13 @@ function createSettingsToggleItem(manager, prefix, toggle) {
     updateStyle();
 
     toggleItem.appendChild(checkbox);
-    toggleItem.appendChild(indicator);
-    toggleItem.appendChild(label);
+    if (usesSliderControl) {
+        toggleItem.appendChild(label);
+        toggleItem.appendChild(indicator);
+    } else {
+        toggleItem.appendChild(indicator);
+        toggleItem.appendChild(label);
+    }
 
     toggleItem.addEventListener('mouseenter', () => {
         updateStyle();
@@ -2589,6 +2727,8 @@ const AvatarPopupMixin = {
         ManagerProto._createMenuItem = function (item, isSubmenuItem = false) {
             const menuItem = document.createElement('div');
             menuItem.className = `${prefix}-settings-menu-item`;
+            menuItem.setAttribute('role', 'button');
+            menuItem.tabIndex = 0;
             markAvatarPopupActionElement(menuItem, isSubmenuItem ? 'settings-submenu' : 'settings-menu');
             setAvatarPopupActionDebugMetadata(menuItem, item, isSubmenuItem ? 'settings-submenu' : 'settings-menu');
             var itemAnchorId = createMenuAnchorId(prefix, item && item.id);
@@ -2609,7 +2749,8 @@ const AvatarPopupMixin = {
             if (item.icon) {
                 const iconImg = document.createElement('img');
                 iconImg.src = item.icon;
-                iconImg.alt = item.label;
+                iconImg.alt = '';
+                iconImg.setAttribute('aria-hidden', 'true');
                 Object.assign(iconImg.style, {
                     width: isSubmenuItem ? '18px' : '24px',
                     height: isSubmenuItem ? '18px' : '24px',
@@ -2634,9 +2775,6 @@ const AvatarPopupMixin = {
                 menuItem._updateLabelText = () => {
                     if (window.t) {
                         labelText.textContent = window.t(item.labelKey);
-                        if (item.icon && menuItem.querySelector('img')) {
-                            menuItem.querySelector('img').alt = window.t(item.labelKey);
-                        }
                     }
                 };
             }
@@ -2645,6 +2783,12 @@ const AvatarPopupMixin = {
             menuItem.addEventListener('mouseleave', () => menuItem.style.background = 'transparent');
 
             let isOpening = false;
+
+            menuItem.addEventListener('keydown', (e) => {
+                if (e.key !== 'Enter' && e.key !== ' ') return;
+                e.preventDefault();
+                menuItem.click();
+            });
 
             menuItem.addEventListener('click', (e) => {
                 e.stopPropagation();
@@ -2688,6 +2832,8 @@ const AvatarPopupMixin = {
                                 windowName = 'neko_chara_manager';
                             } else if (typeof finalUrl === 'string' && finalUrl.startsWith('/api_key')) {
                                 windowName = 'neko_api_key';
+                            } else if (typeof finalUrl === 'string' && finalUrl.startsWith('/voice_identity')) {
+                                windowName = 'neko_voice_identity';
                             } else if (typeof finalUrl === 'string' && finalUrl.startsWith('/memory_browser')) {
                                 windowName = 'neko_memory_browser';
                             }
@@ -2925,6 +3071,7 @@ const AvatarPopupMixin = {
 
             const settingsItems = [
                 { id: 'api-keys', label: window.t ? window.t('settings.menu.apiKeys') : 'API密钥', labelKey: 'settings.menu.apiKeys', icon: '/static/icons/api_key_icon.png', action: 'navigate', url: '/api_key' },
+            { id: 'voice-identity', label: window.t ? window.t('settings.menu.voiceIdentity') : '声纹身份', labelKey: 'settings.menu.voiceIdentity', icon: '/static/icons/voice_clone_icon.png', action: 'navigate', url: '/voice_identity' },
                 { id: 'memory', label: window.t ? window.t('settings.menu.memoryBrowser') : '记忆浏览', labelKey: 'settings.menu.memoryBrowser', icon: '/static/icons/memory_icon.png', action: 'navigate', url: '/memory_browser' },
             ];
 

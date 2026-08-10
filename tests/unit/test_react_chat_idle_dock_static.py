@@ -249,6 +249,11 @@ def test_cat1_minimized_ball_target_wins_over_stale_compact_surface():
 def test_desktop_cat1_minimized_and_compact_surface_state_are_timestamp_ordered():
     source = _read(AVATAR_UI_BUTTONS_PATH)
 
+    assert "function _getNekoDesktopVirtualViewportOrigin()" in source
+    assert "window.__nekoNiriPetPhysicalCrop" in source
+    assert "cropApi.getState()" in source
+    assert "return { x: fallbackX - offsetX, y: fallbackY - offsetY };" in source
+
     state_init_block = _between(
         source,
         "let _nekoIdleDesktopChatMinimizedState = {",
@@ -278,6 +283,8 @@ def test_desktop_cat1_minimized_and_compact_surface_state_are_timestamp_ordered(
     )
     assert "_nekoIdleDesktopChatMinimizedState.minimized" in desktop_compact_rect
     assert "_isNekoIdleDesktopStateNewerThan(_nekoIdleDesktopChatMinimizedState.sourceUpdatedAt, state)" in desktop_compact_rect
+    assert "const virtualOrigin = _getNekoDesktopVirtualViewportOrigin();" in desktop_compact_rect
+    assert "const screenLeft = virtualOrigin.x;" in desktop_compact_rect
 
     desktop_minimized_rect = _between(
         source,
@@ -286,6 +293,8 @@ def test_desktop_cat1_minimized_and_compact_surface_state_are_timestamp_ordered(
     )
     assert "_nekoIdleDesktopCompactSurfaceState.visible" in desktop_minimized_rect
     assert "_isNekoIdleDesktopStateNewerThan(_nekoIdleDesktopCompactSurfaceState.sourceUpdatedAt, state)" in desktop_minimized_rect
+    assert "const virtualOrigin = _getNekoDesktopVirtualViewportOrigin();" in desktop_minimized_rect
+    assert "const screenLeft = virtualOrigin.x;" in desktop_minimized_rect
 
     minimized_listener = _between(
         source,
@@ -434,6 +443,25 @@ def test_cat1_desktop_pair_move_skips_linux_runtime_native_bounds_sync():
         "function _easeNekoIdleCat1PairMove(progress) {",
     )
     assert "chatTarget && chatTarget.mode === 'desktop' && _isNekoDesktopLinuxRuntime()" in plan_block
+    assert "chatTarget && chatTarget.localRect ? chatTarget.localRect.left" in plan_block
+    assert "chatTarget && chatTarget.localRect ? chatTarget.localRect.top" in plan_block
+
+    target_block = _between(
+        source,
+        "function _getNekoIdleCat1PairMoveChatTarget() {",
+        "function _clampNekoIdleCat1MoveVector",
+    )
+    assert "const localRect = _getNekoIdleReactChatMinimizedRect();" in target_block
+    assert "const rect = _getNekoDesktopVirtualRect(localRect);" in target_block
+    assert "localRect: localRect" in target_block
+
+    minimized_rect_block = _between(
+        source,
+        "function _getNekoIdleChatMinimizedRect() {",
+        "function _clampNekoIdleCat1Position",
+    )
+    assert "const reactRect = _getNekoIdleReactChatMinimizedRect();" in minimized_rect_block
+    assert "reactRect ? _getNekoDesktopVirtualRect(reactRect) : null" in minimized_rect_block
 
     schedule_guard_block = _between(
         source,

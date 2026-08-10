@@ -4,7 +4,7 @@ import asyncio
 import re
 from typing import Any
 
-from .pipeline_models import QQDeliveryResult, QQModelResult, QQPipelineStageTrace, QQRelayResult, QQReplyContext, QQReplyDecision, QQReplyOutcome, QQReplyRequest
+from .pipeline_models import QQDeliveryResult, QQModelResult, QQPipelineStageTrace, QQRelayResult, QQReplyContext, QQReplyDecision, QQReplyOutcome, QQReplyRequest, delivered_blocks_text
 from .reply_buffer_service import QQReplyBufferService
 
 
@@ -46,6 +46,7 @@ class QQReplyPipelineRunner:
         context = await self._run_context(request, decision)
         model_result = await self._run_model(context)
         outcome = await self._run_postprocess(context, model_result)
+        outcome.history_ai_row = model_result.history_ai_row
         outcome.traces.extend([
             decision_trace,
             *context.traces,
@@ -142,7 +143,16 @@ class QQReplyPipelineRunner:
     async def _run_context(self, request: QQReplyRequest, decision: QQReplyDecision) -> QQReplyContext:
         return await self.plugin.reply_context_node.build(
             message=request.message_text,
-            permission_level=decision.permission_level,
+            permission_level=(
+                getattr(request, "private_permission_level_at_receipt", None)
+                if (
+                    not request.is_group
+                    and getattr(
+                        request, "private_permission_level_at_receipt", None,
+                    ) is not None
+                )
+                else decision.permission_level
+            ),
             sender_id=request.sender_id,
             attachments=request.attachments,
             is_group=request.is_group,
@@ -154,10 +164,27 @@ class QQReplyPipelineRunner:
             group_facing=request.group_facing,
             group_scene_mode=request.group_scene_mode,
             current_message_id=request.current_message_id,
+            is_reply_to_bot=getattr(request, "is_reply_to_bot", False),
+            quoted_message_id=getattr(request, "quoted_message_id", "") or "",
+            mentions_other_user=getattr(request, "mentions_other_user", False),
+            mentions_all=getattr(request, "mentions_all", False),
+            reply_context=getattr(request, "reply_context", "") or "",
             force_reply=request.force_reply,
             source_kind=getattr(request, "source_kind", ""),
             member_memory_at_receipt=getattr(
                 request, "member_memory_at_receipt", None,
+            ),
+            group_speaker_permission_level_at_receipt=getattr(
+                request, "group_speaker_permission_level_at_receipt", None,
+            ),
+            speaker_channel_at_receipt=getattr(
+                request, "speaker_channel_at_receipt", None,
+            ),
+            participant_memory_at_receipt=getattr(
+                request, "participant_memory_at_receipt", None,
+            ),
+            private_permission_level_at_receipt=getattr(
+                request, "private_permission_level_at_receipt", None,
             ),
             inherited_consent_snapshot=getattr(
                 request, "inherited_consent_snapshot", None,
@@ -242,7 +269,6 @@ class QQReplyPipelineRunner:
     async def _run_delivery(self, delivery_plan, request: QQReplyRequest = None, outcome: QQReplyOutcome = None, context=None) -> QQDeliveryResult | None:
         if (
             request is not None
-            and request.is_group
             and outcome is not None
             and self._primary_row_superseded(outcome, delivery_plan)
         ):
@@ -253,16 +279,38 @@ class QQReplyPipelineRunner:
             self.plugin.session_memory_service.record_tail_undelivered_ai_row(
                 self.plugin._build_session_key(
                     sender_id=request.sender_id,
-                    is_group=True,
-                    group_id=request.group_id,
-                )
+                    is_group=request.is_group,
+                    group_id=request.group_id if request.is_group else None,
+                ),
+                outcome.history_ai_row,
             )
+
+        # 情绪/标记：内部状态，先于缓冲/冷却/交付更新
+        if outcome and outcome.feeling:
+            if delivery_plan and delivery_plan.target_type == "group":
+                group = delivery_plan.target_id
+            elif request and getattr(request, "is_group", False):
+                group = getattr(request, "group_id", "") or ""
+            else:
+                group = ""
+            if group and self.plugin.attention_service:
+                await self.plugin.attention_service.set_emotion(group, outcome.feeling)
 
         # 缓冲内部调用的请求（buffer_delayed/rapid_fire_flush/proactive_speech）不再次走缓冲
         skip_buffer = request and getattr(request, 'source_kind', '') in ('buffer_delayed', 'rapid_fire_flush', 'proactive_speech')
         if not skip_buffer and self.plugin.reply_buffer_service and request and delivery_plan and delivery_plan.blocks:
             # 从 LLM 原始输出提取 <wait> 标签（在 _parse_blocks 之前已保存）
-            raw = (outcome.raw_reply_text if outcome else "") or ""
+            raw = getattr(outcome, "wait_directive_text", None)
+            if raw is None:
+                raw = (outcome.raw_reply_text if outcome else "") or ""
+                structural_pre_tool = str(
+                    getattr(outcome, "pre_tool_text", "") or ""
+                )
+                if structural_pre_tool and raw.startswith(structural_pre_tool):
+                    raw = raw[len(structural_pre_tool):]
+            raw = str(raw or "")
+            # postprocess 直接携带 sanitizer 后、真实 tool 边界之后的最终段；
+            # 因此 hidden/literal pre-tool 内的 <wait> 都不能成为 buffer 指令。
             clean, wait_sec = QQReplyBufferService.extract_wait_seconds(raw)
             # 默认等待加随机抖动（±40%），避免每次都一样
             if wait_sec == QQReplyBufferService.DEFAULT_WAIT_SECONDS:
@@ -270,6 +318,7 @@ class QQReplyPipelineRunner:
                 wait_sec = max(1.5, wait_sec * random.uniform(0.6, 1.4))
             # 私聊默认等更久（对方在讲故事/连续输出）
             first_text = delivery_plan.blocks[0].text if delivery_plan.blocks else ""
+            visible_text = delivered_blocks_text(delivery_plan.blocks)
             # 检查是否有实际内容（text/record/sticker/poke/emoji 任一非空即有效）
             has_content = any(
                 b.text or b.record or b.sticker or b.poke or b.emoji
@@ -291,7 +340,9 @@ class QQReplyPipelineRunner:
             fwd_count = int(getattr(request, 'forward_sub_count', 0) or 0)
             await self.plugin.reply_buffer_service.schedule_reply(
                 session_key=session_key,
-                reply_text=first_text or clean or "",
+                # reply_text 是缓冲汇总的语义输入；首块可能只是 pre-tool，
+                # 必须把最终 XML 块也带上，不能让汇总只看到“我查一下”。
+                reply_text=visible_text or clean or "",
                 raw_text=clean or first_text or "",
                 blocks=delivery_plan.blocks,
                 wait_seconds=wait_sec,
@@ -312,6 +363,14 @@ class QQReplyPipelineRunner:
                         or self._primary_row_superseded(outcome, delivery_plan)
                     ) if outcome else False
                 ),
+                private_permission_level_at_receipt=getattr(
+                    context, "private_permission_level_at_receipt", None,
+                ),
+                first_user_materialized=bool(
+                    (
+                        getattr(self.plugin, "_user_sessions", {}) or {}
+                    ).get(session_key, {}).get("human_row_materialized", False)
+                ),
                 consent_snapshot=(
                     # 私聊也可能有依赖（跨群开关打开时的会话清单段），
                     # 按 is_group 分流会让那条路径没有可撤的授权。空 dict
@@ -321,21 +380,41 @@ class QQReplyPipelineRunner:
                     if context is not None else None
                 ),
                 consented=bool(
-                    not request.is_group
-                    or (
-                        # 解析后的判据：retroactive_review 等路径的 request
-                        # 不带 persist_memory（None），照原样读会把已授权的
-                        # 回放轮标成"非授权输入"，合并出来的总结 ai 行反而
-                        # 被排除出 scoped 历史。
-                        getattr(context, "persist_memory", None)
-                        if context is not None
-                        and getattr(context, "persist_memory", None) is not None
-                        else getattr(request, "persist_memory", None)
-                    )
+                    # Use the resolved policy for private participant turns as
+                    # well as groups. Otherwise every private input looks
+                    # consented and OFF-era text can re-enter memory through a
+                    # later synthetic buffer summary.
+                    getattr(context, "persist_memory", None)
+                    if context is not None
+                    and getattr(context, "persist_memory", None) is not None
+                    else getattr(request, "persist_memory", None)
                 ),
             )
             from .pipeline_models import QQDeliveryResult
             return QQDeliveryResult(delivered=True, target_type=delivery_plan.target_type, target_id=delivery_plan.target_id, reply_text=first_text)
+
+        direct_session_key = None
+        direct_ai_row = None
+        if (
+            request is not None
+            and outcome is not None
+            and outcome.history_ai_row is not None
+            and not getattr(outcome, "used_fallback", False)
+            and not getattr(outcome, "used_default_message", False)
+            and not self._primary_row_superseded(outcome, delivery_plan)
+        ):
+            direct_session_key = self.plugin._build_session_key(
+                sender_id=request.sender_id,
+                is_group=request.is_group,
+                group_id=request.group_id if request.is_group else None,
+            )
+            direct_ai_row = outcome.history_ai_row
+            # The history row exists before network delivery. Fence it before
+            # the await so an opt-out settlement cannot persist a reply whose
+            # send later fails.
+            self.plugin.session_memory_service.record_provisional_ai_row(
+                direct_session_key, direct_ai_row,
+            )
 
         if context is not None and self._consent_revoked_before_send(context):
             # 直投没有 buffer 的撤销闸：生成后复检到真正发出去之间还有
@@ -344,7 +423,6 @@ class QQReplyPipelineRunner:
             self.plugin.logger.warning("发送前记忆授权已撤销，取消本轮投递")
             if (
                 request is not None
-                and request.is_group
                 and outcome is not None
                 and not getattr(outcome, "used_fallback", False)
                 and not getattr(outcome, "used_default_message", False)
@@ -352,9 +430,10 @@ class QQReplyPipelineRunner:
                 self.plugin.session_memory_service.record_tail_undelivered_ai_row(
                     self.plugin._build_session_key(
                         sender_id=request.sender_id,
-                        is_group=True,
-                        group_id=request.group_id,
-                    )
+                        is_group=request.is_group,
+                        group_id=request.group_id if request.is_group else None,
+                    ),
+                    outcome.history_ai_row,
                 )
             from .pipeline_models import QQDeliveryResult
             return QQDeliveryResult(
@@ -365,7 +444,6 @@ class QQReplyPipelineRunner:
         def _mark_tail_undelivered() -> None:
             if (
                 request is not None
-                and request.is_group
                 and outcome is not None
                 and not getattr(outcome, "used_fallback", False)
                 and not getattr(outcome, "used_default_message", False)
@@ -373,9 +451,10 @@ class QQReplyPipelineRunner:
                 self.plugin.session_memory_service.record_tail_undelivered_ai_row(
                     self.plugin._build_session_key(
                         sender_id=request.sender_id,
-                        is_group=True,
-                        group_id=request.group_id,
-                    )
+                        is_group=request.is_group,
+                        group_id=request.group_id if request.is_group else None,
+                    ),
+                    outcome.history_ai_row,
                 )
 
         try:
@@ -399,11 +478,15 @@ class QQReplyPipelineRunner:
             # digest 会把没发出去的回复入库。
             _mark_tail_undelivered()
             raise
+        if direct_ai_row is not None:
+            self.plugin.session_memory_service.settle_provisional_ai_row(
+                direct_session_key, direct_ai_row,
+                delivered=bool(result is not None and result.delivered),
+            )
         if (
             result is not None
             and not getattr(result, "delivered", False)
             and request is not None
-            and request.is_group
             and outcome is not None
             and not getattr(outcome, "used_fallback", False)
             and not getattr(outcome, "used_default_message", False)
@@ -413,11 +496,11 @@ class QQReplyPipelineRunner:
             # 发出去的回复提取成持久记忆。失败即定局，直接进排除名单。
             session_key = self.plugin._build_session_key(
                 sender_id=request.sender_id,
-                is_group=True,
-                group_id=request.group_id,
+                is_group=request.is_group,
+                group_id=request.group_id if request.is_group else None,
             )
             self.plugin.session_memory_service.record_tail_undelivered_ai_row(
-                session_key
+                session_key, outcome.history_ai_row,
             )
         if (
             result is not None
@@ -429,8 +512,6 @@ class QQReplyPipelineRunner:
             # 整条计划的正文：outcome.reply_text 只有首块，后续块里披露
             # 的事实既进不了历史（digest 少半条），也记不到 mention（永远
             # 到不了 suppression）。
-            from .pipeline_models import delivered_blocks_text
-
             delivered_text = (
                 delivered_blocks_text(delivery_plan.blocks) or outcome.reply_text
             )
@@ -472,6 +553,18 @@ class QQReplyPipelineRunner:
         """True when a switch this reply's prompt relied on went off since
         generation — same judgement the buffer applies before a delayed
         send, so the unbuffered direct path is not the weak link."""
+        permission_snapshot = getattr(
+            context, "private_permission_level_at_receipt", None,
+        )
+        permission_mgr = getattr(self.plugin, "permission_mgr", None)
+        if (
+            not getattr(context, "is_group", False)
+            and permission_snapshot is not None
+            and permission_mgr is not None
+            and permission_mgr.get_permission_level(context.sender_id)
+            != permission_snapshot
+        ):
+            return True
         snapshot = getattr(context, "consent_snapshot", None)
         if not snapshot:
             return False
@@ -498,6 +591,7 @@ class QQReplyPipelineRunner:
             for key in (
                 "group_memory_enabled",
                 "group_member_memory_enabled",
+                "private_participant_memory_enabled",
                 "allow_cross_group_context",
             )
         }

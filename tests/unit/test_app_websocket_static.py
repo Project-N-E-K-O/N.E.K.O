@@ -256,28 +256,21 @@ def test_independent_asr_provider_copy_resolves_via_provider_names():
     assert "window.t('microphone.independentAsrActive', { providerKey: asrProvider || 'unknown' })" in ready_branch
     assert "window.t('microphone.independentAsrProviderUnavailable', { providerKey: asrProvider || 'unknown' })" in source
 
-    # The hint is rendered by one function now, called both at build time and
-    # from the toggle's change handler -- it used to be computed once, so
-    # flipping the switch with the popup open left the previous text standing
-    # and the confirmation contradicted the choice just made.
-    hint_block = capture_source.split("function renderAsrHint() {", 1)[1].split(
-        "asrInput.addEventListener('change'",
-        1,
-    )[0]
-    assert "{ providerKey: S.independentAsrProvider || 'unknown' }" in hint_block
-    assert "asrHint.setAttribute('data-i18n-params', JSON.stringify(hintParams));" in hint_block
-    assert hint_block.index("asrHint.setAttribute('data-i18n-params', JSON.stringify(hintParams));") < hint_block.index(
-        "window.t(hintKey, hintParams)"
-    )
-    assert "provider: S.independentAsrProvider" not in hint_block
+    # The shared popover now owns the summary. It resolves the registry key to a
+    # display name, renders that value through the locale template, and refreshes
+    # from the toggle handler so the visible route never lags the user's choice.
+    summary_block = capture_source.split(
+        "function updateVoiceRecognitionUi() {", 1
+    )[1].split("function onVoiceLifecycleChanged()", 1)[0]
+    assert "'microphone.independentAsrSummary'" in summary_block
+    assert "{ provider: provider }" in summary_block
+    assert "'microphone.voiceRecognitionDisabled'" in summary_block
+    assert "provider: S.independentAsrProvider" not in summary_block
 
-    # ...and the change handler actually re-renders it.
     change_handler = capture_source.split(
-        "asrInput.addEventListener('change', function () {", 1
-    )[1].split("window.appSettings.saveSettings", 1)[0]
-    assert "renderAsrHint();" in change_handler, (
-        "flipping the toggle must refresh the hint it confirms"
-    )
+        "var asrToggle = createVoiceSettingToggle(", 1
+    )[1].split("var voicePanelId", 1)[0]
+    assert "updateVoiceRecognitionUi();" in change_handler
 
 
 def test_provider_names_cover_asr_registry_keys_in_all_locales():
@@ -312,42 +305,42 @@ def test_independent_asr_failure_copy_matches_hard_route_in_all_locales():
         "en.json": (
             "Independent ASR unavailable. Voice input has stopped for this session. Check the independent ASR configuration, then start a new voice session.",
             "Enabled for the next voice session; it will not automatically switch to Omni if unavailable.",
-            "{{provider}} is temporarily unavailable. Voice input has stopped for this session. It did not switch to another speech recognition service. Please start a new voice session later.",
+            "{{providerKey}} is temporarily unavailable. Voice input has stopped for this session. It did not switch to another speech recognition service. Please start a new voice session later.",
         ),
         "es.json": (
             "El ASR independiente no está disponible. La entrada de voz se ha detenido para esta sesión. Revisa la configuración del ASR independiente y después inicia una nueva sesión de voz.",
             "Se activará en la próxima sesión de voz; no cambiará automáticamente a Omni si no está disponible.",
-            "{{provider}} no está disponible temporalmente. La entrada de voz se ha detenido para esta sesión. No se cambió a otro servicio de reconocimiento de voz. Inicia una nueva sesión de voz más tarde.",
+            "{{providerKey}} no está disponible temporalmente. La entrada de voz se ha detenido para esta sesión. No se cambió a otro servicio de reconocimiento de voz. Inicia una nueva sesión de voz más tarde.",
         ),
         "ja.json": (
             "独立 ASR を利用できないため、この音声セッションの入力を停止しました。独立 ASR の設定を確認してから、新しい音声セッションを開始してください。",
             "次の音声セッションから有効になります。利用できない場合も Omni へ自動的に切り替わりません。",
-            "{{provider}} は一時的に利用できません。この音声セッションの入力を停止しました。別の音声認識サービスには切り替えていません。後でもう一度音声セッションを開始してください。",
+            "{{providerKey}} は一時的に利用できません。この音声セッションの入力を停止しました。別の音声認識サービスには切り替えていません。後でもう一度音声セッションを開始してください。",
         ),
         "ko.json": (
             "독립 ASR을 사용할 수 없어 이번 음성 세션의 입력을 중지했습니다. 독립 ASR 설정을 확인한 다음 새 음성 세션을 시작하세요.",
             "다음 음성 세션부터 활성화되며, 사용할 수 없어도 Omni로 자동 전환되지 않습니다.",
-            "{{provider}}을(를) 일시적으로 사용할 수 없어 이번 음성 세션의 입력을 중지했습니다. 다른 음성 인식 서비스로 전환하지 않았습니다. 나중에 새 음성 세션을 시작하세요.",
+            "{{providerKey}}을(를) 일시적으로 사용할 수 없어 이번 음성 세션의 입력을 중지했습니다. 다른 음성 인식 서비스로 전환하지 않았습니다. 나중에 새 음성 세션을 시작하세요.",
         ),
         "pt.json": (
             "O ASR independente não está disponível. A entrada de voz foi interrompida nesta sessão. Verifique a configuração do ASR independente e depois inicie uma nova sessão de voz.",
             "Será ativado na próxima sessão de voz; não mudará automaticamente para o Omni se estiver indisponível.",
-            "{{provider}} está temporariamente indisponível. A entrada de voz foi interrompida nesta sessão. O sistema não mudou para outro serviço de reconhecimento de voz. Inicie uma nova sessão de voz mais tarde.",
+            "{{providerKey}} está temporariamente indisponível. A entrada de voz foi interrompida nesta sessão. O sistema não mudou para outro serviço de reconhecimento de voz. Inicie uma nova sessão de voz mais tarde.",
         ),
         "ru.json": (
             "Независимый ASR недоступен. Голосовой ввод в этом сеансе остановлен. Проверьте настройки независимого ASR, затем начните новый голосовой сеанс.",
             "Будет включён в следующем голосовом сеансе; при недоступности автоматического переключения на Omni не произойдёт.",
-            "{{provider}} временно недоступен. Голосовой ввод в этом сеансе остановлен. Переключения на другую службу распознавания речи не произошло. Начните новый голосовой сеанс позже.",
+            "{{providerKey}} временно недоступен. Голосовой ввод в этом сеансе остановлен. Переключения на другую службу распознавания речи не произошло. Начните новый голосовой сеанс позже.",
         ),
         "zh-CN.json": (
             "独立 ASR 不可用，本次语音输入已停止。请检查独立 ASR 配置，然后重新开始语音会话。",
             "将在下次语音会话启用；不可用时不会自动切换到 Omni。",
-            "{{provider}} 暂时不可用，本次语音输入已停止。未切换到其他语音识别服务，请稍后重新开始语音会话。",
+            "{{providerKey}} 暂时不可用，本次语音输入已停止。未切换到其他语音识别服务，请稍后重新开始语音会话。",
         ),
         "zh-TW.json": (
             "獨立 ASR 無法使用，本次語音輸入已停止。請檢查獨立 ASR 設定，然後重新開始語音會話。",
             "將於下次語音會話啟用；無法使用時不會自動切換到 Omni。",
-            "{{provider}} 暫時無法使用，本次語音輸入已停止。未切換到其他語音辨識服務，請稍後重新開始語音會話。",
+            "{{providerKey}} 暫時無法使用，本次語音輸入已停止。未切換到其他語音辨識服務，請稍後重新開始語音會話。",
         ),
     }
 
@@ -493,19 +486,22 @@ def test_independent_asr_toggle_awaits_server_sync_before_next_session():
     capture_source = APP_AUDIO_CAPTURE_PATH.read_text(encoding="utf-8")
     websocket_source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
 
+    persist_block = capture_source.split(
+        "function persistVoiceSettingChange() {", 1
+    )[1].split("function markVoiceSettingsPending", 1)[0]
     toggle_block = capture_source.split(
-        "asrInput.addEventListener('change', function () {",
-        1,
-    )[1].split("asrRow.appendChild(asrLabel);", 1)[0]
-    assert "window.appSettings.saveSettings({ skipServerSync: true });" in toggle_block
-    assert "window.appSettings.syncSettingsToServer({ userInitiated: true })" in toggle_block
-    assert "S.pendingSettingsSyncPromise = syncPromise;" in toggle_block
+        "var asrToggle = createVoiceSettingToggle(", 1
+    )[1].split("asrRow.appendChild(asrCopy);", 1)[0]
+    assert "persistVoiceSettingChange();" in toggle_block
+    assert "window.appSettings.saveSettings({ skipServerSync: true });" in persist_block
+    assert "window.appSettings.syncSettingsToServer({ userInitiated: true })" in persist_block
+    assert "S.pendingSettingsSyncPromise = syncPromise;" in persist_block
     # Completion clears the gate only when it still owns it (a newer toggle
     # may have replaced the pending promise meanwhile).
-    assert "if (S.pendingSettingsSyncPromise === syncPromise)" in toggle_block
-    assert "S.pendingSettingsSyncPromise = null;" in toggle_block
+    assert "if (S.pendingSettingsSyncPromise === syncPromise)" in persist_block
+    assert "S.pendingSettingsSyncPromise = null;" in persist_block
     # Fallback when the settings module does not expose syncSettingsToServer.
-    assert "window.appSettings.saveSettings();" in toggle_block
+    assert "window.appSettings.saveSettings();" in persist_block
 
     gate_block = websocket_source.split(
         "function ensureWebSocketOpen(timeoutMs = 5000)",
@@ -521,6 +517,20 @@ def test_independent_asr_toggle_awaits_server_sync_before_next_session():
     assert "pendingSync.catch(" in gate_block
     assert "return ensureWebSocketOpenNow(timeoutMs);" in gate_block
     assert "var SETTINGS_SYNC_GATE_TIMEOUT_MS = 3000;" in websocket_source
+
+
+def test_noise_reduction_toggle_uses_conversation_settings_cas_client():
+    capture_source = APP_AUDIO_CAPTURE_PATH.read_text(encoding="utf-8")
+    save_block = capture_source.split(
+        "function saveNoiseReductionSetting() {",
+        1,
+    )[1].split("function loadNoiseReductionSetting()", 1)[0]
+    settings_source = APP_SETTINGS_PATH.read_text(encoding="utf-8")
+
+    assert "window.appSettings.saveSettings();" in save_block
+    assert "fetch('/api/config/conversation-settings'" not in save_block
+    assert "'noiseReductionEnabled'," in settings_source
+    assert "noiseReductionEnabled: S.noiseReductionEnabled" in settings_source
 
 
 def test_every_start_session_send_sits_behind_the_ensure_websocket_gate():
@@ -565,6 +575,7 @@ def test_start_session_payload_carries_independent_asr_handshake():
     # other messages pass through untouched.
     assert "typeof data === 'string'" in wrapper
     assert "msg.action === 'start_session'" in wrapper
+    assert "coreApiSupportsIndependentAsr" not in wrapper
 
     # The wrapper is attached at the single socket-creation seam, so every
     # start_session send site (including the ones in app-buttons.js) carries
@@ -572,6 +583,158 @@ def test_start_session_payload_carries_independent_asr_handshake():
     creation_index = websocket_source.index("S.socket = new WebSocket(wsUrl);")
     attach_index = websocket_source.index("attachStartSessionHandshake(S.socket);")
     assert 0 < attach_index - creation_index < 200
+
+
+def test_stale_unsupported_capability_does_not_override_paid_core_preference_harness():
+    source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+    start = source.index("function attachStartSessionHandshake(ws)")
+    end = source.index("function connectWebSocket()", start)
+    attach_source = source[start:end]
+    harness = (
+        """
+        const S = {
+          coreApiSupportsIndependentAsr: false,
+          settingsHydrated: true,
+          independentAsrAuthoritative: true,
+          independentAsrEnabled: true,
+          voiceInputResourceOptimizationAuthoritative: false,
+        };
+        """
+        + attach_source
+        + """
+        const frames = [];
+        const ws = { send(data) { frames.push(data); } };
+        attachStartSessionHandshake(ws);
+        ws.send(JSON.stringify({ action: 'start_session', input_type: 'audio' }));
+        const sent = JSON.parse(frames[0]);
+        if (sent.independent_asr_enabled !== true) {
+          throw new Error('stale capability must not replace the authoritative preference');
+        }
+        console.log('ok');
+        """
+    )
+    result = _run_settings_node_harness(harness)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "ok"
+
+
+def test_core_capability_refresh_failures_fail_open_and_coalesce_requests_harness():
+    source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+    start = source.index("function publishCoreApiCapability(provider, capability)")
+    end = source.index("// Prime the capability once", start)
+    refresh_source = source[start:end]
+    harness = (
+        """
+        const S = {
+          coreApiProvider: 'free',
+          coreApiSupportsIndependentAsr: false,
+        };
+        let _coreApiCapabilityRefreshPromise = null;
+        let _coreApiCapabilityRequestGeneration = 0;
+        const events = [];
+        class CustomEvent {
+          constructor(type, options) {
+            this.type = type;
+            this.detail = options && options.detail;
+          }
+        }
+        const window = {
+          dispatchEvent(event) { events.push(event); },
+          fetch: null,
+        };
+        """
+        + refresh_source
+        + """
+        function response(data) {
+          return { ok: true, json: async () => data };
+        }
+        function assert(condition, message) {
+          if (!condition) throw new Error(message);
+        }
+        async function main() {
+          window.fetch = async () => response({ success: false, coreApi: 'qwen' });
+          await refreshCoreApiCapability({ force: true });
+          assert(S.coreApiSupportsIndependentAsr === null, 'success:false must fail open');
+          assert(S.coreApiProvider === '', 'failed response provider must become unknown');
+
+          S.coreApiProvider = 'free';
+          S.coreApiSupportsIndependentAsr = false;
+          window.fetch = async () => response({ success: true, coreApi: 'qwen' });
+          await refreshCoreApiCapability({ force: true });
+          assert(S.coreApiSupportsIndependentAsr === null, 'legacy response must fail open');
+          assert(S.coreApiProvider === 'qwen', 'usable provider context should be retained');
+
+          const validCapability = {
+            success: true,
+            coreApi: 'free',
+            effectiveCoreApi: 'qwen',
+            supportsIndependentAsr: true,
+          };
+          let fetchCalls = 0;
+          let resolveShared;
+          window.fetch = () => {
+            fetchCalls += 1;
+            return new Promise((resolve) => { resolveShared = resolve; });
+          };
+          const firstRequest = refreshCoreApiCapability({ force: true });
+          const joinedForceRequest = refreshCoreApiCapability({ force: true });
+          const joinedDefaultRequest = refreshCoreApiCapability();
+          assert(firstRequest === joinedForceRequest, 'force callers must share the in-flight request');
+          assert(firstRequest === joinedDefaultRequest, 'all callers must share the in-flight request');
+          assert(fetchCalls === 1, 'coalesced callers must issue one fetch');
+          resolveShared(response(validCapability));
+          await firstRequest;
+          assert(S.coreApiSupportsIndependentAsr === true, 'shared success must publish capability');
+          assert(S.coreApiProvider === 'qwen', 'effective provider must win');
+
+          let resolveNext;
+          window.fetch = () => {
+            fetchCalls += 1;
+            return new Promise((resolve) => { resolveNext = resolve; });
+          };
+          const nextRequest = refreshCoreApiCapability({ force: true });
+          assert(nextRequest !== firstRequest, 'force must bypass completed cache data');
+          assert(fetchCalls === 2, 'force after settlement must issue a fresh fetch');
+          resolveNext(response(validCapability));
+          await nextRequest;
+          assert(
+            events.length === 3
+              && events.every((event) => event.type === 'neko:core-api-capability-changed'),
+            'capability changes should notify the shared UI exactly once per change'
+          );
+          console.log('ok');
+        }
+        main().catch((error) => {
+          console.error(error);
+          process.exitCode = 1;
+        });
+        """
+    )
+    result = _run_settings_node_harness(harness)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "ok"
+
+
+def test_start_session_payload_carries_resource_optimization_handshake():
+    websocket_source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+    state_source = APP_STATE_PATH.read_text(encoding="utf-8")
+    settings_source = APP_SETTINGS_PATH.read_text(encoding="utf-8")
+    wrapper = websocket_source.split(
+        "function attachStartSessionHandshake(ws)",
+        1,
+    )[1].split("function connectWebSocket()", 1)[0]
+
+    assert "voiceInputResourceOptimizationAuthoritative: false," in state_source
+    assert "S.voiceInputResourceOptimizationAuthoritative === true" in wrapper
+    assert (
+        "msg.voice_input_resource_optimization_enabled = "
+        "S.voiceInputResourceOptimizationEnabled !== false;"
+    ) in wrapper
+    assert (
+        "_dirtySettingsKeys.has('voiceInputResourceOptimizationEnabled')"
+        in settings_source
+    )
+    assert "S.voiceInputResourceOptimizationAuthoritative = true;" in settings_source
 
 
 def test_start_session_handshake_omitted_until_settings_hydrated():
@@ -612,7 +775,7 @@ def test_start_session_handshake_omitted_until_settings_hydrated():
 
 
 def test_settings_hydration_marked_on_server_merge_and_user_change():
-    # S.settingsHydrated must flip true on exactly the three authoritative
+    # S.settingsHydrated must flip true on authoritative settings evidence:
     # events, and never merely at boot:
     #   (1) the conversation-settings GET succeeded (server values merged);
     #   (2) the user explicitly changed a setting — the independent-ASR toggle
@@ -623,6 +786,8 @@ def test_settings_hydration_marked_on_server_merge_and_user_change():
     #   (3) a cross-window independent-ASR flip arrived via the 'storage'
     #       listener — the originating window's user action, pinned by
     #       test_cross_window_asr_flip_marks_hydration_and_asr_dirty.
+    #   (4) a durable, explicit optimization decision survived a reload while
+    #       its server synchronization is still pending.
     settings_source = APP_SETTINGS_PATH.read_text(encoding="utf-8")
     capture_source = APP_AUDIO_CAPTURE_PATH.read_text(encoding="utf-8")
 
@@ -655,17 +820,22 @@ def test_settings_hydration_marked_on_server_merge_and_user_change():
     assert "S.settingsHydrated = true;" in user_initiated_gate, (
         "the hydration mark must sit inside the userInitiated gate"
     )
-    assert sync_fn.index("S.settingsHydrated = true;") < sync_fn.index("await fetch(")
+    assert sync_fn.index("S.settingsHydrated = true;") < sync_fn.index(
+        "await _fetchConversationSettingsJsonWithTimeout("
+    )
 
     # The independent-ASR toggle handler reaches that marker via
     # syncSettingsToServer({ userInitiated: true }); the saveSettings call it
     # makes skips the internal server sync, so the direct call is the seam.
     toggle_handler = capture_source.split(
-        "asrInput.addEventListener('change', function () {",
-        1,
-    )[1].split("asrRow.appendChild(", 1)[0]
-    assert "S.independentAsrEnabled = asrInput.checked;" in toggle_handler
-    assert "window.appSettings.syncSettingsToServer({ userInitiated: true })" in toggle_handler
+        "var asrToggle = createVoiceSettingToggle(", 1
+    )[1].split("asrRow.appendChild(asrCopy);", 1)[0]
+    persist_block = capture_source.split(
+        "function persistVoiceSettingChange() {", 1
+    )[1].split("function markVoiceSettingsPending", 1)[0]
+    assert "S.independentAsrEnabled = enabled;" in toggle_handler
+    assert "persistVoiceSettingChange();" in toggle_handler
+    assert "window.appSettings.syncSettingsToServer({ userInitiated: true })" in persist_block
 
     # Boot must NOT mark hydration: the first-launch initialization save goes
     # through saveSettings({ skipServerSync: true }) which bypasses
@@ -677,13 +847,18 @@ def test_settings_hydration_marked_on_server_merge_and_user_change():
     )[1].split("} catch (error) {", 1)[0]
     assert "saveSettings({ skipServerSync: true });" in first_launch_block
     assert "S.settingsHydrated" not in first_launch_block
-    # And nothing else in loadSettings' synchronous body marks hydration
-    # before the async GET callback runs.
+    # The only synchronous load-time hydration is guarded by a durable pending
+    # optimization decision; ordinary boot defaults still cannot gain authority.
     sync_load_body = settings_source.split("function loadSettings()", 1)[1].split(
         "loadSettingsFromServer().then(serverResult => {",
         1,
     )[0]
-    assert "S.settingsHydrated" not in sync_load_body
+    assert sync_load_body.count("S.settingsHydrated = true;") == 1
+    assert "bootMeta.optimizationDecisionPendingSync" in sync_load_body
+    assert (
+        sync_load_body.index("bootMeta.optimizationDecisionPendingSync")
+        < sync_load_body.index("S.settingsHydrated = true;")
+    )
 
 
 def test_periodic_sync_skips_post_and_never_marks_hydration_while_unhydrated():
@@ -699,7 +874,8 @@ def test_periodic_sync_skips_post_and_never_marks_hydration_while_unhydrated():
 
     # Both GET-failure paths do start the periodic task — that is exactly why
     # the tick itself must carry the guard.
-    finally_block = settings_source.split(".finally(() => {", 1)[1].split(
+    load_fn = settings_source.split("function loadSettings()", 1)[1]
+    finally_block = load_fn.split("}).finally(() => {", 1)[1].split(
         "});", 1
     )[0]
     assert "startPeriodicSync();" in finally_block
@@ -742,10 +918,13 @@ def test_user_toggle_during_get_failure_marks_hydration_posts_and_stamps():
 
     # The toggle's direct sync call is user-initiated and still POSTs.
     toggle_block = capture_source.split(
-        "asrInput.addEventListener('change', function () {",
-        1,
-    )[1].split("asrRow.appendChild(asrLabel);", 1)[0]
-    assert "window.appSettings.syncSettingsToServer({ userInitiated: true })" in toggle_block
+        "var asrToggle = createVoiceSettingToggle(", 1
+    )[1].split("asrRow.appendChild(asrCopy);", 1)[0]
+    persist_block = capture_source.split(
+        "function persistVoiceSettingChange() {", 1
+    )[1].split("function markVoiceSettingsPending", 1)[0]
+    assert "persistVoiceSettingChange();" in toggle_block
+    assert "window.appSettings.syncSettingsToServer({ userInitiated: true })" in persist_block
 
     # saveSettings' full (non-skipServerSync) path is the other user seam —
     # the settings popup, subtitle toggles and chat-window toggles all route
@@ -791,7 +970,9 @@ def test_user_dirty_keys_survive_boot_get_merge_field_level():
     assert sync_fn.count("_markUserDirtySettings();") == 1
     user_initiated_gate = _block_after(sync_fn, "if (userInitiated) {")
     assert "_markUserDirtySettings();" in user_initiated_gate
-    assert sync_fn.index("_markUserDirtySettings();") < sync_fn.index("await fetch(")
+    assert sync_fn.index("_markUserDirtySettings();") < sync_fn.index(
+        "await _fetchConversationSettingsJsonWithTimeout("
+    )
 
     # (2) loadSettings snapshots the pre-GET settings as the diff baseline
     # before issuing the GET, so keys changed while it is pending diverge
@@ -801,8 +982,10 @@ def test_user_dirty_keys_survive_boot_get_merge_field_level():
     get_index = load_fn.index("loadSettingsFromServer().then(serverResult => {")
     assert snapshot_index < get_index
 
-    # (3) The merge is field-level: the per-key dirty skip runs before the S
-    # mutation, the subtitle-bridge mirrors carry the same dirty gating, and
+    # (3) The merge is field-level: pending keys are always preserved, while
+    # acknowledged dirty keys yield only to a newer server revision. Both
+    # guards run before the S mutation, the subtitle-bridge mirrors carry the
+    # same gating, and
     # the baseline is rolled to the merged state BEFORE the writeback
     # saveSettings() so server-applied values are never misattributed as
     # user-dirty by the writeback's own userInitiated diff.
@@ -812,12 +995,19 @@ def test_user_dirty_keys_survive_boot_get_merge_field_level():
     null_guard_index = merge_block.index("if (!serverResult) return;")
     hydrate_index = merge_block.index("S.settingsHydrated = true;")
     assert null_guard_index < hydrate_index
-    skip_index = merge_block.index("if (_dirtySettingsKeys.has(key)) continue;")
-    assert skip_index < merge_block.index("S[key] = serverSettings[key];")
-    assert "!_dirtySettingsKeys.has('subtitleEnabled')" in merge_block
-    assert "!_dirtySettingsKeys.has('userLanguage')" in merge_block
+    pending_skip_index = merge_block.index(
+        "if (_pendingSettingsKeys.has(key)) continue;"
+    )
+    dirty_guard_index = merge_block.index("if (_dirtySettingsKeys.has(key)")
+    mutation_index = merge_block.index("S[key] = serverSettings[key];")
+    assert pending_skip_index < dirty_guard_index < mutation_index
+    assert "&& !serverSnapshotNewerThanCurrent) continue;" in merge_block
+    assert "!_pendingSettingsKeys.has('subtitleEnabled')" in merge_block
+    assert "!_pendingSettingsKeys.has('userLanguage')" in merge_block
+    assert "serverSnapshotNewerThanCurrent" in merge_block
     roll_index = merge_block.index("_settingsBaseline = getConversationSettings();")
-    assert skip_index < roll_index < merge_block.index("saveSettings();")
+    assert pending_skip_index < roll_index < merge_block.index("saveSettings({")
+    assert "serverAuthoritativeKeys: Object.keys(" in merge_block
     # The whole-merge drop is gone: no early return between the null-guard
     # and the hydration mark, and the old drop log no longer exists.
     after_null_guard = null_guard_index + len("if (!serverResult) return;")
@@ -827,8 +1017,10 @@ def test_user_dirty_keys_survive_boot_get_merge_field_level():
 
     # (4) Negative validation — non-user flows never dirty keys: the periodic
     # tick passes no options (its POST is not a user change), the boot-time
-    # skipServerSync save bypasses syncSettingsToServer entirely, and the set
-    # is monotone (no delete/clear), so a toggle-and-back stays authoritative.
+    # skipServerSync save bypasses syncSettingsToServer entirely, and the
+    # boot-merge authority set is monotone so a toggle-and-back survives a
+    # stale in-flight GET. The separate pending set is cleared only after a
+    # successful POST and only while the acknowledged value is still current.
     tick_body = settings_source.split("_syncTimerId = setInterval(() => {", 1)[1].split(
         "}, SYNC_INTERVAL_MS);", 1
     )[0]
@@ -841,6 +1033,12 @@ def test_user_dirty_keys_survive_boot_get_merge_field_level():
     assert "saveSettings({ skipServerSync: true });" in first_launch_block
     assert "_dirtySettingsKeys.delete" not in settings_source
     assert "_dirtySettingsKeys.clear" not in settings_source
+    clear_fn = settings_source.split(
+        "function _clearAcknowledgedPendingSettings(payload) {", 1
+    )[1].split("function applySharedRuntimeSettings", 1)[0]
+    assert "current[key] === payload[key]" in clear_fn
+    assert "_pendingSettingsKeys.delete(key);" in clear_fn
+    assert "_clearAcknowledgedPendingSettings(payload);" in sync_fn
 
 
 def test_settings_post_snapshot_waits_bounded_for_boot_get_merge():
@@ -865,7 +1063,9 @@ def test_settings_post_snapshot_waits_bounded_for_boot_get_merge():
     run_sync_body = sync_fn.split("const runSync = async () =>", 1)[1]
     gate_index = run_sync_body.index("await _settingsGetGate;")
     snapshot_index = run_sync_body.index("const settings = getConversationSettings();")
-    fetch_index = run_sync_body.index("await fetch(")
+    fetch_index = run_sync_body.index(
+        "await _fetchConversationSettingsJsonWithTimeout("
+    )
     assert gate_index < snapshot_index < fetch_index
 
     # The gate is armed at GET issue time as a race between the settled merge
@@ -921,7 +1121,9 @@ def test_settings_posts_serialize_so_a_stale_body_cannot_win_persistence():
     # after the predecessor completed — not at call time.
     run_sync_index = sync_fn.index("const runSync = async () =>")
     snapshot_index = sync_fn.index("const settings = getConversationSettings();")
-    fetch_index = sync_fn.index("await fetch(")
+    fetch_index = sync_fn.index(
+        "await _fetchConversationSettingsJsonWithTimeout("
+    )
     assert run_sync_index < snapshot_index < fetch_index
 
     # Negative: the synchronous hydration mark and dirty-key recording stay
@@ -929,6 +1131,49 @@ def test_settings_posts_serialize_so_a_stale_body_cannot_win_persistence():
     # stale-GET-merge window and the pre-hydration handshake gap.
     assert sync_fn.index("S.settingsHydrated = true;") < run_sync_index
     assert sync_fn.index("_markUserDirtySettings();") < run_sync_index
+
+
+def test_cross_window_settings_posts_use_cas_and_persist_asr_decision_order():
+    settings_source = APP_SETTINGS_PATH.read_text(encoding="utf-8")
+    sync_fn = _block_after(
+        settings_source, "async function syncSettingsToServer(options) {"
+    )
+
+    assert "let _conversationSettingsEtag = null;" in settings_source
+    assert "headers['If-Match'] = _conversationSettingsEtag;" in sync_fn
+    assert "response.status === 412" in sync_fn
+    assert "const preservedKeys = new Set(_pendingSettingsKeys);" in sync_fn
+    assert "_conversationSettingsEtagKeyMutationVersions" in sync_fn
+    assert "_crossWindowSettingsNewerThanEtag(" in sync_fn
+    assert "etagKeyMutationVersionsAtSend" in sync_fn
+    assert "_markEtagConfirmedSharedSettings(" in sync_fn
+    assert "_settingsChangedSince(settings, mutationVersionAtSend).forEach" in sync_fn
+    assert "_mergeConversationSettingsSnapshot(data, preservedKeys);" in sync_fn
+    assert "_CONVERSATION_SETTINGS_MAX_ATTEMPTS" in sync_fn
+    assert "headers['X-Conversation-Settings-ASR-Decision']" in sync_fn
+    assert "JSON.stringify(requestDecision)" in sync_fn
+    mark_signature = re.search(
+        r"function _markEtagConfirmedSharedSettings\([^)]*\)\s*\{",
+        settings_source,
+    )
+    assert mark_signature is not None
+    mark_confirmed = _block_after(settings_source, mark_signature.group(0))
+    assert "payloadWasFull" not in mark_confirmed
+    assert "settingsAtSend[key] !== serverSettings[key]" in mark_confirmed
+
+    # Both the state snapshot and the ASR token are rebuilt inside the retry
+    # loop. An older window that loses the server decision comparison must not
+    # resend its stale pre-conflict body.
+    retry_loop = sync_fn.split(
+        "for (let attempt = 0; attempt < _CONVERSATION_SETTINGS_MAX_ATTEMPTS;",
+        1,
+    )[1]
+    assert retry_loop.index("const settings = getConversationSettings();") < retry_loop.index(
+        "await _fetchConversationSettingsJsonWithTimeout("
+    )
+    assert retry_loop.index("const requestDecision = (") < retry_loop.index(
+        "await _fetchConversationSettingsJsonWithTimeout("
+    )
 
 
 def test_cross_window_asr_flip_marks_hydration_and_asr_dirty():
@@ -968,7 +1213,12 @@ def test_cross_window_asr_flip_marks_hydration_and_asr_dirty():
     )[0]
     assert "S.settingsHydrated = true;" in flip_gate
     assert "_dirtySettingsKeys.add('independentAsrEnabled');" in flip_gate
-    assert listener_block.count("S.settingsHydrated = true;") == 1
+    optimization_gate = listener_block.split(
+        "if (optimizationChangedByOtherWindow) {",
+        1,
+    )[1].split("}", 1)[0]
+    assert "S.settingsHydrated = true;" in optimization_gate
+    assert listener_block.count("S.settingsHydrated = true;") == 2
     assert listener_block.count("_dirtySettingsKeys.add('independentAsrEnabled');") == 1
 
     # No POST from the receiving window: the originating window owns
@@ -980,7 +1230,10 @@ def test_cross_window_asr_flip_marks_hydration_and_asr_dirty():
         for line in listener_block.splitlines()
         if not line.strip().startswith("//")
     )
-    assert "saveSettings" not in listener_code
+    assert "syncSettingsToServer" not in listener_code
+    assert "saveSettings();" not in listener_code
+    if "saveSettings({" in listener_code:
+        assert "skipServerSync: true" in listener_code
     assert "syncSettingsToServer" not in listener_code
     assert "fetch(" not in listener_code
 
@@ -1040,6 +1293,7 @@ def test_rapid_asr_toggle_double_flip_persists_final_state_harness():
           // look only at the POST calls.
           const postCalls = [];
           const getCalls = [];
+          const timeoutCallbacks = [];
           const sandbox = {
             console: { log() {}, warn() {}, error() {} },
             setInterval() { return 0; },
@@ -1049,6 +1303,7 @@ def test_rapid_asr_toggle_double_flip_persists_final_state_harness():
               // the harness then exits naturally and stdout always flushes.
               const t = setTimeout(fn, ms);
               if (t && typeof t.unref === 'function') t.unref();
+              timeoutCallbacks.push({ fn, ms, timer: t });
               return t;
             },
             clearTimeout,
@@ -1057,7 +1312,7 @@ def test_rapid_asr_toggle_double_flip_persists_final_state_harness():
             fetch(url, opts) {
               return new Promise((resolve, reject) => {
                 if (opts && opts.method === 'POST') {
-                  postCalls.push({ url, body: opts.body, resolve, reject });
+                  postCalls.push({ url, body: opts.body, opts, resolve, reject });
                 } else {
                   getCalls.push({ url, resolve, reject });
                 }
@@ -1065,9 +1320,16 @@ def test_rapid_asr_toggle_double_flip_persists_final_state_harness():
             },
           };
           sandbox.window = {
-            appState: { independentAsrEnabled: false, settingsHydrated: false },
+            appState: {
+              independentAsrEnabled: false,
+              slopFilterEnabled: false,
+              focusModeEnabled: false,
+              settingsHydrated: false,
+            },
             appConst: {},
             appUtils: { mapRenderQualityToFollowPerf() { return 'medium'; } },
+            slopFilterEnabled: false,
+            focusModeEnabled: false,
             addEventListener() {},
             removeEventListener() {},
           };
@@ -1076,7 +1338,13 @@ def test_rapid_asr_toggle_double_flip_persists_final_state_harness():
           // The harness drives hydration and the toggle state explicitly from
           // a clean baseline.
           sandbox.window.appState.settingsHydrated = false;
-          return { postCalls, getCalls, S: sandbox.window.appState, mod: sandbox.window.appSettings };
+          return {
+            postCalls,
+            getCalls,
+            timeoutCallbacks,
+            S: sandbox.window.appState,
+            mod: sandbox.window.appSettings,
+          };
         }
 
         const okResponse = { ok: true, json: async () => ({ success: true }) };
@@ -1137,6 +1405,37 @@ def test_rapid_asr_toggle_double_flip_persists_final_state_harness():
           postCalls[3].resolve(okResponse);
           await p3;
           await p4;
+
+          // A transport that never settles must time out and release the
+          // serialization tail so the later user state can still be sent.
+          const timeoutCountBeforeStall = ctx.timeoutCallbacks.length;
+          S.independentAsrEnabled = true;
+          const p5 = mod.syncSettingsToServer({ userInitiated: true });
+          await tick();
+          S.independentAsrEnabled = false;
+          const p6 = mod.syncSettingsToServer({ userInitiated: true });
+          await tick();
+          assert(postCalls.length === 5, 'fifth sync in flight, sixth queued');
+          const requestTimeout = ctx.timeoutCallbacks
+            .slice(timeoutCountBeforeStall)
+            .find(
+              (timer) => timer.ms === 15000
+          );
+          assert(requestTimeout, 'the in-flight request must have a bounded timeout');
+          requestTimeout.fn();
+          await tick();
+          await tick();
+          assert(
+            postCalls.length === 6,
+            'a timed-out predecessor must release the queued sync'
+          );
+          assert(
+            JSON.parse(postCalls[5].body).independentAsrEnabled === false,
+            'the post-timeout sync must rebuild from the final state'
+          );
+          postCalls[5].resolve(okResponse);
+          await p5;
+          await p6;
 
           // Negative: a non-userInitiated (periodic-style) call never marks
           // hydration — and after a FAILED boot GET, with nothing the user
@@ -1207,6 +1506,1455 @@ def test_rapid_asr_toggle_double_flip_persists_final_state_harness():
     assert "HARNESS_OK" in result.stdout
 
 
+def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness():
+    harness = textwrap.dedent(
+        """
+        const fs = require('node:fs');
+        const vm = require('node:vm');
+        const source = fs.readFileSync(__APP_SETTINGS_PATH__, 'utf8');
+
+        function assert(cond, msg) {
+          if (!cond) throw new Error('ASSERT: ' + msg);
+        }
+        function response(ok, status, etag, data) {
+          return {
+            ok,
+            status,
+            headers: {
+              get(name) { return name.toLowerCase() === 'etag' ? etag : null; },
+            },
+            json: async () => data,
+          };
+        }
+        const tick = () => new Promise((resolve) => setImmediate(resolve));
+
+        function makeContext(
+          bootFails,
+          bootData,
+          initialProjectSettings,
+          failSharedStorageWrites
+        ) {
+          let storageListener = null;
+          const runtime = {
+            stoppedSpeech: 0,
+            stoppedScreening: 0,
+            stoppedTracks: 0,
+            scheduled: 0,
+          };
+          const store = new Map([
+            ['project_neko_settings', JSON.stringify(initialProjectSettings || {
+              independentAsrEnabled: false,
+              proactiveVisionEnabled: true,
+              slopFilterEnabled: false,
+              mergeMessagesEnabled: false,
+              mouseTrackingEnabled: false,
+            })],
+            ['neko_noise_reduction', '0'],
+          ]);
+          const postCalls = [];
+          const sandbox = {
+            console: { log() {}, warn() {}, error() {} },
+            setInterval() { return 0; },
+            clearInterval() {},
+            setTimeout(fn, ms) {
+              const timer = setTimeout(fn, ms);
+              if (timer && typeof timer.unref === 'function') timer.unref();
+              return timer;
+            },
+            clearTimeout,
+            localStorage: {
+              getItem(key) { return store.has(key) ? store.get(key) : null; },
+              setItem(key, value) {
+                if (failSharedStorageWrites && key === 'project_neko_settings') {
+                  throw new Error('shared localStorage unavailable');
+                }
+                store.set(key, String(value));
+              },
+              removeItem(key) { store.delete(key); },
+            },
+            document: { getElementById() { return null; } },
+            fetch(url, opts) {
+              if (opts && opts.method === 'POST') {
+                return new Promise((resolve) => {
+                  postCalls.push({ url, opts, resolve });
+                });
+              }
+              if (bootFails) return Promise.resolve({ ok: false, status: 500 });
+              return Promise.resolve(response(
+                true,
+                200,
+                '"conversation-settings-0"',
+                bootData || {
+                  success: true,
+                  settings: { independentAsrEnabled: false },
+                  telemetryBranch: null,
+                  decisions: {},
+                }
+              ));
+            },
+          };
+          sandbox.window = {
+            appState: {
+              independentAsrEnabled: false,
+              proactiveVisionEnabled: true,
+              slopFilterEnabled: false,
+              mergeMessagesEnabled: false,
+              focusModeEnabled: false,
+              settingsHydrated: false,
+              screenCaptureStream: {
+                getTracks() {
+                  return [{ stop() { runtime.stoppedTracks += 1; } }];
+                },
+              },
+            },
+            appConst: {},
+            appUtils: { mapRenderQualityToFollowPerf() { return 'medium'; } },
+            proactiveVisionEnabled: true,
+            slopFilterEnabled: false,
+            focusModeEnabled: false,
+            stopProactiveVisionDuringSpeech() { runtime.stoppedSpeech += 1; },
+            stopScreening() { runtime.stoppedScreening += 1; },
+            scheduleProactiveChat() { runtime.scheduled += 1; },
+            addEventListener(type, listener) {
+              if (type === 'storage') storageListener = listener;
+            },
+            removeEventListener() {},
+          };
+          vm.createContext(sandbox);
+          vm.runInContext(source, sandbox);
+          return {
+            S: sandbox.window.appState,
+            win: sandbox.window,
+            mod: sandbox.window.appSettings,
+            postCalls,
+            store,
+            runtime,
+            fireStorage(newValue) {
+              storageListener({ key: 'project_neko_settings', newValue });
+            },
+          };
+        }
+
+        async function runBootMetadataScenario() {
+          const tuple = {
+            // Valid at an authority whose clock is just over one second ahead,
+            // but beyond this browser's independently measured +1 year bound.
+            writeId: Date.now() + (365 * 24 * 60 * 60 * 1000) + 1000,
+            writerId: 'server-ahead',
+            value: false,
+          };
+          const tupleOnly = makeContext(false, {
+            success: true,
+            settings: { independentAsrEnabled: false },
+            revision: 1,
+            telemetryBranch: null,
+            decisions: { independentAsrEnabled: tuple },
+          });
+          await tick();
+          await tick();
+          const persistedTuple = JSON.parse(
+            tupleOnly.store.get('project_neko_settings')
+          )._sharedWriteMeta.asrDecision;
+          const tupleEnvelope = JSON.parse(
+            tupleOnly.store.get('project_neko_settings')
+          )._sharedWriteMeta.writeId;
+          assert(
+            JSON.stringify(persistedTuple) === JSON.stringify(tuple),
+            'a newer same-value server tuple must persist for offline write-id flooring'
+          );
+          assert(
+            tupleEnvelope < tuple.writeId,
+            'a server ASR floor must not inflate the localStorage envelope id'
+          );
+
+          const resetPriorDecision = {
+            writeId: Date.now() + 1000,
+            writerId: 'server-before-reset',
+            value: true,
+          };
+          assert(
+            resetPriorDecision.value !== false,
+            'the pre-reset ASR decision must differ from the disabled reset default'
+          );
+          const reset = makeContext(false, {
+            success: true,
+            settings: {},
+            revision: 10,
+            reset: true,
+            telemetryBranch: null,
+            decisions: { independentAsrEnabled: resetPriorDecision },
+          });
+          await tick();
+          await tick();
+          const resetVisionDefault = reset.mod._isUserRegionChina();
+          assert(
+            reset.S.slopFilterEnabled === true
+              && reset.S.proactiveVisionEnabled === resetVisionDefault
+              && reset.S.independentAsrEnabled === false
+              && reset.S.voiceInputResourceOptimizationEnabled === true,
+            'an empty authoritative restore must reset stale local values to defaults: '
+              + JSON.stringify({
+                slop: reset.S.slopFilterEnabled,
+                vision: reset.S.proactiveVisionEnabled,
+                visionDefault: resetVisionDefault,
+                asr: reset.S.independentAsrEnabled,
+                optimization: reset.S.voiceInputResourceOptimizationEnabled,
+              })
+          );
+          assert(reset.postCalls.length === 1, 'the reset defaults must be written back once');
+          const resetWritebackDecision = JSON.parse(
+            reset.postCalls[0].opts.headers[
+              'X-Conversation-Settings-ASR-Decision'
+            ]
+          );
+          assert(
+            resetWritebackDecision.value === false
+              && resetWritebackDecision.writeId
+                > resetPriorDecision.writeId,
+            'a reset writeback must rebase the stale tuple onto the reset default'
+          );
+          assert(
+            reset.postCalls[0].opts.headers['X-Conversation-Settings-Full-Snapshot'] === '1',
+            'a reset writeback must declare that it can clear the tombstone'
+          );
+          const resetBody = JSON.parse(reset.postCalls[0].opts.body);
+          assert(
+            resetBody.slopFilterEnabled === true
+              && resetBody.proactiveVisionEnabled === resetVisionDefault
+              && resetBody.independentAsrEnabled === false
+              && resetBody.voiceInputResourceOptimizationEnabled === true,
+            'the reset writeback must not repopulate the server with stale localStorage'
+          );
+          reset.postCalls[0].resolve(response(
+            true,
+            200,
+            '"conversation-settings-11"',
+            {
+              success: true,
+              settings: resetBody,
+              revision: 11,
+              reset: false,
+              decisions: {
+                independentAsrEnabled: resetWritebackDecision,
+              },
+            }
+          ));
+          await tick();
+          const resetPersisted = JSON.parse(
+            reset.store.get('project_neko_settings')
+          );
+          assert(
+            resetPersisted._sharedWriteMeta.asrDecision.value === false
+              && resetPersisted._sharedWriteMeta.serverRevision === 11,
+            'a full-write success must adopt and rebroadcast the generated server ASR tuple'
+          );
+
+          const resetRace = makeContext(false, {
+            success: true,
+            settings: {},
+            revision: 10,
+            reset: true,
+            telemetryBranch: null,
+            decisions: { independentAsrEnabled: resetPriorDecision },
+          });
+          await tick();
+          await tick();
+          assert(
+            resetRace.postCalls.length === 1,
+            'the reset-race writeback must start'
+          );
+          const resetRaceBaselineDecision = JSON.parse(
+            resetRace.postCalls[0].opts.headers[
+              'X-Conversation-Settings-ASR-Decision'
+            ]
+          );
+          resetRace.S.independentAsrEnabled = true;
+          resetRace.mod.saveSettings({
+            skipServerSync: true,
+            explicitSharedKeys: ['independentAsrEnabled'],
+          });
+          const resetToggleSync = resetRace.mod.syncSettingsToServer({
+            userInitiated: true,
+          });
+          await tick();
+          assert(
+            resetRace.postCalls.length === 1,
+            'the user toggle must queue behind the reset writeback'
+          );
+          const resetToggleDecision = JSON.parse(
+            resetRace.store.get('project_neko_settings')
+          )._sharedWriteMeta.asrDecision;
+          assert(
+            resetToggleDecision.value === true
+              && resetToggleDecision.writeId
+                > resetRaceBaselineDecision.writeId,
+            'a toggle during reset must mint above the rebased reset decision'
+          );
+          resetRace.postCalls[0].resolve(response(
+            true,
+            200,
+            '"conversation-settings-11"',
+            {
+              success: true,
+              settings: {
+                independentAsrEnabled: false,
+                slopFilterEnabled: true,
+              },
+              revision: 11,
+              reset: false,
+              decisions: {
+                independentAsrEnabled: resetRaceBaselineDecision,
+              },
+            }
+          ));
+          await tick();
+          await tick();
+          assert(
+            resetRace.S.independentAsrEnabled === true
+              && resetRace.postCalls.length === 2,
+            'the older reset response must not overwrite the queued toggle'
+          );
+          const resetToggleBody = JSON.parse(resetRace.postCalls[1].opts.body);
+          const resetToggleHeader = JSON.parse(
+            resetRace.postCalls[1].opts.headers[
+              'X-Conversation-Settings-ASR-Decision'
+            ]
+          );
+          assert(
+            resetToggleBody.independentAsrEnabled === true
+              && JSON.stringify(resetToggleHeader)
+                === JSON.stringify(resetToggleDecision),
+            'the queued sync must persist the newer toggle tuple'
+          );
+          resetRace.postCalls[1].resolve(response(
+            true,
+            200,
+            '"conversation-settings-12"',
+            {
+              success: true,
+              settings: resetToggleBody,
+              revision: 12,
+              reset: false,
+              decisions: {
+                independentAsrEnabled: resetToggleDecision,
+              },
+            }
+          ));
+          await resetToggleSync;
+
+          const noiseMerge = makeContext(false, {
+            success: true,
+            settings: {
+              independentAsrEnabled: false,
+              noiseReductionEnabled: true,
+            },
+            revision: 1,
+            telemetryBranch: null,
+            decisions: {},
+          });
+          await tick();
+          await tick();
+          assert(
+            noiseMerge.store.get('neko_noise_reduction') === '1',
+            'a boot merge must synchronize the legacy noise cache'
+          );
+
+          const serverBroadcaster = makeContext(false, {
+            success: true,
+            settings: {
+              independentAsrEnabled: false,
+              proactiveVisionEnabled: false,
+            },
+            revision: 2,
+            telemetryBranch: null,
+            decisions: {},
+          });
+          await tick();
+          await tick();
+          const serverSnapshot = JSON.parse(
+            serverBroadcaster.store.get('project_neko_settings')
+          );
+          assert(
+            serverSnapshot._sharedWriteMeta.serverRevision === 2
+              && serverSnapshot._sharedWriteMeta.serverAuthoritativeKeys
+                .includes('proactiveVisionEnabled'),
+            'a server winner must carry its real revision and authoritative fields'
+          );
+          serverBroadcaster.fireStorage(JSON.stringify({
+            proactiveVisionEnabled: true,
+            _sharedWriteMeta: {
+              writeId: 1,
+              writerId: 'window-old',
+              changedKeys: ['proactiveVisionEnabled'],
+              hydrated: true,
+              asrAuthoritative: true,
+              knownKeyWrites: {
+                proactiveVisionEnabled: {
+                  writeId: 1,
+                  writerId: 'window-old',
+                },
+              },
+            },
+          }));
+          assert(
+            serverBroadcaster.S.proactiveVisionEnabled === true,
+            'an unconfirmed explicit edit must outrank a server snapshot '
+              + 'that did not observe it'
+          );
+          assert(
+            !serverSnapshot._sharedWriteMeta.knownKeyWrites
+              .proactiveVisionEnabled
+              && serverSnapshot._sharedWriteMeta.serverKeyRevisions
+                .proactiveVisionEnabled === 2,
+            'the server floor must be serialized without forging a source token'
+          );
+          const reloadedServerWinner = makeContext(
+            true,
+            null,
+            serverSnapshot
+          );
+          await tick();
+          await tick();
+          reloadedServerWinner.fireStorage(JSON.stringify({
+            proactiveVisionEnabled: true,
+            _sharedWriteMeta: {
+              writeId: 1,
+              writerId: 'window-old-after-reload',
+              changedKeys: ['proactiveVisionEnabled'],
+              hydrated: true,
+              asrAuthoritative: true,
+              knownKeyWrites: {
+                proactiveVisionEnabled: {
+                  writeId: 1,
+                  writerId: 'window-old-after-reload',
+                },
+              },
+            },
+          }));
+          assert(
+            reloadedServerWinner.S.proactiveVisionEnabled === true,
+            'reload must not let the persisted server floor suppress '
+              + 'an unconfirmed explicit edit'
+          );
+
+          const receiver = makeContext(true);
+          await tick();
+          await tick();
+          receiver.fireStorage(JSON.stringify({
+            proactiveVisionEnabled: true,
+            _sharedWriteMeta: {
+              writeId: 1,
+              writerId: 'window-old',
+              changedKeys: ['proactiveVisionEnabled'],
+              hydrated: true,
+              asrAuthoritative: true,
+              knownKeyWrites: {
+                proactiveVisionEnabled: {
+                  writeId: 1,
+                  writerId: 'window-old',
+                  confirmedRevision: 1,
+                },
+              },
+            },
+          }));
+          receiver.fireStorage(JSON.stringify(serverSnapshot));
+          assert(
+            receiver.S.proactiveVisionEnabled === false,
+            'a newer authoritative server winner must outrank an older local token'
+          );
+          assert(
+            receiver.runtime.stoppedSpeech === 1
+              && receiver.runtime.stoppedScreening === 1
+              && receiver.runtime.stoppedTracks === 1,
+            'the authoritative privacy disable must stop active vision runtime'
+          );
+          receiver.fireStorage(JSON.stringify({
+            proactiveVisionEnabled: true,
+            _sharedWriteMeta: {
+              writeId: 1,
+              writerId: 'window-old',
+              changedKeys: ['proactiveVisionEnabled'],
+              hydrated: true,
+              asrAuthoritative: true,
+              knownKeyWrites: {
+                proactiveVisionEnabled: {
+                  writeId: 1,
+                  writerId: 'window-old',
+                  confirmedRevision: 1,
+                },
+              },
+            },
+          }));
+          assert(
+            receiver.S.proactiveVisionEnabled === false,
+            'an accepted server winner must retain a floor against delayed old events'
+          );
+          const newerVisionWriteId =
+            serverSnapshot._sharedWriteMeta.writeId + 1;
+          receiver.fireStorage(JSON.stringify({
+            proactiveVisionEnabled: true,
+            _sharedWriteMeta: {
+              writeId: newerVisionWriteId,
+              writerId: 'window-new',
+              changedKeys: ['proactiveVisionEnabled'],
+              hydrated: true,
+              asrAuthoritative: true,
+              knownKeyWrites: {
+                proactiveVisionEnabled: {
+                  writeId: newerVisionWriteId,
+                  writerId: 'window-new',
+                },
+              },
+            },
+          }));
+          assert(
+            receiver.S.proactiveVisionEnabled === true,
+            'a genuinely newer explicit event must still supersede the server floor'
+          );
+
+          const subtitleReceiver = makeContext(true);
+          await tick();
+          await tick();
+          subtitleReceiver.fireStorage(JSON.stringify({
+            subtitleEnabled: false,
+            userLanguage: null,
+            _sharedWriteMeta: {
+              writeId: 700,
+              writerId: 'window-subtitle-editor',
+              changedKeys: ['subtitleEnabled', 'userLanguage'],
+              hydrated: true,
+              asrAuthoritative: false,
+              knownKeyWrites: {
+                subtitleEnabled: {
+                  writeId: 700,
+                  writerId: 'window-subtitle-editor',
+                },
+                userLanguage: {
+                  writeId: 700,
+                  writerId: 'window-subtitle-editor',
+                },
+              },
+            },
+          }));
+          subtitleReceiver.fireStorage(JSON.stringify({
+            subtitleEnabled: true,
+            userLanguage: 'ja',
+            _sharedWriteMeta: {
+              writeId: 800,
+              writerId: 'window-stale-server-reader',
+              changedKeys: [],
+              hydrated: true,
+              asrAuthoritative: false,
+              serverRevision: 1,
+              serverAuthoritativeKeys: [
+                'subtitleEnabled',
+                'userLanguage',
+              ],
+              knownKeyWrites: {},
+            },
+          }));
+          assert(
+            subtitleReceiver.S.subtitleEnabled === false
+              && subtitleReceiver.S.userLanguage === null,
+            'same-value subtitle intent must enter per-key ordering and survive '
+              + 'a delayed stale server merge'
+          );
+
+          const noSharedStorage = makeContext(
+            false,
+            {
+              success: true,
+              settings: {},
+              revision: 0,
+              telemetryBranch: null,
+              decisions: {},
+            },
+            null,
+            true
+          );
+          await tick();
+          await tick();
+          noSharedStorage.S.noiseReductionEnabled = false;
+          noSharedStorage.mod.saveSettings();
+          await tick();
+          await tick();
+          assert(
+            noSharedStorage.postCalls.length === 1
+              && JSON.parse(
+                noSharedStorage.postCalls[0].opts.body
+              ).noiseReductionEnabled === false,
+            'a failed shared localStorage write must not suppress the noise CAS POST'
+          );
+          noSharedStorage.postCalls[0].resolve(response(
+            true,
+            200,
+            '"conversation-settings-1"',
+            {
+              success: true,
+              settings: { noiseReductionEnabled: false },
+              revision: 1,
+              decisions: {},
+            }
+          ));
+
+          const staleReceiver = makeContext(false, {
+            success: true,
+            settings: {
+              independentAsrEnabled: false,
+              focusModeEnabled: false,
+            },
+            revision: 2,
+            telemetryBranch: null,
+            decisions: {},
+          });
+          await tick();
+          await tick();
+          staleReceiver.fireStorage(JSON.stringify({
+            focusModeEnabled: true,
+            _sharedWriteMeta: {
+              writeId: 50,
+              writerId: 'window-editor',
+              changedKeys: ['focusModeEnabled'],
+              hydrated: true,
+              asrAuthoritative: true,
+              knownKeyWrites: {
+                focusModeEnabled: {
+                  writeId: 50,
+                  writerId: 'window-editor',
+                },
+              },
+            },
+          }));
+          const staleServerSnapshot = {
+            focusModeEnabled: false,
+            _sharedWriteMeta: {
+              writeId: 500,
+              writerId: 'window-stale-server-reader',
+              changedKeys: [],
+              hydrated: true,
+              asrAuthoritative: true,
+              serverRevision: 2,
+              serverAuthoritativeKeys: ['focusModeEnabled'],
+              knownKeyWrites: {},
+            },
+          };
+          staleReceiver.fireStorage(JSON.stringify(staleServerSnapshot));
+          assert(
+            staleReceiver.S.focusModeEnabled === true,
+            'a same-revision server snapshot must not launder its envelope '
+              + 'over an unconfirmed explicit edit'
+          );
+
+          const equalRevision = makeContext(false, {
+            success: true,
+            settings: {
+              independentAsrEnabled: false,
+              focusModeEnabled: false,
+            },
+            revision: 2,
+            telemetryBranch: null,
+            decisions: {},
+          });
+          await tick();
+          await tick();
+          equalRevision.fireStorage(JSON.stringify({
+            focusModeEnabled: true,
+            _sharedWriteMeta: {
+              writeId: 600,
+              writerId: 'window-editor',
+              changedKeys: ['focusModeEnabled'],
+              hydrated: true,
+              asrAuthoritative: true,
+              knownKeyWrites: {
+                focusModeEnabled: {
+                  writeId: 600,
+                  writerId: 'window-editor',
+                },
+              },
+            },
+          }));
+          equalRevision.fireStorage(JSON.stringify({
+            focusModeEnabled: true,
+            _sharedWriteMeta: {
+              writeId: 601,
+              writerId: 'window-server-reader',
+              changedKeys: [],
+              hydrated: true,
+              asrAuthoritative: true,
+              serverRevision: 2,
+              serverAuthoritativeKeys: ['focusModeEnabled'],
+              knownKeyWrites: {
+                focusModeEnabled: {
+                  writeId: 600,
+                  writerId: 'window-editor',
+                  confirmedRevision: 2,
+                },
+              },
+            },
+          }));
+          const equalSync = equalRevision.mod.syncSettingsToServer();
+          await tick();
+          assert(equalRevision.postCalls.length === 1, 'the confirmed view must POST');
+          equalRevision.postCalls[0].resolve(response(
+            false,
+            412,
+            '"conversation-settings-3"',
+            {
+              success: false,
+              settings: {
+                independentAsrEnabled: false,
+                focusModeEnabled: false,
+              },
+              revision: 3,
+              decisions: {},
+            }
+          ));
+          await tick();
+          await tick();
+          assert(equalRevision.postCalls.length === 2, 'the newer conflict must retry');
+          const equalRetryBody = JSON.parse(equalRevision.postCalls[1].opts.body);
+          assert(
+            equalRetryBody.focusModeEnabled === false,
+            'an equal-revision confirmation must stop the older local value '
+              + 'being preserved over revision 3'
+          );
+          equalRevision.postCalls[1].resolve(response(
+            true,
+            200,
+            '"conversation-settings-4"',
+            {
+              success: true,
+              settings: equalRetryBody,
+              revision: 4,
+              decisions: {},
+            }
+          ));
+          await equalSync;
+        }
+
+        async function runScenario(serverDecisionIsNewer) {
+          const ctx = makeContext();
+          await tick();
+          await tick();
+          assert(ctx.S.settingsHydrated === true, 'boot GET must hydrate settings');
+
+          ctx.S.independentAsrEnabled = true;
+          ctx.mod.saveSettings({ skipServerSync: true });
+          const syncPromise = ctx.mod.syncSettingsToServer({ userInitiated: true });
+          await tick();
+          assert(ctx.postCalls.length === 1, 'first CAS POST must be issued');
+          const first = ctx.postCalls[0];
+          const firstBody = JSON.parse(first.opts.body);
+          const localDecision = JSON.parse(
+            first.opts.headers['X-Conversation-Settings-ASR-Decision']
+          );
+          assert(
+            first.opts.headers['If-Match'] === '"conversation-settings-0"',
+            'boot ETag must guard the first POST'
+          );
+          assert(localDecision.value === true, 'first request carries local ASR intent');
+
+          const serverDecision = {
+            writeId: serverDecisionIsNewer
+              ? localDecision.writeId + 1
+              : Math.max(0, localDecision.writeId - 1),
+            writerId: serverDecisionIsNewer ? 'window-z' : 'window-a',
+            value: false,
+          };
+          first.resolve(response(
+            false,
+            412,
+            '"conversation-settings-1"',
+            {
+              success: false,
+              settings: { independentAsrEnabled: false, slopFilterEnabled: true },
+              revision: 1,
+              decisions: { independentAsrEnabled: serverDecision },
+            }
+          ));
+          await tick();
+          await tick();
+          assert(ctx.S.slopFilterEnabled === true, 'conflict merge must adopt the server field');
+          assert(
+            ctx.win.slopFilterEnabled === true,
+            'conflict merge must synchronize the window mirror'
+          );
+          assert(ctx.postCalls.length === 2, 'a CAS conflict must retry once');
+          const retry = ctx.postCalls[1];
+          const retryBody = JSON.parse(retry.opts.body);
+          assert(
+            retry.opts.headers['If-Match'] === '"conversation-settings-1"',
+            'retry must use the conflict response ETag'
+          );
+          assert(
+            retryBody.independentAsrEnabled === !serverDecisionIsNewer,
+            'retry body must use the winning decision value'
+          );
+          assert(
+            retryBody.slopFilterEnabled === true,
+            'retry must not roll the conflict-merged value back from a stale window mirror'
+          );
+          const retryDecision =
+            JSON.parse(retry.opts.headers['X-Conversation-Settings-ASR-Decision']);
+          assert(
+            retryDecision.writeId === (
+              serverDecisionIsNewer ? serverDecision.writeId : localDecision.writeId
+            ),
+            'retry must carry the winning decision token'
+          );
+          retry.resolve(response(
+            true,
+            200,
+            '"conversation-settings-2"',
+            {
+              success: true,
+              settings: { independentAsrEnabled: retryBody.independentAsrEnabled },
+              revision: 2,
+              decisions: { independentAsrEnabled: retryDecision },
+            }
+          ));
+          await syncPromise;
+          if (serverDecisionIsNewer) {
+            ctx.S.independentAsrEnabled = true;
+            ctx.mod.saveSettings({ skipServerSync: true });
+            const nextSharedSnapshot = JSON.parse(
+              ctx.store.get('project_neko_settings')
+            );
+            const nextDecision = nextSharedSnapshot._sharedWriteMeta.asrDecision;
+            assert(
+              nextDecision.writeId > serverDecision.writeId,
+              'the next explicit local toggle must supersede an adopted server decision'
+            );
+            assert(nextDecision.value === true, 'the superseding tuple carries the new choice');
+          }
+        }
+
+        async function runAcknowledgedDirtyScenario() {
+          const ctx = makeContext();
+          await tick();
+          await tick();
+
+          ctx.win.slopFilterEnabled = true;
+          ctx.mod.saveSettings();
+          assert(ctx.S.slopFilterEnabled === true, 'the first edit updates shared state immediately');
+          await tick();
+          assert(ctx.postCalls.length === 1, 'the first user edit must POST');
+          const acknowledged = JSON.parse(ctx.postCalls[0].opts.body);
+          ctx.postCalls[0].resolve(response(
+            true,
+            200,
+            '"conversation-settings-1"',
+            {
+              success: true,
+              settings: acknowledged,
+              revision: 1,
+              decisions: {},
+            }
+          ));
+          await tick();
+          await tick();
+
+          const acknowledgedLocal = JSON.parse(
+            ctx.store.get('project_neko_settings')
+          );
+          const acknowledgedSlopToken =
+            acknowledgedLocal._sharedWriteMeta.knownKeyWrites.slopFilterEnabled;
+          ctx.fireStorage(JSON.stringify({
+            slopFilterEnabled: false,
+            proactiveMusicEnabled: false,
+            _sharedWriteMeta: {
+              writeId: acknowledgedLocal._sharedWriteMeta.writeId + 20,
+              writerId: 'window-unrelated-editor',
+              changedKeys: ['proactiveMusicEnabled'],
+              hydrated: true,
+              asrAuthoritative: true,
+              knownKeyWrites: {
+                slopFilterEnabled: {
+                  writeId: Math.max(0, acknowledgedSlopToken.writeId - 1),
+                  writerId: 'window-stale',
+                },
+                proactiveMusicEnabled: {
+                  writeId: acknowledgedLocal._sharedWriteMeta.writeId + 20,
+                  writerId: 'window-unrelated-editor',
+                },
+              },
+            },
+          }));
+          assert(
+            ctx.S.slopFilterEnabled === true
+              && ctx.S.proactiveMusicEnabled === false,
+            'an unrelated explicit snapshot must filter a stale incidental field'
+          );
+          ctx.fireStorage(JSON.stringify({
+            slopFilterEnabled: false,
+            _sharedWriteMeta: {
+              writeId: Math.max(
+                0,
+                acknowledgedLocal._sharedWriteMeta.writeId - 1
+              ),
+              writerId: 'window-delayed',
+              changedKeys: ['slopFilterEnabled'],
+              hydrated: true,
+              asrAuthoritative: true,
+            },
+          }));
+          assert(
+            ctx.S.slopFilterEnabled === true,
+            'an older explicit event must not roll back an acknowledged edit'
+          );
+          ctx.fireStorage(JSON.stringify({
+            slopFilterEnabled: false,
+            _sharedWriteMeta: {
+              writeId: acknowledgedLocal._sharedWriteMeta.writeId,
+              writerId: 'zzzzzzzzzzzzzzzz',
+              changedKeys: [],
+              hydrated: true,
+              asrAuthoritative: true,
+            },
+          }));
+          assert(
+            ctx.S.slopFilterEnabled === true,
+            'a delayed same-id server merge must not roll back an acknowledged local edit'
+          );
+
+          // A newer explicit value may only have been received from another
+          // window, so it advances the applied floor without minting a local
+          // write id. A delayed merge must respect that floor too.
+          const externalWriteId =
+            acknowledgedLocal._sharedWriteMeta.writeId + 10;
+          ctx.fireStorage(JSON.stringify({
+            mergeMessagesEnabled: true,
+            _sharedWriteMeta: {
+              writeId: externalWriteId,
+              writerId: 'window-c',
+              changedKeys: ['mergeMessagesEnabled'],
+              hydrated: true,
+              asrAuthoritative: true,
+            },
+          }));
+          ctx.fireStorage(JSON.stringify({
+            mergeMessagesEnabled: false,
+            _sharedWriteMeta: {
+              writeId: externalWriteId,
+              writerId: 'window-d',
+              changedKeys: [],
+              hydrated: true,
+              asrAuthoritative: true,
+            },
+          }));
+          assert(
+            ctx.S.mergeMessagesEnabled === true,
+            'a delayed merge must not roll back a newer externally applied value'
+          );
+
+          // This explicit edit arrives after the boot ETag but before the next
+          // CAS request starts. It is already present in that request snapshot,
+          // so mutationVersionAtSend alone cannot detect it later; the ETag's
+          // cross-window watermark must preserve it across the 412.
+          ctx.fireStorage(JSON.stringify({
+            avatarReactionBubbleEnabled: true,
+            _sharedWriteMeta: {
+              writeId: externalWriteId + 1,
+              writerId: 'window-c',
+              changedKeys: ['avatarReactionBubbleEnabled'],
+              hydrated: true,
+              asrAuthoritative: true,
+            },
+          }));
+          assert(
+            ctx.S.avatarReactionBubbleEnabled === true,
+            'the pre-request cross-window edit must be accepted locally'
+          );
+
+          // A different local edit races a newer server revision. The earlier
+          // slopFilterEnabled=true was already acknowledged and must no longer
+          // be protected as pending during the 412 merge.
+          ctx.win.focusModeEnabled = true;
+          ctx.mod.saveSettings();
+          await tick();
+          assert(ctx.postCalls.length === 2, 'the unrelated edit must POST');
+
+          // A sibling's unrelated explicit edit still carries a full snapshot.
+          // Its incidental copy of this window's pending key must not replace
+          // the pending value merely because changedKeys is nonempty.
+          ctx.fireStorage(JSON.stringify({
+            focusModeEnabled: false,
+            mergeMessagesEnabled: true,
+            _sharedWriteMeta: {
+              writeId: 98,
+              writerId: 'window-b',
+              changedKeys: ['mergeMessagesEnabled'],
+              hydrated: true,
+              asrAuthoritative: true,
+            },
+          }));
+          assert(
+            ctx.S.focusModeEnabled === true && ctx.S.mergeMessagesEnabled === true,
+            'a nonempty explicit broadcast preserves unrelated pending keys'
+          );
+
+          // A server-merge broadcast may have been built before this pending
+          // edit. It must neither overwrite the local value nor leave its
+          // stale full snapshot in shared localStorage.
+          ctx.fireStorage(JSON.stringify({
+            focusModeEnabled: false,
+            _sharedWriteMeta: {
+              writeId: 99,
+              writerId: 'server-window',
+              changedKeys: [],
+              hydrated: true,
+              asrAuthoritative: true,
+            },
+          }));
+          assert(
+            ctx.S.focusModeEnabled === true,
+            'a server-merge broadcast must preserve a pending local edit'
+          );
+          const reasserted = JSON.parse(ctx.store.get('project_neko_settings'));
+          assert(
+            reasserted.focusModeEnabled === true
+              && reasserted._sharedWriteMeta.changedKeys.length === 0,
+            'the pending value must be restored without advertising new user intent'
+          );
+
+          // Cross-window ABA edits do not enter this window's pending set and
+          // leave the final value equal to the request snapshot. The mutation
+          // itself must still protect the latest choice from the 412 snapshot.
+              ctx.fireStorage(JSON.stringify({
+                mergeMessagesEnabled: true,
+                _sharedWriteMeta: {
+                  writeId: externalWriteId + 2,
+              writerId: 'window-b',
+              changedKeys: ['mergeMessagesEnabled'],
+              hydrated: true,
+            },
+          }));
+              ctx.fireStorage(JSON.stringify({
+                mergeMessagesEnabled: false,
+                _sharedWriteMeta: {
+                  writeId: externalWriteId + 3,
+              writerId: 'window-b',
+              changedKeys: ['mergeMessagesEnabled'],
+              hydrated: true,
+            },
+          }));
+          ctx.postCalls[1].resolve(response(
+            false,
+            412,
+            '"conversation-settings-2"',
+            {
+              success: false,
+              settings: {
+                independentAsrEnabled: false,
+                proactiveVisionEnabled: false,
+                slopFilterEnabled: false,
+                focusModeEnabled: false,
+                mergeMessagesEnabled: true,
+                avatarReactionBubbleEnabled: false,
+              },
+              revision: 2,
+              decisions: {},
+            }
+          ));
+          await tick();
+          await tick();
+          assert(ctx.postCalls.length === 3, 'the conflict must retry');
+          const retryBody = JSON.parse(ctx.postCalls[2].opts.body);
+          assert(
+            retryBody.slopFilterEnabled === false,
+            'the retry must adopt the newer server value for an acknowledged old edit'
+          );
+          assert(
+            retryBody.focusModeEnabled === true,
+            'the still-pending local edit must survive the conflict merge'
+          );
+          assert(
+            retryBody.mergeMessagesEnabled === false,
+            'a non-pending ABA edit made after send must survive the conflict merge'
+          );
+          assert(
+            retryBody.avatarReactionBubbleEnabled === true,
+            'an explicit cross-window edit after the ETag but before send must survive'
+          );
+          assert(
+            retryBody.proactiveVisionEnabled === false,
+            'the retry must retain the server privacy winner'
+          );
+          assert(
+            ctx.runtime.stoppedSpeech === 1
+              && ctx.runtime.stoppedScreening === 1
+              && ctx.runtime.stoppedTracks === 1,
+            'the privacy winner must stop every active vision runtime path'
+          );
+          const reconciledLocal = JSON.parse(ctx.store.get('project_neko_settings'));
+          assert(
+            reconciledLocal.slopFilterEnabled === false
+              && reconciledLocal.focusModeEnabled === true
+              && reconciledLocal.proactiveVisionEnabled === false
+              && reconciledLocal.mergeMessagesEnabled === false
+              && reconciledLocal.avatarReactionBubbleEnabled === true,
+            'the conflict winners and pending local edit must persist to shared localStorage'
+          );
+          assert(
+            reconciledLocal.mouseTrackingEnabled === false,
+            'server reconciliation must preserve local-only settings'
+          );
+          assert(
+            reconciledLocal._sharedWriteMeta.changedKeys.length === 0,
+            'server winners must not be advertised as new user intent'
+          );
+          ctx.postCalls[2].resolve(response(
+            true,
+            200,
+            '"conversation-settings-3"',
+            {
+              success: true,
+              settings: retryBody,
+              revision: 3,
+              decisions: {},
+            }
+          ));
+          await tick();
+        }
+
+        async function runSuccessfulPartialSnapshotScenario() {
+          const ctx = makeContext(true);
+          await tick();
+          await tick();
+          assert(ctx.S.settingsHydrated === false, 'failed boot GET stays unhydrated');
+
+          // A cross-window edit arrives before this partial request starts.
+          // It is not this window's pending key and therefore is absent from
+          // the dirty-only payload, but the success snapshot must not erase it.
+          ctx.fireStorage(JSON.stringify({
+            avatarReactionBubbleEnabled: true,
+            _sharedWriteMeta: {
+              writeId: 101,
+              writerId: 'window-b',
+              changedKeys: ['avatarReactionBubbleEnabled'],
+              hydrated: true,
+              asrAuthoritative: true,
+            },
+          }));
+
+          ctx.win.focusModeEnabled = true;
+          ctx.mod.saveSettings();
+          await tick();
+          assert(ctx.postCalls.length === 1, 'the first pending edit must POST');
+          const firstBody = JSON.parse(ctx.postCalls[0].opts.body);
+          assert(
+            Object.keys(firstBody).length === 1 && firstBody.focusModeEnabled === true,
+            'an unmerged view must send only its pending key, got: '
+              + JSON.stringify(firstBody)
+          );
+
+          ctx.fireStorage(JSON.stringify({
+            focusModeEnabled: false,
+            _sharedWriteMeta: {
+              writeId: 1,
+              writerId: 'window-old',
+              changedKeys: ['focusModeEnabled'],
+              hydrated: true,
+              asrAuthoritative: true,
+              knownKeyWrites: {
+                focusModeEnabled: {
+                  writeId: 1,
+                  writerId: 'window-old',
+                },
+              },
+            },
+          }));
+          assert(
+            ctx.S.focusModeEnabled === true,
+            'an older explicit token must not replace a newer pending edit'
+          );
+
+          // A later edit happens while the partial write is in flight. The
+          // successful response snapshot is authoritative for untouched keys,
+          // but must not overwrite this still-pending local value.
+          ctx.win.slopFilterEnabled = true;
+          ctx.mod.saveSettings();
+          assert(ctx.S.slopFilterEnabled === true, 'the in-flight edit updates shared state');
+          await tick();
+          assert(ctx.postCalls.length === 1, 'the later edit queues behind the first POST');
+
+          // The other window explicitly chooses the value this stale local
+          // view already holds. The metadata still represents a newer user
+          // mutation and must protect the key from the delayed response.
+          ctx.fireStorage(JSON.stringify({
+            mergeMessagesEnabled: false,
+            _sharedWriteMeta: {
+              writeId: 102,
+              writerId: 'window-b',
+              changedKeys: ['mergeMessagesEnabled'],
+              hydrated: true,
+              asrAuthoritative: true,
+            },
+          }));
+
+          ctx.postCalls[0].resolve(response(
+            true,
+            200,
+            '"conversation-settings-1"',
+            {
+              success: true,
+              settings: {
+                independentAsrEnabled: true,
+                proactiveVisionEnabled: false,
+                slopFilterEnabled: false,
+                focusModeEnabled: true,
+                mergeMessagesEnabled: true,
+                noiseReductionEnabled: true,
+                avatarReactionBubbleEnabled: false,
+              },
+              revision: 1,
+              decisions: {},
+            }
+          ));
+          await tick();
+          await tick();
+
+          assert(ctx.S.settingsHydrated === true, 'the complete success snapshot hydrates the view');
+          assert(
+            ctx.S.independentAsrEnabled === true,
+            'an untouched field hydrates from the successful partial-write response'
+          );
+          assert(
+            ctx.S.slopFilterEnabled === true,
+            'an edit made while the request was in flight remains pending'
+          );
+          assert(
+            ctx.S.mergeMessagesEnabled === false,
+            'a same-value explicit cross-window edit survives the delayed response'
+          );
+          assert(
+            ctx.S.avatarReactionBubbleEnabled === true,
+            'a pre-request cross-window edit absent from the partial body survives'
+          );
+          assert(
+            ctx.store.get('neko_noise_reduction') === '1',
+            'accepted shared noise reduction mirrors into the legacy cache'
+          );
+          assert(
+            ctx.runtime.stoppedSpeech === 1
+              && ctx.runtime.stoppedScreening === 1
+              && ctx.runtime.stoppedTracks === 1,
+            'hydrating the privacy winner stops active vision runtime'
+          );
+          assert(ctx.postCalls.length === 2, 'the queued edit runs after hydration');
+          const secondBody = JSON.parse(ctx.postCalls[1].opts.body);
+          assert(
+            secondBody.independentAsrEnabled === true
+              && secondBody.proactiveVisionEnabled === false
+              && secondBody.slopFilterEnabled === true
+              && secondBody.mergeMessagesEnabled === false
+              && secondBody.noiseReductionEnabled === true
+              && secondBody.avatarReactionBubbleEnabled === true,
+            'the queued retry uses the reconciled full snapshot plus the pending edit'
+          );
+          const reconciledLocal = JSON.parse(ctx.store.get('project_neko_settings'));
+          assert(
+            reconciledLocal.independentAsrEnabled === true
+              && reconciledLocal.proactiveVisionEnabled === false
+              && reconciledLocal.slopFilterEnabled === true,
+            'the reconciled success snapshot persists for offline restart'
+          );
+          assert(
+            reconciledLocal.mouseTrackingEnabled === false,
+            'success reconciliation preserves local-only settings'
+          );
+          assert(
+            reconciledLocal._sharedWriteMeta.knownKeyWrites.focusModeEnabled
+              .confirmedRevision === 1,
+            'the acknowledged explicit token must carry its confirmed revision'
+          );
+          ctx.postCalls[1].resolve(response(
+            true,
+            200,
+            '"conversation-settings-2"',
+            {
+              success: true,
+              settings: secondBody,
+              revision: 2,
+              decisions: {},
+            }
+          ));
+          await tick();
+        }
+
+        async function runPartialResetSnapshotScenario() {
+          const ctx = makeContext(true);
+          await tick();
+          await tick();
+          assert(ctx.S.slopFilterEnabled === false, 'the harness starts with stale local slop');
+
+          ctx.win.focusModeEnabled = true;
+          ctx.mod.saveSettings();
+          await tick();
+          await tick();
+          assert(ctx.postCalls.length === 1, 'the pre-hydration edit must POST');
+          assert(
+            !('X-Conversation-Settings-Full-Snapshot' in ctx.postCalls[0].opts.headers),
+            'a dirty-only pre-hydration write must not clear the reset tombstone'
+          );
+
+          ctx.postCalls[0].resolve(response(
+            true,
+            200,
+            '"conversation-settings-1"',
+            {
+              success: true,
+              settings: { focusModeEnabled: true },
+              revision: 1,
+              reset: true,
+              decisions: {},
+            }
+          ));
+          await tick();
+          await tick();
+
+          assert(
+            ctx.S.focusModeEnabled === true
+              && ctx.S.slopFilterEnabled === true
+              && ctx.S.independentAsrEnabled === false,
+            'a partial reset response must materialize defaults without losing the edit'
+          );
+          const restoredLocal = JSON.parse(ctx.store.get('project_neko_settings'));
+          assert(
+            restoredLocal.focusModeEnabled === true
+              && restoredLocal.slopFilterEnabled === true
+              && restoredLocal.independentAsrEnabled === false,
+            'the partial reset response must replace stale localStorage values'
+          );
+        }
+
+        async function runPartialConfirmedWatermarkScenario() {
+          const ctx = makeContext(true);
+          await tick();
+          await tick();
+
+          ctx.fireStorage(JSON.stringify({
+            mergeMessagesEnabled: true,
+            _sharedWriteMeta: {
+              writeId: 110,
+              writerId: 'window-b',
+              changedKeys: ['mergeMessagesEnabled'],
+              hydrated: true,
+              asrAuthoritative: true,
+            },
+          }));
+          ctx.win.focusModeEnabled = true;
+          ctx.mod.saveSettings();
+          await tick();
+          await tick();
+
+          assert(ctx.postCalls.length === 1, 'the dirty-only edit must POST');
+          const firstBody = JSON.parse(ctx.postCalls[0].opts.body);
+          assert(firstBody.focusModeEnabled === true, 'the pending key is sent');
+          assert(
+            !Object.prototype.hasOwnProperty.call(
+              firstBody,
+              'mergeMessagesEnabled'
+            ),
+            'the sibling cross-window key stays outside the partial request'
+          );
+
+          ctx.postCalls[0].resolve(response(
+            true,
+            200,
+            '"conversation-settings-1"',
+            {
+              success: true,
+              settings: {
+                independentAsrEnabled: false,
+                focusModeEnabled: true,
+                mergeMessagesEnabled: true,
+                slopFilterEnabled: false,
+              },
+              revision: 1,
+              decisions: {},
+            }
+          ));
+          await tick();
+          await tick();
+
+          ctx.win.slopFilterEnabled = true;
+          ctx.mod.saveSettings();
+          await tick();
+          await tick();
+
+          assert(ctx.postCalls.length === 2, 'the next edit sends a full snapshot');
+          ctx.postCalls[1].resolve(response(
+            false,
+            412,
+            '"conversation-settings-2"',
+            {
+              success: false,
+              settings: {
+                independentAsrEnabled: false,
+                focusModeEnabled: true,
+                mergeMessagesEnabled: false,
+                slopFilterEnabled: false,
+              },
+              revision: 2,
+              decisions: {},
+            }
+          ));
+          await tick();
+          await tick();
+
+          assert(ctx.postCalls.length === 3, 'the CAS mismatch retries once');
+          const retryBody = JSON.parse(ctx.postCalls[2].opts.body);
+          assert(
+            retryBody.mergeMessagesEnabled === false,
+            'a sibling edit confirmed by the prior response no longer masks server state'
+          );
+          assert(
+            retryBody.slopFilterEnabled === true,
+            'the still-pending local edit survives the CAS merge'
+          );
+
+          ctx.postCalls[2].resolve(response(
+            true,
+            200,
+            '"conversation-settings-3"',
+            {
+              success: true,
+              settings: retryBody,
+              revision: 3,
+              decisions: {},
+            }
+          ));
+          await tick();
+        }
+
+        async function main() {
+          await runBootMetadataScenario();
+          await runScenario(false);
+          await runScenario(true);
+          await runAcknowledgedDirtyScenario();
+          await runSuccessfulPartialSnapshotScenario();
+          await runPartialResetSnapshotScenario();
+          await runPartialConfirmedWatermarkScenario();
+          console.log('CAS_HARNESS_OK');
+          process.exitCode = 0;
+        }
+        main().catch((err) => {
+          console.error(err && err.stack ? err.stack : String(err));
+          process.exitCode = 1;
+        });
+        """
+    ).replace("__APP_SETTINGS_PATH__", json.dumps(str(APP_SETTINGS_PATH)))
+
+    result = _run_settings_node_harness(harness)
+    assert result.returncode == 0, (
+        "settings CAS harness failed\n"
+        f"stdout:\n{result.stdout}\n"
+        f"stderr:\n{result.stderr}"
+    )
+    assert "CAS_HARNESS_OK" in result.stdout
+
+
 def test_cross_window_asr_flip_authoritative_over_pending_get_harness():
     # Behavioral pin for the cross-window Codex P2 fix: drive the real module
     # in a vm sandbox, deliver a 'storage' event carrying another window's
@@ -1232,8 +2980,12 @@ def test_cross_window_asr_flip_authoritative_over_pending_get_harness():
           const postCalls = [];
           const getCalls = [];
           const listeners = [];
+          const dispatchedEvents = [];
           const sandbox = {
             console: { log() {}, warn() {}, error() {} },
+            CustomEvent: class {
+              constructor(type) { this.type = type; }
+            },
             setInterval() { return 0; },
             clearInterval() {},
             setTimeout(fn, ms) {
@@ -1257,11 +3009,21 @@ def test_cross_window_asr_flip_authoritative_over_pending_get_harness():
             },
           };
           sandbox.window = {
-            appState: { independentAsrEnabled: false, settingsHydrated: false },
+            appState: {
+              independentAsrEnabled: false,
+              independentAsrActive: true,
+              voiceChatActive: true,
+              voiceInputLifecycleState: 'active',
+              voiceSessionStartEpoch: 10,
+              voiceSettingsPendingUntilEpoch: null,
+              pendingVoiceRouteIndependentAsr: null,
+              settingsHydrated: false,
+            },
             appConst: {},
             appUtils: { mapRenderQualityToFollowPerf() { return 'medium'; } },
             addEventListener(type, fn) { listeners.push({ type, fn }); },
             removeEventListener() {},
+            dispatchEvent(event) { dispatchedEvents.push(event.type); },
           };
           vm.createContext(sandbox);
           vm.runInContext(source, sandbox);
@@ -1270,6 +3032,7 @@ def test_cross_window_asr_flip_authoritative_over_pending_get_harness():
           return {
             postCalls,
             getCalls,
+            dispatchedEvents,
             S: sandbox.window.appState,
             fireStorage(newValue) {
               storage[0].fn({ key: 'project_neko_settings', newValue });
@@ -1289,6 +3052,12 @@ def test_cross_window_asr_flip_authoritative_over_pending_get_harness():
           ctx.fireStorage(JSON.stringify({ independentAsrEnabled: true }));
           assert(ctx.S.independentAsrEnabled === true, 'the flip must be applied to S');
           assert(ctx.S.settingsHydrated === true, 'the flip must arm the start_session handshake stamp');
+          assert(ctx.S.voiceSettingsPendingUntilEpoch === 11, 'the flip must target the next voice-session epoch');
+          assert(ctx.S.pendingVoiceRouteIndependentAsr === true, 'the pending summary must preserve the active route');
+          assert(
+            ctx.dispatchedEvents.includes('neko:voice-settings-pending-changed'),
+            'the flip must notify an already-open microphone popover'
+          );
           assert(ctx.postCalls.length === 0, 'the receiving window must not POST (originating window owns persistence)');
 
           // The GET now resolves with the server value read BEFORE the other
@@ -1310,6 +3079,8 @@ def test_cross_window_asr_flip_authoritative_over_pending_get_harness():
           ctx2.fireStorage(JSON.stringify({ independentAsrEnabled: false, mergeMessagesEnabled: true }));
           assert(ctx2.S.mergeMessagesEnabled === true, 'other shared keys must still sync across windows');
           assert(ctx2.S.settingsHydrated === false, 'no ASR flip means no hydration mark');
+          assert(ctx2.S.voiceSettingsPendingUntilEpoch === null, 'no flip means no pending voice-session marker');
+          assert(ctx2.dispatchedEvents.length === 0, 'no flip means no popover notification');
           assert(ctx2.postCalls.length === 0, 'a non-flip storage event must not POST either');
 
           ctx2.getCalls[0].resolve({
@@ -1345,6 +3116,275 @@ def test_cross_window_asr_flip_authoritative_over_pending_get_harness():
     assert "HARNESS_OK" in result.stdout
 
 
+def test_boot_get_converges_on_a_peer_asr_flip_it_did_not_witness_harness():
+    # Issue #2540 (residual 2 of #2345): window A's boot GET merged the stale
+    # server value onto independentAsrEnabled just because the key was not in
+    # _dirtySettingsKeys, and A then stayed on that value. The sibling test
+    # above only covers the flip arriving DURING the in-flight GET, where the
+    # flip gate marks the key dirty. Pin the two interleavings it does not
+    # reach -- the flip already sitting in the boot snapshot, and the flip
+    # arriving after the merge already landed -- so the decision-tuple ordering
+    # that makes both converge cannot silently regress into dirty-mark-only
+    # gating again.
+    harness = textwrap.dedent(
+        """
+        const fs = require('node:fs');
+        const vm = require('node:vm');
+
+        const source = fs.readFileSync(__APP_SETTINGS_PATH__, 'utf8');
+
+        function assert(cond, msg) {
+          if (!cond) throw new Error('ASSERT: ' + msg);
+        }
+
+        function makeContext(bootSnapshot) {
+          const postCalls = [];
+          const getCalls = [];
+          const listeners = [];
+          const store = Object.create(null);
+          if (bootSnapshot) {
+            store['project_neko_settings'] = JSON.stringify(bootSnapshot);
+          }
+          const sandbox = {
+            console: { log() {}, warn() {}, error() {} },
+            CustomEvent: class {
+              constructor(type) { this.type = type; }
+            },
+            setInterval() { return 0; },
+            clearInterval() {},
+            setTimeout(fn, ms) {
+              const t = setTimeout(fn, ms);
+              if (t && typeof t.unref === 'function') t.unref();
+              return t;
+            },
+            clearTimeout,
+            localStorage: {
+              getItem(key) {
+                return Object.prototype.hasOwnProperty.call(store, key)
+                  ? store[key]
+                  : null;
+              },
+              setItem(key, value) { store[key] = value; },
+              removeItem(key) { delete store[key]; },
+            },
+            document: { getElementById() { return null; } },
+            fetch(url, opts) {
+              return new Promise((resolve, reject) => {
+                if (opts && opts.method === 'POST') {
+                  postCalls.push({ url, body: opts.body, resolve, reject });
+                } else {
+                  getCalls.push({ url, resolve, reject });
+                }
+              });
+            },
+          };
+          sandbox.window = {
+            appState: {
+              independentAsrEnabled: false,
+              independentAsrActive: true,
+              voiceChatActive: true,
+              voiceInputLifecycleState: 'active',
+              voiceSessionStartEpoch: 10,
+              voiceSettingsPendingUntilEpoch: null,
+              pendingVoiceRouteIndependentAsr: null,
+              settingsHydrated: false,
+            },
+            appConst: {},
+            appUtils: { mapRenderQualityToFollowPerf() { return 'medium'; } },
+            addEventListener(type, fn) { listeners.push({ type, fn }); },
+            removeEventListener() {},
+            dispatchEvent() {},
+          };
+          vm.createContext(sandbox);
+          vm.runInContext(source, sandbox);
+          const storage = listeners.filter((entry) => entry.type === 'storage');
+          assert(storage.length === 1, 'module must register exactly one storage listener');
+          return {
+            postCalls,
+            getCalls,
+            S: sandbox.window.appState,
+            fireStorage(value) {
+              storage[0].fn({
+                key: 'project_neko_settings',
+                newValue: JSON.stringify(value),
+              });
+            },
+            postedAsrValues() {
+              return postCalls.map((call) => {
+                try { return JSON.parse(call.body).independentAsrEnabled; }
+                catch (_) { return undefined; }
+              });
+            },
+          };
+        }
+
+        const tick = () => new Promise((resolve) => setImmediate(resolve));
+        const NOW = Date.now();
+        // The peer toggled a second ago; the server snapshot this window is
+        // about to read still carries the decision from a minute ago.
+        const PEER_WRITE_ID = NOW - 1000;
+        const SERVER_DECISION_ID = NOW - 60000;
+
+        function peerFlipSnapshot(writeId, value) {
+          return {
+            independentAsrEnabled: value,
+            _sharedWriteMeta: {
+              writeId,
+              writerId: 'peerwindow',
+              changedKeys: ['independentAsrEnabled'],
+              hydrated: true,
+              asrAuthoritative: true,
+              pendingRecovery: false,
+              asrDecision: { writeId, writerId: 'peerwindow', value },
+            },
+          };
+        }
+
+        function resolveStaleGet(getCall, options) {
+          const withDecision = !(options && options.withoutDecisions);
+          const body = {
+            success: true,
+            revision: 7,
+            settings: { independentAsrEnabled: false },
+            telemetryBranch: null,
+          };
+          if (withDecision) {
+            body.decisions = {
+              independentAsrEnabled: {
+                writeId: SERVER_DECISION_ID,
+                writerId: 'serverside',
+                value: false,
+              },
+            };
+          }
+          getCall.resolve({
+            ok: true,
+            headers: {
+              get(header) {
+                return header === 'ETag' ? '"conversation-settings-7"' : null;
+              },
+            },
+            json: async () => body,
+          });
+        }
+
+        async function main() {
+          // Scenario 1: the peer's flip reached localStorage before this window
+          // loaded, so no storage event ever announces it and the key is not
+          // dirty here. The restored decision tuple must still outrank the
+          // server's older one.
+          const ctx = makeContext(peerFlipSnapshot(PEER_WRITE_ID, true));
+          assert(ctx.S.independentAsrEnabled === true, 'boot must load the peer flip');
+          assert(ctx.getCalls.length === 1, 'boot must issue the settings GET');
+          resolveStaleGet(ctx.getCalls[0]);
+          await tick();
+          await tick();
+          await tick();
+          assert(
+            ctx.S.independentAsrEnabled === true,
+            'the stale boot GET must not overwrite a non-dirty key the peer already decided'
+          );
+          assert(
+            ctx.postedAsrValues().every((value) => value !== false),
+            'the stale value must not be POSTed back over the peer decision'
+          );
+
+          // Scenario 1 negative: the SAME shape with a decision OLDER than the
+          // server's is a genuine hydration, not a conflict -- the merge must
+          // still apply the server value, or scenario 1 would pass vacuously.
+          const stale = makeContext(
+            peerFlipSnapshot(SERVER_DECISION_ID - 1000, true)
+          );
+          assert(stale.S.independentAsrEnabled === true, 'boot must load the local value');
+          resolveStaleGet(stale.getCalls[0]);
+          await tick();
+          await tick();
+          await tick();
+          assert(
+            stale.S.independentAsrEnabled === false,
+            'a local decision older than the server tuple must still hydrate from the server'
+          );
+
+          // Scenario 2: the merge lands first and the peer's flip only arrives
+          // afterwards. Adopting the server tuple must not pin this window.
+          const late = makeContext(null);
+          resolveStaleGet(late.getCalls[0]);
+          await tick();
+          await tick();
+          await tick();
+          assert(
+            late.S.independentAsrEnabled === false,
+            'the clean boot must merge the server value'
+          );
+          late.fireStorage(peerFlipSnapshot(NOW, true));
+          assert(
+            late.S.independentAsrEnabled === true,
+            'a peer flip newer than the adopted server tuple must win after the merge'
+          );
+
+          // Scenario 3: a server with no decisions block at all carries no
+          // ordering evidence, so it must never displace a restored local one.
+          const legacyServer = makeContext(peerFlipSnapshot(PEER_WRITE_ID, true));
+          resolveStaleGet(legacyServer.getCalls[0], { withoutDecisions: true });
+          await tick();
+          await tick();
+          await tick();
+          assert(
+            legacyServer.S.independentAsrEnabled === true,
+            'a decision-less server snapshot must not overwrite a restored local decision'
+          );
+
+          console.log('HARNESS_OK');
+          process.exitCode = 0;
+        }
+
+        main().catch((err) => {
+          console.error(err && err.stack ? err.stack : String(err));
+          process.exitCode = 1;
+        });
+        """
+    ).replace("__APP_SETTINGS_PATH__", json.dumps(str(APP_SETTINGS_PATH)))
+
+    result = _run_settings_node_harness(harness)
+    assert result.returncode == 0, (
+        "boot-GET convergence harness failed\n"
+        f"stdout:\n{result.stdout}\n"
+        f"stderr:\n{result.stderr}"
+    )
+    assert "HARNESS_OK" in result.stdout
+
+
+def test_boot_merge_orders_asr_on_the_decision_tuple_not_only_the_dirty_mark():
+    # Structural half of the #2540 pin. The behavioural harness above can only
+    # observe the outcome; this asserts the boot path actually keeps the two
+    # inputs the issue said were conflated -- "I never changed this key" and
+    # "I never had an authoritative value for it" -- separate.
+    settings_source = APP_SETTINGS_PATH.read_text(encoding="utf-8")
+
+    load_fn = _block_after(settings_source, "function loadSettings() {")
+    # The boot snapshot restores the decision tuple, so a flip a peer wrote
+    # before this window loaded is still ordered against the server's.
+    assert "bootMeta.asrDecision" in load_fn
+    assert "_adoptAsrDecisionTuple(" in load_fn
+    assert "const bootDecision = bootMeta.asrDecision || bootMeta;" in load_fn
+
+    # The field-level merge skips the ASR key on decision ordering, which is
+    # evaluated INDEPENDENTLY of _dirtySettingsKeys.
+    assert (
+        "if (key === 'independentAsrEnabled' && preserveLocalAsrDecision) continue;"
+        in load_fn
+    )
+    preserve = load_fn.split("const preserveLocalAsrDecision =", 1)[1].split(
+        ";", 1
+    )[0]
+    assert "_lastAsrDecision" in preserve
+    assert "_asrDecisionOutranks(_lastAsrDecision, serverAsrDecision)" in preserve
+    # A server snapshot with no decision tuple carries no ordering evidence:
+    # the local decision must win rather than the absence counting as newer.
+    assert "!serverAsrDecision" in preserve
+    assert "_dirtySettingsKeys" not in preserve
+
+
 def test_shared_settings_writes_carry_explicit_change_metadata():
     # Codex P2 (follow-up): saveSettings() writes independentAsrEnabled into
     # EVERY localStorage snapshot, so the receiving window could not tell a real
@@ -1359,20 +3399,28 @@ def test_shared_settings_writes_carry_explicit_change_metadata():
         "localStorage.setItem('project_neko_settings', JSON.stringify(settings))"
         not in settings_source
     )
-    assert settings_source.count("_writeSharedSettings(") == 3  # 1 def + 2 writes
-    assert (
-        "_writeSharedSettings(settings, _collectExplicitSharedKeys(settings));"
-        in settings_source
-    )
+    assert settings_source.count("_writeSharedSettings(") == 4  # 1 def + 3 writes
+    save_fn = _block_after(settings_source, "function saveSettings(options) {")
+    assert "serverMerged ? [] : _collectExplicitSharedKeys(settings)" in save_fn
+    assert "const serverMerged = !!(options && options.serverMerged);" in save_fn
+    assert "const pendingRecovery = !!(options && options.pendingRecovery);" in save_fn
     # The pre-hydration migration write is explicitly non-authoritative.
     assert "_writeSharedSettings(settings, []);" in settings_source
 
-    write_fn = settings_source.split("function _writeSharedSettings(snapshot, explicitKeys) {", 1)[
-        1
-    ].split("\n    }", 1)[0]
+    write_fn = settings_source.split(
+        "function _writeSharedSettings(", 1
+    )[1].split("\n    }", 1)[0]
     assert "writeId: _nextSharedWriteId()," in write_fn
     assert "changedKeys: explicitKeys || []," in write_fn
     assert "hydrated: S.settingsHydrated === true" in write_fn
+    assert "pendingRecovery: pendingRecovery === true" in write_fn
+    assert "ownMeta.knownKeyWrites = _knownSharedKeyWritesSnapshot();" in write_fn
+    assert "ownMeta.serverRevision = _conversationSettingsRevision;" in write_fn
+    assert "serverAuthoritativeKeys.slice()" in write_fn
+    assert (
+        "_rememberSharedKeyWrites(serverAuthoritativeKeys || [], ownMeta)"
+        not in write_fn
+    )
     assert "localStorage.setItem('project_neko_settings', JSON.stringify(payload));" in write_fn
 
     # The write id must be strictly increasing within a window and comparable
@@ -1389,13 +3437,15 @@ def test_shared_settings_writes_carry_explicit_change_metadata():
     assert "Math.max(_lastSharedWriteId, _lastAppliedSharedWriteId)" in id_fn
     assert "_lastSharedWriteId = now > idFloor ? now : idFloor + 1;" in id_fn
 
-    # Explicit keys = the monotone dirty set PLUS the divergence from the
-    # dirty-diff baseline (the ASR toggle handler persists locally before its
-    # userInitiated sync rolls that baseline).
+    # Explicit keys = still-pending writes PLUS divergence from the dirty-diff
+    # baseline (the ASR toggle handler persists locally before its userInitiated
+    # sync rolls that baseline). The monotone boot-merge dirty set must not mint
+    # a new per-key token for an already-acknowledged value.
     collect_fn = settings_source.split("function _collectExplicitSharedKeys(snapshot) {", 1)[
         1
     ].split("\n    }", 1)[0]
-    assert "_dirtySettingsKeys.has(key)" in collect_fn
+    assert "_pendingSettingsKeys.has(key)" in collect_fn
+    assert "_dirtySettingsKeys.has(key)" not in collect_fn
     assert "_settingsBaseline[key] !== snapshot[key]" in collect_fn
     # Negative: only shared keys may be claimed, never the whole snapshot.
     assert "_SHARED_SETTINGS_KEYS.forEach" in collect_fn
@@ -1407,8 +3457,24 @@ def test_shared_settings_writes_carry_explicit_change_metadata():
         "\n    }", 1
     )[0]
     assert "if (!meta || typeof meta !== 'object') return null;" in read_fn
-    assert "typeof meta.writeId !== 'number'" in read_fn
+    assert "if (!_isValidAsrWriteId(meta.writeId)) return null;" in read_fn
+    id_validator = _block_after(
+        settings_source,
+        "function _isValidAsrWriteId(value, serverAuthoritative) {",
+    )
+    assert "Number.isSafeInteger(value)" in id_validator
+    assert "Date.now() + _ASR_WRITE_ID_MAX_FUTURE_SKEW_MS" in id_validator
+    assert "Number.MAX_SAFE_INTEGER - 1" in id_validator
+    assert "if (serverAuthoritative === true) return true;" in id_validator
     assert "Array.isArray(meta.changedKeys) ? meta.changedKeys : []" in read_fn
+    assert "knownKeyWritesPresent" in read_fn
+    optimization_reader = read_fn.split(
+        "optimizationDecision: (meta.optimizationDecision", 1
+    )[1].split("optimizationDecisionPendingSync:", 1)[0]
+    assert "_isValidAsrWriteId(" in optimization_reader
+    assert "meta.optimizationDecision.writeId," in optimization_reader
+    assert "Number.isInteger(meta.serverRevision)" in optimization_reader
+    assert "isFinite(meta.optimizationDecision.writeId)" not in optimization_reader
 
     listener_block = settings_source.split(
         "window.addEventListener('storage', function (event) {", 1
@@ -1470,12 +3536,13 @@ def test_unrelated_save_from_unhydrated_window_is_not_an_asr_toggle_harness():
           if (!cond) throw new Error('ASSERT: ' + msg);
         }
 
-        function makeContext() {
+        function makeContext(initialSettings = null) {
           const postCalls = [];
           const getCalls = [];
           const listeners = [];
           const timers = [];
           const writes = [];
+          let savedShared = initialSettings ? JSON.stringify(initialSettings) : null;
           const sandbox = {
             console: { log() {}, warn() {}, error() {} },
             setInterval() { return 0; },
@@ -1487,8 +3554,13 @@ def test_unrelated_save_from_unhydrated_window_is_not_an_asr_toggle_harness():
             },
             clearTimeout() {},
             localStorage: {
-              getItem() { return null; },
-              setItem(key, value) { writes.push({ key, value }); },
+              getItem(key) {
+                return key === 'project_neko_settings' ? savedShared : null;
+              },
+              setItem(key, value) {
+                if (key === 'project_neko_settings') savedShared = value;
+                writes.push({ key, value });
+              },
               removeItem() {},
             },
             document: { getElementById() { return null; } },
@@ -1520,6 +3592,9 @@ def test_unrelated_save_from_unhydrated_window_is_not_an_asr_toggle_harness():
             S: sandbox.window.appState,
             win: sandbox.window,
             mod: sandbox.window.appSettings,
+            sharedWrites() {
+              return writes.filter((w) => w.key === 'project_neko_settings');
+            },
             lastSharedWrite() {
               const shared = writes.filter((w) => w.key === 'project_neko_settings');
               assert(shared.length > 0, 'the module must persist the shared settings snapshot');
@@ -1538,11 +3613,16 @@ def test_unrelated_save_from_unhydrated_window_is_not_an_asr_toggle_harness():
         const okPost = { ok: true, json: async () => ({ success: true }) };
         const tick = () => new Promise((resolve) => setImmediate(resolve));
 
-        async function hydrateFromServer(ctx, settings) {
+        async function hydrateFromServer(ctx, settings, decisions = null) {
           assert(ctx.getCalls.length === 1, 'boot must issue the settings GET');
           ctx.getCalls[0].resolve({
             ok: true,
-            json: async () => ({ success: true, settings, telemetryBranch: null }),
+            json: async () => ({
+              success: true,
+              settings,
+              decisions: decisions || {},
+              telemetryBranch: null,
+            }),
           });
           await tick();
           await tick();
@@ -1556,8 +3636,15 @@ def test_unrelated_save_from_unhydrated_window_is_not_an_asr_toggle_harness():
         async function main() {
           // ---- Scenario 1: unrelated save from an UNHYDRATED window ----
           const receiver = makeContext();
-          await hydrateFromServer(receiver, { independentAsrEnabled: true });
+          await hydrateFromServer(receiver, {
+            independentAsrEnabled: true,
+            voiceInputResourceOptimizationEnabled: false,
+          });
           assert(receiver.S.independentAsrEnabled === true, 'receiver merged the server ASR value');
+          assert(
+            receiver.S.voiceInputResourceOptimizationEnabled === false,
+            'receiver merged the server optimization value'
+          );
 
           const writer = makeContext();      // boot GET left pending -> unhydrated
           writer.win.mergeMessagesEnabled = true;
@@ -1568,11 +3655,19 @@ def test_unrelated_save_from_unhydrated_window_is_not_an_asr_toggle_harness():
             staleParsed.independentAsrEnabled === false,
             'saveSettings still copies the ASR key into every snapshot (that is the trap)'
           );
+          assert(
+            staleParsed.voiceInputResourceOptimizationEnabled === true,
+            'saveSettings still copies the optimization key into every snapshot (that is the trap)'
+          );
           const receiverPostsBefore = receiver.postCalls.length;
           receiver.fireStorage(stalePayload);
           assert(
             receiver.S.independentAsrEnabled === true,
             'the hydrated ASR value must survive an unrelated save from an unhydrated window'
+          );
+          assert(
+            receiver.S.voiceInputResourceOptimizationEnabled === false,
+            'the hydrated optimization value must survive an unrelated save from an unhydrated window'
           );
           assert(
             receiver.S.mergeMessagesEnabled === true,
@@ -1593,6 +3688,10 @@ def test_unrelated_save_from_unhydrated_window_is_not_an_asr_toggle_harness():
           assert(
             staleMeta.changedKeys.indexOf('independentAsrEnabled') === -1,
             'an unrelated save must NOT declare the ASR key as user-changed'
+          );
+          assert(
+            staleMeta.changedKeys.indexOf('voiceInputResourceOptimizationEnabled') === -1,
+            'an unrelated save must NOT declare the optimization key as user-changed'
           );
           assert(staleMeta.hydrated === false, 'the writer had not merged the server settings yet');
 
@@ -1627,15 +3726,10 @@ def test_unrelated_save_from_unhydrated_window_is_not_an_asr_toggle_harness():
           const pp = pending.mod.syncSettingsToServer();  // periodic-style: no dirty marking
           await tick();
           await tick();
-          assert(pending.postCalls.length === 2, 'the follow-up sync must POST');
-          const dirtyBody2 = JSON.parse(pending.postCalls[1].body);
           assert(
-            !('independentAsrEnabled' in dirtyBody2),
-            'the stale cross-window snapshot must NOT mark the ASR key user-dirty, got: '
-              + JSON.stringify(dirtyBody2)
+            pending.postCalls.length === 1,
+            'the acknowledged local key and incidental ASR copy leave no pending POST'
           );
-          assert(dirtyBody2.mergeMessagesEnabled === true, 'the genuine dirty key still posts');
-          pending.postCalls[1].resolve(okPost);
           await pp;
 
           // ---- Scenario 3: a genuine cross-window toggle stays authoritative ----
@@ -1698,6 +3792,352 @@ def test_unrelated_save_from_unhydrated_window_is_not_an_asr_toggle_harness():
             'legacy payloads keep the value-difference authority fallback'
           );
           assert(legacy.postCalls.length === 0, 'legacy fallback still never POSTs from the listener');
+
+          // ---- Scenario 6: an authoritative server-merge broadcast updates
+          // the decision tuple even though changedKeys is intentionally empty.
+          const sibling = makeContext();
+          await hydrateFromServer(sibling, { independentAsrEnabled: false });
+          sibling.S.independentAsrEnabled = true;
+          sibling.mod.saveSettings({ skipServerSync: true });
+          const localToggleMeta = JSON.parse(sibling.lastSharedWrite())._sharedWriteMeta;
+          const serverDecision = {
+            writeId: localToggleMeta.asrDecision.writeId + 10,
+            writerId: 'server-legacy',
+            value: false,
+          };
+          sibling.fireStorage(JSON.stringify({
+            independentAsrEnabled: false,
+            _sharedWriteMeta: {
+              writeId: serverDecision.writeId,
+              writerId: 'server-window',
+              changedKeys: [],
+              hydrated: true,
+              asrAuthoritative: true,
+              asrDecision: serverDecision,
+            },
+          }));
+          assert(
+            sibling.S.independentAsrEnabled === false,
+            'the authoritative server broadcast must replace the old local toggle'
+          );
+          sibling.win.mergeMessagesEnabled = true;
+          sibling.mod.saveSettings({ skipServerSync: true });
+          const resharedMeta = JSON.parse(sibling.lastSharedWrite())._sharedWriteMeta;
+          assert(
+            JSON.stringify(resharedMeta.asrDecision) === JSON.stringify(serverDecision),
+            'an unrelated save must retain the accepted server decision tuple'
+          );
+
+          // ---- Scenario 7: a persisted server-merge tuple survives reload.
+          // changedKeys is intentionally empty because this is authority from
+          // the server, not a new browser user action.
+          const bootDecision = {
+            writeId: Date.now() + 1000,
+            writerId: 'server-ahead',
+            value: false,
+          };
+          const reloaded = makeContext({
+            independentAsrEnabled: false,
+            _sharedWriteMeta: {
+              writeId: bootDecision.writeId - 1,
+              writerId: 'merging-window',
+              changedKeys: [],
+              hydrated: true,
+              asrAuthoritative: true,
+              asrDecision: bootDecision,
+            },
+          });
+          reloaded.win.mergeMessagesEnabled = true;
+          reloaded.mod.saveSettings({ skipServerSync: true });
+          const afterReloadMeta = JSON.parse(reloaded.lastSharedWrite())._sharedWriteMeta;
+          assert(
+            JSON.stringify(afterReloadMeta.asrDecision) === JSON.stringify(bootDecision),
+            'reload must restore and retain a matching server-merge ASR tuple'
+          );
+          reloaded.S.independentAsrEnabled = true;
+          reloaded.mod.saveSettings({ skipServerSync: true });
+          const nextLocalDecision = JSON.parse(
+            reloaded.lastSharedWrite()
+          )._sharedWriteMeta.asrDecision;
+          assert(
+            nextLocalDecision.writeId > bootDecision.writeId,
+            'the first local toggle after reload must supersede the persisted server tuple'
+          );
+
+          // ---- Scenario 8: pending recovery writes terminate instead of
+          // bouncing between two windows with different pending keys.
+          const pendingA = makeContext();
+          pendingA.win.focusModeEnabled = true;
+          pendingA.mod.saveSettings();
+          const pendingAPayload = pendingA.lastSharedWrite();
+
+          const pendingB = makeContext({
+            independentAsrEnabled: false,
+            focusModeEnabled: false,
+          });
+          pendingB.win.mergeMessagesEnabled = true;
+          pendingB.mod.saveSettings();
+          const pendingBPayload = pendingB.lastSharedWrite();
+
+          pendingA.fireStorage(pendingBPayload);
+          const recoveryPayload = pendingA.lastSharedWrite();
+          const recoveryMeta = JSON.parse(recoveryPayload)._sharedWriteMeta;
+          assert(
+            recoveryMeta.pendingRecovery === true,
+            'the reasserted full snapshot must be marked as pending recovery'
+          );
+          const writesBeforeRecovery = pendingB.sharedWrites().length;
+          pendingB.fireStorage(recoveryPayload);
+          assert(
+            pendingB.sharedWrites().length === writesBeforeRecovery,
+            'a pending window must not answer a recovery with another recovery write'
+          );
+          assert(
+            pendingB.S.mergeMessagesEnabled === true,
+            'the receiving window must still preserve its pending runtime value'
+          );
+          assert(
+            JSON.parse(pendingAPayload)._sharedWriteMeta.pendingRecovery !== true,
+            'ordinary user writes must not be marked as recovery'
+          );
+
+          // ---- Scenario 9: a merge envelope minted later does not make a
+          // stale field newer than an explicit edit the sender never observed.
+          const editor = makeContext({
+            independentAsrEnabled: false,
+            focusModeEnabled: false,
+          });
+          editor.win.focusModeEnabled = true;
+          editor.mod.saveSettings({ skipServerSync: true });
+          const explicitPayload = editor.lastSharedWrite();
+          const explicitMeta = JSON.parse(explicitPayload)._sharedWriteMeta;
+
+          const observer = makeContext({
+            independentAsrEnabled: false,
+            focusModeEnabled: false,
+          });
+          observer.fireStorage(explicitPayload);
+          assert(observer.S.focusModeEnabled === true, 'observer accepts the explicit edit');
+
+          const staleMerger = makeContext({
+            independentAsrEnabled: false,
+            focusModeEnabled: false,
+          });
+          staleMerger.mod.saveSettings({
+            skipServerSync: true,
+            serverMerged: true,
+          });
+          const staleMerge = JSON.parse(staleMerger.lastSharedWrite());
+          staleMerge._sharedWriteMeta.writeId = explicitMeta.writeId + 100;
+          assert(
+            Object.keys(staleMerge._sharedWriteMeta.knownKeyWrites).length === 0,
+            'the stale sender must declare that it never observed the edit'
+          );
+          observer.fireStorage(JSON.stringify(staleMerge));
+          assert(
+            observer.S.focusModeEnabled === true,
+            'a high envelope id must not roll back a newer per-key edit'
+          );
+
+          const mergeAfterEdit = makeContext({
+            independentAsrEnabled: false,
+            focusModeEnabled: false,
+          });
+          mergeAfterEdit.fireStorage(explicitPayload);
+          mergeAfterEdit.getCalls[0].resolve({
+            ok: true,
+            json: async () => ({
+              success: true,
+              settings: { independentAsrEnabled: false, focusModeEnabled: false },
+              telemetryBranch: null,
+            }),
+          });
+          await tick();
+          await tick();
+          assert(
+            mergeAfterEdit.S.focusModeEnabled === true,
+            'a boot GET started before the cross-window edit must preserve that edit'
+          );
+
+          // ---- Scenario 10: a late recovery envelope cannot roll back a
+          // newer explicit decision for the same key.
+          const newerEditor = makeContext(JSON.parse(explicitPayload));
+          newerEditor.win.focusModeEnabled = false;
+          newerEditor.mod.saveSettings({ skipServerSync: true });
+          const newerPayload = newerEditor.lastSharedWrite();
+          const newerMeta = JSON.parse(newerPayload)._sharedWriteMeta;
+          observer.fireStorage(newerPayload);
+          assert(observer.S.focusModeEnabled === false, 'observer accepts the newer edit');
+
+          const lateRecovery = JSON.parse(explicitPayload);
+          lateRecovery._sharedWriteMeta = {
+            ...lateRecovery._sharedWriteMeta,
+            writeId: newerMeta.writeId + 100,
+            changedKeys: [],
+            pendingRecovery: true,
+          };
+          observer.fireStorage(JSON.stringify(lateRecovery));
+          assert(
+            observer.S.focusModeEnabled === false,
+            'a fresh recovery envelope must not outrank its older per-key provenance'
+          );
+
+          // ---- Scenario 11: a genuine optimization toggle still propagates ----
+          const optimizationWriter = makeContext();
+          await hydrateFromServer(optimizationWriter, {
+            independentAsrEnabled: false,
+            voiceInputResourceOptimizationEnabled: true,
+          });
+          optimizationWriter.S.voiceInputResourceOptimizationEnabled = false;
+          optimizationWriter.mod.saveSettings({ skipServerSync: true });
+          const optimizationPayload = optimizationWriter.lastSharedWrite();
+          const optimizationMeta = JSON.parse(optimizationPayload)._sharedWriteMeta;
+          assert(
+            optimizationMeta.changedKeys.indexOf(
+              'voiceInputResourceOptimizationEnabled'
+            ) !== -1,
+            'a real optimization toggle must be declared explicitly'
+          );
+
+          const optimizationReceiver = makeContext();
+          await hydrateFromServer(optimizationReceiver, {
+            independentAsrEnabled: false,
+            voiceInputResourceOptimizationEnabled: true,
+          });
+          optimizationReceiver.fireStorage(optimizationPayload);
+          assert(
+            optimizationReceiver.S.voiceInputResourceOptimizationEnabled === false,
+            'a real optimization toggle must apply across windows'
+          );
+
+          // ---- Scenario 7: concurrent optimization toggles converge ----
+          // Each window writes before observing the other. Freshness against
+          // received writes cannot order either window's own pending choice;
+          // the per-key decision tuple must select the same winner on both.
+          const optimizationA = makeContext();
+          await hydrateFromServer(optimizationA, {
+            independentAsrEnabled: false,
+            voiceInputResourceOptimizationEnabled: true,
+          });
+          optimizationA.S.voiceInputResourceOptimizationEnabled = false;
+          optimizationA.mod.saveSettings({ skipServerSync: true });
+          const optimizationPayloadA = optimizationA.lastSharedWrite();
+
+          const optimizationB = makeContext();
+          await hydrateFromServer(optimizationB, {
+            independentAsrEnabled: false,
+            voiceInputResourceOptimizationEnabled: false,
+          });
+          optimizationB.S.voiceInputResourceOptimizationEnabled = true;
+          optimizationB.mod.saveSettings({ skipServerSync: true });
+          const optimizationPayloadB = optimizationB.lastSharedWrite();
+
+          const parsedA = JSON.parse(optimizationPayloadA);
+          const parsedB = JSON.parse(optimizationPayloadB);
+          const decisionA = parsedA._sharedWriteMeta.optimizationDecision;
+          const decisionB = parsedB._sharedWriteMeta.optimizationDecision;
+          assert(decisionA && decisionB, 'each explicit optimization write must carry its decision tuple');
+          const aWins = decisionA.writeId > decisionB.writeId
+            || (
+              decisionA.writeId === decisionB.writeId
+              && decisionA.writerId > decisionB.writerId
+            );
+          const winningValue = aWins
+            ? parsedA.voiceInputResourceOptimizationEnabled
+            : parsedB.voiceInputResourceOptimizationEnabled;
+
+          optimizationA.fireStorage(optimizationPayloadB);
+          optimizationB.fireStorage(optimizationPayloadA);
+          assert(
+            optimizationA.S.voiceInputResourceOptimizationEnabled === winningValue,
+            'window A must converge on the winning optimization choice'
+          );
+          assert(
+            optimizationB.S.voiceInputResourceOptimizationEnabled === winningValue,
+            'window B must converge on the winning optimization choice'
+          );
+
+          // ---- Scenario 8: a real return to the restored value is fresh ----
+          const restoredDecision = {
+            writeId: 1,
+            writerId: 'restored-writer',
+            value: false,
+          };
+          const rebound = makeContext({
+            independentAsrEnabled: false,
+            voiceInputResourceOptimizationEnabled: false,
+            _sharedWriteMeta: {
+              writeId: 1,
+              writerId: 'restored-writer',
+              changedKeys: [
+                'independentAsrEnabled',
+                'voiceInputResourceOptimizationEnabled',
+              ],
+              asrDecision: restoredDecision,
+              optimizationDecision: restoredDecision,
+              optimizationDecisionPendingSync: false,
+            },
+          });
+          await hydrateFromServer(rebound, {
+            independentAsrEnabled: true,
+            voiceInputResourceOptimizationEnabled: true,
+          }, {
+            independentAsrEnabled: {
+              writeId: 2,
+              writerId: 'server-winner',
+              value: true,
+            },
+          });
+          assert(
+            rebound.S.independentAsrEnabled === true
+              && rebound.S.voiceInputResourceOptimizationEnabled === true,
+            'server decisions must apply before testing a return to the restored value'
+          );
+          rebound.S.independentAsrEnabled = false;
+          rebound.S.voiceInputResourceOptimizationEnabled = false;
+          rebound.mod.saveSettings({ skipServerSync: true });
+          const reboundMeta = JSON.parse(
+            rebound.lastSharedWrite()
+          )._sharedWriteMeta;
+          assert(
+            reboundMeta.asrDecision.writeId === reboundMeta.writeId
+              && reboundMeta.asrDecision.writerId === reboundMeta.writerId,
+            'returning to a restored ASR value is a fresh user decision'
+          );
+          assert(
+            reboundMeta.optimizationDecision.writeId === reboundMeta.writeId
+              && reboundMeta.optimizationDecision.writerId === reboundMeta.writerId,
+            'returning to a restored optimization value is a fresh user decision'
+          );
+
+          // ---- Scenario 9: an invalid optimization decision id cannot poison
+          // later local choices by permanently outranking the browser clock.
+          const poisonedOptimization = makeContext({
+            voiceInputResourceOptimizationEnabled: false,
+            _sharedWriteMeta: {
+              writeId: 1,
+              writerId: 'poisoned-writer',
+              changedKeys: ['voiceInputResourceOptimizationEnabled'],
+              optimizationDecision: {
+                writeId: Number.MAX_SAFE_INTEGER,
+                writerId: 'poisoned-writer',
+                value: false,
+              },
+              optimizationDecisionPendingSync: false,
+            },
+          });
+          poisonedOptimization.S.voiceInputResourceOptimizationEnabled = true;
+          poisonedOptimization.mod.saveSettings({ skipServerSync: true });
+          const recoveredOptimizationMeta = JSON.parse(
+            poisonedOptimization.lastSharedWrite()
+          )._sharedWriteMeta;
+          assert(
+            recoveredOptimizationMeta.optimizationDecision
+              && recoveredOptimizationMeta.optimizationDecision.value === true
+              && recoveredOptimizationMeta.optimizationDecision.writeId
+                === recoveredOptimizationMeta.writeId,
+            'invalid optimization decision ids must not block a fresh local choice'
+          );
 
           console.log('HARNESS_OK');
           // Every sandbox timer is harness-controlled, so the process exits
@@ -1919,8 +4359,9 @@ def test_settings_get_gate_timeout_downgrades_post_to_dirty_keys_only():
         "_settingsMergedFromServer = true;"
     )
     assert merge_cb.index("_settingsMergedFromServer = true;") < merge_cb.index(
-        "saveSettings();"
+        "saveSettings({"
     )
+    assert "serverAuthoritativeKeys: Object.keys(" in merge_cb
     # Negative: the failure paths must NOT re-enable full snapshots. The
     # finally runs for merged AND failed GETs, so it may not touch the flag;
     # neither may the synchronous-throw catch, where nothing was ever read.
@@ -1947,21 +4388,21 @@ def test_settings_get_gate_timeout_downgrades_post_to_dirty_keys_only():
         run_sync_body.index("await _settingsGetGate;")
         < run_sync_body.index("const settings = getConversationSettings();")
         < run_sync_body.index("const payload =")
-        < run_sync_body.index("await fetch(")
+        < run_sync_body.index("await _fetchConversationSettingsJsonWithTimeout(")
     )
     # An empty dirty set means nothing user-authoritative exists yet: skip the
     # POST entirely rather than write pre-merge values.
     assert "if (Object.keys(payload).length === 0) {" in run_sync_body
     assert run_sync_body.index("if (Object.keys(payload).length === 0) {") < run_sync_body.index(
-        "await fetch("
+        "await _fetchConversationSettingsJsonWithTimeout("
     )
 
-    # The picker copies ONLY dirty keys (negative: no fallback that would drag
-    # untouched keys back into the partial body).
+    # The picker copies ONLY pending keys (negative: acknowledged or untouched
+    # keys cannot be dragged back into the partial body).
     pick_fn = settings_source.split("function _pickDirtySettings(settings) {", 1)[1].split(
         "function applySharedRuntimeSettings", 1
     )[0]
-    assert "_dirtySettingsKeys.forEach((key) => {" in pick_fn
+    assert "_pendingSettingsKeys.forEach((key) => {" in pick_fn
     assert "Object.prototype.hasOwnProperty.call(settings, key)" in pick_fn
     assert "partial[key] = settings[key];" in pick_fn
     assert "Object.keys(settings)" not in pick_fn
@@ -2187,6 +4628,197 @@ def test_never_settling_get_posts_only_dirty_keys_harness():
     assert "HARNESS_OK" in result.stdout
 
 
+def test_unsynced_optimization_decision_survives_reload_until_posted_harness():
+    """A persisted explicit choice stays authoritative until its POST succeeds."""
+    harness = textwrap.dedent(
+        """
+        const fs = require('node:fs');
+        const vm = require('node:vm');
+
+        const source = fs.readFileSync(__APP_SETTINGS_PATH__, 'utf8');
+        const optimizationKey = 'voiceInputResourceOptimizationEnabled';
+
+        function assert(cond, msg) {
+          if (!cond) throw new Error('ASSERT: ' + msg);
+        }
+
+        function makeContext(initialSnapshot) {
+          let stored = initialSnapshot ? JSON.stringify(initialSnapshot) : null;
+          const postCalls = [];
+          const getCalls = [];
+          const sandbox = {
+            console: { log() {}, warn() {}, error() {} },
+            setInterval() { return 0; },
+            clearInterval() {},
+            setTimeout(fn, ms) {
+              const t = setTimeout(fn, ms);
+              if (t && typeof t.unref === 'function') t.unref();
+              return t;
+            },
+            clearTimeout,
+            localStorage: {
+              getItem(key) {
+                return key === 'project_neko_settings' ? stored : null;
+              },
+              setItem(key, value) {
+                if (key === 'project_neko_settings') stored = value;
+              },
+              removeItem() {},
+            },
+            document: { getElementById() { return null; } },
+            fetch(url, opts) {
+              return new Promise((resolve, reject) => {
+                if (opts && opts.method === 'POST') {
+                  postCalls.push({ body: opts.body, resolve, reject });
+                } else {
+                  getCalls.push({ resolve, reject });
+                }
+              });
+            },
+          };
+          sandbox.window = {
+            appState: {
+              independentAsrEnabled: true,
+              settingsHydrated: false,
+              independentAsrAuthoritative: false,
+              voiceInputResourceOptimizationEnabled: true,
+              voiceInputResourceOptimizationAuthoritative: false,
+            },
+            appConst: {},
+            appUtils: { mapRenderQualityToFollowPerf() { return 'medium'; } },
+            addEventListener() {},
+            removeEventListener() {},
+            dispatchEvent() {},
+          };
+          vm.createContext(sandbox);
+          vm.runInContext(source, sandbox);
+          return {
+            getCalls,
+            postCalls,
+            S: sandbox.window.appState,
+            mod: sandbox.window.appSettings,
+            snapshot() { return JSON.parse(stored); },
+          };
+        }
+
+        const tick = () => new Promise((resolve) => setImmediate(resolve));
+        const okPost = { ok: true, json: async () => ({ success: true }) };
+
+        async function main() {
+          // This is a snapshot written by the previous PR head: it records the
+          // explicit decision but predates the durable pending-sync marker.
+          const legacyPendingSnapshot = {
+            [optimizationKey]: false,
+            _sharedWriteMeta: {
+              writeId: 41,
+              writerId: 'window-a',
+              changedKeys: [optimizationKey],
+              hydrated: true,
+              asrAuthoritative: false,
+              optimizationDecision: {
+                writeId: 41,
+                writerId: 'window-a',
+                value: false,
+              },
+            },
+          };
+
+          // If the boot GET also fails, pre-merge sync must still retry the
+          // durable decision. `_pickDirtySettings()` reads only the pending
+          // set, so restoring just dirty membership would produce no POST.
+          const offline = makeContext(legacyPendingSnapshot);
+          offline.getCalls[0].resolve({ ok: false });
+          await tick();
+          await tick();
+          const offlineSync = offline.mod.syncSettingsToServer();
+          await tick();
+          assert(
+            offline.postCalls.length === 1,
+            'failed boot GET must not forget the pending optimization POST'
+          );
+          assert(
+            JSON.parse(offline.postCalls[0].body)[optimizationKey] === false,
+            'dirty-only retry must carry the durable optimization choice'
+          );
+          offline.postCalls[0].resolve(okPost);
+          await offlineSync;
+
+          const ctx = makeContext(legacyPendingSnapshot);
+          assert(ctx.S[optimizationKey] === false, 'boot must load the local choice');
+          assert(ctx.S.settingsHydrated === true, 'pending choice must hydrate the handshake');
+          assert(
+            ctx.S.voiceInputResourceOptimizationAuthoritative === true,
+            'pending choice must be authoritative for the next start handshake'
+          );
+
+          ctx.getCalls[0].resolve({
+            ok: true,
+            json: async () => ({
+              success: true,
+              settings: { [optimizationKey]: true },
+              telemetryBranch: null,
+            }),
+          });
+          await tick();
+          await tick();
+          assert(
+            ctx.S[optimizationKey] === false,
+            'stale server GET must not overwrite the unsynced local choice'
+          );
+
+          const sync = ctx.mod.syncSettingsToServer();
+          await tick();
+          assert(ctx.postCalls.length === 1, 'pending choice must be POSTed after reload');
+          assert(
+            JSON.parse(ctx.postCalls[0].body)[optimizationKey] === false,
+            'POST must carry the pending local choice'
+          );
+          ctx.postCalls[0].resolve(okPost);
+          await sync;
+          const syncedSnapshot = ctx.snapshot();
+          assert(
+            syncedSnapshot._sharedWriteMeta.optimizationDecisionPendingSync === false,
+            'successful POST must durably clear the pending marker'
+          );
+
+          // Once synchronization is durable, a later reload may accept newer
+          // server truth instead of pinning the old local choice forever.
+          const reloaded = makeContext(syncedSnapshot);
+          reloaded.getCalls[0].resolve({
+            ok: true,
+            json: async () => ({
+              success: true,
+              settings: { [optimizationKey]: true },
+              telemetryBranch: null,
+            }),
+          });
+          await tick();
+          await tick();
+          assert(
+            reloaded.S[optimizationKey] === true,
+            'synced decision must no longer block server truth on a later reload'
+          );
+
+          console.log('HARNESS_OK');
+          process.exitCode = 0;
+        }
+
+        main().catch((err) => {
+          console.error(err && err.stack ? err.stack : String(err));
+          process.exitCode = 1;
+        });
+        """
+    ).replace("__APP_SETTINGS_PATH__", json.dumps(str(APP_SETTINGS_PATH)))
+
+    result = _run_settings_node_harness(harness)
+    assert result.returncode == 0, (
+        "unsynced-optimization-reload harness failed\n"
+        f"stdout:\n{result.stdout}\n"
+        f"stderr:\n{result.stderr}"
+    )
+    assert "HARNESS_OK" in result.stdout
+
+
 def test_failed_boot_get_keeps_posts_dirty_only_harness():
     # Codex P2 (round 16): the round-15 flag was released in the merge chain's
     # `finally`, which also runs when the GET resolved to null (HTTP error,
@@ -2198,13 +4830,13 @@ def test_failed_boot_get_keeps_posts_dirty_only_harness():
     #
     # Pin the split: "the GET attempt finished" and "server values were merged"
     # are different facts, and only the latter licenses full snapshots.
-    # Scenario 1: HTTP-failed GET + later unrelated user edits -> every POST
-    # (including the periodic one) carries only the dirty keys, so untouched
-    # persisted values survive. Scenario 2: application-level failure
+    # Scenario 1: HTTP-failed GET + later unrelated user edits -> each new
+    # pending edit POST carries only that key, while an acknowledged key is not
+    # resent and an idle periodic pass sends nothing. Scenario 2: application-level failure
     # (success:false) + ASR toggle -> the toggle IS persisted. Scenario 3:
-    # network-error GET -> still dirty-only, and the periodic timer only POSTs
-    # (it never re-fetches), which is why the chosen recovery model is "stay
-    # dirty-only for this session" — safe because the backend merges partial
+    # network-error GET -> still pending-only, and the periodic timer does not
+    # re-fetch or resend an acknowledged key. The recovery model remains "stay
+    # partial-write-only for this session" — safe because the backend merges partial
     # payloads per key. Scenario 4 (recovery): a GET that fails the bound but
     # eventually SUCCEEDS flips back to full snapshots on its merge.
     harness = textwrap.dedent(
@@ -2218,23 +4850,31 @@ def test_failed_boot_get_keeps_posts_dirty_only_harness():
           if (!cond) throw new Error('ASSERT: ' + msg);
         }
 
-        function makeContext() {
+        function makeContext(initialSettings) {
           const postCalls = [];
           const getCalls = [];
           const timers = [];
           const intervals = [];
+          const storage = {};
+          if (initialSettings) {
+            storage.project_neko_settings = JSON.stringify(initialSettings);
+          }
           const sandbox = {
             console: { log() {}, warn() {}, error() {} },
             setInterval(fn, ms) { intervals.push({ fn, ms }); return 1; },
             clearInterval() {},
             setTimeout(fn, ms) { timers.push({ fn, ms }); return { unref() {} }; },
             clearTimeout() {},
-            localStorage: { getItem() { return null; }, setItem() {}, removeItem() {} },
+            localStorage: {
+              getItem(key) { return Object.prototype.hasOwnProperty.call(storage, key) ? storage[key] : null; },
+              setItem() {},
+              removeItem(key) { delete storage[key]; },
+            },
             document: { getElementById() { return null; } },
             fetch(url, opts) {
               return new Promise((resolve, reject) => {
                 if (opts && opts.method === 'POST') {
-                  postCalls.push({ url, body: opts.body, resolve, reject });
+                  postCalls.push({ url, body: opts.body, headers: opts.headers, resolve, reject });
                 } else {
                   getCalls.push({ url, resolve, reject });
                 }
@@ -2306,7 +4946,7 @@ def test_failed_boot_get_keeps_posts_dirty_only_harness():
           await tick();
 
           // The restriction does not decay: a LATER, second edit is still
-          // dirty-only (both touched keys, nothing else).
+          // pending-only. The first key was acknowledged and must not be resent.
           ctx.win.focusModeEnabled = true;
           ctx.mod.saveSettings();
           await tick();
@@ -2314,26 +4954,20 @@ def test_failed_boot_get_keeps_posts_dirty_only_harness():
           assert(ctx.postCalls.length === 2, 'the second user edit is persisted too');
           const body2 = JSON.parse(ctx.postCalls[1].body);
           assert(body2.focusModeEnabled === true, 'the newly dirtied key is persisted');
-          assert(body2.mergeMessagesEnabled === true, 'the earlier dirty key stays authoritative');
+          assert(!('mergeMessagesEnabled' in body2), 'the acknowledged key is no longer pending');
           assert(
-            Object.keys(body2).length === 2,
-            'still only user-touched keys, got: ' + JSON.stringify(body2)
+            Object.keys(body2).length === 1,
+            'only the new pending key travels, got: ' + JSON.stringify(body2)
           );
           ctx.postCalls[1].resolve(okPost);
           await tick();
 
-          // ... and the periodic sync (no userInitiated) never widens the body
-          // either, and never rejects.
+          // ... and the periodic sync (no userInitiated) neither widens nor
+          // resends an already acknowledged body, and never rejects.
           const pp = ctx.mod.syncSettingsToServer();
           await tick();
           await tick();
-          assert(ctx.postCalls.length === 3, 'the periodic-style sync still writes the dirty keys');
-          const body3 = JSON.parse(ctx.postCalls[2].body);
-          assert(
-            Object.keys(body3).length === 2,
-            'the periodic sync must not widen the body, got: ' + JSON.stringify(body3)
-          );
-          ctx.postCalls[2].resolve(okPost);
+          assert(ctx.postCalls.length === 2, 'the periodic-style sync has no pending keys to write');
           await pp;
 
           // ---- Scenario 2: application-level failure + the ASR toggle.
@@ -2387,13 +5021,7 @@ def test_failed_boot_get_keeps_posts_dirty_only_harness():
             'no path re-fetches the settings GET, so dirty-only must be permanently safe '
               + 'rather than a temporary state (recovery is a fresh page load)'
           );
-          assert(ctx3.postCalls.length === 2, 'the periodic tick still POSTs (persistence never blocks)');
-          assert(
-            Object.keys(JSON.parse(ctx3.postCalls[1].body)).length === 1,
-            'the periodic tick stays dirty-only after a failed GET'
-          );
-          ctx3.postCalls[1].resolve(okPost);
-          await tick();
+          assert(ctx3.postCalls.length === 1, 'the periodic tick does not resend an acknowledged key');
 
           // ---- Scenario 4 (recovery): the bound elapses, the POST goes out
           // dirty-only, and the GET LATER succeeds -> full snapshots resume.
@@ -2446,6 +5074,264 @@ def test_failed_boot_get_keeps_posts_dirty_only_harness():
             'the full snapshot carries the merged server value, not the boot default'
           );
           ctx4.postCalls[2].resolve(okPost);
+          await tick();
+
+          // ---- Scenario 5: a legacy/mangled delayed GET omits revision. Once
+          // a POST established a comparable revision, its ETag must not be
+          // downgraded by the unversioned response.
+          const ctxMissingRevision = makeContext();
+          ctxMissingRevision.win.mergeMessagesEnabled = true;
+          ctxMissingRevision.mod.saveSettings();
+          await tick();
+          ctxMissingRevision.fireGateTimeout();
+          await tick();
+          await tick();
+          ctxMissingRevision.postCalls[0].resolve({
+            ok: true,
+            status: 200,
+            headers: {
+              get(name) {
+                return name.toLowerCase() === 'etag'
+                  ? '"conversation-settings-1"'
+                  : null;
+              },
+            },
+            json: async () => ({
+              success: true,
+              settings: {
+                independentAsrEnabled: false,
+                mergeMessagesEnabled: true,
+              },
+              revision: 1,
+              decisions: {},
+            }),
+          });
+          await tick();
+          await tick();
+          ctxMissingRevision.getCalls[0].resolve({
+            ok: true,
+            headers: {
+              get(name) {
+                return name.toLowerCase() === 'etag'
+                  ? '"conversation-settings-0"'
+                  : null;
+              },
+            },
+            json: async () => ({
+              success: true,
+              settings: {
+                independentAsrEnabled: false,
+                mergeMessagesEnabled: false,
+              },
+              decisions: {},
+              telemetryBranch: null,
+            }),
+          });
+          await tick();
+          await tick();
+          assert(
+            ctxMissingRevision.S.mergeMessagesEnabled === true,
+            'an unversioned late GET must preserve the acknowledged local key'
+          );
+          ctxMissingRevision.win.focusModeEnabled = true;
+          ctxMissingRevision.mod.saveSettings();
+          await tick();
+          await tick();
+          assert(
+            ctxMissingRevision.postCalls[1].headers['If-Match']
+              === '"conversation-settings-1"',
+            'an unversioned late GET must not downgrade the confirmed ETag'
+          );
+          ctxMissingRevision.postCalls[1].resolve(okPost);
+          await tick();
+
+          // ---- Scenario 6: the delayed boot GET is newer than the POST that
+          // acknowledged a local edit. The newer server snapshot must win.
+          const ctxNewer = makeContext();
+          ctxNewer.win.mergeMessagesEnabled = true;
+          ctxNewer.mod.saveSettings();
+          await tick();
+          ctxNewer.fireGateTimeout();
+          await tick();
+          await tick();
+          assert(ctxNewer.postCalls.length === 1, 'the bound releases the local edit');
+          ctxNewer.postCalls[0].resolve({
+            ok: true,
+            status: 200,
+            headers: {
+              get(name) {
+                return name.toLowerCase() === 'etag'
+                  ? '"conversation-settings-1"'
+                  : null;
+              },
+            },
+            json: async () => ({
+              success: true,
+              settings: {
+                independentAsrEnabled: false,
+                mergeMessagesEnabled: true,
+              },
+              revision: 1,
+              decisions: {},
+            }),
+          });
+          await tick();
+          await tick();
+          ctxNewer.getCalls[0].resolve({
+            ok: true,
+            headers: {
+              get(name) {
+                return name.toLowerCase() === 'etag'
+                  ? '"conversation-settings-2"'
+                  : null;
+              },
+            },
+            json: async () => ({
+              success: true,
+              settings: {
+                independentAsrEnabled: false,
+                mergeMessagesEnabled: false,
+              },
+              revision: 2,
+              decisions: {},
+              telemetryBranch: null,
+            }),
+          });
+          await tick();
+          await tick();
+          assert(
+            ctxNewer.S.mergeMessagesEnabled === false,
+            'a boot GET newer than the acknowledged POST must win'
+          );
+          assert(ctxNewer.postCalls.length === 2, 'the newer merge writes back once');
+          ctxNewer.postCalls[1].resolve(okPost);
+          await tick();
+
+          // ---- Scenario 7: a timeout-released partial POST advances the server
+          // revision before the captured boot GET returns. The older GET must
+          // not roll back even fields that were never locally dirty.
+          const ctxOlder = makeContext();
+          ctxOlder.win.mergeMessagesEnabled = true;
+          ctxOlder.mod.saveSettings();
+          await tick();
+          ctxOlder.fireGateTimeout();
+          await tick();
+          await tick();
+          ctxOlder.postCalls[0].resolve({
+            ok: true,
+            status: 200,
+            headers: {
+              get(name) {
+                return name.toLowerCase() === 'etag'
+                  ? '"conversation-settings-2"'
+                  : null;
+              },
+            },
+            json: async () => ({
+              success: true,
+              settings: {
+                independentAsrEnabled: false,
+                mergeMessagesEnabled: true,
+                slopFilterEnabled: true,
+              },
+              revision: 2,
+              decisions: {},
+            }),
+          });
+          await tick();
+          await tick();
+          assert(ctxOlder.S.slopFilterEnabled === true, 'the POST response hydrates rev2');
+          ctxOlder.getCalls[0].resolve({
+            ok: true,
+            headers: {
+              get(name) {
+                return name.toLowerCase() === 'etag'
+                  ? '"conversation-settings-1"'
+                  : null;
+              },
+            },
+            json: async () => ({
+              success: true,
+              settings: {
+                independentAsrEnabled: false,
+                mergeMessagesEnabled: false,
+                slopFilterEnabled: false,
+              },
+              revision: 1,
+              decisions: {},
+              telemetryBranch: null,
+            }),
+          });
+          await tick();
+          await tick();
+          assert(
+            ctxOlder.S.mergeMessagesEnabled === true
+              && ctxOlder.S.slopFilterEnabled === true,
+            'a delayed older GET must not merge any stale settings fields'
+          );
+          assert(
+            ctxOlder.postCalls.length === 1,
+            'discarding an older GET must not trigger a stale writeback'
+          );
+
+          // ---- Scenario 8: a newer explicit localStorage ASR decision arrives
+          // before its origin window's POST. The boot GET is older and must not
+          // overwrite either the local value or the tuple that will accompany
+          // the next save.
+          const ctx5 = makeContext({
+            independentAsrEnabled: true,
+            _sharedWriteMeta: {
+              writeId: 20,
+              writerId: 'window-b',
+              changedKeys: ['independentAsrEnabled'],
+              hydrated: true,
+              asrAuthoritative: true,
+              asrDecision: { writeId: 20, writerId: 'window-b', value: true },
+            },
+          });
+          ctx5.getCalls[0].resolve({
+            ok: true,
+            headers: { get(name) { return name.toLowerCase() === 'etag' ? '"conversation-settings-3"' : null; } },
+            json: async () => ({
+              success: true,
+              settings: { independentAsrEnabled: false, mergeMessagesEnabled: false },
+              decisions: {
+                independentAsrEnabled: {
+                  writeId: 10,
+                  writerId: 'window-a',
+                  value: false,
+                },
+              },
+              telemetryBranch: null,
+            }),
+          });
+          await tick();
+          await tick();
+          assert(
+            ctx5.S.independentAsrEnabled === true,
+            'an older boot GET must not overwrite the newer local ASR choice'
+          );
+          assert(ctx5.postCalls.length === 0, 'preserving the local winner needs no merge writeback');
+          ctx5.win.focusModeEnabled = true;
+          ctx5.mod.saveSettings();
+          await tick();
+          await tick();
+          assert(ctx5.postCalls.length === 1, 'a later unrelated edit is persisted');
+          const afterLocalWinner = JSON.parse(ctx5.postCalls[0].body);
+          assert(
+            afterLocalWinner.independentAsrEnabled === true,
+            'the later full snapshot keeps the newer local ASR value'
+          );
+          const decisionHeader = JSON.parse(
+            ctx5.postCalls[0].headers['X-Conversation-Settings-ASR-Decision']
+          );
+          assert(
+            decisionHeader.writeId === 20
+              && decisionHeader.writerId === 'window-b'
+              && decisionHeader.value === true,
+            'the later POST carries the newer local ASR decision tuple'
+          );
+          ctx5.postCalls[0].resolve(okPost);
           await tick();
 
           console.log('HARNESS_OK');
@@ -2825,7 +5711,8 @@ def test_asr_authority_is_per_key_not_granted_by_unrelated_setting_change():
     # S.independentAsrEnabled is still the boot default false at that moment, so
     # a global-only gate would let the next start_session stamp false over the
     # backend's persisted true. Authority for that one key must therefore be
-    # tracked separately and granted by exactly three events.
+    # tracked separately and granted only by explicit ASR edits/cross-window
+    # choices or an authoritative server snapshot.
     settings_source = APP_SETTINGS_PATH.read_text(encoding="utf-8")
 
     user_gate = _block_after(settings_source, "if (userInitiated) {")
@@ -2846,14 +5733,22 @@ def test_asr_authority_is_per_key_not_granted_by_unrelated_setting_change():
         "startPeriodicSync();", 1
     )[0]
 
-    # (2) A cross-window ASR flip grants authority, next to the dirty-key add.
+    # (2) A full snapshot from a successful partial POST or 412 grants the same
+    # server authority when the boot GET was unavailable.
+    snapshot_merge = _block_after(
+        settings_source, "function _mergeConversationSettingsSnapshot(data, preservedKeys) {"
+    )
+    assert "S.independentAsrAuthoritative = true;" in snapshot_merge
+
+    # (3) A cross-window ASR flip grants authority, next to the dirty-key add.
     cross_window = _block_after(
         settings_source, "_dirtySettingsKeys.add('independentAsrEnabled');"
     )
     assert "S.independentAsrAuthoritative = true;" in cross_window
 
-    # (3) Nothing else in the file grants it: exactly three assignment sites.
-    assert settings_source.count("S.independentAsrAuthoritative = true;") == 3
+    # No unrelated path grants it: exactly these four assignment sites (the
+    # conditional local-user gate plus the three authoritative sources above).
+    assert settings_source.count("S.independentAsrAuthoritative = true;") == 4
 
 
 def test_text_session_start_stops_an_active_microphone():
@@ -2967,6 +5862,149 @@ def test_blocked_route_latch_blocks_game_exit_microphone_resume():
         "S.isTextSessionActive = response.input_mode === 'text';", 1
     )[1].split("var _tiaStarted", 1)[0]
     assert "S.voiceInputRouteBlocked = false;" not in started_handler
+
+
+def test_every_start_session_send_carries_a_request_id():
+    # #2539 / Codex P2. The ack names the start it answers, and the receiver
+    # ignores acks that name a different one. A send site that forgets the id
+    # gets an anonymous ack back, which every window treats as "mine" -- the
+    # exact failure the id exists to prevent. Discovered rather than listed, so
+    # a NEW send site cannot slip past this.
+    sources = {
+        "app-buttons.js": APP_BUTTONS_PATH.read_text(encoding="utf-8"),
+        "app-websocket.js": APP_WEBSOCKET_PATH.read_text(encoding="utf-8"),
+    }
+    found = 0
+    for name, source in sources.items():
+        cursor = 0
+        while True:
+            at = source.find("action: 'start_session'", cursor)
+            if at == -1:
+                break
+            cursor = at + 1
+            found += 1
+            payload_end = source.index("}", at)
+            payload = source[at:payload_end]
+            assert "request_id: window.sessionStartRequestId(" in payload, (
+                f"{name}: a start_session send at offset {at} carries no request id"
+            )
+    assert found >= 4, "the send sites were not discovered; the search anchor moved"
+
+    # Read off the flow's OWN owner token, never the shared slot: a start
+    # displaced during its reconnect await would otherwise stamp the newer
+    # start's id onto its own stale request.
+    state_source = APP_STATE_PATH.read_text(encoding="utf-8")
+    assert "window.sessionStartRequestId = function (owner) {" in state_source
+    assert "startRequestIdByOwner.get(owner)" in state_source
+
+
+def test_pending_request_id_is_claimed_and_released_with_the_slot():
+    # The id lives and dies with the shared start slot. Left behind after a
+    # release, it would make the NEXT anonymous-or-foreign ack look mismatched
+    # and strand a start that nothing else settles.
+    state_source = APP_STATE_PATH.read_text(encoding="utf-8")
+    websocket_source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+
+    assert "_pendingSessionStartRequestId: null," in state_source
+    claim = state_source.split("window.claimSessionStart = function (", 1)[1].split(
+        "\n    };", 1
+    )[0]
+    assert "S._pendingSessionStartRequestId = requestId;" in claim
+
+    # Every slot teardown clears it. Paired with the mode, which is the field
+    # that already had to be cleared everywhere -- so count against that rather
+    # than list the sites.
+    for source in (state_source, websocket_source):
+        assert source.count("S._pendingSessionStartRequestId = null;") == source.count(
+            "S._pendingSessionStartMode = null;"
+        )
+
+
+def test_session_started_only_settles_the_start_it_answers():
+    # Codex P2. The cross-mode guard cannot catch a SAME-mode ack meant for
+    # another window, and that is the load-bearing case: the window that claims
+    # the microphone mid-start becomes the lease holder, so the in-flight start's
+    # ack is fanned out to it. Without this guard it clears its own timeout,
+    # resolves, reads the blocked route that ack carries and aborts its
+    # microphone flow -- and its real ack, carrying the re-decided route, lands
+    # on a flow that already gave up.
+    websocket_source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+
+    started_handler = websocket_source.split(
+        "S.isTextSessionActive = response.input_mode === 'text';", 1
+    )[0].rsplit("} else if (response.type === 'session_started') {", 1)[1]
+    guard = started_handler.split("var _ackAnswersThisWindow =", 1)[1].split(";", 1)[0]
+    assert "response.request_id === S._pendingSessionStartRequestId" in guard
+    # Anchored on the resolver first (Codex P2): a dozen places clear the
+    # resolver, and expecting every one of them to also clear the id is exactly
+    # the checklist that goes stale. A window with no start pending must treat
+    # any ack as its own, or a leaked id silently disables the latch forever.
+    assert "!S.sessionStartedResolver" in guard
+    # An ack with no id counts as ours: the internal starts (proactive,
+    # greeting, disconnect recovery) carry no request, and the cross-mode guard
+    # already covers them.
+    assert "!response.request_id" in guard
+    assert "!S._pendingSessionStartRequestId" in guard
+
+    # Settling is what the guard gates -- the timeout clear and the deferred
+    # resolve. The UI sync below it is deliberately NOT gated: the backend did
+    # start a session, so composer visibility and the microphone teardown still
+    # apply to this window.
+    tail = websocket_source.split("var _ackAnswersThisWindow =", 1)[1]
+    timeout_clear = tail.split("clearTimeout(window.sessionTimeoutId);", 1)[0]
+    assert "_ackAnswersThisWindow && S.sessionStartedResolver" in timeout_clear
+    capture = next(l for l in tail.splitlines() if "var _ackedResolver =" in l)
+    assert "_ackAnswersThisWindow ?" in capture
+    # voiceStartPending is a start-lifecycle flag, not a session fact:
+    # app-auto-goodbye.js reads it as "a voice start is in flight", so clearing
+    # it on somebody else's ack lets goodbye/idle run through a legitimate mic
+    # start that is still waiting for its own ack (Codex P2).
+    pending_clear = next(
+        l for l in tail.splitlines() if "S.voiceStartPending = false;" in l
+    )
+    assert "_ackAnswersThisWindow" in pending_clear
+    # Session facts stay ungated -- the backend really did start a session.
+    session_facts = next(
+        l for l in tail.splitlines() if "S.voiceChatActive = response.input_mode" in l
+    )
+    assert "_ackAnswersThisWindow" not in session_facts
+
+
+def test_session_started_ack_latches_a_blocked_microphone_route():
+    # The one clear of the latch that is NOT tied to a route verdict is user
+    # intent (app-buttons.js, next to _pendingSessionStartMode = 'audio'). What
+    # keeps that from opening the microphone onto a dead route is this branch:
+    # the ack carries the settled route (send_session_started in notify.py), so
+    # a still-blocked route re-latches before the start promise settles.
+    #
+    # It is also the only channel that reaches a window which never got an
+    # ASR_INDEPENDENT_* status at all -- a fenced start emits none, which is the
+    # case the backend's dedupe re-decision (#2539) exists to shrink but cannot
+    # remove.
+    websocket_source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+    buttons_source = APP_BUTTONS_PATH.read_text(encoding="utf-8")
+
+    # The clear-on-intent this backstops, in the flow that arms the audio start.
+    assert "S.voiceInputRouteBlocked = false;" in buttons_source
+
+    started_handler = websocket_source.split(
+        "S.isTextSessionActive = response.input_mode === 'text';", 1
+    )[1].split("var _tiaStarted", 1)[0]
+    latch = started_handler.split("S.voiceInputRouteBlocked = true;", 1)[0].rsplit(
+        "if (", 1
+    )[1]
+    # Only for a request this window actually made: the latch is set-only, so a
+    # blocked verdict belonging to another window's start would stick and this
+    # window's own healthy ack could not clear it.
+    assert "_ackAnswersThisWindow" in latch
+    assert "response.input_mode !== 'text'" in latch
+    # Set-only, and only on a blocked verdict: the latch is sticky by design
+    # (tearDownBlockedVoiceRoute relies on it surviving), and an ack that says
+    # native/independent must not clear what a status verdict set.
+    assert "response.microphone_route === 'blocked'" in latch
+    # Guarded on the field being present, so an older backend that omits it
+    # keeps its current behaviour rather than refusing every microphone.
+    assert "response.microphone_route !== 'blocked'" not in started_handler
 
 
 def test_shared_write_metadata_carries_per_key_asr_authority():
@@ -3118,21 +6156,21 @@ def test_concurrent_asr_toggles_are_totally_ordered_not_swapped():
     assert "typeof meta.writerId === 'string' ? meta.writerId : ''" in read_fn
 
     # The comparison is (writeId, writerId) against the local decision.
-    outranks = settings_source.split("function _asrWriteOutranksLocalChoice(", 1)[
+    outranks = settings_source.split("function _settingWriteOutranksLocalChoice(", 1)[
         1
     ].split("\n    }", 1)[0]
     # Ordering is on the DECISION that produced the value, not on the id of the
     # write carrying it: a monotone dirty key makes every later unrelated save
     # re-declare the ASR key explicit with a fresh id, which would outrank a
     # genuinely newer toggle elsewhere (no race required).
-    assert "decision.writeId > _lastAsrDecision.writeId" in outranks
-    assert "(decision.writerId || '') > _lastAsrDecision.writerId" in outranks
+    assert "decision.writeId > localDecision.writeId" in outranks
+    assert "(decision.writerId || '') > localDecision.writerId" in outranks
     # A write with neither a decision tuple nor an explicit declaration is an
     # incidental copy and must never outrank a local choice.
     assert "if (!decision) return false;" in outranks
     # The decision must be DERIVED (tuple, else an explicit declaration), never
     # taken as the incoming write itself -- that is the bug being fixed.
-    assert "const decision = meta.asrDecision" in outranks
+    assert "const decision = meta[decisionKey]" in outranks
     assert "const decision = meta;" not in outranks
 
     # A window's OWN explicit write must be recorded, or it has nothing to
@@ -3140,7 +6178,10 @@ def test_concurrent_asr_toggles_are_totally_ordered_not_swapped():
     write_fn = settings_source.split("function _writeSharedSettings(", 1)[1].split(
         "\n    }", 1
     )[0]
-    assert "_noteAsrDecision(ownMeta.writeId, ownMeta.writerId," in write_fn
+    asr_note = write_fn.split("_noteAsrDecision(", 1)[1].split(");", 1)[0]
+    assert "_nextAsrDecisionWriteId(ownMeta.writeId)" in asr_note
+    assert "ownMeta.writerId" in asr_note
+    assert "snapshot.independentAsrEnabled" in asr_note
 
     # Refusing authority alone is not enough: applySharedRuntimeSettings copies
     # independentAsrEnabled unconditionally, so the losing write must also be
@@ -3189,7 +6230,7 @@ def test_blocked_route_refuses_to_open_the_microphone():
     start_fn = capture_source.split("async function startMicCapture() {", 1)[1]
     head = start_fn.split("const _mic = micButton();", 1)[0]
     assert "S.voiceInputRouteBlocked === true" in head
-    assert "return;" in head
+    assert "return false;" in head
 
     # A refused start must unwind the starting-voice UI rather than throw --
     # throwing would replace the accurate ASR toast with a generic failure.
@@ -3218,16 +6259,30 @@ def test_asr_decision_tuple_survives_unrelated_saves():
     settings_source = APP_SETTINGS_PATH.read_text(encoding="utf-8")
 
     # The write carries the id of the decision that produced the value...
-    write_fn = _block_after(
-        settings_source, "function _writeSharedSettings(snapshot, explicitKeys) {"
+    signature = re.search(
+        r"function _writeSharedSettings\((?P<params>[^)]*)\)\s*\{",
+        settings_source,
     )
+    assert signature is not None, "_writeSharedSettings signature is missing"
+    parameter_names = {
+        parameter.strip() for parameter in signature.group("params").split(",")
+    }
+    assert {
+        "snapshot",
+        "explicitKeys",
+        "pendingRecovery",
+        "serverAuthoritativeKeys",
+    } <= parameter_names
+    write_fn = _block_after(settings_source, signature.group(0))
     assert "ownMeta.asrDecision = {" in write_fn
     assert "_lastAsrDecision.value === snapshot.independentAsrEnabled" in write_fn
 
     # ...the reader parses it defensively, falling back to today's behaviour...
     read_fn = _block_after(settings_source, "function _readSharedWriteMeta(settings) {")
     assert "asrDecision:" in read_fn
-    assert "typeof meta.asrDecision.writeId === 'number'" in read_fn
+    assert "_isValidAsrWriteId(" in read_fn
+    assert "meta.asrDecision.writeId," in read_fn
+    assert "Number.isInteger(meta.serverRevision)" in read_fn
 
     # ...and both the boot seed and the adopted cross-window flip record the
     # ORIGINAL id, or this window re-inflates the value on its own next save.
@@ -3295,6 +6350,74 @@ def test_auto_restart_does_not_claim_success_on_a_blocked_route():
     assert "resetSessionButton(); if (_rsB) _rsB.disabled = false;" in restart
 
 
+def test_auto_restart_unwinds_a_cancelled_microphone_start():
+    # startMicCapture returns false for an ownership cancellation. The restart's
+    # backend session has already been accepted by then, so it must enter the
+    # common teardown without showing a generic failure toast or continuing to
+    # the floating-control/restartComplete success path.
+    websocket_source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+    restart = websocket_source.split("await sessionStartPromise;", 1)[1].split(
+        "} catch (error) {", 1
+    )[0]
+    restart_code = _code_only(restart)
+    await_marker = "microphoneStarted = await window.startMicCapture();"
+    cancellation_marker = "if (microphoneStarted !== true) {"
+    success_marker = "window.syncFloatingMicButtonState(true)"
+    assert await_marker in restart_code
+    assert cancellation_marker in restart_code
+    assert restart_code.index(await_marker) < restart_code.index(cancellation_marker)
+    assert restart_code.index(cancellation_marker) < restart_code.index(success_marker)
+    assert "microphoneStartCancelled.microphoneStartCancelled = true;" in restart_code
+    assert "throw microphoneStartCancelled;" in restart_code
+
+    catch = websocket_source.split("} catch (error) {", 1)[1].split(
+        "}, 7500);", 1
+    )[0]
+    catch_code = _code_only(catch)
+    assert "error && error.microphoneStartCancelled" in catch_code
+    assert "if (!isMicrophoneStartCancelled" in catch_code
+    assert "S.socket.send(JSON.stringify({ action: 'end_session' }));" in catch_code
+    assert "window.syncFloatingMicButtonState(false)" in catch_code
+
+
+def test_microphone_switch_requires_a_live_committed_replacement():
+    capture_source = APP_AUDIO_CAPTURE_PATH.read_text(encoding="utf-8")
+    select_fn = _code_only(
+        _block_after(capture_source, "async function selectMicrophone(deviceId) {")
+    )
+    await_marker = "const microphoneStarted = await startMicCapture();"
+    success_marker = "if (microphoneStarted === true) {"
+    retry_marker = "const latestSelectionNeedsRetry = ("
+    assert "while (true) {" in select_fn
+    assert await_marker in select_fn
+    assert success_marker in select_fn
+    assert retry_marker in select_fn
+    assert select_fn.index(await_marker) < select_fn.index(success_marker)
+    assert select_fn.index(success_marker) < select_fn.index(retry_marker)
+    retry_condition = select_fn.split(retry_marker, 1)[1].split(");", 1)[0]
+    assert (
+        "microphoneSelectionGeneration !== selectionGenerationForRestart"
+        in retry_condition
+    )
+    assert "micStartGeneration === expectedRestartGeneration" in retry_condition
+    assert "S.voiceInputRouteBlocked !== true" in retry_condition
+    assert select_fn.index(retry_marker) < select_fn.index(
+        "await window.startScreenSharing();"
+    )
+
+    start_fn = _code_only(
+        _block_after(capture_source, "async function startMicCapture() {")
+    )
+    assert "let microphoneSelectionGeneration = 0;" in capture_source
+    assert "microphoneSelectionGeneration += 1;" in capture_source
+    assert len(re.findall(r"S\.selectedMicrophoneId\s*=(?!=)", capture_source)) == 1, (
+        "all microphone-selection writes must go through the generation-tracked helper"
+    )
+    assert start_fn.count("if (hasLiveCommittedMicrophonePipeline()) {") == 2
+    assert start_fn.count("S.isRecording = false;") >= 2
+    assert start_fn.count("window.isRecording = false;") >= 2
+
+
 def test_in_flight_microphone_start_is_cancellable():
     # Codex P2. S.isRecording only flips at the END of startAudioWorklet, after
     # getUserMedia() and audioWorklet.addModule() have both awaited, so every
@@ -3323,10 +6446,21 @@ def test_in_flight_microphone_start_is_cancellable():
 
     # ...and the commit is gated on it.
     worklet = _block_after(
-        capture_source, "async function startAudioWorklet(mediaStream, startToken) {"
+        capture_source,
+        "async function startAudioWorklet(\n"
+        "        mediaStream,\n"
+        "        startToken,\n"
+        "        selectedMicrophoneIdAtStart,\n"
+        "        microphoneSelectionGenerationAtStart\n"
+        "    ) {",
     )
     assert "startToken !== micStartGeneration" in worklet
     assert "S.voiceInputRouteBlocked === true" in worklet
+    assert "S.selectedMicrophoneId !== selectedMicrophoneIdAtStart" in worklet
+    assert (
+        "microphoneSelectionGeneration !== microphoneSelectionGenerationAtStart"
+        in worklet
+    )
     # TWO gates on that token, and both are load-bearing. The entry gate stops
     # an attempt that was superseded while still in getUserMedia from running
     # the old-pipeline teardown below it, which would close the WINNER's
@@ -3334,6 +6468,12 @@ def test_in_flight_microphone_start_is_cancellable():
     assert worklet.count("startToken !== micStartGeneration") == 2, (
         "expected an entry gate and a commit gate on the start token"
     )
+    assert worklet.count(
+        "S.selectedMicrophoneId !== selectedMicrophoneIdAtStart"
+    ) == 2, "expected both gates to enforce microphone-selection ownership"
+    assert worklet.count(
+        "microphoneSelectionGeneration !== microphoneSelectionGenerationAtStart"
+    ) == 2, "expected both gates to preserve intermediate selection changes"
     assert worklet.index("superseded before opening") < worklet.index(
         "await previousContext.close()"
     ), "the entry gate must precede the old-pipeline teardown it protects"
@@ -3362,9 +6502,13 @@ def test_in_flight_microphone_start_is_cancellable():
     # before the token gate, where a loser whose getUserMedia settled last
     # could take the slot and then null it out from under the winner), so the
     # handoff goes through the local binding.
+    assert "const selectedMicrophoneIdAtStart = S.selectedMicrophoneId;" in start_code_only
+    compact_start_code = "".join(start_code_only.split())
     assert (
-        "const micStartCommitted = await startAudioWorklet(ownStream, micStartToken);"
-        in start_code_only
+        "constmicStartCommitted=awaitstartAudioWorklet("
+        "ownStream,micStartToken,selectedMicrophoneIdAtStart,"
+        "microphoneSelectionGenerationAtStart);"
+        in compact_start_code
     )
     assert "if (!micStartCommitted) {" in start_code_only
     # ...and the bail happens before every success-path side effect.
@@ -3425,8 +6569,16 @@ def test_deferred_session_start_resolve_is_pinned_to_the_ack_it_belongs_to():
     #     forever, isMicStarting true and the button stuck.
     source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
 
-    capture = "var _ackedResolver = S.sessionStartedResolver;"
-    assert capture in source, "the ack must capture the pending start it belongs to"
+    capture_line = next(
+        l for l in source.splitlines() if "var _ackedResolver =" in l
+    )
+    assert "S.sessionStartedResolver" in capture_line, (
+        "the ack must capture the pending start it belongs to"
+    )
+    # And only when the ack is answering THIS window's request: a same-mode ack
+    # fanned out for somebody else's start must not settle our promise.
+    assert "_ackAnswersThisWindow" in capture_line
+    capture = capture_line.strip()
 
     # The capture has to happen at ack time, i.e. before the deferred callback
     # is scheduled -- capturing inside it would read the same shared slot again

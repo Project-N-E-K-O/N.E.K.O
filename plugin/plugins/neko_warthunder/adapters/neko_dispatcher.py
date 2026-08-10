@@ -14,13 +14,21 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-from ..core.contracts import BattleEvent, broadcast_frequency_multiplier, classify_battle_result
+from ..core.contracts import (
+    BattleEvent,
+    broadcast_frequency_multiplier,
+    classify_battle_result,
+    event_max_age_seconds,
+)
 from .dispatch_observer import DispatchObserver
 from .event_delivery import EventDelivery
 from .runtime_timeline import RuntimeTimeline
 from .text_safety import sanitize_event_payload
 
 BATTLE_EVENT_COALESCE_KEY = "neko_warthunder:battle_event"
+# 短播报风格：这是写进 prompt、由 target_lanlan 指向的角色人设去执行的约束，
+# 不是等宿主强制截断的投递契约——回复长度属于角色的属性，不属于投递层。
+# metadata 里同名字段只作真机排查时的可观测标记，宿主不消费它们也不影响正确性。
 BATTLE_REPLY_CONTRACT = "short_tts_line"
 BATTLE_REPLY_MAX_CHARS = 28
 BATTLE_RESPONSE_MODULE_HINT = "war_thunder_battle_event"
@@ -30,6 +38,54 @@ HOST_REPLY_STYLE = "short_line"
 HOST_QUIET_WINDOW_POLICY = "suppress_non_urgent_during_user_input"
 V2_LIVE_EVIDENCE_GATED_EVENTS = frozenset({"enemy_on_six", "tailing_risk", "ground_target_nearby"})
 FREE_TEXT_DRY_RUN_ONLY_EVENTS = frozenset({"free_text_activity"})
+# push_event 返回人读结果串；以下前缀表示"输出已提交"（真实推送或 dry_run 记录），
+# __init__._evaluate 据此决定是否回滚 arbiter/output_clock checkpoint。
+# 修改 push_event 的返回文案时必须同步维护这组前缀。
+COMMITTED_RESULT_PREFIXES = ("pushed(", "dry_run(")
+# push 成功后回填给 observer 的投递元数据键——直接从 delivery.metadata 派生，
+# 保证观测记录与实际投递内容单一来源；新增元数据键只需扩这份名单。
+_OBSERVED_DELIVERY_METADATA_KEYS = (
+    "coalesce_key",
+    "battle_reply_contract",
+    "live_reply_contract",
+    "reply_contract",
+    "max_reply_chars",
+    "reply_max_chars",
+    "response_module_hint",
+    "plugin_recommended_reply",
+    "plugin_owned_output",
+    "replace_pending",
+    "interrupt_battle_event",
+    "interrupt_pending",
+    "reply_style_contract",
+    "dialogue_policy_owner",
+    "plugin_dialogue_policy",
+    "plugin_quiet_window_policy",
+    "host_callback_contract_version",
+    "delivery_strategy",
+    "passive_from_user_chat_quiet_window",
+    "quiet_window_remaining_seconds",
+    "delivery_ttl_seconds",
+    "delivery_intent",
+    "interrupt_policy",
+    "event_ts",
+    "event_age_seconds",
+    "event_max_age_seconds",
+    "event_expires_at",
+)
+# 派发器需要读写宿主插件上的这几个活动状态字段。它们是跨对象的隐式契约：
+# 任一侧改名或拼错都不会报错，getattr 静默回落到默认值，效果是静默窗门控被
+# 无声关闭。独立插件仓 tests/test_dispatcher_safety.py 有契约测试守着这组名字；
+# 宿主仓 tests/unit/test_neko_warthunder_runtime_resilience.py 覆盖实际运行路径。
+PLUGIN_LAST_USER_CHAT_AT = "_last_user_chat_at"
+PLUGIN_LAST_USER_CHAT_MODE = "_last_user_chat_mode"
+PLUGIN_LAST_BATTLE_RESPOND_AT = "_last_battle_respond_at"
+PLUGIN_ACTIVITY_STATE_FIELDS = (
+    PLUGIN_LAST_USER_CHAT_AT,
+    PLUGIN_LAST_USER_CHAT_MODE,
+    PLUGIN_LAST_BATTLE_RESPOND_AT,
+)
+
 BACKPRESSURE_BYPASS_EVENTS = frozenset({"you_died", "you_killed"})
 URGENT_REPLACE_EVENTS = frozenset({"you_died", "stall_risk", "high_aoa", "over_g", "low_alt_danger", "overspeed"})
 PLUGIN_OWNED_DIRECT_EVENTS = frozenset(
@@ -80,38 +136,13 @@ REPEAT_COLLAPSE_EVENT_IDS = frozenset(
     }
 )
 REPEAT_COLLAPSE_SECONDS = 30.0
-EVENT_MAX_AGE_OVERRIDES_SECONDS: dict[str, float] = {
-    # These cues are useful only while the condition is still tactically fresh.
-    "spawn": 3.0,
-    "enemy_nearby": 3.0,
-    "air_threat_nearby": 3.0,
-    "enemy_on_six": 3.0,
-    "tailing_risk": 3.0,
-    "ground_target_nearby": 4.0,
-    "low_alt_danger": 4.0,
-    "overspeed": 4.0,
-    "high_aoa": 4.0,
-    "over_g": 4.0,
-    "stall_risk": 5.0,
-    "overheat": 6.0,
-    "ground_laser_warning": 4.0,
-    "ground_crew_loss": 6.0,
-    "ground_gunner_disabled": 6.0,
-    "ground_driver_disabled": 6.0,
-    "ground_ammo_empty": 8.0,
-    "ground_ammo_low": 8.0,
-    "player_radio_command": 10.0,
-    # Kill/death/battle-end can tolerate a little more host latency, but still
-    # should not be replayed as old news.
-    "you_killed": 30.0,
-    "you_died": 8.0,
-    "battle_end": 8.0,
-}
 COPILOT_ROLE_BOUNDARY = (
     "边界：只提醒陪伴；不接管、不编锁定/开火/战果/损伤。"
 )
 
 # 每个事件的"要求行"意图（不写最终台词，台词归角色 LLM）。
+# 注意：带动态分支的事件（spawn / you_killed / battle_end，见 _event_intent）不在此表——
+# 它们在 dict 查找前就已 return，写在这里只会成为永不生效的死配置。
 _INTENT: dict[str, str] = {
     "stall_risk": "濒临失速，提醒 {MASTER_NAME} 加速/松杆改出",
     "high_aoa": "攻角过大，提醒 {MASTER_NAME} 松杆改出，别继续硬拉",
@@ -133,58 +164,44 @@ _INTENT: dict[str, str] = {
     "tailing_risk": "报后方持续贴近，提醒 {MASTER_NAME} 立刻改出",
     "free_text_activity": "提醒 {MASTER_NAME} 检测到战场文字来源，只做安全泛化提示，不复读原文",
     "player_radio_command": "听到 {MASTER_NAME} 发出的固定无线电口令；只按标准化口令短回应，不引用聊天原文",
-    "you_killed": "确认刚才战果；按载具域一句短话，可不夸，不套固定话",
     "you_died": "确认己方载具损失；对 {MASTER_NAME} 回应一次；不复盘或补充未提供的战术细节",
-    "spawn": (
-        "确认 {MASTER_NAME} 已进入战局或完成重生；"
-        "只使用当前载具域和已确认的开场事实；"
-        "别报敌情/方位/锁定/击杀/威胁"
-    ),
-    "battle_end": "确认这局结束；对 {MASTER_NAME} 回应一次；不展开战报",
 }
 
 _RECOVERY_INTENT = "刚才的危险解除了，跟 {MASTER_NAME} 说句'好险、稳住了'之类的"
 
 
-def _output_backpressure_seconds(plugin: Any) -> float:
+def _cfg_float(plugin: Any, name: str, default: float) -> float:
+    """读 plugin.cfg 的非负浮点配置；缺失/非法一律回退默认值。"""
     cfg = getattr(plugin, "cfg", None)
     try:
-        configured = max(0.0, float(getattr(cfg, "output_backpressure_seconds", 20.0)))
+        return max(0.0, float(getattr(cfg, name, default)))
     except (TypeError, ValueError):
-        return 20.0
-    return configured * broadcast_frequency_multiplier(getattr(cfg, "broadcast_frequency", "standard"))
+        return default
+
+
+def _cfg_bool(plugin: Any, name: str, default: bool = False) -> bool:
+    return bool(getattr(getattr(plugin, "cfg", None), name, default))
+
+
+def _output_backpressure_seconds(plugin: Any) -> float:
+    configured = _cfg_float(plugin, "output_backpressure_seconds", 20.0)
+    frequency = getattr(getattr(plugin, "cfg", None), "broadcast_frequency", "standard")
+    return configured * broadcast_frequency_multiplier(frequency)
 
 
 def _output_event_max_age_seconds(plugin: Any, event: BattleEvent | None = None) -> float:
-    cfg = getattr(plugin, "cfg", None)
-    try:
-        configured = max(0.0, float(getattr(cfg, "output_event_max_age_seconds", 8.0)))
-    except (TypeError, ValueError):
-        configured = 8.0
-    if event is None or configured <= 0:
+    configured = _cfg_float(plugin, "output_event_max_age_seconds", 8.0)
+    if event is None:
         return configured
-    override = EVENT_MAX_AGE_OVERRIDES_SECONDS.get(event.event_id)
-    if override is None:
-        return configured
-    if event.event_id == "you_killed":
-        return max(configured, override)
-    return min(configured, override)
+    return event_max_age_seconds(event.event_id, configured)
 
 
 def _user_chat_quiet_window_seconds(plugin: Any) -> float:
-    cfg = getattr(plugin, "cfg", None)
-    try:
-        return max(0.0, float(getattr(cfg, "user_chat_quiet_window_seconds", 20.0)))
-    except (TypeError, ValueError):
-        return 20.0
+    return _cfg_float(plugin, "user_chat_quiet_window_seconds", 20.0)
 
 
 def _battle_output_quiet_window_seconds(plugin: Any) -> float:
-    cfg = getattr(plugin, "cfg", None)
-    try:
-        return max(0.0, float(getattr(cfg, "battle_output_quiet_window_seconds", 20.0)))
-    except (TypeError, ValueError):
-        return 20.0
+    return _cfg_float(plugin, "battle_output_quiet_window_seconds", 20.0)
 
 
 def _dialogue_intrusion_mode(plugin: Any) -> str:
@@ -201,28 +218,23 @@ def _dialogue_intrusion_mode(plugin: Any) -> str:
 
 
 def _v2_live_verified_real_output_enabled(plugin: Any) -> bool:
-    cfg = getattr(plugin, "cfg", None)
-    return bool(getattr(cfg, "v2_live_verified_real_output_enabled", False))
+    return _cfg_bool(plugin, "v2_live_verified_real_output_enabled")
 
 
 def _plugin_reply_hint_enabled(plugin: Any) -> bool:
-    cfg = getattr(plugin, "cfg", None)
-    return bool(getattr(cfg, "plugin_reply_hint_enabled", True))
+    return _cfg_bool(plugin, "plugin_reply_hint_enabled", True)
 
 
 def _plugin_owned_blind_output_enabled(plugin: Any) -> bool:
-    cfg = getattr(plugin, "cfg", None)
-    return bool(getattr(cfg, "plugin_owned_blind_output_enabled", False))
+    return _cfg_bool(plugin, "plugin_owned_blind_output_enabled")
 
 
 def _plugin_owned_battle_output_enabled(plugin: Any) -> bool:
-    cfg = getattr(plugin, "cfg", None)
-    return bool(getattr(cfg, "plugin_owned_battle_output_enabled", False))
+    return _cfg_bool(plugin, "plugin_owned_battle_output_enabled")
 
 
 def _plugin_owned_urgent_output_enabled(plugin: Any) -> bool:
-    cfg = getattr(plugin, "cfg", None)
-    return bool(getattr(cfg, "plugin_owned_urgent_output_enabled", False))
+    return _cfg_bool(plugin, "plugin_owned_urgent_output_enabled")
 
 
 def _should_use_plugin_owned_output(plugin: Any, event: BattleEvent, recommended_reply: str) -> bool:
@@ -254,7 +266,7 @@ def _quiet_window_suppression(plugin: Any, event: BattleEvent, now: float) -> tu
 
     user_window = _user_chat_quiet_window_seconds(plugin)
     try:
-        last_user_chat_at = float(getattr(plugin, "_last_user_chat_at", 0.0) or 0.0)
+        last_user_chat_at = float(getattr(plugin, PLUGIN_LAST_USER_CHAT_AT, 0.0) or 0.0)
     except (TypeError, ValueError):
         last_user_chat_at = 0.0
     if user_window > 0 and last_user_chat_at > 0:
@@ -264,7 +276,7 @@ def _quiet_window_suppression(plugin: Any, event: BattleEvent, now: float) -> tu
 
     battle_window = _battle_output_quiet_window_seconds(plugin)
     try:
-        last_battle_respond_at = float(getattr(plugin, "_last_battle_respond_at", 0.0) or 0.0)
+        last_battle_respond_at = float(getattr(plugin, PLUGIN_LAST_BATTLE_RESPOND_AT, 0.0) or 0.0)
     except (TypeError, ValueError):
         last_battle_respond_at = 0.0
     if battle_window > 0 and last_battle_respond_at > 0:
@@ -276,15 +288,15 @@ def _quiet_window_suppression(plugin: Any, event: BattleEvent, now: float) -> tu
 
 
 def _last_user_chat_mode(plugin: Any) -> str:
-    mode = str(getattr(plugin, "_last_user_chat_mode", "unknown") or "unknown").strip().lower()
+    mode = str(getattr(plugin, PLUGIN_LAST_USER_CHAT_MODE, "unknown") or "unknown").strip().lower()
     return mode if mode in {"text", "voice"} else "unknown"
 
 
-def _next_text_turn_instruction() -> str:
+def _passive_context_instruction() -> str:
     return (
-        "[时机] 这是一条短时、一次性的旁注。仅在你接下来生成的第一条回复中，"
-        "若衔接自然，就顺带肯定玩家刚才的表现；不要打断当前话题，不要另起话题。"
-        "若不适合或已经不是紧接着的一轮，直接忽略，之后不要重复提及。"
+        "[时机] 这是一条短时背景，只供之后自然发生的用户轮次参考。"
+        "不要为它主动开口、不要打断当前话题，也不要求在回复中提及；"
+        "若衔接不自然或已经过时，直接忽略。"
     )
 
 
@@ -419,13 +431,13 @@ def _short_line(text: str) -> str:
     return line[:BATTLE_REPLY_MAX_CHARS].strip()
 
 
-def _spawn_domain(event: BattleEvent) -> str:
+def _payload_domain(event: BattleEvent) -> str:
     payload = event.payload if isinstance(event.payload, dict) else {}
     return str(payload.get("domain") or "").lower()
 
 
 def _spawn_domain_hint(event: BattleEvent) -> str:
-    domain = _spawn_domain(event)
+    domain = _payload_domain(event)
     if domain == "air":
         return "当前模式：空战/飞行。角色：后座或僚机。可用语境：上机、升空、跟上、护住你"
     if domain == "heli":
@@ -446,15 +458,10 @@ def _spawn_domain_hint(event: BattleEvent) -> str:
     return "当前模式：未知载具域。只确认进入战局，不猜载具类型或战场事实"
 
 
-def _event_domain(event: BattleEvent) -> str:
-    payload = event.payload if isinstance(event.payload, dict) else {}
-    return str(payload.get("domain") or "").lower()
-
-
 def _domain_prompt_contract(event: BattleEvent) -> str:
     if event.event_id == "spawn":
         return ""
-    domain = _event_domain(event)
+    domain = _payload_domain(event)
     if domain == "air":
         return "当前模式：空战/飞行；角色：后座或僚机；只用本域语境；"
     if domain == "heli":
@@ -472,7 +479,8 @@ def _metadata_domain_prompt_contract(event: BattleEvent) -> str:
     return _domain_prompt_contract(event)
 
 
-def _kill_expression_contract() -> str:
+def _persona_wording_contract() -> str:
+    # 适用于所有事件（不只击杀）：措辞/情绪归当前人设，插件不写台词。
     return "回应方式由你根据当前人设与对话上下文决定；插件不指定情绪或措辞，不套固定话。"
 
 
@@ -597,7 +605,7 @@ def _event_intent(event: BattleEvent) -> str:
     return _INTENT.get(event.event_id, "")
 
 
-def _prompt_reply_contract(event: BattleEvent) -> str:
+def _prompt_reply_contract() -> str:
     return "一句短话；不反问、不续聊。"
 
 
@@ -620,7 +628,7 @@ def _output_shape_contract(event: BattleEvent) -> str:
 
 
 def _domain_vocab_contract(event: BattleEvent) -> str:
-    domain = _spawn_domain(event) if event.event_id == "spawn" else _event_domain(event)
+    domain = _payload_domain(event)
     if domain == "air":
         return "语境：只用空战飞行词，不串其他载具域。"
     if domain == "heli":
@@ -632,12 +640,37 @@ def _domain_vocab_contract(event: BattleEvent) -> str:
     return "语境：未知载具域只确认已知事件，不猜载具动作。"
 
 
-def _prompt_style_hint(event: BattleEvent) -> str:
-    return _kill_expression_contract()
-
-
 def _host_interrupt_pending(event: BattleEvent) -> bool:
     return event.event_id in URGENT_REPLACE_EVENTS
+
+
+def _generic_delivery_metadata(
+    *,
+    freshness: dict[str, float],
+    passive_context: bool,
+) -> dict[str, Any]:
+    """把本插件的投递意图表达为通用、插件无关的 metadata。
+
+    ``ai_behavior="read"`` 是被动语义的规范入口；``delivery_intent`` 只作为
+    前向兼容提示，不得要求宿主主动创建回复或热切换。未知字段在旧宿主上应安全忽略。
+
+    战场提示是强时效的：被打断的旧提示应当直接丢弃而不是稍后补播（"拉起来！"晚播
+    比不播更糟），所以这里显式声明 ``drop``——它同时也是核心的默认行为。
+    """
+    # 本插件从不使用 compensate_once：战场提示过期即失效，没有"补一句"的语义。
+    out: dict[str, Any] = {"interrupt_policy": "drop"}
+
+    max_age = freshness.get("event_max_age_seconds")
+    age = freshness.get("event_age_seconds")
+    if max_age is not None:
+        remaining = float(max_age) - float(age or 0.0)
+        if remaining > 0:
+            out["delivery_ttl_seconds"] = round(remaining, 3)
+
+    if passive_context:
+        # 文本聊天静默窗内的战果只成为背景，不承诺下一轮主动提及。
+        out["delivery_intent"] = "passive_context"
+    return out
 
 
 def _host_callback_contract(
@@ -907,11 +940,11 @@ class NekoDispatcher:
         lines = []
         if fact:
             lines.append(f"[当前] {fact}")
-        lines.append(f"[要求] {domain_contract}{intent}。{_prompt_reply_contract(event)}")
+        lines.append(f"[要求] {domain_contract}{intent}。{_prompt_reply_contract()}")
         if _plugin_reply_hint_enabled(self.plugin) and recommended_reply:
             lines[-1] = f"{lines[-1]} 建议台词：{recommended_reply}"
         lines.append(f"{_copilot_role_boundary(event)} {_domain_vocab_contract(event)}")
-        lines.append(f"{_output_shape_contract(event)} {_prompt_style_hint(event)}")
+        lines.append(f"{_output_shape_contract(event)} {_persona_wording_contract()}")
         return "\n".join(lines)
 
     def _suppress_event(
@@ -941,23 +974,23 @@ class NekoDispatcher:
         recommended_reply: str,
         target_lanlan: str,
         plugin_owned_output: bool,
-        next_text_turn: bool,
+        passive_context: bool,
         quiet_window_remaining: float | None,
         freshness: dict[str, float],
     ) -> EventDelivery:
         text = _short_line(recommended_reply) if plugin_owned_output and recommended_reply else self.build_prompt(event)
-        if next_text_turn:
-            text = f"{text}\n{_next_text_turn_instruction()}"
+        if passive_context:
+            text = f"{text}\n{_passive_context_instruction()}"
         host_contract = _host_callback_contract(event, freshness=freshness, target_lanlan=target_lanlan)
         dialogue_policy = _plugin_dialogue_policy(event)
         visibility = ("chat",) if plugin_owned_output else ()
-        ai_behavior = "blind" if plugin_owned_output else "read" if next_text_turn else "respond"
+        ai_behavior = "blind" if plugin_owned_output else "read" if passive_context else "respond"
         metadata: dict[str, Any] = {
             "plugin": "neko_warthunder",
             "event_id": event.event_id,
             "edge": event.edge,
             "level": event.level,
-            "domain": _event_domain(event),
+            "domain": _payload_domain(event),
             "domain_prompt_contract": _metadata_domain_prompt_contract(event),
             "coalesce_key": BATTLE_EVENT_COALESCE_KEY,
             "replace_pending": True,
@@ -978,13 +1011,14 @@ class NekoDispatcher:
             "host_callback_contract_version": HOST_CALLBACK_CONTRACT_VERSION,
             "host_callback_contract": host_contract,
             **freshness,
+            # 通用、前向兼容的投递提示；不认识这些字段的宿主必须安全忽略。
+            **_generic_delivery_metadata(freshness=freshness, passive_context=passive_context),
         }
-        if next_text_turn:
+        if passive_context:
             metadata.update(
                 {
-                    "delivery_strategy": "next_text_turn",
-                    "consume_hint": "next_reply_once",
-                    "deferred_from_user_chat_quiet_window": True,
+                    "delivery_strategy": "passive_context",
+                    "passive_from_user_chat_quiet_window": True,
                     "quiet_window_remaining_seconds": quiet_window_remaining,
                 }
             )
@@ -1041,18 +1075,18 @@ class NekoDispatcher:
                     pass
         plugin_owned_output = _should_use_plugin_owned_output(self.plugin, event, recommended_reply)
         quiet_suppression = _quiet_window_suppression(self.plugin, event, now)
-        next_text_turn = False
+        passive_context = False
         quiet_window_remaining: float | None = None
         if quiet_suppression is not None:
             reason, remaining = quiet_suppression
-            next_text_turn = bool(
+            passive_context = bool(
                 reason == "user_chat_quiet_window"
                 and event.event_id == "you_killed"
                 and _last_user_chat_mode(self.plugin) == "text"
                 and not plugin_owned_output
                 and target_lanlan
             )
-            if next_text_turn:
+            if passive_context:
                 quiet_window_remaining = remaining
             else:
                 return self._suppress_event(
@@ -1069,7 +1103,7 @@ class NekoDispatcher:
             recommended_reply=recommended_reply,
             target_lanlan=target_lanlan,
             plugin_owned_output=plugin_owned_output,
-            next_text_turn=next_text_turn,
+            passive_context=passive_context,
             quiet_window_remaining=quiet_window_remaining,
             freshness=freshness,
         )
@@ -1100,7 +1134,15 @@ class NekoDispatcher:
                 self._repeat_signature(event, recommended_reply),
             )
             if delivery.ai_behavior == "respond" and self.plugin is not None:
-                setattr(self.plugin, "_last_battle_respond_at", now)
+                setattr(self.plugin, PLUGIN_LAST_BATTLE_RESPOND_AT, now)
+            observed = {
+                key: delivery.metadata[key]
+                for key in _OBSERVED_DELIVERY_METADATA_KEYS
+                if key in delivery.metadata
+            }
+            observed.setdefault("delivery_strategy", "immediate")
+            observed.setdefault("passive_from_user_chat_quiet_window", False)
+            observed.setdefault("quiet_window_remaining_seconds", quiet_window_remaining)
             self._observer.record_event(
                 event,
                 stage="dispatcher_pushed",
@@ -1111,27 +1153,7 @@ class NekoDispatcher:
                 pushed=True,
                 target_lanlan=target_lanlan,
                 visibility=list(delivery.visibility),
-                coalesce_key=BATTLE_EVENT_COALESCE_KEY,
-                battle_reply_contract=BATTLE_REPLY_CONTRACT,
-                live_reply_contract=BATTLE_REPLY_CONTRACT,
-                max_reply_chars=BATTLE_REPLY_MAX_CHARS,
-                response_module_hint=BATTLE_RESPONSE_MODULE_HINT,
-                plugin_recommended_reply=recommended_reply,
-                plugin_owned_output=plugin_owned_output,
-                replace_pending=True,
-                interrupt_battle_event=_host_interrupt_pending(event),
-                interrupt_pending=_host_interrupt_pending(event),
-                reply_style_contract=_reply_style_contract(event),
-                reply_contract=BATTLE_REPLY_CONTRACT,
-                reply_max_chars=BATTLE_REPLY_MAX_CHARS,
-                dialogue_policy_owner="plugin",
-                plugin_dialogue_policy=delivery.metadata["plugin_dialogue_policy"],
-                plugin_quiet_window_policy=HOST_QUIET_WINDOW_POLICY,
-                host_callback_contract_version=HOST_CALLBACK_CONTRACT_VERSION,
-                delivery_strategy=delivery.metadata.get("delivery_strategy", "immediate"),
-                deferred_from_user_chat_quiet_window=bool(next_text_turn),
-                quiet_window_remaining_seconds=quiet_window_remaining,
-                **freshness,
+                **observed,
             )
         except Exception as exc:  # noqa: BLE001 - accepted output must never be retried
             logger = getattr(self.plugin, "logger", None)
@@ -1172,12 +1194,27 @@ class NekoDispatcher:
             return False
         return last_signature == self._repeat_signature(event, recommended_reply)
 
-    @staticmethod
-    def _repeat_signature(event: BattleEvent, recommended_reply: str) -> str:
+    # 连续值字段进签名前先分桶：distance_m 原始浮点每 tick 都在变（812.3 → 807.6），
+    # 不分桶的话同源重复提示的签名永不相等，REPEAT_COLLAPSE 对这类事件名存实亡。
+    _REPEAT_SIGNATURE_BUCKETS: dict[str, float] = {"distance_m": 250.0, "temp_c": 10.0}
+
+    @classmethod
+    def _repeat_signature(cls, event: BattleEvent, recommended_reply: str) -> str:
         if recommended_reply:
             return recommended_reply
         keys = ("target_type", "distance_m", "clock", "grid", "temp_c", "temp_source", "domain", "source")
-        facts = {key: event.payload.get(key) for key in keys if event.payload.get(key) is not None}
+        facts: dict[str, Any] = {}
+        for key in keys:
+            value = event.payload.get(key)
+            if value is None:
+                continue
+            step = cls._REPEAT_SIGNATURE_BUCKETS.get(key)
+            if step is not None:
+                try:
+                    value = int(float(value) // step)
+                except (TypeError, ValueError):
+                    pass
+            facts[key] = value
         return json.dumps(facts, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
 
     def _is_v2_live_evidence_gated(self, event: BattleEvent) -> bool:

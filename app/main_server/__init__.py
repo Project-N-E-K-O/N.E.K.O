@@ -118,6 +118,7 @@ from utils.cloudsave_runtime import (
     should_write_root_mode_normal_after_startup,
 )
 from utils.config_manager import get_config_manager, get_reserved  # noqa
+from utils.root_state_lock import root_state_transaction
 from utils.storage_location_bootstrap import get_storage_startup_blocking_reason
 
 # 将日志初始化提前，确保导入阶段异常也能落盘
@@ -125,6 +126,7 @@ from utils.logger_config import setup_logging  # noqa: E402
 from utils.ssl_env_diagnostics import probe_ssl_environment, write_ssl_diagnostic  # noqa: E402
 from utils.asyncio_executor import configure_default_executor  # noqa: E402
 from utils.asgi_body_limit import InboundBodySizeLimitMiddleware  # noqa: E402
+from utils.host_origin_guard import HostOriginGuardMiddleware  # noqa: E402
 
 _main_log_level = getattr(
     logging, (os.environ.get("NEKO_LOG_LEVEL") or "INFO").upper(), logging.INFO
@@ -527,6 +529,7 @@ _MAIN_LIMITED_MODE_ALLOWED_PAGE_PATHS = {
     "/mmd_emotion_manager",
     "/voice_clone",
     "/api_key",
+    "/voice_identity",
     "/chara_manager",
     "/character_card_manager",
     "/cloudsave_manager",
@@ -607,6 +610,9 @@ async def main_storage_limited_mode_guard(request: Request, call_next):
 # 文件上传（模型/音乐/角色卡等）一律放行，交给各上传 router 自带的流式分块守门。
 # add_middleware 后注册即处于最外层，最先执行——解析前拒收，不浪费后续处理。
 app.add_middleware(InboundBodySizeLimitMiddleware)
+# Registered after the body guard so it is the outermost ASGI middleware and
+# rejects DNS-rebinding Host values before any HTTP or WebSocket route runs.
+app.add_middleware(HostOriginGuardMiddleware)
 
 
 @app.exception_handler(MaintenanceModeError)
@@ -660,6 +666,7 @@ from .web_app import (  # noqa: F401
 _preload_task: asyncio.Task = None
 _game_cleanup_task: asyncio.Task = None
 _facts_sync_worker_task: asyncio.Task = None
+_client_registration_task: asyncio.Task = None
 _runtime_startup_init_lock = asyncio.Lock()
 _runtime_startup_init_completed = False
 
@@ -690,7 +697,21 @@ async def _sync_memory_server_after_startup_import(import_result):
 
 def _start_neko_servers_integration_workers() -> None:
     """Start storage-backed integration workers after the startup barrier clears."""
-    global _facts_sync_worker_task
+    global _facts_sync_worker_task, _client_registration_task
+
+    # The forge debit callback defaults to the production cloud with no feature
+    # flag, so the matching client_id must be registered unconditionally here.
+    # Leaving this to facts_sync (off by default) left every proof-bearing call
+    # failing 403 against a client_id the cloud had never seen.
+    if _client_registration_task is None or _client_registration_task.done():
+        try:
+            from main_logic.client_registration import ensure_client_registered
+
+            _client_registration_task = asyncio.create_task(
+                ensure_client_registered()
+            )
+        except Exception as exc:
+            logger.warning("[client_registration] bootstrap failed: %s", exc)
 
     if _facts_sync_worker_task is None or _facts_sync_worker_task.done():
         try:
@@ -702,7 +723,7 @@ def _start_neko_servers_integration_workers() -> None:
 
 async def _stop_neko_servers_integration_workers() -> None:
     """Cancel storage-backed integration workers during graceful shutdown."""
-    global _facts_sync_worker_task
+    global _facts_sync_worker_task, _client_registration_task
 
     await _cancel_task_if_running(
         _facts_sync_worker_task,
@@ -710,6 +731,13 @@ async def _stop_neko_servers_integration_workers() -> None:
         timeout=1.0,
     )
     _facts_sync_worker_task = None
+
+    await _cancel_task_if_running(
+        _client_registration_task,
+        name="client registration bootstrap",
+        timeout=1.0,
+    )
+    _client_registration_task = None
 
 
 async def _cancel_task_if_running(
@@ -925,16 +953,43 @@ async def _ensure_main_server_runtime_initialized(*, reason: str) -> bool:
                         "跳过 ROOT_MODE_NORMAL 写入：root_state 缺失或读取失败"
                     )
             elif should_write_root_mode_normal_after_startup(current_root_state):
+                # 挪进工作线程有两个理由，缺一不可：
+                # 1) set_root_mode 是同步落盘（mkstemp + fsync + os.replace）；
+                # 2) 它拿 root_state 的写者锁，而 storage_location 那几条变更路由
+                #    现在在工作线程里持同一把锁。受限启动期存储页跟这段是可以
+                #    重叠的，留在循环上就等于把工作线程那次 fsync（撞上 Windows
+                #    占用还要加最多 155ms 退避）接回循环。同一把锁的所有入口要么
+                #    都在工作线程，要么都不在。
+                #
+                # ⚠️ 上面那次 should_write_root_mode_normal_after_startup 判定是在
+                # 循环上做的，跟这次落盘之间隔了一个 await。job 排队期间，存储变更
+                # 路由的工作线程完全可能刚提交 ROOT_MODE_MAINTENANCE_READONLY（用户
+                # 正在发起重启迁移）——那时无脑写 NORMAL 就是把它的受限态踩掉。
+                # 所以判定跟着写一起进锁内重做一遍，恢复"检查和写不可分割"这条原本
+                # 靠"同在循环线程"隐式成立的性质。
+                def _mark_startup_successful() -> bool:
+                    with root_state_transaction():
+                        state = _config_manager.load_root_state()
+                        if not isinstance(state, dict):
+                            return False
+                        if not should_write_root_mode_normal_after_startup(state):
+                            return False
+                        set_root_mode(
+                            _config_manager,
+                            ROOT_MODE_NORMAL,
+                            current_root=str(_config_manager.app_docs_dir),
+                            last_known_good_root=str(_config_manager.app_docs_dir),
+                            last_successful_boot_at=datetime.now(timezone.utc)
+                            .isoformat()
+                            .replace("+00:00", "Z"),
+                        )
+                        return True
+
                 try:
-                    set_root_mode(
-                        _config_manager,
-                        ROOT_MODE_NORMAL,
-                        current_root=str(_config_manager.app_docs_dir),
-                        last_known_good_root=str(_config_manager.app_docs_dir),
-                        last_successful_boot_at=datetime.now(timezone.utc)
-                        .isoformat()
-                        .replace("+00:00", "Z"),
-                    )
+                    if not await asyncio.to_thread(_mark_startup_successful):
+                        logger.info(
+                            "跳过 ROOT_MODE_NORMAL 写入：落盘前 root_state 已被改成阻断态"
+                        )
                 except Exception as e:
                     logger.error(
                         "写入 main_server 启动成功标记失败，启动不会标记为成功: %s", e
@@ -989,21 +1044,62 @@ async def _ensure_main_server_runtime_initialized(*, reason: str) -> bool:
 async def release_storage_startup_barrier(
     *, reason: str = "storage_selection_continue_current_session"
 ) -> dict[str, Any]:
-    await _request_memory_server_continue_startup(reason)
     try:
+        # The continue request has an ambiguous cancellation outcome: memory_server
+        # may have applied it even when this client never receives the response.
+        # Keep the request itself inside the compensation boundary so every failed
+        # exit re-establishes both admission guards before storage state rolls back.
+        await _request_memory_server_continue_startup(reason)
         initialized = await _ensure_main_server_runtime_initialized(reason=reason)
-    except Exception:
+    except BaseException:
+        # Once memory_server may have accepted continue-startup, every failed exit
+        # must put its admission guard back before the storage router restores a
+        # blocking root_state snapshot. CancelledError is a BaseException, so an
+        # Exception-only handler leaves initialized memory writable against the
+        # rolled-back storage state.
         _enable_main_storage_limited_mode("runtime_initialization_failed")
-        try:
-            await _request_memory_server_block_startup(
+
+        # Re-blocking is compensating work, not part of the cancelled request.  A
+        # second cancellation (for example server shutdown following a client
+        # disconnect) must not interrupt it halfway through.  Keep the request in
+        # this handler until the HTTP call has really finished, then re-raise the
+        # original exception below.
+        block_task = asyncio.ensure_future(
+            _request_memory_server_block_startup(
                 f"{reason}:main_server_init_failed"
             )
+        )
+        try:
+            await asyncio.shield(block_task)
+        except asyncio.CancelledError:
+            while not block_task.done():
+                try:
+                    await asyncio.wait({block_task})
+                except asyncio.CancelledError:
+                    continue
         except Exception as revert_exc:
             logger.warning(
                 "main_server 初始化失败后恢复 memory_server limited-mode 失败: %s",
                 revert_exc,
                 exc_info=True,
             )
+            # ``shield`` already retrieved this exception; do not call result()
+            # below and log the same failure a second time.
+            block_task = None
+        else:
+            # ``shield`` returns the task result, so there is nothing left to
+            # retrieve on the ordinary path.
+            block_task = None
+
+        if block_task is not None and block_task.done() and not block_task.cancelled():
+            try:
+                block_task.result()
+            except Exception as revert_exc:
+                logger.warning(
+                    "main_server 初始化取消后恢复 memory_server limited-mode 失败: %s",
+                    revert_exc,
+                    exc_info=True,
+                )
         raise
     _disable_main_storage_limited_mode()
     _start_neko_servers_integration_workers()

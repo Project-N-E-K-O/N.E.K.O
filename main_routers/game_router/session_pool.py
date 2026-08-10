@@ -26,7 +26,6 @@ Split out of ``main_routers/game_router/runtime.py``.
 
 from ._shared import _infer_service_source, logger
 from .badminton_scores import _is_badminton_game_type, _normalize_badminton_mode
-from .balance import _badminton_duel_difficulty_control_prompt
 from .char_info import _get_character_info
 from .game_context import _build_game_context_prompt_payload, _format_game_context_for_prompt
 from .pregame import (
@@ -39,10 +38,13 @@ import asyncio
 import re
 import time
 import uuid
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 from config.prompts.prompts_soccer import get_soccer_system_prompt
-from config.prompts.prompts_badminton import get_badminton_system_prompt
-from utils.language_utils import get_global_language
+from config.prompts.prompts_badminton import (
+    get_badminton_duel_difficulty_control_prompt,
+    get_badminton_system_prompt,
+)
+from utils.language_utils import get_global_language, normalize_language_code
 
 
 # ── Session 池 ─────────────────────────────────────────────────────
@@ -86,6 +88,25 @@ def _get_session_create_lock(key: str) -> asyncio.Lock:
     return lock
 
 
+def _entry_prompt_locale(entry: Any) -> str:
+    """The session entry's locale for prompt-template selection: FULL, keeping zh-TW.
+
+    Entries carry the same short/full pair ``_get_character_info`` produces. Every
+    consumer of this value hands it to a ``config.prompts`` accessor, and those
+    select templates by locale key, so the full code is the one they need: the
+    short ``user_language`` collapses Traditional into ``zh`` and makes the
+    ``zh-TW`` row of every minigame table unreachable (issue #2500 step 2).
+
+    ``or`` rather than a plain lookup because an entry built before the full field
+    existed -- or one a test hand-rolls -- still carries only the short code, and
+    the Simplified template is a better answer there than ``None``. Same idiom as
+    ``_refresh_game_session_instructions`` below and ``pregame``.
+    """
+    if not isinstance(entry, dict):
+        return ""
+    return str(entry.get("user_language_full") or entry.get("user_language") or "")
+
+
 def _build_game_prompt(
     game_type: str,
     lanlan_name: str,
@@ -104,12 +125,20 @@ def _build_game_prompt(
     if _is_badminton_game_type(game_type):
         prompt = get_badminton_system_prompt(language, mode=mode).format(name=lanlan_name, personality=lanlan_prompt)
         if _normalize_badminton_mode(mode) == "duel":
-            prompt = f"{prompt}{_badminton_duel_difficulty_control_prompt(language)}"
+            prompt = f"{prompt}{get_badminton_duel_difficulty_control_prompt(language)}"
         context_prompt = _format_badminton_pregame_context_for_prompt(pre_game_context, language, mode=mode)
         in_game_context_prompt = _format_game_context_for_prompt(game_context, language)
         return f"{prompt}{context_prompt}{in_game_context_prompt}"
     # 未来其他游戏在这里扩展
-    output_language = str(language or get_global_language() or "en")
+    # 这里的 language 会被当成人读的语言名塞进英文句子，所以短码化后再插——
+    # 上游改传 user_language_full 之后不这么做的话，繁中会话会看到字面 "zh-TW"。
+    # ⚠️ #2500 第 2 步复核确认：这处的短码化是有意的、要保留。它不是查表用的
+    # locale，而是拼进英文兜底 prompt 的语言名；繁简两种中文在这句里要的是同
+    # 一个词（"zh"），细分到 zh-TW 只会让模型读到一个不像语言名的字符串。
+    # ⚠️ 只在 language 非空时才归一：normalize_language_code(None) 返回 'en'，
+    # 直接套上去会把下面那两级兜底（全局语言 → "en"）整个吃掉。
+    short_language = normalize_language_code(language, format="short") if language else None
+    output_language = str(short_language or get_global_language() or "en")
     return (
         f"You are {lanlan_name}. {lanlan_prompt}\n"
         f"You are playing a game. Generate short in-character lines in {output_language} for each game event."
@@ -291,7 +320,9 @@ async def _build_and_register_game_session(
         char_info['lanlan_prompt'],
         pre_game_context if isinstance(pre_game_context, dict) else None,
         game_context if isinstance(game_context, dict) else None,
-        char_info.get("user_language"),
+        # FULL locale（含 zh-TW），不是短码：badminton 的难度补充走 full-locale
+        # 表，短码会把繁体塌成 zh。其余下游 getter 各自再归一，收到 full 码不变。
+        char_info.get("user_language_full") or char_info.get("user_language"),
     )
     if _is_badminton_game_type(game_type):
         system_prompt = _build_game_prompt(*prompt_args, mode=route_mode)
@@ -329,6 +360,10 @@ async def _build_and_register_game_session(
         'lanlan_name': char_info['lanlan_name'],
         'lanlan_prompt': char_info.get('lanlan_prompt') or '',
         'user_language': char_info.get('user_language'),
+        # 与 char_info 同形的短码/全码成对字段。读 prompt locale 一律走
+        # ``_entry_prompt_locale``，别直接读 ``user_language``（那是短码，会把
+        # 繁体塌成 zh，让 minigame 表的 zh-TW 行够不到 —— issue #2500 第 2 步）。
+        'user_language_full': char_info.get('user_language_full'),
         'source': _infer_service_source(
             char_info.get('base_url', ''),
             char_info.get('model', ''),
@@ -368,6 +403,7 @@ async def _refresh_game_session_instructions(
     lanlan_name = str(lanlan_name or entry.get("lanlan_name") or "").strip()
     char_info = _get_character_info(lanlan_name)
     entry["user_language"] = char_info.get("user_language")
+    entry["user_language_full"] = char_info.get("user_language_full")
     if postgame_snapshot is not None:
         pre_game_context = postgame_snapshot.get("pre_game_context")
         game_context = postgame_snapshot.get("game_context")
@@ -383,7 +419,9 @@ async def _refresh_game_session_instructions(
         char_info["lanlan_prompt"],
         pre_game_context if isinstance(pre_game_context, dict) else None,
         game_context if isinstance(game_context, dict) else None,
-        char_info.get("user_language"),
+        # FULL locale（含 zh-TW），不是短码：badminton 的难度补充走 full-locale
+        # 表，短码会把繁体塌成 zh。其余下游 getter 各自再归一，收到 full 码不变。
+        char_info.get("user_language_full") or char_info.get("user_language"),
     )
     if _is_badminton_game_type(game_type):
         instructions = _build_game_prompt(*prompt_args, mode=route_mode)

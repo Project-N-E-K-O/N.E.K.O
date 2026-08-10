@@ -351,6 +351,7 @@ async def test_break_reminder_applies_unanswered_repeat_regen_before_delivery(
         best_similarity=0.91 if regen_still_repeats else 0.1,
     )
     corpus = MagicMock()
+    corpus.apreload = AsyncMock()
     corpus.score_unanswered_proactive_draft.side_effect = [
         first_signal,
         regen_signal,
@@ -567,6 +568,7 @@ async def test_guard_regenerates_then_drops_still_unanswered_repeat(monkeypatch)
         repeated_terms=("屏幕", "按钮"),
     )
     corpus = MagicMock()
+    corpus.apreload = AsyncMock()
     corpus.score_unanswered_proactive_draft.side_effect = [
         initial_signal,
         regen_signal,
@@ -634,6 +636,7 @@ async def test_guard_regenerates_then_drops_still_unanswered_repeat(monkeypatch)
 async def test_unanswered_score_failure_keeps_bm25_guard_active(monkeypatch):
     """A new-signal failure must not disable the established BM25 fallback."""
     corpus = MagicMock()
+    corpus.apreload = AsyncMock()
     corpus.score_unanswered_proactive_draft.side_effect = RuntimeError(
         "synthetic unanswered scorer failure"
     )
@@ -700,6 +703,7 @@ async def test_unanswered_score_failure_keeps_bm25_guard_active(monkeypatch):
 async def test_regenerated_fresh_music_recomputes_text_exemption(monkeypatch):
     """A rewrite that selects fresh material skips every textual recheck."""
     corpus = MagicMock()
+    corpus.apreload = AsyncMock()
     corpus.score_unanswered_proactive_draft.return_value = (
         anti_repeat_module.UnansweredProactiveRepeatSignal(
             triggered=True,
@@ -787,6 +791,7 @@ async def test_regenerated_music_without_material_keeps_text_rechecks(monkeypatc
         repeated_terms=("旧话题",),
     )
     corpus = MagicMock()
+    corpus.apreload = AsyncMock()
     corpus.score_unanswered_proactive_draft.side_effect = [
         initial_signal,
         regenerated_signal,
@@ -848,6 +853,7 @@ async def test_regenerated_music_without_material_keeps_text_rechecks(monkeypatc
 async def test_initial_music_without_material_keeps_text_rechecks(monkeypatch):
     """A bare initial MUSIC tag cannot exempt ordinary chat text."""
     corpus = MagicMock()
+    corpus.apreload = AsyncMock()
     corpus.score_unanswered_proactive_draft.return_value = (
         anti_repeat_module.UnansweredProactiveRepeatSignal(
             triggered=False,
@@ -931,6 +937,7 @@ async def test_regenerated_delivery_aborts_when_engagement_cutoff_advances(
         best_similarity=0.0,
     )
     corpus = MagicMock()
+    corpus.apreload = AsyncMock()
     corpus.score_unanswered_proactive_draft.side_effect = [
         initial_signal,
         regenerated_signal,
@@ -1003,6 +1010,7 @@ async def test_regenerated_delivery_aborts_when_engagement_cutoff_advances(
 async def test_fresh_music_material_skips_unanswered_text_scoring(monkeypatch):
     """Fresh material keeps its established exemption from every text repeat guard."""
     corpus = MagicMock()
+    corpus.apreload = AsyncMock()
     corpus.score_unanswered_proactive_draft.return_value = (
         anti_repeat_module.UnansweredProactiveRepeatSignal(
             triggered=True,

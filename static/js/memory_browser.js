@@ -3,9 +3,14 @@
 
     const PARENT_ORIGIN = window.location.origin;
     let currentMemoryFile = null;
+    let currentMemoryFingerprint = null;
+    let currentMemoryIdentityToken = null;
     let chatData = [];
     let currentCatName = '';
     let memoryFileRequestId = 0;
+    let memorySaveRequestId = 0;
+    let memoryEditRevision = 0;
+    let memorySaveInFlight = null;
     let memoryRowExitInProgress = false;
     let memoryRowExitTimer = 0;
     let memoryRowExitOperationId = 0;
@@ -1851,6 +1856,7 @@
 
     function renderMemoryBrowserLimitedState(state) {
         currentMemoryFile = null;
+        currentMemoryIdentityToken = null;
         currentCatName = '';
         chatData = [];
         memoryFileRequestId++;
@@ -2409,6 +2415,20 @@
         return btoa(binary);
     }
 
+    function getCurrentUiLanguage() {
+        const candidates = [
+            window.i18n && window.i18n.language,
+            window.i18next && window.i18next.language,
+            document.documentElement && document.documentElement.lang
+        ];
+        for (const candidate of candidates) {
+            if (typeof candidate === 'string' && candidate.trim()) {
+                return candidate.trim();
+            }
+        }
+        return null;
+    }
+
     async function buildExternalImportPayload(targetCharacter) {
         const input = document.getElementById('external-memory-files');
         const format = document.getElementById('external-memory-format');
@@ -2430,6 +2450,7 @@
             return {
                 character_name: targetCharacter,
                 source_format: format ? format.value : 'auto',
+                language: getCurrentUiLanguage(),
                 archive_b64: bytesToBase64(await zipFiles[0].arrayBuffer())
             };
         }
@@ -2451,6 +2472,7 @@
         return {
             character_name: targetCharacter,
             source_format: format ? format.value : 'auto',
+            language: getCurrentUiLanguage(),
             files: files
         };
     }
@@ -3279,6 +3301,8 @@
             && li.classList.contains('selected');
         const requestId = ++memoryFileRequestId;
         currentMemoryFile = filename;
+        currentMemoryFingerprint = null;
+        currentMemoryIdentityToken = null;
         currentCatName = catName || (li ? li.getAttribute('data-catname') : '');
         setMemoryDirty(false);
         dismissSaveStatus(true);
@@ -3310,6 +3334,12 @@
             if (requestId !== memoryFileRequestId) {
                 return;
             }
+            currentMemoryFingerprint = typeof data.fingerprint === 'string'
+                ? data.fingerprint
+                : null;
+            currentMemoryIdentityToken = typeof data.identity_token === 'string'
+                ? data.identity_token
+                : null;
             if (data.content) {
                 let arr = [];
                 try { arr = JSON.parse(data.content); } catch (e) { arr = []; }
@@ -3349,14 +3379,79 @@
         }
     }
     async function saveCurrentMemory() {
+        const requestedFile = currentMemoryFile;
+        const requestedSelectionId = memoryFileRequestId;
+        const requestedContentRevision = memoryEditRevision;
+        if (
+            memorySaveInFlight
+            && memorySaveInFlight.file === requestedFile
+            && memorySaveInFlight.selectionId === requestedSelectionId
+        ) {
+            if (memorySaveInFlight.contentRevision === requestedContentRevision) {
+                return memorySaveInFlight.promise;
+            }
+            return memorySaveInFlight.promise.then(function (saved) {
+                if (!saved) return false;
+                if (
+                    currentMemoryFile !== requestedFile
+                    || memoryFileRequestId !== requestedSelectionId
+                ) {
+                    return false;
+                }
+                return saveCurrentMemory();
+            });
+        }
+
+        const promise = saveCurrentMemoryOnce();
+        const activeSave = {
+            file: requestedFile,
+            selectionId: requestedSelectionId,
+            contentRevision: requestedContentRevision,
+            promise
+        };
+        memorySaveInFlight = activeSave;
+        try {
+            return await promise;
+        } finally {
+            if (memorySaveInFlight === activeSave) {
+                memorySaveInFlight = null;
+            }
+        }
+    }
+
+    async function saveCurrentMemoryOnce() {
         if (!currentMemoryFile) {
             showSaveStatus(window.t ? window.t('memory.pleaseSelectFile') : '请先选择文件', false);
             return false;
         }
+        if (!currentMemoryFingerprint || !currentMemoryIdentityToken) {
+            const loadFailed = window.t ? window.t('memory.loadFailed') : '加载失败';
+            const refreshTip = window.t
+                ? window.t('memory.tip1')
+                : '请重新点击角色名加载后再保存';
+            showSaveStatus(loadFailed + '。' + refreshTip, false);
+            return false;
+        }
+        const saveFile = currentMemoryFile;
+        const saveSelectionId = memoryFileRequestId;
+        const saveRequestId = ++memorySaveRequestId;
+        const saveContentRevision = memoryEditRevision;
+        const saveFingerprint = currentMemoryFingerprint;
+        const saveIdentityToken = currentMemoryIdentityToken;
+        const stillTargetsSavedSelection = () => (
+            currentMemoryFile === saveFile
+            && memoryFileRequestId === saveSelectionId
+            && memorySaveRequestId === saveRequestId
+        );
+        const stillMatchesSavedRevision = () => (
+            stillTargetsSavedSelection()
+            && memoryEditRevision === saveContentRevision
+        );
+        const saveChat = chatData.map(msg => ({ ...msg }));
         // 处理备忘录为空的情况
         const memoPrefix = window.t ? window.t('memory.previousMemo') : '先前对话的备忘录: ';
         const memoNone = window.t ? window.t('memory.memoNone') : '无。';
-        chatData.forEach(msg => {
+        saveChat.forEach(msg => {
             if (msg.role === 'system') {
                 let text = msg.text || '';
                 if (text.startsWith(memoPrefix)) {
@@ -3371,15 +3466,30 @@
             const resp = await fetch('/api/memory/recent_file/save', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ filename: currentMemoryFile, chat: chatData })
+                body: JSON.stringify({
+                    filename: saveFile,
+                    chat: saveChat,
+                    fingerprint: saveFingerprint,
+                    identity_token: saveIdentityToken
+                })
             });
             const data = await resp.json();
             if (data.success) {
-                setMemoryDirty(false);
-                showSaveStatus(window.t ? window.t('memory.saveSuccess') : '保存成功', 'success', 3000);
+                if (stillTargetsSavedSelection()) {
+                    currentMemoryFingerprint = typeof data.fingerprint === 'string'
+                        ? data.fingerprint
+                        : null;
+                    currentMemoryIdentityToken = typeof data.identity_token === 'string'
+                        ? data.identity_token
+                        : null;
+                }
+                if (stillMatchesSavedRevision()) {
+                    setMemoryDirty(false);
+                    showSaveStatus(window.t ? window.t('memory.saveSuccess') : '保存成功', 'success', 3000);
+                }
 
                 // 通知父窗口刷新对话上下文
-                if (data.need_refresh) {
+                if (data.need_refresh && stillTargetsSavedSelection()) {
                     let broadcastSent = false;
                     
                     // 优先使用 BroadcastChannel（跨页面通信）
@@ -3414,11 +3524,15 @@
                 return true;
             } else {
                 const errorMsg = data.error || (window.t ? window.t('common.unknownError') : '未知错误');
-                showSaveStatus(window.t ? window.t('memory.saveFailed', { error: errorMsg }) : '保存失败：' + errorMsg, false);
+                if (stillTargetsSavedSelection()) {
+                    showSaveStatus(window.t ? window.t('memory.saveFailed', { error: errorMsg }) : '保存失败：' + errorMsg, false);
+                }
                 return false;
             }
         } catch (e) {
-            showSaveStatus(window.t ? window.t('memory.saveFailedGeneral') : '保存失败', false);
+            if (stillTargetsSavedSelection()) {
+                showSaveStatus(window.t ? window.t('memory.saveFailedGeneral') : '保存失败', false);
+            }
             return false;
         }
     }
@@ -3449,6 +3563,7 @@
         }, { batch: true });
     };
     function setMemoryDirty(dirty) {
+        if (dirty) memoryEditRevision++;
         memoryHasUnsavedChanges = Boolean(dirty);
         const indicator = document.getElementById('memory-unsaved-status');
         const saveButton = document.getElementById('save-memory-btn');

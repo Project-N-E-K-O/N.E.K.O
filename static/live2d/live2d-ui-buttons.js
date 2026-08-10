@@ -194,6 +194,7 @@ Live2DManager.prototype.setupHTMLLockIcon = function(model) {
     this._lockIconLastTop = undefined;
     this._lockIconLastTransform = undefined;
     this._lockIconLastOpacity = undefined;
+    this._lockIconLastPointerEvents = undefined;
     this._lockIconLastOverlapScanAt = 0;
     this._lockIconElement = lockIcon;
     this._lockIconImages = {
@@ -268,40 +269,33 @@ Live2DManager.prototype.setupHTMLLockIcon = function(model) {
                 lockIcon.style.top = `${clampedTop}px`;
             }
 
-            // 重叠检测节流到 250ms：纯装饰性淡出（opacity 0.3），不需要逐帧
-            // 扫两遍 DOM。矩形用已知坐标 + 缩放后的实际尺寸推算，避免每帧
-            // getBoundingClientRect 强制布局。
+            // 指针拦截逐帧刷新，避免弹窗刚出现时短暂穿透；装饰性淡出仍节流到 250ms。
+            // 锁图标矩形使用已知坐标和缩放尺寸，避免额外读取自身布局。
+            const lockRect = {
+                left: clampedLeft,
+                top: clampedTop,
+                right: clampedLeft + actualLockIconSize,
+                bottom: clampedTop + actualLockIconSize
+            };
+            const popupUi = window.AvatarPopupUI || null;
+            const isPointerOverlapped = popupUi && typeof popupUi.isRectOverlappedByVisibleOverlay === 'function'
+                ? popupUi.isRectOverlappedByVisibleOverlay(lockRect, 'live2d')
+                : Array.from(document.querySelectorAll('[id^="live2d-popup-"], [data-neko-sidepanel-owner^="live2d-popup-"]')).some(element => {
+                    const style = window.getComputedStyle(element);
+                    const computedOpacity = Number.parseFloat(style.opacity || '1');
+                    const targetOpacity = Number.parseFloat(element.style.opacity || style.opacity || '1');
+                    if (style.display === 'none' || style.visibility === 'hidden' ||
+                        (computedOpacity <= 0 && targetOpacity <= 0)) return false;
+                    const overlayRect = element.getBoundingClientRect();
+                    return lockRect.right > overlayRect.left && lockRect.left < overlayRect.right &&
+                        lockRect.bottom > overlayRect.top && lockRect.top < overlayRect.bottom;
+                });
+
             const nowTs = performance.now();
             let isOverlapped = this._lockIconLastOverlapped === true;
             if (!this._lockIconLastOverlapScanAt || nowTs - this._lockIconLastOverlapScanAt >= 250) {
                 this._lockIconLastOverlapScanAt = nowTs;
-                const lockRect = {
-                    left: clampedLeft,
-                    top: clampedTop,
-                    right: clampedLeft + actualLockIconSize,
-                    bottom: clampedTop + actualLockIconSize
-                };
-                isOverlapped = false;
-                document.querySelectorAll('[id^="live2d-popup-"]').forEach(popup => {
-                    if (popup.style.display === 'flex' && popup.style.opacity === '1') {
-                        const popupRect = popup.getBoundingClientRect();
-                        if (lockRect.right > popupRect.left && lockRect.left < popupRect.right &&
-                            lockRect.bottom > popupRect.top && lockRect.top < popupRect.bottom) {
-                            isOverlapped = true;
-                        }
-                    }
-                });
-                if (!isOverlapped) {
-                    document.querySelectorAll('[data-neko-sidepanel]').forEach(panel => {
-                        if (panel.style.display !== 'none' && parseFloat(panel.style.opacity) > 0) {
-                            const panelRect = panel.getBoundingClientRect();
-                            if (lockRect.right > panelRect.left && lockRect.left < panelRect.right &&
-                                lockRect.bottom > panelRect.top && lockRect.top < panelRect.bottom) {
-                                isOverlapped = true;
-                            }
-                        }
-                    });
-                }
+                isOverlapped = isPointerOverlapped;
                 this._lockIconLastOverlapped = isOverlapped;
             }
             // 与角色形象半透明状态完全同步：容器加了 locked-hover-fade 类(opacity 0.12)时，锁图标也淡到同一透明度
@@ -311,6 +305,11 @@ Live2DManager.prototype.setupHTMLLockIcon = function(model) {
             if (nextOpacity !== this._lockIconLastOpacity) {
                 this._lockIconLastOpacity = nextOpacity;
                 lockIcon.style.opacity = nextOpacity;
+            }
+            const nextPointerEvents = isPointerOverlapped ? 'none' : 'auto';
+            if (nextPointerEvents !== this._lockIconLastPointerEvents) {
+                this._lockIconLastPointerEvents = nextPointerEvents;
+                lockIcon.style.pointerEvents = nextPointerEvents;
             }
         } catch (_) {}
     };
@@ -474,10 +473,11 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
 
         btnWrapper.appendChild(btn);
 
-        // 麦克风静音按钮（仅非手机模式下的麦克风按钮）
+        // 语音会话快捷控制（仅非手机模式下的麦克风按钮）
         if (config.id === 'mic' && config.hasPopup && config.separatePopupTrigger && !isMobileWidth()) {
-            const muteData = this.createMicMuteButton(btnWrapper);
-            // 监听麦克风切换事件以更新静音按钮可见性
+            const quickControls = this.createVoiceSessionQuickControls(btnWrapper);
+            const muteData = quickControls && quickControls.mute;
+            // 监听麦克风切换事件以更新静音按钮可见性；屏幕分享快捷按钮在共享工厂中自行同步。
             const micToggleHandler = (e) => {
                 if (muteData && muteData.updateVisibility) {
                     muteData.updateVisibility(e.detail.active);
@@ -764,6 +764,15 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
         if (this.isLocked) {
             return;
         }
+        if (
+            typeof this.isLive2DPeekActive === 'function'
+            && this.isLive2DPeekActive()
+        ) {
+            if (typeof this._setLive2DPeekControlsSuppressed === 'function') {
+                this._setLive2DPeekControlsSuppressed(true);
+            }
+            return;
+        }
         if (isYuiGuideLive2DPreparing() || isYuiGuideFloatingToolbarSuppressed()) {
             hideYuiGuideLive2DPreparingButtonStyles(buttonsContainer);
             return;
@@ -772,6 +781,15 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
         buttonsContainer.style.display = 'flex';
 
         setTimeout(() => {
+            if (
+                typeof this.isLive2DPeekActive === 'function'
+                && this.isLive2DPeekActive()
+            ) {
+                if (typeof this._setLive2DPeekControlsSuppressed === 'function') {
+                    this._setLive2DPeekControlsSuppressed(true);
+                }
+                return;
+            }
             const inTutorial = buttonsContainer.dataset.inTutorial === 'true' || window.isInTutorial === true;
             if (!this.isFocusing && !inTutorial) {
                 buttonsContainer.style.display = 'none';
@@ -792,6 +810,15 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
     }
 
     this.tutorialProtectionTimer = setInterval(() => {
+        if (
+            typeof this.isLive2DPeekActive === 'function'
+            && this.isLive2DPeekActive()
+        ) {
+            if (typeof this._setLive2DPeekControlsSuppressed === 'function') {
+                this._setLive2DPeekControlsSuppressed(true);
+            }
+            return;
+        }
         if (window.isInTutorial === true) {
             if (isYuiGuideLive2DPreparing() || isYuiGuideFloatingToolbarSuppressed()) {
                 hideYuiGuideLive2DPreparingButtonStyles(buttonsContainer);
@@ -830,6 +857,13 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
     this._uiWindowHandlers = this._uiWindowHandlers || [];
     this._uiWindowHandlers.push({ event: 'click', handler: this._outsideClickHandler, target: document });
 
+    if (
+        typeof this.isLive2DPeekActive === 'function' &&
+        this.isLive2DPeekActive() &&
+        typeof this._setLive2DPeekControlsSuppressed === 'function'
+    ) {
+        this._setLive2DPeekControlsSuppressed(true);
+    }
     window.dispatchEvent(new CustomEvent('live2d-floating-buttons-ready'));
     console.log('[Live2D] 浮动按钮就绪事件已发送');
 };

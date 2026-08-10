@@ -107,7 +107,14 @@ def _group_drain_harness(post_scoped):
     """The smallest group session that can really run the drain.
 
     ``post_scoped`` may be None when the caller rebinds
-    ``plugin.memory_bridge.post_scoped_memory_history`` itself."""
+    ``plugin.memory_bridge.post_scoped_memory_history`` itself.
+
+    生产代码的排空已改批请求（post_scoped_memory_history_batch），但本
+    文件的用例几乎都以"逐成员一次请求"表达场景（某个 sender 失败/阻塞/
+    计数）。桥上装一个真实转发层：把每批逐段扇回 per-member stub——
+    调用时动态读 ``post_scoped_memory_history``（不少用例事后重绑它），
+    stub 抛异常或返回 {"status": "error"} 都翻译成该段 failed，与服务端
+    per-段结果的消费语义一致。"""  # noqa: DOCSTRING_CJK
     from plugin.plugins.qq_auto_reply.session_memory_service import (
         QQSessionMemoryService,
     )
@@ -124,6 +131,29 @@ def _group_drain_harness(post_scoped):
         "member_drain_in_flight": True,
     }
     run_with_session_lock, locks = _session_lock_runner()
+
+    async def _batch_via_single(her_name, segments, *, timeout=30.0):
+        segment_results = []
+        for segment in segments:
+            try:
+                result = await plugin.memory_bridge.post_scoped_memory_history(
+                    her_name,
+                    segment["messages"],
+                    subject=segment["subject"],
+                    speaker_label=segment["speaker_label"],
+                    timeout=timeout,
+                )
+            except Exception:
+                segment_results.append({"status": "failed"})
+                continue
+            if isinstance(result, dict) and result.get("status") == "error":
+                segment_results.append({"status": "failed"})
+            else:
+                segment_results.append(
+                    {"status": "ok", "created": 0, "fact_ids": []}
+                )
+        return {"status": "processed", "segments": segment_results}
+
     plugin = SimpleNamespace(
         _user_sessions={"group:7788": user_data},
         _qq_settings={
@@ -134,7 +164,9 @@ def _group_drain_harness(post_scoped):
         logger=MagicMock(),
         permission_mgr=SimpleNamespace(get_nickname=lambda *a, **k: None),
         memory_bridge=SimpleNamespace(
+            speaker_account_id=lambda sid: f"qq:{str(sid or '').strip()}",
             post_scoped_memory_history=post_scoped,
+            post_scoped_memory_history_batch=_batch_via_single,
             group_participant_subject=(
                 lambda gid, sid: {
                     "subject_kind": "group_participant",
@@ -266,8 +298,82 @@ async def test_failed_drain_returns_buckets_ahead_of_newer_turns():
     # 调度器已经把 due 标消费掉了，失败必须重新举起来。
     assert user_data["member_flush_due"] is True
     assert "member_drain_in_flight" not in user_data
-    # label 也要回到 live 映射，否则下一轮的 speaker_label 会退化成 QQ 号。
-    assert user_data["group_member_memory_labels"]["2046"] == "阿离(2046)"
+    # label 归还由下面两条专门的用例覆盖：这里的 record_group_member_turn
+    # 本身就会写回逐字相同的 "阿离(2046)"，在这条用例里断言它等于什么都
+    # 没测（删掉归还逻辑照样绿）。
+
+
+@pytest.mark.asyncio
+async def test_failed_drain_returns_the_label_of_a_sender_who_stayed_silent():
+    """The snapshot owns the display name while the bucket is in flight.
+
+    ``_take_snapshot`` pops the label out of the live map, so a bucket that
+    fails has to bring its name back — otherwise the next sweep's
+    ``speaker_label`` degrades to a bare QQ number and the extraction
+    prompt loses who was speaking. The sender under test says nothing
+    mid-flight; someone else does. A mid-flight turn from the SAME sender
+    re-creates a byte-identical label and hides whether the restore ran at
+    all.
+    """
+    in_flight = asyncio.Event()
+    released = asyncio.Event()
+
+    async def _post_scoped(her_name, messages, **kwargs):
+        in_flight.set()
+        await released.wait()
+        return {"status": "error", "message": "memory server down"}
+
+    service, plugin, user_data, _locks = _group_drain_harness(_post_scoped)
+    other_speaker = SimpleNamespace(
+        is_group=True, sender_id="3057", member_memory_enabled=True,
+        source_kind="incoming_group", group_facing=False,
+        group_scene_mode="", message="别人在冲刷期间说的话",
+        user_nickname="小北",
+    )
+
+    drain = asyncio.create_task(service._drain_member_buckets("group:7788"))
+    await asyncio.wait_for(in_flight.wait(), timeout=2.0)
+    service.record_group_member_turn(user_data, other_speaker)
+    released.set()
+    await asyncio.wait_for(drain, timeout=2.0)
+
+    labels = user_data["group_member_memory_labels"]
+    assert labels.get("2046") == "阿离(2046)", (
+        "沉默的失败桶没把自己的展示名带回来，下一轮 speaker_label 会退化成 QQ 号"
+    )
+    assert labels.get("3057") == "小北(3057)"
+
+
+@pytest.mark.asyncio
+async def test_returned_label_does_not_clobber_a_newer_display_name():
+    """The other half of the same line: a speaker who changed nickname
+    mid-flight keeps the new one. Restoring unconditionally would roll the
+    live map back to a name the group no longer sees."""
+    in_flight = asyncio.Event()
+    released = asyncio.Event()
+
+    async def _post_scoped(her_name, messages, **kwargs):
+        in_flight.set()
+        await released.wait()
+        return {"status": "error", "message": "memory server down"}
+
+    service, plugin, user_data, _locks = _group_drain_harness(_post_scoped)
+    renamed = SimpleNamespace(
+        is_group=True, sender_id="2046", member_memory_enabled=True,
+        source_kind="incoming_group", group_facing=False,
+        group_scene_mode="", message="改名之后说的话",
+        user_nickname="阿离酱",
+    )
+
+    drain = asyncio.create_task(service._drain_member_buckets("group:7788"))
+    await asyncio.wait_for(in_flight.wait(), timeout=2.0)
+    service.record_group_member_turn(user_data, renamed)
+    released.set()
+    await asyncio.wait_for(drain, timeout=2.0)
+
+    assert user_data["group_member_memory_labels"]["2046"] == "阿离酱(2046)", (
+        "快照里的旧展示名覆盖了冲刷期间的新展示名"
+    )
 
 
 @pytest.mark.asyncio
@@ -337,6 +443,22 @@ async def _drive_every_endpoint(bridge) -> None:
         "Neko", [{"role": "user"}],
         subject={"subject_kind": "group_participant", "subject_id": "qq:7788:2046"},
     )
+    await bridge.post_scoped_memory_history_batch(
+        "Neko",
+        [{
+            "messages": [{"role": "user"}],
+            "subject": {
+                "subject_kind": "group_participant",
+                "subject_id": "qq:7788:2046",
+            },
+            "speaker_label": "2046",
+            "speaker_trust": 0.5,
+            "trust_signal_excluded_fact_identities": [[
+                "later-fact", "group_participant", "qq:7788:1001",
+                "group_participant:qq:7788:1001",
+            ]],
+        }],
+    )
 
 
 @pytest.mark.asyncio
@@ -355,19 +477,32 @@ async def test_memory_bridge_keeps_per_endpoint_timeouts_on_shared_client(
     monkeypatch.setattr(QQMemoryBridge, "_client", staticmethod(lambda: recorder))
     await _drive_every_endpoint(QQMemoryBridge(SimpleNamespace(logger=MagicMock())))
 
-    # 按完整路径建 key：三条 /xxx/{name} 端点的最后一段都是角色名，用
-    # 末段做 key 会让它们相互覆盖，只剩最后写入的那条真被断言到。
-    assert {
-        url.split("/", 3)[3]: kwargs.get("timeout")
+    # 按完整路径 + 多重集断言：三条 /xxx/{name} 端点的最后一段都是角色
+    # 名，用末段做 key 会相互覆盖；单发与批共用 scoped_history 路径，按
+    # dict 建 key 同样会覆盖——排好序的 (path, timeout) 列表两个都躲开。
+    assert sorted(
+        (url.split("/", 3)[3], kwargs.get("timeout"))
         for _method, url, kwargs in recorder.calls
-    } == {
-        "new_dialog/Neko": 5.0,
-        "query_memory/Neko": 5.0,
-        "cache/Neko": 5.0,
-        "internal/memory/Neko/scoped_context": 5.0,
-        "internal/memory/Neko/scoped_mentions": 5.0,
-        "internal/memory/Neko/scoped_history": 30.0,
-    }
+    ) == sorted([
+        ("new_dialog/Neko", 5.0),
+        ("query_memory/Neko", 5.0),
+        ("cache/Neko", 5.0),
+        ("internal/memory/Neko/scoped_context", 5.0),
+        ("internal/memory/Neko/scoped_mentions", 5.0),
+        ("internal/memory/Neko/scoped_history", 30.0),   # legacy 单发
+        ("internal/memory/Neko/scoped_history", 30.0),   # segments 批
+    ])
+    batch_payload = next(
+        kwargs["json"]
+        for _method, _url, kwargs in recorder.calls
+        if kwargs.get("json", {}).get("segments")
+    )
+    assert batch_payload["segments"][0][
+        "trust_signal_excluded_fact_identities"
+    ] == [[
+        "later-fact", "group_participant", "qq:7788:1001",
+        "group_participant:qq:7788:1001",
+    ]]
 
 
 @pytest.mark.asyncio
@@ -395,10 +530,69 @@ async def test_memory_bridge_uses_the_shared_internal_client(monkeypatch):
     bridge = bridge_module.QQMemoryBridge(SimpleNamespace(logger=MagicMock()))
     await _drive_every_endpoint(bridge)
 
-    assert len(handed_out) == 6 and all(c is recorder for c in handed_out)
+    assert len(handed_out) == 7 and all(c is recorder for c in handed_out)
     # 插件侧没有任何自有 client 生命周期可言。
     assert not hasattr(bridge, "aclose")
     assert not hasattr(bridge_module, "httpx")
+
+
+@pytest.mark.asyncio
+async def test_qq_recall_forwards_process_prompt_locale(monkeypatch):
+    from plugin.plugins.qq_auto_reply.memory_bridge import QQMemoryBridge
+
+    recorder = _RecordingClient()
+    monkeypatch.setattr(QQMemoryBridge, "_client", staticmethod(lambda: recorder))
+    monkeypatch.setattr(
+        "utils.language_utils.get_global_language_full",
+        lambda: "zh-TW",
+    )
+
+    await QQMemoryBridge(
+        SimpleNamespace(logger=MagicMock())
+    ).query_relevant_memory("Neko", "查詢")
+
+    query_call = next(call for call in recorder.calls if "/query_memory/" in call[1])
+    assert query_call[2]["json"]["language"] == "zh-TW"
+
+
+@pytest.mark.asyncio
+async def test_qq_bootstrap_omits_process_fallback_locale(monkeypatch):
+    from plugin.plugins.qq_auto_reply.memory_bridge import QQMemoryBridge
+
+    recorder = _RecordingClient()
+    monkeypatch.setattr(QQMemoryBridge, "_client", staticmethod(lambda: recorder))
+    monkeypatch.setattr(
+        "utils.language_utils.get_global_language_full",
+        lambda: "zh-TW",
+    )
+
+    await QQMemoryBridge(
+        SimpleNamespace(logger=MagicMock())
+    ).fetch_bootstrap_memory("Neko")
+
+    bootstrap_call = next(
+        call for call in recorder.calls if "/new_dialog/" in call[1]
+    )
+    assert "params" not in bootstrap_call[2]
+
+
+@pytest.mark.asyncio
+async def test_qq_memory_writer_omits_process_fallback_locale(monkeypatch):
+    from plugin.plugins.qq_auto_reply.memory_bridge import QQMemoryBridge
+
+    recorder = _RecordingClient()
+    monkeypatch.setattr(QQMemoryBridge, "_client", staticmethod(lambda: recorder))
+    monkeypatch.setattr(
+        "utils.language_utils.get_global_language_full",
+        lambda: "zh-TW",
+    )
+
+    await QQMemoryBridge(
+        SimpleNamespace(logger=MagicMock())
+    ).post_memory_history("cache", "Neko", [{"role": "user"}])
+
+    cache_call = next(call for call in recorder.calls if "/cache/" in call[1])
+    assert "language" not in cache_call[2]["json"]
 
 
 @pytest.mark.asyncio
@@ -995,6 +1189,11 @@ async def test_orphaned_buckets_get_one_last_try_while_consent_holds():
     """
     attempts: list[str] = []
     lock_holders: list[str] = []
+    # 锁深度只在 fake 里**采样**，断言留到协程外面：
+    # _flush_one_member 用 `except Exception` 包着这次 await，而
+    # AssertionError 是 Exception 的子类——写在里面的断言会被吞成一次
+    # "请求失败"，然后被当作失败桶重试，测试照样绿。
+    lock_depth_at_attempt: list[int] = []
     released = asyncio.Event()
     in_flight = asyncio.Event()
 
@@ -1012,13 +1211,11 @@ async def test_orphaned_buckets_get_one_last_try_while_consent_holds():
 
     async def _post_scoped(her_name, messages, **kwargs):
         attempts.append((kwargs.get("subject") or {}).get("subject_id", ""))
+        lock_depth_at_attempt.append(len(lock_holders))
         if len(attempts) == 1:
             in_flight.set()
             await released.wait()
             return {"status": "error", "message": "memory server hiccup"}
-        # 末次重试必须在锁外发：会话已经没了，占着这把锁只会挡住同 key
-        # 建起来的新会话。
-        assert not lock_holders, "末次重试是在会话锁里发的"
         return {"status": "ok"}
 
     plugin.memory_bridge.post_scoped_memory_history = _post_scoped
@@ -1032,6 +1229,11 @@ async def test_orphaned_buckets_get_one_last_try_while_consent_holds():
 
     assert attempts == ["qq:7788:2046", "qq:7788:2046"], (
         "会话没了但授权还在，失败的桶应当再试一次"
+    )
+    # 两次都必须在锁外：会话已经没了，占着这把锁只会挡住同 key 建起来的
+    # 新会话。把重试挪回 _return_snapshot（锁内）时这里会变成 [0, 1]。
+    assert lock_depth_at_attempt == [0, 0], (
+        f"scoped POST 是在会话锁里发的：锁深度 {lock_depth_at_attempt}"
     )
 
 
@@ -1179,21 +1381,21 @@ async def test_per_request_consent_check_is_opt_in():
 
 @pytest.mark.asyncio
 async def test_second_drain_wave_sees_an_opt_out_from_the_first():
-    """A sweep is two waves; the second must not outrun the switch.
+    """A serial sweep must recheck consent before its next request.
 
-    Up to eight buckets pass through a four-slot semaphore, so the later
-    wave starts after the earlier requests returned — long enough for an
-    opt-out to land. Those buckets come back as failures and the snapshot
-    return then discards them fail-closed.
+    Large buckets force one sender per request.  The first request turns the
+    switch off; the globally ordered chain must observe that before attempting
+    the next sender.  Remaining snapshot buckets are then discarded fail-closed.
     """
     posted: list[str] = []
     first_wave_done = 0
 
     service, plugin, user_data, _locks = _group_drain_harness(None)
     quota = service.GROUP_MEMBER_MAX_PARTICIPANTS
-    concurrency = service.MEMBER_FLUSH_CONCURRENCY
     user_data["group_member_memory_messages"] = {
-        str(7000 + i): [{"role": "user", "content": [{"type": "text", "text": "x"}]}]
+        str(7000 + i): [
+            {"role": "user", "content": [{"type": "text", "text": "x"}]}
+        ] * 150
         for i in range(quota)
     }
     user_data["group_member_memory_labels"] = {}
@@ -1202,8 +1404,8 @@ async def test_second_drain_wave_sees_an_opt_out_from_the_first():
         nonlocal first_wave_done
         posted.append((kwargs.get("subject") or {}).get("subject_id", ""))
         first_wave_done += 1
-        if first_wave_done == concurrency:
-            # 第一波刚跑完，用户关掉了成员记忆。
+        if first_wave_done == 1:
+            # 第一个请求刚完成，用户关掉了成员记忆。
             plugin._qq_settings["group_member_memory_enabled"] = False
         return {"status": "ok"}
 
@@ -1213,8 +1415,8 @@ async def test_second_drain_wave_sees_an_opt_out_from_the_first():
         service._drain_member_buckets("group:7788"), timeout=3.0,
     )
 
-    assert len(posted) == concurrency, (
-        "第二波在 opt-out 之后照样发了出去"
+    assert len(posted) == 1, (
+        "后续请求在 opt-out 之后照样发了出去"
     )
     # 撤销之后剩下的按 fail-closed 丢弃，没有回到队列。
     assert not (user_data.get("group_member_memory_messages") or {})

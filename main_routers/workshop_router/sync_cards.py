@@ -44,6 +44,7 @@ from utils.cloudsave_runtime import MaintenanceModeError, is_write_fence_active
 from utils.file_utils import read_json_async
 from utils.config_manager import set_reserved
 from utils.character_name import PROFILE_NAME_MAX_UNITS, validate_character_name
+from utils.character_memory import asave_characters_with_recent_activation
 from config import CHARACTER_RESERVED_FIELDS
 
 
@@ -102,6 +103,7 @@ async def sync_workshop_character_cards(
     deleted_character_names_seen: list[str] = []
     restored_deleted_names: list[str] = []
     tombstone_cleanup_deferred = False
+    publish_cancelled = False
 
     def _append_unique(bucket: list[str], name: str) -> None:
         normalized_name = str(name or "").strip()
@@ -601,7 +603,14 @@ async def sync_workshop_character_cards(
 
                 if need_save:
                     try:
-                        await config_mgr.asave_characters(characters_to_save)
+                        if actually_added_names:
+                            publish_cancelled = await asave_characters_with_recent_activation(
+                                config_mgr,
+                                characters_to_save,
+                                *actually_added_names,
+                            )
+                        else:
+                            await config_mgr.asave_characters(characters_to_save)
                     except MaintenanceModeError:
                         logger.info("sync_workshop_character_cards: 保存时进入维护态写围栏，跳过本轮同步并等待后续重试")
                         return _write_fence_blocked_result()
@@ -707,6 +716,13 @@ async def sync_workshop_character_cards(
                         logger.info("sync_workshop_character_cards: 已重新加载角色配置")
                 except Exception as e:
                     logger.warning(f"sync_workshop_character_cards: 重新加载角色配置失败: {e}")
+                if actually_added_names:
+                    from ..characters_router import notify_memory_server_reload
+
+                    await notify_memory_server_reload(
+                        reason="创意工坊角色卡同步",
+                        resume_derived_task_names=actually_added_names,
+                    )
             else:
                 blocked_result = await _clear_restored_existing_tombstones()
                 if blocked_result is not None:
@@ -723,8 +739,12 @@ async def sync_workshop_character_cards(
         # “此订阅里没有角色卡”。用专属 code 兜住，区别于逐角色的部分错误。
         logger.error(f"sync_workshop_character_cards: 同步过程出错: {e}", exc_info=True)
         error_count += 1
+        if publish_cancelled:
+            raise asyncio.CancelledError
         return _sync_result(code="WORKSHOP_SYNC_FAILED")
 
+    if publish_cancelled:
+        raise asyncio.CancelledError
     return _sync_result()
 
 

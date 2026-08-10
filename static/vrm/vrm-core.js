@@ -517,7 +517,11 @@ class VRMCore {
             width = window.innerWidth;
             height = window.innerHeight;
         }
-        this.manager.camera = new THREE.PerspectiveCamera(30, width / height, 0.1, 2000);
+        // A 30° lens is unnecessarily tight for full-body companion motion:
+        // raised hands, ears and wide gestures can leave the viewport even when
+        // the torso is still visible. Start wider and let the interaction module
+        // expand further only when the animated bounds actually need it.
+        this.manager.camera = new THREE.PerspectiveCamera(34, width / height, 0.05, 2000);
         this.manager.camera.position.set(0, 1.1, 1.5);
         this.manager.camera.lookAt(0, 0.9, 0);
 
@@ -1105,7 +1109,7 @@ class VRMCore {
                         // 桌面端：使用更平衡的计算方式
                         if (modelHeight > 0 && Number.isFinite(modelHeight)) {
                             // 目标：让模型在屏幕上的高度约为屏幕高度的0.4-0.5倍
-                            const targetScreenHeight = screenHeight * 0.45;
+                            const targetScreenHeight = screenHeight * 0.40;
                             
                             // 检查相机是否存在
                             if (this.manager.camera && this.manager.camera.fov) {
@@ -1181,7 +1185,7 @@ class VRMCore {
                     const screenHeight = window.innerHeight;
                     const screenWidth = window.innerWidth;
 
-                    const targetScreenHeight = screenHeight * 0.45;
+                    const targetScreenHeight = screenHeight * 0.40;
                     const fov = this.manager.camera.fov * (Math.PI / 180);
                     const distance = (scaledModelHeight / 2) / Math.tan(fov / 2) / targetScreenHeight * screenHeight;
 

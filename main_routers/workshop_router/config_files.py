@@ -20,13 +20,16 @@ Split out of the former monolithic ``main_routers/workshop_router.py``.
 """
 
 from ._shared import logger, router
+from ..shared_state import get_config_manager
 
 import os
+import errno
+import stat
 import asyncio
 from urllib.parse import unquote
 from fastapi.responses import JSONResponse
 from utils.workshop_utils import (
-    get_workshop_path,
+    get_workshop_path_async,
 )
 
 
@@ -43,35 +46,172 @@ async def get_workshop_config():
 
 # 保存创意工坊配置
 
+# 整个「读 → 合并 → 落盘 → 建目录」是一次事务，必须串行。
+#
+# 这几步现在都跑在 worker 线程上（落盘含无上界 fsync，ensure 还可能对着网络盘或
+# 可移动盘做 exists / makedirs，留在事件循环上会卡住所有协程）。但一挪进线程，两个
+# 并发请求就能真交错：
+#
+# * 两个 /config 之间 —— ensure_workshop_folder_exists 会**重新读一次配置文件**来
+#   决定 auto_create（utils/workshop_utils.py:53 与 :75）：A 存下 auto_create=true +
+#   目录 A，B 紧接着存下 auto_create=false，A 的 ensure 读到 B 的配置于是拒绝建目录，
+#   而 A 照样返回 success。
+# * /config 与 GET /config 之间 —— load_workshop_config 那条路径**不是只读**：存储
+#   迁移之后 _rebase_workshop_config_after_storage_migration 会把自愈结果 save 回去。
+#   GET 可以「事务之前读、事务之后写」，把用户刚提交的设置整份盖掉。
+#
+# 所以用的是 ConfigManager 自己那把 _workshop_config_lock（经 workshop_config_lock()
+# 拿），而不是本模块私有的一把 —— 自愈写走的就是它，两边必须是同一把才挡得住。
+# 它是 RLock，所以持着它再调 load_workshop_config 不会自死锁。
+
+
 @router.post('/config')
 async def save_workshop_config_api(config_data: dict):
     try:
         # 导入与get_workshop_config相同路径的函数，保持一致性
         from utils.workshop_utils import load_workshop_config, save_workshop_config, ensure_workshop_folder_exists
-        
-        # 先加载现有配置，避免使用全局变量导致的不一致问题
-        workshop_config_data = await asyncio.to_thread(load_workshop_config) or {}
-        
-        # 更新配置
-        if 'default_workshop_folder' in config_data:
-            workshop_config_data['default_workshop_folder'] = config_data['default_workshop_folder']
-        if 'auto_create_folder' in config_data:
-            workshop_config_data['auto_create_folder'] = config_data['auto_create_folder']
-        # 支持用户mod路径配置
-        if 'user_mod_folder' in config_data:
-            workshop_config_data['user_mod_folder'] = config_data['user_mod_folder']
-        
-        # 保存配置到文件，传递完整的配置数据作为参数
-        save_workshop_config(workshop_config_data)
-        
-        # 如果启用了自动创建文件夹且提供了路径，则确保文件夹存在
-        if workshop_config_data.get('auto_create_folder', True):
-            # 优先使用user_mod_folder，如果没有则使用default_workshop_folder
-            folder_path = workshop_config_data.get('user_mod_folder') or workshop_config_data.get('default_workshop_folder')
-            if folder_path:
-                ensure_workshop_folder_exists(folder_path)
-        
-        return {"success": True, "config": workshop_config_data}
+
+        # 落盘前先校验类型。前端塞个 {} 或 list 进来的话，这里不拦就直接写进配置文件，
+        # 之后 ensure_workshop_folder_exists 在 os.path.isabs() 上抛出来才报错 —— 配置
+        # 已经被写坏了，后续 get_workshop_path() 会把这个对象原样返回，凡是拿它去
+        # os.path.join() 的 workshop 调用全部失败，直到用户手工修好。
+        for key in ('default_workshop_folder', 'user_mod_folder'):
+            if key not in config_data:
+                continue
+            value = config_data[key]
+            if not isinstance(value, str):
+                return {
+                    "success": False,
+                    "error": f"{key} 必须是字符串路径",
+                }
+            # 相对路径直接拒，不做「猜一个 base 再normalize」。ensure 会按用户主目录
+            # 解析它并报 folder_ready: true，而 get_workshop_path() 原样返回那个相对
+            # 串、后续 _assert_under_base 又按服务进程的工作目录解析 —— 两边指向不同
+            # 的地方，而我们已经告诉用户「建好了」。宁可让调用方给绝对路径。
+            # 空串是**清除覆盖**的官方写法：get_workshop_path() 用
+            # `if config.get("user_mod_folder"):` 判断，空串 falsy 就回落到
+            # Steam / 缓存 / 默认（utils/config_manager/workshop.py:417）。上一版
+            # 一并拦掉它，等于用户只能设置和替换、再也无法通过接口清除，只能手改
+            # JSON。全空白（"   "）仍然拒 —— 那不是清除，是个会被当成真路径的值。
+            if value == "":
+                if key == 'user_mod_folder':
+                    continue
+                return {
+                    "success": False,
+                    "error": "default_workshop_folder 不能为空",
+                }
+            if not value.strip():
+                return {
+                    "success": False,
+                    "error": f"{key} 不能是空白（清除请传空字符串）",
+                }
+            if not os.path.isabs(value):
+                return {
+                    "success": False,
+                    "error": f"{key} 必须是绝对路径",
+                }
+            # 正向校验：这个串必须真的能被 os.path 当路径处理。嵌了 NUL 的值能过
+            # isabs（它只看前缀），但之后每一次 os.path.* 都会抛 ValueError —— 而配置
+            # 那时已经写进去了，接口只是「先落盘再报错」，之后所有 workshop 文件操作
+            # 都对着这个毒值抛，直到用户再存一次才好。
+            #
+            # 不逐个字符类去补（NUL、控制字符、超长……）：让 OS 自己判「能不能用」，
+            # 一条规则关掉整类，而不是想到哪个补哪个。
+
+        if 'auto_create_folder' in config_data and not isinstance(
+            config_data['auto_create_folder'], bool
+        ):
+            # 字符串 "false" 是 truthy —— 不拦就会在用户明确说「别建」的时候建目录，
+            # 而且把这个畸形值留在盘上。
+            return {
+                "success": False,
+                "error": "auto_create_folder 必须是布尔值",
+            }
+
+        def _apply_config_transaction() -> tuple[dict, bool | None]:
+            # 「OS 收不收得下这个串」的探针必须下到真正的系统调用（纯路径函数判不
+            # 出嵌 NUL：os.path.isdir 把 ValueError 吞成 False，normpath / realpath
+            # 原样返回）。而系统调用意味着 I/O —— 目标是慢速 UNC / 网络盘 / 可移动盘
+            # 时它可能挂很久，所以只能在 worker 里做，不能留在事件循环上。
+            # 抛出去由外层 except 收成 {"success": false, ...}；此刻还没写任何东西。
+            for probe_key in ('default_workshop_folder', 'user_mod_folder'):
+                probe = config_data.get(probe_key)
+                if not isinstance(probe, str) or probe == '':
+                    continue
+                try:
+                    probe_stat = os.stat(probe)
+                except ValueError as exc:
+                    raise ValueError(f"{probe_key} 不是合法路径: {exc}") from exc
+                except OSError as exc:
+                    # 只放行「语法成立、但此刻不存在/不可访问」的形状。此前把所有
+                    # OSError 都吞掉，ENAMETOOLONG / EINVAL 也会被写进配置；之后每个
+                    # workshop 调用都对着毒路径失败，直到用户再保存一次。
+                    allowed_errnos = {errno.ENOENT, errno.EACCES, errno.EPERM}
+                    allowed_winerrors = {
+                        2,    # ERROR_FILE_NOT_FOUND
+                        3,    # ERROR_PATH_NOT_FOUND
+                        5,    # ERROR_ACCESS_DENIED
+                        21,   # ERROR_NOT_READY (removable drive)
+                        53,   # ERROR_BAD_NETPATH
+                        64,   # ERROR_NETNAME_DELETED
+                        67,   # ERROR_BAD_NET_NAME
+                        121,  # ERROR_SEM_TIMEOUT
+                    }
+                    if (
+                        getattr(exc, 'errno', None) not in allowed_errnos
+                        and getattr(exc, 'winerror', None) not in allowed_winerrors
+                    ):
+                        raise ValueError(
+                            f"{probe_key} 不是合法路径: {exc}"
+                        ) from exc
+                else:
+                    if not stat.S_ISDIR(probe_stat.st_mode):
+                        raise ValueError(f"{probe_key} 必须指向目录")
+
+            with get_config_manager().workshop_config_lock():
+                # 读也放进锁里：不然两个请求各自读到同一份旧配置、各写各的合并结果，
+                # 后写的那次会把前一次的字段整份盖掉。
+                merged = load_workshop_config() or {}
+                for key in ('default_workshop_folder', 'auto_create_folder', 'user_mod_folder'):
+                    if key in config_data:
+                        merged[key] = config_data[key]
+                save_workshop_config(merged)
+                auto_create = bool(merged.get('auto_create_folder', True))
+                # 优先使用user_mod_folder，如果没有则使用default_workshop_folder
+                folder_path = ''
+                if auto_create:
+                    folder_path = merged.get('user_mod_folder') or merged.get('default_workshop_folder') or ''
+            # ⚠️ 建目录在**锁外、但仍在同一个 worker 里**做。
+            #
+            # 锁外：它可能是网络盘 / 可移动盘上的 exists + makedirs，慢得没有上界；
+            # 而事件循环上还有 handler 裸调 get_workshop_path()，持锁做这件事就是把
+            # 整条循环挂在那儿。策略（auto_create + 目标路径）已经在锁内定死并显式
+            # 传进去，所以 ensure 不会重读到别人的配置。
+            #
+            # 同一个 worker：拆成两次 to_thread 的话，取消会落在两者之间 ——
+            # asyncio.to_thread 不会停掉已经开跑的 worker，但 CancelledError 会让
+            # handler 再也走不到第二次调用，于是「配置写了、目录没建」。请求超时和
+            # 应用关闭都会走到这条路径。
+            folder_ready = None
+            if auto_create and folder_path:
+                folder_ready = bool(
+                    ensure_workshop_folder_exists(folder_path, auto_create=True)
+                )
+            return merged, folder_ready
+
+        workshop_config_data, folder_ready = await asyncio.to_thread(
+            _apply_config_transaction
+        )
+
+        # ensure_workshop_folder_exists 把创建失败（只读盘、权限不足）吞成返回 False。
+        # 配置确实存下来了，所以 success 仍然是 True —— 但不能因此告诉用户目录也准备
+        # 好了：那条路径接下来根本用不了。两件事分开报。
+        response = {"success": True, "config": workshop_config_data}
+        if folder_ready is not None:
+            response["folder_ready"] = folder_ready
+            if not folder_ready:
+                response["warning"] = "配置已保存，但指定的工坊目录无法创建（路径只读或权限不足）"
+        return response
     except Exception as e:
         logger.error(f"保存创意工坊配置失败: {str(e)}")
         return {"success": False, "error": str(e)}
@@ -93,7 +233,9 @@ async def read_workshop_file(path: str):
         
         # 解码URL编码的路径
         decoded_path = unquote(path)
-        decoded_path = _assert_under_base(decoded_path, get_workshop_path())
+        decoded_path = _assert_under_base(
+            decoded_path, await get_workshop_path_async()
+        )
         logger.info(f"解码后的路径: {decoded_path}")
         
         # 检查文件是否存在
@@ -137,7 +279,9 @@ async def list_chara_files(directory: str):
         logger.info(f"列出创意工坊目录下的角色卡文件请求，目录: {directory}")
         
         # 解码URL编码的路径
-        decoded_dir = _assert_under_base(unquote(directory), get_workshop_path())
+        decoded_dir = _assert_under_base(
+            unquote(directory), await get_workshop_path_async()
+        )
         logger.info(f"解码后的目录路径: {decoded_dir}")
         
         # 检查目录是否存在
@@ -170,7 +314,9 @@ async def list_audio_files(directory: str):
         logger.info(f"列出创意工坊目录下的音频文件请求，目录: {directory}")
         
         # 解码URL编码的路径并验证是否在workshop目录下
-        decoded_dir = _assert_under_base(unquote(directory), get_workshop_path())
+        decoded_dir = _assert_under_base(
+            unquote(directory), await get_workshop_path_async()
+        )
         logger.info(f"解码后的目录路径: {decoded_dir}")
         
         # 检查目录是否存在

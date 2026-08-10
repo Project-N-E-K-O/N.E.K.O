@@ -29,6 +29,7 @@ def create_auth_service(runtime: Any) -> TwitchAuthService:
         logger=getattr(getattr(runtime, "plugin", None), "logger", None),
         credential_provider=runtime.twitch_credential_store.load,
         credential_saver=runtime.twitch_credential_store.save,
+        credential_deleter=runtime.twitch_credential_store.delete,
         credential_reloader=runtime.reload_twitch_credential,
     )
 
@@ -140,8 +141,10 @@ async def validate_credential(runtime: Any) -> dict[str, Any]:
 async def logout(runtime: Any) -> dict[str, Any]:
     auth = getattr(runtime, "twitch_auth", None)
     if auth is not None:
+        removed = await auth.delete_credential()
         await auth.cancel_device_authorization(_client_id(runtime))
-    removed = await runtime.twitch_credential_store.delete()
+    else:
+        removed = await runtime.twitch_credential_store.delete()
     runtime.twitch_credential = None
     runtime.audit.record("twitch_logout", "twitch credential removed", detail={"files": removed})
     return {

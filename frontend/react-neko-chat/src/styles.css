@@ -1104,6 +1104,7 @@ body.neko-electron-runtime .app-shell:not(.chat-surface-mode-compact)[data-focus
 
 .message-stack {
   max-width: min(86%, 320px);
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -1123,6 +1124,8 @@ body.neko-electron-runtime .app-shell:not(.chat-surface-mode-compact)[data-focus
 }
 
 .message-bubble {
+  min-width: 0;
+  max-width: 100%;
   padding: 9px 11px;
   border-radius: 8px 16px 16px 16px;
   box-shadow: 0 5px 14px rgba(53, 72, 104, 0.05);
@@ -1156,6 +1159,7 @@ body.neko-electron-runtime .app-shell:not(.chat-surface-mode-compact)[data-focus
 
 .message-block {
   min-width: 0;
+  max-width: 100%;
 }
 
 /* 流式文字分块渐现 — 每批新文本整体淡入，参考 ChatGPT / Claude.ai */
@@ -1382,9 +1386,11 @@ body.neko-electron-runtime .app-shell:not(.chat-surface-mode-compact)[data-focus
 
 .message-block-link {
   display: grid;
-  grid-template-columns: 1fr;
+  grid-template-columns: minmax(0, 1fr);
   gap: 10px;
-  min-width: 220px;
+  width: 100%;
+  min-width: min(220px, 100%);
+  max-width: 100%;
   padding: 10px;
   border-radius: 12px;
   color: inherit;
@@ -1394,6 +1400,8 @@ body.neko-electron-runtime .app-shell:not(.chat-surface-mode-compact)[data-focus
 }
 
 .message-link-thumb {
+  min-width: 0;
+  max-width: 100%;
   overflow: hidden;
   border-radius: 10px;
   background: rgba(220, 228, 240, 0.9);
@@ -1409,6 +1417,8 @@ body.neko-electron-runtime .app-shell:not(.chat-surface-mode-compact)[data-focus
 .message-link-copy {
   display: grid;
   gap: 4px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .message-link-title {
@@ -2068,6 +2078,39 @@ body.neko-electron-runtime .app-shell:not(.chat-surface-mode-compact)[data-focus
   padding: 4px 2px;
   transform-origin: bottom center;
   animation: bubblePopoverAppear 0.24s cubic-bezier(0.2, 0.9, 0.2, 1.15) both;
+}
+
+.composer-icon-popover .full-avatar-tool-settings-button {
+  animation-delay: -1.55s;
+}
+
+.composer-icon-popover .full-avatar-tool-settings-icon {
+  width: 32px;
+  height: 32px;
+}
+
+.composer-icon-popover[data-avatar-tool-button-count="4"] .composer-icon-button:nth-child(1),
+.composer-icon-popover[data-avatar-tool-button-count="4"] .composer-icon-button:nth-child(4) {
+  top: 8px;
+}
+
+.composer-icon-popover[data-avatar-tool-button-count="4"] .composer-icon-button:nth-child(2),
+.composer-icon-popover[data-avatar-tool-button-count="4"] .composer-icon-button:nth-child(3) {
+  top: -2px;
+}
+
+.composer-icon-popover[data-avatar-tool-button-count="3"] .composer-icon-button:nth-child(1),
+.composer-icon-popover[data-avatar-tool-button-count="3"] .composer-icon-button:nth-child(3) {
+  top: 6px;
+}
+
+.composer-icon-popover[data-avatar-tool-button-count="3"] .composer-icon-button:nth-child(2) {
+  top: -3px;
+}
+
+.composer-icon-popover[data-avatar-tool-button-count="2"] .composer-icon-button,
+.composer-icon-popover[data-avatar-tool-button-count="1"] .composer-icon-button {
+  top: 0;
 }
 
 .composer-icon-button {
@@ -4363,6 +4406,8 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   --compact-tool-button-size: 38px;
   --compact-tool-fan-hit-outset: 52px;
   --compact-tool-wheel-hover-radius: 116px;
+  --compact-tool-wheel-music-control-cutout-width: 160px;
+  --compact-tool-wheel-music-control-cutout-height: 96px;
   /* Orbit radius = how far the tool icons sit from the arrow center (visual
      only). 45.96px (a straight halving of the original 91.92px) packed the icons
      in too tight, so it's dialed back to 80px. The drag-rotate sensitivity
@@ -4745,11 +4790,22 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 
 .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] {
   visibility: visible;
-  pointer-events: auto;
+  /* 容器本身没有可见内容，不应形成 232px 方形的透明点击层。实际轮盘事件
+     从命中圆/道具按钮冒泡到该容器；未命中的区域自然穿透给下面的界面。 */
+  pointer-events: none;
 }
 
 .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-fan-hit-region {
   pointer-events: auto;
+}
+
+/* 播放器位于轮盘中心左上方，其控制区会和圆形旋转命中区相交。播放器显示时，
+   从命中圆左上挖出固定的控制带，让播放/暂停、音量与静音点击穿透到下层；
+   道具按钮保持各自的 pointer-events:auto，不受影响。 */
+.app-shell:has(> #music-player-mount.compact-music-player-mount > .music-player-bar:not([hidden]))
+  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"]
+  .compact-input-tool-fan-hit-region {
+  clip-path: polygon(0 0, 100% 0, 100% 100%, 0 100%, 0 var(--compact-tool-wheel-music-control-cutout-height), var(--compact-tool-wheel-music-control-cutout-width) var(--compact-tool-wheel-music-control-cutout-height), var(--compact-tool-wheel-music-control-cutout-width) 0);
 }
 
 .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-wheel-selection-pointer {

@@ -1194,11 +1194,14 @@ window.toggleScreenShare = function () {
     // 当前共享状态以隐藏的 #screenButton 的 .active class 为准。
     const screenBtn = document.getElementById('screenButton');
     const isActive = !!(screenBtn && screenBtn.classList.contains('active'));
+    const isStartPending = typeof window.isScreenSharingStartPending === 'function'
+        && window.isScreenSharingStartPending();
+    const isActiveOrPending = isActive || isStartPending;
     const isRecording = window.isRecording || false;
 
     // 屏幕分享仅在语音会话中有效
     // 如果尝试开启屏幕分享但语音会话未开启，显示提示并阻止操作
-    if (!isActive && !isRecording) {
+    if (!isActiveOrPending && !isRecording) {
         console.log('[Electron Shortcut] toggleScreenShare: blocked - voice session not active');
         if (typeof window.showStatusToast === 'function') {
             window.showStatusToast(
@@ -1211,11 +1214,11 @@ window.toggleScreenShare = function () {
 
     // 派发切换事件
     const event = new CustomEvent('live2d-screen-toggle', {
-        detail: { active: !isActive }
+        detail: { active: !isActiveOrPending }
     });
     window.dispatchEvent(event);
 
-    console.log('[Electron Shortcut] toggleScreenShare:', !isActive ? 'start' : 'stop');
+    console.log('[Electron Shortcut] toggleScreenShare:', !isActiveOrPending ? 'start' : 'stop');
 };
 
 /**

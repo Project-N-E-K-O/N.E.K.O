@@ -30,6 +30,104 @@ from utils.cloudsave_runtime import MaintenanceModeError
 from utils.config_manager import ensure_default_yui_voice_for_free_api
 
 
+CORE_CONFIG_SECRET_SENTINEL = "__NEKO_SECRET_MASKED__"
+
+CORE_CONFIG_MODEL_TYPES = (
+    'conversation', 'summary', 'gameMain', 'gameSummary', 'correction', 'emotion',
+    'vision', 'agent', 'omni', 'tts',
+)
+
+CORE_CONFIG_ASSIST_API_KEY_FIELDS = (
+    'assistApiKeyQwen', 'assistApiKeyQwenIntl', 'assistApiKeyOpenai',
+    'assistApiKeyDeepseek', 'assistApiKeyGlm', 'assistApiKeyStep',
+    'assistApiKeySilicon', 'assistApiKeyGemini', 'assistApiKeyKimi',
+    'assistApiKeyDoubao', 'assistApiKeyDoubaoTts', 'assistApiKeyMinimax',
+    'assistApiKeyMinimaxIntl', 'assistApiKeyMimo',
+    'assistApiKeyMimoTokenPlan', 'assistApiKeyElevenlabs', 'assistApiKeyGrok',
+    'assistApiKeyClaude', 'assistApiKeyKimiCode', 'assistApiKeyOpenrouter',
+)
+
+CORE_CONFIG_MODEL_API_KEY_FIELDS = tuple(
+    f'{model_type}ModelApiKey' for model_type in CORE_CONFIG_MODEL_TYPES
+)
+
+CORE_CONFIG_PROVIDER_API_KEY_FIELDS = frozenset(
+    CORE_CONFIG_ASSIST_API_KEY_FIELDS
+)
+
+# Config-file field names.  The GET response uses ``api_key`` for
+# ``coreApiKey``; all other secret names are identical in both directions.
+CORE_CONFIG_SECRET_FIELDS = (
+    'coreApiKey',
+    *CORE_CONFIG_ASSIST_API_KEY_FIELDS,
+    'mcpToken',
+    *CORE_CONFIG_MODEL_API_KEY_FIELDS,
+)
+
+
+def is_core_config_secret_placeholder(value) -> bool:
+    """Return whether *value* means "keep the stored secret".
+
+    New clients use one exact sentinel.  The narrowly-shaped star checks keep
+    round-trips from older clients working without treating every real key
+    containing ``***`` as a placeholder.
+    """
+    if not isinstance(value, str):
+        return False
+
+    stripped = value.strip()
+    if stripped == CORE_CONFIG_SECRET_SENTINEL:
+        return True
+    if len(stripped) >= 3 and set(stripped) == {'*'}:
+        return True
+
+    # Legacy web UI masking kept six characters at each end and replaced the
+    # middle with stars.  Require that exact shape and at least three stars.
+    if len(stripped) < 15:
+        return False
+    prefix, masked, suffix = stripped[:6], stripped[6:-6], stripped[-6:]
+    return (
+        '*' not in prefix
+        and '*' not in suffix
+        and len(masked) >= 3
+        and set(masked) == {'*'}
+    )
+
+
+def redact_core_config_secret(value, *, preserve_free_access: bool = False) -> str:
+    """Replace a non-empty config secret with the public response sentinel."""
+    if value is None or value == '':
+        return ''
+    if preserve_free_access and value == 'free-access':
+        return 'free-access'
+    return CORE_CONFIG_SECRET_SENTINEL
+
+
+def apply_core_config_secret_update(target: dict, source: dict, field: str) -> bool:
+    """Apply a submitted secret unless it is a keep-existing placeholder.
+
+    Returns ``True`` only when the field was written.  In particular, an empty
+    string is a real update so optional credentials can be explicitly cleared.
+    """
+    if field not in source or is_core_config_secret_placeholder(source[field]):
+        return False
+    target[field] = source[field]
+    return True
+
+
+def get_core_config_provider_api_key_field(provider, api_key_registry):
+    """Resolve a provider's config field through the allowlisted registry."""
+    if not isinstance(provider, str) or not isinstance(api_key_registry, dict):
+        return None
+    provider_config = api_key_registry.get(provider)
+    if not isinstance(provider_config, dict):
+        return None
+    field = provider_config.get('config_field')
+    if field not in CORE_CONFIG_PROVIDER_API_KEY_FIELDS:
+        return None
+    return field
+
+
 @router.get("/core_api")
 async def get_core_config_api():
     """Get the core config (API keys)."""
@@ -41,10 +139,12 @@ async def get_core_config_api():
             core_config_path = str(config_manager.get_runtime_config_path('core_config.json'))
             core_cfg = await read_json_async(core_config_path)
             api_key = core_cfg.get('coreApiKey', '')
+            runtime_core_config = await config_manager.aget_core_config()
         except FileNotFoundError:
             # 如果文件不存在，返回当前配置中的CORE_API_KEY
             _config_manager = get_config_manager()
             core_config = await _config_manager.aget_core_config()
+            runtime_core_config = core_config
             api_key = core_config.get('CORE_API_KEY','')
             # 创建空的配置对象用于返回默认值
             core_cfg = {}
@@ -63,6 +163,19 @@ async def get_core_config_api():
         _assist_api_provider = core_cfg.get('assistApi') or runtime_assist_api_provider
         if not _assist_api_provider:
             _assist_api_provider = 'free' if _core_api_provider == 'free' else 'qwen'
+        realtime_config = await config_manager.aget_model_api_config(
+            'realtime',
+            core_config=runtime_core_config,
+        )
+        _effective_core_api_provider = str(
+            realtime_config.get('api_type')
+            or runtime_core_config.get('CORE_API_TYPE')
+            or _core_api_provider
+        ).strip().lower()
+        from main_logic.asr_client import get_asr_core_capabilities
+        _core_asr_capabilities = get_asr_core_capabilities(
+            _effective_core_api_provider
+        )
         _fallback_providers = {_core_api_provider, _assist_api_provider}
         _doubao_tts_shared_key = ''
         if str(core_cfg.get('ttsModelProvider') or '').strip() == 'doubao_tts':
@@ -72,9 +185,15 @@ async def get_core_config_api():
             """Fall back to coreApiKey only when the provider matches the user-selected coreApi/assistApi."""
             return fallback_key if provider in _fallback_providers else ''
 
-        return {
+        response = {
             "api_key": api_key,
             "coreApi": _core_api_provider,
+            "effectiveCoreApi": _effective_core_api_provider,
+            "supportsIndependentAsr": (
+                None
+                if _core_asr_capabilities is None
+                else _core_asr_capabilities.supports_independent_asr
+            ),
             "assistApi": _assist_api_provider,
             "assistApiKeyQwen": core_cfg.get('assistApiKeyQwen', '') or _fb('qwen'),
             "assistApiKeyQwenIntl": core_cfg.get('assistApiKeyQwenIntl', '') or _fb('qwen_intl'),
@@ -108,8 +227,7 @@ async def get_core_config_api():
             # 自定义API相关字段（Provider / Url / Id / ApiKey per model type）
             **{
                 f'{mt}Model{suffix}': core_cfg.get(f'{mt}Model{suffix}', '')
-                for mt in ('conversation', 'summary', 'gameMain', 'gameSummary', 'correction', 'emotion',
-                           'vision', 'agent', 'omni', 'tts')
+                for mt in CORE_CONFIG_MODEL_TYPES
                 for suffix in ('Provider', 'Url', 'Id', 'ApiKey')
             },
             "gptsovitsEnabled": core_cfg.get('gptsovitsEnabled'),
@@ -118,6 +236,17 @@ async def get_core_config_api():
             "disableTts": core_cfg.get('disableTts', False) is True or str(core_cfg.get('disableTts', False)).lower() in ('true', '1', 'yes', 'on'),
             "success": True
         }
+        response['api_key'] = redact_core_config_secret(
+            response['api_key'],
+            preserve_free_access=True,
+        )
+        for field in (
+            *CORE_CONFIG_ASSIST_API_KEY_FIELDS,
+            'mcpToken',
+            *CORE_CONFIG_MODEL_API_KEY_FIELDS,
+        ):
+            response[field] = redact_core_config_secret(response[field])
+        return response
     except Exception as e:
         return {
             "success": False,
@@ -171,18 +300,102 @@ async def update_core_config(request: Request):
         except TypeError as exc:
             return {"success": False, "error": str(exc)}
 
-        effective_core_api = incoming_core_api or _stored_provider('coreApi')
+        stored_core_api = _stored_provider('coreApi') or 'qwen'
+        effective_core_api = incoming_core_api or stored_core_api
         core_uses_free_provider = effective_core_api == 'free'
-        
-        def _is_masked_secret(value) -> bool:
+        stored_assist_api = _stored_provider('assistApi')
+        effective_assist_api = incoming_assist_api or stored_assist_api
+        if not effective_assist_api:
+            effective_assist_api = 'free' if core_uses_free_provider else 'qwen'
+
+        def _usable_provider_api_key(value):
             if not isinstance(value, str):
-                return False
-            stripped = value.strip()
-            return bool(stripped) and ('***' in stripped or set(stripped) == {'*'})
+                return ''
+            normalized = value.strip()
+            if (
+                not normalized
+                or normalized == 'free-access'
+                or is_core_config_secret_placeholder(normalized)
+            ):
+                return ''
+            return normalized
+
+        provider_changed = bool(
+            incoming_core_api and incoming_core_api != stored_core_api
+        )
+        core_key_is_placeholder = (
+            'coreApiKey' in data
+            and is_core_config_secret_placeholder(data['coreApiKey'])
+        )
+        stored_core_api_key = _usable_provider_api_key(
+            core_cfg.get('coreApiKey', '')
+        )
+        needs_provider_key_promotion = (
+            core_key_is_placeholder
+            and (provider_changed or not stored_core_api_key)
+        )
+        promoted_core_api_key = None
+
+        if provider_changed or needs_provider_key_promotion:
+            from utils.api_config_loader import get_config
+
+            provider_config = await asyncio.to_thread(get_config)
+            api_key_registry = (
+                provider_config.get('api_key_registry', {})
+                if isinstance(provider_config, dict)
+                else {}
+            )
+
+            # Preserve the old core provider's authoritative key in its Key
+            # Book slot before coreApiKey is repointed.  A distinct non-empty
+            # key remains authoritative only when that provider stays selected
+            # as assist; otherwise the old slot is stale and must be replaced.
+            if provider_changed and stored_core_api != 'free' and stored_core_api_key:
+                old_provider_field = get_core_config_provider_api_key_field(
+                    stored_core_api,
+                    api_key_registry,
+                )
+                old_provider_key = (
+                    _usable_provider_api_key(core_cfg.get(old_provider_field, ''))
+                    if old_provider_field
+                    else ''
+                )
+                if (
+                    old_provider_field
+                    and (
+                        effective_assist_api != stored_core_api
+                        or not old_provider_key
+                    )
+                ):
+                    core_cfg[old_provider_field] = stored_core_api_key
+
+            if needs_provider_key_promotion:
+                if core_uses_free_provider:
+                    promoted_core_api_key = 'free-access'
+                else:
+                    target_provider_field = get_core_config_provider_api_key_field(
+                        effective_core_api,
+                        api_key_registry,
+                    )
+                    if target_provider_field:
+                        submitted_target_key = data.get(target_provider_field)
+                        if (
+                            target_provider_field in data
+                            and not is_core_config_secret_placeholder(submitted_target_key)
+                        ):
+                            target_key = submitted_target_key
+                        else:
+                            target_key = core_cfg.get(target_provider_field, '')
+                        promoted_core_api_key = _usable_provider_api_key(target_key)
+
+                    if promoted_core_api_key is None:
+                        promoted_core_api_key = ''
+                    if not promoted_core_api_key and not enable_custom_api:
+                        return {"success": False, "error": "API Key不能为空"}
 
         def _normalize_core_api_key(value):
-            if _is_masked_secret(value):
-                return None
+            if is_core_config_secret_placeholder(value):
+                return promoted_core_api_key
             if value is None:
                 raise ValueError("API Key不能为null")
             if not isinstance(value, str):
@@ -211,7 +424,12 @@ async def update_core_config(request: Request):
                 )
             except (TypeError, ValueError) as exc:
                 return {"success": False, "error": str(exc)}
-            if not core_uses_free_provider and not api_key:
+            effective_api_key = (
+                core_cfg.get('coreApiKey', '')
+                if api_key is None
+                else api_key
+            )
+            if not core_uses_free_provider and not effective_api_key:
                 return {"success": False, "error": "API Key不能为空"}
             if api_key is not None:
                 core_cfg['coreApiKey'] = api_key
@@ -235,22 +453,8 @@ async def update_core_config(request: Request):
                 if normalized_key and normalized_value:
                     sanitized_resolved_urls[normalized_key] = normalized_value
             core_cfg['resolvedProviderUrls'] = sanitized_resolved_urls
-        _api_key_fields = [
-            'assistApiKeyQwen', 'assistApiKeyQwenIntl', 'assistApiKeyOpenai', 'assistApiKeyDeepseek',
-            'assistApiKeyGlm', 'assistApiKeyStep', 'assistApiKeySilicon',
-            'assistApiKeyGemini', 'assistApiKeyKimi', 'assistApiKeyDoubao', 'assistApiKeyDoubaoTts',
-            'assistApiKeyMinimax', 'assistApiKeyMinimaxIntl', 'assistApiKeyMimo',
-            'assistApiKeyMimoTokenPlan', 'assistApiKeyElevenlabs', 'assistApiKeyGrok',
-            'assistApiKeyClaude', 'assistApiKeyKimiCode', 'assistApiKeyOpenrouter',
-        ]
-        for field in _api_key_fields:
-            if field in data:
-                value = data[field]
-                if isinstance(value, str) and '***' in value:
-                    continue
-                core_cfg[field] = value
-        if 'mcpToken' in data:
-            core_cfg['mcpToken'] = data['mcpToken']
+        for field in (*CORE_CONFIG_ASSIST_API_KEY_FIELDS, 'mcpToken'):
+            apply_core_config_secret_update(core_cfg, data, field)
         if 'openclawUrl' in data:
             # 前端表单回填的是文件里的原始值。若启动期迁移曾写盘失败（Windows 上
             # os.replace 可能被杀软占用），这里收到的就还是旧的 8089，原样落盘等于把
@@ -283,16 +487,31 @@ async def update_core_config(request: Request):
                 return {"success": False, "error": "disableTts must be a boolean"}
             core_cfg['disableTts'] = data['disableTts']
 
+        # Capture the stored provider and whether either Doubao TTS credential
+        # was explicitly changed before applying the submitted model fields.
+        # A masked value means "keep existing"; an empty string is an explicit
+        # clear and must remain distinguishable from that no-op.
+        stored_tts_model_provider = str(
+            core_cfg.get('ttsModelProvider') or ''
+        ).strip()
+        doubao_tts_key_was_explicitly_updated = (
+            'assistApiKeyDoubaoTts' in data
+            and not is_core_config_secret_placeholder(data['assistApiKeyDoubaoTts'])
+        )
+        tts_model_key_was_explicitly_updated = (
+            'ttsModelApiKey' in data
+            and not is_core_config_secret_placeholder(data['ttsModelApiKey'])
+        )
+
         # 自定义API配置（Provider / Url / Id / ApiKey per model type）
-        _model_types = [
-            'conversation', 'summary', 'gameMain', 'gameSummary', 'correction', 'emotion',
-            'vision', 'agent', 'omni', 'tts',
-        ]
-        for mt in _model_types:
+        for mt in CORE_CONFIG_MODEL_TYPES:
             for suffix in ['Provider', 'Url', 'Id', 'ApiKey']:
                 field = f'{mt}Model{suffix}'
                 if field in data:
-                    core_cfg[field] = data[field]
+                    if suffix == 'ApiKey':
+                        apply_core_config_secret_update(core_cfg, data, field)
+                    else:
+                        core_cfg[field] = data[field]
         # gptsovitsEnabled 退役后的惰性迁移（save choke point，对偶 #1842 voice_id 思路）：
         # GSV 启用已收口到 ttsModelProvider=='gptsovits' 单一真相，旧 gptsovitsEnabled 仅作
         # pre-#1830 存量兜底。前端加载会把启用中的 GSV 下拉钉到 'gptsovits'，故任何提交了
@@ -304,10 +523,19 @@ async def update_core_config(request: Request):
             core_cfg['gptsovitsEnabled'] = False
         if _incoming_tts_provider == 'doubao_tts':
             doubao_key = str(core_cfg.get('assistApiKeyDoubaoTts') or '').strip()
-            if doubao_key and '***' not in doubao_key:
+            if doubao_tts_key_was_explicitly_updated:
+                # The dedicated Key Book field is authoritative when the user
+                # explicitly edits it, including an explicit empty-string clear.
                 core_cfg['ttsModelApiKey'] = doubao_key
-            else:
-                core_cfg['ttsModelApiKey'] = ''
+            elif not tts_model_key_was_explicitly_updated:
+                if doubao_key and not is_core_config_secret_placeholder(doubao_key):
+                    core_cfg['ttsModelApiKey'] = doubao_key
+                elif stored_tts_model_provider != 'doubao_tts':
+                    # Switching from another provider must not reuse its shared
+                    # model key as a Doubao credential. When already on Doubao,
+                    # however, masked/no-op saves preserve the legacy key stored
+                    # only in ttsModelApiKey.
+                    core_cfg['ttsModelApiKey'] = ''
         if 'ttsVoiceId' in data:
             core_cfg['ttsVoiceId'] = data['ttsVoiceId']
 

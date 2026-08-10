@@ -34,7 +34,12 @@ def build_topic(
     intent = selector.intent_text(shape)
     hint = str(chosen.get("hint") or fallback["hint"]).strip()
     if shape != preferred_shape:
-        hint = selector.hint_text(shape)
+        shape_hint = selector.hint_text(shape)
+        hint = (
+            " ".join(part for part in (shape_hint, hint) if part)
+            if bool(chosen.get("preserve_factual_hint"))
+            else shape_hint
+        )
     topic = {
         "source": str(chosen.get("source") or "fallback"),
         "privacy_classification": _privacy_classification(chosen),
@@ -66,6 +71,7 @@ def remember_topic(
     shape: str,
 ) -> None:
     selector._active_engagement_recent_topic_keys.append(key)
+    _mark_ambient_chat_used(selector, key)
     if title:
         selector._active_engagement_recent_topic_titles.append(title)
     selector._active_engagement_recent_topic_sources.append(str(topic["source"]))
@@ -89,3 +95,20 @@ def remember_topic(
     ).strip()
     if shape_guard_reason:
         topic["shape_guard_reason"] = shape_guard_reason
+
+
+def _mark_ambient_chat_used(selector: Any, key: str) -> None:
+    prefix = "ambient_danmaku:"
+    if not key.startswith(prefix):
+        return
+    try:
+        seq = int(key.removeprefix(prefix))
+    except (TypeError, ValueError, OverflowError):
+        return
+    live_events = getattr(selector._runtime, "live_events", None)
+    marker = getattr(live_events, "mark_ambient_chat_used", None)
+    if callable(marker):
+        try:
+            marker(seq)
+        except Exception:
+            return

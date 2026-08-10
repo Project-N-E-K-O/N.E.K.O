@@ -286,7 +286,7 @@
     // the choice survives a reload, then triggers handleModelReload to swap
     // the current MMD/VRM/Live2D model live.
     // =====================================================================
-    var DEFAULT_LIVE2D_MODEL_NAME = 'yui-origin';
+    var DEFAULT_LIVE2D_MODEL_NAME = 'yui-lolita';
     var _resetToDefaultModelInFlight = false;
 
     async function resetToDefaultModel() {

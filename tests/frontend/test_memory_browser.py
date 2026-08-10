@@ -1,4 +1,5 @@
 import json
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 import re
@@ -295,10 +296,18 @@ def _install_ready_memory_browser_routes(
         )
 
     def handle_recent_file(route):
+        filename = parse_qs(urlparse(route.request.url).query).get(
+            "filename",
+            ["recent_测试猫娘.json"],
+        )[0]
         route.fulfill(
             status=200,
             content_type="application/json",
-            json={"content": memory_file.read_text(encoding="utf-8")},
+            json={
+                "content": memory_file.read_text(encoding="utf-8"),
+                "fingerprint": f"fp:{filename}",
+                "identity_token": f"token:{filename}",
+            },
         )
 
     def handle_review_config(route):
@@ -2339,6 +2348,7 @@ def test_external_import_refreshes_open_memory_after_persisting(
     _install_ready_memory_browser_routes(mock_page, seed_memory_file)
     memory_content = {"value": seed_memory_file.read_text(encoding="utf-8")}
     request_counts = {"recent_files": 0, "recent_file": 0}
+    commit_payloads = []
 
     def handle_recent_files(route):
         request_counts["recent_files"] += 1
@@ -2374,6 +2384,7 @@ def test_external_import_refreshes_open_memory_after_persisting(
         )
 
     def handle_commit(route):
+        commit_payloads.append(route.request.post_data_json)
         memory_content["value"] = json.dumps(
             [
                 {
@@ -2419,6 +2430,9 @@ def test_external_import_refreshes_open_memory_after_persisting(
     mock_page.route("**/api/memory/external_import/commit", handle_commit)
 
     mock_page.goto(f"{running_server}/memory_browser")
+    mock_page.wait_for_function("window.i18next && window.i18next.isInitialized")
+    mock_page.evaluate("() => window.i18next.changeLanguage('zh-TW')")
+    mock_page.evaluate("() => { window.i18n = { language: '   ' }; }")
     memo = mock_page.locator("#memory-chat-edit .memo-textarea").first
     expect(memo).to_have_value("这是测试备忘录内容。", timeout=10000)
     if edit_during_import or refresh_failure:
@@ -2469,6 +2483,7 @@ def test_external_import_refreshes_open_memory_after_persisting(
     expect(mock_page.locator("#external-memory-files")).to_be_enabled()
     expect(mock_page.locator("#external-memory-format")).to_be_enabled()
     assert mock_page.evaluate("window._memoryImportInProgress") is False
+    assert commit_payloads[0]["language"] == "zh-TW"
     if refresh_failure:
         assert request_counts["recent_files"] == 1
     else:
@@ -3475,6 +3490,200 @@ def test_memory_browser_unsaved_close_dialog_guards_cancel_discard_and_save(
     expect(dialog).to_be_hidden(timeout=5000)
     expect(mock_page.locator("#memory-unsaved-status")).to_be_hidden()
     assert mock_page.evaluate("window.__memoryCloseAttempts") == 2
+
+
+@pytest.mark.frontend
+def test_memory_browser_stale_save_response_does_not_overwrite_new_selection(
+    mock_page: Page,
+    running_server: str,
+    seed_memory_file,
+):
+    _install_ready_memory_browser_routes(
+        mock_page,
+        seed_memory_file,
+        recent_files=["recent_测试猫娘.json", "recent_备用猫娘.json"],
+        current_catgirl="测试猫娘",
+    )
+    mock_page.goto(f"{running_server}/memory_browser")
+
+    current = mock_page.locator("#memory-file-list .cat-btn", has_text="测试猫娘")
+    target = mock_page.locator("#memory-file-list .cat-btn", has_text="备用猫娘")
+    expect(current).to_have_attribute("aria-current", "true", timeout=10000)
+
+    mock_page.evaluate(
+        """
+        () => {
+            const originalFetch = window.fetch.bind(window);
+            window.__memorySaveBodies = [];
+            window.__firstMemorySaveStarted = false;
+            window.__resolveFirstMemorySave = null;
+            window.fetch = (input, init) => {
+                const url = String(input && input.url ? input.url : input);
+                if (!url.includes('/api/memory/recent_file/save')) {
+                    return originalFetch(input, init);
+                }
+                window.__memorySaveBodies.push(JSON.parse(init.body));
+                if (!window.__firstMemorySaveStarted) {
+                    window.__firstMemorySaveStarted = true;
+                    return new Promise(resolve => {
+                        window.__resolveFirstMemorySave = () => resolve(new Response(
+                            JSON.stringify({
+                                success: true,
+                                need_refresh: false,
+                                fingerprint: 'fp:stale-a-response',
+                                identity_token: 'token:stale-a-response',
+                            }),
+                            { status: 200, headers: { 'Content-Type': 'application/json' } }
+                        ));
+                    });
+                }
+                return originalFetch(input, init);
+            };
+        }
+        """
+    )
+
+    mock_page.locator("#save-memory-btn").click()
+    mock_page.wait_for_function("window.__firstMemorySaveStarted === true")
+
+    target.click()
+    expect(target).to_have_attribute("aria-current", "true", timeout=5000)
+    memo = mock_page.locator("#memory-chat-edit .memo-textarea").first
+    expect(memo).to_be_visible(timeout=5000)
+    memo.fill("备用猫娘的新备忘录")
+    expect(mock_page.locator("#memory-unsaved-status")).to_be_visible()
+
+    mock_page.evaluate(
+        """
+        async () => {
+            const resolveSave = window.__resolveFirstMemorySave;
+            window.__resolveFirstMemorySave = null;
+            resolveSave();
+            await new Promise(resolve => requestAnimationFrame(resolve));
+            await new Promise(resolve => requestAnimationFrame(resolve));
+        }
+        """
+    )
+
+    expect(mock_page.locator("#memory-unsaved-status")).to_be_visible()
+    expect(mock_page.locator("#save-status")).not_to_contain_text("保存成功")
+
+    with mock_page.expect_response(
+        lambda response: "/api/memory/recent_file/save" in response.url
+        and response.status == 200
+    ):
+        mock_page.locator("#save-memory-btn").click()
+
+    bodies = mock_page.evaluate("window.__memorySaveBodies")
+    assert bodies[0]["filename"] == "recent_测试猫娘.json"
+    assert bodies[1]["filename"] == "recent_备用猫娘.json"
+    assert bodies[1]["fingerprint"] == "fp:recent_备用猫娘.json"
+    assert bodies[1]["identity_token"] == "token:recent_备用猫娘.json"
+
+
+@pytest.mark.frontend
+def test_memory_browser_serializes_concurrent_saves_for_same_file(
+    mock_page: Page,
+    running_server: str,
+    seed_memory_file,
+):
+    _install_ready_memory_browser_routes(mock_page, seed_memory_file)
+    mock_page.goto(f"{running_server}/memory_browser")
+    expect(mock_page.locator("#memory-file-list .cat-btn").first).to_have_attribute(
+        "aria-current",
+        "true",
+        timeout=10000,
+    )
+
+    mock_page.evaluate(
+        """
+        () => {
+            const originalFetch = window.fetch.bind(window);
+            window.__memorySaveBodies = [];
+            window.__memoryRefreshBroadcasts = [];
+            window.__resolveFirstMemorySave = null;
+            window.BroadcastChannel = class {
+                postMessage(message) {
+                    window.__memoryRefreshBroadcasts.push(message);
+                }
+                close() {}
+            };
+            window.fetch = (input, init) => {
+                const url = String(input && input.url ? input.url : input);
+                if (!url.includes('/api/memory/recent_file/save')) {
+                    return originalFetch(input, init);
+                }
+                window.__memorySaveBodies.push(JSON.parse(init.body));
+                const requestNumber = window.__memorySaveBodies.length;
+                if (requestNumber === 1) {
+                    return new Promise(resolve => {
+                        window.__resolveFirstMemorySave = () => resolve(new Response(
+                            JSON.stringify({
+                                success: true,
+                                need_refresh: true,
+                                fingerprint: 'fp:stale-response',
+                                identity_token: 'token:stale-response',
+                            }),
+                            { status: 200, headers: { 'Content-Type': 'application/json' } }
+                        ));
+                    });
+                }
+                const suffix = requestNumber === 2 ? 'second-response' : 'third-response';
+                return Promise.resolve(new Response(
+                    JSON.stringify({
+                        success: true,
+                        need_refresh: false,
+                        fingerprint: `fp:${suffix}`,
+                        identity_token: `token:${suffix}`,
+                    }),
+                    { status: 200, headers: { 'Content-Type': 'application/json' } }
+                ));
+            };
+        }
+        """
+    )
+
+    memo = mock_page.locator("#memory-chat-edit .memo-textarea").first
+    expect(memo).to_be_visible(timeout=5000)
+    memo.fill("第一版备忘录")
+
+    mock_page.evaluate(
+        """
+        () => {
+            const save = document.getElementById('save-memory-btn').onclick;
+            save();
+        }
+        """
+    )
+    mock_page.wait_for_function("window.__memorySaveBodies.length === 1")
+    memo.fill("第二版备忘录")
+    mock_page.evaluate("document.getElementById('save-memory-btn').onclick()")
+    mock_page.wait_for_timeout(50)
+    assert len(mock_page.evaluate("window.__memorySaveBodies")) == 1
+    expect(mock_page.locator("#memory-unsaved-status")).to_be_visible()
+    expect(mock_page.locator("#save-status")).not_to_contain_text("保存成功")
+
+    mock_page.evaluate(
+        """
+        async () => {
+            const resolveSave = window.__resolveFirstMemorySave;
+            window.__resolveFirstMemorySave = null;
+            resolveSave();
+            await new Promise(resolve => requestAnimationFrame(resolve));
+            await new Promise(resolve => requestAnimationFrame(resolve));
+        }
+        """
+    )
+    mock_page.wait_for_function("window.__memorySaveBodies.length === 2")
+    expect(mock_page.locator("#save-status")).to_contain_text("保存成功")
+    expect(mock_page.locator("#memory-unsaved-status")).to_be_hidden()
+
+    bodies = mock_page.evaluate("window.__memorySaveBodies")
+    assert "第一版备忘录" in bodies[0]["chat"][0]["text"]
+    assert "第二版备忘录" in bodies[1]["chat"][0]["text"]
+    assert bodies[1]["fingerprint"] == "fp:stale-response"
+    assert bodies[1]["identity_token"] == "token:stale-response"
+    assert len(mock_page.evaluate("window.__memoryRefreshBroadcasts")) == 1
 
 
 @pytest.mark.frontend

@@ -69,6 +69,18 @@ POST 请求体使用第一方设置页返回的字段名，例如 `coreApi`、`c
 
 偏好校验失败通常表示为 `{ "success": false, "error": "..." }`；存储维护模式可改为 HTTP 服务不可用响应。
 
+`GET /api/config/conversation-settings` 会同时在 JSON body 和 `ETag`
+响应头中返回版本。调用方应在 `POST` 时通过 `If-Match` 回传该 ETag；版本过期时服务端
+返回 `412 Precondition Failed`，并附带当前设置、版本、决策元数据和 ETag，供调用方合并后
+重试。为兼容旧客户端，省略 `If-Match` 仍可写入，但当前客户端应使用条件写入。
+当 `reset` 为 `true` 时，云端恢复结果中没有设置本身就是权威状态。当前客户端会先还原
+对话设置默认值再执行条件回写，而不会用过期的本地存储重新填充服务端。
+当前客户端会为完整快照写入附带 `X-Conversation-Settings-Full-Snapshot: 1`；水合前的部分
+写入会保留 reset 标记，使响应仍能触发默认值恢复。
+写入 `independentAsrEnabled` 时，内置 UI 还会通过
+`X-Conversation-Settings-ASR-Decision` 发送 JSON
+`{writeId, writerId, value}` 决策元组，让服务端即使遇到旧窗口请求最后完成，也能拒绝旧决策。
+
 ## 页面与语言数据
 
 | 方法和路径 | 用途 |

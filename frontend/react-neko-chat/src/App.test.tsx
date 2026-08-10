@@ -428,7 +428,7 @@ describe('App', () => {
 
       fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
       const toolGroup = screen.getByRole('group', { name: 'Tool icons' });
-      expect(Array.from(toolGroup.querySelectorAll<HTMLButtonElement>('.composer-icon-button'))
+      expect(Array.from(toolGroup.querySelectorAll<HTMLButtonElement>('.composer-icon-button[data-avatar-tool-id]'))
         .map(button => button.getAttribute('aria-label'))).toEqual(['棒棒糖', '猫爪', '锤子']);
       fireEvent.click(screen.getByRole('button', { name: '棒棒糖' }));
 
@@ -460,6 +460,50 @@ describe('App', () => {
     } finally {
       restoreLive2dBounds();
     }
+  });
+
+  it('lets the full chat configure the avatar tools shown in its emoji menu', async () => {
+    const onAvatarToolStateChange = vi.fn();
+    const { container } = render(
+      <App
+        chatSurfaceMode="full"
+        assistantName="Neko"
+        onAvatarToolStateChange={onAvatarToolStateChange}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+    const toolGroup = screen.getByRole('group', { name: 'Tool icons' });
+    expect(toolGroup.querySelectorAll('[data-avatar-tool-id]')).toHaveLength(3);
+    expect(toolGroup).toHaveAttribute('data-avatar-tool-button-count', '4');
+    expect(toolGroup.querySelector('.full-avatar-tool-settings-divider')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Edit quick tools' })).toHaveClass(
+      'composer-icon-button',
+      'full-avatar-tool-settings-button',
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit quick tools' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Manage tools' });
+    expect(dialog.querySelector('[data-avatar-tool-library-id="rps"]')).not.toBeNull();
+
+    fireEvent.click(dialog.querySelector('.avatar-tool-manager-remove') as HTMLButtonElement);
+    fireEvent.click(dialog.querySelector('[data-avatar-tool-library-id="rps"]') as HTMLButtonElement);
+    fireEvent.click(dialog.querySelector('.avatar-tool-manager-action.primary') as HTMLButtonElement);
+
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Manage tools' })).toBeNull());
+    expect(Array.from(toolGroup.querySelectorAll<HTMLElement>('[data-avatar-tool-id]'))
+      .map(button => button.dataset.avatarToolId)).toEqual(['rps', 'fist', 'hammer']);
+    expect(JSON.parse(window.localStorage.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY) || '[]'))
+      .toEqual(['rps', 'fist', 'hammer']);
+
+    fireEvent.click(container.querySelector('[data-avatar-tool-id="rps"]') as HTMLButtonElement);
+    await waitFor(() => expect(onAvatarToolStateChange).toHaveBeenLastCalledWith(expect.objectContaining({
+      active: true,
+      toolId: 'rps',
+      roundChoiceResultLabels: expect.objectContaining({
+        avatar_win: 'Neko wins',
+      }),
+    })));
   });
 
   it('publishes only the strict desktop descriptor from the full chat surface', async () => {
@@ -3998,6 +4042,273 @@ describe('App', () => {
     }
   });
 
+  it('restores the compact empty state when active-route sync opens after the game turn starts', async () => {
+    vi.useFakeTimers();
+    const gameLine = '哈，这球终于被我拿下了！';
+    const gameMessage = parseChatMessage({
+      id: 'assistant-badminton-exit-line',
+      role: 'assistant',
+      author: 'YUI',
+      time: '12:23',
+      createdAt: 2,
+      turnId: 'badminton-exit-turn',
+      blocks: [{ type: 'text', text: gameLine }],
+      status: 'streaming',
+    });
+
+    try {
+      const { container, rerender } = render(<App chatSurfaceMode="compact" messages={[]} />);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      expect(container.querySelector('.compact-chat-capsule-text')).toHaveTextContent(
+        DEFAULT_CHAT_EMPTY_STATE_FALLBACK,
+      );
+
+      act(() => {
+        window.dispatchEvent(new CustomEvent('neko-assistant-turn-start', {
+          detail: {
+            turnId: 'badminton-exit-turn',
+            source: 'visible_gemini_bubble',
+            meta: {
+              source: 'game_route',
+              kind: 'badminton',
+              session_id: 'badminton-session',
+              mirror: {
+                kind: 'badminton',
+                session_id: 'badminton-session',
+                event: {},
+              },
+            },
+          },
+        }));
+        window.dispatchEvent(new CustomEvent('neko-game-window-state-change', {
+          detail: {
+            action: 'opened',
+            gameType: 'badminton',
+            sessionId: 'badminton-session',
+          },
+        }));
+      });
+      rerender(<App chatSurfaceMode="compact" messages={[gameMessage]} />);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(20);
+      });
+      expect(container.querySelector('.compact-chat-capsule-text')?.textContent ?? '').toBe('');
+
+      act(() => {
+        window.dispatchEvent(new CustomEvent('neko-game-window-state-change', {
+          detail: {
+            action: 'closed',
+            gameType: 'badminton',
+            sessionId: 'badminton-session',
+          },
+        }));
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+
+      expect(container.querySelector('.compact-chat-capsule-text')).toHaveTextContent(
+        DEFAULT_CHAT_EMPTY_STATE_FALLBACK,
+      );
+      expect(container.querySelector('.compact-chat-capsule-text')).not.toHaveTextContent(gameLine);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('restores the compact empty state from an identity-less reconnect close for a tracked game', async () => {
+    vi.useFakeTimers();
+    const gameLine = '比赛已经结束啦！';
+
+    try {
+      const { container } = render(<App chatSurfaceMode="compact" messages={[]} />);
+
+      act(() => {
+        window.dispatchEvent(new CustomEvent('neko-assistant-turn-start', {
+          detail: {
+            turnId: 'reconnected-badminton-turn',
+            source: 'gemini_response_first_chunk',
+            meta: {
+              source: 'game_route',
+              kind: 'badminton',
+              session_id: 'reconnected-badminton-session',
+              mirror: {
+                kind: 'badminton',
+                session_id: 'reconnected-badminton-session',
+                event: {},
+              },
+            },
+          },
+        }));
+        window.dispatchEvent(new CustomEvent('neko-compact-caption-update', {
+          detail: {
+            turnId: 'reconnected-badminton-turn',
+            segmentId: 'reconnected-badminton-turn:segment:1',
+            text: gameLine,
+          },
+        }));
+        window.dispatchEvent(new CustomEvent('neko-assistant-speech-unavailable', {
+          detail: {
+            turnId: 'reconnected-badminton-turn',
+            source: 'test',
+          },
+        }));
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3000);
+      });
+      expect(container.querySelector('.compact-chat-capsule-text')?.textContent ?? '').not.toBe('');
+
+      act(() => {
+        window.dispatchEvent(new CustomEvent('neko-game-window-state-change', {
+          detail: {
+            action: 'closed',
+            gameType: '',
+            sessionId: '',
+          },
+        }));
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+
+      expect(container.querySelector('.compact-chat-capsule-text')).toHaveTextContent(
+        DEFAULT_CHAT_EMPTY_STATE_FALLBACK,
+      );
+      expect(container.querySelector('.compact-chat-capsule-text')).not.toHaveTextContent(gameLine);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('restores the compact empty state after a text-less assistant turn fully ends', async () => {
+    vi.useFakeTimers();
+
+    try {
+      const { container } = render(<App chatSurfaceMode="compact" messages={[]} />);
+
+      act(() => {
+        window.dispatchEvent(new CustomEvent('neko-assistant-turn-start', {
+          detail: {
+            turnId: 'badminton-postgame-turn',
+            source: 'test',
+          },
+        }));
+        window.dispatchEvent(new CustomEvent('neko-assistant-turn-ending', {
+          detail: {
+            turnId: 'badminton-postgame-turn',
+            source: 'turn_end_flush',
+          },
+        }));
+        window.dispatchEvent(new CustomEvent('neko-assistant-turn-end', {
+          detail: {
+            turnId: 'badminton-postgame-turn',
+            source: 'turn_end',
+          },
+        }));
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+
+      expect(container.querySelector('.compact-chat-capsule-text')).toHaveTextContent(
+        DEFAULT_CHAT_EMPTY_STATE_FALLBACK,
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not bind an ordinary assistant caption to a stale active game session', async () => {
+    vi.useFakeTimers();
+    const normalLine = '这是一条与小游戏无关的正常回复。';
+
+    try {
+      const { container } = render(<App chatSurfaceMode="compact" messages={[]} />);
+
+      act(() => {
+        window.dispatchEvent(new CustomEvent('neko-game-window-state-change', {
+          detail: {
+            action: 'opened',
+            gameType: 'badminton',
+            sessionId: 'stale-game-session',
+          },
+        }));
+        window.dispatchEvent(new CustomEvent('neko-assistant-turn-start', {
+          detail: {
+            turnId: 'ordinary-assistant-turn',
+            source: 'gemini_response_first_chunk',
+          },
+        }));
+        window.dispatchEvent(new CustomEvent('neko-compact-caption-update', {
+          detail: {
+            turnId: 'ordinary-assistant-turn',
+            segmentId: 'ordinary-assistant-turn:segment:1',
+            text: normalLine,
+          },
+        }));
+        window.dispatchEvent(new CustomEvent('neko-assistant-speech-unavailable', {
+          detail: {
+            turnId: 'ordinary-assistant-turn',
+            source: 'test',
+          },
+        }));
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3000);
+      });
+      const visibleBeforeSync = container.querySelector('.compact-chat-capsule-text')?.textContent ?? '';
+      expect(visibleBeforeSync.length).toBeGreaterThan(0);
+      expect(normalLine.startsWith(visibleBeforeSync)).toBe(true);
+
+      act(() => {
+        window.dispatchEvent(new CustomEvent('neko-game-window-state-change', {
+          detail: {
+            action: 'closed',
+            gameType: '',
+            sessionId: '',
+          },
+        }));
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(100);
+      });
+
+      const visibleAfterSync = container.querySelector('.compact-chat-capsule-text')?.textContent ?? '';
+      expect(visibleAfterSync.length).toBeGreaterThanOrEqual(visibleBeforeSync.length);
+      expect(normalLine.startsWith(visibleAfterSync)).toBe(true);
+
+      act(() => {
+        window.dispatchEvent(new CustomEvent('neko-game-window-state-change', {
+          detail: {
+            action: 'opened',
+            gameType: 'badminton',
+            sessionId: 'overlapping-game-session',
+          },
+        }));
+        window.dispatchEvent(new CustomEvent('neko-game-window-state-change', {
+          detail: {
+            action: 'closed',
+            gameType: 'badminton',
+            sessionId: 'overlapping-game-session',
+          },
+        }));
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(100);
+      });
+
+      const visibleAfterRealClose = container.querySelector('.compact-chat-capsule-text')?.textContent ?? '';
+      expect(visibleAfterRealClose.length).toBeGreaterThanOrEqual(visibleAfterSync.length);
+      expect(normalLine.startsWith(visibleAfterRealClose)).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('does not flash the previous sentence when the next assistant sentence streams under a new turn id', async () => {
     vi.useFakeTimers();
     const firstSentence = '第一句话已经说完了，不能在第二句话开始时闪回来。';
@@ -6943,6 +7254,27 @@ describe('App', () => {
     );
     expect(compactChatStyles).toMatch(
       /\.compact-export-history-scroll-content\s*\{[\s\S]*?width: 100%;[\s\S]*?padding-right: var\(--compact-export-history-shadow-gutter-right\);[\s\S]*?padding-left: var\(--compact-export-history-shadow-gutter-left\);/,
+    );
+  });
+
+  it('keeps link and music cards inside narrow message bubbles', () => {
+    expect(compactChatStyles).toMatch(
+      /\.message-stack\s*\{[\s\S]*?max-width: min\(86%, 320px\);[\s\S]*?min-width: 0;/,
+    );
+    expect(compactChatStyles).toMatch(
+      /\.message-bubble\s*\{[\s\S]*?min-width: 0;[\s\S]*?max-width: 100%;/,
+    );
+    expect(compactChatStyles).toMatch(
+      /\.message-block\s*\{[\s\S]*?min-width: 0;[\s\S]*?max-width: 100%;/,
+    );
+    expect(compactChatStyles).toMatch(
+      /\.message-block-link\s*\{[\s\S]*?grid-template-columns: minmax\(0, 1fr\);[\s\S]*?width: 100%;[\s\S]*?min-width: min\(220px, 100%\);[\s\S]*?max-width: 100%;/,
+    );
+    expect(compactChatStyles).toMatch(
+      /\.message-link-thumb\s*\{[\s\S]*?min-width: 0;[\s\S]*?max-width: 100%;/,
+    );
+    expect(compactChatStyles).toMatch(
+      /\.message-link-copy\s*\{[\s\S]*?min-width: 0;[\s\S]*?max-width: 100%;/,
     );
   });
 

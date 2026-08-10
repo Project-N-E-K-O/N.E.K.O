@@ -114,6 +114,62 @@ def test_reenabling_noise_reduction_recreates_frame_buffer(monkeypatch) -> None:
     assert len(output) == 480 * np.dtype(np.int16).itemsize
     processor.close()
 
+def test_toggling_noise_reduction_clears_rnnoise_evidence(monkeypatch) -> None:
+    class _Denoiser:
+        def close(self) -> None:
+            return None
+
+    processor = AudioProcessor(
+        input_sample_rate=48_000,
+        output_sample_rate=48_000,
+        noise_reduce_enabled=False,
+        agc_enabled=False,
+        limiter_enabled=False,
+    )
+    monkeypatch.setattr(
+        processor,
+        "_init_denoiser",
+        lambda: setattr(processor, "_denoiser", _Denoiser()),
+    )
+    processor._last_speech_prob = 0.9
+    processor._rnnoise_frame_count = 2
+    processor._rnnoise_peak = 0.9
+    processor._rnnoise_mean = 0.8
+    processor._rnnoise_last = 0.7
+    processor._rnnoise_ema = 0.6
+    processor._rnnoise_ema_state = 0.5
+
+    processor.set_enabled(True)
+
+    assert processor.speech_probability == 0.0
+    assert processor.rnnoise_frame_count == 0
+    assert processor.rnnoise_probability_peak is None
+    assert processor.rnnoise_probability_mean is None
+    assert processor.rnnoise_probability_last is None
+    assert processor.rnnoise_probability_ema is None
+    assert processor._rnnoise_ema_state is None
+
+    processor._last_speech_prob = 0.3
+    processor._rnnoise_frame_count = 1
+    processor._rnnoise_peak = 0.3
+    processor._rnnoise_mean = 0.2
+    processor._rnnoise_last = 0.1
+    processor._rnnoise_ema = 0.4
+    processor._rnnoise_ema_state = 0.4
+    processor.set_enabled(True)
+    assert processor.rnnoise_probability_ema == 0.4
+    assert processor._rnnoise_ema_state == 0.4
+
+    processor.set_enabled(False)
+    assert processor.speech_probability == 0.0
+    assert processor.rnnoise_frame_count == 0
+    assert processor.rnnoise_probability_peak is None
+    assert processor.rnnoise_probability_mean is None
+    assert processor.rnnoise_probability_last is None
+    assert processor.rnnoise_probability_ema is None
+    assert processor._rnnoise_ema_state is None
+
+
 
 @pytest.mark.asyncio
 async def test_audio_close_waits_for_executor_chunk_processing() -> None:

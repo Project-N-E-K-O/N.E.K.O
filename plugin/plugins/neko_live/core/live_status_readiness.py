@@ -105,8 +105,8 @@ def speech_explanation(
         summary = "waiting_for_activity"
         reason = state_reason or state_name
     elif latest_status == "pushed":
-        summary = "recently_spoke"
-        reason = "recent_output"
+        summary = "recently_handed_off"
+        reason = "host_handoff"
     elif latest_status == "skipped":
         summary = "recently_skipped"
         reason = "recently_skipped"

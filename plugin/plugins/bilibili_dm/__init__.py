@@ -1119,24 +1119,20 @@ class BiliDMPlugin(NekoPluginBase):
         user_title: str,
     ) -> str:
         """构建 AI 会话系统提示词"""
-        from config.prompts.prompts_sys import SESSION_INIT_PROMPT
-        from utils.language_utils import get_global_language
-
-        try:
-            from utils.i18n_utils import normalize_language_code
-        except Exception:
-            normalize_language_code = None
-
-        user_language = get_global_language()
-        short_language = (
-            normalize_language_code(user_language, format="short")
-            if normalize_language_code
-            else user_language
+        from config.prompts.prompts_sys import (
+            SESSION_INIT_PROMPT,
+            normalize_sys_prompt_locale,
         )
+        from utils.language_utils import get_global_language_full
+
+        # #2500 第 2 步：取全码再经 prompts_sys 归一。原先那次 format="short" 的
+        # 短码化是顺手做的、不是有意的——它把 zh-TW 塌成 zh，繁中用户拿简体模板，
+        # 下面那级 ``.get(user_language)`` 兜底永远够不到。⚠️ 也不能拿全码裸查：
+        # 简中的全码是 'zh-CN'，而 prompts_sys 这套表的简体键是 'zh'。
+        short_language = normalize_sys_prompt_locale(get_global_language_full())
 
         init_prompt_template = SESSION_INIT_PROMPT.get(
-            short_language,
-            SESSION_INIT_PROMPT.get(user_language, SESSION_INIT_PROMPT["en"]),
+            short_language, SESSION_INIT_PROMPT["en"],
         )
 
         system_prompt_parts = [
@@ -1153,8 +1149,11 @@ class BiliDMPlugin(NekoPluginBase):
                 async with httpx.AsyncClient(
                     timeout=5.0, proxy=None, trust_env=False
                 ) as client:
+                    # Bilibili has no explicit per-user locale.  Let Memory
+                    # Server restore the durable character locale instead of
+                    # persisting the host process fallback.
                     response = await client.get(
-                        f"http://127.0.0.1:{MEMORY_SERVER_PORT}/new_dialog/{her_name}"
+                        f"http://127.0.0.1:{MEMORY_SERVER_PORT}/new_dialog/{her_name}",
                     )
                     if response.is_success:
                         memory_context = response.text.strip()
@@ -1391,9 +1390,13 @@ class BiliDMPlugin(NekoPluginBase):
         from config import MEMORY_SERVER_PORT
 
         async with httpx.AsyncClient() as client:
+            # No Bilibili session locale is user-declared, so persistence-
+            # bearing endpoints must not receive the process fallback.
             response = await client.post(
                 f"http://localhost:{MEMORY_SERVER_PORT}/{endpoint}/{her_name}",
-                json={"input_history": json.dumps(messages, ensure_ascii=False)},
+                json={
+                    "input_history": json.dumps(messages, ensure_ascii=False),
+                },
                 timeout=timeout,
             )
             response.raise_for_status()

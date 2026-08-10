@@ -1,0 +1,27 @@
+{
+  "targetDomain": "project-neko.online",
+  "locationCode": 2156,
+  "languageCode": "zh-CN",
+  "device": "desktop",
+  "serpDepth": 100,
+  "keywords": [
+    {
+      "keyword": "本地 AI 助手",
+      "landingPage": "/zh-CN/guide/local-and-offline",
+      "intent": "MOFU 本地部署教程",
+      "cta": "阅读本地与离线指南 → Steam"
+    },
+    {
+      "keyword": "Live2D AI 助手",
+      "landingPage": "/zh-CN/frontend/live2d",
+      "intent": "MOFU Live2D 功能",
+      "cta": "阅读 Live2D 文档 → Steam"
+    },
+    {
+      "keyword": "长期记忆 AI 助手",
+      "landingPage": "/zh-CN/architecture/memory-system",
+      "intent": "MOFU 长期记忆功能",
+      "cta": "阅读记忆系统文档 → Steam"
+    }
+  ]
+}

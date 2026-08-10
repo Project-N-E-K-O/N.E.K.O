@@ -1531,7 +1531,8 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
             }
         }
 
-        // 保存 Live2D 待机动作（如果当前是 Live2D 模型且动作选择器有值）
+        // 只保存 Live2D 待机动作。角色资料保存不负责模型绑定；这里的表单快照可能已经过期，
+        // 不能把 form._live2dModel 一并写回，否则辅助生成自动保存会恢复旧模型。
         if (!isNew && form._modelType === 'live2d' && form._live2dModel) {
             const motionSelect = document.getElementById('preview-motion-select');
             const idleAnimation = motionSelect ? (motionSelect.value || '') : '';
@@ -1540,8 +1541,6 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
-                        model_type: 'live2d',
-                        live2d: form._live2dModel,
                         live2d_idle_animation: idleAnimation
                     })
                 });

@@ -70,6 +70,23 @@ function getEffectiveLive2DRenderQuality(quality) {
     return isDesktopLinuxX11Runtime() ? LIVE2D_LINUX_X11_DEFAULT_QUALITY : 'medium';
 }
 
+function getLive2DNiriPetVirtualViewportSize() {
+    try {
+        const api = window.__nekoNiriPetPhysicalCrop;
+        if (!api || typeof api.getState !== 'function') return null;
+        const state = api.getState();
+        const virtualBounds = state && state.enabled === true ? state.virtualBounds : null;
+        const width = Number(virtualBounds && virtualBounds.width);
+        const height = Number(virtualBounds && virtualBounds.height);
+        if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+            return null;
+        }
+        return { width, height };
+    } catch (_) {
+        return null;
+    }
+}
+
 // 验证模型偏好是否有效
 function isValidModelPreferences(scale, position) {
     if (!scale || !position) return false;
@@ -106,6 +123,11 @@ class Live2DManager {
         this.isInitialized = false;
         this.motionTimer = null;
         this._motionTimerGeneration = 0;
+        this._actionMotionRequestPendingModel = null;
+        this._simpleMotionActive = false;
+        this._transientExpressionGeneration = 0;
+        this._transientExpressionTask = null;
+        this._activeTransientExpression = false;
         this.isEmotionChanging = false;
         this.dragEnabled = false;
         this.isFocusing = false;
@@ -341,9 +363,19 @@ class Live2DManager {
                     const renderer = this.pixi_app.renderer;
                     const prevW = this.pixi_app.renderer.screen.width;
                     const prevH = this.pixi_app.renderer.screen.height;
-                    // 以 CSS 像素为准（= BrowserWindow 当前像素尺寸），这是模型真正可见的区域
-                    const newW = Math.max(window.innerWidth || window.screen.width || 1, 1);
-                    const newH = Math.max(window.innerHeight || window.screen.height || 1, 1);
+                    // Niri 会把透明 Pet 的 BrowserWindow 物理裁剪到人物附近，但 Live2D
+                    // 始终工作在完整虚拟桌面坐标系。若把物理裁剪尺寸当成 viewport，
+                    // 每轮 setBounds 都会再次缩放人物并反过来改变下一轮裁剪范围。
+                    const niriVirtualViewport = getLive2DNiriPetVirtualViewportSize();
+                    const niriPhysicalCropActive = !!niriVirtualViewport;
+                    const newW = Math.max(
+                        niriVirtualViewport?.width || window.innerWidth || window.screen.width || 1,
+                        1
+                    );
+                    const newH = Math.max(
+                        niriVirtualViewport?.height || window.innerHeight || window.screen.height || 1,
+                        1
+                    );
                     const prevResolution = renderer.resolution || 1;
                     const nextResolution = this._getRenderResolutionForQuality(getEffectiveLive2DRenderQuality(window.renderQuality));
                     if (isLive2DReturnBallViewportSize(newW, newH)) {
@@ -356,7 +388,8 @@ class Live2DManager {
                     const resolutionChanged = Math.abs(prevResolution - nextResolution) >= 0.001;
                     if (!sizeChanged && !resolutionChanged) return;
 
-                    if (typeof this.isLive2DPeekActive === 'function' &&
+                    if (!niriPhysicalCropActive &&
+                        typeof this.isLive2DPeekActive === 'function' &&
                         this.isLive2DPeekActive() &&
                         typeof this.clearLive2DPeek === 'function') {
                         this.clearLive2DPeek(`viewport-changed:${reason}`);
@@ -376,7 +409,7 @@ class Live2DManager {
                     // 主动把 model.x/y 设置为新屏窗口坐标。若这里再按 (newW/prevW, newH/prevH) 缩放，
                     // 会对同一个值双重作用，导致模型偏移。通过 _pendingDisplaySwitch 跳过缩放，
                     // 仅 resize renderer（renderer 尺寸必须更新，否则 canvas 仍是旧尺寸裁切模型）。
-                    if (this._pendingDisplaySwitch || restoringFromReturnBallViewport) {
+                    if (this._pendingDisplaySwitch || restoringFromReturnBallViewport || niriPhysicalCropActive) {
                         if (restoringFromReturnBallViewport && !this._pendingDisplaySwitch) return;
                         console.log('[Live2D Core] renderer 已 resize（跳过模型缩放）:', {
                             reason,
@@ -384,7 +417,8 @@ class Live2DManager {
                             prevH,
                             newW,
                             newH,
-                            pendingDisplaySwitch: !!this._pendingDisplaySwitch
+                            pendingDisplaySwitch: !!this._pendingDisplaySwitch,
+                            niriPhysicalCropActive
                         });
                         return;
                     }
@@ -1673,6 +1707,56 @@ class Live2DManager {
     }
 
     /**
+     * 解析并限制 drawable 矩形的 padding。
+     *
+     * @param {number|string} rawPadding 原始 padding
+     * @param {number} fallback 无效输入时的默认值
+     * @returns {number} 0-32 范围内的 padding
+     */
+    _resolveRectPadding(rawPadding, fallback = 0) {
+        const requestedPadding =
+            (typeof rawPadding === 'number' ||
+                (typeof rawPadding === 'string' && rawPadding.trim() !== ''))
+                ? Number(rawPadding)
+                : NaN;
+        return Number.isFinite(requestedPadding)
+            ? Math.max(0, Math.min(32, requestedPadding))
+            : fallback;
+    }
+
+    /**
+     * 获取当前实际可渲染 drawable 的未裁剪屏幕区域。
+     *
+     * 该公开入口仅供贴边拖拽链读取未裁剪画面几何。既有桌面输入区继续
+     * 走 getModelInputRegionRects()，本功能不能改写普通点击穿透合同。
+     */
+    getModelDrawableScreenRects(options = {}, modelOverride = null) {
+        const model = modelOverride || this.currentModel;
+        if ((model && model.destroyed) ||
+            (modelOverride && this.currentModel && modelOverride !== this.currentModel)) {
+            return [];
+        }
+
+        const padding = this._resolveRectPadding(options?.padding, 0);
+        const modelBounds = this._getUnclippedModelScreenBounds();
+        const drawableRects = this._getRenderableDrawableScreenRects(
+            modelBounds,
+            null,
+            false
+        );
+        if (!Array.isArray(drawableRects)) return [];
+
+        return drawableRects.map((rect) => {
+            if (!rect) return null;
+            const left = Number(rect.left) - padding;
+            const top = Number(rect.top) - padding;
+            const right = Number(rect.right) + padding;
+            const bottom = Number(rect.bottom) + padding;
+            return this._createScreenRect(left, top, right, bottom);
+        }).filter(Boolean);
+    }
+
+    /**
      * 获取当前实际可渲染 drawable 的屏幕输入区域。
      *
      * 桌面宿主使用这些区域构造 Native Wayland compositor input region。
@@ -1695,15 +1779,7 @@ class Live2DManager {
             return [];
         }
 
-        const rawPadding = options?.padding;
-        const requestedPadding =
-            (typeof rawPadding === 'number' ||
-                (typeof rawPadding === 'string' && rawPadding.trim() !== ''))
-                ? Number(rawPadding)
-                : NaN;
-        const padding = Number.isFinite(requestedPadding)
-            ? Math.max(0, Math.min(32, requestedPadding))
-            : 8;
+        const padding = this._resolveRectPadding(options?.padding, 8);
         // Drawable vertices already carry their real screen coordinates. When
         // vertices are temporarily unavailable, logical fallback mapping must
         // use the model's full (unclipped) bounds as its scale basis. Edge peek
@@ -4999,14 +5075,19 @@ class Live2DManager {
                 const screen = renderer && renderer.screen;
                 const rendererW = Number(screen && screen.width);
                 const rendererH = Number(screen && screen.height);
+                const niriVirtualViewport = getLive2DNiriPetVirtualViewportSize();
                 const viewportLeft = 0;
                 const viewportTop = 0;
-                const viewportRight = Math.max(0, Number.isFinite(rendererW) && rendererW > 0
-                    ? Math.min(rendererW, Number(window.innerWidth) || rendererW)
-                    : Number(window.innerWidth) || 0);
-                const viewportBottom = Math.max(0, Number.isFinite(rendererH) && rendererH > 0
-                    ? Math.min(rendererH, Number(window.innerHeight) || rendererH)
-                    : Number(window.innerHeight) || 0);
+                const viewportRight = Math.max(0, niriVirtualViewport
+                    ? niriVirtualViewport.width
+                    : (Number.isFinite(rendererW) && rendererW > 0
+                        ? Math.min(rendererW, Number(window.innerWidth) || rendererW)
+                        : Number(window.innerWidth) || 0));
+                const viewportBottom = Math.max(0, niriVirtualViewport
+                    ? niriVirtualViewport.height
+                    : (Number.isFinite(rendererH) && rendererH > 0
+                        ? Math.min(rendererH, Number(window.innerHeight) || rendererH)
+                        : Number(window.innerHeight) || 0));
                 const visibleLeft = Math.max(left, viewportLeft);
                 const visibleRight = Math.min(right, viewportRight);
                 const visibleTop = Math.max(top, viewportTop);

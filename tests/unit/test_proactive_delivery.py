@@ -16,6 +16,8 @@ from main_logic.proactive_delivery import (
     DELIVERY_ACK_FUTURE_KEY,
     DELIVERY_RETRACTED_KEY,
     ProactiveDeliveryManager,
+    SWAP_PRIME_DELIVERY_CLAIM_KEY,
+    VOICE_DELIVERY_COMMITTED_KEY,
     effective_priority,
 )
 
@@ -35,6 +37,33 @@ async def _settle():
     # Let scheduled call_later(0)/create_task work run.
     for _ in range(5):
         await asyncio.sleep(0.01)
+
+
+async def _wait_until(predicate, *, timeout=5.0, what="condition"):
+    # 轮询到条件成立，超时才报错。不能用固定 sleep 等后台跑完：Windows 事件
+    # 循环时钟精度 15.625ms，短于一格的 sleep 会在下一轮循环立刻返回（等于零
+    # 等待），长于一格的又成倍超发，等多久完全取决于与被测逻辑无关的其它活动。
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while not predicate():
+        if loop.time() >= deadline:
+            raise AssertionError(f"{what} not satisfied within {timeout}s")
+        await asyncio.sleep(0.005)
+
+
+async def _stays_true(predicate, *, until, what="condition"):
+    # 按真实时钟走到 until（绝对时刻），期间每圈复查。"窗口内还没发生"这类负向断言
+    # 只在一瞬间取样是没有牙齿的：被测窗口被误缩短十倍时单点取样照样通过（实测过），
+    # 只有按真实时钟走一段才测得出窗口本身还在。
+    # until 必须是绝对时刻而不是时长：相对时长会在前面的等待被拖长时把观察窗口推到
+    # 被测窗口之外，那时发生的放行是合法的，断言就变成假红。
+    loop = asyncio.get_running_loop()
+    while True:
+        await asyncio.sleep(0.005)
+        # 醒来后先复查挂钟再断言。这一觉可能被别的任务拖长而睡过了窗口。
+        if loop.time() >= until:
+            return
+        assert predicate(), f"{what} broke before {until}"
 
 
 def test_effective_priority_normalisation():
@@ -159,13 +188,23 @@ async def test_noop_release_frees_inflight_slot_immediately():
 
 async def test_min_gap_delays_release():
     delivered = []
-    mgr = _make(delivered, min_gap_s=0.2)
+    # min-gap 抬到 1.0s：负向断言必须落在窗口内，而 Windows 上 sleep 和 pump 各
+    # 自会超发一格时钟（15.625ms），0.2s 的窗口给"还没到点"留的余量不足十倍。
+    min_gap = 1.0
+    mgr = _make(delivered, min_gap_s=min_gap)
+    loop = asyncio.get_running_loop()
     mgr.on_playback_start()
     mgr.submit({"id": "x"}, priority=1)
     mgr.on_playback_end()           # records last_play_end; gap not elapsed
-    await asyncio.sleep(0.05)
-    assert delivered == []          # still inside min-gap
-    await asyncio.sleep(0.3)
+    window_end = loop.time() + min_gap
+    # 不能先 _settle() 再裸断言：那是 5 次不受检的真实 sleep，被拖长到超过 min-gap
+    # 之后放行是合法的，裸断言就会假红。交给 _stays_true 并给它**绝对**的窗口终点，
+    # 第一次醒来（约 5ms）时 call_later(0) 那轮 pump 早已跑过，所以「不受 min-gap
+    # 约束就会立刻放行」这个回归照样会被第一次断言抓住。走到窗口的 80% 处收手。
+    await _stays_true(
+        lambda: delivered == [], until=window_end - 0.2, what="min-gap window"
+    )
+    await _wait_until(lambda: bool(delivered), what="min-gap release")
     assert [c["id"] for c in delivered] == ["x"]
 
 
@@ -173,12 +212,29 @@ async def test_playing_watchdog_recovers_missing_play_end():
     # voice_play_start with no matching voice_play_end (frontend disconnect)
     # must not wedge the queue forever — the max_play watchdog re-opens it.
     delivered = []
-    mgr = _make(delivered, max_play_s=0.1)
+    max_play = 0.5
+    mgr = _make(delivered, max_play_s=max_play)
+    loop = asyncio.get_running_loop()
     mgr.on_playback_start()          # ...and voice_play_end never arrives
+    window_end = loop.time() + max_play
     mgr.submit({"id": "x"}, priority=1)
-    await asyncio.sleep(0.05)
-    assert delivered == []           # still within max_play window
-    await asyncio.sleep(0.2)         # exceed watchdog
+    armed = mgr._pump_handle         # the call_later(0) submit just scheduled
+    # 负向那半不睡固定时长：0.05s 的 sleep 在 Windows 上实际耗 62.5ms，离窗口边界
+    # 只剩几格时钟，随时滑过看门狗变假红。改成等这一轮 pump 真的跑完——它没有放
+    # 行，而是把自己重排到看门狗到点（handle 被换掉），这才是"窗口内"的确定证据。
+    await _wait_until(lambda: mgr._pump_handle is not armed, what="first pump run")
+    # 但要先确认这一轮 pump 仍落在看门狗窗口内才有资格断言「还没放行」：事件循环被
+    # 拖到窗口之后才跑第一轮 pump 时，那一轮直接走看门狗分支放行是**正确行为**。
+    if loop.time() < window_end:
+        assert delivered == []           # still within max_play window
+        assert mgr._playing              # 闸门确实还关着，正向断言才不会空过
+        assert mgr._pump_handle is not None  # 看门狗自己会到点，不靠外部再踢一脚
+        # 上面几条只是窗口内某一瞬的取样，看门狗窗口被误缩短时它们照样通过；
+        # 只有按真实时钟走到窗口的 80% 处才能证明窗口本身还在。
+        await _stays_true(
+            lambda: delivered == [], until=window_end - 0.1, what="max_play window"
+        )
+    await _wait_until(lambda: bool(delivered), what="watchdog release")
     assert [c["id"] for c in delivered] == ["x"]
 
 
@@ -376,6 +432,138 @@ def test_passive_flood_guard_bounds_callback_queue_without_extras(monkeypatch):
     ]
     assert mgr.pending_extra_replies == []
     assert dropped_ack.done() and dropped_ack.result is False
+
+
+def test_flood_guard_rejects_incoming_when_older_send_started(monkeypatch):
+    import config
+
+    monkeypatch.setattr(config, "AGENT_CALLBACK_QUEUE_MAX_ITEMS", 1)
+    mgr = _make_session_mgr()
+    committed_ack = _FakeAckFuture()
+    incoming_ack = _FakeAckFuture()
+    committed = _passive_cb("provider send started")
+    committed[VOICE_DELIVERY_COMMITTED_KEY] = True
+    committed[DELIVERY_ACK_FUTURE_KEY] = committed_ack
+    incoming = _passive_cb("cannot displace committed")
+    incoming[DELIVERY_ACK_FUTURE_KEY] = incoming_ack
+    mgr.pending_agent_callbacks = [committed]
+
+    mgr.enqueue_agent_callback(incoming)
+
+    assert mgr.pending_agent_callbacks == [committed]
+    assert not committed_ack.done()
+    assert incoming_ack.done() and incoming_ack.result is False
+    assert incoming.get(DELIVERY_RETRACTED_KEY) is True
+
+
+@pytest.mark.parametrize(
+    "ownership_key",
+    [VOICE_DELIVERY_COMMITTED_KEY, SWAP_PRIME_DELIVERY_CLAIM_KEY],
+)
+@pytest.mark.parametrize("pre_submitted", [False, True])
+def test_flood_rejected_newer_does_not_stale_provider_owned_old(
+    monkeypatch,
+    ownership_key,
+    pre_submitted,
+):
+    import config
+
+    monkeypatch.setattr(config, "AGENT_CALLBACK_QUEUE_MAX_ITEMS", 1)
+    mgr = _make_session_mgr()
+    old = _passive_cb("provider-owned old", coalesce_key="state")
+    mgr.enqueue_agent_callback(old)
+    old[ownership_key] = True
+    old_seq = old["_coalesce_submit_seq"]
+
+    rejected_ack = _FakeAckFuture()
+    newer = _proactive_cb("flood rejected newer", coalesce_key="state")
+    newer[DELIVERY_ACK_FUTURE_KEY] = rejected_ack
+    if pre_submitted:
+        class _ManagerStub:
+            def submit(self, callback, **_kwargs):
+                self.submitted = callback
+
+        manager = _ManagerStub()
+        mgr.proactive_manager = manager
+        mgr.is_goodbye_silent = lambda: False
+        mgr.submit_proactive_callback(newer, coalesce_key="state")
+        assert manager.submitted is newer
+        assert mgr._coalesce_latest["state"] == newer["_coalesce_submit_seq"]
+    mgr.enqueue_agent_callback(newer)
+
+    assert mgr.pending_agent_callbacks == [old]
+    assert rejected_ack.done() and rejected_ack.result is False
+    assert mgr._coalesce_latest["state"] == old_seq
+    old.pop(ownership_key)
+    assert mgr._retract_stale_coalesced([old]) is False
+
+
+def test_flood_rollback_preserves_newer_manager_held_sequence(monkeypatch):
+    import config
+
+    monkeypatch.setattr(config, "AGENT_CALLBACK_QUEUE_MAX_ITEMS", 1)
+    mgr = _make_session_mgr()
+    old = _passive_cb("claimed old", coalesce_key="state")
+    mgr.enqueue_agent_callback(old)
+    old[SWAP_PRIME_DELIVERY_CLAIM_KEY] = True
+
+    async def _deliver(_batch):
+        return None
+
+    mgr.proactive_manager = ProactiveDeliveryManager(deliver=_deliver)
+    mgr.is_goodbye_silent = lambda: False
+    held = _proactive_cb("manager-held newer", coalesce_key="state")
+    mgr.submit_proactive_callback(held, coalesce_key="state")
+
+    rejected = _passive_cb("flood-rejected newest", coalesce_key="state")
+    mgr.enqueue_agent_callback(rejected)
+
+    assert mgr.pending_agent_callbacks == [old]
+    assert rejected.get(DELIVERY_RETRACTED_KEY) is True
+    assert mgr._coalesce_latest["state"] == held["_coalesce_submit_seq"]
+    old.pop(SWAP_PRIME_DELIVERY_CLAIM_KEY)
+    assert mgr._retract_stale_coalesced([old]) is True
+
+
+def test_newer_same_key_keeps_committed_callback_voice_mirror():
+    mgr = _make_session_mgr()
+    committed = _proactive_cb("provider send started", coalesce_key="state")
+    mgr.enqueue_agent_callback(committed)
+    committed[VOICE_DELIVERY_COMMITTED_KEY] = True
+    committed_id = committed["_callback_delivery_id"]
+
+    newer = _proactive_cb("next snapshot", coalesce_key="state")
+    mgr.enqueue_agent_callback(newer)
+
+    assert mgr.pending_agent_callbacks == [committed, newer]
+    assert [extra["summary"] for extra in mgr.pending_extra_replies] == [
+        "provider send started",
+        "next snapshot",
+    ]
+    assert mgr.pending_extra_replies[0]["_callback_delivery_id"] == committed_id
+
+
+def test_extra_flood_guard_keeps_provider_owned_voice_mirror(monkeypatch):
+    import config
+
+    monkeypatch.setattr(config, "AGENT_CALLBACK_QUEUE_MAX_ITEMS", 1)
+    mgr = _make_session_mgr()
+    committed = _proactive_cb("provider send started")
+    mgr.enqueue_agent_callback(committed)
+    committed[VOICE_DELIVERY_COMMITTED_KEY] = True
+    committed_mirror = mgr.pending_extra_replies[0]
+    mgr.pending_extra_replies.append({
+        "_callback_delivery_id": "orphan-id",
+        "summary": "safe orphan",
+    })
+
+    # A passive incoming callback triggers both flood guards. It is rejected
+    # from the callback queue; the unrelated orphan, not the committed mirror,
+    # is the only safe extra victim.
+    mgr.enqueue_agent_callback(_passive_cb("incoming"))
+
+    assert mgr.pending_agent_callbacks == [committed]
+    assert mgr.pending_extra_replies == [committed_mirror]
 
 
 def test_enqueue_coalesce_resolves_superseded_ack_false():

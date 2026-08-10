@@ -61,6 +61,14 @@ _STABLE_USER_ID_KEYS = (
 _USER_ID_KEYS = ("uid", "id", "idStr", "id_str", "user_id", "userId", *_STABLE_USER_ID_KEYS)
 _USER_NAME_KEYS = ("nickname", "nickName", "nick_name", "user_name", "userName", "name")
 _USER_AVATAR_KEYS = ("avatar_url", "avatar", "avatarUrl", "avatar_thumb", "avatarThumb")
+_EVENT_ID_KEYS = (
+    "provider_event_id",
+    "message_id",
+    "messageId",
+    "msg_id",
+    "msgId",
+)
+_EVENT_ID_PATH_PARENTS = (("common",), ("Common",))
 _GIFT_NAME_KEYS = ("gift_name", "giftName", "gift_name_str", "name", "displayName", "display_name", "describe")
 _UNAMBIGUOUS_GIFT_NAME_KEYS = ("gift_name", "giftName", "gift_name_str")
 _GIFT_COUNT_KEYS = (
@@ -173,6 +181,10 @@ def _payload_from_message(item: dict[str, Any], *, room_ref: str) -> dict[str, A
         return {}
     payload = {
         "event_type": event_type,
+        "provider_event_id": _first_from_paths(
+            item,
+            _paths(_EVENT_ID_KEYS, _EVENT_ID_PATH_PARENTS),
+        ),
         "room_ref": _room_ref(item, fallback=room_ref),
         "uid": _user_id(item),
         "nickname": _first_from_paths(item, _paths(_USER_NAME_KEYS, _USER_PATH_PARENTS)),

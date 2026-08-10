@@ -14,11 +14,17 @@
 
 r"""Static slop-reduction rule tables (per language).
 
-Consumed by ``utils.slop_filter``. Each short language code (matching
-``config.prompts.prompts_sys._loc``: zh / en / ja / ko / ru / es / pt) maps to a
-list of rules that rewrite recurring AI-writing cliches in the assistant turns of
-the *outgoing* prompt (promptOnly — the persisted history and what the user sees
-are untouched), so the model stops imitating its own stock phrases.
+Consumed by ``utils.slop_filter``. Each rule-set key maps to a list of rules that
+rewrite recurring AI-writing cliches in the assistant turns of the *outgoing*
+prompt (promptOnly — the persisted history and what the user sees are untouched),
+so the model stops imitating its own stock phrases.
+
+Keys are short language codes (zh / en / ja / ko / ru / es / pt) plus ``zh-TW``.
+Traditional Chinese is deliberately a separate key rather than sharing ``zh``:
+Simplified patterns barely match Traditional text at all, and the few that do
+match by coincidence of shared glyphs would splice Simplified prose into a
+Traditional conversation. ``utils.slop_filter._resolve_slop_lang_key`` is what
+routes Traditional variants here instead of short-normalizing them to ``zh``.
 
 Rule schema::
 
@@ -51,7 +57,12 @@ SLOP_RULESET_VERSION = 1
 SLOP_REPEAT_THRESHOLD = 2
 
 
-SLOP_RULES: dict[str, list[dict]] = {
+# 这不是文案模板表，是按语言分组的**正则规则集**（find/replace 对）。补 zh-TW
+# 等于把整套简体正则重写成繁体正字，是独立的内容工程，不属于 issue #2500 的
+# "复制模板"批次。当前 zh-TW 用户经 ``_resolve_short_lang`` 落到 'zh' 规则集：
+# 简体正则对繁体文本大部分不命中，效果是"套路过滤变弱"，不是"输出掉英文"——
+# 没有用户可见回归，所以按 noqa 记账而不是硬凑一份繁体规则。
+SLOP_RULES: dict[str, list[dict]] = {  # noqa: PROMPT_ZH_TW  # 正则规则集，非文案模板；见上方注释
     'zh': [
         {
             "id": 'ZH_001',
@@ -621,6 +632,124 @@ SLOP_RULES: dict[str, list[dict]] = {
                 '心头压上一层闷闷的不满',
                 '眼底蓄起一汪委屈',
                 '那点酸楚再也压不住',
+            ],
+        },
+    ],
+    # 繁体是**独立一块**，不是 zh 的另一种写法。两个理由，缺一不可：
+    # (1) 简体规则对繁体文本几乎全不命中（繁简不同码位），零覆盖；
+    # (2) 少数因字形恰好同形而命中的规则更糟——替换池是简体散文，改写等于往
+    #     繁中会话的上下文里灌简体字，会推着模型改字形。
+    # 所以在繁体规则集出现之前，slop_filter 对繁中是**整轮跳过**的。这一块就是
+    # 那个前提：起步集，不是 zh 那 30 条的镜像，也不追求同步。想扩就用
+    # scripts/natural_expression_candidate_miner.py 挖真实繁中语料，别机械繁化。
+    #
+    # 收词标准比 zh 更保守：只收「模式够长够具体、在正常繁体散文里不会出现」的
+    # 套路。ZH_006（不自覺/下意識地）、ZH_021（忍不住）、ZH_007（仿佛…一般）
+    # 这类短模式在台湾华语口语里是常用词，第一批**故意不收**。
+    #
+    # ⚠️ normalize_language_code 把 zh-HK / zh-MO 也归到 zh-TW，所以这张表同时
+    # 服务港澳；用词以台湾华语为准，是既有归一策略的既定后果。
+    'zh-TW': [
+        {
+            "id": 'TW_001',
+            "name": 'heart pounding wildly',
+            "find": '(心臟|心跳|心)(?:不受控制地|瘋狂地?|猛烈地?|劇烈地?)(?:砰砰|怦怦|咚咚)?(?:地)?跳(?:動|得飛快|個不停)?',
+            "replace": [
+                r"\1漏跳了一拍",
+                r"\1像要撞出胸口",
+                r"\1猛然一縮",
+                r"\1快得自己都聽得見",
+                r"\1一下子亂了節奏",
+                r"\1在胸口擂鼓似的",
+                r"\1咚咚地撞著肋骨",
+                r"\1險些跟不上呼吸",
+                r"\1一路提到了喉頭",
+                r"\1一陣發緊",
+            ],
+        },
+        {
+            "id": 'TW_002',
+            "name": 'corner of mouth curling into a smile/smirk',
+            "find": '嘴角(?:微微|輕輕|緩緩)?(?:勾起|揚起|上揚|挑起|噙著|帶著)(?:了)?一(?:抹|絲|縷|道)?(?:弧度|笑意|微笑|笑容|淺笑)',
+            "replace": [
+                '唇邊鬆開一點笑',
+                '笑意爬上了眼睛',
+                '嘴角忍不住翹了翹',
+                '嘴唇壓不住地往上彎',
+                '嘴角漾開一點笑',
+                '臉上漏出半個笑',
+                '嘴唇抿著，還是笑了',
+                '唇線柔和了下來',
+                '嘴邊掠過一點笑',
+                '笑意沒忍住，漏了出來',
+            ],
+        },
+        {
+            "id": 'TW_003',
+            "name": 'ear roots reddening / heating',
+            "find": '耳根(?:子)?(?:不由得|忍不住|瞬間|一下子|漸漸|微微)?(?:泛紅|發紅|發燙|發熱|紅了|燒了起來|爬上一層紅)',
+            "replace": [
+                '耳朵尖悄悄紅了',
+                '耳後燙得發慌',
+                '耳廓也染上了熱度',
+                '耳垂紅得藏不住',
+                '耳根一路熱到脖子',
+                '耳朵不爭氣地發起燙',
+                '整個耳廓泛起薄紅',
+                '耳尖的溫度騙不了人',
+                '臉還沒紅，耳朵先招了',
+                '耳朵悄悄燒了起來',
+            ],
+        },
+        {
+            "id": 'TW_004',
+            "name": 'a blush creeping onto the cheeks / face heating',
+            "find": '(?:臉頰|臉|雙頰|面頰)(?:不由得|忍不住|瞬間|漸漸|微微)?(?:泛起|爬上|浮上|染上|飛上|騰起)(?:了)?(?:一(?:抹|層|片|絲)?)?(?:紅暈|緋紅|薄紅|紅潮|潮紅|嫣紅)',
+            "replace": [
+                '臉一下子燒了起來',
+                '兩頰悄悄染上薄紅',
+                '臉頰一路漫上熱度',
+                '臉上騰起一陣滾燙',
+                '臉上爬滿了紅暈',
+                '臉頰燙得自己都察覺得到',
+                '面上浮起一層淡淡的紅',
+                '臉唰地紅透了',
+                '頰邊泛起一點紅',
+                '臉紅得一直蔓到脖頸',
+            ],
+        },
+        {
+            "id": 'TW_005',
+            "name": 'pupils contracting suddenly',
+            "find": '瞳孔(?:猛地|驟然|驀地|微微|不可察覺地)?(?:一縮|驟縮|收縮|緊縮)(?:了一下|了)?',
+            "replace": [
+                '眼神猛然一凝',
+                '瞳仁倏地縮緊',
+                '黑眸裡的光驟然收住',
+                '眼底一震',
+                '瞳孔不受控制地顫了顫',
+                '眸光霎時繃緊',
+                '瞳孔霎時縮成一點',
+                '目光驟然收緊成一點',
+                '眼仁倏地收成一點',
+                '眼神陡然一銳',
+            ],
+        },
+        {
+            "id": 'TW_006',
+            "name": 'time as if standing still in this moment',
+            "find": '(?:這一刻|此刻|那一瞬間|那一刻|這一瞬)(?:，)?時間(?:仿佛|彷彿|似乎|像是)(?:靜止|停止|凝固|定格|停滯)(?:了|了一般)?',
+            "replace": [
+                '這一瞬，鐘擺像是停了',
+                '時間在那一刻鈍住了',
+                '此刻周遭都慢了半拍',
+                '那一秒被無限拉長',
+                '周遭的一切忽然慢了下來',
+                '時光像被人按住了不動',
+                '這一刻，連秒針都猶豫了',
+                '那一瞬間，世界定成了一張照片',
+                '時間在指縫間凝住',
+                '這一秒長得像一個世紀',
             ],
         },
     ],

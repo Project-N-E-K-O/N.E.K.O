@@ -15,6 +15,7 @@ import main_logic.core as core_module
 from main_logic.proactive_delivery import (
     DELIVERY_ACK_FUTURE_KEY,
     DELIVERY_RETRACTED_KEY,
+    SWAP_PRIME_DELIVERY_CLAIM_KEY,
 )
 
 pytestmark = pytest.mark.unit
@@ -82,6 +83,7 @@ def test_select_picks_only_passive_and_keeps_queue_intact():
     assert "respond now" not in text
     # Selection must NOT drain: removal is deferred to promote success.
     assert mgr.pending_agent_callbacks == [passive, proactive]
+    assert passive.get(SWAP_PRIME_DELIVERY_CLAIM_KEY) is True
 
 
 def test_select_returns_empty_when_no_passive():
@@ -160,6 +162,44 @@ def test_remove_at_promote_dequeues_by_identity_and_acks_true():
     assert removed == [delivered]
     assert mgr.pending_agent_callbacks == [other]
     assert ack.done() and ack.result is True
+
+
+def test_text_drain_skips_swap_prime_claimed_callback():
+    mgr = _make_session_mgr()
+    ack = _FakeAckFuture()
+    claimed = _passive_cb("provider already has this context")
+    claimed[DELIVERY_ACK_FUTURE_KEY] = ack
+    mgr.pending_agent_callbacks = [claimed]
+
+    selected, _ = mgr._select_passive_callbacks_for_swap_prime()
+    rendered = mgr.drain_agent_callbacks_for_llm()
+
+    assert rendered == ""
+    assert mgr.pending_agent_callbacks == [claimed]
+    assert not ack.done()
+    mgr._release_swap_prime_passive_claims(selected)
+
+
+def test_claimed_same_key_rejects_older_late_arrival():
+    mgr = _make_session_mgr()
+    old_ack = _FakeAckFuture()
+    late_ack = _FakeAckFuture()
+    claimed = _passive_cb("current snapshot", coalesce_key="state")
+    claimed["_coalesce_submit_seq"] = 5
+    claimed[DELIVERY_ACK_FUTURE_KEY] = old_ack
+    mgr.enqueue_agent_callback(claimed)
+    selected, _ = mgr._select_passive_callbacks_for_swap_prime()
+
+    late = _passive_cb("late stale snapshot", coalesce_key="state")
+    late["_coalesce_submit_seq"] = 2
+    late[DELIVERY_ACK_FUTURE_KEY] = late_ack
+    mgr.enqueue_agent_callback(late)
+
+    assert mgr.pending_agent_callbacks == [claimed]
+    assert not old_ack.done()
+    assert late_ack.done() and late_ack.result is False
+    assert late.get(DELIVERY_RETRACTED_KEY) is True
+    mgr._release_swap_prime_passive_claims(selected)
 
 
 def test_remove_noops_for_entries_consumed_in_window():

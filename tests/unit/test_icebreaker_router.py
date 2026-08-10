@@ -49,6 +49,7 @@ class _FakeAppendContextManager:
         self.engagement_times = []
         self.language_updates = []
         self.user_language = "zh-CN"
+        self._user_language_explicit = True
         self.result = result or SimpleNamespace(appended=True, deduped=False, reason=None)
         self.error = error
         self.speech_error = speech_error
@@ -56,6 +57,7 @@ class _FakeAppendContextManager:
     def set_user_language(self, language):
         self.language_updates.append(language)
         self.user_language = language
+        self._user_language_explicit = True
 
     def note_user_engagement(self, *, at=None):
         self.engagement_calls += 1
@@ -118,6 +120,24 @@ def _prompt_field(prompt: str, label: str) -> str:
         if line.startswith(prefix):
             return line[len(prefix):]
     raise AssertionError(f"missing prompt field: {label}")
+
+
+def test_icebreaker_request_marks_matching_seeded_locale_explicit(monkeypatch):
+    manager = _FakeAppendContextManager()
+    manager.user_language = "en"
+    manager._user_language_explicit = False
+    monkeypatch.setattr(
+        icebreaker_router,
+        "get_session_manager",
+        lambda: {"Lan": manager},
+    )
+
+    assert icebreaker_router._absorb_request_language(
+        {"language": "en"},
+        "Lan",
+    ) == "en"
+    assert manager.language_updates == ["en"]
+    assert manager._user_language_explicit is True
 
 
 async def _fake_cache_memory(**kwargs):
@@ -185,6 +205,7 @@ async def test_icebreaker_context_endpoint_appends_session_history(monkeypatch):
             "role": "assistant",
             "text": "教程看完啦？",
             "session_id": "icebreaker-day1-test",
+            "i18n_language": "zh-TW",
         })
     )
 
@@ -208,6 +229,7 @@ async def test_icebreaker_context_endpoint_appends_session_history(monkeypatch):
         "lanlan_name": "Lan",
         "role": "assistant",
         "text": "教程看完啦？",
+        "language": "zh-TW",
     }]
     assert mgr.engagement_calls == 0
 
@@ -242,6 +264,7 @@ async def test_icebreaker_context_caches_user_choice_to_recent_memory(monkeypatc
         "lanlan_name": "Lan",
         "role": "user",
         "text": "可以，多陪一会儿",
+        "language": "zh-CN",
     }]
     assert mgr.engagement_calls == 1
 
@@ -407,9 +430,40 @@ async def test_icebreaker_context_cache_failure_does_not_block_context(monkeypat
         "lanlan_name": "Lan",
         "role": "assistant",
         "text": "教程看完啦？",
+        "language": "zh-CN",
     }]
     assert warning_calls
     assert "icebreaker memory cache failed" in warning_calls[0][0]
+
+
+@pytest.mark.asyncio
+async def test_icebreaker_context_omits_seeded_fallback_cache_locale(monkeypatch):
+    mgr = _FakeAppendContextManager()
+    mgr.user_language = "en"
+    mgr._user_language_explicit = False
+    memory_cache_calls = []
+
+    async def fake_cache_memory(**kwargs):
+        memory_cache_calls.append(kwargs)
+        return True, ""
+
+    monkeypatch.setattr(icebreaker_router, "get_session_manager", lambda: {"Lan": mgr})
+    monkeypatch.setattr(system_router, "_validate_local_mutation_request", _allow_local_mutation)
+    monkeypatch.setattr(icebreaker_router, "_cache_icebreaker_context_memory", fake_cache_memory)
+    icebreaker_route_state.activate_icebreaker_route("Lan", "icebreaker-day1-test")
+
+    result = await icebreaker_router.icebreaker_context(
+        _FakeRequest({
+            "lanlan_name": "Lan",
+            "role": "assistant",
+            "text": "教程看完啦？",
+            "session_id": "icebreaker-day1-test",
+            "request_id": "line-seeded",
+        })
+    )
+
+    assert result["ok"] is True
+    assert memory_cache_calls[0]["language"] is None
 
 
 @pytest.mark.asyncio
@@ -468,12 +522,20 @@ async def test_icebreaker_context_falls_back_to_active_session_id(monkeypatch):
 async def test_icebreaker_context_memory_cache_uses_existing_cache_endpoint(monkeypatch):
     calls = []
 
-    async def fake_post_memory_server(endpoint, lanlan_name, payload, *, timeout_s):
+    async def fake_post_memory_server(
+        endpoint,
+        lanlan_name,
+        payload,
+        *,
+        timeout_s,
+        language,
+    ):
         calls.append({
             "endpoint": endpoint,
             "lanlan_name": lanlan_name,
             "payload": payload,
             "timeout_s": timeout_s,
+            "language": language,
         })
         return True, "", {"status": "cached", "count": 1}
 
@@ -485,6 +547,7 @@ async def test_icebreaker_context_memory_cache_uses_existing_cache_endpoint(monk
         lanlan_name="Lan",
         role="user",
         text="可以，多陪一会儿",
+        language="zh-TW",
     )
 
     assert ok is True
@@ -497,6 +560,7 @@ async def test_icebreaker_context_memory_cache_uses_existing_cache_endpoint(monk
             "content": [{"type": "text", "text": "可以，多陪一会儿"}],
         }],
         "timeout_s": icebreaker_router.ICEBREAKER_MEMORY_CACHE_TIMEOUT_SECONDS,
+        "language": "zh-TW",
     }]
 
 

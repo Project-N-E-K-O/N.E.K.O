@@ -27,7 +27,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from utils.language_utils import normalize_language_code, get_global_language
+from utils.language_utils import normalize_language_code, get_global_language_full
 from utils.logger_config import get_module_logger
 
 
@@ -37,6 +37,7 @@ from utils.logger_config import get_module_logger
 # None collapses both into the same code path and would let recovery /
 # proactive paths accidentally bind their messages to a newer request_id.
 _REQUEST_ID_UNSET: Any = object()
+_HANDSHAKE_OVERRIDE_UNSET: Any = object()
 _MAGIC_COMMAND_IMAGE_DROP_REQUEST_MAX = 64
 _VOICE_PROACTIVE_ACK_GRACE_S = 0.05
 _TEXT_SESSION_INPUT_TYPES = frozenset({"text", "avatar_drop_image", "user_image"})
@@ -150,6 +151,15 @@ _proactive_expected_sid: contextvars.ContextVar[str | None] = contextvars.Contex
     '_proactive_expected_sid', default=None,
 )
 
+# Startup greeting text that crossed the real frontend publish boundary in the
+# current proactive task.  ``prompt_ephemeral`` accumulates model output before
+# awaiting its delta callback, so its final committed text can contain a suffix
+# that was dropped after user preemption.  The per-task list lets the greeting
+# flow persist only chunks that ``send_lanlan_response`` actually published.
+_proactive_published_text_chunks: contextvars.ContextVar[list[str] | None] = (
+    contextvars.ContextVar('_proactive_published_text_chunks', default=None)
+)
+
 # TTS 错误码：不可恢复，禁止 respawn（欠费 / API Key 无效）
 NO_RETRY_TTS_CODES = {'API_ARREARS', 'API_KEY_REJECTED', 'TTS_CONFIG_INVALID'}
 # TTS 错误码：立即上报前端，不受"第3次才通知"门槛限制（含配额——仍允许重试）
@@ -170,7 +180,11 @@ def _load_locale_messages(locale_code: str) -> dict:
 
 
 def _get_chat_locale_text(language: str | None, key: str, fallback: str) -> str:
-    raw_lang = language or get_global_language()
+    # ⚠️ 兜底必须取 full。下面的 format='full' 只能保住已有的字形，救不回
+    # 已经丢掉的：get_global_language() 返回短码，繁中在进这个函数之前就成了
+    # zh，format='full' 再把它扩成 zh-CN，static/locales/zh-TW.json 永远读不到
+    # （issue #2500）。显式传进来的 language 照旧优先。
+    raw_lang = language or get_global_language_full()
     try:
         lang_full = normalize_language_code(raw_lang, format='full')
     except Exception:

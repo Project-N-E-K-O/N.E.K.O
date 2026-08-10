@@ -223,6 +223,33 @@ def to_naive_local(dt: datetime | None) -> datetime | None:
     return dt
 
 
+def explicit_event_window(entry: dict) -> tuple[str | None, str | None]:
+    """Return persisted event bounds, excluding synthesis-time fallbacks.
+
+    Reflection synthesis fills missing bounds from ``created_at`` so render
+    and expiry code always has an anchor.  Those ingestion timestamps are not
+    an explicit event window and must not become one merely because a derived
+    row receives a newer ``created_at``.
+    """
+    if not isinstance(entry, dict):
+        return None, None
+    raw_start = entry.get('event_start_at')
+    raw_end = entry.get('event_end_at')
+    start = to_naive_local(_parse_iso_safe(raw_start))
+    end = to_naive_local(_parse_iso_safe(raw_end))
+    created = to_naive_local(_parse_iso_safe(entry.get('created_at')))
+    if (
+        not entry.get('event_when_raw')
+        and start == created
+        and (end is None or end == created)
+    ):
+        return None, None
+    return (
+        raw_start if start is not None else None,
+        raw_end if end is not None else None,
+    )
+
+
 def _past_anchor(entry: dict) -> datetime | None:
     """Time anchor for past judgment (end > start > added > created).
 
@@ -291,8 +318,14 @@ def days_since(anchor_iso: str | None, now: datetime | None = None) -> int | Non
     return max(0, int((now - anchor).total_seconds() // 86400))
 
 
+# 键形制是刻意混用的：其余 locale 用短码，繁中用 full code 'zh-TW'。两个调用点
+# （memory/persona/rendering.py 的 get_global_language_full()、main_logic/core/
+# tool_calling.py 的 _normalize_memory_prompt_lang(keep_traditional=True)）传进来的
+# 就是 'zh-TW'，塌成短码 'zh' 会让这张表永远取不到繁体。别"统一"成短码。
+# 简中走 'zh-CN' 进来，靠 time_since_label 的 or-回落打到 'zh'，不需要单列。
 _TIME_LABELS = {
     'zh': {'now': '当下',  'day': '{n} 天前',   'week': '{n} 周前',   'month': '{n} 月前'},
+    'zh-TW': {'now': '當下', 'day': '{n} 天前',  'week': '{n} 週前',   'month': '{n} 個月前'},
     'en': {'now': 'now',    'day': '{n}d ago',   'week': '{n}w ago',   'month': '{n}mo ago'},
     'ja': {'now': '今',    'day': '{n} 日前',   'week': '{n} 週間前', 'month': '{n} ヶ月前'},
     'ko': {'now': '지금',  'day': '{n}일 전',   'week': '{n}주 전',   'month': '{n}개월 전'},

@@ -2266,7 +2266,12 @@
                 if (micStartMustStandDown()) return;
                 S.socket.send(JSON.stringify({
                     action: 'start_session',
-                    input_type: 'audio'
+                    input_type: 'audio',
+                    // Read off OUR owner token, not the shared slot: a start
+                    // that displaced us during ensureWebSocketOpen above would
+                    // otherwise get its id stamped on this stale request, and
+                    // the ack for it would settle a promise it does not answer.
+                    request_id: window.sessionStartRequestId(micStartOwner)
                 }));
 
                 // Timeout (15s)
@@ -2363,7 +2368,14 @@
                         }
                         return;
                     }
-                    await window.startMicCapture();
+                    var microphoneStarted = await window.startMicCapture();
+                    if (microphoneStarted !== true) {
+                        var microphoneStartCancelled = new Error(
+                            'Microphone start cancelled before capture committed'
+                        );
+                        microphoneStartCancelled.microphoneStartCancelled = true;
+                        throw microphoneStartCancelled;
+                    }
                     ensureVoiceStartCurrent();
 
                     // getUserMedia and the worklet setup are another wide-open
@@ -2438,10 +2450,13 @@
             } catch (error) {
                 var voiceStartErrorMessage = getVoiceStartErrorMessage(error);
                 var isVoiceStartCancelled = !!(error && error.voiceStartCancelled);
+                var isMicrophoneStartCancelled = !!(
+                    error && error.microphoneStartCancelled
+                );
                 var preserveGoodbyeUi = isVoiceStartCancelled
                     && typeof window.isNekoGoodbyeModeActive === 'function'
                     && window.isNekoGoodbyeModeActive();
-                if (!isVoiceStartCancelled) {
+                if (!isVoiceStartCancelled && !isMicrophoneStartCancelled) {
                     console.error(window.t('console.startVoiceSessionFailed'), error);
                 }
 
@@ -2515,7 +2530,7 @@
                     window.showStatusToast('', 0);
                 } else if (error && error.voiceConfigSwitchTimedOut) {
                     window.showStatusToast(voiceStartErrorMessage, 5000);
-                } else {
+                } else if (!isMicrophoneStartCancelled) {
                     window.showStatusToast(window.t ? window.t('app.startFailed', { error: voiceStartErrorMessage }) : '\u542F\u52A8\u5931\u8D25: ' + voiceStartErrorMessage, 5000);
                 }
 
@@ -2768,7 +2783,8 @@
                 S.socket.send(JSON.stringify({
                     action: 'start_session',
                     input_type: 'text',
-                    new_session: true
+                    new_session: true,
+                    request_id: window.sessionStartRequestId(textStartOwner)
                 }));
 
                 await sessionStartPromise;
@@ -3019,7 +3035,8 @@
                             S.socket.send(JSON.stringify({
                                 action: 'start_session',
                                 input_type: 'text',
-                                new_session: false
+                                new_session: false,
+                                request_id: window.sessionStartRequestId(composerStartOwner)
                             }));
 
                             // Timeout after WebSocket confirms connection

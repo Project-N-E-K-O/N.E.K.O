@@ -11,9 +11,17 @@ from collections import OrderedDict
 from typing import Any
 
 from ...core.contracts import LiveEvent, LiveRoomStatus, ViewerEvent
+from ...core.contracts_public import public_text
+from ...core.runtime_live_listener import schedule_unexpected_live_listener_stop
 from ...core.runtime_timeline import record_timeline
 from .._base import BaseModule
-from ..live_events.provider_event import event_signal_fields, event_support_fields
+from ..live_events.provider_event import (
+    event_avatar_url,
+    event_provider_event_id,
+    event_room_ref,
+    event_signal_fields,
+    event_support_fields,
+)
 
 SUPPORT_EVENT_DEDUPE_SECONDS = 0.35
 SUPPORT_EVENT_DEDUPE_LIMIT = 4096
@@ -96,13 +104,23 @@ class BiliLiveIngestModule(BaseModule):
             return {"state": "unknown", "room_id": self._room_id, "viewer_count": 0}
 
     async def start_listening(self, room_id: int) -> bool:
-        """启动真实弹幕监听（匿名只读）。返回是否成功创建监听任务。"""
+        """启动已登录 B 站账号的真实弹幕监听。"""
         room_id = int(room_id or 0)
         if room_id <= 0:
             return False
         async with self._lifecycle_lock:
             await self._stop_listening_locked()
             audit = self.ctx.audit if self.ctx else None
+            credential = getattr(self.ctx, "bili_credential", None) if self.ctx else None
+            if credential is None:
+                if audit is not None:
+                    audit.record(
+                        "live_listener_auth_required",
+                        "Bilibili credential required before starting listener",
+                        level="warning",
+                        detail={"room_id": room_id},
+                    )
+                return False
             try:
                 from .danmaku_core import DanmakuListener
             except Exception as exc:
@@ -132,8 +150,7 @@ class BiliLiveIngestModule(BaseModule):
             }
             listener = DanmakuListener(
                 room_id=room_id,
-                # 登录态（若有）让弹幕连接走登录会话，更稳、低风控；未登录=匿名只读（临时 buvid3 绕风控）。
-                credential=getattr(self.ctx, "bili_credential", None) if self.ctx else None,
+                credential=credential,
                 logger=_ListenerLog(audit),
                 callbacks=callbacks,
             )
@@ -160,6 +177,10 @@ class BiliLiveIngestModule(BaseModule):
             try:
                 await ready_task
             except asyncio.CancelledError:
+                pass
+            except Exception:
+                # A failed readiness waiter is a failed start, not permission
+                # to bypass the generation-owned listener cleanup below.
                 pass
 
         async with self._lifecycle_lock:
@@ -200,7 +221,11 @@ class BiliLiveIngestModule(BaseModule):
                 raise
             except Exception as exc:
                 if self.ctx is not None:
-                    self.ctx.audit.record("live_listener_stop_failed", str(exc)[:200], level="warning")
+                    self.ctx.audit.record(
+                        "live_listener_stop_failed",
+                        f"listener stop failed: {type(exc).__name__}",
+                        level="warning",
+                    )
         if task is not None and not task.done():
             try:
                 await asyncio.wait_for(task, timeout=2.0)
@@ -209,7 +234,11 @@ class BiliLiveIngestModule(BaseModule):
                 pass
             except Exception as exc:
                 if self.ctx is not None:
-                    self.ctx.audit.record("live_listener_task_failed", str(exc)[:200], level="warning")
+                    self.ctx.audit.record(
+                        "live_listener_task_failed",
+                        f"listener task failed: {type(exc).__name__}",
+                        level="warning",
+                    )
         if self.ctx is not None and listener is not None:
             self.ctx.audit.record("live_listener_stopped", "danmaku listener stopped", detail={"room_id": self._room_id})
 
@@ -225,29 +254,32 @@ class BiliLiveIngestModule(BaseModule):
             return
         self._listener = None
         self._listener_task = None
+        self._listener_generation += 1
         if self.ctx is None:
             return
         if exc is not None:
             self.ctx.audit.record("live_listener_task_failed", type(exc).__name__, level="warning")
-            return
-        live_ended = bool(getattr(listener, "_live_ended", False))
-        try:
-            state = listener.get_connection_state()
-        except Exception:
-            state = {}
-        last_packet_at = float(state.get("last_packet_at") or 0.0)
-        last_packet_age = max(0.0, time.time() - last_packet_at) if last_packet_at else 0.0
-        self.ctx.audit.record(
-            "live_listener_task_ended",
-            "live ended" if live_ended else "listener task ended unexpectedly",
-            level="info" if live_ended else "warning",
-            detail={
-                "generation": generation,
-                "reconnect_count": int(state.get("reconnect_count") or 0),
-                "last_packet_age_seconds": round(last_packet_age, 1),
-                "last_event_type": self._last_event_type,
-            },
-        )
+        else:
+            live_ended = bool(getattr(listener, "_live_ended", False))
+            try:
+                state = listener.get_connection_state()
+            except Exception:
+                state = {}
+            last_packet_at = float(state.get("last_packet_at") or 0.0)
+            last_packet_age = max(0.0, time.time() - last_packet_at) if last_packet_at else 0.0
+            self.ctx.audit.record(
+                "live_listener_task_ended",
+                "live ended" if live_ended else "listener task ended unexpectedly",
+                level="info" if live_ended else "warning",
+                detail={
+                    "generation": generation,
+                    "reconnect_count": int(state.get("reconnect_count") or 0),
+                    "last_packet_age_seconds": round(last_packet_age, 1),
+                    "last_event_type": self._last_event_type,
+                },
+            )
+        if bool(getattr(self.ctx, "_accepting_live_events", False)) and self._owns_current_live_session():
+            schedule_unexpected_live_listener_stop(self.ctx)
 
     # 命令名 → LiveEvent.type 路由键（见 core/contracts.LiveEvent）。未列出的命令回落 cmd 小写。
     _CMD_TO_TYPE = {
@@ -275,11 +307,6 @@ class BiliLiveIngestModule(BaseModule):
             return
         if isinstance(event, dict) and event.get("room_id") in (0, None):
             event["room_id"] = self._room_id
-        elif event is not None and getattr(event, "room_id", 0) in (0, None):
-            try:
-                event.room_id = self._room_id
-            except Exception as exc:
-                self.ctx.audit.record("live_event_room_id_fill_failed", str(exc)[:200], level="warning")
         bus = getattr(self.ctx, "event_bus", None)
         if bus is None:
             return
@@ -323,6 +350,10 @@ class BiliLiveIngestModule(BaseModule):
     def _owns_current_live_session(self) -> bool:
         """Reject events from a provider generation that no longer owns input."""
         if self.ctx is None or getattr(self.ctx, "_stopping", False) is True:
+            return False
+        if hasattr(self.ctx, "_accepting_live_events") and not bool(
+            getattr(self.ctx, "_accepting_live_events", False)
+        ):
             return False
         router = getattr(self.ctx, "live_provider", None)
         if router is None:
@@ -542,14 +573,27 @@ class BiliLiveIngestModule(BaseModule):
         if generation is not None and generation != self._listener_generation:
             return
         if self.ctx is not None:
-            self.ctx.audit.record("live_listener_error", str(exc)[:200], level="warning")
+            self.ctx.audit.record(
+                "live_listener_error",
+                f"listener error: {type(exc).__name__}",
+                level="warning",
+            )
 
     def normalize(self, payload: dict[str, Any]) -> ViewerEvent:
-        uid = str(payload.get("uid") or payload.get("user_id") or "").strip()
-        nickname = str(payload.get("nickname") or payload.get("uname") or payload.get("user_name") or "").strip()
-        avatar_url = str(payload.get("avatar_url") or payload.get("face_url") or payload.get("face") or "").strip()
-        text = str(payload.get("danmaku_text") or payload.get("text") or payload.get("content") or "").strip()
-        target_lanlan = str(payload.get("target_lanlan") or payload.get("lanlan_name") or "").strip()
+        uid = _public_uid(payload.get("uid") or payload.get("user_id"))
+        nickname = public_text(
+            payload.get("nickname") or payload.get("uname") or payload.get("user_name"),
+            max_len=80,
+        )
+        avatar_url = event_avatar_url(payload)
+        text = public_text(
+            payload.get("danmaku_text") or payload.get("text") or payload.get("content"),
+            max_len=512,
+        )
+        target_lanlan = public_text(
+            payload.get("target_lanlan") or payload.get("lanlan_name"),
+            max_len=80,
+        )
         return ViewerEvent(
             uid=uid,
             nickname=nickname,
@@ -558,8 +602,8 @@ class BiliLiveIngestModule(BaseModule):
             target_lanlan=target_lanlan,
             source="live_danmaku",
             live_mode=self.ctx.config.live_mode if self.ctx else "co_stream",
-            trace_id=str(payload.get("trace_id") or "").strip(),
-            raw=dict(payload),
+            trace_id=public_text(payload.get("trace_id"), max_len=128),
+            raw=_public_normalized_raw(payload),
         )
 
     async def lookup_room_status(self, room_id: int) -> LiveRoomStatus:
@@ -691,13 +735,13 @@ class BiliLiveIngestModule(BaseModule):
 
     @staticmethod
     def _friendly_lookup_message(code: int, raw_message: str) -> str:
-        """把 B站查询失败码翻成人话。最常见的是 -352：匿名请求被反爬风控拦截
-        （查询走的 HTTP 路径没有像弹幕 WS 那样的临时 buvid3 反 -352 措施）。"""
+        """把 B站查询失败码翻成人话；-352 表示查询 HTTP 路径被风控拦截。"""
         raw = (raw_message or "").strip()
         if code == -352 or raw == "-352":
             return (
-                "B站风控校验失败（-352）：匿名查询被反爬拦截。"
-                "可稍后重试 / 更换网络 / 登录后再查；直播间监听（弹幕）通常仍可用。"
+                "B站风控校验失败（-352）：查询被反爬拦截。"
+                "可稍后重试 / 更换网络 / 登录后再查；底层弹幕传输可能技术可达，"
+                "但监听仍须等待已验证凭据和已确认的直播间目标。"
             )
         if code in (1, 19002000) or "不存在" in raw or "未找到" in raw:
             return f"未找到该直播间（code={code}），请确认房间号是否正确。"
@@ -718,6 +762,49 @@ class BiliLiveIngestModule(BaseModule):
         if status == 2:
             return "rounding"
         return "unknown"
+
+
+def _public_uid(value: Any) -> str:
+    if isinstance(value, bool):
+        return ""
+    if isinstance(value, int):
+        return str(value) if value > 0 else ""
+    return public_text(value, max_len=128)
+
+
+def _public_normalized_raw(payload: dict[str, Any]) -> dict[str, Any]:
+    raw: dict[str, Any] = {}
+    event_type = public_text(
+        payload.get("event_type") or payload.get("type"),
+        max_len=48,
+    ).lower()
+    if event_type:
+        raw["event_type"] = event_type
+
+    raw.update(event_signal_fields(payload))
+    raw.update(event_support_fields(payload))
+
+    provider_event_id = event_provider_event_id(payload)
+    if provider_event_id:
+        raw["provider_event_id"] = provider_event_id
+    room_ref = event_room_ref(payload)
+    if room_ref:
+        raw["room_ref"] = room_ref
+    for key in (
+        "room_id",
+        "gift_num",
+        "gift_total_coin",
+        "gift_price",
+        "guard_level",
+        "_live_session_generation",
+    ):
+        value = _safe_non_negative_int(payload.get(key))
+        if value:
+            raw[key] = value
+    gift_coin_type = public_text(payload.get("gift_coin_type"), max_len=16).lower()
+    if gift_coin_type in {"gold", "silver"}:
+        raw["gift_coin_type"] = gift_coin_type
+    return raw
 
 
 def _safe_non_negative_int(value: Any) -> int:

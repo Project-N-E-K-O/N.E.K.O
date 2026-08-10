@@ -309,6 +309,11 @@ async def _deliver_break_reminder_via_llm(
     if not await mgr.prepare_proactive_delivery(min_idle_secs=10.0):
         return BreakReminderDeliveryResult()
 
+    try:
+        await get_anti_repeat_corpus().apreload(lanlan_name)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("[AntiRepeat] break-reminder preload skipped: %s", exc)
+
     silence_since_before_generation = _break_reminder_silence_since(mgr)
     proactive_sid = mgr.current_speech_id
     from main_logic.session_state import SessionEvent as _SE

@@ -59,11 +59,22 @@ logger = logging.getLogger(__name__)
 # ── language → country code mapping ──────────────────────────────────
 _LANG_TO_COUNTRY: dict[str, str] = {
     'zh': 'CN',
+    'zh-CN': 'CN',
+    'zh-TW': 'TW',
     'en': 'US',
     'ja': 'JP',
     'ko': 'KR',
     'ru': 'RU',
 }
+
+
+def _holiday_hint_language_key(lang: str, table: dict[str, str]) -> str:
+    """Select a template locale while keeping Chinese-family fallback."""
+    if lang in table:
+        return lang
+    if str(lang).lower().startswith('zh') and 'zh' in table:
+        return 'zh'
+    return 'en'
 
 # ── types ────────────────────────────────────────────────────────────
 
@@ -132,11 +143,13 @@ _FETCH_TIMEOUT = 10.0
 # i18n-leak detector but the project convention exempts pure localized data.
 _GLOBAL_EXTRA_HOLIDAYS: list[tuple[int, int, dict[str, str]]] = [
     (2, 14, {  # noqa: I18N_NOT_IN_CONFIG  # holiday display data, not LLM prompt
-        'zh': '情人节', 'en': "Valentine's Day", 'ja': 'バレンタインデー',
+        'zh': '情人节', 'zh-TW': '情人節',
+        'en': "Valentine's Day", 'ja': 'バレンタインデー',
         'ko': '발렌타인데이', 'ru': 'День святого Валентина',
     }),
     (12, 25, {  # noqa: I18N_NOT_IN_CONFIG  # holiday display data, not LLM prompt
-        'zh': '圣诞节', 'en': 'Christmas', 'ja': 'クリスマス',
+        'zh': '圣诞节', 'zh-TW': '聖誕節',
+        'en': 'Christmas', 'ja': 'クリスマス',
         'ko': '크리스마스', 'ru': 'Рождество',
     }),
 ]
@@ -319,7 +332,13 @@ async def _warm_all_once() -> None:
         except Exception as e:
             logger.info("Holiday cache fetch skipped for %s/%d: %s", country, year, e)
 
-    await asyncio.gather(*[_fetch_one(l, c) for l, c in _LANG_TO_COUNTRY.items()])
+    country_locales: dict[str, str] = {}
+    for lang, country in _LANG_TO_COUNTRY.items():
+        country_locales.setdefault(country, lang)
+    await asyncio.gather(*[
+        _fetch_one(lang, country)
+        for country, lang in country_locales.items()
+    ])
 
 
 async def _ensure_periods(country: str, year: int) -> list[HolidayPeriod]:
@@ -586,7 +605,7 @@ async def get_holiday_or_weekend_hint(lang: str, character: str) -> str | None:
             return None
 
         name = proximity.period.display_name
-        lang_key = lang if lang in HOLIDAY_HINT_TODAY else 'en'
+        lang_key = _holiday_hint_language_key(lang, HOLIDAY_HINT_TODAY)
 
         if proximity.is_today:
             tpl = HOLIDAY_HINT_TODAY.get(lang_key, HOLIDAY_HINT_TODAY['en'])
@@ -602,7 +621,8 @@ async def get_holiday_or_weekend_hint(lang: str, character: str) -> str | None:
     if datetime.now().weekday() >= 5:
         if not try_consume_weekend(character):
             return None
-        return WEEKEND_HINT.get(lang, WEEKEND_HINT.get('en', ''))
+        lang_key = _holiday_hint_language_key(lang, WEEKEND_HINT)
+        return WEEKEND_HINT.get(lang_key, WEEKEND_HINT.get('en', ''))
 
     return None
 
@@ -640,7 +660,7 @@ def _has_weekend_budget(character: str) -> bool:
 def _build_holiday_hint_text(lang: str, proximity: HolidayProximity) -> str:
     """Build hint text from a proximity object (no side effects)."""
     name = proximity.period.display_name
-    lang_key = lang if lang in HOLIDAY_HINT_TODAY else 'en'
+    lang_key = _holiday_hint_language_key(lang, HOLIDAY_HINT_TODAY)
     if proximity.is_today:
         tpl = HOLIDAY_HINT_TODAY.get(lang_key, HOLIDAY_HINT_TODAY['en'])
         return tpl.format(name=name)
@@ -674,7 +694,8 @@ async def preview_holiday_or_weekend_hint(
     if datetime.now().weekday() >= 5:
         if not _has_weekend_budget(character):
             return None, None
-        text = WEEKEND_HINT.get(lang, WEEKEND_HINT.get('en', ''))
+        lang_key = _holiday_hint_language_key(lang, WEEKEND_HINT)
+        text = WEEKEND_HINT.get(lang_key, WEEKEND_HINT.get('en', ''))
         return text, ("weekend",)
 
     return None, None

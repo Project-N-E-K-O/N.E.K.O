@@ -1,6 +1,17 @@
 Object.assign(AvatarButtonMixin.methods, {
     setup(ManagerPrototype, prefix, options) {
         ManagerPrototype.setupFloatingButtonsBase = function(model) {
+            // 同一 manager 重建时，先释放各按钮持有的 Observer / window listener。
+            // 仅移除旧 DOM 不会触发这些私有资源的清理。
+            if (this._floatingButtons) {
+                Object.values(this._floatingButtons).forEach((buttonData) => {
+                    if (buttonData && typeof buttonData.cleanup === 'function') {
+                        buttonData.cleanup();
+                    }
+                });
+            }
+            this._floatingButtons = {};
+
             // 清理旧事件监听
             if (!this._uiWindowHandlers) {
                 this._uiWindowHandlers = [];
@@ -14,6 +25,9 @@ Object.assign(AvatarButtonMixin.methods, {
             }
 
             if (this._returnButtonDragHandlers) {
+                if (typeof this._returnButtonDragHandlers.cleanup === 'function') {
+                    this._returnButtonDragHandlers.cleanup();
+                }
                 document.removeEventListener('mousemove', this._returnButtonDragHandlers.mouseMove);
                 document.removeEventListener('mouseup', this._returnButtonDragHandlers.mouseUp);
                 document.removeEventListener('touchmove', this._returnButtonDragHandlers.touchMove);
@@ -21,6 +35,10 @@ Object.assign(AvatarButtonMixin.methods, {
                 document.removeEventListener('touchcancel', this._returnButtonDragHandlers.touchCancel);
                 document.removeEventListener('visibilitychange', this._returnButtonDragHandlers.visibilityChange);
                 window.removeEventListener('blur', this._returnButtonDragHandlers.windowBlur);
+                window.removeEventListener(
+                    'neko:niri-pet-physical-crop-state-applied',
+                    this._returnButtonDragHandlers.cropStateApplied
+                );
                 this._returnButtonDragHandlers = null;
             }
 

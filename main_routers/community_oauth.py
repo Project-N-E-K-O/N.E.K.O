@@ -25,6 +25,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
 import main_routers.card_drop_router as C
+from main_logic import client_registration
 
 logger = logging.getLogger("neko.community_oauth")
 
@@ -35,7 +36,7 @@ _OAUTH_SCOPE = "openid email profile offline"
 _OAUTH_PENDING_FILENAME = "community_oauth_pending.json"
 _OAUTH_PENDING_TTL_SEC = 600
 _OAUTH_REDIRECT_PATH = "/oauth/callback"
-_DEFAULT_DESKTOP_CLIENT_ID = "neko-servers-desktop-dev"
+_DEFAULT_DESKTOP_CLIENT_ID = "neko-servers-desktop-prod"
 _DEFAULT_AUTH_URL = "https://auth.project-neko.cn"
 _HTTP_TIMEOUT_SEC = 30.0
 _BIND_OWNERSHIP_CONFLICT = "client_already_bound_to_other_user"
@@ -907,22 +908,33 @@ async def _oauth_guest_bind(social_base: str, access_token: str) -> dict[str, An
                 bind["error"] = "invalid_client_binding_challenge"
                 return bind
 
-            approval_res = await client.post(
-                f"{base}/api/clients/bind-approval",
-                json={
-                    "client_id": client_id,
-                    "client_proof": client_proof,
-                    "binding_challenge": challenge,
-                },
-            )
-            if approval_res.status_code >= 400:
+            approval_payload = {
+                "client_id": client_id,
+                "client_proof": client_proof,
+                "binding_challenge": challenge,
+            }
+
+            async def _approve():
+                res = await client.post(
+                    f"{base}/api/clients/bind-approval", json=approval_payload
+                )
                 try:
-                    bind["error"] = (
-                        approval_res.json().get("detail")
-                        or f"http_{approval_res.status_code}"
-                    )
+                    detail = res.json().get("detail")
                 except (ValueError, TypeError, AttributeError):
-                    bind["error"] = f"http_{approval_res.status_code}"
+                    detail = None
+                return res, detail
+
+            approval_res, approval_detail = await _approve()
+            # First cloud call from this install can predate registration; the
+            # bind-approval 403 is indistinguishable from a stale proof, so
+            # register and retry exactly once before surfacing the failure.
+            if client_registration.looks_unregistered(
+                approval_res.status_code, approval_detail
+            ) and await client_registration.ensure_client_registered(base, force=True):
+                approval_res, approval_detail = await _approve()
+
+            if approval_res.status_code >= 400:
+                bind["error"] = approval_detail or f"http_{approval_res.status_code}"
                 return bind
 
             bind_res = await client.post(

@@ -47,6 +47,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict
 from multiprocessing import Process, freeze_support, Event
+
+# ``plugin/`` is also used as an import root for user-plugin processes and it
+# contains a sibling ``config`` package.  Keep the repository root first here,
+# otherwise a long-lived test process (or an embedded plugin host) can resolve
+# the launcher's top-level ``config`` imports to ``plugin.config`` instead.
+_PROJECT_ROOT = os.path.abspath(os.path.dirname(__file__))
+while _PROJECT_ROOT in sys.path:
+    sys.path.remove(_PROJECT_ROOT)
+sys.path.insert(0, _PROJECT_ROOT)
+
 import config as config_module
 from config import APP_NAME, MAIN_SERVER_PORT, MEMORY_SERVER_PORT, TOOL_SERVER_PORT
 from utils import parent_guard, single_instance
@@ -58,6 +68,7 @@ from utils.port_utils import (
     is_port_in_excluded_range,
     set_port_probe_reuse,
 )
+from utils.root_state_lock import root_state_transaction
 from utils.cloudsave_runtime import (
     CLOUDSAVE_DISABLED_ENV,
     CLOUDSAVE_DISABLED_LOCAL_STATE_UNAVAILABLE,
@@ -138,6 +149,74 @@ MERGED_SERVER_SHUTDOWN_ORDER = ("Main", "Memory", "Agent")
 #: past it. ``None`` in multi-process mode, where ``cleanup_servers`` covers it.
 _merged_shutdown_request = None
 _merged_shutdown_complete = threading.Event()
+
+
+class _JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
+    _fields_ = [
+        ('PerProcessUserTimeLimit', ctypes.c_int64),
+        ('PerJobUserTimeLimit', ctypes.c_int64),
+        ('LimitFlags', ctypes.c_uint32),
+        ('MinimumWorkingSetSize', ctypes.c_size_t),
+        ('MaximumWorkingSetSize', ctypes.c_size_t),
+        ('ActiveProcessLimit', ctypes.c_uint32),
+        ('Affinity', ctypes.c_size_t),
+        ('PriorityClass', ctypes.c_uint32),
+        ('SchedulingClass', ctypes.c_uint32),
+    ]
+
+
+class _IO_COUNTERS(ctypes.Structure):
+    _fields_ = [
+        ('ReadOperationCount', ctypes.c_uint64),
+        ('WriteOperationCount', ctypes.c_uint64),
+        ('OtherOperationCount', ctypes.c_uint64),
+        ('ReadTransferCount', ctypes.c_uint64),
+        ('WriteTransferCount', ctypes.c_uint64),
+        ('OtherTransferCount', ctypes.c_uint64),
+    ]
+
+
+class _JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
+    _fields_ = [
+        ('BasicLimitInformation', _JOBOBJECT_BASIC_LIMIT_INFORMATION),
+        ('IoInfo', _IO_COUNTERS),
+        ('ProcessMemoryLimit', ctypes.c_size_t),
+        ('JobMemoryLimit', ctypes.c_size_t),
+        ('PeakProcessMemoryUsed', ctypes.c_size_t),
+        ('PeakJobMemoryUsed', ctypes.c_size_t),
+    ]
+
+
+def _get_windows_job_api():
+    """Load kernel32 with pointer-sized signatures for Job Object calls."""
+    if sys.platform != "win32":
+        raise RuntimeError("Windows Job Object API is only available on win32")
+
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.GetCurrentProcess.argtypes = []
+    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel32.IsProcessInJob.argtypes = [
+        wintypes.HANDLE,
+        wintypes.HANDLE,
+        ctypes.POINTER(wintypes.BOOL),
+    ]
+    kernel32.IsProcessInJob.restype = wintypes.BOOL
+    kernel32.CreateJobObjectW.argtypes = [wintypes.LPVOID, wintypes.LPCWSTR]
+    kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+    kernel32.SetInformationJobObject.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+    ]
+    kernel32.SetInformationJobObject.restype = wintypes.BOOL
+    kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+    kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    return kernel32
 
 #: Upper bound on how long owner death waits for the merged ordered shutdown.
 #: Matches the watchdog inside ``_begin_merged_shutdown``: once that fires the
@@ -362,42 +441,8 @@ def _relax_job_kill_on_close() -> None:
     if sys.platform != "win32" or not JOB_HANDLE:
         return
     try:
-        kernel32 = ctypes.windll.kernel32
-
-        class JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
-            _fields_ = [
-                ('PerProcessUserTimeLimit', ctypes.c_int64),
-                ('PerJobUserTimeLimit', ctypes.c_int64),
-                ('LimitFlags', ctypes.c_uint32),
-                ('MinimumWorkingSetSize', ctypes.c_size_t),
-                ('MaximumWorkingSetSize', ctypes.c_size_t),
-                ('ActiveProcessLimit', ctypes.c_uint32),
-                ('Affinity', ctypes.c_size_t),
-                ('PriorityClass', ctypes.c_uint32),
-                ('SchedulingClass', ctypes.c_uint32),
-            ]
-
-        class IO_COUNTERS(ctypes.Structure):
-            _fields_ = [
-                ('ReadOperationCount', ctypes.c_uint64),
-                ('WriteOperationCount', ctypes.c_uint64),
-                ('OtherOperationCount', ctypes.c_uint64),
-                ('ReadTransferCount', ctypes.c_uint64),
-                ('WriteTransferCount', ctypes.c_uint64),
-                ('OtherTransferCount', ctypes.c_uint64),
-            ]
-
-        class JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
-            _fields_ = [
-                ('BasicLimitInformation', JOBOBJECT_BASIC_LIMIT_INFORMATION),
-                ('IoInfo', IO_COUNTERS),
-                ('ProcessMemoryLimit', ctypes.c_size_t),
-                ('JobMemoryLimit', ctypes.c_size_t),
-                ('PeakProcessMemoryUsed', ctypes.c_size_t),
-                ('PeakJobMemoryUsed', ctypes.c_size_t),
-            ]
-
-        info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+        kernel32 = _get_windows_job_api()
+        info = _JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
         info.BasicLimitInformation.LimitFlags = 0
         if not kernel32.SetInformationJobObject(
             JOB_HANDLE,
@@ -612,16 +657,19 @@ def _maybe_schedule_storage_restart() -> bool:
 
 
 def _persist_post_startup_root_state(config_manager) -> None:
-    current_root_state = config_manager.load_root_state()
-    if should_write_root_mode_normal_after_startup(current_root_state):
-        set_root_mode(
-            config_manager,
-            ROOT_MODE_NORMAL,
-            current_root=str(config_manager.app_docs_dir),
-            last_known_good_root=str(config_manager.app_docs_dir),
-            last_successful_boot_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-        )
-        return
+    # 判定和写进同一个锁内事务，理由同 app/memory_server/runtime.py 那处：
+    # "中间没有 await"只挡得住同一循环上的协程，挡不住工作线程上的存储变更写。
+    with root_state_transaction():
+        current_root_state = config_manager.load_root_state()
+        if should_write_root_mode_normal_after_startup(current_root_state):
+            set_root_mode(
+                config_manager,
+                ROOT_MODE_NORMAL,
+                current_root=str(config_manager.app_docs_dir),
+                last_known_good_root=str(config_manager.app_docs_dir),
+                last_successful_boot_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            )
+            return
 
     print(
         "[Launcher] Preserving non-normal root_state after startup: "
@@ -646,7 +694,10 @@ def _get_last_error() -> int:
     """Get the most recent Win32 error code."""
     if sys.platform != 'win32':
         return 0
-    return ctypes.windll.kernel32.GetLastError()
+    get_last_error = getattr(ctypes, "get_last_error", None)
+    if callable(get_last_error):
+        return int(get_last_error())
+    return int(ctypes.windll.kernel32.GetLastError())
 
 
 _child_graceful_stop_hooks: list = []
@@ -879,14 +930,15 @@ def setup_job_object():
         return None
 
     try:
-        kernel32 = ctypes.windll.kernel32
+        kernel32 = _get_windows_job_api()
+        from ctypes import wintypes
 
         # Job Object 常量
         JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
         JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
 
         # 先检查当前进程是否已在某个 Job 中（Steam 场景常见）
-        is_in_job = ctypes.c_int(0)
+        is_in_job = wintypes.BOOL(0)
         current_process = kernel32.GetCurrentProcess()
         if not kernel32.IsProcessInJob(current_process, None, ctypes.byref(is_in_job)):
             print(f"[Launcher] Warning: IsProcessInJob failed (err={_get_last_error()})", flush=True)
@@ -901,40 +953,7 @@ def setup_job_object():
         # 设置 Job Object 信息
         # JOBOBJECT_EXTENDED_LIMIT_INFORMATION 结构体
         # 我们只需要设置 BasicLimitInformation.LimitFlags
-        class JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
-            _fields_ = [
-                ('PerProcessUserTimeLimit', ctypes.c_int64),
-                ('PerJobUserTimeLimit', ctypes.c_int64),
-                ('LimitFlags', ctypes.c_uint32),
-                ('MinimumWorkingSetSize', ctypes.c_size_t),
-                ('MaximumWorkingSetSize', ctypes.c_size_t),
-                ('ActiveProcessLimit', ctypes.c_uint32),
-                ('Affinity', ctypes.c_size_t),
-                ('PriorityClass', ctypes.c_uint32),
-                ('SchedulingClass', ctypes.c_uint32),
-            ]
-
-        class IO_COUNTERS(ctypes.Structure):
-            _fields_ = [
-                ('ReadOperationCount', ctypes.c_uint64),
-                ('WriteOperationCount', ctypes.c_uint64),
-                ('OtherOperationCount', ctypes.c_uint64),
-                ('ReadTransferCount', ctypes.c_uint64),
-                ('WriteTransferCount', ctypes.c_uint64),
-                ('OtherTransferCount', ctypes.c_uint64),
-            ]
-
-        class JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
-            _fields_ = [
-                ('BasicLimitInformation', JOBOBJECT_BASIC_LIMIT_INFORMATION),
-                ('IoInfo', IO_COUNTERS),
-                ('ProcessMemoryLimit', ctypes.c_size_t),
-                ('JobMemoryLimit', ctypes.c_size_t),
-                ('PeakProcessMemoryUsed', ctypes.c_size_t),
-                ('PeakJobMemoryUsed', ctypes.c_size_t),
-            ]
-
-        info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+        info = _JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
         info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
 
         result = kernel32.SetInformationJobObject(
@@ -2832,17 +2851,19 @@ def _prepare_cloudsave_runtime_for_launch() -> dict:
             fence_already_active=True,
         )
 
-    load_root_state = getattr(config_manager, "load_root_state", None)
-    current_root_state = load_root_state() if callable(load_root_state) else {"mode": ROOT_MODE_NORMAL}
-    if should_write_root_mode_normal_after_startup(current_root_state):
-        root_state = set_root_mode(
-            config_manager,
-            ROOT_MODE_NORMAL,
-            current_root=str(config_manager.app_docs_dir),
-            last_known_good_root=str(config_manager.app_docs_dir),
-        )
-    else:
-        root_state = current_root_state
+    # 同上：判定和写不能被别的线程插进来，整段进锁。
+    with root_state_transaction():
+        load_root_state = getattr(config_manager, "load_root_state", None)
+        current_root_state = load_root_state() if callable(load_root_state) else {"mode": ROOT_MODE_NORMAL}
+        if should_write_root_mode_normal_after_startup(current_root_state):
+            root_state = set_root_mode(
+                config_manager,
+                ROOT_MODE_NORMAL,
+                current_root=str(config_manager.app_docs_dir),
+                last_known_good_root=str(config_manager.app_docs_dir),
+            )
+        else:
+            root_state = current_root_state
     root_mode = str(root_state.get("mode") or "")
     root_state_event_payload = {
         "mode": root_mode,

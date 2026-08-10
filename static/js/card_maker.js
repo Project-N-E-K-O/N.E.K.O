@@ -46,7 +46,9 @@
     const PREVIEW_FRAME_INTERVAL_MS = 1000 / PREVIEW_TARGET_FPS;
     let activeModelSourceScale = MODEL_PREVIEW_SOURCE_SCALE;
 
-    window.renderQuality = 'high';
+    window.renderQuality = new URLSearchParams(window.location.search).get('mode') === 'embed'
+        ? 'medium'
+        : 'high';
 
     // 贴纸状态
     const stickers = [];           // { id, src, x, y, w, h, rotation, layer, imgEl }
@@ -142,7 +144,7 @@
     initModelSaveFallbackDefaultCardFace();
 
     // ====== 初始化 ======
-    document.addEventListener('DOMContentLoaded', async () => {
+    async function initializeCardMaker() {
         // 禁用鼠标跟踪（导出页面不需要）
         window.mouseTrackingEnabled = false;
         showLoading(true);
@@ -192,7 +194,13 @@
             showLoading(false);
             notifyEmbedHost('error');
         }
-    });
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', initializeCardMaker, { once: true });
+    } else {
+        void initializeCardMaker();
+    }
 
     // ====== 事件绑定 ======
     function bindEvents() {
@@ -520,8 +528,10 @@
         resetComposition();
         try {
             // 获取该角色的页面配置（包含模型类型和路径）
-            const resp = await fetch(`/api/config/page_config?lanlan_name=${encodeURIComponent(name)}`);
-            const cfg = await resp.json();
+            const prefetchedConfig = window.__NEKO_CARD_MAKER_CONFIG_PROMISE__;
+            const cfg = prefetchedConfig
+                ? await prefetchedConfig
+                : await fetch(`/api/config/page_config?lanlan_name=${encodeURIComponent(name)}`).then(resp => resp.json());
             if (!cfg || !cfg.success) {
                 throw new Error(cfg?.error || '获取角色配置失败');
             }
@@ -614,19 +624,32 @@
     }
 
     async function loadLive2DModel(modelPath) {
+        if (!window.live2dManager && typeof Live2DManager === 'function') {
+            window.live2dManager = new Live2DManager();
+        }
         if (!window.live2dManager) {
             throw new Error('Live2D 管理器未就绪');
         }
         // 初始化 PIXI（如果尚未初始化），启用 preserveDrawingBuffer 以便截图
         if (!window.live2dManager.pixi_app) {
             await window.live2dManager.initPIXI('live2d-canvas', 'live2d-container', {
-                preserveDrawingBuffer: true,
-                resolution: MODEL_PREVIEW_SOURCE_SCALE,
+                preserveDrawingBuffer: !isEmbedMode,
+                resolution: isEmbedMode
+                    ? Math.max(1, Math.min(1.5, window.devicePixelRatio || 1))
+                    : MODEL_PREVIEW_SOURCE_SCALE,
                 autoDensity: true
             });
         }
         resizeModelRendererForCard('live2d');
-        await window.live2dManager.loadModel(modelPath);
+        await window.live2dManager.loadModel(modelPath, isEmbedMode ? {
+            minimalEmbed: true,
+            dragEnabled: false,
+            wheelEnabled: false,
+            touchZoomEnabled: false,
+            loadEmotionMapping: false,
+            suppressPersistentExpressions: true,
+            suppressInitialIdle: true
+        } : {});
 
         // 制卡页居中；嵌入页使用适合社区锻造页的左侧半身构图。
         const model = window.live2dManager.currentModel;
@@ -1093,7 +1116,7 @@
     /**
      * 获取当前活跃模型的渲染画布
      */
-    function getModelCanvas() {
+    function getModelCanvas(options = {}) {
         if (currentModelType === 'live2d') {
             const mgr = window.live2dManager;
             if (mgr?.pixi_app?.renderer?.view) return mgr.pixi_app.renderer.view;
@@ -1110,6 +1133,11 @@
             return document.getElementById('mmd-canvas');
         }
         if (currentModelType === 'pngtuber') {
+            const mgr = window.cardMakerPNGTuberManager;
+            if (options.fullResolution && mgr?.isLayeredActive?.()) {
+                const snapshot = mgr.renderLayeredSnapshotCanvas?.();
+                if (snapshot) return snapshot;
+            }
             return getPNGTuberDrawableSource();
         }
         return null;
@@ -1528,7 +1556,7 @@
         }
         ensureRender();
 
-        const srcCanvas = getModelCanvas();
+        const srcCanvas = getModelCanvas({ fullResolution: currentModelType === 'pngtuber' });
         const srcSize = getDrawableSourceSize(srcCanvas);
         if (!srcCanvas || srcSize.width <= 0 || srcSize.height <= 0) {
             if (activeModelSourceScale !== previousSourceScale) {

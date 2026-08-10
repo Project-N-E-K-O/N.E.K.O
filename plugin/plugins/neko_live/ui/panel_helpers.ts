@@ -35,14 +35,17 @@ export function liveStateTone(state: string): "success" | "warning" | "danger" |
 }
 
 export function recentResultTone(status: string): "success" | "warning" | "danger" | "default" {
+  // "pushed"/"queued" only mean the request was handed to the host (submitted/awaiting),
+  // not that the cat actually spoke on stream — keep "queued" neutral, never a warning.
   if (status === "pushed") return "success"
+  if (status === "queued") return "default"
   if (status === "failed") return "danger"
   if (status === "skipped") return "warning"
   return "default"
 }
 
 export function speechExplanationTone(summary: string): "success" | "warning" | "danger" | "default" {
-  if (summary === "ready" || summary === "recently_spoke") return "success"
+  if (summary === "ready" || summary === "recently_handed_off" || summary === "recently_spoke") return "success"
   if (summary === "cannot_stream" || summary === "failed") return "danger"
   if (summary === "test_only" || summary === "temporarily_not_speaking" || summary === "waiting_for_activity" || summary === "recently_skipped") return "warning"
   return "default"
@@ -141,7 +144,8 @@ export function labelFallback(group: string, value: string): string {
       temporarily_not_speaking: "NEKO 暂时不会说话",
       cannot_stream: "NEKO 还不能开播",
       waiting_for_activity: "正在等合适的开口时机",
-      recently_spoke: "NEKO 刚刚说过话",
+      recently_handed_off: "最近请求已交给宿主",
+      recently_spoke: "最近请求已交给宿主",
       recently_skipped: "最近事件没有输出",
       failed: "最近输出失败",
       waiting: "正在等待合适时机",
@@ -161,7 +165,8 @@ export function labelFallback(group: string, value: string): string {
       quiet_activity_gap: "直播间已经安静了一小会。",
       no_recent_activity: "最近没有新的互动。",
       waiting_for_viewer_or_idle_slot: "正在等待观众接话或冷场补位时机。",
-      recent_output: "NEKO 刚刚已经输出过。",
+      host_handoff: "最近请求已交给宿主；尚未确认播放完成。",
+      recent_output: "最近请求已交给宿主；尚未确认播放完成。",
       recently_skipped: "最近事件被策略跳过。",
       failed: "最近输出链路失败。",
       "dispatcher.dry_run": "Dispatcher 以 dry_run 完成。",

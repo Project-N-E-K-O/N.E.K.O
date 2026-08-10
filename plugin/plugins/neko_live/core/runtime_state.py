@@ -8,18 +8,23 @@ import time
 from collections import deque
 from typing import Any
 
+from .runtime_log import RuntimeLog
+
 
 def initialize_runtime_state(runtime: Any) -> None:
     """Initialize runtime-local mutable state and scheduler caches."""
     runtime.recent_results = deque(maxlen=runtime.config.recent_limit)
     runtime.recent_sandbox_results = deque(maxlen=runtime.config.recent_limit)
     runtime.runtime_timeline = deque(maxlen=200)
+    runtime.runtime_log = RuntimeLog()
     runtime.live_connection_state = "disconnected"
     runtime.live_connection_auth_mode = "unknown"
+    runtime.live_target_lanlan = ""
     runtime.live_room_context = {}
     runtime.instructions_injected = False
     runtime.instructions_signature = ""
     runtime.developer_instructions_injected = False
+    runtime._instruction_transition_lock = asyncio.Lock()
     runtime._last_live_danmaku_seen_at = 0.0
     runtime._last_live_danmaku_seen_type = ""
     runtime._config_last_persist_at = 0.0
@@ -29,6 +34,8 @@ def initialize_runtime_state(runtime: Any) -> None:
     runtime._stopping = False
     runtime._accepting_live_events = False
     runtime._live_session_generation = 0
+    runtime._live_listener_operation_id = 0
+    runtime._live_listener_cleanup_task: asyncio.Task[Any] | None = None
     runtime._timeline_salt = secrets.token_bytes(32)
 
     runtime._idle_hosting_task: asyncio.Task[Any] | None = None

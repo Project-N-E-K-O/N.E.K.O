@@ -13,11 +13,15 @@ from ..core.contracts_public import is_sensitive_public_key, public_topic_materi
 _MAX_TEXT = 240
 _MAX_DEPTH = 4
 _ALLOWED_LEVELS = {"debug", "info", "warning", "error"}
-_SENSITIVE_AUTH_RE = re.compile(r"\bauthorization\s*:\s*(?:bearer|basic)?\s*[^\s;,]+", re.IGNORECASE)
+_SENSITIVE_AUTH_RE = re.compile(
+    r"\b(?:proxy[-_]?authorization|authorization)\b\s*[:=]\s*(?:bearer|basic)?\s*[^\s;,]+",
+    re.IGNORECASE,
+)
 _SENSITIVE_COOKIE_HEADER_RE = re.compile(r"\bcookie\s*:\s*[^\r\n]*", re.IGNORECASE)
 _SENSITIVE_TEXT_RE = re.compile(
-    r"\b(?:cookie|token|access_token|refresh_token|signature|webcast_sign|ttwid|odin_tt|sessionid|"
-    r"sessdata|bili_jct|dedeuserid|buvid3|x-tt-token)\b\s*[:=]\s*[^;\s,&]+",
+    r"[\"']?\b(?:cookie|token|access_token|refresh_token|signature|webcast_sign|ttwid|odin_tt|sessionid|"
+    r"sessdata|bili_jct|dedeuserid|buvid3|x-tt-token|password|passwd|secret|client_secret|"
+    r"api_key|apikey|credentials?)\b[\"']?\s*[:=]\s*[\"']?[^'\";}\s,&]+[\"']?",
     re.IGNORECASE,
 )
 

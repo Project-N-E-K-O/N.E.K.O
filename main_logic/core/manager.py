@@ -166,6 +166,12 @@ class LLMSessionManager(
         self._session_turn_count = 0  # 当前 session 的用户输入轮次计数
         self.pending_connector = None
         self.pending_session = None
+        # Closing a detached pending session is owned here, not by whoever
+        # happened to ask for it: that caller is a background prep task the
+        # reset path cancels — twice, once on entry and again when its 2s wait
+        # expires — and the second cancel used to land inside the close.
+        # Holding the task also keeps it from being garbage collected.
+        self._pending_session_close_tasks: set = set()
         self.pending_use_tts = None
         self.is_hot_swap_imminent = False
         self.tts_handler_task = None
@@ -283,6 +289,9 @@ class LLMSessionManager(
         self._tts_respawn_task: Optional[asyncio.Task] = None  # 延迟重试 Task，end_session 时取消
         self._last_tts_error_code: str = ''  # 上次 TTS 错误码
         self._tts_retry_notify_count: int = 0  # TTS 重试通知计数，前3次不通知前端
+        # User-facing TTS notices must survive handler replacement during a
+        # worker respawn. Entries are released by audio_done or session reset.
+        self._tts_notified_error_keys: set[tuple[str, str]] = set()
         self._tts_done_queued_for_turn: bool = False  # 防止同一轮次多次排入 TTS 结束信号
         self._tts_done_pending_until_ready: bool = False  # TTS未就绪时延迟到 flush 后再排入结束信号
         # Keep one utterance ledger so a replacement worker can replay consumed text.
@@ -443,6 +452,7 @@ class LLMSessionManager(
 
         # 用户语言设置（由 start_session 或前端 set_user_language() 设置，初始为 None）
         self.user_language = None
+        self._user_language_explicit = False
         self._conversation_turn_language = None
         # 翻译服务（延迟初始化）
         self._translation_service = None

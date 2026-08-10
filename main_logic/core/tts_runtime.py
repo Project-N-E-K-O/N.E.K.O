@@ -321,7 +321,29 @@ class TtsRuntimeMixin:
         regardless of ``use_tts``, so a Realtime native voice session
         (``use_tts=False``) can still have a live worker that needs
         interrupting on ``interrupt_audio``.
+
+        The two TTS-done flags are NOT reset together, because they are not
+        paired with the same thing — see the comments at each reset.
         """
+        # ``_tts_done_queued_for_turn`` 的对偶是下面的 ``__interrupt__``：一入队
+        # 就把上一轮那个 done sentinel 作废，而这个 flag 是"本轮 sentinel 已排队"
+        # 的唯一记账。所以清零属于 interrupt 的同一步，必须落在函数的第一个
+        # await（下面的 sleep）之前：从函数入口到 put("__interrupt__") 全是同步
+        # 语句，取消无从投递，两者因此原子。放在 await 之后（历史写法：由各调用方
+        # 在 await 返回后各自清）取消落在 sleep 上就会留下"worker 已被中断、记账
+        # 还说已排队"的残留态，下一轮 ``_request_tts_done_locked`` 因此
+        # early-return "already"，flush sentinel 永远进不了队 —— 正是
+        # handle_new_message 那两行清零本来要防的后果。
+        #
+        # ``_tts_done_pending_until_ready`` 不能跟着挪上来：它的对偶是
+        # ``tts_pending_chunks``（"这批文本还没刷出去，done 要等它们之后再补发"），
+        # 两者一起在函数末尾的 tts_cache_lock 段里清。单把 flag 提前、chunks 留在
+        # 原地，取消落在 sleep 上就撕成另一个方向的半套态：worker 就绪后
+        # ``_flush_tts_pending_chunks`` 会把陈旧 chunks 重新入队，却因为 flag 已是
+        # False 而跳过它们的 done 补发，合成器一直不 flush。所以它留在下面不动。
+        # 调用方在本函数返回后的重复清零保留不动：那是给 sleep 窗口内被并发
+        # 置回 True 的情况兜底，与这里要修的取消残留是两件事。
+        self._tts_done_queued_for_turn = False
         if self.tts_thread and self.tts_thread.is_alive():
             while not self.tts_response_queue.empty():
                 try:
@@ -343,6 +365,14 @@ class TtsRuntimeMixin:
                     break
         async with self.tts_cache_lock:
             self.tts_pending_chunks.clear()
+            # 再清一次 queued：上面那 20ms 里并发路径（finish_proactive_delivery
+            # 等）可能看到 False、排了自己的 sentinel 并把它置回 True。那个
+            # sentinel 排在 __interrupt__ 之后、本轮后续文本之前，本来就已作废；
+            # 而记账留 True 会让后续文本的 done 请求 early-return "already"，
+            # 重试那一轮因此发不出句尾 sentinel。handle_new_message 一族靠调用方
+            # 返回后的重复清零兜住了这一点，丢弃/takeover 两条路径没有，所以兜底
+            # 收进这里，让五个调用方拿到同一个保证。
+            self._tts_done_queued_for_turn = False
             self._tts_done_pending_until_ready = False
             self._reset_tts_replay_state()
             # Drop only queued-but-unconfirmed TTS text. Already-confirmed
@@ -585,6 +615,9 @@ class TtsRuntimeMixin:
         self._last_tts_error_code = ''
         self._last_tts_respawn_time = 0.0
         self._tts_retry_notify_count = 0
+        notified_error_keys = getattr(self, "_tts_notified_error_keys", None)
+        if notified_error_keys is not None:
+            notified_error_keys.clear()
         self._tts_done_queued_for_turn = False
         self._tts_fallback_uses_default_voice = False
         self._reset_tts_replay_state()
@@ -957,8 +990,53 @@ class TtsRuntimeMixin:
             logger.error(f"💥 WS Send Response Error: {e}")
             return False
 
+    async def send_audio_done(self, speech_id: Optional[str]):
+        """Tell the frontend that this speech_id's audio stream is closed.
+
+        Callers MUST await this only after the last ``audio_chunk`` of the same
+        speech_id has already been awaited out. The frontend finalizes the turn
+        on this signal, so an emission that overtakes trailing audio truncates
+        the utterance -- which is the very defect this signal exists to fix.
+        Never scheduled fire-and-forget for that reason.
+
+        Best-effort by design: a dropped signal only costs the frontend its
+        fast path (it still has its own give-up timer plus a watchdog), so any
+        failure is swallowed instead of propagating to the caller. Unlike
+        ``send_speech`` this is not mirrored to ``sync_message_queue``: no
+        monitor/viewer surface consumes audio.
+        """
+        if not speech_id:
+            # 无主信号会让前端给错误的一轮收尾，宁可不发。
+            return False
+        try:
+            if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
+                await self.websocket.send_json({
+                    "type": "audio_done",
+                    "speech_id": speech_id
+                })
+                logger.debug(f"🔚 send_audio_done OK: speech_id={speech_id}")
+                return True
+            else:
+                ws_state = getattr(self.websocket, 'client_state', None) if self.websocket else None
+                logger.warning(f"⚠️ send_audio_done skipped: ws={self.websocket is not None}, state={ws_state}")
+                return False
+        except WebSocketDisconnect:
+            logger.warning("⚠️ send_audio_done: WebSocket disconnected")
+            return False
+        except Exception as e:
+            logger.warning(f"⚠️ send_audio_done 发送失败: speech_id={speech_id}, err={e}")
+            return False
+
     async def tts_response_handler(self):
         q = self.tts_response_queue
+        pending_failed_speech_id = ""
+        notified_error_keys = getattr(self, "_tts_notified_error_keys", None)
+        if notified_error_keys is None:
+            # Some tests and compatibility callers construct the manager with
+            # ``__new__``. Lazily initialize while keeping normal runtimes on
+            # the manager-owned set created in ``LLMSessionManager.__init__``.
+            notified_error_keys = set()
+            self._tts_notified_error_keys = notified_error_keys
         logger.info(f"🎧 tts_response_handler started (queue id={id(q):#x})")
         while True:
             try:
@@ -980,6 +1058,11 @@ class TtsRuntimeMixin:
                     and data[0] in {"__tts_sentence_done__", "__tts_sentence_failed__"}
                 ):
                     _, speech_id, sentence = data
+                    if data[0] == "__tts_sentence_failed__":
+                        # Sentence workers put this marker immediately before the
+                        # matching ``__error__`` item.  Keep the speech identity so
+                        # parallel failures from one reply can share one user notice.
+                        pending_failed_speech_id = str(speech_id or "")
                     if speech_id == getattr(self, "_tts_replay_speech_id", None):
                         # marker 排在该句所有音频之后；只有音频实际送达前端才推进边界。
                         # 失败句若已播放过前缀也整体跳过，避免 fallback 从句首重念；
@@ -990,6 +1073,20 @@ class TtsRuntimeMixin:
                     continue
 
                 if isinstance(data, tuple) and len(data) == 2:
+                    if data[0] == "__audio_done__":
+                        # 必须 await，不能 _fire_task：handler 顺序消费队列，
+                        # await 才能保证这条收尾信号排在该 sid 的所有
+                        # __audio__/裸 bytes 之后。fire-and-forget 会插到尾音
+                        # 前面，前端提前收尾——正是本信号要解决的问题。
+                        await self.send_audio_done(data[1])
+                        completed_speech_id = str(data[1] or "")
+                        if completed_speech_id:
+                            completed_keys = {
+                                key for key in notified_error_keys
+                                if key[0] == completed_speech_id
+                            }
+                            notified_error_keys.difference_update(completed_keys)
+                        continue
                     if data[0] == "__ready__":
                         ready_flag = bool(data[1])
                         async with self.tts_cache_lock:
@@ -1052,6 +1149,10 @@ class TtsRuntimeMixin:
                     elif data[0] == "__error__":
                         error_msg = data[1]
                         error_msg_text = str(error_msg)
+                        error_speech_id = pending_failed_speech_id or str(
+                            getattr(self, "current_speech_id", "") or ""
+                        )
+                        pending_failed_speech_id = ""
                         logger.error(f"TTS Worker Error: {error_msg}")
 
                         # A configured endpoint failure is observable in the
@@ -1148,6 +1249,21 @@ class TtsRuntimeMixin:
                             if self._tts_retry_notify_count < 3:
                                 logger.info(f"TTS 错误重试 {self._tts_retry_notify_count}/3，暂不通知前端")
                                 continue
+                        error_code = str(self._last_tts_error_code or "")
+                        notification_key = (error_speech_id, error_code)
+                        if (
+                            error_speech_id
+                            and error_code
+                            and notification_key in notified_error_keys
+                        ):
+                            logger.info(
+                                "TTS user notice deduplicated: code=%s speech_id=%s",
+                                error_code,
+                                error_speech_id,
+                            )
+                            continue
+                        if error_speech_id and error_code:
+                            notified_error_keys.add(notification_key)
                         self._fire_task(self.send_status(user_msg))
                         continue
                 elif isinstance(data, tuple) and len(data) == 3 and data[0] == "__audio__":

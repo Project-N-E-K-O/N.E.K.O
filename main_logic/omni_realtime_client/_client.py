@@ -27,6 +27,7 @@ from ._shared import (
     TurnDetectionMode,
     _IMAGE_ANALYSIS_PENDING_DESCRIPTION,
     asyncio,
+    response_arbiter_fail_open_enabled,
     soxr,
 )
 
@@ -64,6 +65,13 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         on_audio_delta (Callable[[bytes], Awaitable[None]]):
             Callback for audio delta events.
             Takes in bytes and returns an awaitable.
+        on_audio_done (Callable[[], Awaitable[None]]):
+            Callback for the provider closing this response's audio stream.
+            Awaited strictly after the last audio delta of that response has
+            been awaited, so downstream consumers can treat it as the
+            authoritative end of playback for the current speech id.
+            Only wired on the OpenAI-schema websocket loop; see
+            ``_gemini_support`` for why Gemini deliberately never fires it.
         on_input_transcript (Callable[[str], Awaitable[None]]):
             Callback for input transcript events.
             Takes in a string and returns an awaitable.
@@ -75,6 +83,12 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         extra_event_handlers (Dict[str, Callable[[Dict[str, Any]], Awaitable[None]]]):
             Additional event handlers.
             Is a mapping of event names to functions that process the event payload.
+        get_host_turn_id (Callable[[], str | None]):
+            Reads the host's own notion of "which turn is live" — its speech id.
+            Read-only and synchronous: ownership of the turn stays with the
+            host, this side only samples it at a turn start and compares at the
+            end (see ``_notify_turn_finished``). Left unset, the end-of-turn
+            hooks behave exactly as they did before it existed.
     """
 
     def __init__(
@@ -86,6 +100,7 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         turn_detection_mode: TurnDetectionMode = TurnDetectionMode.SERVER_VAD,
         on_text_delta: Optional[Callable[[str, bool], Awaitable[None]]] = None,
         on_audio_delta: Optional[Callable[[bytes], Awaitable[None]]] = None,
+        on_audio_done: Optional[Callable[[], Awaitable[None]]] = None,
         on_new_message: Optional[Callable[[], Awaitable[None]]] = None,
         on_sid_rotate: Optional[Callable[[], Awaitable[None]]] = None,
         on_input_transcript: Optional[Callable[[str], Awaitable[None]]] = None,
@@ -95,6 +110,7 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         on_silence_timeout: Optional[Callable[[], Awaitable[None]]] = None,
         on_status_message: Optional[Callable[[str], Awaitable[None]]] = None,
         on_repetition_detected: Optional[Callable[[], Awaitable[None]]] = None,
+        get_host_turn_id: Optional[Callable[[], "str | None"]] = None,
         extra_event_handlers: Optional[Dict[str, Callable[[Dict[str, Any]], Awaitable[None]]]] = None,
         api_type: Optional[str] = None,
         on_tool_call: Optional[OnToolCallCallback] = None,
@@ -111,6 +127,7 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         self.instructions = None
         self.on_text_delta = on_text_delta
         self.on_audio_delta = on_audio_delta
+        self.on_audio_done = on_audio_done
         self.on_new_message = on_new_message
         self.on_sid_rotate = on_sid_rotate
         self.on_input_transcript = on_input_transcript
@@ -121,16 +138,56 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         self.on_silence_timeout = on_silence_timeout
         self.on_status_message = on_status_message
         self.on_repetition_detected = on_repetition_detected
+        self.get_host_turn_id = get_host_turn_id
         self.extra_event_handlers = extra_event_handlers or {}
         self._bg_tasks: set = set()  # 防止 fire-and-forget 任务被 GC 回收
+        # Teardown owns the socket it detached, so a cancelled caller cannot
+        # strand it. Both close paths run as one task per connection and every
+        # caller awaits it through a shield: cancelling the caller stops the
+        # waiting, never the closing, and a retry re-awaits the same task
+        # instead of finding ``self.ws`` already None and returning happy.
+        # Reset by connect(), because the client object outlives a connection.
+        self._close_task = None
+        self._failed_transport_close_task = None
+        self._gemini_close_task = None
+        # Bumped when a replacement connection attaches. A teardown that
+        # outlived its caller compares it after every await: the socket it
+        # detached is still its own to close, but client-wide state (silence
+        # scalars, the shared audio processor, the Gemini session) belongs to
+        # whoever attached last.
+        self._connection_generation = 0
 
         # Track current response state
         self._current_response_id = None
         self._current_item_id = None
         self._is_responding = False
+        # Advanced once per turn START, by every writer that begins one. A
+        # fail-open release captures it and stops the moment it changes: an
+        # abandoned turn's end-of-turn hooks must not land on whatever turn is
+        # live by the time the host gets around to them. Nothing that ENDS a
+        # turn touches it — "this turn ended" is not "a new turn started", and
+        # an interrupted response's own terminal must still be able to finish
+        # the turn it belongs to.
+        self._turn_epoch = 0
+        # The value ``_turn_epoch`` had when the response ``_current_response_id``
+        # names began. A release must compare against THIS, not against the
+        # epoch it happens to read on entry: a barge-in advances ``_turn_epoch``
+        # at ``speech_stopped`` without clearing the tracked response id, so a
+        # release starting after that barge-in would otherwise adopt the
+        # successor's epoch as its own baseline and find itself trivially
+        # current.
+        self._current_turn_epoch = 0
+        # The host's speech id as it was when this turn began, sampled at the
+        # same points that record the epoch. The epoch counts turn starts this
+        # transport OBSERVES; the host starts turns of its own that never reach
+        # here (``handle_new_message`` off a text input or independent ASR), so
+        # on those the epoch is unchanged and only the speech id moves. #2612.
+        self._current_turn_host_id: str | None = None
         self._response_arbiter = RealtimeResponseArbiter(
             self.send_event,
             abort_transport=self._abort_failed_transport,
+            fail_open=response_arbiter_fail_open_enabled(),
+            on_stuck_release=self._on_arbiter_stuck_release,
         )
         # Track printing state for input and output transcripts
         self._is_first_text_chunk = False
@@ -146,8 +203,25 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         self._input_audio_committed_total = 0  # diagnostic: audio buffer commits observed
         self._last_input_audio_committed_time = 0.0
         self._response_created_total = 0  # diagnostic: response.created events observed
+        # Raised by a fail-open release, lowered by the next response.created.
+        # Inside that window an id-less event cannot be told apart from the
+        # successor's, and a tool call is the one kind whose leak has side
+        # effects rather than merely wrong words. Never set on the default
+        # fail-closed path, which has no release.
+        self._idless_quarantine = False
+        # Latched the first time this connection sees a response.created.
+        # Until then the stale-event filter has no identity to compare
+        # against, and an id-bearing terminal cannot belong to anyone but
+        # the turn in progress — the free Gemini-proxy route never
+        # announces at all, and treating its terminal as stale skipped
+        # every turn's finalization, including the speech-id rotation it
+        # depends on. Reset per connect(): ids are connection-scoped.
+        self._announces_responses = False
         self._last_response_created_time = 0.0
         self._response_done_total = 0  # diagnostic: response.done events observed
+        # Response ids whose token usage has already been booked, so a
+        # repeated response.done cannot count the same turn twice.
+        self._usage_recorded_ids: list[str] = []
         self._last_response_done_time = 0.0
         self._last_response_transcript = ""
         self._speech_started_total = 0  # diagnostic: server VAD start events observed

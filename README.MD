@@ -125,9 +125,8 @@ services:
       - "48911:80"   # HTTP 访问端口
       - "48912:443"  # HTTPS 访问端口
     volumes:
-      - ./N.E.K.O:/root/Documents/N.E.K.O
+      - ./neko-home:/home/neko
       - ./logs:/app/logs
-      - ./ssl:/home/neko/ssl
     networks:
       - neko-network
 networks:
@@ -160,9 +159,8 @@ docker run -d \
   --restart unless-stopped \
   -p 48911:80 \
   -p 48912:443 \
-  -v "${NEKO_BASE_PATH}/N.E.K.O:/root/Documents/N.E.K.O" \
+  -v "${NEKO_BASE_PATH}/neko-home:/home/neko" \
   -v "${NEKO_BASE_PATH}/logs:/app/logs" \
-  -v "${NEKO_BASE_PATH}/ssl:/home/neko/ssl" \
   --network neko-network \
   docker.gh-proxy.org/ghcr.io/project-n-e-k-o/n.e.k.o:latest
 ```
@@ -171,11 +169,92 @@ docker run -d \
 启动后会自动生成以下目录结构：
 ```plaintext
 当前目录/
-├── N.E.K.O/      # 配置文件和数据
+├── neko-home/    # 用户主目录（配置、数据、SSL、OpenFang agent）
 ├── logs/         # 应用日志
-├── ssl/          # SSL证书
 └── docker-compose.yml
 ```
+
+</details>
+
+#### ⚠️ 从旧版本升级（挂载目录已变更）
+
+> 旧版把数据和证书分成 `./N.E.K.O`、`./ssl` 两个挂载，现在合并为 `./neko-home` 一个。**直接拉新镜像启动会得到一个空的数据目录**——容器照常起来、API Key 也会从环境变量重新生成，看上去一切正常，但人格、记忆、插件、模型都不在。旧数据不会被删除，只是不再挂进容器，按下面的步骤搬一次即可。
+
+<details>
+<summary>点击展开查看迁移步骤（旧版部署过的用户必看）</summary>
+
+下面几段命令请在**同一个终端里依次执行**——`BASE` 是它们共用的基准目录，换终端就丢了。Docker Compose 部署的旧目录在 compose 文件旁边，Docker Run 部署的在你当初传给 `-v` 的那个路径下：
+
+```bash
+# Docker Compose 部署
+BASE="."
+# Docker Run 部署改用这行，路径要和你当初 docker run 时用的一致
+# BASE="/home/neko/neko-data"
+```
+
+**第 1 步：把只存在于容器里的东西导出来。** 必须赶在删容器之前。两类东西可能只在容器可写层里：OpenFang 的工作目录（旧版从没挂过它），以及——如果你当初跟的是旧版 README——应用数据本身，因为那份文档把 `N.E.K.O/` 挂到了 `/root/Documents/N.E.K.O`，而服务从不往那里写。
+
+```bash
+mkdir -p "$BASE/neko-home/.local/share/N.E.K.O" "$BASE/neko-home/ssl" "$BASE/neko-home/.openfang"
+
+# 判据用「容器实际挂了什么」，不是「宿主目录里有没有东西」——后者对旧版 README
+# 部署的人是错的：那个目录里可能有你自己放进去的文件，而真数据仍然只在容器里。
+MOUNTS=$(docker inspect neko --format '{{range .Mounts}}{{println .Destination}}{{end}}' 2>/dev/null)
+
+# 第 4 步要用：真数据是从容器里捞出来的话，就不能再被宿主机上那个旧目录覆盖
+EXPORTED_APP_DATA=""
+
+if [ -z "$MOUNTS" ]; then
+  echo "容器 neko 不在（可能已经删过），跳过导出；旧数据若还在宿主机上，直接做下面几步"
+elif printf '%s\n' "$MOUNTS" | grep -qx /home/neko; then
+  echo "容器已按新布局挂载，没有待导出的内容"
+else
+  # 应用数据先导，这部分丢了找不回来。容器没把数据目录挂出去，就说明它只存在于
+  # 容器可写层。源路径末尾的 /. 表示复制目录内容，否则目标已存在时会多套一层。
+  if ! printf '%s\n' "$MOUNTS" | grep -qx /home/neko/.local/share/N.E.K.O; then
+    docker cp neko:/home/neko/.local/share/N.E.K.O/. "$BASE/neko-home/.local/share/N.E.K.O/"
+    EXPORTED_APP_DATA=1
+  fi
+  # OpenFang 状态其次，且不致命：从没初始化过的话容器里就没这个目录，而 docker cp
+  # 对不存在的源路径是报错退出的 —— 不能让它挡住上面已经完成的关键导出。
+  docker cp neko:/home/neko/.openfang/. "$BASE/neko-home/.openfang/" \
+    || echo "（容器里没有 .openfang，或导出失败；不影响上面的应用数据）"
+fi
+```
+
+**确认上一步成功后**再往下——下面第一条就会销毁容器，而对跟旧版 README 部署的人来说，那是应用数据唯一的副本：
+
+```bash
+# 第 2 步：停容器。Compose 部署用 down；Docker Run 部署改用 docker rm -f neko
+docker-compose down
+
+# 第 3 步：容器内的 neko 固定为 uid/gid 1000，和绝大多数发行版第一个普通用户一致，
+#         所以通常不必动属主。只有你的宿主账号不是 1000 时才需要这一步。
+[ "$(id -u)" = 1000 ] || sudo chown -R "$(id -u):$(id -g)" "$BASE/neko-home"
+
+# 第 4 步：把宿主机上的旧目录并进来——有就并，没有就跳过。容器可能已经在 neko-home
+#         下建好了同名目录和一张新的自签证书，所以按内容合并、不要用 mv：mv 到已存在
+#         的目录会套进去多一层。同名文件以旧数据为准。
+#
+#         但如果第 1 步是从容器里把真数据捞出来的（旧版 README 布局），那
+#         $BASE/N.E.K.O 只是个服务从不写入的空壳，里面顶多是你自己放过的过时
+#         文件 —— 拿它覆盖刚导出的数据就白救了。
+if [ -n "$EXPORTED_APP_DATA" ]; then
+  echo "应用数据已在第 1 步从容器导出，跳过合并 $BASE/N.E.K.O"
+  echo "（旧版 README 把它挂到了服务不写入的路径；确认里面没有你还需要的东西后自行删除）"
+elif [ -d "$BASE/N.E.K.O" ]; then
+  cp -a "$BASE/N.E.K.O/." "$BASE/neko-home/.local/share/N.E.K.O/" && rm -rf "$BASE/N.E.K.O"
+fi
+# 证书在两种旧布局下挂的都是 /home/neko/ssl，宿主机上这份始终是权威
+[ -d "$BASE/ssl" ] && cp -a "$BASE/ssl/." "$BASE/neko-home/ssl/" && rm -rf "$BASE/ssl"
+
+# 第 5 步：Compose 部署把 volumes 换成本文档上方的新版写法后 docker-compose up -d；
+#         Docker Run 部署按上方的新命令重新 docker run
+```
+
+若旧容器已经删除、宿主机上的 `N.E.K.O/` 又是空的，那部分数据无法找回。本次挂载调整正是为了修掉这个问题。
+
+> `./logs` 挂载没有变化，无需处理。容器内的应用用户固定为 uid/gid **1000**，和绝大多数 Linux 发行版第一个普通用户的号一致——所以 `neko-home/` 在宿主机上的属主就是你自己，备份、编辑、删除都不需要 `sudo`。
 
 </details>
 
@@ -185,7 +264,7 @@ docker run -d \
 <summary>点击展开查看 SSL 证书详细说明</summary>
 
 ##### 自动证书
-容器首次启动时会自动生成有效期为 **1000 年** 的自签名证书，证书文件保存在 `./ssl/` 目录。
+容器首次启动时会自动生成有效期为 **1000 年** 的自签名证书，证书文件保存在 `./neko-home/ssl/` 目录（即挂载目录下的 `ssl/`）。
 
 ##### 自定义证书
 如需使用自己的 SSL 证书：
@@ -194,11 +273,11 @@ docker run -d \
 
 ```bash
 # 创建证书目录
-mkdir -p ./ssl
+mkdir -p ./neko-home/ssl
 
 # 放入您的证书文件（必须命名为特定名称）
-cp your-cert.crt ./ssl/N.E.K.O.crt
-cp your-cert.key ./ssl/N.E.K.O.key
+cp your-cert.crt ./neko-home/ssl/N.E.K.O.crt
+cp your-cert.key ./neko-home/ssl/N.E.K.O.key
 ```
 
 **方法二：启动后替换**
@@ -208,8 +287,8 @@ cp your-cert.key ./ssl/N.E.K.O.key
 docker-compose down
 
 # 2. 替换证书文件
-cp your-cert.crt ./ssl/N.E.K.O.crt
-cp your-cert.key ./ssl/N.E.K.O.key
+cp your-cert.crt ./neko-home/ssl/N.E.K.O.crt
+cp your-cert.key ./neko-home/ssl/N.E.K.O.key
 
 # 3. 重新启动
 docker-compose up -d
@@ -302,9 +381,9 @@ ss -tulpn | grep ':4891[12]'
 
 ##### 2. 权限问题
 ```bash
-# 确保目录有正确权限
-mkdir -p N.E.K.O logs ssl
-chmod 755 N.E.K.O logs ssl
+# 确保目录有正确权限（容器启动时会把数据目录的属主改成 1000:1000，即容器内的 neko）
+mkdir -p neko-home logs
+chmod 755 neko-home logs
 ```
 
 ##### 3. 容器启动失败
@@ -319,7 +398,7 @@ docker logs neko --tail=100
 ##### 4. SSL 证书错误
 ```bash
 # 删除错误证书，让容器重新生成
-rm -f ssl/N.E.K.O.crt ssl/N.E.K.O.key
+rm -f neko-home/ssl/N.E.K.O.crt neko-home/ssl/N.E.K.O.key
 docker-compose up -d
 ```
 
@@ -404,14 +483,16 @@ docker-compose up -d
 
 ##### 数据备份
 ```bash
-# 备份重要数据
+# 备份重要数据（neko-home/ 内含 SSL 私钥，备份文件请勿公开）
 tar -czf neko-backup-$(date +%Y%m%d).tar.gz \
-  N.E.K.O/ \
-  ssl/ \
+  neko-home/ \
+  logs/ \
   docker-compose.yml
 ```
 
 ##### 版本升级
+> 若现有部署仍在使用旧版的 `./N.E.K.O` + `./ssl` 双挂载，升级前请先完成上文「从旧版本升级（挂载目录已变更）」的迁移步骤，否则新容器会对着空数据目录启动。
+
 ```bash
 # 拉取最新镜像
 docker-compose pull
@@ -659,10 +740,10 @@ N.E.K.O. **默认开启匿名 Token 用量遥测**，用于跟踪版本兼容性
 
 ## Star History
 
-<a href="https://www.star-history.com/?type=date&repos=wehos%2FN.E.K.O.">
+<a href="https://www.star-history.com/?repos=Project-N-E-K-O%2FN.E.K.O&type=date&legend=top-left">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=wehos/N.E.K.O.&type=date&theme=dark&legend=top-left&sealed_token=Q_Usdp5kZKjJCQn1FaMa0gKy4lU8MH6dX-53VemfgDwnJ3LjGb6T18uR4nRbliWo5h6HSjoF4EfDJ6oGZsE3uV3slX0u4Z6cFQ4SQS3MSjNMPWEvXjspVBwccA_l4uzz7i7YXDZcHmYLu_HTQ634NVnve67xkhbBsCDboxEFtU88nInXkTMtsalrrluF" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=wehos/N.E.K.O.&type=date&legend=top-left&sealed_token=Q_Usdp5kZKjJCQn1FaMa0gKy4lU8MH6dX-53VemfgDwnJ3LjGb6T18uR4nRbliWo5h6HSjoF4EfDJ6oGZsE3uV3slX0u4Z6cFQ4SQS3MSjNMPWEvXjspVBwccA_l4uzz7i7YXDZcHmYLu_HTQ634NVnve67xkhbBsCDboxEFtU88nInXkTMtsalrrluF" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=wehos/N.E.K.O.&type=date&legend=top-left&sealed_token=Q_Usdp5kZKjJCQn1FaMa0gKy4lU8MH6dX-53VemfgDwnJ3LjGb6T18uR4nRbliWo5h6HSjoF4EfDJ6oGZsE3uV3slX0u4Z6cFQ4SQS3MSjNMPWEvXjspVBwccA_l4uzz7i7YXDZcHmYLu_HTQ634NVnve67xkhbBsCDboxEFtU88nInXkTMtsalrrluF" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=Project-N-E-K-O/N.E.K.O&type=date&theme=dark&legend=top-left&sealed_token=nr78l3wDFXejkwf5jAoOZoESiAAX9-j8mznc-e4y92MggEiueKcbJFFgMYmBS5zLjPm_Db3ZZW7rbgGDqDsMsyMZQv032rQiVxP9zH7PJ33urAi_ZTZxKraHxjz9n9IpqyrpS_xFn0MYlP65Ah62wOQK-uleBdil9RgG19rCop_vrNNRIfxQuQVeDHSD" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=Project-N-E-K-O/N.E.K.O&type=date&legend=top-left&sealed_token=nr78l3wDFXejkwf5jAoOZoESiAAX9-j8mznc-e4y92MggEiueKcbJFFgMYmBS5zLjPm_Db3ZZW7rbgGDqDsMsyMZQv032rQiVxP9zH7PJ33urAi_ZTZxKraHxjz9n9IpqyrpS_xFn0MYlP65Ah62wOQK-uleBdil9RgG19rCop_vrNNRIfxQuQVeDHSD" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=Project-N-E-K-O/N.E.K.O&type=date&legend=top-left&sealed_token=nr78l3wDFXejkwf5jAoOZoESiAAX9-j8mznc-e4y92MggEiueKcbJFFgMYmBS5zLjPm_Db3ZZW7rbgGDqDsMsyMZQv032rQiVxP9zH7PJ33urAi_ZTZxKraHxjz9n9IpqyrpS_xFn0MYlP65Ah62wOQK-uleBdil9RgG19rCop_vrNNRIfxQuQVeDHSD" />
  </picture>
 </a>

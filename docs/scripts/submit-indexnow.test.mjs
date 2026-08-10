@@ -5,12 +5,38 @@ import {
   INDEXNOW_KEY_FILENAME,
   SITE_ORIGIN,
   collectIndexNowUrls,
+  createIndexNowStatus,
   documentationPathToUrl,
   normalizeSiteUrl,
   parseGitNameStatus,
   readIndexNowKey,
   submitIndexNow,
 } from './submit-indexnow.mjs'
+
+test('creates a credential-free IndexNow status artifact', () => {
+  const status = createIndexNowStatus({
+    runStatus: 'complete',
+    urls: [`${SITE_ORIGIN}/guide/`],
+    result: { status: 202, attempts: 1, submitted: 1 },
+    submittedAt: '2026-07-28T00:00:00.000Z',
+  })
+
+  assert.equal(status.httpStatus, 202)
+  assert.equal(status.submitted, 1)
+  assert.deepEqual(status.urls, [`${SITE_ORIGIN}/guide/`])
+  assert.doesNotMatch(JSON.stringify(status), /8968441f0c1047fbb91a39f7099beaff/u)
+})
+
+test('dry-run status is not reported as a real zero-URL submission', () => {
+  const status = createIndexNowStatus({
+    runStatus: 'not_run',
+    urls: [`${SITE_ORIGIN}/guide/`],
+    reason: 'dry_run',
+  })
+
+  assert.equal(status.submitted, null)
+  assert.equal(status.httpStatus, null)
+})
 
 test('maps VitePress Markdown source paths to clean production URLs', () => {
   assert.equal(documentationPathToUrl('docs/index.md'), `${SITE_ORIGIN}/`)
@@ -27,6 +53,7 @@ test('maps VitePress Markdown source paths to clean production URLs', () => {
   assert.equal(documentationPathToUrl('docs/design/index.md'), null)
   assert.equal(documentationPathToUrl('docs/design/live2d.md'), null)
   assert.equal(documentationPathToUrl('docs/live2d_motion_plan.md'), null)
+  assert.equal(documentationPathToUrl('docs/seo/reports/TEMPLATE.md'), null)
   assert.equal(
     documentationPathToUrl('docs/pngtuber-remix-physics-plan.md'),
     null,

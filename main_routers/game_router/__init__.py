@@ -184,7 +184,6 @@ from .balance import (  # noqa: F401
     _SOCCER_ANGER_PRESSURE_CAP_DEFAULT,
     _SOCCER_ANGER_PRESSURE_CAP_STRONG,
     _SOCCER_EMOTION_INERTIA,
-    _badminton_duel_difficulty_control_prompt,
     _build_soccer_balance_hint,
     _soccer_context_text_blob,
     _soccer_anger_pressure_cap_applicable,

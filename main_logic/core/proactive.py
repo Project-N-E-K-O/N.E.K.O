@@ -31,11 +31,12 @@ from utils.llm_client import AIMessage
 from main_logic.session_state import SessionEvent, ProactivePhase
 from main_logic.proactive_delivery import (
     DELIVERY_RETRACTED_KEY,
+    SWAP_PRIME_DELIVERY_CLAIM_KEY,
     VOICE_DELIVERY_COMMITTED_KEY,
     resolve_callback_delivery_ack,
 )
 from config import ANTI_REPEAT_EXEMPT_SOURCE_TAGS
-from utils.language_utils import normalize_language_code, get_global_language
+from utils.language_utils import normalize_language_code, get_global_language_full
 from uuid import uuid4
 from ._shared import _VOICE_PROACTIVE_ACK_GRACE_S, logger, _proactive_expected_sid
 from .callback_render import _build_callback_instruction, _select_callbacks_within_token_budget
@@ -260,6 +261,14 @@ class ProactiveMixin:
             if self.state.is_proactive_preempted():
                 logger.info("[%s] prepare_proactive_delivery: preempted during auto-start", self.lanlan_name)
                 return False
+        # ``finish_proactive_delivery`` must stage the committed text before
+        # terminal signals and cannot insert an await there. Pay the first
+        # corpus read here, before the proactive turn is claimed or visible.
+        try:
+            from memory.anti_repeat import get_anti_repeat_corpus
+            await get_anti_repeat_corpus().apreload(self.lanlan_name)
+        except Exception as exc:  # pragma: no cover - best-effort cache
+            logger.debug("[AntiRepeat] proactive preload skipped: %s", exc)
         async with self.lock:
             # lock 内二次复查：USER_INPUT 在 self.lock 内 rotate sid，sticky preempt
             # flag 先于 sid mutation 翻起；此处若已被抢占则不写 current_speech_id。
@@ -483,26 +492,32 @@ class ProactiveMixin:
                 # 绝不会为未投递的轮次暂存截图。
                 if hasattr(self.session, "set_proactive_screenshot"):
                     self.session.set_proactive_screenshot(vision_screenshot_b64)
+
+            # 防复读 corpus 拆成两半：内存更新在收尾信号**之前**（同步、无 await，
+            # 所以不是取消点），落盘在之后。用户可能对着主动搭话立刻回一句，那一轮
+            # 打分必须已经看得到刚投递的这段；而落盘那个 await 一旦被取消就会跳过
+            # TTS 收尾和两处 turn end。两个要求方向相反，只有拆开才能同时满足。
+            #
+            # LLM 给自己的元数据备忘，不算复读对象。素材推送类 channel（推歌）
+            # 的台词天生模板化，录进 corpus 会污染 FG 窗、漂移其它 channel 的
+            # 复读基线，故按 ANTI_REPEAT_EXEMPT_SOURCE_TAGS 豁免（与出口的
+            # BM25 评分豁免对偶）。
+            staged_anti_repeat = None
+            if source_tag not in ANTI_REPEAT_EXEMPT_SOURCE_TAGS:
+                try:
+                    from memory.anti_repeat import get_anti_repeat_corpus
+                    staged_anti_repeat = get_anti_repeat_corpus().stage_output(
+                        self.lanlan_name,
+                        full_text,
+                        is_proactive=True,
+                        now=publication_times[0] if publication_times else None,
+                    )
+                except Exception as _exc:  # pragma: no cover
+                    logger.debug("[AntiRepeat] stage proactive skipped: %s", _exc)
                 # LLM 给自己的元数据备忘，不算复读对象。素材推送类 channel（推歌）
                 # 的台词天生模板化，录进 corpus 会污染 FG 窗、漂移其它 channel 的
                 # 复读基线，故按 ANTI_REPEAT_EXEMPT_SOURCE_TAGS 豁免（与出口的
                 # BM25 评分豁免对偶）。
-                if source_tag not in ANTI_REPEAT_EXEMPT_SOURCE_TAGS:
-                    try:
-                        from memory.anti_repeat import get_anti_repeat_corpus
-                        get_anti_repeat_corpus().record_output(
-                            self.lanlan_name,
-                            full_text,
-                            is_proactive=True,
-                            now=(
-                                publication_times[0]
-                                if publication_times
-                                else None
-                            ),
-                        )
-                    except Exception as _exc:  # pragma: no cover
-                        logger.debug("[AntiRepeat] record proactive skipped: %s", _exc)
-
             if self.use_tts and self.tts_thread and self.tts_thread.is_alive() and not self._tts_done_queued_for_turn:
                 try:
                     await self._request_tts_done_for_turn("finish_proactive_delivery")
@@ -519,43 +534,73 @@ class ProactiveMixin:
             except Exception:
                 # Turn-end push is best-effort; the client may have gone away.
                 pass
+
+            # 落盘排在所有收尾信号之后（内存更新已经在投递后立刻做了，见上），而且
+            # **摘下来不 await**：到这里这一轮对用户已经发生完了，但下面那句
+            # `return True` 才是调用方的记账凭据（break reminder / 小游戏邀请看它决定
+            # 要不要把这条来源标记成已消费）。在这里 await 就等于把一个取消点插在
+            # 「已投递」和「报告已投递」之间 —— CancelledError 是 BaseException，
+            # 下面的 except Exception 接不住，同一条提醒会被再发一次。
+            if staged_anti_repeat is not None:
+                try:
+                    from memory.anti_repeat import get_anti_repeat_corpus
+                    get_anti_repeat_corpus().flush_staged_detached(staged_anti_repeat)
+                except Exception as _exc:  # pragma: no cover
+                    logger.debug("[AntiRepeat] flush proactive skipped: %s", _exc)
         # proactive 原文不写 logger（隐私）；本地 print 兜底
         logger.info("[%s] Proactive stream delivered (text_len=%d)", self.lanlan_name, len(full_text or ""))
         print(f"[{self.lanlan_name}] Proactive stream delivered: {(full_text or '')[:40]}…")
         return True
 
     def _purge_retracted_agent_callbacks(self) -> None:
+        callbacks = getattr(self, "pending_agent_callbacks", None)
+        if not callbacks:
+            return
+        purgeable = [
+            cb for cb in callbacks
+            if cb.get(DELIVERY_RETRACTED_KEY)
+            and not (
+                cb.get(VOICE_DELIVERY_COMMITTED_KEY)
+                or cb.get(SWAP_PRIME_DELIVERY_CLAIM_KEY)
+            )
+        ]
+        if not purgeable:
+            return
+        purgeable_obj_ids = {id(cb) for cb in purgeable}
         retracted_ids = {
             cb.get("_callback_delivery_id")
-            for cb in self.pending_agent_callbacks
-            if cb.get(DELIVERY_RETRACTED_KEY) and cb.get("_callback_delivery_id")
+            for cb in purgeable
+            if cb.get("_callback_delivery_id")
         }
-        has_retracted = any(
-            cb.get(DELIVERY_RETRACTED_KEY)
-            for cb in self.pending_agent_callbacks
-        )
-        if not has_retracted:
-            return
+        for cb in purgeable:
+            resolve_callback_delivery_ack(cb, False)
         self.pending_agent_callbacks = [
-            cb for cb in self.pending_agent_callbacks
-            if not cb.get(DELIVERY_RETRACTED_KEY)
+            cb for cb in callbacks
+            if id(cb) not in purgeable_obj_ids
         ]
         if retracted_ids:
             self.pending_extra_replies = [
                 extra for extra in self.pending_extra_replies
-                if extra.get("_callback_delivery_id") not in retracted_ids
+                if not isinstance(extra, dict)
+                or extra.get("_callback_delivery_id") not in retracted_ids
             ]
 
     def _purge_retracted_agent_callback_extras(self, callbacks: list) -> None:
         retracted_ids = {
             cb.get("_callback_delivery_id")
             for cb in callbacks
-            if cb.get(DELIVERY_RETRACTED_KEY) and cb.get("_callback_delivery_id")
+            if cb.get(DELIVERY_RETRACTED_KEY)
+            and not (
+                cb.get(VOICE_DELIVERY_COMMITTED_KEY)
+                or cb.get(SWAP_PRIME_DELIVERY_CLAIM_KEY)
+            )
+            and cb.get("_callback_delivery_id")
         }
         if retracted_ids:
             self.pending_extra_replies = [
                 extra for extra in self.pending_extra_replies
-                if extra.get("_callback_delivery_id") not in retracted_ids
+                if not isinstance(extra, dict)
+                or extra.get("_callback_delivery_id") not in retracted_ids
             ]
 
     async def trigger_agent_callbacks(self) -> bool:
@@ -676,7 +721,9 @@ class ProactiveMixin:
                     )
                     return False
 
-                _lang = normalize_language_code(self.user_language, format='short')
+                # ⚠️ 不能砍成短码：_build_callback_instruction 的模板有 zh-TW 行，
+                # 短码在这里就把字形丢了，归一化器再也救不回来（issue #2500）。
+                _lang = normalize_language_code(self.user_language, format='full')
                 voice_snapshot = [
                     cb for cb in proactive_cbs
                     if not cb.get(DELIVERY_RETRACTED_KEY)
@@ -938,6 +985,10 @@ class ProactiveMixin:
                         cb for cb in voice_snapshot
                         if not cb.get(DELIVERY_RETRACTED_KEY)
                     ]
+                    self._clear_voice_delivery_committed([
+                        cb for cb in voice_commit_snapshot
+                        if cb.get(DELIVERY_RETRACTED_KEY)
+                    ])
                     self._purge_retracted_agent_callbacks()
                     if not voice_snapshot:
                         self._clear_voice_delivery_committed(
@@ -1281,7 +1332,8 @@ class ProactiveMixin:
             for _cb in active_callbacks:
                 if isinstance(_cb, dict):
                     _proactive_images.extend(_cb.get("media_images") or [])
-            _lang = normalize_language_code(self.user_language, format='short')
+            # 同 trigger_agent_callbacks：字形要留到 _build_callback_instruction。
+            _lang = normalize_language_code(self.user_language, format='full')
             instruction = _build_callback_instruction(
                 active_callbacks,
                 lang=_lang,
@@ -1539,11 +1591,12 @@ class ProactiveMixin:
         stale — coalescing stays strictly opt-in."""
         if not isinstance(entry, dict):
             return False
-        if entry.get(VOICE_DELIVERY_COMMITTED_KEY):
-            # Once provider media delivery has begun, the matching callback
-            # text must complete the same turn. A newer same-key cue remains
-            # queued for the following turn instead of orphaning media that
-            # may already be persisted in provider context.
+        if (entry.get(VOICE_DELIVERY_COMMITTED_KEY)
+                or entry.get(SWAP_PRIME_DELIVERY_CLAIM_KEY)):
+            # Once provider delivery has begun (voice media or hot-swap prime),
+            # the matching callback text must complete that same delivery.
+            # A newer same-key cue stays queued for the following turn instead
+            # of orphaning context that may already be persisted provider-side.
             return False
         key = str(entry.get("coalesce_key") or "").strip()
         seq = entry.get("_coalesce_submit_seq")
@@ -2094,6 +2147,96 @@ class ProactiveMixin:
                 n += 1
         return n
 
+    def _enforce_agent_callback_queue_limit(self, max_items: int) -> list:
+        """Drop the oldest safely retractable callbacks above ``max_items``.
+
+        Provider-owned entries are never flood victims: voice delivery marks
+        them committed, while hot-swap prime marks them claimed before its
+        await. When all older entries are protected, a newly appended callback
+        is rejected instead.
+        """
+        overflow = len(self.pending_agent_callbacks) - max_items
+        if overflow <= 0:
+            return []
+
+        dropped: list = []
+        surviving: list = []
+        for queued in self.pending_agent_callbacks:
+            protected = (
+                isinstance(queued, dict)
+                and (
+                    queued.get(VOICE_DELIVERY_COMMITTED_KEY)
+                    or queued.get(SWAP_PRIME_DELIVERY_CLAIM_KEY)
+                )
+            )
+            if overflow > 0 and not protected:
+                dropped.append(queued)
+                overflow -= 1
+            else:
+                surviving.append(queued)
+
+        self.pending_agent_callbacks = surviving
+        dropped_ids = set()
+        for queued in dropped:
+            if not isinstance(queued, dict):
+                continue
+            resolve_callback_delivery_ack(queued, False)
+            queued[DELIVERY_RETRACTED_KEY] = True
+            delivery_id = queued.get("_callback_delivery_id")
+            if delivery_id:
+                dropped_ids.add(delivery_id)
+
+        if dropped_ids:
+            self.pending_extra_replies = [
+                extra for extra in self.pending_extra_replies
+                if not (
+                    isinstance(extra, dict)
+                    and extra.get("_callback_delivery_id") in dropped_ids
+                )
+            ]
+        if overflow > 0:
+            logger.warning(
+                "[%s] callback queue remains over limit: %d provider-owned entry(s) cannot be evicted",
+                self.lanlan_name,
+                overflow,
+            )
+        return dropped
+
+    def _enforce_pending_extra_reply_queue_limit(self, max_items: int) -> None:
+        """Trim extras without orphaning a provider-owned callback mirror."""
+        overflow = len(self.pending_extra_replies) - max_items
+        if overflow <= 0:
+            return
+
+        provider_owned_ids = {
+            callback.get("_callback_delivery_id")
+            for callback in self.pending_agent_callbacks
+            if isinstance(callback, dict)
+            and (
+                callback.get(VOICE_DELIVERY_COMMITTED_KEY)
+                or callback.get(SWAP_PRIME_DELIVERY_CLAIM_KEY)
+            )
+            and callback.get("_callback_delivery_id")
+        }
+        surviving: list = []
+        for extra in self.pending_extra_replies:
+            delivery_id = (
+                extra.get("_callback_delivery_id")
+                if isinstance(extra, dict)
+                else None
+            )
+            if overflow > 0 and delivery_id not in provider_owned_ids:
+                overflow -= 1
+            else:
+                surviving.append(extra)
+        self.pending_extra_replies = surviving
+        if overflow > 0:
+            logger.warning(
+                "[%s] extra reply queue remains over limit: %d provider-owned mirror(s) cannot be evicted",
+                self.lanlan_name,
+                overflow,
+            )
+
     def enqueue_agent_callback(self, callback: dict) -> None:
         """Enqueue a structured agent task callback for LLM injection.
 
@@ -2203,6 +2346,7 @@ class ProactiveMixin:
                 incoming_superseded = False
                 dropped = 0
                 superseded_ids: set = set()
+                provider_owned_ids: set = set()
                 surviving: list[dict] = []
                 for _cb in self.pending_agent_callbacks:
                     # isinstance guard: the queue should hold dicts, but never let
@@ -2212,14 +2356,24 @@ class ProactiveMixin:
                             and str(_cb.get("coalesce_key") or "").strip() == new_key):
                         surviving.append(_cb)
                         continue
-                    if _cb.get(VOICE_DELIVERY_COMMITTED_KEY):
-                        # This cue has crossed the media-delivery commit
-                        # boundary. Keep it; the new cue queues for the next
-                        # turn instead of retracting already-persisted media.
-                        surviving.append(_cb)
-                        continue
                     _old_seq = _cb.get("_coalesce_submit_seq")
                     _old_seq = _old_seq if isinstance(_old_seq, int) else -1
+                    _provider_owned = (
+                        _cb.get(VOICE_DELIVERY_COMMITTED_KEY)
+                        or _cb.get(SWAP_PRIME_DELIVERY_CLAIM_KEY)
+                    )
+                    if _provider_owned:
+                        # This cue has crossed a provider-delivery ownership
+                        # boundary and cannot be retracted. A genuinely newer
+                        # cue queues for the next turn; an older/equal late
+                        # arrival loses without disturbing provider state.
+                        if _old_seq >= new_seq:
+                            incoming_superseded = True
+                        _did = _cb.get("_callback_delivery_id")
+                        if _did:
+                            provider_owned_ids.add(_did)
+                        surviving.append(_cb)
+                        continue
                     if _old_seq > new_seq:
                         # A newer same-key cue is already queued → the incoming one
                         # (an older manager-released respond) loses; keep the queued.
@@ -2253,6 +2407,11 @@ class ProactiveMixin:
                     kept_extras: list = []
                     for _extra in self.pending_extra_replies:
                         if not isinstance(_extra, dict):
+                            kept_extras.append(_extra)
+                            continue
+                        if _extra.get("_callback_delivery_id") in provider_owned_ids:
+                            # Mirror of a provider-owned callback: it belongs to
+                            # the same in-flight delivery and must survive too.
                             kept_extras.append(_extra)
                             continue
                         # A mirror paired with a just-retracted callback is
@@ -2297,33 +2456,49 @@ class ProactiveMixin:
                     "source_name": source_name,
                     "error_message": error_message,
                 })
-            # Flood guard: a runaway plugin event stream must not grow either
-            # queue without bound. Keep the most recent N (newest = most
-            # relevant); drop-oldest.
-            if len(self.pending_agent_callbacks) > AGENT_CALLBACK_QUEUE_MAX_ITEMS:
-                overflow = len(self.pending_agent_callbacks) - AGENT_CALLBACK_QUEUE_MAX_ITEMS
-                dropped = self.pending_agent_callbacks[:overflow]
-                dropped_ids = {
-                    _cb.get("_callback_delivery_id")
-                    for _cb in dropped
-                    if isinstance(_cb, dict) and _cb.get("_callback_delivery_id")
-                }
-                self.pending_agent_callbacks = self.pending_agent_callbacks[overflow:]
-                # Resolve any delivery-ack future on a dropped callback NOW, so a
-                # waiter (e.g. topic-hook delivery) unblocks immediately instead
-                # of stalling until its timeout.
-                for _cb in dropped:
-                    resolve_callback_delivery_ack(_cb, False)
-                # Drop the matching voice-queue mirrors by delivery_id (the two
-                # queues drift, so positional trimming is unreliable) — otherwise
-                # a callback acked False here could still be injected via hot-swap.
-                if dropped_ids:
-                    self.pending_extra_replies = [
-                        _extra for _extra in self.pending_extra_replies
-                        if _extra.get("_callback_delivery_id") not in dropped_ids
-                    ]
-            if len(self.pending_extra_replies) > AGENT_CALLBACK_QUEUE_MAX_ITEMS:
-                self.pending_extra_replies = self.pending_extra_replies[-AGENT_CALLBACK_QUEUE_MAX_ITEMS:]
+            # Flood guard: evict only callbacks that have not crossed a
+            # provider-delivery ownership boundary. If every older entry is
+            # claimed/committed, the just-appended callback is the safe victim.
+            flood_dropped = self._enforce_agent_callback_queue_limit(
+                AGENT_CALLBACK_QUEUE_MAX_ITEMS
+            )
+            if (
+                new_key
+                and any(dropped is callback for dropped in flood_dropped)
+                and getattr(self, "_coalesce_latest", {}).get(new_key) == new_seq
+            ):
+                # Flood rejection means this cue never became pending. Rebuild
+                # latest from entries that actually survived in either live
+                # queue. This also covers manager-held respond cues, whose seq
+                # was already recorded at submit time before this enqueue.
+                surviving_seqs = [
+                    entry.get("_coalesce_submit_seq")
+                    for entry in (
+                        list(self.pending_agent_callbacks)
+                        + list(self.pending_extra_replies)
+                    )
+                    if isinstance(entry, dict)
+                    and not entry.get(DELIVERY_RETRACTED_KEY)
+                    and str(entry.get("coalesce_key") or "").strip() == new_key
+                    and isinstance(entry.get("_coalesce_submit_seq"), int)
+                ]
+                delivery_manager = getattr(self, "proactive_manager", None)
+                manager_seq_reader = getattr(
+                    delivery_manager,
+                    "latest_queued_coalesce_seq",
+                    None,
+                )
+                if callable(manager_seq_reader):
+                    manager_seq = manager_seq_reader(new_key)
+                    if isinstance(manager_seq, int):
+                        surviving_seqs.append(manager_seq)
+                if surviving_seqs:
+                    self._coalesce_latest[new_key] = max(surviving_seqs)
+                else:
+                    self._coalesce_latest.pop(new_key, None)
+            self._enforce_pending_extra_reply_queue_limit(
+                AGENT_CALLBACK_QUEUE_MAX_ITEMS
+            )
         except Exception:
             # Pruning is best-effort housekeeping — never let it break callback bookkeeping.
             pass
@@ -2361,6 +2536,7 @@ class ProactiveMixin:
         active_callbacks = [
             cb for cb in candidate_callbacks
             if not cb.get(DELIVERY_RETRACTED_KEY)
+            and not cb.get(SWAP_PRIME_DELIVERY_CLAIM_KEY)
         ]
         if not active_callbacks:
             return ""
@@ -2368,12 +2544,15 @@ class ProactiveMixin:
         # Budget-aware selection: render (and ack) only the callbacks that fit
         # the total budget this turn; defer the rest to the next drain instead
         # of acking them as delivered while their text falls off the cap.
-        callbacks_snapshot, deferred = _select_callbacks_within_token_budget(
+        callbacks_snapshot, _deferred = _select_callbacks_within_token_budget(
             active_callbacks, AGENT_CALLBACK_TOTAL_MAX_TOKENS
         )
         delivered_to_prompt = False
         try:
-            _lang = normalize_language_code(getattr(self, 'user_language', '') or '', format='short') or get_global_language()
+            # 同上；user_language 为空时才回落全局语言（此前回落的是短码）。
+            _lang = normalize_language_code(
+                getattr(self, 'user_language', '') or get_global_language_full(), format='full'
+            )
             rendered = _build_callback_instruction(
                 callbacks_snapshot,
                 lang=_lang,
@@ -2387,6 +2566,10 @@ class ProactiveMixin:
             if delivered_to_prompt:
                 for cb in callbacks_snapshot:
                     resolve_callback_delivery_ack(cb, True)
-            # Keep deferred (over-budget) callbacks for the next turn; only the
-            # rendered+acked ones leave the queue.
-            self.pending_agent_callbacks = deferred
+            # Keep claimed and over-budget callbacks in their original order;
+            # only the entries actually rendered by this drain leave the queue.
+            delivered_obj_ids = {id(cb) for cb in callbacks_snapshot}
+            self.pending_agent_callbacks = [
+                cb for cb in self.pending_agent_callbacks
+                if id(cb) not in delivered_obj_ids
+            ]

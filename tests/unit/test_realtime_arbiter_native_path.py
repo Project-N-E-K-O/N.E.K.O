@@ -37,16 +37,18 @@ and would hit every user.
 
 import asyncio
 import json
-import re
-import tomllib
-from pathlib import Path
+import logging
 
 import pytest
 
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-
 from main_logic.omni_realtime_client import OmniRealtimeClient
+from main_logic.omni_realtime_client import _response_arbiter as _arbiter_module
+from main_logic.omni_realtime_client import _transport as _transport_module
 from main_logic.omni_realtime_client._response_arbiter import RealtimeResponseArbiter
+from main_logic.omni_realtime_client._shared import (
+    _IMAGE_ANALYSIS_PENDING_DESCRIPTION,
+)
+from main_logic.tool_calling import ToolResult
 
 
 def _native_client(api_type: str = "qwen", model: str = "qwen-omni-turbo-realtime"):
@@ -309,6 +311,331 @@ async def test_reconnect_restores_dispatch_for_a_native_client():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_a_terminal_resets_the_per_turn_output_state():
+    # The per-turn cleanup in the response.done handler had no coverage at
+    # all: deleting the whole block turned nothing red. It is worth pinning on
+    # its own — _image_sent_this_turn in particular, because a stale one makes
+    # stream_image withhold the NEXT turn's visual context for its whole
+    # duration, so that response answers about a screen it cannot see.
+    #
+    # It is also the safety net for the extraction this commit performs: a
+    # helper nobody tests can be moved wrong without anything noticing.
+    client = _native_client()
+    socket = _RecordingSocket()
+    client.ws = socket
+    receive_loop = asyncio.create_task(client.handle_messages())
+
+    socket.feed({"type": "response.created", "response": {"id": "resp-1"}})
+    await _settle()
+    # Dirty the state AFTER response.created: that handler clears the
+    # transcript buffer itself, so seeding before it would leave this test
+    # asserting a value nobody had to produce. Every field the helper clears
+    # is seeded — a field left at its default makes its reset deletable
+    # without this test noticing.
+    client._audio_delta_count = 5
+    client._output_transcript_buffer = "leftover"
+    client._print_input_transcript = True
+    client._image_sent_this_turn = True
+    client._image_recognized_this_turn = True
+
+    socket.feed({"type": "response.done", "response": {"id": "resp-1"}})
+    await _settle()
+
+    assert client._audio_delta_count == 0
+    assert client._output_transcript_buffer == ""
+    assert client._print_input_transcript is False
+    assert client._image_sent_this_turn is False, (
+        "a stale image flag makes stream_image withhold the next turn's "
+        "visual context for its whole duration"
+    )
+    assert client._image_recognized_this_turn is False
+
+    socket.finish()
+    await asyncio.wait_for(receive_loop, timeout=1)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_response_created_resets_the_per_response_output_state():
+    client = _native_client()
+    socket = _RecordingSocket()
+    client.ws = socket
+    receive_loop = asyncio.create_task(client.handle_messages())
+
+    client._interrupted = True
+    client._output_transcript_buffer = "previous buffered transcript"
+    client._current_response_transcript = "previous repetition transcript"
+    client._last_response_created_time = 0.0
+
+    socket.feed({"type": "response.created", "response": {"id": "resp-new"}})
+    await _settle()
+
+    assert client._interrupted is False
+    assert client._output_transcript_buffer == ""
+    assert client._current_response_transcript == ""
+    assert client._last_response_created_time > 0.0
+
+    socket.finish()
+    await asyncio.wait_for(receive_loop, timeout=1)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_transcript_flush_failure_does_not_stop_the_receive_loop(monkeypatch):
+    warnings: list[tuple[object, ...]] = []
+    monkeypatch.setattr(
+        _transport_module.logger,
+        "warning",
+        lambda *args, **_kwargs: warnings.append(args),
+    )
+
+    async def _raise_from_output_transcript(_text: str, _is_first: bool) -> None:
+        raise RuntimeError("host transcript sink disconnected")
+
+    client = _native_client()
+    client.on_output_transcript = _raise_from_output_transcript
+    socket = _RecordingSocket()
+    client.ws = socket
+    receive_loop = asyncio.create_task(client.handle_messages())
+
+    socket.feed({"type": "response.created", "response": {"id": "resp-1"}})
+    await _settle()
+    client._audio_delta_count = 1
+    client._output_transcript_buffer = "already spoken"
+
+    socket.feed({"type": "response.done", "response": {"id": "resp-1"}})
+    await _settle()
+
+    assert receive_loop.done() is False
+    assert client._output_transcript_buffer == ""
+    assert warnings == [
+        ("response.done transcript flush failed (%s); continuing", "RuntimeError")
+    ]
+
+    socket.feed({"type": "response.created", "response": {"id": "resp-2"}})
+    await _settle()
+    assert client._current_response_id == "resp-2"
+    assert client._response_created_total == 2
+
+    socket.finish()
+    await asyncio.wait_for(receive_loop, timeout=1)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_terminal_clears_the_in_progress_flags():
+    # The other half of ending a turn: the flags that say a response is in
+    # flight. Untested before this, same as the per-turn reset was.
+    client = _native_client()
+    socket = _RecordingSocket()
+    client.ws = socket
+    receive_loop = asyncio.create_task(client.handle_messages())
+
+    socket.feed({"type": "response.created", "response": {"id": "resp-1"}})
+    await _settle()
+    assert client._is_responding is True
+    client._current_item_id = "item-1"
+    client._skip_until_next_response = True
+    client._interrupted = True
+
+    socket.feed({"type": "response.done", "response": {"id": "resp-1"}})
+    await _settle()
+
+    assert client._is_responding is False
+    assert client._current_response_id is None
+    assert client._current_item_id is None
+    assert client._skip_until_next_response is False, (
+        "left raised, the next turn's text and audio are suppressed"
+    )
+    assert client._interrupted is False
+
+    socket.finish()
+    await asyncio.wait_for(receive_loop, timeout=1)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_terminal_notifies_the_host_and_rotates_only_without_server_vad():
+    # The host-facing half. Rotation is conditional: routes WITH server VAD
+    # rotate from speech_stopped, so firing here too would be a second,
+    # unpaired rotation on a live turn.
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+
+    async def _build(base: str):
+        done: list[str] = []
+        rotations: list[str] = []
+
+        async def _on_done() -> None:
+            done.append("done")
+
+        async def _on_rotate() -> None:
+            rotations.append("rotate")
+
+        client = OmniRealtimeClient(
+            base,
+            "test-key",
+            model="free-model",
+            api_type="free",
+            on_response_done=_on_done,
+            on_sid_rotate=_on_rotate,
+        )
+        socket = _RecordingSocket()
+        client.ws = socket
+        loop_task = asyncio.create_task(client.handle_messages())
+        socket.feed({"type": "response.created", "response": {"id": "r"}})
+        await _settle()
+        socket.feed({"type": "response.done", "response": {"id": "r"}})
+        await _settle()
+        socket.finish()
+        await asyncio.wait_for(loop_task, timeout=1)
+        return client, done, rotations
+
+    # lanlan.app free is _is_free_proxy and NOT _is_gemini: arbitrated, and
+    # response.done is its only rotation point.
+    proxy, proxy_done, proxy_rotations = await _build(
+        "wss://www.lanlan.app/api/v1/realtime"
+    )
+    assert proxy._has_server_vad is False
+    assert proxy_done == ["done"]
+    assert proxy_rotations == ["rotate"], (
+        "without this the speech id never advances and TTS upstream drops "
+        "every later turn's text"
+    )
+
+    direct, direct_done, direct_rotations = await _build(
+        "wss://example.invalid/realtime"
+    )
+    assert direct._has_server_vad is True
+    assert direct_done == ["done"]
+    assert direct_rotations == [], (
+        "a server-VAD route already rotates from speech_stopped"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_second_terminal_for_a_finished_turn_does_not_finalize_it_again():
+    # Ending a turn clears _current_response_id, which is what makes a late
+    # terminal for that same response read as stale: the filter forwards it to
+    # the arbiter (so the lane still releases) and drops it otherwise.
+    #
+    # Worth pinning because the temptation runs the other way. handle_
+    # interruption deliberately KEEPS the identity, so the cancelled
+    # response's own terminal still finalizes the turn — the opposite need.
+    # A path that ends a turn early and keeps the identity would let the late
+    # terminal finalize a second time, over whatever turn came next.
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+
+    done_calls: list[str] = []
+
+    async def _on_done() -> None:
+        done_calls.append("done")
+
+    client = OmniRealtimeClient(
+        "wss://example.invalid/realtime",
+        "test-key",
+        model="qwen-omni-turbo-realtime",
+        api_type="qwen",
+        on_response_done=_on_done,
+    )
+    socket = _RecordingSocket()
+    client.ws = socket
+    receive_loop = asyncio.create_task(client.handle_messages())
+
+    socket.feed({"type": "response.created", "response": {"id": "resp-a"}})
+    await _settle()
+    socket.feed({"type": "response.done", "response": {"id": "resp-a"}})
+    await _settle()
+    assert done_calls == ["done"]
+    assert client._current_response_id is None
+
+    # The provider repeats itself, or a buffered duplicate lands late.
+    socket.feed({"type": "response.done", "response": {"id": "resp-a"}})
+    await _settle()
+
+    assert done_calls == ["done"], (
+        "a turn already finalized must not be finalized again by its own "
+        "late terminal"
+    )
+
+    socket.finish()
+    await asyncio.wait_for(receive_loop, timeout=1)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_raising_host_hook_does_not_skip_the_rotation():
+    # The hooks are independent: a host that blows up ending the turn must
+    # not take the speech-id rotation down with it, or the failure silently
+    # mutes every later turn on a no-server-VAD route.
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+
+    rotations: list[str] = []
+
+    async def _on_done() -> None:
+        raise RuntimeError("frontend went away")
+
+    async def _on_rotate() -> None:
+        rotations.append("rotate")
+
+    client = OmniRealtimeClient(
+        "wss://www.lanlan.app/api/v1/realtime",
+        "test-key",
+        model="free-model",
+        api_type="free",
+        on_response_done=_on_done,
+        on_sid_rotate=_on_rotate,
+    )
+    socket = _RecordingSocket()
+    client.ws = socket
+    receive_loop = asyncio.create_task(client.handle_messages())
+
+    socket.feed({"type": "response.created", "response": {"id": "r"}})
+    await _settle()
+    socket.feed({"type": "response.done", "response": {"id": "r"}})
+    await _settle()
+
+    assert rotations == ["rotate"]
+
+    socket.finish()
+    await asyncio.wait_for(receive_loop, timeout=1)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_terminal_rearms_analysis_on_a_non_native_image_provider():
+    # The helper has two branches and the case above only exercises one.
+    # Standard StepFun is the sole provider without native image input: it
+    # re-arms the pending sentinel instead, and only while the cached frame is
+    # absent or already consumed. Without this, the elif could be deleted
+    # wholesale and the suite would stay green.
+    client = _native_client(api_type="step", model="step-realtime")
+    assert client._supports_native_image is False, "this is the elif branch"
+    socket = _RecordingSocket()
+    client.ws = socket
+    receive_loop = asyncio.create_task(client.handle_messages())
+
+    socket.feed({"type": "response.created", "response": {"id": "resp-1"}})
+    await _settle()
+    client._image_recognized_this_turn = True
+    client._image_description = "an analysis from the turn being ended"
+    client._latest_image_b64 = None  # absent frame -> re-arm
+
+    socket.feed({"type": "response.done", "response": {"id": "resp-1"}})
+    await _settle()
+
+    assert client._image_recognized_this_turn is False
+    assert client._image_description == _IMAGE_ANALYSIS_PENDING_DESCRIPTION, (
+        "StepFun analyzes only while the sentinel is present, so ending a "
+        "turn with no cached frame has to re-arm it"
+    )
+
+    socket.finish()
+    await asyncio.wait_for(receive_loop, timeout=1)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_the_client_wires_an_arbiter_for_every_native_user():
     # The premise of this whole file: the arbiter is not opt-in. If it ever
     # becomes gated, these tests would pass vacuously against a bypass.
@@ -398,73 +725,768 @@ async def test_a_native_create_response_runs_through_the_arbiter_end_to_end():
     await asyncio.wait_for(receive_loop, timeout=1)
 
 
-@pytest.mark.unit
-def test_the_python_pin_that_this_arbiter_depends_on_stays_gated():
-    # ``requires-python = "==3.11.*"`` is not a routine bump: the arbiter's
-    # resume -> await -> re-pause hand-off relies on 3.11 task-yield ordering
-    # and #2516 is still open. The pyproject comment says raising it is a
-    # "gated change" -- this is the gate, so that claim is true rather than
-    # aspirational.
-    #
-    # CodeRabbit asked instead for a `sys.version_info >= (3, 12): sys.exit()`
-    # kill switch in launcher.py / launcher_core / the main_server entry
-    # points. Declined here on blast radius: #2516 is a response-ORDERING
-    # defect (proactive chat can jump ahead of user speech), not a crash, and
-    # hard-exiting every entry point would brick the whole application for
-    # anyone already running 3.12 over a bug most of them will never hit.
-    # Shipping that is a release decision, not a review fix. Widening the pin
-    # is what needs stopping, and that is what this stops.
-    pyproject = _REPO_ROOT / "pyproject.toml"
-    with pyproject.open("rb") as handle:
-        config = tomllib.load(handle)
+def _wired_client(api_type: str = "qwen", model: str = "qwen-omni-turbo-realtime"):
+    """A native client attached to a recording socket, ready for its real
+    receive loop. The caller owns creating/joining the ``handle_messages``
+    task so a failed assertion cannot leak an unawaited loop silently."""
 
-    assert config["project"]["requires-python"] == "==3.11.*", (
-        "requires-python was widened while #2516 (RealtimeResponseArbiter "
-        "dispatch ordering on 3.12+) is still open. Fix the dequeue gate "
-        "first -- see the comment above requires-python in pyproject.toml."
+    client = _native_client(api_type=api_type, model=model)
+    socket = _RecordingSocket()
+    client.ws = socket
+    return client, socket
+
+
+async def _finish_loop(socket: _RecordingSocket, receive_loop: asyncio.Task) -> None:
+    socket.finish()
+    await asyncio.wait_for(receive_loop, timeout=1)
+
+
+async def _ack_item_and_expect_create(socket: _RecordingSocket, index: int) -> None:
+    """Acknowledge the conversation item at ``socket.sent[index]`` and wait for
+    the arbiter to put the paired response.create on the wire."""
+
+    item_id = socket.sent[index]["item"]["id"]
+    socket.feed(
+        {
+            "type": "conversation.item.created",
+            "item": {"id": item_id, "role": "user", "type": "message"},
+        }
+    )
+    await _settle()
+    assert socket.types[index + 1] == "response.create"
+
+
+# ---------------------------------------------------------------------------
+# T1 — the server-VAD lane close every native voice turn walks (speech_stopped
+# → notify_server_vad_response_pending → arm backstop). Until now the two-phase
+# call had zero native-side assertions: arm_server_vad_response_pending_timeout
+# had no test anywhere in the repo.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_user_speech_preempts_an_inflight_native_request():
+    # The contract, stated once: the user's voice always wins. An explicit
+    # native request that has not finished dispatching when the user's
+    # utterance ends must be failed promptly — not raced against the server's
+    # automatic response.
+    client, socket = _wired_client()
+    receive_loop = asyncio.create_task(client.handle_messages())
+
+    create = asyncio.create_task(client.create_response("hello"))
+    await _settle()
+    # Parked on the item-ack barrier: item out, response.create withheld.
+    assert socket.types == ["conversation.item.create"]
+
+    socket.feed({"type": "input_audio_buffer.speech_stopped"})
+    await _settle()
+
+    assert create.done(), (
+        "an utterance ending must fail the in-flight explicit request "
+        "immediately, not leave it racing the automatic VAD response"
+    )
+    exc = create.exception()
+    assert isinstance(exc, RuntimeError)
+    assert "pending server VAD response" in str(exc)
+    assert "response.create" not in socket.types, (
+        "the losing explicit request must never emit its response.create"
     )
 
+    # The automatic response runs its own lifecycle; afterwards the lane must
+    # be clean for the next native turn — no residue from the failed request.
+    socket.feed({"type": "response.created", "response": {"id": "vad-1"}})
+    socket.feed({"type": "response.done", "response": {"id": "vad-1"}})
+    await _settle()
+
+    follow_up = asyncio.create_task(client.create_response("next turn"))
+    await _settle()
+    assert socket.types[-1] == "conversation.item.create"
+    await _ack_item_and_expect_create(socket, len(socket.sent) - 1)
+    socket.feed({"type": "response.created", "response": {"id": "resp-2"}})
+    socket.feed({"type": "response.done", "response": {"id": "resp-2"}})
+    await _settle()
+    await asyncio.wait_for(follow_up, timeout=1)
+    await client._response_arbiter.wait_until_idle(timeout=1)
+    assert client.is_active_response() is False
+    assert socket.closed is False
+
+    await _finish_loop(socket, receive_loop)
+
 
 @pytest.mark.unit
-def test_every_runtime_that_actually_executes_this_code_is_pinned_to_311():
-    # CodeRabbit, correctly: the assertion above guards the PIN, not the
-    # INTERPRETER. requires-python only binds at install resolution, so
-    # `python3.12 launcher.py`, a CI matrix bump, or a Docker base image that
-    # quietly moves on would all hit #2516 without touching a character of
-    # pyproject.toml -- a paper gate.
-    #
-    # Auto-discovered rather than a hand-kept list: a new workflow, or a new
-    # docker/Dockerfile.*, is covered the moment it is added. A hardcoded
-    # roster is the failure mode this whole class of gate keeps dying of.
-    offenders: list[str] = []
+@pytest.mark.asyncio
+async def test_missing_created_backstop_arms_only_after_receive_handling_resumes():
+    # _transport feeds the arbiter in two phases on speech_stopped: mark the
+    # pending VAD response BEFORE the on_new_message callback, arm the
+    # missing-created backstop AFTER it (in a finally). The comment in
+    # _transport.py explains why: response.created cannot be observed while
+    # the receive loop is blocked inside the callback, so arming earlier would
+    # let a slow callback expire a perfectly real VAD response. This is the
+    # first test to pin that ordering.
+    client, socket = _wired_client()
+    observations: list[tuple[bool, bool]] = []
 
-    version_decl = re.compile(r"^\s*(python-version|PYTHON_VERSION):\s*(\S.*?)\s*$")
-    workflows = sorted((_REPO_ROOT / ".github" / "workflows").glob("*.yml"))
-    assert workflows, "no workflows found -- the discovery glob is broken, not the pin"
-    for workflow in workflows:
-        for number, line in enumerate(workflow.read_text(encoding="utf-8").splitlines(), 1):
-            match = version_decl.match(line)
-            if not match:
-                continue
-            value = match.group(2).strip().strip("'\"")
-            # An `${{ env.PYTHON_VERSION }}` indirection is fine: the
-            # PYTHON_VERSION declaration it resolves to is itself matched here.
-            if value == "3.11" or value.startswith("${{"):
-                continue
-            offenders.append(f"{workflow.name}:{number} -> {value}")
+    async def _on_new_message() -> None:
+        arbiter = client._response_arbiter
+        observations.append(
+            (
+                arbiter._server_vad_response_pending,
+                arbiter._server_vad_pending_handle is not None,
+            )
+        )
 
-    dockerfiles = sorted((_REPO_ROOT / "docker").glob("Dockerfile*"))
-    assert dockerfiles, "no Dockerfiles found -- the discovery glob is broken, not the pin"
-    for dockerfile in dockerfiles:
-        minors = set(re.findall(r"python3\.(\d+)", dockerfile.read_text(encoding="utf-8")))
-        stray = minors - {"11"}
-        if stray:
-            offenders.append(f"{dockerfile.name} -> python3.{', python3.'.join(sorted(stray))}")
+    client.on_new_message = _on_new_message
+    receive_loop = asyncio.create_task(client.handle_messages())
 
-    assert not offenders, (
-        "a runtime that executes RealtimeResponseArbiter moved off Python 3.11 "
-        "while #2516 (dispatch ordering on 3.12+) is still open:\n  "
-        + "\n  ".join(offenders)
-        + "\nFix the dequeue gate first -- see the module docstring in "
-        "main_logic/omni_realtime_client/_response_arbiter.py."
+    socket.feed({"type": "input_audio_buffer.speech_stopped"})
+    await _settle()
+
+    # Inside the callback: pending already marked, backstop NOT yet armed.
+    assert observations == [(True, False)]
+    # After the callback returned: the finally armed the backstop.
+    arbiter = client._response_arbiter
+    assert arbiter._server_vad_pending_handle is not None
+
+    # The real VAD response arriving disarms the backstop and takes the lane.
+    socket.feed({"type": "response.created", "response": {"id": "vad-1"}})
+    await _settle()
+    assert arbiter._server_vad_pending_handle is None
+    socket.feed({"type": "response.done", "response": {"id": "vad-1"}})
+    await _settle()
+    await arbiter.wait_until_idle(timeout=1)
+
+    await _finish_loop(socket, receive_loop)
+
+
+# ---------------------------------------------------------------------------
+# T3 — the missing-created backstop itself (_SERVER_VAD_RESPONSE_STARTED_
+# TIMEOUT). Zero hits in tests/ before this: if it silently stopped firing,
+# a provider-side pre-creation failure would wedge every queued native turn;
+# if it ever tore the transport instead, a benign expiry would disconnect the
+# user.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_vad_backstop_expiry_reopens_the_lane_without_tearing_the_transport(
+    monkeypatch,
+):
+    monkeypatch.setattr(_arbiter_module, "_SERVER_VAD_RESPONSE_STARTED_TIMEOUT", 0.05)
+    client, socket = _wired_client()
+    receive_loop = asyncio.create_task(client.handle_messages())
+
+    socket.feed({"type": "input_audio_buffer.speech_stopped"})
+    await _settle()
+
+    queued = asyncio.create_task(
+        client.create_response("queued behind a response that never starts")
     )
+    await _settle()
+    assert socket.types == [], (
+        "queued work must hold while the announced VAD response is pending"
+    )
+
+    # No response.created ever arrives. The backstop must reopen the lane…
+    await asyncio.sleep(0.2)
+    await _settle()
+    assert socket.types == ["conversation.item.create"], (
+        "backstop expiry must release the lane so queued native work dispatches"
+    )
+    # …and it must do so by releasing, never by tearing the connection down.
+    assert socket.closed is False
+
+    await _ack_item_and_expect_create(socket, 0)
+    socket.feed({"type": "response.created", "response": {"id": "resp-1"}})
+    socket.feed({"type": "response.done", "response": {"id": "resp-1"}})
+    await _settle()
+    await asyncio.wait_for(queued, timeout=1)
+    await client._response_arbiter.wait_until_idle(timeout=1)
+    assert client.is_active_response() is False
+
+    await _finish_loop(socket, receive_loop)
+
+
+# ---------------------------------------------------------------------------
+# T4 — the real native barge-in. Everywhere else in the suite
+# handle_interruption is an AsyncMock; here the actual transport handler runs:
+# speech_started → handle_interruption → a bare response.cancel on the wire
+# (native interruption does NOT route through arbiter.cancel_current — that
+# API's only production caller is the independent-ASR prepare path).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_native_barge_in_cancels_on_the_wire_and_the_cancelled_done_still_settles():
+    client, socket = _wired_client()
+    done_callbacks: list[bool] = []
+
+    async def _on_done() -> None:
+        done_callbacks.append(True)
+
+    client.on_response_done = _on_done
+    receive_loop = asyncio.create_task(client.handle_messages())
+
+    create = asyncio.create_task(client.create_response("hello"))
+    await _settle()
+    await _ack_item_and_expect_create(socket, 0)
+    await asyncio.wait_for(create, timeout=1)
+    socket.feed({"type": "response.created", "response": {"id": "resp-1"}})
+    await _settle()
+    assert client._is_responding is True
+    done_total_before = client._response_done_total
+
+    # The user starts speaking over her.
+    socket.feed({"type": "input_audio_buffer.speech_started"})
+    await _settle()
+    assert socket.types[-1] == "response.cancel", (
+        "a native barge-in must physically tell the server to stop talking"
+    )
+    assert client._is_responding is False
+    # #2345 deliberately KEEPS the cancelled response identity so the terminal
+    # below is processed as this turn's done rather than dropped stale.
+    assert client._current_response_id == "resp-1"
+
+    socket.feed(
+        {"type": "response.done", "response": {"id": "resp-1", "status": "cancelled"}}
+    )
+    await _settle()
+    # The cancelled turn's terminal must take the NON-stale path: counters,
+    # the on_response_done callback and the _interrupted reset all belong to
+    # this turn. (The stale filter would still forward the terminal to the
+    # arbiter, so lane release alone cannot distinguish the two paths — these
+    # two assertions can.)
+    assert client._response_done_total == done_total_before + 1
+    assert done_callbacks, (
+        "on_response_done must fire for the cancelled turn's terminal"
+    )
+    assert client._interrupted is False
+
+    # And the lane is open for the follow-up turn.
+    follow_up = asyncio.create_task(client.create_response("next"))
+    await _settle()
+    assert socket.types[-1] == "conversation.item.create"
+    await _ack_item_and_expect_create(socket, len(socket.sent) - 1)
+    socket.feed({"type": "response.created", "response": {"id": "resp-2"}})
+    socket.feed({"type": "response.done", "response": {"id": "resp-2"}})
+    await _settle()
+    await asyncio.wait_for(follow_up, timeout=1)
+    await client._response_arbiter.wait_until_idle(timeout=1)
+    assert socket.closed is False
+
+    await _finish_loop(socket, receive_loop)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_stale_filtered_terminal_still_reaches_the_arbiter_and_frees_the_lane():
+    # Crossed lifecycles: a newer response.created becomes current before the
+    # owner's terminal arrives, so the transport's stale filter classifies
+    # that terminal as stale. The filter must still forward it to the arbiter
+    # (the explicitly-commented branch in handle_messages) or the owner holds
+    # the lane until its 60s staleness bound — every queued native turn hangs.
+    client, socket = _wired_client()
+    receive_loop = asyncio.create_task(client.handle_messages())
+
+    create = asyncio.create_task(client.create_response("hello"))
+    await _settle()
+    await _ack_item_and_expect_create(socket, 0)
+    await asyncio.wait_for(create, timeout=1)
+    socket.feed({"type": "response.created", "response": {"id": "resp-a"}})
+    await _settle()
+
+    # A server-initiated response crosses in before resp-a's terminal.
+    socket.feed({"type": "response.created", "response": {"id": "resp-b"}})
+    await _settle()
+    assert client._current_response_id == "resp-b"
+
+    # resp-a's terminal is now stale by id — but it must free resp-a's owner.
+    socket.feed({"type": "response.done", "response": {"id": "resp-a"}})
+    socket.feed({"type": "response.done", "response": {"id": "resp-b"}})
+    await _settle()
+
+    follow_up = asyncio.create_task(client.create_response("next"))
+    await _settle()
+    assert socket.types[-1] == "conversation.item.create", (
+        "both terminals delivered means the lane must be open again"
+    )
+    await _ack_item_and_expect_create(socket, len(socket.sent) - 1)
+    socket.feed({"type": "response.created", "response": {"id": "resp-c"}})
+    socket.feed({"type": "response.done", "response": {"id": "resp-c"}})
+    await _settle()
+    await asyncio.wait_for(follow_up, timeout=1)
+    await client._response_arbiter.wait_until_idle(timeout=1)
+
+    await _finish_loop(socket, receive_loop)
+
+
+# ---------------------------------------------------------------------------
+# T5 — tool results. The existing tool-calling tests drive a __new__-built
+# client with no receive loop and only count wire events, which stays green
+# under a direct-send bypass; these run the real path.
+# ---------------------------------------------------------------------------
+
+
+def _tool_result(call_id: str = "call-1") -> ToolResult:
+    return ToolResult(call_id=call_id, name="get_weather", output={"ok": True})
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_consecutive_tool_results_serialize_on_the_wire():
+    client, socket = _wired_client()
+    receive_loop = asyncio.create_task(client.handle_messages())
+
+    first = asyncio.create_task(client._send_tool_result_openai_realtime(_tool_result()))
+    await _settle()
+    # No ack barrier on tool results: item and response.create go out together.
+    assert socket.types == ["conversation.item.create", "response.create"]
+    assert socket.sent[0]["item"]["type"] == "function_call_output"
+    await asyncio.wait_for(first, timeout=1)
+    socket.feed({"type": "response.created", "response": {"id": "resp-t1"}})
+    await _settle()
+
+    second = asyncio.create_task(
+        client._send_tool_result_openai_realtime(_tool_result("call-2"))
+    )
+    await _settle()
+    assert len(socket.sent) == 2, (
+        "the second tool result must not put a single byte on the wire while "
+        "the first tool response is still live"
+    )
+
+    socket.feed({"type": "response.done", "response": {"id": "resp-t1"}})
+    await _settle()
+    assert socket.types == [
+        "conversation.item.create",
+        "response.create",
+        "conversation.item.create",
+        "response.create",
+    ]
+    await asyncio.wait_for(second, timeout=1)
+    socket.feed({"type": "response.created", "response": {"id": "resp-t2"}})
+    socket.feed({"type": "response.done", "response": {"id": "resp-t2"}})
+    await _settle()
+    await client._response_arbiter.wait_until_idle(timeout=1)
+    assert socket.closed is False
+
+    await _finish_loop(socket, receive_loop)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_tool_result_outranks_earlier_queued_injected_text():
+    # priority=5 in _tools.py is the repo's only priority-5 enqueue. Its
+    # meaning: a tool result (the model is mid-conversation waiting on it)
+    # beats queued priority-10 text injection even when the text was
+    # submitted first. Both are enqueued before the worker selects, which is
+    # exactly the state _next_queued's priority ordering exists for.
+    client, socket = _wired_client()
+    receive_loop = asyncio.create_task(client.handle_messages())
+
+    text_task = asyncio.create_task(client.create_response("catch-up text"))
+    tool_task = asyncio.create_task(
+        client._send_tool_result_openai_realtime(_tool_result())
+    )
+    await _settle()
+
+    assert socket.sent[0]["item"]["type"] == "function_call_output", (
+        "the tool result (priority 5) must be selected over the "
+        "earlier-queued injected text (priority 10)"
+    )
+    assert socket.types[:2] == ["conversation.item.create", "response.create"]
+    await asyncio.wait_for(tool_task, timeout=1)
+    socket.feed({"type": "response.created", "response": {"id": "resp-t1"}})
+    socket.feed({"type": "response.done", "response": {"id": "resp-t1"}})
+    await _settle()
+
+    # Now the text dispatches, behind its ack barrier.
+    assert socket.types[2] == "conversation.item.create"
+    assert socket.sent[2]["item"]["type"] == "message"
+    await _ack_item_and_expect_create(socket, 2)
+    socket.feed({"type": "response.created", "response": {"id": "resp-2"}})
+    socket.feed({"type": "response.done", "response": {"id": "resp-2"}})
+    await _settle()
+    await asyncio.wait_for(text_task, timeout=1)
+    await client._response_arbiter.wait_until_idle(timeout=1)
+
+    await _finish_loop(socket, receive_loop)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_async_tool_rejection_frees_the_lane_without_tearing_the_transport():
+    # Pre-#2345 a rejected tool response.create had no observer at all (not
+    # even on_rejected): the turn just died silently. Now the error event is
+    # routed to the owning ticket via notify_error, which must free the lane
+    # promptly — not leave the next turn waiting for the 5s started-timeout,
+    # and never escalate a routed rejection into a transport teardown.
+    client, socket = _wired_client()
+    receive_loop = asyncio.create_task(client.handle_messages())
+
+    tool_task = asyncio.create_task(
+        client._send_tool_result_openai_realtime(_tool_result())
+    )
+    await _settle()
+    assert socket.types == ["conversation.item.create", "response.create"]
+    await asyncio.wait_for(tool_task, timeout=1)
+
+    create_event_id = socket.sent[1]["event_id"]
+    socket.feed(
+        {
+            "type": "error",
+            "error": {
+                "message": "response.create rejected by provider",
+                "event_id": create_event_id,
+            },
+        }
+    )
+    await _settle()
+
+    # The lane must be free NOW — a follow-up dispatches within a settle, not
+    # after the started-timeout backstop.
+    follow_up = asyncio.create_task(client.create_response("still alive"))
+    await _settle()
+    assert socket.types[-1] == "conversation.item.create", (
+        "a routed rejection must free the lane immediately"
+    )
+    assert socket.closed is False, (
+        "a routed rejection is not a transport failure"
+    )
+    await _ack_item_and_expect_create(socket, len(socket.sent) - 1)
+    socket.feed({"type": "response.created", "response": {"id": "resp-2"}})
+    socket.feed({"type": "response.done", "response": {"id": "resp-2"}})
+    await _settle()
+    await asyncio.wait_for(follow_up, timeout=1)
+    await client._response_arbiter.wait_until_idle(timeout=1)
+
+    await _finish_loop(socket, receive_loop)
+
+
+# ---------------------------------------------------------------------------
+# T2 — hot-swap prime_context(skipped=False). Its production trigger is the
+# final swap sequence in main_logic/core/lifecycle.py; every pre-existing
+# prime_context test used skipped=True or Gemini, neither of which enters the
+# arbiter. NOTE the model here must be non-qwen: _responses.py carves qwen out
+# of the create_response path (update_session instead), so a qwen client would
+# make this test pass without touching the queue.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_hot_swap_prime_runs_the_item_ack_barrier():
+    client, socket = _wired_client(api_type="free", model="free-model")
+    receive_loop = asyncio.create_task(client.handle_messages())
+
+    prime = asyncio.create_task(
+        client.prime_context("[context] the task finished", skipped=False)
+    )
+    await _settle()
+    assert socket.types == ["conversation.item.create"], (
+        "prime must persist the context item and wait for its ack before "
+        "requesting the announce response"
+    )
+    await _ack_item_and_expect_create(socket, 0)
+    socket.feed({"type": "response.created", "response": {"id": "resp-prime"}})
+    socket.feed({"type": "response.done", "response": {"id": "resp-prime"}})
+    await _settle()
+    await asyncio.wait_for(prime, timeout=1)
+    await client._response_arbiter.wait_until_idle(timeout=1)
+
+    await _finish_loop(socket, receive_loop)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_prime_dispatch_failure_surfaces_a_type_the_swap_must_catch():
+    # The final swap sequence wraps prime_context in a TARGETED except whose
+    # job is "abandon this swap, keep the old session". A dispatch failure
+    # surfaces from the arbiter ticket as RuntimeError (or ConnectionError /
+    # TimeoutError) — none of which is websockets' ConnectionClosed or
+    # AttributeError. This pins the surfaced type family so the lifecycle
+    # handler's tuple visibly must include it (see the paired test in
+    # test_hot_swap_cancellation.py for the handler side).
+    from websockets import exceptions as web_exceptions
+
+    client, socket = _wired_client(api_type="free", model="free-model")
+    receive_loop = asyncio.create_task(client.handle_messages())
+
+    prime = asyncio.create_task(
+        client.prime_context("[context] the task finished", skipped=False)
+    )
+    await _settle()
+    assert socket.types == ["conversation.item.create"]
+
+    item_event_id = socket.sent[0]["event_id"]
+    socket.feed(
+        {
+            "type": "error",
+            "error": {"message": "invalid item payload", "event_id": item_event_id},
+        }
+    )
+    await _settle()
+
+    assert prime.done(), "a routed rejection must fail the prime promptly"
+    exc = prime.exception()
+    assert isinstance(exc, RuntimeError)
+    assert not isinstance(exc, (web_exceptions.ConnectionClosed, AttributeError)), (
+        "the surfaced dispatch failure is NOT in the swap handler's legacy "
+        "except tuple — the handler must list these types explicitly"
+    )
+
+    await client._response_arbiter.wait_until_idle(timeout=1)
+    await _finish_loop(socket, receive_loop)
+
+
+class _RiggedUUIDModule:
+    """A ``uuid`` stand-in whose hex always embeds ``needle``.
+
+    Every client event_id in ``_responses`` is ``<prefix>_<uuid4().hex>``, and
+    hex is 0-9a-f -- so '429', '1008' and '503' are all spellable by chance.
+    Rigging the id is not inventing an exotic input; it is pinning one of the
+    ~0.7%-per-error draws that CI kept hitting.
+    """
+
+    def __init__(self, needle: str) -> None:
+        self._needle = needle
+        self._counter = 0
+
+    def uuid4(self):
+        self._counter += 1
+        rigged = (f"{self._counter:08x}" + self._needle).ljust(32, "0")[:32]
+
+        class _U:
+            hex = rigged
+
+        return _U()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("needle", ["429", "1008", "503"])
+async def test_a_rejection_id_that_spells_a_quota_code_never_kills_the_transport(
+    needle, monkeypatch
+):
+    # The fatal-error classifier used to substring-match on str(event['error']),
+    # which echoes OUR OWN client event_id. A uuid4 hex that happens to contain
+    # '429'/'1008' turned an ordinary single-event rejection into a full
+    # connection teardown -- she goes silent mid-sentence, and it reproduces
+    # roughly once in 140 rejections. It was also the whole story behind two
+    # Windows CI flakes in this very file (run 30549810820): the prime failed
+    # with ConnectionError('realtime client closed') instead of the RuntimeError
+    # the swap handler is written against.
+    from main_logic.omni_realtime_client import _responses as responses_mod
+
+    monkeypatch.setattr(responses_mod, "uuid", _RiggedUUIDModule(needle))
+
+    connection_errors: list[str] = []
+
+    async def _on_connection_error(msg) -> None:
+        connection_errors.append(msg)
+
+    client, socket = _wired_client(api_type="free", model="free-model")
+    client.on_connection_error = _on_connection_error
+    receive_loop = asyncio.create_task(client.handle_messages())
+
+    prime = asyncio.create_task(
+        client.prime_context("[context] the task finished", skipped=False)
+    )
+    await _settle()
+    item_event_id = socket.sent[0]["event_id"]
+    assert needle in item_event_id, "the rigged id must actually spell the code"
+
+    socket.feed(
+        {
+            "type": "error",
+            "error": {"message": "invalid item payload", "event_id": item_event_id},
+        }
+    )
+    await _settle()
+
+    assert prime.done()
+    assert isinstance(prime.exception(), RuntimeError)
+    assert not isinstance(prime.exception(), ConnectionError), (
+        "a rejection whose event_id merely spells a quota code must not be "
+        "escalated into a transport teardown"
+    )
+    assert socket.closed is False
+    assert client.ws is socket, "the transport must stay attached"
+    assert connection_errors == [], "no fatal error was reported by the provider"
+    assert client._is_throttled is False, "nor is this a 503 backpressure signal"
+
+    await _finish_loop(socket, receive_loop)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error_payload",
+    [
+        {"message": "HTTP 429 Too Many Requests"},
+        {"message": "rejected", "code": 1008},
+        {"message": "your account is not in good standing"},
+    ],
+)
+async def test_a_real_quota_error_still_closes_the_transport(error_payload):
+    # The other half of the contract: dropping correlation ids from the
+    # classifier must not blunt it. A code carried in a semantic field --
+    # message, code, type -- is still fatal and still tears the session down.
+    connection_errors: list[str] = []
+
+    async def _on_connection_error(msg) -> None:
+        connection_errors.append(msg)
+
+    client, socket = _wired_client(api_type="free", model="free-model")
+    client.on_connection_error = _on_connection_error
+    receive_loop = asyncio.create_task(client.handle_messages())
+
+    create = asyncio.create_task(client.create_response("hello"))
+    await _settle()
+    payload = dict(error_payload)
+    payload["event_id"] = socket.sent[0]["event_id"]
+    socket.feed({"type": "error", "error": payload})
+    await _settle()
+
+    assert socket.closed is True, "a genuine quota/policy error must fail closed"
+    assert client.ws is None
+    assert connection_errors, "the frontend must be told the session died"
+
+    assert create.done()
+    socket.finish()
+    await asyncio.wait_for(receive_loop, timeout=1)
+
+
+# ---------------------------------------------------------------------------
+# T8 — the protect-her-speech contract, stated directly: program-initiated
+# text (proactive chat) queues behind a live response instead of preempting
+# it. Until now this held only implicitly through lane semantics; no test
+# asserted it as a contract.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_queued_proactive_text_never_preempts_a_live_response():
+    client, socket = _wired_client()
+    receive_loop = asyncio.create_task(client.handle_messages())
+
+    # She is mid-answer: a live (server-side) response holds the lane.
+    socket.feed({"type": "response.created", "response": {"id": "live-1"}})
+    await _settle()
+    assert client.is_active_response() is True
+
+    inject = asyncio.create_task(
+        client.inject_text_and_request_response("proactive nudge")
+    )
+    await _settle()
+    assert socket.types == [], (
+        "not a single byte of the proactive inject may reach the wire while "
+        "she is still speaking"
+    )
+
+    socket.feed({"type": "response.done", "response": {"id": "live-1"}})
+    await _settle()
+    assert socket.types[0] == "conversation.item.create", (
+        "the queued inject dispatches only after the live response finished"
+    )
+    await _ack_item_and_expect_create(socket, 0)
+    socket.feed({"type": "response.created", "response": {"id": "resp-inject"}})
+    socket.feed({"type": "response.done", "response": {"id": "resp-inject"}})
+    await _settle()
+    ticket = await asyncio.wait_for(inject, timeout=1)
+    assert ticket is not None
+    await client._response_arbiter.wait_until_idle(timeout=1)
+    assert client.is_active_response() is False
+
+    await _finish_loop(socket, receive_loop)
+
+
+# ---------------------------------------------------------------------------
+# T7 — the fail-close chokepoint. All six _fail_closed call sites tear the
+# transport down through one function; that function now logs the initiator,
+# the reason and the lane state. Issue #2561 is the motivating incident: an
+# unattributable disconnect had to be ruled out via build provenance because
+# exactly this log line did not exist.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fail_close_logs_initiator_reason_and_lane_state(caplog):
+    aborted: list[str] = []
+
+    async def _send(event: dict) -> None:
+        return None
+
+    async def _abort(reason: str) -> None:
+        aborted.append(reason)
+
+    arbiter = RealtimeResponseArbiter(_send, abort_transport=_abort)
+    ticket = await arbiter.enqueue(source="native")
+    await asyncio.wait_for(ticket.sent, timeout=1)
+    arbiter.notify_response_created(
+        {"type": "response.created", "response": {"id": "resp-1"}}
+    )
+
+    with caplog.at_level(
+        logging.WARNING, logger="main_logic.omni_realtime_client._response_arbiter"
+    ):
+        # No terminal ever arrives for the cancelled response; cancel_current
+        # fails closed and re-raises the timeout to its caller.
+        with pytest.raises(asyncio.TimeoutError):
+            await arbiter.cancel_current(timeout=0.05)
+
+    assert aborted, "the cancel-terminal timeout must fail closed"
+    fail_close_logs = [
+        record.getMessage()
+        for record in caplog.records
+        if "failing closed" in record.getMessage()
+    ]
+    assert fail_close_logs, (
+        "the fail-close chokepoint must log BEFORE tearing the transport, or "
+        "a field disconnect cannot be attributed to the arbiter at all"
+    )
+    message = fail_close_logs[0]
+    assert "response cancellation terminal event timed out" in message
+    assert "queue_depth" in message
+    assert "owner=native" in message
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cancel_whose_terminal_arrives_in_time_never_fails_closed(caplog):
+    # The dual of the test above: the same cancel path with a timely terminal
+    # must neither abort the transport nor emit the fail-close log line.
+    aborted: list[str] = []
+
+    async def _send(event: dict) -> None:
+        return None
+
+    async def _abort(reason: str) -> None:
+        aborted.append(reason)
+
+    arbiter = RealtimeResponseArbiter(_send, abort_transport=_abort)
+    ticket = await arbiter.enqueue(source="native")
+    await asyncio.wait_for(ticket.sent, timeout=1)
+    arbiter.notify_response_created(
+        {"type": "response.created", "response": {"id": "resp-1"}}
+    )
+
+    with caplog.at_level(
+        logging.WARNING, logger="main_logic.omni_realtime_client._response_arbiter"
+    ):
+        cancel_task = asyncio.create_task(arbiter.cancel_current(timeout=1))
+        await _settle()
+        arbiter.notify_response_terminal(
+            {"type": "response.cancelled", "response": {"id": "resp-1"}}
+        )
+        await asyncio.wait_for(cancel_task, timeout=1)
+
+    assert aborted == []
+    assert not any(
+        "failing closed" in record.getMessage() for record in caplog.records
+    )
+    await arbiter.wait_until_idle(timeout=1)

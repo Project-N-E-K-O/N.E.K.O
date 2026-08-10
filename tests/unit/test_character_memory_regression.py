@@ -1,7 +1,10 @@
 import asyncio
+import ast
 import importlib
+import inspect
 import json
 import os
+import threading
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -70,12 +73,1020 @@ def reload_module(module_name: str):
     return importlib.reload(module)
 
 
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cancelled_thread_call_returns_retained_lock_transaction():
+    """Cancellation must wait for the worker and preserve its cleanup token."""
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        characters_router_module = reload_module("main_routers.characters_router.crud")
+        from utils.character_memory import (
+            begin_character_recent_transaction,
+            release_character_recent_transaction,
+        )
+
+        worker_entered = threading.Event()
+        release_worker = threading.Event()
+
+        def _acquire_then_block():
+            transaction = begin_character_recent_transaction(cm, "Old", "New")
+            worker_entered.set()
+            assert release_worker.wait(3)
+            return transaction
+
+        operation = asyncio.create_task(
+            characters_router_module._await_thread_call_to_completion(
+                _acquire_then_block,
+            )
+        )
+        assert await asyncio.to_thread(worker_entered.wait, 3)
+        operation.cancel()
+        await asyncio.sleep(0.05)
+        assert not operation.done()
+
+        release_worker.set()
+        transaction, cancelled = await operation
+        assert cancelled is True
+        locks = list(transaction["held_locks"])
+        assert locks and all(lock.locked() for lock in locks)
+        release_character_recent_transaction(transaction)
+        assert all(not lock.locked() for lock in locks)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_rename_cancellation_during_release_runs_admission_rollback(tmp_path):
+    """Cancellation in the release response window must restore old admission."""
+    cm = _make_config_manager(tmp_path)
+    bootstrap_local_cloudsave_environment(cm)
+
+    async def _noop(*_args, **_kwargs):
+        return None
+
+    with patch("utils.config_manager._config_manager", cm):
+        init_shared_state(
+            role_state={},
+            steamworks=None,
+            templates=None,
+            config_manager=cm,
+            logger=None,
+            initialize_character_data=_noop,
+            switch_current_catgirl_fast=_noop,
+            init_one_catgirl=_noop,
+            remove_one_catgirl=_noop,
+        )
+        crud = reload_module("main_routers.characters_router.crud")
+        characters = cm.load_characters()
+        characters.setdefault("猫娘", {})["Old"] = {"昵称": "Old"}
+        cm.save_characters(characters, bypass_write_fence=True)
+        release_started = asyncio.Event()
+        finish_release = asyncio.Event()
+        rollback = AsyncMock(return_value="")
+
+        async def _release(*_args, **_kwargs):
+            release_started.set()
+            await finish_release.wait()
+            return True
+
+        with patch.object(
+            crud, "release_memory_server_character", side_effect=_release,
+        ), patch.object(crud, "_rollback_character_operation", rollback):
+            operation = asyncio.create_task(
+                crud.rename_catgirl("Old", _DummyRequest({"new_name": "New"}))
+            )
+            await asyncio.wait_for(release_started.wait(), timeout=3)
+            operation.cancel()
+            await asyncio.sleep(0.05)
+            assert not operation.done()
+            finish_release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await operation
+
+        claims = rollback.await_args.kwargs["release_derived_task_claims"]
+        assert set(claims) == {"Old"}
+        assert len(claims["Old"]) == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_delete_cancellation_during_release_runs_admission_rollback(tmp_path):
+    """Delete must also compensate a completed release before cancellation."""
+    cm = _make_config_manager(tmp_path)
+    bootstrap_local_cloudsave_environment(cm)
+
+    async def _noop(*_args, **_kwargs):
+        return None
+
+    with patch("utils.config_manager._config_manager", cm):
+        init_shared_state(
+            role_state={},
+            steamworks=None,
+            templates=None,
+            config_manager=cm,
+            logger=None,
+            initialize_character_data=_noop,
+            switch_current_catgirl_fast=_noop,
+            init_one_catgirl=_noop,
+            remove_one_catgirl=_noop,
+        )
+        crud = reload_module("main_routers.characters_router.crud")
+        characters = cm.load_characters()
+        characters.setdefault("猫娘", {})["DeleteMe"] = {"昵称": "DeleteMe"}
+        cm.save_characters(characters, bypass_write_fence=True)
+        release_started = asyncio.Event()
+        finish_release = asyncio.Event()
+        rollback = AsyncMock(return_value="")
+
+        async def _release(*_args, **_kwargs):
+            release_started.set()
+            await finish_release.wait()
+            return True
+
+        with patch.object(
+            crud, "release_memory_server_character", side_effect=_release,
+        ), patch.object(crud, "_rollback_character_operation", rollback):
+            operation = asyncio.create_task(crud.delete_catgirl("DeleteMe"))
+            await asyncio.wait_for(release_started.wait(), timeout=3)
+            operation.cancel()
+            await asyncio.sleep(0.05)
+            assert not operation.done()
+            finish_release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await operation
+
+        claims = rollback.await_args.kwargs["release_derived_task_claims"]
+        assert set(claims) == {"DeleteMe"}
+        assert len(claims["DeleteMe"]) == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation_kind", ["rename", "delete"])
+async def test_release_false_compensation_preserves_cancellation(tmp_path, operation_kind):
+    """Cancellation during release compensation must propagate after cleanup."""
+    cm = _make_config_manager(tmp_path)
+    bootstrap_local_cloudsave_environment(cm)
+
+    async def _noop(*_args, **_kwargs):
+        return None
+
+    name = "Old" if operation_kind == "rename" else "DeleteMe"
+    with patch("utils.config_manager._config_manager", cm):
+        init_shared_state(
+            role_state={},
+            steamworks=None,
+            templates=None,
+            config_manager=cm,
+            logger=None,
+            initialize_character_data=_noop,
+            switch_current_catgirl_fast=_noop,
+            init_one_catgirl=_noop,
+            remove_one_catgirl=_noop,
+        )
+        crud = reload_module("main_routers.characters_router.crud")
+        characters = cm.load_characters()
+        characters.setdefault("猫娘", {})[name] = {"昵称": name}
+        cm.save_characters(characters, bypass_write_fence=True)
+        compensation_started = asyncio.Event()
+        finish_compensation = asyncio.Event()
+        rollback = AsyncMock(return_value="")
+
+        async def _compensate(*_args, **_kwargs):
+            compensation_started.set()
+            await finish_compensation.wait()
+            return ""
+
+        with patch.object(
+            crud,
+            "release_memory_server_character",
+            AsyncMock(return_value=False),
+        ), patch.object(
+            crud,
+            "_resume_released_character_admission",
+            side_effect=_compensate,
+        ), patch.object(crud, "_rollback_character_operation", rollback):
+            if operation_kind == "rename":
+                operation = asyncio.create_task(
+                    crud.rename_catgirl(name, _DummyRequest({"new_name": "New"}))
+                )
+            else:
+                operation = asyncio.create_task(crud.delete_catgirl(name))
+
+            await asyncio.wait_for(compensation_started.wait(), timeout=3)
+            operation.cancel()
+            await asyncio.sleep(0.05)
+            assert not operation.done()
+            finish_compensation.set()
+            with pytest.raises(asyncio.CancelledError):
+                await operation
+
+        claims = rollback.await_args.kwargs["release_derived_task_claims"]
+        assert set(claims) == {name}
+        assert len(claims[name]) == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_rename_backup_setup_failure_happens_before_release(tmp_path):
+    """Backup setup errors must occur before derived-task admission is held."""
+    cm = _make_config_manager(tmp_path)
+    bootstrap_local_cloudsave_environment(cm)
+
+    async def _noop(*_args, **_kwargs):
+        return None
+
+    with patch("utils.config_manager._config_manager", cm):
+        init_shared_state(
+            role_state={},
+            steamworks=None,
+            templates=None,
+            config_manager=cm,
+            logger=None,
+            initialize_character_data=_noop,
+            switch_current_catgirl_fast=_noop,
+            init_one_catgirl=_noop,
+            remove_one_catgirl=_noop,
+        )
+        crud = reload_module("main_routers.characters_router.crud")
+        characters = cm.load_characters()
+        characters.setdefault("猫娘", {})["Old"] = {"昵称": "Old"}
+        cm.save_characters(characters, bypass_write_fence=True)
+        release_memory = AsyncMock(return_value=True)
+
+        with patch.object(
+            crud, "_create_character_operation_backup_dir", side_effect=OSError("disk full"),
+        ), patch.object(
+            crud, "release_memory_server_character", release_memory,
+        ), pytest.raises(OSError, match="disk full"):
+            await crud.rename_catgirl(
+                "Old", _DummyRequest({"new_name": "New"}),
+            )
+
+        release_memory.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_rename_cancellation_waits_for_config_worker_before_rollback(tmp_path):
+    """A late config publish must not overwrite the cancellation rollback."""
+    cm = _make_config_manager(tmp_path)
+    bootstrap_local_cloudsave_environment(cm)
+
+    async def _noop(*args, **kwargs):
+        return None
+
+    with patch("utils.config_manager._config_manager", cm):
+        init_shared_state(
+            role_state={},
+            steamworks=None,
+            templates=None,
+            config_manager=cm,
+            logger=None,
+            initialize_character_data=_noop,
+            switch_current_catgirl_fast=_noop,
+            init_one_catgirl=_noop,
+            remove_one_catgirl=_noop,
+        )
+        crud = reload_module("main_routers.characters_router.crud")
+        characters = cm.load_characters()
+        characters.setdefault("猫娘", {})["Old"] = {"昵称": "Old"}
+        cm.save_characters(characters, bypass_write_fence=True)
+        old_recent = Path(cm.memory_dir) / "Old" / "recent.json"
+        old_recent.parent.mkdir(parents=True, exist_ok=True)
+        old_recent.write_text("[]", encoding="utf-8")
+
+        entered = threading.Event()
+        release = threading.Event()
+        original_save = cm.save_characters
+
+        def _delayed_save(data, character_json_path=None, *, bypass_write_fence=False):
+            if not bypass_write_fence and "New" in (data.get("猫娘") or {}):
+                entered.set()
+                assert release.wait(3)
+            return original_save(
+                data,
+                character_json_path=character_json_path,
+                bypass_write_fence=bypass_write_fence,
+            )
+
+        with (
+            patch.object(crud, "release_memory_server_character", AsyncMock(return_value=True)),
+            patch.object(crud, "notify_memory_server_reload", AsyncMock(return_value=True)),
+            patch.object(cm, "save_characters", side_effect=_delayed_save),
+        ):
+            operation = asyncio.create_task(
+                crud.rename_catgirl("Old", _DummyRequest({"new_name": "New"}))
+            )
+            assert await asyncio.to_thread(entered.wait, 3)
+            operation.cancel()
+            await asyncio.sleep(0.05)
+            assert not operation.done()
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await operation
+
+        saved = cm.load_characters()
+        assert "Old" in saved.get("猫娘", {})
+        assert "New" not in saved.get("猫娘", {})
+        assert old_recent.is_file()
+        assert not (Path(cm.memory_dir) / "New").exists()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_delete_cancellation_waits_for_config_worker_before_rollback(tmp_path):
+    """A late delete publish must not overwrite the cancellation rollback."""
+    cm = _make_config_manager(tmp_path)
+    bootstrap_local_cloudsave_environment(cm)
+
+    async def _noop(*args, **kwargs):
+        return None
+
+    with patch("utils.config_manager._config_manager", cm):
+        init_shared_state(
+            role_state={},
+            steamworks=None,
+            templates=None,
+            config_manager=cm,
+            logger=None,
+            initialize_character_data=_noop,
+            switch_current_catgirl_fast=_noop,
+            init_one_catgirl=_noop,
+            remove_one_catgirl=_noop,
+        )
+        crud = reload_module("main_routers.characters_router.crud")
+        characters = cm.load_characters()
+        characters.setdefault("猫娘", {})["DeleteMe"] = {"昵称": "DeleteMe"}
+        cm.save_characters(characters, bypass_write_fence=True)
+        old_recent = Path(cm.memory_dir) / "DeleteMe" / "recent.json"
+        old_recent.parent.mkdir(parents=True, exist_ok=True)
+        old_recent.write_text("[]", encoding="utf-8")
+
+        entered = threading.Event()
+        release = threading.Event()
+        original_save = cm.save_characters
+
+        def _delayed_save(data, character_json_path=None, *, bypass_write_fence=False):
+            if not bypass_write_fence and "DeleteMe" not in (data.get("猫娘") or {}):
+                entered.set()
+                assert release.wait(3)
+            return original_save(
+                data,
+                character_json_path=character_json_path,
+                bypass_write_fence=bypass_write_fence,
+            )
+
+        with (
+            patch.object(crud, "release_memory_server_character", AsyncMock(return_value=True)),
+            patch.object(crud, "notify_memory_server_reload", AsyncMock(return_value=True)),
+            patch.object(crud, "is_cloudsave_disabled", return_value=True),
+            patch.object(cm, "save_characters", side_effect=_delayed_save),
+        ):
+            operation = asyncio.create_task(crud.delete_catgirl("DeleteMe"))
+            assert await asyncio.to_thread(entered.wait, 3)
+            operation.cancel()
+            await asyncio.sleep(0.05)
+            assert not operation.done()
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await operation
+
+        assert "DeleteMe" in cm.load_characters().get("猫娘", {})
+        assert old_recent.is_file()
+
+
 class _DummyRequest:
     def __init__(self, payload):
         self._payload = payload
 
     async def json(self):
         return self._payload
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_add_catgirl_activates_reused_recent_name_before_config_publish(
+    tmp_path, monkeypatch,
+):
+    """A reused recent identity is active before config publication and rolls back on failure."""
+    from utils import recent_file
+    from utils.character_memory import list_character_recent_paths
+
+    reused_name = "Reused"
+    former_target = tmp_path / "Former" / "recent.json"
+
+    class _Config:
+        memory_dir = tmp_path
+        project_memory_dir = tmp_path
+
+        async def aload_characters(self):
+            return {"猫娘": {}}
+
+        async def asave_characters(self, _characters):
+            for path in list_character_recent_paths(self, reused_name):
+                key = recent_file._lock_key(path)
+                with recent_file._LOCKS_GUARD:
+                    assert recent_file._resolve_key_unlocked(key) == key
+            raise RuntimeError("simulated config publish failure")
+
+    config = _Config()
+    reused_paths = list_character_recent_paths(config, reused_name)
+    recent_file.redirect_recent_paths(reused_paths, former_target)
+    characters_router_module = reload_module("main_routers.characters_router.crud")
+    monkeypatch.setattr(characters_router_module, "get_config_manager", lambda: config)
+    monkeypatch.setattr(
+        characters_router_module, "_get_new_catgirl_default_voice_id", lambda: "voice",
+    )
+
+    with pytest.raises(RuntimeError, match="simulated config publish failure"):
+        await characters_router_module.add_catgirl(_DummyRequest({"档案名": reused_name}))
+
+    with recent_file._LOCKS_GUARD:
+        target_key = recent_file._lock_key(former_target)
+        assert all(
+            recent_file._resolve_key_unlocked(recent_file._lock_key(path)) == target_key
+            for path in reused_paths
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_character_publish_cancellation_waits_for_save_and_keeps_activation(
+    tmp_path,
+):
+    """Cancellation cannot roll identity back after the config publish succeeds."""
+    from utils import recent_file
+    from utils.character_memory import (
+        asave_characters_with_recent_activation,
+        list_character_recent_paths,
+    )
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    class _Config:
+        memory_dir = tmp_path
+        project_memory_dir = tmp_path
+
+        async def asave_characters(self, _characters):
+            entered.set()
+            await release.wait()
+
+    config = _Config()
+    names = ("First", "Second")
+    for name in names:
+        recent_file.redirect_recent_paths(
+            list_character_recent_paths(config, name),
+            tmp_path / f"Former-{name}" / "recent.json",
+        )
+
+    operation = asyncio.create_task(asave_characters_with_recent_activation(
+        config, {"猫娘": {}}, *names,
+    ))
+    await entered.wait()
+    operation.cancel()
+    await asyncio.sleep(0.05)
+    assert not operation.done()
+
+    release.set()
+    assert await operation is True
+
+    with recent_file._LOCKS_GUARD:
+        for name in names:
+            for path in list_character_recent_paths(config, name):
+                key = recent_file._lock_key(path)
+                assert recent_file._resolve_key_unlocked(key) == key
+        assert all(not lock.locked() for lock in recent_file._LOCKS.values())
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_add_cancellation_finishes_post_publish_initialization(tmp_path):
+    """A committed add must initialize runtime services before cancellation escapes."""
+    cm = _make_config_manager(tmp_path)
+    bootstrap_local_cloudsave_environment(cm)
+    entered = threading.Event()
+    release = threading.Event()
+    initialized = asyncio.Event()
+    original_save = cm.save_characters
+
+    def _delayed_save(data, character_json_path=None, *, bypass_write_fence=False):
+        if not bypass_write_fence and "Deferred" in (data.get("猫娘") or {}):
+            entered.set()
+            assert release.wait(3)
+        return original_save(
+            data,
+            character_json_path=character_json_path,
+            bypass_write_fence=bypass_write_fence,
+        )
+
+    async def _init_one(name, *, is_new=False):
+        assert name == "Deferred"
+        assert is_new is True
+        initialized.set()
+
+    async def _noop(*args, **kwargs):
+        return None
+
+    with patch("utils.config_manager._config_manager", cm):
+        init_shared_state(
+            role_state={},
+            steamworks=None,
+            templates=None,
+            config_manager=cm,
+            logger=None,
+            initialize_character_data=_noop,
+            switch_current_catgirl_fast=_noop,
+            init_one_catgirl=_init_one,
+            remove_one_catgirl=_noop,
+        )
+        crud = reload_module("main_routers.characters_router.crud")
+        reload_memory = AsyncMock(return_value=True)
+        with (
+            patch.object(cm, "save_characters", side_effect=_delayed_save),
+            patch.object(
+                crud,
+                "_mark_new_character_greeting_pending_safe",
+                AsyncMock(return_value=(True, "")),
+            ),
+            patch.object(crud, "notify_memory_server_reload", reload_memory),
+            patch.object(crud, "_get_new_catgirl_default_voice_id", return_value="voice"),
+        ):
+            operation = asyncio.create_task(
+                crud.add_catgirl(_DummyRequest({"档案名": "Deferred"}))
+            )
+            assert await asyncio.to_thread(entered.wait, 3)
+            operation.cancel()
+            await asyncio.sleep(0.05)
+            assert not operation.done()
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await operation
+
+    assert initialized.is_set()
+    reload_memory.assert_awaited_once()
+    assert "Deferred" in cm.load_characters().get("猫娘", {})
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_save_character_card_activates_reused_name_before_publish(
+    tmp_path, monkeypatch,
+):
+    """Character-card creation publishes only after its reused identity is active."""
+    from utils import recent_file
+    from utils.character_memory import list_character_recent_paths
+
+    reused_name = "Card-Reused"
+
+    class _Config:
+        memory_dir = tmp_path
+        project_memory_dir = tmp_path
+
+        async def aload_characters(self):
+            return {"猫娘": {}}
+
+        async def asave_characters(self, _characters):
+            for path in list_character_recent_paths(self, reused_name):
+                key = recent_file._lock_key(path)
+                with recent_file._LOCKS_GUARD:
+                    assert recent_file._resolve_key_unlocked(key) == key
+
+    config = _Config()
+    recent_file.redirect_recent_paths(
+        list_character_recent_paths(config, reused_name),
+        tmp_path / "Former-Card" / "recent.json",
+    )
+    cards_module = reload_module("main_routers.characters_router.cards")
+    monkeypatch.setattr(cards_module, "get_config_manager", lambda: config)
+    monkeypatch.setattr(
+        cards_module,
+        "_mark_new_character_greeting_pending_safe",
+        AsyncMock(return_value=(True, "")),
+    )
+    monkeypatch.setattr(
+        cards_module,
+        "_refresh_catgirl_context_after_profile_change",
+        AsyncMock(return_value={"context_refreshed": True}),
+    )
+    reload_memory = AsyncMock(return_value=True)
+    monkeypatch.setattr(
+        cards_module,
+        "notify_memory_server_reload",
+        reload_memory,
+    )
+
+    result = await cards_module.save_character_card(_DummyRequest({
+        "character_card_name": reused_name,
+        "charaData": {"档案名": reused_name, "昵称": "Card"},
+    }))
+
+    assert result["success"] is True
+    assert result["context_refreshed"] is True
+    reload_memory.assert_awaited_once_with(
+        reason=f"角色卡保存新角色: {reused_name}",
+        resume_derived_task_names=(reused_name,),
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_memory_rename_delegates_to_canonical_character_lifecycle(monkeypatch):
+    """The compatibility route must reuse the canonical rename transaction."""
+    memory_router = reload_module("main_routers.memory_router")
+
+    class _Config:
+        async def aload_characters(self):
+            return {"猫娘": {"Old": {}}}
+
+    monkeypatch.setattr(
+        "utils.config_manager.get_config_manager", lambda: _Config(),
+    )
+    canonical_result = {"success": True, "memory_renamed": True}
+    canonical_rename = AsyncMock(return_value=canonical_result)
+    monkeypatch.setattr(
+        "main_routers.characters_router.crud.rename_catgirl",
+        canonical_rename,
+    )
+    request = _DummyRequest({"old_name": "Old", "new_name": "New"})
+
+    result = await memory_router.update_catgirl_name(request)
+
+    assert result is canonical_result
+    canonical_rename.assert_awaited_once_with("Old", request)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_memory_rename_is_idempotent_after_canonical_rename(monkeypatch):
+    """Legacy follow-up calls should succeed after the canonical rename committed."""
+    memory_router = reload_module("main_routers.memory_router")
+
+    class _Config:
+        async def aload_characters(self):
+            return {"猫娘": {"New": {}}}
+
+    monkeypatch.setattr(
+        "utils.config_manager.get_config_manager", lambda: _Config(),
+    )
+    monkeypatch.setattr(
+        memory_router,
+        "character_memory_exists",
+        lambda _config, name: name == "New",
+    )
+    canonical_rename = AsyncMock()
+    monkeypatch.setattr(
+        "main_routers.characters_router.crud.rename_catgirl",
+        canonical_rename,
+    )
+
+    result = await memory_router.update_catgirl_name(
+        _DummyRequest({"old_name": "Old", "new_name": "New"})
+    )
+
+    assert result == {
+        "success": True,
+        "changed": False,
+        "exists_after": True,
+        "already_renamed": True,
+    }
+    canonical_rename.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_memory_rename_rejects_published_name_with_old_storage(monkeypatch):
+    """An idempotent response must not hide a partially migrated storage tree."""
+    memory_router = reload_module("main_routers.memory_router")
+
+    class _Config:
+        async def aload_characters(self):
+            return {"猫娘": {"New": {}}}
+
+    monkeypatch.setattr(
+        "utils.config_manager.get_config_manager", lambda: _Config(),
+    )
+    monkeypatch.setattr(
+        memory_router,
+        "character_memory_exists",
+        lambda _config, name: name == "Old",
+    )
+    canonical_rename = AsyncMock()
+    monkeypatch.setattr(
+        "main_routers.characters_router.crud.rename_catgirl",
+        canonical_rename,
+    )
+
+    result = await memory_router.update_catgirl_name(
+        _DummyRequest({"old_name": "Old", "new_name": "New"})
+    )
+
+    assert result.status_code == 409
+    payload = json.loads(result.body.decode("utf-8"))
+    assert payload["success"] is False
+    canonical_rename.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_workshop_abort_resumes_only_released_names_still_active():
+    """Workshop cleanup must reopen admission for identities it did not delete."""
+    unsubscribe = reload_module("main_routers.workshop_router.unsubscribe")
+
+    class _Config:
+        async def aload_characters(self):
+            return {"猫娘": {"StillHere": {}, "Unrelated": {}}}
+
+    reload_memory = AsyncMock(return_value=True)
+    with patch(
+        "main_routers.characters_router.notify_memory_server_reload",
+        reload_memory,
+    ):
+        resumed = await unsubscribe._resume_released_derived_tasks(
+            _Config(), {"StillHere": "claim-a", "Deleted": "claim-b"}, 42,
+        )
+
+    assert resumed is True
+    reload_memory.assert_awaited_once_with(
+        reason="取消订阅流程结束，恢复仍存在角色: 42",
+        release_derived_task_claims={"StillHere": ("claim-a",)},
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_workshop_abort_surfaces_derived_task_resume_failure():
+    """A failed reload must not masquerade as a completed rollback."""
+    unsubscribe = reload_module("main_routers.workshop_router.unsubscribe")
+
+    class _Config:
+        async def aload_characters(self):
+            return {"猫娘": {"StillHere": {}}}
+
+    with patch(
+        "main_routers.characters_router.notify_memory_server_reload",
+        AsyncMock(return_value=False),
+    ), pytest.raises(RuntimeError, match="notify_memory_server_reload returned False"):
+        await unsubscribe._resume_released_derived_tasks(
+            _Config(), {"StillHere": "claim-a"}, 42,
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_workshop_resume_exception_is_not_swallowed():
+    """Transport exceptions must remain visible on a non-cancelled request."""
+    unsubscribe = reload_module("main_routers.workshop_router.unsubscribe")
+
+    class _Config:
+        async def aload_characters(self):
+            return {"猫娘": {"StillHere": {}}}
+
+    with patch(
+        "main_routers.characters_router.notify_memory_server_reload",
+        AsyncMock(side_effect=OSError("reload unavailable")),
+    ), pytest.raises(OSError, match="reload unavailable"):
+        await unsubscribe._resume_released_derived_tasks(
+            _Config(), {"StillHere": "claim-a"}, 42,
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_workshop_resume_failure_retries_owned_claim_until_acknowledged(
+    monkeypatch,
+):
+    """A transient reload failure must retain and retry the owned claim token."""
+    unsubscribe = reload_module("main_routers.workshop_router.unsubscribe")
+
+    class _Config:
+        async def aload_characters(self):
+            return {"猫娘": {"StillHere": {}}}
+
+    monkeypatch.setattr(
+        unsubscribe,
+        "_RESUME_RETRY_INITIAL_DELAY_SECONDS",
+        0,
+    )
+    reload_memory = AsyncMock(side_effect=[False, True])
+    with patch(
+        "main_routers.characters_router.notify_memory_server_reload",
+        reload_memory,
+    ):
+        with pytest.raises(
+            RuntimeError,
+            match="notify_memory_server_reload returned False",
+        ):
+            await unsubscribe._resume_released_derived_tasks(
+                _Config(), {"StillHere": "claim-a"}, 42,
+            )
+
+        tasks = list(unsubscribe._released_derived_task_resume_tasks.values())
+        await asyncio.gather(*tasks)
+
+    assert reload_memory.await_count == 2
+    for call in reload_memory.await_args_list:
+        assert call.kwargs["release_derived_task_claims"] == {
+            "StillHere": ("claim-a",),
+        }
+    assert unsubscribe._released_derived_task_resume_tasks == {}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_workshop_release_timeout_retains_claim_for_reconciliation():
+    """An indeterminate HTTP timeout must keep the client-owned claim token."""
+    unsubscribe = reload_module("main_routers.workshop_router.unsubscribe")
+    release_started = asyncio.Event()
+    received_tokens = {}
+
+    async def _release(name, **kwargs):
+        received_tokens[name] = kwargs["derived_task_claim_token"]
+        release_started.set()
+        await asyncio.Event().wait()
+
+    claims = {}
+    results = await unsubscribe._release_workshop_character_handles(
+        ["StillHere"],
+        42,
+        _release,
+        lambda: "claim-timeout",
+        claims,
+        per_call_timeout=0.01,
+        overall_timeout=0.1,
+    )
+
+    assert release_started.is_set()
+    assert claims == {"StillHere": "claim-timeout"}
+    assert received_tokens == claims
+    assert results[0][0:2] == ("StillHere", False)
+
+
+@pytest.mark.unit
+def test_workshop_recent_delete_finalizes_inside_each_iteration():
+    """Workshop must not retain one character lock while acquiring the next."""
+    unsubscribe = reload_module("main_routers.workshop_router.unsubscribe")
+    tree = ast.parse(inspect.getsource(unsubscribe))
+    delete_helpers = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "_delete_memory_with_retry_sync"
+    ]
+    assert len(delete_helpers) == 1
+    helper_calls = {
+        node.func.id
+        for node in ast.walk(delete_helpers[0])
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    assert "finalize_character_recent_delete" in helper_calls
+    assert "recent_delete_transactions" not in inspect.getsource(unsubscribe)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_workshop_thread_transaction_finishes_before_cancellation_returns():
+    """Cancellation cannot abandon or outlive a thread-owned recent transaction."""
+    unsubscribe = reload_module("main_routers.workshop_router.unsubscribe")
+    started = threading.Event()
+    finish = threading.Event()
+
+    def _worker():
+        started.set()
+        assert finish.wait(timeout=2)
+        return "done"
+
+    operation = asyncio.create_task(
+        unsubscribe._await_thread_call_to_completion(_worker)
+    )
+    while not started.is_set():
+        await asyncio.sleep(0)
+    operation.cancel()
+    await asyncio.sleep(0)
+    assert not operation.done()
+    finish.set()
+
+    result, cancelled = await operation
+    assert result == "done"
+    assert cancelled is True
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_workshop_thread_failure_cannot_replace_caller_cancellation():
+    """A worker failure after cancellation remains diagnostic, not terminal."""
+    unsubscribe = reload_module("main_routers.workshop_router.unsubscribe")
+    started = threading.Event()
+    finish = threading.Event()
+
+    def _worker():
+        started.set()
+        assert finish.wait(timeout=2)
+        raise RuntimeError("worker failed after cancellation")
+
+    operation = asyncio.create_task(
+        unsubscribe._await_thread_call_to_completion(_worker)
+    )
+    while not started.is_set():
+        await asyncio.sleep(0)
+    operation.cancel()
+    finish.set()
+
+    with pytest.raises(asyncio.CancelledError) as exc_info:
+        await operation
+    assert isinstance(exc_info.value.__cause__, RuntimeError)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_workshop_resume_failure_cannot_replace_active_cancellation():
+    """A failing finally recovery remains the cause of request cancellation."""
+    unsubscribe = reload_module("main_routers.workshop_router.unsubscribe")
+    started = asyncio.Event()
+    entered = asyncio.Event()
+    finish = asyncio.Event()
+
+    async def _resume():
+        entered.set()
+        await finish.wait()
+        raise RuntimeError("resume failed in finally")
+
+    async def _operation():
+        try:
+            started.set()
+            await asyncio.Event().wait()
+        finally:
+            await unsubscribe._finish_resume_preserving_cancellation(_resume())
+
+    operation = asyncio.create_task(_operation())
+    await started.wait()
+    operation.cancel()
+    await entered.wait()
+    finish.set()
+
+    with pytest.raises(asyncio.CancelledError) as exc_info:
+        await operation
+    assert isinstance(exc_info.value.__cause__, RuntimeError)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_memory_reload_failure_still_resumes_requested_admission():
+    """Reload failure releases only the requested claim, preserving its peer."""
+    from app.memory_server import review, runtime
+
+    name = "ReloadFailureClaimOwner"
+    await review.resume_character_derived_task_admission(name)
+    await review.cancel_character_derived_tasks(
+        name,
+        hold_until_publication=True,
+        claim_token="rename-claim",
+    )
+    await review.cancel_character_derived_tasks(
+        name,
+        claim_token="workshop-claim",
+    )
+    with patch.object(
+        runtime,
+        "CompressedRecentHistoryManager",
+        side_effect=RuntimeError("reload failed"),
+    ):
+        reloaded = await runtime.reload_memory_components(
+            release_derived_task_claims={name: {"workshop-claim"}},
+        )
+
+    assert reloaded is False
+    assert review._derived_task_admission_claims[name] == {
+        "rename-claim": (True, 0),
+    }
+    assert name in review._retired_derived_task_names
+    assert name in review._publication_held_derived_task_names
+    await review.resume_character_derived_task_admission(name)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_workshop_request_cancellation_survives_late_resume_failure(monkeypatch):
+    """A late transaction error must not replace caller cancellation."""
+    unsubscribe = reload_module("main_routers.workshop_router.unsubscribe")
+    inner_started = asyncio.Event()
+    finish_inner = asyncio.Event()
+
+    async def _failing_operation(_request, commit_started):
+        commit_started.set()
+        inner_started.set()
+        await finish_inner.wait()
+        raise RuntimeError("resume failed")
+
+    monkeypatch.setattr(unsubscribe, "_unsubscribe_workshop_item", _failing_operation)
+    operation = asyncio.create_task(unsubscribe.unsubscribe_workshop_item(object()))
+    await asyncio.wait_for(inner_started.wait(), timeout=3)
+    operation.cancel()
+    await asyncio.sleep(0.05)
+    assert not operation.done()
+
+    finish_inner.set()
+    with pytest.raises(asyncio.CancelledError):
+        await operation
 
 
 class _DummyGetRequest:
@@ -299,16 +1310,25 @@ async def test_character_management_and_recent_save_regression():
             assert switch_result["success"] is True
             assert cm.load_characters()["当前猫娘"] == "测试角色"
 
+            from utils.recent_file import write_recent_payload
+
+            recent_path = Path(cm.memory_dir) / "测试角色" / "recent.json"
+            write_recent_payload(recent_path, [])
+            recent_snapshot = await memory_router_module.get_recent_file(
+                "recent_测试角色.json"
+            )
             save_recent_result = await memory_router_module.save_recent_file(
                 _DummyRequest(
                     {
                         "filename": "recent_测试角色.json",
                         "chat": [{"role": "user", "text": "你好"}],
+                        "fingerprint": recent_snapshot["fingerprint"],
+                        "identity_token": recent_snapshot["identity_token"],
                     }
                 )
             )
             assert save_recent_result["success"] is True
-            assert (Path(cm.memory_dir) / "测试角色" / "recent.json").is_file()
+            assert recent_path.is_file()
 
             switch_back_result = await characters_router_module.set_current_catgirl(
                 _DummyRequest({"catgirl_name": initial_name})
@@ -993,11 +2013,16 @@ async def test_rename_catgirl_returns_503_and_keeps_disk_unchanged_when_memory_r
                 encoding="utf-8",
             )
 
+            resume_memory = AsyncMock(return_value=True)
             with patch.object(
                 characters_router_module,
                 "release_memory_server_character",
                 AsyncMock(return_value=False),
-            ) as mock_release:
+            ) as mock_release, patch.object(
+                characters_router_module,
+                "notify_memory_server_reload",
+                resume_memory,
+            ):
                 rename_result = await characters_router_module.rename_catgirl(
                     "旧角色",
                     _DummyRequest({"new_name": "新角色"}),
@@ -1008,6 +2033,15 @@ async def test_rename_catgirl_returns_503_and_keeps_disk_unchanged_when_memory_r
             assert payload["success"] is False
             assert payload["code"] == "MEMORY_SERVER_RELEASE_FAILED"
             mock_release.assert_awaited_once()
+            claim_token = mock_release.await_args.kwargs[
+                "derived_task_claim_token"
+            ]
+            resume_memory.assert_awaited_once_with(
+                reason="角色重命名 release 失败补偿: 旧角色 -> 新角色",
+                release_derived_task_claims={
+                    "旧角色": (claim_token,),
+                },
+            )
 
             current_characters = cm.load_characters()
             assert "旧角色" in current_characters.get("猫娘", {})
@@ -1092,6 +2126,67 @@ async def test_rename_catgirl_maintenance_error_preserves_original_exception_typ
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_rename_error_rollback_finishes_when_request_is_cancelled(tmp_path):
+    """Cancellation arriving in an error handler must not detach rollback."""
+    cm = _make_config_manager(tmp_path)
+    bootstrap_local_cloudsave_environment(cm)
+
+    async def _noop(*_args, **_kwargs):
+        return None
+
+    with patch("utils.config_manager._config_manager", cm):
+        init_shared_state(
+            role_state={},
+            steamworks=None,
+            templates=None,
+            config_manager=cm,
+            logger=None,
+            initialize_character_data=_noop,
+            switch_current_catgirl_fast=_noop,
+            init_one_catgirl=_noop,
+            remove_one_catgirl=_noop,
+        )
+        crud = reload_module("main_routers.characters_router.crud")
+        characters = cm.load_characters()
+        characters.setdefault("猫娘", {})["Old"] = {"昵称": "Old"}
+        cm.save_characters(characters, bypass_write_fence=True)
+
+        rollback_entered = asyncio.Event()
+        release_rollback = asyncio.Event()
+
+        async def _rollback(*_args, **_kwargs):
+            rollback_entered.set()
+            await release_rollback.wait()
+            return ""
+
+        with patch.object(
+            crud,
+            "release_memory_server_character",
+            AsyncMock(return_value=True),
+        ), patch.object(
+            cm,
+            "save_characters",
+            side_effect=OSError("primary publish failed"),
+        ), patch.object(
+            crud,
+            "_rollback_character_operation",
+            side_effect=_rollback,
+        ):
+            operation = asyncio.create_task(crud.rename_catgirl(
+                "Old", _DummyRequest({"new_name": "New"})
+            ))
+            await asyncio.wait_for(rollback_entered.wait(), timeout=3)
+            operation.cancel()
+            await asyncio.sleep(0.05)
+            assert not operation.done()
+
+            release_rollback.set()
+            with pytest.raises(asyncio.CancelledError):
+                await operation
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_workshop_sync_imports_legacy_dotted_name_but_rejects_unsafe_names():
     with TemporaryDirectory() as td:
         cm = _make_config_manager(Path(td))
@@ -1132,6 +2227,7 @@ async def test_workshop_sync_imports_legacy_dotted_name_but_rejects_unsafe_names
                     encoding="utf-8",
                 )
 
+            reload_memory = AsyncMock(return_value=True)
             with patch.object(
                 workshop_router_module,
                 "get_subscribed_workshop_items",
@@ -1146,6 +2242,9 @@ async def test_workshop_sync_imports_legacy_dotted_name_but_rejects_unsafe_names
                         ],
                     }
                 ),
+            ), patch(
+                "main_routers.characters_router.notify_memory_server_reload",
+                reload_memory,
             ):
                 sync_result = await workshop_router_module.sync_workshop_character_cards(
                     target_item_id="123456",
@@ -1159,6 +2258,10 @@ async def test_workshop_sync_imports_legacy_dotted_name_but_rejects_unsafe_names
             assert ".." not in current_catgirls
             assert "角色." not in current_catgirls
             assert "角色/子目录" not in current_catgirls
+            reload_memory.assert_awaited_once_with(
+                reason="创意工坊角色卡同步",
+                resume_derived_task_names=["N.E.K.O"],
+            )
 
 
 @pytest.mark.unit
@@ -2893,6 +3996,11 @@ async def test_delete_catgirl_returns_503_when_memory_handle_release_fails_befor
                     characters_router_module,
                     "release_memory_server_character",
                     AsyncMock(return_value=False),
+                ),
+                patch.object(
+                    characters_router_module,
+                    "notify_memory_server_reload",
+                    AsyncMock(return_value=True),
                 ),
                 patch.object(characters_router_module, "delete_character_memory_storage") as mock_delete_memory,
             ):

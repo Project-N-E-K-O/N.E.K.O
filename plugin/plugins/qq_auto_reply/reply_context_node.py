@@ -2,8 +2,13 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
+from main_logic.omni_offline_client import route_supports_tool_calls
 from utils.config_manager import get_config_manager
 
+from .memory_tool_service import (
+    resolve_group_recall_subjects,
+    resolve_participant_recall_subjects,
+)
 from .pipeline_models import is_synthetic_source, QQInstructionBundle, QQPipelineStageTrace, QQReplyContext
 from .prompt_fragment_templates import LONG_TERM_MEMORY_SECTION
 
@@ -23,6 +28,7 @@ class QQReplyContextNode:
         is_group: bool = False,
         group_id: str | None = None,
         sender_id: str = "",
+        participant_memory: bool = False,
     ) -> str:
         if not should_use_memory_context:
             return ""
@@ -50,23 +56,22 @@ class QQReplyContextNode:
             return ""
         try:
             subjects = None
+            used_member_subject = False
             if is_group and group_id:
-                subjects = [self.plugin.memory_bridge.group_subject(group_id)]
-                member_sender = str(sender_id or "").strip()
-                if member_sender and bool(
-                    (getattr(self.plugin, "_qq_settings", {}) or {}).get(
-                        "group_member_memory_enabled", False,
-                    )
-                ):
-                    # 实时复检（对偶群开关的读点复检）：构建期间关掉成员
-                    # 记忆后不得再召回 participant 域。sender 规范化与写侧
-                    # 一致，避免读写落进不同桶。
-                    subjects.append(
-                        self.plugin.memory_bridge.group_participant_subject(
-                            group_id, member_sender,
-                        )
-                    )
-            used_member_subject = bool(subjects and len(subjects) > 1)
+                # subject 组装与 recall_memory 工具 handler 共用一处（含
+                # member 开关的读点实时复检、sender 规范化）：两条召回通道
+                # 授权的域必须一致，线路切换不得悄悄改变群轮能读什么。
+                subjects, used_member_subject = await resolve_group_recall_subjects(
+                    self.plugin, group_id=group_id, memory_sender_id=sender_id,
+                )
+            elif participant_memory:
+                # 私聊 participant 轮：subject 组装与 tool handler / 核心
+                # 记忆段共用 resolver（含开关实时复检、sender 规范化）。
+                # resolver fail-closed 返回 []——bridge 对 [] 直接空结果，
+                # **绝不**让 subjects 保持 None 落进 legacy 主人语料。
+                subjects = resolve_participant_recall_subjects(
+                    self.plugin, memory_sender_id=sender_id,
+                )
             if used_member_subject and used_member_subject_out is not None:
                 # 回传给调用方：召回是否真的带上了 participant 域。绑定
                 # bootstrap 段是否非空是错的——bootstrap 为空、召回命中
@@ -94,6 +99,14 @@ class QQReplyContextNode:
                 # 数据已读回也要丢弃，不注入 opt-out 之后的群回复。此处是
                 # 读侧最后的收敛点：该轮的 persist 已由转变盖章+prime 门控
                 # 挡住。
+                return ""
+            if participant_memory and not bool(
+                (getattr(self.plugin, "_qq_settings", {}) or {}).get(
+                    "private_participant_memory_enabled", False,
+                )
+            ):
+                # participant 侧读后复检（对偶上面两处）：opt-out 落在召回
+                # 飞行期间时，已读回的 participant 域内容整体丢弃。
                 return ""
             if not recall_result.text:
                 return ""
@@ -134,6 +147,35 @@ class QQReplyContextNode:
                 system_prompt = system_prompt.replace(candidate, "", 1)
                 break
         self.plugin.logger.info("成员记忆已关闭，核心记忆段在生成前撤除")
+        return system_prompt, False
+
+    def _strip_participant_if_revoked(
+        self, system_prompt: str, section_text: str, participant_memory: bool,
+    ) -> tuple[str, bool]:
+        """Drop the participant-derived core section when consent is gone.
+
+        对偶 _strip_section_if_member_revoked：私聊 participant 轮的核心
+        记忆段在 login/bootstrap/recall 的 await 窗口里组好，期间开关被
+        关掉/回滚时不得把 participant 域内容留在 prompt 里。返回
+        (prompt, section_kept)。"""
+        if not section_text or not participant_memory:
+            return system_prompt, bool(section_text)
+        if bool(
+            (getattr(self.plugin, "_qq_settings", {}) or {}).get(
+                "private_participant_memory_enabled", False,
+            )
+        ):
+            return system_prompt, True
+        separator = "\n\n"
+        for candidate in (
+            separator + section_text,
+            section_text + separator,
+            section_text,
+        ):
+            if candidate in system_prompt:
+                system_prompt = system_prompt.replace(candidate, "", 1)
+                break
+        self.plugin.logger.info("私聊成员记忆已关闭，核心记忆段在生成前撤除")
         return system_prompt, False
 
     def _strip_cross_group_if_revoked(
@@ -187,9 +229,18 @@ class QQReplyContextNode:
         group_facing: bool = False,
         group_scene_mode: str = "",
         current_message_id: str = "",
+        is_reply_to_bot: bool = False,
+        quoted_message_id: str = "",
+        mentions_other_user: bool = False,
+        mentions_all: bool = False,
+        reply_context: str = "",
         force_reply: bool = False,
         source_kind: str = "",
         member_memory_at_receipt: bool | None = None,
+        group_speaker_permission_level_at_receipt: str | None = None,
+        speaker_channel_at_receipt: str | None = None,
+        participant_memory_at_receipt: bool | None = None,
+        private_permission_level_at_receipt: str | None = None,
         inherited_consent_snapshot: dict[str, bool] | None = None,
     ) -> QQReplyContext:
         # member 记忆 consent 快照优先取消息接收边界（process_messages 在
@@ -201,6 +252,32 @@ class QQReplyContextNode:
                 getattr(self.plugin, "_qq_settings", {}) or {}
             ).get("group_member_memory_enabled", False)
         member_memory_snapshot = bool(is_group and member_memory_at_receipt)
+        # 私聊 participant 记忆快照（对偶 member）：只对非 admin 私聊轮
+        # 生效——admin 私聊仍是 legacy 主人语料，群轮走上面那套。
+        if participant_memory_at_receipt is None:
+            participant_memory_at_receipt = (
+                getattr(self.plugin, "_qq_settings", {}) or {}
+            ).get("private_participant_memory_enabled", False)
+        receipt_permission = (
+            private_permission_level_at_receipt
+            if private_permission_level_at_receipt is not None
+            else permission_level
+        )
+        private_memory_mode = None
+        if not is_group:
+            if receipt_permission == "admin":
+                private_memory_mode = "legacy"
+            elif participant_memory_at_receipt:
+                private_memory_mode = "participant"
+        participant_memory_snapshot = private_memory_mode == "participant"
+        if (
+            not is_group
+            and use_memory_context is None
+        ):
+            # 主路径（dispatcher）不显式传 use/persist：接收边界章在此定格
+            # 成显式请求值，prompt_builder 的 None 分支只服务旁路调用者
+            # （它读实时配置，与群路径的 None 语义对偶）。
+            use_memory_context = private_memory_mode is not None
         # 合成轮（rapid-fire/proactive/buffer 合并）复用首个 pending sender，
         # 但缓冲内容可能混有其他成员的发言——记忆读路径只授权群 subject，
         # 不得注入"名义 sender"的成员记忆（写侧已同样过滤）。
@@ -251,10 +328,29 @@ class QQReplyContextNode:
                 from .session_bootstrap_service import (
                     generation_session_is_reusable,
                 )
+                # 线路指纹与 bootstrap 的重建触发保持同一组判据（helper
+                # docstring 的硬约束）。此处读的是**落定前**的配置快照：
+                # 免费线路的区域改写可能让它与会话存的指纹假错配，方向是
+                # 安全的——多预测一次"要重建"只是多等一次区域落定。
+                _prediction_route = None
+                try:
+                    _prediction_config = config_manager.get_model_api_config(
+                        "conversation",
+                    )
+                    _prediction_route = (
+                        str(_prediction_config.get("base_url") or ""),
+                        str(_prediction_config.get("model") or ""),
+                    )
+                except Exception:
+                    _prediction_route = None
                 session_cached = generation_session_is_reusable(
                     entry,
                     login_self_id=login_self_id,
                     her_name=config_manager.get_character_data()[1],
+                    conversation_route=_prediction_route,
+                    is_group=is_group,
+                    private_memory_mode=private_memory_mode,
+                    permission_level=permission_level,
                 )
             except Exception:
                 session_cached = False
@@ -366,6 +462,7 @@ class QQReplyContextNode:
             is_group=is_group,
             group_id=group_id,
             use_memory_context=should_use_memory_context,
+            participant_memory=participant_memory_snapshot,
             address_user_by_name=address_user_by_name,
             group_facing=effective_group_facing,
             shared_group_session=shared_group_session,
@@ -378,24 +475,48 @@ class QQReplyContextNode:
         core_memory_text = instruction_bundle.core_memory_text
         memory_context_used = instruction_bundle.memory_context_used
         recall_used_member: list = []
-        recalled_memory_text = await self._build_recalled_memory_text(
-            used_member_subject_out=recall_used_member,
-            her_name=her_name,
-            message=message,
-            should_use_memory_context=should_use_memory_context,
-            attachments=attachments,
-            is_group=is_group,
-            group_id=group_id,
-            sender_id=memory_sender_id,
-        )
+        recall_via_tool = False
+        if should_use_memory_context:
+            # 召回通道决策：线路支持 tool call 就把召回交给模型自主决定
+            # （reply_generation_service 按轮挂载 recall_memory 工具，构建
+            # 期不再同步召回）；免费代理只暴露 OpenAI-compat 且会静默丢
+            # tools，那批用户回落到构建期同步召回，否则群记忆会静默归零。
+            # 判定出错按回落处理——回落路径至少确定生效。
+            try:
+                conversation_config = config_manager.get_model_api_config(
+                    "conversation",
+                )
+                recall_via_tool = route_supports_tool_calls(
+                    str(conversation_config.get("model") or ""),
+                    str(conversation_config.get("base_url") or ""),
+                )
+            except Exception:
+                recall_via_tool = False
+        recalled_memory_text = ""
+        if not recall_via_tool:
+            recalled_memory_text = await self._build_recalled_memory_text(
+                used_member_subject_out=recall_used_member,
+                her_name=her_name,
+                message=message,
+                should_use_memory_context=should_use_memory_context,
+                attachments=attachments,
+                is_group=is_group,
+                group_id=group_id,
+                sender_id=memory_sender_id,
+                participant_memory=participant_memory_snapshot,
+            )
         recalled_memory_used = bool(recalled_memory_text)
         traces.append(
             QQPipelineStageTrace(
                 stage="context_memory_recall",
-                status="used" if recalled_memory_used else "skipped",
+                status=(
+                    "tool_deferred" if recall_via_tool
+                    else ("used" if recalled_memory_used else "skipped")
+                ),
                 metadata={
                     "recalled_memory_used": recalled_memory_used,
                     "recalled_memory_length": len(recalled_memory_text),
+                    "recall_via_tool": recall_via_tool,
                 },
             )
         )
@@ -412,6 +533,10 @@ class QQReplyContextNode:
                 },
             )
         )
+        # 引用上下文仅注入 LLM prompt，不污染会话历史
+        prompt_text = message
+        if reply_context:
+            prompt_text = reply_context + "\n" + prompt_text
         prompt_message = self.plugin._build_prompt_message(
             is_group=is_group,
             group_facing=effective_group_facing,
@@ -419,8 +544,12 @@ class QQReplyContextNode:
             user_title=user_title,
             sender_id=sender_id,
             group_id=group_id,
-            message=message,
+            message=prompt_text,
             current_message_id=current_message_id,
+            is_reply_to_bot=is_reply_to_bot,
+            quoted_message_id=quoted_message_id,
+            mentions_other_user=mentions_other_user,
+            mentions_all=mentions_all,
         )
         traces.append(
             QQPipelineStageTrace(
@@ -443,6 +572,13 @@ class QQReplyContextNode:
         if not core_memory_alive:
             core_memory_text = ""
             memory_context_used = False
+        if core_memory_text:
+            system_prompt, core_memory_alive = self._strip_participant_if_revoked(
+                system_prompt, core_memory_text, participant_memory_snapshot,
+            )
+            if not core_memory_alive:
+                core_memory_text = ""
+                memory_context_used = False
         system_prompt, cross_group_alive = self._strip_cross_group_if_revoked(
             system_prompt,
             getattr(instruction_bundle, "cross_group_section", ""),
@@ -486,6 +622,16 @@ class QQReplyContextNode:
             force_reply=force_reply,
             source_kind=source_kind,
             member_memory_enabled=member_memory_snapshot,
+            group_speaker_permission_level_at_receipt=(
+                group_speaker_permission_level_at_receipt
+            ),
+            speaker_channel_at_receipt=speaker_channel_at_receipt,
+            participant_memory_enabled=participant_memory_snapshot,
+            private_memory_mode=private_memory_mode,
+            private_permission_level_at_receipt=(
+                private_permission_level_at_receipt
+            ),
+            recall_via_tool=recall_via_tool,
             cross_group_section=(
                 getattr(instruction_bundle, "cross_group_section", "")
                 if cross_group_alive else ""

@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from utils import recent_file
 from utils.llm_client import AIMessage, HumanMessage
 
 
@@ -101,7 +102,7 @@ async def test_three_output_exhaustions_block_across_growing_contexts():
 
     with (
         patch.object(memory_server.runtime, "recent_history_manager", fake_manager),
-        patch.object(memory_server.gates, "_asave_maint_state", AsyncMock()),
+        patch.object(memory_server.gates, "_persist_maint_state_locked", MagicMock()),
         patch(
             "memory.recent.review_context_token_count",
             side_effect=lambda rows: len(rows) * 100,
@@ -124,9 +125,16 @@ async def test_three_output_exhaustions_block_across_growing_contexts():
     memory_server.gates._maint_state.pop(name, None)
 
 
-async def _drive_review_gate(memory_server, name: str, history: list) -> None:
+async def _drive_review_gate(
+    memory_server, name: str, history: list, token_count=None
+) -> None:
     fake_manager = MagicMock()
-    fake_manager.aget_recent_history = AsyncMock(return_value=history)
+    fake_manager.aget_recent_history = AsyncMock(
+        return_value=(
+            history,
+            recent_file.capture_recent_generation("review-test-recent.json"),
+        ),
+    )
     fake_manager.review_history = AsyncMock(return_value=("white", None))
 
     with (
@@ -141,13 +149,17 @@ async def _drive_review_gate(memory_server, name: str, history: list) -> None:
             "_count_new_user_msgs_since_last_review",
             return_value=999,
         ),
-        patch.object(memory_server.gates, "_asave_maint_state", AsyncMock()),
+        patch.object(memory_server.gates, "_persist_maint_state_locked", MagicMock()),
         patch(
             "memory.recent.review_context_token_count",
-            side_effect=lambda rows: len(rows) * 100,
+            side_effect=token_count or (lambda rows: len(rows) * 100),
         ),
     ):
         await memory_server.maybe_spawn_review(name)
+        task = memory_server.correction_tasks.get(name)
+        if task is not None:
+            await task
+    return fake_manager
 
 
 @pytest.mark.unit
@@ -158,28 +170,25 @@ async def test_output_exhaustion_gate_waits_for_context_to_shrink():
 
     name = "output-limit-gate"
     memory_server.correction_tasks.pop(name, None)
+    generation = recent_file.capture_recent_generation("review-test-recent.json")
     memory_server.gates._maint_state[name] = {
         "review_output_exhaustion_attempts": (
             MEMORY_REVIEW_OUTPUT_EXHAUSTION_MAX_ATTEMPTS
         ),
         "review_output_exhaustion_min_context_tokens": 1000,
         "review_output_exhaustion_blocked": True,
+        "review_output_exhaustion_generation": list(generation),
     }
 
     await _drive_review_gate(memory_server, name, _history(14))
     assert name not in memory_server.correction_tasks
 
-    await _drive_review_gate(memory_server, name, _history(8))
+    fake_manager = await _drive_review_gate(memory_server, name, _history(8))
     state = memory_server.gates._maint_state[name]
     assert state["review_output_exhaustion_attempts"] == 0
     assert state["review_output_exhaustion_min_context_tokens"] is None
     assert state["review_output_exhaustion_blocked"] is False
-
-    task = memory_server.correction_tasks.get(name)
-    assert task is not None
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
+    fake_manager.review_history.assert_awaited_once()
 
     memory_server.gates._maint_state.pop(name, None)
     memory_server.correction_tasks.pop(name, None)
@@ -202,7 +211,7 @@ async def test_success_clears_output_exhaustion_state():
 
     with (
         patch.object(memory_server.runtime, "recent_history_manager", fake_manager),
-        patch.object(memory_server.gates, "_asave_maint_state", AsyncMock()),
+        patch.object(memory_server.gates, "_persist_maint_state_locked", MagicMock()),
     ):
         await memory_server._run_review_in_background(
             name,
@@ -214,6 +223,54 @@ async def test_success_clears_output_exhaustion_state():
     assert state["review_output_exhaustion_attempts"] == 0
     assert state["review_output_exhaustion_min_context_tokens"] is None
     assert state["review_output_exhaustion_blocked"] is False
+    memory_server.gates._maint_state.pop(name, None)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_white_review_clears_output_exhaustion_state():
+    """Mirror of the patched-branch case: a white review must reset the breaker too.
+
+    A white review means the cutoff anchor no longer matches, i.e. the input has
+    actually changed, so the previous "context is too long to summarise" verdict
+    no longer describes the current input. Leaving the breaker armed would keep
+    blocking reviews on an input that was never the one that exhausted the
+    output budget.
+    """
+    from app import memory_server
+
+    name = "output-limit-white"
+    memory_server.gates._maint_state[name] = {
+        "review_output_exhaustion_attempts": 2,
+        "review_output_exhaustion_min_context_tokens": 1000,
+        "review_output_exhaustion_blocked": True,
+        "review_fail_attempts": 3,
+        "review_fail_fp": "old-fp",
+        "last_reviewed_cutoff_tail": "old-anchor",
+    }
+    fake_manager = MagicMock()
+    fake_manager.review_history = AsyncMock(return_value=("white", None))
+
+    with (
+        patch.object(memory_server.runtime, "recent_history_manager", fake_manager),
+        patch.object(memory_server.gates, "_persist_maint_state_locked", MagicMock()),
+    ):
+        await memory_server._run_review_in_background(
+            name,
+            _history(10),
+            asyncio.Event(),
+        )
+
+    state = memory_server.gates._maint_state[name]
+    assert state["review_output_exhaustion_attempts"] == 0
+    assert state["review_output_exhaustion_min_context_tokens"] is None
+    assert state["review_output_exhaustion_blocked"] is False
+    # 顺带钉住白 review 的既有语义：清锚点、清失败退避、故意不刷 last_review_ts
+    # （下轮 gate 4 用旧 ts 直接放行 + fingerprint=None 触发 gate 5 的 ∞ 通行）。
+    assert state["last_reviewed_cutoff_tail"] is None
+    assert state["review_fail_attempts"] == 0
+    assert state["review_fail_fp"] is None
+    assert "last_review_ts" not in state
     memory_server.gates._maint_state.pop(name, None)
 
 
@@ -233,7 +290,7 @@ async def test_generic_failure_breaks_output_exhaustion_streak():
 
     with (
         patch.object(memory_server.runtime, "recent_history_manager", fake_manager),
-        patch.object(memory_server.gates, "_asave_maint_state", AsyncMock()),
+        patch.object(memory_server.gates, "_persist_maint_state_locked", MagicMock()),
     ):
         await memory_server._run_review_in_background(
             name,
@@ -246,4 +303,81 @@ async def test_generic_failure_breaks_output_exhaustion_streak():
     assert state["review_output_exhaustion_min_context_tokens"] is None
     assert state["review_output_exhaustion_blocked"] is False
     assert state["review_fail_attempts"] == 1
+    memory_server.gates._maint_state.pop(name, None)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_recovery_that_loses_the_race_does_not_spawn_a_review():
+    """A breaker armed while the async token count ran must still block the spawn."""
+    # Gate 6a 的恢复判定只能在锁外做（review_context_token_count 是 async，进不了同步
+    # mutator），锁内复查会拒绝清零。但**拒绝清零还不够** —— 调用方必须跟着放弃本轮，
+    # 否则等于拿一个已经过期的判定绕过了刚 armed 的断路器，那条已经证明压不动的
+    # context 又被放行重烧一轮。这条钉的是调用点，不是 mutator 的返回值。
+    from app import memory_server
+    from config import MEMORY_REVIEW_OUTPUT_EXHAUSTION_MAX_ATTEMPTS
+
+    name = "output-limit-lost-race"
+    memory_server.correction_tasks.pop(name, None)
+    generation = recent_file.capture_recent_generation("review-test-recent.json")
+    memory_server.gates._maint_state[name] = {
+        "review_output_exhaustion_attempts": (
+            MEMORY_REVIEW_OUTPUT_EXHAUSTION_MAX_ATTEMPTS
+        ),
+        "review_output_exhaustion_min_context_tokens": 1000,
+        "review_output_exhaustion_blocked": True,
+        "review_output_exhaustion_generation": list(generation),
+    }
+
+    def count_while_a_concurrent_writer_arms_a_newer_breaker(rows):
+        # 模拟另一个后台 review 在这次 async 计数期间又失败了一次，写下更新的断路器。
+        memory_server.gates._maint_state[name][
+            "review_output_exhaustion_min_context_tokens"
+        ] = 400
+        return len(rows) * 100
+
+    # 8 行 → 800 tokens，与**锁外观测到的** 1000 相比像是「context 已缩短、可以恢复」。
+    await _drive_review_gate(
+        memory_server,
+        name,
+        _history(8),
+        token_count=count_while_a_concurrent_writer_arms_a_newer_breaker,
+    )
+
+    assert name not in memory_server.correction_tasks, "恢复判定过期时不许 spawn"
+    state = memory_server.gates._maint_state[name]
+    assert state["review_output_exhaustion_min_context_tokens"] == 400, (
+        "并发写者刚 armed 的断路器必须留着"
+    )
+    assert state["review_output_exhaustion_attempts"] == (
+        MEMORY_REVIEW_OUTPUT_EXHAUSTION_MAX_ATTEMPTS
+    )
+    assert state["review_output_exhaustion_blocked"] is True
+    memory_server.gates._maint_state.pop(name, None)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_stale_output_exhaustion_cannot_arm_reused_identity(tmp_path):
+    """An old review result must not mutate the reused identity's breaker."""
+    from app import memory_server
+    from utils import recent_file
+
+    name = "测试角色-stale-output"
+    path = tmp_path / "recent.json"
+    path.write_text("[]", encoding="utf-8")
+    old_generation = recent_file.capture_recent_generation(path)
+    recent_file.activate_recent_paths([path])
+    memory_server.gates._maint_state.pop(name, None)
+
+    with patch(
+        "memory.recent.review_context_token_count",
+        AsyncMock(return_value=100),
+    ):
+        result = await memory_server.review._record_review_output_exhaustion(
+            name, _history(10), old_generation,
+    )
+
+    assert result is None
+    assert memory_server.gates._maint_state.get(name) == {}
     memory_server.gates._maint_state.pop(name, None)

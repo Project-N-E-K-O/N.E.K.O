@@ -15,7 +15,8 @@ _REASON_CODES = {
     "cooldown", "dispatcher.dry_run", "dispatcher.failed", "dispatcher.pushed",
     "dispatcher.skipped", "dry_run", "live_disabled", "live_ingest_disconnected",
     "ingest.duplicate_support_event", "ingest.ignored_twitch_notification",
-    "ingest.invalid_twitch_projection", "live_room_offline", "manual_paused",
+    "ingest.invalid_twitch_projection", "ingest.duplicate_x_message",
+    "ingest.invalid_x_projection", "live_room_offline", "manual_paused",
     "missing_uid", "normalized", "ok",
     "output_channel_unavailable", "ready", "room_not_configured", "safety_degraded",
     "safety_tripped",
@@ -107,6 +108,17 @@ def _append(runtime: Any, item: dict[str, Any]) -> None:
         return
     try:
         timeline.append(item)
+    except Exception:
+        pass
+    # Mirror to the runtime log. This is the single choke point for timeline
+    # records, and every field here is already sanitized (HMAC uid, allowlisted
+    # reason), so the log inherits those guarantees rather than re-deriving
+    # them. Diagnostics must never break the live path.
+    runtime_log = getattr(runtime, "runtime_log", None)
+    if runtime_log is None:
+        return
+    try:
+        runtime_log.note(runtime, item)
     except Exception:
         pass
 

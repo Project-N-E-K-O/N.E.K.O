@@ -66,6 +66,8 @@ from pathlib import Path
 from typing import Any, Optional
 
 RECORD_SCHEMA_VERSION = 1
+APP_SIGNATURE = "N.E.K.O"
+RUNTIME_STATE_DIR_NAME = f"{APP_SIGNATURE}.runtime"
 
 #: Directory override, mainly for tests and for sandboxed/portable installs.
 RUNTIME_STATE_DIR_ENV = "NEKO_RUNTIME_STATE_DIR"
@@ -102,7 +104,11 @@ def runtime_state_dir() -> Path:
     if sys.platform == "win32":
         base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
         if base:
-            return Path(base) / "N.E.K.O" / "runtime"
+            # Keep the lifetime lock outside the cloudsave-managed application
+            # root.  First-run legacy import atomically replaces
+            # ``%LOCALAPPDATA%\N.E.K.O``; on Windows an open launcher.lock makes
+            # that replacement fail with ERROR_ACCESS_DENIED.
+            return Path(base) / RUNTIME_STATE_DIR_NAME
         # No profile environment at all. Unlike %LOCALAPPDATA% this is shared, so
         # keep it per-user explicitly — otherwise two accounts contend for one
         # lock and the second is told an instance is already running.
@@ -116,7 +122,11 @@ def runtime_state_dir() -> Path:
         # themselves the owner.
         home = _stable_home_dir()
         if home:
-            return Path(home) / "Library" / "Application Support" / "N.E.K.O" / "runtime"
+            # POSIX permits unlinking an open lock file, which is worse here: a
+            # cloudsave root swap would publish a fresh lock inode while this
+            # process still owns the unlinked old one.  A sibling directory keeps
+            # the single-instance proof stable across root replacement.
+            return Path(home) / "Library" / "Application Support" / RUNTIME_STATE_DIR_NAME
     else:
         # Deliberately *not* XDG_RUNTIME_DIR. It is ambient: a desktop session has
         # it, a cron job, a plain SSH login, `su`, a system unit or a container
@@ -163,30 +173,39 @@ def _stable_home_dir() -> str:
 def legacy_state_dirs() -> list[Path]:
     """Directories older builds of this launcher may still hold a lock in.
 
-    Only meaningful during an upgrade: a running old-generation runtime holds
-    ``$XDG_RUNTIME_DIR/neko`` or the shared-temp fallback, and a new launcher
-    resolving the stable path would find it free and start a second runtime.
-    Probing these keeps that from happening exactly once per upgrade, and can be
-    deleted once no build that uses them can still be running.
+    Only meaningful during an upgrade: a running old-generation runtime may hold
+    the former cloudsave-nested Windows/macOS path, ``$XDG_RUNTIME_DIR/neko``, or
+    the shared-temp fallback. A new launcher resolving the stable path would find
+    it free and start a second runtime. Probing these keeps that from happening
+    exactly once per upgrade, and can be deleted once no build that uses them can
+    still be running.
     """
-    if sys.platform == "win32" or sys.platform == "darwin":
-        return []
-    dirs: list[Path] = []
-    xdg_runtime = os.environ.get(RUNTIME_STATE_DIR_ENV, "").strip()
-    if xdg_runtime:
+    override = os.environ.get(RUNTIME_STATE_DIR_ENV, "").strip()
+    if override:
         # An explicit override is the current path, never a legacy one.
         return []
-    ambient = os.environ.get("XDG_RUNTIME_DIR", "").strip()
-    if ambient:
-        dirs.append(Path(ambient) / "neko")
-    suffix = ""
-    getuid = getattr(os, "getuid", None)
-    if callable(getuid):
-        try:
-            suffix = f"-{getuid()}"
-        except Exception:
-            suffix = ""
-    dirs.append(Path(tempfile.gettempdir()) / f"neko-runtime{suffix}")
+
+    dirs: list[Path] = []
+    if sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
+        if base:
+            dirs.append(Path(base) / APP_SIGNATURE / "runtime")
+    elif sys.platform == "darwin":
+        home = _stable_home_dir()
+        if home:
+            dirs.append(Path(home) / "Library" / "Application Support" / APP_SIGNATURE / "runtime")
+    else:
+        ambient = os.environ.get("XDG_RUNTIME_DIR", "").strip()
+        if ambient:
+            dirs.append(Path(ambient) / "neko")
+        suffix = ""
+        getuid = getattr(os, "getuid", None)
+        if callable(getuid):
+            try:
+                suffix = f"-{getuid()}"
+            except Exception:
+                suffix = ""
+        dirs.append(Path(tempfile.gettempdir()) / f"neko-runtime{suffix}")
     current = runtime_state_dir()
     return [d for d in dirs if d != current]
 
@@ -590,7 +609,7 @@ def acquire_single_instance(
     record = {
         "schema": RECORD_SCHEMA_VERSION,
         "state": STATE_STARTING,
-        "app": "N.E.K.O",
+        "app": APP_SIGNATURE,
         "instance_id": str(instance_id or ""),
         "launch_id": str(launch_id or ""),
         "pid": pid,

@@ -1,0 +1,367 @@
+import asyncio
+import json
+from unittest.mock import AsyncMock, Mock
+
+import pytest
+
+from main_logic.omni_realtime_client import OmniRealtimeClient
+from main_logic.omni_realtime_client._response_arbiter import (
+    RealtimeResponseArbiter,
+)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_idless_orphan_releases_at_its_own_stale_deadline():
+    async def send(_event):
+        return None
+
+    arbiter = RealtimeResponseArbiter(send)
+    arbiter._server_response_max_age = 0.01
+    try:
+        assert arbiter.notify_response_created({"type": "response.created"})
+        assert not arbiter._idle.is_set()
+
+        await arbiter.wait_until_idle(timeout=0.2)
+
+        assert arbiter._idless_server_response_at is None
+    finally:
+        await arbiter.shutdown()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_idless_orphan_survives_an_id_bearing_owner_terminal():
+    async def send(_event):
+        return None
+
+    arbiter = RealtimeResponseArbiter(send)
+    try:
+        owner = await arbiter.enqueue(source="owner")
+        await asyncio.wait_for(owner.sent, 0.2)
+        arbiter.notify_response_created(
+            {"type": "response.created", "response": {"id": "resp-owner"}}
+        )
+        arbiter.notify_response_created({"type": "response.created"})
+
+        successor = await arbiter.enqueue(source="successor")
+        arbiter.notify_response_terminal(
+            {"type": "response.done", "response": {"id": "resp-owner"}}
+        )
+        for _ in range(5):
+            await asyncio.sleep(0)
+
+        assert successor.sent.done() is False
+        assert arbiter._idless_server_response_at is not None
+
+        arbiter.notify_response_terminal(
+            {"type": "response.done", "response": {"status": "completed"}}
+        )
+        await asyncio.wait_for(successor.sent, 0.2)
+    finally:
+        await arbiter.shutdown()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_idless_orphan_terminal_does_not_complete_id_bearing_owner():
+    async def send(_event):
+        return None
+
+    arbiter = RealtimeResponseArbiter(send)
+    try:
+        owner = await arbiter.enqueue(source="owner")
+        await asyncio.wait_for(owner.sent, 0.2)
+        arbiter.notify_response_created(
+            {"type": "response.created", "response": {"id": "resp-owner"}}
+        )
+        arbiter.notify_response_created({"type": "response.created"})
+
+        successor = await arbiter.enqueue(source="successor")
+        assert not arbiter.notify_response_terminal(
+            {"type": "response.done", "response": {"status": "completed"}}
+        )
+        for _ in range(5):
+            await asyncio.sleep(0)
+
+        assert arbiter._response_owner is not None
+        assert arbiter._response_owner.ticket is owner
+        assert owner.done.done() is False
+        assert successor.sent.done() is False
+
+        arbiter.notify_response_terminal(
+            {"type": "response.done", "response": {"id": "resp-owner"}}
+        )
+        await asyncio.wait_for(owner.done, 0.2)
+        await asyncio.wait_for(successor.sent, 0.2)
+    finally:
+        await arbiter.shutdown()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_retired_created_overlap_with_server_vad_fails_closed():
+    async def send(_event):
+        return None
+
+    arbiter = RealtimeResponseArbiter(send)
+    try:
+        previous = await arbiter.enqueue(source="previous")
+        await asyncio.wait_for(previous.sent, 0.2)
+        arbiter.notify_response_terminal(
+            {"type": "response.done", "response": {"status": "completed"}}
+        )
+        with pytest.raises(RuntimeError, match="before response.created"):
+            await asyncio.wait_for(previous.done, 0.2)
+
+        arbiter.notify_server_vad_response_pending(arm_timeout=False)
+
+        with pytest.raises(RuntimeError, match="ambiguous response.created"):
+            arbiter.notify_response_created(
+                {"type": "response.created", "response": {"id": "resp-unknown"}}
+            )
+        assert arbiter._retired_created_deadline is not None
+        assert arbiter._server_vad_response_pending
+    finally:
+        await arbiter.shutdown()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_expired_retired_created_gate_is_not_rearmed_at_zero_delay():
+    async def send(_event):
+        return None
+
+    arbiter = RealtimeResponseArbiter(send)
+    loop = asyncio.get_running_loop()
+    try:
+        arbiter._server_response_ids["resp-server"] = loop.time()
+        arbiter._retired_created_deadline = loop.time() - 1
+
+        arbiter._release_lane_if_clear()
+
+        assert arbiter._retired_created_deadline is None
+        assert arbiter._stale_release_handle is not None
+        assert arbiter._stale_release_handle.when() > loop.time()
+    finally:
+        await arbiter.shutdown()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_retired_created_gate_is_not_treated_as_cancellable_response():
+    sent: list[str] = []
+
+    async def send(event):
+        sent.append(event["type"])
+
+    arbiter = RealtimeResponseArbiter(send)
+    try:
+        previous = await arbiter.enqueue(source="previous")
+        await asyncio.wait_for(previous.sent, 0.2)
+        arbiter.notify_response_terminal(
+            {"type": "response.done", "response": {"status": "completed"}}
+        )
+        with pytest.raises(RuntimeError, match="before response.created"):
+            await asyncio.wait_for(previous.done, 0.2)
+        for _ in range(5):
+            await asyncio.sleep(0)
+
+        assert arbiter._retired_created_window_live()
+        await arbiter.cancel_current(timeout=0.01)
+        assert "response.cancel" not in sent
+    finally:
+        await arbiter.shutdown()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_late_created_is_one_shot_and_idless_successor_completes():
+    async def send(_event):
+        return None
+
+    arbiter = RealtimeResponseArbiter(send)
+    try:
+        previous = await arbiter.enqueue(source="previous")
+        await asyncio.wait_for(previous.sent, 0.2)
+        arbiter.notify_response_terminal(
+            {"type": "response.done", "response": {"status": "completed"}}
+        )
+        with pytest.raises(RuntimeError, match="before response.created"):
+            await asyncio.wait_for(previous.done, 0.2)
+
+        successor = await arbiter.enqueue(source="successor")
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert successor.sent.done() is False
+
+        assert not arbiter.notify_response_created({"type": "response.created"})
+        await asyncio.wait_for(successor.sent, 0.2)
+
+        assert arbiter.notify_response_created({"type": "response.created"})
+        await asyncio.wait_for(successor.started, 0.2)
+        arbiter.notify_response_terminal(
+            {"type": "response.done", "response": {"status": "completed"}}
+        )
+        await asyncio.wait_for(successor.done, 0.2)
+    finally:
+        await arbiter.shutdown()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_retired_created_gate_expires_when_announcement_never_arrives(
+    monkeypatch,
+):
+    from main_logic.omni_realtime_client import _response_arbiter as arbiter_module
+
+    monkeypatch.setattr(
+        arbiter_module,
+        "_SERVER_VAD_RESPONSE_STARTED_TIMEOUT",
+        0.01,
+    )
+
+    async def send(_event):
+        return None
+
+    arbiter = RealtimeResponseArbiter(send)
+    try:
+        previous = await arbiter.enqueue(source="previous")
+        await asyncio.wait_for(previous.sent, 0.2)
+        arbiter.notify_response_terminal(
+            {"type": "response.done", "response": {"status": "completed"}}
+        )
+        with pytest.raises(RuntimeError, match="before response.created"):
+            await asyncio.wait_for(previous.done, 0.2)
+
+        successor = await arbiter.enqueue(source="successor")
+        await asyncio.wait_for(successor.sent, 0.2)
+        assert arbiter.notify_response_created({"type": "response.created"})
+    finally:
+        await arbiter.shutdown()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_owner_release_retires_its_inflight_cancel_send():
+    sent: list[str] = []
+    cancel_entered = asyncio.Event()
+    cancel_gate = asyncio.Event()
+
+    async def send(event):
+        if event["type"] == "response.cancel":
+            cancel_entered.set()
+            await cancel_gate.wait()
+        sent.append(event["type"])
+
+    arbiter = RealtimeResponseArbiter(send)
+    try:
+        ticket = await arbiter.enqueue(
+            source="owner",
+            events_before_response=(
+                {
+                    "type": "conversation.item.create",
+                    "event_id": "item-event",
+                    "item": {"id": "item-target", "role": "user"},
+                },
+            ),
+            response_event={
+                "type": "response.create",
+                "event_id": "response-event",
+            },
+            ack_expected=True,
+            expected_item_id="item-target",
+            expected_item_role="user",
+            item_ack_timeout=0.01,
+        )
+        await asyncio.wait_for(ticket.sent, 0.2)
+
+        arbiter.notify_error("item-event", "item rejected late")
+        await asyncio.wait_for(cancel_entered.wait(), 0.2)
+        arbiter.notify_response_terminal(
+            {
+                "type": "response.done",
+                "response": {"id": "resp-owner", "status": "completed"},
+            }
+        )
+        for _ in range(20):
+            if not arbiter._cancel_send_tasks:
+                break
+            await asyncio.sleep(0)
+        assert not arbiter._cancel_send_tasks
+
+        cancel_gate.set()
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert "response.cancel" not in sent
+    finally:
+        cancel_gate.set()
+        await arbiter.shutdown()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_transport_ignores_retired_created_before_exposing_successor():
+    client = OmniRealtimeClient(
+        "wss://example.invalid/realtime",
+        "test-key",
+        model="gpt-test",
+        api_type="gpt",
+    )
+    client.ws = AsyncMock()
+    client.ws.__aiter__.return_value = [
+        json.dumps({"type": "response.created"}),
+        json.dumps(
+            {"type": "response.created", "response": {"id": "resp-successor"}}
+        ),
+    ]
+    announces_before_created: list[bool] = []
+
+    def expose_created(_event):
+        announces_before_created.append(client._announces_responses)
+        return len(announces_before_created) == 2
+
+    client._response_arbiter.notify_response_created = Mock(side_effect=expose_created)
+    client._close_failed_transport = AsyncMock()
+
+    try:
+        await client.handle_messages()
+
+        assert client._response_created_total == 2
+        assert announces_before_created == [False, False]
+        assert client._announces_responses is True
+        assert client._current_response_id == "resp-successor"
+        assert client._is_responding is True
+    finally:
+        await client.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_transport_records_but_does_not_finalize_idless_orphan_terminal():
+    client = OmniRealtimeClient(
+        "wss://example.invalid/realtime",
+        "test-key",
+        model="gpt-test",
+        api_type="gpt",
+    )
+    client.ws = AsyncMock()
+    client.ws.__aiter__.return_value = [
+        json.dumps(
+            {"type": "response.done", "response": {"status": "completed"}}
+        )
+    ]
+    client._response_arbiter.notify_response_terminal = Mock(return_value=False)
+    client._notify_turn_finished = AsyncMock()
+    client._current_response_id = "resp-owner"
+    client._is_responding = True
+
+    try:
+        await client.handle_messages()
+
+        assert client._response_done_total == 1
+        assert client._current_response_id == "resp-owner"
+        assert client._is_responding is True
+        client._notify_turn_finished.assert_not_awaited()
+    finally:
+        await client.close()

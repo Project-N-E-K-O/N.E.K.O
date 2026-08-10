@@ -434,7 +434,7 @@
 
         if (playIdle) {
           try {
-            await manager.playVRMAAnimation('/static/vrm/animation/wait03.vrma', {
+            await manager.playVRMAAnimation('/static/vrm/animation/wait03.vrma.gz', {
               loop: true, immediate: true, isIdle: true,
             });
           } catch (animErr) {

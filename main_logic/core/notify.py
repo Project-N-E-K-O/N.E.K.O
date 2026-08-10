@@ -203,7 +203,9 @@ class NotifyMixin:
         try:
             from memory.anti_repeat import get_anti_repeat_corpus
             from config.prompts.prompts_directives import render_recent_topics_block
-            topics = get_anti_repeat_corpus().top_recent_topics(_directives_key)
+            anti_repeat_corpus = get_anti_repeat_corpus()
+            await anti_repeat_corpus.apreload(_directives_key)
+            topics = anti_repeat_corpus.top_recent_topics(_directives_key)
             prompt += render_recent_topics_block(topics, _lang)
         except Exception as _exc:  # pragma: no cover - defensive
             logger.debug(
@@ -332,6 +334,7 @@ class NotifyMixin:
         normalized_lang = normalize_language_code(language, format='full')
 
         self.user_language = normalized_lang
+        self._user_language_explicit = True
         self._conversation_turn_language = normalized_lang
         self._set_conversation_turn_language(normalized_lang)
         if normalized_lang != language:
@@ -374,18 +377,26 @@ class NotifyMixin:
             return None
         return socket
 
-    async def _send_to_voice_owner(self, payload: dict) -> None:
-        """Best-effort push to the voice-lease holder; never raises."""
+    async def _send_to_voice_owner(self, payload: dict):
+        """Best-effort push to the voice-lease holder; never raises.
+
+        Returns the socket it actually reached, or None. Callers that need to
+        avoid a second copy must dedupe against THIS, not against a fresh
+        ``_voice_owner_socket()`` read: the send below is an await, and a lease
+        takeover inside it makes the second read a DIFFERENT socket, leaving the
+        one that just got the payload absent from the "already sent" set.
+        """
 
         socket = self._voice_owner_socket()
         if socket is None:
-            return
+            return None
         try:
             await socket.send_text(json.dumps(payload))
         except WebSocketDisconnect:
             pass
         except Exception as e:
             logger.error(f"💥 WS Send To Voice Owner Error: {e}")
+        return socket
 
     async def send_status(self, message: str):
         """Send a status message to the frontend. message should be a JSON string {"code": "XXX", "details": {...}}, translated by the frontend via i18next."""
@@ -486,7 +497,14 @@ class NotifyMixin:
         except Exception as e:
             logger.error(f"💥 WS Send Session Preparing Error: {e}")
     
-    async def send_session_started(self, input_mode: str): # 通知前端session已启动
+    async def send_session_started(
+        self,
+        input_mode: str,
+        *,
+        request_id: str | None = None,
+        also_notify=None,
+        microphone_route_override: str | None = None,
+    ): # 通知前端session已启动
         # Carry the SETTLED microphone route on the ack itself (Codex P2).
         #
         # The route verdict otherwise travels only as an ASR_INDEPENDENT_*
@@ -503,23 +521,78 @@ class NotifyMixin:
         #
         # Qualifying the ack fixes every emitter at once: the ordinary one in
         # _start_session_activate, the in-flight dedupe re-ack in
-        # _start_session_handle_inflight (which re-acks WITHOUT re-running the
-        # route decision), and the stale-start case above that no status-based
-        # fix can reach. Suppressing the ack instead would be worse -- the
-        # dedupe re-ack exists precisely so the requester is not stranded on its
-        # 15s timeout, whose end_session tears down the session that did start.
+        # _start_session_handle_inflight (which re-decides a blocked route
+        # first, via _rerun_route_for_deduped_start, precisely so the route it
+        # reports here is the requester's own), and the stale-start case above
+        # that no status-based fix can reach. Suppressing the ack instead would
+        # be worse -- the dedupe re-ack exists precisely so the requester is not
+        # stranded on its 15s timeout, whose end_session tears down the session
+        # that did start.
+        #
+        # ``request_id`` names WHICH start this acks. Without it an ack is
+        # anonymous, and a window with its own start pending settles on the
+        # first same-mode ack that reaches it -- including one fanned out for
+        # somebody else's start. That is exactly what happens when a second
+        # window claims the microphone mid-start: the claim moves the voice
+        # socket, so the in-flight start's ack lands on the claimant, whose
+        # frontend clears its timeout, resolves, reads the blocked route it
+        # carries and aborts its microphone flow outright. The claimant's own
+        # ack -- the one carrying the re-decided route -- arrives to a flow that
+        # has already given up. Tagging the ack lets the frontend ignore acks
+        # that are not answering its request.
         payload = {"type": "session_started", "input_mode": input_mode}
+        if request_id:
+            payload["request_id"] = request_id
+        #
+        # ``microphone_route_override`` exists for one caller: the dedupe re-ack
+        # whose requester has since LOST the voice lease. The live route belongs
+        # to the new holder by then and may well be healthy, but reporting it
+        # would open a microphone on a window whose PCM the server now discards
+        # as superseded. It overrides rather than suppresses so the requester
+        # still gets an ack and settles its start instead of hanging.
+        #
+        # It applies to ``also_notify`` ONLY, never to the fan-out (Codex P2).
+        # "This route is unusable" is true of the superseded requester, not of
+        # the session: the new lease holder is on the very same fan-out, and a
+        # window with no start pending latches any blocked verdict it sees --
+        # so broadcasting the override would fail-close the microphone of the
+        # window that legitimately owns it.
         route_mode = str(getattr(self, "_asr_route_mode", "") or "")
         if route_mode:
             # Omitted when unknown rather than defaulted: a manager without the
             # ASR mixin should keep today's behaviour, not have every audio
             # start refuse the microphone.
             payload["microphone_route"] = route_mode
+        # The sockets this call actually delivered to, recorded as it goes. Every
+        # membership below has to be answered from here rather than by re-reading
+        # self.websocket / _voice_owner_socket(): both can point somewhere else
+        # by the time the addressed send runs, and a socket that already got the
+        # payload would then look unserved (CodeRabbit).
+        delivered_to = []
+
+        def _addressed(base: dict) -> dict:
+            # The requester's copy, carrying the override when there is one.
+            copy = dict(base)
+            if microphone_route_override:
+                copy["microphone_route"] = microphone_route_override
+            return copy
+
+        display_socket = self.websocket
         try:
-            if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
-                data = json.dumps(payload)
+            if display_socket and hasattr(display_socket, 'client_state') and display_socket.client_state == display_socket.client_state.CONNECTED:
+                # The requester can BE the display socket (it is simply the
+                # newest connection), and then this is its only copy -- so the
+                # override has to travel on this plane too when it is the one
+                # carrying it. Every other window on this plane gets the real
+                # route.
+                data = json.dumps(
+                    _addressed(payload)
+                    if also_notify is not None and display_socket is also_notify
+                    else payload
+                )
                 try:
-                    await self.websocket.send_text(data)
+                    await display_socket.send_text(data)
+                    delivered_to.append(display_socket)
                 except WebSocketDisconnect:
                     # Isolated for the same reason as
                     # send_session_ended_by_server: the CONNECTED check and the
@@ -561,7 +634,7 @@ class NotifyMixin:
                 #
                 # Game owner exempt, matching send_session_ended_by_server and
                 # _fail_closed_voice_route. The galgame gate owns the mic
-                # through its own consumer binding and tears down via
+                # through the built-in game consumer route and tears down via
                 # GAME_ROUTE_ENDED, and websocket_router acknowledges a text
                 # entry during an active game route with a bare
                 # send_session_started("text") -- no ordinary text session, no
@@ -571,13 +644,51 @@ class NotifyMixin:
                 # isRecording true (which a game STT gate requires), releasing
                 # the game lease and closing hardware the text entry never
                 # meant to touch.
-                await self._send_to_voice_owner(dict(payload))
+                owner_socket = await self._send_to_voice_owner(dict(payload))
+                if owner_socket is not None:
+                    delivered_to.append(owner_socket)
+            if also_notify is not None:
+                # Addressed delivery for a requester that neither plane is
+                # guaranteed to reach (Codex P2). The dedupe re-ack is the case:
+                # its own re-decision can fail closed, and _fail_closed_voice_route
+                # REVOKES the lease -- clearing _voice_lease_connection_id and the
+                # voice socket -- before this ack goes out. With a newer window as
+                # self.websocket, the requester is then on neither plane, sits on
+                # its promise until the 15s timeout, and that timeout's end_session
+                # tears down the session that just started.
+                await self._send_to_socket_if_new(
+                    also_notify, _addressed(payload), delivered_to
+                )
         except WebSocketDisconnect:
             # Client disconnected mid-send; this push is best-effort.
             pass
         except Exception as e:
             logger.error(f"💥 WS Send Session Started Error: {e}")
-    
+
+    async def _send_to_socket_if_new(self, socket, payload: dict, already_sent) -> None:
+        """Best-effort push to ``socket`` unless it already got this payload.
+
+        Identity comparison, not equality: the planes above hold the very same
+        socket objects, and a second copy of an ack is not harmless -- the
+        frontend's start resolver is one-shot but the handler around it runs
+        again in full (microphone teardown, composer visibility).
+        """
+        if socket is None or any(socket is sent for sent in already_sent):
+            return
+        state = getattr(socket, "client_state", None)
+        if state is None or state != socket.client_state.CONNECTED:
+            return
+        try:
+            await socket.send_text(json.dumps(payload))
+        except WebSocketDisconnect:
+            # The CONNECTED check above and this send are separated by an await,
+            # so the requester can disconnect in between. A window that is gone
+            # has no start left to settle -- swallow it like the sibling planes
+            # do, rather than fail an ack the other windows still need.
+            pass
+        except Exception as e:
+            logger.error(f"💥 WS Send Addressed Ack Error: {e}")
+
     async def send_session_failed(self, input_mode: str): # 通知前端session启动失败
         """Notify the frontend that session start failed, so it hides the preparing banner and resets state"""
         payload = {"type": "session_failed", "input_mode": input_mode}
@@ -652,7 +763,7 @@ class NotifyMixin:
             # the window holding the hardware is not necessarily the current
             # socket. Outside the guard on purpose: a dead current socket must
             # not swallow the lease holder's copy. Game owner exempt -- the
-            # galgame gate owns the mic through its own consumer binding and
+            # galgame gate owns the mic through the built-in game consumer and
             # tears down via GAME_ROUTE_ENDED.
             if getattr(self, "_voice_lease_owner", "none") != "game":
                 await self._send_to_voice_owner(payload)

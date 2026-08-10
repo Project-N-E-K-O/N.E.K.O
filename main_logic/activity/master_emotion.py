@@ -231,8 +231,13 @@ class MasterEmotionTracker:
 
     async def analyze(
         self, text: Optional[str], *, now: Optional[float] = None,
+        ui_language: Optional[str] = None,
     ) -> Optional[MasterEmotionReading]:
         """Analyze one user utterance → update the latest VA reading.
+
+        ``ui_language`` is the session's own language, used only to settle
+        Traditional vs Simplified Chinese, which no detector can read off the
+        text. The caller owns that value; this tracker has no session handle.
 
         Throttled by ``MASTER_EMOTION_MIN_INTERVAL_SEC`` and gated by
         ``MASTER_EMOTION_ENABLED``. Best-effort: any failure (tier disabled,
@@ -254,7 +259,7 @@ class MasterEmotionTracker:
         self._seq += 1
         my_seq = self._seq
 
-        raw = await self._invoke(cleaned)
+        raw = await self._invoke(cleaned, ui_language=ui_language)
         if not raw:
             return None
         reading = self._parse(raw, now=now, source=cleaned)
@@ -307,7 +312,9 @@ class MasterEmotionTracker:
         interval = float(getattr(config, "MASTER_EMOTION_MIN_INTERVAL_SEC", 6.0))
         return (now - self._last_attempt_at) < interval
 
-    async def _invoke(self, text: str) -> Optional[str]:
+    async def _invoke(
+        self, text: str, *, ui_language: Optional[str] = None
+    ) -> Optional[str]:
         # Reuse the package-internal emotion-tier call (same small model the
         # activity enrichment uses). Telemetry currently attributes these to
         # the shared ``activity_enrichment`` call type.
@@ -318,7 +325,7 @@ class MasterEmotionTracker:
         # stops a pasted wall of text from going to the emotion tier whole.
         max_chars = max(1, int(getattr(config, "MASTER_EMOTION_MAX_INPUT_CHARS", 500)))
         bounded = text[:max_chars]
-        lang = self._resolve_lang(bounded)
+        lang = self._resolve_lang(bounded, ui_language)
         # The VA prompt already says "the speaker in the conversation below",
         # so the user's utterance follows directly — no extra delimiter needed.
         prompt = get_master_emotion_va_prompt(lang) + "\n\n" + bounded
@@ -326,11 +333,14 @@ class MasterEmotionTracker:
         return await _invoke_emotion_tier(prompt, timeout=timeout, label="master_emotion")
 
     @staticmethod
-    def _resolve_lang(text: str) -> str:
-        # Prompt language follows the language the user spoke in.
+    def _resolve_lang(text: str, ui_language: Optional[str] = None) -> str:
+        # Prompt language follows the language the user spoke in — except for
+        # Traditional vs Simplified Chinese, which no detector can tell apart from
+        # the text alone, so detect_prompt_language settles that one with the UI
+        # language.
         try:
-            from utils.language_utils import detect_language, normalize_language_code
-            return normalize_language_code(detect_language(text), format="short")
+            from utils.language_utils import detect_prompt_language
+            return detect_prompt_language(text, ui_language=ui_language)
         except Exception:
             return "zh"
 

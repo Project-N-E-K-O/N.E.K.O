@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import hmac
 import os
 import socket
 import subprocess
@@ -30,6 +31,7 @@ class BridgeProcessSupervisor:
         *,
         executable_path: Path,
         args_factory: Callable[[int], list[str]],
+        checksum_path: Path | None = None,
         process_factory: Any = None,
         port_factory: Callable[[], int] | None = None,
         port_waiter: Callable[[int, float], bool] | None = None,
@@ -37,6 +39,7 @@ class BridgeProcessSupervisor:
     ) -> None:
         self._executable_path = executable_path
         self._args_factory = args_factory
+        self._checksum_path = checksum_path
         self._process_factory = process_factory or subprocess.Popen
         self._port_factory = port_factory or _find_free_port
         self._port_waiter = port_waiter or _wait_for_port
@@ -54,6 +57,14 @@ class BridgeProcessSupervisor:
             return BridgeProcessState(ok=True, base_url=_base_url(self._port), port=self._port)
         if not self._executable_path.is_file():
             return BridgeProcessState(ok=False, last_error="bundled bridge executable is missing")
+        if self._checksum_path is not None:
+            checksum_error = await asyncio.to_thread(
+                _bridge_checksum_error,
+                self._executable_path,
+                self._checksum_path,
+            )
+            if checksum_error:
+                return BridgeProcessState(ok=False, last_error=checksum_error)
         if self._stale_process_cleaner is not None:
             with _suppress_process_errors():
                 await asyncio.to_thread(self._stale_process_cleaner, self._executable_path)
@@ -105,6 +116,40 @@ class BridgeProcessSupervisor:
 
     def _is_running(self) -> bool:
         return self._process is not None and self._port > 0 and _poll(self._process) is None
+
+
+def _bridge_checksum_error(executable_path: Path, checksum_path: Path) -> str:
+    try:
+        manifest = checksum_path.read_text(encoding="ascii")
+    except OSError:
+        return "bundled bridge checksum is missing"
+    except UnicodeError:
+        return "bundled bridge checksum is invalid"
+
+    expected = ""
+    for line in manifest.splitlines():
+        parts = line.split()
+        if len(parts) != 2 or parts[1].lstrip("*") != executable_path.name:
+            continue
+        candidate = parts[0].lower()
+        if len(candidate) != 64 or any(char not in "0123456789abcdef" for char in candidate):
+            return "bundled bridge checksum is invalid"
+        if expected and expected != candidate:
+            return "bundled bridge checksum is invalid"
+        expected = candidate
+    if not expected:
+        return "bundled bridge checksum is invalid"
+
+    try:
+        digest = hashlib.sha256()
+        with executable_path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError:
+        return "bundled bridge checksum could not be verified"
+    if not hmac.compare_digest(digest.hexdigest(), expected):
+        return "bundled bridge checksum mismatch"
+    return ""
 
 
 class _suppress_process_errors:

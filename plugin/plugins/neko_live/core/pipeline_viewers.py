@@ -25,9 +25,13 @@ async def resolve_viewer_context(
     steps: list[PipelineStep],
     *,
     is_transient_event: bool,
+    fetch_avatar_image: bool = True,
 ) -> PipelineViewerContext:
     provider = identity_provider_for(ctx)
-    identity = await provider.resolve_identity(event)
+    identity = await provider.resolve_identity(
+        event,
+        fetch_avatar_image=fetch_avatar_image,
+    )
     identity_step_id = provider.identity_step_id()
     record_timeline(
         ctx,

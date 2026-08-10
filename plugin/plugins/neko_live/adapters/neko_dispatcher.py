@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from ..core.contracts import InteractionRequest
+from ..core.contracts_public import public_text
 from ..core.live_output_contract_prompt import render_contract_instruction
 from ..core.live_output_quality import UNVERIFIED_SUPPORT_CLAIM_FALLBACK_REPLIES, choose_fallback_reply
 from ..core.recent_output_families import spent_output_text
@@ -18,7 +19,7 @@ from .output_contract_bridge import (
     response_module_hint,
 )
 
-_AVATAR_INLINE_BUDGET_BYTES = 120 * 1024
+_AVATAR_INLINE_BUDGET_BYTES = 64 * 1024
 _NEKO_LIVE_AUDIENCE_SOURCES = {"live_danmaku", "manual_live_simulation"}
 _NEKO_LIVE_HOSTING_SOURCES = {"warmup_hosting", "idle_hosting", "active_engagement"}
 _NEKO_LIVE_LIVE_SOURCES = _NEKO_LIVE_AUDIENCE_SOURCES | _NEKO_LIVE_HOSTING_SOURCES | {
@@ -45,11 +46,11 @@ def _normalize_avatar_for_neko_vision(data: bytes, mime: str) -> tuple[bytes, st
             elif image.mode != "RGB":
                 image = image.convert("RGB")
             best: bytes | None = None
-            for edge in (512, 384, 256, 192):
+            for edge in (384, 256, 192):
                 frame = image.copy()
                 if max(frame.size) > edge:
                     frame.thumbnail((edge, edge))
-                for quality in (82, 72, 62, 52):
+                for quality in (80, 68, 56):
                     buffer = io.BytesIO()
                     frame.save(buffer, format="JPEG", quality=quality, optimize=True)
                     candidate = buffer.getvalue()
@@ -72,9 +73,19 @@ def _clean_target(value: Any) -> str:
     return str(value).strip()
 
 
-def _resolve_target_lanlan(plugin: Any, request: InteractionRequest) -> str:
+def _resolve_target_lanlan(
+    plugin: Any,
+    request: InteractionRequest,
+    *,
+    live_target_lanlan: str = "",
+) -> str:
     event = request.event
     raw = event.raw if isinstance(event.raw, dict) else {}
+
+    if str(getattr(event, "source", "") or "").strip() in _NEKO_LIVE_LIVE_SOURCES:
+        target = _clean_target(live_target_lanlan)
+        if target:
+            return target
 
     for candidate in (
         event.target_lanlan,
@@ -333,8 +344,19 @@ def _force_exact_live_reply_prompt(reply: str, request: InteractionRequest) -> s
 
 
 class NekoDispatcher:
-    def __init__(self, plugin: Any) -> None:
+    def __init__(self, plugin: Any, *, runtime: Any = None) -> None:
         self.plugin = plugin
+        self.runtime = runtime
+
+    def current_target_lanlan(self) -> str:
+        """Resolve the character selected by the action that starts a session."""
+
+        return resolve_plugin_target_lanlan(self.plugin)
+
+    def live_target_lanlan(self) -> str:
+        runtime = self.runtime or getattr(self.plugin, "runtime", None)
+        target = _clean_target(getattr(runtime, "live_target_lanlan", ""))
+        return target or self.current_target_lanlan()
 
     def output_channel_status(self) -> dict[str, Any]:
         checker = getattr(self.plugin, "output_channel_status", None)
@@ -345,17 +367,18 @@ class NekoDispatcher:
                 return {
                     "ready": False,
                     "reason": "output_channel_unavailable",
-                    "detail": str(exc),
+                    "detail": f"output channel check failed: {type(exc).__name__}",
                 }
             if isinstance(data, dict):
                 ready = bool(data.get("ready", data.get("ok", False)))
                 return {
                     "ready": ready,
-                    "reason": str(
+                    "reason": public_text(
                         data.get("reason")
-                        or ("" if ready else "output_channel_unavailable")
+                        or ("" if ready else "output_channel_unavailable"),
+                        max_len=80,
                     ),
-                    "detail": str(data.get("detail") or ""),
+                    "detail": public_text(data.get("detail"), max_len=160),
                 }
 
         explicit_ready = getattr(self.plugin, "output_channel_ready", None)
@@ -376,17 +399,40 @@ class NekoDispatcher:
 
         return {"ready": True, "reason": "", "detail": ""}
 
-    async def _push_context_text(self, text: str, *, description: str, result_name: str) -> str:
-        target_lanlan = resolve_plugin_target_lanlan(self.plugin)
-        metadata = {"description": description}
+    async def _push_context_text(
+        self,
+        text: str,
+        *,
+        description: str,
+        result_name: str,
+        context_type: str,
+        expired: bool = False,
+    ) -> str:
+        target_lanlan = (
+            self.live_target_lanlan()
+            if context_type == "live_scene"
+            else resolve_plugin_target_lanlan(self.plugin)
+        )
+        target_key = "".join(
+            char for char in str(target_lanlan or "default")[:48]
+            if char.isalnum() or char in "_.:-"
+        ) or "default"
+        metadata = {
+            "description": description,
+            "context_type": context_type,
+            "delivery_intent": "passive_context",
+            "context_expired": bool(expired),
+        }
         if target_lanlan:
             metadata["target_lanlan"] = target_lanlan
         result = self.plugin.push_message(
             source="neko_live",
+            visibility=[],
             ai_behavior="read",
             parts=[{"type": "text", "text": text}],
             metadata=metadata,
             priority=0,
+            coalesce_key=f"neko_live:{context_type}:{target_key}",
             target_lanlan=target_lanlan or None,
         )
         if asyncio.iscoroutine(result):
@@ -398,6 +444,7 @@ class NekoDispatcher:
             text,
             description="NEKO Live behavior instructions",
             result_name="instructions_queued",
+            context_type="live_scene",
         )
 
     async def push_context_restore(self, text: str) -> str:
@@ -405,6 +452,8 @@ class NekoDispatcher:
             text,
             description="NEKO Live behavior restore",
             result_name="instructions_restored",
+            context_type="live_scene",
+            expired=True,
         )
 
     async def push_developer_instructions(self, text: str) -> str:
@@ -412,6 +461,7 @@ class NekoDispatcher:
             text,
             description="NEKO Live developer mode instructions",
             result_name="developer_instructions_queued",
+            context_type="developer_mode",
         )
 
     async def push_developer_restore(self, text: str) -> str:
@@ -419,6 +469,63 @@ class NekoDispatcher:
             text,
             description="NEKO Live developer mode restore",
             result_name="developer_instructions_restored",
+            context_type="developer_mode",
+            expired=True,
+        )
+
+    async def push_ambient_room_context(
+        self,
+        text: str,
+        *,
+        session_key: str,
+        expired: bool = False,
+        target_lanlan: str | None = None,
+    ) -> str:
+        """Submit one replaceable, invisible passive live-room snapshot.
+
+        ``push_message`` is a fire-and-forget SDK boundary and does not return a
+        host delivery acknowledgement.  Keep one stable key per target so a
+        session tombstone and the following session snapshot replace each
+        other instead of accumulating forever in the host callback queue.
+        ``LiveEventsModule`` serializes the old-session clear before publishing
+        the next snapshot.
+        """
+
+        target_lanlan = (
+            self.live_target_lanlan()
+            if target_lanlan is None
+            else _clean_target(target_lanlan)
+        )
+        del session_key
+        target_key = "".join(
+            char for char in str(target_lanlan or "default")[:48]
+            if char.isalnum() or char in "_.:-"
+        ) or "default"
+        coalesce_key = f"neko_live:ambient_room:{target_key}"
+        metadata: dict[str, Any] = {
+            "description": "NEKO Live passive room context",
+            "context_type": "neko_live_ambient_room",
+            "delivery_intent": "passive_context",
+            "context_expired": bool(expired),
+            "ambient_expired": bool(expired),
+        }
+        if target_lanlan:
+            metadata["target_lanlan"] = target_lanlan
+        result = self.plugin.push_message(
+            source="neko_live",
+            visibility=[],
+            ai_behavior="read",
+            parts=[{"type": "text", "text": text}],
+            metadata=metadata,
+            priority=2,
+            coalesce_key=coalesce_key,
+            target_lanlan=target_lanlan or None,
+        )
+        if asyncio.iscoroutine(result):
+            await result
+        return (
+            f"ambient_context_submitted(target={target_lanlan or 'default'}, "
+            f"expired={str(bool(expired)).lower()}, confirmed=false)"
         )
 
     async def push_developer_announcement(self, text: str) -> str:
@@ -451,7 +558,10 @@ class NekoDispatcher:
         if is_demo_event:
             text = "（这是 NEKO Live 首次出场锐评的内置演示，也请像真实弹幕一样直接回应。）\n" + text
         parts: list[dict[str, Any]] = [{"type": "text", "text": text}]
-        if request.allow_avatar_image and identity.avatar_bytes:
+        if (
+            request.allow_avatar_image
+            and identity.avatar_bytes
+        ):
             avatar_bytes, avatar_mime = _normalize_avatar_for_neko_vision(
                 identity.avatar_bytes,
                 identity.avatar_mime or "image/png",
@@ -467,12 +577,17 @@ class NekoDispatcher:
             else:
                 parts[0]["text"] += "\n头像图片过大，本次先只根据昵称和弹幕锐评。"
         image_part_bytes = len(parts[1]["data"]) if len(parts) > 1 else 0
-        target_lanlan = _resolve_target_lanlan(self.plugin, request)
+        target_lanlan = _resolve_target_lanlan(
+            self.plugin,
+            request,
+            live_target_lanlan=self.live_target_lanlan(),
+        )
         if request.dry_run:
             max_reply_chars = _max_live_reply_chars(request)
             # Safe test mode: the whole pipeline has run, but nothing is delivered to NEKO.
             return (
-                f"dry_run(target={target_lanlan or 'none'}, ai_behavior=respond, "
+                f"dry_run(target={target_lanlan or 'none'}, "
+            "ai_behavior=respond, "
                 f"visibility=none, image_part_bytes={image_part_bytes}, text_len={len(text)}, "
                 f"reply_contract=short_tts_line, max_reply_chars={max_reply_chars}, "
                 f"response_module_hint={response_module_hint(request)})"
@@ -506,13 +621,15 @@ class NekoDispatcher:
             str(parts[0].get("text") or ""),
             request,
         )
+        ai_behavior = "respond"
+        coalesce_key = _coalesce_key_for_request(request, demo=is_demo_event)
         result = self.plugin.push_message(
             source="neko_live",
             visibility=[],
-            ai_behavior="respond",
+            ai_behavior=ai_behavior,
             parts=parts,
             priority=_priority_for_request(request, demo=is_demo_event),
-            coalesce_key=_coalesce_key_for_request(request, demo=is_demo_event),
+            coalesce_key=coalesce_key,
             metadata=metadata,
             target_lanlan=target_lanlan or None,
         )

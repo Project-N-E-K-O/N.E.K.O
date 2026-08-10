@@ -94,6 +94,23 @@ async def dispatch_routed_request(
         output = await ctx.dispatcher.push_roast(request)
     except Exception as exc:
         dispatcher_latency_ms = int(round((time.perf_counter() - dispatcher_start) * 1000))
+        if not is_current_live_session_event(ctx, event):
+            record_timeline(
+                ctx,
+                event,
+                stage="dispatcher.push",
+                status="skipped",
+                reason="live_session.stale",
+                route=response_module_id,
+            )
+            return skip_stale_live_event(
+                ctx,
+                event,
+                identity,
+                profile,
+                steps,
+                request=request,
+            )
         record_timeline(
             ctx,
             event,
@@ -113,6 +130,27 @@ async def dispatch_routed_request(
             dispatcher_latency_ms=dispatcher_latency_ms,
         )
     dispatcher_latency_ms = int(round((time.perf_counter() - dispatcher_start) * 1000))
+    # The host boundary is asynchronous and cannot be recalled. A disconnect
+    # or room switch during that await must nevertheless prevent the old
+    # session from claiming a first roast, mutating a viewer profile, or
+    # publishing a result into the new session.
+    if not is_current_live_session_event(ctx, event):
+        record_timeline(
+            ctx,
+            event,
+            stage="dispatcher.push",
+            status="skipped",
+            reason="live_session.stale",
+            route=response_module_id,
+        )
+        return skip_stale_live_event(
+            ctx,
+            event,
+            identity,
+            profile,
+            steps,
+            request=request,
+        )
 
     if request.dry_run:
         if should_mark_roasted:

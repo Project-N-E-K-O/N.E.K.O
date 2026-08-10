@@ -31,7 +31,7 @@ These 17 routes back N.E.K.O.'s first-party Live2D model manager and parameter e
 
 ## Configuration and emotion mappings
 
-The configuration `GET` routes return `{ "success": true, "config": {...} }`. If a readable `.model3.json` lacks `FileReferences.Motions` or `FileReferences.Expressions`, the handler adds the missing containers and attempts to write them back.
+The configuration `GET` routes return `{ "success": true, "config": {...} }`. If a readable `.model3.json` lacks `FileReferences.Motions` or `FileReferences.Expressions`, the handler adds the missing containers **to the response only** — these routes never write to disk. Persisting a repaired configuration is the `POST` routes' job.
 
 The configuration `POST` routes accept a JSON object shaped like Cubism configuration, but deliberately persist only:
 

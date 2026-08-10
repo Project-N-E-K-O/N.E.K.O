@@ -103,9 +103,22 @@ class _AudioMixin:
                 except Exception as exc:
                     logger.error(f"Error toggling audio noise reduction: {exc}")
 
-    async def _close_audio_processor(self) -> None:
-        """Quiesce executor processing before releasing RNNoise/soxr state."""
+    async def _close_audio_processor(self, generation=None) -> None:
+        """Quiesce executor processing before releasing RNNoise/soxr state.
+
+        ``generation`` names the connection whose processor this is. Waiting
+        for the lock is an await like any other, so a replacement can attach
+        during it — and because connect() only builds a processor when the
+        field is empty, the replacement adopts this very one. Releasing it
+        afterwards would leave the live connection resampling through nothing.
+        Callers outside a connection teardown pass nothing and are unaffected.
+        """
         async with self._audio_processing_lock:
+            if generation is not None and not self._still_owns_connection(generation):
+                logger.info(
+                    "Audio processor close: a replacement connection adopted it; leaving it alone"
+                )
+                return
             processor = self._audio_processor
             if processor is None:
                 return

@@ -816,11 +816,10 @@ class WarThunderClient:
         _ok, messages = self.get_hud_with_status()
         return messages
 
-    def reset_incremental_cursors(self) -> None:
-        """重置 HUD/聊天本地游标，供进入新战局后重新同步 8111 滚动缓冲。"""
-        self.reset_hud_cursors()
-        self.reset_chat_cursor()
-
+    # 注：排空积压由 wt_server._poll_events 直接编排（reset → get_*_with_status →
+    # 按结果决定 restore/保留），因为它必须知道请求成败才能决定是丢弃还是恢复边界。
+    # 曾经的 drain_hud/drain_chat/reset_incremental_cursors 便捷方法吞掉了成败信息，
+    # 已随该改造删除，不要重新引入。
     def reset_hud_cursors(self) -> None:
         """重置 HUD 事件与伤害游标。"""
         self._last_evt = 0
@@ -842,21 +841,6 @@ class WarThunderClient:
             "last_dmg": self._last_dmg,
             "last_chat": self._last_chat,
         }
-
-    def drain_hud(self) -> int:
-        """排空当前 hudmsg 积压：把 lastEvt/lastDmg 游标推进到最新但丢弃事件。
-
-        用途：8111 的 /hudmsg 是滚动缓冲，通常跨对局保留，但游戏重连或部分
-        模式下游标也可能重新起算。进入对局前先重置本地游标，首拉会把当前缓冲返回，
-        若直接喂给 KillTracker 会把别人/上一局的击杀阵亡错算进本局。
-        进入对局时调用本方法先排空积压（这些都早于本局开始，必为旧事件），
-        之后再正常增量拉取即可。返回被丢弃的事件条数（便于日志/记录）。
-        """
-        return len(self.get_hud())
-
-    def drain_chat(self) -> int:
-        """排空当前聊天积压并把 lastId 游标推进到最新。"""
-        return len(self.get_chat())
 
     def get_chat_with_status(self) -> tuple[bool, list[dict[str, Any]]]:
         """增量拉取聊天，并报告响应是否为有效列表。"""
@@ -972,16 +956,10 @@ class WarThunderClient:
         self._last_map_gen = gen
         return path
 
-    # -- 坐标换算工具 ------------------------------------------------------
 
-    @staticmethod
-    def to_meters(
-        nx: float, ny: float, map_info: MapInfo
-    ) -> tuple[float, float] | None:
-        """把 0~1 归一化坐标换算成真实米坐标，缺少 grid_size 时返回 None。"""
-        if map_info.grid_size is None:
-            return None
-        return (nx * map_info.grid_size[0], ny * map_info.grid_size[1])
+# 坐标换算不在本模块：归一化坐标 -> 米必须用 map_max-map_min 作跨度，
+# grid_size 只是网格参考区域（实测约为整图的 1/2.5），用它换算会系统性低估距离。
+# 正确实现见 wt_geo.to_meters / wt_geo._world_span。
 
 
 # ---------------------------------------------------------------------------

@@ -1,10 +1,14 @@
 import asyncio
+import time
 from queue import Queue
 from unittest.mock import AsyncMock
 
 import pytest
 
 from main_logic.core import LLMSessionManager
+from main_logic.core import lifecycle as lifecycle_module
+
+from tests.fake_clock import patch_module_clock
 
 
 def _make_inactive_manager(*, starting_count=1):
@@ -151,7 +155,14 @@ async def test_cross_mode_start_waits_then_restarts_in_requested_mode():
 
     # 重入禁用二次跨模式重启（深度封顶 1）。
     restart_mock.assert_awaited_once_with(
-        ws, False, "audio", user_initiated=True, _allow_cross_mode_restart=False
+        ws,
+        False,
+        "audio",
+        user_initiated=True,
+        _allow_cross_mode_restart=False,
+        request_id=None,
+        handshake_override=None,
+        resource_optimization_override=None,
     )
 
 
@@ -187,6 +198,319 @@ async def test_cross_mode_background_start_does_not_restart():
     await LLMSessionManager.start_session(mgr, object(), False, "text")
 
     restart_mock.assert_not_awaited()
+    assert mgr._starting_session_count == 1
+
+
+def _make_deduping_manager(*, route_mode, session_input_mode="audio"):
+    """Manager pre-positioned at the SAME-mode dedupe branch: an in-flight audio
+    start occupies the count, and it has already settled the route to
+    ``route_mode`` for the session whose mode is ``session_input_mode``."""
+    mgr = _make_starting_manager(starting_input_mode="audio")
+    mgr.input_mode = session_input_mode
+    mgr._asr_route_mode = route_mode
+    mgr._voice_lease_connection_id = "socket-b"
+    mgr.lanlan_name = "test"
+    # Lazy-init only; the route fields under test are set explicitly above.
+    mgr._ensure_asr_runtime_state = lambda: None
+    mgr._independent_asr_handshake_override = None
+    mgr._voice_input_resource_optimization_handshake_override = None
+    return mgr
+
+
+def _record_dedupe_calls(mgr):
+    """Trace the two dedupe-path effects in call order: the route re-decision
+    and the re-ack. Order is the point -- an ack sent before the re-decision
+    would carry the very verdict the re-decision exists to replace."""
+    calls = []
+
+    async def _redecide(*_a, **kwargs):
+        calls.append(("redecide", kwargs))
+
+    async def _ack(input_mode, **kwargs):
+        calls.append(("ack", input_mode, kwargs))
+
+    mgr._start_independent_asr_if_enabled = _redecide
+    mgr.send_session_started = _ack
+    return calls
+
+
+async def _run_dedupe_start(mgr, *, request_mode="audio", **kwargs):
+    """Drive a same-mode start into the dedupe wait, then let the in-flight
+    start settle."""
+    task = asyncio.create_task(
+        LLMSessionManager.start_session(
+            mgr, mgr.websocket, False, request_mode, user_initiated=True, **kwargs
+        )
+    )
+    await asyncio.sleep(0.1)
+    mgr._starting_session_count = 0
+    await task
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_same_mode_dedupe_redecides_a_blocked_route_before_reacking():
+    """#2539. The dedupe path starts nothing of its own, so it used to re-ack
+    with the in-flight start's verdict. Claiming the voice lease (which this
+    requester did, synchronously, before start_session) invalidates the
+    in-flight ASR start; that start exits ASR_START_STALE, leaves the route on
+    its blocked placeholder and emits no status at all. The ack carries the
+    placeholder, both windows latch fail-closed, and the microphone never opens
+    for the session that did start -- nothing re-decides in-session."""
+    mgr = _make_deduping_manager(route_mode="blocked")
+    calls = _record_dedupe_calls(mgr)
+
+    await _run_dedupe_start(mgr)
+
+    assert [c[0] for c in calls] == ["redecide", "ack"]
+    assert calls[0][1]["handshake_override"] is None
+    assert calls[1][1] == "audio"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_same_mode_dedupe_keeps_a_settled_route():
+    """A native/independent verdict is valid for whoever holds the microphone.
+    Re-deciding would tear down a healthy provider mid-session, so only a
+    blocked route is re-run."""
+    for settled in ("native", "independent"):
+        mgr = _make_deduping_manager(route_mode=settled)
+        calls = _record_dedupe_calls(mgr)
+
+        await _run_dedupe_start(mgr)
+
+        assert [c[0] for c in calls] == ["ack"], settled
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_same_mode_dedupe_does_not_redecide_against_a_text_session():
+    """The dedupe branch treats a missing _starting_input_mode as a match, so an
+    audio request can land here against an in-flight TEXT start. A text session
+    pins the route to blocked for its whole life; re-deciding would hand a live
+    microphone to a session with no audio path."""
+    mgr = _make_deduping_manager(route_mode="blocked", session_input_mode="text")
+    mgr._starting_input_mode = None
+    calls = _record_dedupe_calls(mgr)
+
+    await _run_dedupe_start(mgr)
+
+    assert [c[0] for c in calls] == ["ack"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_same_mode_dedupe_does_not_redecide_for_a_text_request():
+    """Dual of the case above: a TEXT request can land in the same-mode branch
+    against an in-flight AUDIO start (again via a missing _starting_input_mode).
+    Re-deciding on its behalf would open a microphone route for a requester that
+    asked for the keyboard."""
+    mgr = _make_deduping_manager(route_mode="blocked")
+    mgr._starting_input_mode = None
+    calls = _record_dedupe_calls(mgr)
+
+    await _run_dedupe_start(mgr, request_mode="text")
+
+    assert [c[0] for c in calls] == ["ack"]
+    assert calls[0][1] == "text"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_same_mode_dedupe_redecides_with_this_requests_handshake():
+    """The re-decision belongs to THIS request: it must use the handshake
+    snapshot carried down from its own start_session call, not whatever the
+    shared manager field holds by the time the wait ends (a later request may
+    have overwritten it -- that is why start_session snapshots it at all)."""
+    mgr = _make_deduping_manager(route_mode="blocked")
+    calls = _record_dedupe_calls(mgr)
+
+    async def _overwrite_shared_field_during_wait():
+        await asyncio.sleep(0.05)
+        mgr._independent_asr_handshake_override = False
+        mgr._voice_input_resource_optimization_handshake_override = False
+
+    overwrite = asyncio.create_task(_overwrite_shared_field_during_wait())
+    await _run_dedupe_start(
+        mgr, handshake_override=True, resource_optimization_override=True
+    )
+    await overwrite
+
+    assert calls[0][0] == "redecide"
+    assert calls[0][1]["handshake_override"] is True
+    assert calls[0][1]["resource_optimization_override"] is True
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_same_mode_dedupe_skips_reroute_when_the_lease_moved_on():
+    """Codex P2. The wait is seconds long, and a THIRD audio start can claim the
+    microphone inside it. Re-deciding then would configure the NEW holder's
+    route from this superseded window's handshake. The new holder walks the same
+    path with a snapshot that matches, so skipping loses nothing -- but the ack
+    still goes out, or this requester hangs to its own timeout."""
+    mgr = _make_deduping_manager(route_mode="blocked")
+    calls = _record_dedupe_calls(mgr)
+
+    async def _third_window_claims_the_microphone():
+        await asyncio.sleep(0.05)
+        mgr._voice_lease_connection_id = "socket-c"
+
+    claim = asyncio.create_task(_third_window_claims_the_microphone())
+    await _run_dedupe_start(mgr)
+    await claim
+
+    assert [c[0] for c in calls] == ["ack"]
+    # And the ack must not report the NEW holder's route (Codex P2). It can well
+    # be healthy by now -- the new holder re-decided it -- and a superseded
+    # window that sees a healthy route opens a microphone whose every frame the
+    # server discards as stale. Report blocked so it fails closed and settles.
+    assert calls[0][2]["microphone_route_override"] == "blocked"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_same_mode_dedupe_reports_the_live_route_while_the_lease_holds():
+    """Dual of the above: the requester still owns the microphone, so the ack
+    must carry the real verdict rather than a blanket blocked."""
+    mgr = _make_deduping_manager(route_mode="blocked")
+    calls = _record_dedupe_calls(mgr)
+
+    await _run_dedupe_start(mgr)
+
+    assert calls[-1][0] == "ack"
+    assert calls[-1][2]["microphone_route_override"] is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_same_mode_dedupe_rechecks_the_lease_after_the_reroute():
+    """Codex P2. The reroute itself awaits a whole provider connect (up to 12s),
+    and a third window can claim the microphone inside THAT window and settle
+    the route to a healthy value. A snapshot taken before the reroute cannot see
+    it, so the superseded requester would be handed a healthy route and open a
+    microphone whose frames the server discards."""
+    mgr = _make_deduping_manager(route_mode="blocked")
+    calls = _record_dedupe_calls(mgr)
+
+    async def _redecide_then_lose_the_lease(*_a, **kwargs):
+        calls.append(("redecide", kwargs))
+        # A third window claims the mic while this connect is in flight, and its
+        # own re-decision settles the route.
+        mgr._voice_lease_connection_id = "socket-c"
+        mgr._asr_route_mode = "independent"
+
+    mgr._start_independent_asr_if_enabled = _redecide_then_lose_the_lease
+
+    await _run_dedupe_start(mgr)
+
+    assert [c[0] for c in calls] == ["redecide", "ack"]
+    assert calls[1][2]["microphone_route_override"] == "blocked"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_same_mode_dedupe_does_not_call_a_fail_closed_revoke_a_takeover():
+    """A reroute that fails closed revokes the lease itself, emptying the
+    identity. That is this request's OWN outcome, not a takeover: the route is
+    blocked anyway, so the ack should report it rather than override it -- the
+    override exists to hide somebody else's healthy route, not our own failure."""
+    mgr = _make_deduping_manager(route_mode="blocked")
+    calls = _record_dedupe_calls(mgr)
+
+    async def _redecide_then_fail_closed(*_a, **kwargs):
+        calls.append(("redecide", kwargs))
+        mgr._voice_lease_connection_id = ""
+
+    mgr._start_independent_asr_if_enabled = _redecide_then_fail_closed
+
+    await _run_dedupe_start(mgr)
+
+    assert [c[0] for c in calls] == ["redecide", "ack"]
+    assert calls[1][2]["microphone_route_override"] is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_same_mode_dedupe_measures_the_deadline_on_the_wall_clock(
+    monkeypatch,
+):
+    """Codex P2. The remaining budget must come from a monotonic clock, not from
+    the loop's nominal 50ms sleep counter: a stalled event loop (or an
+    overshooting sleep) burns seconds of the frontend's 15s timer while the
+    counter barely moves, and an inflated budget then permits a full 12s connect
+    whose ack lands after the client has already given up and sent
+    end_session."""
+    real_monotonic = time.monotonic
+    # Local rather than module-level: a shared mutable would couple this case to
+    # any future one that reuses it, and to test ordering (CodeRabbit).
+    stalled = {"on": False}
+    # The counter will read ~0.1s of nominal sleep; the wall clock says the
+    # frontend deadline is nearly spent. Scoped to the module under test --
+    # patching stdlib time would hand the fake to every background thread too.
+    patch_module_clock(
+        monkeypatch,
+        lifecycle_module,
+        monotonic=lambda: real_monotonic() + (14.0 if stalled["on"] else 0.0),
+    )
+    mgr = _make_deduping_manager(route_mode="blocked")
+    calls = _record_dedupe_calls(mgr)
+
+    async def _stall_the_loop():
+        await asyncio.sleep(0.05)
+        stalled["on"] = True
+
+    stall = asyncio.create_task(_stall_the_loop())
+    await _run_dedupe_start(mgr)
+    await stall
+
+    assert calls[0][0] == "redecide"
+    budget = calls[0][1]["connect_budget_seconds"]
+    assert budget < 2.0, (
+        f"budget {budget} was read off the sleep counter, not the wall clock"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_same_mode_dedupe_hands_the_remaining_deadline_down_as_a_budget():
+    """Codex P2, twice. The re-decision can run a whole connect-and-retry phase
+    on top of a wait that already spent part of the frontend's 15s deadline, and
+    a re-ack past that deadline is worse than useless: the client's timeout fires
+    end_session and tears down the session that did start.
+
+    The budget travels DOWN rather than gating here, because only the route
+    decision knows whether it is going to connect at all -- a handshake that
+    disables independent ASR settles on native for free, and refusing that over
+    a connect budget would strand a microphone that had nothing to wait for."""
+    mgr = _make_deduping_manager(route_mode="blocked")
+    calls = _record_dedupe_calls(mgr)
+
+    await _run_dedupe_start(mgr)
+
+    assert [c[0] for c in calls] == ["redecide", "ack"]
+    budget = calls[0][1]["connect_budget_seconds"]
+    assert 14.0 < budget <= 15.0, budget
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_same_mode_dedupe_skips_both_when_inflight_never_settles(monkeypatch):
+    """Timeout exit: the in-flight start never settles, so the session/is_active
+    it would report may belong to the PREVIOUS session. No ack, and therefore no
+    route re-decision either -- re-deciding would tear down the route of a start
+    that is still running."""
+    monkeypatch.setattr(
+        "main_logic.core.lifecycle.FRONTEND_START_SESSION_TIMEOUT_SECONDS", 0.2
+    )
+    mgr = _make_deduping_manager(route_mode="blocked")
+    calls = _record_dedupe_calls(mgr)
+
+    await LLMSessionManager.start_session(
+        mgr, mgr.websocket, False, "audio", user_initiated=True
+    )
+
+    assert calls == []
     assert mgr._starting_session_count == 1
 
 
@@ -243,7 +567,14 @@ async def test_cross_mode_start_restarts_even_if_inflight_failed_internally():
 
     # param ws still connected + self.websocket is None ⇒ restart proceeds.
     restart_mock.assert_awaited_once_with(
-        ws, False, "audio", user_initiated=True, _allow_cross_mode_restart=False
+        ws,
+        False,
+        "audio",
+        user_initiated=True,
+        _allow_cross_mode_restart=False,
+        request_id=None,
+        handshake_override=None,
+        resource_optimization_override=None,
     )
 
 

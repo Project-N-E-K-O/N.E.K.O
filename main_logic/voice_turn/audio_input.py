@@ -7,11 +7,18 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
 
+from .activity_evidence import RnnoiseEvidence
 from utils.audio_processor import AudioProcessor
 
 
 class _AudioProcessorProtocol(Protocol):
     speech_probability: float
+    rnnoise_available: bool
+    rnnoise_frame_count: int
+    rnnoise_probability_peak: float | None
+    rnnoise_probability_mean: float | None
+    rnnoise_probability_last: float | None
+    rnnoise_probability_ema: float | None
 
     def process_chunk(self, audio_bytes: bytes) -> bytes: ...
 
@@ -26,6 +33,7 @@ class ProcessedVoiceFrame:
     sample_rate_hz: int
     speech_probability: float | None
     rnnoise_available: bool = False
+    rnnoise_evidence: RnnoiseEvidence | None = None
 
 
 class VoiceInputAudioPipeline:
@@ -93,9 +101,13 @@ class VoiceInputAudioPipeline:
         if self._closed:
             raise RuntimeError("VOICE_AUDIO_PIPELINE_CLOSED")
         if not pcm16:
-            return ProcessedVoiceFrame(b"", 16_000, None, False)
+            return ProcessedVoiceFrame(
+                b"", 16_000, None, False, RnnoiseEvidence.unavailable()
+            )
         if sample_rate_hz == 16_000:
-            return ProcessedVoiceFrame(pcm16, 16_000, None, False)
+            return ProcessedVoiceFrame(
+                pcm16, 16_000, None, False, RnnoiseEvidence.unavailable()
+            )
 
         async with self._lock:
             if self._closed:
@@ -114,11 +126,41 @@ class VoiceInputAudioPipeline:
                     getattr(self._processor, "_denoiser", None) is not None,
                 )
             )
+            raw_frame_count = getattr(
+                self._processor,
+                "rnnoise_frame_count",
+                None,
+            )
+            if not rnnoise_available:
+                evidence = RnnoiseEvidence.unavailable()
+            elif raw_frame_count is None:
+                # Compatibility for injected legacy processors only. The production
+                # AudioProcessor always exposes real per-chunk frame statistics.
+                evidence = RnnoiseEvidence.from_legacy_probability(
+                    probability,
+                    available=True,
+                )
+            else:
+                frame_count = int(raw_frame_count)
+                if frame_count > 0:
+                    evidence = RnnoiseEvidence(
+                        True,
+                        frame_count,
+                        float(self._processor.rnnoise_probability_peak),
+                        float(self._processor.rnnoise_probability_mean),
+                        float(self._processor.rnnoise_probability_last),
+                        float(self._processor.rnnoise_probability_ema),
+                    )
+                else:
+                    evidence = RnnoiseEvidence(
+                        True, 0, None, None, None, None
+                    )
         return ProcessedVoiceFrame(
             processed,
             16_000,
-            probability if rnnoise_available else None,
+            evidence.peak,
             rnnoise_available,
+            evidence,
         )
 
     async def close(self) -> None:

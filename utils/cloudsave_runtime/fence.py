@@ -23,10 +23,12 @@ Split out of the former monolithic ``utils/cloudsave_runtime.py``.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import os
 import sys
-from contextlib import contextmanager
+import threading
+from contextlib import asynccontextmanager, contextmanager
 from typing import Any
 
 # Late-bound package reference: tests monkeypatch
@@ -34,6 +36,7 @@ from typing import Any
 # ``cloud_apply_fence`` must see that patch, so the helper is resolved
 # through the facade at call time instead of via this module's globals.
 from utils import cloudsave_runtime as _facade
+from utils.root_state_lock import root_state_lifecycle_transaction, root_state_transaction
 
 from ._shared import (
     MaintenanceModeError,
@@ -53,6 +56,9 @@ _cloud_apply_lock_handle = None
 _cloud_apply_lock_file = None
 
 
+_cloud_apply_process_guard = threading.RLock()
+
+
 def get_root_state(config_manager) -> dict[str, Any]:
     return config_manager.load_root_state()
 
@@ -69,13 +75,16 @@ def should_write_root_mode_normal_after_startup(root_state: dict[str, Any] | Non
 
 
 def set_root_mode(config_manager, mode: str, **updates: Any) -> dict[str, Any]:
-    state = get_root_state(config_manager)
-    state["mode"] = str(mode or ROOT_MODE_NORMAL)
-    for key, value in updates.items():
-        if value is not None:
-            state[key] = value
-    config_manager.save_root_state(state)
-    return state
+    # 读—改—写整段进锁：只让最后那次 save 原子是不够的，两个写者各自读到同一份
+    # pre-image 时，后写的那个会把先写的字段整份盖掉。
+    with root_state_transaction():
+        state = get_root_state(config_manager)
+        state["mode"] = str(mode or ROOT_MODE_NORMAL)
+        for key, value in updates.items():
+            if value is not None:
+                state[key] = value
+        config_manager.save_root_state(state)
+        return state
 
 
 def is_write_fence_active(config_manager) -> bool:
@@ -102,12 +111,63 @@ def maintenance_error_payload(exc: MaintenanceModeError) -> dict[str, Any]:
     }
 
 
+@contextmanager
+def cloudsave_writable_transaction(
+    config_manager,
+    *,
+    operation: str = "write",
+    target: str = "",
+):
+    """Keep the cloud-apply fence closed across a final file mutation."""
+    if is_cloudsave_disabled_due_to_local_state_unavailable():
+        yield
+        return
+    _ensure_local_state_directory_or_raise(
+        config_manager,
+        "starting cloudsave_writable_transaction",
+    )
+    with _cloud_apply_process_guard:
+        if not acquire_cloud_apply_lock(config_manager):
+            raise MaintenanceModeError(
+                get_root_mode(config_manager),
+                operation=operation,
+                target=target,
+            )
+        try:
+            with root_state_transaction():
+                assert_cloudsave_writable(
+                    config_manager,
+                    operation=operation,
+                    target=target,
+                )
+                yield
+        finally:
+            release_cloud_apply_lock(config_manager)
+
+
 def _cloud_apply_mutex_name(config_manager) -> str:
     digest = hashlib.sha1(str(config_manager.app_docs_dir).encode("utf-8")).hexdigest()[:12]
     return rf"Global\NEKO_CLOUD_APPLY_LOCK_{digest}"
 
 
-def acquire_cloud_apply_lock(config_manager) -> bool:
+def _configure_win32_mutex_apis(kernel32) -> None:
+    from ctypes import c_void_p, wintypes
+
+    kernel32.CreateMutexW.argtypes = [
+        c_void_p,
+        wintypes.BOOL,
+        wintypes.LPCWSTR,
+    ]
+    kernel32.CreateMutexW.restype = wintypes.HANDLE
+    kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel32.WaitForSingleObject.restype = wintypes.DWORD
+    kernel32.ReleaseMutex.argtypes = [wintypes.HANDLE]
+    kernel32.ReleaseMutex.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+
+def acquire_cloud_apply_lock(config_manager, *, blocking: bool = False) -> bool:
     """Acquire the cross-process cloud apply lock used by maintenance mode."""
     global _cloud_apply_lock_handle, _cloud_apply_lock_file
 
@@ -117,15 +177,20 @@ def acquire_cloud_apply_lock(config_manager) -> bool:
             import ctypes
 
             kernel32 = ctypes.windll.kernel32
-            ERROR_ALREADY_EXISTS = 183
-            handle = kernel32.CreateMutexW(None, True, _cloud_apply_mutex_name(config_manager))
-            last_err = kernel32.GetLastError()
-            if handle != 0:
-                if last_err != ERROR_ALREADY_EXISTS:
-                    _cloud_apply_lock_handle = handle
-                    return True
-                kernel32.CloseHandle(handle)
+            _configure_win32_mutex_apis(kernel32)
+            handle = kernel32.CreateMutexW(
+                None,
+                False,
+                _cloud_apply_mutex_name(config_manager),
+            )
+            if not handle:
                 return False
+            wait_ms = 0xFFFFFFFF if blocking else 0
+            wait_result = kernel32.WaitForSingleObject(handle, wait_ms)
+            if wait_result in {0x00000000, 0x00000080}:
+                _cloud_apply_lock_handle = handle
+                return True
+            kernel32.CloseHandle(handle)
             return False
         except Exception:
             return True
@@ -137,7 +202,10 @@ def acquire_cloud_apply_lock(config_manager) -> bool:
         lock_path = config_manager.local_state_dir / "cloud_apply.lock"
         lock_file = open(lock_path, "w", encoding="utf-8")
         try:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            flags = fcntl.LOCK_EX
+            if not blocking:
+                flags |= fcntl.LOCK_NB
+            fcntl.flock(lock_file.fileno(), flags)
             lock_file.write(str(os.getpid()))
             lock_file.flush()
         except (OSError, IOError):
@@ -166,6 +234,7 @@ def release_cloud_apply_lock(config_manager) -> None:
             import ctypes
 
             kernel32 = ctypes.windll.kernel32
+            _configure_win32_mutex_apis(kernel32)
             kernel32.ReleaseMutex(_cloud_apply_lock_handle)
             kernel32.CloseHandle(_cloud_apply_lock_handle)
         except Exception:
@@ -234,37 +303,126 @@ def _recover_stale_write_blocking_mode(config_manager, root_state: dict[str, Any
         return root_state, False
 
     try:
-        recovered_state = dict(root_state)
-        recovered_state["mode"] = ROOT_MODE_NORMAL
-        recovered_state["last_migration_result"] = f"recovered_stale_mode:{current_mode}"
-        config_manager.save_root_state(recovered_state)
-        return recovered_state, True
+        # 与 set_root_mode 同一把锁：这里也是读—改—写，而且 root_state 是**调用方在
+        # 锁外**读的。跨进程那把 cloud apply 锁挡不住同进程内的另一个写者，所以必须
+        # 锁内重读——直接 dict(root_state) 回写会把这期间别人提交的 mode /
+        # current_root / last_known_good_root 整份盖掉（Greptile P1）。
+        #
+        # 锁序固定为 cloud_apply_lock → root_state_transaction，与 cloud_apply_fence
+        # 一致；任何地方都不许反过来。
+        with root_state_transaction():
+            latest_state = config_manager.load_root_state()
+            if not isinstance(latest_state, dict):
+                latest_state = root_state
+
+            # 判定"该不该自愈"也要按锁内这份重来：锁外那次判断到这里之间，别人可能
+            # 已经把它恢复了，或者刚建了一个真的 pending 迁移。
+            latest_mode = str(latest_state.get("mode") or ROOT_MODE_NORMAL)
+            if latest_mode not in WRITE_BLOCKING_MODES:
+                return latest_state, False
+            if _should_preserve_write_blocking_mode(config_manager, latest_state):
+                return latest_state, False
+
+            recovered_state = dict(latest_state)
+            recovered_state["mode"] = ROOT_MODE_NORMAL
+            recovered_state["last_migration_result"] = f"recovered_stale_mode:{latest_mode}"
+            config_manager.save_root_state(recovered_state)
+            return recovered_state, True
     finally:
         release_cloud_apply_lock(config_manager)
 
 
 @contextmanager
-def cloud_apply_fence(config_manager, *, mode: str = ROOT_MODE_MAINTENANCE_READONLY, reason: str = ""):
-    """Acquire the global cloud apply lock and switch root_state into maintenance."""
-    _ensure_local_state_directory_or_raise(config_manager, "entering cloud_apply_fence")
-
-    previous_state = get_root_state(config_manager)
-    previous_mode = str(previous_state.get("mode") or ROOT_MODE_NORMAL)
-    if not acquire_cloud_apply_lock(config_manager):
-        raise MaintenanceModeError(
-            get_root_mode(config_manager),
-            operation="acquire_lock",
-            target="cloud_apply_lock",
-        )
-    try:
+def _cloud_apply_fence_state(
+    config_manager,
+    *,
+    mode: str = ROOT_MODE_MAINTENANCE_READONLY,
+    reason: str = "",
+):
+    """Switch root state while the caller owns both cloud-apply locks."""
+    # Hold the process-wide root_state transaction for the *whole* fence
+    # lifetime, not only for its enter/exit writes. Storage-location writes
+    # now run in worker threads; without this lifecycle lock they can commit
+    # MAINTENANCE_READONLY while a cloud operation is active, only for the
+    # fence's stale exit snapshot to restore NORMAL over the pending migration.
+    #
+    # Lock order stays cloud_apply_lock -> root_state_transaction everywhere.
+    # The lifecycle scope also hands its logical ownership to to_thread
+    # workers, while unrelated storage writers remain excluded.
+    with root_state_lifecycle_transaction():
+        # Read the pre-image only after both locks are held. Reading it before
+        # acquire_cloud_apply_lock would still allow a storage writer to land
+        # between the read and the acquisition and make this snapshot stale.
+        previous_state = get_root_state(config_manager)
+        previous_mode = str(previous_state.get("mode") or ROOT_MODE_NORMAL)
         _facade.set_root_mode(
             config_manager,
             mode,
             last_migration_result=reason or previous_state.get("last_migration_result", ""),
         )
-        yield get_root_state(config_manager)
-    finally:
         try:
+            yield get_root_state(config_manager)
+        finally:
             _facade.set_root_mode(config_manager, previous_mode)
+
+
+@contextmanager
+def cloud_apply_fence(
+    config_manager,
+    *,
+    mode: str = ROOT_MODE_MAINTENANCE_READONLY,
+    reason: str = "",
+):
+    """Acquire the global cloud apply lock and switch root_state into maintenance."""
+    _ensure_local_state_directory_or_raise(config_manager, "entering cloud_apply_fence")
+
+    with _cloud_apply_process_guard:
+        if not acquire_cloud_apply_lock(config_manager, blocking=True):
+            raise MaintenanceModeError(
+                get_root_mode(config_manager),
+                operation="acquire_lock",
+                target="cloud_apply_lock",
+            )
+        try:
+            with _cloud_apply_fence_state(
+                config_manager,
+                mode=mode,
+                reason=reason,
+            ) as state:
+                yield state
         finally:
             release_cloud_apply_lock(config_manager)
+
+
+@asynccontextmanager
+async def async_cloud_apply_fence(
+    config_manager,
+    *,
+    mode: str = ROOT_MODE_MAINTENANCE_READONLY,
+    reason: str = "",
+    poll_interval: float = 0.05,
+):
+    """Enter the cloud apply fence without blocking the event-loop thread.
+
+    Windows mutex ownership is thread-affine, so acquisition and release stay
+    on the event-loop thread. Contention is handled by short non-blocking polls
+    instead of an infinite OS wait that would stall every task on that loop.
+    """
+    _ensure_local_state_directory_or_raise(
+        config_manager,
+        "entering async_cloud_apply_fence",
+    )
+    while True:
+        with _cloud_apply_process_guard:
+            if acquire_cloud_apply_lock(config_manager, blocking=False):
+                try:
+                    with _cloud_apply_fence_state(
+                        config_manager,
+                        mode=mode,
+                        reason=reason,
+                    ) as state:
+                        yield state
+                finally:
+                    release_cloud_apply_lock(config_manager)
+                return
+        await asyncio.sleep(poll_interval)

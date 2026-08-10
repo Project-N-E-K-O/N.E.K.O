@@ -1144,7 +1144,8 @@
                     }
                 }
                 document.removeEventListener('keydown', escHandler);
-                overlay.style.animation = 'fadeOut 0.2s ease-out';
+                // 动画与 DOM 清理均为 200ms；保持末帧，避免两者调度错开时闪回可见状态。
+                overlay.style.animation = 'fadeOut 0.2s ease-out forwards';
                 setTimeout(() => {
                     if (overlay.parentNode) {
                         overlay.parentNode.removeChild(overlay);

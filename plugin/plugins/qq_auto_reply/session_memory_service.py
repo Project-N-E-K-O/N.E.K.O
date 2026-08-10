@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+from .display_name_service import QQDisplayNameService
 from .pipeline_models import is_synthetic_source
 
 import asyncio
+import hashlib
+import json
 import time
 from typing import Any
+
+
+_CURRENT_TURN_AI_ROW = object()
 
 
 
@@ -36,11 +42,17 @@ class QQSessionMemoryService:
     # 系统消息，此前未落盘的轮次当场消失；在它之前主动落盘，能把损失从
     # "整场会话"压到最多这么多轮。
     GROUP_DIGEST_BACKLOG_TRIGGER = 40
-    # 一趟排空的形状：最多 GROUP_MEMBER_MAX_PARTICIPANTS 个桶，并发
-    # MEMBER_FLUSH_CONCURRENCY，每发一次 scoped history（那是一次 LLM
-    # 抽取，所以超时给得很宽）。下面的等待上限由它们算出来，别写死——
-    # 三个数任何一个改了，等待上限必须跟着走。
+    # 一趟排空的形状：最多 GROUP_MEMBER_MAX_PARTICIPANTS 个桶，打包成若干
+    # **批**（每批 ≤200 条消息、≤8 段，见 _pack_member_segment_groups），并发
+    # MEMBER_FLUSH_CONCURRENCY，每批发一次 scoped history segments 请求
+    # （那是一次 LLM 抽取，所以超时给得很宽）。批的单请求输入工作量上界
+    # 与旧的逐成员单发同口径（200 条）。每趟最多尝试“名额数”个批，且
+    # 每条有序链最多尝试“波数”个批；剩余内容留桶重试，所以下面按
+    # "波数 × 单发超时"推导的等待上限仍覆盖一趟排空。
+    # 别写死——这些数任何一个改了，等待上限必须跟着走。
     MEMBER_FLUSH_CONCURRENCY = 4
+    # speaker_label 的长度上限，与 /scoped_history 路由的校验同一个数。
+    MEMBER_LABEL_MAX_CHARS = 64
     SCOPED_HISTORY_TIMEOUT_SECONDS = 30.0
     # 结算前等待该会话在途排空的上限。分两档，判据是"放弃等待要付什么"：
     # · 短档（idle sweep）：放弃只是多等一个 sweep 周期，下轮自然重来。
@@ -232,6 +244,9 @@ class QQSessionMemoryService:
             return ()
         return (
             int(user_data.get("last_group_digest_index", 0) or 0),
+            # participant 结算的进展同样按游标衡量：少了它，关机 while
+            # 循环会把"私聊批次上限打断"误判成零进展而提前放弃。
+            int(user_data.get("last_participant_digest_index", 0) or 0),
             len(user_data.get("group_member_memory_messages") or {}),
             len(user_data.get("pending_settle_buckets") or {}),
         )
@@ -336,7 +351,8 @@ class QQSessionMemoryService:
     def record_synthetic_prompt_rows(
         self, session_key: str, history_len_before: int,
         *, include_ai_rows: bool = False,
-    ) -> None:
+        replacement_user_texts: list[str] | None = None,
+    ) -> int:
         """Synthetic control turns (rapid-fire flush / proactive speech) run
         the full pipeline, appending a fabricated human instruction row to
         the shared history. Record those rows into the exclusion list so
@@ -347,17 +363,9 @@ class QQSessionMemoryService:
             session_key
         )
         if not isinstance(user_data, dict):
-            return
-        if not user_data.get("is_group"):
-            # 私聊 pre_buffer 场景：第二条起的真实用户消息只活在 flush
-            # prompt 里（handle_private_message 在 pre_buffer 后直接返回，
-            # 不进正常历史）——排除整行会让私聊长期记忆丢真实输入。包装
-            # 噪声交提取端消化，完整性优先。群路径的成员消息每条都走过
-            # 正常轮次、已在历史里，照常排除合成行。
-            return
+            return 0
         session = user_data.get("session")
         history = getattr(session, "_conversation_history", None) or []
-        rows = user_data.setdefault("undelivered_draft_rows", [])
         baseline = int(history_len_before)
         measured_on = getattr(history_len_before, "session", None)
         if measured_on is not None and measured_on is not session:
@@ -366,6 +374,72 @@ class QQSessionMemoryService:
             # 行就当成真人发言进了 scoped 记忆。新会话里现有的行全是本轮
             # 写的，从头算即可。
             baseline = 0
+
+        if (
+            not user_data.get("is_group")
+            and user_data.get("private_memory_mode") == "participant"
+        ):
+            rows = user_data.setdefault("undelivered_draft_rows", [])
+            # Private pre-buffer inputs after the first one never traverse the
+            # pipeline. Replace the fabricated rapid-fire human control row
+            # in-place with those real inputs, preserving their position
+            # before the generated AI reply. This avoids both prompt-wrapper
+            # leakage and loss of the actual participant messages.
+            human_indexes = [
+                index
+                for index in range(max(0, baseline), len(history))
+                if getattr(history[index], "type", "") == "human"
+            ]
+            texts = [
+                str(value).strip()
+                for value in (replacement_user_texts or [])
+                if str(value).strip()
+            ]
+            inserted = 0
+            if human_indexes and texts:
+                try:
+                    from langchain_core.messages import HumanMessage
+
+                    replacement_rows = [
+                        HumanMessage(content=value) for value in texts
+                    ]
+                except Exception:
+                    from types import SimpleNamespace
+
+                    replacement_rows = [
+                        SimpleNamespace(type="human", content=value)
+                        for value in texts
+                    ]
+                first_index = human_indexes[0]
+                for index in reversed(human_indexes[1:]):
+                    del history[index]
+                history[first_index:first_index + 1] = replacement_rows
+                inserted = len(replacement_rows)
+            else:
+                for index in human_indexes:
+                    msg = history[index]
+                    if not any(existing is msg for existing in rows):
+                        rows.append(msg)
+            if include_ai_rows:
+                for msg in history[max(0, baseline):]:
+                    if (
+                        getattr(msg, "type", "") == "ai"
+                        and not any(existing is msg for existing in rows)
+                    ):
+                        rows.append(msg)
+                # _run_session_generation stamped the OFF-era boundary before
+                # this synthetic control row was expanded into multiple real
+                # inputs. Move the floor past every newly materialized row so
+                # none can be collected after participant memory is re-enabled.
+                user_data["nonconsent_history_end"] = max(
+                    int(user_data.get("nonconsent_history_end", 0) or 0),
+                    len(history),
+                )
+            return inserted
+
+        if not user_data.get("is_group"):
+            return 0
+        rows = user_data.setdefault("undelivered_draft_rows", [])
         for msg in history[max(0, baseline):]:
             msg_type = getattr(msg, "type", "")
             if msg_type != "human" and not (
@@ -376,8 +450,11 @@ class QQSessionMemoryService:
                 continue
             if not any(existing is msg for existing in rows):
                 rows.append(msg)
+        return 0
 
-    def record_tail_undelivered_ai_row(self, session_key: str) -> None:
+    def record_tail_undelivered_ai_row(
+        self, session_key: str, ai_row: Any = _CURRENT_TURN_AI_ROW,
+    ) -> None:
         """Mark the newest ai row as undelivered after a FAILED direct send.
 
         History-backed replies that bypass the buffer (synthetic turns, or
@@ -388,10 +465,30 @@ class QQSessionMemoryService:
         user_data = (getattr(self.plugin, "_user_sessions", {}) or {}).get(
             session_key
         )
-        if not isinstance(user_data, dict) or not user_data.get("is_group"):
+        if not isinstance(user_data, dict):
+            return
+        if (
+            not user_data.get("is_group")
+            and user_data.get("private_memory_mode") != "participant"
+        ):
             return
         session = user_data.get("session")
         history = getattr(session, "_conversation_history", None) or []
+        if ai_row is not _CURRENT_TURN_AI_ROW:
+            # Direct delivery carries the originating row identity across its
+            # await. A later generation may already have replaced the mutable
+            # session-wide pointer by the time this send fails.
+            row = ai_row
+            if row is None or not any(existing is row for existing in history):
+                return
+            rows = user_data.setdefault("undelivered_draft_rows", [])
+            if not any(existing is row for existing in rows):
+                rows.append(row)
+            provisional = user_data.get("provisional_draft_rows", [])
+            user_data["provisional_draft_rows"] = [
+                existing for existing in provisional if existing is not row
+            ]
+            return
         if "current_turn_ai_row" in user_data:
             # 生成路径记下了本轮到底写没写 ai 行：按身份标，没写就什么都不
             # 标。扫"最新一条 ai"在本轮无行时会打到上一条已投递的回复上。
@@ -409,6 +506,49 @@ class QQSessionMemoryService:
             if not any(existing is msg for existing in rows):
                 rows.append(msg)
             return
+
+    def record_provisional_ai_row(self, session_key: str, ai_row: Any) -> None:
+        """Fence an exact history row while direct delivery is in flight."""
+        user_data = (getattr(self.plugin, "_user_sessions", {}) or {}).get(
+            session_key
+        )
+        if not isinstance(user_data, dict):
+            return
+        if (
+            not user_data.get("is_group")
+            and user_data.get("private_memory_mode") != "participant"
+        ):
+            return
+        history = getattr(
+            user_data.get("session"), "_conversation_history", None,
+        ) or []
+        if ai_row is None or not any(existing is ai_row for existing in history):
+            return
+        for key in ("undelivered_draft_rows", "provisional_draft_rows"):
+            rows = user_data.setdefault(key, [])
+            if not any(existing is ai_row for existing in rows):
+                rows.append(ai_row)
+
+    def settle_provisional_ai_row(
+        self, session_key: str, ai_row: Any, *, delivered: bool,
+    ) -> None:
+        """Resolve a direct-send fence without relying on a mutable tail."""
+        user_data = (getattr(self.plugin, "_user_sessions", {}) or {}).get(
+            session_key
+        )
+        if not isinstance(user_data, dict) or ai_row is None:
+            return
+        provisional = user_data.get("provisional_draft_rows", [])
+        user_data["provisional_draft_rows"] = [
+            existing for existing in provisional if existing is not ai_row
+        ]
+        undelivered = user_data.setdefault("undelivered_draft_rows", [])
+        if delivered:
+            user_data["undelivered_draft_rows"] = [
+                existing for existing in undelivered if existing is not ai_row
+            ]
+        elif not any(existing is ai_row for existing in undelivered):
+            undelivered.append(ai_row)
 
     def record_group_member_turn(self, user_data: dict[str, Any], context: Any) -> None:
         """Keep bounded, actor-attributed user turns for optional member memory."""
@@ -464,11 +604,62 @@ class QQSessionMemoryService:
             custom_nickname or getattr(context, "user_nickname", "") or ""
         ).strip()
         labels = user_data.setdefault("group_member_memory_labels", {})
-        labels[sender_id] = f"{nickname}({sender_id})" if nickname else sender_id
+        # "(sender_id)" 后缀是这条 label 的**保底可追溯部分**，必须活过截断：
+        # 昵称既可能是群名片（用户自己改）也可能是后台设的备注名；后者的
+        # 新写入已经校验，但历史配置仍可能含超长/结构字符。先按剩余额度裁
+        # 昵称再拼后缀，否则一个 64 字以上的历史昵称会把后缀整个挤掉——
+        # 服务端中和完只剩空串，那一批会拖住同批其他成员反复重试。
+        suffix = f"({sender_id})"
+        nickname_budget = self.MEMBER_LABEL_MAX_CHARS - len(suffix)
+        if nickname and nickname_budget > 0:
+            labels[sender_id] = f"{nickname[:nickname_budget]}{suffix}"
+        else:
+            labels[sender_id] = sender_id[:self.MEMBER_LABEL_MAX_CHARS]
         messages = buckets.setdefault(sender_id, [])
+        # context.permission_level is the group's admission tier here, not
+        # this member's user permission.  Resolve the member profile directly
+        # so a trusted group cannot promote every speaker's trust baseline.
+        permission_level = self._speaker_permission_level_for(
+            sender_id,
+            getattr(
+                context,
+                "group_speaker_permission_level_at_receipt",
+                None,
+            ),
+        )
+        sequence = user_data.get("group_member_message_sequence")
+        if not isinstance(sequence, int) or isinstance(sequence, bool):
+            # Hot-reload compatibility: stamp already buffered rows before
+            # assigning the first sequence to a new row. Message content can
+            # never choose or influence this code-side ordering key.
+            sequence = 0
+            for buffered in buckets.values():
+                for buffered_message in buffered or []:
+                    if not isinstance(buffered_message, dict):
+                        continue
+                    sequence += 1
+                    buffered_message.setdefault("_speaker_sequence", sequence)
+            user_data["group_member_message_sequence"] = sequence
+        sequence += 1
+        user_data["group_member_message_sequence"] = sequence
+        activity_id = hashlib.sha256(
+            f"{sender_id}|{time.time_ns()}|{len(messages)}|{text}".encode("utf-8")
+        ).hexdigest()[:24]
         messages.append({
             "role": "user",
             "content": [{"type": "text", "text": text}],
+            # These request-side snapshots are ignored by the LLM message
+            # converter. They let a delayed flush split one speaker's bucket
+            # by the permission held when each message was authored.
+            "_speaker_permission_level": permission_level,
+            "_speaker_activity_id": activity_id,
+            "_speaker_sequence": sequence,
+            # Observed transport at RECEIPT time, so a buffer spanning a
+            # transport switch still reports the transport each message
+            # actually arrived on. Diagnostics only.
+            "_speaker_channel": getattr(
+                context, "speaker_channel_at_receipt", None,
+            ),
         })
         if len(messages) >= self.GROUP_MEMBER_MAX_MESSAGES:
             # 活跃群永远等不到 idle 结算，焦点 digest 又只冲群历史：到线
@@ -518,6 +709,29 @@ class QQSessionMemoryService:
                 self.plugin._spawn_memory_sync_task(
                     self._drain_member_buckets(session_key),
                     session_key=session_key,
+                )
+            return 0
+        if user_data.get("private_memory_mode") == "participant":
+            # 私聊 participant 会话绝不进 legacy /cache（那是主人的语料）；
+            # 与群分支同构，这里只当调度点——积压过线时后台冲一次 scoped
+            # digest（复读守卫会把共享历史整段换掉，未落盘轮次当场消失，
+            # 与群 digest 同一根因同一治法）。必须放在下面的 memory_enabled
+            # 闸**之前**：participant 会话的 memory_enabled 为 True，落到
+            # 闸后就会继续走 legacy /cache 分支。
+            if not user_data.get("memory_enabled"):
+                return 0
+            self.prune_draft_row_refs(user_data)
+            session = user_data.get("session")
+            history = getattr(session, "_conversation_history", []) or []
+            backlog = len(history) - int(
+                user_data.get("last_participant_digest_index", 0) or 0
+            )
+            if backlog >= self.GROUP_DIGEST_BACKLOG_TRIGGER and not user_data.get(
+                "participant_digest_draining"
+            ):
+                user_data["participant_digest_draining"] = True
+                self.plugin._spawn_memory_sync_task(
+                    self._drain_participant_digest(session_key)
                 )
             return 0
         if not user_data.get("memory_enabled"):
@@ -608,17 +822,228 @@ class QQSessionMemoryService:
 
         await self.plugin._run_with_session_lock(session_key, _drain)
 
+    async def _drain_participant_digest(self, session_key: str) -> None:
+        """私聊 participant 会话的积压冲刷（对偶 _drain_group_digest）。
+
+        同一根因：复读守卫会把共享历史整段换成只剩系统消息，未落盘的
+        轮次当场消失；按积压线主动落盘把损失压到有界。整段在会话锁内跑，
+        与结算天然串行。"""
+        async def _drain() -> None:
+            user_data = self.plugin._user_sessions.get(session_key)
+            if not user_data:
+                return
+            try:
+                if (
+                    user_data.get("private_memory_mode") != "participant"
+                    or not user_data.get("memory_enabled")
+                ):
+                    return
+                if user_data.get("pending_disable_settle"):
+                    # opt-out 结算未完成：实时排空用的是旧游标、没有
+                    # cutoff 围栏，交转变/兜底任务按 cutoff 结算。
+                    return
+                if not (getattr(self.plugin, "_qq_settings", {}) or {}).get(
+                    "private_participant_memory_enabled", False,
+                ):
+                    # 写点前复检实时策略（对偶读侧）：OFF 之后不再推送。
+                    return
+                sender_id = str(user_data.get("sender_id") or "").strip()
+                her_name = user_data.get("her_name")
+                session = user_data.get("session")
+                history = getattr(session, "_conversation_history", []) or []
+                if not sender_id or not her_name or not history:
+                    return
+                # Generation and this drain use different locks. Freeze the
+                # authorized prefix before the first HTTP await so rows added
+                # after a concurrent opt-out cannot enter a later batch.
+                history_snapshot = list(history)
+                cursor = max(
+                    0, int(user_data.get("last_participant_digest_index", 0) or 0),
+                )
+                # 未授权边界地板（对偶 finalize / focus digest）：OFF 时代
+                # 的行不得被实时排空推上去。
+                cursor = max(
+                    cursor, int(user_data.get("nonconsent_history_end", 0) or 0),
+                )
+                if cursor > len(history):
+                    cursor = len(history)
+                    user_data["last_participant_digest_index"] = cursor
+                await self._settle_participant_digest_batches(
+                    user_data=user_data, sender_id=sender_id,
+                    her_name=her_name, reason="participant_digest_backlog",
+                    conversation_history=history_snapshot,
+                    last_participant_digest_index=cursor,
+                    # 在途草稿处停下（对偶群积压冲刷）：越过后草稿被真投递
+                    # 时，那条回复永远进不了 scoped 历史。
+                    stop_at_provisional=True,
+                )
+            except Exception as exc:
+                # 失败留待下一轮/idle 结算：游标停在最后一个成功批次。
+                self.plugin.logger.warning(
+                    f"[participant_digest_backlog] 私聊积压冲刷失败 "
+                    f"({session_key}): {exc}"
+                )
+            finally:
+                user_data.pop("participant_digest_draining", None)
+
+        await self.plugin._run_with_session_lock(session_key, _drain)
+
+    def _participant_speaker_label(
+        self, user_data: dict[str, Any], sender_id: str,
+    ) -> str:
+        """私聊对话方的 speaker_label（备注名 > 昵称 > 纯 QQ 号）。
+
+        与 record_group_member_turn 的组装规则严格同构："(sender_id)"
+        后缀是保底可追溯部分，必须活过截断——否则超长昵称会把后缀挤掉，
+        服务端中和完只剩空串。"""
+        permission_mgr = getattr(self.plugin, "permission_mgr", None)
+        custom_nickname = (
+            permission_mgr.get_nickname(sender_id) if permission_mgr else None
+        )
+        nickname = str(
+            custom_nickname or user_data.get("user_nickname") or ""
+        ).strip()
+        suffix = f"({sender_id})"
+        nickname_budget = self.MEMBER_LABEL_MAX_CHARS - len(suffix)
+        if nickname and nickname_budget > 0:
+            return f"{nickname[:nickname_budget]}{suffix}"
+        return str(sender_id)[:self.MEMBER_LABEL_MAX_CHARS]
+
+    async def _settle_participant_digest_batches(
+        self, *, user_data: dict[str, Any], sender_id: str, her_name: str,
+        reason: str, conversation_history: list,
+        last_participant_digest_index: int,
+        stop_at_provisional: bool = False,
+    ) -> bool:
+        """私聊 participant 历史的分批结算（对偶 _settle_group_digest_batches）。
+
+        与群 digest 的差异只在请求形状：私聊历史含 user（对方）与 ai
+        （角色）两种行，走 segments 批形状会把 ai 行也前缀成对方发言——
+        所以用 legacy 单发形状（speaker_label 只顶替 user 轮的渲染名），
+        并随请求带 speaker_trust / display_name（与群成员段同一组字段，
+        trust 形状一致是发言人信赖度阶段一的硬约束）。"""
+        digest_batches_left = 5
+        speaker_label = self._participant_speaker_label(user_data, sender_id)
+        display_name = QQDisplayNameService.display_name_from_label(
+            speaker_label, sender_id,
+        )
+        permission_level = self._speaker_permission_level_for(
+            sender_id,
+            user_data.get("private_permission_level_at_receipt")
+            or user_data.get("permission_level"),
+        )
+        speaker_is_owner = self._speaker_is_owner_for(
+            sender_id, permission_level,
+        )
+        subject = self.plugin.memory_bridge.participant_subject(sender_id)
+        while True:
+            if digest_batches_left <= 0:
+                self.plugin.logger.info(
+                    f"[{reason}] 私聊 {sender_id} 本轮结算达批次上限，"
+                    f"剩余待下一轮"
+                )
+                return False
+            digest_batches_left -= 1
+            scoped_messages, next_index = self._slice_group_history_batch(
+                conversation_history, last_participant_digest_index,
+                self.GROUP_HISTORY_MAX_MESSAGES,
+                user_data=user_data,
+                stop_at_provisional=stop_at_provisional,
+            )
+            if not scoped_messages:
+                if (
+                    stop_at_provisional
+                    and next_index < len(conversation_history)
+                    and any(
+                        row is conversation_history[next_index]
+                        for row in (
+                            user_data.get("provisional_draft_rows") or []
+                        )
+                    )
+                ):
+                    # Retained opt-out sessions must keep their marker/cutoff
+                    # until this in-flight reply's delivery is decided. A
+                    # successful empty result would consume the cutoff and
+                    # leave no later settlement owner for the delivered row.
+                    return False
+                if next_index > last_participant_digest_index:
+                    # 尾部全是被过滤的行：推进游标即可，无须发送。
+                    user_data["last_participant_digest_index"] = next_index
+                break
+            participant_extra: dict[str, Any] = {}
+            if display_name:
+                # 与群 digest 同约定：拿不到显示名就不带参。
+                participant_extra["display_name"] = display_name
+            if speaker_is_owner:
+                participant_extra["speaker_is_owner"] = True
+            # 只在迁移推送成功之后才上报 trust 来源：闸门未开时插件根本不发
+            # tier/activity（纵深防御的第一层，服务端的闸门是第二层）。
+            if self._trust_reporting_ready():
+                participant_extra["speaker_tier"] = permission_level
+                participant_extra["speaker_activity_events"] = (
+                    self._participant_activity_events_for(
+                        sender_id, scoped_messages,
+                        # Keyed by the batch's START cursor only. Including
+                        # the end cursor would change the id whenever a lost
+                        # response is retried after new messages arrived: the
+                        # server already committed the original id, so the
+                        # grown retry would look like a fresh batch and count
+                        # the same prefix twice. Keying on the start makes the
+                        # retry collide with the committed id and be ignored —
+                        # under-counting the newly added tail instead, which is
+                        # fail-closed and bounded by ACTIVITY_MAX_BONUS (0.02).
+                        stable=(
+                            f"participant:{her_name}:"
+                            f"{user_data.setdefault('_speaker_trust_activity_epoch', time.time_ns())}:"
+                            f"{last_participant_digest_index}"
+                        ),
+                    )
+                )
+                channel = self._speaker_channel_for(scoped_messages)
+                if channel:
+                    participant_extra["speaker_channel"] = channel
+            result = await self.plugin.memory_bridge.post_scoped_memory_history(
+                her_name,
+                scoped_messages,
+                subject=subject,
+                speaker_label=speaker_label,
+                speaker_id=self.plugin.memory_bridge.speaker_account_id(
+                    sender_id
+                ),
+                timeout=30.0,
+                **participant_extra,
+            )
+            if result.get("status") == "error":
+                raise RuntimeError(
+                    result.get("message", "scoped participant history failed")
+                )
+            if not self._trust_persisted(result.get("trust")):
+                # HTTP 200 with ``trust.persisted == false`` means the facts are
+                # durable but the pool write is not. Retain this slice and retry
+                # the same idempotent activity/signal ids — the owner-signal
+                # replay ring is keyed on THIS request's text, so popping here
+                # would silently lose a correction for good.
+                raise RuntimeError("speaker trust update persistence failed")
+            self.plugin.logger.info(
+                f"[{reason}] 已为私聊 {sender_id} 完成 scoped 记忆结算，"
+                f"消息数: {len(scoped_messages)}"
+            )
+            user_data["last_participant_digest_index"] = next_index
+            last_participant_digest_index = next_index
+        return True
+
     async def _drain_member_buckets(self, session_key: str) -> None:
         """Flush member buckets that hit the cap, instead of dropping the
         oldest authorized turns of a group that never goes idle.
 
         The session lock is held only to take the snapshot and to hand the
-        failures back — never across the scoped POSTs. One sweep is two
-        waves of four concurrent requests at up to 30s each; holding the
-        lock for that stalls every message in the group, and the handlers
-        queued behind it keep their share of the global message semaphore,
-        so a couple of always-busy groups could wedge the whole plugin
-        (private chats included)."""
+        failures back — never across the scoped POSTs. One sweep is at
+        worst two waves of four concurrent batch requests at up to 30s
+        each (typically a single packed batch); holding the lock for that
+        stalls every message in the group, and the handlers queued behind
+        it keep their share of the global message semaphore, so a couple
+        of always-busy groups could wedge the whole plugin (private chats
+        included)."""
         snapshot: dict[str, list] = {}
         snapshot_labels: dict[str, str] = {}
         flush_target: dict[str, Any] = {}
@@ -847,6 +1272,11 @@ class QQSessionMemoryService:
                         buckets=orphan_retry["snapshot"],
                         labels=orphan_retry["labels"],
                         require_consent=True,
+                        # 同 opt-out 结算：这是末次重试，失败就"就此丢失"
+                        # （下面那条 error 日志说的正是这个）。而且这些桶
+                        # 已经作为一批失败过一次——再打一次同样的包，一次
+                        # 传输抖动就能连着抹掉同样的 8 个人。
+                        isolate_segments=True,
                     )
                 except Exception as exc:
                     self.plugin.logger.error(
@@ -864,14 +1294,26 @@ class QQSessionMemoryService:
     async def _flush_member_buckets(
         self, user_data: dict[str, Any], *, group_id: str, her_name: str,
         reason: str, buckets: dict | None = None, labels: dict | None = None,
-        require_consent: bool = False,
+        require_consent: bool = False, isolate_segments: bool = False,
     ) -> list[str]:
-        """Concurrently flush member buckets (semaphore 4).
+        """Flush member buckets in packed batches (semaphore 4).
 
-        Success pops the bucket; failures are collected and stay queued for
-        the next sweep. Serial 8x30s used to hold the session lock ~4 min,
-        exhausting the global message semaphore and never fitting the host
-        shutdown kill window."""
+        每批一次 /scoped_history segments 请求 = 一次 LLM 抽取，服务端按
+        段分派回各自的 subject，响应逐段报 ok/failed。成功段当场 pop
+        bucket+label；失败段（或整批异常）留在映射里等下一轮 sweep——
+        与逐成员时代同一份"成功即弹、失败保留"契约，只是粒度从每人一次
+        请求变成每批一次。抽取调用数从 O(发言人数) 降到 O(总消息数/批容
+        量)；最坏（每桶都接近硬顶）退化回一桶一批，与旧形态同形。
+
+        ``isolate_segments``: 一桶一请求，放弃打包省下的那几次 LLM 调用。
+        只有 **失败即永久丢弃** 的调用方该开它——那里"整批一起失败"意味着
+        一次传输抖动同时抹掉 ≤8 个人（打包前是 1 个）。有重试的路径不用开：
+        整批失败只是让这 8 个人晚一轮，代价与 1 个人晚一轮同量级，而打包
+        省下的调用是每次 sweep 都在省的。
+
+        Serial 8x30s used to hold the session lock ~4 min, exhausting the
+        global message semaphore and never fitting the host shutdown kill
+        window."""
         member_buckets = (
             buckets if buckets is not None
             else user_data.get("group_member_memory_messages") or {}
@@ -882,36 +1324,160 @@ class QQSessionMemoryService:
         )
         member_flush_sem = asyncio.Semaphore(self.MEMBER_FLUSH_CONCURRENCY)
 
-        async def _flush_one_member(
-            sender_id: str, member_messages: list,
-        ) -> str | None:
-            async with member_flush_sem:
-                if require_consent and not self._member_memory_consent_live():
-                    # 逐请求复检，因为信号量排队与 gather 的任务调度都是挂起
-                    # 点：调用点检查过之后、真正发出之前，设置侧完全可能把
-                    # 开关翻掉。默认关着——opt-out 结算复用本函数，而它恰恰
-                    # 是在开关已 False 之后调用的，那条路径必须放行。
-                    self.plugin.logger.warning(
-                        f"[{reason}] 群 {group_id} 成员 {sender_id} 发出前"
-                        f"授权已撤销，按 fail-closed 丢弃"
+        def _chronological_segment_groups() -> list[list[dict[str, Any]]]:
+            ordered_messages: list[tuple[tuple[int, int, int, int], str, Any]] = []
+            for bucket_index, (sender_id, messages) in enumerate(
+                list(member_buckets.items())
+            ):
+                for message_index, message in enumerate(list(messages or [])):
+                    raw_sequence = (
+                        message.get("_speaker_sequence")
+                        if isinstance(message, dict) else None
                     )
-                    return sender_id
+                    if isinstance(raw_sequence, int) and not isinstance(
+                        raw_sequence, bool
+                    ):
+                        key = (0, raw_sequence, bucket_index, message_index)
+                    else:
+                        # Synthetic/legacy rows without the internal stamp keep
+                        # the historical deterministic bucket order.
+                        key = (1, bucket_index, message_index, 0)
+                    ordered_messages.append((key, sender_id, message))
+            ordered_messages.sort(key=lambda item: item[0])
+
+            segments: list[dict[str, Any]] = []
+            for _, sender_id, message in ordered_messages:
+                fallback = self._speaker_permission_level_for(sender_id)
+                raw_level = (
+                    message.get("_speaker_permission_level")
+                    if isinstance(message, dict) else None
+                )
+                level = self._speaker_permission_level_for(
+                    sender_id, raw_level or fallback,
+                )
+                if (
+                    not segments
+                    or segments[-1]["sender_id"] != sender_id
+                    or segments[-1]["permission_level"] != level
+                ):
+                    segments.append({
+                        "sender_id": sender_id,
+                        "permission_level": level,
+                        "messages": [],
+                    })
+                segments[-1]["messages"].append(message)
+            # Each chronological run is its own packable group. The packer
+            # may coalesce adjacent runs into one request but cannot reorder
+            # them across speakers.
+            return [[segment] for segment in segments]
+
+        speaker_segment_groups = _chronological_segment_groups()
+
+        async def _flush_one_batch(batch_specs: list[dict]) -> list[str]:
+            async with member_flush_sem:
+                batch_senders = list(dict.fromkeys(
+                    str(spec.get("sender_id") or "") for spec in batch_specs
+                    if spec.get("sender_id")
+                ))
+                if require_consent and not self._member_memory_consent_live():
+                    # 逐批复检（与旧的逐请求复检同语义），因为信号量排队与
+                    # gather 的任务调度都是挂起点：调用点检查过之后、真正发
+                    # 出之前，设置侧完全可能把开关翻掉。默认关着——opt-out
+                    # 结算复用本函数，而它恰恰是在开关已 False 之后调用的，
+                    # 那条路径必须放行。
+                    self.plugin.logger.warning(
+                        f"[{reason}] 群 {group_id} 一批 {len(batch_senders)} "
+                        f"个成员发出前授权已撤销，按 fail-closed 丢弃"
+                    )
+                    return list(batch_senders)
+                def _member_segment(spec: dict) -> dict[str, Any]:
+                    sender_id = spec["sender_id"]
+                    permission_level = spec["permission_level"]
+                    messages = []
+                    excluded_fact_identities: set[tuple[str, str, str, str]] = set()
+                    for message in spec["messages"]:
+                        if (
+                            isinstance(message, dict)
+                            and "_trust_signal_excluded_fact_identities" in message
+                        ):
+                            excluded_fact_identities.update(
+                                tuple(str(part) for part in identity)
+                                for identity in (
+                                    message.get(
+                                        "_trust_signal_excluded_fact_identities"
+                                    ) or []
+                                )
+                                if isinstance(identity, (list, tuple))
+                                and len(identity) == 4
+                                and all(identity)
+                            )
+                            message = dict(message)
+                            message.pop(
+                                "_trust_signal_excluded_fact_identities", None,
+                            )
+                        messages.append(message)
+                    segment: dict[str, Any] = {
+                        "messages": messages,
+                        "subject": (
+                            self.plugin.memory_bridge.group_participant_subject(
+                                group_id, sender_id,
+                            )
+                        ),
+                        "speaker_label": (
+                            str(member_labels.get(sender_id) or sender_id)[:64]
+                        ),
+                        "speaker_id": (
+                            self.plugin.memory_bridge.speaker_account_id(
+                                sender_id
+                            )
+                        ),
+                    }
+                    tier, is_owner = self._speaker_identity_for(
+                        sender_id, permission_level,
+                    )
+                    if self._trust_reporting_ready():
+                        # 只上报权限档位：分数由服务端按全局 trust 池算。
+                        segment["speaker_tier"] = tier
+                        segment["speaker_activity_events"] = (
+                            self._speaker_activity_events_for(
+                                sender_id, messages,
+                            )
+                        )
+                        channel = self._speaker_channel_for(messages)
+                        if channel:
+                            segment["speaker_channel"] = channel
+                    if is_owner:
+                        segment["speaker_is_owner"] = True
+                        if excluded_fact_identities:
+                            segment[
+                                "trust_signal_excluded_fact_identities"
+                            ] = sorted(
+                                excluded_fact_identities
+                            )
+                    # 显示名 = label 剥掉 "(sender_id)" 后缀的昵称本体
+                    # （persona 标题里 subject_id 已含数字 id，不重复）。
+                    # label 退化成纯 id 时不加键，标题回退裸 id 形态。
+                    display_name = QQDisplayNameService.display_name_from_label(
+                        member_labels.get(sender_id), sender_id,
+                    )
+                    if display_name:
+                        segment["display_name"] = display_name
+                    return segment
+
+                segments = [
+                    _member_segment(spec) for spec in batch_specs
+                ]
                 try:
                     # 外层再包一次墙钟上限：httpx 的 timeout= 是给 connect /
                     # read / write / pool **各自**一份，不是整次请求的总时长
                     # ——连接池被别的群排空占满时，光等池就能花掉一份，再花
                     # 一份读响应。等待上限是按"波数 × 单发超时"推的，单发不
-                    # 真的封顶，那个推导就不成立。
+                    # 真的封顶，那个推导就不成立。批的输入工作量上界与旧单
+                    # 发同口径（≤200 条消息 = 一次抽取），30s 预算不变。
                     result = await asyncio.wait_for(
-                        self.plugin.memory_bridge.post_scoped_memory_history(
+                        self.plugin.memory_bridge.post_scoped_memory_history_batch(
                             her_name,
-                            member_messages,
-                            subject=self.plugin.memory_bridge.group_participant_subject(
-                                group_id, sender_id,
-                            ),
-                            speaker_label=(
-                                str(member_labels.get(sender_id) or sender_id)[:64]
-                            ),
+                            segments,
                             timeout=self.SCOPED_HISTORY_TIMEOUT_SECONDS,
                         ),
                         timeout=self.SCOPED_HISTORY_TIMEOUT_SECONDS,
@@ -923,35 +1489,620 @@ class QQSessionMemoryService:
                                 "scoped participant history failed",
                             )
                         )
+                    segment_results = result.get("segments")
+                    if (
+                        not isinstance(segment_results, list)
+                        or len(segment_results) != len(batch_specs)
+                    ):
+                        # 响应形状与请求对不上时绝不按位置乱猜——整批按
+                        # 失败保留重试（fail-closed）。
+                        raise RuntimeError(
+                            "malformed batch response: segment count mismatch"
+                        )
                 except Exception as exc:
                     self.plugin.logger.error(
-                        f"[{reason}] 群 {group_id} 成员 {sender_id} "
-                        f"记忆结算失败: {exc}"
+                        f"[{reason}] 群 {group_id} 一批 {len(batch_senders)} "
+                        f"个成员记忆结算失败: {exc}"
                     )
-                    return sender_id
-                member_buckets.pop(sender_id, None)
-                # label 与 bucket 同生命周期：只弹 bucket 的话，活跃群会
-                # 让 label 映射无限增长，而参与者名额是按 bucket 数算的，
-                # 关闭成员记忆时（bucket 已空）也没人清这些残留。
-                if isinstance(member_labels, dict):
-                    member_labels.pop(sender_id, None)
-                return None
+                    return list(batch_senders)
+                failed: set[str] = set()
+                successful_message_ids: dict[str, set[int]] = {}
+                chronological_predecessor_failed = False
+
+                def _created_fact_identities(result: dict) -> set[tuple[str, ...]]:
+                    return {
+                        tuple(str(part) for part in identity)
+                        for identity in (
+                            result.get("created_fact_identities")
+                            if isinstance(
+                                result.get("created_fact_identities"), list,
+                            )
+                            else result.get("fact_identities") or []
+                        )
+                        if isinstance(identity, (list, tuple))
+                        and len(identity) == 4
+                        and all(identity)
+                    }
+
+                def _add_fact_exclusions(
+                    spec: dict, fact_identities: set[tuple[str, ...]],
+                ) -> None:
+                    if not fact_identities:
+                        return
+                    sender_id = str(spec.get("sender_id") or "")
+                    if not self._speaker_is_owner_for(
+                        sender_id, spec.get("permission_level"),
+                    ):
+                        return
+                    for message in spec["messages"]:
+                        if not isinstance(message, dict):
+                            continue
+                        existing = message.get(
+                            "_trust_signal_excluded_fact_identities"
+                        )
+                        excluded = {
+                            tuple(str(part) for part in identity)
+                            for identity in (
+                                existing if isinstance(existing, list) else []
+                            )
+                            if isinstance(identity, (list, tuple))
+                            and len(identity) == 4
+                            and all(identity)
+                        }
+                        excluded.update(fact_identities)
+                        message[
+                            "_trust_signal_excluded_fact_identities"
+                        ] = [list(identity) for identity in sorted(excluded)]
+
+                def _remember_later_fact_exclusions(
+                    spec: dict, segment_index: int,
+                ) -> None:
+                    """Keep already-persisted later facts out of owner replay."""
+                    later_fact_identities: set[tuple[str, ...]] = set()
+                    for later_result in segment_results[segment_index + 1:]:
+                        if (
+                            isinstance(later_result, dict)
+                            and later_result.get("status") == "ok"
+                        ):
+                            later_fact_identities.update(
+                                _created_fact_identities(later_result)
+                            )
+                    _add_fact_exclusions(spec, later_fact_identities)
+
+                def _remember_current_fact_for_earlier_owners(
+                    segment_result: dict, segment_index: int,
+                ) -> None:
+                    """Attach this durable fact to every retained earlier owner."""
+                    created = _created_fact_identities(segment_result)
+                    for earlier_spec in batch_specs[:segment_index]:
+                        _add_fact_exclusions(earlier_spec, created)
+
+                for segment_index, (spec, segment_result) in enumerate(zip(
+                    batch_specs, segment_results,
+                )):
+                    sender_id = spec["sender_id"]
+                    if (
+                        isinstance(segment_result, dict)
+                        and segment_result.get("status") == "ok"
+                    ):
+                        if chronological_predecessor_failed:
+                            # The server persisted this segment after a gap in
+                            # authored chronology. Retain it and retry after
+                            # the missing predecessor lands; exact dedup keeps
+                            # the fact write idempotent while trust/activity
+                            # effects remain ordered.
+                            role_label = (
+                                "主人" if self._speaker_is_owner_for(
+                                    sender_id, spec.get("permission_level"),
+                                ) else "成员"
+                            )
+                            self.plugin.logger.warning(
+                                f"[{reason}] 群 {group_id} {role_label} "
+                                f"{sender_id} 的前序段失败，保留本段重试"
+                            )
+                            _remember_current_fact_for_earlier_owners(
+                                segment_result, segment_index,
+                            )
+                            failed.add(sender_id)
+                            continue
+                        try:
+                            dropped = int(segment_result.get("dropped") or 0)
+                        except (TypeError, ValueError):
+                            dropped = 0
+                        if dropped:
+                            # 服务端丢的是**不承载内容**的垃圾条目（归属由
+                            # 段对象给定），所以照样 pop；记一行是为了让
+                            # "模型输出在变脏"在插件日志里留痕。
+                            self.plugin.logger.info(
+                                f"[{reason}] 群 {group_id} 成员 {sender_id} "
+                                f"本次抽取丢弃了 {dropped} 条无内容条目"
+                            )
+                        if not self._trust_persisted(
+                            segment_result.get("trust")
+                        ):
+                            # Facts are durable, the pool write is not: retain
+                            # this segment and retry the same idempotent
+                            # activity/signal ids. Also exclude facts authored
+                            # by LATER successful segments from the retry, so a
+                            # retained owner segment cannot borrow knowledge it
+                            # did not have when it was authored — that second
+                            # responsibility is independent of trust and must
+                            # survive here.
+                            _remember_later_fact_exclusions(spec, segment_index)
+                            self.plugin.logger.warning(
+                                f"[{reason}] 群 {group_id} 成员 {sender_id} "
+                                f"的 trust 未落盘，保留本段重试"
+                            )
+                            failed.add(sender_id)
+                            continue
+                        successful_message_ids.setdefault(sender_id, set()).update(
+                            id(message) for message in spec["messages"]
+                        )
+                        continue
+                    self.plugin.logger.error(
+                        f"[{reason}] 群 {group_id} 成员 {sender_id} "
+                        f"记忆结算失败（批内单段失败）"
+                    )
+                    failed.add(sender_id)
+                    chronological_predecessor_failed = True
+                for sender_id in batch_senders:
+                    succeeded = successful_message_ids.get(sender_id, set())
+                    if succeeded and sender_id in member_buckets:
+                        member_buckets[sender_id] = [
+                            message
+                            for message in member_buckets[sender_id]
+                            if id(message) not in succeeded
+                        ]
+                    if member_buckets.get(sender_id):
+                        continue
+                    member_buckets.pop(sender_id, None)
+                    # label 与 bucket 同生命周期：只弹 bucket 的话，活跃
+                    # 群会让 label 映射无限增长，而参与者名额是按 bucket
+                    # 数算的，关闭成员记忆时（bucket 已空）也没人清这些
+                    # 残留。批内失败段的 label 与 bucket 一起留下。
+                    if isinstance(member_labels, dict):
+                        member_labels.pop(sender_id, None)
+                return [sid for sid in batch_senders if sid in failed]
 
         # 冲刷进行中标记：设置侧的快照合并看它决定"追加进这一代"还是
         # "另起一代"。往正在飞的那一代里追加会被它成功后的整桶 pop 带走。
         self._enter_member_flush(user_data)
-        flush_jobs = [
-            _flush_one_member(sender_id, member_messages)
-            for sender_id, member_messages in list(member_buckets.items())
-            if sender_id and member_messages
-        ]
-        if not flush_jobs:
+        batches = self._pack_member_segment_groups(
+            speaker_segment_groups, isolate_segments=isolate_segments,
+        )
+        if not batches:
             self._finish_member_flush_generation(user_data)
             return []
+        # Chronological runs can outnumber participant buckets (for example,
+        # permission changes alternate one-message segments). Bound each sweep
+        # to the same two-wave contract used by the settlement join timeout;
+        # unattempted messages remain in their buckets for the next sweep.
+        batch_attempt_limit = (
+            len(batches) if isolate_segments
+            else self.GROUP_MEMBER_MAX_PARTICIPANTS
+        )
+        deferred_batches = batches[batch_attempt_limit:]
+        batches = batches[:batch_attempt_limit]
         try:
-            return [sid for sid in await asyncio.gather(*flush_jobs) if sid]
+            # Completion time becomes fact chronology on the memory server.
+            # Keep every request boundary in authored order, including batches
+            # without an owner segment, so request latency cannot reverse two
+            # members' conflicting statements. The per-sweep serial cap below
+            # keeps the session-lock wait bounded; leftovers stay retryable.
+            chains: list[list[list[dict]]] = [batches]
+
+            def _chain_attempt_limit(chain: list[list[dict]]) -> int:
+                if isolate_segments:
+                    # Terminal opt-out/orphan settlement has no next sweep.
+                    # Every isolated request must be attempted even if an
+                    # earlier request fails; isolation bounds each failure to
+                    # one sender, and no retry remains whose chronology could
+                    # be overtaken.
+                    return len(chain)
+                return -(
+                    -self.GROUP_MEMBER_MAX_PARTICIPANTS
+                    // self.MEMBER_FLUSH_CONCURRENCY
+                )
+
+            async def _flush_chain(chain: list[list[dict]]) -> list[str]:
+                failed: list[str] = []
+                serial_attempt_limit = _chain_attempt_limit(chain)
+                attempted = chain[:serial_attempt_limit]
+                for batch_index, batch in enumerate(attempted):
+                    batch_failed = await _flush_one_batch(batch)
+                    failed.extend(batch_failed)
+                    if batch_failed and not isolate_segments:
+                        # Later chronological work must not overtake a failed
+                        # predecessor. Report its still-buffered senders too,
+                        # so callers do not mistake "not attempted" for ok.
+                        failed.extend(
+                            str(spec.get("sender_id") or "")
+                            for later in chain[batch_index + 1:]
+                            for spec in later if spec.get("sender_id")
+                        )
+                        break
+                else:
+                    deferred_in_chain = chain[serial_attempt_limit:]
+                    if deferred_in_chain:
+                        failed.extend(
+                            str(spec.get("sender_id") or "")
+                            for later in deferred_in_chain
+                            for spec in later if spec.get("sender_id")
+                        )
+                return list(dict.fromkeys(failed))
+
+            failed_lists = await asyncio.gather(
+                *(_flush_chain(chain) for chain in chains)
+            )
+            deferred_senders = [
+                str(spec.get("sender_id") or "")
+                for batch in deferred_batches for spec in batch
+                if spec.get("sender_id")
+            ]
+            deferred_count = len(deferred_batches) + sum(
+                max(0, len(chain) - _chain_attempt_limit(chain))
+                for chain in chains
+            )
+            if deferred_count:
+                self.plugin.logger.info(
+                    f"[{reason}] 群 {group_id} 为保持排空等待上限，"
+                    f"延后 {deferred_count} 个批次"
+                )
+            failed_senders = [
+                sid
+                for failed in failed_lists
+                for sid in failed
+            ]
+            return list(dict.fromkeys(failed_senders + deferred_senders))
         finally:
             self._finish_member_flush_generation(user_data)
+
+    @staticmethod
+    def _pack_member_batches(
+        member_buckets: dict, *, isolate_segments: bool = False,
+    ) -> list[list[str]]:
+        """Greedy-pack sender buckets into batches of sender ids.
+
+        ``isolate_segments`` 把每批压到一段（= 打包前的形态），给"失败即
+        永久丢弃"的调用方用。
+
+        每批：段数 ≤ SCOPED_HISTORY_BATCH_MAX_SEGMENTS、消息总量 ≤
+        SCOPED_HISTORY_BATCH_MAX_MESSAGES（服务端同口径校验）。单桶硬顶
+        GROUP_MEMBER_HARD_LIMIT(150) < 批容量(200)，一个桶永远不用跨批
+        拆分；防御性地，真出现超限单桶时让它独占一批（服务端 422 → 该批
+        按失败保留，与旧单发 422 行为一致，不在这里静默截断）。一趟
+        sweep 的桶数 ≤ GROUP_MEMBER_MAX_PARTICIPANTS，批数 ≤ 桶数，所以
+        SETTLE_JOIN_TIMEOUT_LONG_SECONDS 的"波数 × 单发超时"推导在最坏
+        情形下与逐成员时代一致。"""
+        from config import (
+            SCOPED_HISTORY_BATCH_MAX_MESSAGES,
+            SCOPED_HISTORY_BATCH_MAX_SEGMENTS,
+        )
+
+        max_segments = (
+            1 if isolate_segments else SCOPED_HISTORY_BATCH_MAX_SEGMENTS
+        )
+        batches: list[list[str]] = []
+        current: list[str] = []
+        current_messages = 0
+        for sender_id, messages in list(member_buckets.items()):
+            if not sender_id or not messages:
+                continue
+            count = len(messages)
+            if current and (
+                current_messages + count > SCOPED_HISTORY_BATCH_MAX_MESSAGES
+                or len(current) >= max_segments
+            ):
+                batches.append(current)
+                current = []
+                current_messages = 0
+            current.append(sender_id)
+            current_messages += count
+        if current:
+            batches.append(current)
+        return batches
+
+    def _pack_member_segment_groups(
+        self, groups: list[list[dict]], *, isolate_segments: bool = False,
+    ) -> list[list[dict]]:
+        """Pack ordered permission runs within the server's batch limits.
+
+        Owner segments close their request.  Their response may carry durable
+        trust events, so every later segment must be materialized only after
+        those events have been applied by the serial flush chain.
+        """
+        from config import (
+            SCOPED_HISTORY_BATCH_MAX_MESSAGES,
+            SCOPED_HISTORY_BATCH_MAX_SEGMENTS,
+        )
+
+        max_segments = 1 if isolate_segments else SCOPED_HISTORY_BATCH_MAX_SEGMENTS
+        split_groups: list[tuple[list[dict], bool]] = []
+        for group in groups:
+            chunks: list[list[dict]] = []
+            chunk: list[dict] = []
+            chunk_messages = 0
+            for raw_spec in group:
+                spec_messages = list(raw_spec.get("messages") or [])
+                while spec_messages:
+                    room = SCOPED_HISTORY_BATCH_MAX_MESSAGES - chunk_messages
+                    if chunk and (len(chunk) >= max_segments or room <= 0):
+                        chunks.append(chunk)
+                        chunk = []
+                        chunk_messages = 0
+                        room = SCOPED_HISTORY_BATCH_MAX_MESSAGES
+                    take = min(len(spec_messages), room)
+                    spec = dict(raw_spec)
+                    spec["messages"] = spec_messages[:take]
+                    chunk.append(spec)
+                    chunk_messages += take
+                    spec_messages = spec_messages[take:]
+                    if len(chunk) >= max_segments or (
+                        chunk_messages >= SCOPED_HISTORY_BATCH_MAX_MESSAGES
+                    ):
+                        chunks.append(chunk)
+                        chunk = []
+                        chunk_messages = 0
+            if chunk:
+                chunks.append(chunk)
+            oversized = len(chunks) > 1
+            split_groups.extend((part, oversized) for part in chunks)
+
+        batches: list[list[dict]] = []
+        current: list[dict] = []
+        current_messages = 0
+        for group, split_from_sender in split_groups:
+            if not group:
+                continue
+            group_messages = sum(len(spec.get("messages") or []) for spec in group)
+            if isolate_segments or split_from_sender:
+                if current:
+                    batches.append(current)
+                    current = []
+                    current_messages = 0
+                batches.append(group)
+                continue
+            current_senders = {
+                str(spec.get("sender_id") or "") for spec in current
+            }
+            group_senders = {
+                str(spec.get("sender_id") or "") for spec in group
+            }
+            if current and (
+                current_messages + group_messages > SCOPED_HISTORY_BATCH_MAX_MESSAGES
+                or len(current) + len(group) > SCOPED_HISTORY_BATCH_MAX_SEGMENTS
+                or bool(current_senders & group_senders)
+            ):
+                batches.append(current)
+                current = []
+                current_messages = 0
+            current.extend(group)
+            current_messages += group_messages
+            if any(
+                self._speaker_is_owner_for(
+                    str(spec.get("sender_id") or ""),
+                    spec.get("permission_level"),
+                )
+                for spec in group
+            ):
+                batches.append(current)
+                current = []
+                current_messages = 0
+        if current:
+            batches.append(current)
+        return batches
+
+    def _group_display_name(self, group_id: object) -> str | None:
+        """The group's human-readable name for scoped writes, or None.
+
+        防御性 getattr：合成测试的 plugin stub 未必装配 display_name
+        service；名字是装饰性元数据，拿不到就退化成不带（persona 保留
+        上次盖上的名字，自愈）。"""
+        service = getattr(self.plugin, "display_name_service", None)
+        if service is None:
+            return None
+        try:
+            return service.group_display_name(group_id)
+        except Exception:
+            return None
+
+    def _speaker_permission_level_for(
+        self, sender_id: str, permission_level: str | None = None,
+    ) -> str:
+        """Freeze one canonical permission tier at message-authoring time."""
+        level = str(permission_level or "").strip().lower()
+        if level == "user":
+            level = "normal"
+        if level in {"admin", "trusted", "normal", "none"}:
+            return level
+        manager = getattr(self.plugin, "permission_mgr", None)
+        try:
+            get_level = getattr(manager, "get_permission_level", None)
+            if get_level is not None:
+                resolved = str(get_level(sender_id) or "none").strip().lower()
+                return resolved if resolved in {
+                    "admin", "trusted", "normal", "none",
+                } else "none"
+        except Exception:
+            # Lightweight integrations can omit permission state entirely.
+            pass
+        return "none"
+
+    def _speaker_identity_for(
+        self, sender_id: str, permission_level: str | None = None,
+    ) -> tuple[str, bool]:
+        """The single source of truth: ``(canonical_tier, is_owner)``.
+
+        ``is_owner`` is DERIVED from the canonical tier rather than computed on
+        a second, differently-normalized path. The two used to disagree —
+        the tier resolver aliased ``"user" -> "normal"``, lowercased and
+        whitelisted, while the owner check compared the raw value against
+        ``"admin"`` — so a caller passing ``"Admin"`` got tier ``"none"`` and
+        owner ``False``, but a caller passing ``"admin "`` could get tier
+        ``"none"`` with owner ``False`` for a different reason. Now that the
+        server 422s ``speaker_is_owner=True`` without ``speaker_tier ==
+        "admin"``, any drift between the two would become a hard request
+        failure, so they must be one function.
+        """
+        tier = self._speaker_permission_level_for(sender_id, permission_level)
+        return tier, tier == "admin"
+
+    def _speaker_is_owner_for(
+        self, sender_id: str, permission_level: str | None = None,
+    ) -> bool:
+        """Use the request-side permission tier, never trust score or content."""
+        return self._speaker_identity_for(sender_id, permission_level)[1]
+
+    def _trust_reporting_ready(self) -> bool:
+        """Whether the legacy ledger has been pushed and trust may be reported.
+
+        Defence in depth, first layer: until the migration push has succeeded,
+        the plugin sends no ``speaker_tier`` / ``speaker_activity_events`` at
+        all. The server's own barrier is the second layer — if this gate is
+        buggy and a tier arrives early, the response reports
+        ``trust.gated = "legacy_import_pending"`` rather than double-counting.
+
+        Missing event (lightweight integrations, old test harnesses) reads as
+        NOT ready: no trust reporting is always safe, the reverse is not.
+        """
+        ready = getattr(self.plugin, "trust_ready", None)
+        try:
+            return bool(ready is not None and ready.is_set())
+        except Exception:
+            return False
+
+    def _trust_persisted(self, trust_block: object) -> bool:
+        """Read the response's ``trust`` block. Absent/None ⇒ nothing to retry.
+
+        ``persisted`` is tri-state: ``true`` (written), ``false`` (RETAIN and
+        retry), ``null`` (this segment carried no server-derived trust source,
+        so there was nothing to write).
+
+        ``gated`` is reported but does NOT force a retry: during the legacy
+        import barrier the owner's signal is already durable on the fact row
+        while the pool deliberately defers it, and the accepted cost is that it
+        is folded later by an owner repeat or a manual reconcile — not that the
+        whole bucket spins. It IS logged, because a silent deferral is the one
+        thing that would make the window impossible to notice.
+        """
+        if not isinstance(trust_block, dict):
+            return True
+        if trust_block.get("gated"):
+            self.plugin.logger.warning(
+                f"speaker trust 本段被闸门推迟结算："
+                f"{trust_block.get('gated')}（信号已 durable 在 fact 行上，"
+                f"闸门开后需主人复述或手动 reconcile 才折叠）"
+            )
+            # A barrier we already opened has come back ⇒ memory_server was
+            # restarted or its pool file was recreated underneath us. Re-arm the
+            # migration push instead of waiting for the plugin's own restart:
+            # otherwise QQ trust stays gated for the rest of this process's
+            # life, which is exactly the "silent, unrecoverable" failure the
+            # every-startup re-push exists to prevent. The server's per-account
+            # sentinel makes the re-push a no-op when it is not needed.
+            self._rearm_trust_migration()
+        return trust_block.get("persisted") is not False
+
+    def _rearm_trust_migration(self) -> None:
+        """Restart the legacy push after the server lost its pool. Idempotent."""
+        plugin = self.plugin
+        trust_ready = getattr(plugin, "trust_ready", None)
+        if trust_ready is None or not trust_ready.is_set():
+            # Never armed, or a push is already in flight — nothing to redo.
+            return
+        settings_service = getattr(plugin, "settings_service", None)
+        pusher = getattr(
+            settings_service, "push_legacy_speaker_trust_forever", None,
+        )
+        if pusher is None:
+            return
+        existing = getattr(plugin, "_trust_migration_task", None)
+        if existing is not None and not existing.done():
+            return
+        trust_ready.clear()
+        plugin.logger.warning(
+            "speaker trust 闸门重新变回 pending（服务端应已重建空池），"
+            "重新推送存量账本；期间不再上报 tier"
+        )
+        plugin._trust_migration_task = asyncio.create_task(pusher())
+
+    @staticmethod
+    def _speaker_channel_for(messages: list[dict]) -> str | None:
+        """The transport these messages actually arrived on.
+
+        Read from the message envelope, NEVER from the live config: a session
+        buffer can span a transport switch (the switch is immediate and does
+        not clear buffers), so reading the current mode at flush time would
+        stamp the wrong channel on messages received under the old one.
+        Purely an observed attribute — it never affects any score.
+        """
+        for message in messages or []:
+            if not isinstance(message, dict):
+                continue
+            channel = str(message.get("_speaker_channel") or "").strip().lower()
+            if channel:
+                return channel
+        return None
+
+    @staticmethod
+    def _activity_event_id(account_id: str, stable: str) -> str:
+        """Idempotent activity token. MUST be hashed, on both paths.
+
+        The wire pattern is anchored ``[A-Za-z0-9_.:-]{8,96}``, so emitting a
+        raw ``participant:{her_name}:{epoch}:{last}:{next}`` would 422 the whole
+        request for any character whose name contains a space or CJK — and what
+        gets stuck is not trust but the entire scoped memory write.
+        """
+        return "activity_" + hashlib.sha256(
+            f"{account_id}|{stable}".encode("utf-8")
+        ).hexdigest()[:24]
+
+    def _speaker_activity_events_for(
+        self, sender_id: str, messages: list[dict],
+    ) -> list[dict]:
+        """Per-message activity events for a group member bucket.
+
+        Per-message rather than per-batch: a batch-level identity changes when a
+        retry grows the batch, so already-acknowledged messages get counted
+        again — which is exactly why the old code needed a three-layer
+        ``cancelled.speaker_trust_persisted`` protocol. Every message in a
+        member bucket is ``role == "user"``, so ``count=1`` each is byte-equal
+        to the old ``len(observation_texts(...))``.
+        """
+        account_id = self.plugin.memory_bridge.speaker_account_id(sender_id)
+        events: list[dict] = []
+        seen: set[str] = set()
+        for message in messages or []:
+            if not isinstance(message, dict):
+                continue
+            stable = str(message.get("_speaker_activity_id") or "")
+            if not stable:
+                continue
+            event_id = self._activity_event_id(account_id, stable)
+            if event_id in seen:
+                continue
+            seen.add(event_id)
+            events.append({"id": event_id, "count": 1})
+        return events
+
+    def _participant_activity_events_for(
+        self, sender_id: str, messages: list[dict], stable: str,
+    ) -> list[dict]:
+        """One batch-level event for the private participant path.
+
+        That path has no per-message stamp, so the epoch rotation stays the
+        stability source. ``count`` is the authored-message count, unchanged.
+        """
+        from memory.speaker_trust import observation_texts
+
+        count = len(observation_texts(messages or []))
+        if count <= 0:
+            return []
+        account_id = self.plugin.memory_bridge.speaker_account_id(sender_id)
+        return [{
+            "id": self._activity_event_id(account_id, stable),
+            "count": count,
+        }]
 
     def _member_memory_consent_live(self) -> bool:
         """Whether member memory is still authorized right now.
@@ -1042,12 +2193,34 @@ class QQSessionMemoryService:
                 current.pop("member_settle_generation_promoted", None)
                 failed: list[str] = []
                 if group_id and her_name and snapshot:
-                    failed = await self._flush_member_buckets(
-                        current, group_id=group_id, her_name=her_name,
-                        reason="member_memory_disabled",
-                        buckets=snapshot,
-                        labels=current.get("pending_settle_labels") or {},
-                    )
+                    try:
+                        failed = await asyncio.wait_for(
+                            self._flush_member_buckets(
+                                current, group_id=group_id, her_name=her_name,
+                                reason="member_memory_disabled",
+                                buckets=snapshot,
+                                labels=(
+                                    current.get("pending_settle_labels") or {}
+                                ),
+                                # 这条路径**没有下一轮**：失败的桶按 opt-out
+                                # 语义当场永久丢弃。一桶一请求把单次传输抖动
+                                # 的爆炸半径保持为一个成员。
+                                isolate_segments=True,
+                            ),
+                            # 隔离请求为保持事实与 trust 信号的 authored-order
+                            # 必须串行，不能借 MEMBER_FLUSH_CONCURRENCY 抢跑。
+                            # 给整条链独立墙钟上限；服务异常时取消剩余请求并
+                            # 走下方可追溯的 fail-closed 丢弃，避免持有会话锁
+                            # 最坏 8 * 30 秒并阻塞关机最后一次结算。
+                            timeout=self.SETTLE_JOIN_TIMEOUT_LONG_SECONDS,
+                        )
+                    except asyncio.TimeoutError:
+                        failed = list(snapshot)
+                        self.plugin.logger.error(
+                            f"[member_memory_disabled] 群 {group_id} 隔离结算"
+                            f"超过 {self.SETTLE_JOIN_TIMEOUT_LONG_SECONDS:.1f}s，"
+                            f"剩余 {len(failed)} 个成员 bucket 按 opt-out 丢弃"
+                        )
                     if failed:
                         self.plugin.logger.error(
                             f"[member_memory_disabled] 群 {group_id} 有 "
@@ -1203,6 +2376,75 @@ class QQSessionMemoryService:
                 if not group_settled:
                     # 成员侧已经排空，群 digest 留给下一轮（游标精确）。
                     return False
+            elif user_data.get("private_memory_mode") == "participant":
+                # 私聊 participant 会话：以对方为主体的 scoped 结算，**绝不**
+                # 落到下面的 legacy /process——那是主人的私聊语料。
+                cutoff = user_data.get("participant_opt_out_cutoff", None)
+                consumed_cutoff = cutoff
+                if cutoff is not None:
+                    # opt-out 截止点（对偶群分支）：只结算开关翻 OFF 时刻
+                    # 之前的历史。
+                    conversation_history = conversation_history[:max(0, int(cutoff))]
+                sender_id = str(user_data.get("sender_id") or "").strip()
+                if not sender_id:
+                    # 防御性 fail-closed：没有 sender 就没有合法的写入目标。
+                    # 宁可丢弃这段缓冲（走正常 pop+close 收尾），也不能把
+                    # 它写进任何别的语料域。
+                    self.plugin.logger.error(
+                        f"[{reason}] participant 会话 {session_key} 缺 "
+                        f"sender_id，按 fail-closed 丢弃未结算缓冲"
+                    )
+                else:
+                    last_participant_digest_index = max(
+                        0, int(user_data.get("last_participant_digest_index", 0)),
+                    )
+                    # 未授权边界地板 + cutoff 豁免（对偶群分支）：cutoff
+                    # 之后记下的边界属于下一个时代，套到本窗口会把整段已
+                    # 授权前缀当作已处理而丢弃。
+                    nonconsent_floor = int(
+                        user_data.get("nonconsent_history_end", 0) or 0
+                    )
+                    if cutoff is not None and nonconsent_floor > int(cutoff):
+                        nonconsent_floor = 0
+                    last_participant_digest_index = max(
+                        last_participant_digest_index, nonconsent_floor,
+                    )
+                    if last_participant_digest_index > len(conversation_history):
+                        # 历史被重复守卫重置后旧游标越界：钳到当前长度并
+                        # 回写（对偶群分支），绝不回退。同步换 activity
+                        # epoch，防止重置后同一下标范围复用旧事件 ID。
+                        last_participant_digest_index = len(conversation_history)
+                        user_data["last_participant_digest_index"] = (
+                            last_participant_digest_index
+                        )
+                        previous_epoch = user_data.get(
+                            "_speaker_trust_activity_epoch"
+                        )
+                        next_epoch = time.time_ns()
+                        if str(next_epoch) == str(previous_epoch):
+                            next_epoch += 1
+                        user_data["_speaker_trust_activity_epoch"] = next_epoch
+                    try:
+                        participant_settled = (
+                            await self._settle_participant_digest_batches(
+                                user_data=user_data, sender_id=sender_id,
+                                her_name=her_name, reason=reason,
+                                conversation_history=conversation_history,
+                                last_participant_digest_index=(
+                                    last_participant_digest_index
+                                ),
+                                stop_at_provisional=retain_session,
+                            )
+                        )
+                    except Exception as digest_error:
+                        self.plugin.logger.error(
+                            f"[{reason}] 私聊 {sender_id} scoped 结算失败: "
+                            f"{digest_error}"
+                        )
+                        participant_settled = False
+                    if not participant_settled:
+                        # 游标停在最后一个成功批次，留给下一轮重试。
+                        return False
             else:
                 last_synced_index = int(user_data.get("last_synced_index", 0))
                 remaining_messages = self.conversation_slice_to_memory_messages(
@@ -1234,8 +2476,12 @@ class QQSessionMemoryService:
             # compare-and-pop：分批结算窗口长达数分钟，期间第二次 OFF 盖章
             # 会覆写 cutoff——那个更新的 cutoff 本次并未消费，删掉它会让
             # 排队中的第二个 OFF 结算失去 opt-out 围栏。
-            if user_data.get("group_opt_out_cutoff") == consumed_cutoff:
-                user_data.pop("group_opt_out_cutoff", None)
+            cutoff_key = (
+                "group_opt_out_cutoff" if user_data.get("is_group")
+                else "participant_opt_out_cutoff"
+            )
+            if user_data.get(cutoff_key) == consumed_cutoff:
+                user_data.pop(cutoff_key, None)
             return True
         self.plugin._user_sessions.pop(session_key, None)
         try:
@@ -1273,11 +2519,18 @@ class QQSessionMemoryService:
                     # 尾部全是被过滤的行：推进游标即可，无须发送。
                     user_data["last_group_digest_index"] = next_index
                 break
+            # 拿不到群名就不带参（而不是传 None）：优雅退化的同时保持旧
+            # 调用形状——display_name 只在真有名字时出现。
+            digest_extra: dict[str, Any] = {}
+            group_display_name = self._group_display_name(group_id)
+            if group_display_name:
+                digest_extra["display_name"] = group_display_name
             result = await self.plugin.memory_bridge.post_scoped_memory_history(
                 her_name,
                 scoped_messages,
                 subject=self.plugin.memory_bridge.group_subject(group_id),
                 timeout=30.0,
+                **digest_extra,
             )
             if result.get("status") == "error":
                 raise RuntimeError(result.get("message", "scoped history failed"))
@@ -1453,9 +2706,44 @@ class QQSessionMemoryService:
 
         async def _invalidate() -> None:
             user_data = self.plugin._user_sessions.get(session_key)
-            if user_data and user_data.get("memory_enabled"):
-                finalized = await self.finalize_user_memory_session(session_key, reason="permission_change")
+            buffer_service = getattr(
+                self.plugin, "reply_buffer_service", None,
+            )
+            if buffer_service is not None:
+                # Permission mutation has already happened. Kill every delayed
+                # reply from the old permission era before either settlement
+                # or the retained-retry branch can leave it deliverable.
+                buffer_service.cancel_pending(session_key, user_data)
+            if user_data and (
+                user_data.get("memory_enabled")
+                or user_data.get("pending_disable_settle")
+            ):
+                retrying_disabled_settlement = bool(
+                    user_data.get("pending_disable_settle")
+                    and not user_data.get("memory_enabled")
+                )
+                if retrying_disabled_settlement:
+                    # The cutoff is the authorization boundary; temporarily
+                    # enable the finalizer exactly as discard/shutdown do.
+                    user_data["memory_enabled"] = True
+                try:
+                    finalized = await self.finalize_user_memory_session(
+                        session_key, reason="permission_change",
+                    )
+                finally:
+                    survivor = self.plugin._user_sessions.get(session_key)
+                    if retrying_disabled_settlement and survivor is user_data:
+                        user_data["memory_enabled"] = False
                 if finalized:
+                    return
+                if user_data.get("private_memory_mode") == "participant":
+                    # A failed participant settlement retains unsent history
+                    # for the next retry. Popping/closing here would make the
+                    # failure irreversible and silently discard that history.
+                    self.plugin.logger.warning(
+                        f"参与者私聊结算失败，保留会话等待重试（{session_key}）"
+                    )
+                    user_data["pending_permission_discard"] = True
                     return
 
             user_data = self.plugin._user_sessions.pop(session_key, None)

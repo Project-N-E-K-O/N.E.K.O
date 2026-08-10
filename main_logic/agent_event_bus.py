@@ -483,6 +483,7 @@ async def publish_analyze_request_reliably(
     conversation_id: Optional[str] = None,
     external_intent: Optional[float] = None,
     proactive: bool = False,
+    language: Optional[str] = None,
 ) -> bool:
     """Reliably publish analyze_request: carries event_id + ack, with short retries.
 
@@ -495,6 +496,14 @@ async def publish_analyze_request_reliably(
     ``proactive`` marks a self-initiated (no fresh user input) turn. The agent
     routes these through a separate throttled path instead of the user-turn
     dedupe; omitted (not set) for ordinary user turns.
+
+    ``language`` is the live session locale (the frontend i18n truth held in
+    ``session_manager[...].user_language``, a full code like ``zh-TW``). The agent
+    runs in its own process, so it cannot see that value — its own
+    ``get_global_language()`` only derives NEKO_LANGUAGE / Steam / system locale,
+    which is wrong whenever the UI language differs. It rides this payload so the
+    analyzer's prompts follow the language the user is actually reading. Omitted
+    (``None``) → the agent falls back to its process-global value.
     """
     event_id = uuid.uuid4().hex
     sent_at = time.perf_counter()
@@ -516,6 +525,12 @@ async def publish_analyze_request_reliably(
         # agent's user-turn path is byte-for-byte unchanged when disabled.
         if proactive:
             event["proactive"] = True
+        # Live session locale; omitted when unknown so the agent keeps its
+        # process-global fallback. Not part of the analyze dedupe fingerprint
+        # (that hashes messages + trigger only), so adding it cannot change
+        # which turns get analyzed.
+        if language:
+            event["language"] = language
 
         loop = asyncio.get_running_loop()
         waiter: asyncio.Future = loop.create_future()

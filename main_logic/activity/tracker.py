@@ -1178,9 +1178,14 @@ class UserActivityTracker:
                 # 已被它更新，本 drain 把那次 pending 一并发出，不会漏也不会重。
                 await self._drain_context_prompt()
 
-                from utils.language_utils import get_global_language, get_global_language_full
-                activity_lang = get_global_language() or 'en'
-                topic_lang = get_global_language_full() or activity_lang
+                # 两条都用全码（#2500 第 2 步）：activity_lang 只喂
+                # ``call_activity_guess``，那边的 ``_normalize_lang`` 认 zh-TW 且
+                # ``ACTIVITY_GUESS_PROMPTS`` 有 zh-TW 模板，塌成短码会让繁中用户
+                # 拿简体叙述。简中的 'zh-CN' 在 ``_normalize_lang`` 里照样归到
+                # 'zh'，行为不变。
+                from utils.language_utils import get_global_language_full
+                activity_lang = get_global_language_full() or 'en'
+                topic_lang = activity_lang
                 self._process_topic_candidates_if_ready(lang=topic_lang, now=ts)
 
                 # Bail on private — explicitly do NOT send sensitive app

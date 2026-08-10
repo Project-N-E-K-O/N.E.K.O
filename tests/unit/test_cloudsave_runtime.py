@@ -3,6 +3,9 @@ import contextlib
 import json
 import shutil
 import sqlite3
+import sys
+import threading
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -145,6 +148,23 @@ def test_managed_target_relative_path_prefers_nested_anchor_root(tmp_path):
     assert _managed_target_relative_path(cm, target_path) == Path("anchor/state/storage_policy.json")
 
 
+@pytest.mark.unit
+def test_managed_target_round_trip_supports_project_memory_root(tmp_path):
+    from utils.cloudsave_runtime import (
+        _managed_target_relative_path,
+        _resolve_managed_target_path,
+    )
+
+    cm = _make_config_manager(tmp_path / "runtime")
+    cm.project_memory_dir = tmp_path / "checkout" / "memory" / "store"
+    target_path = cm.project_memory_dir / "Old" / "recent.json"
+
+    relative_path = _managed_target_relative_path(cm, target_path)
+
+    assert relative_path == Path("project_memory/Old/recent.json")
+    assert _resolve_managed_target_path(cm, str(relative_path)) == target_path.resolve(strict=False)
+
+
 def _add_runtime_character(cm, character_name: str, *, recent_text: str) -> None:
     from utils.config_manager import set_reserved
 
@@ -260,6 +280,37 @@ def test_bootstrap_imports_legacy_root_after_seed_migration(tmp_path):
     assert Path(cm.get_config_path("core_config.json")).is_file()
     assert (cm.live2d_dir / "legacy_model" / "legacy_model.model3.json").is_file()
     assert cm.root_state_path.is_file()
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows held-file replacement semantics")
+def test_bootstrap_replaces_runtime_root_while_single_instance_lock_is_held(tmp_path, monkeypatch):
+    from utils import single_instance
+    from utils.cloudsave_runtime import bootstrap_local_cloudsave_environment
+
+    local_app_data = tmp_path / "LocalAppData"
+    legacy_root = tmp_path / "legacy" / "N.E.K.O"
+    legacy_model = legacy_root / "live2d" / "legacy-model"
+    legacy_model.mkdir(parents=True)
+    (legacy_model / "legacy.model3.json").write_text('{"Version": 3}', encoding="utf-8")
+
+    cm = _make_config_manager(local_app_data, legacy_candidates=[str(legacy_root)])
+    monkeypatch.delenv(single_instance.RUNTIME_STATE_DIR_ENV, raising=False)
+    monkeypatch.setenv("LOCALAPPDATA", str(local_app_data))
+    monkeypatch.delenv("APPDATA", raising=False)
+
+    handle = single_instance.acquire_single_instance(instance_id="bootstrap-regression")
+    try:
+        assert handle is not None
+        assert handle.lock_file.parent == local_app_data / single_instance.RUNTIME_STATE_DIR_NAME
+        assert cm.app_docs_dir not in handle.lock_file.parents
+
+        result = bootstrap_local_cloudsave_environment(cm)
+    finally:
+        single_instance.release_single_instance()
+
+    assert result["legacy_import"]["migrated"] is True
+    assert (cm.live2d_dir / "legacy-model" / "legacy.model3.json").is_file()
 
 
 @pytest.mark.unit
@@ -884,10 +935,196 @@ def test_cloud_apply_fence_releases_lock_when_mode_restore_fails(tmp_path):
 
 
 @pytest.mark.unit
+def test_cloud_apply_fence_does_not_restore_over_a_concurrent_storage_mode_write(tmp_path):
+    """A storage worker's blocking mode must land after the cloud fence exits."""
+    import threading
+
+    cm = _make_config_manager(tmp_path)
+
+    from utils.cloudsave_runtime import (
+        ROOT_MODE_MAINTENANCE_READONLY,
+        cloud_apply_fence,
+        get_root_mode,
+        set_root_mode,
+    )
+
+    started = threading.Event()
+    finished = threading.Event()
+
+    def _storage_writer() -> None:
+        started.set()
+        set_root_mode(
+            cm,
+            ROOT_MODE_MAINTENANCE_READONLY,
+            last_migration_result="restart_pending:test-target",
+        )
+        finished.set()
+
+    with cloud_apply_fence(cm, reason="unit_test"):
+        writer = threading.Thread(target=_storage_writer)
+        writer.start()
+        assert started.wait(5)
+        assert not finished.wait(0.1), (
+            "storage writer escaped the cloud fence lifecycle lock and can be "
+            "overwritten by its stale mode restore"
+        )
+
+    writer.join(timeout=5)
+    assert not writer.is_alive()
+    assert finished.is_set()
+    assert get_root_mode(cm) == ROOT_MODE_MAINTENANCE_READONLY
+
+
+@pytest.mark.unit
+def test_cloud_apply_fence_waits_for_writable_transaction(tmp_path):
+    import threading
+
+    cm = _make_config_manager(tmp_path)
+
+    from utils.cloudsave_runtime import (
+        cloud_apply_fence,
+        cloudsave_writable_transaction,
+    )
+
+    write_entered = threading.Event()
+    release_write = threading.Event()
+    fence_entered = threading.Event()
+    errors = []
+
+    def writer():
+        try:
+            with cloudsave_writable_transaction(
+                cm,
+                operation="save",
+                target="prompt_locale.json",
+            ):
+                write_entered.set()
+                assert release_write.wait(5)
+        except Exception as exc:
+            errors.append(exc)
+
+    def fenced_restore():
+        try:
+            with cloud_apply_fence(cm):
+                fence_entered.set()
+        except Exception as exc:
+            errors.append(exc)
+
+    writer_thread = threading.Thread(target=writer)
+    writer_thread.start()
+    assert write_entered.wait(5)
+
+    fence_thread = threading.Thread(target=fenced_restore)
+    fence_thread.start()
+    assert not fence_entered.wait(0.1)
+
+    release_write.set()
+    writer_thread.join(5)
+    fence_thread.join(5)
+
+    assert errors == []
+    assert not writer_thread.is_alive()
+    assert not fence_thread.is_alive()
+    assert fence_entered.is_set()
+
+
+@pytest.mark.unit
+def test_cloud_apply_fence_requests_a_blocking_cross_process_lock(tmp_path, monkeypatch):
+    cm = _make_config_manager(tmp_path)
+
+    from utils.cloudsave_runtime import fence as fence_module
+
+    blocking_modes: list[bool] = []
+
+    def acquire(_config_manager, *, blocking=False):
+        blocking_modes.append(blocking)
+        return True
+
+    monkeypatch.setattr(fence_module, "acquire_cloud_apply_lock", acquire)
+    monkeypatch.setattr(fence_module, "release_cloud_apply_lock", lambda _cm: None)
+
+    with fence_module.cloud_apply_fence(cm):
+        pass
+
+    assert blocking_modes == [True]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_async_cloud_apply_fence_polls_without_blocking_event_loop(
+    tmp_path,
+    monkeypatch,
+):
+    cm = _make_config_manager(tmp_path)
+
+    from utils.cloudsave_runtime import fence as fence_module
+
+    blocking_modes: list[bool] = []
+    owner_threads: list[tuple[str, int]] = []
+    attempts = iter((False, False, True))
+
+    def acquire(_config_manager, *, blocking=False):
+        blocking_modes.append(blocking)
+        owner_threads.append(("acquire", threading.get_ident()))
+        return next(attempts)
+
+    def release(_config_manager):
+        owner_threads.append(("release", threading.get_ident()))
+
+    @contextlib.contextmanager
+    def state(_config_manager, **_kwargs):
+        yield {"mode": "maintenance_readonly"}
+
+    sleeps: list[float] = []
+
+    async def sleep(delay):
+        sleeps.append(delay)
+
+    monkeypatch.setattr(fence_module, "acquire_cloud_apply_lock", acquire)
+    monkeypatch.setattr(fence_module, "release_cloud_apply_lock", release)
+    monkeypatch.setattr(fence_module, "_cloud_apply_fence_state", state)
+    monkeypatch.setattr(fence_module.asyncio, "sleep", sleep)
+
+    async with fence_module.async_cloud_apply_fence(cm, poll_interval=0.01):
+        pass
+
+    assert blocking_modes == [False, False, False]
+    assert sleeps == [0.01, 0.01]
+    assert owner_threads[-1][0] == "release"
+    assert {thread_id for _, thread_id in owner_threads} == {threading.get_ident()}
+
+
+@pytest.mark.unit
+def test_win32_mutex_apis_use_pointer_sized_handle_signatures():
+    import ctypes
+
+    from utils.cloudsave_runtime import fence as fence_module
+
+    class Function:
+        argtypes = None
+        restype = None
+
+    class Kernel32:
+        CreateMutexW = Function()
+        WaitForSingleObject = Function()
+        ReleaseMutex = Function()
+        CloseHandle = Function()
+
+    kernel32 = Kernel32()
+    fence_module._configure_win32_mutex_apis(kernel32)
+
+    assert kernel32.CreateMutexW.restype is ctypes.c_void_p
+    assert kernel32.WaitForSingleObject.argtypes[0] is ctypes.c_void_p
+    assert kernel32.ReleaseMutex.argtypes == [ctypes.c_void_p]
+    assert kernel32.CloseHandle.argtypes == [ctypes.c_void_p]
+
+
+@pytest.mark.unit
 def test_local_cloudsave_round_trip_restores_runtime_truth(tmp_path):
     cm = _make_config_manager(tmp_path)
 
     from utils.cloudsave_runtime import export_local_cloudsave_snapshot, import_local_cloudsave_snapshot
+    from utils import recent_file
 
     expected_characters = _write_runtime_state(cm)
 
@@ -921,6 +1158,14 @@ def test_local_cloudsave_round_trip_restores_runtime_truth(tmp_path):
         import shutil
         shutil.rmtree(cm.memory_dir)
 
+    restored_recent = Path(cm.memory_dir) / "小满" / "recent.json"
+    from utils.llm_client import HumanMessage
+
+    with recent_file.recent_file_lock(restored_recent):
+        recent_file.set_recent_pending_unlocked(
+            restored_recent, [HumanMessage(content="stale-before-cloud-import")],
+        )
+
     import_result = import_local_cloudsave_snapshot(cm)
 
     assert import_result["applied_character_count"] == 1
@@ -931,15 +1176,145 @@ def test_local_cloudsave_round_trip_restores_runtime_truth(tmp_path):
     assert "__global_conversation__" in preferences
     assert "noiseReductionEnabled" in preferences
 
-    restored_recent = Path(cm.memory_dir) / "小满" / "recent.json"
     restored_db = Path(cm.memory_dir) / "小满" / "time_indexed.db"
     assert restored_recent.is_file()
+    assert recent_file.get_recent_pending(restored_recent) == []
     assert restored_db.read_bytes() == b"sqlite-placeholder"
 
     cloud_state = cm.load_cloudsave_local_state()
     assert cloud_state["next_sequence_number"] == 2
     assert cloud_state["last_applied_manifest_fingerprint"] == export_result["manifest"]["fingerprint"]
     assert cloud_state["last_successful_import_at"]
+
+
+@pytest.mark.unit
+def test_local_cloudsave_import_failure_restores_recent_redirects(tmp_path):
+    cm = _make_config_manager(tmp_path)
+
+    from utils import cloudsave_runtime, recent_file
+
+    _write_runtime_state(cm, character_name="B")
+    cloudsave_runtime.export_local_cloudsave_snapshot(cm)
+    old_alias = Path(cm.memory_dir) / "A" / "recent.json"
+    current_path = Path(cm.memory_dir) / "B" / "recent.json"
+    recent_file.redirect_recent_paths([old_alias], current_path)
+    original_apply = cloudsave_runtime._apply_runtime_file
+
+    def _fail_preferences(source_path, target_path):
+        if Path(target_path).name == "user_preferences.json":
+            raise RuntimeError("simulated runtime apply failure")
+        return original_apply(source_path, target_path)
+
+    with patch.object(
+        cloudsave_runtime,
+        "_apply_runtime_file",
+        side_effect=_fail_preferences,
+    ):
+        with pytest.raises(RuntimeError, match="simulated runtime apply failure"):
+            cloudsave_runtime.import_local_cloudsave_snapshot(cm)
+
+    assert recent_file._resolve_key_unlocked(recent_file._lock_key(old_alias)) == (
+        recent_file._lock_key(current_path)
+    )
+
+
+@pytest.mark.unit
+def test_local_cloudsave_import_locks_recent_before_rollback_backup(tmp_path):
+    cm = _make_config_manager(tmp_path)
+
+    from utils import cloudsave_runtime, recent_file
+
+    _write_runtime_state(cm, character_name="B")
+    cloudsave_runtime.export_local_cloudsave_snapshot(cm)
+    current_path = Path(cm.memory_dir) / "B" / "recent.json"
+    writer_entered = threading.Event()
+    writer = None
+    real_copy2 = shutil.copy2
+
+    def _probe_copy(source_path, target_path, *args, **kwargs):
+        nonlocal writer
+        if Path(source_path) == current_path and writer is None:
+            def _wait_for_recent_lock():
+                with recent_file.recent_file_access(current_path):
+                    writer_entered.set()
+
+            writer = threading.Thread(target=_wait_for_recent_lock)
+            writer.start()
+            time.sleep(0.05)
+            assert not writer_entered.is_set()
+        return real_copy2(source_path, target_path, *args, **kwargs)
+
+    with patch.object(shutil, "copy2", side_effect=_probe_copy):
+        cloudsave_runtime.import_local_cloudsave_snapshot(cm)
+
+    assert writer is not None
+    writer.join(3)
+    assert not writer.is_alive()
+    assert writer_entered.is_set()
+
+
+@pytest.mark.unit
+def test_local_cloudsave_import_rejects_writer_waiting_before_activation(tmp_path):
+    cm = _make_config_manager(tmp_path)
+    cm.project_memory_dir = tmp_path / "project-memory"
+
+    from utils import cloudsave_runtime, recent_file
+    from utils.cloudsave_runtime import operations
+
+    _write_runtime_state(cm, character_name="B")
+    cloudsave_runtime.export_local_cloudsave_snapshot(cm)
+    current_path = Path(cm.memory_dir) / "B" / "recent.json"
+    cloud_payload = json.loads(current_path.read_text(encoding="utf-8"))
+    atomic_write_json(current_path, [{"content": "local-before-import"}])
+
+    writer_attempting = threading.Event()
+    writer_errors = []
+    writer = None
+    activated_paths = set()
+    real_access = recent_file.recent_file_access
+    real_activate = operations.activate_recent_paths
+
+    @contextlib.contextmanager
+    def _probe_access(path, *, expected_generation=None):
+        if threading.current_thread() is writer:
+            writer_attempting.set()
+        with real_access(
+            path, expected_generation=expected_generation,
+        ) as resolved_path:
+            yield resolved_path
+
+    def _write_stale_batch():
+        try:
+            recent_file.write_recent_payload(
+                current_path,
+                [{"content": "stale-writer"}],
+            )
+        except Exception as exc:
+            writer_errors.append(exc)
+
+    def _activate_with_waiting_writer(paths):
+        nonlocal writer
+        activated_paths.update(Path(path) for path in paths)
+        writer = threading.Thread(target=_write_stale_batch)
+        writer.start()
+        assert writer_attempting.wait(3)
+        return real_activate(paths)
+
+    with patch.object(recent_file, "recent_file_access", _probe_access), patch.object(
+        operations,
+        "activate_recent_paths",
+        side_effect=_activate_with_waiting_writer,
+    ):
+        cloudsave_runtime.import_local_cloudsave_snapshot(cm)
+
+    assert writer is not None
+    writer.join(3)
+    assert not writer.is_alive()
+    assert len(writer_errors) == 1
+    assert isinstance(writer_errors[0], recent_file.RecentFileDeletedError)
+    assert json.loads(current_path.read_text(encoding="utf-8")) == cloud_payload
+    from utils.character_memory import list_character_recent_paths
+    assert set(list_character_recent_paths(cm, "B")) <= activated_paths
 
 
 def _tamper_manifest_with_memory_key(cm, hostile_key: str, placement_relative_path: str) -> None:
@@ -1718,6 +2093,64 @@ def test_export_snapshot_includes_external_import_state_sidecar(tmp_path):
 
 
 @pytest.mark.unit
+def test_export_snapshot_includes_prompt_locale_sidecars(tmp_path):
+    cm = _make_config_manager(tmp_path)
+
+    from utils.cloudsave_runtime import (
+        MANAGED_MEMORY_FILENAMES,
+        export_local_cloudsave_snapshot,
+    )
+
+    _write_runtime_state(cm, character_name="小满")
+    payloads = {
+        "prompt_locale.json": {"language": "zh-TW", "order": 3},
+        "scoped_prompt_locales.json": {
+            "subjects": {"group": {"language": "zh-TW", "order": 4}},
+        },
+    }
+    for filename, payload in payloads.items():
+        atomic_write_json(
+            Path(cm.memory_dir) / "小满" / filename,
+            payload,
+            ensure_ascii=False,
+            indent=2,
+        )
+
+    export_local_cloudsave_snapshot(cm)
+
+    assert payloads.keys() <= set(MANAGED_MEMORY_FILENAMES)
+    for filename, payload in payloads.items():
+        staged = cm.cloudsave_dir / "characters" / "小满" / "memory" / filename
+        assert json.loads(staged.read_text(encoding="utf-8")) == payload
+
+
+@pytest.mark.unit
+def test_export_snapshot_includes_subject_forget_tombstones(tmp_path):
+    cm = _make_config_manager(tmp_path)
+
+    from utils.cloudsave_runtime import export_local_cloudsave_snapshot
+
+    _write_runtime_state(cm, character_name="小满")
+    payload = [{
+        "subject_kind": "participant",
+        "subject_id": "qq:1001",
+        "scope": "participant:qq:1001",
+        "forgotten_at": "2026-08-01T00:00:00",
+    }]
+    atomic_write_json(
+        Path(cm.memory_dir) / "小满" / "subject_forget_tombstones.json",
+        payload, ensure_ascii=False, indent=2,
+    )
+    export_local_cloudsave_snapshot(cm)
+
+    staged = (
+        cm.cloudsave_dir / "characters" / "小满" / "memory"
+        / "subject_forget_tombstones.json"
+    )
+    assert json.loads(staged.read_text(encoding="utf-8")) == payload
+
+
+@pytest.mark.unit
 def test_export_cloudsave_character_unit_updates_only_single_character_scope(tmp_path):
     cm = _make_config_manager(tmp_path)
 
@@ -1987,6 +2420,8 @@ def test_import_cloudsave_character_unit_rolls_back_on_apply_failure(tmp_path):
 
 @pytest.mark.unit
 def test_restore_cloudsave_operation_backup_restores_previous_character_state(tmp_path):
+    from utils import recent_file
+
     source_cm = _make_config_manager(tmp_path / "source")
     target_cm = _make_config_manager(tmp_path / "target")
 
@@ -2023,6 +2458,8 @@ def test_restore_cloudsave_operation_backup_restores_previous_character_state(tm
     shutil.copytree(source_cm.cloudsave_dir, target_cm.cloudsave_dir, dirs_exist_ok=True)
 
     import_result = import_cloudsave_character_unit(target_cm, "小满", overwrite=True)
+    target_recent = Path(target_cm.memory_dir) / "小满" / "recent.json"
+    imported_generation = recent_file.capture_recent_generation(target_recent)
 
     assert target_cm.load_characters()["猫娘"]["小满"]["喜欢的食物"] == "鱼干"
     assert (Path(target_cm.memory_dir) / "小满" / "recent.json").read_text(encoding="utf-8") != original_recent
@@ -2031,6 +2468,12 @@ def test_restore_cloudsave_operation_backup_restores_previous_character_state(tm
 
     assert target_cm.load_characters() == original_characters
     assert (Path(target_cm.memory_dir) / "小满" / "recent.json").read_text(encoding="utf-8") == original_recent
+    with pytest.raises(recent_file.RecentFileDeletedError):
+        recent_file.write_recent_payload(
+            target_recent,
+            [{"content": "stale-import-writer"}],
+            expected_generation=imported_generation,
+        )
 
 
 @pytest.mark.unit
@@ -2360,6 +2803,374 @@ def test_import_rolls_back_runtime_on_apply_failure(tmp_path):
 
     assert cm.load_characters() == original_characters
     assert (Path(cm.memory_dir) / "旧角色" / "recent.json").read_text(encoding="utf-8") == original_recent
+
+
+@pytest.mark.unit
+def test_single_character_import_commits_and_restores_recent_runtime_state(tmp_path):
+    from utils import recent_file
+    from utils.cloudsave_runtime import (
+        export_cloudsave_character_unit,
+        import_cloudsave_character_unit,
+        restore_cloudsave_operation_backup,
+    )
+    from utils.llm_client import HumanMessage
+
+    source_cm = _make_config_manager(tmp_path / "source")
+    target_cm = _make_config_manager(tmp_path / "target")
+    target_cm.project_memory_dir = tmp_path / "target-project-memory"
+    character_name = "云端角色"
+    _write_runtime_state(source_cm, character_name=character_name)
+    source_recent = Path(source_cm.memory_dir) / character_name / "recent.json"
+    atomic_write_json(
+        source_recent,
+        [{"role": "user", "content": "cloud"}],
+        ensure_ascii=False,
+        indent=2,
+    )
+    export_cloudsave_character_unit(source_cm, character_name)
+
+    _write_runtime_state(target_cm, character_name=character_name)
+    from utils.character_memory import list_character_recent_paths
+
+    target_recent = Path(target_cm.memory_dir) / character_name / "recent.json"
+    target_recent_paths = list_character_recent_paths(target_cm, character_name)
+    redirected_recent = Path(target_cm.memory_dir) / "redirect-target" / "recent.json"
+    recent_file.redirect_recent_paths(target_recent_paths, redirected_recent)
+    with recent_file.recent_file_locks(target_recent_paths):
+        for recent_path in target_recent_paths:
+            recent_file.set_recent_pending_unlocked(
+                recent_path, [HumanMessage(content=f"pending:{recent_path.name}")],
+            )
+
+    shutil.copytree(source_cm.cloudsave_dir, target_cm.cloudsave_dir, dirs_exist_ok=True)
+    result = import_cloudsave_character_unit(target_cm, character_name, overwrite=True)
+
+    assert json.loads(target_recent.read_text(encoding="utf-8"))[0]["content"] == "cloud"
+    with recent_file.recent_file_locks(target_recent_paths):
+        assert all(
+            recent_file.get_recent_pending_unlocked(recent_path) == []
+            for recent_path in target_recent_paths
+        )
+    redirected_key = recent_file._lock_key(redirected_recent)
+    assert all(
+        recent_file._resolve_key_unlocked(recent_file._lock_key(recent_path))
+        == recent_file._lock_key(recent_path)
+        for recent_path in target_recent_paths
+    )
+
+    restore_cloudsave_operation_backup(target_cm, result["backup_path"])
+
+    assert json.loads(target_recent.read_text(encoding="utf-8"))[0]["content"] == "你好"
+    with recent_file.recent_file_locks(target_recent_paths):
+        restored_pending = {
+            recent_path: recent_file.get_recent_pending_unlocked(recent_path)
+            for recent_path in target_recent_paths
+        }
+    assert all(messages for messages in restored_pending.values())
+    assert all(
+        recent_file._resolve_key_unlocked(recent_file._lock_key(recent_path))
+        == redirected_key
+        for recent_path in target_recent_paths
+    )
+
+
+@pytest.mark.unit
+def test_cloud_exports_include_pending_recent_without_mutating_local_state(tmp_path):
+    from utils import recent_file
+    from utils.cloudsave_runtime import (
+        export_cloudsave_character_unit,
+        export_local_cloudsave_snapshot,
+    )
+    from utils.llm_client import HumanMessage
+
+    cm = _make_config_manager(tmp_path)
+    character_name = "小满"
+    _write_runtime_state(cm, character_name=character_name)
+    recent_path = Path(cm.memory_dir) / character_name / "recent.json"
+    disk_before = recent_path.read_bytes()
+    with recent_file.recent_file_locks([recent_path]):
+        recent_file.set_recent_pending_unlocked(
+            recent_path, [HumanMessage(content="pending-export")],
+        )
+
+    export_cloudsave_character_unit(cm, character_name)
+    for relative_path in (
+        Path("memory") / character_name / "recent.json",
+        Path("characters") / character_name / "memory" / "recent.json",
+    ):
+        payload = json.loads((cm.cloudsave_dir / relative_path).read_text(encoding="utf-8"))
+        assert [item.get("data", item)["content"] for item in payload] == [
+            "你好", "pending-export",
+        ]
+
+    export_local_cloudsave_snapshot(cm)
+    for relative_path in (
+        Path("memory") / character_name / "recent.json",
+        Path("characters") / character_name / "memory" / "recent.json",
+    ):
+        payload = json.loads((cm.cloudsave_dir / relative_path).read_text(encoding="utf-8"))
+        assert [item.get("data", item)["content"] for item in payload] == [
+            "你好", "pending-export",
+        ]
+
+    assert recent_path.read_bytes() == disk_before
+    with recent_file.recent_file_locks([recent_path]):
+        pending = recent_file.get_recent_pending_unlocked(recent_path)
+    assert [message.content for message in pending] == ["pending-export"]
+
+
+@pytest.mark.unit
+def test_single_import_retains_recent_lock_through_external_rollback(tmp_path):
+    from utils import recent_file
+    from utils.cloudsave_runtime import (
+        export_cloudsave_character_unit,
+        finalize_cloudsave_character_import,
+        import_cloudsave_character_unit,
+        restore_cloudsave_operation_backup,
+        rollback_cloudsave_character_import_registry,
+    )
+
+    source_cm = _make_config_manager(tmp_path / "source")
+    target_cm = _make_config_manager(tmp_path / "target")
+    character_name = "云端角色"
+    _write_runtime_state(source_cm, character_name=character_name)
+    export_cloudsave_character_unit(source_cm, character_name)
+    _write_runtime_state(target_cm, character_name=character_name)
+    target_recent = Path(target_cm.memory_dir) / character_name / "recent.json"
+    shutil.copytree(source_cm.cloudsave_dir, target_cm.cloudsave_dir, dirs_exist_ok=True)
+
+    result = import_cloudsave_character_unit(
+        target_cm, character_name, overwrite=True, retain_recent_locks=True,
+    )
+    writer_entered = threading.Event()
+    writer_errors = []
+
+    def _waiting_writer():
+        try:
+            with recent_file.recent_file_access(target_recent):
+                writer_entered.set()
+        except Exception as exc:  # noqa: BLE001 - asserted in the main thread
+            writer_errors.append(exc)
+
+    writer = threading.Thread(target=_waiting_writer)
+    writer.start()
+    time.sleep(0.05)
+    assert not writer_entered.is_set()
+
+    restore_cloudsave_operation_backup(
+        target_cm, result["backup_path"], recent_locks_held=True,
+    )
+    rollback_cloudsave_character_import_registry(result)
+    assert not writer_entered.is_set()
+    finalize_cloudsave_character_import(result)
+    writer.join(3)
+
+    assert not writer.is_alive()
+    assert not writer_entered.is_set()
+    assert len(writer_errors) == 1
+    assert isinstance(writer_errors[0], recent_file.RecentFileDeletedError)
+    assert json.loads(target_recent.read_text(encoding="utf-8"))[0]["content"] == "你好"
+
+
+@pytest.mark.unit
+def test_backup_restore_locks_historical_redirect_paths(tmp_path, monkeypatch):
+    from utils.cloudsave_runtime import operations
+
+    cm = _make_config_manager(tmp_path)
+    backup_root = tmp_path / "backup"
+    alias_path = Path(cm.memory_dir) / "Old" / "recent.json"
+    target_path = Path(cm.memory_dir) / "New" / "recent.json"
+    operations._write_operation_backup_metadata(
+        cm,
+        backup_root,
+        operation="test_restore",
+        character_name="New",
+        backup_records=[],
+        recent_pending={target_path: []},
+        recent_redirects={str(alias_path): str(target_path)},
+        recent_deleted=set(),
+    )
+    locked_paths = []
+
+    @contextlib.contextmanager
+    def _capture_locks(paths):
+        locked_paths.extend(Path(path) for path in paths)
+        yield
+
+    monkeypatch.setattr(operations, "recent_file_locks", _capture_locks)
+    operations.restore_cloudsave_operation_backup(cm, backup_root)
+
+    assert set(locked_paths) == {alias_path, target_path}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("legacy_metadata", [False, True])
+def test_standalone_restore_invalidates_current_alias_writers(
+    tmp_path, legacy_metadata,
+):
+    from utils import recent_file
+    from utils.cloudsave_runtime import (
+        export_cloudsave_character_unit,
+        import_cloudsave_character_unit,
+        restore_cloudsave_operation_backup,
+    )
+
+    source_cm = _make_config_manager(tmp_path / "source")
+    target_cm = _make_config_manager(tmp_path / "target")
+    character_name = "云端角色"
+    _write_runtime_state(source_cm, character_name=character_name)
+    export_cloudsave_character_unit(source_cm, character_name)
+    _write_runtime_state(target_cm, character_name=character_name)
+    shutil.copytree(source_cm.cloudsave_dir, target_cm.cloudsave_dir, dirs_exist_ok=True)
+    result = import_cloudsave_character_unit(target_cm, character_name, overwrite=True)
+    target_recent = Path(target_cm.memory_dir) / character_name / "recent.json"
+
+    if legacy_metadata:
+        metadata_path = Path(result["backup_path"]) / "_operation.json"
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        metadata["schema_version"] = 1
+        metadata.pop("recent_state", None)
+        atomic_write_json(metadata_path, metadata, ensure_ascii=False, indent=2)
+
+    alias_path = Path(target_cm.memory_dir) / "CurrentAlias" / "recent.json"
+    recent_file.redirect_recent_paths([alias_path], target_recent)
+    alias_generation = recent_file.capture_recent_generation(alias_path)
+
+    restore_cloudsave_operation_backup(target_cm, result["backup_path"])
+
+    with pytest.raises(recent_file.RecentFileDeletedError):
+        recent_file.write_recent_payload(
+            alias_path,
+            [{"content": "stale-alias-writer"}],
+            expected_generation=alias_generation,
+        )
+
+
+@pytest.mark.unit
+def test_single_import_releases_retained_lock_when_detail_build_fails(tmp_path):
+    from utils import recent_file
+    from utils.cloudsave_runtime import (
+        export_cloudsave_character_unit,
+        import_cloudsave_character_unit,
+    )
+
+    source_cm = _make_config_manager(tmp_path / "source")
+    target_cm = _make_config_manager(tmp_path / "target")
+    character_name = "云端角色"
+    _write_runtime_state(source_cm, character_name=character_name)
+    export_cloudsave_character_unit(source_cm, character_name)
+    _write_runtime_state(target_cm, character_name=character_name)
+    shutil.copytree(source_cm.cloudsave_dir, target_cm.cloudsave_dir, dirs_exist_ok=True)
+    target_recent = Path(target_cm.memory_dir) / character_name / "recent.json"
+    atomic_write_json(
+        target_recent,
+        [{"type": "human", "data": {"content": "local-before"}}],
+        ensure_ascii=False,
+        indent=2,
+    )
+    from utils.llm_client import HumanMessage
+
+    with recent_file.recent_file_locks([target_recent]):
+        recent_file.set_recent_pending_unlocked(
+            target_recent, [HumanMessage(content="pending-before")],
+        )
+    generation_before = recent_file.capture_recent_generation(target_recent)
+
+    with patch(
+        "utils.cloudsave_runtime.operations.build_cloudsave_character_detail",
+        side_effect=RuntimeError("detail failed"),
+    ), pytest.raises(RuntimeError, match="detail failed"):
+        import_cloudsave_character_unit(
+            target_cm, character_name, overwrite=True, retain_recent_locks=True,
+        )
+
+    acquired = threading.Event()
+
+    def _acquire_after_failure():
+        with recent_file.recent_file_access(target_recent):
+            acquired.set()
+
+    worker = threading.Thread(target=_acquire_after_failure)
+    worker.start()
+    worker.join(3)
+    assert acquired.is_set()
+    assert not worker.is_alive()
+    assert json.loads(target_recent.read_text(encoding="utf-8"))[0]["data"]["content"] == (
+        "local-before"
+    )
+    with recent_file.recent_file_locks([target_recent]):
+        pending = recent_file.get_recent_pending_unlocked(target_recent)
+    assert [message.content for message in pending] == ["pending-before"]
+    assert recent_file.capture_recent_generation(target_recent) == generation_before
+
+
+@pytest.mark.unit
+def test_legacy_operation_backup_restore_locks_recent_and_clears_pending(tmp_path):
+    from utils import recent_file
+    from utils.cloudsave_runtime import (
+        export_cloudsave_character_unit,
+        import_cloudsave_character_unit,
+        restore_cloudsave_operation_backup,
+    )
+    from utils.llm_client import HumanMessage
+
+    source_cm = _make_config_manager(tmp_path / "source")
+    target_cm = _make_config_manager(tmp_path / "target")
+    character_name = "云端角色"
+    _write_runtime_state(source_cm, character_name=character_name)
+    export_cloudsave_character_unit(source_cm, character_name)
+    _write_runtime_state(target_cm, character_name=character_name)
+    target_recent = Path(target_cm.memory_dir) / character_name / "recent.json"
+    shutil.copytree(source_cm.cloudsave_dir, target_cm.cloudsave_dir, dirs_exist_ok=True)
+    result = import_cloudsave_character_unit(target_cm, character_name, overwrite=True)
+    imported_generation = recent_file.capture_recent_generation(target_recent)
+
+    metadata_path = Path(result["backup_path"]) / "_operation.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["schema_version"] = 1
+    metadata.pop("recent_state", None)
+    atomic_write_json(metadata_path, metadata, ensure_ascii=False, indent=2)
+    with recent_file.recent_file_locks([target_recent]):
+        recent_file.set_recent_pending_unlocked(
+            target_recent, [HumanMessage(content="stale-pending")],
+        )
+
+    restore_cloudsave_operation_backup(target_cm, result["backup_path"])
+
+    assert json.loads(target_recent.read_text(encoding="utf-8"))[0]["content"] == "你好"
+    with recent_file.recent_file_locks([target_recent]):
+        assert recent_file.get_recent_pending_unlocked(target_recent) == []
+    with pytest.raises(recent_file.RecentFileDeletedError):
+        recent_file.write_recent_payload(
+            target_recent,
+            [{"content": "stale-import-writer"}],
+            expected_generation=imported_generation,
+        )
+
+
+@pytest.mark.unit
+def test_cloud_export_rejects_redirected_recent_snapshot(tmp_path):
+    from utils import recent_file
+    from utils.cloudsave_runtime import CloudsaveOperationError, export_cloudsave_character_unit
+
+    cm = _make_config_manager(tmp_path)
+    _write_runtime_state(cm, character_name="Old")
+    old_recent = Path(cm.memory_dir) / "Old" / "recent.json"
+    new_recent = Path(cm.memory_dir) / "New" / "recent.json"
+    new_recent.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(
+        new_recent,
+        [{"role": "user", "content": "new-only"}],
+        ensure_ascii=False,
+        indent=2,
+    )
+    recent_file.redirect_recent_paths([old_recent], new_recent)
+
+    with pytest.raises(CloudsaveOperationError) as exc_info:
+        export_cloudsave_character_unit(cm, "Old")
+
+    assert exc_info.value.code == "LOCAL_CHARACTER_CHANGED"
+    assert not (cm.cloudsave_dir / "characters" / "Old" / "profile.json").exists()
 
 
 @pytest.mark.unit

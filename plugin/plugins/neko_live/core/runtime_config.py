@@ -13,12 +13,43 @@ from .runtime_config_activation import (
 )
 from .runtime_config_persistence import (
     persist_config_best_effort,
-    persist_config_update,
+    persist_config_update as persist_config_update,
 )
 from .runtime_live_listener import (
     reconcile_live_listener_after_config,
-    start_live_listener,
-    stop_live_listener,
+    start_live_listener as start_live_listener,
+    stop_live_listener as stop_live_listener,
+)
+
+
+_LIVE_SCENE_CONFIG_KEYS = frozenset(
+    {
+        "live_enabled",
+        "avatar_roast_enabled",
+        "avatar_analysis_enabled",
+        "danmaku_response_enabled",
+        "live_support_events_enabled",
+        "warmup_hosting_enabled",
+        "idle_hosting_enabled",
+        "active_engagement_enabled",
+        "live_mode",
+        "stream_theme",
+        "stream_goal",
+        "stream_columns",
+        "stream_avoid_topics",
+    }
+)
+_FORCE_LIVE_SCENE_SYNC_KEYS = frozenset(
+    {
+        "live_enabled",
+        "avatar_roast_enabled",
+        "avatar_analysis_enabled",
+        "danmaku_response_enabled",
+        "live_support_events_enabled",
+        "warmup_hosting_enabled",
+        "idle_hosting_enabled",
+        "active_engagement_enabled",
+    }
 )
 
 
@@ -41,12 +72,14 @@ async def reload_config(runtime: Any) -> LiveConfig:
     loaded = LiveConfig.from_mapping(data)
     async with get_config_lock(runtime):
         old_config = runtime.config
+        old_live_mode = str(getattr(old_config, "live_mode", "co_stream") or "co_stream")
         old_platform = normalize_live_platform(getattr(old_config, "live_platform", "bilibili"))
         old_room_id = int(getattr(old_config, "live_room_id", 0) or 0)
         old_room_ref = _configured_room_ref(old_config, old_platform)
         old_provider = _captured_provider(runtime, old_platform)
         was_listening = _is_listening(old_provider)
         activate_config(runtime, loaded)
+        _reconcile_live_mode(runtime, old_live_mode, runtime.config.live_mode)
         runtime._config_revision += 1
         clean = _live_config_diff(old_config, runtime.config)
         await reconcile_live_listener_after_config(
@@ -74,6 +107,7 @@ async def update_config(runtime: Any, updates: dict[str, Any]) -> LiveConfig:
     async with get_config_lock(runtime):
         _normalize_live_target_update(runtime, clean)
         old_room_id = int(runtime.config.live_room_id or 0)
+        old_live_mode = str(getattr(runtime.config, "live_mode", "co_stream") or "co_stream")
         old_platform = normalize_live_platform(getattr(runtime.config, "live_platform", "bilibili"))
         old_room_ref = _configured_room_ref(runtime.config, old_platform)
         old_provider = _captured_provider(runtime, old_platform)
@@ -90,21 +124,23 @@ async def update_config(runtime: Any, updates: dict[str, Any]) -> LiveConfig:
         if was_listening and live_diff:
             runtime._accepting_live_events = False
         activate_config(runtime, candidate)
+        _reconcile_live_mode(runtime, old_live_mode, runtime.config.live_mode)
         runtime._config_revision += 1
-        defer_instruction_sync = was_listening and bool(
-            {"live_platform", "live_room_ref", "live_room_id"} & set(live_diff)
+        live_target_keys = {"live_platform", "live_room_ref", "live_room_id"}
+        defer_instruction_sync = (
+            was_listening
+            and bool(live_target_keys & set(clean))
+            and bool(live_target_keys & set(live_diff))
         )
-        if not defer_instruction_sync and {
-            "live_enabled",
-            "avatar_roast_enabled",
-            "avatar_analysis_enabled",
-            "danmaku_response_enabled",
-            "live_support_events_enabled",
-            "warmup_hosting_enabled",
-            "idle_hosting_enabled",
-            "active_engagement_enabled",
-        } & set(clean):
-            await runtime.sync_live_instructions(force=True)
+        requested_scene_keys = _LIVE_SCENE_CONFIG_KEYS & set(clean)
+        if (
+            not defer_instruction_sync
+            and requested_scene_keys
+            and bool(candidate.live_enabled)
+        ):
+            await runtime.sync_live_instructions(
+                force=bool(_FORCE_LIVE_SCENE_SYNC_KEYS & requested_scene_keys)
+            )
         if developer_mode_changed:
             await runtime.sync_developer_mode(announce=False, force=True)
         await persist_config_best_effort(runtime, clean)
@@ -156,15 +192,24 @@ def _normalize_live_target_update(runtime: Any, clean: dict[str, Any]) -> None:
     target_platform = normalize_live_platform(
         clean.get("live_platform", current_platform)
     )
-    if target_platform != "douyin":
-        return
     if not {"live_platform", "live_room_ref"} & set(clean):
         return
     if "live_room_ref" not in clean and current_platform != target_platform:
         clean["live_room_ref"] = ""
         clean["live_room_id"] = 0
+        clean["live_enabled"] = False
+        return
+    if target_platform != "douyin":
         return
     raw_room_ref = clean.get("live_room_ref", getattr(runtime.config, "live_room_ref", ""))
     normalized = normalize_room_ref_for_platform(target_platform, raw_room_ref)
     clean["live_room_ref"] = str(normalized.get("room_ref") or "")
     clean["live_room_id"] = 0
+
+
+def _reconcile_live_mode(runtime: Any, old_mode: str, new_mode: str) -> None:
+    if str(old_mode or "").strip() == str(new_mode or "").strip():
+        return
+    reconcile = getattr(getattr(runtime, "live_events", None), "reconcile_live_mode", None)
+    if callable(reconcile):
+        reconcile(old_mode, new_mode)

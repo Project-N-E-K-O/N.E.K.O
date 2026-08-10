@@ -51,6 +51,10 @@ from utils.icebreaker_route_state import (
     finalize_icebreaker_route,
     get_active_icebreaker_route_session_id,
 )
+from main_logic.music_playback import (
+    handle_music_playback_state,
+    handle_music_request_playback_failed,
+)
 
 
 _VOICE_BINARY_MAGIC = b"NEKO"
@@ -152,6 +156,16 @@ def _is_voice_path_message(message: dict) -> bool:
     if action in {"voice_input_control", "pause_session"}:
         return True
     return action == "stream_data" and message.get("input_type") == "audio"
+
+
+def _is_music_playback_state_message(message: dict) -> bool:
+    """True when the sender is the window currently hosting the local player."""
+    return message.get("action") == "music_playback_state"
+
+
+def _is_music_request_playback_failed_message(message: dict) -> bool:
+    """True when the window handling a request exhausts its candidates."""
+    return message.get("action") == "music_request_playback_failed"
 
 
 def _stamp_user_input_ingress(message: dict) -> dict:
@@ -476,6 +490,11 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
     # 注意：这里设置后，即使cleanup()被调用，websocket也会在start_session时重新设置
     mgr = session_manager[lanlan_name]
     mgr.websocket = websocket
+    music_websockets = getattr(mgr, "_music_playback_websockets", None)
+    if not isinstance(music_websockets, set):
+        music_websockets = set()
+        mgr._music_playback_websockets = music_websockets
+    music_websockets.add(websocket)
     logger.info(f"✅ 已设置 {lanlan_name} 的WebSocket连接")
 
     # Engagement-deferred voice-input claim. Claiming the manager-wide voice
@@ -500,16 +519,42 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
 
     def _claim_voice_input_connection() -> None:
         nonlocal voice_input_claimed
-        if voice_input_claimed:
+        voice_mgr = session_manager[lanlan_name]
+        connection_id = str(this_session_id)
+        has_manager_lease_identity = hasattr(
+            voice_mgr,
+            "_voice_lease_connection_id",
+        )
+        manager_lease_connection_id = getattr(
+            voice_mgr,
+            "_voice_lease_connection_id",
+            None,
+        )
+        # ``voice_input_claimed`` means this socket engaged voice at least once;
+        # it does not guarantee the manager still binds the lease to it. A text
+        # session deliberately fail-closes the microphone route and vacates the
+        # manager lease while keeping this WebSocket alive. The next audio
+        # start on the same socket must therefore re-claim. Otherwise legacy
+        # authorization rejects before start_session is dispatched, leaving the
+        # frontend with no session_started/session_failed until its 15 s timeout.
+        #
+        # The global session-id guard above still prevents a superseded socket
+        # from reaching this path and stealing voice back from a newer window.
+        # Managers without the lease-identity field keep the historical
+        # claim-once behavior used by lightweight integrations and test doubles.
+        if voice_input_claimed and (
+            not has_manager_lease_identity
+            or manager_lease_connection_id == connection_id
+        ):
             return
         voice_input_claimed = True
         begin_voice_input = getattr(
-            session_manager[lanlan_name],
+            voice_mgr,
             "_begin_voice_input_connection",
             None,
         )
         if callable(begin_voice_input):
-            begin_voice_input(str(this_session_id))
+            begin_voice_input(connection_id)
             _voice_connection_sockets[lanlan_name] = (this_session_id, websocket)
             # Hand the socket to the manager too. mgr.websocket is reassigned
             # to every newly accepted socket, so it is the DISPLAY plane; the
@@ -518,12 +563,12 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
             # recorder superseded by a newer chat window never hears that its
             # route died and keeps the hardware mic open.
             set_voice_ws = getattr(
-                session_manager[lanlan_name],
+                voice_mgr,
                 "_set_voice_input_websocket",
                 None,
             )
             if callable(set_voice_ws):
-                set_voice_ws(str(this_session_id), websocket)
+                set_voice_ws(connection_id, websocket)
 
     def _owns_voice_connection() -> bool:
         """True while this socket still holds the manager voice identity.
@@ -709,6 +754,22 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 # messages keep dispatching through the narrow helper above;
                 # any non-voice message from it, or any message once a newer
                 # socket re-claims voice, closes it exactly as before.
+                # Music playback ownership is also window-local: the socket
+                # reporting a real player event may be older than the newest
+                # chat window, so route only that narrow state message without
+                # handing it any general session authority.
+                if _is_music_playback_state_message(message):
+                    handle_music_playback_state(
+                        session_manager[lanlan_name],
+                        message,
+                    )
+                    continue
+                if _is_music_request_playback_failed_message(message):
+                    handle_music_request_playback_failed(
+                        session_manager[lanlan_name],
+                        message,
+                    )
+                    continue
                 if _is_voice_path_message(message) and _owns_voice_connection():
                     await _dispatch_voice_message_while_superseded(message)
                     continue
@@ -763,6 +824,20 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
             if action == "start_session":
                 session_manager[lanlan_name].active_session_is_idle = False
                 session_manager[lanlan_name].set_goodbye_silent(False, "start_session")
+                raw_handshake_override = message.get("independent_asr_enabled")
+                request_handshake_override = (
+                    raw_handshake_override
+                    if isinstance(raw_handshake_override, bool)
+                    else None
+                )
+                raw_optimization_override = message.get(
+                    "voice_input_resource_optimization_enabled"
+                )
+                request_optimization_override = (
+                    raw_optimization_override
+                    if isinstance(raw_optimization_override, bool)
+                    else None
+                )
                 # Handshake: the frontend rides its authoritative independent-ASR
                 # toggle along on every start_session so the route decision cannot
                 # use a stale persisted value (settings POST failed or still in
@@ -777,12 +852,34 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 )
                 if callable(handshake_setter):
                     handshake_setter(message.get("independent_asr_enabled"))
+                optimization_handshake_setter = getattr(
+                    session_manager[lanlan_name],
+                    "set_voice_input_resource_optimization_handshake",
+                    None,
+                )
+                if callable(optimization_handshake_setter):
+                    optimization_handshake_setter(
+                        message.get("voice_input_resource_optimization_enabled")
+                    )
                 input_type = message.get("input_type", "audio")
+                # 前端每次 start_session 自带的请求标识，原样回带进
+                # session_started。多窗口下 ack 会经 voice-lease fan-out 到达
+                # 不是本请求方的窗口，标识就是接收方判断「这条是不是回应我」
+                # 的唯一依据（详见 core/notify.py send_session_started）。
+                request_id = message.get("request_id")
+                if isinstance(request_id, str):
+                    request_id = request_id.strip()[:128] or None
+                else:
+                    request_id = None
                 if input_type in _SESSION_INPUT_TYPES:
                     if is_game_route_active(lanlan_name):
                         if input_type in _TEXT_SESSION_INPUT_TYPES:
                             logger.info("[%s] game route active: acknowledging text entry without starting ordinary text session", lanlan_name)
-                            _fire_task(session_manager[lanlan_name].send_session_started("text"))
+                            _fire_task(
+                                session_manager[lanlan_name].send_session_started(
+                                    "text", request_id=request_id
+                                )
+                            )
                             continue
                         if input_type == "audio":
                             logger.info("[%s] game route active: starting ordinary realtime as STT provider for game voice", lanlan_name)
@@ -790,7 +887,19 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                             if session_manager[lanlan_name]._starting_session_count == 0:
                                 session_manager[lanlan_name].reset_session_start_circuit()
                             _fire_task(route_external_stream_message(lanlan_name, {"input_type": "audio", "stt_provider": "realtime"}))
-                            _fire_task(session_manager[lanlan_name].start_session(websocket, message.get("new_session", False), "audio", user_initiated=True))
+                            _fire_task(
+                                session_manager[lanlan_name].start_session(
+                                    websocket,
+                                    message.get("new_session", False),
+                                    "audio",
+                                    user_initiated=True,
+                                    request_id=request_id,
+                                    handshake_override=request_handshake_override,
+                                    resource_optimization_override=(
+                                        request_optimization_override
+                                    ),
+                                )
+                            )
                             continue
                     # 传递input_mode参数，告知session manager使用何种模式
                     # 注意：音频模块由 main_server 后台预加载，Python import lock 会自动等待首次导入完成
@@ -828,7 +937,19 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     # _starting_session_count > 0 的早退拦掉。
                     if session_manager[lanlan_name]._starting_session_count == 0:
                         session_manager[lanlan_name].reset_session_start_circuit()
-                    _fire_task(session_manager[lanlan_name].start_session(websocket, message.get("new_session", False), mode, user_initiated=True))
+                    _fire_task(
+                        session_manager[lanlan_name].start_session(
+                            websocket,
+                            message.get("new_session", False),
+                            mode,
+                            user_initiated=True,
+                            request_id=request_id,
+                            handshake_override=request_handshake_override,
+                            resource_optimization_override=(
+                                request_optimization_override
+                            ),
+                        )
+                    )
                 else:
                     await session_manager[lanlan_name].send_status(json.dumps({"code": "INVALID_INPUT_TYPE", "details": {"input_type": input_type}}))
 
@@ -1080,6 +1201,18 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 # 这里 no-op 以避免落到 default 分支推 UNKNOWN_ACTION 状态给前端。
                 pass
 
+            elif action == "music_playback_state":
+                handle_music_playback_state(
+                    session_manager[lanlan_name],
+                    message,
+                )
+
+            elif action == "music_request_playback_failed":
+                handle_music_request_playback_failed(
+                    session_manager[lanlan_name],
+                    message,
+                )
+
             elif action in ("voice_play_start", "voice_play_end"):
                 # FRONTEND-reported real audio playback boundaries. start =
                 # buffered audio actually began playing; end = the audio queue
@@ -1131,6 +1264,7 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
             # 抛异常会污染调用栈让真正的 WS error 看不到。
             pass
         logger.info(f"Cleaning up WebSocket resources: {websocket.client}")
+        music_websockets.discard(websocket)
         # 记录 WS 断开时间，供下次连接时判断是否为"刷新/重连"
         _ws_disconnect_time[lanlan_name] = time.time()
         # 释放活跃连接计数（与 try 起始处的 +1 对偶）

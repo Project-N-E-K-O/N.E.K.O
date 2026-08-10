@@ -286,7 +286,7 @@ def test_home_page_opens_plugin_dashboard_through_backend_redirect_for_handoff()
 def test_standalone_agent_hud_show_hide_keeps_origin_position():
     hud_source = Path("static/common-ui-hud.js").read_text(encoding="utf-8")
     show_match = re.search(
-        r"window\.AgentHUD\.showAgentTaskHUD = function \(\) \{(?P<body>[\s\S]*?)\n\};",
+        r"window\.AgentHUD\.showAgentTaskHUD = function \([^)]*\) \{(?P<body>[\s\S]*?)\n\};",
         hud_source,
     )
     hide_match = re.search(
@@ -817,8 +817,8 @@ def test_yui_wakeup_delegates_action_boundary_to_avatar_stage():
     avatar_source = Path("static/tutorial/avatar/yui-stage.js").read_text(encoding="utf-8")
     live2d_source = Path("static/live2d/live2d-model.js").read_text(encoding="utf-8")
     style_source = Path("static/css/yui-guide.css").read_text(encoding="utf-8")
-    yui_model = json.loads(Path("static/yui-origin/yui-origin.model3.json").read_text(encoding="utf-8"))
-    yui_display_info = json.loads(Path("static/yui-origin/yui-origin.cdi3.json").read_text(encoding="utf-8"))
+    yui_model = json.loads(Path("static/yui-lolita/yui-lolita.model3.json").read_text(encoding="utf-8"))
+    yui_display_info = json.loads(Path("static/yui-lolita/yui-lolita.cdi3.json").read_text(encoding="utf-8"))
     yui_param_ids = {
         item.get("Id")
         for item in yui_display_info.get("Parameters", [])
@@ -904,8 +904,8 @@ def test_yui_wakeup_delegates_action_boundary_to_avatar_stage():
         assert param_id in avatar_source
 
     yui_file_refs = yui_model.get("FileReferences", {})
-    assert yui_file_refs.get("Moc") == "yui-origin.moc3"
-    assert yui_file_refs.get("DisplayInfo") == "yui-origin.cdi3.json"
+    assert yui_file_refs.get("Moc") == "yui-lolita.moc3"
+    assert yui_file_refs.get("DisplayInfo") == "yui-lolita.cdi3.json"
     for param_id in ("Param75", "Param90", "Param92", "Param95"):
         assert param_id in yui_param_ids
 
@@ -1618,7 +1618,7 @@ def test_home_yui_guide_avatar_override_does_not_persist_tutorial_model():
     assert "this.revealTutorialLive2dPrepared();" in teardown_block
     assert "this.revealPrepared();" in restore_block
     assert "live2d: this.tutorialModelName" in begin_block
-    assert "TUTORIAL_YUI_LIVE2D_MODEL_PATH = '/static/yui-origin/yui-origin.model3.json'" in tutorial_source
+    assert "TUTORIAL_YUI_LIVE2D_MODEL_PATH = '/static/yui-lolita/yui-lolita.model3.json'" in tutorial_source
     assert "const ROUND_COUNT = 7" in seven_day_state_source
     launch_block = tutorial_source.split("const launchTutorial = () => {", 1)[1].split(
         "if (this.isI18nReady())",
@@ -3605,6 +3605,27 @@ def test_agent_llm_check_marks_browser_use_unloaded_instead_of_pending():
     assert '_set_capability("browser_use", False, "AGENT_BU_MODULE_NOT_LOADED")' in func_src
 
 
+def test_openfang_startup_capability_transitions_emit_status_snapshots():
+    source, func = _find_agent_server_function("startup", ast.AsyncFunctionDef)
+    func_src = ast.get_source_segment(source, func) or ""
+    init_src = func_src.split("async def _init_openfang_background():", 1)[1].split(
+        "_openfang_task = asyncio.create_task", 1
+    )[0]
+
+    assert init_src.count("await _emit_agent_status_update()") == 3
+
+
+def test_agent_popup_refetches_snapshot_after_openclaw_probe_settles():
+    source = Path("static/js/agent_ui_v2.js").read_text(encoding="utf-8")
+    popup_src = source.split(
+        "window.addEventListener('neko-popup-opening'", 1
+    )[1].split("window.addEventListener('neko-popup-closed'", 1)[0]
+
+    assert "refreshOpenClawAvailability()" in popup_src
+    assert ".finally(() => {" in popup_src
+    assert "if (state.popupOpen) fetchSnapshot().catch(() => {});" in popup_src
+
+
 def test_agent_ui_v2_free_warning_accepts_command_gate_shape():
     source = Path("static/js/agent_ui_v2.js").read_text(encoding="utf-8")
 
@@ -4416,11 +4437,6 @@ async def test_cross_server_post_memory_server_success_and_url_encoding(monkeypa
             capture=calls,
         )(),
     )
-    monkeypatch.setattr(
-        "main_logic.cross_server.get_global_language_full",
-        lambda: "zh-CN",
-    )
-
     ok, err_detail, payload = await _post_memory_server(
         "cache",
         "小天/测试",
@@ -4434,7 +4450,7 @@ async def test_cross_server_post_memory_server_success_and_url_encoding(monkeypa
     assert calls
     assert calls[0]["url"].endswith("/cache/%E5%B0%8F%E5%A4%A9%2F%E6%B5%8B%E8%AF%95")
     assert "input_history" in calls[0]["json"]
-    assert calls[0]["json"]["language"] == "zh-CN"
+    assert "language" not in calls[0]["json"]
 
 
 async def test_cross_server_post_memory_server_handles_http_non_2xx(monkeypatch):

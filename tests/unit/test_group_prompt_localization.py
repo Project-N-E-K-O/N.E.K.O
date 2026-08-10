@@ -36,7 +36,11 @@ from config.prompts.prompts_sys import (
 )
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_LANGS = ("zh", "en", "ja", "ko", "ru", "es", "pt")
+# 'zh-TW' joined the prompts_sys tables with the issue #2500 backfill, so the two
+# lists coincide again; _MEMORY_LANGS stays as its own name because the memory
+# tables have carried Traditional since long before that.
+_LANGS = ("zh", "zh-TW", "en", "ja", "ko", "ru", "es", "pt")
+_MEMORY_LANGS = _LANGS
 
 
 # ── scoped 渲染不得泄漏私聊对象的名字 ────────────────────────────────
@@ -116,7 +120,7 @@ async def test_scoped_past_memory_block_never_names_the_private_counterpart():
         ("en", "Unless someone brings them up first", "Unless 老张 brings them up first"),
     ):
         with patch(
-            "utils.language_utils.get_global_language", return_value=lang,
+            "utils.language_utils.get_global_language_full", return_value=lang,
         ):
             rendered_sync = harness.render_persona_markdown(
                 "小天", None, [scoped],
@@ -165,8 +169,12 @@ def test_scoped_past_memory_block_is_localized_everywhere():
         render_past_memory_block,
     )
 
-    assert set(PAST_MEMORY_BLOCK_SCOPED) == set(PAST_MEMORY_BLOCK) == set(_LANGS)
-    for lang in _LANGS:
+    assert (
+        set(PAST_MEMORY_BLOCK_SCOPED)
+        == set(PAST_MEMORY_BLOCK)
+        == set(_MEMORY_LANGS)
+    )
+    for lang in _MEMORY_LANGS:
         assert "{MASTER_NAME}" not in PAST_MEMORY_BLOCK_SCOPED[lang]
         assert "{AI_NAME}" in PAST_MEMORY_BLOCK_SCOPED[lang]
         assert "{ITEMS}" in PAST_MEMORY_BLOCK_SCOPED[lang]
@@ -214,9 +222,11 @@ def test_context_summary_ready_group_variant_has_no_counterpart_slot():
         assert "{master}" not in CONTEXT_SUMMARY_READY_GROUP[lang]
         assert "{name}" in CONTEXT_SUMMARY_READY_GROUP[lang]
         assert "{master}" in CONTEXT_SUMMARY_READY_TEXT[lang]
-        # 文字变体不能还说"语音"。
-        assert "语音" not in CONTEXT_SUMMARY_READY_TEXT[lang]
-        assert "语音" not in CONTEXT_SUMMARY_READY_GROUP[lang]
+        # 文字变体不能还说"语音"。简繁两种写法都要挡：只查简体的话，繁中那行
+        # 写成「語音」会从这条断言底下溜过去。
+        for spelling in ("语音", "語音"):
+            assert spelling not in CONTEXT_SUMMARY_READY_TEXT[lang]
+            assert spelling not in CONTEXT_SUMMARY_READY_GROUP[lang]
         assert "voice" not in CONTEXT_SUMMARY_READY_TEXT[lang].lower()
         assert "voice" not in CONTEXT_SUMMARY_READY_GROUP[lang].lower()
 
@@ -416,7 +426,9 @@ def test_recall_entry_tag_is_localized_and_covers_the_scoped_kinds():
 
     for table in (RECALL_ENTRY_TIER_LABEL, RECALL_ENTRY_ENTITY_LABEL):
         for key, entry in table.items():
-            assert set(entry) == set(_LANGS), f"{key} 缺语言：{set(_LANGS) - set(entry)}"
+            assert set(entry) == set(_MEMORY_LANGS), (
+                f"{key} 缺语言：{set(_MEMORY_LANGS) - set(entry)}"
+            )
 
     # scoped 写入把 entity 强制成 subject.kind，这几个必须在表里。
     for kind in ("group_chat", "participant", "group_participant"):
@@ -433,7 +445,7 @@ def test_qq_recall_render_has_no_internal_enum_left():
     from plugin.plugins.qq_auto_reply.memory_bridge import QQMemoryBridge
 
     bridge = QQMemoryBridge(SimpleNamespace(logger=MagicMock()))
-    with patch("utils.language_utils.get_global_language", return_value="zh"):
+    with patch("utils.language_utils.get_global_language_full", return_value="zh"):
         rendered = bridge.render_relevant_memory([
             {
                 "text": "群里在聊露营",
@@ -452,7 +464,10 @@ def test_qq_recall_render_has_no_internal_enum_left():
     assert "[印象/群成员]" in rendered
     assert "fact" not in rendered and "group_chat" not in rendered
     assert "reflection" not in rendered and "group_participant" not in rendered
-    assert "(2026-05-01)" in rendered
+    # 日期后面还跟一个本地化的相对时间标签（"3 月前"）：QQ 侧此前自己用
+    # anchor[:10] 裁日期、没有这个标签，#2588 收口到 memory.recall_render
+    # 之后与本体侧同格式。断言写成前缀，免得跟"今天/几月前"的措辞绑死。
+    assert "(2026-05-01, " in rendered
 
 
 @pytest.mark.asyncio
@@ -542,7 +557,7 @@ def test_english_user_actually_gets_the_english_group_reply_guidelines():
     )
 
     assert "Group Chat Reply Guidelines" in rendered
-    assert "In group chats, you don't need to reply to every message" in rendered
+    assert "This is a multi-person QQ group" in rendered
     assert "群聊回复意愿" not in rendered
     assert SCENE_KIRA_UNIFIED_GROUP not in rendered
     # 而且不再每轮打一条"缺必需占位符"的 warning。
@@ -552,41 +567,96 @@ def test_english_user_actually_gets_the_english_group_reply_guidelines():
     ]
 
 
-def test_declared_required_placeholders_exist_in_their_own_templates():
-    """Discovered: every declared placeholder must exist in its own
-    default template.
+def _discovered_layer_templates() -> dict[str, str]:
+    """Pair every ``i18n_key`` with the default template its call site
+    actually hands to ``_resolve_static_layer``.
 
-    A hand-kept list would miss entries; this pairs _PROMPT_LAYERS with
-    the templates themselves.
+    Read off the AST instead of copied into a table here. The previous
+    hand-kept dict silently skipped any key it did not list, and it was
+    already two keys short of ``_PROMPT_LAYERS`` — so the guard was
+    passing on layers it had never looked at. Defaults arrive both as
+    module constants (``SCENE_DIRECTED_GROUP``) and as inline literals
+    (the two naming layers), so both forms are resolved.
     """
-    from plugin.plugins.qq_auto_reply import prompt_fragment_templates as frag
-    from plugin.plugins.qq_auto_reply import scene_prompt_templates as scenes
+    import importlib
+
+    module = importlib.import_module(
+        "plugin.plugins.qq_auto_reply.session_instruction_service"
+    )
+    source = Path(module.__file__).read_text(encoding="utf-8")
+    found: dict[str, str] = {}
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if not (isinstance(func, ast.Attribute)
+                and func.attr == "_resolve_static_layer"):
+            continue
+        if len(node.args) < 2:
+            continue
+        key_node, default_node = node.args[0], node.args[1]
+        if not (isinstance(key_node, ast.Constant)
+                and isinstance(key_node.value, str)):
+            continue
+        if isinstance(default_node, ast.Constant) and isinstance(
+            default_node.value, str
+        ):
+            found[key_node.value] = default_node.value
+        elif isinstance(default_node, ast.Name):
+            resolved = getattr(module, default_node.id, None)
+            if isinstance(resolved, str):
+                found[key_node.value] = resolved
+    return found
+
+
+def test_every_guarded_layer_has_a_discoverable_default_template():
+    """Every keyed layer must be reachable by the discovery above.
+
+    This is what the old hand-kept table got wrong: an unlisted key fell
+    through a bare ``continue``, so its declared placeholders were never
+    compared with anything. Failing here — instead of skipping — is what
+    makes the next test's coverage real.
+    """
     from plugin.plugins.qq_auto_reply.session_instruction_service import (
         QQSessionInstructionService,
     )
 
-    defaults = {
-        "prompts.group.kira_unified": scenes.SCENE_KIRA_UNIFIED_GROUP,
-        "prompts.group.collective": scenes.SCENE_COLLECTIVE_GROUP,
-        "prompts.group.shared_session": scenes.SCENE_SHARED_GROUP,
-        "prompts.group.directed": scenes.SCENE_DIRECTED_GROUP,
-        "prompts.private.body": scenes.SCENE_PRIVATE_CHAT,
-        "role_prompt_section": frag.ROLE_PROMPT_SECTION,
-        "attention_prompt_section": frag.ATTENTION_PROMPT_SECTION,
-        "format_prompt_section": frag.FORMAT_PROMPT_SECTION,
-        "format_prompt_section_neko_dynamic": frag.FORMAT_PROMPT_SECTION_NEKO_DYNAMIC,
-        "format_prompt_section_open_platform": frag.FORMAT_PROMPT_SECTION_OPEN_PLATFORM,
-        "character_prompt_section": frag.CHARACTER_PROMPT_SECTION,
-        "time_prompt_section": frag.TIME_PROMPT_SECTION,
-        "detail_constraints_section": frag.DETAIL_CONSTRAINTS_SECTION,
-        "output_prompt_section": frag.OUTPUT_PROMPT_SECTION,
-        "core_memory_section": frag.CORE_MEMORY_SECTION,
-    }
+    discovered = _discovered_layer_templates()
+    guarded = [
+        layer["i18n_key"]
+        for layer in QQSessionInstructionService._PROMPT_LAYERS
+        if layer.get("i18n_key") and layer["i18n_key"] != "__runtime__"
+    ]
+    assert guarded, "夹具失效：一个受护栏管辖的层都没找到"
+    missing = [key for key in guarded if key not in discovered]
+    assert missing == [], (
+        f"这些层受必需占位符护栏管辖，却找不到对应的默认模板，"
+        f"它们声明的占位符等于没人校验：{missing}"
+    )
+
+
+def test_declared_required_placeholders_exist_in_their_own_templates():
+    """Every declared placeholder must exist in its own default template.
+
+    A declaration the template cannot satisfy is an always-failing
+    condition: the guard judges every i18n bundle "missing placeholders"
+    and swaps the whole layer back to the Chinese constant for every
+    non-Chinese user, once per turn, with a warning each time.
+    """
+    from plugin.plugins.qq_auto_reply.session_instruction_service import (
+        QQSessionInstructionService,
+    )
+
+    discovered = _discovered_layer_templates()
     mismatched = []
     for layer in QQSessionInstructionService._PROMPT_LAYERS:
         key = layer.get("i18n_key")
-        template = defaults.get(key)
+        if not key or key == "__runtime__":
+            continue
+        template = discovered.get(key)
         if template is None:
+            # Reported by the test above; skipping here keeps one failure
+            # per defect instead of two.
             continue
         for placeholder in layer.get("required_placeholders") or ():
             if placeholder not in template:
@@ -640,8 +710,23 @@ def test_pipeline_still_forces_group_facing_for_collective_scene():
         "prompting._build_group_turn_message 的 collective 分支被删掉了，"
         "这条推导是它可以被删的唯一理由"
     )
-    assert re.search(
-        r"_build_prompt_message\(\s*\n\s*is_group=is_group,"
-        r"\s*\n\s*group_facing=effective_group_facing,",
-        source,
+    # 这一条走 AST 而不是正则：上一版把参数顺序和"每个参数各占一行"一起
+    # 钉死了，压成一行、换顺序、中间插一个参数都会误红，而行为零变化。
+    calls = [
+        node for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "_build_prompt_message"
+    ]
+    assert len(calls) == 1, (
+        f"reply_context_node 里 _build_prompt_message 的调用点数量变了"
+        f"（{len(calls)} 处），这条护栏只覆盖单一调用点"
+    )
+    passed = {
+        kw.arg: kw.value for kw in calls[0].keywords if kw.arg is not None
+    }
+    group_facing_arg = passed.get("group_facing")
+    assert (
+        isinstance(group_facing_arg, ast.Name)
+        and group_facing_arg.id == "effective_group_facing"
     ), "prompt_message 不再用 effective_group_facing 构建"

@@ -41,7 +41,7 @@ import re
 import httpx
 from utils.frontend_utils import replace_blank, is_only_punctuation
 from utils.internal_http_client import get_internal_http_client
-from utils.language_utils import get_global_language_full
+from utils.language_utils import is_supported_language_code
 from utils.logger_config import get_module_logger
 from main_logic.agent_event_bus import publish_analyze_request_reliably
 
@@ -60,7 +60,7 @@ emoji_pattern2 = re.compile("["
 emotion_pattern = re.compile('<(.*?)>')
 
 
-async def _publish_analyze_request_with_fallback(lanlan_name: str, trigger: str, messages: list[dict], *, conversation_id: str | None = None, had_user_input: bool = True) -> bool:
+async def _publish_analyze_request_with_fallback(lanlan_name: str, trigger: str, messages: list[dict], *, conversation_id: str | None = None, had_user_input: bool = True, language: str | None = None) -> bool:
     """Publish analyze request via EventBus with ack/retry.
 
     ``had_user_input`` is False for a proactive turn (lanlan spoke with no fresh
@@ -68,6 +68,12 @@ async def _publish_analyze_request_with_fallback(lanlan_name: str, trigger: str,
     re-ran, and the "latest user message" here is a stale prior turn) and are
     marked ``proactive=True`` so the agent routes them through its throttled
     proactive path instead of the user-turn dedupe (which would drop them).
+
+    ``language`` is the live session locale, taken from the same
+    ``_current_user_language()`` provider that already feeds the memory-server
+    calls and the agent task-result rendering. The agent process cannot read the
+    session's ``user_language`` on its own, so its analyzer prompts would
+    otherwise follow the machine's Steam/system locale instead of the UI language.
     """
     try:
         # Optional optimization hint: the cheap pre-gate signal the master-emotion
@@ -103,6 +109,7 @@ async def _publish_analyze_request_with_fallback(lanlan_name: str, trigger: str,
             conversation_id=conversation_id,
             external_intent=external_intent,
             proactive=not had_user_input,
+            language=language,
         )
         if sent:
             logger.debug(
@@ -637,21 +644,24 @@ async def _post_memory_server(
     payload: list[dict],
     *,
     timeout_s: float,
+    language: str | None = None,
 ) -> tuple[bool, str, dict]:
     """Post history payload to memory_server and treat only 2xx+valid JSON as success."""
     encoded_name = quote(lanlan_name, safe="")
     url = f"http://127.0.0.1:{MEMORY_SERVER_PORT}/{endpoint}/{encoded_name}"
 
     client = get_internal_http_client()
+    request_payload = {
+        "input_history": json.dumps(payload, indent=2, ensure_ascii=False),
+    }
+    # Only a live frontend/session locale is durable provenance. Omitting this
+    # field lets the memory server choose a render-only fallback without
+    # overwriting a character's last explicit locale.
+    if is_supported_language_code(language):
+        request_payload["language"] = language
     response = await client.post(
         url,
-        json={
-            "input_history": json.dumps(payload, indent=2, ensure_ascii=False),
-            # main_server owns Steamworks. Forward its resolved Steam > system
-            # locale decision so the standalone memory_server does not fall
-            # back to its process-local C.UTF-8 environment.
-            "language": get_global_language_full(),
-        },
+        json=request_payload,
         timeout=timeout_s,
     )
     raw_body = response.text
@@ -722,6 +732,7 @@ async def run_sync_connector(
     sync_server_url=f"ws://127.0.0.1:{MONITOR_SERVER_PORT}",
     config=None,
     status_callback=None,
+    user_language_provider=None,
 ):
     """Async-native sync connector, running on the caller's main event loop.
 
@@ -743,12 +754,23 @@ async def run_sync_connector(
         status_callback: optional ``Callable[[str], None]``. Runs on the main loop, so it
             may call ``asyncio.create_task(...)`` directly without
             ``run_coroutine_threadsafe``.
+        user_language_provider: optional callable returning the live session locale.
     """
     chat_history: list = []
     default_config = {'bullet': True, 'monitor': True}
     if config is None:
         config = {}
     config = default_config | config
+
+    def _current_user_language() -> str | None:
+        if not callable(user_language_provider):
+            return None
+        try:
+            selected = user_language_provider()
+        except Exception as exc:
+            logger.debug("[%s] session language provider failed: %s", lanlan_name, exc)
+            return None
+        return selected if is_supported_language_code(selected) else None
 
     # 历史保留：旧 thread 版本里多处 ``if shutdown_event.is_set(): break`` 用于
     # 子进程时代跳过对正在关闭的 memory_server 的 HTTP 调用。改 async 后取消
@@ -966,6 +988,7 @@ async def run_sync_connector(
                                         lanlan_name,
                                         _renew_payload,
                                         timeout_s=30.0,
+                                        language=_current_user_language(),
                                     )
                                     if not ok:
                                         logger.error(f"[{lanlan_name}] 热重置记忆处理失败 ({_renew_endpoint}): {err_detail}")
@@ -1087,6 +1110,7 @@ async def run_sync_connector(
                                                 lanlan_name,
                                                 avatar_memory_messages,
                                                 timeout_s=10.0,
+                                                language=_current_user_language(),
                                             )
                                             if ok:
                                                 _mark_memory_cache_success(
@@ -1171,6 +1195,7 @@ async def run_sync_connector(
                                                 messages=recent,
                                                 conversation_id=uuid.uuid4().hex,
                                                 had_user_input=_turn_had_user_input,
+                                                language=_current_user_language(),
                                             )
                                             if sent:
                                                 logger.debug(f"[{lanlan_name}] analyze_request dispatch success (turn_end), messages={len(recent)}")
@@ -1198,6 +1223,7 @@ async def run_sync_connector(
                                             lanlan_name,
                                             new_messages,
                                             timeout_s=10.0,
+                                            language=_current_user_language(),
                                         )
                                         if ok:
                                             _mark_memory_cache_success(
@@ -1270,6 +1296,7 @@ async def run_sync_connector(
                                                 trigger="session_end",
                                                 messages=recent,
                                                 conversation_id=uuid.uuid4().hex,
+                                                language=_current_user_language(),
                                                 # session_end is terminal — never treated as proactive
                                                 # (had_user_input defaults True), so it always takes the
                                                 # ordinary user-turn path.
@@ -1311,6 +1338,7 @@ async def run_sync_connector(
                                             lanlan_name,
                                             _settle_payload,
                                             timeout_s=30.0,
+                                            language=_current_user_language(),
                                         )
                                         if not ok:
                                             logger.warning(f"[{lanlan_name}] session end 记忆结算失败 ({_settle_endpoint}): {err_detail}")

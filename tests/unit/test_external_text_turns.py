@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import gc
 import json
 from types import MethodType
@@ -566,18 +567,36 @@ async def test_id_bearing_terminal_before_owner_created_is_treated_as_orphan():
         sent.append(dict(event))
 
     arbiter = RealtimeResponseArbiter(send)
+
+    # Announced with no owner, so it is booked as server-initiated, then
+    # terminated — which drops it from the LIVE set. The live set is not a
+    # record of what has been seen: ids also leave it when the staleness bound
+    # evicts a still-running response, when the LRU gives up, and when a
+    # fail-open release abandons one. Any of those would leave a
+    # previously-announced id looking unknown.
+    arbiter.notify_response_created(
+        {"type": "response.created", "response": {"id": "resp-server"}}
+    )
+    arbiter.notify_response_terminal(
+        {"type": "response.done", "response": {"id": "resp-server"}}
+    )
+    assert "resp-server" not in arbiter._server_response_ids
+
     ticket = await arbiter.enqueue(source="owner")
     await asyncio.wait_for(ticket.sent, 0.2)
     assert ticket.started.done() is False
 
-    # A terminal event never precedes its own response.created, so an
-    # id-bearing terminal arriving before the owner's response.created must
-    # belong to another response and must not fail the owner's lifecycle.
+    # A late or duplicate terminal for that same response must not be credited
+    # to whoever holds the lane now. This one is a terminal for an id this
+    # connection HAS announced, so the "a terminal never precedes its own
+    # response.created" reading still applies and the owner keeps waiting.
     arbiter.notify_response_terminal(
         {"type": "response.done", "response": {"id": "resp-server"}}
     )
     await asyncio.sleep(0.01)
-    assert ticket.started.done() is False
+    assert ticket.started.done() is False, (
+        "an id this connection announced can never become the owner's"
+    )
 
     arbiter.notify_response_created(
         {"type": "response.created", "response": {"id": "resp-owner"}}
@@ -587,6 +606,281 @@ async def test_id_bearing_terminal_before_owner_created_is_treated_as_orphan():
         {"type": "response.done", "response": {"id": "resp-owner"}}
     )
     await asyncio.wait_for(ticket.done, 0.2)
+    await arbiter.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_an_unowned_announcement_is_adopted_when_our_create_answers_nothing():
+    # The China free route (lanlan.tech, a StepFun proxy) starts answering the
+    # moment it receives the conversation item and never waits for
+    # response.create. Its announcement therefore arrives while the item-ack
+    # barrier still holds the owner slot empty, is booked as server-initiated,
+    # and the request's own create is then silently ignored — so ``started``
+    # never resolves and the transport is torn down. Every turn. Measured
+    # 2026-08-01.
+    #
+    # Note the item ack does NOT match: this provider assigns its own item ids.
+    # Requiring a matching ack as adoption evidence would disqualify every
+    # request on the one provider that needs this.
+    sent = []
+    aborted = []
+    arbiter = None
+
+    async def send(event):
+        sent.append(dict(event))
+        if event["type"] == "conversation.item.create":
+            arbiter.notify_response_created(
+                {"type": "response.created", "response": {"id": "resp-auto"}}
+            )
+            arbiter.notify_item_created(
+                {"item": {"id": "provider-assigned-id", "role": "user"}}
+            )
+        # response.create is deliberately answered by nothing at all.
+
+    async def abort(reason):
+        aborted.append(reason)
+
+    arbiter = RealtimeResponseArbiter(send, abort_transport=abort)
+    ticket = await arbiter.enqueue(
+        source="external_asr",
+        events_before_response=(
+            {
+                "type": "conversation.item.create",
+                "item": {"id": "item-ours", "role": "user"},
+            },
+        ),
+        response_event={"type": "response.create"},
+        ack_expected=True,
+        expected_item_id="item-ours",
+        expected_item_role="user",
+        item_ack_timeout=0.05,
+        response_started_timeout=0.15,
+    )
+    await asyncio.wait_for(ticket.sent, 0.5)
+
+    # It finishes before the started allowance expires, which is why the
+    # adoption cannot be keyed on the id still being live.
+    arbiter.notify_response_terminal(
+        {"type": "response.done", "response": {"id": "resp-auto", "status": "completed"}}
+    )
+
+    result = await asyncio.wait_for(ticket.done, 1.0)
+    assert result is not None
+    assert aborted == [], "adopting is what keeps the transport alive"
+    assert "response.cancel" not in [event["type"] for event in sent]
+    assert arbiter._server_response_ids == {}, (
+        "adoption must MOVE the id, not copy it — a copy leaves the lane held "
+        "by the response its own owner just finished answering for"
+    )
+    assert arbiter.is_busy is False
+    await arbiter.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_adopting_a_still_live_announcement_moves_its_id_off_the_lane():
+    # The other adoption path: the announcement is still running when the
+    # started allowance expires. Here the id is in the live set at the moment
+    # of the claim, so adoption has to MOVE it — a copy leaves the lane held by
+    # the very response its owner is now answering for, the owner's own
+    # terminal cannot reopen it, and every adopted turn wedges dispatch until
+    # the 60s staleness bound. That is worse than the teardown this repairs.
+    sent = []
+    aborted = []
+    arbiter = None
+
+    async def send(event):
+        sent.append(dict(event))
+        if event["type"] == "conversation.item.create":
+            arbiter.notify_response_created(
+                {"type": "response.created", "response": {"id": "resp-auto"}}
+            )
+            arbiter.notify_item_created(
+                {"item": {"id": "provider-assigned-id", "role": "user"}}
+            )
+
+    async def abort(reason):
+        aborted.append(reason)
+
+    arbiter = RealtimeResponseArbiter(send, abort_transport=abort)
+    ticket = await arbiter.enqueue(
+        source="external_asr",
+        events_before_response=(
+            {
+                "type": "conversation.item.create",
+                "item": {"id": "item-ours", "role": "user"},
+            },
+        ),
+        response_event={"type": "response.create"},
+        ack_expected=True,
+        expected_item_id="item-ours",
+        expected_item_role="user",
+        item_ack_timeout=0.05,
+        response_started_timeout=0.15,
+    )
+    await asyncio.wait_for(ticket.sent, 0.5)
+    await asyncio.wait_for(ticket.started, 1.0)
+
+    assert arbiter._server_response_ids == {}, (
+        "the adopted id must be held in exactly one place — on its owner"
+    )
+    assert arbiter._response_owner is not None
+    assert arbiter._response_owner.response_id == "resp-auto"
+
+    arbiter.notify_response_terminal(
+        {"type": "response.done", "response": {"id": "resp-auto", "status": "completed"}}
+    )
+    await asyncio.wait_for(ticket.done, 1.0)
+    assert aborted == []
+    assert arbiter.is_busy is False, "the adopted turn's terminal reopens the lane"
+    await arbiter.shutdown()
+
+
+async def _adoption_harness(
+    during_create_send=None, during_item_window=None, ack_expected=True
+):
+    """Drive the route-1 shape, letting a test disturb one of its two moments.
+
+    ``during_item_window`` runs while the owner slot is still empty — the only
+    time an announcement can land unowned. ``during_create_send`` runs after the
+    owner exists, which is why an announcement injected there is credited to it
+    rather than becoming a second unclaimed one.
+    """
+
+    sent = []
+    aborted = []
+    arbiter = None
+
+    async def send(event):
+        sent.append(dict(event))
+        if event["type"] == "conversation.item.create":
+            arbiter.notify_response_created(
+                {"type": "response.created", "response": {"id": "resp-auto"}}
+            )
+            if during_item_window is not None:
+                during_item_window(arbiter)
+            if ack_expected:
+                arbiter.notify_item_created(
+                    {"item": {"id": "provider-assigned-id", "role": "user"}}
+                )
+        elif event["type"] == "response.create":
+            if during_create_send is not None:
+                during_create_send(arbiter)
+
+    async def abort(reason):
+        aborted.append(reason)
+
+    arbiter = RealtimeResponseArbiter(send, abort_transport=abort)
+    ticket = await arbiter.enqueue(
+        source="external_asr",
+        events_before_response=(
+            {
+                "type": "conversation.item.create",
+                "item": {"id": "item-ours", "role": "user"},
+            },
+        ),
+        response_event={"type": "response.create"},
+        ack_expected=ack_expected,
+        expected_item_id="item-ours" if ack_expected else None,
+        expected_item_role="user" if ack_expected else None,
+        item_ack_timeout=0.05,
+        response_started_timeout=0.15,
+        cancel_timeout=0.05,
+    )
+    return arbiter, ticket, sent, aborted
+
+
+@pytest.mark.asyncio
+async def test_a_second_unowned_announcement_makes_the_window_unadoptable():
+    # Adoption rests on there being exactly one thing it could mean. Two
+    # unowned announcements in the same window are ambiguous, and guessing
+    # between them would resolve this request against a response it did not
+    # cause — so it must decline and take the old outcome instead.
+    def two_announcements(arbiter):
+        arbiter.notify_response_created(
+            {"type": "response.created", "response": {"id": "resp-other"}}
+        )
+
+    arbiter, ticket, sent, aborted = await _adoption_harness(
+        during_item_window=two_announcements
+    )
+    with pytest.raises(Exception):
+        await asyncio.wait_for(ticket.done, 1.0)
+    assert aborted, "an ambiguous window must not be adopted"
+    await arbiter.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_a_vad_boundary_across_the_window_makes_it_unadoptable():
+    # The server-VAD correlation state moving means an automatic response the
+    # user triggered may be what is sitting in the unowned bucket. The epoch is
+    # what carries that across the window: the backstop giving up on a pending
+    # marker is a guess, not evidence the automatic response was abandoned.
+    def vad_moves(arbiter):
+        arbiter._server_vad_response_pending = True
+        arbiter._server_vad_pending_expired()
+
+    arbiter, ticket, sent, aborted = await _adoption_harness(
+        during_create_send=vad_moves
+    )
+    with pytest.raises(Exception):
+        await asyncio.wait_for(ticket.done, 1.0)
+    assert aborted, "a moved VAD epoch must not be adopted across"
+    await arbiter.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_without_an_item_acknowledgement_there_is_nothing_to_adopt():
+    # The positive evidence adoption rests on is that the provider
+    # acknowledged an item while this request held the lane. A request that
+    # sends pre-response events and never sees conversation.item.created has
+    # no reason to believe the unowned announcement answers anything of
+    # its own, so it declines and takes the old outcome.
+    arbiter, ticket, sent, aborted = await _adoption_harness(ack_expected=False)
+    with pytest.raises(Exception):
+        await asyncio.wait_for(ticket.done, 1.0)
+    assert aborted, "no item acknowledgement means no adoption"
+    await arbiter.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_a_terminal_for_a_never_announced_id_belongs_to_the_owner():
+    # The dual of the test above, and the frame set of a real provider: the
+    # international free route (lanlan.app, a Gemini proxy) sends transcript
+    # deltas, audio deltas, response.audio.done and an id-bearing
+    # response.done — and NO response.created, ever. Read as "a terminal
+    # cannot precede its own created event", that terminal is somebody else's
+    # and the owner waits out its started allowance, gets cancelled, and the
+    # arbiter tears the transport down. Every turn. Measured 2026-08-01.
+    #
+    # The premise is a property of the provider, not a law. An id this
+    # connection has never announced cannot be another response's, because
+    # there is no other response to have announced it.
+    sent = []
+
+    async def send(event):
+        sent.append(dict(event))
+
+    arbiter = RealtimeResponseArbiter(send)
+    ticket = await arbiter.enqueue(source="owner")
+    await asyncio.wait_for(ticket.sent, 0.2)
+    assert ticket.started.done() is False
+
+    arbiter.notify_response_terminal(
+        {
+            "type": "response.done",
+            "response": {"id": "resp_1785581414491", "status": "completed"},
+        }
+    )
+
+    # Claimed whole: the id and the announcement are one act. Resolving only
+    # the terminal would leave started to be stamped with "response terminated
+    # before response.created" — no teardown, but every turn still reported as
+    # a failure to the host.
+    result = await asyncio.wait_for(ticket.done, 0.2)
+    assert result is not None
+    assert ticket.started.done() and ticket.started.exception() is None
+    assert "response.cancel" not in [event["type"] for event in sent]
+    assert arbiter.is_busy is False, "the lane must reopen for the next turn"
     await arbiter.shutdown()
 
 
@@ -2020,6 +2314,53 @@ async def test_paused_precreated_proactive_yields_to_completed_user_turn():
 
 
 @pytest.mark.asyncio
+async def test_repause_after_dequeue_requeues_without_processing_or_bypass_charge():
+    async def send(_event):
+        raise AssertionError("paused work must not be sent")
+
+    arbiter = RealtimeResponseArbiter(send)
+    arbiter.pause_dispatch()
+    first = await arbiter.enqueue(source="proactive-1", priority=20)
+    second = await arbiter.enqueue(source="proactive-2", priority=20)
+    first_queued = arbiter._queued_by_ticket[id(first)]
+    second_queued = arbiter._queued_by_ticket[id(second)]
+
+    selection_ready = asyncio.Event()
+    return_selection = asyncio.Event()
+    original_next_queued = arbiter._next_queued
+
+    async def controlled_next_queued():
+        selected = await original_next_queued()
+        selection_ready.set()
+        await return_selection.wait()
+        return selected
+
+    arbiter._next_queued = controlled_next_queued
+    process = AsyncMock(wraps=arbiter._process)
+    arbiter._process = process
+
+    try:
+        arbiter.resume_dispatch()
+        await asyncio.wait_for(selection_ready.wait(), timeout=0.2)
+        arbiter.pause_dispatch()
+        return_selection.set()
+
+        for _ in range(20):
+            if arbiter._queue.qsize() == 2:
+                break
+            await asyncio.sleep(0)
+
+        assert arbiter._queue.qsize() == 2
+        process.assert_not_awaited()
+        assert first.sent.done() is False
+        assert second.sent.done() is False
+        assert first_queued.bypass_count == 0
+        assert second_queued.bypass_count == 0
+    finally:
+        await arbiter.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_external_text_turn_rejects_gemini_before_creating_arbiter():
     client = OmniRealtimeClient.__new__(OmniRealtimeClient)
     client._is_gemini = True
@@ -2388,6 +2729,70 @@ async def test_old_external_text_turn_rearms_newer_pause_after_dispatch():
     await arbiter.shutdown()
 
 
+@pytest.mark.asyncio
+async def test_old_external_text_turn_repauses_before_done_waits_can_skip_yield(
+    monkeypatch,
+):
+    original_wait_for = asyncio.wait_for
+
+    async def wait_for_without_done_future_yield(awaitable, timeout):
+        if isinstance(awaitable, asyncio.Future) and awaitable.done():
+            return awaitable.result()
+        return await original_wait_for(awaitable, timeout)
+
+    monkeypatch.setattr(
+        arbiter_module.asyncio,
+        "wait_for",
+        wait_for_without_done_future_yield,
+    )
+
+    arbiter = None
+    sent = []
+
+    async def send(event):
+        sent.append(dict(event))
+        if event["type"] == "conversation.item.create":
+            arbiter.notify_item_created(
+                {"item": {"id": event["item"]["id"], "role": "user"}}
+            )
+        elif event["type"] == "response.create":
+            arbiter.notify_response_created({})
+            arbiter.notify_response_terminal({})
+            # Complete the lifecycle while the transport send is suspended,
+            # matching the Python 3.12+ review reproduction.
+            await asyncio.sleep(0)
+
+    client = OmniRealtimeClient.__new__(OmniRealtimeClient)
+    client._is_gemini = False
+    arbiter = RealtimeResponseArbiter(send)
+    client._response_arbiter = arbiter
+    client._external_voice_turn_pause_id = "turn-new"
+    arbiter.pause_dispatch()
+    proactive = await arbiter.enqueue(
+        source="proactive",
+        response_event={"type": "response.create", "event_id": "proactive"},
+    )
+
+    ticket = await client.submit_external_text_turn("hello", turn_id="turn-old")
+    await ticket.done
+
+    response_event_ids = [
+        event["event_id"]
+        for event in sent
+        if event["type"] == "response.create"
+    ]
+    assert len(response_event_ids) == 1
+    assert response_event_ids[0].startswith("event_asr_response_")
+    assert "proactive" not in response_event_ids
+    assert proactive.sent.done() is False
+    assert not arbiter._dispatch_allowed.is_set()
+
+    client.abandon_external_voice_turn("turn-new")
+    await proactive.done
+    assert sent[-1]["event_id"] == "proactive"
+    await arbiter.shutdown()
+
+
 def test_abandon_without_active_pause_does_not_create_arbiter():
     client = OmniRealtimeClient.__new__(OmniRealtimeClient)
     client._is_gemini = False
@@ -2477,3 +2882,617 @@ async def test_enqueue_keeps_caller_stamped_event_ids_unchanged():
     assert sent[0]["event_id"] == "event_user_item_explicit"
     assert sent[1]["event_id"] == "event_user_response_explicit"
     await arbiter.shutdown()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_never_announcing_provider_still_finalizes_its_turn_on_the_host():
+    # The arbiter half of this is
+    # test_a_terminal_for_a_never_announced_id_belongs_to_the_owner — it stops
+    # the teardown. This is the other half, and without it the fix is worse
+    # than the bug it replaces: the transport's stale filter compares the
+    # terminal's id against _current_response_id, which a provider that never
+    # sends response.created never writes, so the terminal is dropped as stale
+    # and the whole finalization below it is skipped. On exactly those routes
+    # (_has_server_vad is False) _notify_turn_finished is the only speech-id
+    # rotation point, so every turn after the first goes silent — and the
+    # teardown this PR removes is what used to reset that by rebuilding the
+    # session.
+    #
+    # Frame set measured against wss://www.lanlan.app/core on 2026-08-01: no
+    # session.created, no response.created, no conversation.item.created.
+    import json as _json
+
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+
+    class _Socket:
+        def __init__(self, frames):
+            self._frames = frames
+
+        async def __aiter__(self):
+            for frame in self._frames:
+                yield _json.dumps(frame)
+                await asyncio.sleep(0)
+            await asyncio.Event().wait()
+
+        async def send(self, *_a, **_k):
+            return None
+
+        async def close(self, *_a, **_k):
+            return None
+
+    fired = []
+
+    async def _on_done():
+        fired.append("on_response_done")
+
+    async def _on_rotate():
+        fired.append("on_sid_rotate")
+
+    client = OmniRealtimeClient(
+        "wss://www.lanlan.app/core",
+        "free-access",
+        model="free-model",
+        api_type="free",
+        on_response_done=_on_done,
+        on_sid_rotate=_on_rotate,
+    )
+    assert client._has_server_vad is False, "the route this protects"
+    client._fatal_error_occurred = False
+    client.ws = _Socket(
+        [
+            {"type": "response.audio_transcript.delta", "delta": "今天"},
+            {"type": "response.audio_transcript.done", "transcript": "今天天气不错"},
+            {"type": "response.audio.done"},
+            {
+                "type": "response.done",
+                "response": {"id": "resp_1785581414491", "status": "completed"},
+            },
+        ]
+    )
+    try:
+        await asyncio.wait_for(client.handle_messages(), 1)
+    except (asyncio.TimeoutError, Exception):
+        # The socket parks after its scripted frames, so the receive loop is
+        # still running when the bound expires — that IS the end of the
+        # scenario, not a failure. The assertions below are what judge it.
+        pass
+
+    assert "on_response_done" in fired, "the host never completed the turn"
+    assert "on_sid_rotate" in fired, (
+        "no rotation here means TTS goes silent from the next turn on"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_reply_that_finishes_inside_the_item_window_is_still_adoptable():
+    # The item-ack barrier holds the owner slot empty for up to
+    # item_ack_timeout, and lanlan.tech answers the item directly — measured
+    # response.created p50 1.11s, done-from-created p50 2.96s. A short reply
+    # therefore lands its terminal inside that window, with _response_owner
+    # still None, so the owner branch that remembers the outcome never runs.
+    # The id then ends up neither live nor known-finished, adoption refuses
+    # it, and the started timeout tears the socket down — on a turn that
+    # completed perfectly.
+    def finish_inside_the_window(arbiter):
+        arbiter.notify_response_terminal(
+            {
+                "type": "response.done",
+                "response": {"id": "resp-auto", "status": "completed"},
+            }
+        )
+
+    arbiter, ticket, sent, aborted = await _adoption_harness(
+        during_item_window=finish_inside_the_window
+    )
+    result = await asyncio.wait_for(ticket.done, 1.0)
+    assert result is not None
+    assert aborted == [], "a completed reply must not cost the transport"
+    assert "response.cancel" not in [event["type"] for event in sent]
+    await arbiter.shutdown()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_an_auxiliary_item_ahead_of_the_instruction_blocks_adoption():
+    # A proactive vision turn queues an auxiliary conversation.item.create
+    # before the instruction item. `conversation.item.created` then proves the
+    # provider acknowledged AN item this request sent, not WHICH one, and an
+    # announcement answering only the auxiliary item would complete the ticket
+    # — reporting the delivery successful and consuming its scheduler state —
+    # for a response that never carried the text.
+    sent = []
+    aborted = []
+    arbiter = None
+
+    async def send(event):
+        sent.append(dict(event))
+        if event["type"] == "conversation.item.create" and event["item"]["id"] == "aux":
+            arbiter.notify_response_created(
+                {"type": "response.created", "response": {"id": "resp-aux"}}
+            )
+            arbiter.notify_item_created(
+                {"item": {"id": "provider-assigned-id", "role": "user"}}
+            )
+
+    async def abort(reason):
+        aborted.append(reason)
+
+    arbiter = RealtimeResponseArbiter(send, abort_transport=abort)
+    ticket = await arbiter.enqueue(
+        source="proactive_vision",
+        events_before_response=(
+            {
+                "type": "conversation.item.create",
+                "item": {"id": "aux", "role": "user"},
+            },
+            {
+                "type": "conversation.item.create",
+                "item": {"id": "instruction", "role": "user"},
+            },
+        ),
+        response_event={"type": "response.create"},
+        ack_expected=True,
+        expected_item_id="instruction",
+        expected_item_role="user",
+        item_ack_timeout=0.05,
+        response_started_timeout=0.15,
+        cancel_timeout=0.05,
+    )
+    await asyncio.wait_for(ticket.sent, 0.5)
+    with pytest.raises(Exception):
+        await asyncio.wait_for(ticket.done, 1.0)
+    assert aborted, (
+        "an announcement that may answer only the auxiliary item is not this "
+        "request's to adopt"
+    )
+    await arbiter.shutdown()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_an_item_ack_from_before_dispatch_is_not_this_requests_evidence():
+    # A request becomes `_current` the instant the worker selects it, which is
+    # BEFORE it waits for the lane and long before it sends a byte. An earlier
+    # response's `conversation.item.created` crossing the socket in that gap
+    # used to satisfy the adoption evidence — a causation claim granted for
+    # something the request could not have caused.
+    #
+    # Positive evidence gets the narrowest honest window: from this request's
+    # first byte. Anything earlier belongs to whatever was running then.
+    sent = []
+    aborted = []
+    arbiter = None
+
+    async def send(event):
+        sent.append(dict(event))
+        if event["type"] == "conversation.item.create":
+            # One unowned announcement in the window, and our own item is
+            # never acknowledged — the exact corner the ack barrier exists to
+            # detect.
+            arbiter.notify_response_created(
+                {"type": "response.created", "response": {"id": "resp-elsewhere"}}
+            )
+
+    async def abort(reason):
+        aborted.append(reason)
+
+    arbiter = RealtimeResponseArbiter(send, abort_transport=abort)
+    # An earlier response holds the lane, so the request below is SELECTED —
+    # `_current` is set, the disqualifier has armed — and then parks without
+    # having sent anything. That gap is the whole point.
+    arbiter.notify_response_created(
+        {"type": "response.created", "response": {"id": "resp-earlier"}}
+    )
+    ticket = await arbiter.enqueue(
+        source="external_asr",
+        events_before_response=(
+            {
+                "type": "conversation.item.create",
+                "item": {"id": "item-ours", "role": "user"},
+            },
+        ),
+        response_event={"type": "response.create"},
+        ack_expected=True,
+        expected_item_id="item-ours",
+        expected_item_role="user",
+        item_ack_timeout=0.05,
+        response_started_timeout=0.15,
+        cancel_timeout=0.05,
+    )
+    await asyncio.sleep(0.01)
+    assert arbiter._current is not None, "selected, parked, and has sent nothing"
+
+    # The earlier response's own item is acknowledged while we wait for it.
+    arbiter.notify_item_created({"item": {"id": "not-ours", "role": "assistant"}})
+
+    # It ends; the lane opens and our request finally sends.
+    arbiter.notify_response_terminal(
+        {"type": "response.done", "response": {"id": "resp-earlier"}}
+    )
+    with pytest.raises(Exception):
+        await asyncio.wait_for(ticket.done, 1.0)
+    assert aborted, (
+        "an acknowledgement this request cannot have caused is not evidence "
+        "that the announcement answers it"
+    )
+    await arbiter.shutdown()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_vad_boundary_that_expired_while_parked_still_disqualifies():
+    # The 5s missing-created backstop can fire while a request is parked
+    # waiting for the lane. Arming the VAD epoch only after that wait made the
+    # request adopt the expiry as its own baseline, so the delayed automatic
+    # response — announced afterwards, inside its item window — looked like an
+    # unchanged epoch and was adopted.
+    #
+    # Disqualifying evidence gets the widest honest window: from selection,
+    # because that is when a VAD boundary starts being able to interrupt THIS
+    # request.
+    sent = []
+    aborted = []
+    arbiter = None
+
+    async def send(event):
+        sent.append(dict(event))
+        if event["type"] == "conversation.item.create":
+            arbiter.notify_response_created(
+                {"type": "response.created", "response": {"id": "resp-vad-late"}}
+            )
+            arbiter.notify_item_created(
+                {"item": {"id": "provider-assigned", "role": "user"}}
+            )
+
+    async def abort(reason):
+        aborted.append(reason)
+
+    arbiter = RealtimeResponseArbiter(send, abort_transport=abort)
+    # An announced-but-unidentified automatic response holds the lane.
+    arbiter.notify_server_vad_response_pending(arm_timeout=False)
+    ticket = await arbiter.enqueue(
+        source="external_asr",
+        events_before_response=(
+            {
+                "type": "conversation.item.create",
+                "item": {"id": "item-ours", "role": "user"},
+            },
+        ),
+        response_event={"type": "response.create"},
+        ack_expected=True,
+        expected_item_id="item-ours",
+        expected_item_role="user",
+        item_ack_timeout=0.05,
+        response_started_timeout=0.15,
+        cancel_timeout=0.05,
+    )
+    await asyncio.sleep(0.01)
+
+    # The backstop gives up while the request is still parked. This is the one
+    # epoch bump that does not interrupt the current request, which is why it
+    # is the only one the wider window changes.
+    arbiter._server_vad_pending_expired()
+
+    with pytest.raises(Exception):
+        await asyncio.wait_for(ticket.done, 1.0)
+    assert aborted, (
+        "the automatic response the backstop gave up on is not this request's "
+        "to adopt"
+    )
+    await arbiter.shutdown()
+
+
+@pytest.mark.unit
+def test_a_response_id_of_zero_is_an_identity_not_an_absence():
+    # `_event_response_id` used a truthiness test, so a provider numbering its
+    # responses from zero had its FIRST response read as unidentified. Among
+    # other things that makes `_cannot_keep_the_connection` answer "no id to
+    # attribute later events by" and tear the transport down in spite of the
+    # escape hatch — for a response the host could name perfectly well.
+    #
+    # No configured provider numbers this way, so this closes a trap rather
+    # than a live failure. The empty string stays an absence on purpose: it
+    # names nothing, and admitting it would collapse every unidentified
+    # response onto one shared identity.
+    read = RealtimeResponseArbiter._event_response_id
+    assert read({"response": {"id": 0}}) == "0"
+    assert read({"response": {"id": 1}}) == "1"
+    assert read({"response": {"id": "resp-1"}}) == "resp-1"
+    assert read({"response": {"id": ""}}) is None
+    assert read({"response": {}}) is None
+    assert read({}) is None
+    assert read(None) is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_the_release_does_not_guess_who_owns_the_skip_flag():
+    # `_skip_until_next_response` has no per-turn owner, and that is the
+    # finding — not which way to resolve it.
+    #
+    # Leaving it mutes the successor: `_interrupted` may be left for the next
+    # turn because `response.created` resets it, and this flag has no such
+    # reset. Clearing it un-skips a successor that legitimately owns it:
+    # `create_response(skipped=True)` raises the flag BEFORE it enqueues, so a
+    # request queued behind the abandoned one already owns it while it waits
+    # for the lane.
+    #
+    # Neither is right, so the release does neither. Pinned so that a future
+    # change picks a side ON PURPOSE, with the per-turn identity issue #2594
+    # asks for, rather than by accident. Unreachable today: nothing on the
+    # WebSocket path passes `skipped=True`.
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+
+    client = OmniRealtimeClient(
+        "wss://example.invalid/realtime",
+        "test-key",
+        model="free-model",
+        api_type="free",
+    )
+    client._skip_until_next_response = True
+    client._current_response_id = "resp-abandoned"
+    client._is_responding = True
+    client._current_turn_epoch = client._turn_epoch
+    client._turn_epoch += 1
+
+    await client._on_arbiter_stuck_release("stalled", "resp-abandoned")
+
+    assert client._skip_until_next_response is True, (
+        "the release must not guess: the flag may already belong to a queued "
+        "successor that asked to be skipped"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_zero_id_is_still_an_identity_to_the_stale_filter():
+    # The arbiter half of this is
+    # test_a_response_id_of_zero_is_an_identity_not_an_absence. Without the
+    # transport half the arbiter's correction is useless: the stale filter kept
+    # its own truthiness test, so once response `0` was followed by a
+    # successor, `0`'s late deltas, tool events and terminal slipped through —
+    # and a late terminal reaching the ordinary finalization path would end the
+    # SUCCESSOR's turn.
+    import json as _json
+
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+
+    class _Socket:
+        def __init__(self, frames):
+            self._frames = frames
+
+        async def __aiter__(self):
+            for frame in self._frames:
+                yield _json.dumps(frame)
+                await asyncio.sleep(0)
+            await asyncio.Event().wait()
+
+        async def send(self, *_a, **_k):
+            return None
+
+        async def close(self, *_a, **_k):
+            return None
+
+    fired = []
+
+    async def _on_done():
+        fired.append("done")
+
+    client = OmniRealtimeClient(
+        "wss://example.invalid/realtime",
+        "test-key",
+        model="free-model",
+        api_type="free",
+        on_response_done=_on_done,
+    )
+    client._fatal_error_occurred = False
+    client.ws = _Socket(
+        [
+            {"type": "response.created", "response": {"id": 0}},
+            {"type": "response.created", "response": {"id": 1}},
+            # Response 0's terminal, arriving after 1 became current.
+            {"type": "response.done", "response": {"id": 0, "status": "completed"}},
+        ]
+    )
+    # Only the bound expiring is expected — the socket parks after its frames.
+    # Catching Exception here would let a crash inside the receive loop pass as
+    # a green regression test.
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(client.handle_messages(), 1)
+
+    assert fired == [], (
+        "response 0's terminal must not finalize the turn response 1 owns"
+    )
+    assert client._current_response_id == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_barge_in_cancels_a_response_whose_id_is_zero():
+    # The third truthiness site, and the one whose cost is worst. With
+    # `if self._current_response_id:` a barge-in against response `0` marked
+    # the turn interrupted and never sent `response.cancel` — generation keeps
+    # running and the arbiter's lane stays held until the provider finishes on
+    # its own.
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+
+    sent = []
+
+    client = OmniRealtimeClient(
+        "wss://example.invalid/realtime",
+        "test-key",
+        model="free-model",
+        api_type="free",
+    )
+
+    async def _capture(event, **_kwargs):
+        sent.append(event.get("type"))
+
+    client.send_event = _capture
+    client._current_response_id = 0
+    client._is_responding = True
+
+    await client.handle_interruption()
+
+    assert "response.cancel" in sent, (
+        "id 0 names a live response; the barge-in must actually cancel it"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_the_item_ack_wait_reports_what_it_spent(caplog):
+    # Six of the arbiter's seven bounded waits were instrumented; the item ack
+    # was not. That made "no wait spent half its allowance" a claim nothing
+    # could back for it — and it is the same bound I once reported as over
+    # budget from OUTSIDE the arbiter, which is exactly the measurement this
+    # instrumentation exists to replace.
+    sent = []
+
+    async def send(event):
+        sent.append(dict(event))
+        # The ack is never delivered, so the wait burns its whole allowance.
+
+    arbiter = RealtimeResponseArbiter(send)
+    with caplog.at_level(
+        logging.INFO, logger="main_logic.omni_realtime_client._response_arbiter"
+    ):
+        ticket = await arbiter.enqueue(
+            source="external_asr",
+            events_before_response=(
+                {
+                    "type": "conversation.item.create",
+                    "item": {"id": "item-ours", "role": "user"},
+                },
+            ),
+            response_event={"type": "response.create"},
+            ack_expected=True,
+            expected_item_id="item-ours",
+            expected_item_role="user",
+            item_ack_timeout=0.05,
+            response_started_timeout=0.05,
+            cancel_timeout=0.05,
+        )
+        await asyncio.wait_for(ticket.sent, 1.0)
+        await asyncio.sleep(0.1)
+
+    assert any(
+        "conversation item ack waited" in record.getMessage()
+        for record in caplog.records
+    ), "an item-ack wait that spends its allowance must say so"
+    await arbiter.shutdown()
+
+
+@pytest.mark.unit
+def test_every_bounded_wait_is_measured_or_says_why_not():
+    # Two rounds of review each pointed at a different unmeasured bound, and
+    # each time I fixed the one that was pointed at. This discovers them
+    # instead: any `asyncio.wait_for` / `asyncio.wait` in the arbiter must
+    # either sit inside `_report_wait_margin` or carry an explicit note saying
+    # why it does not.
+    #
+    # Without this, the probe's "bound consumption" section is silent by
+    # absence for whatever was missed, which reads exactly like "nothing came
+    # close" — the failure mode that made a torn-down connection render as
+    # "worst 1.5% OK".
+    import re
+    from pathlib import Path
+
+    source = Path(
+        "main_logic/omni_realtime_client/_response_arbiter.py"
+    ).read_text()
+    lines = source.splitlines()
+    unmeasured = []
+    for index, line in enumerate(lines, 1):
+        if "def " in line:
+            continue
+        if "asyncio.wait_for(" not in line and not re.search(r"asyncio\.wait\(", line):
+            continue
+        window = "\n".join(lines[max(0, index - 9) : index])
+        measured = "_report_wait_margin" in window
+        excused = "Deliberately NOT wrapped" in window or "Unbounded on purpose" in window
+        if not measured and not excused:
+            unmeasured.append(f"{index}: {line.strip()[:60]}")
+
+    assert unmeasured == [], (
+        "every bounded wait needs `_report_wait_margin` or a written reason; "
+        f"these have neither: {unmeasured}"
+    )
+
+
+@pytest.mark.unit
+def test_a_response_id_is_absent_only_when_it_names_nothing():
+    # Both halves of this were wrong once, one commit apart. The original
+    # truthiness test dropped a numeric `0`; replacing it with a bare
+    # `is None` check then stopped an empty top-level `response_id` from
+    # falling back to the nested `response.id`, so a late terminal of that
+    # shape skipped the stale filter and finalized whatever turn was current.
+    from main_logic.omni_realtime_client._transport import _response_id_text
+
+    assert _response_id_text(0) == "0", "zero names a response"
+    assert _response_id_text(1) == "1"
+    assert _response_id_text("resp-1") == "resp-1"
+    assert _response_id_text("") is None, "an empty id names nothing"
+    assert _response_id_text(None) is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_an_empty_top_level_id_still_reads_the_nested_one():
+    # The exact frame shape: `response_id: ""` alongside a real `response.id`.
+    # Without the fallback this terminal bypasses the stale filter entirely and
+    # runs ordinary finalization against the successor's turn.
+    import json as _json
+
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+
+    class _Socket:
+        def __init__(self, frames):
+            self._frames = frames
+
+        async def __aiter__(self):
+            for frame in self._frames:
+                yield _json.dumps(frame)
+                await asyncio.sleep(0)
+            await asyncio.Event().wait()
+
+        async def send(self, *_a, **_k):
+            return None
+
+        async def close(self, *_a, **_k):
+            return None
+
+    fired = []
+
+    async def _on_done():
+        fired.append("done")
+
+    client = OmniRealtimeClient(
+        "wss://example.invalid/realtime",
+        "test-key",
+        model="free-model",
+        api_type="free",
+        on_response_done=_on_done,
+    )
+    client._fatal_error_occurred = False
+    client.ws = _Socket(
+        [
+            {"type": "response.created", "response": {"id": "resp-old"}},
+            {"type": "response.created", "response": {"id": "resp-new"}},
+            {
+                "type": "response.done",
+                "response_id": "",
+                "response": {"id": "resp-old", "status": "completed"},
+            },
+        ]
+    )
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(client.handle_messages(), 1)
+
+    assert fired == [], (
+        "an empty top-level id must not hide the nested one and let an old "
+        "terminal finalize the current turn"
+    )
+    assert client._current_response_id == "resp-new"

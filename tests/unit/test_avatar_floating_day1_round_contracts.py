@@ -639,11 +639,15 @@ def test_pc_overlay_screen_coordinates_use_niri_virtual_origin_and_crop_safe_are
     assert "var screenBounds = cropState.virtualBounds || cropState.cropBounds;" in interpage_source
     assert "x: Number(screenBounds.x || 0) + Number(x || 0)" in interpage_source
     assert "y: Number(screenBounds.y || 0) + Number(y || 0)" in interpage_source
-    assert "api.toVirtualPoint({" in interpage_source
-    assert "api.toVirtualRect({" in interpage_source
+    assert "typeof api.toLayoutVirtualPoint === 'function'" in interpage_source
+    assert "? api.toLayoutVirtualPoint" in interpage_source
+    assert ": api.toVirtualPoint" in interpage_source
+    assert "typeof api.toLayoutVirtualRect === 'function'" in interpage_source
+    assert "? api.toLayoutVirtualRect" in interpage_source
+    assert ": api.toVirtualRect" in interpage_source
     assert "toYuiGuideNiriPetPhysicalCropVirtualPointWithState" in interpage_source
-    assert "if (cropState && cropState.metricsVirtualized) {" in interpage_source
-    assert "Number(cropState && cropState.offsetY || 0)" in interpage_source
+    assert "if (cropState) {" in interpage_source
+    assert "Number(cropState.offsetY || 0)" in interpage_source
     assert "var viewport = shouldApplyYuiGuideVisualViewportOffset(metrics) ? (window.visualViewport || null) : null;" in interpage_source
     assert "if (metrics && (metrics.contentBounds || metrics.bounds))" in overlay_source
     assert "const getNiriPetPhysicalCropState = (metrics) => {" in overlay_source
@@ -655,11 +659,15 @@ def test_pc_overlay_screen_coordinates_use_niri_virtual_origin_and_crop_safe_are
     assert "const screenBounds = cropState.virtualBounds || cropState.cropBounds;" in overlay_source
     assert "x: Number(screenBounds.x || 0) + Number(x || 0)" in overlay_source
     assert "y: Number(screenBounds.y || 0) + Number(y || 0)" in overlay_source
-    assert "api.toVirtualPoint({" in overlay_source
-    assert "api.toVirtualRect({" in overlay_source
+    assert "typeof api.toLayoutVirtualPoint === 'function'" in overlay_source
+    assert "? api.toLayoutVirtualPoint" in overlay_source
+    assert ": api.toVirtualPoint" in overlay_source
+    assert "typeof api.toLayoutVirtualRect === 'function'" in overlay_source
+    assert "? api.toLayoutVirtualRect" in overlay_source
+    assert ": api.toVirtualRect" in overlay_source
     assert "toNiriPetPhysicalCropVirtualPointWithState" in overlay_source
-    assert "cropState && cropState.metricsVirtualized ? {" in overlay_source
-    assert "Number(cropState && cropState.offsetY || 0)" in overlay_source
+    assert "cropState ? {" in overlay_source
+    assert "Number(cropState.offsetY || 0)" in overlay_source
     assert "let lastLocalSpotlightEntries = [];" in overlay_source
     assert "window.addEventListener('neko:niri-pet-physical-crop-state-applied', refreshSpotlightsForCropState);" in overlay_source
     assert "const viewport = shouldApplyVisualViewportOffset(metrics) ? (window.visualViewport || null) : null;" in overlay_source
@@ -668,12 +676,16 @@ def test_pc_overlay_screen_coordinates_use_niri_virtual_origin_and_crop_safe_are
     assert "metrics.niriPetPhysicalCropMetricsVirtualized === true" in director_source
     assert "metrics.niriPetPhysicalCropBounds || metrics.contentBounds || metrics.bounds" in director_source
     assert "const api = typeof window !== 'undefined' ? window.__nekoNiriPetPhysicalCrop : null;" in director_source
-    assert "api.toVirtualPoint(point)" in director_source
-    assert "api.toLocalPoint(point)" in director_source
+    assert "typeof api.toLayoutVirtualPoint === 'function'" in director_source
+    assert "? api.toLayoutVirtualPoint" in director_source
+    assert ": api.toVirtualPoint" in director_source
+    assert "typeof api.toLayoutLocalPoint === 'function'" in director_source
+    assert "? api.toLayoutLocalPoint" in director_source
+    assert ": api.toLocalPoint" in director_source
     assert "toNiriPetPhysicalCropVirtualPointWithState(point, cropState)" in director_source
     assert "toNiriPetPhysicalCropLocalPointWithState(virtualPoint, cropState)" in director_source
-    assert "if (cropState && cropState.metricsVirtualized) {" in director_source
-    assert "- Number(cropState && cropState.offsetY || 0)" in director_source
+    assert "if (cropState) {" in director_source
+    assert "- Number(cropState.offsetY || 0)" in director_source
     assert "x: point.x - Number(screenBounds.x || 0)" in director_source
     assert "y: point.y - Number(screenBounds.y || 0)" in director_source
     assert "x: Number(screenBounds.x || 0) + virtualPoint.x" in director_source
@@ -991,13 +1003,15 @@ def test_day1_chat_input_round_rect_highlight_excludes_mid_flow_cursor_scenes():
     assert "cursorTarget: 'chat-history-handle'" in history_block
     assert "spotlight: false" in history_block
     assert "persistent: 'chat-input'" not in history_block
-    assert "cursorAction: 'move'" in screen_entry_block
+    assert "cursorAction: 'click'" in screen_entry_block
     assert "cursorAction: 'wobble'" not in screen_entry_block
-    assert "target: '#${p}-btn-mic'" in screen_entry_block
+    assert "target: '.${p}-trigger-btn'" in screen_entry_block
+    assert "spotlight: false" in screen_entry_block
+    assert "operation: 'day1-screen-share-entry-flow'" in screen_entry_block
     assert "target: '#${p}-btn-screen'" not in screen_entry_block
-    assert "cursorAction: 'move'" in screen_invite_block
+    assert "cursorAction: 'hold'" in screen_invite_block
     assert "cursorAction: 'wobble'" not in screen_invite_block
-    assert "target: '#${p}-btn-mic'" in screen_invite_block
+    assert "target: '#${p}-popup-mic [data-neko-mic-main-action-row=\"screen\"]'" in screen_invite_block
     assert "target: '#${p}-btn-screen'" not in screen_invite_block
 
     return_control_scene = round_block.split("id: 'day1_takeover_return_control'", 1)[1]

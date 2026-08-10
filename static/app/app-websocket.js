@@ -38,6 +38,8 @@
     let _pendingUserActivityCancelTurnId = null;
     let _lanlanNameWaitAttempts = 0;
     let _lanlanNameWaitLastLogAt = 0;
+    let _coreApiCapabilityRefreshPromise = null;
+    let _coreApiCapabilityRequestGeneration = 0;
     let _musicPlayUrlCoordChannel = null;
     let _musicPlayUrlCoordChannelReady = false;
     let _musicPlayUrlClaims = Object.create(null);
@@ -249,14 +251,20 @@
     function handleMusicPlayUrlCoordMessage(data) {
         if (!data || typeof data !== 'object') return;
         if (data.sender === MUSIC_PLAY_URL_SENDER_ID) return;
-        if (data.type === 'music_play_url_claim' && data.key && data.sender) {
+        if (data.type === 'music_play_url_claim' && data.key && data.sender && data.token) {
             _musicPlayUrlClaims[data.key] = {
                 sender: data.sender,
+                token: data.token,
                 expires: Date.now() + MUSIC_PLAY_URL_CLAIM_TTL_MS
             };
-        } else if (data.type === 'music_play_url_claim_release' && data.key && data.sender) {
+        } else if (
+            data.type === 'music_play_url_claim_release'
+            && data.key
+            && data.sender
+            && data.token
+        ) {
             var claim = getValidMusicPlayUrlClaim(data.key);
-            if (claim && claim.sender === data.sender) {
+            if (claim && claim.sender === data.sender && claim.token === data.token) {
                 delete _musicPlayUrlClaims[data.key];
             }
         }
@@ -405,7 +413,7 @@
         if (!key) return null;
         pruneMusicPlayUrlClaims();
         var claim = _musicPlayUrlClaims[key];
-        if (!claim || typeof claim !== 'object' || !claim.sender || !claim.expires) {
+        if (!claim || typeof claim !== 'object' || !claim.sender || !claim.token || !claim.expires) {
             if (claim) delete _musicPlayUrlClaims[key];
             return null;
         }
@@ -417,20 +425,24 @@
     }
 
     function claimMusicPlayUrl(key) {
-        if (!key) return;
+        if (!key) return '';
         pruneMusicPlayUrlClaims();
+        var token = MUSIC_PLAY_URL_SENDER_ID + ':' + Date.now().toString(36)
+            + ':' + Math.random().toString(36).slice(2, 10);
         _musicPlayUrlClaims[key] = {
             sender: MUSIC_PLAY_URL_SENDER_ID,
+            token: token,
             expires: Date.now() + MUSIC_PLAY_URL_CLAIM_TTL_MS
         };
         var channel = getMusicPlayUrlCoordChannel();
-        if (!channel) return;
+        if (!channel) return token;
         var timestamp = Date.now();
         try {
             channel.postMessage({
                 type: 'music_play_url_claim',
                 key: key,
                 sender: MUSIC_PLAY_URL_SENDER_ID,
+                token: token,
                 ts: timestamp
             });
         } catch (error) {
@@ -442,34 +454,48 @@
                 channelType: channel._nekoCoordType || 'unknown'
             });
         }
+        return token;
+    }
+
+    function releaseMusicPlayUrlClaim(key, token) {
+        var claim = getValidMusicPlayUrlClaim(key);
+        if (
+            !claim
+            || claim.sender !== MUSIC_PLAY_URL_SENDER_ID
+            || !token
+            || claim.token !== token
+        ) return;
+        delete _musicPlayUrlClaims[key];
+        var channel = _musicPlayUrlCoordChannel;
+        if (!channel || typeof channel.postMessage !== 'function') return;
+        var timestamp = Date.now();
+        try {
+            channel.postMessage({
+                type: 'music_play_url_claim_release',
+                key: key,
+                sender: MUSIC_PLAY_URL_SENDER_ID,
+                token: token,
+                ts: timestamp
+            });
+        } catch (error) {
+            console.warn('[Music] music_play_url claim 释放广播失败:', error, {
+                key: key,
+                sender: MUSIC_PLAY_URL_SENDER_ID,
+                timestamp: timestamp,
+                channelId: channel._nekoCoordId || MUSIC_PLAY_URL_COORD_CHANNEL_NAME,
+                channelType: channel._nekoCoordType || 'unknown'
+            });
+        }
     }
 
     function releaseOwnedMusicPlayUrlClaims() {
-        var channel = _musicPlayUrlCoordChannel;
         var keys = Object.keys(_musicPlayUrlClaims).filter(function (key) {
             var claim = getValidMusicPlayUrlClaim(key);
             return claim && claim.sender === MUSIC_PLAY_URL_SENDER_ID;
         });
         keys.forEach(function (key) {
-            delete _musicPlayUrlClaims[key];
-            if (!channel || typeof channel.postMessage !== 'function') return;
-            var timestamp = Date.now();
-            try {
-                channel.postMessage({
-                    type: 'music_play_url_claim_release',
-                    key: key,
-                    sender: MUSIC_PLAY_URL_SENDER_ID,
-                    ts: timestamp
-                });
-            } catch (error) {
-                console.warn('[Music] music_play_url claim 释放广播失败:', error, {
-                    key: key,
-                    sender: MUSIC_PLAY_URL_SENDER_ID,
-                    timestamp: timestamp,
-                    channelId: channel._nekoCoordId || MUSIC_PLAY_URL_COORD_CHANNEL_NAME,
-                    channelType: channel._nekoCoordType || 'unknown'
-                });
-            }
+            var claim = getValidMusicPlayUrlClaim(key);
+            if (claim) releaseMusicPlayUrlClaim(key, claim.token);
         });
     }
 
@@ -613,6 +639,267 @@
         }
 
         dispatchMusicPlayUrlResponse(response, 'websocket');
+    }
+
+    function showMusicRequestFailure(response) {
+        if (typeof window.showStatusToast !== 'function') return;
+        var errorCode = (response && response.error_code) || 'track_not_found';
+        var query = (response && response.query) || '';
+        var message;
+        if (errorCode === 'cookie_invalid') {
+            message = (window.t && window.t('music.cookieExpired')) || '音乐Cookie已失效';
+        } else if (errorCode === 'login_required') {
+            message = (window.t && window.t('music.loginRequired')) || '请先配置网易云音乐 Cookie';
+        } else if (errorCode === 'playlist_ambiguous') {
+            message = (window.t && window.t('music.playlistAmbiguous')) || '存在重名歌单，请提供更明确的歌单名';
+        } else if (errorCode === 'source_empty') {
+            message = (window.t && window.t('music.sourceEmpty')) || '该音乐来源暂无可播放歌曲';
+        } else if (errorCode === 'upstream_error' || errorCode === 'playback_failed') {
+            message = (window.t && window.t('music.searchFailed')) || '音乐搜索失败';
+        } else {
+            message = (window.t && window.t('music.notFound', {
+                    query: query,
+                    defaultValue: '找不到歌曲: ' + query
+                })) || ('找不到歌曲: ' + query);
+        }
+        window.showStatusToast(message, 3000);
+    }
+
+    function reportMusicRequestPlaybackFailure(response) {
+        var requestId = Number(response && response.request_id);
+        if (!Number.isFinite(requestId) || requestId <= 0) return;
+        var socket = S.socket;
+        if (!socket || socket.readyState !== WebSocket.OPEN) return;
+        try {
+            socket.send(JSON.stringify({
+                action: 'music_request_playback_failed',
+                request_id: requestId
+            }));
+        } catch (error) {
+            console.warn('[Music] 上报候选播放失败异常:', error);
+        }
+    }
+
+    async function dispatchMusicPlayCandidatesResponse(response, reason) {
+        var tracks = response && Array.isArray(response.tracks) ? response.tracks : [];
+        for (var index = 0; index < tracks.length; index++) {
+            if (response._clientDispatchEpoch !== window._musicCandidateDispatchEpoch) {
+                return false;
+            }
+            var track = tracks[index];
+            if (!track || !track.url) continue;
+            var candidateKey = getMusicPlayUrlClaimKey(track);
+            var existingClaim = getValidMusicPlayUrlClaim(candidateKey);
+            if (existingClaim && existingClaim.sender !== MUSIC_PLAY_URL_SENDER_ID) {
+                console.log('[Music] 跳过用户点歌候选：其他窗口已接管播放', track.url);
+                return false;
+            }
+            var candidateClaimToken = claimMusicPlayUrl(candidateKey);
+            var dispatchResult;
+            try {
+                if (typeof window.dispatchMusicPlayDetailed === 'function') {
+                    dispatchResult = await window.dispatchMusicPlayDetailed(track, {
+                        source: 'user',
+                        requestId: response.request_id
+                    });
+                } else if (typeof window.dispatchMusicPlay === 'function') {
+                    var accepted = await window.dispatchMusicPlay(track, {
+                        source: 'user',
+                        requestId: response.request_id
+                    });
+                    if (accepted === 'queued') {
+                        if (response._clientDispatchEpoch !== window._musicCandidateDispatchEpoch) {
+                            if (typeof window.cancelQueuedMusicDispatch === 'function') {
+                                window.cancelQueuedMusicDispatch(response.request_id);
+                            }
+                            releaseMusicPlayUrlClaim(candidateKey, candidateClaimToken);
+                            return false;
+                        }
+                        console.log('[Music] 用户点歌仍在等待播放器接口就绪');
+                        return 'queued';
+                    }
+                    dispatchResult = {
+                        ok: accepted === true,
+                        canTryNextCandidate: false
+                    };
+                } else {
+                    console.warn('[Music] 没有可用的音乐派发接口');
+                    releaseMusicPlayUrlClaim(candidateKey, candidateClaimToken);
+                    break;
+                }
+            } catch (error) {
+                console.warn('[Music] 用户点歌派发异常，尝试下一条候选:', error);
+                dispatchResult = { ok: false, canTryNextCandidate: true };
+            }
+            if (response._clientDispatchEpoch !== window._musicCandidateDispatchEpoch) {
+                releaseMusicPlayUrlClaim(candidateKey, candidateClaimToken);
+                return false;
+            }
+            if (dispatchResult && dispatchResult.ok === true) {
+                return true;
+            }
+            releaseMusicPlayUrlClaim(candidateKey, candidateClaimToken);
+            if (!dispatchResult || dispatchResult.canTryNextCandidate !== true) {
+                break;
+            }
+            console.warn('[Music] 用户点歌候选不可用，尝试下一条:', track.url, reason);
+        }
+        if (response._clientDispatchEpoch === window._musicCandidateDispatchEpoch) {
+            reportMusicRequestPlaybackFailure(response);
+            showMusicRequestFailure({ error_code: 'playback_failed' });
+        }
+        return false;
+    }
+
+    function queueMusicPlayCandidatesResponse(response, reason) {
+        var previous = window._musicCandidateDispatchQueue || Promise.resolve();
+        var queued = previous.catch(function () {}).then(function () {
+            if (response._clientDispatchEpoch !== window._musicCandidateDispatchEpoch) {
+                return false;
+            }
+            return dispatchMusicPlayCandidatesResponse(response, reason);
+        }).catch(function (error) {
+            console.warn('[Music] 候选派发队列异常:', error);
+            if (response._clientDispatchEpoch === window._musicCandidateDispatchEpoch) {
+                try {
+                    reportMusicRequestPlaybackFailure(response);
+                    showMusicRequestFailure({ error_code: 'playback_failed' });
+                } catch (failureError) {
+                    console.warn('[Music] 候选派发失败提示异常:', failureError);
+                }
+            }
+            return false;
+        });
+        window._musicCandidateDispatchQueue = queued;
+    }
+
+    function resetMusicCandidateRequestScope(scope, force) {
+        var nextScope = String(scope || '');
+        if (!force && window._musicCandidateRequestScope === nextScope) return;
+        if (typeof window.cancelPendingMusicMediaReady === 'function') {
+            window.cancelPendingMusicMediaReady(Number.MAX_SAFE_INTEGER);
+        }
+        if (typeof window.cancelQueuedMusicDispatch === 'function') {
+            window.cancelQueuedMusicDispatch(Number.MAX_SAFE_INTEGER);
+        }
+        window._musicCandidateRequestScope = nextScope;
+        window._latestMusicCandidateRequestId = 0;
+        window._pendingMusicCandidateRequestId = 0;
+        window._musicCandidateDispatchEpoch = (window._musicCandidateDispatchEpoch || 0) + 1;
+    }
+
+    function handleMusicRequestStartedResponse(response) {
+        var requestId = Number(response && response.request_id);
+        if (!Number.isFinite(requestId) || requestId <= 0) {
+            console.warn('[Music] 忽略缺少有效 request_id 的开始响应');
+            return;
+        }
+        var latestRequestId = Number(window._latestMusicCandidateRequestId || 0);
+        if (latestRequestId > 0 && requestId <= latestRequestId) return;
+        if (typeof window.cancelPendingMusicMediaReady === 'function') {
+            var mediaCancelStatus = window.cancelPendingMusicMediaReady(requestId);
+            if (mediaCancelStatus === 'stale') return;
+        }
+        if (typeof window.cancelQueuedMusicDispatch === 'function') {
+            var queuedCancelStatus = window.cancelQueuedMusicDispatch(requestId);
+            if (queuedCancelStatus === 'stale') return;
+        }
+        window._latestMusicCandidateRequestId = requestId;
+        window._pendingMusicCandidateRequestId = requestId;
+        window._musicCandidateDispatchEpoch = (window._musicCandidateDispatchEpoch || 0) + 1;
+    }
+
+    function handleMusicPlayCandidatesResponse(response) {
+        var tracks = response && Array.isArray(response.tracks) ? response.tracks : [];
+        if (tracks.length === 0) return;
+        var requestId = Number(response.request_id);
+        if (!Number.isFinite(requestId) || requestId <= 0) {
+            console.warn('[Music] 忽略缺少有效 request_id 的候选响应');
+            return;
+        }
+        var latestRequestId = Number(window._latestMusicCandidateRequestId || 0);
+        var pendingRequestId = Number(window._pendingMusicCandidateRequestId || 0);
+        if (
+            latestRequestId > 0
+            && (
+                requestId < latestRequestId
+                || (requestId === latestRequestId && requestId !== pendingRequestId)
+            )
+        ) return;
+        if (typeof window.cancelPendingMusicMediaReady === 'function') {
+            var mediaCancelStatus = window.cancelPendingMusicMediaReady(requestId);
+            if (mediaCancelStatus === 'stale') return;
+        }
+        if (typeof window.cancelQueuedMusicDispatch === 'function') {
+            var queuedCancelStatus = window.cancelQueuedMusicDispatch(requestId);
+            if (queuedCancelStatus === 'stale') return;
+        }
+        window._latestMusicCandidateRequestId = requestId;
+        window._pendingMusicCandidateRequestId = 0;
+        window._musicCandidateDispatchEpoch = (window._musicCandidateDispatchEpoch || 0) + 1;
+        response._clientDispatchEpoch = window._musicCandidateDispatchEpoch;
+        var firstTrack = tracks[0];
+        var key = getMusicPlayUrlClaimKey(firstTrack);
+        getMusicPlayUrlCoordChannel();
+
+        if (isStandaloneChatPageForMusic() && !hasLocalMusicOwnerOrPending()) {
+            setTimeout(function () {
+                if (shouldSkipMusicPlayUrlForOtherWindow(key)) return;
+                setTimeout(function () {
+                    if (shouldSkipMusicPlayUrlForOtherWindow(key)) return;
+                    queueMusicPlayCandidatesResponse(response, 'chat-fallback');
+                }, MUSIC_PLAY_URL_SECONDARY_CONFIRM_MS);
+            }, getMusicPlayUrlFollowerGraceMs());
+            return;
+        }
+        if (shouldSkipMusicPlayUrlForOtherWindow(key)) return;
+        queueMusicPlayCandidatesResponse(response, 'websocket');
+    }
+
+    function handleMusicRequestFailureResponse(response) {
+        var requestId = Number(response && response.request_id);
+        if (!Number.isFinite(requestId) || requestId <= 0) {
+            console.warn('[Music] 忽略缺少有效 request_id 的失败响应');
+            return;
+        }
+        var latestRequestId = Number(window._latestMusicCandidateRequestId || 0);
+        if (latestRequestId > 0 && requestId < latestRequestId) return;
+        if (typeof window.cancelPendingMusicMediaReady === 'function') {
+            var mediaCancelStatus = window.cancelPendingMusicMediaReady(requestId);
+            if (mediaCancelStatus === 'stale') return;
+        }
+        if (typeof window.cancelQueuedMusicDispatch === 'function') {
+            var queuedCancelStatus = window.cancelQueuedMusicDispatch(requestId);
+            if (queuedCancelStatus === 'stale') return;
+        }
+        window._latestMusicCandidateRequestId = requestId;
+        window._pendingMusicCandidateRequestId = 0;
+        window._musicCandidateDispatchEpoch = (window._musicCandidateDispatchEpoch || 0) + 1;
+        showMusicRequestFailure(response);
+    }
+
+    function handleMusicRequestCancelledResponse(response) {
+        var requestId = Number(response && response.request_id);
+        if (!Number.isFinite(requestId) || requestId <= 0) {
+            console.warn('[Music] 忽略缺少有效 request_id 的取消响应');
+            return;
+        }
+        var latestRequestId = Number(window._latestMusicCandidateRequestId || 0);
+        if (latestRequestId > 0 && requestId < latestRequestId) return;
+        if (typeof window.cancelPendingMusicMediaReady === 'function') {
+            var mediaCancelStatus = window.cancelPendingMusicMediaReady(requestId);
+            if (mediaCancelStatus === 'stale') return;
+        }
+        if (typeof window.cancelQueuedMusicDispatch === 'function') {
+            var queuedCancelStatus = window.cancelQueuedMusicDispatch(requestId);
+            if (queuedCancelStatus === 'stale') return;
+        }
+        window._latestMusicCandidateRequestId = requestId;
+        window._pendingMusicCandidateRequestId = 0;
+        window._musicCandidateDispatchEpoch = (window._musicCandidateDispatchEpoch || 0) + 1;
+        if (typeof window.cancelActiveMusicPlayback === 'function') {
+            window.cancelActiveMusicPlayback();
+        }
     }
 
     function readNewUserIcebreakerStore() {
@@ -1412,6 +1699,118 @@
     var SETTINGS_SYNC_GATE_TIMEOUT_MS = 3000;
 
     /**
+     * Refresh the current Core's independent-ASR capability from the same
+     * configuration endpoint used by the API settings UI. The capability is
+     * deliberately tri-state: only an explicit false may disable the effective
+     * UI. It never rewrites the user's preference or handshake, and a failed or
+     * legacy response remains unknown.
+     *
+     * Concurrent callers in one window share the in-flight refresh. `force`
+     * only bypasses completed cache data; the generation fence remains a
+     * defensive guard around request publication.
+     */
+    function publishCoreApiCapability(provider, capability) {
+        var previousProvider = S.coreApiProvider || '';
+        var previousCapability = S.coreApiSupportsIndependentAsr;
+        S.coreApiProvider = typeof provider === 'string' ? provider : '';
+        S.coreApiSupportsIndependentAsr =
+            typeof capability === 'boolean' ? capability : null;
+        if (
+            previousProvider !== S.coreApiProvider
+            || previousCapability !== S.coreApiSupportsIndependentAsr
+        ) {
+            try {
+                window.dispatchEvent(new CustomEvent(
+                    'neko:core-api-capability-changed',
+                    {
+                        detail: {
+                            provider: S.coreApiProvider,
+                            supportsIndependentAsr:
+                                S.coreApiSupportsIndependentAsr
+                        }
+                    }
+                ));
+            } catch (_) { /* optional UI notification */ }
+        }
+        return {
+            provider: S.coreApiProvider,
+            supportsIndependentAsr: S.coreApiSupportsIndependentAsr
+        };
+    }
+
+    function refreshCoreApiCapability(options) {
+        options = options || {};
+        // `force` bypasses completed cache data, not a request that is already
+        // in flight. All callers in this window share the same fresh result.
+        if (_coreApiCapabilityRefreshPromise) {
+            return _coreApiCapabilityRefreshPromise;
+        }
+        if (
+            options.force !== true
+            && typeof S.coreApiSupportsIndependentAsr === 'boolean'
+        ) {
+            return Promise.resolve({
+                provider: S.coreApiProvider || '',
+                supportsIndependentAsr: S.coreApiSupportsIndependentAsr
+            });
+        }
+        if (typeof window.fetch !== 'function') {
+            return Promise.resolve({
+                provider: S.coreApiProvider || '',
+                supportsIndependentAsr: S.coreApiSupportsIndependentAsr
+            });
+        }
+
+        var requestGeneration = ++_coreApiCapabilityRequestGeneration;
+        var refreshPromise = window.fetch('/api/config/core_api', {
+            cache: 'no-store',
+            headers: { Accept: 'application/json' }
+        }).then(function (response) {
+            if (!response || response.ok === false) {
+                throw new Error('Core API capability request failed');
+            }
+            return response.json();
+        }).then(function (data) {
+            if (requestGeneration !== _coreApiCapabilityRequestGeneration) {
+                return {
+                    provider: S.coreApiProvider || '',
+                    supportsIndependentAsr: S.coreApiSupportsIndependentAsr
+                };
+            }
+            data = data && typeof data === 'object' ? data : {};
+            if (data.success === false) {
+                throw new Error('Core API capability response was unsuccessful');
+            }
+            return publishCoreApiCapability(
+                typeof data.effectiveCoreApi === 'string'
+                    ? data.effectiveCoreApi
+                    : data.coreApi,
+                data.supportsIndependentAsr
+            );
+        }).catch(function (error) {
+            console.warn('[Core API] Failed to refresh ASR capability:', error);
+            if (requestGeneration === _coreApiCapabilityRequestGeneration) {
+                return publishCoreApiCapability('', null);
+            }
+            return {
+                provider: S.coreApiProvider || '',
+                supportsIndependentAsr: S.coreApiSupportsIndependentAsr
+            };
+        }).finally(function () {
+            if (_coreApiCapabilityRefreshPromise === refreshPromise) {
+                _coreApiCapabilityRefreshPromise = null;
+            }
+        });
+        _coreApiCapabilityRefreshPromise = refreshPromise;
+        return refreshPromise;
+    }
+
+    // Prime the capability once for both Web and Electron windows. API Core
+    // changes normally reload these pages; the microphone popup also forces a
+    // refresh so a window that missed that reload cannot keep a stale view.
+    refreshCoreApiCapability();
+
+    /**
      * Wait for the WebSocket to reach OPEN state.
      *   - Already OPEN  -> resolves immediately
      *   - CONNECTING     -> waits via addEventListener('open')
@@ -1548,6 +1947,7 @@
         });
     }
     mod.ensureWebSocketOpen = ensureWebSocketOpen;
+    mod.refreshCoreApiCapability = refreshCoreApiCapability;
 
     // ========================  connectWebSocket  ========================
 
@@ -1577,14 +1977,28 @@
     // test_start_session_handshake_missing_falls_back_to_persisted). If the
     // GET fails permanently the field simply stays omitted and the backend's
     // persisted value keeps governing — the correct fallback.
+    //
+    // Core capability is intentionally NOT folded into this payload. Another
+    // window may switch to a capable Core while this window still has a stale
+    // false capability cache. The handshake always carries the authoritative
+    // user preference; the backend applies the current Core capability as the
+    // final routing guard.
     function attachStartSessionHandshake(ws) {
         var rawSend = ws.send.bind(ws);
         ws.send = function (data) {
             if (typeof data === 'string' && data.indexOf('start_session') !== -1) {
                 try {
                     var msg = JSON.parse(data);
+                    var handshakeStamped = false;
                     if (msg && msg.action === 'start_session' && S.settingsHydrated === true && S.independentAsrAuthoritative === true) {
                         msg.independent_asr_enabled = S.independentAsrEnabled === true;
+                        handshakeStamped = true;
+                    }
+                    if (msg && msg.action === 'start_session' && S.settingsHydrated === true && S.voiceInputResourceOptimizationAuthoritative === true) {
+                        msg.voice_input_resource_optimization_enabled = S.voiceInputResourceOptimizationEnabled !== false;
+                        handshakeStamped = true;
+                    }
+                    if (handshakeStamped) {
                         data = JSON.stringify(msg);
                     }
                 } catch (e) {
@@ -1622,7 +2036,6 @@
         }
         _lanlanNameWaitAttempts = 0;
         _lanlanNameWaitLastLogAt = 0;
-
         var protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
         // 对 lanlan_name 做 percent-encode：WebSocket.url 会把非 ASCII 字符（中文角色名）
         // 编成 %XX，下面幂等守卫用 S.socket.url === wsUrl 比对，两侧编码口径必须一致，
@@ -1636,6 +2049,7 @@
         if (S.socket && S.socket.readyState === WebSocket.OPEN && S.socket.url === wsUrl) {
             return;
         }
+        resetMusicCandidateRequestScope(currentLanlanName, true);
 
         // 新连接重置模型就绪标志，等待模型重新加载
         S._modelReady = false;
@@ -1869,6 +2283,13 @@
                         return;
                     }
                     var isNewMessage = response.isNewMessage || false;
+                    // Ordinary responses historically expose lifecycle metadata as
+                    // `meta`, while mirror responses (including game dialogue) use
+                    // `metadata`. Preserve the legacy field when present, but let
+                    // mirror turns carry their session identity into turn-start.
+                    var assistantResponseMeta = response.meta !== undefined
+                        ? response.meta
+                        : response.metadata;
                     if (response.metadata && response.metadata.game_route) {
                         var gameMeta = response.metadata.game_route;
                         var gameEvent = gameMeta.event || {};
@@ -1908,7 +2329,7 @@
                         ensureAssistantTurnStarted(
                             'gemini_response_first_chunk',
                             response.turn_id,
-                            response.meta,
+                            assistantResponseMeta,
                             response.request_id
                         );
                     }
@@ -1929,7 +2350,7 @@
                         ensureAssistantTurnStarted(
                             'gemini_response_visible_bubble',
                             response.turn_id,
-                            response.meta,
+                            assistantResponseMeta,
                             response.request_id
                         );
                     }
@@ -2291,7 +2712,29 @@
                         typeof window.appAudioPlayback.schedulePendingAudioMetaStallCheck === 'function') {
                         window.appAudioPlayback.schedulePendingAudioMetaStallCheck();
                     }
+                    // 记下 speech_id 属于哪一轮：随后的 audio_done 只带 speech_id，
+                    // 音频通道上从来没有服务端权威的 turn_id。
+                    if (!shouldSkip && window.appAudioPlayback &&
+                        typeof window.appAudioPlayback.rememberAssistantAudioSpeechTurn === 'function') {
+                        window.appAudioPlayback.rememberAssistantAudioSpeechTurn(
+                            speechId || S.currentPlayingSpeechId || null,
+                            resolveAssistantLifecycleTurnId(response.turn_id)
+                        );
+                    }
                     S.skipNextAudioBlob = false;
+
+                // -------- audio_done（本 speech 的音频流已关闭，权威结束信号）--------
+                // 后端 TTS worker / realtime provider 看得到"这一轮不会再有音频"，
+                // 前端看不到（阵间空档和真结束同构）。收到即可放行收尾；漏发时
+                // 由 app-audio-playback 的 give-up 计时器兜底。
+                } else if (response.type === 'audio_done') {
+                    logAssistantLifecycle('ws:audio_done', {
+                        speechId: response.speech_id || null
+                    });
+                    if (window.appAudioPlayback &&
+                        typeof window.appAudioPlayback.noteAssistantAudioStreamClosed === 'function') {
+                        window.appAudioPlayback.noteAssistantAudioStreamClosed(response.speech_id);
+                    }
 
                 // -------- cozy_audio --------
                 } else if (response.type === 'cozy_audio') {
@@ -2815,7 +3258,11 @@
                                     // that follow (codex P2).
                                     await ensureWebSocketOpen();
                                     if (restartMustStandDown()) return;
-                                    S.socket.send(JSON.stringify({ action: 'start_session', input_type: 'audio' }));
+                                    S.socket.send(JSON.stringify({
+                                        action: 'start_session',
+                                        input_type: 'audio',
+                                        request_id: window.sessionStartRequestId(restartStartOwner)
+                                    }));
 
                                     window.sessionTimeoutId = setTimeout(function () {
                                         // Only for the start this timer was armed for.
@@ -2903,7 +3350,21 @@
                                         // Let the ASR failure toast stand as the explanation.
                                         return;
                                     }
-                                    if (typeof window.startMicCapture === 'function') await window.startMicCapture();
+                                    var microphoneStarted = false;
+                                    if (typeof window.startMicCapture === 'function') {
+                                        microphoneStarted = await window.startMicCapture();
+                                    }
+                                    if (microphoneStarted !== true) {
+                                        // startMicCapture uses false for a benign
+                                        // ownership cancellation. The backend has
+                                        // already accepted this restart, though, so
+                                        // route the cancellation through the common
+                                        // unwind below instead of reporting success
+                                        // with no committed microphone pipeline.
+                                        var microphoneStartCancelled = new Error('Microphone start cancelled');
+                                        microphoneStartCancelled.microphoneStartCancelled = true;
+                                        throw microphoneStartCancelled;
+                                    }
                                     if (S.screenCaptureStream != null) {
                                         if (typeof window.startScreenSharing === 'function') await window.startScreenSharing();
                                     }
@@ -2928,7 +3389,12 @@
                                         window.showStatusToast(window.t ? window.t('app.restartComplete', { name: window.lanlan_config.lanlan_name }) : ('重启完成，' + window.lanlan_config.lanlan_name + '回来了！'), 4000);
                                     }
                                 } catch (error) {
-                                    console.error(window.t('console.restartError'), error);
+                                    var isMicrophoneStartCancelled = !!(
+                                        error && error.microphoneStartCancelled
+                                    );
+                                    if (!isMicrophoneStartCancelled) {
+                                        console.error(window.t('console.restartError'), error);
+                                    }
 
                                     // Only tear down THIS restart's slot.
                                     if (window.sessionStartIsCurrent(restartStartOwner)) {
@@ -2955,7 +3421,8 @@
                                     }
 
                                     if (typeof window.hideVoicePreparingToast === 'function') window.hideVoicePreparingToast();
-                                    if (typeof window.showStatusToast === 'function') {
+                                    if (!isMicrophoneStartCancelled
+                                            && typeof window.showStatusToast === 'function') {
                                         window.showStatusToast(window.t ? window.t('app.restartFailed', { error: error.message }) : ('重启失败: ' + error.message), 5000);
                                     }
 
@@ -3528,11 +3995,38 @@
                         }
                         return;
                     }
+                    // 请求标识守卫：这条 ack 是不是在回应**本窗口**那次启动。
+                    //
+                    // 模式守卫拦不住同模式的串台：抢麦的窗口会把 voice socket 换成
+                    // 自己的，于是别人那次 audio start 的 ack 经 fan-out 落到本窗口。
+                    // 本窗口据此清超时、resolve、按 ack 里的 blocked 路由直接
+                    // abortVoiceStartForBlockedRoute()——而真正回应本窗口的那条 ack
+                    // （带着重跑后的路由）到达时，麦克风流程早就放弃了。
+                    //
+                    // 只 gate「收口」（清超时 + resolve），不 gate 下面的 UI 同步：
+                    // 后端确实起了一个会话，文本框显隐、停麦这些对本窗口照样成立。
+                    // ack 不带标识时按「是我的」处理：后端内部路径（proactive /
+                    // greeting / 断线自恢复）不经用户请求、没有标识，而它们撞上
+                    // pending 启动的情形本就由上面的模式守卫负责。
+                    //
+                    // 主判据是 resolver 而不是标识本身：清 resolver 的地方有十来处，
+                    // 指望每一处都记得连标识一起清是靠不住的，漏一处就会留下一个陈旧
+                    // 标识，让本窗口从此把所有别人的 ack 都判成「不是我的」，连
+                    // blocked latch 和准备中提示都不再处理（Codex P2）。没有 resolver
+                    // 在等 = 本窗口没有启动在途 = 任何 ack 都按旧行为处理。
+                    var _ackAnswersThisWindow = !S.sessionStartedResolver
+                        || !S._pendingSessionStartRequestId
+                        || !response.request_id
+                        || response.request_id === S._pendingSessionStartRequestId;
+                    if (!_ackAnswersThisWindow) {
+                        console.log('[App] session_started answers another start',
+                            response.request_id, 'pending', S._pendingSessionStartRequestId);
+                    }
                     console.log(window.t('console.sessionStartedReceived'), response.input_mode);
                     S.suppressAssistantStreamUntilNextSession = false;
                     S.isTextSessionActive = response.input_mode === 'text';
                     S.voiceChatActive = response.input_mode !== 'text';
-                    S.voiceStartPending = false;
+                    if (_ackAnswersThisWindow) S.voiceStartPending = false;
                     // NOTE: the fail-closed latch is deliberately NOT cleared
                     // here. lifecycle.py runs _start_independent_asr_if_enabled
                     // BEFORE send_session_started, so this ack always arrives
@@ -3556,7 +4050,15 @@
                     // relies on it surviving), and clearing it from an ack
                     // would undo that. Guarded on the field being present so an
                     // older backend keeps exactly today's behaviour.
-                    if (response.input_mode !== 'text'
+                    // Gated on the request guard as well (CodeRabbit): the latch
+                    // is set-only, so a blocked verdict belonging to ANOTHER
+                    // window's start would stick, and this window's own healthy
+                    // ack could not clear it -- the microphone would refuse to
+                    // open even though the route re-decision succeeded. A window
+                    // with no start pending still latches: that is the case with
+                    // no other channel to learn the verdict from.
+                    if (_ackAnswersThisWindow
+                            && response.input_mode !== 'text'
                             && response.microphone_route === 'blocked') {
                         S.voiceInputRouteBlocked = true;
                     }
@@ -3635,7 +4137,7 @@
                     // 500ms 后才清，贴近 15s deadline 的 ack（如 14.8s，尤其跨模式等待+重启
                     // 链路）会被先一步触发的超时误 reject + end_session，把后端已接受的会话
                     // 打断（Codex P2）。resolve 仍延后做（留时间收尾 UI），但超时此刻就拆。
-                    if (S.sessionStartedResolver && window.sessionTimeoutId) {
+                    if (_ackAnswersThisWindow && S.sessionStartedResolver && window.sessionTimeoutId) {
                         clearTimeout(window.sessionTimeoutId);
                         window.sessionTimeoutId = null;
                     }
@@ -3650,9 +4152,13 @@
                     // and let the queued message go out before the backend has
                     // acknowledged the text session at all (Codex P2). Resolve
                     // only if the slot still holds the very start we acked.
-                    var _ackedResolver = S.sessionStartedResolver;
+                    var _ackedResolver = _ackAnswersThisWindow ? S.sessionStartedResolver : null;
                     setTimeout(function () {
-                        if (typeof window.hideVoicePreparingToast === 'function') window.hideVoicePreparingToast();
+                        // Not gated on the resolver: a window with no pending
+                        // start (chat.html) still has to drop the banner. Gated
+                        // on the request guard, though -- a window still waiting
+                        // for ITS ack must keep showing "preparing".
+                        if (_ackAnswersThisWindow && typeof window.hideVoicePreparingToast === 'function') window.hideVoicePreparingToast();
                         if (!_ackedResolver) return;
                         if (S.sessionStartedResolver === _ackedResolver) {
                             // Still ours: release the shared slot and its timer.
@@ -3663,6 +4169,7 @@
                             S.sessionStartedResolver = null;
                             S.sessionStartedRejecter = null;
                             S._pendingSessionStartMode = null;
+                            S._pendingSessionStartRequestId = null;
                         }
                         // Settle OUR promise either way, INCLUDING when the slot
                         // has moved on (Codex P2). Its timeout was already
@@ -3747,6 +4254,7 @@
                     S.sessionStartedResolver = null;
                     S.sessionStartedRejecter = null;
                     S._pendingSessionStartMode = null;
+                    S._pendingSessionStartRequestId = null;
 
                 // -------- session_ended_by_server --------
                 } else if (response.type === 'session_ended_by_server') {
@@ -3771,6 +4279,7 @@
                     S.sessionStartedResolver = null;
                     S.sessionStartedRejecter = null;
                     S._pendingSessionStartMode = null;
+                    S._pendingSessionStartRequestId = null;
 
                     if (window.sessionTimeoutId) {
                         clearTimeout(window.sessionTimeoutId);
@@ -3922,6 +4431,19 @@
                 // -------- music play url --------
                 } else if (response.type === 'music_play_url') {
                     handleMusicPlayUrlResponse(response);
+
+                } else if (response.type === 'music_request_started') {
+                    handleMusicRequestStartedResponse(response);
+
+                } else if (response.type === 'music_play_candidates') {
+                    handleMusicPlayCandidatesResponse(response);
+
+                // -------- user music request failed --------
+                } else if (response.type === 'music_request_failed') {
+                    handleMusicRequestFailureResponse(response);
+
+                } else if (response.type === 'music_request_cancelled') {
+                    handleMusicRequestCancelledResponse(response);
 
                 // -------- repetition_warning --------
                 } else if (response.type === 'repetition_warning') {
@@ -4188,6 +4710,7 @@
     // ========================  Backward-compat globals  ========================
     window.connectWebSocket = connectWebSocket;
     window.ensureWebSocketOpen = ensureWebSocketOpen;
+    window.refreshCoreApiCapability = refreshCoreApiCapability;
     window.ensureAssistantTurnStarted = ensureAssistantTurnStarted;
     window.clearPendingAssistantTurnStart = clearPendingAssistantTurnStart;
 

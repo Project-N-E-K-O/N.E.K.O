@@ -29,7 +29,12 @@ from ._shared import (
     logger,
     router,
 )
-from .notify import notify_memory_server_reload, release_memory_server_character, send_reload_page_notice
+from .notify import (
+    create_derived_task_claim_token,
+    notify_memory_server_reload,
+    release_memory_server_character,
+    send_reload_page_notice,
+)
 from .voice_registry import _is_current_catgirl_voice_session_starting, _voice_session_starting_response
 
 import json
@@ -37,6 +42,7 @@ import shutil
 import asyncio
 import copy
 import tempfile
+from contextlib import suppress
 from datetime import datetime, timezone
 from pathlib import Path
 from fastapi import Request
@@ -52,9 +58,16 @@ from ..shared_state import (
 from ..workshop_router import _ugc_sync_lock
 from ..agent_router import force_disable_agent_for_character_switch
 from utils.character_memory import (
+    asave_characters_with_recent_activation,
+    begin_character_recent_transaction,
     delete_character_memory_storage,
+    finalize_character_recent_delete,
+    finalize_character_recent_rename,
     list_character_memory_paths,
     rename_character_memory_storage,
+    release_character_recent_transaction,
+    rollback_character_recent_delete,
+    rollback_character_recent_rename,
 )
 from utils.config_manager import (
     flatten_reserved,
@@ -62,7 +75,7 @@ from utils.config_manager import (
     set_reserved,
 )
 from utils.voice_config import read_legacy_voice_id
-from utils.file_utils import atomic_write_json_async
+from utils.recent_file import capture_recent_generation, write_recent_payload
 from utils.language_utils import normalize_language_code
 from utils.new_character_greeting_state import (
     mark_pending as mark_new_character_greeting_pending,
@@ -142,13 +155,21 @@ def _append_profile_rename_event(character_payload: dict, old_name: str, new_nam
 
 async def _clear_character_recent_history(config_manager, character_name: str) -> None:
     recent_path = Path(config_manager.memory_dir) / character_name / "recent.json"
+    admission_generation = capture_recent_generation(recent_path)
     assert_cloudsave_writable(
         config_manager,
         operation="save",
         target=f"memory/{character_name}/recent.json",
     )
     await asyncio.to_thread(recent_path.parent.mkdir, parents=True, exist_ok=True)
-    await atomic_write_json_async(recent_path, [], ensure_ascii=False, indent=2)
+    # 走 utils.recent_file 的 per-path 锁：merged 单进程下 memory_server 的写者
+    # 就在同一个进程里，裸 atomic_write_json_async 会绕过互斥。
+    await asyncio.to_thread(
+        write_recent_payload,
+        recent_path,
+        [],
+        expected_generation=admission_generation,
+    )
 
 
 def _normalize_prompt_synced_field_value(value):
@@ -351,6 +372,63 @@ def _create_character_operation_backup_dir(config_manager, prefix: str):
     return tempfile.TemporaryDirectory(prefix=prefix, dir=str(backup_root))
 
 
+async def _await_thread_call_to_completion(func, *args, **kwargs):
+    """Return a worker result and whether cancellation arrived while it ran."""
+    operation = asyncio.create_task(asyncio.to_thread(func, *args, **kwargs))
+    try:
+        return await asyncio.shield(operation), False
+    except asyncio.CancelledError:
+        while not operation.done():
+            with suppress(asyncio.CancelledError):
+                await asyncio.wait({operation})
+        return operation.result(), True
+
+
+async def _await_cleanup_to_completion(coro):
+    """Finish rollback despite repeated cancellation requests."""
+    result, _ = await _await_coroutine_to_completion(coro)
+    return result
+
+
+async def _await_coroutine_to_completion(coro):
+    """Return a coroutine result and whether cancellation arrived while it ran."""
+    operation = asyncio.create_task(coro)
+    try:
+        return await asyncio.shield(operation), False
+    except asyncio.CancelledError:
+        while not operation.done():
+            with suppress(asyncio.CancelledError):
+                await asyncio.wait({operation})
+        return operation.result(), True
+
+
+async def _await_thread_mutation(func, *args, **kwargs):
+    """Finish a worker mutation before propagating caller cancellation."""
+    result, cancelled = await _await_thread_call_to_completion(func, *args, **kwargs)
+    if cancelled:
+        raise asyncio.CancelledError
+    return result
+
+
+async def _resume_released_character_admission(
+    name: str,
+    claim_token: str,
+    *,
+    reason: str,
+) -> str:
+    """Resume one released identity and return a diagnostic on failure."""
+    try:
+        resumed = await notify_memory_server_reload(
+            reason=reason,
+            release_derived_task_claims={name: (claim_token,)},
+        )
+    except Exception as exc:
+        return f"notify_memory_server_reload failed: {exc}"
+    if not resumed:
+        return "notify_memory_server_reload failed: returned False"
+    return ""
+
+
 def _restore_snapshot_paths(records) -> None:
     for record in sorted(records, key=lambda item: len(item["target"].parts), reverse=True):
         target_path = record["target"]
@@ -408,6 +486,11 @@ async def _rollback_character_operation(
     characters_snapshot: dict,
     memory_snapshot_records,
     tombstone_snapshot: dict | None = None,
+    recent_delete_result: dict | None = None,
+    recent_rename_result: dict | None = None,
+    recent_transaction: dict | None = None,
+    resume_derived_task_names: tuple[str, ...] = (),
+    release_derived_task_claims: dict[str, tuple[str, ...]] | None = None,
     reason: str,
 ) -> str:
     rollback_errors: list[str] = []
@@ -426,6 +509,22 @@ async def _rollback_character_operation(
     except Exception as exc:
         rollback_errors.append(f"characters restore failed: {exc}")
 
+    if recent_rename_result is not None:
+        try:
+            await asyncio.to_thread(
+                rollback_character_recent_rename, recent_rename_result,
+            )
+        except Exception as exc:
+            rollback_errors.append(f"recent rename rollback failed: {exc}")
+    elif recent_delete_result is not None:
+        try:
+            await asyncio.to_thread(
+                rollback_character_recent_delete, recent_delete_result,
+            )
+        except Exception as exc:
+            rollback_errors.append(f"recent delete rollback failed: {exc}")
+    release_character_recent_transaction(recent_transaction)
+
     if tombstone_snapshot is not None:
         try:
             await asyncio.to_thread(
@@ -441,7 +540,11 @@ async def _rollback_character_operation(
         rollback_errors.append(f"initialize_character_data failed: {exc}")
 
     try:
-        reload_notified = await notify_memory_server_reload(reason=reason)
+        reload_notified = await notify_memory_server_reload(
+            reason=reason,
+            resume_derived_task_names=resume_derived_task_names,
+            release_derived_task_claims=release_derived_task_claims,
+        )
         if not reload_notified:
             rollback_errors.append("notify_memory_server_reload failed: returned False")
     except Exception as exc:
@@ -567,22 +670,6 @@ async def rename_catgirl(old_name: str, request: Request):
         target=f"characters/{old_name} -> {new_name}",
     )
 
-    released_memory_handle = await release_memory_server_character(
-        old_name,
-        reason=f"角色重命名前释放 SQLite 句柄: {old_name} -> {new_name}",
-    )
-    if not released_memory_handle:
-        logger.warning("角色重命名前释放记忆服务器句柄失败，已阻止重命名: %s -> %s", old_name, new_name)
-        return JSONResponse(
-            {
-                "success": False,
-                "code": "MEMORY_SERVER_RELEASE_FAILED",
-                "error": "释放角色记忆句柄失败，已阻止重命名，请稍后重试",
-                "memory_server_released": False,
-            },
-            status_code=503,
-        )
-
     characters_snapshot = copy.deepcopy(characters)
     memory_targets = list_character_memory_paths(_config_manager, old_name)
     memory_targets.extend(list_character_memory_paths(_config_manager, new_name))
@@ -597,13 +684,85 @@ async def rename_catgirl(old_name: str, request: Request):
     memory_targets.append(old_meta)
     memory_targets.append(new_meta)
     memory_server_reloaded = False
+    memory_rename_result = None
+    recent_transaction = None
+    memory_snapshot_records = []
+    rename_committed = False
+    released_memory_handle = False
+    release_claim_token = create_derived_task_claim_token()
 
     with _create_character_operation_backup_dir(_config_manager, "neko-rename-character-") as temp_dir:
-        memory_snapshot_records = await asyncio.to_thread(
-            _snapshot_existing_paths, memory_targets, Path(temp_dir)
-        )
         try:
-            rename_character_memory_storage(_config_manager, old_name, new_name)
+            released_memory_handle, release_cancelled = (
+                await _await_coroutine_to_completion(
+                    release_memory_server_character(
+                        old_name,
+                        reason=f"角色重命名前释放 SQLite 句柄: {old_name} -> {new_name}",
+                        hold_derived_task_admission=True,
+                        derived_task_claim_token=release_claim_token,
+                    )
+                )
+            )
+            if release_cancelled:
+                raise asyncio.CancelledError
+            if not released_memory_handle:
+                resume_error, resume_cancelled = (
+                    await _await_coroutine_to_completion(
+                        _resume_released_character_admission(
+                            old_name,
+                            release_claim_token,
+                            reason=f"角色重命名 release 失败补偿: {old_name} -> {new_name}",
+                        )
+                    )
+                )
+                if resume_cancelled:
+                    raise asyncio.CancelledError
+                logger.warning(
+                    "角色重命名前释放记忆服务器句柄失败，已阻止重命名: %s -> %s%s",
+                    old_name,
+                    new_name,
+                    f"；补偿失败: {resume_error}" if resume_error else "",
+                )
+                error_message = "释放角色记忆句柄失败，已阻止重命名，请稍后重试"
+                if resume_error:
+                    error_message = f"{error_message}; {resume_error}"
+                return JSONResponse(
+                    {
+                        "success": False,
+                        "code": "MEMORY_SERVER_RELEASE_FAILED",
+                        "error": error_message,
+                        "memory_server_released": False,
+                    },
+                    status_code=503,
+                )
+
+            recent_transaction, acquire_cancelled = await _await_thread_call_to_completion(
+                begin_character_recent_transaction,
+                _config_manager,
+                old_name,
+                new_name,
+            )
+            if acquire_cancelled:
+                raise asyncio.CancelledError
+
+            memory_snapshot_records, snapshot_cancelled = await _await_thread_call_to_completion(
+                _snapshot_existing_paths, memory_targets, Path(temp_dir),
+            )
+            if snapshot_cancelled:
+                raise asyncio.CancelledError
+
+            # to_thread：改名路径里的 recent.json 读写要拿文件锁，不能在事件
+            # 循环线程上取（对偶见 main_routers/memory_router.py 的同一调用）。
+            memory_rename_result, rename_cancelled = await _await_thread_call_to_completion(
+                rename_character_memory_storage,
+                _config_manager,
+                old_name,
+                new_name,
+                keep_recent_locks=True,
+                recent_transaction=recent_transaction,
+            )
+            if rename_cancelled:
+                raise asyncio.CancelledError
 
             # 重命名角色真源
             characters['猫娘'][new_name] = characters['猫娘'].pop(old_name)
@@ -611,7 +770,9 @@ async def rename_catgirl(old_name: str, request: Request):
             # 如果当前猫娘是被重命名的猫娘，也需要更新
             if is_current_catgirl:
                 characters['当前猫娘'] = new_name
-            await _config_manager.asave_characters(characters)
+            await _await_thread_mutation(
+                _config_manager.save_characters, characters,
+            )
 
             # Fast path：移除旧名 + 以新名启动一个 catgirl slot。
             # 等价于"删除旧 + 新增新"，不遍历其它 N-1 个。
@@ -626,26 +787,32 @@ async def rename_catgirl(old_name: str, request: Request):
             if old_face.exists():
                 if new_face.exists():
                     backup_face = _config_manager.card_faces_dir / f"{new_name}.png.conflict-{_ts}.bak"
-                    await asyncio.to_thread(new_face.rename, backup_face)
+                    await _await_thread_mutation(new_face.rename, backup_face)
                     logger.info(f"[重命名卡面] 冲突备份: {new_face} -> {backup_face}")
-                await asyncio.to_thread(old_face.rename, new_face)
+                await _await_thread_mutation(old_face.rename, new_face)
                 logger.info(f"[重命名卡面] 已迁移: {old_face} -> {new_face}")
             if old_meta.exists():
                 if new_meta.exists():
                     backup_meta = _config_manager.card_face_meta_path(f"{new_name}.conflict-{_ts}.bak")
-                    await asyncio.to_thread(new_meta.rename, backup_meta)
+                    await _await_thread_mutation(new_meta.rename, backup_meta)
                     logger.info(f"[重命名卡面元数据] 冲突备份: {new_meta} -> {backup_meta}")
-                await asyncio.to_thread(old_meta.rename, new_meta)
+                await _await_thread_mutation(old_meta.rename, new_meta)
                 logger.info(f"[重命名卡面元数据] 已迁移: {old_meta} -> {new_meta}")
 
             memory_server_reloaded = await notify_memory_server_reload(
                 reason=f"角色重命名: {old_name} -> {new_name}",
+                resume_derived_task_names=(new_name,),
             )
             if not memory_server_reloaded:
                 rollback_error = await _rollback_character_operation(
                     _config_manager,
                     characters_snapshot=characters_snapshot,
                     memory_snapshot_records=memory_snapshot_records,
+                    recent_rename_result=memory_rename_result,
+                    recent_transaction=recent_transaction,
+                    release_derived_task_claims={
+                        old_name: (release_claim_token,),
+                    },
                     reason=f"角色重命名回滚（memory_server 重载失败）: {old_name} -> {new_name}",
                 )
                 logger.error(
@@ -664,28 +831,80 @@ async def rename_catgirl(old_name: str, request: Request):
                     status_code=500,
                 )
 
-        except MaintenanceModeError as exc:
-            rollback_error = await _rollback_character_operation(
-                _config_manager,
-                characters_snapshot=characters_snapshot,
-                memory_snapshot_records=memory_snapshot_records,
-                reason=f"维护模式：角色重命名回滚 {old_name} -> {new_name}",
+            rename_committed = True
+            _, finalize_cancelled = await _await_thread_call_to_completion(
+                finalize_character_recent_rename, memory_rename_result,
             )
+            if finalize_cancelled:
+                raise asyncio.CancelledError
+
+        except asyncio.CancelledError:
+            if rename_committed:
+                if memory_rename_result is not None:
+                    release_character_recent_transaction(
+                        memory_rename_result.get("_recent_rename_transaction"),
+                    )
+            else:
+                await _await_cleanup_to_completion(
+                    _rollback_character_operation(
+                        _config_manager,
+                        characters_snapshot=characters_snapshot,
+                        memory_snapshot_records=memory_snapshot_records,
+                        recent_rename_result=memory_rename_result,
+                        recent_transaction=recent_transaction,
+                        release_derived_task_claims={
+                            old_name: (release_claim_token,),
+                        },
+                        reason=f"任务取消：角色重命名回滚 {old_name} -> {new_name}",
+                    )
+                )
+            raise
+        except MaintenanceModeError as exc:
+            rollback_error, rollback_cancelled = (
+                await _await_coroutine_to_completion(
+                    _rollback_character_operation(
+                        _config_manager,
+                        characters_snapshot=characters_snapshot,
+                        memory_snapshot_records=memory_snapshot_records,
+                        recent_rename_result=memory_rename_result,
+                        recent_transaction=recent_transaction,
+                        release_derived_task_claims={
+                            old_name: (release_claim_token,),
+                        },
+                        reason=f"维护模式：角色重命名回滚 {old_name} -> {new_name}",
+                    )
+                )
+            )
+            if rollback_cancelled:
+                raise asyncio.CancelledError
             if rollback_error:
                 raise exc from RuntimeError(rollback_error)
             raise
         except Exception as exc:
-            rollback_error = await _rollback_character_operation(
-                _config_manager,
-                characters_snapshot=characters_snapshot,
-                memory_snapshot_records=memory_snapshot_records,
-                reason=f"角色重命名回滚: {old_name} -> {new_name}",
+            rollback_error, rollback_cancelled = (
+                await _await_coroutine_to_completion(
+                    _rollback_character_operation(
+                        _config_manager,
+                        characters_snapshot=characters_snapshot,
+                        memory_snapshot_records=memory_snapshot_records,
+                        recent_rename_result=memory_rename_result,
+                        recent_transaction=recent_transaction,
+                        release_derived_task_claims={
+                            old_name: (release_claim_token,),
+                        },
+                        reason=f"角色重命名回滚: {old_name} -> {new_name}",
+                    )
+                )
             )
+            if rollback_cancelled:
+                raise asyncio.CancelledError
             logger.exception("重命名角色失败，已尝试回滚: %s -> %s", old_name, new_name)
             error_message = f"重命名角色失败: {exc}"
             if rollback_error:
                 error_message = f"{error_message}; 回滚失败: {rollback_error}"
             return JSONResponse({"success": False, "error": error_message}, status_code=500)
+        finally:
+            release_character_recent_transaction(recent_transaction)
 
     # 数据更新+重载+卡面迁移完成后再通知前端
     if memory_server_reloaded and rename_notification_ws and rename_notification_message:
@@ -994,14 +1213,19 @@ async def add_catgirl(request: Request):
     # 从 free_voices['cuteGirl'] 读以避免硬编码漂移；缺失时回退到首个非空预设，再回退到旧版默认值。
     default_free_voice_id = _get_new_catgirl_default_voice_id()
     set_reserved(catgirl_data, 'voice_id', default_free_voice_id)
-    await _config_manager.asave_characters(characters)
+    publish_cancelled = await asave_characters_with_recent_activation(
+        _config_manager, characters, key,
+    )
     pending_mark_ok, pending_mark_error = await _mark_new_character_greeting_pending_safe(_config_manager, key, "create")
 
     # Fast path：新增只需为 `key` 这一个 catgirl 分配资源 + 启动线程，不影响其它角色。
     init_one_catgirl = get_init_one_catgirl()
     await init_one_catgirl(key, is_new=True)
 
-    memory_server_reloaded = await notify_memory_server_reload(reason=f"新角色: {key}")
+    memory_server_reloaded = await notify_memory_server_reload(
+        reason=f"新角色: {key}",
+        resume_derived_task_names=(key,),
+    )
 
     response: dict = {
         "success": True,
@@ -1013,6 +1237,8 @@ async def add_catgirl(request: Request):
         response["pending_mark_ok"] = False
         response["pending_mark_failed"] = True
         response["pending_mark_error"] = pending_mark_error
+    if publish_cancelled:
+        raise asyncio.CancelledError
     return response
 
 
@@ -1262,22 +1488,6 @@ async def _delete_catgirl_by_name(name: str):
             "memory_server_reloaded": memory_server_reloaded,
         }
 
-    released_memory_handle = await release_memory_server_character(
-        name,
-        reason=f"角色删除前释放 SQLite 句柄: {name}",
-    )
-    if not released_memory_handle:
-        logger.warning("角色删除前释放记忆服务器句柄失败，已阻止删除: %s", name)
-        return JSONResponse(
-            {
-                "success": False,
-                "code": "MEMORY_SERVER_RELEASE_FAILED",
-                "error": "释放角色记忆句柄失败，已阻止删除，请稍后重试",
-                "memory_server_released": False,
-            },
-            status_code=503,
-        )
-
     characters_snapshot = copy.deepcopy(characters)
     memory_targets = list_character_memory_paths(_config_manager, name)
     face_path = _config_manager.card_faces_dir / f"{name}.png"
@@ -1286,36 +1496,105 @@ async def _delete_catgirl_by_name(name: str):
     memory_targets.append(meta_path)
 
     with _create_character_operation_backup_dir(_config_manager, "neko-delete-character-") as temp_dir:
-        memory_snapshot_records = await asyncio.to_thread(
-            _snapshot_existing_paths, memory_targets, Path(temp_dir)
-        )
+        memory_snapshot_records = []
         tombstone_snapshot = None
+        recent_delete_result = None
+        recent_transaction = None
         memory_server_reloaded = False
+        delete_committed = False
+        released_memory_handle = False
+        release_claim_token = create_derived_task_claim_token()
         try:
+            released_memory_handle, release_cancelled = (
+                await _await_coroutine_to_completion(
+                    release_memory_server_character(
+                        name,
+                        reason=f"角色删除前释放 SQLite 句柄: {name}",
+                        hold_derived_task_admission=True,
+                        derived_task_claim_token=release_claim_token,
+                    )
+                )
+            )
+            if release_cancelled:
+                raise asyncio.CancelledError
+            if not released_memory_handle:
+                resume_error, resume_cancelled = (
+                    await _await_coroutine_to_completion(
+                        _resume_released_character_admission(
+                            name,
+                            release_claim_token,
+                            reason=f"角色删除 release 失败补偿: {name}",
+                        )
+                    )
+                )
+                if resume_cancelled:
+                    raise asyncio.CancelledError
+                logger.warning(
+                    "角色删除前释放记忆服务器句柄失败，已阻止删除: %s%s",
+                    name,
+                    f"；补偿失败: {resume_error}" if resume_error else "",
+                )
+                error_message = "释放角色记忆句柄失败，已阻止删除，请稍后重试"
+                if resume_error:
+                    error_message = f"{error_message}; {resume_error}"
+                return JSONResponse(
+                    {
+                        "success": False,
+                        "code": "MEMORY_SERVER_RELEASE_FAILED",
+                        "error": error_message,
+                        "memory_server_released": False,
+                    },
+                    status_code=503,
+                )
+
+            recent_transaction, acquire_cancelled = await _await_thread_call_to_completion(
+                begin_character_recent_transaction,
+                _config_manager,
+                name,
+            )
+            if acquire_cancelled:
+                raise asyncio.CancelledError
+
+            memory_snapshot_records, snapshot_cancelled = await _await_thread_call_to_completion(
+                _snapshot_existing_paths, memory_targets, Path(temp_dir),
+            )
+            if snapshot_cancelled:
+                raise asyncio.CancelledError
+
             if not is_cloudsave_disabled():
                 tombstone_snapshot = copy.deepcopy(_config_manager.load_character_tombstones_state())
 
-            removed_memory_paths = await asyncio.to_thread(
-                delete_character_memory_storage, _config_manager, name
+            delete_result, delete_cancelled = await _await_thread_call_to_completion(
+                delete_character_memory_storage,
+                _config_manager,
+                name,
+                capture_pending=True,
+                keep_recent_locks=True,
+                recent_transaction=recent_transaction,
             )
+            removed_memory_paths, recent_delete_result = delete_result
+            if delete_cancelled:
+                raise asyncio.CancelledError
             for entry_path in removed_memory_paths:
                 logger.info(f"已删除: {entry_path}")
 
             # 同步删除卡面 PNG 与 sidecar JSON（纳入同一事务以便回滚）
             if face_path.exists():
-                await asyncio.to_thread(face_path.unlink)
+                await _await_thread_mutation(face_path.unlink)
             if meta_path.exists():
-                await asyncio.to_thread(meta_path.unlink)
+                await _await_thread_mutation(meta_path.unlink)
 
             if not is_cloudsave_disabled():
-                await asyncio.to_thread(
+                await _await_thread_mutation(
                     _config_manager.save_character_tombstones_state,
                     _build_character_tombstones_state(_config_manager, name),
                 )
 
             # 删除角色配置
             del characters['猫娘'][name]
-            await _config_manager.asave_characters(characters)
+            await _await_thread_mutation(
+                _config_manager.save_characters, characters,
+            )
             # Fast path：只停该角色的线程 + 清 dict + 刷 globals，不遍历其它 N-1 个。
             remove_one_catgirl = get_remove_one_catgirl()
             await remove_one_catgirl(name)
@@ -1329,25 +1608,72 @@ async def _delete_catgirl_by_name(name: str):
                     mark_session_deleted_character_name(name)
                 except Exception as exc:
                     logger.warning("记录本会话工坊删除标记失败: %s", exc)
-        except MaintenanceModeError as exc:
-            rollback_error = await _rollback_character_operation(
-                _config_manager,
-                characters_snapshot=characters_snapshot,
-                memory_snapshot_records=memory_snapshot_records,
-                tombstone_snapshot=tombstone_snapshot,
-                reason=f"维护模式：删除角色回滚 {name}",
+            delete_committed = True
+            _, finalize_cancelled = await _await_thread_call_to_completion(
+                finalize_character_recent_delete, recent_delete_result,
             )
+            if finalize_cancelled:
+                raise asyncio.CancelledError
+        except asyncio.CancelledError:
+            if delete_committed:
+                release_character_recent_transaction(recent_delete_result)
+            else:
+                await _await_cleanup_to_completion(
+                    _rollback_character_operation(
+                        _config_manager,
+                        characters_snapshot=characters_snapshot,
+                        memory_snapshot_records=memory_snapshot_records,
+                        tombstone_snapshot=tombstone_snapshot,
+                        recent_delete_result=recent_delete_result,
+                        recent_transaction=recent_transaction,
+                        release_derived_task_claims={
+                            name: (release_claim_token,),
+                        },
+                        reason=f"任务取消：删除角色回滚 {name}",
+                    )
+                )
+            raise
+        except MaintenanceModeError as exc:
+            rollback_error, rollback_cancelled = (
+                await _await_coroutine_to_completion(
+                    _rollback_character_operation(
+                        _config_manager,
+                        characters_snapshot=characters_snapshot,
+                        memory_snapshot_records=memory_snapshot_records,
+                        tombstone_snapshot=tombstone_snapshot,
+                        recent_delete_result=recent_delete_result,
+                        recent_transaction=recent_transaction,
+                        release_derived_task_claims={
+                            name: (release_claim_token,),
+                        },
+                        reason=f"维护模式：删除角色回滚 {name}",
+                    )
+                )
+            )
+            if rollback_cancelled:
+                raise asyncio.CancelledError
             if rollback_error:
                 raise exc from RuntimeError(rollback_error)
             raise
         except Exception as exc:
-            rollback_error = await _rollback_character_operation(
-                _config_manager,
-                characters_snapshot=characters_snapshot,
-                memory_snapshot_records=memory_snapshot_records,
-                tombstone_snapshot=tombstone_snapshot,
-                reason=f"删除角色回滚: {name}",
+            rollback_error, rollback_cancelled = (
+                await _await_coroutine_to_completion(
+                    _rollback_character_operation(
+                        _config_manager,
+                        characters_snapshot=characters_snapshot,
+                        memory_snapshot_records=memory_snapshot_records,
+                        tombstone_snapshot=tombstone_snapshot,
+                        recent_delete_result=recent_delete_result,
+                        recent_transaction=recent_transaction,
+                        release_derived_task_claims={
+                            name: (release_claim_token,),
+                        },
+                        reason=f"删除角色回滚: {name}",
+                    )
+                )
             )
+            if rollback_cancelled:
+                raise asyncio.CancelledError
             logger.exception("删除角色失败，已尝试回滚: %s", name)
             error_message = f"删除角色失败: {exc}"
             if rollback_error:
@@ -1360,6 +1686,8 @@ async def _delete_catgirl_by_name(name: str):
                 },
                 status_code=500,
             )
+        finally:
+            release_character_recent_transaction(recent_transaction)
 
     pending_remove_ok = True
     pending_remove_error = ""

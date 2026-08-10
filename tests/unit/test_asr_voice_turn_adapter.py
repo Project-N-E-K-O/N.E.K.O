@@ -9,8 +9,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from main_logic.asr_client.detector_runtime import _VoiceTurnAdapter
-from main_logic.asr_client.detector import DetectorIngressIdentity
+from main_logic.asr_client.endpointing.detector_runtime import _VoiceTurnAdapter
+from main_logic.asr_client.endpointing.detector import DetectorIngressIdentity
 from main_logic.asr_client.lifecycle import VoiceIngressToken
 from main_logic.voice_turn.contracts import (
     EvaluationStatus,
@@ -18,7 +18,7 @@ from main_logic.voice_turn.contracts import (
     TurnDecision,
     TurnEvaluation,
 )
-from main_logic.voice_turn.coordinator import CoordinatorState
+from main_logic.asr_client.endpointing.coordinator import CoordinatorState
 
 
 async def _eventually(predicate, *, timeout: float = 1.0) -> None:
@@ -275,14 +275,20 @@ async def test_silent_audio_does_not_extend_smart_turn_warm_ttl() -> None:
         gate=gate,
         coordinator=coordinator,
         on_commit=_noop_commit,
-        smart_turn_warm_seconds=0.01,
+        # TTL 必须远大于「一帧音频被消费完」所需的时间：取 0.01s 时卸载往往在
+        # 音频进入消费路径之前就已触发，断言就证明不了「静音音频没有续期」。
+        smart_turn_warm_seconds=0.2,
     )
     await adapter.start()
 
     await adapter.reset(generation=1, buffer_epoch=1, utterance_id=2)
-    await _eventually(lambda: coordinator.unload_calls == 1)
+    # TTL 现在是 0.2s，默认 1.0s 的 deadline 只有 5 倍余量，CI 比本机慢一到两个
+    # 数量级，显式给到 2.0s。
+    await _eventually(lambda: coordinator.unload_calls == 1, timeout=2.0)
 
     await adapter.reset(generation=1, buffer_epoch=1, utterance_id=3)
+    armed = adapter._smart_turn_unload_task   # reset() 排下的这一轮 TTL 卸载
+    assert armed is not None
     await adapter.push_audio(
         generation=1,
         buffer_epoch=1,
@@ -290,7 +296,17 @@ async def test_silent_audio_does_not_extend_smart_turn_warm_ttl() -> None:
         pcm16=b"\x01\x00",
     )
     await _eventually(lambda: len(gate.feed_calls) == 1)
-    await asyncio.sleep(0.03)
+    # wait_idle 排空队列，保证这帧静音音频已被完整消费——若消费路径错误地
+    # 取消了 TTL 卸载，此刻取消就已经发生了，下面的断言不会变成空过判定。
+    await adapter.wait_idle()
+    # 本用例的主张是「静音音频不给 TTL 续期」，光数 unload_calls 到 2 证明不了它：
+    # 续期就是 _cancel_smart_turn_unload + _schedule_smart_turn_unload，计数照样会
+    # 到 2、只是晚一轮 TTL。所以要断言 reset() 排下的**同一个**任务还挂着、没被取消。
+    assert adapter._smart_turn_unload_task is armed, "静音音频重排了 TTL 卸载任务"
+    assert not armed.cancelled()
+    # 不能用固定 sleep 等 TTL 到点：Windows 事件循环 15.625ms 的时钟粒度下
+    # sleep(0.03) 可能只等零毫秒（断言提前落地）。
+    await _eventually(lambda: coordinator.unload_calls == 2, timeout=2.0)
 
     assert coordinator.unload_calls == 2
     await adapter.close()
@@ -558,6 +574,63 @@ async def test_silero_keeps_consuming_while_smart_turn_is_blocked() -> None:
     await adapter.close()
 
 
+async def test_evaluation_tail_overflow_uses_backpressure_without_failure() -> None:
+    coordinator = _FakeCoordinator([_complete()], block_evaluation=True)
+    adapter = _VoiceTurnAdapter(
+        vad=_FakeVad(),
+        gate=_FakeGate(
+            [
+                (SpeechActivityEvent.CANDIDATE_PAUSE,),
+                (),
+                (),
+                (),
+            ]
+        ),
+        coordinator=coordinator,
+        on_commit=_noop_commit,
+        queue_capacity_ms=20,
+    )
+    await adapter.start()
+    try:
+        await adapter.push_audio(
+            generation=1,
+            buffer_epoch=1,
+            utterance_id=1,
+            pcm16=b"\x01\x00" * 160,
+        )
+        await asyncio.wait_for(coordinator.evaluate_started.wait(), 1)
+
+        for value in (2, 3):
+            await adapter.push_audio(
+                generation=1,
+                buffer_epoch=1,
+                utterance_id=1,
+                pcm16=bytes((value, 0)) * 160,
+            )
+            await _eventually(lambda: len(coordinator.pushed_audio) >= value)
+
+        with pytest.raises(asyncio.QueueFull):
+            await adapter.push_audio(
+                generation=1,
+                buffer_epoch=1,
+                utterance_id=1,
+                pcm16=b"\x04\x00" * 160,
+            )
+
+        assert adapter.failed is False
+        assert coordinator.pushed_audio == [
+            b"\x01\x00" * 160,
+            b"\x02\x00" * 160,
+            b"\x03\x00" * 160,
+        ]
+        coordinator.evaluate_release.set()
+        await adapter.wait_idle()
+        assert adapter.failed is False
+    finally:
+        coordinator.evaluate_release.set()
+        await adapter.close()
+
+
 async def test_multiple_pauses_coalesce_to_one_followup_evaluation() -> None:
     coordinator = _FakeCoordinator(
         [_failed_evaluation(EvaluationStatus.STALE), _complete()],
@@ -709,21 +782,25 @@ async def test_incomplete_waits_for_continuation_and_resume_cancels_fallback() -
         gate=gate,
         coordinator=coordinator,
         on_commit=commit,
-        continuation_timeout_seconds=0.02,
+        continuation_timeout_seconds=60.0,
+        max_endpoint_wait_seconds=60.0,
     )
     await adapter.start()
 
     await adapter.push_audio(
         generation=1, buffer_epoch=2, utterance_id=3, pcm16=b"\x01\x00"
     )
-    await _eventually(lambda: coordinator.evaluate_calls == 1)
+    await _eventually(lambda: adapter._fallback_task is not None)
+    fallback_task = adapter._fallback_task
+    assert fallback_task is not None
     await adapter.push_audio(
         generation=1, buffer_epoch=2, utterance_id=3, pcm16=b"\x02\x00"
     )
-    await _eventually(
-        lambda: SpeechActivityEvent.SPEECH_RESUMED in coordinator.activity_events
-    )
-    await asyncio.sleep(0.04)
+    await _eventually(lambda: adapter._fallback_task is None)
+    await _eventually(fallback_task.done)
+
+    assert SpeechActivityEvent.SPEECH_RESUMED in coordinator.activity_events
+    assert fallback_task.cancelled()
     assert commits == []
 
     await adapter.push_audio(
@@ -752,9 +829,11 @@ async def test_required_incomplete_rechecks_and_only_complete_commits() -> None:
         gate=_FakeGate([(SpeechActivityEvent.CANDIDATE_PAUSE,)]),
         coordinator=coordinator,
         on_commit=commit,
-        continuation_timeout_seconds=0.02,
+        # 复查窗口取 0.5s（原为 0.02s）：Windows 时钟粒度 15.625ms，窗口太窄时
+        # 「还没复查」的断言点和复查定时器会落在同一格 ready，靠回调顺序决定输赢。
+        continuation_timeout_seconds=0.5,
         smart_turn_required=True,
-        max_endpoint_wait_seconds=0.2,
+        max_endpoint_wait_seconds=5.0,
     )
     await adapter.start()
 
@@ -762,10 +841,12 @@ async def test_required_incomplete_rechecks_and_only_complete_commits() -> None:
         generation=21, buffer_epoch=22, utterance_id=23, pcm16=b"\x01\x00"
     )
     await _eventually(lambda: coordinator.evaluate_calls == 1)
-    await asyncio.sleep(0.01)
+    # wait_idle 是确定性同步点：队列排空 + 评估任务与 commit 回调都已跑完，
+    # 所以 incomplete 若被错误地 commit，此刻 commits 一定非空——断言不会空过。
+    await adapter.wait_idle()
     assert commits == []
-    await _eventually(lambda: coordinator.evaluate_calls == 2)
-    await _eventually(lambda: commits == [(21, 22, 23)])
+    await _eventually(lambda: coordinator.evaluate_calls == 2, timeout=3.0)
+    await _eventually(lambda: commits == [(21, 22, 23)], timeout=3.0)
     assert commits == [(21, 22, 23)]
     await adapter.close()
 

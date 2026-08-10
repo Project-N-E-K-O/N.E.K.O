@@ -33,10 +33,22 @@ from .qq_open_plat import QQOpenPlatformConnection
 
 from utils.api_config_loader import get_free_voices
 from utils.config_manager import get_reserved
-from utils.tts.native_voice_registry import get_active_realtime_native_provider_for_ui
-from utils.tts.providers.gemini import normalize_gemini_tts_voice
-from utils.voice_clone import MimoVoiceCloneClient, MimoVoiceCloneError, MinimaxVoiceCloneClient, MinimaxVoiceCloneError
-from utils.voice_config import read_legacy_voice_id
+try:
+    from utils.tts.native_voice_registry import get_active_realtime_native_provider_for_ui
+except (ImportError, ModuleNotFoundError):
+    get_active_realtime_native_provider_for_ui = None
+try:
+    from utils.tts.providers.gemini import normalize_gemini_tts_voice
+except (ImportError, ModuleNotFoundError):
+    normalize_gemini_tts_voice = None
+try:
+    from utils.voice_clone import MimoVoiceCloneClient, MimoVoiceCloneError, MinimaxVoiceCloneClient, MinimaxVoiceCloneError
+except (ImportError, ModuleNotFoundError):
+    MimoVoiceCloneClient = MimoVoiceCloneError = MinimaxVoiceCloneClient = MinimaxVoiceCloneError = None
+try:
+    from utils.voice_config import read_legacy_voice_id
+except (ImportError, ModuleNotFoundError):
+    read_legacy_voice_id = None
 from .dashboard_service import QQDashboardService
 from .feedback_classifier import QQFeedbackClassifier
 from .backlog_models import QQBacklogMessage
@@ -48,6 +60,8 @@ from .group_permission import GroupPermissionManager
 from .handler_runtime_service import QQHandlerRuntimeService
 from .message_dispatcher import QQMessageDispatcher
 from .memory_bridge import QQMemoryBridge
+from .display_name_service import QQDisplayNameService
+from .memory_tool_service import QQMemoryToolService
 from .napcat_service import QQNapcatService
 from .permission import PermissionManager
 from .prompt_builder import QQPromptBuilder
@@ -66,7 +80,10 @@ from .runtime_ops_service import QQProactiveMessageService, QQRuntimeOpsService
 from .runtime_service import QQRuntimeService
 from .session import QQAutoReplySessionMixin
 from .session_bootstrap_service import QQSessionBootstrapService
-from .session_instruction_service import QQSessionInstructionService
+from .session_instruction_service import (
+    QQSessionInstructionService,
+    resolve_prompt_override,
+)
 from .session_memory_service import QQSessionMemoryService
 from .session_runtime_service import QQSessionRuntimeService
 from .settings_service import QQSettingsService
@@ -119,6 +136,8 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         self.attention_service = QQAttentionService(self)
         self.prompt_builder = QQPromptBuilder(self)
         self.memory_bridge = QQMemoryBridge(self)
+        self.display_name_service = QQDisplayNameService(self)
+        self.memory_tool_service = QQMemoryToolService(self)
         self.relay_service = QQRelayService(self)
         self.reply_generation_service = QQReplyGenerationService(self)
         self.reply_decision_node = QQReplyDecisionNode(self)
@@ -146,6 +165,12 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         self._message_task: Optional[asyncio.Task] = None
         self._session_housekeeping_task: Optional[asyncio.Task] = None
         self._group_digest_task: Optional[asyncio.Task] = None
+        self._trust_migration_task: Optional[asyncio.Task] = None
+        self._identity_scope_task: Optional[asyncio.Task] = None
+        # 只有在存量 trust 池成功推给 memory_server 之后才开始上报
+        # speaker_tier / speaker_activity_events。纵深防御第一层，服务端的
+        # legacy_barriers 是第二层。
+        self.trust_ready: asyncio.Event = asyncio.Event()
         self._handler_tasks: set[asyncio.Task] = set()
         self._user_sessions: dict[str, dict[str, Any]] = {}
         self._session_locks: dict[str, asyncio.Lock] = {}
@@ -189,13 +214,201 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
                 app_id=str((self._qq_settings or {}).get("qq_open_app_id") or "").strip(),
                 client_secret=str((self._qq_settings or {}).get("qq_open_client_secret") or "").strip(),
                 logger=self.logger,
+                # 每条事件现读，开关改完立刻生效，不必重连。
+                identity_probe=lambda: bool(
+                    (self._qq_settings or {}).get("qq_open_identity_probe_enabled", False)
+                ),
+                # 取证行要同时进 UI 的「运行日志」页，不能只落文件。
+                emit_log=self._emit_log,
             )
         return QQClient(
             onebot_url=str((self._qq_settings or {}).get("onebot_url") or "ws://0.0.0.0:6199"),
             token=str((self._qq_settings or {}).get("token") or ""),
             logger=self.logger,
             emit_log=self._emit_log,
+            image_describer=self._describe_reply_image,
+            voice_transcriber=self._transcribe_voice,
         )
+
+    async def _transcribe_voice(self, audio_base64: str = "", *, audio_url: str = "") -> str:
+        """语音转文字：优先本地 STT，其次云端 OpenAI/Qwen。audio_url 用于 Qwen。"""
+        try:
+            from utils.config_manager import get_config_manager
+            import httpx, base64 as b64
+
+            core_config = get_config_manager().get_core_config() or {}
+            audio_bytes = b64.b64decode(audio_base64) if audio_base64 else b""
+            # 如果没有 base64 但有 URL，下载音频
+            if not audio_bytes and audio_url:
+                try:
+                    async with httpx.AsyncClient(timeout=30.0, proxy=None, trust_env=False) as cl:
+                        dl = await cl.get(audio_url)
+                        if dl.status_code == 200:
+                            audio_bytes = dl.content
+                except Exception:
+                    pass
+
+            stt_filename = "voice.mp3"
+            stt_mime = "audio/mp3"
+
+            # ── 本地 STT（优先独立配置 local_stt_url，其次 tts_custom base_url 推导）──
+            if audio_bytes:
+                try:
+                    amr_detected = audio_bytes and (audio_bytes[:6] == b"#!AMR\n" or audio_bytes[:9].startswith(b"#!AMR-W"))
+                    stt_filename = "voice.amr" if amr_detected else "voice.mp3"
+                    stt_mime = "audio/amr" if amr_detected else "audio/mp3"
+                    # 优先使用 qq_settings 中的 local_stt_url
+                    local_stt_url = str((self._qq_settings or {}).get("local_stt_url", "") or "").strip()
+                    if not local_stt_url:
+                        # 回退：tts_custom base_url 推导
+                        tts_config = get_config_manager().get_model_api_config("tts_custom")
+                        local_base = str(tts_config.get("base_url") or "").strip()
+                        _is_ws = local_base.startswith("ws://") or local_base.startswith("wss://")
+                        _is_http = local_base.startswith("http://") or local_base.startswith("https://")
+                        if local_base and (_is_ws or _is_http):
+                            http_base = local_base.replace("ws://", "http://").replace("wss://", "https://")
+                            local_stt_url = http_base.rstrip("/") + "/v1/audio/transcriptions"
+                    if local_stt_url:
+                        async with httpx.AsyncClient(timeout=30.0, proxy=None, trust_env=False) as client:
+                            resp = await client.post(
+                                local_stt_url,
+                                files={"file": (stt_filename, audio_bytes, stt_mime)},
+                                data={"model": "whisper-1", "language": "zh"},
+                            )
+                            if resp.status_code == 200:
+                                text = str(resp.json().get("text", "") or "").strip()
+                                if text:
+                                    self._emit_log("INFO", f"[Voice] 本地STT完成: {text[:40]}")
+                                    return text
+                            self._emit_log("DEBUG", f"[Voice] 本地STT: {resp.status_code}")
+                except Exception:
+                    pass
+
+            # ── OpenAI Whisper ──
+            openai_key = str(core_config.get("ASSIST_API_KEY_OPENAI") or "").strip()
+            if openai_key and audio_bytes:
+                async with httpx.AsyncClient(timeout=30.0, proxy=None, trust_env=False) as client:
+                    resp = await client.post(
+                        "https://api.openai.com/v1/audio/transcriptions",
+                        headers={"Authorization": f"Bearer {openai_key}"},
+                        files={"file": (stt_filename, audio_bytes, stt_mime)},
+                        data={"model": "whisper-1", "language": "zh"},
+                    )
+                    if resp.status_code == 200:
+                        return str(resp.json().get("text", "") or "").strip()
+                    self._emit_log("DEBUG", f"[Voice] OpenAI转录: {resp.status_code}")
+
+            # ── Qwen DashScope (SenseVoice) 同步模式 ──
+            import json as _json
+            qwen_key = str(core_config.get("ASSIST_API_KEY_QWEN") or "").strip()
+            if qwen_key and audio_bytes:
+                amr_detected = audio_bytes and (audio_bytes[:6] == b"#!AMR\n" or audio_bytes[:9].startswith(b"#!AMR-W"))
+                if amr_detected:
+                    self._emit_log("DEBUG", f"[Voice] 检测到AMR: magic={audio_bytes[:9]!r}")
+                self._emit_log("DEBUG", f"[Voice] Qwen同步转录: {len(audio_bytes)} bytes")
+                mime = "audio/amr-wb" if (amr_detected and audio_bytes[:9].startswith(b"#!AMR-W")) else ("audio/amr" if amr_detected else "audio/mpeg")
+                data_uri = f"data:{mime};base64,{b64.b64encode(audio_bytes).decode()}"
+                async with httpx.AsyncClient(timeout=30.0, proxy=None, trust_env=False) as client:
+                    submit_resp = await client.post(
+                        "https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription",
+                        headers={"Authorization": f"Bearer {qwen_key}"},
+                        json={
+                            "model": "sensevoice-v1",
+                            "input": {"file_urls": [data_uri]},
+                        },
+                    )
+                    if submit_resp.status_code != 200:
+                        try:
+                            err = submit_resp.json()
+                            self._emit_log("DEBUG", f"[Voice] Qwen同步转录失败: {submit_resp.status_code} code={err.get('code','?')} msg={err.get('message','?')}")
+                        except Exception:
+                            self._emit_log("DEBUG", f"[Voice] Qwen同步转录失败: {submit_resp.status_code} {submit_resp.text[:200]}")
+                    else:
+                        result = submit_resp.json()
+                        output = result.get("output") or {}
+                        results = output.get("results") or []
+                        text = ""
+                        for r in results:
+                            transcripts = r.get("transcripts") or []
+                            trans_url = r.get("transcription_url") or ""
+                            if not transcripts and trans_url:
+                                try:
+                                    async with httpx.AsyncClient(timeout=15.0, proxy=None, trust_env=False) as dl:
+                                        dl_resp = await dl.get(trans_url)
+                                    if dl_resp.status_code == 200:
+                                        trans_data = dl_resp.json()
+                                        transcripts = trans_data.get("transcripts") or []
+                                        props = trans_data.get("properties") or {}
+                                        if props:
+                                            dur = props.get("original_duration_in_milliseconds", 0)
+                                            fmt = props.get("audio_format", "?")
+                                            sr = props.get("original_sampling_rate", 0)
+                                            self._emit_log("DEBUG", f"[Voice] Qwen音频属性: {fmt} {sr}Hz {dur}ms")
+                                    else:
+                                        self._emit_log("DEBUG", f"[Voice] Qwen下载转录失败: status={dl_resp.status_code}")
+                                except Exception as e:
+                                    self._emit_log("DEBUG", f"[Voice] Qwen下载转录异常: {type(e).__name__}: {e}")
+                            if transcripts:
+                                import re as _re
+                                for t in transcripts:
+                                    raw_text = str(t.get("text", "") or "").strip()
+                                    if raw_text:
+                                        cleaned = _re.sub(r'<\|/?\w+\|>', '', raw_text).strip()
+                                        text += cleaned
+                            else:
+                                text += str(r.get("transcript", "") or r.get("text", "") or "").strip()
+                            result_text = text.strip()
+                            if result_text:
+                                self._emit_log("INFO", f"[Voice] Qwen转录完成: {result_text[:80]}")
+                            else:
+                                self._emit_log("DEBUG", f"[Voice] Qwen转录成功但无文字, full_output={_json.dumps(output, ensure_ascii=False)[:2000]}")
+                            return result_text
+            return ""
+        except Exception:
+            return ""
+
+    async def _describe_reply_image(self, image_url: str) -> str:
+        """对引用回复中的图片做简短 VLM 描述（KiraAI 方案）。"""
+        import asyncio as _asyncio
+        try:
+            from utils.llm_client import create_chat_llm_async
+            from utils.config_manager import get_config_manager
+
+            model_config = get_config_manager().get_model_api_config("conversation")
+            base_url = str(model_config.get("base_url") or "").strip()
+            model = str(model_config.get("model") or "").strip()
+            api_key = str(model_config.get("api_key") or "").strip()
+            if not base_url or not model:
+                return ""
+
+            # 拉取图片并压缩为 JPEG base64
+            image_b64 = await self._prepare_attachment_image_b64({"url": image_url})
+            if not image_b64:
+                return ""
+
+            llm = await create_chat_llm_async(
+                model=model, base_url=base_url, api_key=api_key,
+                max_completion_tokens=60, timeout=15.0,
+                provider_type=model_config.get("provider_type"),
+            )
+            try:
+                response = await _asyncio.wait_for(
+                    llm.ainvoke([{"role": "user", "content": [
+                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}},
+                        {"type": "text", "text": "用简短的中文描述这张图片的内容（不超过20字）"},
+                    ]}]),
+                    timeout=15.0,
+                )
+                return str(getattr(response, "content", "") or "").strip()
+            finally:
+                aclose = getattr(llm, "aclose", None)
+                if callable(aclose):
+                    try:
+                        await aclose()
+                    except Exception:
+                        pass
+        except Exception:
+            return ""
 
     def _refresh_admin_qq(self) -> None:
         self._admin_qq = None
@@ -257,6 +470,16 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
     async def _persist_business_config(self) -> bool:
         return await self.settings_service.persist_business_config()
 
+    async def _mutate_business_config(self, mutation) -> bool:
+        """Route direct action mutations through the serialized writer."""
+        settings_service = getattr(self, "settings_service", None)
+        if settings_service is not None:
+            return await settings_service.mutate_business_config(mutation)
+        # Preserve the established lightweight-host seam used by unit tests.
+        if not mutation(self._qq_settings):
+            return True
+        return await self._persist_business_config()
+
     def _ensure_qq_client_initialized(self) -> None:
         if self.qq_client is not None:
             return
@@ -285,6 +508,19 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
                 "open_in": "new_tab",
             }
         ])
+        # 后台推送存量 trust 池，**不阻塞 startup**：memory_server 可能还没
+        # 起来，而在 startup 里 await 一个带退避的重试循环既拖慢插件启动、
+        # 又是在赌另一个进程的就绪顺序。
+        if (
+            self._trust_migration_task is None
+            or self._trust_migration_task.done()
+        ):
+            self._trust_migration_task = asyncio.create_task(
+                self.settings_service.push_legacy_speaker_trust_forever()
+            )
+        # 标识符语义的登记**不在这里**：它描述的是「现在跑着的 wire
+        # format」，而 startup 时还没有连接。登记发生在连接真正建立之后
+        # （runtime_ops_service 的 start_auto_reply，见 §2.15.4）。
         if self._session_housekeeping_task is None or self._session_housekeeping_task.done():
             self._session_housekeeping_task = asyncio.create_task(self._session_housekeeping_loop())
         # 定期清理已审核超过24h的旧消息
@@ -381,6 +617,16 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         await self._flush_all_memory_sessions(reason="shutdown")
         if self.attention_gate_service:
             await self.attention_gate_service.shutdown()
+        if (
+            self._trust_migration_task
+            and not self._trust_migration_task.done()
+        ):
+            self._trust_migration_task.cancel()
+        if (
+            self._identity_scope_task
+            and not self._identity_scope_task.done()
+        ):
+            self._identity_scope_task.cancel()
         if self._group_digest_task and not self._group_digest_task.done():
             self._group_digest_task.cancel()
         if getattr(self, "_purge_task", None) and not self._purge_task.done():
@@ -802,7 +1048,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         return Ok({"stickers": items, "total": len(items)})
 
     @ui.action(id="save_settings", label=tr("entries.save_settings.name", default="保存 QQ 自动回复设置"), refresh_context=True)
-    @plugin_entry(id="save_settings", name=tr("entries.save_settings.name", default="保存 QQ 自动回复设置"), description=tr("entries.save_settings.description", default="保存 QQ 插件当前的 OneBot 地址、Token、NapCat 路径、回复概率和 backlog 标签等设置。"), input_schema={"type": "object", "properties": {"onebot_url": {"type": "string"}, "token": {"type": "string"}, "napcat_directory": {"type": "string"}, "show_napcat_window": {"type": "boolean"}, "reply_mode": {"type": "string", "enum": ["text", "voice", "both"]}, "show_onboarding": {"type": "boolean"}, "guide_step_napcat_done": {"type": "boolean"}, "guide_step_config_done": {"type": "boolean"}, "guide_step_runtime_done": {"type": "boolean"}, "normal_relay_probability": {"type": "number"}, "truth_reply_probability": {"type": "number"}, "backlog_labels": {"type": "array", "items": {"type": "object"}}, "strategy_mode": {"type": "string", "enum": ["neko_dynamic", "neko_scene"]}, "qq_connection_mode": {"type": "string", "enum": ["napcat", "open_platform"]}, "qq_open_app_id": {"type": "string"}, "qq_open_client_secret": {"type": "string"}, "sticker_cooldown_messages": {"type": "integer"}, "retroactive_review_max_messages": {"type": "integer"}, "retroactive_review_max_reply": {"type": "integer"}, "group_memory_enabled": {"type": "boolean"}, "group_member_memory_enabled": {"type": "boolean"}, "allow_cross_group_context": {"type": "boolean"}}, "additionalProperties": False})
+    @plugin_entry(id="save_settings", name=tr("entries.save_settings.name", default="保存 QQ 自动回复设置"), description=tr("entries.save_settings.description", default="保存 QQ 插件当前的 OneBot 地址、Token、NapCat 路径、回复概率和 backlog 标签等设置。"), input_schema={"type": "object", "properties": {"onebot_url": {"type": "string"}, "token": {"type": "string"}, "napcat_directory": {"type": "string"}, "show_napcat_window": {"type": "boolean"}, "reply_mode": {"type": "string", "enum": ["text", "voice", "both"]}, "show_onboarding": {"type": "boolean"}, "guide_step_napcat_done": {"type": "boolean"}, "guide_step_config_done": {"type": "boolean"}, "guide_step_runtime_done": {"type": "boolean"}, "normal_relay_probability": {"type": "number"}, "truth_reply_probability": {"type": "number"}, "backlog_labels": {"type": "array", "items": {"type": "object"}}, "strategy_mode": {"type": "string", "enum": ["neko_dynamic", "neko_scene"]}, "qq_connection_mode": {"type": "string", "enum": ["napcat", "open_platform"]}, "qq_open_app_id": {"type": "string"}, "qq_open_client_secret": {"type": "string"}, "qq_open_identity_probe_enabled": {"type": "boolean"}, "sticker_cooldown_messages": {"type": "integer"}, "retroactive_review_max_messages": {"type": "integer"}, "retroactive_review_max_reply": {"type": "integer"}, "group_memory_enabled": {"type": "boolean"}, "group_member_memory_enabled": {"type": "boolean"}, "private_participant_memory_enabled": {"type": "boolean"}, "allow_cross_group_context": {"type": "boolean"}}, "additionalProperties": False})
     async def save_settings(
         self,
         onebot_url: Optional[str] = None,
@@ -818,15 +1064,30 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         truth_reply_probability: Optional[float] = None,
         backlog_labels: Optional[list[dict[str, Any]]] = None,
         sticker_cooldown_messages: Optional[int] = None,
+        group_attention_decay_per_second: Optional[float] = None,
+        group_attention_message_recovery: Optional[float] = None,
+        group_attention_reply_penalty: Optional[float] = None,
+        group_attention_keyword_boost_scale: Optional[float] = None,
+        group_attention_focus_lock_seconds: Optional[int] = None,
+        group_attention_focus_rise_seconds: Optional[int] = None,
+        group_attention_focus_cooldown_seconds: Optional[int] = None,
+        group_attention_max_score: Optional[float] = None,
+        group_attention_focus_threshold: Optional[float] = None,
+        group_attention_min_threshold: Optional[float] = None,
+        group_attention_message_gain: Optional[float] = None,
+        icebreaker_cold_threshold: Optional[int] = None,
         retroactive_review_max_messages: Optional[int] = None,
         retroactive_review_max_reply: Optional[int] = None,
         group_memory_enabled: Optional[bool] = None,
         group_member_memory_enabled: Optional[bool] = None,
+        private_participant_memory_enabled: Optional[bool] = None,
         allow_cross_group_context: Optional[bool] = None,
         strategy_mode: Optional[str] = None,
         qq_connection_mode: Optional[str] = None,
         qq_open_app_id: Optional[str] = None,
         qq_open_client_secret: Optional[str] = None,
+        qq_open_identity_probe_enabled: Optional[bool] = None,
+        local_stt_url: Optional[str] = None,
         **_,
     ):
         return await self.dashboard_service.save_settings(
@@ -843,15 +1104,30 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             truth_reply_probability=truth_reply_probability,
             backlog_labels=backlog_labels,
             sticker_cooldown_messages=sticker_cooldown_messages,
+            group_attention_decay_per_second=group_attention_decay_per_second,
+            group_attention_message_recovery=group_attention_message_recovery,
+            group_attention_reply_penalty=group_attention_reply_penalty,
+            group_attention_keyword_boost_scale=group_attention_keyword_boost_scale,
+            group_attention_focus_lock_seconds=group_attention_focus_lock_seconds,
+            group_attention_focus_rise_seconds=group_attention_focus_rise_seconds,
+            group_attention_focus_cooldown_seconds=group_attention_focus_cooldown_seconds,
+            group_attention_max_score=group_attention_max_score,
+            group_attention_focus_threshold=group_attention_focus_threshold,
+            group_attention_min_threshold=group_attention_min_threshold,
+            group_attention_message_gain=group_attention_message_gain,
+            icebreaker_cold_threshold=icebreaker_cold_threshold,
             retroactive_review_max_messages=retroactive_review_max_messages,
             retroactive_review_max_reply=retroactive_review_max_reply,
             group_memory_enabled=group_memory_enabled,
             group_member_memory_enabled=group_member_memory_enabled,
+            private_participant_memory_enabled=private_participant_memory_enabled,
             allow_cross_group_context=allow_cross_group_context,
             strategy_mode=strategy_mode,
             qq_connection_mode=qq_connection_mode,
             qq_open_app_id=qq_open_app_id,
             qq_open_client_secret=qq_open_client_secret,
+            qq_open_identity_probe_enabled=qq_open_identity_probe_enabled,
+            local_stt_url=local_stt_url,
         )
 
     @ui.action(id="add_trusted_user", label=tr("entries.add_trusted_user.name", default="添加信任用户"), refresh_context=True)
@@ -862,6 +1138,25 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             level=level,
             nickname=nickname,
             normal_relay_probability=normal_relay_probability,
+        )
+
+    @ui.action(id="list_identity_claims", label=tr("entries.list_identity_claims.name", default="列出未认领的群内 ID"), refresh_context=False)
+    @plugin_entry(id="list_identity_claims", name=tr("entries.list_identity_claims.name", default="列出未认领的群内 ID"), description=tr("entries.list_identity_claims.description", default="列出开放平台上出现过、但还不在信任用户名册里的群内 ID，以及可供人工合并的已有身份候选。"), input_schema={"type": "object", "properties": {}, "additionalProperties": False})
+    async def list_identity_claims(self, **_):
+        return await self.dashboard_service.list_identity_claims()
+
+    @ui.action(id="bind_identity_account", label=tr("entries.bind_identity_account.name", default="合并到已有身份"), refresh_context=True)
+    @plugin_entry(id="bind_identity_account", name=tr("entries.bind_identity_account.name", default="合并到已有身份"), description=tr("entries.bind_identity_account.description", default="把一个群内 ID 的信赖度账本并入已有身份。只能由人触发，系统不会自动合并任何身份。"), input_schema={"type": "object", "properties": {"user_id": {"type": "string"}, "target_user_id": {"type": "string"}}, "required": ["user_id", "target_user_id"], "additionalProperties": False})
+    async def bind_identity_account(self, user_id: str, target_user_id: str, **_):
+        return await self.dashboard_service.bind_identity_account(
+            user_id=user_id, target_user_id=target_user_id,
+        )
+
+    @ui.action(id="unbind_identity_account", label=tr("entries.unbind_identity_account.name", default="撤销合并"), refresh_context=True)
+    @plugin_entry(id="unbind_identity_account", name=tr("entries.unbind_identity_account.name", default="撤销合并"), description=tr("entries.unbind_identity_account.description", default="把一个群内 ID 从它被合并进的身份里拆回独立身份。误合并的唯一回滚方式。"), input_schema={"type": "object", "properties": {"user_id": {"type": "string"}}, "required": ["user_id"], "additionalProperties": False})
+    async def unbind_identity_account(self, user_id: str, **_):
+        return await self.dashboard_service.unbind_identity_account(
+            user_id=user_id,
         )
 
     @ui.action(id="remove_trusted_user", label=tr("entries.remove_trusted_user.name", default="移除信任用户"), refresh_context=True)
@@ -946,6 +1241,83 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         normalized_group_id = self._validate_group_id(group_id)
         return Ok(await self.backlog_service.mark_group_reviewed_payload(normalized_group_id))
 
+    @plugin_entry(
+        id="forget_group_memory",
+        name=tr("entries.forget_group_memory.name", default="清除群记忆"),
+        description=tr("entries.forget_group_memory.description", default="删除指定群聊的全部长期记忆（facts/reflections/persona）。幂等，重试安全。"),
+        input_schema={"type": "object", "properties": {"group_id": {"type": "string"}}, "required": ["group_id"]},
+    )
+    async def forget_group_memory(self, group_id: str, **_):
+        normalized_group_id = self._validate_group_id(group_id)
+        from utils.config_manager import get_config_manager
+        try:
+            _, her_name, _, _, _, _, _, _, _ = get_config_manager().get_character_data()
+        except Exception:
+            her_name = "neko"
+        try:
+            result = await self.memory_bridge.post_scoped_forget(
+                her_name,
+                subject=self.memory_bridge.group_subject(normalized_group_id),
+            )
+            self._emit_log("INFO", f"群 {normalized_group_id} 记忆已清除: {result}")
+            return Ok({"group_id": normalized_group_id, "forgotten": True, "detail": result})
+        except Exception as exc:
+            self._emit_log("ERROR", f"清除群 {normalized_group_id} 记忆失败: {exc}")
+            return Err(SdkError(f"FORGET_FAILED: {exc}"))
+
+    @plugin_entry(
+        id="get_user_profiles",
+        name=tr("entries.get_user_profiles.name", default="获取用户画像"),
+        description=tr("entries.get_user_profiles.description", default="读取当前缓存的用户画像列表，包含身份信息和从长期记忆中提取的事实摘要。"),
+        input_schema={"type": "object", "properties": {}},
+    )
+    async def get_user_profiles(self, **_):
+        import time
+        profiles: list[dict[str, Any]] = []
+        now = time.time()
+        cache = getattr(self.session_instruction_service, "_user_profile_cache", {}) or {}
+        perm_mgr = self.permission_mgr
+
+        # 收集所有有缓存画像的用户（cache key 格式: sender_id:scope_key）
+        seen: set[str] = set()
+        for cache_key, (text, expire_at) in list(cache.items()):
+            # 从复合 key 中提取 sender_id
+            sender_id = str(cache_key).split(":", 1)[0] if ":" in str(cache_key) else str(cache_key)
+            if sender_id in seen:
+                continue
+            seen.add(sender_id)
+            nickname = ""
+            level = "none"
+            if perm_mgr:
+                nickname = perm_mgr.get_nickname(sender_id) or ""
+                level = perm_mgr.get_permission_level(sender_id)
+            profiles.append({
+                "sender_id": sender_id,
+                "nickname": nickname,
+                "permission_level": level,
+                "profile_text": text,
+                "cached": True,
+                "expires_in_seconds": max(0, int(expire_at - now)),
+            })
+
+        # 也列出信任用户中还没有画像的
+        if perm_mgr:
+            for u in perm_mgr.list_users():
+                sid = str(u.get("qq") or "").strip()
+                if sid and sid not in seen:
+                    seen.add(sid)
+                    profiles.append({
+                        "sender_id": sid,
+                        "nickname": str(u.get("nickname") or ""),
+                        "permission_level": str(u.get("level") or "normal"),
+                        "profile_text": "",
+                        "cached": False,
+                        "expires_in_seconds": 0,
+                    })
+
+
+        return Ok({"profiles": profiles, "count": len(profiles), "cached_count": sum(1 for p in profiles if p["cached"])})
+
     # ==========================================
     # 提示词编辑器
     # ==========================================
@@ -960,9 +1332,14 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         frontend_mode = str(mode or "").strip()
         stored_mode = str((self._qq_settings or {}).get("qq_connection_mode", "napcat") or "napcat").strip()
         mode = frontend_mode if frontend_mode in ("napcat", "open_platform") else stored_mode
-        from utils.language_utils import get_global_language
+        from utils.language_utils import get_global_language_full
         frontend_locale = str(locale or "").strip()
-        locale = frontend_locale if frontend_locale else get_global_language()
+        # #2500 第 2 步：兜底也用全码。这个 locale 有两个身份——查 i18n bundle 的
+        # 键，以及回传给前端、被 save_prompt_override 原样当作覆盖的存储键。短码
+        # 'zh' 会让繁中用户在编辑器里看到（并覆盖）简体那份。
+        # ⚠️ 必须和 session_instruction_service._resolve_static_layer 的兜底同时
+        # 翻：写侧用 'zh-TW' 存、读侧还按 'zh' 的候选链找，覆盖会静默失效。
+        locale = frontend_locale if frontend_locale else get_global_language_full()
         strategy_mode = getattr(self, "_strategy_mode", "neko_dynamic")
         is_napcat = mode == "napcat"
         overrides = (self._qq_settings or {}).get("prompt_overrides") or {}
@@ -1026,13 +1403,23 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             has_override = False
             effective_text = ""
             if not is_runtime:
-                if isinstance(overrides.get(locale), dict) and i18n_key in overrides[locale]:
+                # ⚠️ 走候选链而不是精确匹配 ``overrides[locale]``：覆盖桶的键是
+                # 存的时候那次的 locale，未必等于现在解析出来的（#2500 之前繁中
+                # 用户的兜底是短码 'zh'）。运行时按候选链读，编辑器精确匹配的
+                # 话，那份覆盖照样生效、编辑器却报「未修改」。
+                found = resolve_prompt_override(overrides, locale, i18n_key)
+                if found is not None:
                     has_override = True
-                    effective_text = str(overrides[locale][i18n_key] or "")
+                    effective_text = str(found[1] or "")
                 else:
                     effective_text = self.i18n.t(i18n_key, locale=locale, default=default_text)
             if lid == "time" and self.fatigue_service:
                 effective_text = self.fatigue_service.get_dynamic_time_context()
+            if lid == "fatigue_tiers" and self.fatigue_service:
+                lines = []
+                for threshold, text in self.fatigue_service._FATIGUE_TIERS:
+                    lines.append(f"{threshold}: {text}\n")
+                effective_text = "\n".join(lines)
             layers.append({
                 "id": lid,
                 "i18n_key": i18n_key,
@@ -1045,11 +1432,21 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             })
         self._emit_log("INFO", f"[PromptEditor] mode={mode} is_napcat={is_napcat} strategy={strategy_mode} locale={locale} layers={len(layers)}")
         self.logger.info(f"[PromptEditor] mode={mode} is_napcat={is_napcat} strategy={strategy_mode} locale={locale} layers={len(layers)}")
+        proactive_topics = list((self._qq_settings or {}).get("proactive_topics") or [])
+        if not proactive_topics and self.attention_gate_service:
+            proactive_topics = list(getattr(self.attention_gate_service, "_DEFAULT_PROACTIVE_TOPICS", []))
+        # 疲劳层级提示词（供前端查看和覆盖）
+        fatigue_tiers = []
+        if self.fatigue_service:
+            for threshold, text in self.fatigue_service._FATIGUE_TIERS:
+                fatigue_tiers.append({"threshold": threshold, "text": text})
         return Ok({
             "mode": mode,
             "locale": locale,
             "strategy_mode": strategy_mode,
             "layers": layers,
+            "proactive_topics": proactive_topics,
+            "fatigue_tiers": fatigue_tiers,
         })
 
     @plugin_entry(
@@ -1081,14 +1478,22 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             return Err(SdkError(f"INVALID_INPUT: 未知的提示词层: {layer_id}"))
         if layer_def.get("runtime"):
             return Err(SdkError(f"INVALID_INPUT: 运行时层不可编辑: {layer_id}"))
-        # 写入覆盖
-        overrides = dict((self._qq_settings or {}).get("prompt_overrides") or {})
-        if not isinstance(overrides, dict):
-            overrides = {}
-        overrides.setdefault(locale, {})
-        overrides[locale][layer_def["i18n_key"]] = text_val if text_val.strip() else ""
-        self._qq_settings["prompt_overrides"] = overrides
-        success = await self.settings_service.persist_business_config()
+        def _save_override(settings):
+            raw_overrides = settings.get("prompt_overrides") or {}
+            overrides = (
+                dict(raw_overrides) if isinstance(raw_overrides, dict) else {}
+            )
+            overrides.setdefault(locale, {})
+            overrides[locale] = dict(overrides[locale])
+            overrides[locale][layer_def["i18n_key"]] = (
+                text_val if text_val.strip() else ""
+            )
+            settings["prompt_overrides"] = overrides
+            return True
+
+        success = await QQAutoReplyPlugin._mutate_business_config(
+            self, _save_override,
+        )
         if success:
             self.session_instruction_service._discard_all_sessions_for_prompt_change()
         return Ok({"persisted": success, "layer_id": layer_id, "locale": locale})
@@ -1112,13 +1517,56 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         layer_def = next((ld for ld in self.session_instruction_service._PROMPT_LAYERS if ld["id"] == layer_id), None)
         if layer_def is None or layer_def.get("runtime"):
             return Err(SdkError(f"INVALID_INPUT: 无法重置的层: {layer_id}"))
-        overrides = dict((self._qq_settings or {}).get("prompt_overrides") or {})
-        if isinstance(overrides, dict) and locale in overrides and isinstance(overrides[locale], dict):
-            overrides[locale].pop(layer_def["i18n_key"], None)
-            if not overrides[locale]:
-                overrides.pop(locale, None)
-            self._qq_settings["prompt_overrides"] = overrides
-            success = await self.settings_service.persist_business_config()
+        override_found = False
+
+        def _reset_override(settings):
+            nonlocal override_found
+            raw_overrides = settings.get("prompt_overrides") or {}
+            overrides = {
+                bucket: (dict(entries) if isinstance(entries, dict) else entries)
+                for bucket, entries in (
+                    raw_overrides.items() if isinstance(raw_overrides, dict) else ()
+                )
+            }
+            i18n_key = layer_def["i18n_key"]
+            removed = False
+
+            # 先删精确桶。它可能存着空串（编辑器清空时的存法），resolve 看不见
+            # 那种，光靠下面的循环会漏。
+            exact = overrides.get(locale)
+            if isinstance(exact, dict) and i18n_key in exact:
+                exact.pop(i18n_key)
+                removed = True
+
+            # 再一直删到「解析不出覆盖」为止。只删精确桶是不够的：候选链上
+            # 还有别的桶（存量短码 'zh'，以及每条链都会带上的 'zh-CN' /
+            # 'en'），删掉 zh-TW 之后它们会顶上来 —— 「恢复默认」就变成了
+            # 「换一份旧覆盖」，而且再按一次还是它。
+            # ⚠️ 代价说清楚：同一个人如果按 locale 分别调过这一层的提示词，
+            # 重置会把该层其它 locale 的那几份一起清掉。单用户桌面应用里，
+            # 这比「按了恢复默认却恢复不掉」轻 —— 后者没有任何出路。
+            while True:
+                found = resolve_prompt_override(overrides, locale, i18n_key)
+                if found is None:
+                    break
+                overrides[found[0]].pop(i18n_key, None)
+                removed = True
+
+            if not removed:
+                return False
+            override_found = True
+            for bucket in [
+                b for b, entries in overrides.items()
+                if isinstance(entries, dict) and not entries
+            ]:
+                overrides.pop(bucket, None)
+            settings["prompt_overrides"] = overrides
+            return True
+
+        success = await QQAutoReplyPlugin._mutate_business_config(
+            self, _reset_override,
+        )
+        if override_found:
             if success:
                 self.session_instruction_service._discard_all_sessions_for_prompt_change()
             return Ok({"persisted": success, "layer_id": layer_id, "locale": locale})
@@ -1131,15 +1579,31 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         if not gid:
             return Err(SdkError("INVALID_GROUP_ID: group_id 不能为空"))
         custom_text = str(text or "").strip()
-        group_prompts = dict(self._qq_settings.get("group_prompts") or {})
-        if custom_text:
-            group_prompts[gid] = custom_text
-            self._emit_log("INFO", f"已保存群 {gid} 的自定义提示词 ({len(custom_text)} 字符)")
+        def _save_group_prompt(settings):
+            group_prompts = dict(settings.get("group_prompts") or {})
+            if custom_text:
+                group_prompts[gid] = custom_text
+            else:
+                group_prompts.pop(gid, None)
+            settings["group_prompts"] = group_prompts
+            return True
+
+        success = await QQAutoReplyPlugin._mutate_business_config(
+            self, _save_group_prompt,
+        )
+        if success:
+            if custom_text:
+                self._emit_log(
+                    "INFO",
+                    f"已保存群 {gid} 的自定义提示词 ({len(custom_text)} 字符)",
+                )
+            else:
+                self._emit_log("INFO", f"已清除群 {gid} 的自定义提示词")
         else:
-            group_prompts.pop(gid, None)
-            self._emit_log("INFO", f"已清除群 {gid} 的自定义提示词")
-        self._qq_settings["group_prompts"] = group_prompts
-        success = await self._persist_business_config()
+            self._emit_log(
+                "WARNING",
+                f"群 {gid} 自定义提示词写盘失败，运行时变更未持久化",
+            )
         # 清除该群的当前会话，下次回复时重新注入新提示词
         if self.session_runtime_service:
             discarded = await self._run_with_session_lock(
@@ -1156,12 +1620,22 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         gid = str(group_id or "").strip()
         if not gid:
             return Err(SdkError("INVALID_GROUP_ID: group_id 不能为空"))
-        group_prompts = dict(self._qq_settings.get("group_prompts") or {})
-        existed = gid in group_prompts
-        group_prompts.pop(gid, None)
-        self._qq_settings["group_prompts"] = group_prompts
+        existed = False
+
+        def _delete_group_prompt(settings):
+            nonlocal existed
+            group_prompts = dict(settings.get("group_prompts") or {})
+            existed = gid in group_prompts
+            if not existed:
+                return False
+            group_prompts.pop(gid)
+            settings["group_prompts"] = group_prompts
+            return True
+
+        success = await QQAutoReplyPlugin._mutate_business_config(
+            self, _delete_group_prompt,
+        )
         if existed:
-            success = await self._persist_business_config()
             if self.session_runtime_service:
                 discarded = await self._run_with_session_lock(
                     f"group:{gid}",
@@ -1169,7 +1643,13 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
                 )
                 if discarded is False:
                     self._emit_log("WARNING", f"群 {gid} 会话因记忆结算失败暂未重置，新提示词将在下次会话重建时生效")
-            self._emit_log("INFO", f"已删除群 {gid} 的自定义提示词")
+            if success:
+                self._emit_log("INFO", f"已删除群 {gid} 的自定义提示词")
+            else:
+                self._emit_log(
+                    "WARNING",
+                    f"群 {gid} 自定义提示词删除写盘失败，运行时变更未持久化",
+                )
             return Ok({"persisted": success, "group_id": gid, "deleted": True})
         return Ok({"persisted": True, "group_id": gid, "deleted": False, "reason": "not_found"})
 
@@ -1215,6 +1695,38 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             source_id,
             relay_probability=relay_probability,
         )
+
+    @plugin_entry(
+        id="save_proactive_topics",
+        name=tr("entries.save_proactive_topics.name", default="保存主动发言话题"),
+        description=tr("entries.save_proactive_topics.description", default="保存主动发言话题列表，每行一个话题。"),
+        input_schema={"type": "object", "properties": {"topics": {"type": "array", "items": {"type": "string"}}}, "required": ["topics"], "additionalProperties": False},
+    )
+    async def save_proactive_topics(self, topics: list[str] = None, **_):
+        topic_list = [str(t).strip() for t in (topics or []) if str(t).strip()]
+        self._qq_settings["proactive_topics"] = topic_list
+        success = await self._persist_business_config()
+        self._emit_log("INFO", f"主动发言话题已更新: {len(topic_list)}条")
+        return Ok({"count": len(topic_list), "persisted": success})
+
+    @plugin_entry(
+        id="save_fatigue_tiers",
+        name=tr("entries.save_fatigue_tiers.name", default="保存疲劳层级提示词"),
+        description=tr("entries.save_fatigue_tiers.description", default="覆盖默认的疲劳层级提示词。传入空列表恢复默认。"),
+        input_schema={"type": "object", "properties": {"tiers": {"type": "array", "items": {"type": "object", "properties": {"threshold": {"type": "integer"}, "text": {"type": "string"}}}}}, "additionalProperties": False},
+    )
+    async def save_fatigue_tiers(self, tiers: list[dict] = None, **_):
+        tier_list = []
+        for t in (tiers or []):
+            if isinstance(t, dict) and "threshold" in t and "text" in t:
+                tier_list.append({"threshold": int(t["threshold"]), "text": str(t["text"])})
+        if tier_list:
+            self._qq_settings["fatigue_tiers"] = tier_list
+        else:
+            self._qq_settings.pop("fatigue_tiers", None)
+        success = await self._persist_business_config()
+        self._emit_log("INFO", f"疲劳层级提示词已更新: {len(tier_list)}层")
+        return Ok({"count": len(tier_list), "persisted": success})
 
     async def _run_message_handler(self, message: Dict[str, Any]) -> None:
         await self.handler_runtime_service.run_message_handler(message)

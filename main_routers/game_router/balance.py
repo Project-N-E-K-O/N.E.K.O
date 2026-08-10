@@ -23,11 +23,12 @@ from .visible_events import _normalize_badminton_shot_type, _sanitize_badminton_
 
 from typing import Any, Dict
 from config.prompts.prompts_soccer import (
+    SOCCER_ANGER_CAP_STRONG_KEYWORDS,
+    SOCCER_ANGER_CAP_WEAK_KEYWORDS,
+    SOCCER_ANGER_CONTEXT_KEYWORDS,
     get_soccer_anger_pressure_cap_message,
     get_soccer_anger_pressure_cap_reason,
 )
-from utils.language_utils import normalize_language_code
-
 
 _SOCCER_ANGER_PRESSURE_CAP_WEAK = 8
 
@@ -39,24 +40,6 @@ _SOCCER_ANGER_PRESSURE_CAP_STRONG = 50
 
 
 _SOCCER_EMOTION_INERTIA = {"low", "medium", "high", "very_high"}
-
-
-def _badminton_duel_difficulty_control_prompt(language: str | None = None) -> str:
-    lang = normalize_language_code(language)
-    if lang == "zh":
-        return (
-            "\n对战难度控制补充：duel 模式下你可以在台词后另起一行输出 "
-            "{\"difficulty\":\"max|lv2|lv3|lv4\"}。"
-            "max=最强/认真压制，lv2=强但略慢，lv3=明显放水，lv4=最弱/主要防守。"
-            "只在局势、情绪或 balanceHint 需要时调整；spectator 不使用 difficulty。\n"
-        )
-    return (
-        "\nDuel difficulty control addendum: in duel mode, you may output "
-        "{\"difficulty\":\"max|lv2|lv3|lv4\"} on a separate line after the spoken line. "
-        "max=strongest/serious pressure, lv2=strong but slightly slower, "
-        "lv3=clear soft play, lv4=weakest/mostly defensive. Adjust only when the "
-        "score, emotion, or balanceHint calls for it; spectator does not use difficulty.\n"
-    )
 
 
 def _build_soccer_balance_hint(event: Any) -> Dict[str, Any]:
@@ -150,28 +133,14 @@ def _soccer_anger_pressure_cap_applicable(pre_game_context: Any) -> bool:
         return True
 
     text_blob = _soccer_context_text_blob(pre_game_context).lower()
-    anger_context_keywords = (
-        "生气", "发火", "愤怒", "爆发", "惩罚", "教训", "报复", "泄愤",
-        "冷战", "冲突", "关系修复", "哄", "道歉", "补偿", "赔偿",
-        "angry", "punish", "punishment", "repair", "apology", "compensation",
-        "cold_war",
-    )
-    return any(keyword in text_blob for keyword in anger_context_keywords)
+    return any(keyword in text_blob for keyword in SOCCER_ANGER_CONTEXT_KEYWORDS)
 
 
 def _soccer_anger_pressure_cap_goals(pre_game_context: Any, lanlan_prompt: str = "") -> int:
     text_blob = f"{_soccer_context_text_blob(pre_game_context)} {lanlan_prompt}".lower()
-    weak_keywords = (
-        "不擅长运动", "运动差", "体力弱", "体弱", "虚弱", "病弱", "容易累",
-        "缺乏运动", "宅", "懒得动", "weak", "frail", "sickly",
-    )
-    strong_keywords = (
-        "擅长运动", "运动神经", "体育", "足球", "体力强", "耐力好", "精力充沛",
-        "敏捷", "athletic", "sporty", "stamina", "energetic",
-    )
-    if any(keyword in text_blob for keyword in weak_keywords):
+    if any(keyword in text_blob for keyword in SOCCER_ANGER_CAP_WEAK_KEYWORDS):
         return _SOCCER_ANGER_PRESSURE_CAP_WEAK
-    if any(keyword in text_blob for keyword in strong_keywords):
+    if any(keyword in text_blob for keyword in SOCCER_ANGER_CAP_STRONG_KEYWORDS):
         return _SOCCER_ANGER_PRESSURE_CAP_STRONG
     return _SOCCER_ANGER_PRESSURE_CAP_DEFAULT
 

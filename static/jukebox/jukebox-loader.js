@@ -1,6 +1,21 @@
 (function() {
   'use strict';
 
+  var COMPRESSED_BUNDLED_VRM_IDLE_NAMES = new Set([
+    'liked', 'wait01', 'wait02', 'wait03', 'wait04', 'wait05',
+    '全身展示', '射击姿态', '屈伸运动', '旋转', '模特姿势', '比 V 手势', '致意问候'
+  ]);
+
+  function normalizeBundledVrmIdleUrl(url) {
+    var value = String(url || '');
+    var match = value.match(/^\/static\/vrm\/animation\/([^/?#]+)\.vrma(?:[?#]|$)/i);
+    if (!match) return url;
+    var assetName = match[1];
+    try { assetName = decodeURIComponent(assetName); } catch (_) {}
+    if (!COMPRESSED_BUNDLED_VRM_IDLE_NAMES.has(assetName)) return url;
+    return value.replace(/\.vrma(?=[?#]|$)/i, '.vrma.gz');
+  }
+
   function ensureNativeJukeboxFacade() {
     if (window.Jukebox) return;
 
@@ -81,12 +96,12 @@
 
         try {
           facade.stopVMD(true);
-          await window.vrmManager.playVRMAAnimation(vrmaPath, {
+          var played = await window.vrmManager.playVRMAAnimation(vrmaPath, {
             loop: false,
             fadeInDuration: 0.5,
             fadeOutDuration: 0.5
           });
-          if (playRequestId !== state.playRequestId) return;
+          if (played !== true || playRequestId !== state.playRequestId) return;
           state.isVMDPlaying = true;
           state.isPaused = false;
           state.isPlaying = true;
@@ -131,9 +146,15 @@
             if (!vrmIdleUrl) {
               vrmIdleUrl = window.lanlan_config && window.lanlan_config.vrmIdleAnimation;
             }
-            await window.vrmManager.playVRMAAnimation(vrmIdleUrl || '/static/vrm/animation/wait03.vrma', {
+            vrmIdleUrl = normalizeBundledVrmIdleUrl(
+              vrmIdleUrl || '/static/vrm/animation/wait03.vrma.gz'
+            );
+            await window.vrmManager.playVRMAAnimation(vrmIdleUrl, {
               loop: true,
-              isIdle: true
+              isIdle: true,
+              shouldApply: function() {
+                return restoreRequestId === state.playRequestId;
+              }
             });
           } catch (error) {
             console.warn('[Jukebox] VRM 待机动画恢复失败:', error);

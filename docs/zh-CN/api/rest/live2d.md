@@ -31,7 +31,7 @@
 
 ## 配置与情绪映射
 
-配置 `GET` 路由返回 `{ "success": true, "config": {...} }`。如果可读的 `.model3.json` 缺少 `FileReferences.Motions` 或 `FileReferences.Expressions`，处理器会补上容器并尝试写回。
+配置 `GET` 路由返回 `{ "success": true, "config": {...} }`。如果可读的 `.model3.json` 缺少 `FileReferences.Motions` 或 `FileReferences.Expressions`，处理器只会把缺失的容器补进**响应**里 —— 这些路由不写磁盘。把修补后的配置落盘是 `POST` 路由的职责。
 
 配置 `POST` 接受类似 Cubism 配置的 JSON，但只持久化：
 

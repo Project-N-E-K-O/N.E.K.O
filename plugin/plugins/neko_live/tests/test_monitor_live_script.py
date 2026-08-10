@@ -293,9 +293,9 @@ def test_monitor_live_script_prints_live_test_help() -> None:
     assert "timeline_status_*" in completed.stdout
     assert "timeline_route_*" in completed.stdout
     assert "timeline_reason_*" in completed.stdout
-    assert "Latest pushed NEKO output" in completed.stdout
+    assert "Latest host-handoff text" in completed.stdout
     assert "dry_run/skipped results are ignored" in completed.stdout
-    assert "Recent pushed spent-output family counts" in completed.stdout
+    assert "Recent host-handoff spent-output family counts" in completed.stdout
     assert "topic_repeat / avatar_repeat" in completed.stdout
     assert "topic_filter_direct_request" in completed.stdout
     assert "topic_filter_reaction" in completed.stdout

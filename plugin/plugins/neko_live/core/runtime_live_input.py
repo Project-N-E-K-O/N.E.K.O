@@ -11,6 +11,16 @@ from .runtime_timeline import ensure_trace_id, record_timeline, timeline_for_tra
 from .runtime_live_session import is_current_live_session_event
 
 
+class _RecentChatObservedPayload(dict[str, Any]):
+    """Internal handoff marker that provider payloads cannot spoof by key."""
+
+
+def mark_recent_chat_observed(payload: dict[str, Any]) -> _RecentChatObservedPayload:
+    """Tag a selected payload before provider normalization copies its fields."""
+
+    return _RecentChatObservedPayload(payload)
+
+
 def record_result(runtime: Any, result: InteractionResult) -> None:
     if result.event.source == "developer_sandbox":
         payload = result.to_sandbox_dict()
@@ -80,10 +90,17 @@ def _public_metadata_text(value: Any) -> str:
 
 
 async def handle_live_payload(runtime: Any, payload: dict[str, Any]) -> InteractionResult:
+    recent_chat_observed = isinstance(payload, _RecentChatObservedPayload)
     event = runtime.live_provider.normalize(payload)
     signal_event_type = _signal_event_type(event)
     ensure_trace_id(event)
-    remember_live_danmaku_seen(runtime, event)
+    # A delayed scheduler/provider payload can arrive after session rotation.
+    # Do not mutate the current session's recent-chat or activity state before
+    # the pipeline reaches its own stale-event gate.
+    if is_current_live_session_event(runtime, event):
+        remember_live_danmaku_seen(runtime, event)
+        if not recent_chat_observed:
+            observe_live_danmaku(runtime, event)
     record_timeline(
         runtime,
         event,
@@ -92,6 +109,23 @@ async def handle_live_payload(runtime: Any, payload: dict[str, Any]) -> Interact
         route=signal_event_type or event.source,
     )
     return await runtime.pipeline.handle_event(event)
+
+
+def observe_live_danmaku(runtime: Any, event: ViewerEvent) -> int:
+    """Mirror developer/live-entry danmaku into the production context store."""
+
+    observer = getattr(getattr(runtime, "live_events", None), "observe_danmaku", None)
+    if not callable(observer):
+        return 0
+    try:
+        return max(0, int(observer(event) or 0))
+    except Exception as exc:
+        runtime.audit.record(
+            "live_danmaku_observe_failed",
+            f"live danmaku observation failed: {type(exc).__name__}",
+            level="warning",
+        )
+        return 0
 
 
 def remember_live_danmaku_seen(runtime: Any, event: ViewerEvent) -> None:
