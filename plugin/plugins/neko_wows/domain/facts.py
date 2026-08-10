@@ -76,6 +76,7 @@ class WowsFacts:
     lowest_hp_target: ThreatBearing | None = None
 
     damage_inflicted: float | None = None
+    damage_inflicted_by_victim: dict[int, float] = field(default_factory=dict)
     ammo_type: str | None = None
     penetration_mm: float | None = None
 
@@ -211,8 +212,14 @@ class FactBuilder:
 
         exposed, exposed_angle = self._exposed_target(own, threats)
 
-        damage = snapshot.damage_inflicted if snapshot.is_available(DOMAIN_DAMAGE) else None
-        if damage is not None:
+        damage_available = snapshot.is_available(DOMAIN_DAMAGE)
+        damage = snapshot.damage_inflicted if damage_available else None
+        damage_by_victim = (
+            dict(snapshot.damage_inflicted_by_victim)
+            if damage_available
+            else {}
+        )
+        if damage is not None or damage_by_victim:
             sourced.append(DOMAIN_DAMAGE)
 
         ammo_type = None
@@ -253,6 +260,7 @@ class FactBuilder:
             best_target=self._best_target(threats),
             lowest_hp_target=self._lowest_hp_target(threats),
             damage_inflicted=damage,
+            damage_inflicted_by_victim=damage_by_victim,
             ammo_type=ammo_type,
             penetration_mm=penetration,
             sourced_domains=tuple(sourced),

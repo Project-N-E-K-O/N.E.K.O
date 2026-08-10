@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import time
 from typing import Any, Mapping
 
@@ -250,6 +251,10 @@ class WowsSchemaAdapter:
         ballistics = ballistics if isinstance(ballistics, dict) else {}
         map_info = payload.get("map")
         map_info = map_info if isinstance(map_info, dict) else {}
+        self_ship = self._read_self(payload.get("self"))
+        own_player_id = self_ship.player_id if self_ship is not None else None
+        damage_inflicted, damage_by_victim = _inflicted_damage(
+            damage.get("inflicted"), own_player_id)
         return {
             "active": bool(payload.get("active")),
             "ts": _number(payload.get("ts")),
@@ -257,9 +262,10 @@ class WowsSchemaAdapter:
             "game_mode": _text(payload.get("gameMode")),
             "map_name": _text(map_info.get("name")) or _text(map_info.get("id")),
             "bounds": self._read_bounds(payload.get("bounds")),
-            "self_ship": self._read_self(payload.get("self")),
+            "self_ship": self_ship,
             "ships": self._read_ships(payload.get("objects"), payload.get("roster")),
-            "damage_inflicted": _sum_table(damage.get("inflicted")),
+            "damage_inflicted": damage_inflicted,
+            "damage_inflicted_by_victim": damage_by_victim,
             "damage_received": _sum_table(damage.get("received")),
             "damage_team_total": _sum_table(damage.get("teamTotal")),
             "ballistics": ballistics,
@@ -567,6 +573,52 @@ def _sum_table(raw: Any) -> float | None:
             total += number
             seen = True
     return total if seen else None
+
+
+def _damage_amount(value: Any) -> float | None:
+    number = _number(value)
+    if number is None or not math.isfinite(number) or number < 0:
+        return None
+    return number
+
+
+def _victim_damage_table(raw: Any) -> dict[int, float]:
+    if not isinstance(raw, Mapping):
+        return {}
+    parsed: dict[int, float] = {}
+    for key, value in raw.items():
+        if isinstance(key, bool):
+            continue
+        try:
+            victim_id = int(key)
+        except (TypeError, ValueError):
+            continue
+        if victim_id < 0:
+            continue
+        amount = _damage_amount(value)
+        if amount is not None:
+            parsed[victim_id] = amount
+    return parsed
+
+
+def _inflicted_damage(
+    raw: Any,
+    player_id: int | None,
+) -> tuple[float | None, dict[int, float]]:
+    if not isinstance(raw, Mapping):
+        return None, {}
+    own = None
+    if player_id is not None:
+        own = raw.get(str(player_id))
+        if own is None:
+            own = raw.get(player_id)
+    if isinstance(own, Mapping):
+        by_victim = _victim_damage_table(own.get("byVictim"))
+        total = _damage_amount(own.get("total"))
+        if total is None and by_victim:
+            total = sum(by_victim.values())
+        return total, by_victim
+    return _sum_table(raw), {}
 
 
 __all__ = [

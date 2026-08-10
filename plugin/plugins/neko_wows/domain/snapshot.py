@@ -203,6 +203,7 @@ class WowsSnapshot:
     self_ship: SelfShip | None = None
     ships: tuple[Ship, ...] = ()
     damage_inflicted: float | None = None
+    damage_inflicted_by_victim: dict[int, float] = field(default_factory=dict)
     damage_received: float | None = None
     damage_team_total: float | None = None
     ballistics: dict[str, Any] = field(default_factory=dict)

@@ -166,6 +166,79 @@ def test_v1_body_is_normalized():
     assert snapshot.enemies()[0].name == "Shimakaze"
 
 
+def test_current_8111_damage_selects_only_the_local_attacker():
+    payload = v1_payload(damage={
+        "inflicted": {
+            "2000": {
+                "total": 25_000,
+                "byVictim": {"3000": 21_000, "3001": 4_000},
+            },
+            "9999": {
+                "total": 80_000,
+                "byVictim": {"3000": 80_000},
+            },
+        },
+        "received": {},
+        "teamTotal": {"0": 105_000},
+    })
+
+    snapshot = WowsSchemaAdapter().parse(payload)
+
+    assert snapshot.damage_inflicted == pytest.approx(25_000)
+    assert snapshot.damage_inflicted_by_victim == {
+        3000: 21_000.0,
+        3001: 4_000.0,
+    }
+    facts = FactBuilder(WowsConfig()).build(snapshot)
+    assert facts.damage_inflicted_by_victim == {
+        3000: 21_000.0,
+        3001: 4_000.0,
+    }
+
+
+def test_nested_damage_without_local_identity_is_not_guessed():
+    payload = v1_payload(
+        self=None,
+        damage={
+            "inflicted": {
+                "9999": {
+                    "total": 80_000,
+                    "byVictim": {"3000": 80_000},
+                },
+            },
+            "received": {},
+            "teamTotal": {},
+        },
+    )
+
+    snapshot = WowsSchemaAdapter().parse(payload)
+
+    assert snapshot.damage_inflicted is None
+    assert snapshot.damage_inflicted_by_victim == {}
+
+
+def test_nested_damage_rejects_bad_victim_values():
+    payload = v1_payload(damage={
+        "inflicted": {
+            "2000": {
+                "total": 22_000,
+                "byVictim": {
+                    "3000": 20_000,
+                    "bad": 1,
+                    "3001": -2,
+                    "3002": float("inf"),
+                },
+            },
+        },
+        "received": {},
+        "teamTotal": {},
+    })
+
+    snapshot = WowsSchemaAdapter().parse(payload)
+
+    assert snapshot.damage_inflicted_by_victim == {3000: 20_000.0}
+
+
 def test_adapter_converts_bigworld_wire_coords_to_meters():
     """8111_for_wows emits BigWorld units (1 BW = 30 m); facts must be metres.
 
