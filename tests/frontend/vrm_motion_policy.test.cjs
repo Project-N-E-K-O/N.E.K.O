@@ -49,6 +49,7 @@ const talkAsset = manifest.assets.find(function (asset) { return asset.id === 't
 const talkGlb = zlib.gunzipSync(fs.readFileSync(path.join(root, talkAsset.src[0])));
 const talkJsonLength = talkGlb.readUInt32LE(12);
 const talkJson = JSON.parse(talkGlb.subarray(20, 20 + talkJsonLength).toString('utf8'));
+assert.equal(talkJsonLength % 4, 0, 'GLB JSON chunk must be 4-byte aligned');
 const talkBinOffset = 20 + talkJsonLength + 8;
 const hipsIndex = talkJson.nodes.findIndex(function (node) { return node.name === 'mixamorig:Hips'; });
 const hipsRotationChannel = talkJson.animations[0].channels.find(function (channel) {
@@ -78,6 +79,15 @@ function walk(directory) {
         const fullPath = path.join(directory, entry.name);
         return entry.isDirectory() ? walk(fullPath) : [fullPath];
     });
+}
+
+function sliceBetween(text, startMarker, endMarker, label) {
+    const startIndex = text.indexOf(startMarker);
+    assert.notEqual(startIndex, -1, 'missing start marker: ' + (label || startMarker));
+    const tail = text.slice(startIndex + startMarker.length);
+    const endIndex = tail.indexOf(endMarker);
+    assert.notEqual(endIndex, -1, 'missing end marker: ' + (label || endMarker));
+    return tail.slice(0, endIndex);
 }
 
 const relativeFiles = walk(motionRoot).map(function (filename) {
@@ -189,8 +199,9 @@ assert.match(runtimeSource, /if \(await processStage\(stage, turn\)\) turn\.seen
 assert.match(runtimeSource, /turn\.pendingStages\.delete\(stage\.id\)/);
 assert.match(runtimeSource, /if \(turn && isCurrentTurn\(turn\)\) turn\.deferredUntilVrmReady = true/);
 assert.match(runtimeSource, /const duplicateStaleBuffer = \(!turnId \|\| duplicateId\)/);
-const startObservedTurn = runtimeSource.split('function startObservedTurn(event)', 2)[1]
-    .split('function endObservedTurn', 1)[0];
+const startObservedTurn = sliceBetween(
+    runtimeSource, 'function startObservedTurn(event)', 'function endObservedTurn', 'startObservedTurn'
+);
 assert.ok(
     startObservedTurn.indexOf("if (activeTurn && activeTurn.ended && (duplicateId || duplicateStaleBuffer))")
         < startObservedTurn.indexOf("if (bridgeEvent) bridgedText = ''")
@@ -205,8 +216,12 @@ assert.match(
     startObservedTurn,
     /else \{\s*if \(activeTurn && !activeTurn\.ended\) discardActiveTurn\(\);\s*beginTurn\(/
 );
-const bridgeTextUpdate = runtimeSource.split("if (message.eventName === 'neko-assistant-text-update')", 2)[1]
-    .split("if (message.eventName === 'neko-assistant-turn-end'", 1)[0];
+const bridgeTextUpdate = sliceBetween(
+    runtimeSource,
+    "if (message.eventName === 'neko-assistant-text-update')",
+    "if (message.eventName === 'neko-assistant-turn-end'",
+    'bridgeTextUpdate'
+);
 assert.match(bridgeTextUpdate, /if \(refreshMode\(\) !== 'vrm'\)/);
 assert.ok(
     bridgeTextUpdate.indexOf("if (refreshMode() !== 'vrm')")
@@ -216,8 +231,9 @@ assert.ok(
         && bridgeTextUpdate.indexOf('bridgedText = String(detail.text')
         < bridgeTextUpdate.indexOf("beginTurn(detail.turnId || 'bridge-' + Date.now(), 'bridge-buffer')")
 );
-const turnEndSource = runtimeSource.split('function endObservedTurn', 2)[1]
-    .split('function emotionObserved', 1)[0];
+const turnEndSource = sliceBetween(
+    runtimeSource, 'function endObservedTurn', 'function emotionObserved', 'endObservedTurn'
+);
 assert.match(turnEndSource, /if \(refreshMode\(\) !== 'vrm'\)/);
 assert.ok(
     turnEndSource.indexOf("if (refreshMode() !== 'vrm')")
@@ -229,8 +245,9 @@ assert.ok(
         < turnEndSource.indexOf("beginTurn(turnId, source || 'lifecycle')"),
     'a stale completed turn end must not replace the current turn'
 );
-const emotionSource = runtimeSource.split('function emotionObserved', 2)[1]
-    .split('function cancelObservedSpeech', 1)[0];
+const emotionSource = sliceBetween(
+    runtimeSource, 'function emotionObserved', 'function cancelObservedSpeech', 'emotionObserved'
+);
 assert.match(
     emotionSource,
     /if \(turnId && \(!activeTurn \|\| String\(turnId\) !== activeTurn\.id\)\) return;/
@@ -242,8 +259,9 @@ assert.match(runtimeSource, /turn\.deferredUntilVrmReady = true/);
 assert.match(runtimeSource, /turn && isCurrentTurn\(turn\) && turn\.deferredUntilVrmReady/);
 assert.match(runtimeSource, /window\.vrmManager\.currentModel !== loadedModel/);
 assert.match(runtimeSource, /casualTalkPending/);
-const waitForEmotionBlock = runtimeSource.split('function waitForOfficialEmotion(turn)', 2)[1]
-    .split('function finishTurn', 1)[0];
+const waitForEmotionBlock = sliceBetween(
+    runtimeSource, 'function waitForOfficialEmotion(turn)', 'function finishTurn', 'waitForOfficialEmotion'
+);
 assert.match(waitForEmotionBlock, /Promise\.resolve\(true\)/);
 assert.match(waitForEmotionBlock, /resolve\(false\)/);
 assert.match(runtimeSource, /function settleMissingEmotion\(turn, emotionReceived\)/);
@@ -254,22 +272,31 @@ assert.equal(
     (runtimeSource.match(/settleMissingEmotion\(turn, emotionReceived\);/g) || []).length,
     'every waitForOfficialEmotion() call site must settle the timeout'
 );
-const finishTurnBlock = runtimeSource.split('function finishTurn(turn, source)', 2)[1]
-    .split('function scheduleFinishTurn', 1)[0];
+const finishTurnBlock = sliceBetween(
+    runtimeSource, 'function finishTurn(turn, source)', 'function scheduleFinishTurn', 'finishTurn'
+);
 assert.match(finishTurnBlock, /const emotionReceived = await waitForOfficialEmotion\(turn\)/);
 assert.match(
     finishTurnBlock,
     /settleMissingEmotion\(turn, emotionReceived\);[\s\S]*await processSpeechFallback\(turn\)/
 );
-const cancelObservedSpeechBlock = runtimeSource.split('function cancelObservedSpeech(detail)', 2)[1]
-    .split('function handleMotionLifecycleBridge', 1)[0];
+const cancelObservedSpeechBlock = sliceBetween(
+    runtimeSource,
+    'function cancelObservedSpeech(detail)',
+    'function handleMotionLifecycleBridge',
+    'cancelObservedSpeech'
+);
 assert.match(
     cancelObservedSpeechBlock,
     /const turnId = detail && detail\.turnId;[\s\S]*if \(turnId && \(!activeTurn \|\| String\(turnId\) !== activeTurn\.id\)\) return;/
 );
 assert.match(runtimeSource, /neko-assistant-speech-cancel'[\s\S]*cancelObservedSpeech\(detail\)/);
-const modelLoadedBlock = runtimeSource.split('async function handleVrmModelLoaded()', 2)[1]
-    .split("window.addEventListener('vrm-model-loaded'", 1)[0];
+const modelLoadedBlock = sliceBetween(
+    runtimeSource,
+    'async function handleVrmModelLoaded()',
+    "window.addEventListener('vrm-model-loaded'",
+    'handleVrmModelLoaded'
+);
 assert.match(
     modelLoadedBlock,
     /const emotionReceived = await waitForOfficialEmotion\(turn\)[\s\S]*settleMissingEmotion\(turn, emotionReceived\)/
@@ -296,8 +323,9 @@ const modeSetParts = runtimeSource.split(modeSetMarker);
 assert.equal(modeSetParts.length, 2, 'mode-set listener must remain unique');
 const modeSetBlock = modeSetParts[1].slice(0, 1800);
 assert.match(modeSetBlock, /else \{\s*discardActiveTurn\(\);\s*releasePlaybackOwnership\(\)/);
-const initializeBlock = runtimeSource.split('async function initialize()', 2)[1]
-    .split('function remember', 1)[0];
+const initializeBlock = sliceBetween(
+    runtimeSource, 'async function initialize()', 'function remember', 'initialize'
+);
 assert.ok(
     initializeBlock.indexOf("if (refreshMode() !== 'vrm')")
         < initializeBlock.indexOf('acquirePlaybackOwnership()'),

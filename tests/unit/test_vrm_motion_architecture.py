@@ -36,10 +36,12 @@ def test_vrm_motion_frontend_contract(test_name: str):
 
 def test_closed_stages_use_assistant_speech_guards():
     source = RUNTIME_PATH.read_text(encoding="utf-8")
-    process_stage = source.split("async function processStage(stage, turn) {", 1)[1].split(
-        "async function processSpeech",
-        1,
-    )[0]
+    process_stage_marker = "async function processStage(stage, turn) {"
+    process_speech_marker = "async function processSpeech"
+    assert process_stage_marker in source
+    process_stage_tail = source.split(process_stage_marker, 1)[1]
+    assert process_speech_marker in process_stage_tail
+    process_stage = process_stage_tail.split(process_speech_marker, 1)[0]
 
-    assert "speechMode: true," in process_stage
-    assert process_stage.index("speechMode: true,") < process_stage.index("stageDirection: true")
+    assert "speechMode: true" in process_stage
+    assert process_stage.index("speechMode: true") < process_stage.index("stageDirection: true")

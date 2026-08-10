@@ -9,6 +9,8 @@ const source = fs.readFileSync(path.join(root, 'static/vrm/motion/bridge.js'), '
 const listeners = new Map();
 const localMessages = [];
 const broadcastMessages = [];
+let currentTime = 1000;
+const DateLike = { now() { return currentTime; } };
 
 class CustomEventLike {
     constructor(type, options) {
@@ -48,7 +50,7 @@ vm.runInNewContext(source, {
     Map,
     Object,
     String,
-    Date,
+    Date: DateLike,
     Math
 }, { filename: 'bridge.js' });
 
@@ -242,6 +244,48 @@ emit('neko:session-ended-by-server');
 emit('neko-assistant-turn-start', {
     turnId: 'after-session',
     requestId: 'stale-request'
+});
+assert.equal(latest('neko-assistant-turn-start').detail.userText, undefined);
+
+emit('neko:user-content-sent', {
+    requestId: 'expired-request',
+    text: 'expired-wave',
+    source: 'text'
+});
+currentTime += 60001;
+emit('neko-assistant-turn-start', {
+    turnId: 'expired-turn',
+    requestId: 'expired-request'
+});
+assert.equal(latest('neko-assistant-turn-start').detail.userText, undefined);
+
+for (let index = 0; index < 17; index += 1) {
+    emit('neko:user-content-sent', {
+        requestId: 'capacity-' + index,
+        text: 'capacity-text-' + index,
+        source: 'text'
+    });
+}
+emit('neko-assistant-turn-start', {
+    turnId: 'capacity-oldest-turn',
+    requestId: 'capacity-0'
+});
+assert.equal(latest('neko-assistant-turn-start').detail.userText, undefined);
+emit('neko-assistant-turn-start', {
+    turnId: 'capacity-newest-turn',
+    requestId: 'capacity-16'
+});
+assert.equal(latest('neko-assistant-turn-start').detail.userText, 'capacity-text-16');
+
+emit('neko:user-content-sent', {
+    requestId: 'disconnect-request',
+    text: 'disconnect-wave',
+    source: 'text'
+});
+emit('neko:websocket-disconnected');
+emit('neko-assistant-turn-start', {
+    turnId: 'after-disconnect-turn',
+    requestId: 'disconnect-request'
 });
 assert.equal(latest('neko-assistant-turn-start').detail.userText, undefined);
 
