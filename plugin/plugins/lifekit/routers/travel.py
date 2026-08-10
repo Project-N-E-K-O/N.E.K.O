@@ -8,6 +8,7 @@ from plugin.sdk.plugin import plugin_entry, quick_action, Ok, tr
 from plugin.sdk.shared.core.router import PluginRouter
 
 from .._api import RAIN_CODES, SNOW_CODES
+from .._advice_policy import DEFAULT_ADVICE_POLICY
 from .._chat import push_lifekit_content
 from .._contracts import CityParams, TravelAdviceResult
 from .._i18n import I18n
@@ -31,13 +32,14 @@ def build_travel_advice(
     wind = current.get("wind_speed_10m", 0)
 
     tips: List[str] = []
+    policy = DEFAULT_ADVICE_POLICY
 
     if ref is not None:
-        if ref < 5:
+        if ref < policy.cold_below_c:
             tips.append(t.t("advice.cold"))
-        elif ref < 15:
+        elif ref < policy.cool_below_c:
             tips.append(t.t("advice.cool"))
-        elif ref < 25:
+        elif ref < policy.mild_below_c:
             tips.append(t.t("advice.mild"))
         else:
             tips.append(t.t("advice.hot"))
@@ -47,12 +49,12 @@ def build_travel_advice(
     elif code in SNOW_CODES:
         tips.append(t.t("advice.snow"))
 
-    if uv >= 8:
+    if uv >= policy.uv_extreme_from:
         tips.append(t.t("advice.uv_extreme"))
-    elif uv >= 5:
+    elif policy.needs_sun_protection(uv):
         tips.append(t.t("advice.uv_high"))
 
-    if wind >= 40:
+    if wind >= policy.strong_wind_from_kmh:
         tips.append(t.t("advice.wind_strong"))
 
     daily_codes = daily.get("weather_code", [])
@@ -65,9 +67,9 @@ def build_travel_advice(
         tips.append(t.t("advice.rain_forecast", dates=", ".join(rain_days)))
 
     eff = ref if ref is not None else 20
-    if eff < 10:
+    if eff < policy.heavy_clothing_below_c:
         clothing = t.t("clothing.heavy")
-    elif eff < 22:
+    elif eff < policy.light_clothing_below_c:
         clothing = t.t("clothing.light")
     else:
         clothing = t.t("clothing.cool")
@@ -76,7 +78,7 @@ def build_travel_advice(
         "tips": tips,
         "clothing": clothing,
         "umbrella": code in RAIN_CODES,
-        "sunscreen": uv >= 5,
+        "sunscreen": policy.needs_sun_protection(uv),
     }
 
 

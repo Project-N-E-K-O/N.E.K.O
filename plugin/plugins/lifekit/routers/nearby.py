@@ -19,8 +19,12 @@ from .._nearby_discovery import (
     normalize_search_terms,
 )
 from .._nearby_intent import (
+    has_explicit_nearby_relation,
     infer_location_hint,
+    infer_fallback_search_term,
+    infer_explicit_search_terms,
     infer_place_intent,
+    infer_preference_hints,
     normalize_place_intent,
     normalize_preference_hints,
     search_terms_for_hints,
@@ -63,6 +67,7 @@ class NearbyRouter(PluginRouter):
         _ctx: dict[str, Any] | None = None,
         **_,
     ):
+        projected_params = params is not None
         if params is not None:
             request = params.request
             location_hint = params.location_hint
@@ -76,21 +81,58 @@ class NearbyRouter(PluginRouter):
 
         raw_request = clean_text((_ctx or {}).get("latest_user_request"))
         request_text = raw_request or clean_text(request)
-        intent = normalize_place_intent(place_intent)
-        if intent == "explore":
-            intent = infer_place_intent(request_text)
-        preferences = normalize_preference_hints(preference_hints)
-        terms = _clean_search_terms(search_terms) or search_terms_for_hints(
-            intent,
-            preferences,
+        raw_has_relation = projected_params and has_explicit_nearby_relation(
+            raw_request
         )
+        raw_intent = infer_place_intent(raw_request) if projected_params else "explore"
+        raw_explicit_terms = (
+            infer_explicit_search_terms(raw_request) if projected_params else ()
+        )
+        raw_fallback_term = (
+            infer_fallback_search_term(raw_request)
+            if raw_has_relation
+            else ""
+        )
+        raw_has_decisive_target = bool(
+            raw_explicit_terms or raw_fallback_term or raw_intent != "explore"
+        )
+        intent = normalize_place_intent(place_intent)
+        if raw_has_decisive_target:
+            intent = raw_intent
+        elif intent == "explore":
+            intent = infer_place_intent(request_text)
+        preferences = normalize_preference_hints((
+            *(preference_hints or ()),
+            *infer_preference_hints(request_text, intent),
+        ))
+        terms = _clean_search_terms(search_terms)
+        if raw_has_decisive_target:
+            terms = (
+                raw_explicit_terms
+                or ((raw_fallback_term,) if raw_fallback_term else ())
+                or search_terms_for_hints(intent, preferences)
+            )
+        elif not terms:
+            explicit_terms = infer_explicit_search_terms(request_text)
+            fallback_term = infer_fallback_search_term(request_text)
+            terms = (
+                explicit_terms
+                or (
+                    (fallback_term,)
+                    if fallback_term and intent == "explore"
+                    else search_terms_for_hints(intent, preferences)
+                )
+            )
         if not request_text or not terms:
             return Err(SdkError(i18n.t("nearby.no_query")))
-        clean_location = (
-            clean_text(location_hint)
-            or clean_text(location)
-            or infer_location_hint(request_text)
-        )
+        if raw_has_relation:
+            clean_location = infer_location_hint(raw_request)
+        else:
+            clean_location = (
+                clean_text(location_hint)
+                or clean_text(location)
+                or infer_location_hint(request_text)
+            )
         radius = clamp_int(radius, 3000, 500, 50000)
 
         # 解析搜索中心

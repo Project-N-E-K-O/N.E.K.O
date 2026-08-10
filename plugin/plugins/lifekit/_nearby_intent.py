@@ -14,9 +14,12 @@ MAX_PREFERENCE_HINTS = 4
 _ZH_LOCATION_PREFIX = re.compile(
     r"^(?:请|麻烦|帮我|给我|想|我要|我想)?(?:查(?:一下)?|找(?:一下)?|看看|推荐)?"
 )
-_ZH_NEARBY_LOCATION = re.compile(r"^(?P<location>.+?)(?:附近|周边|旁边|一带)")
-_EN_NEARBY_LOCATION = re.compile(
-    r"\b(?:near|around|close\s+to)\s+(?P<location>[^,;!?。！？]+)",
+_ZH_NEARBY_PARTS = re.compile(
+    r"^(?P<location>.*?)(?:附近|周边|旁边|一带)(?P<target>.*)$"
+)
+_EN_NEARBY_PARTS = re.compile(
+    r"^(?P<target>.*?)\b(?:near|around|close\s+to)\s+"
+    r"(?P<location>[^,;!?。！？]+)$",
     re.IGNORECASE,
 )
 
@@ -54,7 +57,7 @@ PLACE_INTENTS: dict[str, PlaceIntentDefinition] = {
             "日本料理": "日料",
             "素食": "素食餐厅",
         },
-        request_keywords=("好吃", "吃饭", "餐厅", "饭店", "美食", "restaurant", "food", "eat"),
+        request_keywords=("好吃", "吃饭", "餐厅", "饭店", "美食", "restaurant", "restaurants", "food", "eat"),
     ),
     "coffee": PlaceIntentDefinition(
         search_terms=("咖啡馆", "茶馆"),
@@ -108,10 +111,14 @@ PLACE_INTENTS: dict[str, PlaceIntentDefinition] = {
         search_terms=("医院", "药店", "银行", "停车场"),
         preference_terms={
             "医院": "医院",
+            "hospital": "医院",
             "药店": "药店",
+            "pharmacy": "药店",
             "银行": "银行",
+            "bank": "银行",
             "停车": "停车场",
             "停车场": "停车场",
+            "parking": "停车场",
         },
         request_keywords=("医院", "药店", "银行", "停车", "hospital", "pharmacy", "bank", "parking"),
     ),
@@ -133,24 +140,119 @@ def infer_location_hint(request: object) -> str:
     This is intentionally small and deterministic: it only accepts explicit
     nearby grammar and never invents a city from the requested place category.
     """
+    center, _ = _request_parts(request)
+    return center
+
+
+def has_explicit_nearby_relation(request: object) -> bool:
+    """Whether the request itself explicitly separates a target and center."""
     text = str(request or "").strip()
     if not text:
-        return ""
+        return False
     zh_text = _ZH_LOCATION_PREFIX.sub("", text).strip()
-    if match := _ZH_NEARBY_LOCATION.search(zh_text):
-        return match.group("location").strip(" ，,。.!！？?")
-    if match := _EN_NEARBY_LOCATION.search(text):
-        return match.group("location").strip(" ,.!?。！？")
-    return ""
+    return bool(_ZH_NEARBY_PARTS.match(zh_text) or _EN_NEARBY_PARTS.match(text))
+
+
+def _request_parts(request: object) -> tuple[str, str]:
+    """Return the explicit nearby center and requested target phrase."""
+    text = str(request or "").strip()
+    if not text:
+        return "", ""
+    zh_text = _ZH_LOCATION_PREFIX.sub("", text).strip()
+    if match := _ZH_NEARBY_PARTS.match(zh_text):
+        return (
+            match.group("location").strip(" ，,。.!！？?"),
+            match.group("target").lstrip(" 的").strip(" ，,。.!！？?"),
+        )
+    if match := _EN_NEARBY_PARTS.match(text):
+        location = match.group("location").strip(" ,.!?。！？")
+        if location.casefold() in {"me", "my location", "here"}:
+            location = ""
+        return location, match.group("target").strip(" ,.!?。！？")
+    return "", text
+
+
+def _keyword_matches(text: str, keyword: str) -> bool:
+    """Match CJK phrases by text and Latin keywords by complete words."""
+    folded_keyword = keyword.casefold()
+    if re.search(r"[a-z0-9]", folded_keyword):
+        return bool(
+            re.search(
+                rf"(?<![a-z0-9]){re.escape(folded_keyword)}(?![a-z0-9])",
+                text,
+            )
+        )
+    return folded_keyword in text
 
 
 def infer_place_intent(request: object) -> str:
     """Classify common explicit category words without an LLM dependency."""
-    text = str(request or "").strip().casefold()
+    _, target = _request_parts(request)
+    text = target.casefold()
+    matches: list[str] = []
     for intent, definition in PLACE_INTENTS.items():
-        if any(keyword in text for keyword in definition.request_keywords):
-            return intent
-    return "explore"
+        keywords = (*definition.preference_terms, *definition.request_keywords)
+        if any(_keyword_matches(text, keyword) for keyword in keywords):
+            matches.append(intent)
+    return matches[0] if len(matches) == 1 else "explore"
+
+
+def infer_explicit_search_terms(request: object) -> tuple[str, ...]:
+    """Preserve every explicit provider-searchable target in textual order."""
+    _, target = _request_parts(request)
+    text = target.casefold()
+    matches: list[tuple[int, int, str]] = []
+    for definition in PLACE_INTENTS.values():
+        for keyword, term in definition.preference_terms.items():
+            if not _keyword_matches(text, keyword):
+                continue
+            position = text.find(keyword.casefold())
+            matches.append((position if position >= 0 else len(text), -len(keyword), term))
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for _, _, term in sorted(matches):
+        key = term.casefold()
+        if key not in seen:
+            ordered.append(term)
+            seen.add(key)
+    return normalize_search_terms(ordered)
+
+
+def infer_preference_hints(request: object, place_intent: str) -> tuple[str, ...]:
+    """Recover only provider-searchable preference terms from the target phrase."""
+    intent = normalize_place_intent(place_intent)
+    _, target = _request_parts(request)
+    text = target.casefold()
+    return tuple(
+        term
+        for keyword, term in PLACE_INTENTS[intent].preference_terms.items()
+        if _keyword_matches(text, keyword)
+    )[:MAX_PREFERENCE_HINTS]
+
+
+def infer_fallback_search_term(request: object) -> str:
+    """Preserve an otherwise unknown explicit target instead of inventing one."""
+    _, target = _request_parts(request)
+    target = target.strip()
+    if not target or len(target) > 80:
+        return ""
+    text = target.casefold()
+    if any(
+        _keyword_matches(text, keyword)
+        for definition in PLACE_INTENTS.values()
+        for keyword in (*definition.preference_terms, *definition.request_keywords)
+    ):
+        return ""
+    if text in {
+        "有什么合适的地方",
+        "有什么",
+        "找地方",
+        "places",
+        "place",
+        "something",
+    }:
+        return ""
+    return target
 
 
 def normalize_preference_hints(
@@ -178,4 +280,4 @@ def search_terms_for_hints(
         for hint in preference_hints or ()
         if (key := str(hint).strip().casefold()) in definition.preference_terms
     )
-    return normalize_search_terms((*preference_terms, *definition.search_terms))
+    return normalize_search_terms(preference_terms or definition.search_terms)

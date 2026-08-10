@@ -50,7 +50,7 @@
   },
   "summary": {
     "weather": "{city}: {weather}、{temp}℃ (体感温度は{feels}℃)、湿度 {humidity}%",
-    "vpn_hint": " (プロキシが検出されました — IP は {ip_city} を示し、システムのタイムゾーンの場所に自動で切り替えられます)",
+    "timezone_mismatch": " (IP の場所と端末のタイムゾーンが異なるため、場所は概算の可能性があります)",
     "travel_prefix": "{city} への旅行に関するアドバイス: ",
     "hourly_temp_range": "次の{count}時の気温 {low}~{high}°C",
     "hourly_rain_times": "雨の予想時刻: {times}",
@@ -79,7 +79,7 @@
     "no_destination": "目的地を指定してください",
     "invalid_mode": "無効なトリップ モード '{mode}'。許可: {valid}",
     "mode_transit": "🚇 公共交通", "mode_walking": "🚶 徒歩", "mode_bicycling": "🚲 自転車", "mode_driving": "🚗 車",
-    "near_walk": "🚶 とても近いため徒歩がおすすめです", "rain_transit": "🚇 雨のため公共交通がおすすめです", "good_bike": "🚲 適度な距離で天気も良く、自転車向きです", "transit_advice": "🚇 公共交通がおすすめです"
+    "near_walk": "🚶 とても近いため徒歩がおすすめです", "rain_transit": "🚇 雨のため公共交通がおすすめです", "good_bike": "🚲 適度な距離で天気も良く、自転車向きです", "transit_advice": "🚇 公共交通がおすすめです", "step_take": "{line} に乗車", "step_walk": "{distance} 徒歩"
   },
   "nearby": {
     "no_query": "検索キーワードを入力してください (例: レストラン、カフェ、公園)",
@@ -127,7 +127,7 @@
     "provider_unavailable": "レシピサービスは一時的に利用できません。後でもう一度お試しください。",
     "found": "{count} 件のレシピが見つかりました: {names}",
     "random_summary": "🎲 ランダムおすすめ: {recipe}",
-    "entry_search_name": "レシピ検索", "entry_search_description": "料理名または材料で検索します。一般的な中国語名は限定的に変換されます。", "entry_random_name": "ランダムレシピ", "entry_random_description": "ランダムなレシピを提案し、近くのレストランも案内できます。", "ingredients": "材料", "instructions": "作り方", "today_try": "🎲 今日はこちら: {recipe}", "action_food": "food_recommend cuisine={query} — 近くの類似レストランを探す", "action_market": "search_nearby request=食材を買える近くのスーパー place_intent=shopping preference_hints=[スーパー] — スーパーを探す"
+    "entry_search_name": "レシピ検索", "entry_search_description": "指定された料理名または材料をそのまま検索し、料理名を一般的な材料に置き換えません。", "entry_random_name": "ランダムレシピ", "entry_random_description": "ランダムなレシピを提案し、近くのレストランも案内できます。", "ingredients": "材料", "instructions": "作り方", "today_try": "🎲 今日はこちら: {recipe}", "action_food": "food_recommend cuisine={query} — 近くの類似レストランを探す", "action_market": "search_nearby request=食材を買える近くのスーパー place_intent=shopping preference_hints=[スーパー] — スーパーを探す"
   },
   "air_quality": {
     "fetch_failed": "{city} の大気質データの取得に失敗しました",
@@ -165,7 +165,7 @@
     "same": "{value} {source} = {value} {target}（同じ単位）",
     "unsupported_pair": "未対応の換算です: {source} → {target}"
   },
-  "date": {"target_required": "対象日を指定してください", "invalid": "日付「{value}」を認識できません", "future": "{event} まであと {days} 日（{date}）", "today": "🎉 今日は {event} です！", "past": "{event} から {days} 日経過しました（{date}）", "weeks": "約 {weeks} 週間 | {weekday}", "invalid_start": "開始日「{value}」を認識できません", "invalid_end": "終了日「{value}」を認識できません", "between": "{start} → {end}：{days} 日", "years": "{value} 年", "months": "{value} か月", "days": "{value} 日", "weekdays": ["月曜日", "火曜日", "水曜日", "木曜日", "金曜日", "土曜日", "日曜日"]},
+  "date": {"target_required": "対象日を指定してください", "invalid": "日付「{value}」を認識できません", "future": "{event} まであと {days} 日（{date}）", "today": "🎉 今日は {event} です！", "past": "{event} から {days} 日経過しました（{date}）", "weeks": "約 {weeks} 週間 | {weekday}", "invalid_start": "開始日「{value}」を認識できません", "invalid_end": "終了日「{value}」を認識できません", "between": "{start} → {end}：{days} 日", "years": "{value} 年", "months": "{value} か月", "days": "{value} 日", "holiday_alternatives": "{event}（{country} と仮定、他の候補：{alternatives}）", "weekdays": ["月曜日", "火曜日", "水曜日", "木曜日", "金曜日", "土曜日", "日曜日"]},
   "currency": {
     "no_currencies": "ソース通貨とターゲット通貨を指定してください",
     "convert_failed": "通貨換算に失敗しました: {from} → {to}"

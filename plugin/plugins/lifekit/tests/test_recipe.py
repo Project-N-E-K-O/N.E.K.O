@@ -23,7 +23,7 @@ class _Plugin:
 
 
 @pytest.mark.asyncio
-async def test_common_chinese_recipe_query_uses_documented_alias(
+async def test_chinese_dish_name_is_not_replaced_with_a_generic_ingredient(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     queries: list[str] = []
@@ -39,7 +39,7 @@ async def test_common_chinese_recipe_query_uses_documented_alias(
     result = await router.search_recipe(query="红烧肉")
 
     assert isinstance(result, Ok)
-    assert queries == ["pork"]
+    assert queries == ["红烧肉"]
     assert result.value["query"] == "红烧肉"
 
 

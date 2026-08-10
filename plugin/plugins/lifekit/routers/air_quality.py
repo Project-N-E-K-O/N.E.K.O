@@ -8,6 +8,7 @@ from plugin.sdk.plugin import Ok, plugin_entry, quick_action, tr
 from plugin.sdk.shared.core.router import PluginRouter
 
 from .._api import AirQualityError, fetch_air_quality
+from .._advice_policy import DEFAULT_ADVICE_POLICY
 from .._chat import push_lifekit_content
 from .._coerce import clean_text, finite_float
 from .._contracts import AirQualityResult, CityParams
@@ -35,15 +36,16 @@ def _aqi_level(aqi: int, i18n: Any) -> tuple[str, str]:
 
 def _build_advice(aqi: int, pm25: float | None, uv: float | None, i18n: Any) -> list[str]:
     tips: list[str] = []
-    if aqi > 60:
+    policy = DEFAULT_ADVICE_POLICY
+    if aqi > policy.aqi_mask_above:
         tips.append(i18n.t("air_quality.advice.mask"))
-    if aqi > 80:
+    if aqi > policy.aqi_reduce_outdoors_above:
         tips.append(i18n.t("air_quality.advice.reduce_outdoors"))
-    if aqi <= 40:
+    if aqi <= policy.aqi_outdoors_ok_at_most:
         tips.append(i18n.t("air_quality.advice.outdoors_ok"))
-    if isinstance(pm25, (int, float)) and pm25 > 75:
+    if isinstance(pm25, (int, float)) and pm25 > policy.pm25_high_above:
         tips.append(i18n.t("air_quality.advice.pm25_high", value=pm25))
-    if isinstance(uv, (int, float)) and uv >= 6:
+    if isinstance(uv, (int, float)) and policy.needs_sun_protection(uv):
         tips.append(i18n.t("air_quality.advice.uv"))
     return tips
 

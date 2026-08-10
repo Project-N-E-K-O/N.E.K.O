@@ -201,7 +201,7 @@ def select_primary_candidate(
     locale: str,
     purpose: LocationPurpose,
 ) -> Optional[LocationCandidate]:
-    """Choose one reproducible best-effort candidate for a read-only query."""
+    """Choose the strongest candidate without inventing a country from locale."""
     eligible = tuple(
         candidate
         for candidate in candidates
@@ -209,29 +209,17 @@ def select_primary_candidate(
     )
     if not eligible:
         return None
-    normalized_locale = locale.strip().replace("_", "-").casefold()
-    preferred_country = {
-        "zh-cn": "CN",
-        "zh-tw": "TW",
-        "ja": "JP",
-        "ko": "KR",
-    }.get(normalized_locale, "")
+    del locale  # Locale controls presentation, not geographic relevance.
 
-    def rank(candidate: LocationCandidate) -> tuple[object, ...]:
+    def rank(indexed: tuple[int, LocationCandidate]) -> tuple[object, ...]:
+        index, candidate = indexed
         return (
-            -int(bool(preferred_country) and candidate.country_code == preferred_country),
             -int(candidate.verified),
-            -_place_kind_rank(candidate.precision),
-            -{"open_meteo": 2, "nominatim": 1}.get(candidate.source, 0),
-            _normalise_place_name(candidate.display_name),
-            candidate.country_code,
-            _admin_key(candidate.admin1),
-            _admin_key(candidate.admin2),
-            round(candidate.latitude, 6),
-            round(candidate.longitude, 6),
+            -_purpose_precision_rank(candidate.precision, purpose),
+            index,
         )
 
-    return min(eligible, key=rank)
+    return min(enumerate(eligible), key=rank)[1]
 
 
 def assumed_location_payload(
@@ -782,6 +770,20 @@ def _place_kind_rank(precision: str) -> int:
     if precision in {"address", "locality"}:
         return 1
     return 0
+
+
+def _purpose_precision_rank(precision: str, purpose: LocationPurpose) -> int:
+    if purpose in {
+        LocationPurpose.NEARBY,
+        LocationPurpose.FOOD,
+        LocationPurpose.ROUTE_ORIGIN,
+        LocationPurpose.ROUTE_DESTINATION,
+    }:
+        return {"address": 3, "district": 2, "city": 1}.get(precision, 0)
+    return {"city": 3, "district": 2, "address": 1, "locality": 1}.get(
+        precision,
+        0,
+    )
 
 
 def _candidate_is_eligible(

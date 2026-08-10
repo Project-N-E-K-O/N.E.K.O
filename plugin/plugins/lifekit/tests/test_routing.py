@@ -41,6 +41,60 @@ async def test_amap_routing_converts_wgs84_request_coordinates(
     assert origin_lon != pytest.approx(121.4737, abs=0.001)
 
 
+@pytest.mark.asyncio
+async def test_amap_transit_uses_provider_type_instead_of_chinese_line_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_: object) -> None:
+            return None
+
+        async def get(self, url: str, **_: object) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "status": "1",
+                    "route": {
+                        "transits": [
+                            {
+                                "distance": "1000",
+                                "duration": "600",
+                                "segments": [
+                                    {
+                                        "bus": {
+                                            "buslines": [
+                                                {
+                                                    "name": "Metro Line 2",
+                                                    "type": "subway",
+                                                    "distance": "900",
+                                                    "duration": "500",
+                                                    "via_num": "3",
+                                                }
+                                            ]
+                                        }
+                                    }
+                                ],
+                            }
+                        ]
+                    },
+                },
+                request=httpx.Request("GET", url),
+            )
+
+    monkeypatch.setattr(_routing.httpx, "AsyncClient", lambda **_: _Client())
+
+    routes = await AMapProvider("key").plan_route(
+        31.2, 121.4, 31.3, 121.5, "transit",
+    )
+
+    assert routes[0].steps[0].mode == "subway"
+    assert routes[0].steps[0].instruction == ""
+    assert routes[0].steps[0].line_name == "Metro Line 2"
+
+
 @pytest.mark.parametrize(
     ("mode", "expected_base"),
     [

@@ -50,7 +50,7 @@
   },
   "summary": {
     "weather": "{city}: {weather}, {temp}°C (parece {feels}°C), umidade {humidity}%",
-    "vpn_hint": " (Proxy detectado — IP mostra {ip_city}, comutado automaticamente para o local do fuso horário do sistema)",
+    "timezone_mismatch": " (A localização do IP e o fuso horário do dispositivo diferem; a localização pode ser aproximada)",
     "travel_prefix": "Conselhos de viagem para {city}: ",
     "hourly_temp_range": "Próximo {count}h temperatura {low}~{high}°C",
     "hourly_rain_times": "Chuva esperada em: {times}",
@@ -79,7 +79,7 @@
     "no_destination": "Especifique um destino",
     "invalid_mode": "Modo de viagem inválido '{mode}'. Permitido: {valid}",
     "mode_transit": "🚇 Transit", "mode_walking": "🚶 Walking", "mode_bicycling": "🚲 Cycling", "mode_driving": "🚗 Driving",
-    "near_walk": "🚶 Very close; walking is recommended", "rain_transit": "🚇 Rain expected; use transit", "good_bike": "🚲 Moderate distance and good weather; cycling is suitable", "transit_advice": "🚇 Transit is recommended"
+    "near_walk": "🚶 Very close; walking is recommended", "rain_transit": "🚇 Rain expected; use transit", "good_bike": "🚲 Moderate distance and good weather; cycling is suitable", "transit_advice": "🚇 Transit is recommended", "step_take": "Pegue {line}", "step_walk": "Caminhe {distance}"
   },
   "nearby": {
     "no_query": "Insira uma palavra-chave de pesquisa (por exemplo, restaurante, café, parque)",
@@ -127,7 +127,7 @@
     "provider_unavailable": "O serviço de receitas está temporariamente indisponível.",
     "found": "Encontradas {count} receitas: {names}",
     "random_summary": "🎲 Sugestão aleatória: {recipe}",
-    "entry_search_name": "Search recipes", "entry_search_description": "Search recipes by dish or ingredient with limited Chinese aliases.", "entry_random_name": "Random recipe", "entry_random_description": "Recommend a random recipe.", "ingredients": "Ingredients", "instructions": "Instructions", "today_try": "🎲 Try today: {recipe}", "action_food": "food_recommend cuisine={query} — find similar restaurants nearby", "action_market": "search_nearby request=nearby supermarket for ingredients place_intent=shopping preference_hints=[supermarket] — find a supermarket"
+    "entry_search_name": "Search recipes", "entry_search_description": "Search the requested dish or ingredient without replacing a dish with a generic ingredient.", "entry_random_name": "Random recipe", "entry_random_description": "Recommend a random recipe.", "ingredients": "Ingredients", "instructions": "Instructions", "today_try": "🎲 Try today: {recipe}", "action_food": "food_recommend cuisine={query} — find similar restaurants nearby", "action_market": "search_nearby request=nearby supermarket for ingredients place_intent=shopping preference_hints=[supermarket] — find a supermarket"
   },
   "air_quality": {
     "fetch_failed": "Falha ao obter dados de qualidade do ar para {city}",
@@ -142,7 +142,7 @@
   },
   "locations": {"label_required": "O rótulo do local é obrigatório", "city_required": "A cidade é obrigatória", "confirm_add": "Confirmar a adição de {label} ({city})?", "confirm_remove": "Confirmar a remoção de {label}?", "confirm_default": "Definir {label} como local padrão?", "confirm": "Confirmar", "cancel": "Cancelar", "duplicate": "O rótulo já existe: {label}", "not_found": "Local não encontrado: {label}", "save_failed": "Falha ao salvar. Verifique o armazenamento do plugin.", "removed": "Local removido: {label}", "default_set": "Local padrão definido: {label}"},
   "unit": {"unsupported": "Unidade não suportada: {unit}", "invalid_value": "Valor inválido", "same": "{value} {source} = {value} {target} (mesma unidade)", "unsupported_pair": "Conversão não suportada: {source} → {target}"},
-  "date": {"target_required": "Please specify a target date", "invalid": "Could not parse date {value}", "future": "{days} days until {event} ({date})", "today": "🎉 {event} is today!", "past": "{event} was {days} days ago ({date})", "weeks": "About {weeks} weeks | {weekday}", "invalid_start": "Could not parse start date {value}", "invalid_end": "Could not parse end date {value}", "between": "{start} → {end}: {days} days", "years": "{value} years", "months": "{value} months", "days": "{value} days", "weekdays": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]},
+  "date": {"target_required": "Please specify a target date", "invalid": "Could not parse date {value}", "future": "{days} days until {event} ({date})", "today": "🎉 {event} is today!", "past": "{event} was {days} days ago ({date})", "weeks": "About {weeks} weeks | {weekday}", "invalid_start": "Could not parse start date {value}", "invalid_end": "Could not parse end date {value}", "between": "{start} → {end}: {days} days", "years": "{value} years", "months": "{value} months", "days": "{value} days", "holiday_alternatives": "{event} (assuming {country}; alternatives: {alternatives})", "weekdays": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]},
   "panel.title": "LifeKit",
   "panel.subtitle": "Gerencie configurações básicas e locais salvos enquanto mantém disponíveis o clima, a rota, a pesquisa nas proximidades e outras ferramentas.",
   "panel.config.title": "Configuração",

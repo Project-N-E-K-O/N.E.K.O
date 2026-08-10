@@ -9,6 +9,7 @@ from plugin.sdk.plugin import Err, Ok
 
 from plugin.plugins.lifekit import LifeKitPlugin
 from plugin.plugins.lifekit._i18n import I18n
+from plugin.plugins.lifekit._contracts import NearbyParams
 from plugin.plugins.lifekit import _poi
 from plugin.plugins.lifekit._contracts import NearbyResult
 from plugin.plugins.lifekit._location import (
@@ -211,6 +212,61 @@ async def test_raw_request_recovers_missing_location_and_intent_hints(
 
 
 @pytest.mark.asyncio
+async def test_raw_request_corrects_conflicting_projected_nearby_hints(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    resolved: list[str | None] = []
+
+    class _RawRequestPlugin(_NearbyPlugin):
+        async def _resolve_location(self, location: str | None, **_: object):
+            resolved.append(location)
+            return await super()._resolve_location(location)
+
+    monkeypatch.setattr(_poi.httpx, "AsyncClient", lambda **_: _EmptyPOIClient())
+    router = NearbyRouter()
+    router._bind(_RawRequestPlugin())
+
+    result = await router.search_nearby(
+        params=NearbyParams(
+            request="南京东路附近的火锅",
+            location_hint="错误地点",
+            place_intent="outdoors",
+        ),
+        search_terms=["公园"],
+        _ctx={"latest_user_request": "南京东路附近的火锅"},
+    )
+
+    assert isinstance(result, Ok)
+    assert resolved == ["南京东路"]
+    assert result.value["searched_terms"] == ["火锅"]
+
+
+@pytest.mark.asyncio
+async def test_raw_request_preserves_explicit_target_after_nearby(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    resolved: list[str | None] = []
+
+    class _RawRequestPlugin(_NearbyPlugin):
+        async def _resolve_location(self, location: str | None, **_: object):
+            resolved.append(location)
+            return await super()._resolve_location(location)
+
+    monkeypatch.setattr(_poi.httpx, "AsyncClient", lambda **_: _EmptyPOIClient())
+    router = NearbyRouter()
+    router._bind(_RawRequestPlugin())
+
+    result = await router.search_nearby(
+        request="南京东路附近的火锅",
+        _ctx={"latest_user_request": "南京东路附近的火锅"},
+    )
+
+    assert isinstance(result, Ok)
+    assert resolved == ["南京东路"]
+    assert result.value["searched_terms"] == ["火锅"]
+
+
+@pytest.mark.asyncio
 async def test_english_raw_request_recovers_location_hint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -233,6 +289,61 @@ async def test_english_raw_request_recovers_location_hint(
     assert isinstance(result, Ok)
     assert resolved == ["Times Square"]
     assert result.value["searched_terms"] == ["餐厅"]
+
+
+@pytest.mark.parametrize(
+    ("query_text", "expected_location", "expected_first_term", "forbidden_terms"),
+    [
+        ("theater near Oxford Street", "Oxford Street", "theater", {"餐厅"}),
+        ("barber near me", None, "barber", {"酒吧", "夜店"}),
+        ("parking near me", None, "停车场", {"公园", "景点"}),
+    ],
+)
+@pytest.mark.asyncio
+async def test_english_words_are_not_classified_by_substrings(
+    monkeypatch: pytest.MonkeyPatch,
+    query_text: str,
+    expected_location: str | None,
+    expected_first_term: str,
+    forbidden_terms: set[str],
+) -> None:
+    resolved: list[str | None] = []
+
+    class _RawRequestPlugin(_NearbyPlugin):
+        async def _resolve_location(self, location: str | None, **_: object):
+            resolved.append(location)
+            return await super()._resolve_location(location)
+
+    monkeypatch.setattr(_poi.httpx, "AsyncClient", lambda **_: _EmptyPOIClient())
+    router = NearbyRouter()
+    router._bind(_RawRequestPlugin())
+
+    result = await router.search_nearby(
+        request=query_text,
+        _ctx={"latest_user_request": query_text},
+    )
+
+    assert isinstance(result, Ok)
+    assert resolved == [expected_location]
+    assert result.value["searched_terms"][0] == expected_first_term
+    assert forbidden_terms.isdisjoint(result.value["searched_terms"])
+
+
+@pytest.mark.asyncio
+async def test_multiple_explicit_targets_are_preserved_without_first_match_wins(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(_poi.httpx, "AsyncClient", lambda **_: _EmptyPOIClient())
+    router = NearbyRouter()
+    router._bind(_NearbyPlugin())
+
+    result = await router.search_nearby(
+        request="人民广场附近的咖啡和书店",
+        _ctx={"latest_user_request": "人民广场附近的咖啡和书店"},
+    )
+
+    assert isinstance(result, Ok)
+    assert result.value["searched_terms"] == ["咖啡馆", "书店"]
 
 
 @pytest.mark.parametrize(
@@ -286,7 +397,7 @@ async def test_typed_preferences_only_add_provider_searchable_terms(
     )
 
     assert isinstance(result, Ok)
-    assert result.value["searched_terms"] == ["火锅", "餐厅"]
+    assert result.value["searched_terms"] == ["火锅"]
 
 
 @pytest.mark.asyncio
@@ -505,7 +616,7 @@ async def test_nearby_without_a_usable_location_returns_completed_unavailable() 
     assert isinstance(result, Ok)
     assert result.value["status"] == "unavailable"
     assert result.value["request"] == "吉林附近的公园"
-    assert result.value["searched_terms"] == ["公园", "景点"]
+    assert result.value["searched_terms"] == ["公园"]
     assert result.value["results"] == []
     assert result.value["error_code"] == "LOCATION_REQUIRED"
     assert result.value["retriable"] is True
@@ -655,9 +766,9 @@ async def test_ambiguous_location_searches_one_primary_center_without_mixing_res
     assert isinstance(result, Ok)
     assert result.value["status"] == "ready"
     assert result.value["count"] == 1
-    assert [item["name"] for item in result.value["results"]] == ["上海餐厅"]
-    assert result.value["assumed_location"] == "南京东路 · 上海市 · CN"
-    assert "南京东路 · 江苏省 · 太仓市 · CN" in result.value["ambiguity_warning"]
+    assert [item["name"] for item in result.value["results"]] == ["太仓餐厅"]
+    assert result.value["assumed_location"] == "南京东路 · 江苏省 · 太仓市 · CN"
+    assert "南京东路 · 上海市 · CN" in result.value["ambiguity_warning"]
     assert result.value["ambiguity_warning"] in result.value["summary"]
-    assert "太仓餐厅" not in str(result.value)
+    assert "上海餐厅" not in str(result.value)
     NearbyResult.model_validate(result.value)

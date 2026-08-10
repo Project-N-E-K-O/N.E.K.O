@@ -86,8 +86,9 @@ class CurrentWeatherRouter(PluginRouter):
             feels=current["feels_like"],
             humidity=current["humidity"],
         )
-        if loc.get("_vpn_detected"):
-            summary += i18n.t("summary.vpn_hint", ip_city=loc.get("_ip_city", ""))
+        timezone_mismatch = bool(loc.get("_timezone_mismatch"))
+        if timezone_mismatch:
+            summary += i18n.t("summary.timezone_mismatch")
 
         # 推送天气卡片到聊天框（直接显示，不经过 LLM）
         forecast_lines = []
@@ -113,6 +114,7 @@ class CurrentWeatherRouter(PluginRouter):
             "summary": summary,
             "current": current,
             "forecast": forecast,
-            "vpn_detected": bool(loc.get("_vpn_detected")),
+            "timezone_mismatch": timezone_mismatch,
+            "vpn_detected": False,
             "next_actions": ["travel_advice", "food_recommend", "air_quality", "hourly_forecast"],
         }, loc, i18n))

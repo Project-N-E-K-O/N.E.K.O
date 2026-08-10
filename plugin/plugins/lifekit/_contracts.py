@@ -421,7 +421,7 @@ class NearbyResult(ReadOnlyLocationResult):
 
 
 class FoodRecommendParams(LifeKitModel):
-    cuisine: str = Field("", description=_desc("Cuisine preference; blank uses weather", "口味偏好；留空按天气", "料理の好み；空欄は天気を使用"))
+    cuisine: str = Field("", description=_desc("Cuisine preference; blank searches restaurants and uses weather only as advice", "口味偏好；留空搜索餐厅，天气仅用于提示", "料理の好み；空欄はレストランを検索し、天気は補足にのみ使用"))
     scene: str = Field("", description=_desc("Dining occasion", "用餐场景", "食事の場面"))
     location: str = Field("", description=_desc("Location label or city; blank uses default", "地点标签或城市；留空用默认", "場所ラベルまたは都市；空欄は既定"))
     radius: int = Field(3000, ge=500, le=50000, description=_desc("Search radius in meters", "搜索半径（米）", "検索半径（メートル）"))
@@ -481,6 +481,7 @@ class _GetWeatherReadyResult(LocationRiskFields):
     summary: str
     current: dict[str, Any]
     forecast: list[dict[str, Any]]
+    timezone_mismatch: bool = False
     vpn_detected: bool = False
     next_actions: list[str] = Field(default_factory=list)
 
@@ -549,8 +550,9 @@ class CurrencyConvertResult(LifeKitModel):
 class CountdownParams(LifeKitModel):
     target_date: str = Field(..., min_length=1, description=_desc("Target date, month-day, or holiday", "目标日期、月日或节日", "対象日、月日、祝日"))
     label: str = Field("", description=_desc("Optional event label", "可选事件名称", "任意のイベント名"))
+    country_hint: str = Field("", description=_desc("Country code used to interpret regional holiday names", "用于解释地域节日名称的国家代码", "地域の祝日名を解釈する国コード"))
 
-    @field_validator("target_date", "label", mode="before")
+    @field_validator("target_date", "label", "country_hint", mode="before")
     @classmethod
     def _clean_text(cls, value: Any) -> str:
         return _blankable_text(value)
@@ -559,8 +561,9 @@ class CountdownParams(LifeKitModel):
 class DaysBetweenParams(LifeKitModel):
     start_date: str = Field("", description=_desc("Start date; blank means today", "起始日期；留空为今天", "開始日；空欄は今日"))
     end_date: str = Field("", description=_desc("End date; blank means today", "结束日期；留空为今天", "終了日；空欄は今日"))
+    country_hint: str = Field("", description=_desc("Country code used to interpret regional holiday names", "用于解释地域节日名称的国家代码", "地域の祝日名を解釈する国コード"))
 
-    @field_validator("start_date", "end_date", mode="before")
+    @field_validator("start_date", "end_date", "country_hint", mode="before")
     @classmethod
     def _clean_text(cls, value: Any) -> str:
         return _blankable_text(value)
@@ -617,6 +620,9 @@ class _TripAdviceReadyResult(LocationRiskFields):
     routes: list[dict[str, Any]]
     weather_tips: list[str] = Field(default_factory=list)
     mode_advice: str = ""
+    requested_mode: str = ""
+    selected_mode: str = "auto"
+    mode_assumption: str = ""
     provider: str | None = None
     next_actions: list[str] = Field(default_factory=list)
 

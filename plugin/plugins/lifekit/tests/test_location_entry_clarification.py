@@ -32,7 +32,7 @@ from plugin.plugins.lifekit.routers.hourly import HourlyForecastRouter
 from plugin.plugins.lifekit.routers.locations import LocationsRouter
 from plugin.plugins.lifekit.routers.travel import TravelAdviceRouter
 from plugin.plugins.lifekit.routers.trip import TripRouter
-from plugin.plugins.lifekit._routing import RoutingResult
+from plugin.plugins.lifekit._routing import Route, RouteStep, RoutingResult
 
 
 class _AmbiguousLocationPlugin:
@@ -257,6 +257,51 @@ async def test_weather_returns_the_primary_same_named_city_with_risk_disclosed()
 
 
 @pytest.mark.asyncio
+async def test_weather_reports_timezone_mismatch_without_claiming_proxy() -> None:
+    class _TimezonePlugin(_AmbiguousLocationPlugin):
+        def _resolve_locale(self) -> None:
+            self._i18n.set_locale("en")
+
+        async def _resolve_location(self, *_: Any, **__: Any):
+            return {
+                "city": "New York",
+                "lat": 40.71,
+                "lon": -74.00,
+                "_timezone_mismatch": True,
+            }, None
+
+        async def _get_weather_data(self, *_: Any, **__: Any):
+            return {
+                "current": {
+                    "weather_code": 0,
+                    "temperature_2m": 20,
+                    "apparent_temperature": 20,
+                    "relative_humidity_2m": 50,
+                    "wind_speed_10m": 5,
+                },
+                "daily": {},
+            }, None
+
+        def _wmo_text(self, _code: int) -> str:
+            return "Clear"
+
+        def push_message(self, **_: Any) -> dict[str, bool]:
+            return {"ok": True}
+
+    router = CurrentWeatherRouter()
+    router._bind(_TimezonePlugin())
+
+    result = await router.get_weather()
+
+    assert isinstance(result, Ok)
+    assert result.value["timezone_mismatch"] is True
+    assert result.value["vpn_detected"] is False
+    assert "timezone" in result.value["summary"].casefold()
+    assert "proxy" not in result.value["summary"].casefold()
+    assert "vpn" not in result.value["summary"].casefold()
+
+
+@pytest.mark.asyncio
 async def test_weather_without_any_location_returns_completed_unavailable() -> None:
     router = CurrentWeatherRouter()
     router._bind(_AmbiguousLocationPlugin())
@@ -467,6 +512,107 @@ async def test_trip_route_provider_failure_returns_completed_unavailable(
     assert _plugin_terminal_status(True, result.value) == "completed"
 
 
+@pytest.mark.asyncio
+async def test_unknown_trip_mode_falls_back_without_hiding_the_assumption(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_modes: list[list[str] | None] = []
+
+    class _TripPlugin(_WeatherProviderFailurePlugin):
+        async def _resolve_location(self, value: str | None, **_: Any):
+            if value == "北京":
+                return {"city": "北京", "lat": 39.9, "lon": 116.4}, None
+            return {"city": "上海", "lat": 31.2, "lon": 121.5}, None
+
+        def push_message(self, **_: Any) -> dict[str, bool]:
+            return {"ok": True}
+
+    async def successful_plan(*_: Any, **kwargs: Any) -> RoutingResult:
+        captured_modes.append(kwargs.get("modes"))
+        return RoutingResult(origin_name="上海", destination_name="北京", provider="test")
+
+    monkeypatch.setattr(
+        "plugin.plugins.lifekit.routers.trip.RoutingService.plan",
+        successful_plan,
+    )
+    router = TripRouter()
+    router._bind(_TripPlugin())
+
+    result = await router.trip_advice(
+        origin="上海",
+        destination="北京",
+        mode="motorcycle",
+    )
+
+    assert isinstance(result, Ok)
+    assert result.value["status"] == "ready"
+    assert captured_modes == [None]
+    assert result.value["requested_mode"] == "motorcycle"
+    assert result.value["selected_mode"] == "auto"
+    assert "motorcycle" in result.value["mode_assumption"]
+    assert "bicycling" not in result.value["mode_assumption"]
+    assert "driving" not in result.value["mode_assumption"]
+    assert result.value["mode_assumption"] in result.value["summary"]
+
+
+@pytest.mark.asyncio
+async def test_trip_router_localizes_structured_provider_steps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _TripPlugin(_WeatherProviderFailurePlugin):
+        def _resolve_locale(self) -> None:
+            self._i18n.set_locale("en")
+
+        async def _resolve_location(self, value: str | None, **_: Any):
+            if value == "Paris":
+                return {"city": "Paris", "lat": 48.85, "lon": 2.35}, None
+            return {"city": "London", "lat": 51.50, "lon": -0.12}, None
+
+        def push_message(self, **_: Any) -> dict[str, bool]:
+            return {"ok": True}
+
+    async def successful_plan(*_: Any, **__: Any) -> RoutingResult:
+        return RoutingResult(
+            origin_name="London",
+            destination_name="Paris",
+            provider="test",
+            routes=[
+                Route(
+                    mode="transit",
+                    distance_m=1000,
+                    duration_s=600,
+                    steps=[
+                        RouteStep(
+                            instruction="",
+                            distance_m=900,
+                            duration_s=500,
+                            mode="subway",
+                            line_name="Metro Line 2",
+                        )
+                    ],
+                )
+            ],
+        )
+
+    monkeypatch.setattr(
+        "plugin.plugins.lifekit.routers.trip.RoutingService.plan",
+        successful_plan,
+    )
+    router = TripRouter()
+    router._bind(_TripPlugin())
+
+    result = await router.trip_advice(
+        origin="London",
+        destination="Paris",
+        mode="transit",
+    )
+
+    assert isinstance(result, Ok)
+    instruction = result.value["routes"][0]["steps"][0]["instruction"]
+    assert instruction == "Take Metro Line 2"
+    assert "乘坐" not in instruction
+
+
 @pytest.mark.parametrize(
     "cause",
     ["ambiguous", "needs_confirmation", "not_found", "no_location"],
@@ -559,6 +705,7 @@ async def test_add_location_success_uses_localized_summary(monkeypatch: Any) -> 
     assert result.value["message"] == result.value["summary"]
     assert geocode_queries == ["上海 南京东路 1 号"]
     assert result.value["location"]["timezone"] == "Asia/Shanghai"
+    assert result.value["location"]["verified"] is False
 
 
 @pytest.mark.parametrize("outcome", [None, RuntimeError("unexpected provider error")])

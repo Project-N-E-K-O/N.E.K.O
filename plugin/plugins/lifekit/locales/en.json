@@ -50,7 +50,7 @@
   },
   "summary": {
     "weather": "{city}: {weather}, {temp}°C (feels like {feels}°C), humidity {humidity}%",
-    "vpn_hint": " (Proxy detected — IP shows {ip_city}, auto-switched to system timezone location)",
+    "timezone_mismatch": " (IP location and device timezone differ; location may be approximate)",
     "travel_prefix": "Travel advice for {city}: ",
     "hourly_temp_range": "Next {count}h temperature {low}~{high}°C",
     "hourly_rain_times": "Rain expected at: {times}",
@@ -79,7 +79,7 @@
     "no_destination": "Please specify a destination",
     "invalid_mode": "Invalid trip mode '{mode}'. Allowed: {valid}",
     "mode_transit": "🚇 Transit", "mode_walking": "🚶 Walking", "mode_bicycling": "🚲 Cycling", "mode_driving": "🚗 Driving",
-    "near_walk": "🚶 Very close; walking is recommended", "rain_transit": "🚇 Rain expected; use transit", "good_bike": "🚲 Moderate distance and good weather; cycling is suitable", "transit_advice": "🚇 Transit is recommended"
+    "near_walk": "🚶 Very close; walking is recommended", "rain_transit": "🚇 Rain expected; use transit", "good_bike": "🚲 Moderate distance and good weather; cycling is suitable", "transit_advice": "🚇 Transit is recommended", "step_take": "Take {line}", "step_walk": "Walk {distance}"
   },
   "nearby": {
     "no_query": "Please enter a search keyword (e.g. restaurant, cafe, park)",
@@ -127,7 +127,7 @@
     "provider_unavailable": "The recipe service is temporarily unavailable. Please try again later.",
     "found": "Found {count} recipes: {names}",
     "random_summary": "🎲 Random pick: {recipe}",
-    "entry_search_name": "Search recipes", "entry_search_description": "Search by dish or ingredient; common Chinese names have limited deterministic aliases.", "entry_random_name": "Random recipe", "entry_random_description": "Recommend a random recipe with nearby restaurants as an alternative.", "ingredients": "Ingredients", "instructions": "Instructions", "today_try": "🎲 Try today: {recipe}", "action_food": "food_recommend cuisine={query} — find similar restaurants nearby", "action_market": "search_nearby request=nearby supermarket for ingredients place_intent=shopping preference_hints=[supermarket] — find a supermarket"
+    "entry_search_name": "Search recipes", "entry_search_description": "Search by the requested dish name or ingredient without replacing a dish with a generic ingredient.", "entry_random_name": "Random recipe", "entry_random_description": "Recommend a random recipe with nearby restaurants as an alternative.", "ingredients": "Ingredients", "instructions": "Instructions", "today_try": "🎲 Try today: {recipe}", "action_food": "food_recommend cuisine={query} — find similar restaurants nearby", "action_market": "search_nearby request=nearby supermarket for ingredients place_intent=shopping preference_hints=[supermarket] — find a supermarket"
   },
   "air_quality": {
     "fetch_failed": "Failed to get air quality data for {city}",
@@ -165,7 +165,7 @@
     "same": "{value} {source} = {value} {target} (same unit)",
     "unsupported_pair": "Unsupported conversion: {source} → {target}"
   },
-  "date": {"target_required": "Please specify a target date", "invalid": "Could not parse date “{value}”; use YYYY-MM-DD or a holiday name", "future": "{days} days until {event} ({date})", "today": "🎉 {event} is today!", "past": "{event} was {days} days ago ({date})", "weeks": "About {weeks} weeks | {weekday}", "invalid_start": "Could not parse start date “{value}”", "invalid_end": "Could not parse end date “{value}”", "between": "{start} → {end}: {days} days", "years": "{value} years", "months": "{value} months", "days": "{value} days", "weekdays": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]},
+  "date": {"target_required": "Please specify a target date", "invalid": "Could not parse date “{value}”; use YYYY-MM-DD or a holiday name", "future": "{days} days until {event} ({date})", "today": "🎉 {event} is today!", "past": "{event} was {days} days ago ({date})", "weeks": "About {weeks} weeks | {weekday}", "invalid_start": "Could not parse start date “{value}”", "invalid_end": "Could not parse end date “{value}”", "between": "{start} → {end}: {days} days", "years": "{value} years", "months": "{value} months", "days": "{value} days", "holiday_alternatives": "{event} (assuming {country}; alternatives: {alternatives})", "weekdays": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]},
   "currency": {
     "no_currencies": "Please specify source and target currencies",
     "convert_failed": "Currency conversion failed: {from} → {to}"

@@ -9,6 +9,7 @@ from plugin.sdk.plugin import plugin_entry, quick_action, Ok, Err, SdkError, tr
 from plugin.sdk.shared.core.router import PluginRouter
 
 from .._geodesy import haversine_km
+from .._advice_policy import DEFAULT_ADVICE_POLICY
 from .._routing import RoutingService, format_duration, format_distance, suggest_modes
 from .._api import RAIN_CODES
 from .._chat import push_lifekit_content
@@ -76,8 +77,6 @@ class TripRouter(PluginRouter):
 
         # 路线规划
         svc = RoutingService(plugin._cfg)
-        # 校验 mode：未识别的值（如 "drive" / "car"）会被 RoutingService 静默丢弃返回空 routes，
-        # 调用方/LLM 看到的是 Ok(空结果)，分不清是"无路线"还是"参数错"，所以这里提前拒掉喵。
         mode_raw = mode.strip().lower() if mode else ""
         _VALID_MODES = {"transit", "walking", "bicycling", "driving"}
         mode_aliases = {
@@ -94,8 +93,19 @@ class TripRouter(PluginRouter):
             "public transport": "transit",
         }
         mode_clean = mode_aliases.get(mode_raw, mode_raw)
+        mode_assumption = ""
         if mode_clean not in _VALID_MODES:
+            if mode_clean:
+                mode_assumption = i18n.t(
+                    "trip.invalid_mode",
+                    mode=mode_raw,
+                    valid=", ".join(
+                        _mode_label(value, i18n)
+                        for value in sorted(_VALID_MODES)
+                    ),
+                )
             mode_clean = ""
+        selected_mode = mode_clean or "auto"
         modes = [mode_clean] if mode_clean else None
         routing, (origin_weather, _), (dest_weather, _) = await asyncio.gather(
             svc.plan(
@@ -126,7 +136,11 @@ class TripRouter(PluginRouter):
                 entry["cost"] = route.cost
             if route.steps:
                 entry["steps"] = [
-                    {"instruction": s.instruction, "mode": s.mode, "duration": format_duration(s.duration_s)}
+                    {
+                        "instruction": _localized_step_instruction(s, i18n),
+                        "mode": s.mode,
+                        "duration": format_duration(s.duration_s),
+                    }
                     for s in route.steps[:8]
                 ]
             route_summaries.append(entry)
@@ -147,6 +161,8 @@ class TripRouter(PluginRouter):
             summary_parts.append(f"{i18n.t('trip.recommended')}: {_mode_label(best.mode, i18n)} {format_duration(best.duration_s)}")
         if mode_advice:
             summary_parts.append(mode_advice)
+        if mode_assumption:
+            summary_parts.append(mode_assumption)
         summary_parts.extend(weather_tips)
 
         # 推送出行规划卡片到聊天框
@@ -157,6 +173,8 @@ class TripRouter(PluginRouter):
             card_lines.append(" ".join(weather_tips))
         if mode_advice:
             card_lines.append(mode_advice)
+        if mode_assumption:
+            card_lines.append(mode_assumption)
         push_lifekit_content(plugin, [
             {"type": "text", "text": f"🗺️ {origin_loc['city']} → {dest_loc['city']}"},
             {"type": "text", "text": "\n".join(card_lines)},
@@ -171,6 +189,9 @@ class TripRouter(PluginRouter):
             "routes": route_summaries,
             "weather_tips": weather_tips,
             "mode_advice": mode_advice,
+            "requested_mode": mode_raw,
+            "selected_mode": selected_mode,
+            "mode_assumption": mode_assumption,
             "provider": routing.provider,
             "next_actions": [
                 f"food_recommend location={dest_loc['city']}",
@@ -188,6 +209,16 @@ def _mode_label(mode: str, i18n: Any) -> str:
         "driving": "trip.mode_driving",
     }.get(mode)
     return i18n.t(key) if key else mode
+
+
+def _localized_step_instruction(step: Any, i18n: Any) -> str:
+    if step.instruction:
+        return step.instruction
+    if step.mode == "walk":
+        return i18n.t("trip.step_walk", distance=format_distance(step.distance_m))
+    if step.line_name:
+        return i18n.t("trip.step_take", line=step.line_name)
+    return _mode_label(step.mode, i18n)
 
 
 def _build_weather_tips(
@@ -213,7 +244,7 @@ def _build_weather_tips(
     # 温差大 → 提醒
     if o_temp is not None and d_temp is not None:
         diff = abs(o_temp - d_temp)
-        if diff >= 5:
+        if diff >= DEFAULT_ADVICE_POLICY.notable_temperature_difference_c:
             tips.append(f"🌡️ {origin_loc['city']} {o_temp}°C → {dest_loc['city']} {d_temp}°C")
 
     return tips
@@ -236,10 +267,14 @@ def _build_mode_advice(
         if code in RAIN_CODES:
             has_rain = True
 
-    if dist_km <= 1:
-        return i18n.t("trip.near_walk") if not has_rain else i18n.t("trip.rain_transit")
-    if dist_km <= 3 and not has_rain:
+    advised_mode = DEFAULT_ADVICE_POLICY.primary_advice_mode(
+        dist_km,
+        has_rain=has_rain,
+    )
+    if advised_mode == "walking":
+        return i18n.t("trip.near_walk")
+    if advised_mode == "bicycling":
         return i18n.t("trip.good_bike")
-    if dist_km <= 5:
-        return i18n.t("trip.transit_advice") if not has_rain else i18n.t("trip.rain_transit")
+    if advised_mode == "transit":
+        return i18n.t("trip.rain_transit") if has_rain else i18n.t("trip.transit_advice")
     return ""

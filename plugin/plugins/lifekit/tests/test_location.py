@@ -305,6 +305,95 @@ async def test_unresolved_location_log_uses_only_non_sensitive_metadata() -> Non
     assert "121.475" not in rendered
 
 
+async def test_read_only_location_does_not_replace_provider_relevance_with_locale() -> None:
+    candidates = (
+        LocationCandidate(
+            display_name="Springfield",
+            latitude=39.78,
+            longitude=-89.64,
+            country_code="US",
+            admin1="Illinois",
+            precision="city",
+            source="nominatim",
+        ),
+        LocationCandidate(
+            display_name="Springfield",
+            latitude=31.22,
+            longitude=121.46,
+            country_code="CN",
+            admin1="上海市",
+            precision="city",
+            source="nominatim",
+        ),
+    )
+
+    class _AmbiguousResolver:
+        async def resolve(self, _request: LocationRequest) -> LocationResolution:
+            return LocationResolution(LocationStatus.AMBIGUOUS, candidates=candidates)
+
+    class _Logger:
+        def info(self, *_: object, **__: object) -> None:
+            return None
+
+    plugin = object.__new__(LifeKitPlugin)
+    plugin._cfg = {"enable_geoip": False}
+    plugin._i18n = SimpleNamespace(locale="zh-CN")
+    plugin._location_resolver = _AmbiguousResolver()
+    plugin.logger = _Logger()
+
+    location, _problem = await plugin._resolve_location(
+        "Springfield",
+        purpose=LocationPurpose.WEATHER,
+    )
+
+    assert location is not None
+    assert location["country"] == "US"
+
+
+async def test_geoip_timezone_difference_is_disclosed_without_claiming_vpn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate = LocationCandidate(
+        display_name="New York",
+        latitude=40.71,
+        longitude=-74.00,
+        country_code="US",
+        timezone="America/New_York",
+        precision="city",
+        source="geoip",
+    )
+
+    class _ResolvedResolver:
+        async def resolve(self, _request: LocationRequest) -> LocationResolution:
+            return LocationResolution(
+                LocationStatus.RESOLVED,
+                location=candidate,
+                candidates=(candidate,),
+            )
+
+    class _Logger:
+        def info(self, *_: object, **__: object) -> None:
+            return None
+
+    monkeypatch.setattr(
+        "plugin.plugins.lifekit.get_system_timezone",
+        lambda: "Asia/Shanghai",
+    )
+    plugin = object.__new__(LifeKitPlugin)
+    plugin._cfg = {"enable_geoip": True}
+    plugin._i18n = SimpleNamespace(locale="en")
+    plugin._location_resolver = _ResolvedResolver()
+    plugin.logger = _Logger()
+
+    location, _problem = await plugin._resolve_location(
+        purpose=LocationPurpose.WEATHER,
+    )
+
+    assert location is not None
+    assert location["_timezone_mismatch"] is True
+    assert "_vpn_detected" not in location
+
+
 async def test_weather_can_use_legacy_saved_default() -> None:
     legacy = SavedLocation(
         label="旧默认",

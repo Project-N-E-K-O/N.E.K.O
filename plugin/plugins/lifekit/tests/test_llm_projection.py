@@ -216,15 +216,19 @@ def test_location_entries_project_their_control_and_risk_scalars_to_llm(
             FoodRecommendRouter: [
                 "recommendations", "query", "weather_reason", "provider", "next_actions",
             ],
-            CurrentWeatherRouter: ["city", "current", "forecast", "vpn_detected", "next_actions"],
+            CurrentWeatherRouter: [
+                "city", "current", "forecast", "timezone_mismatch", "vpn_detected",
+                "next_actions",
+            ],
             AirQualityRouter: ["city", "aqi", "advice", "next_actions"],
             TravelAdviceRouter: [
                 "city", "tips", "clothing", "umbrella", "sunscreen", "next_actions",
             ],
-            TripRouter: [
-                "origin", "destination", "distance_km", "routes", "weather_tips",
-                "mode_advice", "provider", "next_actions",
-            ],
+                TripRouter: [
+                    "origin", "destination", "distance_km", "routes", "weather_tips",
+                    "mode_advice", "requested_mode", "selected_mode", "mode_assumption",
+                    "provider", "next_actions",
+                ],
         }
         assert entry.meta.llm_result_fields == common_fields + useful_fields[router_type]
 

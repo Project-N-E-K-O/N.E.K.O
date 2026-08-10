@@ -16,18 +16,6 @@ from .._chat import push_lifekit_content
 from .._contracts import RandomRecipeResult, SearchRecipeParams, SearchRecipeResult
 
 
-_COMMON_ZH_RECIPE_ALIASES = {
-    "红烧肉": "pork",
-    "宫保鸡丁": "chicken",
-    "麻婆豆腐": "tofu",
-    "番茄炒蛋": "tomato",
-    "糖醋排骨": "pork",
-    "鱼香肉丝": "pork",
-    "饺子": "dumpling",
-    "炒饭": "fried rice",
-}
-
-
 def _format_recipe_summary(r: recipe_api.Recipe) -> str:
     """生成菜谱的 LLM 友好摘要。"""
     parts = [r.name]
@@ -84,7 +72,7 @@ class RecipeRouter(PluginRouter):
         name=tr("recipe.entry_search_name", default="Search recipes"),
         description=tr(
             "recipe.entry_search_description",
-            default="Search recipes by dish or ingredient. Common Chinese dish names have limited deterministic aliases.",
+            default="Search recipes by the requested dish name or ingredient without replacing a dish with a generic ingredient.",
         ),
         params=SearchRecipeParams,
         llm_result_model=SearchRecipeResult,
@@ -109,11 +97,9 @@ class RecipeRouter(PluginRouter):
             return Err(SdkError(i18n.t("recipe.no_query")))
 
         q = query.strip()
-        provider_query = _COMMON_ZH_RECIPE_ALIASES.get(q, q)
-
         try:
             if by_ingredient:
-                results = await recipe_api.search_by_ingredient(provider_query)
+                results = await recipe_api.search_by_ingredient(q)
                 details = await asyncio.gather(
                     *(recipe_api.get_by_id(brief.id) for brief in results[:3]),
                     return_exceptions=True,
@@ -125,7 +111,7 @@ class RecipeRouter(PluginRouter):
                 ]
                 results = detailed if detailed else results
             else:
-                results = await recipe_api.search_by_name(provider_query)
+                results = await recipe_api.search_by_name(q)
         except recipe_api.RecipeAPIError:
             return Ok({
                 "status": "unavailable",

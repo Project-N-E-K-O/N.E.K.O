@@ -21,24 +21,6 @@ from .._location_entry import (
     upstream_unavailable_result,
 )
 
-# 天气 → 推荐关键词映射
-_WEATHER_FOOD: Dict[str, List[str]] = {
-    "hot":  ["冷饮", "冰淇淋", "沙拉", "刨冰", "凉面"],
-    "cold": ["火锅", "炖菜", "麻辣烫", "羊肉汤", "热干面"],
-    "rain": ["火锅", "烧烤", "炖汤", "麻辣烫"],
-    "mild": ["咖啡", "甜品", "面包", "brunch"],
-}
-
-# 场景 → 搜索关键词
-_SCENE_KEYWORDS: Dict[str, List[str]] = {
-    "聚餐":   ["火锅", "烧烤", "自助餐", "中餐厅"],
-    "约会":   ["西餐", "日料", "咖啡厅", "法餐"],
-    "一人食": ["面馆", "快餐", "便当", "拉面"],
-    "家庭":   ["中餐厅", "粤菜", "自助餐", "火锅"],
-    "宵夜":   ["烧烤", "小龙虾", "大排档", "串串"],
-}
-
-
 class FoodRecommendRouter(PluginRouter):
     """food_recommend entry：基于位置和天气的美食推荐。"""
 
@@ -160,32 +142,24 @@ class FoodRecommendRouter(PluginRouter):
 
     @staticmethod
     def _pick_query(weather_data: Any, scene: str, i18n: Any) -> tuple[str, str]:
-        """根据天气和场景选择搜索关键词。返回 (query, reason)。"""
-        import random
+        """Keep retrieval broad; weather and occasion only explain the result."""
+        query = "餐厅"
 
-        # 场景优先
         scene_key = clean_text(scene)
-        if scene_key and scene_key in _SCENE_KEYWORDS:
-            kw = random.choice(_SCENE_KEYWORDS[scene_key])
-            return kw, i18n.t("runtime.food_scene", scene=scene_key)
+        if scene_key:
+            return query, i18n.t("runtime.food_scene", scene=scene_key)
 
-        # 天气推荐
         if weather_data:
             cur = weather_data.get("current", {})
             code = cur.get("weather_code", -1)
             temp = cur.get("apparent_temperature") or cur.get("temperature_2m")
 
             if code in RAIN_CODES:
-                kw = random.choice(_WEATHER_FOOD["rain"])
-                return kw, i18n.t("runtime.food_rain")
+                return query, i18n.t("runtime.food_rain")
             if isinstance(temp, (int, float)):
                 if temp >= 30:
-                    kw = random.choice(_WEATHER_FOOD["hot"])
-                    return kw, i18n.t("runtime.food_hot", temp=temp)
+                    return query, i18n.t("runtime.food_hot", temp=temp)
                 if temp <= 8:
-                    kw = random.choice(_WEATHER_FOOD["cold"])
-                    return kw, i18n.t("runtime.food_cold", temp=temp)
+                    return query, i18n.t("runtime.food_cold", temp=temp)
 
-        # 默认
-        kw = random.choice(_WEATHER_FOOD["mild"])
-        return kw, ""
+        return query, ""

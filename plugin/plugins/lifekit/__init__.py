@@ -34,7 +34,7 @@ from plugin.sdk.plugin import (
 
 from ._i18n import I18n, LRUCache, SUPPORTED_LOCALES
 from ._coerce import clamp_int, clean_text, finite_float
-from ._geo import get_system_timezone, detect_vpn_conflict
+from ._geo import get_system_timezone, detect_timezone_mismatch
 from ._api import geoip_locate, fetch_forecast, ForecastError
 from ._geocoders import nominatim_candidates, open_meteo_candidates
 from ._write_confirmation import WriteConfirmationGate
@@ -248,7 +248,10 @@ class LifeKitPlugin(NekoPluginBase):
         )
         if result.status is LocationStatus.RESOLVED and result.location is not None:
             loc = result.location
-            if loc.source == "geoip" and detect_vpn_conflict(loc.timezone, get_system_timezone()):
+            if loc.source == "geoip" and detect_timezone_mismatch(
+                loc.timezone,
+                get_system_timezone(),
+            ):
                 self.logger.info(
                     "IP location differs from timezone; continuing as an assumption",
                 )
@@ -259,7 +262,9 @@ class LifeKitPlugin(NekoPluginBase):
                     candidates=(loc,),
                 )
                 if purpose in READ_ONLY_LOCATION_PURPOSES:
-                    return assumed_location_payload(loc, (loc,)), problem
+                    payload = assumed_location_payload(loc, (loc,))
+                    payload["_timezone_mismatch"] = True
+                    return payload, problem
                 return None, problem
             return loc.as_legacy_dict(), ""
 

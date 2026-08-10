@@ -24,7 +24,6 @@ from plugin.plugins.lifekit._poi import (
     UPSTREAM_TIMEOUT,
 )
 from plugin.plugins.lifekit.routers.food import FoodRecommendRouter
-from plugin.plugins.lifekit.routers.food import _SCENE_KEYWORDS, _WEATHER_FOOD
 
 
 @pytest.mark.asyncio
@@ -84,7 +83,6 @@ async def test_amap_non_object_response_is_a_provider_error(
 @pytest.mark.parametrize(
     ("search_term", "expected_filter"),
     [
-        ("茶馆", '["amenity"="cafe"]'),
         ("博物馆", '["tourism"="museum"]'),
         ("美术馆", '["tourism"="gallery"]'),
         ("书店", '["shop"="books"]'),
@@ -93,7 +91,6 @@ async def test_amap_non_object_response_is_a_provider_error(
         ("夜店", '["amenity"="nightclub"]'),
         ("火锅", '["cuisine"~"^(hot_pot|hotpot)$"]'),
         ("烧烤", '["cuisine"~"^(barbecue|grill)$"]'),
-        ("川菜", '["cuisine"="chinese"]'),
         ("日料", '["cuisine"~"^(japanese|sushi)$"]'),
         ("素食餐厅", '["diet:vegetarian"~"^(yes|only)$"]'),
         ("甜品店", '["shop"~"^(confectionery|pastry)$"]'),
@@ -122,14 +119,34 @@ async def test_typed_intent_terms_use_osm_category_filters(
     assert '["name"~' not in captured_query
 
 
-def test_every_generated_food_term_has_a_structured_osm_filter() -> None:
-    generated_terms = {
-        term
-        for terms in (*_WEATHER_FOOD.values(), *_SCENE_KEYWORDS.values())
-        for term in terms
-    }
+@pytest.mark.parametrize(
+    "search_term",
+    [
+        "茶馆", "川菜", "粤菜", "炖菜", "便当", "小龙虾",
+        "刨冰", "凉面", "麻辣烫", "羊肉汤", "热干面", "炖汤",
+        "brunch", "自助餐", "中餐厅", "西餐", "法餐", "面馆",
+        "拉面", "大排档", "串串",
+    ],
+)
+@pytest.mark.asyncio
+async def test_lossy_food_categories_preserve_the_original_name(
+    search_term: str,
+) -> None:
+    captured_query = ""
 
-    assert generated_terms <= OverpassPOI._TAG_FILTERS.keys()
+    def respond(request: httpx.Request) -> httpx.Response:
+        nonlocal captured_query
+        captured_query = parse_qs(request.content.decode())["data"][0]
+        return httpx.Response(200, json={"elements": []})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        provider = OverpassPOI(
+            endpoints=("https://available.example/api/interpreter",),
+            http_client=client,
+        )
+        await provider.search(search_term, 31.235, 121.475)
+
+    assert f'["name"~"{search_term}",i]' in captured_query
 
 
 @pytest.mark.asyncio
@@ -368,6 +385,54 @@ async def test_food_provider_outage_is_not_reported_as_zero_results(
     assert isinstance(result, Ok)
     assert result.value["status"] == "unavailable"
     assert "附近地点搜索失败" in result.value["summary"]
+
+
+@pytest.mark.asyncio
+async def test_food_scene_does_not_randomly_replace_the_search_category(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    queries: list[str] = []
+
+    class _Logger:
+        def warning(self, *_: object, **__: object) -> None:
+            pass
+
+    class _Plugin:
+        plugin_id = "lifekit"
+
+        def __init__(self) -> None:
+            self._cfg: dict[str, Any] = {}
+            self._i18n = I18n(Path(__file__).resolve().parents[1] / "locales")
+            self.logger = _Logger()
+
+        def _resolve_locale(self) -> None:
+            self._i18n.set_locale("zh-CN")
+
+        async def _resolve_location(self, *_: Any, **__: Any):
+            return {"city": "上海", "lat": 31.235, "lon": 121.475}, None
+
+        async def _get_weather_data(self, *_: Any, **__: Any):
+            return {"current": {"weather_code": 61, "temperature_2m": 20}}, None
+
+    async def capture_search(
+        _self: POIService,
+        query: str,
+        *_: Any,
+        **__: Any,
+    ) -> POIResult:
+        queries.append(query)
+        return POIResult(query=query, provider="test")
+
+    monkeypatch.setattr(POIService, "search", capture_search)
+    router = FoodRecommendRouter()
+    router._bind(_Plugin())
+
+    first = await router.food_recommend(scene="约会", location="上海")
+    second = await router.food_recommend(scene="约会", location="上海")
+
+    assert isinstance(first, Ok)
+    assert isinstance(second, Ok)
+    assert queries == ["餐厅", "餐厅"]
 
 
 @pytest.mark.asyncio

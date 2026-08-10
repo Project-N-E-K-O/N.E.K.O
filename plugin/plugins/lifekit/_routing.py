@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional, Protocol
 import httpx
 
 from ._coordinates import wgs84_to_gcj02
+from ._advice_policy import DEFAULT_ADVICE_POLICY
 from ._geodesy import haversine_km
 from ._hedged import ordered_hedged_first
 
@@ -98,18 +99,18 @@ def format_distance(meters: float) -> str:
     return f"{meters / 1000:.1f}km"
 
 
+def _transit_mode(provider_type: object) -> str:
+    token = str(provider_type or "").strip().casefold()
+    if token in {"subway", "metro", "underground"}:
+        return "subway"
+    if token in {"bus", "coach"}:
+        return "bus"
+    return "transit"
+
+
 def suggest_modes(distance_km: float) -> List[str]:
     """根据距离建议合理的出行方式。"""
-    modes = []
-    if distance_km <= 2:
-        modes.append("walking")
-    if distance_km <= 10:
-        modes.append("bicycling")
-    if distance_km >= 2:
-        modes.append("transit")
-    if distance_km >= 5:
-        modes.append("driving")
-    return modes or ["transit", "driving"]
+    return list(DEFAULT_ADVICE_POLICY.route_modes(distance_km))
 
 
 # ── 高德地图 Provider ────────────────────────────────────────────
@@ -167,7 +168,7 @@ class AMapProvider:
                         wd = float(walking.get("distance", 0))
                         wt = float(walking.get("duration", 0))
                         if wd > 30:
-                            steps.append(RouteStep(instruction=f"步行 {format_distance(wd)}", distance_m=wd, duration_s=wt, mode="walk"))
+                            steps.append(RouteStep(instruction="", distance_m=wd, duration_s=wt, mode="walk"))
                     # 公交/地铁段
                     bus = seg.get("bus", {})
                     buslines = bus.get("buslines") or []
@@ -176,15 +177,13 @@ class AMapProvider:
                         via = bl.get("via_num", 0)
                         bd = float(bl.get("distance", 0))
                         bt = float(bl.get("duration", 0))
-                        is_subway = "地铁" in name or "号线" in name
-                        m = "subway" if is_subway else "bus"
-                        instr = f"乘坐 {name}" + (f" {via}站" if via else "")
-                        steps.append(RouteStep(instruction=instr, distance_m=bd, duration_s=bt, mode=m, line_name=name))
+                        m = _transit_mode(bl.get("type"))
+                        steps.append(RouteStep(instruction="", distance_m=bd, duration_s=bt, mode=m, line_name=name))
                         line_names.append(name)
                 dist = float(transit.get("distance", 0))
                 dur = float(transit.get("duration", 0))
                 cost = transit.get("cost", "")
-                summary = " → ".join(line_names[:4]) if line_names else "公交"
+                summary = " → ".join(line_names[:4])
                 routes.append(Route(mode="transit", distance_m=dist, duration_s=dur, steps=steps, summary=summary, cost=str(cost)))
             return routes
         except RoutingProviderError:
@@ -305,13 +304,13 @@ class BaiduMapProvider:
                             if name:
                                 line_names.append(name)
                                 steps.append(RouteStep(
-                                    instruction=f"乘坐 {name}",
+                                    instruction="",
                                     distance_m=float(item.get("distance", 0)),
                                     duration_s=float(item.get("duration", 0)),
-                                    mode="subway" if "地铁" in name else "bus",
+                                    mode=_transit_mode(veh.get("type")),
                                     line_name=name,
                                 ))
-                    summary = " → ".join(line_names[:4]) if line_names else "公交"
+                    summary = " → ".join(line_names[:4])
                     routes.append(Route(mode="transit", distance_m=dist, duration_s=dur, steps=steps, summary=summary, cost=str(price)))
                 return routes
             else:

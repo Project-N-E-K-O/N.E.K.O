@@ -50,7 +50,7 @@
   },
   "summary": {
     "weather": "{city}：{weather}，{temp}°C（體感 {feels}°C），濕度 {humidity}%",
-    "vpn_hint": "（偵測到代理，IP 顯示 {ip_city}，已自動切換到系統時區定位）",
+    "timezone_mismatch": "（IP 位置與裝置時區不一致，目前位置可能是近似結果）",
     "travel_prefix": "{city}出行建議：",
     "hourly_temp_range": "未來 {count} 小時氣溫 {low}~{high}°C",
     "hourly_rain_times": "降水時段: {times}",
@@ -79,7 +79,7 @@
     "no_destination": "請指定目的地",
     "invalid_mode": "出行方式 '{mode}' 無效，可選：{valid}",
     "mode_transit": "🚇 公車/捷運", "mode_walking": "🚶 步行", "mode_bicycling": "🚲 騎行", "mode_driving": "🚗 駕車",
-    "near_walk": "🚶 距離很近，建議步行", "rain_transit": "🚇 有雨，建議搭乘大眾運輸", "good_bike": "🚲 距離適中，天氣好適合騎行", "transit_advice": "🚇 建議搭乘大眾運輸"
+    "near_walk": "🚶 距離很近，建議步行", "rain_transit": "🚇 有雨，建議搭乘大眾運輸", "good_bike": "🚲 距離適中，天氣好適合騎行", "transit_advice": "🚇 建議搭乘大眾運輸", "step_take": "搭乘 {line}", "step_walk": "步行 {distance}"
   },
   "nearby": {
     "no_query": "請輸入搜尋關鍵詞（如：火鍋、咖啡、超市）",
@@ -127,7 +127,7 @@
     "provider_unavailable": "菜譜服務暫時不可用，請稍後重試。",
     "found": "找到 {count} 個菜譜: {names}",
     "random_summary": "🎲 隨機推薦: {recipe}",
-    "entry_search_name": "搜尋菜譜", "entry_search_description": "按菜名或食材搜尋菜譜；常見中文菜名僅提供有限映射。", "entry_random_name": "隨機菜譜", "entry_random_description": "隨機推薦一道菜，也可繼續尋找附近餐廳。", "ingredients": "食材", "instructions": "做法", "today_try": "🎲 今天試試: {recipe}", "action_food": "food_recommend cuisine={query} — 尋找附近類似餐廳", "action_market": "search_nearby request=附近超市買食材 place_intent=shopping preference_hints=[超市] — 尋找附近超市"
+    "entry_search_name": "搜尋菜譜", "entry_search_description": "按使用者指定的菜名或食材搜尋，不把具體菜名替換成寬泛食材。", "entry_random_name": "隨機菜譜", "entry_random_description": "隨機推薦一道菜，也可繼續尋找附近餐廳。", "ingredients": "食材", "instructions": "做法", "today_try": "🎲 今天試試: {recipe}", "action_food": "food_recommend cuisine={query} — 尋找附近類似餐廳", "action_market": "search_nearby request=附近超市買食材 place_intent=shopping preference_hints=[超市] — 尋找附近超市"
   },
   "air_quality": {
     "fetch_failed": "獲取 {city} 的空氣品質數據失敗",
@@ -142,7 +142,7 @@
   },
   "locations": {"label_required": "地點標籤不能為空", "city_required": "城市不能為空", "confirm_add": "請確認是否新增地點「{label}（{city}）」。", "confirm_remove": "請確認是否刪除儲存地點「{label}」。", "confirm_default": "請確認是否將「{label}」設為預設地點。", "confirm": "確認", "cancel": "取消", "duplicate": "地點標籤已存在：{label}", "not_found": "找不到地點：{label}", "save_failed": "儲存失敗，請檢查外掛儲存是否啟用。", "removed": "已刪除地點：{label}", "default_set": "已將 {label} 設為預設地點"},
   "unit": {"unsupported": "不支援的單位「{unit}」", "invalid_value": "數值無效", "same": "{value} {source} = {value} {target}（相同單位）", "unsupported_pair": "不支援 {source} → {target} 的換算"},
-  "date": {"target_required": "請指定目標日期", "invalid": "無法識別日期「{value}」", "future": "距離 {event} 還有 {days} 天 ({date})", "today": "🎉 今天就是 {event}！", "past": "{event} 已經過去 {days} 天 ({date})", "weeks": "約 {weeks} 週 | {weekday}", "invalid_start": "無法識別開始日期「{value}」", "invalid_end": "無法識別結束日期「{value}」", "between": "{start} → {end}：共 {days} 天", "years": "{value} 年", "months": "{value} 個月", "days": "{value} 天", "weekdays": ["週一", "週二", "週三", "週四", "週五", "週六", "週日"]},
+  "date": {"target_required": "請指定目標日期", "invalid": "無法識別日期「{value}」", "future": "距離 {event} 還有 {days} 天 ({date})", "today": "🎉 今天就是 {event}！", "past": "{event} 已經過去 {days} 天 ({date})", "weeks": "約 {weeks} 週 | {weekday}", "invalid_start": "無法識別開始日期「{value}」", "invalid_end": "無法識別結束日期「{value}」", "between": "{start} → {end}：共 {days} 天", "years": "{value} 年", "months": "{value} 個月", "days": "{value} 天", "holiday_alternatives": "{event}（暫按 {country}；其他可能：{alternatives}）", "weekdays": ["週一", "週二", "週三", "週四", "週五", "週六", "週日"]},
   "panel.title": "生活助手",
   "panel.subtitle": "管理基礎設定和常用地點，天氣、路線、附近搜尋等工具入口保持可用。",
   "panel.config.title": "基礎設定",

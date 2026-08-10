@@ -224,7 +224,7 @@ class LocationsRouter(PluginRouter):
                 "precision": geo.get("_location_precision", "city"),
                 "source": geo.get("_location_source", "geocoder"),
                 "timezone": geo.get("timezone", ""),
-                "verified": bool(geo.get("_location_verified", True)),
+                "verified": bool(geo.get("_location_verified", False)),
                 "schema_version": 2,
                 "resolved_query": resolved_query,
                 "resolved_at": datetime.now(timezone.utc).isoformat(),

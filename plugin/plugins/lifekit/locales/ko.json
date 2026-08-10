@@ -50,7 +50,7 @@
   },
   "summary": {
     "weather": "{city}: {weather}, {temp}°C(느낌은 {feels}°C), 습도 {humidity}%",
-    "vpn_hint": " (프록시가 감지됨 - IP에 {ip_city}이 표시되고 시스템 시간대로 자동 전환됨)",
+    "timezone_mismatch": " (IP 위치와 기기 시간대가 다르므로 위치가 대략적일 수 있습니다)",
     "travel_prefix": "{city} 여행 조언: ",
     "hourly_temp_range": "다음 {count}h 온도 {low}~{high}°C",
     "hourly_rain_times": "예상 비 예상 시간: {times}",
@@ -79,7 +79,7 @@
     "no_destination": "목적지를 지정해주세요",
     "invalid_mode": "여행 모드 '{mode}'이(가) 잘못되었습니다. 허용됨: {valid}",
     "mode_transit": "🚇 Transit", "mode_walking": "🚶 Walking", "mode_bicycling": "🚲 Cycling", "mode_driving": "🚗 Driving",
-    "near_walk": "🚶 Very close; walking is recommended", "rain_transit": "🚇 Rain expected; use transit", "good_bike": "🚲 Moderate distance and good weather; cycling is suitable", "transit_advice": "🚇 Transit is recommended"
+    "near_walk": "🚶 Very close; walking is recommended", "rain_transit": "🚇 Rain expected; use transit", "good_bike": "🚲 Moderate distance and good weather; cycling is suitable", "transit_advice": "🚇 Transit is recommended", "step_take": "{line} 탑승", "step_walk": "{distance} 걷기"
   },
   "nearby": {
     "no_query": "검색어를 입력해주세요. (예: 레스토랑, 카페, 공원)",
@@ -127,7 +127,7 @@
     "provider_unavailable": "레시피 서비스를 일시적으로 사용할 수 없습니다.",
     "found": "{count}개의 레시피를 찾았습니다: {names}",
     "random_summary": "🎲 무작위 추천: {recipe}",
-    "entry_search_name": "Search recipes", "entry_search_description": "Search recipes by dish or ingredient with limited Chinese aliases.", "entry_random_name": "Random recipe", "entry_random_description": "Recommend a random recipe.", "ingredients": "Ingredients", "instructions": "Instructions", "today_try": "🎲 Try today: {recipe}", "action_food": "food_recommend cuisine={query} — find similar restaurants nearby", "action_market": "search_nearby request=nearby supermarket for ingredients place_intent=shopping preference_hints=[supermarket] — find a supermarket"
+    "entry_search_name": "Search recipes", "entry_search_description": "Search the requested dish or ingredient without replacing a dish with a generic ingredient.", "entry_random_name": "Random recipe", "entry_random_description": "Recommend a random recipe.", "ingredients": "Ingredients", "instructions": "Instructions", "today_try": "🎲 Try today: {recipe}", "action_food": "food_recommend cuisine={query} — find similar restaurants nearby", "action_market": "search_nearby request=nearby supermarket for ingredients place_intent=shopping preference_hints=[supermarket] — find a supermarket"
   },
   "air_quality": {
     "fetch_failed": "{city}의 공기질 데이터를 가져오지 못했습니다.",
@@ -142,7 +142,7 @@
   },
   "locations": {"label_required": "위치 라벨을 입력하세요", "city_required": "도시를 입력하세요", "confirm_add": "{label} ({city}) 위치를 추가할까요?", "confirm_remove": "{label} 위치를 삭제할까요?", "confirm_default": "{label}을 기본 위치로 설정할까요?", "confirm": "확인", "cancel": "취소", "duplicate": "위치 라벨이 이미 있습니다: {label}", "not_found": "위치를 찾을 수 없습니다: {label}", "save_failed": "저장에 실패했습니다. 플러그인 저장소를 확인하세요.", "removed": "위치를 삭제했습니다: {label}", "default_set": "기본 위치를 설정했습니다: {label}"},
   "unit": {"unsupported": "지원하지 않는 단위: {unit}", "invalid_value": "잘못된 값", "same": "{value} {source} = {value} {target} (동일 단위)", "unsupported_pair": "지원하지 않는 변환: {source} → {target}"},
-  "date": {"target_required": "Please specify a target date", "invalid": "Could not parse date {value}", "future": "{days} days until {event} ({date})", "today": "🎉 {event} is today!", "past": "{event} was {days} days ago ({date})", "weeks": "About {weeks} weeks | {weekday}", "invalid_start": "Could not parse start date {value}", "invalid_end": "Could not parse end date {value}", "between": "{start} → {end}: {days} days", "years": "{value} years", "months": "{value} months", "days": "{value} days", "weekdays": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]},
+  "date": {"target_required": "Please specify a target date", "invalid": "Could not parse date {value}", "future": "{days} days until {event} ({date})", "today": "🎉 {event} is today!", "past": "{event} was {days} days ago ({date})", "weeks": "About {weeks} weeks | {weekday}", "invalid_start": "Could not parse start date {value}", "invalid_end": "Could not parse end date {value}", "between": "{start} → {end}: {days} days", "years": "{value} years", "months": "{value} months", "days": "{value} days", "holiday_alternatives": "{event} (assuming {country}; alternatives: {alternatives})", "weekdays": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]},
   "panel.title": "LifeKit",
   "panel.subtitle": "날씨, 경로, 주변 검색 및 기타 도구를 계속 사용하면서 기본 설정과 저장된 위치를 관리하세요.",
   "panel.config.title": "구성",
