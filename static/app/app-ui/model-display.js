@@ -114,7 +114,7 @@
     function restoreLive2DDisplaySurface(reason) {
         const preserveAvatarCornerPeekOpacity = window.nekoYuiGuideAvatarCornerPeekActive === true;
         const preserveYuiGuidePreparing = shouldPreserveYuiGuideLive2DPreparing();
-        if (!preserveYuiGuidePreparing) {
+        if (!preserveYuiGuidePreparing && !preserveAvatarCornerPeekOpacity) {
             restoreYuiGuideLive2DPreparingControls();
         }
         if (document.body && document.body.classList) {

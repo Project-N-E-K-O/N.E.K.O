@@ -161,7 +161,8 @@ function createFrameMotionSession(options) {
         elements: {
             'live2d-container': container,
             'live2d-canvas': canvas
-        }
+        },
+        configureWindow: normalizedOptions.configureWindow
     });
     const coreModel = {};
     const model = {
@@ -201,6 +202,7 @@ function createFrameMotionSession(options) {
             }
         }
     };
+    context.window.live2dManager = manager;
     const session = new context.api.Live2DFrameMotionSession({
         manager,
         model,
@@ -218,6 +220,7 @@ function createFrameMotionSession(options) {
         useCompositorOpacity: true
     });
     return {
+        api: context.api,
         session,
         model,
         container,
@@ -820,6 +823,51 @@ test('Live2D opening frame motion restores its original state when reveal fallba
     assert.equal(window.nekoYuiGuideAvatarCornerPeekActive, false);
 });
 
+test('Live2D non-opening frame motion restores display opacity when cancelled', async () => {
+    const frameCallbacks = [];
+    let cancelled = false;
+    const { api, model, container, canvas, window } = createFrameMotionSession({
+        container: { style: { opacity: '1', transition: 'opacity 900ms ease' } },
+        canvas: { style: { opacity: '1', transition: 'opacity 900ms ease' } },
+        configureWindow(targetWindow) {
+            targetWindow.requestAnimationFrame = (callback) => {
+                frameCallbacks.push(callback);
+                return frameCallbacks.length;
+            };
+            targetWindow.cancelAnimationFrame = () => {};
+        }
+    });
+
+    const playback = api.playAvatarMotion({
+        preset: 'bottom-rise',
+        narrationBudgeted: true,
+        isOpeningProbe: false,
+        isCancelled: () => cancelled
+    });
+
+    await Promise.resolve();
+    await Promise.resolve();
+    window.__setNow(1500);
+    frameCallbacks.splice(0).forEach((callback) => callback());
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.equal(container.style.opacity, '0');
+
+    cancelled = true;
+    window.__setNow(1600);
+    frameCallbacks.splice(0).forEach((callback) => callback());
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const result = await playback;
+    assert.equal(result.result, 'cancelled');
+    assert.equal(model.alpha, 0.8);
+    assert.equal(container.style.opacity, '1');
+    assert.equal(canvas.style.opacity, '1');
+    assert.equal(container.style.transition, 'opacity 900ms ease');
+    assert.equal(canvas.style.transition, 'opacity 900ms ease');
+});
+
 test('tutorial frame motion keeps one visible compositor and opening motion skips the fade handoff', () => {
     const frameMotionSource = avatarStageSource
         .split('async function playFrameAvatarMotion(options, preset) {')[1]
@@ -945,6 +993,9 @@ test('Live2D visibility recovery preserves opacity while avatar corner peek is a
     const wakeupRevealSource = wakeupSource
         .split('function revealPreparedTutorialLive2D(reason) {')[1]
         .split('function normalizeDuration(value, fallback) {')[0];
+    const restoreDisplaySurfaceSource = modelDisplaySource
+        .split('function restoreLive2DDisplaySurface(reason) {')[1]
+        .split('function activateLive2DRenderForDisplay(reason) {')[0];
     const preparingCommentIndex = showLive2dSource.indexOf('// 教程准备/探身演出期间');
     const preparingFastPathIndex = showLive2dSource.lastIndexOf(
         'if (preserveYuiGuidePreparing || preserveYuiGuideAvatarMotion)',
@@ -966,6 +1017,10 @@ test('Live2D visibility recovery preserves opacity while avatar corner peek is a
     assert.match(universalManagerSource, /preserveAvatarCornerPeekOpacity[\s\S]{0,360}restoreTutorialLive2dDisplayState/);
     assert.match(universalManagerSource, /preserveOpacity[\s\S]{0,360}live2dCanvas\.style\.setProperty\('opacity', '1', 'important'\)/);
     assert.match(universalManagerSource, /preserveAvatarMotionOpacity[\s\S]{0,500}id !== 'live2d-container'[\s\S]{0,120}id !== 'live2d-canvas'/);
+    assert.match(
+        restoreDisplaySurfaceSource,
+        /if \(!preserveYuiGuidePreparing && !preserveAvatarCornerPeekOpacity\) \{\s*restoreYuiGuideLive2DPreparingControls\(\);/
+    );
 });
 
 test('daily opening reveal keeps a bounded fallback while preserving explicit overrides', () => {

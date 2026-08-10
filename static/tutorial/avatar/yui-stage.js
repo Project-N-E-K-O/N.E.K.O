@@ -6629,6 +6629,14 @@
         activeAvatarMotionSession = session;
         await session.waitForFinish();
         if (session.result !== 'played') {
+            if (!isOpeningProbe) {
+                writeAvatarMotionVisibleOpacity(context, originalTargets, originalAlpha, originalDisplayAlpha);
+                originalTargets.forEach((target) => {
+                    if (target.element && target.element.style) {
+                        target.element.style.transition = target.transition || '';
+                    }
+                });
+            }
             return {
                 result: session.result || 'cancelled',
                 reason: session.result || 'cancelled'
