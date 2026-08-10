@@ -5,18 +5,23 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass, field, replace
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Protocol, Sequence
 import unicodedata
 
 import httpx
 
-from ._routing import haversine_km
+from ._geodesy import haversine_km
 from ._coordinates import gcj02_to_wgs84, wgs84_to_gcj02
+from ._hedged import ordered_hedged_first
 
 logger = logging.getLogger(__name__)
 
 UPSTREAM_TIMEOUT = "UPSTREAM_TIMEOUT"
 UPSTREAM_UNAVAILABLE = "UPSTREAM_UNAVAILABLE"
+OVERPASS_TOTAL_TIMEOUT_SECONDS = 8.0
+OVERPASS_HEDGE_DELAY_SECONDS = 0.25
+POI_TOTAL_TIMEOUT_SECONDS = 8.0
+POI_PROVIDER_HEDGE_SECONDS = 0.25
 
 
 class POIProviderError(RuntimeError):
@@ -25,6 +30,11 @@ class POIProviderError(RuntimeError):
     def __init__(self, message: str, *, code: str = UPSTREAM_UNAVAILABLE) -> None:
         super().__init__(message)
         self.code = code
+
+
+def _text_value(value: Any) -> str:
+    """Return provider text only when the JSON value is actually textual."""
+    return value.strip() if isinstance(value, str) else ""
 
 
 @dataclass
@@ -50,6 +60,20 @@ class POIResult:
     error: str = ""
     error_code: str = ""
     searched_terms: tuple[str, ...] = ()
+
+
+class POIProvider(Protocol):
+    name: str
+
+    async def search(
+        self,
+        query: str,
+        lat: float,
+        lon: float,
+        radius: int = 3000,
+        limit: int = 10,
+        timeout: float = 8.0,
+    ) -> List[POIItem]: ...
 
 
 # ── 高德 POI 搜索 ───────────────────────────────────────────────
@@ -78,24 +102,31 @@ class AMapPOI:
             r = await c.get(url, params=params)
             r.raise_for_status()
             data = r.json()
+        if not isinstance(data, dict):
+            raise POIProviderError("AMap response is not an object")
         if data.get("status") != "1":
             raise POIProviderError(data.get("info") or "AMap POI search failed")
         items: List[POIItem] = []
-        for poi in (data.get("pois") or []):
+        pois = data.get("pois")
+        if not isinstance(pois, list):
+            raise POIProviderError("AMap response has no POI list")
+        for poi in pois:
+            if not isinstance(poi, dict):
+                continue
             try:
-                loc_str = poi.get("location", "")
+                loc_str = _text_value(poi.get("location"))
                 plon, plat = 0.0, 0.0
                 if "," in loc_str:
                     parts = loc_str.split(",")
                     plon, plat = float(parts[0]), float(parts[1])
                     plat, plon = gcj02_to_wgs84(plat, plon)
                 items.append(POIItem(
-                    name=poi.get("name", ""),
-                    address=poi.get("address", "") if isinstance(poi.get("address"), str) else "",
-                    type_name=poi.get("type", "").split(";")[0] if poi.get("type") else "",
+                    name=_text_value(poi.get("name")),
+                    address=_text_value(poi.get("address")),
+                    type_name=_text_value(poi.get("type")).split(";")[0],
                     distance_m=float(poi.get("distance", 0)),
                     lat=plat, lon=plon,
-                    tel=poi.get("tel", "") if isinstance(poi.get("tel"), str) else "",
+                    tel=_text_value(poi.get("tel")),
                 ))
             except (ValueError, TypeError, KeyError):
                 continue
@@ -130,25 +161,34 @@ class BaiduPOI:
             r = await c.get(url, params=params)
             r.raise_for_status()
             data = r.json()
+        if not isinstance(data, dict):
+            raise POIProviderError("Baidu response is not an object")
         if data.get("status") != 0:
             raise POIProviderError(data.get("message") or "Baidu POI search failed")
         items: List[POIItem] = []
-        for poi in (data.get("results") or []):
+        pois = data.get("results")
+        if not isinstance(pois, list):
+            raise POIProviderError("Baidu response has no POI list")
+        for poi in pois:
+            if not isinstance(poi, dict):
+                continue
             try:
                 loc = poi.get("location", {})
                 detail = poi.get("detail_info", {})
+                if not isinstance(loc, dict):
+                    continue
                 plat = float(loc.get("lat", 0))
                 plon = float(loc.get("lng", 0))
                 if plat or plon:
                     plat, plon = gcj02_to_wgs84(plat, plon)
                 items.append(POIItem(
-                    name=poi.get("name", ""),
-                    address=poi.get("address", ""),
-                    type_name=poi.get("detail_info", {}).get("tag", "") if isinstance(detail, dict) else "",
+                    name=_text_value(poi.get("name")),
+                    address=_text_value(poi.get("address")),
+                    type_name=_text_value(detail.get("tag")) if isinstance(detail, dict) else "",
                     distance_m=float(detail.get("distance", 0)) if isinstance(detail, dict) else 0,
                     lat=plat,
                     lon=plon,
-                    tel=detail.get("phone", "") if isinstance(detail, dict) else "",
+                    tel=_text_value(detail.get("phone")) if isinstance(detail, dict) else "",
                     rating=str(detail.get("overall_rating", "")) if isinstance(detail, dict) else "",
                 ))
             except (ValueError, TypeError, KeyError):
@@ -194,6 +234,31 @@ class OverpassPOI:
         "咖啡馆": '["amenity"="cafe"]', "cafe": '["amenity"="cafe"]',
         "茶馆": '["amenity"="cafe"]',
         "甜品店": '["shop"~"^(confectionery|pastry)$"]',
+        "冷饮": '["shop"~"^(ice_cream|confectionery)$"]',
+        "冰淇淋": '["shop"="ice_cream"]',
+        "沙拉": '["amenity"="restaurant"]["cuisine"~"salad"]',
+        "刨冰": '["shop"="ice_cream"]',
+        "凉面": '["amenity"="restaurant"]["cuisine"~"noodle"]',
+        "炖菜": '["amenity"="restaurant"]',
+        "麻辣烫": '["amenity"="restaurant"]["cuisine"~"hot_pot|hotpot"]',
+        "羊肉汤": '["amenity"="restaurant"]["cuisine"~"soup"]',
+        "热干面": '["amenity"="restaurant"]["cuisine"~"noodle"]',
+        "炖汤": '["amenity"="restaurant"]["cuisine"~"soup"]',
+        "甜品": '["shop"~"^(confectionery|pastry)$"]',
+        "面包": '["shop"="bakery"]',
+        "brunch": '["amenity"~"^(cafe|restaurant)$"]',
+        "自助餐": '["amenity"="restaurant"]["cuisine"~"buffet"]',
+        "中餐厅": '["amenity"="restaurant"]["cuisine"~"chinese"]',
+        "西餐": '["amenity"="restaurant"]["cuisine"~"western"]',
+        "法餐": '["amenity"="restaurant"]["cuisine"~"french"]',
+        "面馆": '["amenity"="restaurant"]["cuisine"~"noodle"]',
+        "快餐": '["amenity"="fast_food"]',
+        "便当": '["amenity"~"^(restaurant|fast_food)$"]["cuisine"~"japanese"]',
+        "拉面": '["amenity"="restaurant"]["cuisine"~"ramen|noodle"]',
+        "粤菜": '["amenity"="restaurant"]["cuisine"~"chinese"]',
+        "小龙虾": '["amenity"="restaurant"]["cuisine"~"seafood"]',
+        "大排档": '["amenity"~"^(food_court|restaurant)$"]',
+        "串串": '["amenity"="restaurant"]["cuisine"~"hot_pot|hotpot"]',
         "超市": '["shop"="supermarket"]', "便利店": '["shop"="convenience"]',
         "购物中心": '["shop"="mall"]', "商场": '["shop"="mall"]',
         "书店": '["shop"="books"]',
@@ -231,7 +296,7 @@ class OverpassPOI:
             sanitized = re.sub(r'[\x00-\x1f\x7f]', '', query)  # strip control chars
             escaped = re.sub(r'(["\\\.\*\+\?\(\)\[\]\{\}\|^$])', r'\\\1', sanitized)
             tag_filter = f'["name"~"{escaped}",i]'
-        request_timeout = max(3.0, min(timeout + 2.0, 6.0))
+        request_timeout = max(0.01, min(float(timeout), OVERPASS_TOTAL_TIMEOUT_SECONDS))
         query_timeout = max(1, min(int(timeout), int(request_timeout) - 1))
         overpass_query = f"""
         [out:json][timeout:{query_timeout}];
@@ -245,24 +310,35 @@ class OverpassPOI:
             data = await self._request_first_available(
                 self._http_client,
                 overpass_query,
+                timeout=request_timeout,
             )
         else:
             async with httpx.AsyncClient(
                 timeout=request_timeout,
-                headers={"User-Agent": "N.E.K.O-LifeKit/1.0"},
+                headers={"User-Agent": "N.E.K.O-LifeKit/0.3"},
             ) as client:
-                data = await self._request_first_available(client, overpass_query)
+                data = await self._request_first_available(
+                    client,
+                    overpass_query,
+                    timeout=request_timeout,
+                )
         items: List[POIItem] = []
         for el in (data.get("elements") or []):
+            if not isinstance(el, dict):
+                continue
             try:
                 tags = el.get("tags", {})
-                name = tags.get("name", "")
+                if not isinstance(tags, dict):
+                    continue
+                name = _text_value(tags.get("name"))
                 if not name:
                     continue
                 raw_lat = el.get("lat")
                 raw_lon = el.get("lon")
                 if raw_lat is None or raw_lon is None:
                     center = el.get("center", {}) or {}
+                    if not isinstance(center, dict):
+                        continue
                     raw_lat = raw_lat if raw_lat is not None else center.get("lat")
                     raw_lon = raw_lon if raw_lon is not None else center.get("lon")
                 # 合法坐标可能是 0.0（赤道/本初子午线），所以用显式 None 判定喵
@@ -271,14 +347,19 @@ class OverpassPOI:
                 plat = float(raw_lat)
                 plon = float(raw_lon)
                 dist = haversine_km(lat, lon, plat, plon) * 1000
-                addr_parts = [tags.get("addr:street", ""), tags.get("addr:housenumber", "")]
+                addr_parts = [
+                    _text_value(tags.get("addr:street")),
+                    _text_value(tags.get("addr:housenumber")),
+                ]
                 items.append(POIItem(
                     name=name,
                     address=" ".join(p for p in addr_parts if p).strip(),
-                    type_name=tags.get("cuisine", tags.get("shop", tags.get("amenity", ""))),
+                    type_name=_text_value(
+                        tags.get("cuisine", tags.get("shop", tags.get("amenity", "")))
+                    ),
                     distance_m=dist,
                     lat=plat, lon=plon,
-                    tel=tags.get("phone", ""),
+                    tel=_text_value(tags.get("phone")),
                 ))
             except (ValueError, TypeError, KeyError):
                 continue
@@ -289,34 +370,80 @@ class OverpassPOI:
         self,
         client: httpx.AsyncClient,
         overpass_query: str,
+        *,
+        timeout: float,
     ) -> dict[str, Any]:
         errors: list[str] = []
         error_codes: list[str] = []
-        for endpoint_index, endpoint in enumerate(self._endpoints):
+
+        async def request_endpoint(
+            endpoint_index: int,
+            endpoint: str,
+        ) -> tuple[int, dict[str, Any] | None, str, str]:
             try:
                 response = await client.post(endpoint, data={"data": overpass_query})
                 response.raise_for_status()
                 data = response.json()
                 if not isinstance(data, dict):
                     raise ValueError("Overpass response is not an object")
-                return data
+                remark = data.get("remark")
+                if remark:
+                    code = (
+                        UPSTREAM_TIMEOUT
+                        if "timeout" in str(remark).casefold()
+                        else UPSTREAM_UNAVAILABLE
+                    )
+                    raise POIProviderError("Overpass returned a runtime error", code=code)
+                if not isinstance(data.get("elements"), list):
+                    raise POIProviderError("Overpass response has no elements list")
+                return endpoint_index, data, "", ""
             except (httpx.HTTPError, ValueError, POIProviderError) as exc:
                 message = f"{endpoint}: {type(exc).__name__}: {exc}"
-                errors.append(message)
-                error_codes.append(
+                error_code = (
                     UPSTREAM_TIMEOUT
                     if isinstance(exc, (httpx.TimeoutException, TimeoutError))
                     else getattr(exc, "code", UPSTREAM_UNAVAILABLE)
                 )
-                logger.warning(
+                logger.debug(
                     "Overpass instance failed: endpoint_index=%s error_type=%s",
                     endpoint_index,
                     type(exc).__name__,
                 )
+                return endpoint_index, None, message, error_code
+
+        attempts = tuple(
+            lambda index=index, endpoint=endpoint: request_endpoint(index, endpoint)
+            for index, endpoint in enumerate(self._endpoints)
+        )
+        outcome = await ordered_hedged_first(
+            attempts,
+            accept=lambda value: value[1] is not None,
+            hedge_delay=OVERPASS_HEDGE_DELAY_SECONDS,
+            total_timeout=timeout,
+        )
+        if outcome.winner is not None:
+            return outcome.winner[1] or {"elements": []}
+        for _, (_, _, error, error_code) in outcome.completed:
+            errors.append(error)
+            error_codes.append(error_code)
+        for endpoint_index in outcome.timed_out_indices:
+            endpoint = self._endpoints[endpoint_index]
+            errors.append(f"{endpoint}: TimeoutError: total request budget exceeded")
+            error_codes.append(UPSTREAM_TIMEOUT)
+            logger.debug(
+                "Overpass instance failed: endpoint_index=%s error_type=TimeoutError",
+                endpoint_index,
+            )
+
         code = (
             UPSTREAM_TIMEOUT
             if error_codes and all(value == UPSTREAM_TIMEOUT for value in error_codes)
             else UPSTREAM_UNAVAILABLE
+        )
+        logger.warning(
+            "Overpass search failed: endpoint_count=%s error_code=%s",
+            len(errors),
+            code,
         )
         raise POIProviderError(
             "all Overpass instances failed: " + "; ".join(errors),
@@ -359,7 +486,7 @@ class POIService:
     """根据配置选择 provider 搜索 POI。"""
 
     def __init__(self, cfg: Dict[str, Any]):
-        self._providers: list = []
+        self._providers: list[POIProvider] = []
         amap_key = str(cfg.get("amap_key", "")).strip()
         if amap_key:
             self._providers.append(AMapPOI(amap_key))
@@ -372,22 +499,15 @@ class POIService:
         self, query: str, lat: float, lon: float,
         radius: int = 3000, limit: int = 10,
     ) -> POIResult:
-        result = POIResult(query=query)
-        errors: list[str] = []
-        error_codes: list[str] = []
-        successful_provider = ""
-        for provider in self._providers:
+        async def search_provider(
+            provider: POIProvider,
+        ) -> tuple[POIProvider, list[POIItem] | None, str, str]:
             try:
                 items = await provider.search(query, lat, lon, radius=radius, limit=limit)
-                successful_provider = provider.name
-                if items:
-                    result.items = items
-                    result.provider = provider.name
-                    return result
+                return provider, items, "", ""
             except (httpx.HTTPError, ValueError, POIProviderError) as exc:
                 message = f"{provider.name}: {type(exc).__name__}: {exc}"
-                errors.append(message)
-                error_codes.append(
+                error_code = (
                     UPSTREAM_TIMEOUT
                     if isinstance(exc, (httpx.TimeoutException, TimeoutError))
                     else getattr(exc, "code", UPSTREAM_UNAVAILABLE)
@@ -397,7 +517,36 @@ class POIService:
                     provider.name,
                     type(exc).__name__,
                 )
-                continue
+                return provider, None, message, error_code
+
+        result = POIResult(query=query)
+        errors: list[str] = []
+        error_codes: list[str] = []
+        successful_provider = ""
+        outcome = await ordered_hedged_first(
+            tuple(
+                lambda provider=provider: search_provider(provider)
+                for provider in self._providers
+            ),
+            accept=lambda value: bool(value[1]),
+            hedge_delay=POI_PROVIDER_HEDGE_SECONDS,
+            total_timeout=POI_TOTAL_TIMEOUT_SECONDS,
+        )
+        if outcome.winner is not None:
+            provider, items, _, _ = outcome.winner
+            result.items = items or []
+            result.provider = provider.name
+            return result
+        for _, (provider, items, error, error_code) in outcome.completed:
+            if items is not None:
+                successful_provider = successful_provider or provider.name
+            else:
+                errors.append(error)
+                error_codes.append(error_code)
+        for provider_index in outcome.timed_out_indices:
+            errors.append(f"{self._providers[provider_index].name}: timeout")
+            error_codes.append(UPSTREAM_TIMEOUT)
+
         if successful_provider:
             result.provider = successful_provider
         elif errors:

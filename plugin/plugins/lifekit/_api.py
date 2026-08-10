@@ -13,7 +13,7 @@ from ._location import LocationPurpose, LocationRequest, LocationResolver, Locat
 _GEOIP_BASE = "https://ipapi.co"
 _FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 _AIR_QUALITY_URL = "https://air-quality-api.open-meteo.com/v1/air-quality"
-_UA = "NEKO-LifeKit-Plugin/0.2"
+_UA = "NEKO-LifeKit-Plugin/0.3"
 
 # ipapi.co 用 ISO 639 简码；Content-Language 头部即可
 LOCALE_TO_GEOIP_LANG: Dict[str, str] = {
@@ -154,7 +154,13 @@ async def fetch_forecast(
         async with httpx.AsyncClient(timeout=timeout) as c:
             r = await c.get(_FORECAST_URL, params=params)
             if r.status_code == 200:
-                return r.json()
+                payload = r.json()
+                if not isinstance(payload, dict):
+                    raise ForecastError(
+                        "Weather API returned an invalid response",
+                        cause="api_error",
+                    )
+                return payload
             raise ForecastError(f"API returned HTTP {r.status_code}", cause="api_error")
     except ForecastError:
         raise
@@ -200,7 +206,13 @@ async def fetch_air_quality(
         async with httpx.AsyncClient(timeout=timeout) as c:
             r = await c.get(_AIR_QUALITY_URL, params=params)
             if r.status_code == 200:
-                return r.json()
+                payload = r.json()
+                if not isinstance(payload, dict):
+                    raise AirQualityError(
+                        "Air quality API returned an invalid response",
+                        cause="api_error",
+                    )
+                return payload
             raise AirQualityError(f"Air quality API returned HTTP {r.status_code}", cause="api_error")
     except AirQualityError:
         raise

@@ -87,7 +87,7 @@ def test_nearby_entry_exposes_typed_hints_instead_of_provider_search_terms() -> 
     schema = entry.meta.input_schema or {}
     properties = schema.get("properties", {})
 
-    assert "不要生成地图召回词" in entry.meta.description
+    assert entry.meta.description["$i18n"] == "entries.searchNearby.description"
     assert "request" in properties
     assert properties["place_intent"]["enum"] == [
         "food",
@@ -200,12 +200,48 @@ def test_location_entries_project_their_control_and_risk_scalars_to_llm(
             "location_groups",
         ]
     elif router_type is LocationsRouter:
-        assert entry.meta.llm_result_fields == ["status", "summary"]
-    else:
         assert entry.meta.llm_result_fields == [
+            "status", "summary", "message", "location", "choices", "confirmation_token",
+        ]
+    else:
+        common_fields = [
             "status",
             "summary",
             "assumed",
             "assumed_location",
             "ambiguity_warning",
         ]
+        useful_fields = {
+            HourlyForecastRouter: ["city", "hours", "total_hours"],
+            FoodRecommendRouter: [
+                "recommendations", "query", "weather_reason", "provider", "next_actions",
+            ],
+            CurrentWeatherRouter: ["city", "current", "forecast", "vpn_detected", "next_actions"],
+            AirQualityRouter: ["city", "aqi", "advice", "next_actions"],
+            TravelAdviceRouter: [
+                "city", "tips", "clothing", "umbrella", "sunscreen", "next_actions",
+            ],
+            TripRouter: [
+                "origin", "destination", "distance_km", "routes", "weather_tips",
+                "mode_advice", "provider", "next_actions",
+            ],
+        }
+        assert entry.meta.llm_result_fields == common_fields + useful_fields[router_type]
+
+
+def test_write_confirmation_token_survives_host_llm_projection() -> None:
+    entry = LocationsRouter().collect_entries()["remove_location"]
+
+    detail = parse_plugin_result(
+        {
+            "status": "clarify",
+            "summary": "Confirm removal",
+            "choices": ["Confirm", "Cancel"],
+            "confirmation_token": "one-time-token",
+            "context": {"location_id": "home"},
+        },
+        llm_result_fields=entry.meta.llm_result_fields,
+        lang="en",
+    )
+
+    assert "one-time-token" in detail

@@ -76,10 +76,16 @@ class I18n:
                 return key
         return self._default
 
-    def t(self, path: str, locale: Optional[str] = None, **kwargs: Any) -> str:
+    def t(
+        self,
+        path: str,
+        locale: Optional[str] = None,
+        fallback: str | None = None,
+        **kwargs: Any,
+    ) -> str:
         val = self.value(path, locale=locale)
         if val is None:
-            return path
+            return fallback if fallback is not None else path
         text = str(val)
         if kwargs:
             try:

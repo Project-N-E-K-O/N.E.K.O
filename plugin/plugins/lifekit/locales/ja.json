@@ -77,7 +77,9 @@
     "distance": "距離",
     "recommended": "おすすめ",
     "no_destination": "目的地を指定してください",
-    "invalid_mode": "無効なトリップ モード '{mode}'。許可: {valid}"
+    "invalid_mode": "無効なトリップ モード '{mode}'。許可: {valid}",
+    "mode_transit": "🚇 公共交通", "mode_walking": "🚶 徒歩", "mode_bicycling": "🚲 自転車", "mode_driving": "🚗 車",
+    "near_walk": "🚶 とても近いため徒歩がおすすめです", "rain_transit": "🚇 雨のため公共交通がおすすめです", "good_bike": "🚲 適度な距離で天気も良く、自転車向きです", "transit_advice": "🚇 公共交通がおすすめです"
   },
   "nearby": {
     "no_query": "検索キーワードを入力してください (例: レストラン、カフェ、公園)",
@@ -121,11 +123,49 @@
   "recipe": {
     "no_query": "料理名または材料を入力してください",
     "not_found": "「{query}」のレシピは見つかりませんでした。",
-    "random_fail": "ランダムなレシピを取得できませんでした。後でもう一度お試しください。"
+    "random_fail": "ランダムなレシピを取得できませんでした。後でもう一度お試しください。",
+    "provider_unavailable": "レシピサービスは一時的に利用できません。後でもう一度お試しください。",
+    "found": "{count} 件のレシピが見つかりました: {names}",
+    "random_summary": "🎲 ランダムおすすめ: {recipe}",
+    "entry_search_name": "レシピ検索", "entry_search_description": "料理名または材料で検索します。一般的な中国語名は限定的に変換されます。", "entry_random_name": "ランダムレシピ", "entry_random_description": "ランダムなレシピを提案し、近くのレストランも案内できます。", "ingredients": "材料", "instructions": "作り方", "today_try": "🎲 今日はこちら: {recipe}", "action_food": "food_recommend cuisine={query} — 近くの類似レストランを探す", "action_market": "search_nearby request=食材を買える近くのスーパー place_intent=shopping preference_hints=[スーパー] — スーパーを探す"
   },
   "air_quality": {
-    "fetch_failed": "{city} の大気質データの取得に失敗しました"
+    "fetch_failed": "{city} の大気質データの取得に失敗しました",
+    "summary": "{city} の大気質: {level}（AQI {aqi}）",
+    "pm25_suffix": "、PM2.5 {value} μg/m³",
+    "level": {
+      "good": "良好", "fair": "普通", "moderate": "中程度", "poor": "悪い",
+      "very_poor": "非常に悪い", "extremely_poor": "極めて悪い"
+    },
+    "advice": {
+      "mask": "マスクの着用を検討してください",
+      "reduce_outdoors": "屋外活動を減らしてください",
+      "outdoors_ok": "通常、屋外活動に適しています",
+      "pm25_high": "PM2.5 が高いです（{value} μg/m³）",
+      "uv": "紫外線が強いため、日焼け対策をしてください"
+    }
   },
+  "locations": {
+    "label_required": "場所のラベルを入力してください",
+    "city_required": "都市を入力してください",
+    "confirm_add": "「{label}（{city}）」を追加しますか？",
+    "confirm_remove": "保存場所「{label}」を削除しますか？",
+    "confirm_default": "「{label}」をデフォルトの場所に設定しますか？",
+    "confirm": "確認",
+    "cancel": "キャンセル",
+    "duplicate": "場所のラベルは既に存在します: {label}",
+    "not_found": "場所が見つかりません: {label}",
+    "save_failed": "保存に失敗しました。プラグインストレージを確認してください。",
+    "removed": "場所を削除しました: {label}",
+    "default_set": "デフォルトの場所を設定しました: {label}"
+  },
+  "unit": {
+    "unsupported": "未対応の単位です: {unit}",
+    "invalid_value": "値が無効です",
+    "same": "{value} {source} = {value} {target}（同じ単位）",
+    "unsupported_pair": "未対応の換算です: {source} → {target}"
+  },
+  "date": {"target_required": "対象日を指定してください", "invalid": "日付「{value}」を認識できません", "future": "{event} まであと {days} 日（{date}）", "today": "🎉 今日は {event} です！", "past": "{event} から {days} 日経過しました（{date}）", "weeks": "約 {weeks} 週間 | {weekday}", "invalid_start": "開始日「{value}」を認識できません", "invalid_end": "終了日「{value}」を認識できません", "between": "{start} → {end}：{days} 日", "years": "{value} 年", "months": "{value} か月", "days": "{value} 日", "weekdays": ["月曜日", "火曜日", "水曜日", "木曜日", "金曜日", "土曜日", "日曜日"]},
   "currency": {
     "no_currencies": "ソース通貨とターゲット通貨を指定してください",
     "convert_failed": "通貨換算に失敗しました: {from} → {to}"
@@ -152,6 +192,14 @@
   "panel.fields.forecastDaysHelp": "1日から7日まで対応します。",
   "panel.fields.locale": "言語",
   "panel.fields.forceLocale": "選択した言語を強制する",
+  "panel.fields.cacheTtl": "キャッシュ有効期間（秒）",
+  "panel.fields.enableGeoip": "IP による自動位置情報を許可",
+  "config.confirm_update": "これらの LifeKit 設定変更を保存しますか？",
+  "config.no_valid": "更新可能な設定項目がありません", "config.forecast_range": "予報日数は 1〜7 の範囲で指定してください", "config.cache_nonnegative": "キャッシュ期間を負の値にはできません", "config.locale_supported": "言語は次のいずれかです: {values}", "config.invalid_value": "設定値が無効です: {detail}", "config.update_failed": "設定の更新に失敗しました: {detail}",
+  "config.secret_ui_only": "地図 API キーは LifeKit 設定パネルでのみ更新できます。",
+  "panel.configured": "設定済み",
+  "panel.notConfigured": "未設定",
+  "panel.keepSecret": "空欄の場合は現在のキーを保持します",
   "panel.fields.label": "ラベル",
   "panel.fields.city": "市",
   "panel.fields.address": "住所",
@@ -272,5 +320,28 @@
   "quickstart.next.guide": "ガイド",
   "quickstart.next.entries": "ツールエントリ",
   "quickstart.next.entriesValue": "天気、旅行、場所、食べ物、日付、通貨、単位換算",
-  "quickstart.warning.network": "天気、場所、ルート、食べ物、レシピの機能は外部サービスを呼び出します。リクエストが失敗した場合は、最初にネットワーク、プロキシ、およびマップ API キーを確認してください。"
+  "quickstart.warning.network": "天気、場所、ルート、食べ物、レシピの機能は外部サービスを呼び出します。リクエストが失敗した場合は、最初にネットワーク、プロキシ、およびマップ API キーを確認してください。",
+  "entries.getWeather.name": "天気を取得",
+  "entries.getWeather.description": "都市、保存済み地点、自動位置情報の現在天気と日別予報を取得します。",
+  "entries.hourlyForecast.name": "時間別予報",
+  "entries.hourlyForecast.description": "最大168時間の気温、降水、風の予報を取得します。",
+  "entries.travelAdvice.name": "お出かけアドバイス",
+  "entries.travelAdvice.description": "天気に応じた服装、傘、日焼け止め、移動の助言を提供します。",
+  "entries.tripAdvice.name": "旅行を計画",
+  "entries.tripAdvice.description": "都市や保存済み地点間の経路を計画し、天気の助言を組み合わせます。",
+  "entries.searchNearby.name": "周辺を検索",
+  "entries.searchNearby.description": "道路、ランドマーク、現在地、都市の周辺を検索します。ユーザーの原文を保持し、型付き意図と明示された好みを使います。",
+  "entries.foodRecommend.name": "料理をおすすめ",
+  "entries.foodRecommend.description": "場所、天気、料理の好み、利用場面から近くの飲食店をおすすめします。",
+  "entries.airQuality.name": "空気質",
+  "entries.airQuality.description": "都市や保存済み地点の空気質、PM2.5、PM10、UVと助言を取得します。",
+  "entries.currencyConvert.name": "通貨換算",
+  "entries.currencyConvert.description": "欧州中央銀行の参照レートで主要通貨を換算します。",
+  "entries.countdown.name": "カウントダウン",
+  "entries.countdown.description": "日付、月日、対応する祝日までの日数を計算します。",
+  "entries.daysBetween.name": "日付間の日数",
+  "entries.daysBetween.description": "2つの日付の間の日数を計算します。",
+  "entries.unitConvert.name": "単位換算",
+  "entries.unitConvert.description": "長さ、重さ、温度、体積、面積、速度の一般的な単位を換算します。",
+  "runtime": {"weather_details": "体感 {feels}°C | 湿度 {humidity}% | 風速 {wind} km/h", "hourly_title": "時間別予報", "more_hours": "時間", "currency_rate_suffix": "（レート {rate}、{date}）", "currency_rate_card": "レート: 1 {from_currency} = {rate} {to_currency}（{date}）", "food_title": "{query}のおすすめ", "food_scene": "🎯 {scene}シーン", "food_rain": "🌧️ 雨の日は温かい料理がおすすめです", "food_hot": "🌡️ {temp}°C。冷たい料理がおすすめです", "food_cold": "🌡️ {temp}°C。温かい料理がおすすめです", "travel_title": "お出かけアドバイス"}
 }

@@ -77,7 +77,9 @@
     "distance": "Distancia",
     "recommended": "Recomendado",
     "no_destination": "Por favor especifica un destino",
-    "invalid_mode": "Modo de viaje no válido '{mode}'. Permitido: {valid}"
+    "invalid_mode": "Modo de viaje no válido '{mode}'. Permitido: {valid}",
+    "mode_transit": "🚇 Transit", "mode_walking": "🚶 Walking", "mode_bicycling": "🚲 Cycling", "mode_driving": "🚗 Driving",
+    "near_walk": "🚶 Very close; walking is recommended", "rain_transit": "🚇 Rain expected; use transit", "good_bike": "🚲 Moderate distance and good weather; cycling is suitable", "transit_advice": "🚇 Transit is recommended"
   },
   "nearby": {
     "no_query": "Introduzca una palabra clave de búsqueda (por ejemplo, restaurante, cafetería, parque)",
@@ -121,15 +123,26 @@
   "recipe": {
     "no_query": "Por favor ingresa el nombre de un plato o ingrediente",
     "not_found": "No se encontraron recetas para \"{query}\"",
-    "random_fail": "No se pudo obtener una receta aleatoria, inténtelo de nuevo más tarde"
+    "random_fail": "No se pudo obtener una receta aleatoria, inténtelo de nuevo más tarde",
+    "provider_unavailable": "El servicio de recetas no está disponible temporalmente.",
+    "found": "Se encontraron {count} recetas: {names}",
+    "random_summary": "🎲 Sugerencia aleatoria: {recipe}",
+    "entry_search_name": "Search recipes", "entry_search_description": "Search recipes by dish or ingredient with limited Chinese aliases.", "entry_random_name": "Random recipe", "entry_random_description": "Recommend a random recipe.", "ingredients": "Ingredients", "instructions": "Instructions", "today_try": "🎲 Try today: {recipe}", "action_food": "food_recommend cuisine={query} — find similar restaurants nearby", "action_market": "search_nearby request=nearby supermarket for ingredients place_intent=shopping preference_hints=[supermarket] — find a supermarket"
   },
   "air_quality": {
-    "fetch_failed": "No se pudieron obtener datos sobre la calidad del aire para {city}"
+    "fetch_failed": "No se pudieron obtener datos sobre la calidad del aire para {city}",
+    "summary": "Calidad del aire en {city}: {level} (AQI {aqi})",
+    "pm25_suffix": ", PM2.5 {value} μg/m³",
+    "level": {"good": "Buena", "fair": "Aceptable", "moderate": "Moderada", "poor": "Mala", "very_poor": "Muy mala", "extremely_poor": "Extremadamente mala"},
+    "advice": {"mask": "Considere usar mascarilla", "reduce_outdoors": "Reduzca la actividad al aire libre", "outdoors_ok": "La actividad al aire libre suele ser adecuada", "pm25_high": "PM2.5 alto ({value} μg/m³)", "uv": "La radiación UV es fuerte; use protección solar"}
   },
   "currency": {
     "no_currencies": "Especifique las monedas de origen y de destino.",
     "convert_failed": "Error en la conversión de moneda: {from} → {to}"
   },
+  "locations": {"label_required": "La etiqueta de ubicación es obligatoria", "city_required": "La ciudad es obligatoria", "confirm_add": "¿Confirmar la adición de {label} ({city})?", "confirm_remove": "¿Confirmar la eliminación de {label}?", "confirm_default": "¿Establecer {label} como ubicación predeterminada?", "confirm": "Confirmar", "cancel": "Cancelar", "duplicate": "La etiqueta ya existe: {label}", "not_found": "Ubicación no encontrada: {label}", "save_failed": "Error al guardar. Compruebe el almacenamiento del plugin.", "removed": "Ubicación eliminada: {label}", "default_set": "Ubicación predeterminada: {label}"},
+  "unit": {"unsupported": "Unidad no compatible: {unit}", "invalid_value": "Valor no válido", "same": "{value} {source} = {value} {target} (misma unidad)", "unsupported_pair": "Conversión no compatible: {source} → {target}"},
+  "date": {"target_required": "Please specify a target date", "invalid": "Could not parse date {value}", "future": "{days} days until {event} ({date})", "today": "🎉 {event} is today!", "past": "{event} was {days} days ago ({date})", "weeks": "About {weeks} weeks | {weekday}", "invalid_start": "Could not parse start date {value}", "invalid_end": "Could not parse end date {value}", "between": "{start} → {end}: {days} days", "years": "{value} years", "months": "{value} months", "days": "{value} days", "weekdays": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]},
   "panel.title": "LifeKit",
   "panel.subtitle": "Administre la configuración base y las ubicaciones guardadas mientras mantiene disponibles el clima, la ruta, la búsqueda cercana y otras herramientas.",
   "panel.config.title": "Configuración",
@@ -152,6 +165,14 @@
   "panel.fields.forecastDaysHelp": "Soporta de 1 a 7 días.",
   "panel.fields.locale": "Idioma",
   "panel.fields.forceLocale": "Forzar idioma seleccionado",
+  "panel.fields.cacheTtl": "Duración de caché (segundos)",
+  "panel.fields.enableGeoip": "Permitir ubicación automática por IP",
+  "config.confirm_update": "¿Guardar estos cambios de configuración de LifeKit?",
+  "config.no_valid": "No valid configuration fields to update", "config.forecast_range": "Forecast days must be between 1 and 7", "config.cache_nonnegative": "Cache lifetime cannot be negative", "config.locale_supported": "Locale must be one of: {values}", "config.invalid_value": "Invalid configuration value: {detail}", "config.update_failed": "Configuration update failed: {detail}",
+  "config.secret_ui_only": "Map API keys can only be updated in the LifeKit settings panel.",
+  "panel.configured": "Configurado",
+  "panel.notConfigured": "No configurado",
+  "panel.keepSecret": "Déjelo vacío para conservar la clave actual",
   "panel.fields.label": "Etiqueta",
   "panel.fields.city": "ciudad",
   "panel.fields.address": "Dirección",
@@ -272,5 +293,28 @@
   "quickstart.next.guide": "Guía",
   "quickstart.next.entries": "Entradas de herramientas",
   "quickstart.next.entriesValue": "Clima, viajes, lugares, comida, fechas, moneda, conversión de unidades",
-  "quickstart.warning.network": "Las funciones de clima, ubicación, ruta, comida y recetas llaman a servicios externos. Si las solicitudes fallan, verifique primero las claves API de red, proxy y mapa."
+  "quickstart.warning.network": "Las funciones de clima, ubicación, ruta, comida y recetas llaman a servicios externos. Si las solicitudes fallan, verifique primero las claves API de red, proxy y mapa.",
+  "entries.getWeather.name": "Get weather",
+  "entries.getWeather.description": "Get current weather and daily forecasts for a city, saved location, or automatic location.",
+  "entries.hourlyForecast.name": "Hourly forecast",
+  "entries.hourlyForecast.description": "Get hourly temperature, precipitation, and wind forecasts for up to 168 hours.",
+  "entries.travelAdvice.name": "Travel advice",
+  "entries.travelAdvice.description": "Give clothing, umbrella, sunscreen, and travel advice based on weather.",
+  "entries.tripAdvice.name": "Plan a trip",
+  "entries.tripAdvice.description": "Plan routes between cities or saved locations and combine them with weather advice.",
+  "entries.searchNearby.name": "Search nearby",
+  "entries.searchNearby.description": "Search near a road, landmark, current position, or city. Preserve the user's wording in request; use typed intent and explicit preference hints, and do not invent provider search terms.",
+  "entries.foodRecommend.name": "Recommend food",
+  "entries.foodRecommend.description": "Recommend nearby food from location, weather, cuisine, and dining occasion.",
+  "entries.airQuality.name": "Air quality",
+  "entries.airQuality.description": "Query current air quality, PM2.5, PM10, UV, and related advice for a city or saved location.",
+  "entries.currencyConvert.name": "Convert currency",
+  "entries.currencyConvert.description": "Convert major currencies using European Central Bank reference rates.",
+  "entries.countdown.name": "Countdown",
+  "entries.countdown.description": "Count days to a date, month-day, or supported holiday name.",
+  "entries.daysBetween.name": "Days between dates",
+  "entries.daysBetween.description": "Calculate the number of days between two dates.",
+  "entries.unitConvert.name": "Convert units",
+  "entries.unitConvert.description": "Convert common length, weight, temperature, volume, area, and speed units.",
+  "runtime": {"weather_details": "Feels like {feels}°C | humidity {humidity}% | wind {wind} km/h", "hourly_title": "Hourly forecast", "more_hours": "hours", "currency_rate_suffix": " (rate {rate}, {date})", "currency_rate_card": "Rate: 1 {from_currency} = {rate} {to_currency} ({date})", "food_title": "{query} recommendations", "food_scene": "🎯 {scene} occasion", "food_rain": "🌧️ Warm food suits a rainy day", "food_hot": "🌡️ {temp}°C is hot; try something cool", "food_cold": "🌡️ {temp}°C is cold; try something warm", "travel_title": "Travel advice"}
 }

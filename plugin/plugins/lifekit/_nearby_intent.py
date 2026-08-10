@@ -3,12 +3,22 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Literal, Sequence
 
 from ._nearby_discovery import normalize_search_terms
 
 
 MAX_PREFERENCE_HINTS = 4
+
+_ZH_LOCATION_PREFIX = re.compile(
+    r"^(?:请|麻烦|帮我|给我|想|我要|我想)?(?:查(?:一下)?|找(?:一下)?|看看|推荐)?"
+)
+_ZH_NEARBY_LOCATION = re.compile(r"^(?P<location>.+?)(?:附近|周边|旁边|一带)")
+_EN_NEARBY_LOCATION = re.compile(
+    r"\b(?:near|around|close\s+to)\s+(?P<location>[^,;!?。！？]+)",
+    re.IGNORECASE,
+)
 
 
 PlaceIntent = Literal[
@@ -28,6 +38,7 @@ PlaceIntent = Literal[
 class PlaceIntentDefinition:
     search_terms: tuple[str, ...]
     preference_terms: dict[str, str]
+    request_keywords: tuple[str, ...] = ()
 
 
 PLACE_INTENTS: dict[str, PlaceIntentDefinition] = {
@@ -43,6 +54,7 @@ PLACE_INTENTS: dict[str, PlaceIntentDefinition] = {
             "日本料理": "日料",
             "素食": "素食餐厅",
         },
+        request_keywords=("好吃", "吃饭", "餐厅", "饭店", "美食", "restaurant", "food", "eat"),
     ),
     "coffee": PlaceIntentDefinition(
         search_terms=("咖啡馆", "茶馆"),
@@ -51,6 +63,7 @@ PLACE_INTENTS: dict[str, PlaceIntentDefinition] = {
             "茶": "茶馆",
             "甜品": "甜品店",
         },
+        request_keywords=("咖啡", "茶馆", "coffee", "cafe", "tea"),
     ),
     "shopping": PlaceIntentDefinition(
         search_terms=("商店", "购物中心"),
@@ -60,10 +73,12 @@ PLACE_INTENTS: dict[str, PlaceIntentDefinition] = {
             "商场": "购物中心",
             "书店": "书店",
         },
+        request_keywords=("购物", "商场", "商店", "超市", "shopping", "mall", "shop"),
     ),
     "outdoors": PlaceIntentDefinition(
         search_terms=("公园", "景点"),
         preference_terms={},
+        request_keywords=("公园", "户外", "徒步", "park", "outdoor", "hiking"),
     ),
     "culture": PlaceIntentDefinition(
         search_terms=("博物馆", "美术馆", "书店"),
@@ -72,6 +87,7 @@ PLACE_INTENTS: dict[str, PlaceIntentDefinition] = {
             "美术馆": "美术馆",
             "书店": "书店",
         },
+        request_keywords=("博物馆", "美术馆", "文化", "museum", "gallery"),
     ),
     "family": PlaceIntentDefinition(
         search_terms=("室内游乐场", "公园", "博物馆"),
@@ -81,10 +97,12 @@ PLACE_INTENTS: dict[str, PlaceIntentDefinition] = {
             "公园": "公园",
             "博物馆": "博物馆",
         },
+        request_keywords=("亲子", "儿童", "小孩", "family", "kids", "children"),
     ),
     "nightlife": PlaceIntentDefinition(
         search_terms=("酒吧", "夜店"),
         preference_terms={"酒吧": "酒吧", "夜店": "夜店"},
+        request_keywords=("酒吧", "夜店", "bar", "nightclub", "nightlife"),
     ),
     "service": PlaceIntentDefinition(
         search_terms=("医院", "药店", "银行", "停车场"),
@@ -95,6 +113,7 @@ PLACE_INTENTS: dict[str, PlaceIntentDefinition] = {
             "停车": "停车场",
             "停车场": "停车场",
         },
+        request_keywords=("医院", "药店", "银行", "停车", "hospital", "pharmacy", "bank", "parking"),
     ),
     "explore": PlaceIntentDefinition(
         search_terms=("景点", "公园", "咖啡馆", "书店"),
@@ -106,6 +125,32 @@ PLACE_INTENTS: dict[str, PlaceIntentDefinition] = {
 def normalize_place_intent(value: object) -> str:
     intent = str(value).strip().casefold()
     return intent if intent in PLACE_INTENTS else "explore"
+
+
+def infer_location_hint(request: object) -> str:
+    """Recover a conservative search center when the host omits a hint.
+
+    This is intentionally small and deterministic: it only accepts explicit
+    nearby grammar and never invents a city from the requested place category.
+    """
+    text = str(request or "").strip()
+    if not text:
+        return ""
+    zh_text = _ZH_LOCATION_PREFIX.sub("", text).strip()
+    if match := _ZH_NEARBY_LOCATION.search(zh_text):
+        return match.group("location").strip(" ，,。.!！？?")
+    if match := _EN_NEARBY_LOCATION.search(text):
+        return match.group("location").strip(" ,.!?。！？")
+    return ""
+
+
+def infer_place_intent(request: object) -> str:
+    """Classify common explicit category words without an LLM dependency."""
+    text = str(request or "").strip().casefold()
+    for intent, definition in PLACE_INTENTS.items():
+        if any(keyword in text for keyword in definition.request_keywords):
+            return intent
+    return "explore"
 
 
 def normalize_preference_hints(

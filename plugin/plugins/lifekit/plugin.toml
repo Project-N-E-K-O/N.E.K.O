@@ -49,8 +49,6 @@ auto_start = false
 enabled = true
 
 [lifekit]
-# Open-Meteo 免费，无需 key；如需和风天气可在 profile 中覆盖
-provider = "open-meteo"
 # 默认城市（留空则 IP 自动定位）
 default_city = ""
 # 预报天数 (1-7)
@@ -64,6 +62,8 @@ timezone = "Asia/Shanghai"
 locale = ""
 # 强制使用上面的 locale，忽略主干下发的语言（默认关闭）
 force_locale = false
+# 是否允许通过 IP 自动定位
+enable_geoip = true
 
 # 路线规划 API Key（至少配一个才能用公交/地铁路线）
 # 不配 key 也能用 OSRM（步行/骑行/驾车，无公交）

@@ -37,6 +37,8 @@ from ._coerce import clamp_int, clean_text, finite_float
 from ._geo import get_system_timezone, detect_vpn_conflict
 from ._api import geoip_locate, fetch_forecast, ForecastError
 from ._geocoders import nominatim_candidates, open_meteo_candidates
+from ._write_confirmation import WriteConfirmationGate
+from ._contracts import UpdateConfigResult
 from .routers import (
     CurrentWeatherRouter, TravelAdviceRouter, HourlyForecastRouter,
     LocationsRouter, TripRouter, NearbyRouter,
@@ -60,6 +62,30 @@ from ._location import (
 )
 
 _LOCALES_DIR = Path(__file__).parent / "locales"
+_EDITABLE_CONFIG_SCHEMA: Dict[str, Dict[str, Any]] = {
+    "default_city": {"type": "string"},
+    "timezone": {"type": "string"},
+    "forecast_days": {"type": "integer"},
+    "locale": {"type": "string"},
+    "cache_ttl_seconds": {"type": "integer"},
+    "force_locale": {"type": "boolean"},
+    "enable_geoip": {"type": "boolean"},
+    "amap_key": {"type": "string"},
+    "baidu_map_key": {"type": "string"},
+}
+_SECRET_CONFIG_KEYS = frozenset({"amap_key", "baidu_map_key"})
+_PUBLIC_CONFIG_KEYS = frozenset(_EDITABLE_CONFIG_SCHEMA) - _SECRET_CONFIG_KEYS
+
+
+def _public_config(config: Dict[str, Any]) -> Dict[str, Any]:
+    public = {
+        key: value
+        for key, value in config.items()
+        if key in _PUBLIC_CONFIG_KEYS
+    }
+    public["amap_configured"] = bool(clean_text(config.get("amap_key")))
+    public["baidu_map_configured"] = bool(clean_text(config.get("baidu_map_key")))
+    return public
 
 
 @neko_plugin
@@ -70,20 +96,26 @@ class LifeKitPlugin(NekoPluginBase):
         """生活助手配置 — hot 字段会自动出现在聊天面板中。"""
         model_config = {"toml_section": "lifekit"}
 
-        default_city: str = SettingsField("", hot=True, description="默认城市（留空则自动定位）")
-        timezone: str = SettingsField("Asia/Shanghai", hot=True, description="时区")
-        forecast_days: int = SettingsField(3, hot=True, ge=1, le=7, description="预报天数")
-        cache_ttl_seconds: int = SettingsField(1800, description="缓存有效期（秒）")
+        default_city: str = SettingsField("", hot=True, description="Default city / 默认城市 / 既定の都市")
+        timezone: str = SettingsField("Asia/Shanghai", hot=True, description="Timezone / 时区 / タイムゾーン")
+        forecast_days: int = SettingsField(3, hot=True, ge=1, le=7, description="Forecast days / 预报天数 / 予報日数")
+        cache_ttl_seconds: int = SettingsField(1800, description="Cache TTL in seconds / 缓存秒数 / キャッシュ秒数")
         locale: str = SettingsField(
             "",
             hot=True,
-            description="语言（留空自动检测）",
+            description="Language; blank means auto / 语言；留空自动检测 / 言語；空欄は自動",
             json_schema_extra={"hot": True, "enum": ["", *SUPPORTED_LOCALES]},
         )
-        force_locale: bool = SettingsField(False, description="强制使用上面的语言设置")
+        force_locale: bool = SettingsField(False, description="Force selected language / 强制所选语言 / 選択言語を強制")
         enable_geoip: bool = SettingsField(
             True,
-            description="允许通过 IP 自动定位（禁用后仅用保存地点、默认城市或手填位置）",
+            description="Allow IP location / 允许 IP 定位 / IP 位置情報を許可",
+        )
+        amap_key: str = SettingsField(
+            "", description="AMap API key / 高德密钥 / AMap API キー",
+        )
+        baidu_map_key: str = SettingsField(
+            "", description="Baidu Maps API key / 百度密钥 / Baidu Maps API キー",
         )
 
     # 声明 router 类，供主进程静态扫描 entry 元数据
@@ -102,6 +134,7 @@ class LifeKitPlugin(NekoPluginBase):
         self._cfg: Dict[str, Any] = {}
         self._i18n = I18n(_LOCALES_DIR)
         self._locations_lock = asyncio.Lock()
+        self._write_confirmations = WriteConfirmationGate()
         self._location_resolver = LocationResolver(
             open_meteo=open_meteo_candidates,
             nominatim=nominatim_candidates,
@@ -289,7 +322,9 @@ class LifeKitPlugin(NekoPluginBase):
         """获取天气数据。返回 (data, error_key)。"""
         ttl = clamp_int(self._cfg.get("cache_ttl_seconds", 1800), 1800, 0, 86400)
         days = clamp_int(self._cfg.get("forecast_days", 3), 3, 1, 7)
-        tz = str(self._cfg.get("timezone", "Asia/Shanghai"))
+        tz = clean_text(loc.get("timezone")) or str(
+            self._cfg.get("timezone", "Asia/Shanghai")
+        )
         cache_key = f"{loc['lat']:.2f},{loc['lon']:.2f},days={days},tz={tz}"
         cached = self._cache.get(cache_key, ttl)
         if cached is not None:
@@ -336,6 +371,7 @@ class LifeKitPlugin(NekoPluginBase):
                         precision=clean_text(record.get("precision")) or "city",
                         source="saved",
                         verified=schema_version == 2 and bool(record.get("verified")),
+                        timezone=clean_text(record.get("timezone")),
                     ),
                 )
             )
@@ -357,7 +393,7 @@ class LifeKitPlugin(NekoPluginBase):
     async def get_dashboard_ui_context(self) -> dict[str, Any]:
         locations = await self._load_saved_locations_for_ui()
         return {
-            "config": dict(self._cfg),
+            "config": _public_config(self._cfg),
             "locations": locations,
             "location_count": len(locations),
             "default_location": next((dict(item) for item in locations if item.get("is_default")), None),
@@ -380,7 +416,7 @@ class LifeKitPlugin(NekoPluginBase):
         description=tr("entries.getConfig.description", default="获取生活助手当前配置。"),
     )
     async def get_config_entry(self, **_):
-        return Ok(dict(self._cfg))
+        return Ok(_public_config(self._cfg))
 
     @ui.action(
         label=tr("actions.updateConfig.label", default="Save config"),
@@ -394,50 +430,90 @@ class LifeKitPlugin(NekoPluginBase):
         id="update_config",
         name=tr("entries.updateConfig.name", default="更新配置"),
         description=tr("entries.updateConfig.description", default="更新生活助手配置字段。"),
+        llm_result_model=UpdateConfigResult,
         input_schema={
             "type": "object",
             "properties": {
-                "default_city": {"type": "string"},
-                "timezone": {"type": "string"},
-                "forecast_days": {"type": "integer"},
-                "locale": {"type": "string"},
-                "cache_ttl_seconds": {"type": "integer"},
-                "force_locale": {"type": "boolean"},
+                **_EDITABLE_CONFIG_SCHEMA,
+                "confirmed": {
+                    "type": "boolean",
+                    "description": "Explicit confirmation / 明确确认 / 明示的な確認",
+                    "default": False,
+                },
+                "confirmation_token": {"type": "string"},
             },
         },
     )
     async def update_config_entry(self, **kwargs):
-        allowed = {"default_city", "timezone", "forecast_days", "locale", "cache_ttl_seconds", "force_locale"}
-        updates = {k: v for k, v in kwargs.items() if k in allowed and not k.startswith("_")}
+        self._resolve_locale()
+        call_context = kwargs.pop("_ctx", None)
+        confirmed = kwargs.pop("confirmed", False) is True
+        confirmation_token = clean_text(kwargs.pop("confirmation_token", ""))
+        updates = {
+            key: value
+            for key, value in kwargs.items()
+            if key in _EDITABLE_CONFIG_SCHEMA and not key.startswith("_")
+        }
         if not updates:
-            return Err(SdkError("No valid fields to update"))
+            return Err(SdkError(self._i18n.t("config.no_valid")))
+        if call_context is not None and _SECRET_CONFIG_KEYS.intersection(updates):
+            return Err(SdkError(self._i18n.t("config.secret_ui_only")))
+        authorized, next_token = self._write_confirmations.authorize_or_issue(
+            action="update_config",
+            payload=updates,
+            confirmed=confirmed,
+            token=confirmation_token,
+        )
+        if not authorized:
+            return Ok({
+                "status": "clarify",
+                "summary": self._i18n.t("config.confirm_update"),
+                "choices": [
+                    self._i18n.t("locations.confirm"),
+                    self._i18n.t("locations.cancel"),
+                ],
+                "confirmation_token": next_token,
+                "context": {
+                    **updates,
+                    "confirmed": True,
+                    "confirmation_token": next_token,
+                },
+            })
         try:
             if "forecast_days" in updates:
                 days = int(updates["forecast_days"])
                 if not 1 <= days <= 7:
-                    return Err(SdkError("forecast_days must be between 1 and 7"))
+                    return Err(SdkError(self._i18n.t("config.forecast_range")))
                 updates["forecast_days"] = days
             if "cache_ttl_seconds" in updates:
                 ttl = int(updates["cache_ttl_seconds"])
                 if ttl < 0:
-                    return Err(SdkError("cache_ttl_seconds must be non-negative"))
+                    return Err(SdkError(self._i18n.t("config.cache_nonnegative")))
                 updates["cache_ttl_seconds"] = ttl
             if "force_locale" in updates:
                 updates["force_locale"] = bool(updates["force_locale"])
+            if "enable_geoip" in updates:
+                updates["enable_geoip"] = bool(updates["enable_geoip"])
             if "locale" in updates:
                 locale = str(updates["locale"])
                 if locale not in {"", *SUPPORTED_LOCALES}:
                     supported = ", ".join(SUPPORTED_LOCALES)
-                    return Err(SdkError(f"locale must be one of: {supported}"))
+                    return Err(SdkError(self._i18n.t("config.locale_supported", values=supported)))
                 updates["locale"] = locale
-            for key in ("default_city", "timezone"):
+            for key in ("default_city", "timezone", "amap_key", "baidu_map_key"):
                 if key in updates:
                     updates[key] = str(updates[key])
         except (TypeError, ValueError) as exc:
-            return Err(SdkError(f"Invalid config value: {exc}"))
+            return Err(SdkError(self._i18n.t("config.invalid_value", detail=exc)))
         try:
             await self.config.update({"lifekit": updates})
             await self._reload_config()
-            return Ok({"message": "Config updated", "config": dict(self._cfg)})
+            message = self._i18n.t("panel.messages.configSaved")
+            return Ok({
+                "status": "ready",
+                "summary": message,
+                "message": message,
+                "config": _public_config(self._cfg),
+            })
         except Exception as e:
-            return Err(SdkError(f"Config update failed: {e}"))
+            return Err(SdkError(self._i18n.t("config.update_failed", detail=e)))

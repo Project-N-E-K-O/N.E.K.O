@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Dict, List
 
-from plugin.sdk.plugin import plugin_entry, quick_action, Ok, Err, SdkError
+from plugin.sdk.plugin import plugin_entry, quick_action, Ok, Err, SdkError, tr
 from plugin.sdk.shared.core.router import PluginRouter
 
 from .._poi import POIService, UPSTREAM_TIMEOUT, UPSTREAM_UNAVAILABLE
@@ -18,6 +19,8 @@ from .._nearby_discovery import (
     normalize_search_terms,
 )
 from .._nearby_intent import (
+    infer_location_hint,
+    infer_place_intent,
     normalize_place_intent,
     normalize_preference_hints,
     search_terms_for_hints,
@@ -41,13 +44,8 @@ class NearbyRouter(PluginRouter):
 
     @plugin_entry(
         id="search_nearby",
-        name="附近搜索",
-        description=(
-            "搜索某条路、地标、当前位置或城市附近的餐厅、咖啡、商店、景点和生活服务。"
-            "request 保留用户原话；能确定时填写 location_hint，并选择最接近的 place_intent，"
-            "preference_hints 只填写用户明确说出的简短偏好。不确定时使用 explore；"
-            "不要生成地图召回词，也不要要求用户先选择地点类别。"
-        ),
+        name=tr("entries.searchNearby.name", default="Search nearby"),
+        description=tr("entries.searchNearby.description", default="Search near a road, landmark, current position, or city. Preserve the user's wording in request; use typed intent and explicit preference hints, and do not invent provider search terms."),
         params=NearbyParams,
         llm_result_model=NearbyResult,
     )
@@ -79,6 +77,8 @@ class NearbyRouter(PluginRouter):
         raw_request = clean_text((_ctx or {}).get("latest_user_request"))
         request_text = raw_request or clean_text(request)
         intent = normalize_place_intent(place_intent)
+        if intent == "explore":
+            intent = infer_place_intent(request_text)
         preferences = normalize_preference_hints(preference_hints)
         terms = _clean_search_terms(search_terms) or search_terms_for_hints(
             intent,
@@ -86,7 +86,11 @@ class NearbyRouter(PluginRouter):
         )
         if not request_text or not terms:
             return Err(SdkError(i18n.t("nearby.no_query")))
-        clean_location = clean_text(location_hint) or clean_text(location)
+        clean_location = (
+            clean_text(location_hint)
+            or clean_text(location)
+            or infer_location_hint(request_text)
+        )
         radius = clamp_int(radius, 3000, 500, 50000)
 
         # 解析搜索中心
@@ -115,6 +119,7 @@ class NearbyRouter(PluginRouter):
             ))
 
         discovery = NearbyDiscovery(POIService(plugin._cfg))
+        weather_task = asyncio.create_task(plugin._get_weather_data(loc))
         poi_results = await discovery.discover(
             DiscoveryRequest(search_terms=terms, radius=radius),
             (
@@ -129,6 +134,8 @@ class NearbyRouter(PluginRouter):
         query_label = i18n.t("nearby.list_separator").join(executed_terms)
 
         if poi_result.error:
+            weather_task.cancel()
+            await asyncio.gather(weather_task, return_exceptions=True)
             plugin.logger.warning(
                 "Nearby search failed: term_count={}, provider_count={}",
                 len(terms),
@@ -142,6 +149,8 @@ class NearbyRouter(PluginRouter):
             ), loc, i18n))
 
         if not poi_result.items:
+            weather_task.cancel()
+            await asyncio.gather(weather_task, return_exceptions=True)
             plugin.logger.info(
                 "Nearby search completed: term_count={}, count=0, provider={}",
                 len(terms),
@@ -157,7 +166,12 @@ class NearbyRouter(PluginRouter):
             }, loc, i18n))
 
         # 获取天气（用于建议）
-        weather_data, _ = await plugin._get_weather_data(loc)
+        weather_data = None
+        if weather_task.done() and not weather_task.cancelled():
+            weather_data, _ = weather_task.result()
+        else:
+            weather_task.cancel()
+            await asyncio.gather(weather_task, return_exceptions=True)
         weather_tip = ""
         if weather_data:
             code = weather_data.get("current", {}).get("weather_code", -1)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs
@@ -7,13 +8,23 @@ from urllib.parse import parse_qs
 import httpx
 import pytest
 
-from plugin.sdk.plugin import Err
+from plugin.sdk.plugin import Ok
 
 from plugin.plugins.lifekit import _poi
 from plugin.plugins.lifekit._i18n import I18n
 from plugin.plugins.lifekit._coordinates import wgs84_to_gcj02
-from plugin.plugins.lifekit._poi import AMapPOI, BaiduPOI, OverpassPOI, POIItem, POIResult, POIService
+from plugin.plugins.lifekit._poi import (
+    AMapPOI,
+    BaiduPOI,
+    OverpassPOI,
+    POIItem,
+    POIProviderError,
+    POIResult,
+    POIService,
+    UPSTREAM_TIMEOUT,
+)
 from plugin.plugins.lifekit.routers.food import FoodRecommendRouter
+from plugin.plugins.lifekit.routers.food import _SCENE_KEYWORDS, _WEATHER_FOOD
 
 
 @pytest.mark.asyncio
@@ -35,6 +46,39 @@ async def test_generic_shop_discovery_uses_osm_tag_existence_filter() -> None:
     assert '%5B%22shop%22%5D' in captured_queries[0]
     assert '%5B%22name%22~%22' not in captured_queries[0]
     assert '%5B%22shop%22%3D%22yes%22%5D' not in captured_queries[0]
+
+
+@pytest.mark.asyncio
+async def test_overpass_ignores_malformed_elements_in_valid_response() -> None:
+    def respond(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"elements": [7, {"tags": "invalid"}]})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        provider = OverpassPOI(
+            endpoints=("https://available.example/api/interpreter",),
+            http_client=client,
+        )
+
+        assert await provider.search("餐厅", 31.235, 121.475) == []
+
+
+@pytest.mark.asyncio
+async def test_amap_non_object_response_is_a_provider_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def respond(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=[])
+
+    original_client = httpx.AsyncClient
+    transport = httpx.MockTransport(respond)
+    monkeypatch.setattr(
+        _poi.httpx,
+        "AsyncClient",
+        lambda **kwargs: original_client(transport=transport, **kwargs),
+    )
+
+    with pytest.raises(POIProviderError):
+        await AMapPOI("secret").search("餐厅", 31.235, 121.475)
 
 
 @pytest.mark.parametrize(
@@ -76,6 +120,16 @@ async def test_typed_intent_terms_use_osm_category_filters(
 
     assert expected_filter in captured_query
     assert '["name"~' not in captured_query
+
+
+def test_every_generated_food_term_has_a_structured_osm_filter() -> None:
+    generated_terms = {
+        term
+        for terms in (*_WEATHER_FOOD.values(), *_SCENE_KEYWORDS.values())
+        for term in terms
+    }
+
+    assert generated_terms <= OverpassPOI._TAG_FILTERS.keys()
 
 
 @pytest.mark.asyncio
@@ -137,19 +191,107 @@ async def test_overpass_search_recovers_when_one_public_instance_rejects_request
 
 
 @pytest.mark.asyncio
-async def test_default_overpass_order_uses_the_responsive_instance_first() -> None:
-    requested_hosts: list[str] = []
+async def test_overpass_returns_first_success_without_waiting_for_a_slow_instance() -> None:
+    slow_started = asyncio.Event()
+    never_finishes = asyncio.Event()
 
-    def respond(request: httpx.Request) -> httpx.Response:
-        requested_hosts.append(str(request.url.host))
-        if request.url.host == "overpass.private.coffee":
-            return httpx.Response(200, json={"elements": []})
-        raise httpx.ReadTimeout("slow instance", request=request)
+    async def respond(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "slow.example":
+            slow_started.set()
+            await never_finishes.wait()
+            raise AssertionError("the slow instance should be cancelled")
+
+        await slow_started.wait()
+        return httpx.Response(
+            200,
+            json={
+                "elements": [
+                    {
+                        "type": "node",
+                        "id": 1,
+                        "lat": 31.236,
+                        "lon": 121.476,
+                        "tags": {"name": "及时返回的餐厅", "amenity": "restaurant"},
+                    }
+                ]
+            },
+        )
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
-        await OverpassPOI(http_client=client).search("商场", 31.18, 121.42)
+        provider = OverpassPOI(
+            endpoints=(
+                "https://slow.example/api/interpreter",
+                "https://available.example/api/interpreter",
+            ),
+            http_client=client,
+        )
+        items = await asyncio.wait_for(
+            provider.search("餐厅", 31.18, 121.42),
+            timeout=0.6,
+        )
 
-    assert requested_hosts == ["overpass.private.coffee"]
+    assert [item.name for item in items] == ["及时返回的餐厅"]
+
+
+@pytest.mark.asyncio
+async def test_overpass_runtime_remark_does_not_cancel_a_healthy_instance() -> None:
+    async def respond(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "broken.example":
+            return httpx.Response(
+                200,
+                json={"remark": "runtime error: Query timed out", "elements": []},
+            )
+        await asyncio.sleep(0)
+        return httpx.Response(
+            200,
+            json={
+                "elements": [{
+                    "type": "node",
+                    "id": 1,
+                    "lat": 31.236,
+                    "lon": 121.476,
+                    "tags": {"name": "健康实例餐厅", "amenity": "restaurant"},
+                }]
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        provider = OverpassPOI(
+            endpoints=(
+                "https://broken.example/api/interpreter",
+                "https://healthy.example/api/interpreter",
+            ),
+            http_client=client,
+        )
+        items = await provider.search("餐厅", 31.18, 121.42)
+
+    assert [item.name for item in items] == ["健康实例餐厅"]
+
+
+@pytest.mark.asyncio
+async def test_overpass_applies_one_timeout_budget_to_all_instances() -> None:
+    never_finishes = asyncio.Event()
+
+    async def respond(_: httpx.Request) -> httpx.Response:
+        await never_finishes.wait()
+        raise AssertionError("timed-out requests should be cancelled")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        provider = OverpassPOI(
+            endpoints=(
+                "https://slow-a.example/api/interpreter",
+                "https://slow-b.example/api/interpreter",
+                "https://slow-c.example/api/interpreter",
+            ),
+            http_client=client,
+        )
+        with pytest.raises(POIProviderError) as exc_info:
+            await asyncio.wait_for(
+                provider.search("餐厅", 31.18, 121.42, timeout=0.03),
+                timeout=0.2,
+            )
+
+    assert exc_info.value.code == UPSTREAM_TIMEOUT
 
 
 @pytest.mark.asyncio
@@ -175,7 +317,7 @@ async def test_overpass_failure_log_does_not_include_request_details(
     assert "sensitive-provider.example" not in lifekit_log
     assert "private provider response" not in lifekit_log
     assert "机密搜索词" not in lifekit_log
-    assert "endpoint_index=0" in lifekit_log
+    assert "endpoint_count=1" in lifekit_log
 
 
 @pytest.mark.asyncio
@@ -223,8 +365,9 @@ async def test_food_provider_outage_is_not_reported_as_zero_results(
         location="上海南京东路",
     )
 
-    assert isinstance(result, Err)
-    assert "附近地点搜索失败" in str(result.error)
+    assert isinstance(result, Ok)
+    assert result.value["status"] == "unavailable"
+    assert "附近地点搜索失败" in result.value["summary"]
 
 
 @pytest.mark.asyncio
@@ -263,6 +406,34 @@ async def test_successful_empty_provider_is_not_overridden_by_an_earlier_failure
     assert result.items == []
     assert result.provider == "osm"
     assert result.error == ""
+
+
+@pytest.mark.asyncio
+async def test_primary_poi_success_does_not_contact_fallback_provider() -> None:
+    fallback_called = False
+
+    class _PrimaryProvider:
+        name = "primary"
+
+        async def search(self, *_: Any, **__: Any) -> list[POIItem]:
+            return [POIItem(name="首选结果")]
+
+    class _FallbackProvider:
+        name = "fallback"
+
+        async def search(self, *_: Any, **__: Any) -> list[POIItem]:
+            nonlocal fallback_called
+            fallback_called = True
+            return [POIItem(name="不应调用")]
+
+    service = POIService({})
+    service._providers = [_PrimaryProvider(), _FallbackProvider()]
+
+    result = await service.search("餐厅", 31.235, 121.475)
+
+    assert [item.name for item in result.items] == ["首选结果"]
+    assert result.provider == "primary"
+    assert fallback_called is False
 
 
 @pytest.mark.asyncio

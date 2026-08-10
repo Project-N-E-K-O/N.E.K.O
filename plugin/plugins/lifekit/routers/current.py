@@ -4,14 +4,18 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from plugin.sdk.plugin import plugin_entry, quick_action, Ok, Err, SdkError
+from plugin.sdk.plugin import plugin_entry, quick_action, Ok, tr
 from plugin.sdk.shared.core.router import PluginRouter
 
 from .._api import daily_val
 from .._chat import push_lifekit_content
 from .._contracts import CityParams, GetWeatherResult
 from .._location import LocationPurpose
-from .._location_entry import apply_location_assumption, location_unavailable_result
+from .._location_entry import (
+    apply_location_assumption,
+    location_unavailable_result,
+    upstream_unavailable_result,
+)
 
 
 class CurrentWeatherRouter(PluginRouter):
@@ -22,11 +26,8 @@ class CurrentWeatherRouter(PluginRouter):
 
     @plugin_entry(
         id="get_weather",
-        name="获取天气",
-        description=(
-            "查询指定城市（或自动定位）的当前天气和未来预报。"
-            "可配合 travel_advice 获取出行建议，或 food_recommend 获取天气适合的美食推荐。"
-        ),
+        name=tr("entries.getWeather.name", default="Get weather"),
+        description=tr("entries.getWeather.description", default="Get current weather and daily forecasts for a city, saved location, or automatic location."),
         params=CityParams,
         llm_result_model=GetWeatherResult,
     )
@@ -45,7 +46,11 @@ class CurrentWeatherRouter(PluginRouter):
 
         data, data_err = await plugin._get_weather_data(loc)
         if not data:
-            return Err(SdkError(i18n.t(data_err or "error.fetch_failed", city=loc["city"])))
+            return upstream_unavailable_result(
+                i18n.t(data_err or "error.fetch_failed", city=loc["city"]),
+                i18n,
+                location=loc,
+            )
 
         current_raw = data.get("current", {})
         daily_raw = data.get("daily", {})
@@ -91,7 +96,12 @@ class CurrentWeatherRouter(PluginRouter):
 
         blocks = [
             {"type": "text", "text": f"🌤️ {loc['city']} — {current['weather']} {current['temperature']}°C"},
-            {"type": "text", "text": f"体感 {current['feels_like']}°C | 💧 {current['humidity']}% | 💨 {current['wind_speed']}km/h"},
+            {"type": "text", "text": i18n.t(
+                "runtime.weather_details",
+                feels=current["feels_like"],
+                humidity=current["humidity"],
+                wind=current["wind_speed"],
+            )},
         ]
         if forecast_lines:
             blocks.append({"type": "text", "text": "\n".join(forecast_lines)})
@@ -104,5 +114,5 @@ class CurrentWeatherRouter(PluginRouter):
             "current": current,
             "forecast": forecast,
             "vpn_detected": bool(loc.get("_vpn_detected")),
-            "next_actions": ["travel_advice — 出行建议", "food_recommend — 美食推荐", "air_quality — 空气质量", "hourly_forecast — 逐小时预报"],
+            "next_actions": ["travel_advice", "food_recommend", "air_quality", "hourly_forecast"],
         }, loc, i18n))

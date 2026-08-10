@@ -81,13 +81,22 @@ async def nominatim_candidates(
     if country_code:
         params["countrycodes"] = country_code.lower()
 
-    async with _NOMINATIM_LOCK:
+    loop = asyncio.get_running_loop()
+    started_at = loop.time()
+    try:
+        await asyncio.wait_for(_NOMINATIM_LOCK.acquire(), timeout=timeout)
+    except TimeoutError as exc:
+        raise GeocoderError("geocoder queue timed out", cause="timeout") from exc
+    try:
+        remaining = max(0.01, timeout - (loop.time() - started_at))
         payload = await _get_json(
             _NOMINATIM_URL,
             params=params,
-            timeout=timeout,
+            timeout=remaining,
             headers={"User-Agent": _USER_AGENT},
         )
+    finally:
+        _NOMINATIM_LOCK.release()
     if not isinstance(payload, list):
         return []
 

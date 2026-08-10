@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, Optional
 
-from plugin.sdk.plugin import plugin_entry, quick_action, Ok, Err, SdkError
+from plugin.sdk.plugin import plugin_entry, quick_action, Ok, Err, SdkError, tr
 from plugin.sdk.shared.core.router import PluginRouter
 
 from .._chat import push_lifekit_content
@@ -70,12 +70,8 @@ class CountdownRouter(PluginRouter):
 
     @plugin_entry(
         id="countdown",
-        name="倒计时",
-        description=(
-            "计算距离某个日期还有多少天。"
-            "支持具体日期(2025-10-01)、月日(10-01)、节日名(圣诞节/国庆节/元旦)。"
-            "适合回答「距离国庆还有几天」「离圣诞节还有多久」。"
-        ),
+        name=tr("entries.countdown.name", default="Countdown"),
+        description=tr("entries.countdown.description", default="Count days to a date, month-day, or supported holiday name."),
         params=CountdownParams,
         llm_result_model=DateDetailResult,
     )
@@ -91,39 +87,44 @@ class CountdownRouter(PluginRouter):
             target_date = params.target_date
             label = params.label
 
+        plugin = self.main_plugin
+        plugin._resolve_locale()
+        i18n = plugin._i18n
+
         if not target_date.strip():
-            return Err(SdkError("请指定目标日期"))
+            return Err(SdkError(i18n.t("date.target_required")))
 
         parsed = _parse_date(target_date)
         if parsed is None:
-            return Err(SdkError(f"无法识别日期「{target_date}」，请用 YYYY-MM-DD 格式或节日名"))
+            return Err(SdkError(i18n.t("date.invalid", value=target_date)))
 
         today = date.today()
         delta = (parsed - today).days
         event = label.strip() or target_date.strip()
 
         if delta > 0:
-            summary = f"距离 {event} 还有 {delta} 天 ({parsed.isoformat()})"
+            summary = i18n.t("date.future", event=event, days=delta, date=parsed.isoformat())
             emoji = "⏳"
         elif delta == 0:
-            summary = f"🎉 今天就是 {event}！"
+            summary = i18n.t("date.today", event=event)
             emoji = "🎉"
         else:
-            summary = f"{event} 已经过去 {abs(delta)} 天 ({parsed.isoformat()})"
+            summary = i18n.t("date.past", event=event, days=abs(delta), date=parsed.isoformat())
             emoji = "📅"
 
         weeks = abs(delta) // 7
+        weekdays = i18n.value("date.weekdays") or ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
         detail = {
             "target": parsed.isoformat(),
             "days": delta,
             "weeks": weeks,
-            "weekday": ["周一", "周二", "周三", "周四", "周五", "周六", "周日"][parsed.weekday()],
+            "weekday": weekdays[parsed.weekday()],
         }
 
         # 推送卡片
         blocks = [{"type": "text", "text": f"{emoji} {summary}"}]
         if abs(delta) > 7:
-            blocks.append({"type": "text", "text": f"约 {weeks} 周 | {detail['weekday']}"})
+            blocks.append({"type": "text", "text": i18n.t("date.weeks", weeks=weeks, weekday=detail["weekday"])})
 
         push_lifekit_content(self.main_plugin, blocks)
 
@@ -131,11 +132,8 @@ class CountdownRouter(PluginRouter):
 
     @plugin_entry(
         id="days_between",
-        name="日期间隔",
-        description=(
-            "计算两个日期之间相隔多少天。"
-            "适合回答「我们认识多少天了」「从某天到某天有多久」。"
-        ),
+        name=tr("entries.daysBetween.name", default="Days between dates"),
+        description=tr("entries.daysBetween.description", default="Calculate the number of days between two dates."),
         params=DaysBetweenParams,
         llm_result_model=DateDetailResult,
     )
@@ -150,29 +148,33 @@ class CountdownRouter(PluginRouter):
             start_date = params.start_date
             end_date = params.end_date
 
+        plugin = self.main_plugin
+        plugin._resolve_locale()
+        i18n = plugin._i18n
+
         today = date.today()
         d1 = _parse_date(start_date) if start_date.strip() else today
         d2 = _parse_date(end_date) if end_date.strip() else today
 
         if d1 is None:
-            return Err(SdkError(f"无法识别起始日期「{start_date}」"))
+            return Err(SdkError(i18n.t("date.invalid_start", value=start_date)))
         if d2 is None:
-            return Err(SdkError(f"无法识别结束日期「{end_date}」"))
+            return Err(SdkError(i18n.t("date.invalid_end", value=end_date)))
 
         delta = abs((d2 - d1).days)
         years = delta // 365
         months = (delta % 365) // 30
         weeks = delta // 7
 
-        summary = f"{d1.isoformat()} → {d2.isoformat()}：共 {delta} 天"
+        summary = i18n.t("date.between", start=d1.isoformat(), end=d2.isoformat(), days=delta)
         detail = {"start": d1.isoformat(), "end": d2.isoformat(), "days": delta, "weeks": weeks, "years": years, "months_approx": months}
 
         parts = []
         if years > 0:
-            parts.append(f"{years} 年")
+            parts.append(i18n.t("date.years", value=years))
         if months > 0:
-            parts.append(f"{months} 个月")
-        parts.append(f"{delta} 天")
+            parts.append(i18n.t("date.months", value=months))
+        parts.append(i18n.t("date.days", value=delta))
 
         push_lifekit_content(self.main_plugin, [
             {"type": "text", "text": f"📅 {d1} → {d2}"},

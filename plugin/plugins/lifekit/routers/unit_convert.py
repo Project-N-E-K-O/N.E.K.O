@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional, Tuple
 
-from plugin.sdk.plugin import plugin_entry, quick_action, Ok, Err, SdkError
+from plugin.sdk.plugin import plugin_entry, quick_action, Ok, Err, SdkError, tr
 from plugin.sdk.shared.core.router import PluginRouter
 
 from .._chat import push_lifekit_content
@@ -95,8 +95,8 @@ def _convert(value: float, from_key: str, to_key: str) -> Optional[Tuple[float, 
     entry = _CONVERSIONS.get((from_key, to_key))
     if entry is None:
         return None
-    mult, fl, tl = entry
-    return (value * mult, fl, tl)
+    mult, _, _ = entry
+    return (value * mult, from_key, to_key)
 
 
 class UnitConvertRouter(PluginRouter):
@@ -107,13 +107,8 @@ class UnitConvertRouter(PluginRouter):
 
     @plugin_entry(
         id="unit_convert",
-        name="单位换算",
-        description=(
-            "常用单位换算：长度(cm/inch/m/ft/km/mile)、重量(kg/lb/g/oz)、"
-            "温度(°C/°F)、体积(ml/cup/tbsp/tsp/l/gal)、面积、速度。"
-            "适合回答「180cm多少英尺」「30度是多少华氏度」「500g几盎司」。"
-            "菜谱中的外国单位也可以用这个换算。"
-        ),
+        name=tr("entries.unitConvert.name", default="Convert units"),
+        description=tr("entries.unitConvert.description", default="Convert common length, weight, temperature, volume, area, and speed units."),
         params=UnitConvertParams,
         llm_result_model=UnitConvertResult,
     )
@@ -131,23 +126,34 @@ class UnitConvertRouter(PluginRouter):
             from_unit = params.from_unit
             to_unit = params.to_unit
 
+        plugin = self.main_plugin
+        plugin._resolve_locale()
+        i18n = plugin._i18n
+
         fk = _resolve_unit(from_unit)
         tk = _resolve_unit(to_unit)
 
         if fk is None:
-            return Err(SdkError(f"不支持的单位「{from_unit}」"))
+            return Err(SdkError(i18n.t("unit.unsupported", unit=from_unit)))
         if tk is None:
-            return Err(SdkError(f"不支持的单位「{to_unit}」"))
+            return Err(SdkError(i18n.t("unit.unsupported", unit=to_unit)))
 
         numeric_value = finite_float(value)
         if numeric_value is None:
-            return Err(SdkError("Invalid value"))
+            return Err(SdkError(i18n.t("unit.invalid_value")))
         if fk == tk:
-            return Ok({"summary": f"{numeric_value} {from_unit} = {numeric_value} {to_unit}（相同单位）", "conversion": {"value": numeric_value, "result": numeric_value}})
+            return Ok({
+                "summary": i18n.t(
+                    "unit.same", value=numeric_value, source=from_unit, target=to_unit,
+                ),
+                "conversion": {"value": numeric_value, "result": numeric_value},
+            })
 
         result = _convert(numeric_value, fk, tk)
         if result is None:
-            return Err(SdkError(f"不支持 {from_unit} → {to_unit} 的换算"))
+            return Err(SdkError(i18n.t(
+                "unit.unsupported_pair", source=from_unit, target=to_unit,
+            )))
 
         converted, fl, tl = result
         converted = round(converted, 4)

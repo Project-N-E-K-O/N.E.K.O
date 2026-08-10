@@ -16,11 +16,12 @@ from .._contracts import (
     AddLocationResult,
     ListLocationsResult,
     LocationIdParams,
-    MessageResult,
     RemoveLocationResult,
+    SetDefaultLocationResult,
 )
 from .._location import is_location_clarification, location_error_key_from_cause
 from .._location_entry import location_failure_result
+from .._write_confirmation import WriteConfirmationGate
 
 _STORE_KEY = "saved_locations"
 
@@ -30,6 +31,7 @@ class LocationsRouter(PluginRouter):
 
     def __init__(self):
         super().__init__(name="locations")
+        self._write_confirmations = WriteConfirmationGate()
 
     async def _load(self) -> List[Dict[str, Any]]:
         plugin = self.main_plugin
@@ -103,6 +105,9 @@ class LocationsRouter(PluginRouter):
         city: str = "",
         address: str = "",
         set_default: bool = False,
+        confirmed: bool = False,
+        confirmation_token: str = "",
+        _ctx: dict[str, Any] | None = None,
         **_,
     ):
         if params is not None:
@@ -110,20 +115,48 @@ class LocationsRouter(PluginRouter):
             city = params.city
             address = params.address
             set_default = params.set_default
-
-        clean_label = clean_text(label)
-        clean_city = clean_text(city)
-        if not clean_label:
-            return Err(SdkError("Location label cannot be empty"))
-        if not clean_city:
-            return Err(SdkError("City cannot be empty"))
+            confirmed = params.confirmed
+            confirmation_token = params.confirmation_token
 
         plugin = self.main_plugin
         plugin._resolve_locale()
+        i18n = plugin._i18n
+        clean_label = clean_text(label)
+        clean_city = clean_text(city)
+        if not clean_label:
+            return Err(SdkError(i18n.t("locations.label_required")))
+        if not clean_city:
+            return Err(SdkError(i18n.t("locations.city_required")))
         locale = plugin._i18n.locale
 
         clean_address = clean_text(address)
-        resolved_query = clean_city
+        confirmation_payload = {
+            "label": clean_label,
+            "city": clean_city,
+            "address": clean_address,
+            "set_default": set_default,
+        }
+        authorized, next_token = self._write_confirmations.authorize_or_issue(
+            action="add_location",
+            payload=confirmation_payload,
+            confirmed=confirmed,
+            token=confirmation_token,
+        )
+        if not authorized:
+            return Ok({
+                "status": "clarify",
+                "summary": i18n.t("locations.confirm_add", label=clean_label, city=clean_city),
+                "choices": [i18n.t("locations.confirm"), i18n.t("locations.cancel")],
+                "confirmation_token": next_token,
+                "context": {
+                    **confirmation_payload,
+                    "confirmed": True,
+                    "confirmation_token": next_token,
+                },
+            })
+        resolved_query = " ".join(
+            part for part in (clean_city, clean_address) if part
+        )
         try:
             geo = await geocode_city(resolved_query, locale=locale)
         except GeocodeError as exc:
@@ -174,7 +207,7 @@ class LocationsRouter(PluginRouter):
             locations = await self._load()
             for loc in locations:
                 if loc.get("label") == clean_label:
-                    return Err(SdkError(f"Location label already exists: {clean_label}"))
+                    return Err(SdkError(i18n.t("locations.duplicate", label=clean_label)))
 
             new_loc: Dict[str, Any] = {
                 "id": self._new_location_id(locations),
@@ -190,6 +223,7 @@ class LocationsRouter(PluginRouter):
                 "admin2": geo.get("admin2", ""),
                 "precision": geo.get("_location_precision", "city"),
                 "source": geo.get("_location_source", "geocoder"),
+                "timezone": geo.get("timezone", ""),
                 "verified": bool(geo.get("_location_verified", True)),
                 "schema_version": 2,
                 "resolved_query": resolved_query,
@@ -204,7 +238,7 @@ class LocationsRouter(PluginRouter):
 
             locations.append(new_loc)
             if not await self._save(locations):
-                return Err(SdkError("Save failed. Please check whether plugin storage is enabled."))
+                return Err(SdkError(i18n.t("locations.save_failed")))
 
         summary = plugin._i18n.t(
             "panel.messages.locationAdded",
@@ -234,25 +268,62 @@ class LocationsRouter(PluginRouter):
         params=LocationIdParams,
         llm_result_model=RemoveLocationResult,
     )
-    async def remove_location(self, params: LocationIdParams | None = None, location_id: str = "", **_):
+    async def remove_location(
+        self,
+        params: LocationIdParams | None = None,
+        location_id: str = "",
+        confirmed: bool = False,
+        confirmation_token: str = "",
+        _ctx: dict[str, Any] | None = None,
+        **_,
+    ):
         if params is not None:
             location_id = params.location_id
+            confirmed = params.confirmed
+            confirmation_token = params.confirmation_token
 
         plugin = self.main_plugin
+        plugin._resolve_locale()
+        i18n = plugin._i18n
         key = clean_text(location_id)
+        confirmation_payload = {"location_id": key}
+        authorized, next_token = self._write_confirmations.authorize_or_issue(
+            action="remove_location",
+            payload=confirmation_payload,
+            confirmed=confirmed,
+            token=confirmation_token,
+        )
+        if not authorized:
+            return Ok({
+                "status": "clarify",
+                "summary": i18n.t("locations.confirm_remove", label=key),
+                "choices": [i18n.t("locations.confirm"), i18n.t("locations.cancel")],
+                "confirmation_token": next_token,
+                "context": {
+                    **confirmation_payload,
+                    "confirmed": True,
+                    "confirmation_token": next_token,
+                },
+            })
         async with plugin._locations_lock:
             locations = await self._load()
             before = len(locations)
             locations = [loc for loc in locations if loc.get("id") != key and loc.get("label") != key]
             if len(locations) == before:
-                return Err(SdkError(f"Location not found: {key}"))
+                return Err(SdkError(i18n.t("locations.not_found", label=key)))
 
             if locations and not any(loc.get("is_default") for loc in locations):
                 locations[0]["is_default"] = True
 
             if not await self._save(locations):
-                return Err(SdkError("Save failed"))
-        return Ok({"message": f"Removed location: {key}", "remaining": len(locations)})
+                return Err(SdkError(i18n.t("locations.save_failed")))
+        message = i18n.t("locations.removed", label=key)
+        return Ok({
+            "status": "ready",
+            "summary": message,
+            "message": message,
+            "remaining": len(locations),
+        })
 
     @ui.action(
         label=tr("actions.setDefaultLocation.label", default="Set default"),
@@ -267,14 +338,45 @@ class LocationsRouter(PluginRouter):
         name=tr("entries.setDefaultLocation.name", default="Set default location"),
         description=tr("entries.setDefaultLocation.description", default="Set the location preferred by weather and travel tools."),
         params=LocationIdParams,
-        llm_result_model=MessageResult,
+        llm_result_model=SetDefaultLocationResult,
     )
-    async def set_default_location(self, params: LocationIdParams | None = None, location_id: str = "", **_):
+    async def set_default_location(
+        self,
+        params: LocationIdParams | None = None,
+        location_id: str = "",
+        confirmed: bool = False,
+        confirmation_token: str = "",
+        _ctx: dict[str, Any] | None = None,
+        **_,
+    ):
         if params is not None:
             location_id = params.location_id
+            confirmed = params.confirmed
+            confirmation_token = params.confirmation_token
 
         plugin = self.main_plugin
+        plugin._resolve_locale()
+        i18n = plugin._i18n
         key = clean_text(location_id)
+        confirmation_payload = {"location_id": key}
+        authorized, next_token = self._write_confirmations.authorize_or_issue(
+            action="set_default_location",
+            payload=confirmation_payload,
+            confirmed=confirmed,
+            token=confirmation_token,
+        )
+        if not authorized:
+            return Ok({
+                "status": "clarify",
+                "summary": i18n.t("locations.confirm_default", label=key),
+                "choices": [i18n.t("locations.confirm"), i18n.t("locations.cancel")],
+                "confirmation_token": next_token,
+                "context": {
+                    **confirmation_payload,
+                    "confirmed": True,
+                    "confirmation_token": next_token,
+                },
+            })
         async with plugin._locations_lock:
             locations = await self._load()
             found = False
@@ -285,7 +387,8 @@ class LocationsRouter(PluginRouter):
                 else:
                     loc["is_default"] = False
             if not found:
-                return Err(SdkError(f"Location not found: {key}"))
+                return Err(SdkError(i18n.t("locations.not_found", label=key)))
             if not await self._save(locations):
-                return Err(SdkError("Save failed"))
-        return Ok({"message": f"Default location set: {key}"})
+                return Err(SdkError(i18n.t("locations.save_failed")))
+        message = i18n.t("locations.default_set", label=key)
+        return Ok({"status": "ready", "summary": message, "message": message})

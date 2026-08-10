@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Dict, List
 
-from plugin.sdk.plugin import plugin_entry, quick_action, Ok, Err, SdkError
+from plugin.sdk.plugin import plugin_entry, quick_action, Ok, tr
 from plugin.sdk.shared.core.router import PluginRouter
 
 from .._poi import POIService
@@ -14,7 +15,11 @@ from .._coerce import clamp_int, clean_text
 from .._contracts import FoodRecommendParams, FoodRecommendResult
 from .._routing import format_distance
 from .._location import LocationPurpose
-from .._location_entry import apply_location_assumption, location_unavailable_result
+from .._location_entry import (
+    apply_location_assumption,
+    location_unavailable_result,
+    upstream_unavailable_result,
+)
 
 # 天气 → 推荐关键词映射
 _WEATHER_FOOD: Dict[str, List[str]] = {
@@ -42,12 +47,8 @@ class FoodRecommendRouter(PluginRouter):
 
     @plugin_entry(
         id="food_recommend",
-        name="美食推荐",
-        description=(
-            "根据当前位置、天气和场景推荐附近美食。"
-            "支持指定口味偏好、用餐场景和预算。"
-            "如果用户想自己做，可用 search_recipe 查菜谱。"
-        ),
+        name=tr("entries.foodRecommend.name", default="Recommend food"),
+        description=tr("entries.foodRecommend.description", default="Recommend nearby food from location, weather, cuisine, and dining occasion."),
         params=FoodRecommendParams,
         llm_result_model=FoodRecommendResult,
     )
@@ -82,8 +83,14 @@ class FoodRecommendRouter(PluginRouter):
 
         if not query:
             # 根据天气 + 场景推荐
-            weather_data, _ = await plugin._get_weather_data(loc)
-            query, weather_reason = self._pick_query(weather_data, clean_scene)
+            try:
+                weather_data, _ = await asyncio.wait_for(
+                    plugin._get_weather_data(loc),
+                    timeout=1.0,
+                )
+            except TimeoutError:
+                weather_data = None
+            query, weather_reason = self._pick_query(weather_data, clean_scene, i18n)
 
         # POI 搜索
         svc = POIService(plugin._cfg)
@@ -94,17 +101,16 @@ class FoodRecommendRouter(PluginRouter):
                 "Food search failed: provider_count={}",
                 len(poi_result.provider.split(",")) if poi_result.provider else 0,
             )
-            return Err(
-                SdkError(
-                    i18n.t("error.poi_search_failed"),
-                    details=poi_result.error,
-                )
+            return upstream_unavailable_result(
+                i18n.t("error.poi_search_failed"),
+                i18n,
+                location=loc,
             )
 
         if not poi_result.items:
             return Ok(apply_location_assumption({
                 "status": "ready",
-                "summary": f"在 {loc['city']} 附近没有找到「{query}」相关的餐厅",
+                "summary": i18n.t("food.no_results", location=loc["city"], query=query),
                 "recommendations": [],
                 "query": query,
             }, loc, i18n))
@@ -125,7 +131,7 @@ class FoodRecommendRouter(PluginRouter):
 
         # 摘要
         top_names = "、".join(r["name"] for r in recs[:3])
-        summary = f"{loc['city']}附近推荐「{query}」: {top_names}"
+        summary = i18n.t("food.summary", location=loc["city"], query=query, top=top_names)
         if weather_reason:
             summary = f"{weather_reason}，{summary}"
 
@@ -138,7 +144,7 @@ class FoodRecommendRouter(PluginRouter):
             card_lines.append(line)
 
         push_lifekit_content(plugin, [
-            {"type": "text", "text": f"🍜 {loc['city']} — {query}推荐"},
+            {"type": "text", "text": f"🍜 {loc['city']} — " + i18n.t("runtime.food_title", query=query)},
             {"type": "text", "text": "\n".join(card_lines)},
         ])
 
@@ -149,11 +155,11 @@ class FoodRecommendRouter(PluginRouter):
             "query": query,
             "weather_reason": weather_reason,
             "provider": poi_result.provider,
-            "next_actions": [f"search_recipe query={query} — 自己做{query}", "trip_advice — 规划去餐厅的路线"],
+            "next_actions": [f"search_recipe query={query}", "trip_advice"],
         }, loc, i18n))
 
     @staticmethod
-    def _pick_query(weather_data: Any, scene: str) -> tuple[str, str]:
+    def _pick_query(weather_data: Any, scene: str, i18n: Any) -> tuple[str, str]:
         """根据天气和场景选择搜索关键词。返回 (query, reason)。"""
         import random
 
@@ -161,7 +167,7 @@ class FoodRecommendRouter(PluginRouter):
         scene_key = clean_text(scene)
         if scene_key and scene_key in _SCENE_KEYWORDS:
             kw = random.choice(_SCENE_KEYWORDS[scene_key])
-            return kw, f"🎯 {scene_key}场景"
+            return kw, i18n.t("runtime.food_scene", scene=scene_key)
 
         # 天气推荐
         if weather_data:
@@ -171,14 +177,14 @@ class FoodRecommendRouter(PluginRouter):
 
             if code in RAIN_CODES:
                 kw = random.choice(_WEATHER_FOOD["rain"])
-                return kw, "🌧️ 下雨天适合吃点暖的"
+                return kw, i18n.t("runtime.food_rain")
             if isinstance(temp, (int, float)):
                 if temp >= 30:
                     kw = random.choice(_WEATHER_FOOD["hot"])
-                    return kw, f"🌡️ {temp}°C 太热了，来点凉的"
+                    return kw, i18n.t("runtime.food_hot", temp=temp)
                 if temp <= 8:
                     kw = random.choice(_WEATHER_FOOD["cold"])
-                    return kw, f"🌡️ {temp}°C 挺冷的，吃点热乎的"
+                    return kw, i18n.t("runtime.food_cold", temp=temp)
 
         # 默认
         kw = random.choice(_WEATHER_FOOD["mild"])

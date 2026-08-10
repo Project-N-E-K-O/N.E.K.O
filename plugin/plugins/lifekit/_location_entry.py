@@ -85,6 +85,25 @@ def location_unavailable_result(error: LocationError, i18n: Any):
     )
 
 
+def upstream_unavailable_result(
+    detail: str,
+    i18n: Any,
+    *,
+    location: dict[str, Any] | None = None,
+):
+    """Complete a read-only entry even when an upstream provider is down."""
+    payload: dict[str, Any] = {
+        "status": "unavailable",
+        "summary": detail,
+        "assumed": False,
+        "assumed_location": "",
+        "ambiguity_warning": "",
+    }
+    if location:
+        apply_location_assumption(payload, location, i18n)
+    return Ok(payload)
+
+
 def location_failure_result(
     error: LocationError,
     i18n: Any,

@@ -7,7 +7,7 @@
 - Read-only entries choose one deterministic primary location when several usable candidates remain, execute the query, and disclose the assumption and alternatives in the summary.
 - Nearby results always come from one search center; candidates from different places are never mixed.
 - If no usable location exists, read-only entries return `status=unavailable` instead of a blocking clarification.
-- Location writes keep their existing confirmation behavior.
+- Location and configuration writes require an explicit confirmation flag; read-only requests never do.
 
 ## Development
 
@@ -20,8 +20,8 @@ N.E.K.O/plugin/plugins/lifekit
 From the N.E.K.O `plugin/` directory:
 
 ```bash
-uv run python neko_plugin_cli/cli.py doctor lifekit
-uv run python neko_plugin_cli/cli.py release-check lifekit
+uv run python neko_plugin_cli/cli.py check lifekit --strict
+uv run python neko_plugin_cli/cli.py check lifekit --release
 ```
 
 ## Entry

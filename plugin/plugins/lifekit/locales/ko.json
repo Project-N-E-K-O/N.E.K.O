@@ -77,7 +77,9 @@
     "distance": "거리",
     "recommended": "추천",
     "no_destination": "목적지를 지정해주세요",
-    "invalid_mode": "여행 모드 '{mode}'이(가) 잘못되었습니다. 허용됨: {valid}"
+    "invalid_mode": "여행 모드 '{mode}'이(가) 잘못되었습니다. 허용됨: {valid}",
+    "mode_transit": "🚇 Transit", "mode_walking": "🚶 Walking", "mode_bicycling": "🚲 Cycling", "mode_driving": "🚗 Driving",
+    "near_walk": "🚶 Very close; walking is recommended", "rain_transit": "🚇 Rain expected; use transit", "good_bike": "🚲 Moderate distance and good weather; cycling is suitable", "transit_advice": "🚇 Transit is recommended"
   },
   "nearby": {
     "no_query": "검색어를 입력해주세요. (예: 레스토랑, 카페, 공원)",
@@ -121,15 +123,26 @@
   "recipe": {
     "no_query": "요리 이름이나 재료를 입력하세요.",
     "not_found": "\"{query}\"에 대한 레시피를 찾을 수 없습니다.",
-    "random_fail": "무작위 레시피를 가져오지 못했습니다. 나중에 다시 시도해 주세요."
+    "random_fail": "무작위 레시피를 가져오지 못했습니다. 나중에 다시 시도해 주세요.",
+    "provider_unavailable": "레시피 서비스를 일시적으로 사용할 수 없습니다.",
+    "found": "{count}개의 레시피를 찾았습니다: {names}",
+    "random_summary": "🎲 무작위 추천: {recipe}",
+    "entry_search_name": "Search recipes", "entry_search_description": "Search recipes by dish or ingredient with limited Chinese aliases.", "entry_random_name": "Random recipe", "entry_random_description": "Recommend a random recipe.", "ingredients": "Ingredients", "instructions": "Instructions", "today_try": "🎲 Try today: {recipe}", "action_food": "food_recommend cuisine={query} — find similar restaurants nearby", "action_market": "search_nearby request=nearby supermarket for ingredients place_intent=shopping preference_hints=[supermarket] — find a supermarket"
   },
   "air_quality": {
-    "fetch_failed": "{city}의 공기질 데이터를 가져오지 못했습니다."
+    "fetch_failed": "{city}의 공기질 데이터를 가져오지 못했습니다.",
+    "summary": "{city} 공기질: {level} (AQI {aqi})",
+    "pm25_suffix": ", PM2.5 {value} μg/m³",
+    "level": {"good": "좋음", "fair": "양호", "moderate": "보통", "poor": "나쁨", "very_poor": "매우 나쁨", "extremely_poor": "극도로 나쁨"},
+    "advice": {"mask": "마스크 착용을 고려하세요", "reduce_outdoors": "야외 활동을 줄이세요", "outdoors_ok": "일반적으로 야외 활동에 적합합니다", "pm25_high": "PM2.5가 높습니다 ({value} μg/m³)", "uv": "자외선이 강하므로 자외선 차단제를 사용하세요"}
   },
   "currency": {
     "no_currencies": "소스 및 대상 통화를 지정하십시오.",
     "convert_failed": "통화 변환 실패: {from} → {to}"
   },
+  "locations": {"label_required": "위치 라벨을 입력하세요", "city_required": "도시를 입력하세요", "confirm_add": "{label} ({city}) 위치를 추가할까요?", "confirm_remove": "{label} 위치를 삭제할까요?", "confirm_default": "{label}을 기본 위치로 설정할까요?", "confirm": "확인", "cancel": "취소", "duplicate": "위치 라벨이 이미 있습니다: {label}", "not_found": "위치를 찾을 수 없습니다: {label}", "save_failed": "저장에 실패했습니다. 플러그인 저장소를 확인하세요.", "removed": "위치를 삭제했습니다: {label}", "default_set": "기본 위치를 설정했습니다: {label}"},
+  "unit": {"unsupported": "지원하지 않는 단위: {unit}", "invalid_value": "잘못된 값", "same": "{value} {source} = {value} {target} (동일 단위)", "unsupported_pair": "지원하지 않는 변환: {source} → {target}"},
+  "date": {"target_required": "Please specify a target date", "invalid": "Could not parse date {value}", "future": "{days} days until {event} ({date})", "today": "🎉 {event} is today!", "past": "{event} was {days} days ago ({date})", "weeks": "About {weeks} weeks | {weekday}", "invalid_start": "Could not parse start date {value}", "invalid_end": "Could not parse end date {value}", "between": "{start} → {end}: {days} days", "years": "{value} years", "months": "{value} months", "days": "{value} days", "weekdays": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]},
   "panel.title": "LifeKit",
   "panel.subtitle": "날씨, 경로, 주변 검색 및 기타 도구를 계속 사용하면서 기본 설정과 저장된 위치를 관리하세요.",
   "panel.config.title": "구성",
@@ -152,6 +165,14 @@
   "panel.fields.forecastDaysHelp": "1~7일을 지원합니다.",
   "panel.fields.locale": "언어",
   "panel.fields.forceLocale": "강제로 선택한 언어",
+  "panel.fields.cacheTtl": "캐시 유효 시간(초)",
+  "panel.fields.enableGeoip": "IP 자동 위치 허용",
+  "config.confirm_update": "LifeKit 설정 변경 사항을 저장할까요?",
+  "config.no_valid": "No valid configuration fields to update", "config.forecast_range": "Forecast days must be between 1 and 7", "config.cache_nonnegative": "Cache lifetime cannot be negative", "config.locale_supported": "Locale must be one of: {values}", "config.invalid_value": "Invalid configuration value: {detail}", "config.update_failed": "Configuration update failed: {detail}",
+  "config.secret_ui_only": "Map API keys can only be updated in the LifeKit settings panel.",
+  "panel.configured": "설정됨",
+  "panel.notConfigured": "설정되지 않음",
+  "panel.keepSecret": "비워 두면 현재 키를 유지합니다",
   "panel.fields.label": "라벨",
   "panel.fields.city": "도시",
   "panel.fields.address": "주소",
@@ -272,5 +293,28 @@
   "quickstart.next.guide": "가이드",
   "quickstart.next.entries": "도구 항목",
   "quickstart.next.entriesValue": "날씨, 여행, 장소, 음식, 날짜, 통화, 단위 변환",
-  "quickstart.warning.network": "날씨, 위치, 경로, 음식, 레시피 기능은 외부 서비스를 호출합니다. 요청이 실패하면 먼저 네트워크, 프록시, 지도 API 키를 확인하세요."
+  "quickstart.warning.network": "날씨, 위치, 경로, 음식, 레시피 기능은 외부 서비스를 호출합니다. 요청이 실패하면 먼저 네트워크, 프록시, 지도 API 키를 확인하세요.",
+  "entries.getWeather.name": "Get weather",
+  "entries.getWeather.description": "Get current weather and daily forecasts for a city, saved location, or automatic location.",
+  "entries.hourlyForecast.name": "Hourly forecast",
+  "entries.hourlyForecast.description": "Get hourly temperature, precipitation, and wind forecasts for up to 168 hours.",
+  "entries.travelAdvice.name": "Travel advice",
+  "entries.travelAdvice.description": "Give clothing, umbrella, sunscreen, and travel advice based on weather.",
+  "entries.tripAdvice.name": "Plan a trip",
+  "entries.tripAdvice.description": "Plan routes between cities or saved locations and combine them with weather advice.",
+  "entries.searchNearby.name": "Search nearby",
+  "entries.searchNearby.description": "Search near a road, landmark, current position, or city. Preserve the user's wording in request; use typed intent and explicit preference hints, and do not invent provider search terms.",
+  "entries.foodRecommend.name": "Recommend food",
+  "entries.foodRecommend.description": "Recommend nearby food from location, weather, cuisine, and dining occasion.",
+  "entries.airQuality.name": "Air quality",
+  "entries.airQuality.description": "Query current air quality, PM2.5, PM10, UV, and related advice for a city or saved location.",
+  "entries.currencyConvert.name": "Convert currency",
+  "entries.currencyConvert.description": "Convert major currencies using European Central Bank reference rates.",
+  "entries.countdown.name": "Countdown",
+  "entries.countdown.description": "Count days to a date, month-day, or supported holiday name.",
+  "entries.daysBetween.name": "Days between dates",
+  "entries.daysBetween.description": "Calculate the number of days between two dates.",
+  "entries.unitConvert.name": "Convert units",
+  "entries.unitConvert.description": "Convert common length, weight, temperature, volume, area, and speed units.",
+  "runtime": {"weather_details": "Feels like {feels}°C | humidity {humidity}% | wind {wind} km/h", "hourly_title": "Hourly forecast", "more_hours": "hours", "currency_rate_suffix": " (rate {rate}, {date})", "currency_rate_card": "Rate: 1 {from_currency} = {rate} {to_currency} ({date})", "food_title": "{query} recommendations", "food_scene": "🎯 {scene} occasion", "food_rain": "🌧️ Warm food suits a rainy day", "food_hot": "🌡️ {temp}°C is hot; try something cool", "food_cold": "🌡️ {temp}°C is cold; try something warm", "travel_title": "Travel advice"}
 }

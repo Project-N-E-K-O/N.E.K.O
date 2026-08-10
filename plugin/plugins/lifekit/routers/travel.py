@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from plugin.sdk.plugin import plugin_entry, quick_action, Ok, Err, SdkError
+from plugin.sdk.plugin import plugin_entry, quick_action, Ok, tr
 from plugin.sdk.shared.core.router import PluginRouter
 
 from .._api import RAIN_CODES, SNOW_CODES
@@ -12,7 +12,11 @@ from .._chat import push_lifekit_content
 from .._contracts import CityParams, TravelAdviceResult
 from .._i18n import I18n
 from .._location import LocationPurpose
-from .._location_entry import apply_location_assumption, location_unavailable_result
+from .._location_entry import (
+    apply_location_assumption,
+    location_unavailable_result,
+    upstream_unavailable_result,
+)
 
 
 def build_travel_advice(
@@ -84,8 +88,8 @@ class TravelAdviceRouter(PluginRouter):
 
     @plugin_entry(
         id="travel_advice",
-        name="出行建议",
-        description="根据天气给出穿衣、带伞、防晒等出行建议。可配合 food_recommend 获取美食推荐，或 trip_advice 规划路线。",
+        name=tr("entries.travelAdvice.name", default="Travel advice"),
+        description=tr("entries.travelAdvice.description", default="Give clothing, umbrella, sunscreen, and travel advice based on weather."),
         params=CityParams,
         llm_result_model=TravelAdviceResult,
     )
@@ -104,7 +108,11 @@ class TravelAdviceRouter(PluginRouter):
 
         data, data_err = await plugin._get_weather_data(loc)
         if not data:
-            return Err(SdkError(i18n.t(data_err or "error.fetch_failed", city=loc["city"])))
+            return upstream_unavailable_result(
+                i18n.t(data_err or "error.fetch_failed", city=loc["city"]),
+                i18n,
+                location=loc,
+            )
 
         current_raw = data.get("current", {})
         daily_raw = data.get("daily", {})
@@ -120,14 +128,14 @@ class TravelAdviceRouter(PluginRouter):
         card_lines.append(f"👔 {advice['clothing']}")
         extras = []
         if advice["umbrella"]:
-            extras.append("☂️ " + i18n.t("advice.bring_umbrella", fallback="带伞"))
+            extras.append("☂️ " + i18n.t("advice.bring_umbrella"))
         if advice["sunscreen"]:
-            extras.append("🧴 " + i18n.t("advice.bring_sunscreen", fallback="防晒"))
+            extras.append("🧴 " + i18n.t("advice.bring_sunscreen"))
         if extras:
             card_lines.append(" | ".join(extras))
 
         push_lifekit_content(plugin, [
-            {"type": "text", "text": f"🧳 {loc['city']} — {i18n.t('entry.travel_advice', fallback='出行建议')}"},
+            {"type": "text", "text": f"🧳 {loc['city']} — {i18n.t('runtime.travel_title')}"},
             {"type": "text", "text": "\n".join(card_lines)},
         ])
 
@@ -136,5 +144,5 @@ class TravelAdviceRouter(PluginRouter):
             "city": loc["city"],
             "summary": summary,
             **advice,
-            "next_actions": ["food_recommend — 美食推荐", "trip_advice — 路线规划"],
+            "next_actions": ["food_recommend", "trip_advice"],
         }, loc, i18n))

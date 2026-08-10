@@ -5,10 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from enum import Enum
 import hashlib
-import math
 import re
 from typing import Awaitable, Callable, Optional
 import unicodedata
+
+from ._geodesy import haversine_km
 
 
 class LocationPurpose(str, Enum):
@@ -181,6 +182,7 @@ class LocationCandidate:
             "country": self.country_code,
             "admin1": self.admin1,
             "admin2": self.admin2,
+            "timezone": self.timezone,
             "_location_precision": self.precision,
             "_location_source": self.source,
             "_location_verified": self.verified,
@@ -646,18 +648,12 @@ def _provider_candidate_preference(candidate: LocationCandidate) -> tuple[object
 
 
 def _distance_km(first: LocationCandidate, second: LocationCandidate) -> float:
-    first_latitude = math.radians(first.latitude)
-    second_latitude = math.radians(second.latitude)
-    latitude_delta = second_latitude - first_latitude
-    longitude_delta = math.radians(second.longitude - first.longitude)
-    haversine = (
-        math.sin(latitude_delta / 2) ** 2
-        + math.cos(first_latitude)
-        * math.cos(second_latitude)
-        * math.sin(longitude_delta / 2) ** 2
+    return haversine_km(
+        first.latitude,
+        first.longitude,
+        second.latitude,
+        second.longitude,
     )
-    haversine = min(1.0, max(0.0, haversine))
-    return 6371.0 * 2 * math.atan2(math.sqrt(haversine), math.sqrt(1 - haversine))
 
 
 def _admin_key(value: str) -> str:

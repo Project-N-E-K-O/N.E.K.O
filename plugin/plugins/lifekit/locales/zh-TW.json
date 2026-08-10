@@ -77,7 +77,9 @@
     "distance": "直線距離",
     "recommended": "推薦",
     "no_destination": "請指定目的地",
-    "invalid_mode": "出行方式 '{mode}' 無效，可選：{valid}"
+    "invalid_mode": "出行方式 '{mode}' 無效，可選：{valid}",
+    "mode_transit": "🚇 公車/捷運", "mode_walking": "🚶 步行", "mode_bicycling": "🚲 騎行", "mode_driving": "🚗 駕車",
+    "near_walk": "🚶 距離很近，建議步行", "rain_transit": "🚇 有雨，建議搭乘大眾運輸", "good_bike": "🚲 距離適中，天氣好適合騎行", "transit_advice": "🚇 建議搭乘大眾運輸"
   },
   "nearby": {
     "no_query": "請輸入搜尋關鍵詞（如：火鍋、咖啡、超市）",
@@ -121,15 +123,26 @@
   "recipe": {
     "no_query": "請輸入菜名或食材",
     "not_found": "沒有找到「{query}」相關的菜譜",
-    "random_fail": "隨機菜譜獲取失敗，請稍後重試"
+    "random_fail": "隨機菜譜獲取失敗，請稍後重試",
+    "provider_unavailable": "菜譜服務暫時不可用，請稍後重試。",
+    "found": "找到 {count} 個菜譜: {names}",
+    "random_summary": "🎲 隨機推薦: {recipe}",
+    "entry_search_name": "搜尋菜譜", "entry_search_description": "按菜名或食材搜尋菜譜；常見中文菜名僅提供有限映射。", "entry_random_name": "隨機菜譜", "entry_random_description": "隨機推薦一道菜，也可繼續尋找附近餐廳。", "ingredients": "食材", "instructions": "做法", "today_try": "🎲 今天試試: {recipe}", "action_food": "food_recommend cuisine={query} — 尋找附近類似餐廳", "action_market": "search_nearby request=附近超市買食材 place_intent=shopping preference_hints=[超市] — 尋找附近超市"
   },
   "air_quality": {
-    "fetch_failed": "獲取 {city} 的空氣品質數據失敗"
+    "fetch_failed": "獲取 {city} 的空氣品質數據失敗",
+    "summary": "{city} 空氣品質：{level}（AQI {aqi}）",
+    "pm25_suffix": "，PM2.5 {value} μg/m³",
+    "level": {"good": "優", "fair": "良", "moderate": "中等", "poor": "較差", "very_poor": "很差", "extremely_poor": "極差"},
+    "advice": {"mask": "建議佩戴口罩", "reduce_outdoors": "減少戶外活動", "outdoors_ok": "通常適合戶外活動", "pm25_high": "PM2.5 偏高（{value} μg/m³）", "uv": "紫外線較強，請注意防曬"}
   },
   "currency": {
     "no_currencies": "請指定源貨幣和目標貨幣",
     "convert_failed": "匯率查詢失敗：{from} → {to}"
   },
+  "locations": {"label_required": "地點標籤不能為空", "city_required": "城市不能為空", "confirm_add": "請確認是否新增地點「{label}（{city}）」。", "confirm_remove": "請確認是否刪除儲存地點「{label}」。", "confirm_default": "請確認是否將「{label}」設為預設地點。", "confirm": "確認", "cancel": "取消", "duplicate": "地點標籤已存在：{label}", "not_found": "找不到地點：{label}", "save_failed": "儲存失敗，請檢查外掛儲存是否啟用。", "removed": "已刪除地點：{label}", "default_set": "已將 {label} 設為預設地點"},
+  "unit": {"unsupported": "不支援的單位「{unit}」", "invalid_value": "數值無效", "same": "{value} {source} = {value} {target}（相同單位）", "unsupported_pair": "不支援 {source} → {target} 的換算"},
+  "date": {"target_required": "請指定目標日期", "invalid": "無法識別日期「{value}」", "future": "距離 {event} 還有 {days} 天 ({date})", "today": "🎉 今天就是 {event}！", "past": "{event} 已經過去 {days} 天 ({date})", "weeks": "約 {weeks} 週 | {weekday}", "invalid_start": "無法識別開始日期「{value}」", "invalid_end": "無法識別結束日期「{value}」", "between": "{start} → {end}：共 {days} 天", "years": "{value} 年", "months": "{value} 個月", "days": "{value} 天", "weekdays": ["週一", "週二", "週三", "週四", "週五", "週六", "週日"]},
   "panel.title": "生活助手",
   "panel.subtitle": "管理基礎設定和常用地點，天氣、路線、附近搜尋等工具入口保持可用。",
   "panel.config.title": "基礎設定",
@@ -152,6 +165,14 @@
   "panel.fields.forecastDaysHelp": "支援 1 到 7 天。",
   "panel.fields.locale": "語言",
   "panel.fields.forceLocale": "強制使用所選語言",
+  "panel.fields.cacheTtl": "快取有效期（秒）",
+  "panel.fields.enableGeoip": "允許透過 IP 自動定位",
+  "config.confirm_update": "請確認是否儲存這些 LifeKit 設定變更。",
+  "config.no_valid": "沒有可更新的有效設定欄位", "config.forecast_range": "預報天數必須在 1 到 7 之間", "config.cache_nonnegative": "快取有效期不能為負數", "config.locale_supported": "語言必須是以下之一：{values}", "config.invalid_value": "設定值無效：{detail}", "config.update_failed": "設定更新失敗：{detail}",
+  "config.secret_ui_only": "地圖 API Key 只能在 LifeKit 設定面板中更新。",
+  "panel.configured": "已設定",
+  "panel.notConfigured": "未設定",
+  "panel.keepSecret": "留空則保留目前密鑰",
   "panel.fields.label": "標籤",
   "panel.fields.city": "城市",
   "panel.fields.address": "具體地址",
@@ -272,5 +293,28 @@
   "quickstart.next.guide": "教程頁",
   "quickstart.next.entries": "工具入口",
   "quickstart.next.entriesValue": "天氣、出行、地點、美食、日期、匯率、單位換算",
-  "quickstart.warning.network": "天氣、定位、路線、美食和菜譜功能會訪問外部服務；如果請求失敗，請先檢查網路、代理和地圖 API Key。"
+  "quickstart.warning.network": "天氣、定位、路線、美食和菜譜功能會訪問外部服務；如果請求失敗，請先檢查網路、代理和地圖 API Key。",
+  "entries.getWeather.name": "获取天气",
+  "entries.getWeather.description": "查询城市、保存地点或自动定位位置的当前天气和每日预报。",
+  "entries.hourlyForecast.name": "逐小时预报",
+  "entries.hourlyForecast.description": "查询最长 168 小时的温度、降水和风力预报。",
+  "entries.travelAdvice.name": "出行建议",
+  "entries.travelAdvice.description": "根据天气给出穿衣、带伞、防晒和出行建议。",
+  "entries.tripAdvice.name": "出行规划",
+  "entries.tripAdvice.description": "规划城市或保存地点之间的路线，并结合天气给出建议。",
+  "entries.searchNearby.name": "附近搜索",
+  "entries.searchNearby.description": "搜索道路、地标、当前位置或城市附近的地点；保留用户原话，使用类型化意图和明确偏好，不编造地图召回词。",
+  "entries.foodRecommend.name": "美食推荐",
+  "entries.foodRecommend.description": "根据位置、天气、口味和用餐场景推荐附近美食。",
+  "entries.airQuality.name": "空气质量",
+  "entries.airQuality.description": "查询城市或保存地点的空气质量、PM2.5、PM10、紫外线及建议。",
+  "entries.currencyConvert.name": "汇率换算",
+  "entries.currencyConvert.description": "使用欧洲央行参考汇率换算主要货币。",
+  "entries.countdown.name": "倒计时",
+  "entries.countdown.description": "计算距离日期、月日或支持的节日名称还有多少天。",
+  "entries.daysBetween.name": "日期间隔",
+  "entries.daysBetween.description": "计算两个日期之间相隔的天数。",
+  "entries.unitConvert.name": "单位换算",
+  "entries.unitConvert.description": "换算常用长度、重量、温度、体积、面积和速度单位。",
+  "runtime": {"weather_details": "體感 {feels}°C | 濕度 {humidity}% | 風速 {wind} km/h", "hourly_title": "逐小時預報", "more_hours": "小時", "currency_rate_suffix": "（匯率 {rate}，{date}）", "currency_rate_card": "匯率：1 {from_currency} = {rate} {to_currency}（{date}）", "food_title": "{query}推薦", "food_scene": "🎯 {scene}場合", "food_rain": "🌧️ 下雨天適合吃點暖的", "food_hot": "🌡️ {temp}°C 很熱，來點涼的", "food_cold": "🌡️ {temp}°C 挺冷，吃點熱的", "travel_title": "出行建議"}
 }

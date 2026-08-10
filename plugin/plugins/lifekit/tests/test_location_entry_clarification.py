@@ -32,6 +32,7 @@ from plugin.plugins.lifekit.routers.hourly import HourlyForecastRouter
 from plugin.plugins.lifekit.routers.locations import LocationsRouter
 from plugin.plugins.lifekit.routers.travel import TravelAdviceRouter
 from plugin.plugins.lifekit.routers.trip import TripRouter
+from plugin.plugins.lifekit._routing import RoutingResult
 
 
 class _AmbiguousLocationPlugin:
@@ -87,6 +88,95 @@ class _LocationStorePlugin(_AmbiguousLocationPlugin):
     def __init__(self) -> None:
         super().__init__()
         self._locations_lock = asyncio.Lock()
+
+
+async def _confirmed_add(router: LocationsRouter, **payload: Any):
+    challenge = await router.add_location(**payload)
+    assert isinstance(challenge, Ok)
+    assert challenge.value["status"] == "clarify"
+    return await router.add_location(**challenge.value["context"])
+
+
+@pytest.mark.asyncio
+async def test_location_write_requires_explicit_confirmation(monkeypatch: Any) -> None:
+    geocode_called = False
+
+    async def geocode(*_: Any, **__: Any):
+        nonlocal geocode_called
+        geocode_called = True
+        return None
+
+    monkeypatch.setattr(
+        "plugin.plugins.lifekit.routers.locations.geocode_city",
+        geocode,
+    )
+    router = LocationsRouter()
+    router._bind(_LocationStorePlugin())
+
+    result = await router.add_location(label="家", city="上海")
+
+    assert isinstance(result, Ok)
+    assert result.value["status"] == "clarify"
+    assert result.value["context"]["confirmed"] is True
+    assert result.value["context"]["confirmation_token"]
+    assert result.value["confirmation_token"] == result.value["context"]["confirmation_token"]
+    assert geocode_called is False
+
+    bypass = await router.add_location(
+        label="家", city="上海", confirmed=True, _ctx={"source": "chat"},
+    )
+    assert bypass.value["status"] == "clarify"
+    assert geocode_called is False
+
+    confirmed = await router.add_location(
+        **bypass.value["context"],
+        _ctx={"source": "chat"},
+    )
+    assert confirmed.value["status"] == "clarify"
+    assert geocode_called is True
+
+
+@pytest.mark.parametrize("method_name", ["remove_location", "set_default_location"])
+@pytest.mark.asyncio
+async def test_saved_location_mutations_require_confirmation(
+    monkeypatch: Any,
+    method_name: str,
+) -> None:
+    router = LocationsRouter()
+    router._bind(_LocationStorePlugin())
+    save_called = False
+
+    async def load_locations() -> list[dict[str, Any]]:
+        return [{"id": "home", "label": "家", "is_default": True}]
+
+    async def save_locations(_: list[dict[str, Any]]) -> bool:
+        nonlocal save_called
+        save_called = True
+        return True
+
+    monkeypatch.setattr(router, "_load", load_locations)
+    monkeypatch.setattr(router, "_save", save_locations)
+
+    result = await getattr(router, method_name)(location_id="home")
+
+    assert isinstance(result, Ok)
+    assert result.value["status"] == "clarify"
+    assert result.value["context"]["confirmed"] is True
+    assert save_called is False
+
+
+class _WeatherProviderFailurePlugin(_AmbiguousLocationPlugin):
+    logger = _Logger()
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._cfg = {"timezone": "Asia/Shanghai"}
+
+    async def _resolve_location(self, *_: Any, **__: Any):
+        return {"city": "上海", "lat": 31.2, "lon": 121.5}, None
+
+    async def _get_weather_data(self, *_: Any, **__: Any):
+        return None, "error.forecast_timeout"
 
 
 @pytest.mark.asyncio
@@ -178,6 +268,30 @@ async def test_weather_without_any_location_returns_completed_unavailable() -> N
     assert result.value["summary"]
     assert _plugin_terminal_status(True, result.value) == "completed"
     GetWeatherResult.model_validate(result.value)
+
+
+@pytest.mark.parametrize(
+    ("router_type", "entry_name", "result_model"),
+    [
+        (CurrentWeatherRouter, "get_weather", GetWeatherResult),
+        (TravelAdviceRouter, "travel_advice", TravelAdviceResult),
+    ],
+)
+@pytest.mark.asyncio
+async def test_weather_provider_failures_are_completed_unavailable(
+    router_type: type,
+    entry_name: str,
+    result_model: type,
+) -> None:
+    router = router_type()
+    router._bind(_WeatherProviderFailurePlugin())
+
+    result = await getattr(router, entry_name)(city="上海")
+
+    assert isinstance(result, Ok)
+    assert result.value["status"] == "unavailable"
+    assert _plugin_terminal_status(True, result.value) == "completed"
+    result_model.model_validate(result.value)
 
 
 @pytest.mark.parametrize(
@@ -322,6 +436,37 @@ async def test_trip_with_no_usable_destination_returns_completed_unavailable() -
     assert _plugin_terminal_status(True, result.value) == "completed"
 
 
+@pytest.mark.asyncio
+async def test_trip_route_provider_failure_returns_completed_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _TripPlugin(_WeatherProviderFailurePlugin):
+        async def _resolve_location(self, value: str | None, **_: Any):
+            if value == "北京":
+                return {"city": "北京", "lat": 39.9, "lon": 116.4}, None
+            return {"city": "上海", "lat": 31.2, "lon": 121.5}, None
+
+    async def failed_plan(*_: Any, **__: Any) -> RoutingResult:
+        return RoutingResult(
+            origin_name="上海",
+            destination_name="北京",
+            error="timeout:routing budget exceeded",
+        )
+
+    monkeypatch.setattr(
+        "plugin.plugins.lifekit.routers.trip.RoutingService.plan",
+        failed_plan,
+    )
+    router = TripRouter()
+    router._bind(_TripPlugin())
+
+    result = await router.trip_advice(origin="上海", destination="北京")
+
+    assert isinstance(result, Ok)
+    assert result.value["status"] == "unavailable"
+    assert _plugin_terminal_status(True, result.value) == "completed"
+
+
 @pytest.mark.parametrize(
     "cause",
     ["ambiguous", "needs_confirmation", "not_found", "no_location"],
@@ -341,7 +486,8 @@ async def test_add_location_entry_clarifies_user_correctable_geocode_outcome(
     router = LocationsRouter()
     router._bind(_LocationStorePlugin())
 
-    result = await router.add_location(
+    result = await _confirmed_add(
+        router,
         label="出差",
         city="上海",
         address="浦东新区",
@@ -369,19 +515,23 @@ async def test_add_location_entry_keeps_provider_failure_as_error(
     router = LocationsRouter()
     router._bind(_LocationStorePlugin())
 
-    result = await router.add_location(label="出差", city="上海")
+    result = await _confirmed_add(router, label="出差", city="上海")
 
     assert isinstance(result, Err)
 
 
 @pytest.mark.asyncio
 async def test_add_location_success_uses_localized_summary(monkeypatch: Any) -> None:
+    geocode_queries: list[str] = []
+
     async def resolved(*_: Any, **__: Any):
+        geocode_queries.append(str(_[0]))
         return {
             "city": "上海",
             "lat": 31.2,
             "lon": 121.5,
             "country": "CN",
+            "timezone": "Asia/Shanghai",
         }
 
     async def load_locations() -> list[dict[str, Any]]:
@@ -400,11 +550,15 @@ async def test_add_location_success_uses_localized_summary(monkeypatch: Any) -> 
     monkeypatch.setattr(router, "_load", load_locations)
     monkeypatch.setattr(router, "_save", save_locations)
 
-    result = await router.add_location(label="家", city="上海")
+    result = await _confirmed_add(
+        router, label="家", city="上海", address="南京东路 1 号",
+    )
 
     assert isinstance(result, Ok)
     assert result.value["summary"] == "已添加：家（上海）"
     assert result.value["message"] == result.value["summary"]
+    assert geocode_queries == ["上海 南京东路 1 号"]
+    assert result.value["location"]["timezone"] == "Asia/Shanghai"
 
 
 @pytest.mark.parametrize("outcome", [None, RuntimeError("unexpected provider error")])
@@ -425,7 +579,7 @@ async def test_add_location_entry_classifies_untyped_geocode_outcomes(
     router = LocationsRouter()
     router._bind(_LocationStorePlugin())
 
-    result = await router.add_location(label="出差", city="上海")
+    result = await _confirmed_add(router, label="出差", city="上海")
 
     if outcome is None:
         assert isinstance(result, Ok)
@@ -515,7 +669,12 @@ def test_location_result_contracts_reject_clarification_without_summary(
             {
                 "summary": "已保存",
                 "message": "已保存",
-                "location": {"city": "上海"},
+                "location": {
+                    "label": "家",
+                    "city": "上海",
+                    "lat": 31.2,
+                    "lon": 121.5,
+                },
             },
         ),
         (

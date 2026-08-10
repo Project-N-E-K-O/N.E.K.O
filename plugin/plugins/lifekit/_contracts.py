@@ -19,6 +19,11 @@ def _blankable_text(value: Any) -> str:
     return str(value).strip()
 
 
+def _desc(en: str, zh: str, ja: str) -> str:
+    """Keep static schema descriptions useful in the required three locales."""
+    return f"{en} / {zh} / {ja}"
+
+
 class LifeKitModel(BaseModel):
     model_config = {"extra": "ignore"}
 
@@ -38,6 +43,7 @@ class ClarificationResult(LifeKitModel):
     status: Literal["clarify"]
     summary: str = Field(..., min_length=1)
     choices: list[str] = Field(default_factory=list)
+    confirmation_token: str = ""
     context: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("summary", mode="before")
@@ -53,6 +59,7 @@ class ProjectedResult(RootModel[Any]):
     """Root result that explicitly controls scalar projection to the host."""
 
     projected_statuses: ClassVar[tuple[str, ...]] = ()
+    projected_model: ClassVar[type[BaseModel] | None] = None
 
     @classmethod
     def model_json_schema(cls, *args: Any, **kwargs: Any) -> dict[str, Any]:
@@ -66,7 +73,21 @@ class ProjectedResult(RootModel[Any]):
             },
             "summary": {"title": "Summary", "type": "string"},
         }
-        schema["required"] = ["status", "summary"]
+        projected_properties: dict[str, Any] = {}
+        if cls.projected_model is not None:
+            model_properties = cls.projected_model.model_json_schema().get("properties", {})
+            projected_properties = {
+                name: definition
+                for name, definition in model_properties.items()
+                if name not in {
+                    "status", "summary", "assumed", "assumed_location", "ambiguity_warning",
+                }
+            }
+        schema["properties"].update(projected_properties)
+        # The SDK uses ``required`` as its explicit projection allow-list. These
+        # fields are not Pydantic validation requirements for every union arm;
+        # they are the complete safe surface the host may pass back to the LLM.
+        schema["required"] = ["status", "summary", *projected_properties]
         return schema
 
     @property
@@ -86,6 +107,19 @@ class ClarifiableResult(ProjectedResult):
     """Validated union of a complete ready result and a clarification result."""
 
     projected_statuses = ("ready", "clarify")
+
+    @classmethod
+    def model_json_schema(cls, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        schema = super().model_json_schema(*args, **kwargs)
+        clarification_properties = ClarificationResult.model_json_schema().get(
+            "properties", {}
+        )
+        schema["properties"].update({
+            name: clarification_properties[name]
+            for name in ("choices", "confirmation_token")
+        })
+        schema["required"] = [*schema["required"], "choices", "confirmation_token"]
+        return schema
 
 
 class ReadOnlyLocationResult(ProjectedResult):
@@ -115,6 +149,13 @@ class ReadOnlyLocationResult(ProjectedResult):
             "assumed",
             "assumed_location",
             "ambiguity_warning",
+            *(
+                name
+                for name in schema["properties"]
+                if name not in {
+                    "status", "summary", "assumed", "assumed_location", "ambiguity_warning",
+                }
+            ),
         ]
         return schema
 
@@ -127,23 +168,28 @@ class SavedLocationModel(LifeKitModel):
     lat: float
     lon: float
     country: str = ""
+    timezone: str = ""
     is_default: bool = False
 
 
 class ListLocationsResult(LifeKitModel):
     count: int
-    locations: list[dict[str, Any]]
-
-
-class MessageResult(LifeKitModel):
-    message: str
+    locations: list[SavedLocationModel]
 
 
 class AddLocationParams(LifeKitModel):
-    label: str = Field(..., min_length=1, description="地点标签")
-    city: str = Field(..., min_length=1, description="城市名")
-    address: str = Field("", description="可选的详细地址")
-    set_default: bool = Field(False, description="是否设为默认地点")
+    label: str = Field(..., min_length=1, description=_desc("Location label", "地点标签", "場所ラベル"))
+    city: str = Field(..., min_length=1, description=_desc("City", "城市名", "都市名"))
+    address: str = Field("", description=_desc("Optional address", "可选详细地址", "任意の住所"))
+    set_default: bool = Field(False, description=_desc("Set as default", "设为默认地点", "既定に設定"))
+    confirmed: bool = Field(
+        False,
+        description="Explicit confirmation / 明确确认 / 明示的な確認",
+    )
+    confirmation_token: str = Field(
+        "",
+        description="One-time token / 一次性确认令牌 / ワンタイム確認トークン",
+    )
 
     @field_validator("label", "city", "address", mode="before")
     @classmethod
@@ -155,10 +201,11 @@ class _AddLocationReadyResult(LifeKitModel):
     status: Literal["ready"]
     summary: str
     message: str
-    location: dict[str, Any]
+    location: SavedLocationModel
 
 
 class AddLocationResult(ClarifiableResult):
+    projected_model = _AddLocationReadyResult
     root: Annotated[
         _AddLocationReadyResult | ClarificationResult,
         Field(discriminator="status"),
@@ -166,7 +213,15 @@ class AddLocationResult(ClarifiableResult):
 
 
 class LocationIdParams(LifeKitModel):
-    location_id: str = Field(..., min_length=1, description="地点 ID 或地点标签")
+    location_id: str = Field(..., min_length=1, description=_desc("Location ID or label", "地点 ID 或标签", "場所 ID またはラベル"))
+    confirmed: bool = Field(
+        False,
+        description="Explicit confirmation / 明确确认 / 明示的な確認",
+    )
+    confirmation_token: str = Field(
+        "",
+        description="One-time token / 一次性确认令牌 / ワンタイム確認トークン",
+    )
 
     @field_validator("location_id", mode="before")
     @classmethod
@@ -174,13 +229,53 @@ class LocationIdParams(LifeKitModel):
         return _blankable_text(value)
 
 
-class RemoveLocationResult(MessageResult):
+class _RemoveLocationReadyResult(LifeKitModel):
+    status: Literal["ready"]
+    summary: str
+    message: str
     remaining: int
 
 
+class RemoveLocationResult(ClarifiableResult):
+    projected_model = _RemoveLocationReadyResult
+    root: Annotated[
+        _RemoveLocationReadyResult | ClarificationResult,
+        Field(discriminator="status"),
+    ]
+
+
+class _SetDefaultLocationReadyResult(LifeKitModel):
+    status: Literal["ready"]
+    summary: str
+    message: str
+
+
+class SetDefaultLocationResult(ClarifiableResult):
+    projected_model = _SetDefaultLocationReadyResult
+    root: Annotated[
+        _SetDefaultLocationReadyResult | ClarificationResult,
+        Field(discriminator="status"),
+    ]
+
+
+class _UpdateConfigReadyResult(LifeKitModel):
+    status: Literal["ready"]
+    summary: str
+    message: str
+    config: dict[str, Any]
+
+
+class UpdateConfigResult(ClarifiableResult):
+    projected_model = _UpdateConfigReadyResult
+    root: Annotated[
+        _UpdateConfigReadyResult | ClarificationResult,
+        Field(discriminator="status"),
+    ]
+
+
 class HourlyForecastParams(LifeKitModel):
-    city: str = Field("", description="城市名，留空则自动定位")
-    hours: int = Field(48, ge=1, le=168, description="预报小时数（1-168，默认 48）")
+    city: str = Field("", description=_desc("City; blank uses auto location", "城市；留空自动定位", "都市；空欄は自動位置情報"))
+    hours: int = Field(48, ge=1, le=168, description=_desc("Forecast hours (1-168)", "预报小时数（1-168）", "予報時間（1-168）"))
 
     @field_validator("city", mode="before")
     @classmethod
@@ -197,6 +292,7 @@ class _HourlyForecastReadyResult(LocationRiskFields):
 
 
 class HourlyForecastResult(ReadOnlyLocationResult):
+    projected_model = _HourlyForecastReadyResult
     root: Annotated[
         _HourlyForecastReadyResult | LocationUnavailableResult,
         Field(discriminator="status"),
@@ -204,24 +300,25 @@ class HourlyForecastResult(ReadOnlyLocationResult):
 
 
 class NearbyParams(LifeKitModel):
-    request: str = Field(..., min_length=1, description="用户的原始附近搜索需求，保留完整语义")
+    request: str = Field(..., min_length=1, description=_desc("Original nearby request; preserve full meaning", "附近搜索原话；保留完整语义", "周辺検索の原文；意味を保持"))
     location_hint: str = Field(
         "",
-        description="从用户原话中识别出的搜索中心；不确定时留空",
+        description=_desc("Search center inferred from the request; blank if uncertain", "从原话识别的搜索中心；不确定留空", "原文から推定した検索中心；不明なら空欄"),
     )
     place_intent: PlaceIntent = Field(
         "explore",
-        description="最接近用户需求的地点意图；不确定时使用 explore",
+        description=_desc("Closest place intent; use explore if uncertain", "最接近需求的地点意图；不确定用 explore", "最も近い場所意図；不明なら explore"),
     )
     preference_hints: list[str] = Field(
         default_factory=list,
         max_length=MAX_PREFERENCE_HINTS,
-        description=(
-            "用户明确表达的最多 4 个简短偏好，例如川菜、安静、适合儿童；"
-            "不要生成地图服务的召回词"
+        description=_desc(
+            "Up to four explicit short preferences; do not invent map search terms",
+            "最多四个明确偏好；不要编造地图召回词",
+            "明示された好みを最大4件；地図検索語を作らない",
         ),
     )
-    radius: int = Field(3000, ge=500, le=50000, description="搜索半径（米，默认 3000）")
+    radius: int = Field(3000, ge=500, le=50000, description=_desc("Search radius in meters", "搜索半径（米）", "検索半径（メートル）"))
 
     @field_validator("request", "location_hint", mode="before")
     @classmethod
@@ -324,10 +421,10 @@ class NearbyResult(ReadOnlyLocationResult):
 
 
 class FoodRecommendParams(LifeKitModel):
-    cuisine: str = Field("", description="口味/菜系偏好（如：火锅、日料、川菜、意大利菜），留空则根据天气推荐")
-    scene: str = Field("", description="用餐场景：聚餐/约会/一人食/家庭/宵夜，留空不限")
-    location: str = Field("", description="位置（地点标签或城市名，留空用默认位置）")
-    radius: int = Field(3000, ge=500, le=50000, description="搜索半径（米，默认 3000）")
+    cuisine: str = Field("", description=_desc("Cuisine preference; blank uses weather", "口味偏好；留空按天气", "料理の好み；空欄は天気を使用"))
+    scene: str = Field("", description=_desc("Dining occasion", "用餐场景", "食事の場面"))
+    location: str = Field("", description=_desc("Location label or city; blank uses default", "地点标签或城市；留空用默认", "場所ラベルまたは都市；空欄は既定"))
+    radius: int = Field(3000, ge=500, le=50000, description=_desc("Search radius in meters", "搜索半径（米）", "検索半径（メートル）"))
 
     @field_validator("cuisine", "scene", "location", mode="before")
     @classmethod
@@ -346,6 +443,7 @@ class _FoodRecommendReadyResult(LocationRiskFields):
 
 
 class FoodRecommendResult(ReadOnlyLocationResult):
+    projected_model = _FoodRecommendReadyResult
     root: Annotated[
         _FoodRecommendReadyResult | LocationUnavailableResult,
         Field(discriminator="status"),
@@ -353,9 +451,9 @@ class FoodRecommendResult(ReadOnlyLocationResult):
 
 
 class UnitConvertParams(LifeKitModel):
-    value: float = Field(..., description="要换算的数值")
-    from_unit: str = Field(..., min_length=1, description="源单位（如 cm, kg, °C, cup, ml）")
-    to_unit: str = Field(..., min_length=1, description="目标单位（如 inch, lb, °F, ml, g）")
+    value: float = Field(..., description=_desc("Value to convert", "要换算的数值", "変換する値"))
+    from_unit: str = Field(..., min_length=1, description=_desc("Source unit", "源单位", "変換元の単位"))
+    to_unit: str = Field(..., min_length=1, description=_desc("Target unit", "目标单位", "変換先の単位"))
 
     @field_validator("from_unit", "to_unit", mode="before")
     @classmethod
@@ -369,7 +467,7 @@ class UnitConvertResult(LifeKitModel):
 
 
 class CityParams(LifeKitModel):
-    city: str = Field("", description="城市名，留空则自动定位或使用默认地点")
+    city: str = Field("", description=_desc("City; blank uses automatic or default location", "城市；留空用自动或默认地点", "都市；空欄は自動または既定の場所"))
 
     @field_validator("city", mode="before")
     @classmethod
@@ -388,6 +486,7 @@ class _GetWeatherReadyResult(LocationRiskFields):
 
 
 class GetWeatherResult(ReadOnlyLocationResult):
+    projected_model = _GetWeatherReadyResult
     root: Annotated[
         _GetWeatherReadyResult | LocationUnavailableResult,
         Field(discriminator="status"),
@@ -404,6 +503,7 @@ class _AirQualityReadyResult(LocationRiskFields):
 
 
 class AirQualityResult(ReadOnlyLocationResult):
+    projected_model = _AirQualityReadyResult
     root: Annotated[
         _AirQualityReadyResult | LocationUnavailableResult,
         Field(discriminator="status"),
@@ -422,6 +522,7 @@ class _TravelAdviceReadyResult(LocationRiskFields):
 
 
 class TravelAdviceResult(ReadOnlyLocationResult):
+    projected_model = _TravelAdviceReadyResult
     root: Annotated[
         _TravelAdviceReadyResult | LocationUnavailableResult,
         Field(discriminator="status"),
@@ -429,9 +530,9 @@ class TravelAdviceResult(ReadOnlyLocationResult):
 
 
 class CurrencyConvertParams(LifeKitModel):
-    amount: float = Field(1, description="金额（默认 1）")
-    from_currency: str = Field(..., min_length=1, description="源货币代码（如 USD, CNY, EUR, JPY）")
-    to_currency: str = Field(..., min_length=1, description="目标货币代码（如 CNY, USD, EUR）")
+    amount: float = Field(1, description=_desc("Amount", "金额", "金額"))
+    from_currency: str = Field(..., min_length=1, description=_desc("Source currency code", "源货币代码", "変換元通貨コード"))
+    to_currency: str = Field(..., min_length=1, description=_desc("Target currency code", "目标货币代码", "変換先通貨コード"))
 
     @field_validator("from_currency", "to_currency", mode="before")
     @classmethod
@@ -446,8 +547,8 @@ class CurrencyConvertResult(LifeKitModel):
 
 
 class CountdownParams(LifeKitModel):
-    target_date: str = Field(..., min_length=1, description="目标日期：YYYY-MM-DD、MM-DD、或节日名（元旦/圣诞节/国庆节等）")
-    label: str = Field("", description="事件名称（如：生日、旅行、考试），留空自动识别")
+    target_date: str = Field(..., min_length=1, description=_desc("Target date, month-day, or holiday", "目标日期、月日或节日", "対象日、月日、祝日"))
+    label: str = Field("", description=_desc("Optional event label", "可选事件名称", "任意のイベント名"))
 
     @field_validator("target_date", "label", mode="before")
     @classmethod
@@ -456,8 +557,8 @@ class CountdownParams(LifeKitModel):
 
 
 class DaysBetweenParams(LifeKitModel):
-    start_date: str = Field("", description="起始日期 (YYYY-MM-DD)，留空表示今天")
-    end_date: str = Field("", description="结束日期 (YYYY-MM-DD)，留空表示今天")
+    start_date: str = Field("", description=_desc("Start date; blank means today", "起始日期；留空为今天", "開始日；空欄は今日"))
+    end_date: str = Field("", description=_desc("End date; blank means today", "结束日期；留空为今天", "終了日；空欄は今日"))
 
     @field_validator("start_date", "end_date", mode="before")
     @classmethod
@@ -471,8 +572,8 @@ class DateDetailResult(LifeKitModel):
 
 
 class SearchRecipeParams(LifeKitModel):
-    query: str = Field(..., min_length=1, description="菜名或食材（如：红烧肉、chicken curry、tomato）")
-    by_ingredient: bool = Field(False, description="是否按食材搜索（默认按菜名）")
+    query: str = Field(..., min_length=1, description=_desc("Dish or ingredient", "菜名或食材", "料理名または食材"))
+    by_ingredient: bool = Field(False, description=_desc("Search by ingredient", "按食材搜索", "食材で検索"))
 
     @field_validator("query", mode="before")
     @classmethod
@@ -481,6 +582,7 @@ class SearchRecipeParams(LifeKitModel):
 
 
 class SearchRecipeResult(LifeKitModel):
+    status: Literal["ready", "unavailable"]
     summary: str
     recipes: list[dict[str, Any]]
     query: str = ""
@@ -489,15 +591,16 @@ class SearchRecipeResult(LifeKitModel):
 
 
 class RandomRecipeResult(LifeKitModel):
+    status: Literal["ready", "unavailable"]
     summary: str
     recipe: dict[str, Any] | None = None
     next_actions: list[str] = Field(default_factory=list)
 
 
 class TripAdviceParams(LifeKitModel):
-    origin: str = Field("", description="起点（地点标签或城市名，留空用默认地点）")
-    destination: str = Field(..., min_length=1, description="终点（地点标签或城市名）")
-    mode: str = Field("", description="出行方式: transit/walking/bicycling/driving，留空自动推荐")
+    origin: str = Field("", description=_desc("Origin label or city; blank uses default", "起点标签或城市；留空用默认", "出発地ラベルまたは都市；空欄は既定"))
+    destination: str = Field(..., min_length=1, description=_desc("Destination label or city", "终点标签或城市", "目的地ラベルまたは都市"))
+    mode: str = Field("", description=_desc("Travel mode; blank selects automatically", "出行方式；留空自动选择", "移動手段；空欄は自動選択"))
 
     @field_validator("origin", "destination", "mode", mode="before")
     @classmethod
@@ -519,6 +622,7 @@ class _TripAdviceReadyResult(LocationRiskFields):
 
 
 class TripAdviceResult(ReadOnlyLocationResult):
+    projected_model = _TripAdviceReadyResult
     root: Annotated[
         _TripAdviceReadyResult | LocationUnavailableResult,
         Field(discriminator="status"),

@@ -185,6 +185,56 @@ async def test_typed_hints_drive_nearby_search_without_free_form_retrieval_terms
     assert result.value["results"][0]["name"] == "南京东路餐厅"
 
 
+@pytest.mark.asyncio
+async def test_raw_request_recovers_missing_location_and_intent_hints(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    resolved: list[str | None] = []
+
+    class _RawRequestPlugin(_NearbyPlugin):
+        async def _resolve_location(self, location: str | None, **_: object):
+            resolved.append(location)
+            return await super()._resolve_location(location)
+
+    monkeypatch.setattr(_poi.httpx, "AsyncClient", lambda **_: _EmptyPOIClient())
+    router = NearbyRouter()
+    router._bind(_RawRequestPlugin())
+
+    result = await router.search_nearby(
+        request="南京东路附近有什么好吃的",
+        _ctx={"latest_user_request": "南京东路附近有什么好吃的"},
+    )
+
+    assert isinstance(result, Ok)
+    assert resolved == ["南京东路"]
+    assert result.value["searched_terms"] == ["餐厅"]
+
+
+@pytest.mark.asyncio
+async def test_english_raw_request_recovers_location_hint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    resolved: list[str | None] = []
+
+    class _RawRequestPlugin(_NearbyPlugin):
+        async def _resolve_location(self, location: str | None, **_: object):
+            resolved.append(location)
+            return await super()._resolve_location(location)
+
+    monkeypatch.setattr(_poi.httpx, "AsyncClient", lambda **_: _EmptyPOIClient())
+    router = NearbyRouter()
+    router._bind(_RawRequestPlugin())
+
+    result = await router.search_nearby(
+        request="good restaurants near Times Square",
+        _ctx={"latest_user_request": "good restaurants near Times Square"},
+    )
+
+    assert isinstance(result, Ok)
+    assert resolved == ["Times Square"]
+    assert result.value["searched_terms"] == ["餐厅"]
+
+
 @pytest.mark.parametrize(
     ("place_intent", "expected_terms"),
     [

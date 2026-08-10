@@ -77,7 +77,9 @@
     "distance": "Расстояние",
     "recommended": "Рекомендуется",
     "no_destination": "Пожалуйста, укажите пункт назначения",
-    "invalid_mode": "Недопустимый режим поездки «{mode}». Допустимые варианты: {valid}"
+    "invalid_mode": "Недопустимый режим поездки «{mode}». Допустимые варианты: {valid}",
+    "mode_transit": "🚇 Transit", "mode_walking": "🚶 Walking", "mode_bicycling": "🚲 Cycling", "mode_driving": "🚗 Driving",
+    "near_walk": "🚶 Very close; walking is recommended", "rain_transit": "🚇 Rain expected; use transit", "good_bike": "🚲 Moderate distance and good weather; cycling is suitable", "transit_advice": "🚇 Transit is recommended"
   },
   "nearby": {
     "no_query": "Введите ключевое слово для поиска (например, ресторан, кафе, парк)",
@@ -121,15 +123,26 @@
   "recipe": {
     "no_query": "Пожалуйста, введите название блюда или ингредиент",
     "not_found": "Рецептов для \"{query}\" не найдено.",
-    "random_fail": "Не удалось получить случайный рецепт. Повторите попытку позже."
+    "random_fail": "Не удалось получить случайный рецепт. Повторите попытку позже.",
+    "provider_unavailable": "Сервис рецептов временно недоступен.",
+    "found": "Найдено рецептов: {count}: {names}",
+    "random_summary": "🎲 Случайная рекомендация: {recipe}",
+    "entry_search_name": "Search recipes", "entry_search_description": "Search recipes by dish or ingredient with limited Chinese aliases.", "entry_random_name": "Random recipe", "entry_random_description": "Recommend a random recipe.", "ingredients": "Ingredients", "instructions": "Instructions", "today_try": "🎲 Try today: {recipe}", "action_food": "food_recommend cuisine={query} — find similar restaurants nearby", "action_market": "search_nearby request=nearby supermarket for ingredients place_intent=shopping preference_hints=[supermarket] — find a supermarket"
   },
   "air_quality": {
-    "fetch_failed": "Не удалось получить данные о качестве воздуха для {city}."
+    "fetch_failed": "Не удалось получить данные о качестве воздуха для {city}.",
+    "summary": "Качество воздуха в {city}: {level} (AQI {aqi})",
+    "pm25_suffix": ", PM2.5 {value} μg/m³",
+    "level": {"good": "Хорошее", "fair": "Удовлетворительное", "moderate": "Среднее", "poor": "Плохое", "very_poor": "Очень плохое", "extremely_poor": "Крайне плохое"},
+    "advice": {"mask": "Рассмотрите возможность надеть маску", "reduce_outdoors": "Сократите активность на улице", "outdoors_ok": "Активность на улице обычно допустима", "pm25_high": "Высокий PM2.5 ({value} μg/m³)", "uv": "Сильное УФ-излучение; используйте защиту"}
   },
   "currency": {
     "no_currencies": "Укажите исходную и целевую валюты.",
     "convert_failed": "Не удалось конвертировать валюту: {from} → {to}."
   },
+  "locations": {"label_required": "Укажите метку местоположения", "city_required": "Укажите город", "confirm_add": "Добавить {label} ({city})?", "confirm_remove": "Удалить {label}?", "confirm_default": "Сделать {label} местоположением по умолчанию?", "confirm": "Подтвердить", "cancel": "Отмена", "duplicate": "Метка уже существует: {label}", "not_found": "Местоположение не найдено: {label}", "save_failed": "Не удалось сохранить. Проверьте хранилище плагина.", "removed": "Местоположение удалено: {label}", "default_set": "Местоположение по умолчанию: {label}"},
+  "unit": {"unsupported": "Неподдерживаемая единица: {unit}", "invalid_value": "Недопустимое значение", "same": "{value} {source} = {value} {target} (та же единица)", "unsupported_pair": "Неподдерживаемое преобразование: {source} → {target}"},
+  "date": {"target_required": "Please specify a target date", "invalid": "Could not parse date {value}", "future": "{days} days until {event} ({date})", "today": "🎉 {event} is today!", "past": "{event} was {days} days ago ({date})", "weeks": "About {weeks} weeks | {weekday}", "invalid_start": "Could not parse start date {value}", "invalid_end": "Could not parse end date {value}", "between": "{start} → {end}: {days} days", "years": "{value} years", "months": "{value} months", "days": "{value} days", "weekdays": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]},
   "panel.title": "LifeKit",
   "panel.subtitle": "Управляйте настройками базы и сохраненными местоположениями, сохраняя при этом доступность погоды, маршрута, поиска поблизости и других инструментов.",
   "panel.config.title": "Конфигурация",
@@ -152,6 +165,14 @@
   "panel.fields.forecastDaysHelp": "Поддерживает от 1 до 7 дней.",
   "panel.fields.locale": "Язык",
   "panel.fields.forceLocale": "Принудительно выбранный язык",
+  "panel.fields.cacheTtl": "Срок кэша (секунды)",
+  "panel.fields.enableGeoip": "Разрешить определение по IP",
+  "config.confirm_update": "Сохранить изменения конфигурации LifeKit?",
+  "config.no_valid": "No valid configuration fields to update", "config.forecast_range": "Forecast days must be between 1 and 7", "config.cache_nonnegative": "Cache lifetime cannot be negative", "config.locale_supported": "Locale must be one of: {values}", "config.invalid_value": "Invalid configuration value: {detail}", "config.update_failed": "Configuration update failed: {detail}",
+  "config.secret_ui_only": "Map API keys can only be updated in the LifeKit settings panel.",
+  "panel.configured": "Настроено",
+  "panel.notConfigured": "Не настроено",
+  "panel.keepSecret": "Оставьте пустым, чтобы сохранить текущий ключ",
   "panel.fields.label": "Этикетка",
   "panel.fields.city": "Город",
   "panel.fields.address": "Адрес",
@@ -272,5 +293,28 @@
   "quickstart.next.guide": "Руководство",
   "quickstart.next.entries": "Записи инструмента",
   "quickstart.next.entriesValue": "Погода, путешествия, места, еда, даты, валюта, конвертация единиц измерения.",
-  "quickstart.warning.network": "Функции погоды, местоположения, маршрута, еды и рецептов вызывают внешние службы. Если запросы не выполняются, сначала проверьте ключи сети, прокси-сервера и API карты."
+  "quickstart.warning.network": "Функции погоды, местоположения, маршрута, еды и рецептов вызывают внешние службы. Если запросы не выполняются, сначала проверьте ключи сети, прокси-сервера и API карты.",
+  "entries.getWeather.name": "Get weather",
+  "entries.getWeather.description": "Get current weather and daily forecasts for a city, saved location, or automatic location.",
+  "entries.hourlyForecast.name": "Hourly forecast",
+  "entries.hourlyForecast.description": "Get hourly temperature, precipitation, and wind forecasts for up to 168 hours.",
+  "entries.travelAdvice.name": "Travel advice",
+  "entries.travelAdvice.description": "Give clothing, umbrella, sunscreen, and travel advice based on weather.",
+  "entries.tripAdvice.name": "Plan a trip",
+  "entries.tripAdvice.description": "Plan routes between cities or saved locations and combine them with weather advice.",
+  "entries.searchNearby.name": "Search nearby",
+  "entries.searchNearby.description": "Search near a road, landmark, current position, or city. Preserve the user's wording in request; use typed intent and explicit preference hints, and do not invent provider search terms.",
+  "entries.foodRecommend.name": "Recommend food",
+  "entries.foodRecommend.description": "Recommend nearby food from location, weather, cuisine, and dining occasion.",
+  "entries.airQuality.name": "Air quality",
+  "entries.airQuality.description": "Query current air quality, PM2.5, PM10, UV, and related advice for a city or saved location.",
+  "entries.currencyConvert.name": "Convert currency",
+  "entries.currencyConvert.description": "Convert major currencies using European Central Bank reference rates.",
+  "entries.countdown.name": "Countdown",
+  "entries.countdown.description": "Count days to a date, month-day, or supported holiday name.",
+  "entries.daysBetween.name": "Days between dates",
+  "entries.daysBetween.description": "Calculate the number of days between two dates.",
+  "entries.unitConvert.name": "Convert units",
+  "entries.unitConvert.description": "Convert common length, weight, temperature, volume, area, and speed units.",
+  "runtime": {"weather_details": "Feels like {feels}°C | humidity {humidity}% | wind {wind} km/h", "hourly_title": "Hourly forecast", "more_hours": "hours", "currency_rate_suffix": " (rate {rate}, {date})", "currency_rate_card": "Rate: 1 {from_currency} = {rate} {to_currency} ({date})", "food_title": "{query} recommendations", "food_scene": "🎯 {scene} occasion", "food_rain": "🌧️ Warm food suits a rainy day", "food_hot": "🌡️ {temp}°C is hot; try something cool", "food_cold": "🌡️ {temp}°C is cold; try something warm", "travel_title": "Travel advice"}
 }

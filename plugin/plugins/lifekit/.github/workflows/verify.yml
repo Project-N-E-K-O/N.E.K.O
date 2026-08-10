@@ -51,7 +51,7 @@ jobs:
         working-directory: neko/plugin
         run: |
           mkdir -p neko_plugin_cli/target
-          uv run python neko_plugin_cli/cli.py release-check "${PLUGIN_ID}" | tee "neko_plugin_cli/target/${PLUGIN_ID}.release-check.txt"
+          uv run python neko_plugin_cli/cli.py check "${PLUGIN_ID}" --release | tee "neko_plugin_cli/target/${PLUGIN_ID}.release-check.txt"
 
       - name: Write verification summary
         working-directory: neko/plugin
