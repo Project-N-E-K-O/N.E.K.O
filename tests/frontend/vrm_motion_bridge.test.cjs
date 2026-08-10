@@ -76,6 +76,30 @@ emit('neko-assistant-turn-start', {
 assert.equal(latest('neko-assistant-turn-start').detail.userText, '请鼓掌');
 assert.equal(latest('neko-assistant-turn-start').detail.lanlan_name, 'Yui');
 
+const longText = '前文'.repeat(600) + '最后请挥手';
+emit('neko:user-content-sent', {
+    requestId: 'long-text-request',
+    text: longText,
+    source: 'text'
+});
+emit('neko-assistant-turn-start', {
+    turnId: 'long-text-turn',
+    requestId: 'long-text-request'
+});
+assert.equal(latest('neko-assistant-turn-start').detail.userText, longText);
+
+const longVoiceText = '语音前文'.repeat(300) + '最后不要点头';
+emit('neko:user-voice-content-received', {
+    requestId: 'long-voice-request',
+    text: longVoiceText,
+    source: 'voice'
+});
+emit('neko-assistant-turn-start', {
+    turnId: 'long-voice-turn',
+    requestId: 'long-voice-request'
+});
+assert.equal(latest('neko-assistant-turn-start').detail.userText, longVoiceText);
+
 emit('neko:user-content-sent', {
     requestId: 'request-2',
     text: 'wave',

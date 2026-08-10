@@ -3,7 +3,6 @@
 
     if (window.NekoMotionBridge) return;
 
-    const USER_TEXT_LIMIT = 1000;
     const ASSISTANT_TEXT_LIMIT = 24000;
     const CONTEXT_TTL_MS = 60000;
     const MAX_PENDING_CONTEXTS = 16;
@@ -31,7 +30,7 @@
 
     function rememberUserText(event) {
         const detail = event && event.detail || {};
-        const text = String(detail.text || '').trim().slice(0, USER_TEXT_LIMIT);
+        const text = String(detail.text || '').trim();
         if (!text) return;
         const entry = { text: text, at: Date.now() };
         const requestId = normalizedRequestId(detail.requestId);

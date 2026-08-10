@@ -108,11 +108,12 @@ const relaySource = fs.readFileSync(
 const runtimeSource = fs.readFileSync(path.join(motionRoot, 'runtime.js'), 'utf8');
 assert.equal(websocketSource.includes('_nekoMotionPendingUserText'), false);
 assert.equal(buttonsSource.includes('_nekoMotionPendingUserText'), false);
-assert.match(buttonsSource, /requestId: requestId,\s*text: text\.slice\(0, 1000\),\s*source:/);
+assert.match(buttonsSource, /requestId: requestId,\s*text: text,\s*source:/);
 assert.match(
     websocketSource,
-    /requestId: resolveAssistantRequestId\(response\.request_id, response\.meta\),\s*text: normalizedVoiceTranscript\.slice\(0, 1000\),\s*source: 'voice'/
+    /requestId: resolveAssistantRequestId\(response\.request_id, response\.meta\),\s*text: normalizedVoiceTranscript,\s*source: 'voice'/
 );
+assert.equal(bridgeSource.includes('USER_TEXT_LIMIT'), false);
 assert.equal(bridgeSource.includes("new BroadcastChannel('neko_motion_lifecycle')"), false);
 assert.match(bridgeSource, /appInterpage\.nekoBroadcastChannel/);
 assert.match(bridgeSource, /function relayClosedStage\(event\)/);
@@ -149,6 +150,11 @@ assert.match(runtimeSource, /activeTurn === turn/);
 assert.match(runtimeSource, /ignored stale assistant turn end/);
 assert.equal(runtimeSource.includes("window.dispatchEvent(new CustomEvent(message.eventName"), false);
 assert.match(runtimeSource, /await initialize\(\)/);
+assert.equal(runtimeSource.includes('.slice(0, 1000)'), false);
+assert.match(runtimeSource, /fetchWithTimeout\(SEMANTICS_URL/);
+assert.match(runtimeSource, /fetchWithTimeout\('\/api\/characters\/character\/'/);
+assert.match(runtimeSource, /async function requireInitialized\(\)/);
+assert.equal((runtimeSource.match(/await requireInitialized\(\)/g) || []).length, 5);
 assert.match(runtimeSource, /processUnseenStagesDirect\(turn\)/);
 assert.match(runtimeSource, /turn\.cancelled = true/);
 assert.match(runtimeSource, /played = await player\.playPlan\(plan, context\)/);

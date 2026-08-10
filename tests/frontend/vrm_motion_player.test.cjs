@@ -133,7 +133,26 @@ async function waitForLoadStart(predicate, message) {
     };
     assert.match(await player._assetUrl(player.assets[0]), /^blob:test-/);
     assert.equal(requested, '/static/vrm/' + player.assets[0].f + '.gz');
-    assert.deepEqual(requestedOptions, { cache: 'no-cache' });
+    assert.equal(requestedOptions.cache, 'no-cache');
+    assert.equal(requestedOptions.signal instanceof AbortSignal, true);
+
+    const originalSetTimeout = global.setTimeout;
+    const originalClearTimeout = global.clearTimeout;
+    global.setTimeout = function (handler) {
+        queueMicrotask(handler);
+        return 1;
+    };
+    global.clearTimeout = function () {};
+    global.fetch = async function (url, options) {
+        return new Promise(function (resolve, reject) {
+            options.signal.addEventListener('abort', function () {
+                reject(options.signal.reason);
+            }, { once: true });
+        });
+    };
+    await assert.rejects(new global.NekoMotionPlayer().load(), /abort/i);
+    global.setTimeout = originalSetTimeout;
+    global.clearTimeout = originalClearTimeout;
 
     const corrupted = Buffer.from(packedSource);
     corrupted[2] ^= 0xff;

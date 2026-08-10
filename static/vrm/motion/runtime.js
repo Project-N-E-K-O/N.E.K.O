@@ -6,6 +6,7 @@
     window.__nekoMotionOwnsVrmPlayback = false;
 
     const SEMANTICS_URL = '/static/vrm/motion/semantics.json';
+    const FETCH_TIMEOUT_MS = 10000;
     const POLL_INTERVAL_MS = 120;
     const BUFFER_SEAL_GRACE_MS = 1200;
     const TURN_END_GRACE_MS = 240;
@@ -78,6 +79,21 @@
         coalescedTurnEnds: 0, casualTalkSkipped: 0,
         casualTalkSuppressedByEmotion: 0, processingFailures: 0
     };
+
+    async function fetchWithTimeout(url, options) {
+        const controller = typeof AbortController === 'function' ? new AbortController() : null;
+        const requestOptions = Object.assign({}, options || {});
+        let timeoutId = null;
+        if (controller && !requestOptions.signal) {
+            requestOptions.signal = controller.signal;
+            timeoutId = setTimeout(function () { controller.abort(); }, FETCH_TIMEOUT_MS);
+        }
+        try {
+            return await fetch(url, requestOptions);
+        } finally {
+            if (timeoutId !== null) clearTimeout(timeoutId);
+        }
+    }
 
     function configuredMode() {
         const config = window.lanlan_config || {};
@@ -184,7 +200,7 @@
         let preset = '';
         if (name) {
             try {
-                const response = await fetch('/api/characters/character/' + encodeURIComponent(name) + '/persona-selection', {
+                const response = await fetchWithTimeout('/api/characters/character/' + encodeURIComponent(name) + '/persona-selection', {
                     cache: 'no-store'
                 });
                 if (response.ok) {
@@ -387,7 +403,7 @@
     async function initialize() {
         if (readyPromise) return readyPromise;
         readyPromise = (async function () {
-            const response = await fetch(SEMANTICS_URL, { cache: 'no-store' });
+            const response = await fetchWithTimeout(SEMANTICS_URL, { cache: 'no-store' });
             if (!response.ok) throw new Error('Motion semantics HTTP ' + response.status);
             core = new window.NekoMotionCore(await response.json());
             player = new window.NekoMotionPlayer();
@@ -748,7 +764,7 @@
         const emotionReadyPromise = new Promise(function (resolve) {
             resolveEmotionReady = resolve;
         });
-        const pendingUserText = String(userText || '').slice(0, 1000);
+        const pendingUserText = String(userText || '');
         activeTurn = {
             id: String(turnId || 'local-' + Date.now()),
             source: source || 'lifecycle',
@@ -888,7 +904,7 @@
         if (canReuseActiveTurn) {
             if (turnId) activeTurn.id = String(turnId);
             activeTurn.source = bridgeEvent ? 'bridge' : 'lifecycle';
-            if (userText && !activeTurn.userText) activeTurn.userText = String(userText).slice(0, 1000);
+            if (userText && !activeTurn.userText) activeTurn.userText = String(userText);
         } else {
             if (activeTurn && !activeTurn.ended) discardActiveTurn();
             beginTurn(turnId, bridgeEvent ? 'bridge' : 'lifecycle', userText);
@@ -1192,9 +1208,14 @@
     startMaintenanceTimers();
     if (refreshMode() === 'vrm') void initialize();
 
+    async function requireInitialized() {
+        if (await initialize() && core && player) return;
+        throw new Error('NekoMotion runtime initialization failed');
+    }
+
     window.NekoMotion = Object.freeze({
         analyze: async function (text, options) {
-            await initialize();
+            await requireInitialized();
             return core.analyze(text, Object.assign({
                 locale: currentLocale(),
                 officialEmotion: activeTurn && activeTurn.officialEmotion || '',
@@ -1202,7 +1223,7 @@
             }, options || {}));
         },
         analyzeSpeech: async function (text, options) {
-            await initialize();
+            await requireInitialized();
             return core.analyzeSpeech(text, Object.assign({
                 locale: currentLocale(),
                 officialEmotion: activeTurn && activeTurn.officialEmotion || '',
@@ -1210,17 +1231,17 @@
             }, options || {}));
         },
         normalizeToChinese: async function (text, locale) {
-            await initialize();
+            await requireInitialized();
             return core.toChineseFrame(text, locale || currentLocale());
         },
         extract: function (text) { return window.NekoMotionText.extractClosedStages(text); },
         play: async function (intent, options) {
-            await initialize();
+            await requireInitialized();
             const decision = Object.assign({ intent: String(intent || ''), kind: 'manual', intensity: 2, count: 1 }, options || {});
             return player.playPlan([decision], { seed: 'manual:' + Date.now() });
         },
         rest: async function (options) {
-            await initialize();
+            await requireInitialized();
             syncSavedRestAnimations();
             return player.enterRest(Object.assign({
                 profile: characterProfile(),
