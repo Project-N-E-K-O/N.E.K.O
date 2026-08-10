@@ -653,3 +653,48 @@ def test_a_broken_document_store_does_not_break_retrieval(store):
     repo.store = Broken()
     assert repo.search(TacticQuery(summary="巡洋舰距离"), limit=3) == ()
     assert repo.diagnostics.gated is True
+    assert repo.diagnostics.gate_reason == "store unavailable"
+
+
+@pytest.mark.parametrize(
+    "broken_method",
+    ("postings_for_terms", "load_chunks", "stats", "tags_for_documents"),
+)
+def test_any_store_call_failure_degrades_search_to_empty(store, broken_method):
+    """Every KnowledgeStore hop in search must share the same fallback."""
+    importer(store).import_text(
+        "a.md",
+        "---\nclasses: Cruiser\n---\n\n# 甲\n\n巡洋舰应该保持距离开火",
+    )
+    repo = repository(store)
+    real = store
+
+    class Flaky:
+        def chunk_ids_for_tags(self, tags):
+            return real.chunk_ids_for_tags(tags)
+
+        def postings_for_terms(self, terms):
+            if broken_method == "postings_for_terms":
+                raise RuntimeError("postings gone")
+            return real.postings_for_terms(terms)
+
+        def load_chunks(self, ids):
+            if broken_method == "load_chunks":
+                raise RuntimeError("chunks gone")
+            return real.load_chunks(ids)
+
+        def stats(self):
+            if broken_method == "stats":
+                raise RuntimeError("stats gone")
+            return real.stats()
+
+        def tags_for_documents(self, ids):
+            if broken_method == "tags_for_documents":
+                raise RuntimeError("tags gone")
+            return real.tags_for_documents(ids)
+
+    repo.store = Flaky()
+    assert repo.search(
+        TacticQuery(summary="巡洋舰距离", ship_class="Cruiser"), limit=3) == ()
+    assert repo.diagnostics.gated is True
+    assert repo.diagnostics.gate_reason == "store unavailable"

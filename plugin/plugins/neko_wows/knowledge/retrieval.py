@@ -94,96 +94,98 @@ class WowsTacticsRepository:
         )
 
         try:
+            # Every store hop shares this fallback: the reference block is
+            # optional, so a document-store failure must never stop a call-out.
             tag_hits = self.store.chunk_ids_for_tags(tags)
+            diagnostics.tag_candidates = len(tag_hits)
+
+            terms = index_terms(query_text)
+            postings, document_frequency = self.store.postings_for_terms(terms)
+            diagnostics.term_candidates = len(postings)
+            diagnostics.best_term_hits = max(
+                (len(matched) for matched in postings.values()), default=0)
+
+            min_hits = max(1, int(cfg.tactics_min_term_hits))
+            if not tag_hits and diagnostics.best_term_hits < min_hits:
+                diagnostics.gated = True
+                diagnostics.gate_reason = (
+                    f"无标签命中且最多只有 {diagnostics.best_term_hits} 个查询词命中"
+                    f"（需要 {min_hits}）"
+                )
+                self.diagnostics = diagnostics
+                return ()
+
+            candidates = self._candidate_ids(tag_hits, postings, min_hits)
+            if not candidates:
+                diagnostics.gated = True
+                diagnostics.gate_reason = "没有候选段落"
+                self.diagnostics = diagnostics
+                return ()
+
+            rows = self.store.load_chunks(candidates)
+            corpus = self.store.stats()
+            total_chunks = max(1, corpus["indexed_chunks"])
+            average_length = (
+                corpus["indexed_tokens"] / total_chunks) if total_chunks else 1.0
+            query_trigrams = set(trigrams(query_text))
+
+            scored: list[tuple[float, dict[str, Any]]] = []
+            for chunk_id, row in rows.items():
+                score = _bm25(
+                    postings.get(chunk_id, {}),
+                    document_frequency,
+                    total_chunks=total_chunks,
+                    length=row["token_count"] or 1,
+                    average_length=average_length or 1.0,
+                )
+                score += float(cfg.tactics_tag_weight) * tag_hits.get(chunk_id, 0)
+                if query_trigrams:
+                    overlap = query_trigrams.intersection(trigrams(row["text"]))
+                    score += TRIGRAM_BONUS_WEIGHT * (
+                        len(overlap) / len(query_trigrams))
+                if score <= 0.0:
+                    continue
+                scored.append((score, row))
+
+            diagnostics.scored = len(scored)
+            # Ties break on chunk id so a replay of the same corpus is reproducible.
+            scored.sort(key=lambda item: (-item[0], item[1]["chunk_id"]))
+            top = scored[:max(1, int(limit))]
+
+            doc_tags = self.store.tags_for_documents(
+                [row["doc_id"] for _score, row in top])
+            excerpts: list[TacticExcerpt] = []
+            for score, row in top:
+                heading = row["heading"]
+                # A single-heading document has the same text in both fields;
+                # showing it twice just makes the panel harder to read.
+                title = (
+                    f"{row['title']} / {heading}"
+                    if heading and heading != row["title"]
+                    else row["title"]
+                )
+                excerpts.append(TacticExcerpt(
+                    doc_id=row["doc_id"],
+                    title=title,
+                    text=row["text"],
+                    score=round(score, 4),
+                    tags=tuple(doc_tags.get(row["doc_id"], ())),
+                ))
+                diagnostics.hits.append({
+                    "doc_id": row["doc_id"],
+                    "title": title,
+                    "score": round(score, 4),
+                    "tag_hits": tag_hits.get(row["chunk_id"], 0),
+                    "term_hits": len(postings.get(row["chunk_id"], {})),
+                })
+
+            self.diagnostics = diagnostics
+            return tuple(excerpts)
         except Exception:
-            # A document-store failure must never stop a battle call-out; the
-            # reference block is optional by construction.
             self.diagnostics = diagnostics
             diagnostics.gated = True
             diagnostics.gate_reason = "store unavailable"
             return ()
-        diagnostics.tag_candidates = len(tag_hits)
-
-        terms = index_terms(query_text)
-        postings, document_frequency = self.store.postings_for_terms(terms)
-        diagnostics.term_candidates = len(postings)
-        diagnostics.best_term_hits = max(
-            (len(matched) for matched in postings.values()), default=0)
-
-        min_hits = max(1, int(cfg.tactics_min_term_hits))
-        if not tag_hits and diagnostics.best_term_hits < min_hits:
-            diagnostics.gated = True
-            diagnostics.gate_reason = (
-                f"无标签命中且最多只有 {diagnostics.best_term_hits} 个查询词命中"
-                f"（需要 {min_hits}）"
-            )
-            self.diagnostics = diagnostics
-            return ()
-
-        candidates = self._candidate_ids(tag_hits, postings, min_hits)
-        if not candidates:
-            diagnostics.gated = True
-            diagnostics.gate_reason = "没有候选段落"
-            self.diagnostics = diagnostics
-            return ()
-
-        rows = self.store.load_chunks(candidates)
-        corpus = self.store.stats()
-        total_chunks = max(1, corpus["indexed_chunks"])
-        average_length = (
-            corpus["indexed_tokens"] / total_chunks) if total_chunks else 1.0
-        query_trigrams = set(trigrams(query_text))
-
-        scored: list[tuple[float, dict[str, Any]]] = []
-        for chunk_id, row in rows.items():
-            score = _bm25(
-                postings.get(chunk_id, {}),
-                document_frequency,
-                total_chunks=total_chunks,
-                length=row["token_count"] or 1,
-                average_length=average_length or 1.0,
-            )
-            score += float(cfg.tactics_tag_weight) * tag_hits.get(chunk_id, 0)
-            if query_trigrams:
-                overlap = query_trigrams.intersection(trigrams(row["text"]))
-                score += TRIGRAM_BONUS_WEIGHT * (len(overlap) / len(query_trigrams))
-            if score <= 0.0:
-                continue
-            scored.append((score, row))
-
-        diagnostics.scored = len(scored)
-        # Ties break on chunk id so a replay of the same corpus is reproducible.
-        scored.sort(key=lambda item: (-item[0], item[1]["chunk_id"]))
-        top = scored[:max(1, int(limit))]
-
-        doc_tags = self.store.tags_for_documents([row["doc_id"] for _score, row in top])
-        excerpts: list[TacticExcerpt] = []
-        for score, row in top:
-            heading = row["heading"]
-            # A single-heading document has the same text in both fields; showing
-            # it twice just makes the panel harder to read.
-            title = (
-                f"{row['title']} / {heading}"
-                if heading and heading != row["title"]
-                else row["title"]
-            )
-            excerpts.append(TacticExcerpt(
-                doc_id=row["doc_id"],
-                title=title,
-                text=row["text"],
-                score=round(score, 4),
-                tags=tuple(doc_tags.get(row["doc_id"], ())),
-            ))
-            diagnostics.hits.append({
-                "doc_id": row["doc_id"],
-                "title": title,
-                "score": round(score, 4),
-                "tag_hits": tag_hits.get(row["chunk_id"], 0),
-                "term_hits": len(postings.get(row["chunk_id"], {})),
-            })
-
-        self.diagnostics = diagnostics
-        return tuple(excerpts)
 
     # ------------------------------------------------------------------
     def _candidate_ids(
