@@ -23,5 +23,4 @@ def unavailable_error(
     if details:
         payload.update(details)
     payload["error_code"] = code
-    payload.setdefault("retriable", True)
     return Err(SdkError(summary, code=code, details=payload))
