@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import pytest
 
+from plugin.plugins.neko_wows.adapters.schema_adapter import WowsSchemaAdapter
 from plugin.plugins.neko_wows.detectors._base import DetectorRegistry
-from plugin.plugins.neko_wows.detectors.damage import DamageBurstDetector
+from plugin.plugins.neko_wows.detectors.damage import (
+    DamageBurstDetector,
+    build_damage_detectors,
+)
 from plugin.plugins.neko_wows.domain.catalog import (
     DEVASTATING_STRIKE,
     HIGH_DAMAGE,
@@ -24,6 +28,8 @@ from plugin.plugins.neko_wows.domain.snapshot import (
     Ship,
     WowsSnapshot,
 )
+from plugin.plugins.neko_wows.policy.arbiter import Arbiter
+from plugin.plugins.neko_wows.policy.tactic_policy import WowsTacticPolicy
 
 
 def enemy(
@@ -215,7 +221,7 @@ def test_counter_rollback_discards_the_pending_burst():
     assert event_ids(results) == []
 
 
-def test_new_victim_row_is_a_baseline_not_replayed_damage():
+def test_first_victim_row_in_a_healthy_stream_counts_from_zero():
     target = enemy(max_health=100_000.0)
     results = run_frames(
         frame(1, 100.0, {}, target),
@@ -223,7 +229,7 @@ def test_new_victim_row_is_a_baseline_not_replayed_damage():
         frame(3, 106.0, {3002: 50_000}, target),
     )
 
-    assert event_ids(results) == []
+    assert event_ids(results) == [HIGH_DAMAGE]
 
 
 def test_victim_table_disappearance_discards_the_pending_burst():
@@ -316,3 +322,101 @@ def test_multiple_resolved_victims_choose_devastating_and_consume_the_rest():
 
     assert event_ids(results) == [DEVASTATING_STRIKE]
     assert emitted(results, DEVASTATING_STRIKE).detail["target_name"] == "Dev"
+
+
+def wire_payload(*, seq: int, damage: float | None, alive: bool) -> dict:
+    inflicted = {
+        "9999": {
+            "total": 100_000,
+            "byVictim": {"3002": 100_000},
+        },
+    }
+    if damage is not None:
+        inflicted["2000"] = {
+            "total": damage,
+            "byVictim": {"3002": damage},
+        }
+    return {
+        "serviceId": "8111_for_wows",
+        "apiVersion": "1.0",
+        "instanceId": "inst-wire",
+        "seq": seq,
+        "battleId": "battle-wire",
+        "source": {
+            "kind": "file",
+            "mode": "live",
+            "status": "live",
+            "updatedAt": float(seq),
+        },
+        "capabilities": {
+            domain: {"supported": True, "version": "1.0"}
+            for domain in CORE_DOMAINS
+        },
+        "availability": {
+            **{domain: AVAIL_AVAILABLE for domain in CORE_DOMAINS},
+            **{domain: AVAIL_UNSUPPORTED for domain in FUTURE_DOMAINS},
+        },
+        "extensions": {},
+        "schema": 1,
+        "active": True,
+        "self": {
+            "playerId": 2000,
+            "teamId": 0,
+            "health": 80_000,
+            "maxHealth": 80_000,
+            "position": [0.0, 0.0, 0.0],
+        },
+        "objects": [{
+            "uiId": 2,
+            "playerId": 3002,
+            "teamId": 1,
+            "relation": 2,
+            "type": "Cruiser",
+            "name": "Zao",
+            "alive": alive,
+            "visible": True,
+            "x": 200.0,
+            "z": 0.0,
+            "health": 40_000 if alive else 0,
+            "maxHealth": 40_000,
+        }],
+        "roster": [],
+        "damage": {
+            "inflicted": inflicted,
+            "received": {},
+            "teamTotal": {},
+        },
+        "ballistics": {"available": False},
+    }
+
+
+def test_realistic_nested_8111_payload_reaches_the_arbiter_once():
+    cfg = WowsConfig()
+    adapter = WowsSchemaAdapter()
+    builder = FactBuilder(cfg)
+    registry = DetectorRegistry(build_damage_detectors(cfg))
+    policy = WowsTacticPolicy(cfg)
+    arbiter = Arbiter(cfg)
+    previous = None
+    chosen = []
+
+    for at, payload in (
+        (100.0, wire_payload(seq=1, damage=None, alive=True)),
+        (101.0, wire_payload(seq=2, damage=20_000, alive=True)),
+        (102.0, wire_payload(seq=3, damage=20_000, alive=False)),
+    ):
+        snapshot = adapter.parse(payload, transport="ws", received_at=at)
+        current = (snapshot, builder.build(snapshot))
+        result = registry.feed(previous, current, cfg=cfg)
+        previous = current
+        decision = arbiter.decide(policy.expand(result.events, current[1]), at)
+        if decision.chosen is not None:
+            chosen.append(decision.chosen)
+
+    assert [candidate.event_id for candidate in chosen] == [DEVASTATING_STRIKE]
+    candidate = chosen[0]
+    assert candidate.lane == "normal"
+    assert candidate.detail["target_name"] == "Zao"
+    assert candidate.detail["window_damage"] == 20_000
+    assert candidate.detail["damage_ratio"] == pytest.approx(0.5)
+    assert candidate.detail["classification"] == "telemetry_estimate"

@@ -39,6 +39,7 @@ class DamageBurstDetector(Detector):
 
     def reset(self) -> None:
         self._last_totals: dict[int, float] = {}
+        self._rebaseline_victims: set[int] = set()
         self._bursts: dict[int, _Burst] = {}
         self._target_names: dict[int, str] = {}
         self._target_max_health: dict[int, float] = {}
@@ -74,15 +75,20 @@ class DamageBurstDetector(Detector):
 
         for victim_id in self._last_totals.keys() - current_totals.keys():
             self._bursts.pop(victim_id, None)
+            self._rebaseline_victims.add(victim_id)
 
         for victim_id in sorted(current_totals):
             current_total = self._valid_total(current_totals[victim_id])
             previous_total = self._valid_total(self._last_totals.get(victim_id))
             if current_total is None:
                 self._bursts.pop(victim_id, None)
+                self._rebaseline_victims.add(victim_id)
                 continue
             if previous_total is None:
-                continue
+                if victim_id in self._rebaseline_victims:
+                    self._rebaseline_victims.discard(victim_id)
+                    continue
+                previous_total = 0.0
             if current_total < previous_total:
                 self._bursts.pop(victim_id, None)
                 continue
