@@ -4036,7 +4036,7 @@ function CompactChatApp({
   // 拖拽交给宿主（web: app-react-chat-window / Electron: preload-chat-react.js）经
   // neko:compact-surface-drag-grab 接管。
   // 点按（无移动）语义保持原样：toggle 展开/关闭，fan 原点收起，毛球折叠，胶囊进入 input，
-  // textarea 正常聚焦输入。文本编辑控件中的指针移动始终留给光标与文本选择，
+  // textarea、input 与 contenteditable 正常聚焦/选择。文本编辑控件中的指针移动始终留给光标与文本选择，
   // 不能被父层冒泡的 pointer 事件重新解释为窗口拖拽。
   // 用独立的 compactToolOriginSuppressClickRef 抑制拖动后补发的 click——不能复用
   // compactInputToolWheelSuppressClickRef，因为关闭轮盘的 effect 会把它清掉（见下方 fan 关闭 effect）。

@@ -8367,10 +8367,15 @@ describe('App', () => {
     expect(queryAvatarToolVisualOverlay()).not.toBeNull();
   });
 
-  it('keeps compact text input pointer drags reserved for text selection', () => {
+  it('keeps compact editable pointer drags reserved for text selection', () => {
     render(<App chatSurfaceMode="compact" compactChatState="input" />);
-    const input = document.body.querySelector('.composer-input') as HTMLTextAreaElement;
-    fireEvent.change(input, { target: { value: '第一行\n第二行\n第三行' } });
+    const textarea = document.body.querySelector('.composer-input') as HTMLTextAreaElement;
+    const input = document.createElement('input');
+    const editable = document.createElement('div');
+    editable.setAttribute('contenteditable', 'true');
+    const inputFrame = document.body.querySelector('.compact-chat-surface-frame') as HTMLDivElement;
+    inputFrame.append(input, editable);
+    fireEvent.change(textarea, { target: { value: '第一行\n第二行\n第三行' } });
     const dragEvents: Event[] = [];
     const recordDragEvent = (event: Event) => dragEvents.push(event);
     const eventNames = [
@@ -8382,17 +8387,20 @@ describe('App', () => {
     ];
     eventNames.forEach((eventName) => window.addEventListener(eventName, recordDragEvent));
     try {
-      fireEvent.pointerDown(input, {
-        pointerId: 50, clientX: 120, clientY: 40, screenX: 420, screenY: 340,
-        button: 0, buttons: 1, pointerType: 'mouse',
-      });
-      fireEvent.pointerMove(document, {
-        pointerId: 50, clientX: 190, clientY: 62, screenX: 490, screenY: 362,
-        buttons: 1, pointerType: 'mouse',
-      });
-      fireEvent.pointerUp(document, {
-        pointerId: 50, clientX: 190, clientY: 62, screenX: 490, screenY: 362,
-        buttons: 0, pointerType: 'mouse',
+      [textarea, input, editable].forEach((target, index) => {
+        const pointerId = 50 + index;
+        fireEvent.pointerDown(target, {
+          pointerId, clientX: 120, clientY: 40, screenX: 420, screenY: 340,
+          button: 0, buttons: 1, pointerType: 'mouse',
+        });
+        fireEvent.pointerMove(document, {
+          pointerId, clientX: 190, clientY: 62, screenX: 490, screenY: 362,
+          buttons: 1, pointerType: 'mouse',
+        });
+        fireEvent.pointerUp(document, {
+          pointerId, clientX: 190, clientY: 62, screenX: 490, screenY: 362,
+          buttons: 0, pointerType: 'mouse',
+        });
       });
 
       expect(dragEvents).toHaveLength(0);
