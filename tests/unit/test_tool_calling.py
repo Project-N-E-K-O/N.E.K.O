@@ -93,6 +93,40 @@ async def test_registry_local_handler_runs():
 
 
 @pytest.mark.asyncio
+async def test_registry_local_handler_envelope_extracts_images():
+    """Local handlers share the remote ``{output, images}`` envelope.
+
+    Without normalization, pixels stay inside ``output`` and never reach
+    ``_route_tool_images`` — the model gets base64 text instead of a picture.
+    """
+    from main_logic.tool_calling import ToolCall, ToolDefinition, ToolRegistry
+
+    jpeg_b64 = "/9j/2Q=="
+
+    async def screenshot_handler(_args):
+        return {
+            "output": {"ok": True},
+            "images": [{
+                "data_b64": jpeg_b64,
+                "mime": "image/jpeg",
+                "vision_prompt": "minimap",
+            }],
+        }
+
+    reg = ToolRegistry()
+    reg.register(ToolDefinition(
+        name="shot", description="shot", handler=screenshot_handler))
+    result = await reg.execute(ToolCall(name="shot", arguments={}, call_id="c1"))
+
+    assert result.is_error is False
+    assert result.output == {"ok": True}
+    assert "images" not in result.output
+    assert len(result.images) == 1
+    assert result.images[0].data_b64 == jpeg_b64
+    assert result.images[0].vision_prompt == "minimap"
+
+
+@pytest.mark.asyncio
 async def test_registry_unknown_tool_returns_error_not_raise():
     from main_logic.tool_calling import ToolCall, ToolRegistry
 

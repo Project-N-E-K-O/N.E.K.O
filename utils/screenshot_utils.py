@@ -149,11 +149,23 @@ async def process_screen_data(data: str) -> Optional[str]:
         return None
 
 
+_VISION_DATA_URL_MIMES = frozenset({"image/jpeg", "image/png"})
+
+
+def _vision_image_data_url(image_b64: str, mime: str = "image/jpeg") -> str:
+    """Build a data URL whose media type matches the payload bytes."""
+    normalized = (mime or "image/jpeg").strip().lower()
+    if normalized not in _VISION_DATA_URL_MIMES:
+        normalized = "image/jpeg"
+    return f"data:{normalized};base64,{image_b64}"
+
+
 async def analyze_image_with_vision_model(
     image_b64: str,
     max_completion_tokens: int | None = None,
     window_title: str = '',
     extra_instruction: str = '',
+    mime: str = "image/jpeg",
 ) -> Optional[str]:
     """
     Analyze an image with the vision model
@@ -169,6 +181,9 @@ async def analyze_image_with_vision_model(
             steer a vision-capable conversation model looking at the frame
             directly — the two delivery paths must not describe different
             things.
+        mime: image media type for the data URL (``image/jpeg`` or
+            ``image/png``). Must match the bytes; mislabeling a PNG as JPEG
+            can make the vision model return an empty/unreadable description.
 
     Returns: the image description text, or None on failure
     """
@@ -239,7 +254,7 @@ async def analyze_image_with_vision_model(
                     {
                         "type": "image_url",
                         "image_url": {
-                            "url": f"data:image/jpeg;base64,{image_b64}"
+                            "url": _vision_image_data_url(image_b64, mime)
                         }
                     },
                     {

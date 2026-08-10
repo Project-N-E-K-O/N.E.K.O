@@ -268,10 +268,11 @@ def spy_vision(monkeypatch):
     calls: list[dict] = []
 
     async def _fake(image_b64, max_completion_tokens=None, window_title="",
-                    extra_instruction=""):
+                    extra_instruction="", mime="image/jpeg"):
         calls.append({
             "image_b64": image_b64,
             "extra_instruction": extra_instruction,
+            "mime": mime,
         })
         return _fake.reply
 
@@ -320,6 +321,21 @@ async def test_text_only_model_gets_a_transcription_instead(spy_vision):
     assert out.images == [], "pixels must not survive for a model that cannot read them"
     assert out.output["_image_descriptions"] == ["a burning cruiser near the cap"]
     assert spy_vision.calls[0]["extra_instruction"] == "watch the minimap"
+
+
+@pytest.mark.asyncio
+async def test_transcription_passes_png_mime_to_the_vision_helper(spy_vision):
+    """Realtime / text-only fallback must not relabel PNG bytes as JPEG."""
+    out = await _dispatch(
+        _result(
+            output={"ok": True},
+            images=[ToolImage(data_b64="PNGIMG", mime="image/png")],
+        ),
+        _FakeOfflineSession("deepseek-chat"),
+    )
+    assert out.images == []
+    assert spy_vision.calls[0]["mime"] == "image/png"
+    assert spy_vision.calls[0]["image_b64"] == "PNGIMG"
 
 
 @pytest.mark.asyncio

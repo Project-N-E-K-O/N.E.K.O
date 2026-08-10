@@ -164,6 +164,7 @@ class ToolCallingMixin:
             description = await analyze_image_with_vision_model(
                 image.data_b64,
                 extra_instruction=image.vision_prompt,
+                mime=getattr(image, "mime", None) or "image/jpeg",
             )
         except asyncio.CancelledError:
             raise
