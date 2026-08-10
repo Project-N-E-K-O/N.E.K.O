@@ -8367,9 +8367,43 @@ describe('App', () => {
     expect(queryAvatarToolVisualOverlay()).not.toBeNull();
   });
 
-  it('dispatches compact surface drag prime and renderer drag events from the input body', () => {
+  it('keeps compact text input pointer drags reserved for text selection', () => {
     render(<App chatSurfaceMode="compact" compactChatState="input" />);
     const input = document.body.querySelector('.composer-input') as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: '第一行\n第二行\n第三行' } });
+    const dragEvents: Event[] = [];
+    const recordDragEvent = (event: Event) => dragEvents.push(event);
+    const eventNames = [
+      'neko:compact-surface-drag-prime',
+      'neko:compact-surface-drag-grab',
+      'neko:compact-surface-drag-move',
+      'neko:compact-surface-drag-end',
+      'neko:compact-surface-drag-prime-end',
+    ];
+    eventNames.forEach((eventName) => window.addEventListener(eventName, recordDragEvent));
+    try {
+      fireEvent.pointerDown(input, {
+        pointerId: 50, clientX: 120, clientY: 40, screenX: 420, screenY: 340,
+        button: 0, buttons: 1, pointerType: 'mouse',
+      });
+      fireEvent.pointerMove(document, {
+        pointerId: 50, clientX: 190, clientY: 62, screenX: 490, screenY: 362,
+        buttons: 1, pointerType: 'mouse',
+      });
+      fireEvent.pointerUp(document, {
+        pointerId: 50, clientX: 190, clientY: 62, screenX: 490, screenY: 362,
+        buttons: 0, pointerType: 'mouse',
+      });
+
+      expect(dragEvents).toHaveLength(0);
+    } finally {
+      eventNames.forEach((eventName) => window.removeEventListener(eventName, recordDragEvent));
+    }
+  });
+
+  it('dispatches compact surface drag prime and renderer drag events from the input frame', () => {
+    render(<App chatSurfaceMode="compact" compactChatState="input" />);
+    const inputFrame = document.body.querySelector('.compact-chat-surface-frame') as HTMLDivElement;
     const primes: Array<Record<string, number>> = [];
     const primeEnds: Array<Record<string, number>> = [];
     const grabs: Array<Record<string, number>> = [];
@@ -8386,7 +8420,7 @@ describe('App', () => {
     window.addEventListener('neko:compact-surface-drag-move', onMove);
     window.addEventListener('neko:compact-surface-drag-end', onEnd);
     try {
-      fireEvent.pointerDown(input, {
+      fireEvent.pointerDown(inputFrame, {
         pointerId: 51, clientX: 160, clientY: 46, screenX: 460, screenY: 340,
         button: 0, buttons: 1, pointerType: 'mouse',
       });
@@ -8451,7 +8485,7 @@ describe('App', () => {
 
   it('dispatches compact surface drag cleanup from document pointercancel', () => {
     render(<App chatSurfaceMode="compact" compactChatState="input" />);
-    const input = document.body.querySelector('.composer-input') as HTMLTextAreaElement;
+    const inputFrame = document.body.querySelector('.compact-chat-surface-frame') as HTMLDivElement;
     const primeEnds: Array<Record<string, number>> = [];
     const ends: Array<Record<string, number | string>> = [];
     const onPrimeEnd = (event: Event) => primeEnds.push((event as CustomEvent).detail);
@@ -8459,7 +8493,7 @@ describe('App', () => {
     window.addEventListener('neko:compact-surface-drag-prime-end', onPrimeEnd);
     window.addEventListener('neko:compact-surface-drag-end', onEnd);
     try {
-      fireEvent.pointerDown(input, {
+      fireEvent.pointerDown(inputFrame, {
         pointerId: 61, clientX: 120, clientY: 40, screenX: 320, screenY: 240,
         button: 0, buttons: 1, pointerType: 'mouse',
       });
@@ -8489,7 +8523,7 @@ describe('App', () => {
 
   it('finishes a replaced compact surface drag before priming the next pointer', () => {
     render(<App chatSurfaceMode="compact" compactChatState="input" />);
-    const input = document.body.querySelector('.composer-input') as HTMLTextAreaElement;
+    const inputFrame = document.body.querySelector('.compact-chat-surface-frame') as HTMLDivElement;
     const minimize = document.body.querySelector('.compact-chat-minimize-ball') as HTMLButtonElement;
     const primes: Array<Record<string, number>> = [];
     const primeEnds: Array<Record<string, number>> = [];
@@ -8514,7 +8548,7 @@ describe('App', () => {
     window.addEventListener('neko:compact-surface-drag-prime-end', onPrimeEnd);
     window.addEventListener('neko:compact-surface-drag-end', onEnd);
     try {
-      fireEvent.pointerDown(input, {
+      fireEvent.pointerDown(inputFrame, {
         pointerId: 71, clientX: 150, clientY: 50, screenX: 450, screenY: 340,
         button: 0, buttons: 1, pointerType: 'mouse',
       });
