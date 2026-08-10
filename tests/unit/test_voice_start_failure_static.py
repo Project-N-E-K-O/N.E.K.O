@@ -732,7 +732,8 @@ def test_every_screen_share_toggle_treats_a_pending_start_as_on():
     activation_guard = start_once.rfind(
         "discardCancelledScreenSharingStart(attempt)", 0, activate
     )
-    assert activation_guard > start_once.index("fetchBackendScreenshot()")
+    fail_closed = start_once.index("streamError.name = 'NotReadableError'")
+    assert activation_guard > fail_closed
     commit_stream = start_once.index("S.screenCaptureStream = captureStream;")
     first_post_capture_guard = start_once.index(
         "if (discardCancelledScreenSharingStart(attempt)) return;",
