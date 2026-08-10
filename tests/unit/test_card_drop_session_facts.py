@@ -34,10 +34,17 @@ def test_same_originish_rejects_malformed_ports(malformed_origin):
     assert C._same_originish(malformed_origin, "http://localhost:48911") is False
 
 
-def _main_server_request(*, method: str = "POST", origin: str = "") -> Request:
+def _main_server_request(
+    *,
+    method: str = "POST",
+    origin: str = "",
+    extra_headers: dict[str, str] | None = None,
+) -> Request:
     headers = [(b"host", b"127.0.0.1:48911")]
     if origin:
         headers.append((b"origin", origin.encode("ascii")))
+    for name, value in (extra_headers or {}).items():
+        headers.append((name.lower().encode("ascii"), value.encode("ascii")))
     return Request(
         {
             "type": "http",
@@ -53,6 +60,25 @@ def _main_server_request(*, method: str = "POST", origin: str = "") -> Request:
             "headers": headers,
         }
     )
+
+
+def test_forge_grant_requires_the_electron_runtime_secret(monkeypatch):
+    request = _main_server_request()
+    monkeypatch.delenv("NEKO_FORGE_GRANT_SECRET", raising=False)
+    with pytest.raises(C.HTTPException) as unavailable:
+        C._require_forge_grant_secret(request)
+    assert unavailable.value.status_code == 503
+
+    secret = "a" * 64
+    monkeypatch.setenv("NEKO_FORGE_GRANT_SECRET", secret)
+    with pytest.raises(C.HTTPException) as rejected:
+        C._require_forge_grant_secret(request)
+    assert rejected.value.status_code == 403
+
+    authorized = _main_server_request(
+        extra_headers={"x-neko-forge-grant-secret": secret},
+    )
+    C._require_forge_grant_secret(authorized)
 
 
 @pytest.mark.asyncio

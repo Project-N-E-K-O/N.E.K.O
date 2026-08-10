@@ -58,6 +58,7 @@ _FACT_QUERY_MAX_EXCLUSIONS = 200
 _FACT_QUERY_MAX_EXCLUSION_LENGTH = 128
 _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 _SUPPORTED_AUTH_SOURCES = frozenset({"legacy", "oauth"})
+_FORGE_GRANT_SECRET_ENV = "NEKO_FORGE_GRANT_SECRET"
 _native_sync_tickets: dict[str, float] = {}
 # digest -> {expires_at, scopes, local_user_id, audience, session_fingerprint}
 _native_delegates: dict[str, dict] = {}
@@ -423,6 +424,16 @@ def _local_mutation_origin_allowed(request: Request) -> bool:
         and request_host in _LOOPBACK_HOSTS
         and _same_originish(origin, request_base)
     )
+
+
+def _require_forge_grant_secret(request: Request) -> None:
+    """Authenticate the private Electron dropper before mutating the ledger."""
+    expected = str(os.environ.get(_FORGE_GRANT_SECRET_ENV) or "").strip()
+    supplied = (request.headers.get("x-neko-forge-grant-secret") or "").strip()
+    if len(expected) < 32:
+        raise HTTPException(status_code=503, detail="forge_grant_secret_unavailable")
+    if not supplied or not secrets.compare_digest(supplied, expected):
+        raise HTTPException(status_code=403, detail="invalid_forge_grant_secret")
 
 
 def _require_local_mutation_ticket(request: Request, payload: dict | None) -> None:
@@ -2061,6 +2072,7 @@ async def credit_options(request: Request, credit_id: str = "", operation_id: st
 async def grant_credit_endpoint(request: Request, payload: dict = Body(...)):
     if not _local_mutation_origin_allowed(request):
         raise HTTPException(status_code=403, detail="origin_not_allowed")
+    _require_forge_grant_secret(request)
     from main_logic.forge_credit_ledger import grant_credit
 
     try:

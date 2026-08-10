@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import hmac
 import os
 import random
 import secrets
@@ -14,7 +16,14 @@ from pathlib import Path
 DAILY_CAP = 6
 TRIGGER_LIMITS = {"emotion_combo": None, "5rounds": 2, "idle": 2, "minigame": 1}
 RARITY_WEIGHTS = {"UR": 0, "SSR": 0.5, "SR": 3.5, "R": 26, "N": 70}
+LEDGER_VERSION = 2
+_INTEGRITY_ALGORITHM = "hmac-sha256"
+_SIGNING_KEY_BYTES = 32
 _LOCK = threading.RLock()
+
+
+class LedgerIntegrityError(RuntimeError):
+    """The persisted credit ledger cannot be authenticated safely."""
 
 
 def _ledger_path() -> Path:
@@ -24,6 +33,10 @@ def _ledger_path() -> Path:
     from utils.config_manager import get_config_manager
 
     return Path(get_config_manager().memory_dir).parent / "forge_credits.json"
+
+
+def _signing_key_path() -> Path:
+    return _ledger_path().with_name("forge_credits.key")
 
 
 def _now() -> datetime:
@@ -42,23 +55,134 @@ def _parse(value: object) -> datetime | None:
 
 
 def _empty() -> dict:
-    return {"version": 1, "credits": []}
+    return {"version": LEDGER_VERSION, "credits": []}
+
+
+def _read_or_create_signing_key() -> tuple[bytes, bool]:
+    path = _signing_key_path()
+    try:
+        key = path.read_bytes()
+    except FileNotFoundError:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        key = secrets.token_bytes(_SIGNING_KEY_BYTES)
+        try:
+            with path.open("xb") as handle:
+                handle.write(key)
+            try:
+                path.chmod(0o600)
+            except OSError:
+                pass
+            return key, True
+        except FileExistsError:
+            key = path.read_bytes()
+    except OSError as exc:
+        raise LedgerIntegrityError("ledger_signing_key_unavailable") from exc
+    if len(key) != _SIGNING_KEY_BYTES:
+        raise LedgerIntegrityError("ledger_signing_key_invalid")
+    return key, False
+
+
+def _canonical_ledger(data: dict) -> bytes:
+    payload = {
+        "credits": data.get("credits"),
+        "version": LEDGER_VERSION,
+    }
+    return json.dumps(
+        payload,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+
+
+def _ledger_mac(data: dict, key: bytes) -> str:
+    return hmac.new(key, _canonical_ledger(data), hashlib.sha256).hexdigest()
+
+
+def _valid_uuid(value: object) -> bool:
+    try:
+        return str(uuid.UUID(str(value))) == str(value).strip().lower()
+    except (ValueError, AttributeError, TypeError):
+        return False
+
+
+def _validate_ledger(data: dict) -> None:
+    if not isinstance(data, dict) or not isinstance(data.get("credits"), list):
+        raise LedgerIntegrityError("ledger_schema_invalid")
+    seen_ids: set[str] = set()
+    seen_idem_keys: set[str] = set()
+    for credit in data["credits"]:
+        if not isinstance(credit, dict):
+            raise LedgerIntegrityError("ledger_credit_schema_invalid")
+        credit_id = credit.get("id")
+        idem_key = credit.get("idem_key")
+        if not _valid_uuid(credit_id) or credit_id in seen_ids:
+            raise LedgerIntegrityError("ledger_credit_id_invalid")
+        if not isinstance(idem_key, str) or not 8 <= len(idem_key) <= 128:
+            raise LedgerIntegrityError("ledger_credit_idem_invalid")
+        if idem_key in seen_idem_keys:
+            raise LedgerIntegrityError("ledger_credit_idem_duplicate")
+        if credit.get("rarity") not in RARITY_WEIGHTS:
+            raise LedgerIntegrityError("ledger_credit_rarity_invalid")
+        if credit.get("trigger_type") not in TRIGGER_LIMITS:
+            raise LedgerIntegrityError("ledger_credit_trigger_invalid")
+        if credit.get("status") not in {"active", "reserved", "consumed", "expired"}:
+            raise LedgerIntegrityError("ledger_credit_status_invalid")
+        if _parse(credit.get("created_at")) is None or _parse(credit.get("expires_at")) is None:
+            raise LedgerIntegrityError("ledger_credit_timestamp_invalid")
+        for field in ("operation_id", "reservation_owner_id", "card_id"):
+            if field in credit and not _valid_uuid(credit.get(field)):
+                raise LedgerIntegrityError(f"ledger_credit_{field}_invalid")
+        for field in ("reserved_at", "consumed_at", "expired_at"):
+            if field in credit and _parse(credit.get(field)) is None:
+                raise LedgerIntegrityError(f"ledger_credit_{field}_invalid")
+        seen_ids.add(credit_id)
+        seen_idem_keys.add(idem_key)
 
 
 def _load() -> dict:
     path = _ledger_path()
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, TypeError):
+    except FileNotFoundError:
+        if _signing_key_path().exists():
+            raise LedgerIntegrityError("ledger_missing")
         return _empty()
-    if not isinstance(data, dict) or not isinstance(data.get("credits"), list):
-        return _empty()
+    except (OSError, ValueError, TypeError) as exc:
+        raise LedgerIntegrityError("ledger_unreadable") from exc
+
+    key, key_created = _read_or_create_signing_key()
+    version = data.get("version") if isinstance(data, dict) else None
+    if version == 1 and key_created:
+        # One-time upgrade path. Once the key exists, an unsigned/version-1
+        # ledger is a downgrade attempt and must fail closed.
+        migrated = {"version": LEDGER_VERSION, "credits": data.get("credits")}
+        _validate_ledger(migrated)
+        _save(migrated, signing_key=key)
+        return migrated
+    if version != LEDGER_VERSION:
+        raise LedgerIntegrityError("ledger_version_invalid")
+    supplied = data.get("integrity")
+    if not isinstance(supplied, dict) or supplied.get("algorithm") != _INTEGRITY_ALGORITHM:
+        raise LedgerIntegrityError("ledger_integrity_missing")
+    digest = supplied.get("digest")
+    expected = _ledger_mac(data, key)
+    if not isinstance(digest, str) or not hmac.compare_digest(digest, expected):
+        raise LedgerIntegrityError("ledger_integrity_failed")
+    _validate_ledger(data)
     return data
 
 
-def _save(data: dict) -> None:
+def _save(data: dict, *, signing_key: bytes | None = None) -> None:
     path = _ledger_path()
     path.parent.mkdir(parents=True, exist_ok=True)
+    data["version"] = LEDGER_VERSION
+    _validate_ledger(data)
+    key = signing_key or _read_or_create_signing_key()[0]
+    data["integrity"] = {
+        "algorithm": _INTEGRITY_ALGORITHM,
+        "digest": _ledger_mac(data, key),
+    }
     tmp = path.with_name(f".{path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
     try:
         tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")

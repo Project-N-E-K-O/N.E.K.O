@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -39,6 +40,88 @@ def test_grant_is_installation_local_and_idempotent() -> None:
     assert duplicate["reason"] == "duplicate"
     assert duplicate["rarity"] == "SR"
     assert ledger.list_credits(now)["count"] == 1
+
+
+@pytest.mark.parametrize("mutation", ["rarity", "inject", "delete"])
+def test_signed_ledger_rejects_out_of_band_credit_tampering(mutation: str) -> None:
+    now = datetime(2026, 7, 13, 8, tzinfo=UTC)
+    ledger.grant_credit(
+        {"trigger_type": "emotion_combo", "idem_key": "signed-ledger-credit"},
+        now=now,
+        rarity="N",
+    )
+    path = ledger._ledger_path()
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if mutation == "rarity":
+        raw["credits"][0]["rarity"] = "UR"
+    elif mutation == "inject":
+        injected = dict(raw["credits"][0])
+        injected["id"] = "99999999-9999-4999-8999-999999999999"
+        injected["idem_key"] = "injected-credit-idem"
+        raw["credits"].append(injected)
+    else:
+        raw["credits"].clear()
+    path.write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(ledger.LedgerIntegrityError, match="ledger_integrity_failed"):
+        ledger.list_credits(now)
+    with pytest.raises(ledger.LedgerIntegrityError, match="ledger_integrity_failed"):
+        ledger.grant_credit(
+            {"trigger_type": "emotion_combo", "idem_key": "cannot-reset-after-tamper"},
+            now=now,
+            rarity="N",
+        )
+
+
+def test_unsigned_legacy_ledger_is_migrated_only_before_signing_key_exists() -> None:
+    now = datetime(2026, 7, 13, 8, tzinfo=UTC)
+    legacy = {
+        "version": 1,
+        "credits": [
+            {
+                "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                "rarity": "R",
+                "trigger_type": "emotion_combo",
+                "idem_key": "legacy-credit-idem",
+                "status": "active",
+                "created_at": ledger._iso(now),
+                "expires_at": ledger._iso(now + timedelta(hours=16)),
+            }
+        ],
+    }
+    path = ledger._ledger_path()
+    path.write_text(json.dumps(legacy), encoding="utf-8")
+
+    assert ledger.list_credits(now)["count"] == 1
+    migrated = json.loads(path.read_text(encoding="utf-8"))
+    assert migrated["version"] == ledger.LEDGER_VERSION
+    assert migrated["integrity"]["algorithm"] == "hmac-sha256"
+    assert ledger._signing_key_path().stat().st_mode & 0o777 == 0o600
+
+    migrated.pop("integrity")
+    migrated["version"] = 1
+    path.write_text(json.dumps(migrated), encoding="utf-8")
+    with pytest.raises(ledger.LedgerIntegrityError, match="ledger_version_invalid"):
+        ledger.list_credits(now)
+
+
+def test_deleting_a_signed_ledger_does_not_reset_the_daily_cap() -> None:
+    now = datetime(2026, 7, 13, 8, tzinfo=UTC)
+    ledger.grant_credit(
+        {"trigger_type": "emotion_combo", "idem_key": "delete-ledger-idem"},
+        now=now,
+        rarity="N",
+    )
+    ledger._ledger_path().unlink()
+
+    with pytest.raises(ledger.LedgerIntegrityError, match="ledger_missing"):
+        ledger.list_credits(now)
+    with pytest.raises(ledger.LedgerIntegrityError, match="ledger_missing"):
+        ledger.grant_credit(
+            {"trigger_type": "emotion_combo", "idem_key": "delete-reset-idem"},
+            now=now,
+            rarity="N",
+        )
 
 
 def test_reserve_commit_and_replay_are_idempotent() -> None:
