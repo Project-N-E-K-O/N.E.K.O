@@ -572,7 +572,7 @@
             });
             const revealReadyFallbackMs = Number.isFinite(Number(normalizedOptions.revealReadyFallbackMs))
                 ? Math.max(0, Math.floor(Number(normalizedOptions.revealReadyFallbackMs)))
-                : (resolveOnReveal ? 0 : (isCornerPeekPerformance ? 0 : 1600));
+                : (resolveOnReveal ? 3000 : (isCornerPeekPerformance ? 0 : 1600));
             const resolveRevealReady = (value) => {
                 if (revealReadySettled) {
                     return;

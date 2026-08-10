@@ -65,6 +65,12 @@
     const TUTORIAL_AVATAR_PROBE_APPROACH_MS = 2000;
     const TUTORIAL_AVATAR_PROBE_HOLD_MS = 2500;
     const TUTORIAL_AVATAR_PROBE_RETURN_MS = 2000;
+    const TUTORIAL_AVATAR_PROBE_TIMING = Object.freeze({
+        fadeOutMs: TUTORIAL_AVATAR_PROBE_FADE_OUT_MS,
+        approachMs: TUTORIAL_AVATAR_PROBE_APPROACH_MS,
+        holdMs: TUTORIAL_AVATAR_PROBE_HOLD_MS,
+        returnMs: TUTORIAL_AVATAR_PROBE_RETURN_MS
+    });
     const AVATAR_CORNER_PEEK_EDGE_INSET_RATIO = 0.18;
     const AVATAR_CORNER_PEEK_REGION_HEIGHT_RATIO = 0.36;
     const PLUGIN_DASHBOARD_CORNER_ELEVATED_Z_INDEX = '2147483647';
@@ -6588,7 +6594,7 @@
             initialAlphaOverride: originalAlpha,
             motionFromAlpha: 0,
             motionToAlpha: originalAlpha,
-            useCompositorOpacity: isOpeningProbe,
+            useCompositorOpacity: true,
             restoreMode: normalizedOptions.restore || normalizedOptions.restoreMode || 'half-body',
             performanceLockKey: normalizedOptions.performanceLockKey || 'home-yui-guide-avatar-motion-frame'
         });
@@ -6830,6 +6836,7 @@
         computeInterruptResistPose: computeInterruptResistPose,
         computeAngryExitPose: computeAngryExitPose,
         waitForLive2DContext: waitForLive2DContext,
+        TUTORIAL_AVATAR_PROBE_TIMING: TUTORIAL_AVATAR_PROBE_TIMING,
         YUI_WAKEUP_PARAMS: YUI_WAKEUP_PARAMS,
         YUI_INTRO_GREETING_HUG_PARAMS: YUI_INTRO_GREETING_HUG_PARAMS,
         YUI_INTRO_GIFT_HEART_PARAMS: YUI_INTRO_GIFT_HEART_PARAMS,

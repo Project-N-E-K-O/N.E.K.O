@@ -335,17 +335,6 @@
             statusElement.style.setProperty('opacity', '0', 'important');
         }
 
-        if (preserveYuiGuidePreparing || preserveYuiGuideAvatarMotion) {
-            // 教程准备/探身演出期间只恢复渲染宿主，不启动普通半身淡入；演出负责逐帧揭示。
-            const reason = preserveYuiGuideAvatarMotion
-                ? 'show-live2d-yui-guide-avatar-motion'
-                : 'show-live2d-yui-guide-preparing';
-            restoreLive2DDisplaySurface(reason);
-            activateLive2DRenderForDisplay(reason);
-            console.log('[App] showLive2d: YUI 教程显示演出中，跳过普通模型淡入');
-            return;
-        }
-
         // 取消"请她离开"的延迟隐藏定时器
         if (window._goodbyeHideTimerId) {
             clearTimeout(window._goodbyeHideTimerId);
@@ -357,6 +346,17 @@
         if (window._returnFadeTimer) {
             clearTimeout(window._returnFadeTimer);
             window._returnFadeTimer = null;
+        }
+
+        if (preserveYuiGuidePreparing || preserveYuiGuideAvatarMotion) {
+            // 教程准备/探身演出期间只恢复渲染宿主，不启动普通半身淡入；演出负责逐帧揭示。
+            const reason = preserveYuiGuideAvatarMotion
+                ? 'show-live2d-yui-guide-avatar-motion'
+                : 'show-live2d-yui-guide-preparing';
+            restoreLive2DDisplaySurface(reason);
+            activateLive2DRenderForDisplay(reason);
+            console.log('[App] showLive2d: YUI 教程显示演出中，跳过普通模型淡入');
+            return;
         }
 
         // 如果模型已经可见，跳过淡入动画

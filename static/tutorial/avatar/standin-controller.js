@@ -11,15 +11,40 @@
 })(typeof window !== 'undefined' ? window : globalThis, function (root) {
     'use strict';
 
-    const TUTORIAL_STAND_IN_FADE_OUT_MS = 1500;
-    const TUTORIAL_STAND_IN_APPROACH_MS = 2000;
-    const TUTORIAL_STAND_IN_HOLD_MS = 2500;
-    const TUTORIAL_STAND_IN_RETURN_MS = 2000;
+    const DEFAULT_TUTORIAL_STAND_IN_TIMING = Object.freeze({
+        fadeOutMs: 1500,
+        approachMs: 2000,
+        holdMs: 2500,
+        returnMs: 2000
+    });
 
     function resolveCueDuration(value, fallback) {
         return Number.isFinite(Number(value))
             ? Math.max(0, Math.floor(Number(value)))
             : fallback;
+    }
+
+    function resolveTutorialStandInTiming() {
+        const avatarStage = root && root.YuiGuideAvatarStage;
+        const sharedTiming = avatarStage && avatarStage.TUTORIAL_AVATAR_PROBE_TIMING;
+        return {
+            fadeOutMs: resolveCueDuration(
+                sharedTiming && sharedTiming.fadeOutMs,
+                DEFAULT_TUTORIAL_STAND_IN_TIMING.fadeOutMs
+            ),
+            approachMs: resolveCueDuration(
+                sharedTiming && sharedTiming.approachMs,
+                DEFAULT_TUTORIAL_STAND_IN_TIMING.approachMs
+            ),
+            holdMs: resolveCueDuration(
+                sharedTiming && sharedTiming.holdMs,
+                DEFAULT_TUTORIAL_STAND_IN_TIMING.holdMs
+            ),
+            returnMs: resolveCueDuration(
+                sharedTiming && sharedTiming.returnMs,
+                DEFAULT_TUTORIAL_STAND_IN_TIMING.returnMs
+            )
+        };
     }
 
     function resolveCueTiming(cue, scene, director) {
@@ -29,11 +54,12 @@
                 scene && scene.text
             ), 0)
             : 0;
-        const hideMs = TUTORIAL_STAND_IN_FADE_OUT_MS;
-        const appearMs = TUTORIAL_STAND_IN_APPROACH_MS;
-        const holdMs = TUTORIAL_STAND_IN_HOLD_MS;
+        const timing = resolveTutorialStandInTiming();
+        const hideMs = timing.fadeOutMs;
+        const appearMs = timing.approachMs;
+        const holdMs = timing.holdMs;
         const entryMs = hideMs + appearMs;
-        const exitMs = hideMs + TUTORIAL_STAND_IN_RETURN_MS;
+        const exitMs = hideMs + timing.returnMs;
         const totalDurationMs = entryMs + holdMs;
         const fullDurationMs = totalDurationMs + exitMs;
         const rawDelayMs = Number.isFinite(Number(cue.delay))

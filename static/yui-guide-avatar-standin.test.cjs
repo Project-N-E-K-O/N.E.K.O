@@ -15,6 +15,7 @@ const overlaySource = fs.readFileSync(path.join(__dirname, 'tutorial/yui-guide/o
 const live2dInteractionSource = fs.readFileSync(path.join(__dirname, 'live2d', 'live2d-interaction.js'), 'utf8');
 const live2dInitSource = fs.readFileSync(path.join(__dirname, 'live2d', 'live2d-init.js'), 'utf8');
 const live2dButtonsSource = fs.readFileSync(path.join(__dirname, 'live2d', 'live2d-ui-buttons.js'), 'utf8');
+const modelDisplaySource = fs.readFileSync(path.join(__dirname, 'app/app-ui/model-display.js'), 'utf8');
 const appUiSource = readJsParts(path.join(__dirname, 'app/app-ui'));
 const appInterpageSource = readJsParts(path.join(__dirname, 'app/app-interpage'));
 const universalManagerSource = fs.readFileSync(path.join(__dirname, 'tutorial/core/universal-manager.js'), 'utf8');
@@ -396,6 +397,7 @@ test('director routes avatar stand-ins through Live2D corner peek, not overlay i
     assert.match(directorSource, /this\.startAvatarCornerPeekPerformance\({[\s\S]*position: cue\.position/);
     assert.match(controllerSource, /Number\.isFinite\(Number\(cue\.delay\)\)/);
     assert.match(directorSource, /Number\.isFinite\(Number\(cue\.duration\)\)/);
+    assert.match(directorSource, /startAvatarCornerPeek[\s\S]*useCompositorOpacity: true/);
     assert.match(directorSource, /await this\.stopAvatarCornerPeekPerformance\(handle,\s*reason \|\| 'avatar_standin_clear'\);/);
     assert.doesNotMatch(directorSource, /overlay\.showAvatarStandIn/);
     assert.doesNotMatch(overlaySource, /showAvatarStandIn/);
@@ -423,6 +425,8 @@ test('day two through seven avatar probes keep fixed phases and move short-line 
     assert.match(avatarStageSource, /const TUTORIAL_AVATAR_PROBE_FADE_OUT_MS = 1500;/);
     assert.match(avatarStageSource, /const TUTORIAL_AVATAR_PROBE_APPROACH_MS = 2000;/);
     assert.match(avatarStageSource, /const TUTORIAL_AVATAR_PROBE_HOLD_MS = 2500;/);
+    assert.match(avatarStageSource, /TUTORIAL_AVATAR_PROBE_TIMING: TUTORIAL_AVATAR_PROBE_TIMING/);
+    assert.match(controllerSource, /root && root\.YuiGuideAvatarStage/);
     assert.match(avatarStageSource, /startFromHidden: isOpeningProbe/);
     assert.match(avatarStageSource, /holdMs: TUTORIAL_AVATAR_PROBE_HOLD_MS/);
     assert.match(directorSource, /isOpeningProbe: tutorialDay >= 2[\s\S]*resolveOnReveal/);
@@ -445,6 +449,33 @@ test('day two through seven avatar probes keep fixed phases and move short-line 
         { getAvatarFloatingNarrationDurationMs: () => 12000 }
     );
     assert.equal(longLineCue.delay, 900);
+
+    const previousAvatarStage = globalThis.YuiGuideAvatarStage;
+    globalThis.YuiGuideAvatarStage = {
+        TUTORIAL_AVATAR_PROBE_TIMING: {
+            fadeOutMs: 1400,
+            approachMs: 1900,
+            holdMs: 2400,
+            returnMs: 1800
+        }
+    };
+    try {
+        const sharedTimingCue = standInController.resolveCueTiming(
+            { delay: 0, position: 'top-right' },
+            { voiceKey: 'day2_galgame_entry', text: 'test' },
+            { getAvatarFloatingNarrationDurationMs: () => 10000 }
+        );
+        assert.equal(sharedTimingCue.hideMs, 1400);
+        assert.equal(sharedTimingCue.appearMs, 1900);
+        assert.equal(sharedTimingCue.holdMs, 2400);
+        assert.equal(sharedTimingCue.fullDurationMs, 8900);
+    } finally {
+        if (typeof previousAvatarStage === 'undefined') {
+            delete globalThis.YuiGuideAvatarStage;
+        } else {
+            globalThis.YuiGuideAvatarStage = previousAvatarStage;
+        }
+    }
 });
 
 test('bottom-rise intro avatar motion approaches and holds the first-day half-body frame', () => {
@@ -722,7 +753,6 @@ test('Live2D non-opening corner peek uses one compositor layer for the full prob
     assert.equal(canvas.style.opacity, '1');
     assert.equal(container.style.transition, 'opacity 900ms ease');
     assert.equal(canvas.style.transition, 'opacity 900ms ease');
-    assert.match(directorSource, /startAvatarCornerPeek[\s\S]*useCompositorOpacity: true/);
 });
 
 test('Live2D opening frame motion reuses the corner peek compositor fade', () => {
@@ -757,11 +787,15 @@ test('Live2D opening frame motion reuses the corner peek compositor fade', () =>
     assert.equal(canvas.style.opacity, '1');
 });
 
-test('tutorial opening frame motion stays at the default placement without a fade handoff', () => {
-    assert.match(avatarStageSource, /useCompositorOpacity: isOpeningProbe/);
+test('tutorial frame motion keeps one visible compositor and opening motion skips the fade handoff', () => {
+    const frameMotionSource = avatarStageSource
+        .split('async function playFrameAvatarMotion(options, preset) {')[1]
+        .split('async function playAvatarMotion(options) {')[0];
+    assert.match(frameMotionSource, /useCompositorOpacity:\s*true/);
+    assert.doesNotMatch(frameMotionSource, /useCompositorOpacity:\s*isOpeningProbe/);
     assert.match(
-        avatarStageSource,
-        /if \(isOpeningProbe\) \{\s*return \{ result: 'played', reason: '' \};\s*\}/
+        frameMotionSource,
+        /if\s*\(\s*isOpeningProbe\s*\)\s*\{[\s\S]{0,160}result:\s*'played'/
     );
 });
 
@@ -872,12 +906,30 @@ test('Live2D corner peek does not self-cancel its return fade after stand-in tok
 });
 
 test('Live2D visibility recovery preserves opacity while avatar corner peek is active', () => {
+    const showLive2dSource = modelDisplaySource
+        .split('I.showLive2d = function showLive2d() {')[1]
+        .split('I.mod.showLive2d = I.showLive2d;')[0];
+    const preparingCommentIndex = showLive2dSource.indexOf('// 教程准备/探身演出期间');
+    const preparingFastPathIndex = showLive2dSource.lastIndexOf(
+        'if (preserveYuiGuidePreparing || preserveYuiGuideAvatarMotion)',
+        preparingCommentIndex
+    );
+    assert.ok(showLive2dSource.indexOf('if (window._goodbyeHideTimerId)') < preparingFastPathIndex);
+    assert.ok(showLive2dSource.indexOf('if (window._returnFadeTimer)') < preparingFastPathIndex);
     assert.match(live2dInitSource, /nekoYuiGuideAvatarCornerPeekActive[\s\S]{0,120}return;/);
     assert.match(live2dInitSource, /nekoYuiGuideLive2dPreparing[\s\S]{0,220}yui-guide-live2d-preparing/);
+    assert.match(live2dInitSource, /neko:yui-guide:live2d-prepared-revealed/);
+    assert.match(live2dInitSource, /new MutationObserver\(revealAfterPreparing\)/);
     assert.match(appUiSource, /preserveAvatarCornerPeekOpacity[\s\S]{0,240}model\.alpha = 1;/);
     assert.match(appInterpageSource, /preserveAvatarCornerPeekOpacity[\s\S]{0,240}currentModel\.alpha = 1;/);
     assert.match(universalManagerSource, /preserveAvatarCornerPeekOpacity[\s\S]{0,360}restoreTutorialLive2dDisplayState/);
     assert.match(universalManagerSource, /preserveOpacity[\s\S]{0,360}live2dCanvas\.style\.setProperty\('opacity', '1', 'important'\)/);
+});
+
+test('daily opening reveal keeps a bounded fallback while preserving explicit overrides', () => {
+    assert.match(directorSource, /normalizedOptions\.revealReadyFallbackMs/);
+    assert.match(directorSource, /resolveOnReveal \? 3000/);
+    assert.match(directorSource, /daily-intro-avatar-reveal-timeout/);
 });
 
 test('Live2D corner peek can continue across scene boundaries until its cue duration ends', () => {
