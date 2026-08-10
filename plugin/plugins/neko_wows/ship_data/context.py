@@ -345,17 +345,20 @@ class BattleShipContextManager:
                 # Register any newly observed alias (e.g. stub that only has
                 # player_id after a ui_id flicker) without recounting the hull.
                 self._remember_object_keys(object_keys)
+                self._clear_unresolved_reasons(object_keys)
                 continue
-            object_key = object_keys[0]
             resolution = resolver.resolve(
                 ship.name, tier=ship.tier, ship_type=ship.ship_type)
             if not resolution.resolved or resolution.ship is None:
-                self._set_unresolved_reason(object_key, resolution.reason)
+                # Keep a single reason on the primary key; clear sibling aliases
+                # so ui-only → player+ui transitions do not double-count.
+                self._clear_unresolved_reasons(object_keys)
+                self._set_unresolved_reason(object_keys[0], resolution.reason)
                 events.append(ShipCatalogEvent("unresolved", {
                     "reason": resolution.reason,
                 }))
                 continue
-            self._set_unresolved_reason(object_key, None)
+            self._clear_unresolved_reasons(object_keys)
             self._remember_object_keys(object_keys)
             ship_id = resolution.ship.ship_id
             self._resolutions.setdefault(ship_id, resolution)
@@ -413,6 +416,13 @@ class BattleShipContextManager:
         if reason is not None:
             self._unresolved_by_object[object_key] = reason
             self._unresolved_reasons[reason] += 1
+
+    def _clear_unresolved_reasons(
+        self,
+        object_keys: list[tuple[Any, ...]],
+    ) -> None:
+        for object_key in object_keys:
+            self._set_unresolved_reason(object_key, None)
 
     @staticmethod
     def _object_keys(

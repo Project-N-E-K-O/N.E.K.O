@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 
 import pytest
 
@@ -503,6 +504,24 @@ def test_enemy_closing_rate_requires_the_same_ship():
     assert closing
     assert closing[0].detail["closing_m_per_s"] is None
     assert closing[0].detail["ship_name"] == "Shimakaze"
+
+
+def test_enemy_closing_rate_matches_stable_ui_id_without_player_id():
+    registry = DetectorRegistry(build_threat_detectors(CFG))
+    approaching = feed(registry, [
+        frame(seq=1, at=100.0, ships=(
+            replace(enemy(ui_id=2, x=11000.0), player_id=None),
+        )),
+        frame(seq=2, at=101.0, ships=(
+            replace(enemy(ui_id=2, x=5000.0), player_id=None),
+        )),
+    ])
+    closing = [
+        event for result in approaching for event in result.events
+        if event.event_id == ENEMY_CLOSING
+    ]
+    assert closing
+    assert closing[0].detail["closing_m_per_s"] == 6000.0
 
 
 def test_losing_sight_of_everyone_is_not_reported_as_safety():

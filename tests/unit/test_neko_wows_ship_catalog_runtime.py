@@ -521,6 +521,29 @@ def test_context_retries_unresolved_ui_object_when_identity_details_arrive(
     assert len(plugin.calls) == 1
 
 
+def test_context_clears_ui_unresolved_when_player_alias_resolves(context_parts):
+    """ui-only failure must not leave stale reasons after player+ui resolve."""
+    context, plugin, _, _ = context_parts
+    ui_only = replace(
+        yamato_ship(50, 50, RELATION_ENEMY, name="duplicate"),
+        player_id=None,
+        ship_type=None,
+        tier=None,
+    )
+
+    first = context.observe(battle_snapshot(ui_only), dry_run=False)
+    assert first.unresolved_reasons == {"ambiguous_alias": 1}
+    assert context.stats()["unresolved_objects"] == 1
+
+    complete = replace(ui_only, player_id=50, ship_type="Destroyer", tier=8)
+    resolved = context.observe(battle_snapshot(complete), dry_run=False)
+
+    assert resolved.submitted_ship_ids == (111,)
+    assert resolved.unresolved_reasons == {}
+    assert context.stats()["unresolved_objects"] == 0
+    assert len(plugin.calls) == 1
+
+
 def test_context_retries_unresolved_fallback_object_when_details_arrive(
     context_parts,
 ):

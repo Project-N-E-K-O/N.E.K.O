@@ -26,6 +26,12 @@ class EnemyClosingDetector(Detector):
             and nearest.distance_m <= self.cfg.enemy_close_range_m
         )
 
+    @staticmethod
+    def _same_tracked_ship(before, current) -> bool:
+        if before.player_id is not None and before.player_id == current.player_id:
+            return True
+        return before.ui_id is not None and before.ui_id == current.ui_id
+
     def observe(self, snapshot, facts) -> None:
         self._inside = self._inside_ring(facts)
 
@@ -42,11 +48,7 @@ class EnemyClosingDetector(Detector):
         closing_rate = None
         # Distance deltas are only a measurement when both frames tracked the
         # same ship; a nearest-enemy swap has no physical closing speed.
-        if (
-            before is not None
-            and before.ship.player_id is not None
-            and before.ship.player_id == nearest.ship.player_id
-        ):
+        if before is not None and self._same_tracked_ship(before.ship, nearest.ship):
             elapsed = facts.at - previous_facts.at
             if elapsed > 0:
                 closing_rate = round(
