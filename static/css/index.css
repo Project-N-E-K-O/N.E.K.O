@@ -567,6 +567,10 @@ body.neko-game-active [id$="-lock-icon"] {
     animation: nekoIdleCat1CompactDrop 360ms cubic-bezier(0.22, 0.72, 0.2, 1) both;
 }
 
+.neko-idle-return-button-container.is-cat1-desktop-window-top-edge-dropping > .neko-idle-return-btn {
+    animation: nekoIdleCat1DesktopWindowTopEdgeDrop 360ms cubic-bezier(0.22, 0.72, 0.2, 1) both;
+}
+
 .neko-idle-return-button-container.is-cat1-compact-mirror-active {
     pointer-events: none;
 }
@@ -707,6 +711,14 @@ body.neko-game-active [id$="-lock-icon"] {
 
 .neko-idle-return-btn.is-cat1-facing-right > .neko-idle-return-art {
     --neko-idle-return-facing-transform: scaleX(-1);
+}
+
+.neko-idle-return-btn.is-cat1-desktop-window-top-edge-facing-right > .neko-idle-return-art {
+    --neko-idle-return-facing-transform: scaleX(-1);
+}
+
+.neko-idle-return-btn.is-cat1-desktop-window-top-edge-walking .neko-idle-thought-bubble {
+    display: none !important;
 }
 
 /*
@@ -959,10 +971,23 @@ body.neko-game-active [id$="-lock-icon"] {
     }
 }
 
+@keyframes nekoIdleCat1DesktopWindowTopEdgeDrop {
+    0% {
+        transform: translate3d(0, -52px, 0) rotate(0deg);
+    }
+    70% {
+        transform: translate3d(0, 3px, 0) rotate(-2deg);
+    }
+    100% {
+        transform: translate3d(0, 0, 0) rotate(0deg);
+    }
+}
+
 @media (prefers-reduced-motion: reduce) {
     .neko-idle-return-btn.is-tier-transitioning > .neko-idle-return-art,
     .neko-idle-return-btn.is-tier-transitioning > .neko-idle-return-art-next,
-    .neko-idle-return-button-container.is-cat1-dropping-from-compact-top-edge > .neko-idle-return-btn {
+    .neko-idle-return-button-container.is-cat1-dropping-from-compact-top-edge > .neko-idle-return-btn,
+    .neko-idle-return-button-container.is-cat1-desktop-window-top-edge-dropping > .neko-idle-return-btn {
         animation: none;
     }
 }

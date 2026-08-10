@@ -205,6 +205,13 @@ Object.assign(AvatarButtonMixin.methods, {
                     return;
                 }
                 e.stopPropagation();
+                const desktopTopEdge = window.NekoDesktopWindowTopEdgePerch;
+                if (desktopTopEdge && typeof desktopTopEdge.cancel === 'function') {
+                    desktopTopEdge.cancel(returnBtn, {
+                        reason: 'return-click',
+                        restoreArt: false
+                    });
+                }
                 _clearNekoIdleCat1QuestionMark(returnBtn);
                 _cancelNekoIdleCat1EatAction(returnBtn, { restoreArt: false });
                 _cancelNekoIdleCat1StretchAction(returnBtn, { restoreArt: false });

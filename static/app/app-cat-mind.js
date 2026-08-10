@@ -1542,6 +1542,14 @@
 
     function shouldScheduleDecisionForObservation(observation) {
         var type = observation && typeof observation.type === 'string' ? observation.type : '';
+        // Native desktop-window facts are consumed directly by dedicated
+        // renderer presentations. Keep them in Cat Mind's observable context,
+        // but do not turn a window move/cancel into an unrelated ordinary CAT1
+        // action opportunity.
+        if (type === OBSERVATION_TYPES.DESKTOP_OCCLUSION_OR_LAYER_CHANGE
+            && observation.source === 'desktop-window-sensing') {
+            return false;
+        }
         // These two events close the existing walk-to-yarn local presentation
         // tail (one 25% play / otherwise stretch). They remain full Cat Mind
         // observations for fields, recent events, and debug. They may only

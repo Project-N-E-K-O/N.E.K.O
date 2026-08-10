@@ -702,12 +702,22 @@ function _getNekoCatMindYarnRuntimeGateSnapshot() {
         return { yarnDragActive: false, yarnSettling: false };
     }
 }
+function _isNekoIdleCat1PositionPresentationBusy(button) {
+    const state = button && (button.__nekoIdleReturnSubactionState || button.__nekoIdleCat1Journey);
+    if (!state) return false;
+    if (state.targetKind === _NEKO_IDLE_CAT1_TARGET_KIND_COMPACT_TOP_EDGE) return true;
+    if (state.paused || state.frame || state.pendingWalkTimer || state.pendingWalkReady ||
+        state.pairMovePlan || state.pairMoveFrame) return true;
+    if (!state.profile) return true;
+    return state.substate !== state.profile.idleSubstate || state.actionSettled !== true;
+}
 function _getNekoCatMindRuntimeGateSnapshot() {
     const tier = _getActiveNekoIdleReturnTier(); const button = _findNekoCatMindVisibleButtonForTier(tier);
     const yarnGate = _getNekoCatMindYarnRuntimeGateSnapshot();
     return Object.freeze({ returnPending: _isAnyNekoCatMindReturnPending(), dragPending: _isAnyNekoIdleReturnDragActionBlocking(), dragging: _isAnyNekoIdleReturnDragActionActive(),
         edgePeekActive: tier === _NEKO_IDLE_TIER_CAT1 && _isNekoIdleCat1EdgePeekActive(button),
         transitionActive: _isNekoCatMindTransitionActive(button), activeIndependentAction: _isAnyNekoIdleCat1IndependentActionActive() || _isNekoCatMindAudioActionActive(),
+        cat1PositionPresentationBusy: tier === _NEKO_IDLE_TIER_CAT1 && _isNekoIdleCat1PositionPresentationBusy(button),
         returnBallVisible: !!button, validCatRuntime: tier !== _NEKO_IDLE_TIER_NONE, chatSurfaceDragging: _isNekoIdleCompactSurfaceDragging(),
         yarnDragActive: yarnGate.yarnDragActive, yarnSettling: yarnGate.yarnSettling, tier });
 }

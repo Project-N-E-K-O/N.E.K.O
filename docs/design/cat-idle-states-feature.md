@@ -97,9 +97,9 @@ Web 主页面与 NEKO-PC 的 Pet renderer 页面运行同一套页面内 Cat Min
 - 毛线球临时隐藏与恢复；
 - 桌面窗口命中、遮挡和层级安全。
 
-桌面壳不持有 Cat Mind 运行状态，不维护五维、短时意图、cooldown、pending/active action 或 return episode，不运行 selector，也不发 action request。它只把真实桌面事实提交为 observation，并提供窗口、坐标与命中安全；后续计分、选择、request、runner 结果和 return 摘要仍由 Pet renderer 内的同一条 Cat Mind 链处理。
+桌面壳不持有 Cat Mind 运行状态，不维护五维、短时意图、cooldown、pending/active action 或 return episode，不运行 selector，也不发 action request。它把安全的真实桌面事实提供给 Primary Pet renderer；需要进入 Cat Mind 的事实再由页面 consumer 转换为 observation，其他 renderer 功能可以并列消费对应的通用窗口、坐标与命中能力。后续计分、选择、request、Cat Mind runner 结果和 return 摘要仍由 Pet renderer 内的同一条 Cat Mind 链处理。
 
-桌面窗口感知只覆盖真实小猫形态的 CAT1 阶段：小猫已经出现并且当前 tier 为 CAT1 时启动正式 sensing session；进入 CAT2/CAT3、return commit、切换为呼吸球、猫容器失败或页面卸载时停止；从 CAT2/CAT3 重新回到 CAT1 时建立新 session。普通模型形态、呼吸球形态、CAT2 和 CAT3 都不启动窗口感知。这里复用的是 CAT1 生命周期，不是 Cat Mind 的 30 秒自主时钟。正式窗口事实只转换为 CAT1 的 `desktop_occlusion_or_layer_change` observation，不直接修改五维、选择动作或移动猫。
+桌面窗口感知只覆盖真实小猫形态的 CAT1 阶段：小猫已经出现并且当前 tier 为 CAT1 时启动正式 sensing session；进入 CAT2/CAT3、return commit、切换为呼吸球、猫容器失败或页面卸载时停止；从 CAT2/CAT3 重新回到 CAT1 时建立新 session。普通模型形态、呼吸球形态、CAT2 和 CAT3 都不启动窗口感知。这里复用的是 CAT1 生命周期，不是 Cat Mind 的 30 秒自主时钟。正式窗口事实是 Primary Pet renderer 的通用能力；当前 Cat Mind consumer 将其投影为 CAT1 的 `desktop_occlusion_or_layer_change` observation，其他页面功能可并列消费同一 session 的安全结果。窗口事实本身不直接修改五维、选择动作或移动猫。
 
 ### 4.5 后端
 
@@ -333,7 +333,7 @@ URL 参数优先于全局变量和 localStorage，方便单次排查后用 `0` �
 
 1. 默认页面不显示 debug；query 打开后面板可见且可隐藏。
 2. 真实 runner 的 accepted、started、done 顺序；音频 autoplay 拒绝时不能出现 started/cooldown。
-3. Web 和 Electron 各进入猫形态一次，确认页面内 Cat Mind 都产生五维状态，并在 provider 合法时走同一条 action request；Electron 桌面壳只产生 observation/窗口桥接，不存在第二套 selector 或 request producer。两端各验证一次有完成 episode 的回归、无 episode 的正常回归，以及不受 started/done 影响的短时统一静默。
+3. Web 和 Electron 各进入猫形态一次，确认页面内 Cat Mind 都产生五维状态，并在 provider 合法时走同一条 action request；Electron 桌面壳只提供安全桌面事实和窗口桥接，需要进入 Cat Mind 的部分由页面 consumer 产生 observation，不存在第二套 selector 或 request producer。两端各验证一次有完成 episode 的回归、无 episode 的正常回归，以及不受 started/done 影响的短时统一静默。
 4. 在桌面真实拖拽、聊天窗移动、compact/dock、毛线球隐藏恢复下确认窗口和命中安全；分别验证 far→near 强邀请、猫旁重复递球、拖离清除，以及 active/settling 期间不抢跑。
 
 浏览器页面测试可以确认 debug、事件和普通 Web 链，但不能代替 Electron 原生窗口、透明覆盖层和 Live2D canvas 拖拽验收。
@@ -346,7 +346,7 @@ URL 参数优先于全局变量和 localStorage，方便单次排查后用 `0` �
 | 猫形态本地文字接收、request 去重、哈气彩蛋选择与 observation 提交 | `static/app/app-react-chat-window/cat-local-chat.js` |
 | 普通猫叫与哈气彩蛋词元 | `static/app/app-react-chat-window/cat-local-chat-lexicon.js` |
 | debug 面板 | `static/app/app-cat-mind-debug.js` |
-| Electron CAT1 桌面窗口 observation 适配 | `static/app/app-desktop-window-sensing.js` |
+| Electron CAT1 桌面窗口 session owner 与当前 observation consumer | `static/app/app-desktop-window-sensing.js` |
 | avatar 只读毛线 observation adapter | `static/avatar/avatar-ui-buttons/idle-cat-mind-observations.js` |
 | renderer adapter 与 CAT1/CAT2/CAT3 runner | `static/avatar/avatar-ui-buttons/` 的拆分脚本 |
 | 自动 goodbye 与 return 附件消费 | `static/app/app-auto-goodbye.js` |

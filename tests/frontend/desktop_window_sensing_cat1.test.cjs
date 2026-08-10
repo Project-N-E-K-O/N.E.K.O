@@ -460,6 +460,8 @@ test('CAT2 and CAT3 never start sensing until the visible cat returns to CAT1', 
 test('ordinary web pages without the desktop bridge remain unaffected', async () => {
   const runtime = createRuntime({ bridge: false });
 
+  assert.equal(runtime.window.nekoDesktopWindowSensingContext, undefined);
+
   runtime.publishCatState({
     active: true,
     appearance: 'cat',
@@ -474,6 +476,130 @@ test('ordinary web pages without the desktop bridge remain unaffected', async ()
 
   assert.equal(runtime.starts.length, 0);
   assert.equal(runtime.observations.length, 0);
+});
+
+test('one desktop session owner shares the latest safe result with parallel consumers', async () => {
+  const runtime = createRuntime();
+  const shared = runtime.window.nekoDesktopWindowSensingContext;
+  const received = [];
+
+  assert.ok(shared);
+  assert.equal(Object.isFrozen(shared), true);
+  assert.deepEqual(Object.keys(shared), ['getCurrent', 'subscribe']);
+  assert.equal(shared.getCurrent(), null);
+  const unsubscribe = shared.subscribe((value) => received.push(plain(value)));
+
+  runtime.publishCatState({ active: true, appearance: 'cat', tier: 'cat1' });
+  await flushPromises();
+
+  assert.deepEqual(plain(shared.getCurrent()), {
+    status: 'current',
+    sessionId: 'session-1',
+    revision: 1,
+    changes: [],
+    movement: null,
+    rect: { x: 10, y: 20, width: 300, height: 200 },
+    timestamp: 1000,
+  });
+  assert.equal(runtime.starts.length, 1);
+  assert.equal(runtime.subscriptions.length, 1);
+
+  runtime.setNow(2000);
+  runtime.publishChanged({
+    status: 'changed',
+    sessionId: 'session-1',
+    changes: ['position'],
+    movement: { x: 1, y: 0 },
+    rect: { x: 30, y: 20, width: 300, height: 200 },
+    title: 'must-not-cross',
+  });
+
+  assert.deepEqual(plain(shared.getCurrent()), {
+    status: 'changed',
+    sessionId: 'session-1',
+    revision: 2,
+    changes: ['position'],
+    movement: { x: 1, y: 0 },
+    rect: { x: 30, y: 20, width: 300, height: 200 },
+    timestamp: 2000,
+  });
+  assert.equal(JSON.stringify(received).includes('must-not-cross'), false);
+  assert.equal(runtime.observations.length, 2);
+
+  unsubscribe();
+  unsubscribe();
+  assert.equal(runtime.stops.length, 0);
+});
+
+test('shared consumer failures are isolated and session stop clears the current result', async () => {
+  const runtime = createRuntime();
+  const shared = runtime.window.nekoDesktopWindowSensingContext;
+  const received = [];
+  shared.subscribe(() => { throw new Error('consumer failed'); });
+  shared.subscribe((value) => received.push(value === null ? null : plain(value)));
+
+  runtime.publishCatState({ active: true, appearance: 'cat', tier: 'cat1' });
+  await flushPromises();
+  const oldListener = runtime.subscriptions[0];
+
+  assert.equal(received.length, 1);
+  assert.equal(runtime.observations.length, 1);
+
+  runtime.publishTierState({ type: 'visual-tier', tier: 'cat2' });
+  await flushPromises();
+
+  assert.equal(shared.getCurrent(), null);
+  assert.equal(received.at(-1), null);
+  assert.deepEqual(runtime.stops, ['session-1']);
+
+  oldListener({
+    status: 'changed',
+    sessionId: 'session-1',
+    changes: ['size'],
+    movement: null,
+    rect: { x: 10, y: 20, width: 400, height: 200 },
+  });
+  assert.equal(shared.getCurrent(), null);
+
+  runtime.publishTierState({ type: 'visual-tier', tier: 'cat1' });
+  await flushPromises();
+  const freshResult = plain(shared.getCurrent());
+  const observationCount = runtime.observations.length;
+  oldListener({
+    status: 'changed',
+    sessionId: 'session-1',
+    changes: ['identity'],
+    movement: null,
+    rect: { x: 999, y: 999, width: 100, height: 100 },
+  });
+  assert.deepEqual(plain(shared.getCurrent()), freshResult);
+  assert.equal(runtime.observations.length, observationCount);
+});
+
+test('shared unavailable results contain no stale rect and dispose removes the desktop context', async () => {
+  const runtime = createRuntime();
+  const shared = runtime.window.nekoDesktopWindowSensingContext;
+
+  runtime.publishCatState({ active: true, appearance: 'cat', tier: 'cat1' });
+  await flushPromises();
+  runtime.publishChanged({
+    status: 'unavailable',
+    sessionId: 'session-1',
+    reason: 'no-window',
+    rect: { x: 10, y: 20, width: 300, height: 200 },
+  });
+
+  assert.deepEqual(plain(shared.getCurrent()), {
+    status: 'unavailable',
+    sessionId: 'session-1',
+    revision: 2,
+    reason: 'no-window',
+    timestamp: 1000,
+  });
+
+  runtime.window.dispatchEvent({ type: 'pagehide' });
+  await flushPromises();
+  assert.equal('nekoDesktopWindowSensingContext' in runtime.window, false);
 });
 
 test('adapter has no reader, polling timer, DOM state or Cat Mind action producer', () => {

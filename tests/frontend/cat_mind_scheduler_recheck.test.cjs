@@ -101,10 +101,10 @@ function createRuntime(allowedActionId, options = {}) {
     }
     assert.ok(remaining > 0, 'scheduler must remain asynchronous and bounded');
   };
-  const observe = (type, detail = {}, tier = 'cat1') => {
+  const observe = (type, detail = {}, tier = 'cat1', source = 'scheduler-test') => {
     now += 1;
     win.dispatchEvent(new CustomEventLike('neko:cat-mind:observation', {
-      detail: { type, source: 'scheduler-test', tier, timestamp: now, detail },
+      detail: { type, source, tier, timestamp: now, detail },
     }));
     flush();
   };
@@ -227,6 +227,34 @@ test('provider-ready presentation wakes retained yarn intent without waiting for
 
   startRequest(runtime, runtime.requests[0], 'provider-ready-yarn');
   assert.equal(runtime.win.nekoCatMind.getDebugSnapshot().actionIntentEvidence.cat1_play_yarn, undefined);
+});
+
+test('desktop window facts stay observable without waking an ordinary Cat Mind action', () => {
+  const runtime = createRuntime('cat1_social_ping', { providerReady: false });
+  runtime.enter();
+  runtime.advanceNeed();
+  assert.equal(runtime.requests.length, 0);
+
+  runtime.setProviderReady(true);
+  const dryRunsBeforeDesktopFact = runtime.dryRunCalls();
+  runtime.observe('desktop_occlusion_or_layer_change', {
+    status: 'changed',
+    changes: ['position'],
+    rect: { x: 100, y: 100, width: 640, height: 480 },
+  }, 'cat1', 'desktop-window-sensing');
+
+  assert.equal(runtime.requests.length, 0);
+  assert.equal(runtime.dryRunCalls(), dryRunsBeforeDesktopFact);
+  assert.equal(
+    runtime.win.nekoCatMind.getRecentEvents().at(-1).type,
+    'desktop_occlusion_or_layer_change'
+  );
+
+  runtime.observe('desktop_occlusion_or_layer_change', {
+    visible: true,
+  }, 'cat1', 'return-ball');
+  assert.equal(runtime.requests.length, 1);
+  assert.equal(runtime.requests[0].actionId, 'cat1_social_ping');
 });
 
 test('interrupted small move settles its physical facts once and interruption metadata adds no needs', () => {
