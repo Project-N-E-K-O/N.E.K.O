@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any, ClassVar, Literal
 
-from pydantic import BaseModel, Field, RootModel, field_validator
+from pydantic import BaseModel, Field, RootModel, field_validator, model_validator
 
 from ._nearby_intent import (
     MAX_PREFERENCE_HINTS,
@@ -253,6 +253,10 @@ class SetDefaultLocationResult(ClarifiableResult):
     ]
 
 
+# Backward-compatible public name retained for existing host integrations.
+MessageResult = SetDefaultLocationResult
+
+
 class _UpdateConfigReadyResult(LifeKitModel):
     status: Literal["ready"]
     summary: str
@@ -292,7 +296,7 @@ class HourlyForecastResult(ReadOnlyLocationResult):
 
 
 class NearbyParams(LifeKitModel):
-    request: str = Field(..., min_length=1, description=_desc("Original nearby request; preserve full meaning", "附近搜索原话；保留完整语义", "周辺検索の原文；意味を保持"))
+    query: str = Field(..., min_length=1, description=_desc("Original nearby request; preserve full meaning", "附近搜索原话；保留完整语义", "周辺検索の原文；意味を保持"))
     location_hint: str = Field(
         "",
         description=_desc("Search center inferred from the request; blank if uncertain", "从原话识别的搜索中心；不确定留空", "原文から推定した検索中心；不明なら空欄"),
@@ -312,7 +316,19 @@ class NearbyParams(LifeKitModel):
     )
     radius: int = Field(3000, ge=500, le=50000, description=_desc("Search radius in meters", "搜索半径（米）", "検索半径（メートル）"))
 
-    @field_validator("request", "location_hint", mode="before")
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_request_alias(cls, value: Any) -> Any:
+        if isinstance(value, dict) and "query" not in value and "request" in value:
+            return {**value, "query": value["request"]}
+        return value
+
+    @property
+    def request(self) -> str:
+        """Compatibility accessor for the clearer internal request wording."""
+        return self.query
+
+    @field_validator("query", "location_hint", mode="before")
     @classmethod
     def _clean_text(cls, value: Any) -> str:
         return _blankable_text(value)

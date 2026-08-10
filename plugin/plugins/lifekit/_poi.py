@@ -484,7 +484,7 @@ class POIService:
             try:
                 items = await provider.search(query, lat, lon, radius=radius, limit=limit)
                 return provider, items, "", ""
-            except (httpx.HTTPError, ValueError, POIProviderError) as exc:
+            except (httpx.HTTPError, RuntimeError, ValueError, POIProviderError) as exc:
                 message = f"{provider.name}: {type(exc).__name__}: {exc}"
                 error_code = (
                     UPSTREAM_TIMEOUT

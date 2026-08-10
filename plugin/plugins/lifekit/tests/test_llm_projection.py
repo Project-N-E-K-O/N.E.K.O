@@ -86,7 +86,7 @@ def test_nearby_entry_exposes_typed_hints_instead_of_provider_search_terms() -> 
     properties = schema.get("properties", {})
 
     assert entry.meta.description["$i18n"] == "entries.searchNearby.description"
-    assert "request" in properties
+    assert "query" in properties
     assert properties["place_intent"]["enum"] == [
         "food",
         "coffee",
@@ -102,8 +102,8 @@ def test_nearby_entry_exposes_typed_hints_instead_of_provider_search_terms() -> 
     assert "search_terms" not in properties
     assert "location_hint" in properties
     assert "location" not in properties
-    assert "query" not in properties
-    assert set(schema.get("required", [])) == {"request"}
+    assert "request" not in properties
+    assert set(schema.get("required", [])) == {"query"}
 
 
 @pytest.mark.asyncio
