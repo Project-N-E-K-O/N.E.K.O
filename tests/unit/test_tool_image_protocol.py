@@ -123,6 +123,8 @@ _TINY_PNG_B64 = (
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQ"
     "AAAABJRU5ErkJggg=="
 )
+# Minimal JPEG (SOI + EOI) — matches the default mime when the entry omits it.
+_TINY_JPEG_B64 = "/9j/2Q=="
 
 
 def _image_entry(**overrides) -> dict:
@@ -153,12 +155,8 @@ def test_valid_entry_is_parsed():
 
 
 def test_jpeg_is_accepted():
-    # Minimal JFIF-ish payload: decodeable base64 that starts with JPEG SOI.
-    import base64
-
-    jpeg_b64 = base64.b64encode(b"\xff\xd8\xff\xd9").decode("ascii")
     images, warnings = _parse_tool_images(
-        {"images": [_image_entry(data_b64=jpeg_b64, mime="image/jpeg")]}
+        {"images": [_image_entry(data_b64=_TINY_JPEG_B64, mime="image/jpeg")]}
     )
     assert warnings == []
     assert images[0].mime == "image/jpeg"
@@ -225,9 +223,10 @@ def test_non_dict_entry_is_dropped():
 
 
 def test_missing_mime_defaults_to_jpeg():
-    entry = {"data_b64": _TINY_PNG_B64}
+    entry = {"data_b64": _TINY_JPEG_B64}
     images, warnings = _parse_tool_images({"images": [entry]})
     assert warnings == []
+    assert images[0].data_b64 == _TINY_JPEG_B64
     assert images[0].mime == "image/jpeg"
 
 
