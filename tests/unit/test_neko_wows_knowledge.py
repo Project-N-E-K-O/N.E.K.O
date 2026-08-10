@@ -82,7 +82,7 @@ def test_latin_runs_stay_whole_tokens():
 
 
 def test_mixed_script_segments_keep_both_halves():
-    """"AP弹" must be findable as both `ap` and the CJK n-gram."""
+    """Mixed Latin+CJK tokens must index both the Latin half and the CJK n-gram."""
     terms = index_terms("AP弹药")
     assert "ap" in terms
     assert "弹药" in terms

@@ -290,7 +290,7 @@ def test_adapter_converts_bigworld_wire_coords_to_meters():
 
 
 def test_not_confirmed_sunk_enemies_keep_last_known_ships_after_they_go_dark():
-    """灭点舰仍计入未确认沉没上限，但不计入当前点亮。"""
+    """Dark last-known ships still count toward not-confirmed-sunk, but not visible."""
     own = {
         "uiId": 1, "playerId": 2000, "teamId": 0, "relation": 0,
         "type": "Battleship", "name": "OwnShip", "playerName": "Master",
@@ -328,7 +328,7 @@ def test_not_confirmed_sunk_enemies_keep_last_known_ships_after_they_go_dark():
 
 
 def test_threat_geometry_uses_visible_enemies_not_dark_last_known():
-    """存活计数可含灭点船，但威胁方位只能看当前点亮的。"""
+    """Alive counts may include dark ships; threat geometry uses only lit ones."""
     own = {
         "uiId": 1, "playerId": 2000, "teamId": 0, "relation": 0,
         "type": "Battleship", "name": "OwnShip", "playerName": "Master",
@@ -369,7 +369,7 @@ def test_threat_geometry_uses_visible_enemies_not_dark_last_known():
 
 
 def test_roster_stub_does_not_resurrect_ship_after_corpse_leaves_objects():
-    """尸体从 objects 消失后，roster 存根不能把敌舰算回存活。"""
+    """After a corpse leaves objects, a roster stub must not revive that enemy."""
     adapter = WowsSchemaAdapter()
     own = {
         "uiId": 1, "playerId": 2000, "teamId": 0, "relation": 0,
@@ -410,7 +410,7 @@ def test_roster_stub_does_not_resurrect_ship_after_corpse_leaves_objects():
 
 
 def test_roster_only_counts_are_not_presented_as_confirmed_alive():
-    """花名册能给出未确认沉没上限，但不能证明舰船仍然存活。"""
+    """Roster can cap not-confirmed-sunk counts but does not prove ships are alive."""
     own = {
         "uiId": 1, "playerId": 2000, "teamId": 0, "relation": 0,
         "type": "Battleship", "name": "OwnShip", "playerName": "Master",
@@ -478,7 +478,7 @@ def test_spoken_ship_name_humanizes_wire_indexes():
 
 
 def test_dead_object_enemy_is_not_revived_by_roster_entry():
-    """objects 里已标记死亡的敌舰，即使还在 roster，也不能算存活。"""
+    """An enemy marked dead in objects must stay dead even if still on the roster."""
     own = {
         "uiId": 1, "playerId": 2000, "teamId": 0, "relation": 0,
         "type": "Battleship", "name": "OwnShip", "playerName": "Master",
@@ -554,7 +554,7 @@ def test_roster_counts_survive_when_objects_domain_is_stale():
 
 
 def test_distant_ally_flicker_does_not_drop_alive_count_without_roster():
-    """远距离队友从 objects 短暂消失时，不能把存活数当成阵亡。"""
+    """A distant ally briefly dropping from objects must not be treated as sunk."""
     adapter = WowsSchemaAdapter()
     own = {
         "uiId": 1, "playerId": 2000, "teamId": 0, "relation": 0,
@@ -588,7 +588,7 @@ def test_distant_ally_flicker_does_not_drop_alive_count_without_roster():
 
 
 def test_lost_spot_enemy_flicker_keeps_alive_but_not_visible():
-    """灭点/未再点亮的敌人从 objects 消失时，存活仍在，点亮数为 0。"""
+    """A lost-spot enemy leaving objects stays alive but drops to zero visible."""
     adapter = WowsSchemaAdapter()
     own = {
         "uiId": 1, "playerId": 2000, "teamId": 0, "relation": 0,
@@ -622,7 +622,7 @@ def test_lost_spot_enemy_flicker_keeps_alive_but_not_visible():
 
 
 def test_sticky_memory_does_not_block_death_without_roster():
-    """无 roster 时：粘住 → 死亡 → 尸体离开，存活数必须落下且保持落下。"""
+    """Without roster: sticky memory, then death, then corpse leave — alive drops."""
     adapter = WowsSchemaAdapter()
     own = {
         "uiId": 1, "playerId": 2000, "teamId": 0, "relation": 0,
