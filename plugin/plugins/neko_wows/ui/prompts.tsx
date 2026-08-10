@@ -42,15 +42,22 @@ export function PromptsSection(props: {
   const [preview, setPreview] = useState("")
   const [note, setNote] = useState("")
 
-  // Adopt the active revision whenever it changes underneath us, so a rollback
-  // made elsewhere does not leave a stale draft on screen.
+  // Adopt server sections whenever the active revision or their text changes
+  // (builtin first load may keep active_revision stable while sections arrive).
+  // Identical auto-refresh payloads keep the same strings, so an in-progress
+  // edit is not wiped by the panel poller.
   useEffect(() => {
     setDraft({
       base: sections.base || "",
       urgent: sections.urgent || "",
       normal: sections.normal || "",
     })
-  }, [prompts.active_revision])
+  }, [
+    prompts.active_revision,
+    sections.base,
+    sections.urgent,
+    sections.normal,
+  ])
 
   const tooLong = (value: string) => value.length > limit
   const invalid =

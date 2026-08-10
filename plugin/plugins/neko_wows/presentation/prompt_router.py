@@ -148,6 +148,11 @@ def _render_facts(payload: dict[str, Any]) -> str:
     return json.dumps(usable, ensure_ascii=False, sort_keys=True)
 
 
+def _strip_fence(raw: str) -> str:
+    """Remove fence markers so imported docs cannot close the untrusted block."""
+    return raw.replace(REFERENCE_CLOSE, "").replace(REFERENCE_OPEN, "")
+
+
 def _render_reference(excerpts: Sequence[TacticExcerpt], lane: str) -> tuple[str, int]:
     """Returns the fenced reference block and how many excerpts made the cut."""
     if not excerpts:
@@ -161,9 +166,10 @@ def _render_reference(excerpts: Sequence[TacticExcerpt], lane: str) -> tuple[str
         remaining = budget - used
         if remaining <= 0:
             break
-        text = excerpt.text[:remaining]
+        # Strip before truncating: cutting mid-marker would leave a residue.
+        text = _strip_fence(excerpt.text)[:remaining]
         used += len(text)
-        body.append(f"# {excerpt.title}\n{text}")
+        body.append(f"# {_strip_fence(excerpt.title)}\n{text}")
     if not body:
         return "", 0
     block = (
