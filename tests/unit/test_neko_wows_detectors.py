@@ -427,6 +427,24 @@ def test_low_health_thresholds_fire_once_each():
     assert fired(results).count(LOW_HEALTH) == 2
 
 
+def test_one_big_drop_keeps_the_lowest_crossed_threshold():
+    """Crossing several bands in one frame must not lose the urgent one."""
+    registry = DetectorRegistry(build_survival_detectors(CFG))
+    results = feed(registry, [
+        frame(seq=1, at=100.0, hp_ratio=1.0),
+        frame(seq=2, at=101.0, hp_ratio=1.0),
+        frame(seq=3, at=102.0, hp_ratio=0.10),
+        frame(seq=4, at=103.0, hp_ratio=0.09),
+    ])
+    events = [
+        event for result in results for event in result.events
+        if event.event_id == LOW_HEALTH
+    ]
+    assert len(events) == 1
+    assert events[0].detail["threshold"] == 0.15
+    assert events[0].severity == int(60 + (1.0 - 0.15) * 35)
+
+
 def test_rapid_damage_is_never_described_as_focused_fire():
     registry = DetectorRegistry(build_survival_detectors(CFG))
     results = feed(registry, [

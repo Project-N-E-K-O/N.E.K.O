@@ -77,27 +77,31 @@ class LowHealthDetector(Detector):
         if ratio is None or before is None or ratio <= 0.0:
             return ()
 
-        for threshold in self.cfg.low_health_ratios:
-            if threshold in self._crossed:
-                continue
-            if before > threshold >= ratio:
-                self._crossed.add(threshold)
-                # A lower threshold means a more urgent situation; scale the
-                # severity so the arbiter prefers the worse one.
-                severity = int(60 + (1.0 - threshold) * 35)
-                return (self._event(
-                    LOW_HEALTH,
-                    severity=severity,
-                    facts=facts,
-                    detail={
-                        "hp_ratio": round(ratio, 3),
-                        "threshold": threshold,
-                        "health": facts.own_health,
-                        "max_health": facts.own_max_health,
-                        "nearest_enemy_m": _nearest_distance(facts),
-                    },
-                ),)
-        return ()
+        crossed = [
+            threshold
+            for threshold in self.cfg.low_health_ratios
+            if threshold not in self._crossed and before > threshold >= ratio
+        ]
+        if not crossed:
+            return ()
+        # Mark every band crossed this frame so a later smaller drop cannot
+        # re-fire a threshold we already passed through in one leap.
+        self._crossed.update(crossed)
+        # Prefer the lowest band: that is the most urgent situation reached.
+        threshold = min(crossed)
+        severity = int(60 + (1.0 - threshold) * 35)
+        return (self._event(
+            LOW_HEALTH,
+            severity=severity,
+            facts=facts,
+            detail={
+                "hp_ratio": round(ratio, 3),
+                "threshold": threshold,
+                "health": facts.own_health,
+                "max_health": facts.own_max_health,
+                "nearest_enemy_m": _nearest_distance(facts),
+            },
+        ),)
 
 
 class RapidDamageDetector(Detector):
