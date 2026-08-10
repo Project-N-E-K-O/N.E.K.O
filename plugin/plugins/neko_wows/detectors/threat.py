@@ -40,10 +40,18 @@ class EnemyClosingDetector(Detector):
         nearest = facts.nearest_enemy
         before = previous_facts.nearest_enemy
         closing_rate = None
-        if before is not None:
+        # Distance deltas are only a measurement when both frames tracked the
+        # same ship; a nearest-enemy swap has no physical closing speed.
+        if (
+            before is not None
+            and before.ship.player_id is not None
+            and before.ship.player_id == nearest.ship.player_id
+        ):
             elapsed = facts.at - previous_facts.at
             if elapsed > 0:
-                closing_rate = round((before.distance_m - nearest.distance_m) / elapsed, 1)
+                closing_rate = round(
+                    (before.distance_m - nearest.distance_m) / elapsed, 1)
+
         return (self._event(
             ENEMY_CLOSING,
             severity=int(60 + max(0.0, 1.0 - nearest.distance_m / max(

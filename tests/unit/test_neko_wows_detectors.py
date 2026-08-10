@@ -460,6 +460,31 @@ def test_enemy_closing_needs_an_actual_approach():
         frame(seq=4, at=103.0, ships=(enemy(x=5000.0),)),
     ])
     assert ENEMY_CLOSING in fired(approaching)
+    closing = [
+        event for result in approaching for event in result.events
+        if event.event_id == ENEMY_CLOSING
+    ][0]
+    assert closing.detail["closing_m_per_s"] == 6000.0
+
+
+def test_enemy_closing_rate_requires_the_same_ship():
+    """Nearest-enemy swaps across frames must not invent a closing speed."""
+    registry = DetectorRegistry(build_threat_detectors(CFG))
+    results = feed(registry, [
+        frame(seq=1, at=100.0, ships=(
+            enemy(ui_id=2, x=9500.0, ship_type="Battleship", name="Yamato"),
+        )),
+        frame(seq=2, at=100.5, ships=(
+            enemy(ui_id=3, x=3000.0, ship_type="Destroyer", name="Shimakaze"),
+        )),
+    ])
+    closing = [
+        event for result in results for event in result.events
+        if event.event_id == ENEMY_CLOSING
+    ]
+    assert closing
+    assert closing[0].detail["closing_m_per_s"] is None
+    assert closing[0].detail["ship_name"] == "Shimakaze"
 
 
 def test_losing_sight_of_everyone_is_not_reported_as_safety():
