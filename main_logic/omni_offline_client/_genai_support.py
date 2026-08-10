@@ -738,6 +738,7 @@ class _GenaiMixin:
                     "tool_calls": tool_calls_dict,
                 })
                 executed_tool_calls += len(collected_tool_calls)
+                image_results = []
                 for i, (tc_id, tc_name, tc_args, tc_raw, _tc_extra) in enumerate(collected_tool_calls):
                     tool_call = ToolCall(
                         name=tc_name,
@@ -761,10 +762,12 @@ class _GenaiMixin:
                         "name": tc_name,
                         "content": result.output_as_json_string(),
                     })
-                    # Symmetric with the OpenAI-compat path. The multimodal
-                    # user turn it appends converts cleanly here because
-                    # ``_genai_parts_from_content`` already maps
-                    # ``image_url`` data URLs onto ``inline_data`` parts.
+                    if getattr(result, "images", None):
+                        image_results.append(result)
+                # Symmetric with the OpenAI-compat path: every tool reply
+                # first, then multimodal user turns. ``_genai_parts_from_content``
+                # maps ``image_url`` data URLs onto ``inline_data`` parts.
+                for result in image_results:
                     self._append_tool_result_images(messages, result)
                 # Sentinel：与 OpenAI 路径对偶，告诉上游 stream_text 把
                 # final-segment buffer 清掉（pre-tool 文本已被持久化进

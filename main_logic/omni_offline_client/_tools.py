@@ -158,6 +158,10 @@ class _ToolingMixin:
         if assistant_reasoning:
             assistant_turn["reasoning_content"] = assistant_reasoning
         messages.append(assistant_turn)
+        # Image turns must wait until every ``tool`` reply is written —
+        # OpenAI-compat providers reject assistant(tool_calls) → tool →
+        # user(image) → tool sequences.
+        image_results: list = []
         for i, c in enumerate(calls):
             tool_call = ToolCall(
                 name=c.name,
@@ -194,6 +198,9 @@ class _ToolingMixin:
                 "name": tool_call.name,
                 "content": result.output_as_json_string(),
             })
+            if getattr(result, "images", None):
+                image_results.append(result)
+        for result in image_results:
             self._append_tool_result_images(messages, result)
         return len(calls)
 

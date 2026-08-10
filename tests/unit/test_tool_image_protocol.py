@@ -222,12 +222,36 @@ def test_non_dict_entry_is_dropped():
     assert any("not an object" in w for w in warnings)
 
 
-def test_missing_mime_defaults_to_jpeg():
+def test_missing_mime_defaults_to_detected_type():
+    """Omitted mime follows the file header so PNG bytes are not labeled JPEG."""
     entry = {"data_b64": _TINY_JPEG_B64}
     images, warnings = _parse_tool_images({"images": [entry]})
     assert warnings == []
     assert images[0].data_b64 == _TINY_JPEG_B64
     assert images[0].mime == "image/jpeg"
+
+    png_images, png_warnings = _parse_tool_images(
+        {"images": [{"data_b64": _TINY_PNG_B64}]}
+    )
+    assert png_warnings == []
+    assert png_images[0].mime == "image/png"
+
+
+def test_mime_that_does_not_match_image_bytes_is_dropped():
+    """A PNG labeled as JPEG must not reach the vision data-URL builder."""
+    images, warnings = _parse_tool_images(
+        {"images": [_image_entry(data_b64=_TINY_PNG_B64, mime="image/jpeg")]}
+    )
+    assert images == []
+    assert any("mime does not match" in w for w in warnings)
+
+
+def test_mime_is_normalized_before_matching_magic_bytes():
+    images, warnings = _parse_tool_images(
+        {"images": [_image_entry(mime="Image/PNG; charset=binary")]}
+    )
+    assert warnings == []
+    assert images[0].mime == "image/png"
 
 
 # ============================================================================

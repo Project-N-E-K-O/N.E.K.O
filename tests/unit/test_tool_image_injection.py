@@ -123,6 +123,34 @@ async def test_two_images_ride_one_message():
     assert types == ["image_url", "image_url", "text"]
 
 
+@pytest.mark.asyncio
+async def test_image_turns_follow_every_tool_result():
+    """OpenAI-compat wants all ``tool`` replies before any other role."""
+    first = ToolResult(
+        call_id="call_a",
+        name="with_image",
+        output={"ok": True},
+        images=[ToolImage(data_b64="IMGDATA", mime="image/jpeg")],
+    )
+    second = ToolResult(
+        call_id="call_b",
+        name="plain",
+        output={"ok": True},
+    )
+    client = _Client({"with_image": first, "plain": second})
+    messages: list = []
+    await client._execute_and_append_openai_tool_calls(
+        messages,
+        [
+            _Call(name="with_image", id="call_a"),
+            _Call(name="plain", id="call_b"),
+        ],
+    )
+    assert [m["role"] for m in messages] == [
+        "assistant", "tool", "tool", "user",
+    ]
+
+
 # -------------------------------------------------------------------- release
 
 

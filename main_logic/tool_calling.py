@@ -210,16 +210,29 @@ def tool_result_output_payload(body: Dict[str, Any]) -> Any:
     return {k: v for k, v in body.items() if k != "images"}
 
 
-def _decode_tool_image_b64(data_b64: str) -> bytes | None:
+def _decode_tool_image_b64(data_b64: str) -> Tuple[bytes, str] | None:
+    """Decode base64 image bytes and return ``(raw, detected_mime)``."""
     try:
         raw = base64.b64decode(data_b64, validate=True)
     except (binascii.Error, ValueError):
         return None
     if not raw:
         return None
-    if raw.startswith(_JPEG_MAGIC) or raw.startswith(_PNG_MAGIC):
-        return raw
+    if raw.startswith(_JPEG_MAGIC):
+        return raw, "image/jpeg"
+    if raw.startswith(_PNG_MAGIC):
+        return raw, "image/png"
     return None
+
+
+def _normalize_tool_image_mime(mime: Any) -> str | None:
+    """Strip parameters / case so ``Image/PNG; charset=binary`` can match."""
+    if not isinstance(mime, str):
+        return None
+    normalized = mime.strip().lower().split(";", 1)[0].strip()
+    if normalized not in _ALLOWED_TOOL_IMAGE_MIMES:
+        return None
+    return normalized
 
 
 def parse_tool_images(body: Dict[str, Any]) -> Tuple[List[ToolImage], List[str]]:
@@ -258,14 +271,26 @@ def parse_tool_images(body: Dict[str, Any]) -> Tuple[List[ToolImage], List[str]]
                 f"({len(data_b64)} > {_MAX_TOOL_IMAGE_B64_BYTES} base64 bytes); dropped"
             )
             continue
-        if _decode_tool_image_b64(data_b64) is None:
+        decoded = _decode_tool_image_b64(data_b64)
+        if decoded is None:
             warnings.append(
                 f"image #{index} has invalid base64 or non-image bytes; dropped"
             )
             continue
-        mime = entry.get("mime") or "image/jpeg"
-        if not isinstance(mime, str) or mime not in _ALLOWED_TOOL_IMAGE_MIMES:
-            warnings.append(f"image #{index} has unsupported mime {mime!r}; dropped")
+        _, detected_mime = decoded
+        declared = entry.get("mime")
+        mime = (
+            detected_mime
+            if declared is None or declared == ""
+            else _normalize_tool_image_mime(declared)
+        )
+        if mime is None:
+            warnings.append(f"image #{index} has unsupported mime {declared!r}; dropped")
+            continue
+        if mime != detected_mime:
+            warnings.append(
+                f"image #{index} mime does not match image bytes; dropped"
+            )
             continue
         vision_prompt = entry.get("vision_prompt")
         images.append(ToolImage(
