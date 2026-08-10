@@ -105,6 +105,44 @@ async def test_main_active_character_get_falls_back_to_configured_catgirl(monkey
     assert "characterReferenceDataUrl" not in payload
 
 
+@pytest.mark.asyncio
+async def test_main_active_character_get_merges_master_into_live_snapshot(monkeypatch):
+    from app.main_server import web_app
+
+    monkeypatch.setattr(
+        web_app,
+        "_card_drop_active_character",
+        {
+            "name": "YUI",
+            "dataUrl": "avatar",
+            "characterReferenceDataUrl": "reference",
+        },
+    )
+
+    async def fallback_identity():
+        return "Configured Character", "max"
+
+    monkeypatch.setattr(
+        web_app,
+        "_fallback_active_character_identity",
+        fallback_identity,
+    )
+
+    response = await web_app.get_card_drop_active_character(
+        _main_server_request(),
+        include_avatar=True,
+    )
+
+    assert response.status_code == 200
+    assert response.body
+    assert json.loads(response.body.decode("utf-8")) == {
+        "name": "YUI",
+        "master_name": "max",
+        "dataUrl": "avatar",
+        "characterReferenceDataUrl": "reference",
+    }
+
+
 def test_main_active_character_exposes_only_canonical_card_drop_routes():
     from app.main_server import web_app
 

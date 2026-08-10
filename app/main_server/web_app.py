@@ -289,13 +289,13 @@ async def get_card_drop_active_character(
     if cors is None:
         return JSONResponse({"detail": "origin_not_allowed"}, status_code=403)
     name = str(_card_drop_active_character.get("name", "") or "").strip()
-    master_name = ""
+    configured_name, master_name = await _fallback_active_character_identity()
     # Community forge used to treat an empty live snapshot as "本体未连接" even
     # when the local ledger/credits were healthy. Fall back to the configured
     # current catgirl so ticket selection can proceed before Pet avatar sync.
     used_fallback = False
     if not name:
-        name, master_name = await _fallback_active_character_identity()
+        name = configured_name
         used_fallback = True
     payload: dict[str, str] = {"name": name}
     if master_name:
