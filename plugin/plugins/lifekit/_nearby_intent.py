@@ -22,7 +22,7 @@ _ZH_ON_LOCATION_PARTS = re.compile(
 )
 _EN_NEARBY_PARTS = re.compile(
     r"^(?P<target>.*?)\b(?:near|around|close\s+to)\s+"
-    r"(?P<location>[^,;!?。！？]+)$",
+    r"(?P<location>[^,;!?。！？]+?)[.!?。！？]*$",
     re.IGNORECASE,
 )
 

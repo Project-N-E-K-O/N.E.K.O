@@ -101,3 +101,20 @@ def test_mixed_culture_categories_keep_museum_and_gallery_distinct() -> None:
     )
 
     assert plan.search_terms == ("博物馆", "美术馆")
+
+
+def test_english_nearby_location_accepts_sentence_punctuation() -> None:
+    request = "restaurants near Times Square?"
+
+    plan = build_nearby_request_plan(
+        request_text=request,
+        raw_request=request,
+        projected_params=True,
+        location_hint="",
+        legacy_location="",
+        place_intent="explore",
+        preference_hints=(),
+        search_terms=(),
+    )
+
+    assert plan.location == "Times Square"

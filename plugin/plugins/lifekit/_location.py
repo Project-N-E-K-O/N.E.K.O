@@ -445,6 +445,7 @@ class LocationResolver:
             LocationPurpose.FOOD,
             LocationPurpose.ROUTE_ORIGIN,
             LocationPurpose.ROUTE_DESTINATION,
+            LocationPurpose.SAVE,
         }
         providers = (
             ((self._nominatim, True), (self._open_meteo, False))
@@ -549,7 +550,13 @@ def _normalise_candidates(
             item.display_name.strip().casefold(),
             item.precision,
         )
-        if item.precision == "district":
+        if item.precision == "city":
+            key += (
+                _admin_key(item.admin2),
+                round(item.latitude, 3),
+                round(item.longitude, 3),
+            )
+        elif item.precision == "district":
             key += (_admin_key(item.admin2),)
         elif item.precision in {"locality", "address"}:
             key += (
@@ -784,6 +791,7 @@ def _purpose_precision_rank(precision: str, purpose: LocationPurpose) -> int:
         LocationPurpose.FOOD,
         LocationPurpose.ROUTE_ORIGIN,
         LocationPurpose.ROUTE_DESTINATION,
+        LocationPurpose.SAVE,
     }:
         return {"address": 3, "district": 2, "city": 1}.get(precision, 0)
     return {"city": 3, "district": 2, "address": 1, "locality": 1}.get(

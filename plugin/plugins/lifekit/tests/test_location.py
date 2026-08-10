@@ -815,6 +815,54 @@ async def test_same_named_localities_at_different_coordinates_remain_ambiguous()
     assert len(result.candidates) == 2
 
 
+async def test_same_named_cities_in_different_counties_remain_ambiguous() -> None:
+    first = LocationCandidate(
+        display_name="Springfield",
+        latitude=39.78,
+        longitude=-89.64,
+        country_code="US",
+        admin1="Illinois",
+        admin2="Sangamon County",
+        precision="city",
+        source="open_meteo",
+    )
+    second = LocationCandidate(
+        display_name="Springfield",
+        latitude=39.35,
+        longitude=-90.20,
+        country_code="US",
+        admin1="Illinois",
+        admin2="Greene County",
+        precision="city",
+        source="open_meteo",
+    )
+
+    async def open_meteo(
+        *_args: object,
+        **_kwargs: object,
+    ) -> list[LocationCandidate]:
+        return [first, second]
+
+    async def empty(
+        *_args: object,
+        **_kwargs: object,
+    ) -> list[LocationCandidate]:
+        return []
+
+    resolver = LocationResolver(open_meteo=open_meteo, nominatim=empty)
+
+    result = await resolver.resolve(
+        LocationRequest(
+            text="Springfield",
+            purpose=LocationPurpose.WEATHER,
+            country_hint="US",
+        )
+    )
+
+    assert result.status is LocationStatus.AMBIGUOUS
+    assert result.candidates == (first, second)
+
+
 async def test_explicit_country_suffix_becomes_hard_country_hint() -> None:
     seen: list[tuple[str, str]] = []
 
@@ -969,3 +1017,88 @@ async def test_geocode_city_preserves_timeout_cause(
         await _api.geocode_city("Beijing")
 
     assert exc_info.value.cause == "timeout"
+
+
+async def test_geocode_city_gives_address_provider_full_timeout_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    received_timeouts: list[float] = []
+
+    async def no_city_match(
+        *_args: object,
+        **_kwargs: object,
+    ) -> list[LocationCandidate]:
+        return []
+
+    async def address_match(
+        *_args: object,
+        **kwargs: object,
+    ) -> list[LocationCandidate]:
+        received_timeouts.append(float(kwargs["timeout"]))
+        return [
+            LocationCandidate(
+                display_name="漕宝路",
+                latitude=31.17,
+                longitude=121.43,
+                country_code="CN",
+                admin1="上海市",
+                admin2="上海市",
+                precision="address",
+                source="nominatim",
+            )
+        ]
+
+    monkeypatch.setattr(_api, "open_meteo_candidates", no_city_match)
+    monkeypatch.setattr(_api, "nominatim_candidates", address_match)
+
+    result = await _api.geocode_city("上海 漕宝路", timeout=5.0)
+
+    assert result is not None
+    assert received_timeouts == [5.0]
+
+
+async def test_geocode_city_prefers_saved_address_over_broader_city(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    city = LocationCandidate(
+        display_name="上海市",
+        latitude=31.23,
+        longitude=121.47,
+        country_code="CN",
+        admin1="上海市",
+        admin2="上海市",
+        precision="city",
+        source="open_meteo",
+    )
+    address = LocationCandidate(
+        display_name="漕宝路",
+        latitude=31.17,
+        longitude=121.43,
+        country_code="CN",
+        admin1="上海市",
+        admin2="上海市",
+        precision="address",
+        source="nominatim",
+    )
+
+    async def city_match(
+        *_args: object,
+        **_kwargs: object,
+    ) -> list[LocationCandidate]:
+        return [city]
+
+    async def address_match(
+        *_args: object,
+        **_kwargs: object,
+    ) -> list[LocationCandidate]:
+        return [address]
+
+    monkeypatch.setattr(_api, "open_meteo_candidates", city_match)
+    monkeypatch.setattr(_api, "nominatim_candidates", address_match)
+
+    result = await _api.geocode_city("上海市 漕宝路")
+
+    assert result is not None
+    assert result["lat"] == address.latitude
+    assert result["lon"] == address.longitude
+    assert result["_location_precision"] == "address"

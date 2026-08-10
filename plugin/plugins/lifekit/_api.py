@@ -97,7 +97,7 @@ async def geocode_city(city: str, locale: str = "zh-CN", timeout: float = 5.0) -
             query,
             locale=str(kwargs.get("locale") or locale),
             country_code=str(kwargs.get("country_code") or ""),
-            timeout=min(timeout, 2.0),
+            timeout=timeout,
         )
 
     result = await LocationResolver(
