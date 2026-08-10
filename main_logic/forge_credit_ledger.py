@@ -13,7 +13,7 @@ from pathlib import Path
 
 DAILY_CAP = 6
 TRIGGER_LIMITS = {"emotion_combo": None, "5rounds": 2, "idle": 2, "minigame": 1}
-RARITY_WEIGHTS = {"UR": 0, "SSR": 1, "SR": 7, "R": 22, "N": 70}
+RARITY_WEIGHTS = {"UR": 0, "SSR": 0.5, "SR": 3.5, "R": 26, "N": 70}
 _LOCK = threading.RLock()
 
 

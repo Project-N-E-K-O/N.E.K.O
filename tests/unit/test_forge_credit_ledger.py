@@ -15,6 +15,20 @@ def isolated_ledger(tmp_path, monkeypatch):
     monkeypatch.setenv("NEKO_USER_DATA_DIR", str(tmp_path))
 
 
+def test_high_rarity_drop_weight_is_four_percent() -> None:
+    assert sum(ledger.RARITY_WEIGHTS.values()) == 100
+    assert sum(
+        ledger.RARITY_WEIGHTS[rarity] for rarity in ("SR", "SSR", "UR")
+    ) == 4
+    assert ledger.RARITY_WEIGHTS == {
+        "UR": 0,
+        "SSR": 0.5,
+        "SR": 3.5,
+        "R": 26,
+        "N": 70,
+    }
+
+
 def test_grant_is_installation_local_and_idempotent() -> None:
     now = datetime(2026, 7, 13, 8, tzinfo=UTC)
     payload = {"trigger_type": "emotion_combo", "idem_key": "drop-idem-1"}
