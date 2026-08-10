@@ -1637,8 +1637,6 @@ class QQMusicCrawler(BaseMusicCrawler):
                     "page_num": 1,
                     "num_per_page": min(max(limit * 3, 5), 50),
                     "search_type": 0,
-                    "grp": 1,
-                    "remoteplace": "txt.yqq.song",
                 },
             },
         }
