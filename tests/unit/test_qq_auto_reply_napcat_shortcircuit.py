@@ -1,9 +1,13 @@
-"""wait_for_onebot_ready must short-circuit when NapCat startup fails, not idle-wait 20s.
+"""wait_for_onebot_ready must short-circuit on hard startup failure, not idle-wait 20s.
 
-Background: when napcat_directory is unset or missing, ensure_napcat_started sets
-_startup_error; but the old wait_for_onebot_ready ignored it and polled for the full
-timeout (20s), and the frontend call() also polls with a 20s cap, so the start button
-reported a spurious timeout.
+Background: a hard failure (napcat_directory configured but missing, launcher absent,
+process won't start) sets _startup_error, and wait_for_onebot_ready must return
+immediately instead of polling the full timeout (20s) — the frontend call() also polls
+with a 20s cap, so the start button would report a spurious timeout.
+
+An unconfigured napcat_directory is NOT a hard failure: the user may start NapCat
+manually, so ensure_napcat_started stays silent and wait_for_onebot_ready still polls
+for the OneBot connection that a manual launch provides.
 """
 from __future__ import annotations
 
@@ -66,12 +70,29 @@ def test_wait_returns_true_when_connected():
     assert plugin._startup_error is None  # clear_startup_error 已执行
 
 
-def test_ensure_started_sets_error_when_no_dir():
-    """When napcat_directory is unset, ensure_napcat_started sets an explicit error (not silent)."""
+def test_ensure_started_no_dir_stays_silent_for_manual_launch():
+    """Unset napcat_directory → no error, no launch: the user may start NapCat manually,
+    and wait_for_onebot_ready still polls for that OneBot connection."""
     plugin = _plugin(qq_settings={})
     service = QQNapcatService(plugin)
 
     asyncio.run(service.ensure_napcat_started())
 
-    assert "napcat_directory" in (plugin._startup_error or "")
+    assert plugin._startup_error is None
     assert plugin._napcat_process is None
+    # Unconfigured is not a hard failure: wait_for_onebot_ready keeps polling for a manually started OneBot
+    assert not service.has_hard_startup_error()
+
+
+def test_ensure_started_sets_hard_error_when_configured_dir_missing():
+    """Configured-but-missing napcat_directory is a hard failure: ensure_napcat_started
+    sets an explicit error (not silent), which short-circuits wait_for_onebot_ready."""
+    plugin = _plugin(qq_settings={"napcat_directory": "C:/does/not/exist"})
+    service = QQNapcatService(plugin)
+
+    asyncio.run(service.ensure_napcat_started())
+
+    assert "launcher" in (plugin._startup_error or "").lower()
+    assert plugin._napcat_process is None
+    # Hard failure: wait_for_onebot_ready short-circuits immediately instead of polling
+    assert service.has_hard_startup_error()
