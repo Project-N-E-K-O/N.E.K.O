@@ -77,6 +77,7 @@ MOCK_QQMUSIC_SEARCH_JSON = {
                             "interval": 180,
                             "singer": [{"name": "QQ Artist"}, {"name": "Featured Artist"}],
                             "album": {"mid": "album_mid_1"},
+                            "file": {"media_mid": "media_mid_1"},
                         },
                         {
                             "mid": "too_long",
@@ -192,7 +193,7 @@ async def test_qqmusic_crawler_returns_only_resolved_playable_tracks():
     assert results[0]['url'].startswith('https://dl.stream.qqmusic.qq.com/')
     assert results[0]['cover'].endswith('album_mid_1.jpg')
     assert results[0]['duration'] == 180
-    assert resolve.await_args.args == ('song_mid_1',)
+    assert resolve.await_args.args == ('song_mid_1', 'media_mid_1')
     assert post.await_args.kwargs['json']['music.search.SearchCgiService']['module'] == 'music.search.SearchCgiService'
     await crawler.close()
 
@@ -213,10 +214,11 @@ async def test_qqmusic_crawler_resolves_https_stream_url():
     }
 
     with patch.object(httpx.AsyncClient, 'post', new=AsyncMock(return_value=stream_response)) as post:
-        result = await crawler._resolve_playable_url('song_mid_1')
+        result = await crawler._resolve_playable_url('song_mid_1', 'media_mid_1')
 
     assert result == 'https://dl.stream.qqmusic.qq.com/C400song_mid_1.m4a?vkey=temporary'
     assert post.await_args.kwargs['json']['req_0']['module'] == 'vkey.GetVkeyServer'
+    assert post.await_args.kwargs['json']['req_0']['param']['filename'] == ['C400media_mid_1.m4a']
     await crawler.close()
 
 
@@ -1728,6 +1730,50 @@ async def test_fetch_music_content_tries_qqmusic_before_open_fallbacks():
     mock_fma.search.assert_not_awaited()
     mock_soundcloud.search.assert_not_awaited()
     mock_bandcamp.search.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fetch_music_content_skips_qqmusic_fallback_outside_china():
+    """Global searches keep the existing open-source fallback behavior."""
+    mock_netease = MagicMock()
+    mock_netease._cookie_invalid = False
+    mock_netease.search = AsyncMock(return_value=[])
+    mock_qqmusic = MagicMock()
+    mock_qqmusic.search = AsyncMock(return_value=[])
+    mock_itunes = MagicMock()
+    mock_itunes.search = AsyncMock(return_value=[])
+    mock_fma = MagicMock()
+    mock_fma.search = AsyncMock(return_value=[])
+    mock_soundcloud = MagicMock()
+    mock_soundcloud.search = AsyncMock(return_value=[])
+    mock_bandcamp = MagicMock()
+    mock_bandcamp.search = AsyncMock(return_value=[])
+
+    with (
+        patch(
+            'utils.music_crawlers.get_music_crawlers',
+            return_value={
+                'netease': mock_netease,
+                'qqmusic': mock_qqmusic,
+                'itunes': mock_itunes,
+                'fma': mock_fma,
+                'soundcloud': mock_soundcloud,
+                'bandcamp': mock_bandcamp,
+            },
+        ),
+        patch('utils.music_crawlers.source_region_from_locale', return_value='non-china'),
+    ):
+        await fetch_music_content(
+            'unmatched global query',
+            limit=1,
+            source_locale='en-US',
+            bypass_recommendation_dedupe=True,
+        )
+
+    mock_qqmusic.search.assert_not_awaited()
+    mock_fma.search.assert_awaited_once_with('unmatched global query', 1)
+    mock_bandcamp.search.assert_awaited_once_with('unmatched global query', 1)
 
 
 @pytest.mark.unit

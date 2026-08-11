@@ -4148,7 +4148,7 @@
             },
             "qqmusicUin": {
                 "label": "uin",
-                "desc": "Identificador de cuenta QQ (normalmente comienza con o seguida de dígitos)"
+                "desc": "Identificador de cuenta QQ (normalmente comienza con la letra o, seguida de dígitos)"
             },
             "qqmusicKey": {
                 "label": "qqmusic_key",

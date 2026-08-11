@@ -1571,8 +1571,9 @@ class QQMusicCrawler(BaseMusicCrawler):
         raw_uin = str(self._cookies.get("uin") or self._cookies.get("p_uin") or "0")
         return raw_uin.lstrip("o") if raw_uin.lstrip("o").isdigit() else "0"
 
-    async def _resolve_playable_url(self, song_mid: str) -> str:
+    async def _resolve_playable_url(self, song_mid: str, media_mid: str = "") -> str:
         """Ask QQ Music for a short-lived direct URL; return empty when unavailable."""
+        stream_mid = media_mid.strip() or song_mid
         payload = {
             "comm": {
                 "ct": 24,
@@ -1589,6 +1590,7 @@ class QQMusicCrawler(BaseMusicCrawler):
                     "guid": self._guid,
                     "songmid": [song_mid],
                     "songtype": [0],
+                    "filename": [f"C400{stream_mid}.m4a"],
                     "uin": self._uin(),
                     "loginflag": 1,
                     "platform": "20",
@@ -1657,16 +1659,17 @@ class QQMusicCrawler(BaseMusicCrawler):
                 duration_seconds = _parse_duration_seconds(song.get("interval"))
                 if not song_mid or not _is_recommendable_duration(duration_seconds):
                     continue
-                candidates.append((song, song_mid, duration_seconds))
+                media_mid = str((song.get("file") or {}).get("media_mid") or song_mid).strip()
+                candidates.append((song, song_mid, media_mid, duration_seconds))
                 if len(candidates) >= limit * 3:
                     break
 
             resolved_urls = await asyncio.gather(
-                *(self._resolve_playable_url(song_mid) for _, song_mid, _ in candidates),
+                *(self._resolve_playable_url(song_mid, media_mid) for _, song_mid, media_mid, _ in candidates),
                 return_exceptions=True,
             )
             results = []
-            for (song, _song_mid, duration_seconds), audio_url in zip(candidates, resolved_urls):
+            for (song, _song_mid, _media_mid, duration_seconds), audio_url in zip(candidates, resolved_urls):
                 if not isinstance(audio_url, str) or not audio_url:
                     continue
                 singers = song.get("singer") or []
@@ -2512,13 +2515,14 @@ async def fetch_music_content(
         # 1. 古典乐意图判定：强古典词 OR (包含乐器词且非现代风格词)
         is_classical = any(kw in kw_lower for kw in ROUTING_STRONG_CLASSICAL_KEYWORDS) or \
                        (any(kw in kw_lower for kw in ROUTING_INSTRUMENT_KEYWORDS) and not any(kw in kw_lower for kw in ROUTING_MODERN_STYLE_KEYWORDS))
+        is_chinese_query = any(kw in kw_lower for kw in chinese_keywords)
         
         if is_classical:
             logger.info(f"[智能调度] 识别到古典/纯正乐器意图，优先调度 Musopen: {keyword}")
             primary_tasks.append(all_crawlers['musopen'].search(keyword, limit))
         
         # 2. 华语/流行路由：命中华语歌手或关键词
-        elif any(kw in kw_lower for kw in chinese_keywords):
+        elif is_chinese_query:
             logger.info(f"[智能调度] 识别到华语检索意图，优先调度网易云: {keyword}")
             primary_tasks.append(all_crawlers['netease'].search(keyword, limit))
             netease_used = True
@@ -2581,7 +2585,7 @@ async def fetch_music_content(
             # 必须透传原始 keyword，这样搜不到才会真实返回空，让路由层去触发真正的随机逻辑
             # netease 不重试（cookies 失败重试也没意义），直接换其他平台兜底
             qqmusic = all_crawlers.get('qqmusic')
-            if qqmusic:
+            if qqmusic and (china or is_chinese_query):
                 # QQ 音乐是中文曲库的首个备用源。先单独等待，避免开放音源
                 # 的竞速结果抢先取消 QQ 请求；没有可播放链接则继续下一级。
                 try:
