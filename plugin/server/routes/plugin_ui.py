@@ -72,6 +72,18 @@ def _origin_is_trusted(origin: str) -> bool:
     return host in _TRUSTED_ORIGIN_HOSTS
 
 
+def _is_loopback_host(host: str) -> bool:
+    """判断对端主机是否本机回环（含 IPv4-mapped IPv6 形式 ::ffff:127.x.x.x）。
+
+    push 移除共享密钥后，以此作为「仅本机回环可推送」的边界：不信任
+    X-Forwarded-For 等转发头，直接看直连对端 request.client.host。
+    """
+    host = (host or "").strip().lower()
+    if host in ("localhost", "127.0.0.1", "::1"):
+        return True
+    return host.startswith("::ffff:127.")
+
+
 def _parse_push_payload(body: bytes) -> dict:
     """POST /ui-api/push 入参解析：支持 {"type":..., "text":..., ...} 或纯文本。
 
@@ -334,8 +346,14 @@ async def plugin_ui_push(plugin_id: str, request: Request):
     入参：{"text": "..."} 或纯文本。任意插件/后端调用，推送到已订阅的前端页面。
     返回 ``queued``：成功写入各客户端缓冲队列的数目（排队计数，非客户端实际送达确认）。
 
-    鉴权：本机回环可直接推送（不再要求共享密钥；Origin 校验仍防跨站注入）。
+    鉴权：仅本机回环客户端可直接推送（不再要求共享密钥；对端非回环一律拒绝，
+    伪造 Origin / 转发头均无法绕过；Origin 校验仍防跨站注入）。
     """
+    # 回环校验：只接受本机回环客户端。用直连对端 request.client.host，不信任
+    # X-Forwarded-For，避免伪造转发头绕过（非回环部署应保留其他鉴权/可信代理）。
+    client_host = request.client.host if request.client else ""
+    if not _is_loopback_host(client_host):
+        return JSONResponse({"ok": False, "error": "non-loopback push rejected"}, status_code=403)
     # Origin 校验：浏览器跨站表单 POST（no-cors）可向 loopback 注入 SSE；
     # 只接受无 Origin（插件后端/curl）或本机回环 Origin
     if not _origin_is_trusted(request.headers.get("origin", "")):
@@ -379,8 +397,10 @@ async def plugin_ui_push(plugin_id: str, request: Request):
             try:
                 c.put_nowait(data)  # 队列满（QueueFull）→ 丢弃新消息，不计入 queued
                 queued += 1
-            except Exception:
-                pass
+            except asyncio.QueueFull:
+                pass  # 预期：队列满丢弃该条，不计入 queued
+            except Exception as exc:  # 其他运行时故障（如队列已关闭）记录，不阻断其它客户端
+                logger.warning("[plugin-ui] SSE push 队列写入失败: %s", exc)
     finally:
         _sse_clients_lock.release()
     return JSONResponse({"ok": True, "queued": queued})
