@@ -168,7 +168,9 @@ def test_plural_english_nearby_categories_map_to_specific_terms(
     ("request_text", "projected_location", "expected_location", "expected_term"),
     [
         ("我附近的公园", "我", "", "公园"),
+        ("我附近的公园", "在这里", "", "公园"),
         ("这附近的餐厅", "这", "", "餐厅"),
+        ("这附近的餐厅", "在当前位置", "", "餐厅"),
         ("在人民广场附近的餐厅", "在人民广场", "人民广场", "餐厅"),
     ],
 )

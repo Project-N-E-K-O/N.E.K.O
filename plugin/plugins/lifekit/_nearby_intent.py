@@ -227,9 +227,10 @@ def _zh_request_parts(text: str) -> tuple[str, str]:
 
 def _normalize_zh_nearby_center(value: str) -> str:
     location = value.strip(" ，,。.!！？?")
+    location = _ZH_NEARBY_CENTER_PREFIX.sub("", location, count=1).strip()
     if location in _ZH_IMPLICIT_NEARBY_CENTERS:
         return ""
-    return _ZH_NEARBY_CENTER_PREFIX.sub("", location, count=1).strip()
+    return location
 
 
 def _zh_nearby_candidates(text: str) -> tuple[str, ...]:
