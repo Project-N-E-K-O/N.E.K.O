@@ -150,7 +150,7 @@ class AgentObservationMixin:
                 await self._maybe_consult_cat(
                     shared,
                     snapshot=snapshot,
-                    scene_changed=False,
+                    scene_changed=scene_changed,
                 )
             except Exception:  # noqa: BLE001 — consultation must never break observe
                 self._logger.warning(

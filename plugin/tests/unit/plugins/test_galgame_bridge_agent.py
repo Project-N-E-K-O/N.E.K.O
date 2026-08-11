@@ -40,7 +40,7 @@ def test_game_llm_agent_menu_stage_without_choices_is_choice_menu(tmp_path: Path
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
-async def test_game_llm_agent_scene_change_updates_boundary_without_push_or_consult(
+async def test_game_llm_agent_scene_change_forwards_confirmed_boundary_to_consultation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -95,7 +95,7 @@ async def test_game_llm_agent_scene_change_updates_boundary_without_push_or_cons
 
     assert agent._observed_scene_id == "scene-b"
     assert scheduled == []
-    assert consultation_scene_flags == [False]
+    assert consultation_scene_flags == [True]
     assert ctx.pushed_messages == []
 
 

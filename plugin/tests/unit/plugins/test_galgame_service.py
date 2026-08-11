@@ -585,6 +585,48 @@ def test_stable_line_promotes_matching_observed_entry_out_of_tentative_history()
     assert observed == []
 
 
+def test_stable_line_only_promotes_observed_entry_from_matching_scene() -> None:
+    def _line_event(seq: int, event_type: str, scene_id: str) -> dict[str, object]:
+        return {
+            "seq": seq,
+            "ts": f"2026-08-11T07:15:4{seq}Z",
+            "type": event_type,
+            "session_id": "ocr-session",
+            "game_id": "ocr-game",
+            "payload": {
+                "speaker": "旁白",
+                "text": "……",
+                "line_id": "ocr:same-text-hash",
+                "scene_id": scene_id,
+                "route_id": "ocr",
+                "stability": "stable" if event_type == "line_changed" else "tentative",
+            },
+        }
+
+    events = [
+        _line_event(1, "line_observed", "scene-a"),
+        _line_event(2, "line_observed", "scene-b"),
+        _line_event(3, "line_changed", "scene-b"),
+    ]
+
+    _history_events, stable, observed, _choices, _dedupe, _snapshot = (
+        galgame_service.rebuild_histories_from_events(
+            events=events,
+            snapshot={},
+            dedupe_window=[],
+            config=galgame_service.build_config({}),
+            game_id="ocr-game",
+        )
+    )
+
+    assert [(item["scene_id"], item["line_id"]) for item in stable] == [
+        ("scene-b", "ocr:same-text-hash")
+    ]
+    assert [(item["scene_id"], item["line_id"]) for item in observed] == [
+        ("scene-a", "ocr:same-text-hash")
+    ]
+
+
 def test_empty_scene_id_does_not_match_observed_lines_by_text() -> None:
     observed = [
         {

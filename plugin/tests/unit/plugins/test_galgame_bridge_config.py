@@ -1201,8 +1201,22 @@ async def test_restart_restores_cursor_and_processes_new_tail(tmp_path: Path) ->
     await plugin1.startup()
     await plugin1._poll_bridge(force=True)
 
-    new_event = _event(
+    repeated_event = _event(
         seq=3,
+        event_type="line_changed",
+        session_id=session_id,
+        game_id=game_id,
+        payload={
+            "speaker": "雪乃",
+            "text": "旧台词",
+            "line_id": "line-1",
+            "scene_id": "scene-a",
+            "route_id": "",
+        },
+        ts="2026-04-21T08:30:04Z",
+    )
+    new_event = _event(
+        seq=4,
         event_type="line_changed",
         session_id=session_id,
         game_id=game_id,
@@ -1216,16 +1230,17 @@ async def test_restart_restores_cursor_and_processes_new_tail(tmp_path: Path) ->
         ts="2026-04-21T08:30:05Z",
     )
     with (game_dir / "events.jsonl").open("ab") as handle:
-        handle.write(
-            json.dumps(new_event, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-            + b"\n"
-        )
+        for event in (repeated_event, new_event):
+            handle.write(
+                json.dumps(event, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+                + b"\n"
+            )
     _write_session(
         game_dir / "session.json",
         _session(
             game_id=game_id,
             session_id=session_id,
-            last_seq=3,
+            last_seq=4,
             state=_session_state(
                 speaker="雪乃",
                 text="重启后新增台词",
@@ -1242,8 +1257,11 @@ async def test_restart_restores_cursor_and_processes_new_tail(tmp_path: Path) ->
     await plugin2._poll_bridge(force=True)
     history = await plugin2.galgame_get_history(limit=20, include_events=True)
     assert isinstance(history, Ok)
-    assert history.value["events"][-1]["seq"] == 3
-    assert history.value["stable_lines"][-1]["line_id"] == "line-2"
+    assert history.value["events"][-1]["seq"] == 4
+    assert [item["line_id"] for item in history.value["stable_lines"]] == [
+        "line-1",
+        "line-2",
+    ]
 
 
 @pytest.mark.asyncio

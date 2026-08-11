@@ -2067,7 +2067,12 @@ def _append_observed_line(
     scene_id = str(item.get("scene_id") or "")
     for index in range(len(history_observed_lines) - 1, -1, -1):
         existing = history_observed_lines[index]
-        same_line = line_id and line_id == str(existing.get("line_id") or "")
+        same_scene = scene_id == str(existing.get("scene_id") or "")
+        same_line = (
+            bool(line_id)
+            and same_scene
+            and line_id == str(existing.get("line_id") or "")
+        )
         same_text = (
             bool(scene_id)
             and text == normalize_text(str(existing.get("text") or ""))
@@ -2092,7 +2097,11 @@ def _remove_observed_line(
         existing
         for existing in history_observed_lines
         if not (
-            (line_id and line_id == str(existing.get("line_id") or ""))
+            (
+                line_id
+                and scene_id == str(existing.get("scene_id") or "")
+                and line_id == str(existing.get("line_id") or "")
+            )
             or (
                 text
                 and scene_id
@@ -2359,7 +2368,7 @@ def rebuild_histories_from_events(
     history_lines: list[dict[str, Any]] = []
     history_observed_lines: list[dict[str, Any]] = []
     history_choices: list[dict[str, Any]] = []
-    working_window = [dict(item) for item in dedupe_window]
+    replay_window: list[dict[str, str]] = []
     working_snapshot = sanitize_snapshot_state(snapshot)
 
     for event in events:
@@ -2368,19 +2377,27 @@ def rebuild_histories_from_events(
             history_lines=history_lines,
             history_observed_lines=history_observed_lines,
             history_choices=history_choices,
-            dedupe_window=working_window,
+            dedupe_window=replay_window,
             event=event,
             config=config,
             game_id=game_id,
         )
         working_snapshot = apply_event_to_snapshot(working_snapshot, event)
 
+    retained_window = [dict(item) for item in dedupe_window]
+    for fingerprint in replay_window:
+        _update_dedupe_window(
+            retained_window,
+            fingerprint,
+            config.dedupe_window_limit,
+        )
+
     return (
         history_events,
         history_lines,
         history_observed_lines,
         history_choices,
-        working_window,
+        retained_window,
         working_snapshot,
     )
 
