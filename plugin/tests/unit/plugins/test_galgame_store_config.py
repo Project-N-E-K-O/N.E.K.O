@@ -14,6 +14,7 @@ from plugin.plugins.galgame_plugin.models import (
     STORE_CHARACTER_PROFILES,
     STORE_CONTEXT_SNAPSHOT,
     STORE_CHARACTER_RUNTIME_STATE,
+    STORE_DEDUPE_WINDOW,
     STORE_KEYS,
     STORE_LLM_VISION_ENABLED,
     STORE_LLM_VISION_MAX_IMAGE_PX,
@@ -201,6 +202,50 @@ def test_galgame_store_load_reads_json_once(tmp_path: Path) -> None:
     store.load()
 
     assert store.read_count == 1
+
+
+def test_galgame_store_load_preserves_dedupe_scene_ids_and_migrates_legacy(
+    tmp_path: Path,
+) -> None:
+    store = _make_store(tmp_path)
+    store.persist_runtime(
+        session_id="session-a",
+        events_byte_offset=0,
+        events_file_size=0,
+        last_seq=2,
+        dedupe_window=[
+            {
+                "game_id": "game-a",
+                "scene_id": "scene-a",
+                "line_id": "line-a",
+                "normalized_text": "same line",
+            },
+            {
+                "game_id": "game-a",
+                "line_id": "legacy-line",
+                "normalized_text": "legacy text",
+            },
+        ],
+        last_error={},
+    )
+
+    restored, warnings = store.load()
+
+    assert warnings == []
+    assert restored[STORE_DEDUPE_WINDOW] == [
+        {
+            "game_id": "game-a",
+            "scene_id": "scene-a",
+            "line_id": "line-a",
+            "normalized_text": "same line",
+        },
+        {
+            "game_id": "game-a",
+            "scene_id": "",
+            "line_id": "legacy-line",
+            "normalized_text": "legacy text",
+        },
+    ]
 
 
 def test_galgame_store_context_snapshot_round_trips_and_checks_game_id(tmp_path: Path) -> None:

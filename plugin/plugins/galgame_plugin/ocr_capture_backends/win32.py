@@ -398,6 +398,21 @@ class Win32CaptureBackend:
             try:
                 frame = backend.capture_frame(target, profile)
                 frame_info = getattr(frame, "info", None)
+                window_level_capture = kind in {_CAPTURE_BACKEND_PRINTWINDOW, "electron"}
+                if should_check_occlusion and not window_level_capture:
+                    try:
+                        capture_region_occluded = bool(self._occlusion_checker(target, profile))
+                    except Exception:
+                        capture_region_occluded = True
+                    if capture_region_occluded:
+                        untrusted_reason = "capture_region_occluded_by_other_window"
+                        self._set_last_backend(kind=kind, detail=untrusted_reason)
+                        self._set_last_capture_trust(
+                            occluded=True,
+                            trusted=False,
+                            reason=untrusted_reason,
+                        )
+                        raise RuntimeError(f"{kind}: {untrusted_reason}")
                 frame_backend_detail = (
                     str(frame_info.get("galgame_capture_backend_detail") or "")
                     if isinstance(frame_info, dict)
@@ -420,7 +435,6 @@ class Win32CaptureBackend:
                     else "selected"
                 )
                 self._set_last_backend(kind=kind, detail=last_backend_detail)
-                window_level_capture = kind in {_CAPTURE_BACKEND_PRINTWINDOW, "electron"}
                 capture_content_trusted = not capture_region_occluded or window_level_capture
                 capture_untrusted_reason = (
                     "capture_region_occluded_by_other_window"
@@ -460,6 +474,7 @@ class Win32CaptureBackend:
                     for marker in (
                         "target_not_foreground_for_screen_capture",
                         "foreground_changed_during_screen_capture",
+                        "capture_region_occluded_by_other_window",
                     )
                 )
                 if screen_foreground_failure:

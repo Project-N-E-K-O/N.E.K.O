@@ -648,10 +648,12 @@ class GalgameStore:
                     warnings.append("invalid dedupe_window item dropped: non-object")
                     continue
                 game_id = item.get("game_id")
+                scene_id = item.get("scene_id", "")
                 line_id = item.get("line_id")
                 normalized_text = item.get("normalized_text")
                 if not (
                     isinstance(game_id, str)
+                    and isinstance(scene_id, str)
                     and isinstance(line_id, str)
                     and isinstance(normalized_text, str)
                 ):
@@ -660,6 +662,7 @@ class GalgameStore:
                 dedupe_window.append(
                     {
                         "game_id": game_id,
+                        "scene_id": scene_id,
                         "line_id": line_id,
                         "normalized_text": normalized_text,
                     }

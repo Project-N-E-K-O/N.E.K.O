@@ -404,6 +404,95 @@ def test_explicit_pixel_backend_rejects_occluded_capture_region(
     )
 
 
+@pytest.mark.parametrize("selection", ["auto", "dxcam", "mss", "pyautogui"])
+def test_pixel_backend_rejects_capture_region_that_becomes_occluded(
+    monkeypatch: pytest.MonkeyPatch,
+    selection: str,
+) -> None:
+    class _PixelBackend:
+        kind = "dxcam" if selection == "auto" else selection
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def is_available(self) -> bool:
+            return True
+
+        def capture_frame(self, _target, _profile):
+            self.calls += 1
+            return "unsafe-frame"
+
+    occlusion_checks: list[bool] = []
+
+    def _occlusion_checker(_target, _profile) -> bool:
+        occlusion_checks.append(True)
+        return len(occlusion_checks) == 2
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    pixel_backend = _PixelBackend()
+    backend = Win32CaptureBackend(
+        selection=selection,
+        occlusion_checker=_occlusion_checker,
+    )
+    backend._backends = [pixel_backend]
+
+    with pytest.raises(RuntimeError, match="capture_region_occluded_by_other_window"):
+        backend.capture_frame(_target(foreground=True), OcrCaptureProfile())
+
+    assert pixel_backend.calls == 1
+    assert len(occlusion_checks) == 2
+    assert backend.last_capture_region_occluded is True
+    assert backend.last_capture_content_trusted is False
+    assert (
+        backend.last_capture_untrusted_reason
+        == "capture_region_occluded_by_other_window"
+    )
+
+
+def test_smart_post_capture_occlusion_reroutes_to_printwindow(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Backend:
+        def __init__(self, kind: str, frame: str) -> None:
+            self.kind = kind
+            self.frame = frame
+            self.calls = 0
+
+        def is_available(self) -> bool:
+            return True
+
+        def capture_frame(self, _target, _profile):
+            self.calls += 1
+            return self.frame
+
+    occlusion_checks: list[bool] = []
+
+    def _occlusion_checker(_target, _profile) -> bool:
+        occlusion_checks.append(True)
+        return len(occlusion_checks) == 2
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    pixel_backend = _Backend("dxcam", "unsafe-frame")
+    printwindow = _Backend("printwindow", "printwindow-frame")
+    backend = Win32CaptureBackend(
+        selection="smart",
+        occlusion_checker=_occlusion_checker,
+    )
+    backend._dxcam_backend = pixel_backend
+    backend._printwindow_backend = printwindow
+    backend._backends = [pixel_backend, printwindow]
+
+    frame = backend.capture_frame(_target(foreground=True), OcrCaptureProfile())
+
+    assert frame == "printwindow-frame"
+    assert pixel_backend.calls == 1
+    assert printwindow.calls == 1
+    assert len(occlusion_checks) == 2
+    assert backend.last_backend_kind == "printwindow"
+    assert backend.last_capture_region_occluded is True
+    assert backend.last_capture_content_trusted is True
+
+
 def test_printwindow_occluded_foreground_does_not_fallback_to_pixel_backends(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
