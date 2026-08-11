@@ -122,6 +122,26 @@ def _foreground_window_handle() -> int:
     return _ocr_reader_module._foreground_window_handle()
 
 
+def _has_strong_ocr_dialogue_evidence(text: str) -> bool:
+    normalized = normalize_text(str(text or "")).replace("\n", " ").strip()
+    if (
+        _looks_like_noise_ocr_text(normalized)
+        or _looks_like_game_overlay_text(normalized)
+        or not _looks_like_ocr_dialogue_text(normalized)
+    ):
+        return False
+    for opening, closing in (("「", "」"), ("『", "』"), ("“", "”")):
+        start = normalized.find(opening)
+        while start >= 0:
+            end = normalized.find(closing, start + 1)
+            if end < 0:
+                break
+            if _significant_char_count(normalized[start + 1 : end]) >= 6:
+                return True
+            start = normalized.find(opening, start + 1)
+    return False
+
+
 class RuntimeMixin:
     """Runtime 状态聚合、to_dict、backend plan、screen awareness"""
 
@@ -1202,10 +1222,22 @@ class RuntimeMixin:
     def _should_skip_dialogue_for_screen_classification(
         self,
         classification: ScreenClassification,
+        *,
+        raw_text: str = "",
     ) -> bool:
         # This threshold is higher than _screen_classification_is_known (0.45):
         # skipping dialogue needs stronger confidence to avoid false non-dialogue gates.
         if float(classification.confidence or 0.0) < 0.5:
+            return False
+        if (
+            str(classification.screen_type or "") == OCR_CAPTURE_PROFILE_STAGE_TITLE
+            and _has_strong_ocr_dialogue_evidence(raw_text)
+        ):
+            classification.debug = {
+                **dict(classification.debug or {}),
+                "skip_dialogue_bypassed": True,
+                "skip_dialogue_bypass_reason": "ocr_dialogue_evidence",
+            }
             return False
         if (
             str(classification.screen_type or "") == self._known_screen_skip_bypass_type

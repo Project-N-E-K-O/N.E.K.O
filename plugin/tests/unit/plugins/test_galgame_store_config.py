@@ -184,6 +184,25 @@ def test_galgame_store_reads_refresh_from_disk_after_first_load(tmp_path: Path) 
     assert first.load_config_overrides()[STORE_READER_MODE] == "ocr_reader"
 
 
+def test_galgame_store_load_reads_json_once(tmp_path: Path) -> None:
+    class _CountingStore(GalgameStore):
+        def __init__(self, store_path: Path, logger) -> None:
+            super().__init__(store_path, logger)
+            self.read_count = 0
+
+        def _read_values_from_path(self, path: Path) -> dict[str, object]:
+            self.read_count += 1
+            return super()._read_values_from_path(path)
+
+    store = _CountingStore(_store_path(tmp_path), _logger())
+    store.persist_config_override(STORE_READER_MODE, "auto")
+    store.read_count = 0
+
+    store.load()
+
+    assert store.read_count == 1
+
+
 def test_galgame_store_context_snapshot_round_trips_and_checks_game_id(tmp_path: Path) -> None:
     store = _make_store(tmp_path)
     snapshot = {

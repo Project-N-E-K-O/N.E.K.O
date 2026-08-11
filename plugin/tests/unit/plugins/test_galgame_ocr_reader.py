@@ -1355,6 +1355,110 @@ def test_ocr_reader_known_title_timeout_triggers_rescan_and_skip_bypass(
     )
 
 
+def test_ocr_reader_title_classification_only_bypasses_for_strong_dialogue_text(
+    tmp_path: Path,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=_make_config(bridge_root),
+        time_fn=lambda: 3000.0,
+        platform_fn=lambda: True,
+        window_scanner=_window,
+        capture_backend=_FakeCaptureBackend(),
+        ocr_backend=_FakeOcrBackend(),
+    )
+    classification = ScreenClassification(
+        screen_type=OCR_CAPTURE_PROFILE_STAGE_TITLE,
+        confidence=0.99,
+    )
+
+    assert manager._should_skip_dialogue_for_screen_classification(
+        classification,
+        raw_text="芦花】\n「那当然了。也没有感冒，腰杆笔直，腿脚利落」",
+    ) is False
+    assert classification.debug["skip_dialogue_bypass_reason"] == (
+        "ocr_dialogue_evidence"
+    )
+
+    title_classification = ScreenClassification(
+        screen_type=OCR_CAPTURE_PROFILE_STAGE_TITLE,
+        confidence=0.99,
+    )
+    assert manager._should_skip_dialogue_for_screen_classification(
+        title_classification,
+        raw_text="Start Game\nContinue\nConfig\nExit",
+    ) is True
+
+
+@pytest.mark.asyncio
+async def test_ocr_reader_cnn_title_false_positive_preserves_dialogue_stability(
+    tmp_path: Path,
+    ocr_runtime_root: Path,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    clock = {"now": 3000.0}
+    raw_text = "芦花】\n「那当然了。也没有感冒，腰杆笔直，腿脚利落」"
+    config = _make_config(
+        bridge_root,
+        enabled=True,
+        install_target_dir=str(ocr_runtime_root),
+    )
+    config.vision_classifier_enabled = True
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=config,
+        time_fn=lambda: clock["now"],
+        platform_fn=lambda: True,
+        window_scanner=_window,
+        capture_backend=_FakeCaptureBackend(),
+        ocr_backend=_FakeOcrBackend([raw_text, raw_text]),
+    )
+
+    class _TitleClassifier:
+        last_error = ""
+
+        @staticmethod
+        def classify(_image: object) -> dict[str, object]:
+            return {
+                "label": "title_screen",
+                "screen_type": OCR_CAPTURE_PROFILE_STAGE_TITLE,
+                "confidence": 0.97,
+                "latency_ms": 1.0,
+                "model_name": "test_model",
+            }
+
+    manager.vision_classifier = _TitleClassifier()
+
+    try:
+        first = await manager.tick(
+            bridge_sdk_available=False,
+            memory_reader_runtime={},
+        )
+        events_path = bridge_root / first.runtime["game_id"] / "events.jsonl"
+        first_events = _read_events(events_path)
+        assert [event["type"] for event in first_events][-1:] == ["line_observed"]
+        assert first.runtime["last_observed_line"]["text"] == (
+            "那当然了。也没有感冒，腰杆笔直，腿脚利落"
+        )
+        assert first.runtime["last_stable_line"] == {}
+
+        clock["now"] += 1.0
+        second = await manager.tick(
+            bridge_sdk_available=False,
+            memory_reader_runtime={},
+        )
+        second_events = _read_events(events_path)
+        assert second_events[-1]["type"] == "line_changed"
+        assert second.runtime["last_stable_line"]["text"] == (
+            "那当然了。也没有感冒，腰杆笔直，腿脚利落"
+        )
+    finally:
+        await manager.shutdown()
+
+
 def test_ocr_writer_start_session_preserves_existing_game_events(tmp_path: Path) -> None:
     bridge_root = tmp_path / "bridge"
     bridge_root.mkdir()
@@ -5286,6 +5390,11 @@ def test_ocr_reader_update_config_reloads_vision_classifier(
 
     manager.update_config(enabled_config)
 
+    assert manager.vision_classifier is None
+    assert manager._vision_classifier_detail == "pending"
+
+    manager.initialize_vision_classifier_if_needed()
+
     assert isinstance(manager.vision_classifier, _FakeVisionScreenClassifier)
     assert manager.vision_classifier.input_size == (192, 192)
     assert manager.vision_classifier.latency_check_ms == 123.0
@@ -5300,6 +5409,61 @@ def test_ocr_reader_update_config_reloads_vision_classifier(
     assert manager.vision_classifier is None
     assert manager._vision_classifier_detail == "disabled"
     assert manager._vision_classifier_last_label == ""
+
+
+def test_ocr_reader_lazy_vision_initialization_is_single_flight(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from plugin.plugins.galgame_plugin.core import vision as vision_module
+
+    load_started = threading.Event()
+    allow_load = threading.Event()
+    load_calls = 0
+
+    class _FakeVisionModelLoader:
+        def __init__(self, model_dir: Path) -> None:
+            self.model_dir = model_dir
+
+    class _FakeVisionScreenClassifier:
+        def __init__(self, loader, *, input_size, latency_check_ms) -> None:
+            del loader, input_size, latency_check_ms
+
+        def load(self, model_name: str) -> bool:
+            nonlocal load_calls
+            del model_name
+            load_calls += 1
+            load_started.set()
+            assert allow_load.wait(timeout=1.0)
+            return True
+
+    monkeypatch.setattr(vision_module, "VisionModelLoader", _FakeVisionModelLoader)
+    monkeypatch.setattr(vision_module, "VisionScreenClassifier", _FakeVisionScreenClassifier)
+
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    config = _make_config(bridge_root, enabled=True, rapidocr_enabled=False)
+    config.vision_classifier_enabled = True
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=config,
+        platform_fn=lambda: False,
+        window_scanner=_window,
+    )
+
+    assert load_calls == 0
+    assert manager._vision_classifier_detail == "pending"
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(manager.initialize_vision_classifier_if_needed)
+        assert load_started.wait(timeout=1.0)
+        second = executor.submit(manager.initialize_vision_classifier_if_needed)
+        allow_load.set()
+        first.result(timeout=1.0)
+        second.result(timeout=1.0)
+
+    assert load_calls == 1
+    assert manager._vision_classifier_detail == "loaded"
 
 
 @pytest.mark.asyncio

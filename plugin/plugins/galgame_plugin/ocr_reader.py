@@ -283,12 +283,17 @@ class OcrReaderManager(
         self._ocr_lang_detector = _OcrLangDetector()
         self._ocr_lang_cooldown_seconds = 60.0
         self.vision_classifier = None
-        self._vision_classifier_detail = "disabled"
+        self._vision_classifier_detail = (
+            "pending"
+            if bool(getattr(config, "vision_classifier_enabled", False))
+            else "disabled"
+        )
         self._vision_classifier_last_label = ""
         self._vision_classifier_last_confidence = 0.0
         self._vision_classifier_last_latency_ms = 0.0
         self._vision_classifier_tick_count = 0
-        self._initialize_vision_classifier()
+        self._vision_classifier_init_lock = threading.Lock()
+        self._vision_classifier_initialized = False
         self._backend_plan_cache_key: tuple[str, ...] | None = None
         self._backend_plan_cache_at = 0.0
         self._backend_plan_cache: SelectedOcrBackendPlan | None = None
@@ -306,7 +311,24 @@ class OcrReaderManager(
         self._window_inventory_cache_at = 0.0
         self._window_inventory_cache: list[DetectedGameWindow] = []
 
+    def initialize_vision_classifier_if_needed(self) -> None:
+        """Load the optional ONNX classifier once, outside plugin startup.
+
+        ``GalgamePlugin.bridge_tick`` invokes this after the host has already
+        received the plugin's ready result.  Keeping the one-time native ORT
+        session construction behind this lock also prevents the bridge and
+        fast OCR loops from racing a future deferred initialization.
+        """
+        with self._vision_classifier_init_lock:
+            if self._vision_classifier_initialized:
+                return
+            self._initialize_vision_classifier()
+
+    def vision_classifier_initialization_pending(self) -> bool:
+        return not self._vision_classifier_initialized
+
     def _initialize_vision_classifier(self) -> None:
+        self._vision_classifier_initialized = True
         self.vision_classifier = None
         self._vision_classifier_detail = "disabled"
         self._vision_classifier_last_label = ""
@@ -470,11 +492,20 @@ class OcrReaderManager(
         self._config = config
         self._runtime.enabled = config.ocr_reader_enabled
         if old_vision_key != self._vision_classifier_config_key(config):
-            classifier = self.vision_classifier
-            close_classifier = getattr(classifier, "close", None)
-            if callable(close_classifier):
-                close_classifier()
-            self._initialize_vision_classifier()
+            with self._vision_classifier_init_lock:
+                classifier = self.vision_classifier
+                self.vision_classifier = None
+                close_classifier = getattr(classifier, "close", None)
+                if callable(close_classifier):
+                    close_classifier()
+                self._vision_classifier_initialized = False
+                self._vision_classifier_detail = (
+                    "pending" if bool(config.vision_classifier_enabled) else "disabled"
+                )
+                self._vision_classifier_last_label = ""
+                self._vision_classifier_last_confidence = 0.0
+                self._vision_classifier_last_latency_ms = 0.0
+                self._vision_classifier_tick_count = 0
         if not bool(config.llm_vision_enabled):
             self._clear_vision_snapshot()
         if float(getattr(config, "ocr_reader_known_screen_timeout_seconds", 0.0) or 0.0) <= 0.0:

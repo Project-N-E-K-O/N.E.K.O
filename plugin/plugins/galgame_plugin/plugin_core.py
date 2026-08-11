@@ -3257,7 +3257,6 @@ class GalgamePlugin(
                     exc,
                 )
 
-        await self._poll_bridge(force=True)
         self._start_ocr_fast_loop()
         await self._ensure_ocr_foreground_advance_monitor()
         return Ok({"status": "ready", "result": await self._build_status_payload_async()})
@@ -3365,6 +3364,22 @@ class GalgamePlugin(
                         )
                     )
             self._start_background_bridge_poll()
+            vision_initializer = getattr(
+                self._ocr_reader_manager,
+                "initialize_vision_classifier_if_needed",
+                None,
+            )
+            vision_initialization_pending = getattr(
+                self._ocr_reader_manager,
+                "vision_classifier_initialization_pending",
+                None,
+            )
+            should_initialize_vision = (
+                not callable(vision_initialization_pending)
+                or vision_initialization_pending()
+            )
+            if callable(vision_initializer) and should_initialize_vision:
+                await asyncio.to_thread(vision_initializer)
             self._start_ocr_fast_loop()
             await asyncio.sleep(0)
             return Ok({"status": "tick"})

@@ -30,6 +30,7 @@ enabled = false
 [plugin_runtime]
 enabled = true
 auto_start = false
+timeout = 30
 
 [galgame]
 bridge_root = ""

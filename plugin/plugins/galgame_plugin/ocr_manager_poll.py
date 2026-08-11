@@ -908,7 +908,10 @@ class PollMixin:
                 if screen_event_emitted:
                     result.should_rescan = True
                 text_event_seq_before_capture = int(self._writer.last_seq or 0)
-                if self._should_skip_dialogue_for_screen_classification(screen_classification):
+                if self._should_skip_dialogue_for_screen_classification(
+                    screen_classification,
+                    raw_text=extraction.text,
+                ):
                     self._default_ocr_state.reset()
                     self._reset_aihong_menu_state()
                 elif aihong_two_stage_enabled:
