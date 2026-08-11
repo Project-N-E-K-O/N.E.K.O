@@ -266,9 +266,16 @@ def test_damage_event_claim_limits_do_not_invent_awards_or_salvos():
     assert devastating.lane == LANE_NORMAL
 
 
+_FORBIDDEN_CONSUMABLE_STATE = (
+    "消耗品实时状态（雷达、水听、烟幕、损伤控制等是否开启或持续）当前不可用，不要提及；"
+    "不要把小地图上敌舰被点亮说成对方开了雷达。"
+)
+
+
 def test_every_callout_forbids_inventing_consumable_state():
-    built = candidate(LOW_HEALTH)
-    assert any("雷达" in line or "消耗品" in line for line in built.claim_limits)
+    for event_id in (LOW_HEALTH, HIGH_DAMAGE, DEVASTATING_STRIKE):
+        built = candidate(event_id)
+        assert _FORBIDDEN_CONSUMABLE_STATE in built.claim_limits
 
 
 def test_shared_context_carries_confirmed_visible_team_counts():

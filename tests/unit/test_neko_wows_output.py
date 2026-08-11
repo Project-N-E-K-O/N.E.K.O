@@ -924,20 +924,43 @@ def test_base_instructions_distinguish_visible_from_alive_counts():
 
 
 def test_base_instructions_forbid_inventing_consumables_and_relative_sectors():
-    assert "雷达" in BASE_INSTRUCTIONS
-    assert "消耗品" in BASE_INSTRUCTIONS
-    assert "左前方" in BASE_INSTRUCTIONS
-    assert "不要" in BASE_INSTRUCTIONS
+    assert (
+        "消耗品实时状态当前不可用：不要说雷达、水听、烟幕、损伤控制等是否开启、持续或冷却"
+        in BASE_INSTRUCTIONS
+    )
+    assert "也不要把“被点亮”说成对方开了雷达。" in BASE_INSTRUCTIONS
+    assert (
+        "没有给出相对方位字段时，不要说左前方、正前方、右前方"
+        in BASE_INSTRUCTIONS
+    )
 
 
 def test_vision_prompts_forbid_reading_enemy_radar_from_minimap():
     from plugin.plugins.neko_wows.vision.tool import WOWS_VISION_PROMPT
 
-    for text in (
-        WOWS_VISION_PROMPT,
-        WOWS_CONTEXT_WITH_LIVE_VISION_INSTRUCTIONS,
-        WOWS_CONTEXT_WITH_VISION_INSTRUCTIONS,
-        WOWS_CONTEXT_INSTRUCTIONS,
-    ):
-        assert "雷达" in text
-        assert "消耗品" in text
+    minimap_not_radar = (
+        "小地图上敌舰图标亮起只表示被点亮/被发现，绝不等于对方开了雷达。"
+    )
+    consumable_unavailable = (
+        "消耗品实时状态当前不可用：不要说任何人开了或正在开雷达、水听、烟幕、损伤控制等。"
+    )
+
+    assert minimap_not_radar in WOWS_VISION_PROMPT
+    assert "绝不要声称敌方开了雷达、水听或其他消耗品" in WOWS_VISION_PROMPT
+    assert "消耗品实时状态当前不可用，不要提雷达是否开启。" in WOWS_VISION_PROMPT
+
+    assert minimap_not_radar in WOWS_CONTEXT_WITH_VISION_INSTRUCTIONS
+    assert consumable_unavailable in WOWS_CONTEXT_WITH_VISION_INSTRUCTIONS
+
+    assert minimap_not_radar in WOWS_CONTEXT_WITH_LIVE_VISION_INSTRUCTIONS
+    assert (
+        "绝不要据此声称敌方开了雷达、水听或其他消耗品"
+        in WOWS_CONTEXT_WITH_LIVE_VISION_INSTRUCTIONS
+    )
+    assert (
+        "（雷达、水听、烟幕等是否开启）当前不可用，不要提。"
+        in WOWS_CONTEXT_WITH_LIVE_VISION_INSTRUCTIONS
+    )
+
+    # Telemetry-only context still forbids inventing active consumable state.
+    assert consumable_unavailable in WOWS_CONTEXT_INSTRUCTIONS
