@@ -905,6 +905,8 @@ class PollMixin:
                 result=result,
             ):
                 capture_error = True
+            elif self._handle_untrusted_capture(extraction, now=now, result=result):
+                guard_blocked = True
             elif self._observe_background_hash(
                 extraction.background_hash,
                 now=now,
@@ -912,10 +914,8 @@ class PollMixin:
                 defer_scene_emit=after_advance_trigger_mode,
             ):
                 result.should_rescan = True
-            if capture_error:
+            if capture_error or guard_blocked:
                 pass
-            elif self._handle_untrusted_capture(extraction, now=now, result=result):
-                guard_blocked = True
             elif extraction.text and _looks_like_self_ui_text(extraction.text):
                 guard_blocked = True
                 self._record_rejected_ocr_text(

@@ -6090,6 +6090,67 @@ async def test_ocr_reader_shutdown_waits_for_deferred_vision_initialization(
 
 
 @pytest.mark.asyncio
+async def test_ocr_reader_rejects_untrusted_primary_capture_before_background_hash(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    ocr_runtime_root: Path,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=_make_config(
+            bridge_root,
+            enabled=True,
+            install_target_dir=str(ocr_runtime_root),
+        ),
+        platform_fn=lambda: True,
+        window_scanner=_window,
+        capture_backend=_FakeCaptureBackend(),
+        ocr_backend=_FakeOcrBackend(["不可信台词。"]),
+    )
+    observed_background_hashes: list[str] = []
+
+    async def _untrusted_capture(*_args, **_kwargs) -> OcrExtractionResult:
+        return OcrExtractionResult(
+            text="不可信台词。",
+            background_hash="ffffffffffffffff",
+            backend=OcrBackendDescriptor(kind="fake", available=True),
+            capture_backend_kind="fake",
+            target_foreground=False,
+            capture_region_occluded=True,
+            capture_content_trusted=False,
+            capture_untrusted_reason="target_occluded",
+        )
+
+    monkeypatch.setattr(
+        manager,
+        "_capture_and_extract_text_with_timeout",
+        _untrusted_capture,
+    )
+    monkeypatch.setattr(
+        manager,
+        "_observe_background_hash",
+        lambda background_hash, **_kwargs: (
+            observed_background_hashes.append(background_hash) or True
+        ),
+    )
+
+    try:
+        result = await manager.tick(
+            bridge_sdk_available=False,
+            memory_reader_runtime={},
+        )
+
+        assert observed_background_hashes == []
+        assert "ocr_reader ignored text from an untrusted capture source" in result.warnings
+        assert manager._ocr_capture_content_trusted is False
+        assert manager._ocr_capture_rejected_reason == "target_occluded"
+    finally:
+        await manager.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_ocr_reader_rejects_untrusted_followup_before_stable_line(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -6684,12 +6745,12 @@ def test_rapidocr_runtime_keeps_classifier_shape_when_metadata_read_fails(
         model_type="mobile",
         ocr_version="PP-OCRv5",
     )
-    cache_key = (
-        install_target_dir,
-        "onnxruntime",
-        "ch",
-        "mobile",
-        "PP-OCRv5",
+    cache_key = galgame_ocr_reader._rapidocr_runtime_cache_key(
+        install_target_dir_raw=install_target_dir,
+        engine_type="onnxruntime",
+        lang_type="ch",
+        model_type="mobile",
+        ocr_version="PP-OCRv5",
     )
     galgame_ocr_reader._RAPIDOCR_RUNTIME_CACHE.pop(cache_key, None)
 
