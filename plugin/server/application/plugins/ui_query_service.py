@@ -322,6 +322,7 @@ def _build_static_compat_surface(plugin_id: str, plugin_meta: Mapping[str, objec
         open_in="iframe",
         permissions=["state:read"],
         available=True,
+        legacy_static_compat=True,
     ).model_dump(exclude_none=True)
 
 

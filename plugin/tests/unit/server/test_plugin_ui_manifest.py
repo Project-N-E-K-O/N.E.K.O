@@ -145,7 +145,42 @@ def test_surfaces_and_actions_use_manifest_and_static_compat(tmp_path: Path) -> 
 
     assert warnings == []
     assert [surface["kind"] for surface in surfaces] == ["panel", "guide"]
+    assert surfaces[0]["legacy_static_compat"] is False
     assert {action["id"] for action in actions} == {"open_panel", "open_guide"}
+
+
+def test_static_compat_surface_is_marked_and_precedes_declared_panels(tmp_path: Path) -> None:
+    plugin_dir = tmp_path / "demo"
+    static_dir = plugin_dir / "static"
+    ui_dir = plugin_dir / "ui"
+    static_dir.mkdir(parents=True)
+    ui_dir.mkdir()
+    (static_dir / "index.html").write_text("<html></html>", encoding="utf-8")
+    (ui_dir / "dashboard.tsx").write_text("export default function Panel() { return <Page /> }", encoding="utf-8")
+    config_path = plugin_dir / "plugin.toml"
+    config_path.write_text("[plugin]\\nid='demo'\\n", encoding="utf-8")
+    plugin_ui = normalize_plugin_ui_manifest(
+        {
+            "plugin": {
+                "ui": {
+                    "panel": [{"id": "dashboard", "mode": "hosted-tsx", "entry": "ui/dashboard.tsx"}],
+                }
+            }
+        },
+        plugin_id="demo",
+    )
+
+    surfaces, warnings = _build_surfaces_sync("demo", {
+        "id": "demo",
+        "config_path": str(config_path),
+        "plugin_ui": plugin_ui,
+    })
+
+    assert warnings == []
+    assert [(surface["id"], surface["legacy_static_compat"]) for surface in surfaces] == [
+        ("main", True),
+        ("dashboard", False),
+    ]
 
 
 def test_unavailable_surfaces_do_not_get_route_actions(tmp_path: Path) -> None:

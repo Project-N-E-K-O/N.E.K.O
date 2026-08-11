@@ -168,7 +168,7 @@ function sendMessage(payload: any) {
   }, expectedOrigin)
 }
 
-function sendStudySurfaceMessage(message: { type: string; payload?: unknown }) {
+function sendSurfaceMessage(message: unknown) {
   if (!iframeRef.value?.contentWindow) return
   iframeRef.value.contentWindow.postMessage(message, expectedOrigin)
 }
@@ -176,7 +176,7 @@ function sendStudySurfaceMessage(message: { type: string; payload?: unknown }) {
 defineExpose({
   reload,
   sendMessage,
-  sendStudySurfaceMessage,
+  sendSurfaceMessage,
   hasUI
 })
 
