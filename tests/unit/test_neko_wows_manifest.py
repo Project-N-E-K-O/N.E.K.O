@@ -228,7 +228,7 @@ def test_the_manifest_section_parses_into_the_config(manifest):
     assert cfg.channel_mode in ALL_CHANNEL_MODES
     assert manifest["neko_wows"]["user_chat_quiet_window_seconds"] == 10.0
     assert cfg.user_chat_quiet_window_seconds == 10.0
-    assert cfg.ttl_for(LANE_URGENT) == 8.0
+    assert cfg.ttl_for(LANE_URGENT) == 12.0
     assert cfg.min_gap_for(LANE_NORMAL) == 18.0
     assert cfg.damage_burst_window_seconds == 5.0
     assert cfg.high_damage_absolute_threshold == 20_000.0
@@ -283,6 +283,17 @@ def test_ship_catalog_language_accepts_only_supported_values():
 
 def test_product_default_enables_live_output():
     assert WowsConfig().dry_run is False
+
+
+def test_default_urgent_ttl_outlasts_the_default_quiet_window(manifest):
+    product = WowsConfig()
+    fallback = WowsConfig.from_mapping({"dry_run": False})
+    shipped = WowsConfig.from_mapping(manifest["neko_wows"])
+
+    assert product.urgent_ttl_seconds == 12.0
+    assert fallback.urgent_ttl_seconds == 12.0
+    assert shipped.urgent_ttl_seconds == 12.0
+    assert shipped.urgent_ttl_seconds > shipped.user_chat_quiet_window_seconds
 
 
 def test_a_corrupt_config_falls_back_to_dry_run():

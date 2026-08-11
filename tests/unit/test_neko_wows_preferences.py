@@ -291,6 +291,26 @@ def test_default_normal_callout_reopens_before_its_ttl_expires():
     assert reopened.chosen.event_id == DAMAGE_MILESTONE
 
 
+def test_default_no_interrupt_releases_urgent_before_its_ttl_expires():
+    from plugin.plugins.neko_wows.domain.catalog import ENEMY_CLOSING
+
+    cfg = WowsConfig.from_mapping({
+        "dialogue_intrusion_mode": INTRUSION_NO_INTERRUPT,
+    })
+    arbiter = Arbiter(cfg)
+    arbiter.note_user_activity(100.0)
+
+    held = arbiter.decide([
+        candidate(ENEMY_CLOSING, at=101.0, cfg=cfg),
+    ], 101.0)
+    assert held.chosen is None
+    assert REASON_QUIET_WINDOW in outcomes(held, ENEMY_CLOSING)
+
+    released = arbiter.decide([], 110.0)
+    assert released.chosen is not None
+    assert released.chosen.event_id == ENEMY_CLOSING
+
+
 def test_allow_interrupt_ignores_the_window_entirely():
     cfg = WowsConfig.from_mapping({
         "dialogue_intrusion_mode": INTRUSION_ALLOW_INTERRUPT,

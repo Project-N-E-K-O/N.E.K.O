@@ -110,7 +110,7 @@ class WowsConfig:
     ws_reconnect_max_seconds: float = 15.0
     http_timeout_seconds: float = 1.5
 
-    urgent_ttl_seconds: float = 8.0
+    urgent_ttl_seconds: float = 12.0
     urgent_min_gap_seconds: float = 6.0
     normal_ttl_seconds: float = 30.0
     normal_min_gap_seconds: float = 18.0
@@ -233,7 +233,7 @@ class WowsConfig:
             cfg.ws_reconnect_max_seconds = cfg.ws_reconnect_min_seconds
         cfg.http_timeout_seconds = number("http_timeout_seconds", 1.5, 0.2, 30.0)
 
-        cfg.urgent_ttl_seconds = number("urgent_ttl_seconds", 8.0, 1.0, 120.0)
+        cfg.urgent_ttl_seconds = number("urgent_ttl_seconds", 12.0, 1.0, 120.0)
         cfg.urgent_min_gap_seconds = number("urgent_min_gap_seconds", 6.0, 0.0, 600.0)
         cfg.normal_ttl_seconds = number("normal_ttl_seconds", 30.0, 1.0, 600.0)
         cfg.normal_min_gap_seconds = number("normal_min_gap_seconds", 18.0, 0.0, 3600.0)

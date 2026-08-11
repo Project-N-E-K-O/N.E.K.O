@@ -22,12 +22,37 @@ from ._base import Detector, DetectorContext, GameEvent
 class BattleLifecycleDetector(Detector):
     name = "battle_lifecycle"
     events = (BATTLE_STARTED, BATTLE_ENDED, POST_BATTLE_SUMMARY)
+    delivery_managed_events = (BATTLE_STARTED,)
     needs_live = False
 
     def reset(self) -> None:
         self._announced_start = False
+        self._pending_start = False
         self._announced_end = False
         self._peak_damage: float | None = None
+
+    def acknowledge_delivery(self, event_id, detail) -> None:
+        del detail
+        if event_id == BATTLE_STARTED:
+            self._announced_start = True
+            self._pending_start = False
+
+    def pending_delivery_events(self) -> tuple[str, ...]:
+        return (BATTLE_STARTED,) if self._pending_start else ()
+
+    def _start_event(self, snapshot, facts) -> GameEvent:
+        return self._event(
+            BATTLE_STARTED,
+            severity=40,
+            facts=facts,
+            detail={
+                "battle_type": snapshot.battle_type,
+                "game_mode": snapshot.game_mode,
+                "map_name": snapshot.map_name,
+                "own_ship": snapshot.own_ship_spoken_name,
+                "ship_type": snapshot.own_ship_type,
+            },
+        )
 
     def observe(self, snapshot, facts) -> None:
         # Damage is reported per-frame and the final inactive frame drops it, so
@@ -46,19 +71,11 @@ class BattleLifecycleDetector(Detector):
             and snapshot.status == STATUS_LIVE
             and previous_snapshot.status != STATUS_LIVE
         ):
-            self._announced_start = True
-            events.append(self._event(
-                BATTLE_STARTED,
-                severity=40,
-                facts=facts,
-                detail={
-                    "battle_type": snapshot.battle_type,
-                    "game_mode": snapshot.game_mode,
-                    "map_name": snapshot.map_name,
-                    "own_ship": snapshot.own_ship_spoken_name,
-                    "ship_type": snapshot.own_ship_type,
-                },
-            ))
+            self._pending_start = True
+        if self._pending_start and snapshot.status != STATUS_LIVE:
+            self._pending_start = False
+        if self._pending_start:
+            events.append(self._start_event(snapshot, facts))
 
         if (
             not self._announced_end

@@ -42,6 +42,7 @@ from plugin.plugins.neko_wows.domain.snapshot import (
     CORE_DOMAINS,
     DOMAIN_OBJECTS,
     DOMAIN_ROSTER,
+    DOMAIN_SELF,
     FUTURE_DOMAINS,
     STATUS_ENDED,
     STATUS_LIVE,
@@ -151,6 +152,11 @@ def feed(registry, snapshots, cfg=CFG):
         results.append(registry.feed(previous, current, cfg=cfg))
         previous = current
     return results
+
+
+def feed_one(registry, previous, snapshot, cfg=CFG):
+    current = (snapshot, BUILDER.build(snapshot))
+    return current, registry.feed(previous, current, cfg=cfg)
 
 
 def fired(results):
@@ -327,6 +333,24 @@ def test_battle_start_and_end_fire_on_status_transitions():
     assert POST_BATTLE_SUMMARY in events
 
 
+def test_battle_start_repeats_until_delivery_is_acknowledged():
+    registry = DetectorRegistry(build_lifecycle_detectors(CFG))
+    previous, _ = feed_one(
+        registry, None,
+        frame(seq=1, at=99.0, status=STATUS_WAITING, self_present=False))
+    previous, first = feed_one(
+        registry, previous, frame(seq=2, at=100.0, status=STATUS_LIVE))
+    previous, retry = feed_one(
+        registry, previous, frame(seq=3, at=101.0, status=STATUS_LIVE))
+    event = next(e for e in first.events if e.event_id == BATTLE_STARTED)
+    assert BATTLE_STARTED in fired([retry])
+
+    registry.acknowledge_delivery(event.event_id, event.detail)
+    _, after_ack = feed_one(
+        registry, previous, frame(seq=4, at=102.0, status=STATUS_LIVE))
+    assert BATTLE_STARTED not in fired([after_ack])
+
+
 def test_lifecycle_still_runs_when_live_data_is_gone():
     """The final frame is inactive by definition; end events must survive it."""
     registry = DetectorRegistry(build_lifecycle_detectors(CFG))
@@ -405,6 +429,72 @@ def test_sinking_attaches_visible_team_counts_after_own_hull_dies():
     }
 
 
+def test_sinking_repeats_until_delivery_is_acknowledged():
+    registry = DetectorRegistry(build_survival_detectors(CFG))
+    previous, _ = feed_one(
+        registry, None, frame(seq=1, at=100.0, hp_ratio=0.4))
+    previous, first = feed_one(
+        registry, previous, frame(seq=2, at=101.0, hp_ratio=0.0))
+    previous, retry = feed_one(
+        registry, previous, frame(seq=3, at=102.0, hp_ratio=0.0))
+    event = next(e for e in first.events if e.event_id == OWN_SHIP_SUNK)
+    assert OWN_SHIP_SUNK in fired([retry])
+
+    registry.acknowledge_delivery(event.event_id, event.detail)
+    _, after_ack = feed_one(
+        registry, previous, frame(seq=4, at=103.0, hp_ratio=0.0))
+    assert OWN_SHIP_SUNK not in fired([after_ack])
+
+
+def test_pending_sinking_survives_a_temporary_self_domain_outage():
+    registry = DetectorRegistry(build_survival_detectors(CFG))
+    previous, _ = feed_one(
+        registry, None, frame(seq=1, at=100.0, hp_ratio=0.4))
+    previous, sunk = feed_one(
+        registry, previous, frame(seq=2, at=101.0, hp_ratio=0.0))
+    assert OWN_SHIP_SUNK in fired([sunk])
+
+    previous, blocked = feed_one(
+        registry,
+        previous,
+        frame(
+            seq=3,
+            at=102.0,
+            hp_ratio=0.0,
+            avail=availability(**{DOMAIN_SELF: AVAIL_UNKNOWN}),
+        ),
+    )
+    assert OWN_SHIP_SUNK not in fired([blocked])
+    previous, recovered = feed_one(
+        registry, previous, frame(seq=4, at=103.0, hp_ratio=0.0))
+    assert OWN_SHIP_SUNK not in fired([recovered])
+
+    _, retry = feed_one(
+        registry, previous, frame(seq=5, at=104.0, hp_ratio=0.0))
+    assert OWN_SHIP_SUNK in fired([retry])
+
+
+def test_pending_sinking_survives_available_self_with_null_health():
+    registry = DetectorRegistry(build_survival_detectors(CFG))
+    previous, _ = feed_one(
+        registry, None, frame(seq=1, at=100.0, hp_ratio=0.4))
+    previous, sunk = feed_one(
+        registry, previous, frame(seq=2, at=101.0, hp_ratio=0.0))
+    assert OWN_SHIP_SUNK in fired([sunk])
+
+    null_health = replace(
+        frame(seq=3, at=102.0, hp_ratio=0.0),
+        self_ship=SelfShip(player_id=2000, team_id=0, health=None, max_health=None),
+    )
+    previous, blank = feed_one(registry, previous, null_health)
+    assert OWN_SHIP_SUNK not in fired([blank])
+    assert OWN_SHIP_SUNK not in registry.inactive_delivery_events()
+
+    _, retry = feed_one(
+        registry, previous, frame(seq=4, at=103.0, hp_ratio=0.0))
+    assert OWN_SHIP_SUNK in fired([retry])
+
+
 def test_self_going_absent_is_not_a_sinking():
     registry = DetectorRegistry(build_survival_detectors(CFG))
     results = feed(registry, [
@@ -418,29 +508,184 @@ def test_self_going_absent_is_not_a_sinking():
 
 def test_low_health_thresholds_fire_once_each():
     registry = DetectorRegistry(build_survival_detectors(CFG))
-    results = feed(registry, [
+    events = []
+    previous = None
+    for snapshot in [
         frame(seq=1, at=100.0, hp_ratio=1.0),
         frame(seq=2, at=101.0, hp_ratio=1.0),
         frame(seq=3, at=102.0, hp_ratio=0.30),
         frame(seq=4, at=103.0, hp_ratio=0.28),
         frame(seq=5, at=104.0, hp_ratio=0.10),
-    ])
-    assert fired(results).count(LOW_HEALTH) == 2
+    ]:
+        previous, result = feed_one(registry, previous, snapshot)
+        low_health = [
+            event for event in result.events if event.event_id == LOW_HEALTH
+        ]
+        events.extend(low_health)
+        for event in low_health:
+            registry.acknowledge_delivery(event.event_id, event.detail)
+    assert len(events) == 2
+
+
+def test_low_health_pending_band_repeats_then_allows_a_lower_band():
+    registry = DetectorRegistry(build_survival_detectors(CFG))
+    previous, _ = feed_one(
+        registry, None, frame(seq=1, at=100.0, hp_ratio=1.0))
+    previous, first = feed_one(
+        registry, previous, frame(seq=2, at=101.0, hp_ratio=0.30))
+    previous, retry = feed_one(
+        registry, previous, frame(seq=3, at=102.0, hp_ratio=0.29))
+    event = next(e for e in first.events if e.event_id == LOW_HEALTH)
+    retried = next(e for e in retry.events if e.event_id == LOW_HEALTH)
+    assert event.detail["threshold"] == retried.detail["threshold"] == 0.35
+
+    registry.acknowledge_delivery(event.event_id, event.detail)
+    previous, quiet = feed_one(
+        registry, previous, frame(seq=4, at=103.0, hp_ratio=0.28))
+    assert LOW_HEALTH not in fired([quiet])
+
+    _, lower = feed_one(
+        registry, previous, frame(seq=5, at=104.0, hp_ratio=0.10))
+    assert next(
+        e for e in lower.events if e.event_id == LOW_HEALTH
+    ).detail["threshold"] == 0.15
+
+
+def test_pending_low_health_survives_a_temporary_self_domain_outage():
+    registry = DetectorRegistry(build_survival_detectors(CFG))
+    previous, _ = feed_one(
+        registry, None, frame(seq=1, at=100.0, hp_ratio=1.0))
+    previous, low = feed_one(
+        registry, previous, frame(seq=2, at=101.0, hp_ratio=0.30))
+    assert LOW_HEALTH in fired([low])
+
+    previous, _ = feed_one(
+        registry,
+        previous,
+        frame(
+            seq=3,
+            at=102.0,
+            hp_ratio=0.30,
+            avail=availability(**{DOMAIN_SELF: AVAIL_UNKNOWN}),
+        ),
+    )
+    previous, recovered = feed_one(
+        registry, previous, frame(seq=4, at=103.0, hp_ratio=0.30))
+    assert LOW_HEALTH not in fired([recovered])
+
+    _, retry = feed_one(
+        registry, previous, frame(seq=5, at=104.0, hp_ratio=0.29))
+    assert LOW_HEALTH in fired([retry])
+
+
+def test_pending_low_health_survives_available_self_with_null_hp_ratio():
+    registry = DetectorRegistry(build_survival_detectors(CFG))
+    previous, _ = feed_one(
+        registry, None, frame(seq=1, at=100.0, hp_ratio=1.0))
+    previous, low = feed_one(
+        registry, previous, frame(seq=2, at=101.0, hp_ratio=0.30))
+    assert LOW_HEALTH in fired([low])
+
+    null_ratio = replace(
+        frame(seq=3, at=102.0, hp_ratio=0.30),
+        self_ship=SelfShip(player_id=2000, team_id=0, health=None, max_health=None),
+    )
+    previous, blank = feed_one(registry, previous, null_ratio)
+    assert LOW_HEALTH not in fired([blank])
+    assert LOW_HEALTH not in registry.inactive_delivery_events()
+
+    _, retry = feed_one(
+        registry, previous, frame(seq=4, at=103.0, hp_ratio=0.29))
+    assert LOW_HEALTH in fired([retry])
+
+
+def test_pending_low_health_is_cancelled_on_recovery_after_outage_repair():
+    registry = DetectorRegistry(build_survival_detectors(CFG))
+    previous, _ = feed_one(
+        registry, None, frame(seq=1, at=100.0, hp_ratio=1.0))
+    previous, low = feed_one(
+        registry, previous, frame(seq=2, at=101.0, hp_ratio=0.30))
+    assert LOW_HEALTH in fired([low])
+
+    previous, _ = feed_one(
+        registry,
+        previous,
+        frame(
+            seq=3,
+            at=102.0,
+            hp_ratio=0.40,
+            avail=availability(**{DOMAIN_SELF: AVAIL_UNKNOWN}),
+        ),
+    )
+    _, recovered = feed_one(
+        registry, previous, frame(seq=4, at=103.0, hp_ratio=0.40))
+    assert LOW_HEALTH not in fired([recovered])
+    assert LOW_HEALTH in registry.inactive_delivery_events()
+
+
+def test_acknowledged_low_health_stays_latched_across_a_self_domain_outage():
+    registry = DetectorRegistry(build_survival_detectors(CFG))
+    previous, _ = feed_one(
+        registry, None, frame(seq=1, at=100.0, hp_ratio=1.0))
+    previous, low = feed_one(
+        registry, previous, frame(seq=2, at=101.0, hp_ratio=0.30))
+    event = next(e for e in low.events if e.event_id == LOW_HEALTH)
+    registry.acknowledge_delivery(event.event_id, event.detail)
+
+    previous, _ = feed_one(
+        registry,
+        previous,
+        frame(
+            seq=3,
+            at=102.0,
+            hp_ratio=0.30,
+            avail=availability(**{DOMAIN_SELF: AVAIL_UNKNOWN}),
+        ),
+    )
+    previous, _ = feed_one(
+        registry, previous, frame(seq=4, at=103.0, hp_ratio=0.40))
+    _, recrossed = feed_one(
+        registry, previous, frame(seq=5, at=104.0, hp_ratio=0.30))
+    assert LOW_HEALTH not in fired([recrossed])
+
+
+def test_unacknowledged_low_health_is_cancelled_after_repair():
+    registry = DetectorRegistry(build_survival_detectors(CFG))
+    previous, _ = feed_one(
+        registry, None, frame(seq=1, at=100.0, hp_ratio=1.0))
+    previous, low = feed_one(
+        registry, previous, frame(seq=2, at=101.0, hp_ratio=0.30))
+    assert LOW_HEALTH in fired([low])
+    assert LOW_HEALTH not in registry.inactive_delivery_events()
+
+    previous, repaired = feed_one(
+        registry, previous, frame(seq=3, at=102.0, hp_ratio=0.40))
+    assert LOW_HEALTH not in fired([repaired])
+    assert LOW_HEALTH in registry.inactive_delivery_events()
+
+    _, crossed_again = feed_one(
+        registry, previous, frame(seq=4, at=103.0, hp_ratio=0.30))
+    assert LOW_HEALTH in fired([crossed_again])
 
 
 def test_one_big_drop_keeps_the_lowest_crossed_threshold():
     """Crossing several bands in one frame must not lose the urgent one."""
     registry = DetectorRegistry(build_survival_detectors(CFG))
-    results = feed(registry, [
+    previous = None
+    events = []
+    for snapshot in [
         frame(seq=1, at=100.0, hp_ratio=1.0),
         frame(seq=2, at=101.0, hp_ratio=1.0),
         frame(seq=3, at=102.0, hp_ratio=0.10),
         frame(seq=4, at=103.0, hp_ratio=0.09),
-    ])
-    events = [
-        event for result in results for event in result.events
-        if event.event_id == LOW_HEALTH
-    ]
+    ]:
+        previous, result = feed_one(registry, previous, snapshot)
+        low_health = [
+            event for event in result.events if event.event_id == LOW_HEALTH
+        ]
+        events.extend(low_health)
+        for event in low_health:
+            registry.acknowledge_delivery(event.event_id, event.detail)
     assert len(events) == 1
     assert events[0].detail["threshold"] == 0.15
     assert events[0].severity == int(60 + (1.0 - 0.15) * 35)

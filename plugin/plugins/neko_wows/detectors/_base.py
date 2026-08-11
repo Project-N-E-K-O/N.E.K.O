@@ -14,6 +14,7 @@ wrong once is enough to produce a phantom call-out:
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Sequence
 
@@ -78,6 +79,7 @@ class Detector:
 
     name: str = "detector"
     events: tuple[str, ...] = ()
+    delivery_managed_events: tuple[str, ...] = ()
     required: tuple[str, ...] = ()
     # When non-empty, at least one of these domains must be available (in
     # addition to every entry in `required`). Used for counts that can come
@@ -95,8 +97,33 @@ class Detector:
     def reset(self) -> None:
         """Drop all per-battle memory."""
 
+    def reset_for_discontinuity(
+        self,
+        snapshot: WowsSnapshot,
+        facts: WowsFacts,
+    ) -> None:
+        """Drop comparison state after a same-battle telemetry gap.
+
+        Most detectors keep only edge history, so a full reset remains the safe
+        default. Delivery-aware detectors override this to preserve pending and
+        acknowledged output state across a temporary domain outage.
+        """
+        del snapshot, facts
+        self.reset()
+
     def observe(self, snapshot: WowsSnapshot, facts: WowsFacts) -> None:
         """Record whatever `detect` will compare against next frame."""
+
+    def acknowledge_delivery(
+        self,
+        event_id: str,
+        detail: Mapping[str, Any],
+    ) -> None:
+        """Mark one detector-owned event as committed to output."""
+
+    def pending_delivery_events(self) -> tuple[str, ...]:
+        """Return delivery-managed event ids that are still valid to send."""
+        return ()
 
     def detect(
         self,
@@ -150,6 +177,29 @@ class DetectorRegistry:
         self._live_baseline_ready = False
         self._blocked_detectors.clear()
 
+    def acknowledge_delivery(
+        self,
+        event_id: str,
+        detail: Mapping[str, Any] | None = None,
+    ) -> None:
+        payload = detail or {}
+        for detector in self.detectors:
+            if event_id in detector.events:
+                detector.acknowledge_delivery(event_id, payload)
+
+    def inactive_delivery_events(self) -> frozenset[str]:
+        """Return managed event ids not currently valid to send.
+
+        Includes ids that never became pending this battle. Callers use this as
+        a cancel set for the arbiter queue, where absent matches are no-ops.
+        """
+        managed: set[str] = set()
+        pending: set[str] = set()
+        for detector in self.detectors:
+            managed.update(detector.delivery_managed_events)
+            pending.update(detector.pending_delivery_events())
+        return frozenset(managed - pending)
+
     def feed(
         self,
         previous: tuple[WowsSnapshot, WowsFacts] | None,
@@ -187,8 +237,8 @@ class DetectorRegistry:
             missing = _missing_domains(detector, snapshot)
             if missing:
                 if detector.name not in self._blocked_detectors:
-                    detector.reset()
                     self._blocked_detectors.add(detector.name)
+                detector.reset_for_discontinuity(snapshot, facts)
                 blocked.append(BlockedDetector(
                     detector=detector.name,
                     missing=missing,

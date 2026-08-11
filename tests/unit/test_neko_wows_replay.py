@@ -7,15 +7,18 @@ in the seam between two stages shows up here rather than only in a real battle.
 
 from __future__ import annotations
 
-from collections import Counter, defaultdict
+from collections import Counter, defaultdict, deque
 import json
 from pathlib import Path
 
 import pytest
 
+from plugin.plugins.neko_wows import NekoWowsPlugin
 from plugin.plugins.neko_wows.adapters.neko_dispatcher import (
     NekoDispatcher,
+    REASON_DELIVERED,
     REASON_DRY_RUN,
+    REASON_FAILED,
 )
 from plugin.plugins.neko_wows.adapters.schema_adapter import WowsSchemaAdapter
 from plugin.plugins.neko_wows.adapters.transport import CursorGate
@@ -30,9 +33,14 @@ from plugin.plugins.neko_wows.domain.catalog import (
     BATTLE_ENDED,
     BATTLE_STARTED,
     EVENT_CATALOG,
+    LOW_HEALTH,
+    OWN_SHIP_SUNK,
     POST_BATTLE_SUMMARY,
 )
 from plugin.plugins.neko_wows.domain.contracts import (
+    ALL_CATEGORIES,
+    CATEGORY_LIFECYCLE,
+    CATEGORY_SURVIVAL,
     CHANNEL_DUAL,
     NullTacticsRepository,
     WowsConfig,
@@ -158,10 +166,14 @@ class FakePlugin:
         self.calls: list[dict] = []
         self.call_frames: list[tuple[int | None, dict]] = []
         self.frame_seq: int | None = None
+        self.callout_receipts = deque()
 
     def push_message(self, **kwargs):
         self.calls.append(kwargs)
         self.call_frames.append((self.frame_seq, kwargs))
+        metadata = kwargs.get("metadata") or {}
+        if metadata.get("event_id") and self.callout_receipts:
+            return self.callout_receipts.popleft()
         return {"submitted": True}
 
 
@@ -220,6 +232,8 @@ class Pipeline:
             self.previous = current
             if result.identity_reset:
                 self.arbiter.reset_battle(snapshot.battle_id)
+            self.arbiter.cancel_events(
+                self.registry.inactive_delivery_events())
             for entry in result.blocked:
                 self.blocked.append((entry.detector, entry.missing))
             self.detected.extend(event.event_id for event in result.events)
@@ -240,8 +254,8 @@ class Pipeline:
                 self.tactics.search(decision.chosen.summary, limit=3, budget=0),
             )
             outcome = self.dispatcher.deliver(request)
-            self.arbiter.commit(
-                decision.chosen, self.now, outcome_reason=outcome.reason)
+            NekoWowsPlugin._commit_callout_outcome(
+                self, decision.chosen, self.now, outcome)
             self.delivered.append((request.event_id, outcome.reason))
         finally:
             if snapshot.status == STATUS_ENDED:
@@ -263,6 +277,38 @@ def run(pipeline: Pipeline, frames, *, epoch=1):
     for offset, frame in enumerate(frames, start=1):
         pipeline.feed(frame, epoch=epoch, at=100.0 + offset * 3.0)
     return pipeline
+
+
+def live_health_frame(base, *, seq, hp_ratio):
+    clone = json.loads(json.dumps(base))
+    clone["seq"] = seq
+    clone["source"]["status"] = STATUS_LIVE
+    clone["capabilities"]["self"] = True
+    clone["availability"]["self"] = "available"
+    clone["active"] = True
+    clone["self"]["health"] = clone["self"]["maxHealth"] * hp_ratio
+    for ship in clone.get("objects", []):
+        if ship.get("relation") == 0:
+            ship["health"] = ship["maxHealth"] * hp_ratio
+            ship["hpRatio"] = hp_ratio
+            ship["alive"] = hp_ratio > 0.0
+    return clone
+
+
+def only_category(category):
+    return tuple(item for item in ALL_CATEGORIES if item != category)
+
+
+def fail_then_accept(pipeline):
+    pipeline.plugin.callout_receipts.extend([
+        {"submitted": False, "reason": "host_queue_full"},
+        {"submitted": True},
+    ])
+
+
+def resume_output(pipeline):
+    pipeline.dispatcher.resume()
+    pipeline.arbiter.resume()
 
 
 # --- fixture integrity ---------------------------------------------------
@@ -287,6 +333,181 @@ def test_the_replay_fixture_carries_no_real_player_data(replay):
 
 
 # --- end to end ----------------------------------------------------------
+
+def test_failed_battle_start_retries_immediately_after_fuse_resume(replay):
+    pipeline = Pipeline(WowsConfig(
+        dry_run=False,
+        ship_catalog_enabled=False,
+        safety_failure_limit=1,
+        disabled_categories=only_category(CATEGORY_LIFECYCLE),
+    ))
+    fail_then_accept(pipeline)
+    pipeline.feed(replay["frames"][0], at=100.0)
+    pipeline.feed(replay["frames"][1], at=101.0)
+
+    assert pipeline.delivered == [(BATTLE_STARTED, REASON_FAILED)]
+    assert pipeline.dispatcher.paused is True
+    assert pipeline.arbiter.paused is True
+
+    pipeline.feed(replay["frames"][2], at=102.0)
+    assert pipeline.delivered == [(BATTLE_STARTED, REASON_FAILED)]
+
+    resume_output(pipeline)
+    retry = json.loads(json.dumps(replay["frames"][2]))
+    retry["seq"] = 4
+    pipeline.feed(retry, at=103.0)
+    assert pipeline.delivered[-1] == (BATTLE_STARTED, REASON_DELIVERED)
+
+    after_ack = json.loads(json.dumps(retry))
+    after_ack["seq"] = 5
+    pipeline.feed(after_ack, at=104.0)
+    assert pipeline.detected.count(BATTLE_STARTED) == 3
+    assert len(pipeline.delivered) == 2
+
+
+def test_manually_paused_battle_start_retries_after_resume(replay):
+    pipeline = Pipeline(WowsConfig(
+        dry_run=False,
+        ship_catalog_enabled=False,
+        disabled_categories=only_category(CATEGORY_LIFECYCLE),
+    ))
+    pipeline.arbiter.pause()
+    pipeline.dispatcher.pause("manual")
+    pipeline.feed(replay["frames"][0], at=100.0)
+    pipeline.feed(replay["frames"][1], at=101.0)
+    assert pipeline.delivered == []
+
+    resume_output(pipeline)
+    pipeline.feed(replay["frames"][2], at=102.0)
+    assert pipeline.delivered == [(BATTLE_STARTED, REASON_DELIVERED)]
+
+    after_ack = json.loads(json.dumps(replay["frames"][2]))
+    after_ack["seq"] = 4
+    pipeline.feed(after_ack, at=103.0)
+    assert pipeline.detected.count(BATTLE_STARTED) == 2
+    assert len(pipeline.delivered) == 1
+
+
+def test_failed_low_health_retries_after_fuse_resume(replay):
+    pipeline = Pipeline(WowsConfig(
+        dry_run=False,
+        ship_catalog_enabled=False,
+        safety_failure_limit=1,
+        rapid_damage_ratio=0.9,
+        disabled_categories=only_category(CATEGORY_SURVIVAL),
+    ))
+    fail_then_accept(pipeline)
+    base = replay["frames"][2]
+    pipeline.feed(live_health_frame(base, seq=10, hp_ratio=1.0), at=100.0)
+    pipeline.feed(live_health_frame(base, seq=11, hp_ratio=1.0), at=101.0)
+    pipeline.feed(live_health_frame(base, seq=12, hp_ratio=0.30), at=102.0)
+    assert pipeline.delivered[-1] == (LOW_HEALTH, REASON_FAILED)
+
+    resume_output(pipeline)
+    pipeline.feed(live_health_frame(base, seq=13, hp_ratio=0.29), at=103.0)
+    assert pipeline.delivered[-1] == (LOW_HEALTH, REASON_DELIVERED)
+
+    pipeline.feed(live_health_frame(base, seq=14, hp_ratio=0.28), at=124.0)
+    assert pipeline.detected.count(LOW_HEALTH) == 2
+    assert len(pipeline.delivered) == 2
+
+
+def test_paused_low_health_is_cancelled_if_ship_repairs_before_resume(replay):
+    pipeline = Pipeline(WowsConfig(
+        dry_run=False,
+        ship_catalog_enabled=False,
+        rapid_damage_ratio=0.9,
+    ))
+    base = replay["frames"][2]
+    pipeline.feed(live_health_frame(base, seq=30, hp_ratio=1.0), at=100.0)
+    pipeline.feed(live_health_frame(base, seq=31, hp_ratio=1.0), at=101.0)
+
+    pipeline.arbiter.pause()
+    pipeline.dispatcher.pause("manual")
+    pipeline.feed(live_health_frame(base, seq=32, hp_ratio=0.30), at=102.0)
+    pipeline.feed(live_health_frame(base, seq=33, hp_ratio=0.40), at=103.0)
+    assert pipeline.detected.count(LOW_HEALTH) == 1
+    assert pipeline.delivered == []
+
+    resume_output(pipeline)
+    ended = json.loads(json.dumps(replay["frames"][-1]))
+    ended["seq"] = 34
+    pipeline.feed(ended, at=104.0)
+
+    assert pipeline.delivered == [(BATTLE_ENDED, REASON_DELIVERED)]
+
+
+def test_paused_low_health_is_cancelled_when_the_battle_ends(replay):
+    pipeline = Pipeline(WowsConfig(
+        dry_run=False,
+        ship_catalog_enabled=False,
+        rapid_damage_ratio=0.9,
+    ))
+    base = replay["frames"][2]
+    pipeline.feed(live_health_frame(base, seq=40, hp_ratio=1.0), at=100.0)
+    pipeline.feed(live_health_frame(base, seq=41, hp_ratio=1.0), at=101.0)
+
+    pipeline.arbiter.pause()
+    pipeline.dispatcher.pause("manual")
+    pipeline.feed(live_health_frame(base, seq=42, hp_ratio=0.30), at=102.0)
+    assert pipeline.delivered == []
+
+    resume_output(pipeline)
+    ended = json.loads(json.dumps(replay["frames"][-1]))
+    ended["seq"] = 43
+    pipeline.feed(ended, at=103.0)
+
+    assert pipeline.delivered == [(BATTLE_ENDED, REASON_DELIVERED)]
+
+
+def test_paused_low_health_is_cancelled_after_outage_then_battle_end(replay):
+    pipeline = Pipeline(WowsConfig(
+        dry_run=False,
+        ship_catalog_enabled=False,
+        rapid_damage_ratio=0.9,
+    ))
+    base = replay["frames"][2]
+    pipeline.feed(live_health_frame(base, seq=50, hp_ratio=1.0), at=100.0)
+    pipeline.feed(live_health_frame(base, seq=51, hp_ratio=1.0), at=101.0)
+
+    pipeline.arbiter.pause()
+    pipeline.dispatcher.pause("manual")
+    pipeline.feed(live_health_frame(base, seq=52, hp_ratio=0.30), at=102.0)
+    outage = live_health_frame(base, seq=53, hp_ratio=0.30)
+    outage["availability"]["self"] = "unknown"
+    pipeline.feed(outage, at=103.0)
+    assert pipeline.delivered == []
+
+    resume_output(pipeline)
+    ended = json.loads(json.dumps(replay["frames"][-1]))
+    ended["seq"] = 54
+    pipeline.feed(ended, at=104.0)
+
+    assert pipeline.delivered == [(BATTLE_ENDED, REASON_DELIVERED)]
+
+
+def test_failed_sinking_retries_after_fuse_resume(replay):
+    pipeline = Pipeline(WowsConfig(
+        dry_run=False,
+        ship_catalog_enabled=False,
+        safety_failure_limit=1,
+        rapid_damage_ratio=0.9,
+        disabled_categories=only_category(CATEGORY_SURVIVAL),
+    ))
+    fail_then_accept(pipeline)
+    base = replay["frames"][2]
+    pipeline.feed(live_health_frame(base, seq=20, hp_ratio=1.0), at=100.0)
+    pipeline.feed(live_health_frame(base, seq=21, hp_ratio=0.40), at=101.0)
+    pipeline.feed(live_health_frame(base, seq=22, hp_ratio=0.0), at=102.0)
+    assert pipeline.delivered[-1] == (OWN_SHIP_SUNK, REASON_FAILED)
+
+    resume_output(pipeline)
+    pipeline.feed(live_health_frame(base, seq=23, hp_ratio=0.0), at=103.0)
+    assert pipeline.delivered[-1] == (OWN_SHIP_SUNK, REASON_DELIVERED)
+
+    pipeline.feed(live_health_frame(base, seq=24, hp_ratio=0.0), at=104.0)
+    assert pipeline.detected.count(OWN_SHIP_SUNK) == 2
+    assert len(pipeline.delivered) == 2
 
 def test_the_pipeline_survives_the_whole_replay(replay, pipeline):
     run(pipeline, replay["frames"])

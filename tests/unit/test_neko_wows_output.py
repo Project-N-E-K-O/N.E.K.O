@@ -17,7 +17,11 @@ from plugin.plugins.neko_wows.adapters.neko_dispatcher import (
     REASON_FAILED,
     REASON_PAUSED,
 )
-from plugin.plugins.neko_wows.adapters.runtime_timeline import STAGE_SHIP_CATALOG
+from plugin.plugins.neko_wows.adapters.runtime_timeline import (
+    STAGE_ARBITER,
+    STAGE_DETECT,
+    STAGE_SHIP_CATALOG,
+)
 from plugin.plugins.neko_wows.domain.catalog import (
     AMMO_RECHECK_HINT,
     LOW_HEALTH,
@@ -36,6 +40,12 @@ from plugin.plugins.neko_wows.domain.contracts import (
 from plugin.plugins.neko_wows.policy.tactic_policy import (
     AdviceCandidate,
     WowsTacticPolicy,
+)
+from plugin.plugins.neko_wows.policy.arbiter import (
+    REASON_COOLDOWN,
+    REASON_LANE_GAP,
+    REASON_QUEUED,
+    REASON_QUIET_WINDOW,
 )
 from plugin.plugins.neko_wows.presentation.instructions import (
     BASE_INSTRUCTIONS,
@@ -283,12 +293,16 @@ def _catalog_order_target(*, catalog_error: Exception | None = None):
     facts = SimpleNamespace(at=100.0)
     plugin.facts = SimpleNamespace(build=lambda _snapshot: facts)
     event = SimpleNamespace(event_id="battle_started")
-    plugin.registry = SimpleNamespace(feed=lambda *_args, **_kwargs: SimpleNamespace(
-        identity_reset=False,
-        blocked=(),
-        events=(event,),
-        reason="events",
-    ))
+    plugin.registry = SimpleNamespace(
+        feed=lambda *_args, **_kwargs: SimpleNamespace(
+            identity_reset=False,
+            blocked=(),
+            events=(event,),
+            reason="events",
+        ),
+        acknowledge_delivery=lambda *_args: None,
+        inactive_delivery_events=lambda: frozenset(),
+    )
     plugin.context_injector = SimpleNamespace(
         push=lambda *_args, **_kwargs: calls.append("scene") or True)
     plugin.live_vision = SimpleNamespace(is_active=lambda: False)
@@ -305,18 +319,23 @@ def _catalog_order_target(*, catalog_error: Exception | None = None):
         lane="normal",
         severity=20,
         summary="开局",
+        detail={},
     )
     plugin.policy = SimpleNamespace(expand=lambda *_args: (chosen,))
     plugin.arbiter = SimpleNamespace(
         decide=lambda *_args: SimpleNamespace(chosen=chosen, chain=()),
-        commit=lambda *_args, **_kwargs: None,
+        commit=lambda *_args, **_kwargs: True,
+        cancel_events=lambda *_args: 0,
     )
     request = SimpleNamespace(text="respond", event_id="battle_started")
     plugin.router = SimpleNamespace(build=lambda *_args: request)
-    plugin.dispatcher = SimpleNamespace(deliver=lambda _request: (
-        calls.append("respond")
-        or SimpleNamespace(reason="delivered", host_calls=1)
-    ))
+    plugin.dispatcher = SimpleNamespace(
+        paused=False,
+        deliver=lambda _request: (
+            calls.append("respond")
+            or SimpleNamespace(reason="delivered", host_calls=1)
+        ),
+    )
     plugin._reference_for = lambda *_args: ()
     ship = SimpleNamespace(
         name="OwnShip",
@@ -348,6 +367,112 @@ def test_ship_catalog_observation_runs_after_scene_and_before_response():
     NekoWowsPlugin._evaluate_locked(plugin, snapshot)
 
     assert calls == ["scene", "ship", "respond"]
+
+
+def test_a_no_event_frame_drains_the_arbiter_queue():
+    plugin, snapshot, calls = _catalog_order_target()
+    queued = plugin.arbiter.decide((), 100.0).chosen
+    decide_calls = []
+    plugin.registry.feed = lambda *_args, **_kwargs: SimpleNamespace(
+        identity_reset=False,
+        blocked=(),
+        events=(),
+        reason="no_events",
+    )
+    plugin.policy.expand = lambda *_args: ()
+
+    def decide(candidates, now):
+        decide_calls.append((tuple(candidates), now))
+        return SimpleNamespace(chosen=queued, chain=())
+
+    plugin.arbiter.decide = decide
+
+    NekoWowsPlugin._evaluate_locked(plugin, snapshot)
+
+    assert decide_calls == [((), 100.0)]
+    assert calls == ["scene", "ship", "respond"]
+
+
+@pytest.mark.parametrize(("outcome", "expected"), [
+    (REASON_PAUSED, []),
+    (REASON_QUIET_WINDOW, []),
+    (REASON_COOLDOWN, []),
+    (REASON_LANE_GAP, []),
+    (REASON_EXPIRED, [REASON_EXPIRED]),
+])
+def test_no_event_frame_only_records_arbiter_state_changes(outcome, expected):
+    plugin, snapshot, _calls = _catalog_order_target()
+    plugin.registry.feed = lambda *_args, **_kwargs: SimpleNamespace(
+        identity_reset=False,
+        blocked=(),
+        events=(),
+        reason="no_events",
+    )
+    plugin.policy.expand = lambda *_args: ()
+    step = SimpleNamespace(
+        event_id="enemy_closing",
+        lane="urgent",
+        outcome=outcome,
+        detail="still queued",
+    )
+    plugin.arbiter.decide = lambda *_args: SimpleNamespace(
+        chosen=None,
+        chain=(step,),
+    )
+
+    NekoWowsPlugin._evaluate_locked(plugin, snapshot)
+
+    arbiter_outcomes = [
+        args[1]
+        for args, _kwargs in plugin.timeline.records
+        if args[0] == STAGE_ARBITER
+    ]
+    assert arbiter_outcomes == expected
+
+
+def test_unchanged_pending_retries_do_not_flood_the_timeline():
+    plugin, snapshot, _calls = _catalog_order_target()
+    event = SimpleNamespace(event_id="battle_started")
+    plugin.registry.feed = lambda *_args, **_kwargs: SimpleNamespace(
+        identity_reset=False,
+        blocked=(),
+        events=(event,),
+        reason="events",
+    )
+    plugin.policy.expand = lambda events, _facts: events
+    step_queued = SimpleNamespace(
+        event_id="battle_started",
+        lane="normal",
+        outcome=REASON_QUEUED,
+        detail="",
+    )
+    step_paused = SimpleNamespace(
+        event_id="",
+        lane="",
+        outcome=REASON_PAUSED,
+        detail="output paused",
+    )
+    plugin.arbiter.decide = lambda *_args: SimpleNamespace(
+        chosen=None,
+        chain=(step_queued, step_paused),
+    )
+
+    NekoWowsPlugin._evaluate_locked(plugin, snapshot)
+    NekoWowsPlugin._evaluate_locked(plugin, snapshot)
+    NekoWowsPlugin._evaluate_locked(plugin, snapshot)
+
+    detect_events = [
+        args[1]
+        for args, _kwargs in plugin.timeline.records
+        if args[0] == STAGE_DETECT and args[1] == "events"
+    ]
+    arbiter_outcomes = [
+        args[1]
+        for args, _kwargs in plugin.timeline.records
+        if args[0] == STAGE_ARBITER
+    ]
+    assert detect_events == ["events"]
+    assert arbiter_outcomes == [REASON_QUEUED, REASON_PAUSED]
 
 
 def test_automatic_lifecycle_never_queries_the_official_ship_api():

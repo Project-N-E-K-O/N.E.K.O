@@ -69,7 +69,7 @@ ws_reconnect_max_seconds = 15.0
 http_timeout_seconds = 1.5
 
 # 仲裁与限流（草稿值，待真机校准）。
-urgent_ttl_seconds = 8.0
+urgent_ttl_seconds = 12.0
 urgent_min_gap_seconds = 6.0
 normal_ttl_seconds = 30.0
 normal_min_gap_seconds = 18.0

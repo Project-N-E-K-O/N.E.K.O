@@ -4,18 +4,17 @@ The queue is the only place preemption happens. Once a candidate has been handed
 to the host, this module makes no claim about being able to take it back -- the
 generation or the voice line may already be underway.
 
-Failure handling is asymmetric on purpose:
+Outcome handling is asymmetric on purpose:
 
-* the per-event cooldown is recorded even when delivery failed, so a failure
-  cannot turn into a retry loop (each candidate is attempted exactly once);
-* `once_per_battle` is only marked as spent when something was actually said, so
-  a swallowed sinking call-out can still fire later in the same battle;
-* the lane gap is *not* advanced on failure, because its whole purpose is to
-  pace what the user hears and nothing was heard.
+* a failed delivery starts a per-event cooldown so it cannot become a tight
+  retry loop, but an explicit resume releases that failure-only cooldown;
+* paused or expired delivery attempts do not consume a cooldown;
+* `once_per_battle` and the lane gap advance only when output was committed.
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any, Sequence
 
@@ -42,6 +41,7 @@ REASON_QUIET_WINDOW = "quiet_window"
 # Dispatcher outcomes that consumed the candidate. Anything else leaves
 # `once_per_battle` unspent and the lane gap untouched.
 COMMITTED_REASONS = frozenset({"delivered", "dry_run"})
+COOLDOWN_REASONS = frozenset({*COMMITTED_REASONS, "failed"})
 
 
 @dataclass(frozen=True)
@@ -80,6 +80,7 @@ class Arbiter:
         self.cfg = cfg
         self._queue: list[AdviceCandidate] = []
         self._cooldowns: dict[str, float] = {}
+        self._failure_cooldowns: set[str] = set()
         self._fired_once: set[str] = set()
         self._lanes: dict[str, _LaneState] = {lane: _LaneState() for lane in ALL_LANES}
         self._paused = False
@@ -100,6 +101,9 @@ class Arbiter:
 
     def resume(self) -> None:
         self._paused = False
+        for event_id in self._failure_cooldowns:
+            self._cooldowns.pop(event_id, None)
+        self._failure_cooldowns.clear()
 
     def note_user_activity(self, at: float) -> None:
         """Start the quiet window; the user just said something."""
@@ -116,6 +120,7 @@ class Arbiter:
         self._queue.clear()
         self._fired_once.clear()
         self._cooldowns.clear()
+        self._failure_cooldowns.clear()
 
     def clear_shadow_state(self) -> None:
         """Drop cooldowns accumulated while dry-run was suppressing output.
@@ -126,9 +131,23 @@ class Arbiter:
         """
         self._queue.clear()
         self._cooldowns.clear()
+        self._failure_cooldowns.clear()
         self._fired_once.clear()
         for lane in self._lanes.values():
             lane.last_output_at = 0.0
+
+    def cancel_events(self, event_ids: Iterable[str]) -> int:
+        """Remove queued candidates whose detector-side state is no longer valid."""
+        cancelled = frozenset(event_ids)
+        if not cancelled:
+            return 0
+        before = len(self._queue)
+        self._queue = [
+            candidate
+            for candidate in self._queue
+            if candidate.event_id not in cancelled
+        ]
+        return before - len(self._queue)
 
     def stats(self) -> dict[str, Any]:
         return {
@@ -265,20 +284,28 @@ class Arbiter:
         return ArbiterDecision(None, tuple(steps), queued=len(self._queue))
 
     # ------------------------------------------------------------------
-    def commit(self, candidate: AdviceCandidate, now: float, *, outcome_reason: str) -> None:
-        """Record the consequences of an attempt. See the module docstring.
+    def commit(self, candidate: AdviceCandidate, now: float, *, outcome_reason: str) -> bool:
+        """Record an attempt and report whether output was committed.
 
         A dry-run counts as committed so the shadow chain throttles exactly like
         the real one; `clear_shadow_state` wipes that when output is turned on.
         """
         spec = candidate.spec
-        self._cooldowns[candidate.event_id] = now + spec.cooldown_seconds
-        if outcome_reason not in COMMITTED_REASONS:
-            return
+        if outcome_reason in COOLDOWN_REASONS:
+            self._cooldowns[candidate.event_id] = now + spec.cooldown_seconds
+        if outcome_reason == "failed":
+            self._failure_cooldowns.add(candidate.event_id)
+        elif outcome_reason in COMMITTED_REASONS:
+            self._failure_cooldowns.discard(candidate.event_id)
+
+        committed = outcome_reason in COMMITTED_REASONS
+        if not committed:
+            return False
         if spec.once_per_battle:
             self._fired_once.add(candidate.event_id)
         lane = self._lanes.setdefault(candidate.lane, _LaneState())
         lane.last_output_at = now
+        return True
 
     # ------------------------------------------------------------------
     def _blocked_reason(
@@ -332,6 +359,7 @@ class Arbiter:
 
 __all__ = [
     "COMMITTED_REASONS",
+    "COOLDOWN_REASONS",
     "REASON_CHOSEN",
     "REASON_COALESCED",
     "REASON_COOLDOWN",

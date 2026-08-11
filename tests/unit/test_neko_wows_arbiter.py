@@ -115,8 +115,20 @@ def test_a_queued_candidate_expires_while_waiting():
     assert later.queued == 0
 
 
+def test_cancel_events_removes_only_matching_queued_candidates():
+    arbiter = Arbiter(CFG)
+    arbiter.submit([
+        candidate(LOW_HEALTH, at=100.0),
+        candidate(DAMAGE_MILESTONE, at=100.0),
+    ], 100.0)
+
+    assert arbiter.cancel_events({LOW_HEALTH}) == 1
+    decision = arbiter.decide([], 100.0)
+    assert decision.chosen.event_id == DAMAGE_MILESTONE
+
+
 def test_lane_ttls_come_from_config():
-    assert CFG.ttl_for(LANE_URGENT) == 8.0
+    assert CFG.ttl_for(LANE_URGENT) == 12.0
     assert CFG.ttl_for(LANE_NORMAL) == 30.0
     assert CFG.min_gap_for(LANE_URGENT) == 6.0
     assert CFG.min_gap_for(LANE_NORMAL) == 18.0
@@ -188,8 +200,52 @@ def test_once_per_battle_survives_a_new_battle():
 
 # --- failure rollback ----------------------------------------------------
 
+@pytest.mark.parametrize(("reason", "committed"), [
+    ("delivered", True),
+    ("dry_run", True),
+    ("failed", False),
+    ("paused", False),
+    ("expired", False),
+])
+def test_commit_reports_whether_the_detector_may_latch(reason, committed):
+    arbiter = Arbiter(CFG)
+    decision = arbiter.decide([candidate(BATTLE_STARTED)], 100.0)
+    assert arbiter.commit(
+        decision.chosen, 100.0, outcome_reason=reason) is committed
+
+
+@pytest.mark.parametrize("reason", ["paused", "expired"])
+def test_suppressed_delivery_does_not_start_event_cooldown(reason):
+    arbiter = Arbiter(CFG)
+    first = arbiter.decide([candidate(LOW_HEALTH, at=100.0)], 100.0)
+    arbiter.commit(first.chosen, 100.0, outcome_reason=reason)
+
+    retry = arbiter.decide([candidate(LOW_HEALTH, at=101.0)], 101.0)
+    assert retry.chosen is not None
+
+
+def test_resume_clears_failure_cooldown_but_keeps_delivery_cooldown():
+    arbiter = Arbiter(CFG)
+    failed = arbiter.decide([candidate(LOW_HEALTH, at=100.0)], 100.0)
+    arbiter.commit(failed.chosen, 100.0, outcome_reason="failed")
+
+    delivered = arbiter.decide(
+        [candidate(DAMAGE_MILESTONE, at=100.0)], 100.0)
+    arbiter.commit(delivered.chosen, 100.0, outcome_reason="delivered")
+
+    arbiter.pause()
+    arbiter.resume()
+
+    assert arbiter.decide(
+        [candidate(LOW_HEALTH, at=101.0)], 101.0).chosen is not None
+    still_cooled = arbiter.decide(
+        [candidate(DAMAGE_MILESTONE, at=101.0)], 101.0)
+    assert still_cooled.chosen is None
+    assert REASON_COOLDOWN in outcomes(still_cooled, DAMAGE_MILESTONE)
+
+
 def test_a_failed_delivery_still_takes_the_cooldown():
-    """One attempt only: a failure must not become a retry loop."""
+    """A failure must not become a tight retry loop."""
     arbiter = Arbiter(CFG)
     first = arbiter.decide([candidate(LOW_HEALTH, at=100.0)], 100.0)
     arbiter.commit(first.chosen, 100.0, outcome_reason="failed")

@@ -95,7 +95,7 @@ from .presentation.instructions import (
     validate_sections,
 )
 from .presentation.prompt_router import PromptProfile, WowsPromptRouter
-from .policy.arbiter import Arbiter, REASON_CHOSEN
+from .policy.arbiter import Arbiter, REASON_CHOSEN, REASON_EXPIRED
 from .policy.tactic_policy import AdviceCandidate, WowsTacticPolicy
 from .ship_data.context import BattleShipContextManager, ContextObservation
 from .ship_data.official_api import (
@@ -634,10 +634,12 @@ class NekoWowsPlugin(NekoPluginBase):
         if result.identity_reset:
             self.arbiter.reset_battle(snapshot.battle_id)
             self._blocked_signature = ()
+            self._last_logged_detect_events = ()
             self.timeline.record(
                 STAGE_DETECT, "reset", seq=snapshot.seq,
                 battle_id=snapshot.battle_id,
                 reason="instanceId/battleId changed")
+        self.arbiter.cancel_events(self.registry.inactive_delivery_events())
 
         if snapshot.is_live:
             self.context_injector.push(
@@ -682,7 +684,14 @@ class NekoWowsPlugin(NekoPluginBase):
                     battle_id=snapshot.battle_id,
                     reason="required capabilities available again",
                 )
+        event_ids = tuple(event.event_id for event in result.events)
+        last_logged = getattr(self, "_last_logged_detect_events", ())
+        # Pending delivery retries re-emit the same ids every live frame so the
+        # arbiter can refresh TTL; only the first of an unchanged burst belongs
+        # on the timeline.
+        repeat_pending = bool(event_ids) and event_ids == last_logged
         if not result.events:
+            self._last_logged_detect_events = ()
             # Ordinary evaluated frames are intentionally silent. At telemetry
             # rates they otherwise evict the decisions and failures a user needs
             # the timeline to explain.
@@ -692,18 +701,24 @@ class NekoWowsPlugin(NekoPluginBase):
                     battle_id=snapshot.battle_id,
                     detail={"status": snapshot.status,
                             "transport": snapshot.transport})
-            return
-
-        with self._state_lock:
-            self._events_seen += len(result.events)
-        self.timeline.record(
-            STAGE_DETECT, "events", seq=snapshot.seq,
-            battle_id=snapshot.battle_id,
-            detail={"events": [event.event_id for event in result.events]})
+        else:
+            with self._state_lock:
+                self._events_seen += len(result.events)
+            if not repeat_pending:
+                self._last_logged_detect_events = event_ids
+                self.timeline.record(
+                    STAGE_DETECT, "events", seq=snapshot.seq,
+                    battle_id=snapshot.battle_id,
+                    detail={"events": list(event_ids)})
 
         candidates = self.policy.expand(result.events, facts)
         decision = self.arbiter.decide(candidates, facts.at)
         for step in decision.chain:
+            if (
+                (not result.events or repeat_pending)
+                and step.outcome not in (REASON_CHOSEN, REASON_EXPIRED)
+            ):
+                continue
             self.timeline.record(
                 STAGE_ARBITER, step.outcome, seq=snapshot.seq,
                 battle_id=snapshot.battle_id, event_id=step.event_id,
@@ -725,7 +740,7 @@ class NekoWowsPlugin(NekoPluginBase):
         excerpts = self._reference_for(chosen, snapshot)
         request = self.router.build(chosen, profile, excerpts)
         outcome = self.dispatcher.deliver(request)
-        self.arbiter.commit(chosen, facts.at, outcome_reason=outcome.reason)
+        self._commit_callout_outcome(chosen, facts.at, outcome)
 
         self.timeline.record(
             STAGE_DELIVERY, outcome.reason, seq=snapshot.seq,
@@ -740,6 +755,17 @@ class NekoWowsPlugin(NekoPluginBase):
                 "preview": request.text if cfg.dry_run else "",
             },
         )
+
+    def _commit_callout_outcome(self, candidate, now: float, outcome) -> bool:
+        """Commit output state and acknowledge detector-owned latches."""
+        committed = self.arbiter.commit(
+            candidate, now, outcome_reason=outcome.reason)
+        if committed:
+            self.registry.acknowledge_delivery(
+                candidate.event_id, candidate.detail)
+        if self.dispatcher.paused:
+            self.arbiter.pause()
+        return committed
 
     def _reference_for(self, candidate, snapshot) -> tuple:
         """Look up reference text; never let the document layer break a call-out."""

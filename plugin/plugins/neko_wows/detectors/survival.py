@@ -17,30 +17,69 @@ from ..domain.catalog import (
     OWN_SHIP_SUNK,
     RAPID_DAMAGE,
 )
-from ..domain.snapshot import DOMAIN_OBJECTS, DOMAIN_ROSTER, DOMAIN_SELF
+from ..domain.snapshot import (
+    DOMAIN_OBJECTS,
+    DOMAIN_ROSTER,
+    DOMAIN_SELF,
+    STATUS_ENDED,
+)
 from ._base import Detector, DetectorContext, GameEvent
 
 
 class SinkingDetector(Detector):
     name = "own_ship_sunk"
     events = (OWN_SHIP_SUNK,)
+    delivery_managed_events = events
     required = (DOMAIN_SELF,)
 
     def reset(self) -> None:
-        self._fired = False
+        self._announced = False
+        self._pending = False
+
+    def reset_for_discontinuity(self, snapshot, facts) -> None:
+        """Keep delivery state across a temporary loss of own-ship data."""
+        del facts
+        if snapshot.status == STATUS_ENDED:
+            self._pending = False
+
+    def observe(self, snapshot, facts) -> None:
+        # Null health is a missing reading, not recovery. Keep pending so a
+        # partial self payload cannot cancel a queued sinking call-out.
+        if self._pending and (
+            snapshot.status == STATUS_ENDED
+            or (facts.own_health is not None and facts.own_health > 0)
+        ):
+            self._pending = False
+
+    def acknowledge_delivery(self, event_id, detail) -> None:
+        del detail
+        if event_id == OWN_SHIP_SUNK:
+            self._announced = True
+            self._pending = False
+
+    def pending_delivery_events(self) -> tuple[str, ...]:
+        return (OWN_SHIP_SUNK,) if self._pending else ()
 
     def detect(self, previous, current, context: DetectorContext) -> Sequence[GameEvent]:
         _previous_snapshot, previous_facts = previous
         _snapshot, facts = current
-        if self._fired:
+        if self._announced:
             return ()
-        # Both readings must exist: `self` going absent is a missing domain, not
-        # a death, and the registry already blocks us in that case.
-        if previous_facts.own_health is None or facts.own_health is None:
+        # A null current reading is unknown, not death. Keep any pending latch
+        # so delivery can retry once health returns.
+        if facts.own_health is None:
             return ()
-        if previous_facts.own_health <= 0 or facts.own_health > 0:
+        if self._pending and facts.own_health > 0:
+            self._pending = False
+        if (
+            not self._pending
+            and previous_facts.own_health is not None
+            and previous_facts.own_health > 0
+            and facts.own_health <= 0
+        ):
+            self._pending = True
+        if not self._pending or facts.own_health > 0:
             return ()
-        self._fired = True
         # Own hull is usually alive=False on this frame, so team_counts_confirmed
         # (which requires our own object still lit-and-alive) is false. Visible
         # force counts for the rest of the field remain trustworthy when present.
@@ -64,31 +103,78 @@ class SinkingDetector(Detector):
 class LowHealthDetector(Detector):
     name = "low_health"
     events = (LOW_HEALTH,)
+    delivery_managed_events = events
     required = (DOMAIN_SELF,)
 
     def reset(self) -> None:
-        self._crossed: set[float] = set()
+        self._announced: set[float] = set()
+        self._pending: float | None = None
+
+    def reset_for_discontinuity(self, snapshot, facts) -> None:
+        """Keep delivery state across a temporary loss of own-ship data."""
+        del facts
+        if snapshot.status == STATUS_ENDED:
+            self._pending = None
+
+    def observe(self, snapshot, facts) -> None:
+        threshold = self._pending
+        if threshold is None:
+            return
+        ratio = facts.own_hp_ratio
+        # Null ratio is a missing reading, not repair. Keep pending across it.
+        if (
+            snapshot.status == STATUS_ENDED
+            or (ratio is not None and ratio <= 0.0)
+            or (ratio is not None and ratio > threshold)
+        ):
+            self._pending = None
+
+    def acknowledge_delivery(self, event_id, detail) -> None:
+        if event_id != LOW_HEALTH:
+            return
+        threshold = detail.get("threshold")
+        if (
+            not isinstance(threshold, (int, float))
+            or isinstance(threshold, bool)
+        ):
+            return
+        threshold = float(threshold)
+        self._announced.update(
+            band for band in self.cfg.low_health_ratios if band >= threshold)
+        if self._pending == threshold:
+            self._pending = None
+
+    def pending_delivery_events(self) -> tuple[str, ...]:
+        return (LOW_HEALTH,) if self._pending is not None else ()
 
     def detect(self, previous, current, context: DetectorContext) -> Sequence[GameEvent]:
         _previous_snapshot, previous_facts = previous
         _snapshot, facts = current
         ratio = facts.own_hp_ratio
         before = previous_facts.own_hp_ratio
-        if ratio is None or before is None or ratio <= 0.0:
+        if ratio is None:
+            return ()
+        if ratio <= 0.0:
+            self._pending = None
             return ()
 
-        crossed = [
-            threshold
-            for threshold in self.cfg.low_health_ratios
-            if threshold not in self._crossed and before > threshold >= ratio
-        ]
-        if not crossed:
+        if self._pending is not None and ratio > self._pending:
+            self._pending = None
+        if before is not None:
+            crossed = [
+                threshold
+                for threshold in self.cfg.low_health_ratios
+                if threshold not in self._announced and before > threshold >= ratio
+            ]
+            if crossed:
+                crossed_threshold = min(crossed)
+                if self._pending is None or crossed_threshold < self._pending:
+                    self._pending = crossed_threshold
+
+        threshold = self._pending
+        if threshold is None or ratio > threshold:
             return ()
-        # Mark every band crossed this frame so a later smaller drop cannot
-        # re-fire a threshold we already passed through in one leap.
-        self._crossed.update(crossed)
         # Prefer the lowest band: that is the most urgent situation reached.
-        threshold = min(crossed)
         severity = int(60 + (1.0 - threshold) * 35)
         return (self._event(
             LOW_HEALTH,
