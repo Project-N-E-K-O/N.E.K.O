@@ -136,6 +136,9 @@
         </el-tab-pane>
 
       </el-tabs>
+      <div v-if="needsLegacyStaticUiRelay" class="static-ui-relay" aria-hidden="true">
+        <PluginUIFrame ref="staticUiFrameRef" :plugin-id="pluginId" height="560px" @open-surface="openHostedSurfaceFromStaticUi" />
+      </div>
     </el-card>
 
     <EmptyState v-else-if="!loading" :description="$t('plugins.pluginNotFound')" />
@@ -205,10 +208,13 @@ const pluginDisplayText = computed(() => {
 
 const panelSurfaces = computed(() => surfaces.value.filter((surface) => surface.kind === 'panel'))
 const guideSurfaces = computed(() => surfaces.value.filter((surface) => surface.kind === 'guide' || surface.kind === 'docs'))
-// A declared panel is the current UI surface API.  Static UI is retained only
-// for legacy plugins that have not declared a panel yet; otherwise the same
-// static/index.html can be rendered twice under two different tabs.
-const showLegacyStaticUi = computed(() => hasStaticUI.value && panelSurfaces.value.length === 0)
+const hasAvailablePanelSurface = computed(() => panelSurfaces.value.some((surface) => surface.available !== false))
+// The study plugin's legacy page remains a message relay for its hosted
+// sub-panels. Keep it mounted but hidden while the modern panel is visible.
+const needsLegacyStaticUiRelay = computed(() => pluginId.value === 'study_companion' && hasStaticUI.value && hasAvailablePanelSurface.value)
+// A usable declared panel is the current UI surface API. Unavailable panels
+// must not hide a working legacy static UI fallback.
+const showLegacyStaticUi = computed(() => hasStaticUI.value && !hasAvailablePanelSurface.value)
 
 const isAdapter = computed(() => plugin.value?.type === 'adapter')
 
@@ -246,8 +252,22 @@ function resolveDefaultTab(value: unknown): string {
   const requested = resolveActiveTab(value)
   if (requested === 'panel' && panelSurfaces.value.length === 0) return 'info'
   if (requested === 'guide' && guideSurfaces.value.length === 0) return 'info'
+  if (requested === 'ui' && hasAvailablePanelSurface.value) return 'panel'
   if (requested === 'ui' && !showLegacyStaticUi.value) return 'info'
   return requested
+}
+
+function syncActiveTab(requestedTab: unknown) {
+  const nextTab = resolveDefaultTab(requestedTab)
+  activeTab.value = nextTab
+  if (requestedTab === 'ui' && nextTab !== 'ui') {
+    void router.replace({
+      query: {
+        ...route.query,
+        tab: nextTab,
+      },
+    })
+  }
 }
 
 function syncSurfaceTabs() {
@@ -345,22 +365,24 @@ function relayHostedSurfaceMessageToStaticUi(data: unknown) {
   staticUiFrameRef.value?.sendStudySurfaceMessage(data)
 }
 
-async function fetchSurfaces() {
+async function fetchSurfaces(): Promise<boolean> {
   const loadId = ++currentSurfaceLoadId
   const currentPluginId = pluginId.value
   try {
     const info = await getPluginUiSurfaceInfo(currentPluginId, locale.value)
-    if (loadId !== currentSurfaceLoadId || currentPluginId !== pluginId.value) return
+    if (loadId !== currentSurfaceLoadId || currentPluginId !== pluginId.value) return false
     surfaces.value = info.surfaces
     surfaceWarnings.value = info.warnings
-    if (panelSurfaces.value.length > 0) {
+    if (hasAvailablePanelSurface.value) {
       // Prefer the declared panel and invalidate a possible in-flight legacy
       // static-UI probe from the previous plugin/page state.
       currentStaticUiLoadId += 1
       hasStaticUI.value = false
+      const requestedTab = route.query.tab === 'ui' || activeTab.value === 'ui' ? 'ui' : route.query.tab
+      syncActiveTab(requestedTab)
     }
   } catch (caught: any) {
-    if (loadId !== currentSurfaceLoadId || currentPluginId !== pluginId.value) return
+    if (loadId !== currentSurfaceLoadId || currentPluginId !== pluginId.value) return false
     surfaces.value = []
     surfaceWarnings.value = [{
       path: 'plugin.ui',
@@ -371,13 +393,14 @@ async function fetchSurfaces() {
   activePanelSurfaceId.value = ''
   activeGuideSurfaceId.value = ''
   syncSurfaceTabs()
+  return true
 }
 
 async function fetchStaticUI() {
   // The legacy /ui-info route serves static/index.html.  A modern panel may
   // intentionally point at that same file, so probing it would only create a
   // duplicate "界面" tab.
-  if (panelSurfaces.value.length > 0) {
+  if (hasAvailablePanelSurface.value && pluginId.value !== 'study_companion') {
     hasStaticUI.value = false
     return
   }
@@ -393,13 +416,17 @@ async function fetchStaticUI() {
   }
 }
 
+async function refreshPluginUi() {
+  const surfacesApplied = await fetchSurfaces()
+  if (surfacesApplied) await fetchStaticUI()
+}
+
 onMounted(async () => {
   try {
     await pluginStore.fetchPlugins()
     await pluginStore.fetchPluginStatus(pluginId.value)
-    await fetchSurfaces()
-    await fetchStaticUI()
-    activeTab.value = resolveDefaultTab(route.query.tab)
+    await refreshPluginUi()
+    syncActiveTab(route.query.tab)
     pluginStore.setSelectedPlugin(pluginId.value)
   } finally {
     loading.value = false
@@ -410,7 +437,7 @@ watch(
   () => [route.query.tab, route.query.surface],
   ([tab]) => {
     syncSurfaceTabs()
-    activeTab.value = resolveDefaultTab(tab)
+    syncActiveTab(tab)
   },
 )
 
@@ -418,9 +445,8 @@ watch(pluginId, async () => {
   loading.value = true
   try {
     await pluginStore.fetchPluginStatus(pluginId.value)
-    await fetchSurfaces()
-    await fetchStaticUI()
-    activeTab.value = resolveDefaultTab(route.query.tab)
+    await refreshPluginUi()
+    syncActiveTab(route.query.tab)
     pluginStore.setSelectedPlugin(pluginId.value)
   } finally {
     loading.value = false
@@ -429,13 +455,17 @@ watch(pluginId, async () => {
 
 watch(locale, () => {
   if (!plugin.value) return
-  void fetchSurfaces()
+  void refreshPluginUi()
 })
 </script>
 
 <style scoped>
 .plugin-detail {
   padding: 0;
+}
+
+.static-ui-relay {
+  display: none;
 }
 
 .loading-container {
