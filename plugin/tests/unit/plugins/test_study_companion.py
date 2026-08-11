@@ -5252,11 +5252,11 @@ def test_study_companion_ui_refactor_static_and_hosted_contracts() -> None:
     assert "openSurface" in plugin_ui_frame
     assert "payload.pluginId.trim()" in plugin_ui_frame
     assert "payload.kind.trim()" in plugin_ui_frame
-    assert "sendStudySurfaceMessage" in plugin_ui_frame
+    assert "sendSurfaceMessage" in plugin_ui_frame
     assert '@open-surface="openHostedSurfaceFromStaticUi"' in plugin_detail
     assert '@message="relayHostedSurfaceMessageToStaticUi"' in plugin_detail
-    assert "studySurfaceRelayMessageTypes" in plugin_detail
-    assert "staticUiFrameRef.value?.sendStudySurfaceMessage(data)" in plugin_detail
+    assert "studySurfaceRelayMessageTypes" not in plugin_detail
+    assert "staticUiFrameRef.value?.sendSurfaceMessage(data)" in plugin_detail
     assert "const preferGuide = payload.kind === 'guide' || payload.kind === 'docs'" in plugin_detail
     assert "activeGuideSurfaceId.value = guide.id" in plugin_detail
     assert "surface: activeSurfaceId" in plugin_detail

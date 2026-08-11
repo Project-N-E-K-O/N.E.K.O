@@ -100,7 +100,11 @@ setlocal EnableExtensions
 set "MODEL=%~1"
 set "YUI_ARCHIVE=%ROOT_DIR%\assets\%MODEL%.tar.gz"
 set "YUI_DIR=%ROOT_DIR%\static\%MODEL%"
-set "YUI_MARKER=%YUI_DIR%\%MODEL%.moc3"
+set "YUI_COMPLETE_MARKER=%YUI_DIR%\.unpacked"
+set "YUI_TEMP_ROOT=%ROOT_DIR%\static\.%MODEL%.extract-%RANDOM%-%RANDOM%"
+set "YUI_TEMP_DIR=%YUI_TEMP_ROOT%\%MODEL%"
+set "YUI_TEMP_COMPLETE_MARKER=%YUI_TEMP_DIR%\.unpacked"
+set "YUI_BACKUP_DIR=%ROOT_DIR%\static\.%MODEL%.backup-%RANDOM%-%RANDOM%"
 
 if not exist "%YUI_ARCHIVE%" (
   echo [build_frontend] %MODEL% archive missing: %YUI_ARCHIVE%
@@ -108,9 +112,9 @@ if not exist "%YUI_ARCHIVE%" (
 )
 
 set "YUI_NEED_EXTRACT=0"
-if not exist "%YUI_MARKER%" set "YUI_NEED_EXTRACT=1"
+if not exist "%YUI_COMPLETE_MARKER%" set "YUI_NEED_EXTRACT=1"
 if "%YUI_NEED_EXTRACT%"=="0" set "YUI_COMPARE_RESULT_FILE=%TEMP%\neko-live2d-%RANDOM%-%RANDOM%.txt"
-if "%YUI_NEED_EXTRACT%"=="0" call :compare_live2d_timestamps "%YUI_ARCHIVE%" "%YUI_MARKER%" "%YUI_COMPARE_RESULT_FILE%"
+if "%YUI_NEED_EXTRACT%"=="0" call :compare_live2d_timestamps "%YUI_ARCHIVE%" "%YUI_COMPLETE_MARKER%" "%YUI_COMPARE_RESULT_FILE%"
 if "%YUI_NEED_EXTRACT%"=="0" set "YUI_MTIME_STATUS=%ERRORLEVEL%"
 if "%YUI_NEED_EXTRACT%"=="0" set /p "YUI_MTIME_RESULT="<"%YUI_COMPARE_RESULT_FILE%"
 if "%YUI_NEED_EXTRACT%"=="0" if exist "%YUI_COMPARE_RESULT_FILE%" del /q "%YUI_COMPARE_RESULT_FILE%" >nul 2>&1
@@ -126,23 +130,75 @@ if "%YUI_NEED_EXTRACT%"=="0" if /i not "%YUI_MTIME_RESULT%"=="older" (
 
 if "%YUI_NEED_EXTRACT%"=="1" (
   echo [build_frontend] unpacking %MODEL%...
+  if exist "%YUI_TEMP_ROOT%" rmdir /s /q "%YUI_TEMP_ROOT%"
+  if exist "%YUI_TEMP_ROOT%" (
+    echo [build_frontend] cannot clear temporary %MODEL% directory: %YUI_TEMP_ROOT%
+    endlocal & exit /b 1
+  )
+  if exist "%YUI_BACKUP_DIR%" (
+    echo [build_frontend] backup path already exists for %MODEL%: %YUI_BACKUP_DIR%
+    endlocal & exit /b 1
+  )
+  mkdir "%YUI_TEMP_ROOT%"
+  if errorlevel 1 (
+    echo [build_frontend] cannot create temporary %MODEL% directory: %YUI_TEMP_ROOT%
+    endlocal & exit /b 1
+  )
+  tar -xzmf "%YUI_ARCHIVE%" -C "%YUI_TEMP_ROOT%"
+  if errorlevel 1 (
+    echo [build_frontend] %MODEL% unpack failed
+    rmdir /s /q "%YUI_TEMP_ROOT%"
+    endlocal & exit /b 1
+  )
+  if not exist "%YUI_TEMP_DIR%\%MODEL%.moc3" (
+    echo [build_frontend] %MODEL% moc3 missing after unpack
+    rmdir /s /q "%YUI_TEMP_ROOT%"
+    endlocal & exit /b 1
+  )
+  if not exist "%YUI_TEMP_DIR%\%MODEL%.model3.json" (
+    echo [build_frontend] %MODEL% model3 config missing after unpack
+    rmdir /s /q "%YUI_TEMP_ROOT%"
+    endlocal & exit /b 1
+  )
+  if not exist "%YUI_TEMP_DIR%\%MODEL%.physics3.json" (
+    echo [build_frontend] %MODEL% physics config missing after unpack
+    rmdir /s /q "%YUI_TEMP_ROOT%"
+    endlocal & exit /b 1
+  )
+  if not exist "%YUI_TEMP_DIR%\%MODEL%.vtube.json" (
+    echo [build_frontend] %MODEL% vtube config missing after unpack
+    rmdir /s /q "%YUI_TEMP_ROOT%"
+    endlocal & exit /b 1
+  )
+  if not exist "%YUI_TEMP_DIR%\%MODEL%.4096\texture_00.png" (
+    echo [build_frontend] %MODEL% texture missing after unpack
+    rmdir /s /q "%YUI_TEMP_ROOT%"
+    endlocal & exit /b 1
+  )
+  type nul > "%YUI_TEMP_COMPLETE_MARKER%"
+  if not exist "%YUI_TEMP_COMPLETE_MARKER%" (
+    echo [build_frontend] cannot create completion marker for %MODEL%
+    rmdir /s /q "%YUI_TEMP_ROOT%"
+    endlocal & exit /b 1
+  )
   if exist "%YUI_DIR%" (
-    rmdir /s /q "%YUI_DIR%"
-    if exist "%YUI_DIR%" (
-      echo [build_frontend] cannot remove old %MODEL% directory: %YUI_DIR%
+    move /y "%YUI_DIR%" "%YUI_BACKUP_DIR%" >nul
+    if errorlevel 1 (
+      echo [build_frontend] cannot preserve old %MODEL% directory: %YUI_DIR%
       echo [build_frontend] Close any process using the model files and try again.
+      rmdir /s /q "%YUI_TEMP_ROOT%"
       endlocal & exit /b 1
     )
   )
-  tar -xzmf "%YUI_ARCHIVE%" -C "%ROOT_DIR%\static"
+  move /y "%YUI_TEMP_DIR%" "%YUI_DIR%" >nul
   if errorlevel 1 (
-    echo [build_frontend] %MODEL% unpack failed
+    echo [build_frontend] cannot replace old %MODEL% directory: %YUI_DIR%
+    if exist "%YUI_BACKUP_DIR%" move /y "%YUI_BACKUP_DIR%" "%YUI_DIR%" >nul
+    rmdir /s /q "%YUI_TEMP_ROOT%"
     endlocal & exit /b 1
   )
-  if not exist "%YUI_MARKER%" (
-    echo [build_frontend] %MODEL% marker missing after unpack: %YUI_MARKER%
-    endlocal & exit /b 1
-  )
+  rmdir /s /q "%YUI_TEMP_ROOT%"
+  if exist "%YUI_BACKUP_DIR%" rmdir /s /q "%YUI_BACKUP_DIR%"
   echo [build_frontend] %MODEL% done: %YUI_DIR%
 ) else (
   echo [build_frontend] %MODEL% up to date, skip

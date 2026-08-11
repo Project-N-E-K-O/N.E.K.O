@@ -204,7 +204,10 @@ const pluginDisplayText = computed(() => {
 const panelSurfaces = computed(() => surfaces.value.filter((surface) => surface.kind === 'panel'))
 const guideSurfaces = computed(() => surfaces.value.filter((surface) => surface.kind === 'guide' || surface.kind === 'docs'))
 const availablePanelSurfaces = computed(() => panelSurfaces.value.filter((surface) => surface.available !== false))
-const availableDeclaredPanelSurfaces = computed(() => availablePanelSurfaces.value.filter((surface) => !surface.legacy_static_compat))
+// `auto` is accepted by the manifest but does not have a renderer yet. Do not
+// let its placeholder hide a working legacy static UI.
+const renderablePanelSurfaces = computed(() => availablePanelSurfaces.value.filter((surface) => surface.mode !== 'auto'))
+const availableDeclaredPanelSurfaces = computed(() => renderablePanelSurfaces.value.filter((surface) => !surface.legacy_static_compat))
 const availableHostedPanelSurfaces = computed(() => availableDeclaredPanelSurfaces.value.filter((surface) => surface.mode === 'hosted-tsx'))
 // Prefer usable hosted TSX panels without hiding other declared panels. Only
 // fall back to a host-generated compatibility panel when the plugin did not
@@ -216,7 +219,7 @@ const displayedPanelSurfaces = computed(() => {
       ...availableDeclaredPanelSurfaces.value.filter((surface) => surface.mode !== 'hosted-tsx'),
     ]
   }
-  return availablePanelSurfaces.value
+  return renderablePanelSurfaces.value
 })
 const hasStaticCompatPanel = computed(() => panelSurfaces.value.some((surface) => surface.legacy_static_compat))
 const hasDisplayablePanelSurface = computed(() => displayedPanelSurfaces.value.length > 0)
