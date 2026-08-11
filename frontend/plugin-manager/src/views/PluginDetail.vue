@@ -82,7 +82,7 @@
           </div>
         </el-tab-pane>
 
-        <el-tab-pane v-if="hasStaticUI" :label="$t('plugins.ui.title')" name="ui">
+        <el-tab-pane v-if="showLegacyStaticUi" :label="$t('plugins.ui.title')" name="ui">
           <PluginUIFrame ref="staticUiFrameRef" :plugin-id="pluginId" height="560px" @open-surface="openHostedSurfaceFromStaticUi" />
         </el-tab-pane>
 
@@ -205,6 +205,10 @@ const pluginDisplayText = computed(() => {
 
 const panelSurfaces = computed(() => surfaces.value.filter((surface) => surface.kind === 'panel'))
 const guideSurfaces = computed(() => surfaces.value.filter((surface) => surface.kind === 'guide' || surface.kind === 'docs'))
+// A declared panel is the current UI surface API.  Static UI is retained only
+// for legacy plugins that have not declared a panel yet; otherwise the same
+// static/index.html can be rendered twice under two different tabs.
+const showLegacyStaticUi = computed(() => hasStaticUI.value && panelSurfaces.value.length === 0)
 
 const isAdapter = computed(() => plugin.value?.type === 'adapter')
 
@@ -242,7 +246,7 @@ function resolveDefaultTab(value: unknown): string {
   const requested = resolveActiveTab(value)
   if (requested === 'panel' && panelSurfaces.value.length === 0) return 'info'
   if (requested === 'guide' && guideSurfaces.value.length === 0) return 'info'
-  if (requested === 'ui' && !hasStaticUI.value) return 'info'
+  if (requested === 'ui' && !showLegacyStaticUi.value) return 'info'
   return requested
 }
 
@@ -349,6 +353,12 @@ async function fetchSurfaces() {
     if (loadId !== currentSurfaceLoadId || currentPluginId !== pluginId.value) return
     surfaces.value = info.surfaces
     surfaceWarnings.value = info.warnings
+    if (panelSurfaces.value.length > 0) {
+      // Prefer the declared panel and invalidate a possible in-flight legacy
+      // static-UI probe from the previous plugin/page state.
+      currentStaticUiLoadId += 1
+      hasStaticUI.value = false
+    }
   } catch (caught: any) {
     if (loadId !== currentSurfaceLoadId || currentPluginId !== pluginId.value) return
     surfaces.value = []
@@ -364,6 +374,13 @@ async function fetchSurfaces() {
 }
 
 async function fetchStaticUI() {
+  // The legacy /ui-info route serves static/index.html.  A modern panel may
+  // intentionally point at that same file, so probing it would only create a
+  // duplicate "界面" tab.
+  if (panelSurfaces.value.length > 0) {
+    hasStaticUI.value = false
+    return
+  }
   const loadId = ++currentStaticUiLoadId
   const currentPluginId = pluginId.value
   try {
