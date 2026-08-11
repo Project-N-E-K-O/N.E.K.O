@@ -392,8 +392,14 @@ class OcrReaderManager(
             self._log_warning("galgame vision classifier failed to load: {}", exc)
 
     def _release_vision_classifier(self, *, detail: str) -> None:
-        with self._vision_classifier_init_lock:
-            classifier = self.vision_classifier
+        init_lock = getattr(self, "_vision_classifier_init_lock", None)
+        if init_lock is None:
+            # Teardown is intentionally safe for a manager whose construction
+            # stopped before the lazy-classifier state was fully installed.
+            init_lock = threading.Lock()
+            self._vision_classifier_init_lock = init_lock
+        with init_lock:
+            classifier = getattr(self, "vision_classifier", None)
             self.vision_classifier = None
             self._vision_classifier_initialized = False
             self._vision_classifier_detail = str(detail or "disabled")

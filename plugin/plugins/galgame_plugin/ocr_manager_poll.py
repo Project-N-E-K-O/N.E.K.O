@@ -289,10 +289,25 @@ class PollMixin:
             self._log_warning("ocr_reader rapidocr backend release failed: {}", exc)
         self._vision_classifier_shutdown_requested = True
         try:
-            await asyncio.to_thread(
-                self._release_vision_classifier,
-                detail="shutdown",
-            )
+            if cancelled is None:
+                await asyncio.to_thread(
+                    self._release_vision_classifier,
+                    detail="shutdown",
+                )
+            else:
+                # Once cancellation has started, do not add another await point:
+                # a repeated cancel must not bypass the remaining cleanup.
+                self._release_vision_classifier(detail="shutdown")
+        except asyncio.CancelledError as exc:
+            cancelled = cancelled or exc
+            try:
+                # The to_thread call keeps running after cancellation.  Taking
+                # the same lock here waits for it and makes the retry idempotent.
+                self._release_vision_classifier(detail="shutdown")
+            except Exception as release_exc:
+                self._log_warning(
+                    "ocr_reader vision classifier release failed: {}", release_exc
+                )
         except Exception as exc:
             self._log_warning("ocr_reader vision classifier release failed: {}", exc)
         try:
