@@ -316,12 +316,8 @@ class Win32CaptureBackend:
         if bool(getattr(target, "is_minimized", False)):
             raise RuntimeError("smart: target_window_minimized_for_capture")
         if not is_windows_host:
-            if not is_linux_host:
-                return window_level_backends + pixel_backends
-            if bool(getattr(target, "is_foreground", False)):
-                return window_level_backends + pixel_backends
-            if not is_wayland_host:
-                return window_level_backends + pixel_backends
+            if not is_linux_host or not is_wayland_host:
+                return list(self._backends)
             if window_level_backends:
                 return window_level_backends
             raise RuntimeError("smart: background_capture_requires_window_backend")

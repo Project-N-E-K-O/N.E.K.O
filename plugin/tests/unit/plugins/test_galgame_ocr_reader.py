@@ -3382,16 +3382,15 @@ def test_galgame_printwindow_releases_window_dc_without_deleting_wrapped_hdc(
             CreateBitmap=lambda: bitmap,
         ),
     )
+    def _print_window(_hwnd, _hdc, flags):
+        calls.append(f"printwindow:{flags}")
+        return 0
+
     monkeypatch.setattr(
         galgame_printwindow_backend.ctypes,
         "windll",
         SimpleNamespace(
-            user32=SimpleNamespace(
-                PrintWindow=lambda _hwnd, _hdc, flags: calls.append(
-                    f"printwindow:{flags}"
-                )
-                or 0
-            )
+            user32=SimpleNamespace(PrintWindow=_print_window)
         ),
     )
 
@@ -3412,6 +3411,12 @@ def test_galgame_printwindow_releases_window_dc_without_deleting_wrapped_hdc(
         "release_dc",
     ]
     assert "source_delete" not in calls
+    assert _print_window.argtypes == [
+        galgame_printwindow_backend.ctypes.wintypes.HWND,
+        galgame_printwindow_backend.ctypes.wintypes.HDC,
+        galgame_printwindow_backend.ctypes.wintypes.UINT,
+    ]
+    assert _print_window.restype is galgame_printwindow_backend.ctypes.wintypes.BOOL
 
 
 def test_ocr_capture_samples_dialogue_background_hash_at_low_frequency(tmp_path: Path) -> None:
@@ -3691,7 +3696,7 @@ def test_smart_capture_backend_non_windows_background_uses_filtered_chain(
     assert electron.calls == 1
     assert mss.calls == 0
     assert backend.last_backend_kind == "electron"
-    assert backend.last_backend_detail == "selected"
+    assert backend.last_backend_detail == "mss_unavailable_fallback"
 
 
 def test_smart_capture_backend_linux_wayland_background_fails_without_window_backend(
@@ -3778,27 +3783,28 @@ def test_smart_capture_backend_macos_background_allows_pixel_backend(
     assert backend.last_backend_kind == "mss"
 
 
-def test_smart_capture_backend_non_windows_foreground_prefers_window_backend(
+def test_smart_capture_backend_linux_x11_preserves_local_backend_order(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class _Backend:
         def __init__(self, kind: str, *, available: bool) -> None:
             self.kind = kind
             self.available = available
+            self.calls = 0
 
         def is_available(self) -> bool:
             return self.available
 
         def capture_frame(self, target, profile):
+            self.calls += 1
             return f"{self.kind}-frame"
 
     monkeypatch.setattr(sys, "platform", "linux")
     backend = galgame_ocr_reader.Win32CaptureBackend(selection="smart")
-    backend._backends = [
-        _Backend("mss", available=True),
-        _Backend("electron", available=False),
-        _Backend("pyautogui", available=True),
-    ]
+    mss = _Backend("mss", available=True)
+    electron = _Backend("electron", available=True)
+    pyautogui = _Backend("pyautogui", available=True)
+    backend._backends = [mss, pyautogui, electron]
 
     target = _window()[0]
     target.is_foreground = True
@@ -3806,8 +3812,11 @@ def test_smart_capture_backend_non_windows_foreground_prefers_window_backend(
     frame = backend.capture_frame(target, galgame_ocr_reader.OcrCaptureProfile())
 
     assert frame == "mss-frame"
+    assert mss.calls == 1
+    assert electron.calls == 0
+    assert pyautogui.calls == 0
     assert backend.last_backend_kind == "mss"
-    assert backend.last_backend_detail == "electron_unavailable_fallback"
+    assert backend.last_backend_detail == "selected"
 
 
 def test_smart_capture_backend_windows_background_keeps_printwindow_only(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ctypes
+import ctypes.wintypes
 from typing import Any
 
 from ..ocr_runtime_types import (
@@ -85,13 +86,20 @@ class PrintWindowCaptureBackend:
             # Keep background capture window-scoped. Falling back to BitBlt
             # would read visible desktop pixels and could OCR an occluding app.
             PW_RENDERFULLCONTENT = 0x00000002
-            success = ctypes.windll.user32.PrintWindow(
+            print_window = ctypes.windll.user32.PrintWindow
+            print_window.argtypes = [
+                ctypes.wintypes.HWND,
+                ctypes.wintypes.HDC,
+                ctypes.wintypes.UINT,
+            ]
+            print_window.restype = ctypes.wintypes.BOOL
+            success = print_window(
                 hwnd,
                 mem_dc.GetSafeHdc(),
                 PW_RENDERFULLCONTENT,
             )
             if not success:
-                success = ctypes.windll.user32.PrintWindow(
+                success = print_window(
                     hwnd,
                     mem_dc.GetSafeHdc(),
                     0,
