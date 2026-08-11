@@ -75,12 +75,6 @@ def _origin_is_trusted(origin: str) -> bool:
     return host in _TRUSTED_ORIGIN_HOSTS
 
 
-def _client_is_loopback(request: Request) -> bool:
-    """客户端是否来自本机回环（127.0.0.1/::1/localhost）。"""
-    host = str(request.client.host or "") if request.client is not None else ""
-    return host in ("127.0.0.1", "::1", "localhost") or host.startswith("127.")
-
-
 def _parse_push_payload(body: bytes) -> dict:
     """POST /ui-api/push 入参解析：支持 {"type":..., "text":..., ...} 或纯文本。
 
@@ -344,19 +338,14 @@ async def plugin_ui_push(plugin_id: str, request: Request):
     返回 ``queued``：成功写入各客户端缓冲队列的数目（排队计数，非客户端实际送达确认）。
     配置了 ``NEKO_SSE_PUSH_TOKEN`` 时要求 ``Authorization: Bearer <token>``。
     """
-    # 非回环部署（远程/容器访问，如 Compose 暴露）必须配置共享密钥；
-    # 本机回环无 token 时向后兼容
-    if not _client_is_loopback(request) and not _PUSH_TOKEN:
-        return JSONResponse(
-            {"ok": False, "error": "token required for non-loopback deployment"},
-            status_code=403,
-        )
-    # 鉴权：配置共享密钥后强制校验 Authorization: Bearer <token>
-    if _PUSH_TOKEN:
-        auth = request.headers.get("authorization", "")
-        scheme, _, presented = auth.partition(" ")
-        if scheme.lower() != "bearer" or presented.strip() != _PUSH_TOKEN:
-            return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
+    # 鉴权：push 一律要求共享密钥（NEKO_SSE_PUSH_TOKEN），不做回环豁免；
+    # 未配置 token 则拒绝（部署方必须配置）
+    if not _PUSH_TOKEN:
+        return JSONResponse({"ok": False, "error": "token not configured"}, status_code=503)
+    auth = request.headers.get("authorization", "")
+    scheme, _, presented = auth.partition(" ")
+    if scheme.lower() != "bearer" or presented.strip() != _PUSH_TOKEN:
+        return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
     # Origin 校验：浏览器跨站表单 POST（no-cors）可向 loopback 注入 SSE；
     # 只接受无 Origin（插件后端/curl）或本机回环 Origin
     if not _origin_is_trusted(request.headers.get("origin", "")):
