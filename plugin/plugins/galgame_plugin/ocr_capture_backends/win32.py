@@ -37,6 +37,33 @@ def _capture_region_rect(
     return crop_left, crop_top, crop_right, crop_bottom
 
 
+def _configure_user32_occlusion_signatures(user32: Any) -> None:
+    signatures = (
+        ("IsWindow", [ctypes.wintypes.HWND], ctypes.wintypes.BOOL),
+        (
+            "GetWindowThreadProcessId",
+            [ctypes.wintypes.HWND, ctypes.POINTER(ctypes.wintypes.DWORD)],
+            ctypes.wintypes.DWORD,
+        ),
+        (
+            "GetWindow",
+            [ctypes.wintypes.HWND, ctypes.wintypes.UINT],
+            ctypes.wintypes.HWND,
+        ),
+        ("IsWindowVisible", [ctypes.wintypes.HWND], ctypes.wintypes.BOOL),
+        ("IsIconic", [ctypes.wintypes.HWND], ctypes.wintypes.BOOL),
+        (
+            "GetWindowRect",
+            [ctypes.wintypes.HWND, ctypes.POINTER(ctypes.wintypes.RECT)],
+            ctypes.wintypes.BOOL,
+        ),
+    )
+    for name, argtypes, restype in signatures:
+        function = getattr(user32, name)
+        function.argtypes = argtypes
+        function.restype = restype
+
+
 def _win32_capture_region_occluded(
     target: DetectedGameWindow,
     profile: OcrCaptureProfile,
@@ -48,10 +75,11 @@ def _win32_capture_region_occluded(
         return False
     user32 = ctypes.windll.user32
     try:
+        _configure_user32_occlusion_signatures(user32)
         if not bool(user32.IsWindow(hwnd)):
             return False
     except Exception:
-        return False
+        return True
 
     target_pid = ctypes.wintypes.DWORD()
     try:

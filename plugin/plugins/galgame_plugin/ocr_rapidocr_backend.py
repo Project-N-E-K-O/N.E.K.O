@@ -37,7 +37,7 @@ def _align_rapidocr_classifier_input_shape(runtime: Any) -> None:
     try:
         model_inputs = list(get_inputs() or [])
         model_shape = list(getattr(model_inputs[0], "shape", []) or [])
-    except (IndexError, TypeError, ValueError):
+    except Exception:
         return
     if len(model_shape) != 4:
         return

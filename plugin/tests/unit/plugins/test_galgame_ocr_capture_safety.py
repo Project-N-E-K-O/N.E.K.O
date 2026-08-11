@@ -11,6 +11,7 @@ from plugin.plugins.galgame_plugin.ocr_capture_backends import _helpers
 from plugin.plugins.galgame_plugin.ocr_capture_backends import dxcam as dxcam_backend
 from plugin.plugins.galgame_plugin.ocr_capture_backends import mss as mss_backend
 from plugin.plugins.galgame_plugin.ocr_capture_backends import pyautogui as pyautogui_backend
+from plugin.plugins.galgame_plugin.ocr_capture_backends import win32 as win32_backend
 from plugin.plugins.galgame_plugin.ocr_reader import (
     DetectedGameWindow,
     OcrCaptureProfile,
@@ -34,6 +35,71 @@ def _target(*, hwnd: int = 101, pid: int = 77, foreground: bool = True):
         height=20,
         is_foreground=foreground,
     )
+
+
+def test_win32_occlusion_scan_preserves_pointer_sized_hwnds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    large_hwnd = 0x1234567887654321
+    visible_candidates: list[int] = []
+
+    class _Win32Function:
+        def __init__(self, callback) -> None:
+            self._callback = callback
+            self.argtypes = None
+            self.restype = None
+
+        def __call__(self, *args):
+            return self._callback(*args)
+
+    def _get_window(hwnd: int, _command: int) -> int:
+        return large_hwnd if int(hwnd) == 101 else 0
+
+    def _get_pid(hwnd: int, pid_pointer) -> int:
+        pid_pointer._obj.value = 77 if int(hwnd) == 101 else 88
+        return 1
+
+    def _is_visible(hwnd: int) -> int:
+        visible_candidates.append(int(hwnd))
+        return 1
+
+    def _get_rect(_hwnd: int, rect_pointer) -> int:
+        rect_pointer._obj.left = 0
+        rect_pointer._obj.top = 0
+        rect_pointer._obj.right = 20
+        rect_pointer._obj.bottom = 20
+        return 1
+
+    user32 = SimpleNamespace(
+        IsWindow=_Win32Function(lambda _hwnd: 1),
+        GetWindowThreadProcessId=_Win32Function(_get_pid),
+        GetWindow=_Win32Function(_get_window),
+        IsWindowVisible=_Win32Function(_is_visible),
+        IsIconic=_Win32Function(lambda _hwnd: 0),
+        GetWindowRect=_Win32Function(_get_rect),
+    )
+    monkeypatch.setattr(
+        win32_backend.ctypes,
+        "windll",
+        SimpleNamespace(user32=user32),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        win32_backend,
+        "_capture_region_rect",
+        lambda _target_value, _profile: (0, 0, 20, 20),
+    )
+
+    assert win32_backend._win32_capture_region_occluded(
+        _target(),
+        OcrCaptureProfile(),
+    ) is True
+    assert user32.GetWindow.restype is win32_backend.ctypes.wintypes.HWND
+    assert user32.GetWindow.argtypes == [
+        win32_backend.ctypes.wintypes.HWND,
+        win32_backend.ctypes.wintypes.UINT,
+    ]
+    assert visible_candidates == [large_hwnd]
 
 
 def _install_foreground_api(

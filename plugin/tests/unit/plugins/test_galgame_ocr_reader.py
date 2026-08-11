@@ -6655,6 +6655,52 @@ def test_rapidocr_runtime_keeps_classifier_shape_for_dynamic_onnx_dimensions(
         galgame_ocr_reader._RAPIDOCR_RUNTIME_CACHE.pop(cache_key, None)
 
 
+def test_rapidocr_runtime_keeps_classifier_shape_when_metadata_read_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_target_dir = str(tmp_path / "RapidOCR")
+
+    def _raise_metadata_error() -> list[object]:
+        raise RuntimeError("metadata unavailable")
+
+    runtime = SimpleNamespace(
+        text_cls=SimpleNamespace(
+            cls_image_shape=[3, 48, 192],
+            infer=SimpleNamespace(
+                session=SimpleNamespace(get_inputs=_raise_metadata_error),
+            ),
+        )
+    )
+    monkeypatch.setattr(
+        galgame_ocr_rapidocr_backend,
+        "load_rapidocr_runtime",
+        lambda **_kwargs: (runtime, {}),
+    )
+    backend = galgame_ocr_reader.RapidOcrBackend(
+        install_target_dir_raw=install_target_dir,
+        engine_type="onnxruntime",
+        lang_type="ch",
+        model_type="mobile",
+        ocr_version="PP-OCRv5",
+    )
+    cache_key = (
+        install_target_dir,
+        "onnxruntime",
+        "ch",
+        "mobile",
+        "PP-OCRv5",
+    )
+    galgame_ocr_reader._RAPIDOCR_RUNTIME_CACHE.pop(cache_key, None)
+
+    try:
+        assert backend._ensure_runtime() is runtime
+        assert runtime.text_cls.cls_image_shape == [3, 48, 192]
+    finally:
+        backend.close()
+        galgame_ocr_reader._RAPIDOCR_RUNTIME_CACHE.pop(cache_key, None)
+
+
 def test_rapidocr_backend_close_releases_cached_runtime(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
