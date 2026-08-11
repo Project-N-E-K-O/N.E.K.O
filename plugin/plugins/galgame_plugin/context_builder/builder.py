@@ -19,6 +19,7 @@ from ..models import (
     sanitize_snapshot_state,
 )
 from ..reader import normalize_text
+from ..ocr_text_normalize import _looks_like_self_ui_text
 
 _OCR_OVERLAY_TEXT_GUARD_SUBSTRINGS = (
     ".agent",
@@ -152,7 +153,9 @@ def _looks_like_ocr_overlay_text(text: object) -> bool:
     normalized = normalize_text(str(text or "")).strip().lower()
     if not normalized:
         return False
-    return any(token in normalized for token in _OCR_OVERLAY_TEXT_GUARD_SUBSTRINGS)
+    return _looks_like_self_ui_text(normalized) or any(
+        token in normalized for token in _OCR_OVERLAY_TEXT_GUARD_SUBSTRINGS
+    )
 
 
 def _significant_char_count(text: object) -> int:
@@ -528,7 +531,9 @@ def _global_scene_context_window(
     observed_candidates = [
         {**dict(item), "_context_source": "observed"}
         for item in history_observed_lines
-        if isinstance(item, dict) and _matches(item)
+        if isinstance(item, dict)
+        and _matches(item)
+        and str(item.get("stability") or "").strip().lower() != "stable"
     ]
     if dialogue_only:
         stable_candidates = _dialogue_context_lines(
@@ -539,6 +544,14 @@ def _global_scene_context_window(
             observed_candidates,
             limit=max(line_limit, len(observed_candidates)) if line_importance_enabled else line_limit,
         )
+    stable_keys = {
+        _dialogue_line_dedupe_key(item) for item in stable_candidates
+    }
+    observed_candidates = [
+        item
+        for item in observed_candidates
+        if _dialogue_line_dedupe_key(item) not in stable_keys
+    ]
 
     ordered_lines = _recency_ordered_context_lines(stable_candidates, observed_candidates)
     if target_line is not None:

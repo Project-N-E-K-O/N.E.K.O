@@ -149,6 +149,7 @@ class AgentSceneContextMixin:
         observed_lines = [
             item for item in list(context.get("observed_lines") or [])
             if isinstance(item, dict) and str(item.get("text") or "").strip()
+            and str(item.get("stability") or "").strip().lower() != "stable"
         ]
         choices = [
             item for item in list(context.get("recent_choices") or [])

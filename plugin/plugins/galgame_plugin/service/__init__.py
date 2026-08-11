@@ -2073,6 +2073,27 @@ def _append_observed_line(
     _append_limited(history_observed_lines, item, limit)
 
 
+def _remove_observed_line(
+    history_observed_lines: list[dict[str, Any]],
+    item: dict[str, Any],
+) -> None:
+    text = normalize_text(str(item.get("text") or ""))
+    line_id = str(item.get("line_id") or "")
+    scene_id = str(item.get("scene_id") or "")
+    history_observed_lines[:] = [
+        existing
+        for existing in history_observed_lines
+        if not (
+            (line_id and line_id == str(existing.get("line_id") or ""))
+            or (
+                text
+                and text == normalize_text(str(existing.get("text") or ""))
+                and scene_id == str(existing.get("scene_id") or "")
+            )
+        )
+    ]
+
+
 def _update_dedupe_window(
     dedupe_window: list[dict[str, str]],
     fingerprint: dict[str, str],
@@ -2264,10 +2285,9 @@ def apply_event_to_histories(
             config.history_lines_limit,
         )
         if history_observed_lines is not None:
-            _append_observed_line(
+            _remove_observed_line(
                 history_observed_lines,
                 _line_history_entry(payload_obj, ts=event_ts, stability="stable"),
-                limit=config.history_lines_limit,
             )
         return
 

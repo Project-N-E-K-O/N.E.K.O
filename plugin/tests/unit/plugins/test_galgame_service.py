@@ -631,7 +631,7 @@ def test_payload_text_length_cap_allows_multilingual_text_and_unknown_fields() -
     history_events, history_lines, history_observed_lines, _choices, _dedupe, updated = histories
     assert len(history_events) == 1
     assert len(history_lines) == 1
-    assert len(history_observed_lines) == 1
+    assert history_observed_lines == []
     assert history_lines[0]["text"] == "あいう😊\n次です。"
     assert updated["text"] == "あいう😊\n次です。"
 
