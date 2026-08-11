@@ -128,21 +128,6 @@ class AgentObservationMixin:
                 },
                 limit=32,
             )
-            if self._observed_scene_id and self._should_push_scene(shared):
-                self._schedule_scene_summary_task(
-                    shared=shared,
-                    session_id=session_id,
-                    scene_id=current_scene_id,
-                    route_id=current_route_id,
-                    snapshot=snapshot,
-                    context=context,
-                    trigger="scene_changed",
-                    metadata={
-                        "context_type": "galgame_scene_context",
-                        "trigger": "scene_changed",
-                    },
-                    update_scene_memory=True,
-                )
             self._observed_scene_id = current_scene_id
             self._observed_route_id = current_route_id
             self._scene_tracker.reset_summary(scene_id=current_scene_id)
@@ -180,7 +165,7 @@ class AgentObservationMixin:
                 await self._maybe_consult_cat(
                     shared,
                     snapshot=snapshot,
-                    scene_changed=bool(scene_changed),
+                    scene_changed=False,
                 )
             except Exception:  # noqa: BLE001 — consultation must never break observe
                 self._logger.warning(

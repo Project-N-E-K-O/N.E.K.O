@@ -609,14 +609,34 @@ class TextMixin:
                 text=text,
                 now=now,
             )
-        if emit_observed and self._writer.emit_line_observed(
-            cleaned_text,
-            ts=utc_now_iso(now),
-            ocr_confidence=ocr_confidence,
-            text_source=text_source,
-        ):
-            observed = self._line_payload_from_writer(stability="tentative")
-            self._last_observed_line = observed
+        pending_visual_scene = bool(self._pending_visual_scene_hash)
+        if emit_observed:
+            if pending_visual_scene:
+                state_obj = getattr(self._writer, "_state", {})
+                route_id = (
+                    str(state_obj.get("route_id") or "")
+                    if isinstance(state_obj, dict)
+                    else ""
+                )
+                if text:
+                    self._last_observed_line = {
+                        "line_id": "",
+                        "speaker": speaker,
+                        "text": text,
+                        "scene_id": "",
+                        "route_id": route_id,
+                        "stability": "tentative",
+                        "ts": utc_now_iso(now),
+                    }
+                    self._last_observed_at = utc_now_iso(now)
+            elif self._writer.emit_line_observed(
+                cleaned_text,
+                ts=utc_now_iso(now),
+                ocr_confidence=ocr_confidence,
+                text_source=text_source,
+            ):
+                observed = self._line_payload_from_writer(stability="tentative")
+                self._last_observed_line = observed
         tracker = state or self._default_ocr_state
         effective_repeat_threshold = (
             self._line_changed_repeat_threshold()
@@ -625,7 +645,9 @@ class TextMixin:
         )
         if dialogue_library_match is not None:
             effective_repeat_threshold = 1
-        if tracker.stable_text and int(effective_repeat_threshold or 1) > 1:
+        if pending_visual_scene:
+            effective_repeat_threshold = max(2, int(effective_repeat_threshold or 1))
+        elif tracker.stable_text and int(effective_repeat_threshold or 1) > 1:
             cleaned_key = _ocr_stability_key(cleaned_text)
             stable_key = tracker.stable_text_key or _ocr_stability_key(tracker.stable_text)
             if (
@@ -641,6 +663,12 @@ class TextMixin:
         ):
             return False
         emitted_text = tracker.stable_text or cleaned_text
+        if pending_visual_scene:
+            self._commit_pending_visual_scene(
+                now=now,
+                diagnostic=self._pending_visual_scene_commit_diagnostic
+                or "pending_scene_committed_with_stable_line",
+            )
         emitted = self._writer.emit_line(
             emitted_text,
             ts=utc_now_iso(now),

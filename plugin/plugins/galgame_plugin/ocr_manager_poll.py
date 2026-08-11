@@ -582,9 +582,8 @@ class PollMixin:
             and self._pending_visual_scene_at > 0
             and now - self._pending_visual_scene_at > _PENDING_VISUAL_SCENE_MAX_SECONDS
         ):
-            self._commit_pending_visual_scene(
-                now=now,
-                diagnostic="pending_scene_committed_by_timeout",
+            self._clear_pending_visual_scene(
+                diagnostic="pending_scene_discarded_by_timeout",
             )
 
         if bool(getattr(self, "_visual_scene_committed", False)):
@@ -595,6 +594,12 @@ class PollMixin:
         detail = self._runtime.detail
         observed_or_stable_emitted = int(self._writer.last_seq or 0) > text_event_seq_before_capture
         known_screen_classified = self._screen_classification_is_known(screen_classification)
+        pending_repeat_waiting = bool(
+            self._pending_visual_scene_hash
+            and self._default_ocr_state.last_block_reason == "waiting_for_repeat"
+        )
+        if pending_repeat_waiting:
+            result.should_rescan = True
 
         if emitted:
             self._reset_known_screen_stuck_tracking()
@@ -624,6 +629,12 @@ class PollMixin:
             if status == "starting":
                 status = "active"
             detail = "capture_failed"
+        elif pending_repeat_waiting:
+            self._mark_observed_progress(now=now)
+            self._last_heartbeat_at = now
+            if status == "starting":
+                status = "active"
+            detail = "receiving_observed_text"
         elif screen_event_emitted or known_screen_classified:
             self._consecutive_no_text_polls = 0
             if status == "starting":

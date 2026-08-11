@@ -39,6 +39,67 @@ def test_game_llm_agent_menu_stage_without_choices_is_choice_menu(tmp_path: Path
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
+async def test_game_llm_agent_scene_change_updates_boundary_without_push_or_consult(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    agent = GameLLMAgent(
+        plugin=plugin,
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    shared_scene_a = _shared_state(
+        mode="companion",
+        push_notifications=True,
+        snapshot=_session_state(
+            scene_id="scene-a",
+            line_id="line-a",
+            text="上一场景。",
+        ),
+    )
+    await agent._observe(shared_scene_a)
+
+    scheduled: list[str] = []
+    consultation_scene_flags: list[bool] = []
+
+    def _record_schedule(**kwargs: Any) -> None:
+        scheduled.append(str(kwargs.get("trigger") or ""))
+
+    async def _record_consult(
+        _shared: dict[str, Any],
+        *,
+        snapshot: dict[str, Any],
+        scene_changed: bool,
+    ) -> None:
+        del snapshot
+        consultation_scene_flags.append(scene_changed)
+
+    monkeypatch.setattr(agent, "_schedule_scene_summary_task", _record_schedule)
+    monkeypatch.setattr(agent, "_maybe_consult_cat", _record_consult)
+    shared_scene_b = _shared_state(
+        mode="companion",
+        push_notifications=True,
+        snapshot=_session_state(
+            scene_id="scene-b",
+            line_id="line-b",
+            text="新场景。",
+        ),
+    )
+
+    await agent._observe(shared_scene_b)
+
+    assert agent._observed_scene_id == "scene-b"
+    assert scheduled == []
+    assert consultation_scene_flags == [False]
+    assert ctx.pushed_messages == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
 async def test_game_llm_agent_ocr_menu_without_bridge_choices_uses_keyboard_fallback(
     tmp_path: Path,
 ) -> None:
@@ -3792,8 +3853,8 @@ async def test_game_llm_agent_set_standby_interrupts_awaiting_bridge_without_hos
     ("mode", "expected_kinds"),
     [
         ("silent", []),
-        ("companion", ["scene_summary", "choice_reason"]),
-        ("choice_advisor", ["scene_summary", "choice_reason"]),
+        ("companion", ["choice_reason"]),
+        ("choice_advisor", ["choice_reason"]),
     ],
 )
 async def test_game_llm_agent_mode_controls_push_types(
@@ -5097,7 +5158,7 @@ async def test_game_llm_agent_scene_summary_fallback_marks_observed_as_tentative
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
-async def test_game_llm_agent_scene_summary_does_not_block_observe(
+async def test_game_llm_agent_scene_change_does_not_schedule_summary(
     tmp_path: Path,
 ) -> None:
     plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
@@ -5113,17 +5174,17 @@ async def test_game_llm_agent_scene_summary_does_not_block_observe(
     shared_before = _shared_state(
         mode="companion",
         connection_state="idle",
-        snapshot=_session_state(text="第一幕。", scene_id="scene-a", line_id="line-1"),
+        snapshot=_session_state(text="scene a", scene_id="scene-a", line_id="line-1"),
     )
     shared_after = _shared_state(
         mode="companion",
         connection_state="idle",
-        snapshot=_session_state(text="第二幕。", scene_id="scene-b", line_id="line-2"),
+        snapshot=_session_state(text="scene b", scene_id="scene-b", line_id="line-2"),
         history_lines=[
             {
                 "line_id": "line-2",
-                "speaker": "雪乃",
-                "text": "第二幕。",
+                "speaker": "Yukino",
+                "text": "scene b",
                 "scene_id": "scene-b",
                 "route_id": "",
                 "ts": "2026-04-21T08:34:00Z",
@@ -5133,21 +5194,15 @@ async def test_game_llm_agent_scene_summary_does_not_block_observe(
 
     await agent.tick(shared_before)
     await asyncio.wait_for(agent.tick(shared_after), timeout=0.5)
-    await asyncio.wait_for(gateway.summary_started.wait(), timeout=0.5)
 
     assert ctx.pushed_messages == []
-
-    gateway.release_summary.set()
-    await _drain_agent_summary_tasks(agent)
-
-    assert ctx.pushed_messages[-1]["metadata"]["kind"] == "scene_summary"
-    assert ctx.pushed_messages[-1]["metadata"]["scene_id"] == "scene-b"
-    assert "llm summary for scene-b" in ctx.pushed_messages[-1]["content"]
+    assert gateway.summary_started.is_set() is False
+    assert agent._summary_tasks == set()
 
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
-async def test_game_llm_agent_discards_stale_background_scene_summary(
+async def test_game_llm_agent_repeated_scene_changes_do_not_schedule_summaries(
     tmp_path: Path,
 ) -> None:
     plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
@@ -5165,36 +5220,31 @@ async def test_game_llm_agent_discards_stale_background_scene_summary(
         _shared_state(
             mode="companion",
             connection_state="idle",
-            snapshot=_session_state(text="第一幕。", scene_id="scene-a", line_id="line-1"),
+            snapshot=_session_state(text="scene a", scene_id="scene-a", line_id="line-1"),
         )
     )
     await agent.tick(
         _shared_state(
             mode="companion",
             connection_state="idle",
-            snapshot=_session_state(text="第二幕。", scene_id="scene-b", line_id="line-2"),
+            snapshot=_session_state(text="scene b", scene_id="scene-b", line_id="line-2"),
         )
     )
-    await asyncio.wait_for(gateway.summary_started.wait(), timeout=0.5)
-    gateway.summary_started.clear()
-
     await asyncio.wait_for(
         agent.tick(
             _shared_state(
                 mode="companion",
                 connection_state="idle",
-                snapshot=_session_state(text="第三幕。", scene_id="scene-c", line_id="line-3"),
+                snapshot=_session_state(text="scene c", scene_id="scene-c", line_id="line-3"),
             )
         ),
         timeout=0.5,
     )
-    await asyncio.wait_for(gateway.summary_started.wait(), timeout=0.5)
-    gateway.release_summary.set()
-    await _drain_agent_summary_tasks(agent)
 
-    pushed_scene_ids = [item["metadata"]["scene_id"] for item in ctx.pushed_messages]
-    assert "scene-b" not in pushed_scene_ids
-    assert pushed_scene_ids == ["scene-c"]
+    assert agent._observed_scene_id == "scene-c"
+    assert gateway.summary_started.is_set() is False
+    assert agent._summary_tasks == set()
+    assert ctx.pushed_messages == []
 
 
 @pytest.mark.asyncio

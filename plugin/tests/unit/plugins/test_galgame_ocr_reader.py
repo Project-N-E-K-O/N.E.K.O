@@ -3231,7 +3231,9 @@ def test_dxcam_camera_creation_is_serialized(monkeypatch: pytest.MonkeyPatch) ->
     assert results == [camera, camera]
 
 
-def test_background_hash_scene_change_resets_no_text_counter_without_losing_scene(tmp_path: Path) -> None:
+def test_background_hash_scene_change_preserves_ocr_state_while_scene_is_pending(
+    tmp_path: Path,
+) -> None:
     bridge_root = tmp_path / "bridge"
     bridge_root.mkdir()
     manager = OcrReaderManager(
@@ -3245,6 +3247,11 @@ def test_background_hash_scene_change_resets_no_text_counter_without_losing_scen
     )
     manager._last_background_hash = "0000000000000000"
     manager._consecutive_no_text_polls = 3
+    manager._default_ocr_state.last_raw_text = "旧台词。"
+    manager._default_ocr_state.last_text_key = "旧台词"
+    manager._default_ocr_state.repeat_count = 2
+    manager._default_ocr_state.stable_text = "旧台词。"
+    manager._default_ocr_state.stable_text_key = "旧台词"
     manager._aihong_stage = galgame_ocr_reader._AIHONG_MENU_STAGE
     manager._aihong_dialogue_idle_polls = 4
     manager._aihong_menu_missing_polls = 3
@@ -3261,13 +3268,15 @@ def test_background_hash_scene_change_resets_no_text_counter_without_losing_scen
         is False
     )
 
-    assert manager._consecutive_no_text_polls == 0
+    assert manager._consecutive_no_text_polls == 3
     assert manager._last_background_hash == "ffffffffffffffff"
     assert manager._pending_visual_scene_hash == "ffffffffffffffff"
-    assert manager._aihong_stage == galgame_ocr_reader._AIHONG_DIALOGUE_STAGE
-    assert manager._aihong_dialogue_idle_polls == 0
-    assert manager._aihong_menu_missing_polls == 0
-    assert manager._aihong_menu_ocr_state.last_raw_text == ""
+    assert manager._default_ocr_state.stable_text == "旧台词。"
+    assert manager._default_ocr_state.repeat_count == 2
+    assert manager._aihong_stage == galgame_ocr_reader._AIHONG_MENU_STAGE
+    assert manager._aihong_dialogue_idle_polls == 4
+    assert manager._aihong_menu_missing_polls == 3
+    assert manager._aihong_menu_ocr_state.last_raw_text == "去东院\n去西院"
 
 
 def test_aihong_menu_reset_clears_no_text_counter(tmp_path: Path) -> None:
@@ -3291,7 +3300,71 @@ def test_aihong_menu_reset_clears_no_text_counter(tmp_path: Path) -> None:
     assert manager._aihong_stage == galgame_ocr_reader._AIHONG_DIALOGUE_STAGE
 
 
-def test_pending_visual_scene_commits_before_observed_line(tmp_path: Path) -> None:
+def test_pending_visual_scene_waits_for_stable_line_before_commit(tmp_path: Path) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    writer = OcrReaderBridgeWriter(bridge_root=bridge_root, time_fn=lambda: 3000.0)
+    writer.start_session(_window()[0])
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=_make_config(bridge_root),
+        time_fn=lambda: 3000.0,
+        platform_fn=lambda: True,
+        window_scanner=_window,
+        capture_backend=_FakeCaptureBackend(),
+        ocr_backend=_FakeOcrBackend(),
+        writer=writer,
+    )
+    assert manager._emit_line_from_ocr_text(
+        "王生：上一句。",
+        now=2999.0,
+        repeat_threshold=1,
+    )
+    manager._pending_visual_scene_hash = "ffffffffffffffff"
+    manager._pending_visual_scene_at = 3000.0
+    writer.emit_screen_classified(
+        screen_type=OCR_CAPTURE_PROFILE_STAGE_TITLE,
+        confidence=0.95,
+        ts=galgame_ocr_reader.utc_now_iso(3000.0),
+    )
+
+    assert (
+        manager._emit_line_from_ocr_text(
+            "王生：先等等。",
+            now=3000.0,
+            repeat_threshold=2,
+        )
+        is False
+    )
+    assert manager._pending_visual_scene_hash == "ffffffffffffffff"
+    assert manager._default_ocr_state.stable_text == "王生：上一句。"
+    assert manager._default_ocr_state.repeat_count == 1
+    assert manager._default_ocr_state.last_block_reason == "waiting_for_repeat"
+    assert manager._last_observed_line["text"] == "先等等。"
+    events = _read_events(bridge_root / writer.game_id / "events.jsonl")
+    event_types = [event["type"] for event in events]
+    assert event_types[-1:] == ["screen_classified"]
+    assert "scene_changed" not in event_types
+
+    assert manager._emit_line_from_ocr_text(
+        "王生：先等等。",
+        now=3000.2,
+        repeat_threshold=2,
+    )
+    assert manager._pending_visual_scene_hash == ""
+    events = _read_events(bridge_root / writer.game_id / "events.jsonl")
+    event_types = [event["type"] for event in events]
+    assert event_types[-2:] == ["scene_changed", "line_changed"]
+    scene_id = events[-2]["payload"]["scene_id"]
+    assert events[-1]["payload"]["scene_id"] == scene_id
+    assert manager._runtime.scene_ordering_diagnostic == (
+        "pending_scene_committed_before_observed"
+    )
+
+
+def test_pending_visual_scene_different_second_candidate_stays_pending(
+    tmp_path: Path,
+) -> None:
     bridge_root = tmp_path / "bridge"
     bridge_root.mkdir()
     writer = OcrReaderBridgeWriter(bridge_root=bridge_root, time_fn=lambda: 3000.0)
@@ -3309,23 +3382,99 @@ def test_pending_visual_scene_commits_before_observed_line(tmp_path: Path) -> No
     manager._pending_visual_scene_hash = "ffffffffffffffff"
     manager._pending_visual_scene_at = 3000.0
 
-    assert (
-        manager._emit_line_from_ocr_text(
-            "王生：先等等。",
-            now=3000.0,
-            repeat_threshold=2,
-        )
-        is False
+    assert not manager._emit_line_from_ocr_text(
+        "王生：第一候选。",
+        now=3000.0,
+        repeat_threshold=1,
     )
-    assert manager._pending_visual_scene_hash == ""
+    assert not manager._emit_line_from_ocr_text(
+        "王生：第二候选。",
+        now=3000.1,
+        repeat_threshold=1,
+    )
+
+    assert manager._pending_visual_scene_hash == "ffffffffffffffff"
+    assert manager._default_ocr_state.repeat_count == 1
+    assert manager._default_ocr_state.last_block_reason == "waiting_for_repeat"
+    assert manager._last_observed_line["text"] == "第二候选。"
     events = _read_events(bridge_root / writer.game_id / "events.jsonl")
-    event_types = [event["type"] for event in events]
-    assert event_types[-2:] == ["scene_changed", "line_observed"]
-    scene_id = events[-2]["payload"]["scene_id"]
-    assert events[-1]["payload"]["scene_id"] == scene_id
-    assert manager._runtime.scene_ordering_diagnostic == (
-        "pending_scene_committed_before_observed"
+    assert all(event["type"] != "scene_changed" for event in events)
+    assert all(event["type"] != "line_changed" for event in events)
+
+
+def test_pending_visual_scene_capture_failure_preserves_candidate_for_recovery(
+    tmp_path: Path,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    writer = OcrReaderBridgeWriter(bridge_root=bridge_root, time_fn=lambda: 3000.0)
+    writer.start_session(_window()[0])
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=_make_config(bridge_root),
+        time_fn=lambda: 3000.0,
+        platform_fn=lambda: True,
+        window_scanner=_window,
+        capture_backend=_FakeCaptureBackend(),
+        ocr_backend=_FakeOcrBackend(),
+        writer=writer,
     )
+    target = _window()[0]
+    active_backend = OcrBackendDescriptor(kind="fake", available=True)
+    manager._pending_visual_scene_hash = "ffffffffffffffff"
+    manager._pending_visual_scene_at = 3000.0
+    assert not manager._emit_line_from_ocr_text(
+        "王生：恢复后确认。",
+        now=3000.0,
+        repeat_threshold=1,
+    )
+    candidate_before_failure = dict(manager._last_observed_line)
+    manager._last_capture_error = "foreground_changed_during_screen_capture"
+
+    result = manager._finalize_tick_result(
+        result=galgame_ocr_reader.OcrReaderTickResult(),
+        now=3000.1,
+        poll_started_at=3000.1,
+        backend_plan=SelectedOcrBackendPlan(primary=active_backend),
+        active_backend=active_backend,
+        backend_detail_override="",
+        target=target,
+        aihong_two_stage_enabled=False,
+        runtime_profile=OcrCaptureProfile(),
+        runtime_capture_profile_selection=None,  # type: ignore[arg-type]
+        selection=galgame_ocr_reader.WindowSelectionResult(target=target),
+        emitted=False,
+        guard_blocked=False,
+        screen_classification=ScreenClassification(),
+        screen_event_emitted=False,
+        capture_attempted=True,
+        capture_completed=False,
+        capture_error=True,
+        text_event_seq_before_capture=writer.last_seq,
+        foreground_advance_stable_grace_active=False,
+    )
+
+    assert result.should_rescan is True
+    assert result.runtime["detail"] == "capture_failed"
+    assert result.runtime["last_capture_error"] == (
+        "foreground_changed_during_screen_capture"
+    )
+    assert manager._pending_visual_scene_hash == "ffffffffffffffff"
+    assert manager._last_observed_line == candidate_before_failure
+    assert manager._default_ocr_state.repeat_count == 1
+    events = _read_events(bridge_root / writer.game_id / "events.jsonl")
+    assert all(event["type"] != "scene_changed" for event in events)
+
+    assert manager._emit_line_from_ocr_text(
+        "王生：恢复后确认。",
+        now=3000.2,
+        repeat_threshold=1,
+    )
+    events = _read_events(bridge_root / writer.game_id / "events.jsonl")
+    assert [event["type"] for event in events][-2:] == [
+        "scene_changed",
+        "line_changed",
+    ]
 
 
 def test_committed_pending_visual_scene_requests_rescan(tmp_path: Path) -> None:
@@ -3379,7 +3528,60 @@ def test_committed_pending_visual_scene_requests_rescan(tmp_path: Path) -> None:
     assert manager._visual_scene_committed is False
 
 
-def test_pending_visual_scene_commits_before_stable_line_when_observed_disabled(
+def test_pending_visual_scene_timeout_discards_boundary_without_empty_scene(
+    tmp_path: Path,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    writer = OcrReaderBridgeWriter(bridge_root=bridge_root, time_fn=lambda: 3000.0)
+    writer.start_session(_window()[0])
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=_make_config(bridge_root),
+        time_fn=lambda: 3000.0,
+        platform_fn=lambda: True,
+        window_scanner=_window,
+        capture_backend=_FakeCaptureBackend(),
+        ocr_backend=_FakeOcrBackend(),
+        writer=writer,
+    )
+    target = _window()[0]
+    active_backend = OcrBackendDescriptor(kind="fake", available=True)
+    manager._pending_visual_scene_hash = "ffffffffffffffff"
+    manager._pending_visual_scene_at = 3000.0
+
+    manager._finalize_tick_result(
+        result=galgame_ocr_reader.OcrReaderTickResult(),
+        now=3000.0 + galgame_ocr_reader._PENDING_VISUAL_SCENE_MAX_SECONDS + 0.1,
+        poll_started_at=3000.0,
+        backend_plan=SelectedOcrBackendPlan(primary=active_backend),
+        active_backend=active_backend,
+        backend_detail_override="",
+        target=target,
+        aihong_two_stage_enabled=False,
+        runtime_profile=OcrCaptureProfile(),
+        runtime_capture_profile_selection=None,  # type: ignore[arg-type]
+        selection=galgame_ocr_reader.WindowSelectionResult(target=target),
+        emitted=False,
+        guard_blocked=False,
+        screen_classification=ScreenClassification(),
+        screen_event_emitted=False,
+        capture_attempted=True,
+        capture_completed=True,
+        capture_error=False,
+        text_event_seq_before_capture=writer.last_seq,
+        foreground_advance_stable_grace_active=False,
+    )
+
+    assert manager._pending_visual_scene_hash == ""
+    assert manager._runtime.scene_ordering_diagnostic == (
+        "pending_scene_discarded_by_timeout"
+    )
+    events = _read_events(bridge_root / writer.game_id / "events.jsonl")
+    assert all(event["type"] != "scene_changed" for event in events)
+
+
+def test_pending_visual_scene_commits_with_stable_line_when_observed_disabled(
     tmp_path: Path,
 ) -> None:
     bridge_root = tmp_path / "bridge"
@@ -3403,6 +3605,41 @@ def test_pending_visual_scene_commits_before_stable_line_when_observed_disabled(
         manager._emit_line_from_ocr_text(
             "王生：稳定了。",
             now=3000.0,
+            emit_observed=False,
+            repeat_threshold=1,
+        )
+        is False
+    )
+    assert manager._pending_visual_scene_hash == "eeeeeeeeeeeeeeee"
+    assert manager._last_observed_line == {}
+    active_backend = OcrBackendDescriptor(kind="fake", available=True)
+    result = manager._finalize_tick_result(
+        result=galgame_ocr_reader.OcrReaderTickResult(),
+        now=3000.1,
+        poll_started_at=3000.1,
+        backend_plan=SelectedOcrBackendPlan(primary=active_backend),
+        active_backend=active_backend,
+        backend_detail_override="",
+        target=_window()[0],
+        aihong_two_stage_enabled=False,
+        runtime_profile=OcrCaptureProfile(),
+        runtime_capture_profile_selection=None,  # type: ignore[arg-type]
+        selection=galgame_ocr_reader.WindowSelectionResult(target=_window()[0]),
+        emitted=False,
+        guard_blocked=False,
+        screen_classification=ScreenClassification(),
+        screen_event_emitted=False,
+        capture_attempted=True,
+        capture_completed=True,
+        capture_error=False,
+        text_event_seq_before_capture=writer.last_seq,
+        foreground_advance_stable_grace_active=False,
+    )
+    assert result.should_rescan is True
+    assert (
+        manager._emit_line_from_ocr_text(
+            "王生：稳定了。",
+            now=3000.2,
             emit_observed=False,
             repeat_threshold=1,
         )
@@ -3535,9 +3772,15 @@ def test_pending_background_scene_commits_for_non_dialogue_boundary(
         ts=galgame_ocr_reader.utc_now_iso(3001.0),
     )
 
-    assert manager._emit_line_from_ocr_text(
+    assert not manager._emit_line_from_ocr_text(
         "Alice: This is a new chapter.",
         now=3001.0,
+        repeat_threshold=1,
+    )
+    assert manager._pending_visual_scene_hash == "dddddddddddddddd"
+    assert manager._emit_line_from_ocr_text(
+        "Alice: This is a new chapter.",
+        now=3001.2,
         repeat_threshold=1,
     )
 
@@ -3756,15 +3999,21 @@ def test_configured_background_scene_change_distance_does_not_change_force_thres
     assert manager._pending_visual_scene_hash == "ffffffffffffffff"
     assert manager._pending_visual_scene_distance == 64
 
-    assert manager._emit_line_from_ocr_text(
+    assert not manager._emit_line_from_ocr_text(
         "王生：这是真正的新场景。",
         now=3000.1,
+        repeat_threshold=1,
+    )
+    assert manager._pending_visual_scene_hash == "ffffffffffffffff"
+    assert manager._emit_line_from_ocr_text(
+        "王生：这是真正的新场景。",
+        now=3000.2,
         repeat_threshold=1,
     )
 
     assert manager._pending_visual_scene_hash == ""
     assert manager._runtime.scene_ordering_diagnostic == (
-        "pending_scene_committed_by_force_background_distance"
+        "pending_scene_confirmed_by_force_background_distance"
     )
 
 
@@ -3803,26 +4052,30 @@ def test_followup_background_hash_pending_scene_commits_before_line(
     assert manager._runtime.scene_ordering_diagnostic == (
         "followup_background_hash_scene_pending"
     )
-    assert (
+    assert not (
         manager._emit_line_from_ocr_text(
             "王生：新场景。",
             now=3000.1,
             repeat_threshold=1,
         )
-        is True
+    )
+    assert manager._pending_visual_scene_hash == "ffffffffffffffff"
+    assert manager._emit_line_from_ocr_text(
+        "王生：新场景。",
+        now=3000.2,
+        repeat_threshold=1,
     )
     events = _read_events(bridge_root / writer.game_id / "events.jsonl")
     event_types = [event["type"] for event in events]
-    assert event_types[-3:] == ["scene_changed", "line_observed", "line_changed"]
-    scene_id = events[-3]["payload"]["scene_id"]
-    assert events[-2]["payload"]["scene_id"] == scene_id
+    assert event_types[-2:] == ["scene_changed", "line_changed"]
+    scene_id = events[-2]["payload"]["scene_id"]
     assert events[-1]["payload"]["scene_id"] == scene_id
     assert manager._runtime.scene_ordering_diagnostic == (
         "followup_background_hash_scene_committed"
     )
 
 
-def test_background_candidate_commits_before_first_new_scene_observed_line(
+def test_background_candidate_waits_for_repeat_before_first_new_scene_line(
     tmp_path: Path,
 ) -> None:
     bridge_root = tmp_path / "bridge"
@@ -3854,21 +4107,29 @@ def test_background_candidate_commits_before_first_new_scene_observed_line(
             now=3000.0,
             repeat_threshold=1,
         )
-        is True
+        is False
+    )
+    assert manager._pending_visual_scene_hash == "00000000ffffffff"
+    events = _read_events(bridge_root / writer.game_id / "events.jsonl")
+    assert all(event["type"] != "scene_changed" for event in events)
+
+    assert manager._emit_line_from_ocr_text(
+        "王生：新场景台词。",
+        now=3000.2,
+        repeat_threshold=1,
     )
     events = _read_events(bridge_root / writer.game_id / "events.jsonl")
     event_types = [event["type"] for event in events]
-    assert event_types[-3:] == ["scene_changed", "line_observed", "line_changed"]
-    scene_id = events[-3]["payload"]["scene_id"]
-    assert events[-2]["payload"]["scene_id"] == scene_id
+    assert event_types[-2:] == ["scene_changed", "line_changed"]
+    scene_id = events[-2]["payload"]["scene_id"]
     assert events[-1]["payload"]["scene_id"] == scene_id
-    assert events[-3]["payload"]["reason"] == "background_changed"
+    assert events[-2]["payload"]["reason"] == "background_changed"
     assert manager._runtime.scene_ordering_diagnostic == (
         "background_candidate_committed_before_observed"
     )
 
 
-def test_background_candidate_commits_before_first_new_scene_stable_line_when_observed_disabled(
+def test_background_candidate_waits_for_repeat_when_observed_disabled(
     tmp_path: Path,
 ) -> None:
     bridge_root = tmp_path / "bridge"
@@ -3899,7 +4160,14 @@ def test_background_candidate_commits_before_first_new_scene_stable_line_when_ob
             emit_observed=False,
             repeat_threshold=1,
         )
-        is True
+        is False
+    )
+    assert manager._pending_visual_scene_hash == "00000000ffffffff"
+    assert manager._emit_line_from_ocr_text(
+        "王生：新场景稳定台词。",
+        now=3000.2,
+        emit_observed=False,
+        repeat_threshold=1,
     )
     events = _read_events(bridge_root / writer.game_id / "events.jsonl")
     event_types = [event["type"] for event in events]
@@ -4106,8 +4374,16 @@ def test_background_candidate_does_not_duplicate_scene_changed_after_confirmed_p
             now=3000.0,
             repeat_threshold=1,
         )
-        is True
+        is False
     )
+    assert manager._pending_visual_scene_hash == "eeeeeeeeeeeeeeee"
+    assert not manager._last_stable_line, manager._last_stable_line
+    assert manager._emit_line_from_ocr_text(
+        "王生：台词。",
+        now=3000.2,
+        repeat_threshold=1,
+    )
+    assert manager._pending_visual_scene_hash == ""
     events = _read_events(bridge_root / writer.game_id / "events.jsonl")
     scene_events = [event for event in events if event["type"] == "scene_changed"]
     assert len(scene_events) == 1
@@ -4148,7 +4424,13 @@ def test_background_candidate_uses_default_threshold_28_without_requiring_24(
             now=3000.0,
             repeat_threshold=1,
         )
-        is True
+        is False
+    )
+    assert manager._pending_visual_scene_hash == "00000000ffffffff"
+    assert manager._emit_line_from_ocr_text(
+        "王生：默认阈值台词。",
+        now=3000.2,
+        repeat_threshold=1,
     )
     events = _read_events(bridge_root / writer.game_id / "events.jsonl")
     scene_events = [event for event in events if event["type"] == "scene_changed"]
@@ -4196,7 +4478,13 @@ def test_background_candidate_overwritten_when_new_hash_exceeds_threshold(
             now=3001.0,
             repeat_threshold=1,
         )
-        is True
+        is False
+    )
+    assert manager._pending_visual_scene_hash == "ffffffff00000000"
+    assert manager._emit_line_from_ocr_text(
+        "王生：覆盖后台词。",
+        now=3001.2,
+        repeat_threshold=1,
     )
     events = _read_events(bridge_root / writer.game_id / "events.jsonl")
     scene_events = [event for event in events if event["type"] == "scene_changed"]
@@ -4204,7 +4492,7 @@ def test_background_candidate_overwritten_when_new_hash_exceeds_threshold(
     assert scene_events[0]["payload"]["background_hash"] == "ffffffff00000000"
 
 
-def test_background_candidate_force_distance_commits_immediately(
+def test_background_candidate_force_distance_still_waits_for_repeat(
     tmp_path: Path,
 ) -> None:
     bridge_root = tmp_path / "bridge"
@@ -4240,7 +4528,13 @@ def test_background_candidate_force_distance_commits_immediately(
             now=3001.0,
             repeat_threshold=1,
         )
-        is True
+        is False
+    )
+    assert manager._pending_visual_scene_hash == "ffffffffffffffff"
+    assert manager._emit_line_from_ocr_text(
+        "小红：你好呀。",
+        now=3001.2,
+        repeat_threshold=1,
     )
     events = _read_events(bridge_root / writer.game_id / "events.jsonl")
     scene_events = [event for event in events if event["type"] == "scene_changed"]
@@ -4250,7 +4544,7 @@ def test_background_candidate_force_distance_commits_immediately(
     )
 
 
-def test_background_candidate_commits_after_realistic_19_second_delay(
+def test_background_candidate_waits_for_repeat_after_realistic_19_second_delay(
     tmp_path: Path,
 ) -> None:
     bridge_root = tmp_path / "bridge"
@@ -4286,7 +4580,13 @@ def test_background_candidate_commits_after_realistic_19_second_delay(
             now=3019.0,
             repeat_threshold=1,
         )
-        is True
+        is False
+    )
+    assert manager._pending_visual_scene_hash == "00000000ffffffff"
+    assert manager._emit_line_from_ocr_text(
+        "王生：新场景第一句。",
+        now=3019.2,
+        repeat_threshold=1,
     )
     events = _read_events(bridge_root / writer.game_id / "events.jsonl")
     scene_events = [event for event in events if event["type"] == "scene_changed"]
