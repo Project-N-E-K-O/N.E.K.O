@@ -122,24 +122,74 @@ def _foreground_window_handle() -> int:
     return _ocr_reader_module._foreground_window_handle()
 
 
-def _has_strong_ocr_dialogue_evidence(text: str) -> bool:
-    normalized = normalize_text(str(text or "")).replace("\n", " ").strip()
-    if (
-        _looks_like_noise_ocr_text(normalized)
-        or _looks_like_game_overlay_text(normalized)
-        or not _looks_like_ocr_dialogue_text(normalized)
-    ):
+_TITLE_DIALOGUE_CLOSING_QUOTE = {"「": "」", "『": "』", "“": "”"}
+_TITLE_DIALOGUE_SENTENCE_PUNCTUATION = frozenset("。！？…")
+_TITLE_DIALOGUE_GAMEPLAY_OVERLAY_RE = re.compile(
+    r"(?:热身时间|起始点|解决一名敌人|获得\s*\d+\s*点得分)",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_short_title_speaker_line(text: str) -> bool:
+    value = normalize_text(str(text or "")).strip()
+    if not value:
         return False
-    for opening, closing in (("「", "」"), ("『", "』"), ("“", "”")):
-        start = normalized.find(opening)
-        while start >= 0:
-            end = normalized.find(closing, start + 1)
-            if end < 0:
-                break
-            if _significant_char_count(normalized[start + 1 : end]) >= 6:
-                return True
-            start = normalized.find(opening, start + 1)
+    has_left_bracket = value.startswith(("【", "["))
+    has_right_bracket = value.endswith(("】", "]"))
+    if not (has_left_bracket or has_right_bracket):
+        return False
+    core = value.lstrip("【[").rstrip("】]").strip()
+    if not 1 <= _significant_char_count(core) <= 12:
+        return False
+    return all(ch.isalpha() or ch in {"・", "·", "ー", "々"} for ch in core)
+
+
+def _title_dialogue_text_is_rejected(text: str, *, lines: list[str]) -> bool:
+    normalized = normalize_text(str(text or "")).strip()
+    return bool(
+        not normalized
+        or _looks_like_noise_ocr_text(normalized)
+        or _looks_like_game_overlay_text(normalized)
+        or _looks_like_self_ui_text(normalized)
+        or _TITLE_DIALOGUE_GAMEPLAY_OVERLAY_RE.search(normalized)
+        or _coerce_choice_lines(lines)
+    )
+
+
+def _has_strong_ocr_dialogue_evidence(text: str) -> bool:
+    lines = _stripped_ocr_lines(text)
+    if not 1 <= len(lines) <= 3 or _title_dialogue_text_is_rejected(text, lines=lines):
+        return False
+    for index in range(len(lines) - 1):
+        if not _looks_like_short_title_speaker_line(lines[index]):
+            continue
+        quote_line = normalize_text(lines[index + 1]).strip()
+        opening = quote_line[:1]
+        closing = _TITLE_DIALOGUE_CLOSING_QUOTE.get(opening)
+        if closing is None:
+            continue
+        body = quote_line[1:]
+        if _significant_char_count(body) < 4:
+            continue
+        if closing in body or any(mark in body for mark in _TITLE_DIALOGUE_SENTENCE_PUNCTUATION):
+            return True
     return False
+
+
+def _has_conservative_title_narration_evidence(text: str) -> bool:
+    lines = _stripped_ocr_lines(text)
+    if not 1 <= len(lines) <= 2 or _title_dialogue_text_is_rejected(text, lines=lines):
+        return False
+    if any(_looks_like_short_title_speaker_line(line) for line in lines):
+        return False
+    if any(_DIALOGUE_BOUNDARY_TITLE_RE.match(normalize_text(line).strip()) for line in lines):
+        return False
+    normalized = normalize_text(" ".join(lines)).strip()
+    return bool(
+        8 <= _significant_char_count(normalized) <= 220
+        and any(mark in normalized for mark in _TITLE_DIALOGUE_SENTENCE_PUNCTUATION)
+        and _looks_like_ocr_dialogue_normalized_text(normalized)
+    )
 
 
 class RuntimeMixin:
@@ -1199,25 +1249,31 @@ class RuntimeMixin:
         else:
             self._last_screen_classification_type = screen_type
             self._last_screen_classification_streak = 1
-        bonus = min(max(self._last_screen_classification_streak - 1, 0) * 0.04, 0.12)
-        if bonus <= 0.0:
-            classification.debug = {
-                **dict(classification.debug or {}),
-                "stability_streak": self._last_screen_classification_streak,
-                "stability_bonus": 0.0,
-            }
-            return classification
-        classification.confidence = round(
-            max(0.0, min(float(classification.confidence or 0.0) + bonus, 0.99)),
-            2,
-        )
         classification.debug = {
             **dict(classification.debug or {}),
             "stability_streak": self._last_screen_classification_streak,
-            "stability_bonus": round(bonus, 2),
+            "stability_bonus": 0.0,
         }
         return classification
 
+    def _reset_title_narration_candidate(self) -> None:
+        self._last_title_narration_key = ""
+        self._title_narration_streak = 0
+
+    def _observe_title_narration_candidate(self, raw_text: str) -> bool:
+        if not _has_conservative_title_narration_evidence(raw_text):
+            self._reset_title_narration_candidate()
+            return False
+        candidate_key = _ocr_stability_key(normalize_text(str(raw_text or "")))
+        if not candidate_key:
+            self._reset_title_narration_candidate()
+            return False
+        if candidate_key == self._last_title_narration_key:
+            self._title_narration_streak += 1
+        else:
+            self._last_title_narration_key = candidate_key
+            self._title_narration_streak = 1
+        return self._title_narration_streak >= 2
 
     def _should_skip_dialogue_for_screen_classification(
         self,
@@ -1227,29 +1283,48 @@ class RuntimeMixin:
     ) -> bool:
         # This threshold is higher than _screen_classification_is_known (0.45):
         # skipping dialogue needs stronger confidence to avoid false non-dialogue gates.
+        screen_type = str(classification.screen_type or "")
+        screen_debug = dict(classification.debug or {})
+        is_cnn_title = bool(
+            screen_type == OCR_CAPTURE_PROFILE_STAGE_TITLE
+            and str(screen_debug.get("source") or "") == "cnn_primary"
+            and str(screen_debug.get("label") or "") == "title_screen"
+        )
         if float(classification.confidence or 0.0) < 0.5:
+            self._reset_title_narration_candidate()
             return False
-        if (
-            str(classification.screen_type or "") == OCR_CAPTURE_PROFILE_STAGE_TITLE
-            and _has_strong_ocr_dialogue_evidence(raw_text)
-        ):
+        if is_cnn_title and _has_strong_ocr_dialogue_evidence(raw_text):
+            self._reset_title_narration_candidate()
             classification.debug = {
-                **dict(classification.debug or {}),
+                **screen_debug,
                 "skip_dialogue_bypassed": True,
                 "skip_dialogue_bypass_reason": "ocr_dialogue_evidence",
             }
             return False
+        stable_title_narration = (
+            self._observe_title_narration_candidate(raw_text)
+            if is_cnn_title
+            else False
+        )
+        if not is_cnn_title:
+            self._reset_title_narration_candidate()
         if (
-            str(classification.screen_type or "") == self._known_screen_skip_bypass_type
+            screen_type == self._known_screen_skip_bypass_type
             and self._time_fn() <= float(self._known_screen_skip_bypass_until or 0.0)
         ):
+            if is_cnn_title and not stable_title_narration:
+                return True
             classification.debug = {
                 **dict(classification.debug or {}),
                 "skip_dialogue_bypassed": True,
-                "skip_dialogue_bypass_reason": "known_screen_timeout_rescan",
+                "skip_dialogue_bypass_reason": (
+                    "stable_title_narration_timeout_rescan"
+                    if is_cnn_title
+                    else "known_screen_timeout_rescan"
+                ),
             }
             return False
-        return classification.screen_type in {
+        return screen_type in {
             OCR_CAPTURE_PROFILE_STAGE_TITLE,
             OCR_CAPTURE_PROFILE_STAGE_SAVE_LOAD,
             OCR_CAPTURE_PROFILE_STAGE_CONFIG,
@@ -1258,7 +1333,6 @@ class RuntimeMixin:
             OCR_CAPTURE_PROFILE_STAGE_MINIGAME,
             OCR_CAPTURE_PROFILE_STAGE_GAME_OVER,
         }
-
 
     @staticmethod
     def _screen_classification_is_known(classification: ScreenClassification) -> bool:

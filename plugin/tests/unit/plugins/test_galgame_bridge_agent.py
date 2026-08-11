@@ -158,6 +158,58 @@ async def test_game_llm_agent_ocr_menu_without_bridge_choices_uses_keyboard_fall
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
+async def test_game_llm_agent_ocr_menu_with_dialogue_does_not_use_keyboard_fallback(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    local_calls: list[dict[str, object]] = []
+
+    def _local_input(
+        _shared: dict[str, object],
+        actuation: dict[str, object],
+    ) -> dict[str, object]:
+        local_calls.append(dict(actuation))
+        return {"success": True}
+
+    agent = GameLLMAgent(
+        plugin=plugin,
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+        local_input_actuator=_local_input,
+    )
+    snapshot = _session_state(
+        text="我猛地坐起来，回答坐在前面的司机。",
+        line_id="ocr:dialogue-line",
+        choices=[],
+        is_menu_open=False,
+        screen_type=OCR_CAPTURE_PROFILE_STAGE_MENU,
+        screen_confidence=0.99,
+    )
+    snapshot["stability"] = "stable"
+    shared = _shared_state(
+        snapshot=snapshot,
+        active_data_source=DATA_SOURCE_OCR_READER,
+        ocr_reader_runtime={
+            "enabled": True,
+            "status": "active",
+            "pid": 4242,
+            "target_is_foreground": True,
+            "input_target_foreground": True,
+        },
+    )
+
+    await agent.tick(shared)
+
+    assert local_calls == []
+    assert agent._ocr_choice_fallback_attempts == 0
+    assert agent._actuation is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
 async def test_game_llm_agent_peek_status_does_not_commit_session_transition(
     tmp_path: Path,
 ) -> None:
@@ -2038,7 +2090,7 @@ async def test_game_llm_agent_cat_choice_advice_can_select_first_visible_choice(
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
-async def test_game_llm_agent_ocr_choice_planning_waits_for_confirmed_choices_event(
+async def test_game_llm_agent_ocr_choice_planning_accepts_two_visible_choices(
     tmp_path: Path,
 ) -> None:
     plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
@@ -2065,45 +2117,60 @@ async def test_game_llm_agent_ocr_choice_planning_waits_for_confirmed_choices_ev
         is_menu_open=True,
         ts="2026-04-21T08:31:00Z",
     )
-    shared_unconfirmed = _shared_state(
+    shared_visible = _shared_state(
         snapshot=snapshot,
         active_data_source=DATA_SOURCE_OCR_READER,
         history_events=[],
     )
 
-    await agent.tick(shared_unconfirmed)
+    await agent.tick(shared_visible)
     await asyncio.sleep(0)
 
     assert fake_gateway.suggest_calls == []
     assert fake_host.started == []
+    assert agent._pending_choice_advice is not None
+    assert ctx.pushed_messages[-1]["metadata"]["kind"] == "choice_advice_request"
 
-    shared_confirmed = _shared_state(
+
+@pytest.mark.plugin_unit
+def test_game_llm_agent_ocr_choice_gate_accepts_matching_single_choice_event(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    agent = GameLLMAgent(
+        plugin=plugin,
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    choice = {"choice_id": "choice-1", "text": "继续", "index": 0, "enabled": True}
+    snapshot = _session_state(
+        scene_id="scene-a",
+        line_id="line-1",
+        choices=[choice],
+        is_menu_open=True,
+        screen_type=OCR_CAPTURE_PROFILE_STAGE_MENU,
+    )
+    shared = _shared_state(
         snapshot=snapshot,
         active_data_source=DATA_SOURCE_OCR_READER,
-        last_seq=3,
         history_events=[
             {
-                "seq": 3,
-                "ts": "2026-04-21T08:31:01Z",
                 "type": "choices_shown",
-                "session_id": "sess-a",
-                "game_id": "demo.alpha",
                 "payload": {
                     "line_id": "line-1",
                     "scene_id": "scene-a",
-                    "route_id": "",
-                    "choices": visible_choices,
+                    "choices": [choice],
                 },
             }
         ],
     )
 
-    await agent.tick(shared_confirmed)
-    await asyncio.sleep(0)
-
-    assert fake_gateway.suggest_calls == []
-    assert agent._pending_choice_advice is not None
-    assert ctx.pushed_messages[-1]["metadata"]["kind"] == "choice_advice_request"
+    assert agent._has_confirmed_ocr_choice_menu(shared, snapshot) is True
+    shared["history_events"] = []
+    assert agent._has_confirmed_ocr_choice_menu(shared, snapshot) is False
 
 
 @pytest.mark.asyncio

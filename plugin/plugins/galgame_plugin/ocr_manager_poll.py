@@ -128,6 +128,7 @@ class PollMixin:
 
     def _reset_default_ocr_state(self) -> None:
         self._default_ocr_state.reset()
+        self._reset_title_narration_candidate()
         self._consecutive_no_text_polls = 0
         self._last_capture_error = ""
         self._last_raw_ocr_text = ""

@@ -251,6 +251,8 @@ class OcrReaderManager(
         self._clear_vision_snapshot()
         self._last_screen_classification_type = ""
         self._last_screen_classification_streak = 0
+        self._last_title_narration_key = ""
+        self._title_narration_streak = 0
         self._known_screen_stuck_since: float | None = None
         self._last_known_screen_type = ""
         self._known_screen_skip_bypass_until = 0.0

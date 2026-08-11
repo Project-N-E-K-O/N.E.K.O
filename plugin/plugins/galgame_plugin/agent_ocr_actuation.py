@@ -674,33 +674,54 @@ class AgentOcrActuationMixin:
     ) -> bool:
         if self._current_input_source(shared) != DATA_SOURCE_OCR_READER:
             return True
-        choices = list(snapshot.get("choices", []))
+        choices = [
+            item
+            for item in list(snapshot.get("choices", []))
+            if isinstance(item, dict)
+            and str(item.get("text") or "").strip()
+            and bool(item.get("enabled", True))
+        ]
         screen_type = str(snapshot.get("screen_type") or "").strip()
-        if screen_type == OCR_CAPTURE_PROFILE_STAGE_MENU:
-            return True
-        if not bool(snapshot.get("is_menu_open")) or not choices:
-            return False
         history_events = shared.get("history_events")
-        if not isinstance(history_events, list):
-            return len(choices) >= 2
-        current_choice_signature = build_choice_signature(choices)
-        current_line_id = str(snapshot.get("line_id") or "")
-        current_scene_id = str(snapshot.get("scene_id") or "")
-        for event in reversed(history_events):
-            if not isinstance(event, dict):
-                continue
-            if str(event.get("type") or "") != "choices_shown":
-                continue
-            payload = event.get("payload")
-            if not isinstance(payload, dict):
-                continue
-            if build_choice_signature(list(payload.get("choices") or [])) != current_choice_signature:
-                continue
-            event_line_id = str(payload.get("line_id") or "")
-            if current_line_id and event_line_id and event_line_id != current_line_id:
-                continue
-            event_scene_id = str(payload.get("scene_id") or "")
-            if current_scene_id and event_scene_id and event_scene_id != current_scene_id:
-                continue
+        if choices and isinstance(history_events, list):
+            current_choice_signature = build_choice_signature(choices)
+            current_line_id = str(snapshot.get("line_id") or "")
+            current_scene_id = str(snapshot.get("scene_id") or "")
+            for event in reversed(history_events):
+                if not isinstance(event, dict):
+                    continue
+                if str(event.get("type") or "") != "choices_shown":
+                    continue
+                payload = event.get("payload")
+                if not isinstance(payload, dict):
+                    continue
+                event_choices = [
+                    item
+                    for item in list(payload.get("choices") or [])
+                    if isinstance(item, dict)
+                    and str(item.get("text") or "").strip()
+                    and bool(item.get("enabled", True))
+                ]
+                if build_choice_signature(event_choices) != current_choice_signature:
+                    continue
+                event_line_id = str(payload.get("line_id") or "")
+                if current_line_id and event_line_id and event_line_id != current_line_id:
+                    continue
+                event_scene_id = str(payload.get("scene_id") or "")
+                if current_scene_id and event_scene_id and event_scene_id != current_scene_id:
+                    continue
+                return True
+        if len(choices) >= 2:
             return True
-        return len(choices) >= 2
+        has_current_dialogue = bool(
+            str(snapshot.get("stability") or "") in {"tentative", "stable"}
+            and (
+                str(snapshot.get("text") or "").strip()
+                or str(snapshot.get("line_id") or "").strip()
+            )
+        )
+        if has_current_dialogue:
+            return False
+        if screen_type == OCR_CAPTURE_PROFILE_STAGE_MENU and not choices:
+            return True
+        return False

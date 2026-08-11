@@ -119,6 +119,13 @@ from .ocr_input_hooks import *
 from .ocr_bridge_writer import *
 from . import ocr_reader as _ocr_reader_module
 
+_DIALOGUE_RECONCILIATION_CONFIDENCE = 0.5
+_CNN_DIALOGUE_BOUNDARY_LABELS = {
+    OCR_CAPTURE_PROFILE_STAGE_TITLE: "title_screen",
+    OCR_CAPTURE_PROFILE_STAGE_MENU: "choice_menu",
+}
+
+
 class TextMixin:
     """OCR 文本提取、语言检测、文本去重、台词 emit"""
 
@@ -184,17 +191,120 @@ class TextMixin:
             ts=utc_now_iso(now),
         )
 
+    @staticmethod
+    def _is_cnn_dialogue_boundary_classification(
+        classification: ScreenClassification,
+    ) -> bool:
+        screen_type = str(classification.screen_type or "")
+        debug = dict(classification.debug or {})
+        return bool(
+            str(debug.get("source") or "") == "cnn_primary"
+            and str(debug.get("label") or "")
+            == _CNN_DIALOGUE_BOUNDARY_LABELS.get(screen_type, "")
+        )
+
+    @staticmethod
+    def _dialogue_reconciliation_debug(
+        classification: ScreenClassification,
+        *,
+        reason: str,
+    ) -> dict[str, Any]:
+        return {
+            "source": "ocr_dialogue_reconciliation",
+            "reason": reason,
+            "confidence_source": "rule",
+            "original_screen_type": str(classification.screen_type or ""),
+            "original_screen_confidence": float(classification.confidence or 0.0),
+            "original_screen_debug": json_copy(classification.debug or {}),
+        }
+
+    def _reconcile_screen_classification_with_active_dialogue(
+        self,
+        classification: ScreenClassification,
+    ) -> ScreenClassification:
+        if not self._is_cnn_dialogue_boundary_classification(classification):
+            return classification
+        state = self._writer.current_state or {}
+        if (
+            str(state.get("screen_type") or "") != OCR_CAPTURE_PROFILE_STAGE_DIALOGUE
+            or str(state.get("stability") or "") not in {"tentative", "stable"}
+            or bool(state.get("is_menu_open"))
+            or bool(state.get("choices"))
+        ):
+            return classification
+        current_text = str(state.get("text") or "").strip()
+        if not current_text:
+            return classification
+        raw_text = "\n".join(str(line or "") for line in classification.raw_ocr_text)
+        if _looks_like_self_ui_text(raw_text):
+            return classification
+        _content_text, cleaned_text = self._clean_ocr_dialogue_for_emit(raw_text)
+        if (
+            _looks_like_noise_normalized_text(cleaned_text)
+            or _looks_like_game_overlay_normalized_text(cleaned_text)
+            or not _looks_like_ocr_dialogue_normalized_text(cleaned_text)
+        ):
+            return classification
+        _speaker, candidate_text = OcrReaderBridgeWriter._split_speaker_text(cleaned_text)
+        current_key = _ocr_stability_key(current_text)
+        candidate_key = _ocr_stability_key(candidate_text)
+        if not candidate_key or not _ocr_stability_keys_match(current_key, candidate_key):
+            return classification
+        return ScreenClassification(
+            screen_type=OCR_CAPTURE_PROFILE_STAGE_DIALOGUE,
+            confidence=_DIALOGUE_RECONCILIATION_CONFIDENCE,
+            ui_elements=[],
+            raw_ocr_text=list(classification.raw_ocr_text),
+            debug=self._dialogue_reconciliation_debug(
+                classification,
+                reason="active_dialogue_matches_current_ocr",
+            ),
+        )
+
+    def _emit_dialogue_screen_reconciliation_after_line(
+        self,
+        *,
+        now: float,
+        raw_text: str,
+    ) -> bool:
+        state = self._writer.current_state or {}
+        original = ScreenClassification(
+            screen_type=str(state.get("screen_type") or ""),
+            confidence=float(state.get("screen_confidence") or 0.0),
+            ui_elements=list(state.get("screen_ui_elements") or []),
+            raw_ocr_text=_stripped_ocr_lines(raw_text)[:20],
+            debug=dict(state.get("screen_debug") or {}),
+        )
+        if original.screen_type not in _CNN_DIALOGUE_BOUNDARY_LABELS:
+            return False
+        return self._writer.emit_screen_classified(
+            screen_type=OCR_CAPTURE_PROFILE_STAGE_DIALOGUE,
+            confidence=_DIALOGUE_RECONCILIATION_CONFIDENCE,
+            ui_elements=[],
+            raw_ocr_text=original.raw_ocr_text,
+            screen_debug=self._dialogue_reconciliation_debug(
+                original,
+                reason="accepted_ocr_line_overrides_screen",
+            ),
+            ts=utc_now_iso(now),
+        )
+
     def _classification_from_vision_result(
         self,
         result: dict[str, Any],
         *,
         extraction: OcrExtractionResult,
     ) -> ScreenClassification:
+        try:
+            model_confidence_raw = float(result.get("confidence") or 0.0)
+        except (TypeError, ValueError):
+            model_confidence_raw = 0.0
         debug = {
             "source": "cnn_primary",
             "reason": "cnn_high_confidence",
             "label": str(result.get("label") or ""),
             "model_name": str(result.get("model_name") or ""),
+            "model_confidence_raw": model_confidence_raw,
             "latency_ms": result.get("latency_ms"),
             "all_scores": json_copy(result.get("all_scores") or {}),
         }
@@ -637,6 +747,10 @@ class TextMixin:
             ):
                 observed = self._line_payload_from_writer(stability="tentative")
                 self._last_observed_line = observed
+                self._emit_dialogue_screen_reconciliation_after_line(
+                    now=now,
+                    raw_text=raw_text,
+                )
         tracker = state or self._default_ocr_state
         effective_repeat_threshold = (
             self._line_changed_repeat_threshold()
@@ -679,6 +793,10 @@ class TextMixin:
             stable_line = self._line_payload_from_writer(stability="stable")
             self._last_stable_line = stable_line
             self._last_observed_line = stable_line
+            self._emit_dialogue_screen_reconciliation_after_line(
+                now=now,
+                raw_text=raw_text,
+            )
         return emitted
 
 
@@ -910,6 +1028,9 @@ class TextMixin:
             vision_classification = self._apply_screen_classification_stability(
                 vision_classification
             )
+            vision_classification = self._reconcile_screen_classification_with_active_dialogue(
+                vision_classification
+            )
             self._screen_awareness_model_detail = "skipped_cnn_primary"
             self._update_capture_profile_recommendation(
                 extraction,
@@ -944,6 +1065,9 @@ class TextMixin:
             target=target,
         )
         classification = self._apply_screen_classification_stability(classification)
+        classification = self._reconcile_screen_classification_with_active_dialogue(
+            classification
+        )
         self._update_capture_profile_recommendation(
             extraction,
             classification=classification,
