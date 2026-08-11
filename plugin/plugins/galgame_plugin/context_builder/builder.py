@@ -1169,6 +1169,8 @@ def _snapshot_for_stable_summary_seed(
     local_state: dict[str, Any],
     snapshot: dict[str, Any],
     stable_lines: list[dict[str, Any]],
+    *,
+    scene_id: str = "",
 ) -> dict[str, Any]:
     snapshot_line_id = str(snapshot.get("line_id") or "")
     is_ocr_snapshot = (
@@ -1177,7 +1179,10 @@ def _snapshot_for_stable_summary_seed(
     )
     if not is_ocr_snapshot:
         return snapshot
+    snapshot_scene_id = str(snapshot.get("scene_id") or "").strip()
     if str(snapshot.get("stability") or "") == "stable":
+        if scene_id and snapshot_scene_id == str(scene_id).strip():
+            return snapshot
         for line in stable_lines:
             if not isinstance(line, dict):
                 continue
@@ -1411,7 +1416,12 @@ def build_summarize_context(
         route_id=route_id,
         lines=stable_lines,
         selected_choices=selected_choices,
-        snapshot=_snapshot_for_stable_summary_seed(local_state, snapshot, stable_lines),
+        snapshot=_snapshot_for_stable_summary_seed(
+            local_state,
+            snapshot,
+            stable_lines,
+            scene_id=effective_scene_id,
+        ),
         previous_summary=_previous_summary_from_state(
             local_state,
             current_game_id=str(local_state.get("active_game_id") or ""),
@@ -1434,6 +1444,7 @@ def build_summarize_context(
         local_state,
         snapshot,
         stable_lines,
+        scene_id=effective_scene_id,
     )
     return {
         "game_id": str(local_state.get("active_game_id") or ""),

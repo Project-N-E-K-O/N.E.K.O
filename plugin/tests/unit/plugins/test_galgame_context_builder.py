@@ -279,6 +279,61 @@ def test_snapshot_for_stable_summary_seed_blanks_unstable_ocr_snapshot() -> None
     assert result["stability"] == ""
 
 
+def test_summarize_context_preserves_stable_ocr_snapshot_deduped_from_new_scene() -> None:
+    result = context_builder.build_summarize_context(
+        {
+            "active_data_source": DATA_SOURCE_OCR_READER,
+            "latest_snapshot": {
+                "scene_id": "scene-b",
+                "line_id": "ocr-line-same",
+                "speaker": "",
+                "text": "……",
+                "stability": "stable",
+            },
+            "history_lines": [
+                {
+                    "scene_id": "scene-a",
+                    "line_id": "ocr-line-same",
+                    "speaker": "",
+                    "text": "……",
+                    "stability": "stable",
+                }
+            ],
+            "history_observed_lines": [],
+            "history_choices": [],
+        },
+        scene_id="scene-b",
+    )
+
+    assert result["stable_lines"] == []
+    assert result["current_snapshot"]["line_id"] == "ocr-line-same"
+    assert result["current_snapshot"]["text"] == "……"
+    assert "……" in result["scene_summary_seed"]
+
+
+def test_summarize_context_blanks_stable_ocr_snapshot_from_another_scene() -> None:
+    result = context_builder.build_summarize_context(
+        {
+            "active_data_source": DATA_SOURCE_OCR_READER,
+            "latest_snapshot": {
+                "scene_id": "scene-a",
+                "line_id": "ocr-line-a",
+                "speaker": "A",
+                "text": "旧场景台词。",
+                "stability": "stable",
+            },
+            "history_lines": [],
+            "history_observed_lines": [],
+            "history_choices": [],
+        },
+        scene_id="scene-b",
+    )
+
+    assert result["current_snapshot"]["line_id"] == ""
+    assert result["current_snapshot"]["text"] == ""
+    assert "旧场景台词" not in result["scene_summary_seed"]
+
+
 def test_condense_dialogue_batch_merges_same_speaker_short_lines() -> None:
     lines = [
         {"speaker": "A", "text": "hello", "scene_id": "s", "line_id": "1"},
