@@ -266,6 +266,31 @@ def test_damage_event_claim_limits_do_not_invent_awards_or_salvos():
     assert devastating.lane == LANE_NORMAL
 
 
+def test_every_callout_forbids_inventing_consumable_state():
+    built = candidate(LOW_HEALTH)
+    assert any("雷达" in line or "消耗品" in line for line in built.claim_limits)
+
+
+def test_shared_context_carries_confirmed_visible_team_counts():
+    event = GameEvent(
+        event_id=LOW_HEALTH, severity=80, at=100.0, seq=1, battle_id="b-1",
+        detail={"hp_ratio": 0.12})
+    facts = WowsFacts(
+        seq=1,
+        at=100.0,
+        battle_id="b-1",
+        own_hp_ratio=0.12,
+        confirmed_visible_allies=2,
+        confirmed_visible_enemies=1,
+        team_counts_confirmed=True,
+        visible_enemies=1,
+    )
+    built = WowsTacticPolicy(CFG).expand([event], facts)[0]
+    assert built.context["confirmed_visible_allies"] == 2
+    assert built.context["confirmed_visible_enemies"] == 1
+    assert built.context["team_counts_confirmed"] is True
+
+
 # --- preview -------------------------------------------------------------
 
 def test_building_a_preview_never_touches_the_dispatcher():

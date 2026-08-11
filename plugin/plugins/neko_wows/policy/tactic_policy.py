@@ -26,6 +26,14 @@ from ..domain.catalog import (
 from ..domain.facts import WowsFacts
 from ..detectors._base import GameEvent
 
+# Always attached: consumable active-state and relative sectors are not in
+# live telemetry, and ship-catalog Radar text must not become a call-out.
+_GLOBAL_CLAIM_LIMITS: tuple[str, ...] = (
+    "消耗品实时状态（雷达、水听、烟幕、损伤控制等是否开启或持续）当前不可用，不要提及；"
+    "不要把小地图上敌舰被点亮说成对方开了雷达。",
+    "没有给出相对方位字段时，不要说左前方、正前方、右前方。",
+)
+
 # Constraints attached per event so the prompt cannot drift into claims the
 # telemetry does not support. Keyed by event id.
 _CLAIM_LIMITS: dict[str, tuple[str, ...]] = {
@@ -117,6 +125,7 @@ class WowsTacticPolicy:
             if not self.cfg.category_enabled(spec.coalesce_key):
                 continue
             ttl = spec.ttl_seconds or self.cfg.ttl_for(spec.lane)
+            per_event = _CLAIM_LIMITS.get(event.event_id, ())
             candidates.append(AdviceCandidate(
                 event_id=event.event_id,
                 lane=spec.lane,
@@ -128,7 +137,7 @@ class WowsTacticPolicy:
                 summary=spec.summary,
                 detail=dict(event.detail),
                 context=self._shared_context(facts),
-                claim_limits=_CLAIM_LIMITS.get(event.event_id, ()),
+                claim_limits=_GLOBAL_CLAIM_LIMITS + per_event,
                 expires_at=event.at + ttl,
             ))
         candidates.sort(key=lambda c: c.rank)
@@ -141,6 +150,16 @@ class WowsTacticPolicy:
         return {
             "own_hp_ratio": round(facts.own_hp_ratio, 3) if facts.own_hp_ratio else None,
             "visible_enemies": facts.visible_enemies,
+            "confirmed_visible_allies": facts.confirmed_visible_allies,
+            "confirmed_visible_enemies": facts.confirmed_visible_enemies,
+            # Only meaningful once objects-domain lit counts exist; a bare
+            # false would otherwise clutter every out-of-battle / no-objects
+            # call-out.
+            "team_counts_confirmed": (
+                facts.team_counts_confirmed
+                if facts.confirmed_visible_allies is not None
+                else None
+            ),
             "nearest_enemy_m": round(nearest.distance_m) if nearest else None,
             "damage_inflicted": round(facts.damage_inflicted) if facts.damage_inflicted else None,
             "sourced_domains": list(facts.sourced_domains),

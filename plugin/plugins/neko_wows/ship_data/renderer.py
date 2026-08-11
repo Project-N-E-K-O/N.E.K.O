@@ -109,7 +109,9 @@ class ShipReferenceRenderer:
             f"catalog_version={catalog_version}",
             f"version_status={version_status}",
             f"configuration={_safe_text(profile.configuration)}",
-            "notice=这是离线顶配参考，不代表玩家实际配装或实时增益",
+            "notice=这是离线顶配参考，不代表玩家实际配装或实时增益；"
+            "其中的消耗品只说明该舰可能装备什么，不能据此声称战场上有人正在使用"
+            "雷达、水听、烟幕等",
             "",
             (
                 f"舰船：{_safe_text(ship.display_name)} | {tier}级 | {ship_class} | "
@@ -384,6 +386,7 @@ class ShipReferenceRenderer:
 
     @staticmethod
     def _render_consumables(lines: list[str], raw: Any) -> None:
+        rendered_any = False
         for slot_value in _sequence(raw):
             slot = _mapping(slot_value)
             slot_number = _plain(slot.get("slot"))
@@ -405,6 +408,9 @@ class ShipReferenceRenderer:
                 if ability.get("unlimited_charges") is True:
                     parts.append("无限次数")
                 if parts:
+                    if not rendered_any:
+                        lines.append("消耗品（离线参考，非实时状态）：")
+                        rendered_any = True
                     label = f"消耗品槽{slot_number}" if slot_number else "消耗品"
                     lines.append(label + "：" + "；".join(parts))
 
