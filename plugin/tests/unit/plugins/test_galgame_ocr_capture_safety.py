@@ -329,9 +329,8 @@ def test_smart_foreground_capture_error_reroutes_to_printwindow(
             return "printwindow-frame"
 
     class _SkippedPixelBackend:
-        kind = "mss"
-
-        def __init__(self) -> None:
+        def __init__(self, kind: str) -> None:
+            self.kind = kind
             self.calls = 0
 
         def is_available(self) -> bool:
@@ -343,22 +342,25 @@ def test_smart_foreground_capture_error_reroutes_to_printwindow(
 
     monkeypatch.setattr(sys, "platform", "win32")
     rejected = _RejectedBackend()
-    skipped_pixel = _SkippedPixelBackend()
+    skipped_mss = _SkippedPixelBackend("mss")
+    skipped_pyautogui = _SkippedPixelBackend("pyautogui")
     printwindow = _PrintWindowBackend()
     backend = Win32CaptureBackend(
         selection="smart",
         occlusion_checker=lambda _target, _profile: False,
     )
     backend._dxcam_backend = rejected
-    backend._mss_backend = skipped_pixel
+    backend._mss_backend = skipped_mss
+    backend._pyautogui_backend = skipped_pyautogui
     backend._printwindow_backend = printwindow
-    backend._backends = [rejected, skipped_pixel, printwindow]
+    backend._backends = [rejected, skipped_mss, skipped_pyautogui, printwindow]
 
     frame = backend.capture_frame(_target(foreground=True), OcrCaptureProfile())
 
     assert frame == "printwindow-frame"
     assert rejected.calls == 1
-    assert skipped_pixel.calls == 0
+    assert skipped_mss.calls == 0
+    assert skipped_pyautogui.calls == 0
     assert printwindow.calls == 1
     assert backend.last_backend_kind == "printwindow"
     assert backend.last_capture_content_trusted is True
