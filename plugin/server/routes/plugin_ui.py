@@ -20,8 +20,10 @@
 import asyncio
 import json
 import mimetypes
+import os
 import re
 from pathlib import Path
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
@@ -51,6 +53,26 @@ _sse_clients_lock = asyncio.Lock()
 _SSE_QUEUE_MAX = 100
 # push 请求体大小上限（字节）；读取前按 Content-Length 校验，避免大 body 直接进内存
 _PUSH_MAX_BODY = 16 * 1024
+# push 鉴权共享密钥（环境变量 NEKO_SSE_PUSH_TOKEN）：非空时要求 Authorization: Bearer <token>
+# 未配置则不鉴权（向后兼容）。danmu_bridge 等插件推送侧读取同一变量自动带上。
+_PUSH_TOKEN = os.environ.get("NEKO_SSE_PUSH_TOKEN", "").strip()
+# 可信 Origin 主机（本机回环）：push 广播只接受无 Origin（插件后端/非浏览器）或本机页面
+_TRUSTED_ORIGIN_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
+def _origin_is_trusted(origin: str) -> bool:
+    """push 广播的 Origin 校验：无 Origin（插件后端/curl）或本机回环放行。
+
+    防止恶意网站通过浏览器表单 POST（no-cors）向 loopback 注入 SSE 消息。
+    """
+    origin = (origin or "").strip()
+    if not origin:
+        return True
+    try:
+        host = (urlparse(origin).hostname or "").lower()
+    except Exception:
+        return False
+    return host in _TRUSTED_ORIGIN_HOSTS
 
 
 def _parse_push_payload(body: bytes) -> dict:
@@ -314,8 +336,19 @@ async def plugin_ui_push(plugin_id: str, request: Request):
 
     入参：{"text": "..."} 或纯文本。任意插件/后端调用，推送到已订阅的前端页面。
     返回 ``queued``：成功写入各客户端缓冲队列的数目（排队计数，非客户端实际送达确认）。
+    配置了 ``NEKO_SSE_PUSH_TOKEN`` 时要求 ``Authorization: Bearer <token>``。
     """
-    # 读取 body 前按 Content-Length 校验大小，避免超大请求直接进内存
+    # 鉴权：本机其他进程/本地网页可能调用本路由注入消息，配置共享密钥后强制校验
+    if _PUSH_TOKEN:
+        auth = request.headers.get("authorization", "")
+        scheme, _, presented = auth.partition(" ")
+        if scheme.lower() != "bearer" or presented.strip() != _PUSH_TOKEN:
+            return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
+    # Origin 校验：浏览器跨站表单 POST（no-cors）可向 loopback 注入 SSE；
+    # 只接受无 Origin（插件后端/curl）或本机回环 Origin
+    if not _origin_is_trusted(request.headers.get("origin", "")):
+        return JSONResponse({"ok": False, "error": "invalid origin"}, status_code=403)
+    # Content-Length 预检（快速失败）；无 Content-Length / 分块传输时靠流式读取兜底
     content_length = request.headers.get("content-length")
     if content_length:
         try:
@@ -323,9 +356,15 @@ async def plugin_ui_push(plugin_id: str, request: Request):
                 return JSONResponse({"ok": False, "error": "payload too large"}, status_code=413)
         except ValueError:
             pass
-    body = await request.body()
-    if len(body) > _PUSH_MAX_BODY:
-        return JSONResponse({"ok": False, "error": "payload too large"}, status_code=413)
+    # 流式读取请求体：逐块累计，超过上限立即 413，避免超大请求整段进内存
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in request.stream():
+        total += len(chunk)
+        if total > _PUSH_MAX_BODY:
+            return JSONResponse({"ok": False, "error": "payload too large"}, status_code=413)
+        chunks.append(chunk)
+    body = b"".join(chunks)
     payload = _parse_push_payload(body)
     if not payload.get("text"):
         return JSONResponse({"ok": False, "error": "empty"}, status_code=400)
