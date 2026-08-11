@@ -205,6 +205,15 @@ class TextMixin:
             and str(debug.get("label") or "") == expected_label
         )
 
+    def _has_current_cnn_menu_classification(self) -> bool:
+        state = self._writer.current_state or {}
+        debug = dict(state.get("screen_debug") or {})
+        return bool(
+            str(state.get("screen_type") or "") == OCR_CAPTURE_PROFILE_STAGE_MENU
+            and str(debug.get("source") or "") == "cnn_primary"
+            and str(debug.get("label") or "") == "choice_menu"
+        )
+
     @staticmethod
     def _dialogue_reconciliation_debug(
         classification: ScreenClassification,
@@ -284,6 +293,17 @@ class TextMixin:
             debug=dict(state.get("screen_debug") or {}),
         )
         if original.screen_type not in _CNN_DIALOGUE_BOUNDARY_LABELS:
+            return False
+        # A fresh full-frame CNN menu gets one complete menu-profile poll before
+        # dialogue reconciliation can overrule it. Real choice screens commonly
+        # introduce a new prompt in the dialogue crop while their buttons live
+        # outside that crop. If the next menu-profile capture still yields the
+        # same stable line and no choices, the existing false-positive recovery
+        # remains available below.
+        if (
+            self._has_current_cnn_menu_classification()
+            and str(state.get("stability") or "") != "stable"
+        ):
             return False
         return self._writer.emit_screen_classified(
             screen_type=OCR_CAPTURE_PROFILE_STAGE_DIALOGUE,
@@ -784,6 +804,8 @@ class TextMixin:
         )
         if dialogue_library_match is not None:
             effective_repeat_threshold = 1
+        if self._has_current_cnn_menu_classification():
+            effective_repeat_threshold = max(2, int(effective_repeat_threshold or 1))
         if pending_visual_scene:
             effective_repeat_threshold = max(2, int(effective_repeat_threshold or 1))
         if not self._stabilize_text_key(

@@ -1018,6 +1018,7 @@ class PollMixin:
                             not dialogue_emitted
                             and not dialogue_text_is_menu_status
                             and not dialogue_menu_choices
+                            and not self._has_current_cnn_menu_classification()
                             and self._should_attempt_followup_confirm(
                                 extraction.text,
                                 state=self._default_ocr_state,
@@ -1245,6 +1246,7 @@ class PollMixin:
                     )
                     if (
                         not emitted
+                        and not self._has_current_cnn_menu_classification()
                         and self._should_attempt_followup_confirm(
                             extraction.text,
                             state=self._default_ocr_state,

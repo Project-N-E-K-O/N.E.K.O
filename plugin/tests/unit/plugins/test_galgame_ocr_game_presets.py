@@ -271,7 +271,7 @@ assert.equal(automatic.top_ratio, 0.40);
 
 const elements = {{
   ocrProfileGamePresetSelect: {{ value: 'senren_banka' }},
-  ocrProfileProcessInput: {{ value: '' }},
+  ocrProfileProcessInput: {{ value: 'OtherGame.exe' }},
   ocrProfileStageSelect: {{ value: 'default' }},
 }};
 let renderedStatus = null;

@@ -1842,20 +1842,20 @@ async def test_ocr_reader_cnn_choice_menu_false_positive_keeps_narration_dialogu
         first = await manager.tick(bridge_sdk_available=False, memory_reader_runtime={})
         events_path = bridge_root / first.runtime["game_id"] / "events.jsonl"
         first_events = _read_events(events_path)
-        assert [event["type"] for event in first_events][-3:] == [
+        assert [event["type"] for event in first_events][-2:] == [
             "screen_classified",
             "line_observed",
-            "screen_classified",
         ]
-        assert first_events[-1]["payload"]["screen_type"] == (
-            OCR_CAPTURE_PROFILE_STAGE_DIALOGUE
+        first_session = read_session_json(events_path.parent / "session.json").session
+        assert first_session is not None
+        assert first_session["state"]["screen_type"] == (
+            OCR_CAPTURE_PROFILE_STAGE_MENU
         )
 
         clock["now"] += 1.0
         second = await manager.tick(bridge_sdk_available=False, memory_reader_runtime={})
         second_events = _read_events(events_path)
-        assert [event["type"] for event in second_events][-3:] == [
-            "screen_classified",
+        assert [event["type"] for event in second_events][-2:] == [
             "line_changed",
             "screen_classified",
         ]
@@ -1866,6 +1866,80 @@ async def test_ocr_reader_cnn_choice_menu_false_positive_keeps_narration_dialogu
         session = read_session_json(events_path.parent / "session.json").session
         assert session is not None
         assert session["state"]["screen_type"] == OCR_CAPTURE_PROFILE_STAGE_DIALOGUE
+    finally:
+        await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_ocr_reader_cnn_choice_menu_prompt_waits_for_menu_profile_choices(
+    tmp_path: Path,
+    ocr_runtime_root: Path,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    clock = {"now": 3000.0}
+    prompt = "雪乃：请选择接下来的行动。"
+    config = _make_config(
+        bridge_root,
+        enabled=True,
+        install_target_dir=str(ocr_runtime_root),
+    )
+    config.vision_classifier_enabled = True
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=config,
+        time_fn=lambda: clock["now"],
+        platform_fn=lambda: True,
+        window_scanner=_window,
+        capture_backend=_FakeCaptureBackend(),
+        ocr_backend=_FakeOcrBackend(
+            [
+                prompt,
+                "1. 去左边\n2. 去右边",
+                "1. 去左边\n2. 去右边",
+            ]
+        ),
+    )
+
+    class _MenuClassifier:
+        last_error = ""
+
+        @staticmethod
+        def classify(_image: object) -> dict[str, object]:
+            return {
+                "label": "choice_menu",
+                "screen_type": OCR_CAPTURE_PROFILE_STAGE_MENU,
+                "confidence": 0.99,
+                "latency_ms": 1.0,
+                "model_name": "test_model",
+            }
+
+    manager.vision_classifier = _MenuClassifier()
+
+    try:
+        first = await manager.tick(bridge_sdk_available=False, memory_reader_runtime={})
+        events_path = bridge_root / first.runtime["game_id"] / "events.jsonl"
+        first_session = read_session_json(events_path.parent / "session.json").session
+        assert first_session is not None
+        assert first_session["state"]["screen_type"] == OCR_CAPTURE_PROFILE_STAGE_MENU
+        assert first_session["state"]["stability"] == "tentative"
+
+        clock["now"] += 1.0
+        await manager.tick(bridge_sdk_available=False, memory_reader_runtime={})
+        clock["now"] += 1.0
+        third = await manager.tick(bridge_sdk_available=False, memory_reader_runtime={})
+
+        events = _read_events(events_path)
+        session = read_session_json(events_path.parent / "session.json").session
+        assert events[-1]["type"] == "choices_shown"
+        assert session is not None
+        assert session["state"]["screen_type"] == OCR_CAPTURE_PROFILE_STAGE_MENU
+        assert session["state"]["is_menu_open"] is True
+        assert [item["text"] for item in session["state"]["choices"]] == [
+            "去左边",
+            "去右边",
+        ]
+        assert third.runtime["last_stable_line"] == {}
     finally:
         await manager.shutdown()
 

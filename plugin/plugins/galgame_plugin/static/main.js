@@ -6036,7 +6036,7 @@ function selectOcrGameCapturePreset() {
   if (selectedGamePreset) {
     const processInput = document.getElementById('ocrProfileProcessInput');
     const stageSelect = document.getElementById('ocrProfileStageSelect');
-    if (processInput && !processInput.value.trim()) {
+    if (processInput) {
       processInput.value = selectedGamePreset.process_name;
     }
     if (stageSelect) {
