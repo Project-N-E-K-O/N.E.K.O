@@ -9,6 +9,10 @@ const runnerPath = path.join(
   projectRoot,
   'static/avatar/avatar-ui-buttons/idle-desktop-window-top-edge.js'
 );
+const coordinatorPath = path.join(
+  projectRoot,
+  'static/avatar/avatar-ui-buttons/idle-desktop-window-interactions.js'
+);
 const templatePath = path.join(projectRoot, 'templates/index.html');
 const methodsReturnPath = path.join(
   projectRoot,
@@ -32,7 +36,6 @@ function createRuntime(options = {}) {
   const sharedListeners = new Set();
   const rafs = new Map();
   const timers = new Map();
-  const terminalEvents = [];
   const mutationObservers = new Set();
   const observerRecords = [];
   const gateOverrides = Object.assign({}, options.gate || {});
@@ -108,9 +111,6 @@ function createRuntime(options = {}) {
     },
     removeEventListener(type, listener) { listeners.get(type)?.delete(listener); },
     dispatchEvent(event) {
-      if (event.type === 'neko:desktop-window-top-edge:terminal') {
-        terminalEvents.push(event.detail);
-      }
       Array.from(listeners.get(event.type) || []).forEach((listener) => listener(event));
       return true;
     },
@@ -180,7 +180,24 @@ function createRuntime(options = {}) {
     },
   };
   vm.createContext(context);
+  vm.runInContext(fs.readFileSync(coordinatorPath, 'utf8'), context);
+  if (window.NekoDesktopWindowInteractions) {
+    window.NekoDesktopWindowInteractions.register({
+      kind: 'desktop-window-edge-peek',
+      priority: 1,
+      handleSensingResult: () => false,
+      getCandidate: () => null,
+      startCandidate: () => false,
+      consumeOpportunity: () => false,
+      rearmOpportunity: () => false,
+      isActive: () => false,
+      cancel: () => false,
+    });
+  }
   vm.runInContext(fs.readFileSync(runnerPath, 'utf8'), context);
+  const startupCallbacks = Array.from(timers.values());
+  timers.clear();
+  startupCallbacks.forEach((callback) => callback());
 
   return {
     window,
@@ -189,7 +206,6 @@ function createRuntime(options = {}) {
     container,
     catParent,
     art,
-    terminalEvents,
     observerRecords,
     setShared(value) {
       current = value;
@@ -252,9 +268,10 @@ test('desktop runner is loaded after the sole sensing owner and stays independen
   assert.doesNotMatch(source, /_stepNekoIdleCat1Walk|_finishNekoIdleCat1CompactTopEdgeWalk|_dropNekoIdleCat1FromCompactTopEdge/);
   assert.doesNotMatch(source, /COMPACT_TOP_EDGE_FOLLOW_DISTANCE|compact-mirror|compactTopEdgeRearm|is-cat1-on-compact-top-edge/);
   assert.doesNotMatch(source, /nekoDesktopWindowSensing\.(?:start|stop|activeWindow|openWindows)/);
+  assert.doesNotMatch(source, /subscribe\(handleSensingResult\)|desktop-window-top-edge:terminal/);
   assert.doesNotMatch(source, /__nekoIdleReturnSubactionState|__nekoIdleCat1Journey|_scheduleNekoIdleCat1JourneySync/);
   assert.doesNotMatch(source, /yarn-gate-released|compact-surface-layout-change|neko:cat-mind:action-result|attributeFilter/);
-  assert.match(returnSource, /NekoDesktopWindowTopEdgePerch[\s\S]*return-click/);
+  assert.match(returnSource, /NekoDesktopWindowInteractions[\s\S]*return-click/);
 });
 
 test('200px center distance starts, 201px does not, and desktop coordinates ignore DPR', async () => {
@@ -303,9 +320,6 @@ test('accepted action walks the real container once and perches without followin
   assert.equal(runtime.container.style.left, '200px');
   assert.equal(runtime.container.style.top, '0px');
   assert.equal(runtime.art.src, 'idle.gif');
-  assert.equal(runtime.terminalEvents.filter((item) => item.phase === 'perched').length, 1);
-  assert.ok(runtime.terminalEvents[0].activityId);
-  assert.ok(runtime.terminalEvents[0].pathDistancePx > 0);
 });
 
 test('one target episode cancels or drops once without restarting on later geometry revisions', async () => {
@@ -337,7 +351,6 @@ test('one target episode cancels or drops once without restarting on later geome
   assert.equal(perched.activeTimers(), 1);
   perched.flushTimers();
   assert.equal(perched.window.NekoDesktopWindowTopEdgePerch.getState().phase, 'idle');
-  assert.equal(perched.terminalEvents.filter((item) => item.phase === 'dropped').length, 1);
   perched.setShared(sensingResult(6, { x: 200, y: 122, width: 460, height: 300 }, { changes: ['size'] }));
   await perched.flushMicrotasks();
   assert.equal(perched.window.NekoDesktopWindowTopEdgePerch.getState().phase, 'idle');
@@ -398,7 +411,6 @@ test('identity replacement and unavailable make a perched cat drop once without 
     assert.equal(runtime.activeTimers(), 1);
     runtime.flushTimers();
     assert.equal(runtime.window.NekoDesktopWindowTopEdgePerch.getState().phase, 'idle');
-    assert.equal(runtime.terminalEvents.filter((item) => item.phase === 'dropped').length, 1);
     runtime.setShared(sensingResult(3, { x: 200, y: 122, width: 400, height: 300 }, {
       status: 'current',
     }));
@@ -580,7 +592,6 @@ test('pending drag does not interrupt; real drag, owner clear, return and unload
   leavingDuringDrop.setShared(null);
   assert.equal(leavingDuringDrop.window.NekoDesktopWindowTopEdgePerch.getState().phase, 'idle');
   assert.equal(leavingDuringDrop.activeTimers(), 0);
-  assert.equal(leavingDuringDrop.terminalEvents.filter((item) => item.phase === 'dropped').length, 0);
 
   const unload = createRuntime();
   unload.setShared(sensingResult(1, { x: 200, y: 122, width: 400, height: 300 }));

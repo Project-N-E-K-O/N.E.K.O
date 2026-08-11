@@ -571,6 +571,85 @@ body.neko-game-active [id$="-lock-icon"] {
     animation: nekoIdleCat1DesktopWindowTopEdgeDrop 360ms cubic-bezier(0.22, 0.72, 0.2, 1) both;
 }
 
+.neko-idle-return-button-container.is-cat1-desktop-window-edge-peeking {
+    pointer-events: none;
+}
+
+.neko-idle-return-button-container.is-cat1-desktop-window-edge-peeking > .neko-idle-return-btn {
+    pointer-events: auto;
+}
+
+.neko-idle-return-btn.is-cat1-desktop-window-edge-peek-left {
+    clip-path: polygon(-100% -100%, 50% -100%, 50% 200%, -100% 200%);
+}
+
+.neko-idle-return-btn.is-cat1-desktop-window-edge-peek-right {
+    clip-path: polygon(50% -100%, 200% -100%, 200% 200%, 50% 200%);
+}
+
+.neko-idle-return-btn.is-cat1-desktop-window-edge-peek-bottom {
+    clip-path: polygon(-100% 60%, 200% 60%, 200% 200%, -100% 200%);
+}
+
+.neko-idle-return-btn.is-cat1-desktop-window-edge-peek-left > .neko-idle-return-art {
+    --neko-idle-return-edge-transform: rotate(-60deg);
+}
+
+.neko-idle-return-btn.is-cat1-desktop-window-edge-peek-right > .neko-idle-return-art {
+    --neko-idle-return-edge-transform: rotate(60deg);
+}
+
+.neko-idle-return-btn.is-cat1-desktop-window-edge-peek-bottom > .neko-idle-return-art {
+    --neko-idle-return-edge-transform: rotate(180deg);
+}
+
+.neko-idle-return-btn.is-cat1-desktop-window-edge-peek-facing-right > .neko-idle-return-art {
+    --neko-idle-return-facing-transform: scaleX(-1);
+}
+
+.neko-idle-return-btn.is-cat1-desktop-window-edge-peek-walking .neko-idle-thought-bubble,
+.neko-idle-return-button-container.is-cat1-desktop-window-edge-peeking .neko-idle-thought-bubble {
+    display: none !important;
+}
+
+.neko-idle-return-button-container.is-cat1-desktop-window-edge-peek-leaving > .neko-idle-return-btn {
+    animation: nekoIdleCat1DesktopWindowEdgePeekLeave 360ms cubic-bezier(0.22, 0.72, 0.2, 1) both;
+}
+
+.neko-idle-return-button-container.is-cat1-desktop-window-edge-peek-cue-active::after {
+    content: "";
+    position: absolute;
+    width: 18px;
+    height: 3px;
+    border-radius: 999px;
+    background: rgba(255, 190, 86, 0.95);
+    box-shadow:
+        5px 8px 0 rgba(255, 190, 86, 0.82),
+        -1px 16px 0 rgba(255, 190, 86, 0.68);
+    filter: drop-shadow(0 1px 1px rgba(73, 43, 18, 0.28));
+    pointer-events: none;
+    z-index: 4;
+    animation: nekoIdleCat1DesktopWindowEdgePeekCue 700ms ease-out both;
+}
+
+.neko-idle-return-button-container.is-cat1-desktop-window-edge-peek-left::after {
+    left: -8px;
+    top: 20%;
+    transform: rotate(-18deg);
+}
+
+.neko-idle-return-button-container.is-cat1-desktop-window-edge-peek-right::after {
+    right: -8px;
+    top: 20%;
+    transform: rotate(198deg);
+}
+
+.neko-idle-return-button-container.is-cat1-desktop-window-edge-peek-bottom::after {
+    left: 52%;
+    bottom: -4px;
+    transform: rotate(90deg);
+}
+
 .neko-idle-return-button-container.is-cat1-compact-mirror-active {
     pointer-events: none;
 }
@@ -983,11 +1062,37 @@ body.neko-game-active [id$="-lock-icon"] {
     }
 }
 
+@keyframes nekoIdleCat1DesktopWindowEdgePeekLeave {
+    0% {
+        transform: translate3d(0, -52px, 0) rotate(0deg);
+    }
+    70% {
+        transform: translate3d(0, 3px, 0) rotate(2deg);
+    }
+    100% {
+        transform: translate3d(0, 0, 0) rotate(0deg);
+    }
+}
+
+@keyframes nekoIdleCat1DesktopWindowEdgePeekCue {
+    0% {
+        opacity: 0;
+    }
+    28% {
+        opacity: 1;
+    }
+    100% {
+        opacity: 0;
+    }
+}
+
 @media (prefers-reduced-motion: reduce) {
     .neko-idle-return-btn.is-tier-transitioning > .neko-idle-return-art,
     .neko-idle-return-btn.is-tier-transitioning > .neko-idle-return-art-next,
     .neko-idle-return-button-container.is-cat1-dropping-from-compact-top-edge > .neko-idle-return-btn,
-    .neko-idle-return-button-container.is-cat1-desktop-window-top-edge-dropping > .neko-idle-return-btn {
+    .neko-idle-return-button-container.is-cat1-desktop-window-top-edge-dropping > .neko-idle-return-btn,
+    .neko-idle-return-button-container.is-cat1-desktop-window-edge-peek-leaving > .neko-idle-return-btn,
+    .neko-idle-return-button-container.is-cat1-desktop-window-edge-peek-cue-active::after {
         animation: none;
     }
 }

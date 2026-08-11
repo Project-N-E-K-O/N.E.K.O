@@ -20,6 +20,8 @@ const PART_NAMES = [
     'methods-state-and-cleanup.js',
 ];
 const STANDALONE_PART_NAMES = [
+    'idle-desktop-window-edge-peek.js',
+    'idle-desktop-window-interactions.js',
     'idle-desktop-window-top-edge.js',
 ];
 const EXPECTED_METHOD_NAMES = [

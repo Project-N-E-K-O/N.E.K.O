@@ -1,7 +1,7 @@
 /**
- * Desktop-only CAT1 presentation: walk to the already-sensed native window
- * top edge and perch there. This runner owns no sensing session and shares no
- * compact/chat journey state.
+ * Desktop-only CAT1 presentation: walk to a sensed native window's left,
+ * right, or bottom edge and appear to peek from behind it. This runner owns
+ * no sensing session and shares no state with the screen-edge peek feature.
  */
 (function () {
     'use strict';
@@ -13,22 +13,30 @@
         return;
     }
 
-    const TARGET_KIND = 'desktop-window-top-edge';
+    const TARGET_KIND = 'desktop-window-edge-peek';
     const TRIGGER_DISTANCE_PX = 200;
-    const SIDE_PADDING_PX = 12;
-    const TOP_EDGE_OVERLAP_PX = 28;
+    const EDGE_PADDING_PX = 12;
+    const SIDE_VISIBLE_RATIO = 0.5;
+    const SIDE_HIDDEN_RATIO = 1 - SIDE_VISIBLE_RATIO;
+    const BOTTOM_HIDDEN_RATIO = 0.6;
+    const SIDE_ROTATION_DEG = 60;
     const WALK_FINISH_DISTANCE_PX = 14;
     const WALK_SPEED_PX_PER_SEC = 82;
     const WALK_MIN_STEP_MS = 12;
     const WALK_MAX_STEP_MS = 48;
-    const DROP_DISTANCE_PX = 52;
-    const DROP_DURATION_MS = 360;
-    const DROP_COOLDOWN_MS = 30000;
+    const LEAVE_DISTANCE_PX = 52;
+    const LEAVE_DURATION_MS = 360;
+    const LEAVE_COOLDOWN_MS = 30000;
+    const CUE_DURATION_MS = 700;
     const MANUAL_MOVE_EVENT = 'neko:return-ball-manual-move';
     const PLAYGROUND_EVENT = 'neko:idle-cat1-playground-state';
-    const WALKING_CLASS = 'is-cat1-desktop-window-top-edge-walking';
-    const FACING_RIGHT_CLASS = 'is-cat1-desktop-window-top-edge-facing-right';
-    const DROPPING_CLASS = 'is-cat1-desktop-window-top-edge-dropping';
+    const WALKING_CLASS = 'is-cat1-desktop-window-edge-peek-walking';
+    const FACING_RIGHT_CLASS = 'is-cat1-desktop-window-edge-peek-facing-right';
+    const PEEKING_CLASS = 'is-cat1-desktop-window-edge-peeking';
+    const LEAVING_CLASS = 'is-cat1-desktop-window-edge-peek-leaving';
+    const CUE_CLASS = 'is-cat1-desktop-window-edge-peek-cue-active';
+    const EDGE_CLASS_PREFIX = 'is-cat1-desktop-window-edge-peek-';
+    const EDGES = Object.freeze(['left', 'right', 'bottom']);
     const TARGET_OPPORTUNITY_NONE = 'none';
     const TARGET_OPPORTUNITY_READY = 'ready';
     const TARGET_OPPORTUNITY_CONSUMED = 'consumed';
@@ -66,6 +74,16 @@
             width: width,
             height: height,
         };
+    }
+
+    function clamp(value, minValue, maxValue) {
+        if (!Number.isFinite(value)
+            || !Number.isFinite(minValue)
+            || !Number.isFinite(maxValue)
+            || maxValue < minValue) {
+            return null;
+        }
+        return Math.max(minValue, Math.min(value, maxValue));
     }
 
     function getScreenOrigin() {
@@ -145,11 +163,69 @@
         return 'same-target';
     }
 
+    function getRotationMargin(width, height, degrees) {
+        const radians = Math.abs(Number(degrees) || 0) * Math.PI / 180;
+        const rotatedWidth = Math.abs(width * Math.cos(radians)) + Math.abs(height * Math.sin(radians));
+        const rotatedHeight = Math.abs(width * Math.sin(radians)) + Math.abs(height * Math.cos(radians));
+        return {
+            x: Math.max(0, (rotatedWidth - width) / 2),
+            y: Math.max(0, (rotatedHeight - height) / 2),
+        };
+    }
+
+    function buildCandidate(edge, catRect, windowRect, viewportWidth, viewportHeight) {
+        const width = catRect.width;
+        const height = catRect.height;
+        let left = 0;
+        let top = 0;
+
+        if (edge === 'left' || edge === 'right') {
+            const margin = getRotationMargin(width, height, SIDE_ROTATION_DEG);
+            const minTop = Math.max(windowRect.top + EDGE_PADDING_PX, margin.y);
+            const maxTop = Math.min(
+                windowRect.bottom - EDGE_PADDING_PX - height,
+                viewportHeight - height - margin.y
+            );
+            top = clamp(catRect.top, minTop, maxTop);
+            if (top === null) return null;
+            left = edge === 'left'
+                ? windowRect.left - width * SIDE_VISIBLE_RATIO
+                : windowRect.right - width * SIDE_HIDDEN_RATIO;
+            if (left - margin.x < 0 || left + width + margin.x > viewportWidth) return null;
+        } else if (edge === 'bottom') {
+            const minLeft = Math.max(windowRect.left + EDGE_PADDING_PX, 0);
+            const maxLeft = Math.min(
+                windowRect.right - EDGE_PADDING_PX - width,
+                viewportWidth - width
+            );
+            left = clamp(catRect.left, minLeft, maxLeft);
+            if (left === null) return null;
+            top = windowRect.bottom - height * BOTTOM_HIDDEN_RATIO;
+            if (top < 0 || top + height > viewportHeight) return null;
+        } else {
+            return null;
+        }
+
+        const centerX = left + width / 2;
+        const centerY = top + height / 2;
+        const catCenterX = catRect.left + width / 2;
+        const catCenterY = catRect.top + height / 2;
+        return Object.freeze({
+            kind: TARGET_KIND,
+            edge: edge,
+            left: left,
+            top: top,
+            centerX: centerX,
+            centerY: centerY,
+            distancePx: Math.hypot(centerX - catCenterX, centerY - catCenterY),
+            facingRight: centerX > catCenterX,
+        });
+    }
+
     function computeTarget(catValue, desktopValue) {
         const catRect = normalizeRect(catValue);
         const windowRect = getLocalWindowRect(desktopValue);
         if (!catRect || !windowRect) return null;
-
         const viewportWidth = Number(window.innerWidth);
         const viewportHeight = Number(window.innerHeight);
         if (!Number.isFinite(viewportWidth)
@@ -159,37 +235,15 @@
             return null;
         }
 
-        const halfWidth = catRect.width / 2;
-        const safeCenterLeft = Math.max(
-            windowRect.left + SIDE_PADDING_PX + halfWidth,
-            halfWidth
-        );
-        const safeCenterRight = Math.min(
-            windowRect.right - SIDE_PADDING_PX - halfWidth,
-            viewportWidth - halfWidth
-        );
-        if (safeCenterRight < safeCenterLeft) return null;
-
-        const targetTop = windowRect.top - catRect.height + TOP_EDGE_OVERLAP_PX;
-        if (targetTop < 0 || targetTop + catRect.height > viewportHeight) return null;
-
-        const catCenterX = catRect.left + halfWidth;
-        const catCenterY = catRect.top + catRect.height / 2;
-        const targetCenterX = Math.max(safeCenterLeft, Math.min(catCenterX, safeCenterRight));
-        const targetCenterY = targetTop + catRect.height / 2;
-        const distancePx = Math.hypot(
-            targetCenterX - catCenterX,
-            targetCenterY - catCenterY
-        );
-        return Object.freeze({
-            kind: TARGET_KIND,
-            left: targetCenterX - halfWidth,
-            top: targetTop,
-            centerX: targetCenterX,
-            centerY: targetCenterY,
-            distancePx: distancePx,
-            facingRight: targetCenterX > catCenterX,
+        const candidates = EDGES.map((edge) => (
+            buildCandidate(edge, catRect, windowRect, viewportWidth, viewportHeight)
+        )).filter(Boolean);
+        candidates.sort((left, right) => {
+            const distanceDelta = left.distancePx - right.distancePx;
+            if (Math.abs(distanceDelta) > 0.000001) return distanceDelta;
+            return EDGES.indexOf(left.edge) - EDGES.indexOf(right.edge);
         });
+        return candidates[0] || null;
     }
 
     function findVisibleCat1Button() {
@@ -202,9 +256,7 @@
             const container = typeof _getNekoIdleReturnContainerFromButton === 'function'
                 ? _getNekoIdleReturnContainerFromButton(button)
                 : null;
-            if (container && container.style && container.style.display !== 'none') {
-                return button;
-            }
+            if (container && container.style && container.style.display !== 'none') return button;
         }
         return null;
     }
@@ -225,12 +277,7 @@
             ? _getNekoIdleReturnContainerFromButton(button)
             : null;
         const art = button.querySelector('.neko-idle-return-art');
-        if (!container
-            || !art
-            || container.style.display === 'none'
-            || art.__nekoIdleHoverSrc) {
-            return false;
-        }
+        if (!container || !art || container.style.display === 'none' || art.__nekoIdleHoverSrc) return false;
         const dragging = container.getAttribute('data-dragging');
         if (dragging === 'true' || dragging === 'pending') return false;
         if (typeof _isNekoIdleCat1PlaygroundEntryOrDropActive === 'function'
@@ -267,20 +314,42 @@
         container.style.transform = 'none';
     }
 
-    function setOwnClasses(state) {
-        if (!state || !state.button || !state.container) return;
-        const active = state.phase !== 'idle';
-        state.button.classList.toggle(WALKING_CLASS, state.phase === 'walking');
-        state.button.classList.toggle(FACING_RIGHT_CLASS, active && state.facingRight);
-        state.container.classList.toggle(DROPPING_CLASS, state.phase === 'dropping');
+    function clearCue(state) {
+        if (!state) return;
+        if (state.cueTimer) {
+            window.clearTimeout(state.cueTimer);
+            state.cueTimer = 0;
+        }
+        if (state.container) state.container.classList.remove(CUE_CLASS);
     }
 
     function clearOwnClasses(state) {
         if (!state || !state.button || !state.container) return;
-        [WALKING_CLASS, FACING_RIGHT_CLASS].forEach((name) => {
-            state.button.classList.remove(name);
+        state.button.classList.remove(WALKING_CLASS, FACING_RIGHT_CLASS);
+        state.container.classList.remove(PEEKING_CLASS, LEAVING_CLASS, CUE_CLASS);
+        EDGES.forEach((edge) => {
+            const edgeClass = `${EDGE_CLASS_PREFIX}${edge}`;
+            state.button.classList.remove(edgeClass);
+            state.container.classList.remove(edgeClass);
         });
-        state.container.classList.remove(DROPPING_CLASS);
+    }
+
+    function setWalkingClasses(state) {
+        clearOwnClasses(state);
+        state.button.classList.add(WALKING_CLASS);
+        state.button.classList.toggle(FACING_RIGHT_CLASS, state.facingRight);
+    }
+
+    function setPeekingClasses(state) {
+        clearOwnClasses(state);
+        const edgeClass = `${EDGE_CLASS_PREFIX}${state.target.edge}`;
+        state.button.classList.add(edgeClass);
+        state.container.classList.add(PEEKING_CLASS, edgeClass, CUE_CLASS);
+        state.cueTimer = window.setTimeout(() => {
+            if (currentAction !== state || state.phase !== 'peeking') return;
+            state.cueTimer = 0;
+            state.container.classList.remove(CUE_CLASS);
+        }, CUE_DURATION_MS);
     }
 
     function setArt(state, src) {
@@ -302,28 +371,33 @@
         setArt(state, src);
     }
 
-    function stopFramesAndTimer(state) {
+    function stopFramesAndTimers(state) {
         if (!state) return;
         if (state.frame) {
             window.cancelAnimationFrame(state.frame);
             state.frame = 0;
         }
-        if (state.dropTimer) {
-            window.clearTimeout(state.dropTimer);
-            state.dropTimer = 0;
+        if (state.leaveTimer) {
+            window.clearTimeout(state.leaveTimer);
+            state.leaveTimer = 0;
         }
+        clearCue(state);
+    }
+
+    function disconnectRemovalObserver() {
+        if (removalObserver) {
+            try { removalObserver.disconnect(); } catch (_) {}
+        }
+        removalObserver = null;
     }
 
     function finishState(state, options) {
         if (!state || currentAction !== state || state.phase === 'idle') return false;
-        stopFramesAndTimer(state);
+        stopFramesAndTimers(state);
         state.phase = 'idle';
         clearOwnClasses(state);
-        if (!options || options.restoreArt !== false) {
-            restoreIdleArt(state);
-        }
+        if (!options || options.restoreArt !== false) restoreIdleArt(state);
         state.target = null;
-        state.facingRight = false;
         currentAction = null;
         disconnectRemovalObserver();
         state.button = null;
@@ -339,12 +413,15 @@
         return finishState(state, options || {});
     }
 
-    function finishPerch(state) {
+    function finishPeekArrival(state) {
         if (!state || currentAction !== state || state.phase !== 'walking') return;
-        stopFramesAndTimer(state);
+        if (state.frame) {
+            window.cancelAnimationFrame(state.frame);
+            state.frame = 0;
+        }
         setContainerPosition(state.container, state.target.left, state.target.top);
-        state.phase = 'perched';
-        setOwnClasses(state);
+        state.phase = 'peeking';
+        setPeekingClasses(state);
         restoreIdleArt(state);
     }
 
@@ -363,7 +440,7 @@
         const dy = state.target.top - rect.top;
         const distance = Math.hypot(dx, dy);
         if (distance <= WALK_FINISH_DISTANCE_PX) {
-            finishPerch(state);
+            finishPeekArrival(state);
             return;
         }
         const previousAt = state.lastStepAt || timestamp;
@@ -389,10 +466,8 @@
         if (!result
             || (result.status !== 'current' && result.status !== 'changed')
             || !result.sessionId
-            || !Number.isFinite(Number(result.revision))) {
-            return null;
-        }
-        if (targetState.opportunity !== TARGET_OPPORTUNITY_READY) {
+            || !Number.isFinite(Number(result.revision))
+            || targetState.opportunity !== TARGET_OPPORTUNITY_READY) {
             return null;
         }
         const button = findVisibleCat1Button();
@@ -401,7 +476,6 @@
         const catRect = normalizeRect(container.getBoundingClientRect());
         const target = computeTarget(catRect, result.rect);
         if (!target || target.distancePx > TRIGGER_DISTANCE_PX) return null;
-
         return Object.freeze({
             targetKind: TARGET_KIND,
             sessionId: result.sessionId,
@@ -423,7 +497,6 @@
                 || Number(expectedCandidate.revision) !== candidate.revision)) {
             return false;
         }
-
         const state = {
             phase: 'walking',
             button: candidate.button,
@@ -435,12 +508,13 @@
             facingRight: candidate.target.facingRight,
             lastStepAt: 0,
             frame: 0,
-            dropTimer: 0,
+            leaveTimer: 0,
+            cueTimer: 0,
         };
         currentAction = state;
         bindRemovalObserver(state);
         targetState.opportunity = TARGET_OPPORTUNITY_CONSUMED;
-        setOwnClasses(state);
+        setWalkingClasses(state);
         const walkingSrc = typeof _getNekoIdleCat1WalkingAssetUrl === 'function'
             ? _getNekoIdleCat1WalkingAssetUrl()
             : '';
@@ -462,21 +536,23 @@
         }
     }
 
-    function startDrop(state, reason) {
-        if (!state || currentAction !== state || state.phase !== 'perched') return false;
+    function startLeave(state, reason) {
+        if (!state || currentAction !== state || state.phase !== 'peeking') return false;
         const rect = normalizeRect(state.container.getBoundingClientRect());
         if (!rect) {
             finishState(state, { reason: 'invalid-cat-rect' });
             return false;
         }
-        state.phase = 'dropping';
-        setContainerPosition(state.container, rect.left, rect.top + DROP_DISTANCE_PX);
-        setOwnClasses(state);
-        const duration = shouldReduceMotion() ? 0 : DROP_DURATION_MS;
-        state.dropTimer = window.setTimeout(() => {
-            if (currentAction !== state || state.phase !== 'dropping') return;
-            state.dropTimer = 0;
-            coordinator.completePresentation(DROP_COOLDOWN_MS);
+        clearCue(state);
+        clearOwnClasses(state);
+        state.phase = 'leaving';
+        setContainerPosition(state.container, rect.left, rect.top + LEAVE_DISTANCE_PX);
+        state.container.classList.add(LEAVING_CLASS);
+        const duration = shouldReduceMotion() ? 0 : LEAVE_DURATION_MS;
+        state.leaveTimer = window.setTimeout(() => {
+            if (currentAction !== state || state.phase !== 'leaving') return;
+            state.leaveTimer = 0;
+            coordinator.completePresentation(LEAVE_COOLDOWN_MS);
             finishState(state, {
                 reason: reason || 'window-geometry-changed',
                 restoreArt: true,
@@ -486,12 +562,9 @@
     }
 
     function leaveChangedSupport(state, reason) {
-        if (!state || currentAction !== state || state.phase === 'dropping') return;
-        if (state.phase === 'walking') {
-            finishState(state, { reason: reason });
-        } else if (state.phase === 'perched') {
-            startDrop(state, reason);
-        }
+        if (!state || currentAction !== state || state.phase === 'leaving') return;
+        if (state.phase === 'walking') finishState(state, { reason: reason });
+        else if (state.phase === 'peeking') startLeave(state, reason);
     }
 
     function handleSensingResult(result) {
@@ -511,7 +584,7 @@
             finishState(state, { reason: 'sensing-session-cleared', restoreArt: false });
             return false;
         }
-        if (state.phase === 'dropping') return false;
+        if (state.phase === 'leaving') return false;
         const revision = Number(result.revision);
         if (result.sessionId === state.sessionId
             && Number.isFinite(revision)
@@ -534,8 +607,7 @@
 
     function consumeOpportunity(result) {
         if (!result || result.sessionId !== targetState.sessionId) return false;
-        if (Number(result.revision) !== targetState.revision) return false;
-        if (targetState.current === null) return false;
+        if (Number(result.revision) !== targetState.revision || targetState.current === null) return false;
         targetState.opportunity = TARGET_OPPORTUNITY_CONSUMED;
         return true;
     }
@@ -557,6 +629,7 @@
         return Object.freeze({
             phase: state.phase,
             targetKind: TARGET_KIND,
+            edge: state.target.edge,
             sessionId: state.sessionId,
             revision: state.lastRevision,
             targetLeft: Math.round(state.target.left),
@@ -573,15 +646,12 @@
 
     function handleManualMove(event) {
         const detail = event && event.detail;
-        if (!detail) return;
-        if (detail.reason === 'return-ball-drag-active') {
-            if (currentAction && detail.container === currentAction.container) {
-                cancel(currentAction.button, {
-                    reason: 'return-ball-drag-active',
-                    restoreArt: false,
-                });
-            }
-            return;
+        if (!detail || detail.reason !== 'return-ball-drag-active') return;
+        if (currentAction && detail.container === currentAction.container) {
+            cancel(currentAction.button, {
+                reason: 'return-ball-drag-active',
+                restoreArt: false,
+            });
         }
     }
 
@@ -589,13 +659,6 @@
         if (event && event.detail && event.detail.active === true) {
             cancel(null, { reason: 'playground-active', restoreArt: false });
         }
-    }
-
-    function disconnectRemovalObserver() {
-        if (removalObserver) {
-            try { removalObserver.disconnect(); } catch (_) {}
-        }
-        removalObserver = null;
     }
 
     function bindRemovalObserver(state) {
@@ -613,7 +676,7 @@
 
     let unregisterCoordinator = coordinator.register({
         kind: TARGET_KIND,
-        priority: 0,
+        priority: 1,
         handleSensingResult: handleSensingResult,
         getCandidate: getCandidate,
         startCandidate: tryStart,
@@ -637,13 +700,13 @@
         window.removeEventListener('pagehide', dispose);
         window.removeEventListener('beforeunload', dispose);
         try {
-            delete window.NekoDesktopWindowTopEdgePerch;
+            delete window.NekoDesktopWindowEdgePeek;
         } catch (_) {
-            window.NekoDesktopWindowTopEdgePerch = undefined;
+            window.NekoDesktopWindowEdgePeek = undefined;
         }
     }
 
-    window.NekoDesktopWindowTopEdgePerch = Object.freeze({
+    window.NekoDesktopWindowEdgePeek = Object.freeze({
         tryStart: tryStart,
         cancel: cancel,
         getState: getState,
