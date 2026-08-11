@@ -34,6 +34,21 @@ def _voucher_credit(**over):
     return credit
 
 
+def _fixed_expected_voucher():
+    return {
+        "version": 1,
+        "operation_id": "operation-id",
+        "credit_id": "credit-id",
+        "card_id": "card-id",
+        "rarity": "R",
+        "created_at": "2026-08-09T00:00:00.000000Z",
+        "expires_at": "2026-08-10T00:00:00.000000Z",
+        "reserved_at": "2026-08-09T01:00:00.000000Z",
+        "consumed_at": "2026-08-09T01:01:00.000000Z",
+        "signature": "5e95eb9dfe25de5ad5ee661e7e47817f1ce4f4a91103572dcc574961c6ec98ab",
+    }
+
+
 @pytest.mark.parametrize(
     "malformed_origin",
     [
@@ -404,14 +419,7 @@ async def test_confirm_cloud_forge_debit_includes_signed_voucher_for_local_http(
         "client_proof": "client-proof",
         "credit_id": "credit-id",
         "card_id": "card-id",
-        "voucher": C._forge_voucher_attestation(
-            client_id="client-id",
-            client_proof="client-proof",
-            operation_id="operation-id",
-            credit_id="credit-id",
-            card_id="card-id",
-            credit=_voucher_credit(),
-        ),
+        "voucher": _fixed_expected_voucher(),
     }
 
 
@@ -478,14 +486,7 @@ async def test_confirm_cloud_forge_debit_retries_for_loopback_unregistered(monke
         "client_proof": "client-proof",
         "credit_id": "credit-id",
         "card_id": "card-id",
-        "voucher": C._forge_voucher_attestation(
-            client_id="client-id",
-            client_proof="client-proof",
-            operation_id="operation-id",
-            credit_id="credit-id",
-            card_id="card-id",
-            credit=_voucher_credit(),
-        ),
+        "voucher": _fixed_expected_voucher(),
     }
     assert call_log[1][1] == ("http://localhost:48911",)
     assert call_log[1][2] == {"force": True}
