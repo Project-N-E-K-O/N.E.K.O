@@ -206,12 +206,16 @@ const guideSurfaces = computed(() => surfaces.value.filter((surface) => surface.
 const availablePanelSurfaces = computed(() => panelSurfaces.value.filter((surface) => surface.available !== false))
 const availableDeclaredPanelSurfaces = computed(() => availablePanelSurfaces.value.filter((surface) => !surface.legacy_static_compat))
 const availableHostedPanelSurfaces = computed(() => availableDeclaredPanelSurfaces.value.filter((surface) => surface.mode === 'hosted-tsx'))
-// Prefer usable hosted TSX panels.  A declared non-hosted panel is still a
-// valid modern surface; only fall back to a host-generated compatibility panel
-// when the plugin did not declare any usable panel of its own.
+// Prefer usable hosted TSX panels without hiding other declared panels. Only
+// fall back to a host-generated compatibility panel when the plugin did not
+// declare any usable panel of its own.
 const displayedPanelSurfaces = computed(() => {
-  if (availableHostedPanelSurfaces.value.length > 0) return availableHostedPanelSurfaces.value
-  if (availableDeclaredPanelSurfaces.value.length > 0) return availableDeclaredPanelSurfaces.value
+  if (availableDeclaredPanelSurfaces.value.length > 0) {
+    return [
+      ...availableHostedPanelSurfaces.value,
+      ...availableDeclaredPanelSurfaces.value.filter((surface) => surface.mode !== 'hosted-tsx'),
+    ]
+  }
   return availablePanelSurfaces.value
 })
 const hasStaticCompatPanel = computed(() => panelSurfaces.value.some((surface) => surface.legacy_static_compat))

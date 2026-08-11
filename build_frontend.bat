@@ -109,12 +109,19 @@ if not exist "%YUI_ARCHIVE%" (
 
 set "YUI_NEED_EXTRACT=0"
 if not exist "%YUI_MARKER%" set "YUI_NEED_EXTRACT=1"
-if "%YUI_NEED_EXTRACT%"=="0" call :compare_live2d_timestamps "%YUI_ARCHIVE%" "%YUI_MARKER%"
+if "%YUI_NEED_EXTRACT%"=="0" set "YUI_COMPARE_RESULT_FILE=%TEMP%\neko-live2d-%RANDOM%-%RANDOM%.txt"
+if "%YUI_NEED_EXTRACT%"=="0" call :compare_live2d_timestamps "%YUI_ARCHIVE%" "%YUI_MARKER%" "%YUI_COMPARE_RESULT_FILE%"
 if "%YUI_NEED_EXTRACT%"=="0" set "YUI_MTIME_STATUS=%ERRORLEVEL%"
-if "%YUI_NEED_EXTRACT%"=="0" if "%YUI_MTIME_STATUS%"=="0" set "YUI_NEED_EXTRACT=1"
-if "%YUI_NEED_EXTRACT%"=="0" if not "%YUI_MTIME_STATUS%"=="0" if not "%YUI_MTIME_STATUS%"=="1" (
+if "%YUI_NEED_EXTRACT%"=="0" set /p "YUI_MTIME_RESULT="<"%YUI_COMPARE_RESULT_FILE%"
+if "%YUI_NEED_EXTRACT%"=="0" if exist "%YUI_COMPARE_RESULT_FILE%" del /q "%YUI_COMPARE_RESULT_FILE%" >nul 2>&1
+if "%YUI_NEED_EXTRACT%"=="0" if not "%YUI_MTIME_STATUS%"=="0" (
   echo [build_frontend] failed to compare timestamps for %MODEL% ^(exit %YUI_MTIME_STATUS%^)
   endlocal & exit /b %YUI_MTIME_STATUS%
+)
+if "%YUI_NEED_EXTRACT%"=="0" if /i "%YUI_MTIME_RESULT%"=="newer" set "YUI_NEED_EXTRACT=1"
+if "%YUI_NEED_EXTRACT%"=="0" if /i not "%YUI_MTIME_RESULT%"=="older" (
+  echo [build_frontend] invalid timestamp comparison result for %MODEL%: %YUI_MTIME_RESULT%
+  endlocal & exit /b 1
 )
 
 if "%YUI_NEED_EXTRACT%"=="1" (
@@ -143,5 +150,5 @@ if "%YUI_NEED_EXTRACT%"=="1" (
 endlocal & exit /b 0
 
 :compare_live2d_timestamps
-uv run --no-sync python -c "import os, sys; sys.exit(0 if os.path.getmtime(sys.argv[1]) > os.path.getmtime(sys.argv[2]) else 1)" "%~1" "%~2"
+uv run --no-sync python -c "import os, sys; print('newer' if os.path.getmtime(sys.argv[1]) > os.path.getmtime(sys.argv[2]) else 'older')" "%~1" "%~2" > "%~3"
 exit /b %ERRORLEVEL%
