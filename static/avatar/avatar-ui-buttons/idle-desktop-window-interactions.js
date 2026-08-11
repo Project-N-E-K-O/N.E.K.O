@@ -17,11 +17,51 @@
         'desktop-window-top-edge',
         'desktop-window-edge-peek',
     ]);
+    const MANUAL_MOVE_EVENT = 'neko:return-ball-manual-move';
+    const MANUAL_MOVE_COOLDOWN_MS = 30000;
     const runners = new Map();
     let disposed = false;
     let replayTimer = 0;
     let presentationCooldownUntil = 0;
     let rearmOnNextFact = false;
+    let manualMoveStartedFromPresentation = false;
+    let lastRunnerFailure = null;
+
+    function canStart(button) {
+        if (!button
+            || _normalizeNekoIdleReturnTier(button.getAttribute('data-neko-idle-tier')) !== _NEKO_IDLE_TIER_CAT1) {
+            return false;
+        }
+        if (_getActiveNekoIdleReturnTier() !== _NEKO_IDLE_TIER_CAT1) return false;
+        if (_isNekoIdleReturnDragActionBlocking(button) || _isAnyNekoIdleReturnDragActionBlocking()) return false;
+        if (_isNekoIdleReturnPending(button) || _isAnyNekoIdleReturnPending()) return false;
+        if (_isNekoIdlePresentationTransitionActive(button)) return false;
+        if (_isNekoIdleCompactSurfaceDragging()) return false;
+        if (_isNekoIdleCat1EdgePeekActive(button)) return false;
+        if (_isAnyNekoIdleCat1IndependentActionActive()) return false;
+        if (_isNekoIdleCat1PositionPresentationBusy(button)) return false;
+        return true;
+    }
+
+    function reportRunnerFailure(stage, runner, error) {
+        lastRunnerFailure = Object.freeze({
+            stage: String(stage || ''),
+            runnerKind: runner && typeof runner.kind === 'string' ? runner.kind : '',
+            message: error && error.message ? String(error.message) : String(error || ''),
+            timestamp: Date.now(),
+        });
+        try {
+            const debugEnabled = window.__NEKO_DESKTOP_WINDOW_INTERACTIONS_DEBUG__ === true
+                || (window.localStorage
+                    && window.localStorage.getItem('nekoDesktopWindowInteractionsDebug') === '1');
+            if (debugEnabled && window.console && typeof window.console.warn === 'function') {
+                window.console.warn(
+                    '[NekoDesktopWindowInteractions] runner failed',
+                    lastRunnerFailure
+                );
+            }
+        } catch (_) {}
+    }
 
     function getActiveRunner(button) {
         let active = null;
@@ -29,7 +69,9 @@
             if (active || typeof runner.isActive !== 'function') return;
             try {
                 if (runner.isActive(button)) active = runner;
-            } catch (_) {}
+            } catch (error) {
+                reportRunnerFailure('isActive', runner, error);
+            }
         });
         return active;
     }
@@ -46,7 +88,8 @@
                 if (runner.handleSensingResult(result) === true) {
                     eligibleRunners.push(runner);
                 }
-            } catch (_) {
+            } catch (error) {
+                reportRunnerFailure('handleSensingResult', runner, error);
                 runnerFailed = true;
             }
         });
@@ -65,7 +108,9 @@
                         rearmed = true;
                         if (!eligibleRunners.includes(runner)) eligibleRunners.push(runner);
                     }
-                } catch (_) {}
+                } catch (error) {
+                    reportRunnerFailure('rearmOpportunity', runner, error);
+                }
             });
             if (!rearmed) return false;
             rearmOnNextFact = false;
@@ -76,7 +121,12 @@
         eligibleRunners.forEach((runner) => {
             if (typeof runner.getCandidate !== 'function') return;
             let candidate = null;
-            try { candidate = runner.getCandidate(); } catch (_) { candidateFailed = true; }
+            try {
+                candidate = runner.getCandidate();
+            } catch (error) {
+                reportRunnerFailure('getCandidate', runner, error);
+                candidateFailed = true;
+            }
             if (!candidate || !Number.isFinite(Number(candidate.distancePx))) return;
             candidates.push({ runner: runner, candidate: candidate });
         });
@@ -92,12 +142,20 @@
         const selected = candidates[0];
         if (!selected || typeof selected.runner.startCandidate !== 'function') return false;
         let started = false;
-        try { started = selected.runner.startCandidate(selected.candidate) === true; } catch (_) {}
+        try {
+            started = selected.runner.startCandidate(selected.candidate) === true;
+        } catch (error) {
+            reportRunnerFailure('startCandidate', selected.runner, error);
+        }
         if (!started) return false;
 
         runners.forEach((runner) => {
             if (runner === selected.runner || typeof runner.consumeOpportunity !== 'function') return;
-            try { runner.consumeOpportunity(result); } catch (_) {}
+            try {
+                runner.consumeOpportunity(result);
+            } catch (error) {
+                reportRunnerFailure('consumeOpportunity', runner, error);
+            }
         });
         return true;
     }
@@ -132,7 +190,9 @@
             if (typeof runner.cancel !== 'function') return;
             try {
                 cancelled = runner.cancel(button, options || {}) === true || cancelled;
-            } catch (_) {}
+            } catch (error) {
+                reportRunnerFailure('cancel', runner, error);
+            }
         });
         return cancelled;
     }
@@ -146,6 +206,30 @@
         rearmOnNextFact = true;
     }
 
+    function handleManualMove(event) {
+        const detail = event && event.detail;
+        if (!detail) return;
+        if (detail.reason === 'return-ball-drag-start') {
+            manualMoveStartedFromPresentation = !!getActiveRunner(null);
+            return;
+        }
+        if (detail.reason === 'return-ball-drag-active') {
+            const movedFromPresentation = manualMoveStartedFromPresentation
+                || !!getActiveRunner(null);
+            manualMoveStartedFromPresentation = false;
+            if (movedFromPresentation) {
+                completePresentation(MANUAL_MOVE_COOLDOWN_MS);
+            } else {
+                rearmOnNextFact = true;
+            }
+            return;
+        }
+        if (detail.reason === 'return-ball-drag-end'
+            || detail.reason === 'return-ball-drag-cancel') {
+            manualMoveStartedFromPresentation = false;
+        }
+    }
+
     function getState() {
         const active = getActiveRunner(null);
         return Object.freeze({
@@ -153,6 +237,7 @@
             registeredKinds: Object.freeze(Array.from(runners.keys())),
             cooldownUntil: presentationCooldownUntil,
             rearmOnNextFact: rearmOnNextFact,
+            lastRunnerFailure: lastRunnerFailure,
         });
     }
 
@@ -171,6 +256,9 @@
         runners.clear();
         presentationCooldownUntil = 0;
         rearmOnNextFact = false;
+        manualMoveStartedFromPresentation = false;
+        lastRunnerFailure = null;
+        window.removeEventListener(MANUAL_MOVE_EVENT, handleManualMove);
         window.removeEventListener('pagehide', dispose);
         window.removeEventListener('beforeunload', dispose);
         try {
@@ -183,12 +271,14 @@
     window.NekoDesktopWindowInteractions = Object.freeze({
         register: register,
         cancel: cancel,
+        canStart: canStart,
         completePresentation: completePresentation,
         isActive(button) {
             return !!getActiveRunner(button);
         },
         getState: getState,
     });
+    window.addEventListener(MANUAL_MOVE_EVENT, handleManualMove);
     window.addEventListener('pagehide', dispose);
     window.addEventListener('beforeunload', dispose);
 })();

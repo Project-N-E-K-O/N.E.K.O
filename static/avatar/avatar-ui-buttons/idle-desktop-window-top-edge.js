@@ -237,26 +237,8 @@
             && _isNekoIdleCat1PlaygroundEntryOrDropActive(button)) {
             return false;
         }
-        if (typeof _getNekoCatMindRuntimeGateSnapshot === 'function') {
-            const gate = _getNekoCatMindRuntimeGateSnapshot();
-            if (!gate
-                || !gate.validCatRuntime
-                || gate.tier !== 'cat1'
-                || gate.returnPending
-                || gate.dragPending
-                || gate.dragging
-                || gate.edgePeekActive
-                || gate.transitionActive
-                || gate.activeIndependentAction
-                || gate.cat1PositionPresentationBusy
-                || !gate.returnBallVisible
-                || gate.chatSurfaceDragging
-                || gate.yarnDragActive
-                || gate.yarnSettling) {
-                return false;
-            }
-        }
-        return true;
+        return typeof coordinator.canStart === 'function'
+            && coordinator.canStart(button);
     }
 
     function setContainerPosition(container, left, top) {

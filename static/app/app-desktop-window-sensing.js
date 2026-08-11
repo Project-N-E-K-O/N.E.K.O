@@ -39,6 +39,7 @@
 
     let sharedRevision = 0;
     let sharedResult = null;
+    let lastObservedRect = null;
     const sharedListeners = new Set();
 
     function readSessionId(value) {
@@ -215,10 +216,30 @@
         return true;
     }
 
+    function sameRect(left, right) {
+        return !!(left
+            && right
+            && left.x === right.x
+            && left.y === right.y
+            && left.width === right.width
+            && left.height === right.height);
+    }
+
     sharedContext.subscribe((value) => {
-        if (value !== null) {
-            publishObservation(value);
+        if (value === null) {
+            lastObservedRect = null;
+            return;
         }
+        if (value.status === 'unavailable') {
+            lastObservedRect = null;
+            publishObservation(value);
+            return;
+        }
+        const rect = readRect(value.rect);
+        if (!rect) return;
+        if (value.status === 'current' && sameRect(lastObservedRect, rect)) return;
+        lastObservedRect = rect;
+        publishObservation(value);
     });
 
     function removeChangedSubscription() {

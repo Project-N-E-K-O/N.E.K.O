@@ -43,6 +43,8 @@ function createRuntime(options = {}) {
   let now = 1000;
   let nextRaf = 1;
   let nextTimer = 1;
+  const runtimeMath = Object.create(Math);
+  runtimeMath.random = typeof options.random === 'function' ? options.random : () => 0.5;
 
   const attributes = new Map([['data-neko-idle-tier', 'cat1']]);
   const containerAttributes = new Map();
@@ -67,6 +69,9 @@ function createRuntime(options = {}) {
       right: '',
       bottom: '',
       transform: 'none',
+      setProperty(name, value) { this[name] = String(value); },
+      removeProperty(name) { delete this[name]; },
+      getPropertyValue(name) { return this[name] || ''; },
     },
     classList: new FakeClassList(),
     parentNode: catParent,
@@ -119,14 +124,14 @@ function createRuntime(options = {}) {
       return id;
     },
     cancelAnimationFrame(id) { rafs.delete(id); },
-    setTimeout(callback) {
+    setTimeout(callback, delay) {
       const id = nextTimer++;
-      timers.set(id, callback);
+      timers.set(id, { callback, delay: Number(delay) || 0 });
       return id;
     },
     clearTimeout(id) { timers.delete(id); },
     queueMicrotask(callback) { Promise.resolve().then(callback); },
-    matchMedia: () => ({ matches: false }),
+    matchMedia: () => ({ matches: options.reducedMotion === true }),
   };
   const document = {
     querySelectorAll(selector) {
@@ -136,7 +141,7 @@ function createRuntime(options = {}) {
   const context = {
     window,
     document,
-    Math,
+    Math: runtimeMath,
     Object,
     Number,
     Date: { now: () => now },
@@ -144,27 +149,24 @@ function createRuntime(options = {}) {
       this.type = type;
       this.detail = init && init.detail;
     },
+    _NEKO_IDLE_TIER_CAT1: 'cat1',
     _NEKO_GOODBYE_IDLE_APPEARANCE_CAT: 'cat',
     _getNekoGoodbyeIdleAppearance: () => 'cat',
+    _normalizeNekoIdleReturnTier: (tier) => tier || 'cat1',
     _getNekoIdleReturnContainerFromButton: (candidate) => candidate === button ? container : null,
     _getNekoIdleReturnCurrentArtUrl: () => 'idle.gif',
     _getNekoIdleCat1WalkingAssetUrl: () => 'walk.gif',
     _setNekoIdleReturnArtSource: (candidate, src) => candidate.setAttribute('src', src),
-    _getNekoCatMindRuntimeGateSnapshot: () => Object.assign({
-      validCatRuntime: true,
-      tier: 'cat1',
-      returnPending: false,
-      dragPending: false,
-      dragging: false,
-      edgePeekActive: false,
-      transitionActive: false,
-      activeIndependentAction: false,
-      cat1PositionPresentationBusy: false,
-      returnBallVisible: true,
-      chatSurfaceDragging: false,
-      yarnDragActive: false,
-      yarnSettling: false,
-    }, gateOverrides),
+    _getActiveNekoIdleReturnTier: () => gateOverrides.tier || 'cat1',
+    _isNekoIdleReturnDragActionBlocking: () => !!gateOverrides.drag,
+    _isAnyNekoIdleReturnDragActionBlocking: () => false,
+    _isNekoIdleReturnPending: () => !!gateOverrides.returnPending,
+    _isAnyNekoIdleReturnPending: () => false,
+    _isNekoIdlePresentationTransitionActive: () => !!gateOverrides.transition,
+    _isNekoIdleCompactSurfaceDragging: () => !!gateOverrides.compactDrag,
+    _isNekoIdleCat1EdgePeekActive: () => !!gateOverrides.screenEdgePeek,
+    _isAnyNekoIdleCat1IndependentActionActive: () => !!gateOverrides.activeIndependentAction,
+    _isNekoIdleCat1PositionPresentationBusy: () => !!gateOverrides.cat1PositionPresentationBusy,
     _isNekoIdleCat1PlaygroundEntryOrDropActive: () => false,
     MutationObserver: class MutationObserver {
       constructor(callback) { this.callback = callback; }
@@ -190,7 +192,7 @@ function createRuntime(options = {}) {
     });
   }
   vm.runInContext(fs.readFileSync(runnerPath, 'utf8'), context);
-  const startupCallbacks = Array.from(timers.values());
+  const startupCallbacks = Array.from(timers.values()).map((entry) => entry.callback);
   timers.clear();
   startupCallbacks.forEach((callback) => callback());
 
@@ -216,9 +218,21 @@ function createRuntime(options = {}) {
       return count;
     },
     flushTimers() {
-      const callbacks = Array.from(timers.values());
+      const callbacks = Array.from(timers.values()).map((entry) => entry.callback);
       timers.clear();
       callbacks.forEach((callback) => callback());
+    },
+    runNextTimer() {
+      const next = timers.entries().next();
+      if (next.done) return false;
+      const [id, entry] = next.value;
+      timers.delete(id);
+      entry.callback();
+      return true;
+    },
+    nextTimerDelay() {
+      const next = timers.values().next();
+      return next.done ? null : next.value.delay;
     },
     activeTimers: () => timers.size,
     advanceTime(durationMs) { now += Math.max(0, Number(durationMs) || 0); },
@@ -255,14 +269,28 @@ test('edge-peek runner loads after the selector and stays independent from scree
   assert.doesNotMatch(source, /_applyNekoIdleCat1EdgePeek|_clearNekoIdleCat1EdgePeek|is-cat1-edge-peek-/);
   assert.doesNotMatch(source, /nekoDesktopWindowSensing\.(?:start|stop|activeWindow|openWindows)/);
   assert.doesNotMatch(source, /subscribe\(handleSensingResult\)|desktop-window-edge-peek:terminal/);
+  assert.match(source, /coordinator\.canStart/);
+  assert.doesNotMatch(source, /_getNekoCatMindRuntimeGateSnapshot|NekoCatMind/);
   assert.match(source, /SIDE_VISIBLE_RATIO\s*=\s*0\.5/);
-  assert.match(source, /BOTTOM_HIDDEN_RATIO\s*=\s*0\.6/);
+  assert.match(source, /BOTTOM_HIDDEN_RATIO\s*=\s*0\.56/);
+  assert.match(source, /PEEK_CYCLE_DELAY_MIN_MS\s*=\s*6000/);
+  assert.match(source, /PEEK_CYCLE_DELAY_MAX_MS\s*=\s*12000/);
+  assert.doesNotMatch(source, /setInterval/);
   assert.match(css, /edge-peek-left[\s\S]*polygon\([^)]*50%/);
   assert.match(css, /edge-peek-right[\s\S]*polygon\(50%/);
   assert.match(css, /edge-peek-left[\s\S]*rotate\(-60deg\)/);
   assert.match(css, /edge-peek-right[\s\S]*rotate\(60deg\)/);
   assert.match(css, /is-cat1-desktop-window-edge-peek-bottom[\s\S]*rotate\(180deg\)/);
   assert.match(css, /is-cat1-desktop-window-edge-peeking[\s\S]*pointer-events:\s*none/);
+  assert.match(css, /edge-peek-left[^}]*58%[^}]*translate3d\(-8%, 0, 0\)/);
+  assert.match(css, /edge-peek-right[^}]*42%[^}]*translate3d\(8%, 0, 0\)/);
+  assert.match(css, /edge-peek-bottom[^}]*48%[^}]*translate3d\(0, 8%, 0\)/);
+  assert.match(css, /@keyframes nekoIdleCat1DesktopWindowEdgePeekCycle[\s\S]*46%/);
+  assert.doesNotMatch(
+    css,
+    /\.neko-idle-return-button-container\.is-cat1-desktop-window-edge-peek-cycle-active\s*\{[^}]*animation:/
+  );
+  assert.doesNotMatch(source, /freezePeekCyclePosition/);
 });
 
 test('the nearest valid left, right, or bottom edge becomes the target', async () => {
@@ -282,7 +310,7 @@ test('the nearest valid left, right, or bottom edge becomes the target', async (
   bottom.setShared(sensingResult(1, { x: 400, y: 150, width: 400, height: 300 }));
   await bottom.flushMicrotasks();
   assert.equal(bottom.window.NekoDesktopWindowEdgePeek.getState().edge, 'bottom');
-  assert.equal(bottom.window.NekoDesktopWindowEdgePeek.getState().targetTop, 340);
+  assert.equal(bottom.window.NekoDesktopWindowEdgePeek.getState().targetTop, 344);
 });
 
 test('real runners choose the closest presentation and keep equal-time ownership singular', () => {
@@ -316,8 +344,8 @@ test('after a completed drop and 30 seconds both real runners compare the new fa
   assert.equal(runtime.window.NekoDesktopWindowInteractions.getState().activeKind, '');
 
   runtime.advanceTime(30000);
-  runtime.setShared(sensingResult(4, { x: 490, y: 300, width: 300, height: 300 }, {
-    changes: ['position'],
+  runtime.setShared(sensingResult(4, { x: 480, y: 300, width: 300, height: 300 }, {
+    status: 'current',
   }));
   assert.equal(runtime.window.NekoDesktopWindowInteractions.getState().activeKind, 'desktop-window-edge-peek');
   assert.equal(runtime.window.NekoDesktopWindowTopEdgePerch.getState().phase, 'idle');
@@ -340,9 +368,42 @@ test('200px starts while 201px and unusable outside space do not', async () => {
   assert.equal(noOutsideRoom.window.NekoDesktopWindowEdgePeek.getState().phase, 'idle');
 });
 
+test('a stable current fact retries edge-peek after renderer occupancy clears', async () => {
+  const runtime = createRuntime({
+    catLeft: 200,
+    catTop: 300,
+    gate: { activeIndependentAction: true },
+  });
+  const rect = { x: 480, y: 300, width: 300, height: 300 };
+
+  runtime.setShared(sensingResult(1, rect));
+  await runtime.flushMicrotasks();
+  assert.equal(runtime.window.NekoDesktopWindowEdgePeek.getState().phase, 'idle');
+
+  runtime.setGate({ activeIndependentAction: false });
+  runtime.setShared(sensingResult(2, rect, { status: 'current' }));
+  await runtime.flushMicrotasks();
+  assert.equal(runtime.window.NekoDesktopWindowEdgePeek.getState().phase, 'walking');
+});
+
+test('a stable current fact starts edge-peek after the cat itself moves into range', async () => {
+  const runtime = createRuntime({ catLeft: 0, catTop: 300 });
+  const rect = { x: 480, y: 300, width: 300, height: 300 };
+
+  runtime.setShared(sensingResult(1, rect));
+  await runtime.flushMicrotasks();
+  assert.equal(runtime.window.NekoDesktopWindowEdgePeek.getState().phase, 'idle');
+
+  runtime.container.style.left = '200px';
+  runtime.setShared(sensingResult(2, rect, { status: 'current' }));
+  await runtime.flushMicrotasks();
+  assert.equal(runtime.window.NekoDesktopWindowEdgePeek.getState().phase, 'walking');
+});
+
 test('arrival applies one independent crop presentation and a short cue', async () => {
   const runtime = createRuntime({ catLeft: 200, catTop: 300 });
-  runtime.setShared(sensingResult(1, { x: 480, y: 300, width: 300, height: 300 }));
+  const rect = { x: 480, y: 300, width: 300, height: 300 };
+  runtime.setShared(sensingResult(1, rect));
   await runtime.flushMicrotasks();
   assert.equal(runtime.art.src, 'walk.gif');
   runtime.flushRafs();
@@ -356,9 +417,95 @@ test('arrival applies one independent crop presentation and a short cue', async 
   assert.equal(runtime.container.classList.contains('is-cat1-desktop-window-edge-peek-cue-active'), true);
   assert.equal(runtime.activeTimers(), 1);
 
+  runtime.setShared(sensingResult(2, rect, { status: 'current' }));
+  assert.equal(runtime.window.NekoDesktopWindowEdgePeek.getState().phase, 'peeking');
+  assert.equal(runtime.activeTimers(), 1);
+
   runtime.flushTimers();
   assert.equal(runtime.container.classList.contains('is-cat1-desktop-window-edge-peek-cue-active'), false);
   assert.equal(runtime.window.NekoDesktopWindowEdgePeek.getState().phase, 'peeking');
+});
+
+test('all three edges occasionally perform one short out-and-back animation without moving the owner', () => {
+  const cases = [
+    { edge: 'left', catLeft: 200, catTop: 300, rect: { x: 480, y: 300, width: 300, height: 300 } },
+    { edge: 'right', catLeft: 650, catTop: 300, rect: { x: 400, y: 300, width: 300, height: 300 } },
+    { edge: 'bottom', catLeft: 450, catTop: 480, rect: { x: 400, y: 150, width: 400, height: 300 } },
+  ];
+
+  cases.forEach(({ edge, catLeft, catTop, rect }) => {
+    const runtime = createRuntime({ catLeft, catTop });
+    runtime.setShared(sensingResult(1, rect));
+    runtime.flushRafs();
+    const settledLeft = runtime.container.style.left;
+    const settledTop = runtime.container.style.top;
+
+    assert.equal(runtime.window.NekoDesktopWindowEdgePeek.getState().edge, edge);
+    assert.equal(runtime.nextTimerDelay(), 700);
+    runtime.runNextTimer();
+    assert.equal(runtime.nextTimerDelay(), 9000);
+    assert.equal(runtime.container.classList.contains('is-cat1-desktop-window-edge-peek-cycle-active'), false);
+
+    runtime.runNextTimer();
+    assert.equal(runtime.container.classList.contains('is-cat1-desktop-window-edge-peek-cycle-active'), true);
+    assert.equal(
+      runtime.container.style.getPropertyValue('--neko-desktop-window-edge-peek-cycle-duration'),
+      '850ms'
+    );
+    assert.equal(runtime.container.style.left, settledLeft);
+    assert.equal(runtime.container.style.top, settledTop);
+    assert.equal(runtime.nextTimerDelay(), 850);
+    assert.equal(runtime.activeTimers(), 1);
+
+    runtime.runNextTimer();
+    assert.equal(runtime.container.classList.contains('is-cat1-desktop-window-edge-peek-cycle-active'), false);
+    assert.equal(
+      runtime.container.style.getPropertyValue('--neko-desktop-window-edge-peek-cycle-duration'),
+      ''
+    );
+    assert.equal(runtime.container.style.left, settledLeft);
+    assert.equal(runtime.container.style.top, settledTop);
+    assert.equal(runtime.nextTimerDelay(), 9000);
+    assert.equal(runtime.activeTimers(), 1);
+    assert.equal(runtime.window.NekoDesktopWindowEdgePeek.getState().phase, 'peeking');
+  });
+});
+
+test('reduced motion keeps the settled peek static without scheduling a cycle', () => {
+  const runtime = createRuntime({ catLeft: 200, catTop: 300, reducedMotion: true });
+  runtime.setShared(sensingResult(1, { x: 480, y: 300, width: 300, height: 300 }));
+  runtime.flushRafs();
+  runtime.runNextTimer();
+
+  assert.equal(runtime.window.NekoDesktopWindowEdgePeek.getState().phase, 'peeking');
+  assert.equal(runtime.container.classList.contains('is-cat1-desktop-window-edge-peek-cycle-active'), false);
+  assert.equal(runtime.activeTimers(), 0);
+});
+
+test('window change interrupts an active peek cycle and leaves only once', () => {
+  const runtime = createRuntime({ catLeft: 200, catTop: 300 });
+  runtime.setShared(sensingResult(1, { x: 480, y: 300, width: 300, height: 300 }));
+  runtime.flushRafs();
+  runtime.runNextTimer();
+  runtime.runNextTimer();
+  assert.equal(runtime.container.classList.contains('is-cat1-desktop-window-edge-peek-cycle-active'), true);
+
+  runtime.setShared(sensingResult(2, { x: 490, y: 300, width: 300, height: 300 }, {
+    changes: ['position'],
+    movement: { x: 1, y: 0 },
+  }));
+  assert.equal(runtime.window.NekoDesktopWindowEdgePeek.getState().phase, 'leaving');
+  assert.equal(runtime.container.classList.contains('is-cat1-desktop-window-edge-peek-cycle-active'), false);
+  assert.equal(runtime.activeTimers(), 1);
+
+  runtime.setShared(sensingResult(3, { x: 500, y: 300, width: 300, height: 300 }, {
+    changes: ['position'],
+    movement: { x: 1, y: 0 },
+  }));
+  assert.equal(runtime.activeTimers(), 1);
+  runtime.runNextTimer();
+  assert.equal(runtime.window.NekoDesktopWindowEdgePeek.getState().phase, 'idle');
+  assert.equal(runtime.activeTimers(), 0);
 });
 
 test('window changes cancel walking or make a peeking cat leave once with event-driven cooldown', async () => {
@@ -377,22 +524,23 @@ test('window changes cancel walking or make a peeking cat leave once with event-
   assert.equal(peeking.window.NekoDesktopWindowEdgePeek.getState().phase, 'leaving');
   assert.equal(peeking.container.style.top, '352px');
   assert.equal(peeking.activeTimers(), 1);
-  peeking.setShared(sensingResult(3, { x: 500, y: 300, width: 300, height: 300 }, { changes: ['position'] }));
+  peeking.setShared(sensingResult(3, { x: 490, y: 300, width: 300, height: 300 }, { status: 'current' }));
   assert.equal(peeking.activeTimers(), 1);
   peeking.flushTimers();
   assert.equal(peeking.window.NekoDesktopWindowEdgePeek.getState().phase, 'idle');
 
-  peeking.setShared(sensingResult(4, { x: 510, y: 300, width: 300, height: 300 }, { changes: ['position'] }));
+  peeking.setShared(sensingResult(4, { x: 490, y: 300, width: 300, height: 300 }, { status: 'current' }));
   await peeking.flushMicrotasks();
   assert.equal(peeking.window.NekoDesktopWindowEdgePeek.getState().phase, 'idle');
   peeking.advanceTime(30000);
   assert.equal(peeking.window.NekoDesktopWindowEdgePeek.getState().phase, 'idle');
-  peeking.setShared(sensingResult(5, { x: 520, y: 300, width: 300, height: 300 }, { changes: ['position'] }));
+  peeking.setShared(sensingResult(5, { x: 490, y: 300, width: 300, height: 300 }, { status: 'current' }));
   await peeking.flushMicrotasks();
-  assert.equal(peeking.window.NekoDesktopWindowEdgePeek.getState().phase, 'walking');
+  assert.equal(peeking.window.NekoDesktopWindowEdgePeek.isActive(peeking.button), true);
+  assert.equal(peeking.window.NekoDesktopWindowEdgePeek.getState().phase, 'peeking');
 });
 
-test('pending drag blocks start while real drag and owner clear remove the presentation', async () => {
+test('pending gate blocks start while pointer drag-start immediately reveals the whole cat', async () => {
   const runtime = createRuntime({ catLeft: 200, catTop: 300 });
   runtime.setDragging('pending');
   runtime.setShared(sensingResult(1, { x: 480, y: 300, width: 300, height: 300 }));
@@ -404,15 +552,42 @@ test('pending drag blocks start while real drag and owner clear remove the prese
   await runtime.flushMicrotasks();
   runtime.flushRafs();
   assert.equal(runtime.window.NekoDesktopWindowEdgePeek.getState().phase, 'peeking');
-  runtime.setDragging('pending');
-  assert.equal(runtime.window.NekoDesktopWindowEdgePeek.getState().phase, 'peeking');
+  runtime.runNextTimer();
+  runtime.runNextTimer();
+  assert.equal(runtime.container.classList.contains('is-cat1-desktop-window-edge-peek-cycle-active'), true);
+  runtime.emit('neko:return-ball-manual-move', {
+    reason: 'return-ball-drag-start',
+    container: runtime.container,
+  });
+  assert.equal(runtime.window.NekoDesktopWindowEdgePeek.getState().phase, 'idle');
+  assert.equal(runtime.container.classList.contains('is-cat1-desktop-window-edge-peeking'), false);
+  assert.equal(runtime.container.classList.contains('is-cat1-desktop-window-edge-peek-cycle-active'), false);
+  assert.equal(runtime.activeTimers(), 0);
+
+  runtime.setShared(sensingResult(3, { x: 480, y: 300, width: 300, height: 300 }, {
+    status: 'current',
+  }));
+  await runtime.flushMicrotasks();
+  assert.equal(runtime.window.NekoDesktopWindowEdgePeek.getState().phase, 'idle');
+
   runtime.setDragging('true');
   runtime.emit('neko:return-ball-manual-move', {
     reason: 'return-ball-drag-active',
     container: runtime.container,
   });
+  runtime.setDragging('false');
+  runtime.setShared(sensingResult(4, { x: 480, y: 300, width: 300, height: 300 }, {
+    status: 'current',
+  }));
+  await runtime.flushMicrotasks();
   assert.equal(runtime.window.NekoDesktopWindowEdgePeek.getState().phase, 'idle');
-  assert.equal(runtime.container.classList.contains('is-cat1-desktop-window-edge-peeking'), false);
+
+  runtime.advanceTime(30000);
+  runtime.setShared(sensingResult(5, { x: 480, y: 300, width: 300, height: 300 }, {
+    status: 'current',
+  }));
+  await runtime.flushMicrotasks();
+  assert.equal(runtime.window.NekoDesktopWindowEdgePeek.isActive(runtime.button), true);
 
   const cleared = createRuntime({ catLeft: 200, catTop: 300 });
   cleared.setShared(sensingResult(1, { x: 480, y: 300, width: 300, height: 300 }));

@@ -536,15 +536,21 @@ function _findNekoCatMindVisibleButtonForTier(tier) {
     });
     return found;
 }
-function _isNekoCatMindReturnPending(button) {
+function _isNekoIdleReturnPending(button) {
     const container = button && _getNekoIdleReturnContainerFromButton(button);
     return !!(container && (container.getAttribute('data-neko-return-click-suppressed') === 'true' ||
         container.getAttribute('data-neko-model-cat-transitioning') === 'cat-to-model'));
 }
-function _isAnyNekoCatMindReturnPending() {
+function _isAnyNekoIdleReturnPending() {
     let pending = false;
-    _forEachNekoIdleReturnButton((button) => { pending = pending || _isNekoCatMindReturnPending(button); });
+    _forEachNekoIdleReturnButton((button) => { pending = pending || _isNekoIdleReturnPending(button); });
     return pending;
+}
+function _isNekoCatMindReturnPending(button) {
+    return _isNekoIdleReturnPending(button);
+}
+function _isAnyNekoCatMindReturnPending() {
+    return _isAnyNekoIdleReturnPending();
 }
 function _isNekoIdleReturnDragActionBlocking(button) {
     const container = button && _getNekoIdleReturnContainerFromButton(button);
@@ -556,7 +562,7 @@ function _isAnyNekoIdleReturnDragActionBlocking() {
     _forEachNekoIdleReturnButton((button) => { blocking = blocking || _isNekoIdleReturnDragActionBlocking(button); });
     return blocking;
 }
-function _isNekoCatMindTransitionActive(button) {
+function _isNekoIdlePresentationTransitionActive(button) {
     const container = button && _getNekoIdleReturnContainerFromButton(button);
     const shell = typeof document !== 'undefined' && typeof document.getElementById === 'function'
         ? document.getElementById('react-chat-window-shell') : null;
@@ -564,6 +570,9 @@ function _isNekoCatMindTransitionActive(button) {
         container.getAttribute('data-neko-model-cat-transitioning') !== 'false') ||
         (typeof window.isNekoModelCatTransitionActive === 'function' && window.isNekoModelCatTransitionActive()) ||
         (shell && (shell.classList.contains('is-collapsing') || shell.classList.contains('is-expanding'))));
+}
+function _isNekoCatMindTransitionActive(button) {
+    return _isNekoIdlePresentationTransitionActive(button);
 }
 function _isNekoCatMindChatTransitionActive() {
     return _isNekoCatMindTransitionActive(null);

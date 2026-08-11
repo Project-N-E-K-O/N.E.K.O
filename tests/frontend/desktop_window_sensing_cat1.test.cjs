@@ -531,6 +531,32 @@ test('one desktop session owner shares the latest safe result with parallel cons
   assert.equal(runtime.stops.length, 0);
 });
 
+test('stable current facts reach desktop interactions without flooding Cat Mind observations', async () => {
+  const runtime = createRuntime();
+  const shared = runtime.window.nekoDesktopWindowSensingContext;
+  const received = [];
+  shared.subscribe((value) => received.push(value === null ? null : plain(value)));
+
+  runtime.publishCatState({ active: true, appearance: 'cat', tier: 'cat1' });
+  await flushPromises();
+  assert.equal(runtime.observations.length, 1);
+  assert.equal(received.length, 1);
+
+  runtime.setNow(1200);
+  runtime.publishChanged({
+    status: 'current',
+    sessionId: 'session-1',
+    changes: [],
+    movement: null,
+    rect: { x: 10, y: 20, width: 300, height: 200 },
+  });
+
+  assert.equal(received.length, 2);
+  assert.equal(received[1].revision, 2);
+  assert.equal(received[1].status, 'current');
+  assert.equal(runtime.observations.length, 1);
+});
+
 test('shared consumer failures are isolated and session stop clears the current result', async () => {
   const runtime = createRuntime();
   const shared = runtime.window.nekoDesktopWindowSensingContext;

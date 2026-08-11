@@ -18,7 +18,7 @@
     const EDGE_PADDING_PX = 12;
     const SIDE_VISIBLE_RATIO = 0.5;
     const SIDE_HIDDEN_RATIO = 1 - SIDE_VISIBLE_RATIO;
-    const BOTTOM_HIDDEN_RATIO = 0.6;
+    const BOTTOM_HIDDEN_RATIO = 0.56;
     const SIDE_ROTATION_DEG = 60;
     const WALK_FINISH_DISTANCE_PX = 14;
     const WALK_SPEED_PX_PER_SEC = 82;
@@ -28,6 +28,10 @@
     const LEAVE_DURATION_MS = 360;
     const LEAVE_COOLDOWN_MS = 30000;
     const CUE_DURATION_MS = 700;
+    const PEEK_CYCLE_DELAY_MIN_MS = 6000;
+    const PEEK_CYCLE_DELAY_MAX_MS = 12000;
+    const PEEK_CYCLE_DURATION_MIN_MS = 700;
+    const PEEK_CYCLE_DURATION_MAX_MS = 1000;
     const MANUAL_MOVE_EVENT = 'neko:return-ball-manual-move';
     const PLAYGROUND_EVENT = 'neko:idle-cat1-playground-state';
     const WALKING_CLASS = 'is-cat1-desktop-window-edge-peek-walking';
@@ -35,6 +39,8 @@
     const PEEKING_CLASS = 'is-cat1-desktop-window-edge-peeking';
     const LEAVING_CLASS = 'is-cat1-desktop-window-edge-peek-leaving';
     const CUE_CLASS = 'is-cat1-desktop-window-edge-peek-cue-active';
+    const PEEK_CYCLE_CLASS = 'is-cat1-desktop-window-edge-peek-cycle-active';
+    const PEEK_CYCLE_DURATION_PROPERTY = '--neko-desktop-window-edge-peek-cycle-duration';
     const EDGE_CLASS_PREFIX = 'is-cat1-desktop-window-edge-peek-';
     const EDGES = Object.freeze(['left', 'right', 'bottom']);
     const TARGET_OPPORTUNITY_NONE = 'none';
@@ -284,26 +290,8 @@
             && _isNekoIdleCat1PlaygroundEntryOrDropActive(button)) {
             return false;
         }
-        if (typeof _getNekoCatMindRuntimeGateSnapshot === 'function') {
-            const gate = _getNekoCatMindRuntimeGateSnapshot();
-            if (!gate
-                || !gate.validCatRuntime
-                || gate.tier !== 'cat1'
-                || gate.returnPending
-                || gate.dragPending
-                || gate.dragging
-                || gate.edgePeekActive
-                || gate.transitionActive
-                || gate.activeIndependentAction
-                || gate.cat1PositionPresentationBusy
-                || !gate.returnBallVisible
-                || gate.chatSurfaceDragging
-                || gate.yarnDragActive
-                || gate.yarnSettling) {
-                return false;
-            }
-        }
-        return true;
+        return typeof coordinator.canStart === 'function'
+            && coordinator.canStart(button);
     }
 
     function setContainerPosition(container, left, top) {
@@ -312,6 +300,65 @@
         container.style.right = '';
         container.style.bottom = '';
         container.style.transform = 'none';
+    }
+
+    function randomDuration(minValue, maxValue) {
+        const randomValue = Number(Math.random());
+        const ratio = Number.isFinite(randomValue)
+            ? Math.max(0, Math.min(randomValue, 0.999999))
+            : 0.5;
+        return Math.round(minValue + (maxValue - minValue) * ratio);
+    }
+
+    function resetPeekCycleVisual(state) {
+        if (!state || !state.container) return;
+        state.container.classList.remove(PEEK_CYCLE_CLASS);
+        if (state.container.style
+            && typeof state.container.style.removeProperty === 'function') {
+            state.container.style.removeProperty(PEEK_CYCLE_DURATION_PROPERTY);
+        }
+    }
+
+    function clearPeekCycle(state) {
+        if (!state) return;
+        if (state.peekCycleTimer) {
+            window.clearTimeout(state.peekCycleTimer);
+            state.peekCycleTimer = 0;
+        }
+        resetPeekCycleVisual(state);
+    }
+
+    function schedulePeekCycle(state) {
+        if (!state
+            || currentAction !== state
+            || state.phase !== 'peeking'
+            || shouldReduceMotion()) {
+            return;
+        }
+        clearPeekCycle(state);
+        const delay = randomDuration(PEEK_CYCLE_DELAY_MIN_MS, PEEK_CYCLE_DELAY_MAX_MS);
+        state.peekCycleTimer = window.setTimeout(() => {
+            if (currentAction !== state || state.phase !== 'peeking') return;
+            state.peekCycleTimer = 0;
+            const duration = randomDuration(
+                PEEK_CYCLE_DURATION_MIN_MS,
+                PEEK_CYCLE_DURATION_MAX_MS
+            );
+            if (state.container.style
+                && typeof state.container.style.setProperty === 'function') {
+                state.container.style.setProperty(
+                    PEEK_CYCLE_DURATION_PROPERTY,
+                    `${duration}ms`
+                );
+            }
+            state.container.classList.add(PEEK_CYCLE_CLASS);
+            state.peekCycleTimer = window.setTimeout(() => {
+                if (currentAction !== state || state.phase !== 'peeking') return;
+                state.peekCycleTimer = 0;
+                resetPeekCycleVisual(state);
+                schedulePeekCycle(state);
+            }, duration);
+        }, delay);
     }
 
     function clearCue(state) {
@@ -326,7 +373,12 @@
     function clearOwnClasses(state) {
         if (!state || !state.button || !state.container) return;
         state.button.classList.remove(WALKING_CLASS, FACING_RIGHT_CLASS);
-        state.container.classList.remove(PEEKING_CLASS, LEAVING_CLASS, CUE_CLASS);
+        state.container.classList.remove(
+            PEEKING_CLASS,
+            LEAVING_CLASS,
+            CUE_CLASS,
+            PEEK_CYCLE_CLASS
+        );
         EDGES.forEach((edge) => {
             const edgeClass = `${EDGE_CLASS_PREFIX}${edge}`;
             state.button.classList.remove(edgeClass);
@@ -349,6 +401,7 @@
             if (currentAction !== state || state.phase !== 'peeking') return;
             state.cueTimer = 0;
             state.container.classList.remove(CUE_CLASS);
+            schedulePeekCycle(state);
         }, CUE_DURATION_MS);
     }
 
@@ -382,6 +435,7 @@
             state.leaveTimer = 0;
         }
         clearCue(state);
+        clearPeekCycle(state);
     }
 
     function disconnectRemovalObserver() {
@@ -510,6 +564,7 @@
             frame: 0,
             leaveTimer: 0,
             cueTimer: 0,
+            peekCycleTimer: 0,
         };
         currentAction = state;
         bindRemovalObserver(state);
@@ -538,6 +593,7 @@
 
     function startLeave(state, reason) {
         if (!state || currentAction !== state || state.phase !== 'peeking') return false;
+        clearPeekCycle(state);
         const rect = normalizeRect(state.container.getBoundingClientRect());
         if (!rect) {
             finishState(state, { reason: 'invalid-cat-rect' });
@@ -646,10 +702,14 @@
 
     function handleManualMove(event) {
         const detail = event && event.detail;
-        if (!detail || detail.reason !== 'return-ball-drag-active') return;
+        if (!detail
+            || (detail.reason !== 'return-ball-drag-start'
+                && detail.reason !== 'return-ball-drag-active')) {
+            return;
+        }
         if (currentAction && detail.container === currentAction.container) {
             cancel(currentAction.button, {
-                reason: 'return-ball-drag-active',
+                reason: detail.reason,
                 restoreArt: false,
             });
         }

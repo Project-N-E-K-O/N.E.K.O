@@ -31,6 +31,9 @@ function createRuntime(options = {}) {
       listeners.get(type).add(listener);
     },
     removeEventListener(type, listener) { listeners.get(type)?.delete(listener); },
+    dispatchEvent(event) {
+      Array.from(listeners.get(event.type) || []).forEach((listener) => listener(event));
+    },
     setTimeout(callback) {
       const id = nextTimer++;
       timers.set(id, callback);
@@ -54,6 +57,7 @@ function createRuntime(options = {}) {
       current = value;
       Array.from(sharedListeners).forEach((listener) => listener(value));
     },
+    emitEvent(type, detail) { window.dispatchEvent({ type, detail }); },
     flushTimers() {
       const callbacks = Array.from(timers.values());
       timers.clear();
@@ -77,6 +81,7 @@ function createRunner(kind, distancePx, priority, options = {}) {
         return options.eligible !== false;
       },
       getCandidate() {
+        if (options.throwAt === 'getCandidate') throw new Error('candidate failed');
         const currentDistance = typeof distancePx === 'function' ? distancePx() : distancePx;
         return { targetKind: kind, distancePx: currentDistance };
       },
@@ -160,6 +165,23 @@ test('a fact that ends one action cannot start another until the next sensing fa
   assert.equal(waiting.calls.started, 1);
 });
 
+test('runner failures stop the revision and remain inspectable without changing the action cycle', () => {
+  const runtime = createRuntime();
+  const failing = createRunner('desktop-window-top-edge', 90, 0, { throwAt: 'getCandidate' });
+  const waiting = createRunner('desktop-window-edge-peek', 70, 1);
+  runtime.window.NekoDesktopWindowInteractions.register(failing.runner);
+  runtime.window.NekoDesktopWindowInteractions.register(waiting.runner);
+
+  runtime.emit({ sessionId: 's1', revision: 2 });
+
+  const state = runtime.window.NekoDesktopWindowInteractions.getState();
+  assert.equal(failing.calls.started, 0);
+  assert.equal(waiting.calls.started, 0);
+  assert.equal(state.lastRunnerFailure.stage, 'getCandidate');
+  assert.equal(state.lastRunnerFailure.runnerKind, 'desktop-window-top-edge');
+  assert.equal(state.lastRunnerFailure.message, 'candidate failed');
+});
+
 test('coordinator cancellation only affects the active desktop-window runner', () => {
   const runtime = createRuntime();
   const top = createRunner('desktop-window-top-edge', 80, 0);
@@ -172,6 +194,49 @@ test('coordinator cancellation only affects the active desktop-window runner', (
   assert.equal(top.calls.cancelled, 1);
   assert.equal(edge.calls.cancelled, 0);
   assert.equal(runtime.window.NekoDesktopWindowInteractions.getState().activeKind, '');
+});
+
+test('dragging a cat out of a desktop presentation starts the shared 30-second cooldown', () => {
+  const runtime = createRuntime();
+  const top = createRunner('desktop-window-top-edge', 80, 0);
+  const edge = createRunner('desktop-window-edge-peek', 120, 1);
+  runtime.window.NekoDesktopWindowInteractions.register(top.runner);
+  runtime.window.NekoDesktopWindowInteractions.register(edge.runner);
+  runtime.emit({ sessionId: 's1', revision: 1 });
+  assert.equal(top.calls.started, 1);
+
+  runtime.emitEvent('neko:return-ball-manual-move', {
+    reason: 'return-ball-drag-start',
+  });
+  runtime.emitEvent('neko:return-ball-manual-move', {
+    reason: 'return-ball-drag-active',
+  });
+  runtime.window.NekoDesktopWindowInteractions.cancel(null, { reason: 'return-ball-drag-active' });
+  assert.equal(runtime.window.NekoDesktopWindowInteractions.getState().rearmOnNextFact, true);
+
+  runtime.emit({ sessionId: 's1', revision: 2 });
+  assert.equal(top.calls.rearmed, 0);
+  assert.equal(edge.calls.rearmed, 0);
+  assert.equal(top.calls.started, 1);
+
+  runtime.advanceTime(30000);
+  runtime.emit({ sessionId: 's1', revision: 3 });
+  assert.equal(top.calls.rearmed, 1);
+  assert.equal(edge.calls.rearmed, 1);
+  assert.equal(top.calls.started, 2);
+});
+
+test('ordinary manual dragging outside a desktop presentation creates no presentation cooldown', () => {
+  const runtime = createRuntime();
+  const top = createRunner('desktop-window-top-edge', 80, 0, { eligible: false });
+  const edge = createRunner('desktop-window-edge-peek', 120, 1, { eligible: false });
+  runtime.window.NekoDesktopWindowInteractions.register(top.runner);
+  runtime.window.NekoDesktopWindowInteractions.register(edge.runner);
+
+  runtime.emitEvent('neko:return-ball-manual-move', { reason: 'return-ball-drag-start' });
+  runtime.emitEvent('neko:return-ball-manual-move', { reason: 'return-ball-drag-active' });
+
+  assert.equal(runtime.window.NekoDesktopWindowInteractions.getState().cooldownUntil, 0);
 });
 
 test('a completed presentation waits 30 seconds and then compares both runners again', () => {
