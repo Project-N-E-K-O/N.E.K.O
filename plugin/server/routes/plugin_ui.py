@@ -47,6 +47,10 @@ _I18N_BUNDLE_CACHE: dict[Path, tuple[float, bytes]] = {}
 # 任意插件/后端往 /ui-api/push 推送，前端页面连 /ui-api/events 即时接收实时更新。
 _sse_clients: dict[str, list[asyncio.Queue]] = {}
 _sse_clients_lock = asyncio.Lock()
+# 每个客户端队列的最大缓冲（慢/阻塞客户端不使其无限膨胀）；满时丢弃新消息
+_SSE_QUEUE_MAX = 100
+# push 请求体大小上限（字节）；读取前按 Content-Length 校验，避免大 body 直接进内存
+_PUSH_MAX_BODY = 16 * 1024
 
 
 def _parse_push_payload(body: bytes) -> dict:
@@ -61,25 +65,27 @@ def _parse_push_payload(body: bytes) -> dict:
     if raw.startswith("{"):
         try:
             payload = json.loads(raw)
-            if isinstance(payload, dict) and payload.get("text"):
-                result: dict = {"text": str(payload["text"]).strip()}
-                if not result["text"]:
-                    return {}
-                msg_type = str(payload.get("type") or "").strip()
-                if msg_type:
-                    result["type"] = msg_type
-                style = str(payload.get("style") or "").strip()
-                if style in ("catgirl", "narration"):
-                    result["style"] = style
-                placement = str(payload.get("placement") or "").strip()
-                if placement in ("scrolling", "top"):
-                    result["placement"] = placement
-                avatar = str(payload.get("avatar") or "").strip()
-                if avatar:
-                    result["avatar"] = avatar
-                return result
         except Exception:
-            pass
+            return {"text": raw}  # 非合法 JSON → 回退纯文本
+        if not isinstance(payload, dict):
+            return {}  # JSON 但不是对象 → 拒绝
+        text = str(payload.get("text") or "").strip()
+        if not text:
+            return {}  # 缺 text / 空 text → 拒绝（不回退纯文本，避免原始 JSON 被当正文）
+        result: dict = {"text": text}
+        msg_type = str(payload.get("type") or "").strip()
+        if msg_type:
+            result["type"] = msg_type
+        style = str(payload.get("style") or "").strip()
+        if style in ("catgirl", "narration"):
+            result["style"] = style
+        placement = str(payload.get("placement") or "").strip()
+        if placement in ("scrolling", "top"):
+            result["placement"] = placement
+        avatar = str(payload.get("avatar") or "").strip()
+        if avatar:
+            result["avatar"] = avatar
+        return result
     return {"text": raw}
 
 
@@ -262,7 +268,8 @@ async def plugin_ui_sse_events(plugin_id: str):
 
     前端页面用 EventSource 连这里，即时接收 /ui-api/push 广播的实时更新。
     """
-    queue_obj: asyncio.Queue = asyncio.Queue()
+    # 有界队列：慢/阻塞客户端不被无限缓冲（满时由 push 侧丢弃新消息）
+    queue_obj: asyncio.Queue = asyncio.Queue(maxsize=_SSE_QUEUE_MAX)
 
     async def event_stream():
         await _sse_clients_lock.acquire()
@@ -284,6 +291,9 @@ async def plugin_ui_sse_events(plugin_id: str):
                 clients = _sse_clients.get(plugin_id)
                 if clients and queue_obj in clients:
                     clients.remove(queue_obj)
+                # 列表空则删除 plugin_id，避免任意路径参数留下永久空条目
+                if clients is not None and not clients:
+                    _sse_clients.pop(plugin_id, None)
             finally:
                 _sse_clients_lock.release()
 
@@ -303,8 +313,19 @@ async def plugin_ui_push(plugin_id: str, request: Request):
     """向插件静态 UI 的所有 SSE 客户端广播一条实时消息（后端 → 前端推送）。
 
     入参：{"text": "..."} 或纯文本。任意插件/后端调用，推送到已订阅的前端页面。
+    返回 ``queued``：成功写入各客户端缓冲队列的数目（排队计数，非客户端实际送达确认）。
     """
+    # 读取 body 前按 Content-Length 校验大小，避免超大请求直接进内存
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            if int(content_length) > _PUSH_MAX_BODY:
+                return JSONResponse({"ok": False, "error": "payload too large"}, status_code=413)
+        except ValueError:
+            pass
     body = await request.body()
+    if len(body) > _PUSH_MAX_BODY:
+        return JSONResponse({"ok": False, "error": "payload too large"}, status_code=413)
     payload = _parse_push_payload(body)
     if not payload.get("text"):
         return JSONResponse({"ok": False, "error": "empty"}, status_code=400)
@@ -319,19 +340,19 @@ async def plugin_ui_push(plugin_id: str, request: Request):
     if payload.get("avatar"):
         event["avatar"] = payload["avatar"]
     data = "data: " + json.dumps(event, ensure_ascii=False) + "\n\n"
-    delivered = 0
+    queued = 0
     await _sse_clients_lock.acquire()
     try:
         clients = _sse_clients.get(plugin_id, [])
         for c in list(clients):
             try:
-                c.put_nowait(data)
-                delivered += 1
+                c.put_nowait(data)  # 队列满（QueueFull）→ 丢弃新消息，不计入 queued
+                queued += 1
             except Exception:
                 pass
     finally:
         _sse_clients_lock.release()
-    return JSONResponse({"ok": True, "delivered": delivered})
+    return JSONResponse({"ok": True, "queued": queued})
 
 
 @router.get("/plugin/{plugin_id}/ui/{file_path:path}")
