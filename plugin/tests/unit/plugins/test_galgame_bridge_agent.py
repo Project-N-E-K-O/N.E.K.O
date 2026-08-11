@@ -5224,6 +5224,179 @@ async def test_game_llm_agent_scene_summary_fallback_marks_observed_as_tentative
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
+async def test_scene_summary_401_fallback_ignores_unreviewed_snapshot_text(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    gateway = _FakeLLMGateway(
+        summarize_payload={
+            "degraded": True,
+            "summary": "",
+            "diagnostic": "401 Unauthorized",
+        }
+    )
+    agent = GameLLMAgent(
+        plugin=plugin,
+        logger=_Logger(),
+        llm_gateway=gateway,
+        host_adapter=_FakeHostAdapter(),
+    )
+    context = build_summarize_context(
+        _shared_state(
+            active_data_source=DATA_SOURCE_OCR_READER,
+            snapshot=_session_state(
+                speaker="",
+                text="",
+                scene_id="scene-new",
+                line_id="",
+            ),
+            history_lines=[],
+            history_observed_lines=[],
+        ),
+        scene_id="scene-new",
+    )
+    unreviewed_snapshot = _session_state(
+        speaker="旁白",
+        text="动画设置 主动搭话 隐私模式 角色设置 API密钥 声纹身份",
+        scene_id="scene-new",
+        line_id="ocr:raw-unreviewed",
+    )
+
+    content, meta = await agent._summarize_scene_context_for_cat(
+        context,
+        scene_id="scene-new",
+        route_id="ocr",
+        snapshot=unreviewed_snapshot,
+    )
+
+    assert meta["summary_source"] == "local_context"
+    assert meta["summary_diagnostic"] == "401 Unauthorized"
+    assert "动画设置" not in content
+    assert "API密钥" not in content
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_redacted_seq_384_392_replay_stays_clean_through_401_outbound(
+    tmp_path: Path,
+) -> None:
+    scene_old = "ocr:game:scene-old"
+    scene_new = "ocr:game:scene-new"
+    ui_prefix = "动画设置 主动搭话 隐私模式 角色设置 API密钥 +++声纹身份 "
+
+    def line_event(seq: int, event_type: str, text: str, line_id: str, scene_id: str):
+        return {
+            "seq": seq,
+            "ts": f"2026-08-11T07:15:{seq - 340:02d}Z",
+            "type": event_type,
+            "session_id": "ocr-session",
+            "game_id": "ocr-game",
+            "payload": {
+                "speaker": "旁白",
+                "text": text,
+                "line_id": line_id,
+                "scene_id": scene_id,
+                "route_id": "ocr",
+                "stability": "stable" if event_type == "line_changed" else "tentative",
+            },
+        }
+
+    events = [
+        line_event(384, "line_changed", "单位圆内接正八边形平方和最大值为16。", "old-math", scene_old),
+        {
+            "seq": 385,
+            "ts": "2026-08-11T07:15:45Z",
+            "type": "scene_changed",
+            "session_id": "ocr-session",
+            "game_id": "ocr-game",
+            "payload": {"scene_id": scene_new, "route_id": "ocr"},
+        },
+        line_event(386, "line_observed", ui_prefix + "出家门后，算上换乘我一共坐了2个小时的电车。S英", "ui-s", scene_new),
+        line_event(387, "line_observed", ui_prefix + "出家门后，算上换乘我一共坐了2个小时的电车。区记忆浏", "ui-memory", scene_new),
+        line_event(388, "line_observed", "出家门后，算上换乘我一共坐了2个小时的电车。", "line-train", scene_new),
+        line_event(389, "line_changed", "出家门后，算上换乘我一共坐了2个小时的电车。", "line-train", scene_new),
+        line_event(390, "line_observed", "出家门后，算上换乘我一共坐了2个小时的电车。", "line-train", scene_new),
+        line_event(391, "line_observed", "原因之一便是在于这城镇风貌。", "line-town", scene_new),
+        {
+            "seq": 392,
+            "ts": "2026-08-11T07:15:52Z",
+            "type": "screen_classified",
+            "session_id": "ocr-session",
+            "game_id": "ocr-game",
+            "payload": {"screen_type": "dialogue", "screen_confidence": 0.91},
+        },
+    ]
+    history_events, stable, observed, choices, dedupe, snapshot = (
+        galgame_service.rebuild_histories_from_events(
+            events=events,
+            snapshot={},
+            dedupe_window=[],
+            config=galgame_service.build_config({}),
+            game_id="ocr-game",
+        )
+    )
+    shared = _shared_state(
+        mode="companion",
+        game_id="ocr-game",
+        session_id="ocr-session",
+        last_seq=392,
+        active_data_source=DATA_SOURCE_OCR_READER,
+        snapshot=snapshot,
+        history_events=history_events,
+        history_lines=stable,
+        history_observed_lines=observed,
+        history_choices=choices,
+    )
+    context = build_summarize_context(shared, scene_id=scene_new)
+
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    agent = GameLLMAgent(
+        plugin=plugin,
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(
+            summarize_payload={
+                "degraded": True,
+                "summary": "",
+                "diagnostic": "401 Unauthorized",
+            }
+        ),
+        host_adapter=_FakeHostAdapter(),
+    )
+    content, meta = await agent._summarize_scene_context_for_cat(
+        context,
+        scene_id=scene_new,
+        route_id="ocr",
+        snapshot=snapshot,
+    )
+    await agent._push_agent_message(
+        shared,
+        kind="scene_summary",
+        content=content,
+        scene_id=scene_new,
+        route_id="ocr",
+        metadata=meta,
+    )
+    outbound = str(ctx.pushed_messages[-1]["content"])
+
+    assert "出家门后，算上换乘我一共坐了2个小时的电车。" in outbound
+    assert "原因之一便是在于这城镇风貌。" in outbound
+    assert "动画设置" not in outbound
+    assert "API密钥" not in outbound
+    assert "S英" not in outbound
+    assert "区记忆浏" not in outbound
+    assert "单位圆" not in outbound
+    assert "最大值为16" not in outbound
+    assert "Cross-scene memory" not in outbound
+    candidate_section = outbound.split("待确认候选：", 1)[-1]
+    assert "出家门后，算上换乘我一共坐了2个小时的电车。" not in candidate_section
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
 async def test_game_llm_agent_scene_change_does_not_schedule_summary(
     tmp_path: Path,
 ) -> None:

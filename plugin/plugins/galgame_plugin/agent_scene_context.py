@@ -45,6 +45,8 @@ class AgentSceneContextMixin:
         route_id: str,
         snapshot: dict[str, Any],
     ) -> tuple[str, dict[str, Any]]:
+        reviewed_snapshot = context.get("current_snapshot")
+        snapshot = dict(reviewed_snapshot) if isinstance(reviewed_snapshot, dict) else {}
         pov_context = self._fixed_character_pov_context(
             context, applied_to="scene_summary"
         )

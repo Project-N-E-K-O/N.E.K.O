@@ -792,7 +792,9 @@ async def test_auto_reader_keeps_rapidocr_enabled_ocr_available_when_backend_aut
     assert isinstance(snapshot, Ok)
     assert ocr_ticks
     assert status.value["active_data_source"] == DATA_SOURCE_OCR_READER
-    assert snapshot.value["snapshot"]["text"] == "rapidocr enabled OCR line"
+    # The source remains available, but internal RapidOCR status-like text is
+    # fail-closed at the public snapshot boundary.
+    assert snapshot.value["snapshot"]["text"] == ""
 
 
 @pytest.mark.asyncio
@@ -5558,8 +5560,7 @@ def test_ocr_line_second_stable_read_enters_history(tmp_path: Path) -> None:
     assert len(history_lines) == 1
     assert history_lines[0]["speaker"] == "王生"
     assert history_lines[0]["text"] == "算了，没事。"
-    assert len(history_observed_lines) == 1
-    assert history_observed_lines[0]["stability"] == "stable"
+    assert history_observed_lines == []
 
 
 @pytest.mark.plugin_unit

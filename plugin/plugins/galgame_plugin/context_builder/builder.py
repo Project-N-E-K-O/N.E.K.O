@@ -1170,11 +1170,19 @@ def _snapshot_for_stable_summary_seed(
     snapshot: dict[str, Any],
     stable_lines: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    if str(local_state.get("active_data_source") or "") != DATA_SOURCE_OCR_READER:
+    snapshot_line_id = str(snapshot.get("line_id") or "")
+    is_ocr_snapshot = (
+        str(local_state.get("active_data_source") or "") == DATA_SOURCE_OCR_READER
+        or _is_ocr_reader_identifier(snapshot_line_id)
+    )
+    if not is_ocr_snapshot:
         return snapshot
     if str(snapshot.get("stability") or "") == "stable":
-        return snapshot
-    snapshot_line_id = str(snapshot.get("line_id") or "")
+        for line in stable_lines:
+            if not isinstance(line, dict):
+                continue
+            if snapshot_line_id and snapshot_line_id == str(line.get("line_id") or ""):
+                return snapshot
     snapshot_text = str(snapshot.get("text") or "")
     snapshot_speaker = str(snapshot.get("speaker") or "")
     for line in stable_lines:
@@ -1422,12 +1430,17 @@ def build_summarize_context(
             route_id=route_id,
         ),
     )
+    reviewed_snapshot = _snapshot_for_stable_summary_seed(
+        local_state,
+        snapshot,
+        stable_lines,
+    )
     return {
         "game_id": str(local_state.get("active_game_id") or ""),
         "session_id": str(local_state.get("active_session_id") or ""),
         "scene_id": effective_scene_id,
         "route_id": route_id,
-        "current_snapshot": snapshot,
+        "current_snapshot": reviewed_snapshot,
         "recent_lines": scene_lines,
         "stable_lines": stable_lines,
         "observed_lines": observed_lines,
