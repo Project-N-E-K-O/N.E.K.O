@@ -1432,6 +1432,33 @@ def test_ocr_reader_cnn_title_dialogue_evidence_accepts_one_sided_speaker_bracke
     assert classification.debug["skip_dialogue_bypass_reason"] == "ocr_dialogue_evidence"
 
 
+def test_ocr_reader_cnn_title_dialogue_evidence_accepts_straight_quotes(
+    tmp_path: Path,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=_make_config(bridge_root),
+        time_fn=lambda: 3000.0,
+        platform_fn=lambda: True,
+        window_scanner=_window,
+        capture_backend=_FakeCaptureBackend(),
+        ocr_backend=_FakeOcrBackend(),
+    )
+    classification = ScreenClassification(
+        screen_type=OCR_CAPTURE_PROFILE_STAGE_TITLE,
+        confidence=0.97,
+        debug={"source": "cnn_primary", "label": "title_screen"},
+    )
+
+    assert manager._should_skip_dialogue_for_screen_classification(
+        classification,
+        raw_text='[Alice]\n"Are you okay?"',
+    ) is False
+    assert classification.debug["skip_dialogue_bypass_reason"] == "ocr_dialogue_evidence"
+
+
 def test_ocr_reader_cnn_title_narration_requires_repeat_and_timeout(
     tmp_path: Path,
 ) -> None:

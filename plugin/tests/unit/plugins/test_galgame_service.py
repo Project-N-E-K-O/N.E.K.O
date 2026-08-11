@@ -610,6 +610,65 @@ def test_empty_scene_id_does_not_match_observed_lines_by_text() -> None:
     assert [item["line_id"] for item in observed] == ["line-a", "line-b"]
 
 
+def test_stable_history_keeps_repeated_text_in_each_scene_after_snapshot_advances() -> None:
+    def _line_event(seq: int, *, scene_id: str, text: str, line_id: str) -> dict[str, object]:
+        return {
+            "seq": seq,
+            "ts": f"2026-08-11T07:16:0{seq}Z",
+            "type": "line_changed",
+            "session_id": "ocr-session",
+            "game_id": "ocr-game",
+            "payload": {
+                "speaker": "旁白",
+                "text": text,
+                "line_id": line_id,
+                "scene_id": scene_id,
+                "route_id": "ocr",
+                "stability": "stable",
+            },
+        }
+
+    events = [
+        _line_event(1, scene_id="scene-a", text="……", line_id="ocr:same"),
+        _line_event(2, scene_id="scene-b", text="……", line_id="ocr:same"),
+        _line_event(3, scene_id="scene-b", text="……", line_id="ocr:same"),
+        _line_event(4, scene_id="scene-b", text="后来，我们继续向前。", line_id="ocr:later"),
+    ]
+
+    history_events, stable, observed, choices, dedupe, snapshot = (
+        galgame_service.rebuild_histories_from_events(
+            events=events,
+            snapshot={},
+            dedupe_window=[],
+            config=galgame_service.build_config({}),
+            game_id="ocr-game",
+        )
+    )
+    context = build_summarize_context(
+        {
+            "active_data_source": DATA_SOURCE_OCR_READER,
+            "latest_snapshot": snapshot,
+            "history_events": history_events,
+            "history_lines": stable,
+            "history_observed_lines": observed,
+            "history_choices": choices,
+            "dedupe_window": dedupe,
+        },
+        scene_id="scene-b",
+    )
+
+    assert [(item["scene_id"], item["text"]) for item in stable] == [
+        ("scene-a", "……"),
+        ("scene-b", "……"),
+        ("scene-b", "后来，我们继续向前。"),
+    ]
+    assert [item["text"] for item in context["stable_lines"]] == [
+        "……",
+        "后来，我们继续向前。",
+    ]
+    assert context["current_snapshot"]["text"] == "后来，我们继续向前。"
+
+
 def _rebuild_single_event(event: dict[str, object]) -> tuple[
     list[dict[str, object]],
     list[dict[str, object]],

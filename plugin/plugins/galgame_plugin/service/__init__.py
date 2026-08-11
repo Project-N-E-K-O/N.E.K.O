@@ -2027,9 +2027,16 @@ def _append_limited(items: list[dict[str, Any]], item: dict[str, Any], limit: in
         del items[:-limit]
 
 
-def _line_fingerprint(game_id: str, line_id: str, text: str) -> dict[str, str]:
+def _line_fingerprint(
+    game_id: str,
+    line_id: str,
+    text: str,
+    *,
+    scene_id: str = "",
+) -> dict[str, str]:
     return {
         "game_id": game_id,
+        "scene_id": scene_id,
         "line_id": line_id,
         "normalized_text": normalize_text(text),
     }
@@ -2275,6 +2282,7 @@ def apply_event_to_histories(
             game_id,
             str(payload_obj.get("line_id") or ""),
             str(payload_obj.get("text") or ""),
+            scene_id=str(payload_obj.get("scene_id") or ""),
         )
         duplicate = _update_dedupe_window(
             dedupe_window, fingerprint, config.dedupe_window_limit
