@@ -6293,6 +6293,98 @@ def test_rapidocr_runtime_cache_reuses_loaded_runtime(
         galgame_ocr_reader._RAPIDOCR_RUNTIME_CACHE.pop(cache_key, None)
 
 
+def test_rapidocr_runtime_aligns_classifier_shape_with_loaded_onnx_model(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_target_dir = str(tmp_path / "RapidOCR")
+
+    class _ModelInput:
+        shape = [None, 3, 80, 160]
+
+    runtime = SimpleNamespace(
+        text_cls=SimpleNamespace(
+            cls_image_shape=[3, 48, 192],
+            infer=SimpleNamespace(
+                session=SimpleNamespace(get_inputs=lambda: [_ModelInput()]),
+            ),
+        )
+    )
+    monkeypatch.setattr(
+        galgame_ocr_rapidocr_backend,
+        "load_rapidocr_runtime",
+        lambda **_kwargs: (runtime, {}),
+    )
+    backend = galgame_ocr_reader.RapidOcrBackend(
+        install_target_dir_raw=install_target_dir,
+        engine_type="onnxruntime",
+        lang_type="ch",
+        model_type="mobile",
+        ocr_version="PP-OCRv5",
+    )
+    cache_key = (
+        install_target_dir,
+        "onnxruntime",
+        "ch",
+        "mobile",
+        "PP-OCRv5",
+    )
+    galgame_ocr_reader._RAPIDOCR_RUNTIME_CACHE.pop(cache_key, None)
+
+    try:
+        assert backend._ensure_runtime() is runtime
+        assert runtime.text_cls.cls_image_shape == [3, 80, 160]
+    finally:
+        backend.close()
+        galgame_ocr_reader._RAPIDOCR_RUNTIME_CACHE.pop(cache_key, None)
+
+
+def test_rapidocr_runtime_keeps_classifier_shape_for_dynamic_onnx_dimensions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_target_dir = str(tmp_path / "RapidOCR")
+
+    class _ModelInput:
+        shape = [None, 3, "height", "width"]
+
+    runtime = SimpleNamespace(
+        text_cls=SimpleNamespace(
+            cls_image_shape=[3, 48, 192],
+            infer=SimpleNamespace(
+                session=SimpleNamespace(get_inputs=lambda: [_ModelInput()]),
+            ),
+        )
+    )
+    monkeypatch.setattr(
+        galgame_ocr_rapidocr_backend,
+        "load_rapidocr_runtime",
+        lambda **_kwargs: (runtime, {}),
+    )
+    backend = galgame_ocr_reader.RapidOcrBackend(
+        install_target_dir_raw=install_target_dir,
+        engine_type="onnxruntime",
+        lang_type="ch",
+        model_type="mobile",
+        ocr_version="PP-OCRv5",
+    )
+    cache_key = (
+        install_target_dir,
+        "onnxruntime",
+        "ch",
+        "mobile",
+        "PP-OCRv5",
+    )
+    galgame_ocr_reader._RAPIDOCR_RUNTIME_CACHE.pop(cache_key, None)
+
+    try:
+        assert backend._ensure_runtime() is runtime
+        assert runtime.text_cls.cls_image_shape == [3, 48, 192]
+    finally:
+        backend.close()
+        galgame_ocr_reader._RAPIDOCR_RUNTIME_CACHE.pop(cache_key, None)
+
+
 def test_rapidocr_backend_close_releases_cached_runtime(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
