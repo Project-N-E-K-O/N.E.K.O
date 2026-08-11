@@ -1430,7 +1430,8 @@ def test_summarize_context_uses_observed_lines_when_stable_history_is_empty() ->
     assert context["stable_lines"] == []
     assert len(context["observed_lines"]) == 1
     assert context["recent_lines"][0]["stability"] == "tentative"
-    assert "算了，没事。" in context["scene_summary_seed"]
+    assert "算了，没事。" not in context["scene_summary_seed"]
+    assert "暂时没有足够台词上下文" in context["scene_summary_seed"]
 
 
 @pytest.mark.plugin_unit
