@@ -537,6 +537,54 @@ def test_untrusted_ocr_candidate_is_rejected_before_history_lines_update() -> No
     assert updated["text"] == "previous trusted line"
 
 
+def test_stable_line_promotes_matching_observed_entry_out_of_tentative_history() -> None:
+    events = [
+        {
+            "seq": 1,
+            "ts": "2026-08-11T07:15:38Z",
+            "type": "line_observed",
+            "session_id": "ocr-session",
+            "game_id": "ocr-game",
+            "payload": {
+                "speaker": "旁白",
+                "text": "出家门后，算上换乘我一共坐了2个小时的电车。",
+                "line_id": "ocr:line-1",
+                "scene_id": "ocr:game:scene-0001",
+                "route_id": "ocr",
+                "stability": "tentative",
+            },
+        },
+        {
+            "seq": 2,
+            "ts": "2026-08-11T07:15:41Z",
+            "type": "line_changed",
+            "session_id": "ocr-session",
+            "game_id": "ocr-game",
+            "payload": {
+                "speaker": "旁白",
+                "text": "出家门后，算上换乘我一共坐了2个小时的电车。",
+                "line_id": "ocr:line-1",
+                "scene_id": "ocr:game:scene-0001",
+                "route_id": "ocr",
+                "stability": "stable",
+            },
+        },
+    ]
+
+    _history_events, stable, observed, _choices, _dedupe, _snapshot = (
+        galgame_service.rebuild_histories_from_events(
+            events=events,
+            snapshot={},
+            dedupe_window=[],
+            config=galgame_service.build_config({}),
+            game_id="ocr-game",
+        )
+    )
+
+    assert [item["line_id"] for item in stable] == ["ocr:line-1"]
+    assert observed == []
+
+
 def _rebuild_single_event(event: dict[str, object]) -> tuple[
     list[dict[str, object]],
     list[dict[str, object]],

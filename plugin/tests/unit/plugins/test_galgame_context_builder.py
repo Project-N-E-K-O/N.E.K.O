@@ -141,6 +141,74 @@ def test_dialogue_context_lines_filters_diagnostics_and_dedupes() -> None:
     assert [item["line_id"] for item in result] == ["2", "3"]
 
 
+def test_summarize_context_filters_compound_self_ui_and_stable_observed_duplicates() -> None:
+    polluted = (
+        "动画设置 主动搭话 隐私模式 角色设置 API密钥 +++声纹身份 "
+        "出家门后，算上换乘我一共坐了2个小时的电车。区记忆浏"
+    )
+    stable_line = {
+        "speaker": "旁白",
+        "text": "出家门后，算上换乘我一共坐了2个小时的电车。",
+        "line_id": "stable-1",
+        "scene_id": "scene-a",
+        "route_id": "ocr",
+        "stability": "stable",
+        "ts": "2026-08-11T07:15:44Z",
+    }
+    local_state = {
+        "active_game_id": "game-a",
+        "active_session_id": "session-a",
+        "active_data_source": DATA_SOURCE_OCR_READER,
+        "latest_snapshot": dict(stable_line),
+        "history_lines": [
+            {**stable_line, "line_id": "polluted", "text": polluted},
+            stable_line,
+        ],
+        "history_observed_lines": [
+            dict(stable_line),
+            {
+                **stable_line,
+                "line_id": "tentative-1",
+                "text": "也许还要再确认一下。",
+                "stability": "tentative",
+                "ts": "2026-08-11T07:15:45Z",
+            },
+        ],
+        "history_choices": [],
+    }
+
+    context = context_builder.build_summarize_context(local_state, scene_id="scene-a")
+
+    assert polluted not in [item["text"] for item in context["stable_lines"]]
+    assert [item["text"] for item in context["stable_lines"]] == [stable_line["text"]]
+    assert [item["text"] for item in context["observed_lines"]] == ["也许还要再确认一下。"]
+
+
+def test_suggest_context_does_not_expose_cross_scene_memory() -> None:
+    local_state = {
+        "active_game_id": "game-b",
+        "active_session_id": "session-b",
+        "latest_snapshot": {"scene_id": "scene-b", "route_id": "ocr", "choices": []},
+        "history_lines": [],
+        "history_observed_lines": [],
+        "history_choices": [],
+        "cross_scene_memory": {
+            "plot_threads": [
+                {
+                    "thread": "old-game",
+                    "status": "最大值：8(1)+8=16",
+                    "confidence": 0.9,
+                }
+            ]
+        },
+    }
+
+    context = context_builder.build_suggest_context(local_state)
+
+    assert "cross_scene_memory" not in context
+    assert "cross_scene_memory_context" not in context
+
+
 def test_build_input_degraded_context_marks_ocr_identifiers() -> None:
     source, degraded, reasons = context_builder._build_input_degraded_context(
         {"active_data_source": DATA_SOURCE_OCR_READER},

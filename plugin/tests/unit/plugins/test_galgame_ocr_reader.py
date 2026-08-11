@@ -24,6 +24,7 @@ from plugin.plugins.galgame_plugin.ocr_capture_backends import dxcam as galgame_
 from plugin.plugins.galgame_plugin.ocr_capture_backends import pyautogui as galgame_pyautogui_backend
 from plugin.plugins.galgame_plugin.ocr_capture_backends import _helpers as galgame_ocr_capture_helpers
 from plugin.plugins.galgame_plugin import ocr_manager_text as galgame_ocr_manager_text
+from plugin.plugins.galgame_plugin import ocr_text_normalize as galgame_ocr_text_normalize
 from plugin.plugins.galgame_plugin import ocr_rapidocr_backend as galgame_ocr_rapidocr_backend
 from plugin.plugins.galgame_plugin import ocr_reader as galgame_ocr_reader
 from plugin.plugins._shared.rapidocr import rapidocr_support as galgame_rapidocr_support
@@ -5146,7 +5147,7 @@ def test_followup_confirm_uses_cleaned_dialogue_text() -> None:
     )
 
 
-def test_stable_text_promotes_distinct_line_without_waiting_for_repeat(
+def test_medium_stable_text_requires_distinct_line_to_repeat(
     tmp_path: Path,
 ) -> None:
     bridge_root = tmp_path / "bridge"
@@ -5178,6 +5179,14 @@ def test_stable_text_promotes_distinct_line_without_waiting_for_repeat(
             now=3001.0,
             repeat_threshold=2,
         )
+        is False
+    )
+    assert (
+        manager._emit_line_from_ocr_text(
+            "王生：新 台词。",
+            now=3002.0,
+            repeat_threshold=2,
+        )
         is True
     )
 
@@ -5185,6 +5194,16 @@ def test_stable_text_promotes_distinct_line_without_waiting_for_repeat(
     assert session is not None
     assert session["state"]["speaker"] == "王生"
     assert session["state"]["text"] == "新 台词。"
+
+
+def test_compound_neko_ui_capture_is_rejected_without_blocking_single_game_word() -> None:
+    polluted = (
+        "动画设置 主动搭话 隐私模式 角色设置 API密钥 +++声纹身份 "
+        "出家门后，算上换乘我一共坐了2个小时的电车。S英"
+    )
+
+    assert galgame_ocr_text_normalize._looks_like_self_ui_text(polluted) is True
+    assert galgame_ocr_text_normalize._looks_like_self_ui_text("她打开角色设置后继续说道。") is False
     assert manager._default_ocr_state.stable_text == "王生：新 台词。"
 
 
