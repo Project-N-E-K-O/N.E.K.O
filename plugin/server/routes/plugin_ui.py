@@ -53,9 +53,6 @@ _sse_clients_lock = asyncio.Lock()
 _SSE_QUEUE_MAX = 100
 # push 请求体大小上限（字节）；读取前按 Content-Length 校验，避免大 body 直接进内存
 _PUSH_MAX_BODY = 16 * 1024
-# push 鉴权共享密钥（环境变量 NEKO_SSE_PUSH_TOKEN）：非空时要求 Authorization: Bearer <token>
-# 未配置则不鉴权（向后兼容）。danmu_bridge 等插件推送侧读取同一变量自动带上。
-_PUSH_TOKEN = os.environ.get("NEKO_SSE_PUSH_TOKEN", "").strip()
 # 可信 Origin 主机（本机回环）：push 广播只接受无 Origin（插件后端/非浏览器）或本机页面
 _TRUSTED_ORIGIN_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
@@ -337,17 +334,8 @@ async def plugin_ui_push(plugin_id: str, request: Request):
     入参：{"text": "..."} 或纯文本。任意插件/后端调用，推送到已订阅的前端页面。
     返回 ``queued``：成功写入各客户端缓冲队列的数目（排队计数，非客户端实际送达确认）。
 
-    鉴权：一律要求共享密钥（环境变量 ``NEKO_SSE_PUSH_TOKEN``）。
-    未配置时返回 503（不允许推送）；配置后必须带 ``Authorization: Bearer <token>``，否则 401。
+    鉴权：本机回环可直接推送（不再要求共享密钥；Origin 校验仍防跨站注入）。
     """
-    # 鉴权：push 一律要求共享密钥（NEKO_SSE_PUSH_TOKEN），不做回环豁免；
-    # 未配置 token 则拒绝（部署方必须配置）
-    if not _PUSH_TOKEN:
-        return JSONResponse({"ok": False, "error": "token not configured"}, status_code=503)
-    auth = request.headers.get("authorization", "")
-    scheme, _, presented = auth.partition(" ")
-    if scheme.lower() != "bearer" or presented.strip() != _PUSH_TOKEN:
-        return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
     # Origin 校验：浏览器跨站表单 POST（no-cors）可向 loopback 注入 SSE；
     # 只接受无 Origin（插件后端/curl）或本机回环 Origin
     if not _origin_is_trusted(request.headers.get("origin", "")):
