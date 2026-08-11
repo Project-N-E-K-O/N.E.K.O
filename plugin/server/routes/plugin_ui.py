@@ -17,12 +17,14 @@
     GET /plugin/{plugin_id}/ui/main.js   -> static/main.js
     GET /plugin/{plugin_id}/ui/style.css -> static/style.css
 """
+import asyncio
+import json
 import mimetypes
 import re
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from plugin.logging_config import get_logger
@@ -39,6 +41,46 @@ _I18N_LOCALE_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_\-]{0,15}$")
 # and only change when the plugin author edits a translation file, so we keep
 # the parsed bytes in process memory and revalidate via mtime on each hit.
 _I18N_BUNDLE_CACHE: dict[Path, tuple[float, bytes]] = {}
+
+# ---- 插件静态 UI 的 SSE 实时推送通道（强化后端 → 前端通信）----
+# plugin_id -> list[asyncio.Queue]；每个 SSE 连接一个队列，POST /ui-api/push 广播。
+# 任意插件/后端往 /ui-api/push 推送，前端页面连 /ui-api/events 即时接收实时更新。
+_sse_clients: dict[str, list[asyncio.Queue]] = {}
+_sse_clients_lock = asyncio.Lock()
+
+
+def _parse_push_payload(body: bytes) -> dict:
+    """POST /ui-api/push 入参解析：支持 {"type":..., "text":..., ...} 或纯文本。
+
+    type 为调用方（插件）自定义的消息类别，server 原样透传、不预设分类；
+    text 为必填正文；style / avatar 等为可选扩展元数据。返回空 dict 表示无内容。
+    """
+    raw = body.decode("utf-8", "replace").strip()
+    if not raw:
+        return {}
+    if raw.startswith("{"):
+        try:
+            payload = json.loads(raw)
+            if isinstance(payload, dict) and payload.get("text"):
+                result: dict = {"text": str(payload["text"]).strip()}
+                if not result["text"]:
+                    return {}
+                msg_type = str(payload.get("type") or "").strip()
+                if msg_type:
+                    result["type"] = msg_type
+                style = str(payload.get("style") or "").strip()
+                if style in ("catgirl", "narration"):
+                    result["style"] = style
+                placement = str(payload.get("placement") or "").strip()
+                if placement in ("scrolling", "top"):
+                    result["placement"] = placement
+                avatar = str(payload.get("avatar") or "").strip()
+                if avatar:
+                    result["avatar"] = avatar
+                return result
+        except Exception:
+            pass
+    return {"text": raw}
 
 
 class HostedUiActionRequest(BaseModel):
@@ -212,6 +254,84 @@ async def plugin_ui_api_i18n_bundle(plugin_id: str, locale: str) -> Response:
             "ETag": f'W/"{plugin_id}-{locale}-{int(mtime)}"',
         },
     )
+
+
+@router.get("/plugin/{plugin_id}/ui-api/events")
+async def plugin_ui_sse_events(plugin_id: str):
+    """插件静态 UI 的 SSE 事件流（后端 → 前端实时推送）。
+
+    前端页面用 EventSource 连这里，即时接收 /ui-api/push 广播的实时更新。
+    """
+    queue_obj: asyncio.Queue = asyncio.Queue()
+
+    async def event_stream():
+        await _sse_clients_lock.acquire()
+        try:
+            _sse_clients.setdefault(plugin_id, []).append(queue_obj)
+        finally:
+            _sse_clients_lock.release()
+        try:
+            yield "data: " + json.dumps({"type": "hello", "lanes": 12}, ensure_ascii=False) + "\n\n"
+            while True:
+                try:
+                    payload = await asyncio.wait_for(queue_obj.get(), timeout=15.0)
+                    yield payload
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+        finally:
+            await _sse_clients_lock.acquire()
+            try:
+                clients = _sse_clients.get(plugin_id)
+                if clients and queue_obj in clients:
+                    clients.remove(queue_obj)
+            finally:
+                _sse_clients_lock.release()
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@router.post("/plugin/{plugin_id}/ui-api/push")
+async def plugin_ui_push(plugin_id: str, request: Request):
+    """向插件静态 UI 的所有 SSE 客户端广播一条实时消息（后端 → 前端推送）。
+
+    入参：{"text": "..."} 或纯文本。任意插件/后端调用，推送到已订阅的前端页面。
+    """
+    body = await request.body()
+    payload = _parse_push_payload(body)
+    if not payload.get("text"):
+        return JSONResponse({"ok": False, "error": "empty"}, status_code=400)
+    # type 由插件自定义并原样透传（server 不预设分类）；未指定则不带 type 字段
+    event: dict = {"text": payload["text"]}
+    if payload.get("type"):
+        event["type"] = payload["type"]
+    if payload.get("style"):
+        event["style"] = payload["style"]
+    if payload.get("placement"):
+        event["placement"] = payload["placement"]
+    if payload.get("avatar"):
+        event["avatar"] = payload["avatar"]
+    data = "data: " + json.dumps(event, ensure_ascii=False) + "\n\n"
+    delivered = 0
+    await _sse_clients_lock.acquire()
+    try:
+        clients = _sse_clients.get(plugin_id, [])
+        for c in list(clients):
+            try:
+                c.put_nowait(data)
+                delivered += 1
+            except Exception:
+                pass
+    finally:
+        _sse_clients_lock.release()
+    return JSONResponse({"ok": True, "delivered": delivered})
 
 
 @router.get("/plugin/{plugin_id}/ui/{file_path:path}")
