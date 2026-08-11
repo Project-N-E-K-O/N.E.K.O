@@ -5,7 +5,11 @@ from types import SimpleNamespace
 import pytest
 from plugin.plugins.lifekit import LifeKitPlugin, _api, _geocoders
 from plugin.plugins.lifekit._api import GeocodeError
-from plugin.plugins.lifekit._geocoders import GeocoderError, open_meteo_candidates
+from plugin.plugins.lifekit._geocoders import (
+    GeocoderError,
+    nominatim_candidates,
+    open_meteo_candidates,
+)
 from plugin.plugins.lifekit._location import (
     LocationCandidate,
     LocationPurpose,
@@ -462,8 +466,10 @@ async def test_legacy_saved_default_blocks_lower_priority_nearby_fallbacks() -> 
     assert result.candidates == (legacy.location,)
 
 
-async def test_open_meteo_adapter_keeps_candidate_metadata(
+@pytest.mark.parametrize("feature_code", ["PPLA2", "PPL"])
+async def test_open_meteo_populated_places_are_usable_city_candidates(
     monkeypatch: pytest.MonkeyPatch,
+    feature_code: str,
 ) -> None:
     captured: dict[str, object] = {}
 
@@ -480,7 +486,7 @@ async def test_open_meteo_adapter_keeps_candidate_metadata(
                         "country_code": "CN",
                         "admin1": "吉林省",
                         "admin2": "吉林市",
-                        "feature_code": "PPLA2",
+                        "feature_code": feature_code,
                         "timezone": "Asia/Shanghai",
                     }
                 ]
@@ -513,6 +519,54 @@ async def test_open_meteo_adapter_keeps_candidate_metadata(
         "language": "zh",
         "countryCode": "CN",
     }
+
+
+@pytest.mark.parametrize(
+    ("address_type", "expected_precision"),
+    [
+        ("station", "address"),
+        ("square", "address"),
+        ("neighbourhood", "district"),
+        ("village", "city"),
+        ("hamlet", "city"),
+    ],
+)
+async def test_nominatim_landmarks_are_usable_nearby_centers(
+    monkeypatch: pytest.MonkeyPatch,
+    address_type: str,
+    expected_precision: str,
+) -> None:
+    class Response:
+        status_code = 200
+
+        def json(self) -> list[dict[str, object]]:
+            return [
+                {
+                    "name": "Search Center",
+                    "lat": "35.0",
+                    "lon": "139.0",
+                    "addresstype": address_type,
+                    "address": {"country_code": "jp"},
+                }
+            ]
+
+    class Client:
+        async def __aenter__(self) -> "Client":
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+        async def get(self, _url: str, **_kwargs: object) -> Response:
+            return Response()
+
+    monkeypatch.setattr(_geocoders, "_NOMINATIM_MIN_INTERVAL_SECONDS", 0.0)
+    monkeypatch.setattr(_geocoders.httpx, "AsyncClient", lambda **_kwargs: Client())
+
+    candidates = await nominatim_candidates("Search Center", locale="en")
+
+    assert len(candidates) == 1
+    assert candidates[0].precision == expected_precision
 
 
 async def test_geoip_requires_confirmation_for_nearby_search() -> None:
@@ -925,6 +979,46 @@ async def test_address_text_is_sent_verbatim_to_address_provider() -> None:
 
     assert result.status is LocationStatus.RESOLVED
     assert seen == [("nominatim", "上海南京东路")]
+
+
+async def test_address_first_resolution_prefers_street_over_broader_city() -> None:
+    city = LocationCandidate(
+        display_name="上海市",
+        latitude=31.23,
+        longitude=121.47,
+        country_code="CN",
+        admin1="上海市",
+        admin2="上海市",
+        precision="city",
+        source="nominatim",
+    )
+    street = LocationCandidate(
+        display_name="漕宝路",
+        latitude=31.17,
+        longitude=121.43,
+        country_code="CN",
+        admin1="上海市",
+        admin2="上海市",
+        precision="address",
+        source="nominatim",
+    )
+
+    async def nominatim(*_args: object, **_kwargs: object) -> list[LocationCandidate]:
+        return [city, street]
+
+    async def empty(*_args: object, **_kwargs: object) -> list[LocationCandidate]:
+        return []
+
+    resolver = LocationResolver(open_meteo=empty, nominatim=nominatim)
+
+    result = await resolver.resolve(
+        LocationRequest(text="上海市 漕宝路", purpose=LocationPurpose.NEARBY)
+    )
+
+    assert result.status is LocationStatus.RESOLVED
+    assert result.location is not None
+    assert result.location.display_name == "漕宝路"
+    assert result.location.precision == "address"
 
 
 async def test_secondary_provider_failure_keeps_usable_primary_hit() -> None:

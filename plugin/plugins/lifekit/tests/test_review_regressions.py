@@ -162,3 +162,32 @@ def test_plural_english_nearby_categories_map_to_specific_terms(
     )
 
     assert plan.search_terms == (expected_term,)
+
+
+@pytest.mark.parametrize(
+    ("request_text", "projected_location", "expected_location", "expected_term"),
+    [
+        ("我附近的公园", "我", "", "公园"),
+        ("这附近的餐厅", "这", "", "餐厅"),
+        ("在人民广场附近的餐厅", "在人民广场", "人民广场", "餐厅"),
+    ],
+)
+def test_chinese_nearby_centers_remove_deictics_and_prepositions(
+    request_text: str,
+    projected_location: str,
+    expected_location: str,
+    expected_term: str,
+) -> None:
+    plan = build_nearby_request_plan(
+        request_text=request_text,
+        raw_request=request_text,
+        projected_params=True,
+        location_hint=projected_location,
+        legacy_location="",
+        place_intent="explore",
+        preference_hints=(),
+        search_terms=(),
+    )
+
+    assert plan.location == expected_location
+    assert plan.search_terms == (expected_term,)

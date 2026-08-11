@@ -181,7 +181,7 @@ def _language(locale: str) -> str:
 
 def _open_meteo_precision(feature_code: str) -> str:
     code = feature_code.upper()
-    if code.startswith("PPLA") or code == "PPLC":
+    if code.startswith("PPL"):
         return "city"
     if code.startswith("ADM1"):
         return "region"
@@ -200,11 +200,22 @@ def _nominatim_precision(address_type: str) -> str:
         "residential",
         "commercial",
         "amenity",
+        "station",
+        "square",
     }:
         return "address"
-    if kind in {"borough", "district", "county", "city_district", "suburb"}:
+    if kind in {
+        "borough",
+        "district",
+        "county",
+        "city_district",
+        "suburb",
+        "neighbourhood",
+        "neighborhood",
+        "quarter",
+    }:
         return "district"
-    if kind in {"city", "town", "municipality"}:
+    if kind in {"city", "town", "municipality", "village", "hamlet"}:
         return "city"
     if kind in {"state", "province", "region"}:
         return "region"

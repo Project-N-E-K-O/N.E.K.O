@@ -476,6 +476,7 @@ class LocationResolver:
         eligible = _preferred_candidates(
             _eligible_candidates(candidates, request.purpose),
             text,
+            request.purpose,
         )
         countries = {item.country_code for item in eligible if item.country_code}
         if not request.country_hint.strip() and len(countries) > 1:
@@ -680,7 +681,9 @@ def _eligible_candidates(
 
 
 def _preferred_candidates(
-    candidates: list[LocationCandidate], requested_name: str
+    candidates: list[LocationCandidate],
+    requested_name: str,
+    purpose: LocationPurpose,
 ) -> list[LocationCandidate]:
     """Discard weaker search hits before deciding whether a place is ambiguous.
 
@@ -716,7 +719,10 @@ def _preferred_candidates(
             if rank == best_context
         ]
 
-    precision_ranks = [_place_kind_rank(candidate.precision) for candidate in matched]
+    precision_ranks = [
+        _preference_precision_rank(candidate.precision, purpose)
+        for candidate in matched
+    ]
     best_precision = max(precision_ranks)
     return [
         candidate
@@ -777,14 +783,6 @@ def _without_admin_suffix(value: str) -> str:
     return value
 
 
-def _place_kind_rank(precision: str) -> int:
-    if precision in {"city", "district"}:
-        return 2
-    if precision in {"address", "locality"}:
-        return 1
-    return 0
-
-
 def _purpose_precision_rank(precision: str, purpose: LocationPurpose) -> int:
     if purpose in {
         LocationPurpose.NEARBY,
@@ -797,6 +795,23 @@ def _purpose_precision_rank(precision: str, purpose: LocationPurpose) -> int:
     return {"city": 3, "district": 2, "address": 1, "locality": 1}.get(
         precision,
         0,
+    )
+
+
+def _preference_precision_rank(precision: str, purpose: LocationPurpose) -> int:
+    """Prefer requested addresses without collapsing administrative ambiguity."""
+    if purpose in {
+        LocationPurpose.NEARBY,
+        LocationPurpose.FOOD,
+        LocationPurpose.ROUTE_ORIGIN,
+        LocationPurpose.ROUTE_DESTINATION,
+        LocationPurpose.SAVE,
+    }:
+        return 2 if precision == "address" else int(
+            precision in {"city", "district"}
+        )
+    return 2 if precision in {"city", "district"} else int(
+        precision in {"address", "locality"}
     )
 
 

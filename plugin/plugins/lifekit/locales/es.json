@@ -41,7 +41,7 @@
     "uv_extreme": "🧴 UV extremo: el protector solar es imprescindible",
     "uv_high": "🕶️ UV alto: se recomienda protector solar",
     "wind_strong": "💨 Vientos fuertes: tenga cuidado al aire libre",
-    "rain_forecast": "📅 Se espera lluvia el: {dates}",
+    "rain_forecast": "📅 Se espera lluvia: {dates}",
     "bring_umbrella": "Lleve un paraguas",
     "bring_sunscreen": "Use protector solar"
   },

@@ -13,6 +13,8 @@ MAX_PREFERENCE_HINTS = 4
 _ZH_LOCATION_PREFIX = re.compile(
     r"^(?:请|麻烦|帮我|给我|想|我要|我想)?(?:查(?:一下)?|找(?:一下)?|看看|推荐)?"
 )
+_ZH_NEARBY_CENTER_PREFIX = re.compile(r"^在")
+_ZH_IMPLICIT_NEARBY_CENTERS = frozenset({"我", "这", "这里", "此处", "当前位置"})
 _ZH_NEARBY_PARTS = re.compile(
     r"^(?P<location>.*?)(?:附近|周边|旁边|一带)(?P<target>.*)$"
 )
@@ -214,13 +216,20 @@ def _zh_request_parts(text: str) -> tuple[str, str]:
             candidate
         )
         if match:
-            location = match.group("location").strip(" ，,。.!！？?")
+            location = _normalize_zh_nearby_center(match.group("location"))
             target = match.group("target").lstrip(" 的").strip(" ，,。.!！？?")
             if not location:
                 fallback_target = fallback_target or target
                 continue
             return location, target
     return "", fallback_target
+
+
+def _normalize_zh_nearby_center(value: str) -> str:
+    location = value.strip(" ，,。.!！？?")
+    if location in _ZH_IMPLICIT_NEARBY_CENTERS:
+        return ""
+    return _ZH_NEARBY_CENTER_PREFIX.sub("", location, count=1).strip()
 
 
 def _zh_nearby_candidates(text: str) -> tuple[str, ...]:
@@ -408,7 +417,7 @@ def build_nearby_request_plan(
         infer_location_hint(raw_request)
         if raw_has_relation
         else (
-            str(location_hint).strip()
+            _normalize_zh_nearby_center(str(location_hint))
             or str(legacy_location).strip()
             or infer_location_hint(request_text)
         )
