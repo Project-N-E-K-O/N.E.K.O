@@ -73,13 +73,16 @@ def _origin_is_trusted(origin: str) -> bool:
 
 
 def _is_loopback_host(host: str) -> bool:
-    """判断对端主机是否本机回环（含 IPv4-mapped IPv6 形式 ::ffff:127.x.x.x）。
+    """判断对端主机是否本机回环：localhost、整个 IPv4 回环网段 127.0.0.0/8、
+    IPv6 ::1，以及 IPv4-mapped IPv6 形式 ::ffff:127.x.x.x。
 
     push 移除共享密钥后，以此作为「仅本机回环可推送」的边界：不信任
     X-Forwarded-For 等转发头，直接看直连对端 request.client.host。
     """
     host = (host or "").strip().lower()
-    if host in ("localhost", "127.0.0.1", "::1"):
+    if host in ("localhost", "::1"):
+        return True
+    if host.startswith("127."):  # 整个 127.0.0.0/8 都是 IPv4 回环（本机后端可能绑 127.0.0.2 等）
         return True
     return host.startswith("::ffff:127.")
 
