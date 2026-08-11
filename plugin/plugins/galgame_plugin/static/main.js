@@ -7038,6 +7038,10 @@ async function saveOcrCaptureProfile() {
       bottom_inset_ratio: bottomInsetRatio,
       clear: false,
     });
+    const gamePresetSelect = document.getElementById('ocrProfileGamePresetSelect');
+    if (gamePresetSelect) {
+      gamePresetSelect.value = 'auto';
+    }
     setFlash(payload.summary || uiT('ui.flash.ocr_profile_saved', 'OCR 截图校准已保存'), 'success');
     await refreshAll({ preserveFlash: true, forceInsights: true });
   } catch (error) {

@@ -2062,7 +2062,8 @@ def _append_observed_line(
         existing = history_observed_lines[index]
         same_line = line_id and line_id == str(existing.get("line_id") or "")
         same_text = (
-            text == normalize_text(str(existing.get("text") or ""))
+            bool(scene_id)
+            and text == normalize_text(str(existing.get("text") or ""))
             and scene_id == str(existing.get("scene_id") or "")
         )
         if same_line or same_text:
@@ -2087,6 +2088,7 @@ def _remove_observed_line(
             (line_id and line_id == str(existing.get("line_id") or ""))
             or (
                 text
+                and scene_id
                 and text == normalize_text(str(existing.get("text") or ""))
                 and scene_id == str(existing.get("scene_id") or "")
             )

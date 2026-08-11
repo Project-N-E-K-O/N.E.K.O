@@ -196,11 +196,13 @@ class TextMixin:
         classification: ScreenClassification,
     ) -> bool:
         screen_type = str(classification.screen_type or "")
+        expected_label = _CNN_DIALOGUE_BOUNDARY_LABELS.get(screen_type, "")
+        if not expected_label:
+            return False
         debug = dict(classification.debug or {})
         return bool(
             str(debug.get("source") or "") == "cnn_primary"
-            and str(debug.get("label") or "")
-            == _CNN_DIALOGUE_BOUNDARY_LABELS.get(screen_type, "")
+            and str(debug.get("label") or "") == expected_label
         )
 
     @staticmethod
@@ -223,6 +225,12 @@ class TextMixin:
         classification: ScreenClassification,
     ) -> ScreenClassification:
         if not self._is_cnn_dialogue_boundary_classification(classification):
+            return classification
+        # A persisted dialogue crop cannot disprove a fresh full-frame menu
+        # classification: real choice screens commonly retain the prompt while
+        # rendering buttons outside the dialogue crop.  A newly emitted line can
+        # still reconcile a false menu result through the post-line path below.
+        if classification.screen_type == OCR_CAPTURE_PROFILE_STAGE_MENU:
             return classification
         state = self._writer.current_state or {}
         if (
@@ -757,6 +765,18 @@ class TextMixin:
                     raw_text=raw_text,
                 )
         tracker = state or self._default_ocr_state
+        if pending_visual_scene:
+            current_key = _ocr_stability_key(cleaned_text)
+            stable_key = tracker.stable_text_key or _ocr_stability_key(
+                tracker.stable_text
+            )
+            if _ocr_stability_keys_match(current_key, stable_key):
+                # The same short line can legitimately occur on both sides of a
+                # confirmed visual boundary (for example "……").  Start a fresh
+                # repeat window only after the boundary survived continuation
+                # suppression, so the prior scene's stable key cannot block the
+                # pending scene forever.
+                tracker.reset()
         effective_repeat_threshold = (
             self._line_changed_repeat_threshold()
             if repeat_threshold is None

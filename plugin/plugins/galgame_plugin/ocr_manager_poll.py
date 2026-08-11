@@ -210,6 +210,37 @@ class PollMixin:
         )
         return True
 
+    def _record_capture_trust_metadata(self, extraction: OcrExtractionResult) -> None:
+        self._capture_target_foreground = bool(extraction.target_foreground)
+        self._capture_region_occluded = bool(extraction.capture_region_occluded)
+        self._ocr_capture_content_trusted = bool(extraction.capture_content_trusted)
+        self._ocr_capture_rejected_reason = str(
+            extraction.capture_untrusted_reason or ""
+        )
+
+    def _handle_untrusted_capture(
+        self,
+        extraction: OcrExtractionResult,
+        *,
+        now: float,
+        result: OcrReaderTickResult,
+    ) -> bool:
+        if extraction.capture_content_trusted:
+            return False
+        self._record_rejected_ocr_text(
+            extraction.text,
+            reason=extraction.capture_untrusted_reason or "untrusted_capture_source",
+            now=now,
+            capture_backend_kind=extraction.capture_backend_kind,
+        )
+        result.warnings.append(
+            "ocr_reader ignored text from an untrusted capture source"
+        )
+        self._default_ocr_state.reset()
+        self._ocr_lang_detector.reset()
+        self._reset_aihong_menu_state()
+        return True
+
 
     async def shutdown(self) -> None:
         # 顺序与 OcrReaderManager.close() 对偶：停线程/线程池 → 等在飞 capture
@@ -256,14 +287,14 @@ class PollMixin:
             self._release_rapidocr_backend()
         except Exception as exc:
             self._log_warning("ocr_reader rapidocr backend release failed: {}", exc)
-        classifier = self.vision_classifier
-        self.vision_classifier = None
-        close_classifier = getattr(classifier, "close", None)
-        if callable(close_classifier):
-            try:
-                close_classifier()
-            except Exception as exc:
-                self._log_warning("ocr_reader vision classifier close failed: {}", exc)
+        self._vision_classifier_shutdown_requested = True
+        try:
+            await asyncio.to_thread(
+                self._release_vision_classifier,
+                detail="shutdown",
+            )
+        except Exception as exc:
+            self._log_warning("ocr_reader vision classifier release failed: {}", exc)
         try:
             if self._writer.session_id:
                 self._writer.end_session(ts=utc_now_iso(self._time_fn()))
@@ -864,10 +895,7 @@ class PollMixin:
             self._record_capture_geometry(extraction)
             self._capture_backend_kind = extraction.capture_backend_kind
             self._capture_backend_detail = extraction.capture_backend_detail
-            self._capture_target_foreground = bool(extraction.target_foreground)
-            self._capture_region_occluded = bool(extraction.capture_region_occluded)
-            self._ocr_capture_content_trusted = bool(extraction.capture_content_trusted)
-            self._ocr_capture_rejected_reason = str(extraction.capture_untrusted_reason or "")
+            self._record_capture_trust_metadata(extraction)
             active_backend = extraction.backend if extraction.backend.kind else backend_plan.primary
             backend_detail_override = extraction.backend_detail
             result.warnings.extend(extraction.warnings)
@@ -886,18 +914,8 @@ class PollMixin:
                 result.should_rescan = True
             if capture_error:
                 pass
-            elif not extraction.capture_content_trusted:
+            elif self._handle_untrusted_capture(extraction, now=now, result=result):
                 guard_blocked = True
-                self._record_rejected_ocr_text(
-                    extraction.text,
-                    reason=extraction.capture_untrusted_reason or "untrusted_capture_source",
-                    now=now,
-                    capture_backend_kind=extraction.capture_backend_kind,
-                )
-                result.warnings.append("ocr_reader ignored text from an untrusted capture source")
-                self._default_ocr_state.reset()
-                self._ocr_lang_detector.reset()
-                self._reset_aihong_menu_state()
             elif extraction.text and _looks_like_self_ui_text(extraction.text):
                 guard_blocked = True
                 self._record_rejected_ocr_text(
@@ -1022,6 +1040,7 @@ class PollMixin:
                             self._record_capture_geometry(followup_extraction)
                             self._capture_backend_kind = followup_extraction.capture_backend_kind
                             self._capture_backend_detail = followup_extraction.capture_backend_detail
+                            self._record_capture_trust_metadata(followup_extraction)
                             active_backend = (
                                 followup_extraction.backend
                                 if followup_extraction.backend.kind
@@ -1038,6 +1057,12 @@ class PollMixin:
                                 result=result,
                             ):
                                 capture_error = True
+                            elif self._handle_untrusted_capture(
+                                followup_extraction,
+                                now=followup_now,
+                                result=result,
+                            ):
+                                guard_blocked = True
                             elif followup_extraction.text and _looks_like_self_ui_text(followup_extraction.text):
                                 guard_blocked = True
                                 self._record_rejected_ocr_text(
@@ -1140,6 +1165,7 @@ class PollMixin:
                                 self._record_capture_geometry(menu_extraction)
                                 self._capture_backend_kind = menu_extraction.capture_backend_kind
                                 self._capture_backend_detail = menu_extraction.capture_backend_detail
+                                self._record_capture_trust_metadata(menu_extraction)
                                 active_backend = (
                                     menu_extraction.backend
                                     if menu_extraction.backend.kind
@@ -1156,6 +1182,12 @@ class PollMixin:
                                     result=result,
                                 ):
                                     capture_error = True
+                                elif self._handle_untrusted_capture(
+                                    menu_extraction,
+                                    now=menu_now,
+                                    result=result,
+                                ):
+                                    guard_blocked = True
                                 elif menu_extraction.text and _looks_like_self_ui_text(menu_extraction.text):
                                     guard_blocked = True
                                     self._record_rejected_ocr_text(
@@ -1235,6 +1267,7 @@ class PollMixin:
                         self._record_capture_geometry(followup_extraction)
                         self._capture_backend_kind = followup_extraction.capture_backend_kind
                         self._capture_backend_detail = followup_extraction.capture_backend_detail
+                        self._record_capture_trust_metadata(followup_extraction)
                         active_backend = (
                             followup_extraction.backend
                             if followup_extraction.backend.kind
@@ -1251,6 +1284,12 @@ class PollMixin:
                             result=result,
                         ):
                             capture_error = True
+                        elif self._handle_untrusted_capture(
+                            followup_extraction,
+                            now=followup_now,
+                            result=result,
+                        ):
+                            guard_blocked = True
                         elif followup_extraction.text and _looks_like_self_ui_text(followup_extraction.text):
                             guard_blocked = True
                             self._record_rejected_ocr_text(

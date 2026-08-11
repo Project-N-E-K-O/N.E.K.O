@@ -298,6 +298,7 @@ class OcrReaderManager(
         self._vision_classifier_tick_count = 0
         self._vision_classifier_init_lock = threading.Lock()
         self._vision_classifier_initialized = False
+        self._vision_classifier_shutdown_requested = False
         self._backend_plan_cache_key: tuple[str, ...] | None = None
         self._backend_plan_cache_at = 0.0
         self._backend_plan_cache: SelectedOcrBackendPlan | None = None
@@ -324,12 +325,18 @@ class OcrReaderManager(
         fast OCR loops from racing a future deferred initialization.
         """
         with self._vision_classifier_init_lock:
+            if self._vision_classifier_shutdown_requested:
+                self._vision_classifier_detail = "shutdown"
+                return
             if self._vision_classifier_initialized:
                 return
             self._initialize_vision_classifier()
 
     def vision_classifier_initialization_pending(self) -> bool:
-        return not self._vision_classifier_initialized
+        return bool(
+            not self._vision_classifier_shutdown_requested
+            and not self._vision_classifier_initialized
+        )
 
     def _initialize_vision_classifier(self) -> None:
         self._vision_classifier_initialized = True
@@ -384,6 +391,25 @@ class OcrReaderManager(
             self._vision_classifier_detail = "load_failed"
             self._log_warning("galgame vision classifier failed to load: {}", exc)
 
+    def _release_vision_classifier(self, *, detail: str) -> None:
+        with self._vision_classifier_init_lock:
+            classifier = self.vision_classifier
+            self.vision_classifier = None
+            self._vision_classifier_initialized = False
+            self._vision_classifier_detail = str(detail or "disabled")
+            self._vision_classifier_last_label = ""
+            self._vision_classifier_last_confidence = 0.0
+            self._vision_classifier_last_latency_ms = 0.0
+            self._vision_classifier_tick_count = 0
+            close_classifier = getattr(classifier, "close", None)
+            if callable(close_classifier):
+                try:
+                    close_classifier()
+                except Exception as exc:
+                    self._log_warning(
+                        "ocr_reader vision classifier close failed: {}", exc
+                    )
+
     @staticmethod
     def _vision_classifier_config_key(config: GalgameConfig) -> tuple[bool, str, str, tuple[int, int], float]:
         return (
@@ -433,14 +459,8 @@ class OcrReaderManager(
         # 引用先摘掉再 close：close 失败也不能把一个已经宣告释放的 classifier
         # 继续挂在 self 上。getattr 兜底与本文件对 _logger 的取法一致——收尾
         # 路径不该假设自己被构造完整。
-        classifier = getattr(self, "vision_classifier", None)
-        self.vision_classifier = None
-        close_classifier = getattr(classifier, "close", None)
-        if callable(close_classifier):
-            try:
-                close_classifier()
-            except Exception as exc:
-                self._log_warning("ocr_reader vision classifier close failed: {}", exc)
+        self._vision_classifier_shutdown_requested = True
+        self._release_vision_classifier(detail="shutdown")
 
     def __enter__(self) -> "OcrReaderManager":
         return self
@@ -496,20 +516,11 @@ class OcrReaderManager(
         self._config = config
         self._runtime.enabled = config.ocr_reader_enabled
         if old_vision_key != self._vision_classifier_config_key(config):
-            with self._vision_classifier_init_lock:
-                classifier = self.vision_classifier
-                self.vision_classifier = None
-                close_classifier = getattr(classifier, "close", None)
-                if callable(close_classifier):
-                    close_classifier()
-                self._vision_classifier_initialized = False
-                self._vision_classifier_detail = (
+            self._release_vision_classifier(
+                detail=(
                     "pending" if bool(config.vision_classifier_enabled) else "disabled"
                 )
-                self._vision_classifier_last_label = ""
-                self._vision_classifier_last_confidence = 0.0
-                self._vision_classifier_last_latency_ms = 0.0
-                self._vision_classifier_tick_count = 0
+            )
         if not bool(config.llm_vision_enabled):
             self._clear_vision_snapshot()
         if float(getattr(config, "ocr_reader_known_screen_timeout_seconds", 0.0) or 0.0) <= 0.0:

@@ -585,6 +585,31 @@ def test_stable_line_promotes_matching_observed_entry_out_of_tentative_history()
     assert observed == []
 
 
+def test_empty_scene_id_does_not_match_observed_lines_by_text() -> None:
+    observed = [
+        {
+            "speaker": "旁白",
+            "text": "……",
+            "line_id": "line-a",
+            "scene_id": "",
+        }
+    ]
+    second = {
+        "speaker": "旁白",
+        "text": "……",
+        "line_id": "line-b",
+        "scene_id": "",
+    }
+
+    galgame_service._append_observed_line(observed, second, limit=10)
+    galgame_service._remove_observed_line(
+        observed,
+        {"text": "……", "line_id": "", "scene_id": ""},
+    )
+
+    assert [item["line_id"] for item in observed] == ["line-a", "line-b"]
+
+
 def _rebuild_single_event(event: dict[str, object]) -> tuple[
     list[dict[str, object]],
     list[dict[str, object]],

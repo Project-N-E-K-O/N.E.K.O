@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import html
 import json
+import re
 import shutil
 from pathlib import Path
 
@@ -299,8 +301,63 @@ assert.deepEqual(
     assert 'id="ocrProfileGamePresetSelect"' in index
     assert '<option value="auto"' in index
     assert '<option value="senren_banka">' in index
-    assert "&#x5343;&#x604B;&#xFF0A;&#x4E07;&#x82B1;" in index
-    assert (
-        "getElementById('ocrProfileGamePresetSelect').addEventListener("
-        "'change', selectOcrGameCapturePreset)" in source
+    assert "千恋＊万花" in html.unescape(index)
+    assert re.search(
+        r"getElementById\(\s*['\"]ocrProfileGamePresetSelect['\"]\s*\)"
+        r"\s*\.addEventListener\(\s*['\"]change['\"]\s*,"
+        r"\s*selectOcrGameCapturePreset\s*\)",
+        source,
     )
+
+
+@pytest.mark.plugin_unit
+def test_saving_selected_game_preset_returns_editor_to_stored_profile() -> None:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js is required for Galgame UI JavaScript tests")
+
+    source = (
+        Path(__file__).resolve().parents[3]
+        / "plugins"
+        / "galgame_plugin"
+        / "static"
+        / "main.js"
+    ).read_text(encoding="utf-8")
+    save_functions = source[
+        source.index("function readProfileNumber") : source.index(
+            "async function clearOcrCaptureProfile"
+        )
+    ]
+    script = f"""
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+const elements = {{
+  ocrProfileProcessInput: {{ value: 'SenrenBanka.exe' }},
+  ocrProfileStageSelect: {{ value: 'dialogue_stage' }},
+  ocrProfileSaveScopeSelect: {{ value: 'process_fallback' }},
+  ocrProfileLeftInput: {{ value: '0.31' }},
+  ocrProfileRightInput: {{ value: '0.04' }},
+  ocrProfileTopInput: {{ value: '0.59' }},
+  ocrProfileBottomInput: {{ value: '0.11' }},
+  ocrProfileGamePresetSelect: {{ value: 'senren_banka' }},
+}};
+let refreshCount = 0;
+const context = {{
+  document: {{ getElementById(id) {{ return elements[id] || null; }} }},
+  normalizeCaptureProfileSaveScope(value) {{ return value; }},
+  async callPlugin() {{ return {{ summary: 'saved' }}; }},
+  setFlash() {{}},
+  uiT(_key, fallback) {{ return fallback; }},
+  async refreshAll() {{ refreshCount += 1; }},
+}};
+vm.runInNewContext({json.dumps(save_functions)}, context);
+(async () => {{
+  await context.saveOcrCaptureProfile();
+  assert.equal(elements.ocrProfileGamePresetSelect.value, 'auto');
+  assert.equal(refreshCount, 1);
+}})().catch((error) => {{
+  console.error(error);
+  process.exitCode = 1;
+}});
+"""
+    run_node_script(node, script, check=True)
