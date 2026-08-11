@@ -349,15 +349,33 @@ class Win32CaptureBackend:
         return f"{target.process_name}({target.pid}) {target.title}"
 
     def capture_frame(self, target: DetectedGameWindow, profile: OcrCaptureProfile) -> Any:
+        from ..capture_platform import is_windows  # noqa: PLC0415
+
         errors: list[str] = []
         capture_region_occluded = False
-        if self.selection == _CAPTURE_BACKEND_SMART and bool(
-            getattr(target, "is_foreground", False)
-        ):
+        explicit_pixel_selection = self.selection in {
+            _CAPTURE_BACKEND_DXCAM,
+            _CAPTURE_BACKEND_MSS,
+            _CAPTURE_BACKEND_PYAUTOGUI,
+        }
+        should_check_occlusion = bool(getattr(target, "is_foreground", False)) and (
+            self.selection == _CAPTURE_BACKEND_SMART
+            or (is_windows() and explicit_pixel_selection)
+        )
+        if should_check_occlusion:
             try:
                 capture_region_occluded = bool(self._occlusion_checker(target, profile))
             except Exception:
                 capture_region_occluded = True
+        if capture_region_occluded and explicit_pixel_selection:
+            untrusted_reason = "capture_region_occluded_by_other_window"
+            self._set_last_backend(kind=self.selection, detail=untrusted_reason)
+            self._set_last_capture_trust(
+                occluded=True,
+                trusted=False,
+                reason=untrusted_reason,
+            )
+            raise RuntimeError(f"{self.selection}: {untrusted_reason}")
         backends = self._ordered_backends_for_target(
             target,
             capture_region_occluded=capture_region_occluded,
@@ -367,7 +385,9 @@ class Win32CaptureBackend:
             if backends
             else self.selection
         )
-        for backend in backends:
+        pending_backends = list(backends)
+        while pending_backends:
+            backend = pending_backends.pop(0)
             kind = str(getattr(backend, "kind", backend.__class__.__name__))
             if not backend.is_available():
                 errors.append(f"{kind}_unavailable")
@@ -423,17 +443,32 @@ class Win32CaptureBackend:
                 return frame
             except Exception as exc:
                 errors.append(f"{kind}_failed:{exc}")
-                if any(
+                fatal_target_failure = any(
                     marker in str(exc)
                     for marker in (
                         "target_window_not_resolved_for_capture",
                         "target_window_invalid_for_capture",
                         "target_window_not_visible_for_capture",
                         "target_window_minimized_for_capture",
+                    )
+                )
+                screen_foreground_failure = any(
+                    marker in str(exc)
+                    for marker in (
                         "target_not_foreground_for_screen_capture",
                         "foreground_changed_during_screen_capture",
                     )
-                ):
+                )
+                if screen_foreground_failure:
+                    if (
+                        self.selection == _CAPTURE_BACKEND_SMART
+                        and backend is not self._printwindow_backend
+                        and self._printwindow_backend in self._backends
+                    ):
+                        pending_backends = [self._printwindow_backend]
+                        continue
+                    raise
+                if fatal_target_failure:
                     raise
                 continue
         if self.selection == _CAPTURE_BACKEND_SMART and not bool(
