@@ -476,6 +476,18 @@ async def test_callback_route_accepts_images_without_is_error():
 
 
 @pytest.mark.asyncio
+async def test_callback_route_accepts_images_without_output():
+    """Image-only replies must stay envelopes — requiring ``output`` would
+    wrap the whole dict and bury base64 in the tool text channel."""
+    out = await _call_with_handler_result({
+        "images": [{"data_b64": "QUJD", "mime": "image/jpeg"}],
+    })
+    assert out["is_error"] is False
+    assert "output" not in out
+    assert out["images"] == [{"data_b64": "QUJD", "mime": "image/jpeg"}]
+
+
+@pytest.mark.asyncio
 async def test_callback_route_omits_images_key_when_there_are_none():
     """Every pre-existing plugin must keep producing a byte-identical
     response body; an empty ``images: []`` would be a silent wire change."""

@@ -183,15 +183,18 @@ async def llm_tool_callback(
     #    pass through verbatim. This is the path used when a handler
     #    wraps its own error semantics, e.g. via the SDK's Result type.
     #
-    # ``images`` also marks the envelope shape: a handler returning pixels
-    # has no reason to spell out ``is_error: False`` as well. A bare dict
-    # carrying only ``output`` stays data, not an envelope — otherwise a
-    # tool whose result happens to have an ``output`` field would get
-    # silently unwrapped.
-    if isinstance(result, dict) and "output" in result and (
+    # ``images`` / ``is_error`` mark the envelope shape. ``output`` may be
+    # omitted (image-only replies); main_server's parser then uses the
+    # remaining body fields minus ``images``. A bare dict carrying only
+    # ``output`` stays data, not an envelope — otherwise a tool whose
+    # result happens to have an ``output`` field would get silently
+    # unwrapped.
+    if isinstance(result, dict) and (
         "is_error" in result or "images" in result
     ):
-        out = {"output": result["output"], "is_error": bool(result.get("is_error", False))}
+        out = {"is_error": bool(result.get("is_error", False))}
+        if "output" in result:
+            out["output"] = result["output"]
         if result.get("error"):
             out["error"] = str(result["error"])
         # Only forward a non-empty list. Emitting ``images: []`` for every
