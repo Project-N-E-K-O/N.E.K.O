@@ -113,6 +113,11 @@ if not exist "%YUI_ARCHIVE%" (
 
 set "YUI_NEED_EXTRACT=0"
 if not exist "%YUI_COMPLETE_MARKER%" set "YUI_NEED_EXTRACT=1"
+if "%YUI_NEED_EXTRACT%"=="0" if not exist "%YUI_DIR%\%MODEL%.moc3" set "YUI_NEED_EXTRACT=1"
+if "%YUI_NEED_EXTRACT%"=="0" if not exist "%YUI_DIR%\%MODEL%.model3.json" set "YUI_NEED_EXTRACT=1"
+if "%YUI_NEED_EXTRACT%"=="0" if not exist "%YUI_DIR%\%MODEL%.physics3.json" set "YUI_NEED_EXTRACT=1"
+if "%YUI_NEED_EXTRACT%"=="0" if not exist "%YUI_DIR%\%MODEL%.vtube.json" set "YUI_NEED_EXTRACT=1"
+if "%YUI_NEED_EXTRACT%"=="0" if not exist "%YUI_DIR%\%MODEL%.4096\texture_00.png" set "YUI_NEED_EXTRACT=1"
 if "%YUI_NEED_EXTRACT%"=="0" set "YUI_COMPARE_RESULT_FILE=%TEMP%\neko-live2d-%RANDOM%-%RANDOM%.txt"
 if "%YUI_NEED_EXTRACT%"=="0" call :compare_live2d_timestamps "%YUI_ARCHIVE%" "%YUI_COMPLETE_MARKER%" "%YUI_COMPARE_RESULT_FILE%"
 if "%YUI_NEED_EXTRACT%"=="0" set "YUI_MTIME_STATUS=%ERRORLEVEL%"

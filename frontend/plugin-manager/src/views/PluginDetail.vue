@@ -186,6 +186,10 @@ let currentSurfaceLoadId = 0
 // 才到达，覆盖 hasStaticUI 导致 UI tab 显示状态错位。
 let currentStaticUiLoadId = 0
 const hasStaticUI = ref(false)
+// Keep a confirmed legacy UI relay mounted while this same plugin's surfaces
+// are refreshed (for example after a locale change), but never reuse it for a
+// different plugin while its /ui-info probe is still in flight.
+const staticUiPluginId = ref('')
 
 const plugin = computed(() => {
   return pluginStore.pluginsWithStatus.find(p => p.id === pluginId.value)
@@ -223,10 +227,11 @@ const displayedPanelSurfaces = computed(() => {
 })
 const hasStaticCompatPanel = computed(() => panelSurfaces.value.some((surface) => surface.legacy_static_compat))
 const hasDisplayablePanelSurface = computed(() => displayedPanelSurfaces.value.length > 0)
+const hasCurrentStaticUI = computed(() => hasStaticUI.value && staticUiPluginId.value === pluginId.value)
 // Preserve the legacy iframe only as a hidden message receiver when it is an
 // automatically injected compatibility surface alongside a newer declared UI.
-const needsLegacyStaticUiRelay = computed(() => hasStaticUI.value && hasStaticCompatPanel.value && availableDeclaredPanelSurfaces.value.length > 0)
-const showLegacyStaticUi = computed(() => hasStaticUI.value && !hasDisplayablePanelSurface.value)
+const needsLegacyStaticUiRelay = computed(() => hasCurrentStaticUI.value && hasStaticCompatPanel.value && availableDeclaredPanelSurfaces.value.length > 0)
+const showLegacyStaticUi = computed(() => hasCurrentStaticUI.value && !hasDisplayablePanelSurface.value)
 
 const isAdapter = computed(() => plugin.value?.type === 'adapter')
 
@@ -381,9 +386,9 @@ async function fetchSurfaces(): Promise<boolean> {
     surfaceWarnings.value = info.warnings
     if (hasDisplayablePanelSurface.value) {
       // Prefer the declared panel and invalidate a possible in-flight legacy
-      // static-UI probe from the previous plugin/page state.
+      // static-UI probe from the previous request. Keep an already-confirmed
+      // relay mounted for this plugin until the replacement probe completes.
       currentStaticUiLoadId += 1
-      hasStaticUI.value = false
     }
   } catch (caught: any) {
     if (loadId !== currentSurfaceLoadId || currentPluginId !== pluginId.value) return false
@@ -406,6 +411,7 @@ async function fetchStaticUI(): Promise<boolean> {
   // duplicate "界面" tab.
   if (hasDisplayablePanelSurface.value && !hasStaticCompatPanel.value) {
     hasStaticUI.value = false
+    staticUiPluginId.value = pluginId.value
     return true
   }
   const loadId = ++currentStaticUiLoadId
@@ -414,10 +420,12 @@ async function fetchStaticUI(): Promise<boolean> {
     const info = await get<{ has_ui: boolean }>(`/plugin/${encodeURIComponent(currentPluginId)}/ui-info`)
     if (loadId !== currentStaticUiLoadId || currentPluginId !== pluginId.value) return false
     hasStaticUI.value = info?.has_ui ?? false
+    staticUiPluginId.value = currentPluginId
     return true
   } catch {
     if (loadId !== currentStaticUiLoadId || currentPluginId !== pluginId.value) return false
     hasStaticUI.value = false
+    staticUiPluginId.value = currentPluginId
     return true
   }
 }

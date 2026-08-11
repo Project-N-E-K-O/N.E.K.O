@@ -1177,7 +1177,15 @@ def _add_surface_route_actions(
     plugin_meta: Mapping[str, object],
 ) -> None:
     surfaces, _warnings = _build_surfaces_sync(plugin_id, plugin_meta)
-    has_panel = any(surface.get("kind") == "panel" and surface.get("available") is not False for surface in surfaces)
+    # ``auto`` is accepted as a manifest placeholder, but the frontend has no
+    # renderer for it yet. Do not expose an Open Panel action that would only
+    # route the user back to Basic Info.
+    has_panel = any(
+        surface.get("kind") == "panel"
+        and surface.get("mode") != "auto"
+        and surface.get("available") is not False
+        for surface in surfaces
+    )
     has_guide = any(surface.get("kind") in {"guide", "docs"} and surface.get("available") is not False for surface in surfaces)
     safe_id = plugin_id.replace("/", "%2F")
     if has_panel and "open_panel" not in seen_ids:
