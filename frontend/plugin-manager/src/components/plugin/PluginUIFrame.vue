@@ -64,6 +64,9 @@ const uiCacheBust = ref(Date.now())
 const loading = ref(true)
 const error = ref<string | null>(null)
 const hasUI = ref(false)
+const iframeReady = ref(false)
+const pendingSurfaceMessages: unknown[] = []
+const maxPendingSurfaceMessages = 100
 let currentRequestId = 0
 const expectedOrigin = window.location.origin
 
@@ -88,6 +91,7 @@ async function checkUIAvailability() {
   
   loading.value = true
   error.value = null
+  iframeReady.value = false
   
   try {
     const info = await get(`/plugin/${encodeURIComponent(props.pluginId)}/ui-info`)
@@ -108,12 +112,15 @@ async function checkUIAvailability() {
 function onIframeLoad() {
   loading.value = false
   error.value = null
+  iframeReady.value = true
+  flushSurfaceMessages()
   emit('load')
 }
 
 function onIframeError() {
   loading.value = false
   error.value = t('plugins.ui.loadError')
+  iframeReady.value = false
   emit('error', error.value)
 }
 
@@ -122,6 +129,7 @@ async function reload() {
     // UI availability already confirmed (iframe load failed); skip network call
     error.value = null
     loading.value = true
+    iframeReady.value = false
     uiCacheBust.value = Date.now()
     iframeKey.value++
   } else {
@@ -168,9 +176,27 @@ function sendMessage(payload: any) {
   }, expectedOrigin)
 }
 
+function flushSurfaceMessages() {
+  const target = iframeRef.value?.contentWindow
+  if (!target) return
+  for (const message of pendingSurfaceMessages.splice(0)) {
+    target.postMessage(message, expectedOrigin)
+  }
+}
+
 function sendSurfaceMessage(message: unknown) {
-  if (!iframeRef.value?.contentWindow) return
-  iframeRef.value.contentWindow.postMessage(message, expectedOrigin)
+  const target = iframeRef.value?.contentWindow
+  if (target && iframeReady.value) {
+    target.postMessage(message, expectedOrigin)
+    return
+  }
+  // A hidden compatibility iframe may still be checking /ui-info while the
+  // hosted panel emits its initial state. Keep the newest bounded set until
+  // the iframe load event makes a target available.
+  if (pendingSurfaceMessages.length >= maxPendingSurfaceMessages) {
+    pendingSurfaceMessages.shift()
+  }
+  pendingSurfaceMessages.push(message)
 }
 
 defineExpose({
@@ -190,6 +216,8 @@ onUnmounted(() => {
 })
 
 watch(() => props.pluginId, () => {
+  pendingSurfaceMessages.length = 0
+  iframeReady.value = false
   uiCacheBust.value = Date.now()
   checkUIAvailability()
 })

@@ -5253,6 +5253,8 @@ def test_study_companion_ui_refactor_static_and_hosted_contracts() -> None:
     assert "payload.pluginId.trim()" in plugin_ui_frame
     assert "payload.kind.trim()" in plugin_ui_frame
     assert "sendSurfaceMessage" in plugin_ui_frame
+    assert "pendingSurfaceMessages" in plugin_ui_frame
+    assert "flushSurfaceMessages()" in plugin_ui_frame
     assert '@open-surface="openHostedSurfaceFromStaticUi"' in plugin_detail
     assert '@message="relayHostedSurfaceMessageToStaticUi"' in plugin_detail
     assert "studySurfaceRelayMessageTypes" not in plugin_detail
