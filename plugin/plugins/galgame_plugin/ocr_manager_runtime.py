@@ -620,6 +620,9 @@ class RuntimeMixin:
                 or getattr(self._capture_backend, "last_backend_detail", "")
                 or ""
             ),
+            capture_region_occluded=bool(
+                getattr(self, "_capture_region_occluded", False)
+            ),
             last_capture_image_hash=str(
                 self._last_capture_image_hash or self._runtime.last_capture_image_hash
             ),

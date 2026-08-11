@@ -134,6 +134,8 @@ class PollMixin:
         self._last_raw_ocr_text = ""
         self._ocr_capture_content_trusted = True
         self._ocr_capture_rejected_reason = ""
+        self._capture_region_occluded = False
+        self._capture_target_foreground = False
         self._last_observed_line = {}
         self._last_stable_line = {}
         self._last_capture_image_hash = ""
@@ -862,6 +864,10 @@ class PollMixin:
             self._record_capture_geometry(extraction)
             self._capture_backend_kind = extraction.capture_backend_kind
             self._capture_backend_detail = extraction.capture_backend_detail
+            self._capture_target_foreground = bool(extraction.target_foreground)
+            self._capture_region_occluded = bool(extraction.capture_region_occluded)
+            self._ocr_capture_content_trusted = bool(extraction.capture_content_trusted)
+            self._ocr_capture_rejected_reason = str(extraction.capture_untrusted_reason or "")
             active_backend = extraction.backend if extraction.backend.kind else backend_plan.primary
             backend_detail_override = extraction.backend_detail
             result.warnings.extend(extraction.warnings)
@@ -880,6 +886,18 @@ class PollMixin:
                 result.should_rescan = True
             if capture_error:
                 pass
+            elif not extraction.capture_content_trusted:
+                guard_blocked = True
+                self._record_rejected_ocr_text(
+                    extraction.text,
+                    reason=extraction.capture_untrusted_reason or "untrusted_capture_source",
+                    now=now,
+                    capture_backend_kind=extraction.capture_backend_kind,
+                )
+                result.warnings.append("ocr_reader ignored text from an untrusted capture source")
+                self._default_ocr_state.reset()
+                self._ocr_lang_detector.reset()
+                self._reset_aihong_menu_state()
             elif extraction.text and _looks_like_self_ui_text(extraction.text):
                 guard_blocked = True
                 self._record_rejected_ocr_text(

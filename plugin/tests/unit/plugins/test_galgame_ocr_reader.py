@@ -2042,6 +2042,11 @@ def test_ocr_writer_line_observed_includes_confidence_and_text_source(tmp_path: 
         ts="2026-04-29T03:00:00Z",
         ocr_confidence=0.87,
         text_source="bottom_region",
+        capture_backend_kind="printwindow",
+        target_foreground=True,
+        capture_region_occluded=True,
+        capture_content_trusted=True,
+        capture_untrusted_reason="",
     ) is True
 
     events = _read_events(bridge_root / writer.game_id / "events.jsonl")
@@ -2050,6 +2055,11 @@ def test_ocr_writer_line_observed_includes_confidence_and_text_source(tmp_path: 
     assert payload["ocr_confidence"] == pytest.approx(0.87)
     assert payload["speaker_confidence"] >= 0.9
     assert payload["text_source"] == "bottom_region"
+    assert payload["capture_backend_kind"] == "printwindow"
+    assert payload["target_foreground"] is True
+    assert payload["capture_region_occluded"] is True
+    assert payload["ocr_capture_content_trusted"] is True
+    assert payload["ocr_capture_rejected_reason"] == ""
 
 
 def test_ocr_choices_emit_does_not_fall_through_to_dialogue(tmp_path: Path) -> None:
@@ -3696,6 +3706,43 @@ def test_smart_capture_backend_windows_background_keeps_printwindow_only(
     assert printwindow.calls == 1
     assert dxcam.calls == 0
     assert backend.last_backend_kind == "printwindow"
+
+
+def test_smart_capture_backend_windows_occluded_foreground_uses_printwindow_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Backend:
+        def __init__(self, kind: str) -> None:
+            self.kind = kind
+            self.calls = 0
+
+        def is_available(self) -> bool:
+            return True
+
+        def capture_frame(self, target, profile):
+            self.calls += 1
+            return f"{self.kind}-frame"
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    backend = galgame_ocr_reader.Win32CaptureBackend(
+        selection="smart",
+        occlusion_checker=lambda _target, _profile: True,
+    )
+    printwindow = _Backend("printwindow")
+    dxcam = _Backend("dxcam")
+    backend._printwindow_backend = printwindow
+    backend._dxcam_backend = dxcam
+    backend._backends = [dxcam, _Backend("mss"), _Backend("pyautogui"), printwindow]
+
+    target = _window()[0]
+    target.is_foreground = True
+    frame = backend.capture_frame(target, galgame_ocr_reader.OcrCaptureProfile())
+
+    assert frame == "printwindow-frame"
+    assert printwindow.calls == 1
+    assert dxcam.calls == 0
+    assert backend.last_capture_region_occluded is True
+    assert backend.last_capture_content_trusted is True
 
 
 def test_dxcam_camera_creation_is_serialized(monkeypatch: pytest.MonkeyPatch) -> None:

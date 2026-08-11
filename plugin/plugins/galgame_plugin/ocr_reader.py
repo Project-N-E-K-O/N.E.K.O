@@ -220,6 +220,8 @@ class OcrReaderManager(
         self._last_rejected_capture_backend = ""
         self._ocr_capture_content_trusted = True
         self._ocr_capture_rejected_reason = ""
+        self._capture_region_occluded = False
+        self._capture_target_foreground = False
         self._last_observed_line: dict[str, Any] = {}
         self._last_stable_line: dict[str, Any] = {}
         self._last_capture_image_hash = ""

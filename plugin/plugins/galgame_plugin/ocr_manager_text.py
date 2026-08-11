@@ -744,6 +744,11 @@ class TextMixin:
                 ts=utc_now_iso(now),
                 ocr_confidence=ocr_confidence,
                 text_source=text_source,
+                capture_backend_kind=str(getattr(self, "_capture_backend_kind", "") or ""),
+                target_foreground=bool(getattr(self, "_capture_target_foreground", False)),
+                capture_region_occluded=bool(getattr(self, "_capture_region_occluded", False)),
+                capture_content_trusted=bool(getattr(self, "_ocr_capture_content_trusted", True)),
+                capture_untrusted_reason=str(getattr(self, "_ocr_capture_rejected_reason", "") or ""),
             ):
                 observed = self._line_payload_from_writer(stability="tentative")
                 self._last_observed_line = observed
@@ -788,6 +793,11 @@ class TextMixin:
             ts=utc_now_iso(now),
             ocr_confidence=ocr_confidence,
             text_source=text_source,
+            capture_backend_kind=str(getattr(self, "_capture_backend_kind", "") or ""),
+            target_foreground=bool(getattr(self, "_capture_target_foreground", False)),
+            capture_region_occluded=bool(getattr(self, "_capture_region_occluded", False)),
+            capture_content_trusted=bool(getattr(self, "_ocr_capture_content_trusted", True)),
+            capture_untrusted_reason=str(getattr(self, "_ocr_capture_rejected_reason", "") or ""),
         )
         if emitted:
             stable_line = self._line_payload_from_writer(stability="stable")
