@@ -75,6 +75,12 @@ def _origin_is_trusted(origin: str) -> bool:
     return host in _TRUSTED_ORIGIN_HOSTS
 
 
+def _client_is_loopback(request: Request) -> bool:
+    """客户端是否来自本机回环（127.0.0.1/::1/localhost）。"""
+    host = str(request.client.host or "") if request.client is not None else ""
+    return host in ("127.0.0.1", "::1", "localhost") or host.startswith("127.")
+
+
 def _parse_push_payload(body: bytes) -> dict:
     """POST /ui-api/push 入参解析：支持 {"type":..., "text":..., ...} 或纯文本。
 
@@ -338,7 +344,14 @@ async def plugin_ui_push(plugin_id: str, request: Request):
     返回 ``queued``：成功写入各客户端缓冲队列的数目（排队计数，非客户端实际送达确认）。
     配置了 ``NEKO_SSE_PUSH_TOKEN`` 时要求 ``Authorization: Bearer <token>``。
     """
-    # 鉴权：本机其他进程/本地网页可能调用本路由注入消息，配置共享密钥后强制校验
+    # 非回环部署（远程/容器访问，如 Compose 暴露）必须配置共享密钥；
+    # 本机回环无 token 时向后兼容
+    if not _client_is_loopback(request) and not _PUSH_TOKEN:
+        return JSONResponse(
+            {"ok": False, "error": "token required for non-loopback deployment"},
+            status_code=403,
+        )
+    # 鉴权：配置共享密钥后强制校验 Authorization: Bearer <token>
     if _PUSH_TOKEN:
         auth = request.headers.get("authorization", "")
         scheme, _, presented = auth.partition(" ")
