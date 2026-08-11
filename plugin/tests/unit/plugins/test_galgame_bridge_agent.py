@@ -3,6 +3,7 @@ from __future__ import annotations
 from _galgame_test_support import *
 
 from tests.fake_clock import patch_module_clock
+from utils.result_parser import parse_push_message_content
 
 @pytest.mark.plugin_unit
 def test_game_llm_agent_menu_stage_without_choices_is_choice_menu(tmp_path: Path) -> None:
@@ -1749,6 +1750,50 @@ async def test_game_llm_agent_push_includes_cross_scene_memory(tmp_path: Path) -
     assert "protects the promise" in content
     assert "betrayal clue" in content
     assert "current scene summary" in content
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_scene_summary_survives_host_push_truncation_with_cross_scene_memory(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    agent = GameLLMAgent(
+        plugin=plugin,
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    shared = _shared_state(mode="companion")
+    with plugin._state_lock:
+        plugin._state.character_mode = "off"
+        plugin._state.character_fixed_name = ""
+        plugin._state.cross_scene_memory = {
+            "characters": {
+                "Murasame": {
+                    "arc": "叢雨仍在追寻封印背后的真相，" * 40,
+                    "confidence": 0.8,
+                }
+            },
+            "plot_threads": [],
+        }
+
+    await agent._push_agent_message(
+        shared,
+        kind="scene_summary",
+        content="CURRENT OCR SCENE SUMMARY MUST SURVIVE",
+        scene_id="scene-b",
+        route_id="",
+    )
+
+    pushed_content = str(ctx.pushed_messages[-1]["content"])
+    host_visible_content = parse_push_message_content(pushed_content)
+
+    assert "======[角色身份]" not in pushed_content
+    assert "Cross-scene memory" in pushed_content
+    assert "CURRENT OCR SCENE SUMMARY MUST SURVIVE" in host_visible_content
 
 
 @pytest.mark.plugin_unit

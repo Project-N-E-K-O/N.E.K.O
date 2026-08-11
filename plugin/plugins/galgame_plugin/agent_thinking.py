@@ -96,6 +96,11 @@ class AgentThinkingMixin:
         rendered = _render_cross_scene_memory_for_push(memory, max_chars=360)
         if not rendered:
             return content
+        if kind == "scene_summary":
+            # Current OCR-backed facts must survive the host's per-message
+            # input cap; cross-scene memory is supporting context and can be
+            # truncated from the tail when the combined push is too large.
+            return f"{content}\n\nCross-scene memory (reference only):\n{rendered}"
         return f"Cross-scene memory (reference only):\n{rendered}\n\n{content}"
 
     def _maybe_update_cross_scene_memory(
