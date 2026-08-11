@@ -273,6 +273,7 @@ const elements = {{
   ocrProfileGamePresetSelect: {{ value: 'senren_banka' }},
   ocrProfileProcessInput: {{ value: 'OtherGame.exe' }},
   ocrProfileStageSelect: {{ value: 'default' }},
+  ocrProfileSaveScopeSelect: {{ value: 'window_bucket' }},
 }};
 let renderedStatus = null;
 const selectorContext = {{
@@ -281,7 +282,14 @@ const selectorContext = {{
       return elements[id] || null;
     }},
   }},
-  latestStatus: null,
+  latestStatus: {{
+    ocr_reader_runtime: {{
+      process_name: 'OtherGame.exe',
+      width: 1280,
+      height: 720,
+    }},
+  }},
+  resolveRuntimeDefaultSaveScope: context.resolveRuntimeDefaultSaveScope,
   renderOcrProfile(statusValue) {{
     renderedStatus = statusValue;
   }},
@@ -290,11 +298,29 @@ vm.runInNewContext({json.dumps(constants + selector)}, selectorContext);
 selectorContext.selectOcrGameCapturePreset();
 assert.equal(elements.ocrProfileProcessInput.value, 'SenrenBanka.exe');
 assert.equal(elements.ocrProfileStageSelect.value, 'dialogue_stage');
+assert.equal(elements.ocrProfileSaveScopeSelect.value, 'process_fallback');
 assert.ok(renderedStatus);
 assert.deepEqual(
   JSON.parse(JSON.stringify(renderedStatus)),
-  {{ ocr_reader_runtime: {{}} }}
+  {{
+    ocr_reader_runtime: {{
+      process_name: 'OtherGame.exe',
+      width: 1280,
+      height: 720,
+    }},
+  }}
 );
+
+elements.ocrProfileSaveScopeSelect.value = 'window_bucket';
+selectorContext.latestStatus = {{
+  ocr_reader_runtime: {{
+    process_name: 'SenrenBanka.exe',
+    width: 1920,
+    height: 1080,
+  }},
+}};
+selectorContext.selectOcrGameCapturePreset();
+assert.equal(elements.ocrProfileSaveScopeSelect.value, 'window_bucket');
 """
     run_node_script(node, script, check=True)
 

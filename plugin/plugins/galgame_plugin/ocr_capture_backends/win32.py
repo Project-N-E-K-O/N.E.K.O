@@ -349,21 +349,22 @@ class Win32CaptureBackend:
 
         errors: list[str] = []
         capture_region_occluded = False
-        explicit_pixel_selection = self.selection in {
+        pixel_only_selection = self.selection in {
+            _CAPTURE_BACKEND_AUTO,
             _CAPTURE_BACKEND_DXCAM,
             _CAPTURE_BACKEND_MSS,
             _CAPTURE_BACKEND_PYAUTOGUI,
         }
         should_check_occlusion = bool(getattr(target, "is_foreground", False)) and (
             self.selection == _CAPTURE_BACKEND_SMART
-            or (is_windows() and explicit_pixel_selection)
+            or (is_windows() and pixel_only_selection)
         )
         if should_check_occlusion:
             try:
                 capture_region_occluded = bool(self._occlusion_checker(target, profile))
             except Exception:
                 capture_region_occluded = True
-        if capture_region_occluded and explicit_pixel_selection:
+        if capture_region_occluded and pixel_only_selection:
             untrusted_reason = "capture_region_occluded_by_other_window"
             self._set_last_backend(kind=self.selection, detail=untrusted_reason)
             self._set_last_capture_trust(

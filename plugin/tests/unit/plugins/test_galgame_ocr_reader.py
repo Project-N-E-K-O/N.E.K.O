@@ -1494,6 +1494,41 @@ def test_ocr_reader_cnn_title_narration_requires_repeat_and_timeout(
     assert manager._title_narration_streak == 0
 
 
+def test_ocr_reader_cnn_title_narration_accepts_ascii_strong_punctuation(
+    tmp_path: Path,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=_make_config(bridge_root),
+        time_fn=lambda: 3000.0,
+        platform_fn=lambda: True,
+        window_scanner=_window,
+        capture_backend=_FakeCaptureBackend(),
+        ocr_backend=_FakeOcrBackend(),
+    )
+    classification = ScreenClassification(
+        screen_type=OCR_CAPTURE_PROFILE_STAGE_TITLE,
+        confidence=0.97,
+        debug={"source": "cnn_primary", "label": "title_screen"},
+    )
+    manager._known_screen_skip_bypass_type = OCR_CAPTURE_PROFILE_STAGE_TITLE
+    manager._known_screen_skip_bypass_until = 3001.0
+
+    assert manager._should_skip_dialogue_for_screen_classification(
+        classification,
+        raw_text="What are you doing?",
+    ) is True
+    assert manager._should_skip_dialogue_for_screen_classification(
+        classification,
+        raw_text="What are you doing?",
+    ) is False
+    assert classification.debug["skip_dialogue_bypass_reason"] == (
+        "stable_title_narration_timeout_rescan"
+    )
+
+
 @pytest.mark.parametrize(
     "raw_text",
     [

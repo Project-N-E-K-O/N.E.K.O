@@ -366,7 +366,7 @@ def test_smart_foreground_capture_error_reroutes_to_printwindow(
     assert backend.last_capture_content_trusted is True
 
 
-@pytest.mark.parametrize("selection", ["dxcam", "mss", "pyautogui"])
+@pytest.mark.parametrize("selection", ["auto", "dxcam", "mss", "pyautogui"])
 def test_explicit_pixel_backend_rejects_occluded_capture_region(
     monkeypatch: pytest.MonkeyPatch,
     selection: str,

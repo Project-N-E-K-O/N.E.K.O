@@ -123,7 +123,7 @@ def _foreground_window_handle() -> int:
 
 
 _TITLE_DIALOGUE_CLOSING_QUOTE = {"「": "」", "『": "』", "“": "”"}
-_TITLE_DIALOGUE_SENTENCE_PUNCTUATION = frozenset("。！？…")
+_TITLE_DIALOGUE_SENTENCE_PUNCTUATION = frozenset("。！？…!?")
 _TITLE_DIALOGUE_GAMEPLAY_OVERLAY_RE = re.compile(
     r"(?:热身时间|起始点|解决一名敌人|获得\s*\d+\s*点得分)",
     re.IGNORECASE,

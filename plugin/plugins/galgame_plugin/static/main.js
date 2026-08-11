@@ -6036,11 +6036,21 @@ function selectOcrGameCapturePreset() {
   if (selectedGamePreset) {
     const processInput = document.getElementById('ocrProfileProcessInput');
     const stageSelect = document.getElementById('ocrProfileStageSelect');
+    const saveScopeSelect = document.getElementById('ocrProfileSaveScopeSelect');
     if (processInput) {
       processInput.value = selectedGamePreset.process_name;
     }
     if (stageSelect) {
       stageSelect.value = selectedGamePreset.default_stage;
+    }
+    if (
+      saveScopeSelect
+      && resolveRuntimeDefaultSaveScope(
+        latestStatus || {},
+        selectedGamePreset.process_name,
+      ) === 'process_fallback'
+    ) {
+      saveScopeSelect.value = 'process_fallback';
     }
   }
   renderOcrProfile(latestStatus || { ocr_reader_runtime: {} });
