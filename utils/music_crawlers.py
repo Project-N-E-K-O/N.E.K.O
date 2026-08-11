@@ -2577,50 +2577,66 @@ async def fetch_music_content(
         # --- 组建第二梯队（兜底截断逻辑） ---
         if not all_results:
             logger.info("[智能调度] 第一梯队未命中，触发第二级兜底引擎...")
-            fallback_tasks = []
-            
             # 不要在这里将关键词篡改为 "relax"
             # 必须透传原始 keyword，这样搜不到才会真实返回空，让路由层去触发真正的随机逻辑
             # netease 不重试（cookies 失败重试也没意义），直接换其他平台兜底
-            # QQ 音乐是中文曲库的首个备用源；没有可播放链接的版权曲会由
-            # crawler 自行过滤，不会阻塞后续开放音源。
             qqmusic = all_crawlers.get('qqmusic')
             if qqmusic:
-                fallback_tasks.append(qqmusic.search(keyword, limit))
-            fallback_tasks.append(all_crawlers['fma'].search(keyword, limit))
-            fallback_tasks.append(all_crawlers['soundcloud'].search(keyword, limit))
-            fallback_tasks.append(all_crawlers['bandcamp'].search(keyword, limit))
-            
-            # 兜底梯队也使用竞速模式
-            fallback_task_objs = [asyncio.create_task(coro) for coro in fallback_tasks]
-            # 【统一命名】将循环变量改为 completed_task，与主循环保持一致
-            for completed_task in asyncio.as_completed(fallback_task_objs):
+                # QQ 音乐是中文曲库的首个备用源。先单独等待，避免开放音源
+                # 的竞速结果抢先取消 QQ 请求；没有可播放链接则继续下一级。
                 try:
-                    res = await completed_task
-                    if isinstance(res, list) and res:
-                        res = _filter_requested_music_results(
-                            res,
+                    qq_results = await qqmusic.search(keyword, limit)
+                    if isinstance(qq_results, list) and qq_results:
+                        qq_results = _filter_requested_music_results(
+                            qq_results,
                             requested_song=requested_song,
                             requested_artist=requested_artist,
                         )
-                    if isinstance(res, list) and res:
-                        all_results.extend(res)
-                        logger.info("[智能调度] 兜底源命中，取消其他任务")
-                        # 取消剩余任务
+                    if isinstance(qq_results, list) and qq_results:
+                        all_results.extend(qq_results)
+                        logger.info("[智能调度] QQ 音乐备用源命中")
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    logger.warning(f"[智能调度] QQ 音乐备用源异常: {e}")
+
+            if not all_results:
+                fallback_tasks = [
+                    all_crawlers['fma'].search(keyword, limit),
+                    all_crawlers['soundcloud'].search(keyword, limit),
+                    all_crawlers['bandcamp'].search(keyword, limit),
+                ]
+
+            # 兜底梯队也使用竞速模式
+                fallback_task_objs = [asyncio.create_task(coro) for coro in fallback_tasks]
+                # 【统一命名】将循环变量改为 completed_task，与主循环保持一致
+                for completed_task in asyncio.as_completed(fallback_task_objs):
+                    try:
+                        res = await completed_task
+                        if isinstance(res, list) and res:
+                            res = _filter_requested_music_results(
+                                res,
+                                requested_song=requested_song,
+                                requested_artist=requested_artist,
+                            )
+                        if isinstance(res, list) and res:
+                            all_results.extend(res)
+                            logger.info("[智能调度] 兜底源命中，取消其他任务")
+                            # 取消剩余任务
+                            for task in fallback_task_objs:
+                                if not task.done():
+                                    task.cancel()
+                            # 等待取消完成
+                            await asyncio.gather(*fallback_task_objs, return_exceptions=True)
+                            break
+                    except asyncio.CancelledError:
                         for task in fallback_task_objs:
                             if not task.done():
                                 task.cancel()
-                        # 等待取消完成
                         await asyncio.gather(*fallback_task_objs, return_exceptions=True)
-                        break
-                except asyncio.CancelledError:
-                    for task in fallback_task_objs:
-                        if not task.done():
-                            task.cancel()
-                    await asyncio.gather(*fallback_task_objs, return_exceptions=True)
-                    raise
-                except Exception as e:
-                    logger.warning(f"[智能调度] 兜底源异常: {e}")
+                        raise
+                    except Exception as e:
+                        logger.warning(f"[智能调度] 兜底源异常: {e}")
 
     elif not all_results and not strict_request:
         # 场景 B: 纯背景音乐推荐 -> 并发盲抽

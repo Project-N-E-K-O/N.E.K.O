@@ -35,6 +35,13 @@ def test_qqmusic_credential_tab_and_required_fields_are_present():
     assert "key: 'uin'" in script
     assert "key: 'qqmusic_key'" in script
 
+    for locale_path in Path("static/locales").glob("*.json"):
+        cookies_login = json.loads(locale_path.read_text(encoding="utf-8"))["cookiesLogin"]
+        assert cookies_login["qqmusic"].strip(), locale_path
+        assert cookies_login["instructions"]["qqmusic"].strip(), locale_path
+        assert cookies_login["fields"]["qqmusicUin"]["label"] == "uin", locale_path
+        assert cookies_login["fields"]["qqmusicKey"]["label"] == "qqmusic_key", locale_path
+
     validate_platform_fields("qqmusic", {"uin": "o123", "qqmusic_key": "secret"})
     with pytest.raises(HTTPException, match="qqmusic_key"):
         validate_platform_fields("qqmusic", {"uin": "o123"})

@@ -39,11 +39,12 @@ const PLATFORM_CONFIG_DATA = {
     },
     'qqmusic': {
         name: 'QQ音乐',
+        nameKey: 'cookiesLogin.qqmusic',
         theme: '#31c27c',
-        instruction: '<b>目标：</b> 请前往 <code>y.qq.com</code> 获取这些 Cookies。',
+        instructionKey: 'cookiesLogin.instructions.qqmusic',
         fields: [
-            { key: 'uin', label: 'uin', desc: 'QQ 账号标识（Cookie 中通常以 o 加数字开头）', required: true },
-            { key: 'qqmusic_key', label: 'qqmusic_key', desc: 'QQ 音乐登录凭证', required: true }
+            { key: 'uin', labelKey: 'cookiesLogin.fields.qqmusicUin.label', descKey: 'cookiesLogin.fields.qqmusicUin.desc', required: true },
+            { key: 'qqmusic_key', labelKey: 'cookiesLogin.fields.qqmusicKey.label', descKey: 'cookiesLogin.fields.qqmusicKey.desc', required: true }
         ]
     },
     'bilibili': {

@@ -3990,6 +3990,7 @@
         "twitter": "Twitter/X",
         "reddit": "Reddit",
         "netease": "网易雲音楽",
+        "qqmusic": "QQミュージック",
         "saveConfig": "設定を保存",
         "encryptStorage": "ローカルファイルに安全に暗号化保存",
         "localMonitoring": "ローカルステータス監視",
@@ -4028,7 +4029,8 @@
             "weibo": "<b>対象：</b> <code>m.weibo.cn</code> にアクセスして Cookie を取得してください。",
             "twitter": "<b>対象：</b> <code>x.com</code> にアクセスして Cookie を取得してください。",
             "reddit": "<b>対象：</b> <code>reddit.com</code> にアクセスして Cookie を取得してください。",
-            "netease": "<b>対象：</b> <code>music.163.com</code> にアクセスして Cookie を取得してください。"
+            "netease": "<b>対象：</b> <code>music.163.com</code> にアクセスして Cookie を取得してください。",
+            "qqmusic": "<b>対象：</b> <code>y.qq.com</code> にアクセスして Cookie を取得してください。"
         },
         "guide": {
             "title": "初心者向け共通ガイド",
@@ -4143,6 +4145,14 @@
             "MUSIC_U": {
                 "label": "MUSIC_U",
                 "desc": "コアIDクレデンシャル (必須)"
+            },
+            "qqmusicUin": {
+                "label": "uin",
+                "desc": "QQアカウント識別子（通常は o に数字が続きます）"
+            },
+            "qqmusicKey": {
+                "label": "qqmusic_key",
+                "desc": "QQ Music のログイン認証情報（必須）"
             },
             "NMTID": {
                 "label": "NMTID",

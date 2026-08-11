@@ -1685,6 +1685,52 @@ async def test_fetch_music_content_orchestration():
 
 
 @pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fetch_music_content_tries_qqmusic_before_open_fallbacks():
+    """QQ Music is the first Chinese fallback, not one more race participant."""
+    mock_netease = MagicMock()
+    mock_netease._cookie_invalid = False
+    mock_netease.search = AsyncMock(return_value=[])
+    mock_qqmusic = MagicMock()
+    mock_qqmusic.search = AsyncMock(return_value=[{
+        'name': 'QQ Fallback',
+        'artist': 'QQ Artist',
+        'url': 'https://dl.stream.qqmusic.qq.com/free-track.m4a',
+        'duration': 180,
+    }])
+    mock_fma = MagicMock()
+    mock_fma.search = AsyncMock(return_value=[])
+    mock_soundcloud = MagicMock()
+    mock_soundcloud.search = AsyncMock(return_value=[])
+    mock_bandcamp = MagicMock()
+    mock_bandcamp.search = AsyncMock(return_value=[])
+
+    with (
+        patch(
+            'utils.music_crawlers.get_music_crawlers',
+            return_value={
+                'netease': mock_netease,
+                'qqmusic': mock_qqmusic,
+                'fma': mock_fma,
+                'soundcloud': mock_soundcloud,
+                'bandcamp': mock_bandcamp,
+            },
+        ),
+        patch('utils.music_crawlers.is_china_region', return_value=True),
+    ):
+        response = await fetch_music_content(
+            'fallback query', limit=1, bypass_recommendation_dedupe=True,
+        )
+
+    assert response['success'] is True
+    assert response['data'][0]['name'] == 'QQ Fallback'
+    mock_qqmusic.search.assert_awaited_once_with('fallback query', 1)
+    mock_fma.search.assert_not_awaited()
+    mock_soundcloud.search.assert_not_awaited()
+    mock_bandcamp.search.assert_not_awaited()
+
+
+@pytest.mark.unit
 def test_background_music_samples_distinct_providers():
     style_options = [
         ('netease', '华语'),
