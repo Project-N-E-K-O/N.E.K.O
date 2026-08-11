@@ -600,7 +600,7 @@ async def test_game_llm_agent_passes_cat_opinions_to_choice_planning(
 
 
 @pytest.mark.plugin_unit
-def test_build_suggest_context_includes_cross_scene_memory() -> None:
+def test_build_suggest_context_ignores_cross_scene_memory() -> None:
     shared = _shared_state(
         snapshot=_session_state(
             speaker="Yukino",
@@ -633,17 +633,13 @@ def test_build_suggest_context_includes_cross_scene_memory() -> None:
 
     context = build_suggest_context(shared)
 
-    assert "Yukino" in context["cross_scene_memory_context"]
-    assert "keeps the oath" in context["cross_scene_memory_context"]
-    assert "betrayal clue" in context["cross_scene_memory_context"]
-    assert context["cross_scene_memory"]["characters"]["Yukino"]["arc"] == (
-        "keeps the oath from scene-a"
-    )
+    assert "cross_scene_memory" not in context
+    assert "cross_scene_memory_context" not in context
 
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
-async def test_game_llm_agent_passes_cross_scene_memory_to_choice_planning(
+async def test_game_llm_agent_ignores_cross_scene_memory_for_choice_planning(
     tmp_path: Path,
 ) -> None:
     plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
@@ -670,24 +666,9 @@ async def test_game_llm_agent_passes_cross_scene_memory_to_choice_planning(
             is_menu_open=True,
         ),
     )
-    with plugin._state_lock:
-        plugin._state.cross_scene_memory = {
-            "characters": {
-                "Yukino": {
-                    "arc": "trusts the right path after scene-a",
-                    "current_emotion": "quiet resolve",
-                    "confidence": 0.8,
-                }
-            },
-            "plot_threads": [
-                {
-                    "thread": "route-secret",
-                    "status": "betrayal clue remains unresolved",
-                    "key_scenes": ["scene-a"],
-                    "confidence": 0.7,
-                }
-            ],
-        }
+    shared["cross_scene_memory"] = {
+        "characters": {"Yukino": {"arc": "trusts the right path after scene-a"}}
+    }
     agent._planning_choice_signature = (
         ("choice-1", "left", 0),
         ("choice-2", "right", 1),
@@ -695,13 +676,8 @@ async def test_game_llm_agent_passes_cross_scene_memory_to_choice_planning(
 
     await agent._run_choice_planning_inline(shared, context={}, now=time.monotonic())
 
-    assert "cross_scene_memory" not in shared
-    assert "trusts the right path" in fake_gateway.suggest_calls[-1][
-        "cross_scene_memory_context"
-    ]
-    assert fake_gateway.suggest_calls[-1]["cross_scene_memory"]["characters"][
-        "Yukino"
-    ]["current_emotion"] == "quiet resolve"
+    assert "cross_scene_memory" not in fake_gateway.suggest_calls[-1]
+    assert "cross_scene_memory_context" not in fake_gateway.suggest_calls[-1]
 
 
 @pytest.mark.asyncio
@@ -1707,7 +1683,7 @@ async def test_game_llm_agent_outbound_message_queue_and_ack(tmp_path: Path) -> 
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
-async def test_game_llm_agent_push_includes_cross_scene_memory(tmp_path: Path) -> None:
+async def test_game_llm_agent_push_ignores_cross_scene_memory(tmp_path: Path) -> None:
     plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
     ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
     plugin = GalgameBridgePlugin(ctx)
@@ -1718,24 +1694,9 @@ async def test_game_llm_agent_push_includes_cross_scene_memory(tmp_path: Path) -
         host_adapter=_FakeHostAdapter(),
     )
     shared = _shared_state(mode="companion")
-    with plugin._state_lock:
-        plugin._state.cross_scene_memory = {
-            "characters": {
-                "Yukino": {
-                    "arc": "protects the promise from scene-a",
-                    "current_emotion": "watchful",
-                    "confidence": 0.8,
-                }
-            },
-            "plot_threads": [
-                {
-                    "thread": "route-secret",
-                    "status": "betrayal clue remains unresolved",
-                    "key_scenes": ["scene-a"],
-                    "confidence": 0.7,
-                }
-            ],
-        }
+    shared["cross_scene_memory"] = {
+        "characters": {"Yukino": {"arc": "protects the promise from scene-a"}}
+    }
 
     await agent._push_agent_message(
         shared,
@@ -1746,15 +1707,14 @@ async def test_game_llm_agent_push_includes_cross_scene_memory(tmp_path: Path) -
     )
 
     content = str(ctx.pushed_messages[-1]["content"])
-    assert "Cross-scene memory" in content
-    assert "protects the promise" in content
-    assert "betrayal clue" in content
+    assert "Cross-scene memory" not in content
+    assert "protects the promise" not in content
     assert "current scene summary" in content
 
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
-async def test_scene_summary_survives_host_push_truncation_with_cross_scene_memory(
+async def test_scene_summary_ignores_legacy_memory_input(
     tmp_path: Path,
 ) -> None:
     plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
@@ -1770,15 +1730,9 @@ async def test_scene_summary_survives_host_push_truncation_with_cross_scene_memo
     with plugin._state_lock:
         plugin._state.character_mode = "off"
         plugin._state.character_fixed_name = ""
-        plugin._state.cross_scene_memory = {
-            "characters": {
-                "Murasame": {
-                    "arc": "叢雨仍在追寻封印背后的真相，" * 40,
-                    "confidence": 0.8,
-                }
-            },
-            "plot_threads": [],
-        }
+    shared["cross_scene_memory"] = {
+        "characters": {"Murasame": {"arc": "叢雨仍在追寻封印背后的真相，" * 40}}
+    }
 
     await agent._push_agent_message(
         shared,
@@ -1792,7 +1746,7 @@ async def test_scene_summary_survives_host_push_truncation_with_cross_scene_memo
     host_visible_content = parse_push_message_content(pushed_content)
 
     assert "======[角色身份]" not in pushed_content
-    assert "Cross-scene memory" in pushed_content
+    assert "Cross-scene memory" not in pushed_content
     assert "CURRENT OCR SCENE SUMMARY MUST SURVIVE" in host_visible_content
 
 

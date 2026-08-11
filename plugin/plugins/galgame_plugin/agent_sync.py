@@ -360,9 +360,6 @@ class AgentSyncMixin:
         # host-play-mode plan, step 12: when fixed character mode is on, prepend
         # the catgirl-facing character anchor so every push is self-contained
         # (catgirl never needs prior pushes to make sense of the current one).
-        content = self._maybe_augment_with_cross_scene_memory(
-            shared, content, kind=kind
-        )
         content = self._maybe_augment_with_character_anchor(
             shared, content, kind=kind
         )

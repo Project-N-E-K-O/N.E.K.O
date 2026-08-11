@@ -25,7 +25,6 @@ from ..models import (
     STORE_CHARACTER_PROFILE_VERSION,
     STORE_CHARACTER_PROFILES,
     STORE_CONTEXT_SNAPSHOT,
-    STORE_CROSS_SCENE_MEMORY,
     STORE_DEDUPE_WINDOW,
     STORE_EVENTS_BYTE_OFFSET,
     STORE_EVENTS_FILE_SIZE,
@@ -59,6 +58,8 @@ from ..models import (
     parse_ocr_capture_profile_bucket_key,
     _RAPIDOCR_OCR_VERSIONS,
 )
+
+_LEGACY_CROSS_SCENE_MEMORY_KEY = "cross_scene_memory"
 
 
 class GalgameStore:
@@ -618,6 +619,11 @@ class GalgameStore:
             self._load_values(force=True, locked=True)
             values = json_copy(self._values)
 
+        legacy_cross_scene_memory = values.get(_LEGACY_CROSS_SCENE_MEMORY_KEY)
+        if legacy_cross_scene_memory not in ({}, None):
+            self._write(_LEGACY_CROSS_SCENE_MEMORY_KEY, {})
+            warnings.append("legacy cross_scene_memory cleared")
+
         def read(key: str, default: Any) -> Any:
             return values.get(key, default)
 
@@ -728,10 +734,6 @@ class GalgameStore:
             STORE_CHARACTER_PROFILE_VERSION: character_profile_version,
             STORE_CHARACTER_MODE: character_mode,
             STORE_CHARACTER_FIXED_NAME: character_fixed_name,
-            STORE_CROSS_SCENE_MEMORY: read_dict_store_value(
-                STORE_CROSS_SCENE_MEMORY,
-                "cross_scene_memory",
-            ),
             STORE_CHARACTER_RUNTIME_STATE: read_dict_store_value(
                 STORE_CHARACTER_RUNTIME_STATE,
                 "character_runtime_state",

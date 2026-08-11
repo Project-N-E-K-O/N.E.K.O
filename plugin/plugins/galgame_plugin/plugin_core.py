@@ -76,7 +76,6 @@ from .models import (
     STORE_CHARACTER_PROFILE_VERSION,
     STORE_CHARACTER_PROFILES,
     STORE_DEDUPE_WINDOW,
-    STORE_CROSS_SCENE_MEMORY,
     STORE_EVENTS_BYTE_OFFSET,
     STORE_EVENTS_FILE_SIZE,
     STORE_LAST_ERROR,
@@ -653,7 +652,6 @@ class GalgamePlugin(
                 "character_mode": state.character_mode,
                 "character_fixed_name": state.character_fixed_name,
                 "character_mode_stale": state.character_mode_stale,
-                "cross_scene_memory": dict(state.cross_scene_memory),
                 "character_runtime_state": dict(state.character_runtime_state),
                 "last_push_seq": state.last_push_seq,
                 "plugin_error": state.plugin_error,
@@ -709,7 +707,6 @@ class GalgamePlugin(
             "character_mode": raw["character_mode"],
             "character_fixed_name": raw["character_fixed_name"],
             "character_mode_stale": raw["character_mode_stale"],
-            "cross_scene_memory": json_copy(raw["cross_scene_memory"]),
             "character_runtime_state": json_copy(raw["character_runtime_state"]),
             "last_push_seq": raw["last_push_seq"],
             "plugin_error": raw["plugin_error"],
@@ -1366,7 +1363,6 @@ class GalgamePlugin(
         return runtime
 
     def _commit_state(self, payload: dict[str, Any]) -> None:
-        cross_scene_memory_to_persist: dict[str, Any] | None = None
         character_runtime_state_to_persist: dict[str, Any] | None = None
         copy_json = _package_json_copy
         with self._state_lock:
@@ -1454,15 +1450,6 @@ class GalgamePlugin(
                 "character_mode_stale",
                 bool(payload.get("character_mode_stale", state.character_mode_stale)),
             )
-            if not live_changed_since_snapshot("cross_scene_memory"):
-                cross_scene_memory_value = payload.get(
-                    "cross_scene_memory",
-                    state.cross_scene_memory,
-                )
-                if state.cross_scene_memory != cross_scene_memory_value:
-                    cross_scene_memory_to_persist = copy_json(cross_scene_memory_value)
-                    state.cross_scene_memory = copy_json(cross_scene_memory_to_persist)
-                    changed = True
             if not live_changed_since_snapshot("character_runtime_state"):
                 character_runtime_state_value = payload.get(
                     "character_runtime_state",
@@ -1544,18 +1531,6 @@ class GalgamePlugin(
             if changed:
                 self._state_dirty = True
                 self._cached_snapshot = None
-        if cross_scene_memory_to_persist is not None:
-            try:
-                self._persist.persist_config_override(
-                    STORE_CROSS_SCENE_MEMORY,
-                    cross_scene_memory_to_persist,
-                )
-            except Exception:  # noqa: BLE001
-                self.logger.warning(
-                    "failed to persist galgame strategy memory state key=%s",
-                    STORE_CROSS_SCENE_MEMORY,
-                    exc_info=True,
-                )
         if character_runtime_state_to_persist is not None:
             try:
                 self._persist.persist_config_override(
@@ -2435,7 +2410,6 @@ class GalgamePlugin(
             self._state.character_fixed_name = str(
                 restored.get(STORE_CHARACTER_FIXED_NAME, "")
             )
-            self._state.cross_scene_memory = json_copy(restored.get(STORE_CROSS_SCENE_MEMORY, {}))
             self._state.character_runtime_state = json_copy(
                 restored.get(STORE_CHARACTER_RUNTIME_STATE, {})
             )
@@ -4189,7 +4163,6 @@ class GalgamePlugin(
             "character_fixed_name": str(local.get("character_fixed_name") or ""),
             "character_profiles": json_copy(local.get("character_profiles") or {}),
             "character_runtime_state": json_copy(local.get("character_runtime_state") or {}),
-            "cross_scene_memory": json_copy(local.get("cross_scene_memory") or {}),
             "last_push_seq": int(local.get("last_push_seq") or 0),
             "ocr_capture_profiles": json_copy(local.get("ocr_capture_profiles") or {}),
             "ocr_window_target": json_copy(local.get("ocr_window_target") or {}),

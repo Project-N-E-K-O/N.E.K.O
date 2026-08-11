@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import threading
 import time
@@ -12,7 +13,6 @@ from plugin.plugins.galgame_plugin.models import (
     STORE_CHARACTER_PROFILE_VERSION,
     STORE_CHARACTER_PROFILES,
     STORE_CONTEXT_SNAPSHOT,
-    STORE_CROSS_SCENE_MEMORY,
     STORE_CHARACTER_RUNTIME_STATE,
     STORE_KEYS,
     STORE_LLM_VISION_ENABLED,
@@ -284,26 +284,28 @@ def test_galgame_store_restores_host_play_mode_values(tmp_path: Path) -> None:
 
     profile = {"叢雨": {"identity": "刀灵"}}
     runtime = {"叢雨": {"current_emotion": "平静"}}
-    memory = {"plot_threads": [{"thread": "intro"}]}
+    legacy_memory = {"plot_threads": [{"thread": "intro"}]}
     for key, value in {
         STORE_CHARACTER_PROFILES: profile,
         STORE_CHARACTER_PROFILE_VERSION: "2026-05-18",
         STORE_CHARACTER_MODE: "fixed",
         STORE_CHARACTER_FIXED_NAME: "叢雨",
-        STORE_CROSS_SCENE_MEMORY: memory,
+        "cross_scene_memory": legacy_memory,
         STORE_CHARACTER_RUNTIME_STATE: runtime,
     }.items():
         store.persist_config_override(key, value)
 
     restored, warnings = store.load()
 
-    assert warnings == []
+    assert any("cross_scene_memory" in warning for warning in warnings)
     assert restored[STORE_CHARACTER_PROFILES] == profile
     assert restored[STORE_CHARACTER_PROFILE_VERSION] == "2026-05-18"
     assert restored[STORE_CHARACTER_MODE] == "fixed"
     assert restored[STORE_CHARACTER_FIXED_NAME] == "叢雨"
-    assert restored[STORE_CROSS_SCENE_MEMORY] == memory
+    assert "cross_scene_memory" not in restored
     assert restored[STORE_CHARACTER_RUNTIME_STATE] == runtime
+    persisted = json.loads(_store_path(tmp_path).read_text(encoding="utf-8"))
+    assert persisted["cross_scene_memory"] == {}
 
 
 def test_galgame_store_rejects_invalid_host_play_mode_values(tmp_path: Path) -> None:
@@ -313,7 +315,7 @@ def test_galgame_store_rejects_invalid_host_play_mode_values(tmp_path: Path) -> 
         STORE_CHARACTER_PROFILE_VERSION: 123,
         STORE_CHARACTER_MODE: "dynamic",
         STORE_CHARACTER_FIXED_NAME: [],
-        STORE_CROSS_SCENE_MEMORY: [],
+        "cross_scene_memory": [],
         STORE_CHARACTER_RUNTIME_STATE: [],
     }.items():
         store.persist_config_override(key, value)
@@ -324,7 +326,7 @@ def test_galgame_store_rejects_invalid_host_play_mode_values(tmp_path: Path) -> 
     assert restored[STORE_CHARACTER_PROFILE_VERSION] == ""
     assert restored[STORE_CHARACTER_MODE] == "off"
     assert restored[STORE_CHARACTER_FIXED_NAME] == ""
-    assert restored[STORE_CROSS_SCENE_MEMORY] == {}
+    assert "cross_scene_memory" not in restored
     assert restored[STORE_CHARACTER_RUNTIME_STATE] == {}
     assert any("character_mode" in warning for warning in warnings)
 
@@ -335,10 +337,10 @@ def test_galgame_store_keys_include_host_play_mode_keys() -> None:
         STORE_CHARACTER_PROFILE_VERSION,
         STORE_CHARACTER_MODE,
         STORE_CHARACTER_FIXED_NAME,
-        STORE_CROSS_SCENE_MEMORY,
         STORE_CHARACTER_RUNTIME_STATE,
         STORE_RAPIDOCR_OCR_VERSION,
     }.issubset(set(STORE_KEYS))
+    assert "cross_scene_memory" not in STORE_KEYS
 
 
 def test_galgame_snapshot_state_redacts_context_snapshot_by_default() -> None:
@@ -394,7 +396,6 @@ def test_galgame_snapshot_state_redacts_context_snapshot_by_default() -> None:
             character_mode="off",
             character_fixed_name="",
             character_mode_stale=False,
-            cross_scene_memory={},
             character_runtime_state={},
             last_push_seq=0,
             plugin_error="",

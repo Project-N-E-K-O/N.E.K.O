@@ -6,10 +6,6 @@ import re
 from typing import Any
 
 from ..context_tokens import count_tokens_heuristic
-from ..cross_scene_memory import (
-    render_for_push as _render_cross_scene_memory_for_push,
-    sanitize_memory as _cross_scene_sanitize,
-)
 from ..models import (
     DATA_SOURCE_BRIDGE_SDK,
     DATA_SOURCE_MEMORY_READER,
@@ -1082,21 +1078,6 @@ def _scene_context_hint(
     return {}
 
 
-def _cross_scene_memory_context(
-    local_state: dict[str, Any],
-    *,
-    max_chars: int = 360,
-) -> dict[str, Any]:
-    memory = _cross_scene_sanitize(local_state.get("cross_scene_memory"))
-    rendered = _render_cross_scene_memory_for_push(memory, max_chars=max_chars)
-    if not rendered:
-        return {}
-    return {
-        "cross_scene_memory": memory,
-        "cross_scene_memory_context": rendered,
-    }
-
-
 def _compact_profile_text(value: Any, *, limit: int = 180) -> str:
     if isinstance(value, list):
         text = " / ".join(str(item).strip() for item in value if str(item).strip())
@@ -1529,7 +1510,6 @@ def build_suggest_context(
         "input_degraded": input_degraded,
         "degraded_reasons": degraded_reasons,
         **_fixed_character_pov_context(local_state),
-        **_cross_scene_memory_context(local_state),
         **_scene_context_hint(
             local_state,
             scene_id=scene_id,
