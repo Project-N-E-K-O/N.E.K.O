@@ -30,6 +30,7 @@
       ref="iframeRef"
       :src="uiUrl"
       :title="pluginId"
+      :data-load-generation="iframeGeneration"
       class="plugin-iframe"
       sandbox="allow-scripts allow-forms allow-popups allow-same-origin"
       @load="onIframeLoad"
@@ -65,6 +66,7 @@ const loading = ref(true)
 const error = ref<string | null>(null)
 const hasUI = ref(false)
 const iframeReady = ref(false)
+const iframeGeneration = ref(0)
 const pendingSurfaceMessages: unknown[] = []
 const maxPendingSurfaceMessages = 100
 let currentRequestId = 0
@@ -80,6 +82,7 @@ const uiUrl = computed(() => {
 })
 
 async function checkUIAvailability() {
+  startIframeLoadGeneration()
   if (!props.pluginId) {
     currentRequestId += 1
     hasUI.value = false
@@ -91,8 +94,6 @@ async function checkUIAvailability() {
   
   loading.value = true
   error.value = null
-  iframeReady.value = false
-  
   try {
     const info = await get(`/plugin/${encodeURIComponent(props.pluginId)}/ui-info`)
     if (requestId !== currentRequestId) return
@@ -109,7 +110,20 @@ async function checkUIAvailability() {
   }
 }
 
-function onIframeLoad() {
+function startIframeLoadGeneration() {
+  iframeGeneration.value++
+  iframeReady.value = false
+  iframeKey.value++
+}
+
+function isCurrentIframeEvent(event: Event) {
+  const target = event.currentTarget
+  return target instanceof HTMLIFrameElement
+    && target.dataset.loadGeneration === String(iframeGeneration.value)
+}
+
+function onIframeLoad(event: Event) {
+  if (!isCurrentIframeEvent(event)) return
   loading.value = false
   error.value = null
   iframeReady.value = true
@@ -117,7 +131,8 @@ function onIframeLoad() {
   emit('load')
 }
 
-function onIframeError() {
+function onIframeError(event: Event) {
+  if (!isCurrentIframeEvent(event)) return
   loading.value = false
   error.value = t('plugins.ui.loadError')
   iframeReady.value = false
@@ -129,15 +144,11 @@ async function reload() {
     // UI availability already confirmed (iframe load failed); skip network call
     error.value = null
     loading.value = true
-    iframeReady.value = false
+    startIframeLoadGeneration()
     uiCacheBust.value = Date.now()
-    iframeKey.value++
   } else {
+    uiCacheBust.value = Date.now()
     await checkUIAvailability()
-    if (hasUI.value && !error.value) {
-      uiCacheBust.value = Date.now()
-      iframeKey.value++
-    }
   }
 }
 
@@ -178,7 +189,7 @@ function sendMessage(payload: any) {
 
 function flushSurfaceMessages() {
   const target = iframeRef.value?.contentWindow
-  if (!target) return
+  if (!target || !iframeReady.value) return
   for (const message of pendingSurfaceMessages.splice(0)) {
     target.postMessage(message, expectedOrigin)
   }

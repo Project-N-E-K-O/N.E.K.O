@@ -5255,6 +5255,8 @@ def test_study_companion_ui_refactor_static_and_hosted_contracts() -> None:
     assert "sendSurfaceMessage" in plugin_ui_frame
     assert "pendingSurfaceMessages" in plugin_ui_frame
     assert "flushSurfaceMessages()" in plugin_ui_frame
+    assert "iframeGeneration" in plugin_ui_frame
+    assert "isCurrentIframeEvent" in plugin_ui_frame
     assert '@open-surface="openHostedSurfaceFromStaticUi"' in plugin_detail
     assert '@message="relayHostedSurfaceMessageToStaticUi"' in plugin_detail
     assert "studySurfaceRelayMessageTypes" not in plugin_detail
