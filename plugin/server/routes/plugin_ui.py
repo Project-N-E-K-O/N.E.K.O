@@ -336,7 +336,9 @@ async def plugin_ui_push(plugin_id: str, request: Request):
 
     入参：{"text": "..."} 或纯文本。任意插件/后端调用，推送到已订阅的前端页面。
     返回 ``queued``：成功写入各客户端缓冲队列的数目（排队计数，非客户端实际送达确认）。
-    配置了 ``NEKO_SSE_PUSH_TOKEN`` 时要求 ``Authorization: Bearer <token>``。
+
+    鉴权：一律要求共享密钥（环境变量 ``NEKO_SSE_PUSH_TOKEN``）。
+    未配置时返回 503（不允许推送）；配置后必须带 ``Authorization: Bearer <token>``，否则 401。
     """
     # 鉴权：push 一律要求共享密钥（NEKO_SSE_PUSH_TOKEN），不做回环豁免；
     # 未配置 token 则拒绝（部署方必须配置）
