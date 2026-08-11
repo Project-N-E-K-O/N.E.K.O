@@ -766,15 +766,6 @@ class TextMixin:
             effective_repeat_threshold = 1
         if pending_visual_scene:
             effective_repeat_threshold = max(2, int(effective_repeat_threshold or 1))
-        elif tracker.stable_text and int(effective_repeat_threshold or 1) > 1:
-            cleaned_key = _ocr_stability_key(cleaned_text)
-            stable_key = tracker.stable_text_key or _ocr_stability_key(tracker.stable_text)
-            if (
-                cleaned_key
-                and stable_key
-                and not _ocr_stability_keys_match(cleaned_key, stable_key)
-            ):
-                effective_repeat_threshold = 1
         if not self._stabilize_text_key(
             cleaned_text,
             state=tracker,

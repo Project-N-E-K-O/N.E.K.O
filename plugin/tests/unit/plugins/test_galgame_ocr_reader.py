@@ -5241,6 +5241,7 @@ def test_medium_stable_text_requires_distinct_line_to_repeat(
     assert session is not None
     assert session["state"]["speaker"] == "王生"
     assert session["state"]["text"] == "新 台词。"
+    assert manager._default_ocr_state.stable_text == "王生：新 台词。"
 
 
 def test_compound_neko_ui_capture_is_rejected_without_blocking_single_game_word() -> None:
@@ -5251,7 +5252,6 @@ def test_compound_neko_ui_capture_is_rejected_without_blocking_single_game_word(
 
     assert galgame_ocr_text_normalize._looks_like_self_ui_text(polluted) is True
     assert galgame_ocr_text_normalize._looks_like_self_ui_text("她打开角色设置后继续说道。") is False
-    assert manager._default_ocr_state.stable_text == "王生：新 台词。"
 
 
 @pytest.mark.asyncio
