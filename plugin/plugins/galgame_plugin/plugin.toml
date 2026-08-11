@@ -110,7 +110,7 @@ renpy = []
 [ocr_reader]
 enabled = true
 backend_selection = "rapidocr"
-capture_backend = "dxcam"
+capture_backend = "smart"
 install_manifest_url = ""
 install_target_dir = ""
 install_timeout_seconds = 60

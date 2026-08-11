@@ -123,10 +123,8 @@ class UpdateParameters:
 
                 det_dict[k] = v
             elif k.startswith("cls_"):
-                k = k.split("cls_", 1)[1]
                 cls_dict[k] = v
             elif k.startswith("rec_"):
-                k = k.split("rec_", 1)[1]
                 rec_dict[k] = v
             else:
                 global_dict[k] = v

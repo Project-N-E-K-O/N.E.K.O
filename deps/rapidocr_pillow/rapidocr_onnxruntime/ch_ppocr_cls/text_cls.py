@@ -33,6 +33,28 @@ class TextClassifier:
         self.postprocess_op = ClsPostProcess(config["label_list"])
 
         self.infer = OrtInferSession(config)
+        model_inputs = self.infer.session.get_inputs()
+        if model_inputs:
+            model_shape = list(model_inputs[0].shape)
+            configured_shape = list(self.cls_image_shape)
+            if len(model_shape) == 4 and len(configured_shape) == 3:
+                fixed_model_shape = model_shape[1:]
+                has_mismatch = any(
+                    isinstance(expected, int)
+                    and expected > 0
+                    and configured != expected
+                    for configured, expected in zip(
+                        configured_shape,
+                        fixed_model_shape,
+                    )
+                )
+                if has_mismatch:
+                    raise ValueError(
+                        "RapidOCR classifier cls_image_shape "
+                        f"{configured_shape} does not match ONNX input shape "
+                        f"{model_shape}. Pass cls_image_shape matching the "
+                        "classifier model."
+                    )
 
     def __call__(
         self, img_list: Union[np.ndarray, List[np.ndarray]]

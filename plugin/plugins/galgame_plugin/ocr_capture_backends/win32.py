@@ -257,6 +257,8 @@ class Win32CaptureBackend:
                         "target_window_invalid_for_capture",
                         "target_window_not_visible_for_capture",
                         "target_window_minimized_for_capture",
+                        "target_not_foreground_for_screen_capture",
+                        "foreground_changed_during_screen_capture",
                     )
                 ):
                     raise

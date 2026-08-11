@@ -2738,24 +2738,30 @@ def test_galgame_printwindow_releases_window_dc_without_deleting_wrapped_hdc(
             CreateBitmap=lambda: bitmap,
         ),
     )
-    monkeypatch.setitem(sys.modules, "win32con", SimpleNamespace(SRCCOPY=1))
     monkeypatch.setattr(
-        galgame_printwindow_backend.sys,
-        "getwindowsversion",
-        lambda: SimpleNamespace(major=6, minor=2),
-        raising=False,
+        galgame_printwindow_backend.ctypes,
+        "windll",
+        SimpleNamespace(
+            user32=SimpleNamespace(
+                PrintWindow=lambda _hwnd, _hdc, flags: calls.append(
+                    f"printwindow:{flags}"
+                )
+                or 0
+            )
+        ),
     )
 
-    image = galgame_printwindow_backend.PrintWindowCaptureBackend._capture_full_window(
-        1234,
-        (0, 0, 2, 2),
-    )
+    with pytest.raises(RuntimeError, match="printwindow_failed_for_capture"):
+        galgame_printwindow_backend.PrintWindowCaptureBackend._capture_full_window(
+            1234,
+            (0, 0, 2, 2),
+        )
 
-    assert image.size == (2, 2)
     assert calls == [
         "create_bitmap:2x2",
         "select_bitmap",
-        "bitblt",
+        "printwindow:2",
+        "printwindow:0",
         "restore_bitmap",
         "mem_delete",
         "delete_object",
@@ -2960,6 +2966,11 @@ def test_pyautogui_capture_uses_screenshot_region(monkeypatch: pytest.MonkeyPatc
         SimpleNamespace(size=lambda: (1920, 1080), screenshot=screenshot),
     )
     monkeypatch.setattr(galgame_pyautogui_backend, "_require_visible_capture_target", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        galgame_pyautogui_backend,
+        "_require_foreground_screen_capture_target",
+        lambda *_args, **_kwargs: None,
+    )
     monkeypatch.setattr(galgame_pyautogui_backend, "_target_screen_capture_rect", lambda _target: (10, 20, 210, 120))
 
     frame = galgame_ocr_reader.PyAutoGuiCaptureBackend().capture_frame(

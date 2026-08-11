@@ -564,8 +564,133 @@ def test_rapidocr_pillow_update_parameters_strips_module_prefixes_consistently()
 
     assert global_dict["text_score"] == 0.6
     assert det_dict == {"box_thresh": 0.7, "use_dilation": False}
-    assert cls_dict == {"batch_num": 8, "label_list": ["0", "180"]}
-    assert rec_dict == {"batch_num": 12, "img_shape": [3, 48, 320]}
+    assert cls_dict == {
+        "cls_batch_num": 8,
+        "cls_label_list": ["0", "180"],
+    }
+    assert rec_dict == {
+        "rec_batch_num": 12,
+        "rec_img_shape": [3, 48, 320],
+    }
+
+
+@pytest.mark.skipif(not _HAS_PYCLIPPER, reason="pyclipper missing (galgame group not installed)")
+def test_rapidocr_pillow_update_parameters_preserves_v5_and_rec_shapes() -> None:
+    from rapidocr_onnxruntime.utils import read_yaml
+    from rapidocr_onnxruntime.utils.parse_parameters import UpdateParameters
+
+    config_path = RAPIDOCR_PILLOW_ROOT / "rapidocr_onnxruntime" / "config.yaml"
+    config = read_yaml(config_path)
+    cls_model_path = "X:/models/ch_PP-LCNet_x0_25_textline_ori_cls_mobile.onnx"
+
+    effective = UpdateParameters()(
+        config,
+        cls_model_path=cls_model_path,
+        cls_image_shape=[3, 80, 160],
+        cls_batch_num=4,
+        rec_img_shape=[3, 48, 640],
+        rec_batch_num=2,
+    )
+
+    assert effective["Cls"]["model_path"] == cls_model_path
+    assert effective["Cls"]["cls_image_shape"] == [3, 80, 160]
+    assert effective["Cls"]["cls_batch_num"] == 4
+    assert "image_shape" not in effective["Cls"]
+    assert "batch_num" not in effective["Cls"]
+    assert effective["Rec"]["rec_img_shape"] == [3, 48, 640]
+    assert effective["Rec"]["rec_batch_num"] == 2
+    assert "img_shape" not in effective["Rec"]
+    assert "batch_num" not in effective["Rec"]
+
+
+@pytest.mark.skipif(not _HAS_PYCLIPPER, reason="pyclipper missing (galgame group not installed)")
+def test_rapidocr_pillow_runtime_applies_v5_classifier_shape(monkeypatch) -> None:
+    class FakeModelInput:
+        shape = [None, 3, 80, 160]
+
+    class FakeOnnxSession:
+        @staticmethod
+        def get_inputs():
+            return [FakeModelInput()]
+
+    class FakeOrtInferSession:
+        def __init__(self, config):
+            self.config = dict(config)
+            self.session = FakeOnnxSession()
+
+        @staticmethod
+        def have_key() -> bool:
+            return True
+
+        @staticmethod
+        def get_character_list() -> list[str]:
+            return ["a"]
+
+    monkeypatch.setattr(
+        "rapidocr_onnxruntime.ch_ppocr_det.text_detect.OrtInferSession",
+        FakeOrtInferSession,
+    )
+    monkeypatch.setattr(
+        "rapidocr_onnxruntime.ch_ppocr_cls.text_cls.OrtInferSession",
+        FakeOrtInferSession,
+    )
+    monkeypatch.setattr(
+        "rapidocr_onnxruntime.ch_ppocr_rec.text_recognize.OrtInferSession",
+        FakeOrtInferSession,
+    )
+
+    from rapidocr_onnxruntime import RapidOCR
+
+    runtime = RapidOCR(
+        cls_model_path="X:/models/ch_PP-LCNet_x0_25_textline_ori_cls_mobile.onnx",
+        cls_image_shape=[3, 80, 160],
+    )
+    prepared = runtime.text_cls.resize_norm_img(
+        np.zeros((40, 100, 3), dtype=np.uint8)
+    )
+
+    assert runtime.text_cls.cls_image_shape == [3, 80, 160]
+    assert prepared.shape == (3, 80, 160)
+
+
+@pytest.mark.skipif(not _HAS_PYCLIPPER, reason="pyclipper missing (galgame group not installed)")
+def test_rapidocr_pillow_classifier_rejects_model_shape_mismatch(
+    monkeypatch,
+) -> None:
+    class FakeModelInput:
+        shape = [None, 3, 80, 160]
+
+    class FakeOnnxSession:
+        @staticmethod
+        def get_inputs():
+            return [FakeModelInput()]
+
+    class FakeOrtInferSession:
+        session = FakeOnnxSession()
+
+        def __init__(self, _config):
+            pass
+
+    monkeypatch.setattr(
+        "rapidocr_onnxruntime.ch_ppocr_cls.text_cls.OrtInferSession",
+        FakeOrtInferSession,
+    )
+
+    from rapidocr_onnxruntime.ch_ppocr_cls.text_cls import TextClassifier
+
+    with pytest.raises(
+        ValueError,
+        match=r"\[3, 48, 192\].*\[None, 3, 80, 160\]",
+    ):
+        TextClassifier(
+            {
+                "cls_image_shape": [3, 48, 192],
+                "cls_batch_num": 6,
+                "cls_thresh": 0.9,
+                "label_list": ["0", "180"],
+            }
+        )
+
 
 
 def test_every_fork_importing_test_carries_the_dependency_guard():
