@@ -51,6 +51,8 @@ _sse_clients: dict[str, list[asyncio.Queue]] = {}
 _sse_clients_lock = asyncio.Lock()
 # 每个客户端队列的最大缓冲（慢/阻塞客户端不使其无限膨胀）；满时丢弃新消息
 _SSE_QUEUE_MAX = 100
+# push 请求体大小上限（字节）：1MB，足够 catgirl 带头像弹幕，同时限制本机恶意分块请求占内存
+_PUSH_MAX_BODY = 1024 * 1024
 # 可信 Origin 主机（本机回环）：push 广播只接受无 Origin（插件后端/非浏览器）或本机页面
 _TRUSTED_ORIGIN_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
@@ -359,9 +361,13 @@ async def plugin_ui_push(plugin_id: str, request: Request):
     # 只接受无 Origin（插件后端/curl）或本机回环 Origin
     if not _origin_is_trusted(request.headers.get("origin", "")):
         return JSONResponse({"ok": False, "error": "invalid origin"}, status_code=403)
-    # 流式读取请求体（不设大小上限；仅本机回环可推送，SSE 队列满会丢弃）
+    # 流式读取请求体：累计字节数，超过固定上限立即 413，避免本机恶意分块请求占内存
     chunks: list[bytes] = []
+    total = 0
     async for chunk in request.stream():
+        total += len(chunk)
+        if total > _PUSH_MAX_BODY:
+            return JSONResponse({"ok": False, "error": "payload too large"}, status_code=413)
         chunks.append(chunk)
     body = b"".join(chunks)
     payload = _parse_push_payload(body)
