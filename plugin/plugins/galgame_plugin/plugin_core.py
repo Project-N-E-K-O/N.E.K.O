@@ -3743,7 +3743,13 @@ class GalgamePlugin(
                 ocr_reader_stable_event_emitted,
                 warnings,
             )
-        if self._ocr_fast_loop_should_run() and not force:
+        fast_loop_snapshot = dict(local)
+        fast_loop_snapshot["ocr_reader_runtime"] = json_copy(ocr_reader_runtime or {})
+        if (
+            self._ocr_fast_loop_should_run()
+            and not force
+            and self._ocr_fast_loop_capture_allowed_snapshot(fast_loop_snapshot)
+        ):
             self._start_ocr_fast_loop()
             ocr_reader_runtime = json_copy(ocr_reader_runtime or {})
             tick_execution_diagnostics.update(

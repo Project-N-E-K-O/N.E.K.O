@@ -404,6 +404,39 @@ def test_explicit_pixel_backend_rejects_occluded_capture_region(
     )
 
 
+def test_printwindow_occluded_foreground_does_not_fallback_to_pixel_backends(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Backend:
+        def __init__(self, kind: str, *, available: bool = True) -> None:
+            self.kind = kind
+            self.available = available
+            self.calls = 0
+
+        def is_available(self) -> bool:
+            return self.available
+
+        def capture_frame(self, _target, _profile):
+            self.calls += 1
+            return f"{self.kind}-frame"
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    printwindow = _Backend("printwindow", available=False)
+    pixel_backends = [_Backend("dxcam"), _Backend("mss"), _Backend("pyautogui")]
+    backend = Win32CaptureBackend(
+        selection="printwindow",
+        occlusion_checker=lambda _target, _profile: True,
+    )
+    backend._printwindow_backend = printwindow
+    backend._backends = [printwindow, *pixel_backends]
+
+    with pytest.raises(RuntimeError, match="printwindow_unavailable"):
+        backend.capture_frame(_target(foreground=True), OcrCaptureProfile())
+
+    assert printwindow.calls == 0
+    assert all(item.calls == 0 for item in pixel_backends)
+
+
 def test_smart_background_uses_only_printwindow(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

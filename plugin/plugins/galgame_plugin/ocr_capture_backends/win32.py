@@ -307,8 +307,11 @@ class Win32CaptureBackend:
             if bool(getattr(target, "is_minimized", False)):
                 raise RuntimeError("printwindow: target_window_minimized_for_capture")
             if bool(getattr(target, "is_foreground", False)):
+                if capture_region_occluded:
+                    return [self._printwindow_backend]
                 # Foreground: other backends would also see the right window,
-                # so falling through after PrintWindow failure is safe.
+                # so falling through after PrintWindow failure is safe only
+                # when the requested capture region is not visibly occluded.
                 return list(self._backends)
             return [self._printwindow_backend]
         if self.selection != _CAPTURE_BACKEND_SMART:
@@ -355,9 +358,12 @@ class Win32CaptureBackend:
             _CAPTURE_BACKEND_MSS,
             _CAPTURE_BACKEND_PYAUTOGUI,
         }
+        selection_may_fallback_to_pixels = (
+            pixel_only_selection or self.selection == _CAPTURE_BACKEND_PRINTWINDOW
+        )
         should_check_occlusion = bool(getattr(target, "is_foreground", False)) and (
             self.selection == _CAPTURE_BACKEND_SMART
-            or (is_windows() and pixel_only_selection)
+            or (is_windows() and selection_may_fallback_to_pixels)
         )
         if should_check_occlusion:
             try:
