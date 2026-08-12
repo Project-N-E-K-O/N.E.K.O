@@ -243,7 +243,9 @@ export function installPluginPackage(payload: PluginCliInstallRequest): Promise<
  * 检查本地包将执行首次安装、原位升级，还是因冲突被阻止
  */
 export function planPluginInstall(payload: PluginCliInstallPlanRequest): Promise<PluginCliInstallPlanResponse> {
-  return post('/plugin-cli/install-plan', payload)
+  return post('/plugin-cli/install-plan', payload, {
+    timeout: 120_000,
+  })
 }
 
 /**
