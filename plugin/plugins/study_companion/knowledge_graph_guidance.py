@@ -37,6 +37,13 @@ GENERIC_QUERY_TERMS = {
     "\u5982\u4f55",
     "\u5b66\u4e60",
     "\u4ec0\u4e48",
+    "\u7406\u89e3",
+    "\u5206\u6790",
+    "\u8bf4\u660e",
+    "\u89e3\u91ca",
+    "\u8bb2\u89e3",
+    "\u89e3\u7b54",
+    "\u8c08\u8c08",
     "\u533a\u522b",
     "\u5173\u7cfb",
     "\u4e3a\u4ec0\u4e48",
@@ -382,6 +389,7 @@ def match_topics(
     *,
     topic_id: str = "",
     query: str = "",
+    subject: str = "",
     limit: int = 5,
 ) -> list[dict[str, Any]]:
     by_id = {_topic_id(topic): topic for topic in topics if _topic_id(topic)}
@@ -391,6 +399,7 @@ def match_topics(
             {
                 "id": topic_key,
                 "label": _topic_label(by_id[topic_key], topic_key),
+                "subject": _text(by_id[topic_key].get("subject")),
                 "score": 100,
                 "match": "topic_id",
             }
@@ -400,10 +409,16 @@ def match_topics(
     subject_hints = _subject_hints(query_text)
     if not terms:
         return []
+    subject_scope = _text(subject).lower()
+    if subject_scope == "unknown":
+        return []
     scored: list[dict[str, Any]] = []
     for topic in topics:
         current_id = _topic_id(topic)
         if not current_id:
+            continue
+        topic_subject = _text(topic.get("subject"))
+        if subject_scope and topic_subject.lower() != subject_scope:
             continue
         label = _topic_label(topic, current_id)
         label_lower = label.lower()
@@ -442,17 +457,17 @@ def match_topics(
             else:
                 continue
             matched_terms.append(term)
-        subject = _text(topic.get("subject"))
         if score and subject_hints:
-            if subject in subject_hints:
+            if topic_subject in subject_hints:
                 score += 18
-            elif subject:
+            elif topic_subject:
                 score -= 10
         if score:
             scored.append(
                 {
                     "id": current_id,
                     "label": label,
+                    "subject": topic_subject,
                     "score": score,
                     "match": "query",
                     "matched_terms": list(dict.fromkeys(matched_terms))[:6],

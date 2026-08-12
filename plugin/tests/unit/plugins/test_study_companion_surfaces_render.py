@@ -104,6 +104,75 @@ def test_solution_narration_outcome_messages_exist_in_all_locales() -> None:
     assert zh_cn["ui.error.solution_narration_missing_answer"] == expected_zh_cn
 
 
+def test_study_explain_surfaces_render_backend_knowledge_guidance_evidence() -> None:
+    hosted = _read("study_panel.tsx")
+    fallback = (PLUGIN_DIR / "static" / "main.js").read_text(encoding="utf-8")
+
+    required_contract_fields = {
+        "knowledge_guidance_applied",
+        "knowledge_guidance_status",
+        "knowledge_guidance_subject",
+        "knowledge_guidance_content_type",
+        "knowledge_guidance_entity",
+        "knowledge_guidance_focus_topic",
+        "knowledge_guidance_related_topics",
+        "knowledge_guidance_source",
+    }
+    for source in (hosted, fallback):
+        assert all(field in source for field in required_contract_fields)
+        assert "formatKnowledgeGuidanceEvidence" in source
+        assert "ui.knowledge_guidance.applied" in source
+        assert "ui.knowledge_guidance.not_matched" in source
+        assert "ui.knowledge_guidance.low_confidence" in source
+        assert "ui.knowledge_guidance.routing_unavailable" in source
+        assert "status === 'not_applicable'" in source
+        assert "knowledge_guidance_focus_topic" in source
+        assert "knowledge_guidance_related_topics" in source
+        formatter = source[source.index("function formatKnowledgeGuidanceEvidence") :]
+        formatter = formatter[: formatter.index("\n}\n") + 3]
+        assert "data.reply" not in formatter
+
+
+def test_knowledge_guidance_evidence_messages_exist_in_all_locales() -> None:
+    subject_keys = {
+        f"ui.knowledge_guidance.subject.{subject}"
+        for subject in (
+            "math", "chinese", "english", "physics", "chemistry", "biology",
+            "history", "geography", "politics", "economics", "computer_science",
+            "unknown",
+        )
+    }
+    required_keys = {
+        "ui.knowledge_guidance.applied",
+        "ui.knowledge_guidance.not_matched",
+        "ui.knowledge_guidance.low_confidence",
+        "ui.knowledge_guidance.routing_unavailable",
+        "ui.knowledge_guidance.subject",
+        "ui.knowledge_guidance.content_type",
+        "ui.knowledge_guidance.entity",
+        "ui.knowledge_guidance.focus_topic",
+        "ui.knowledge_guidance.related_topics",
+        "ui.knowledge_guidance.source",
+        "ui.knowledge_guidance.subject.chinese",
+        "ui.knowledge_guidance.content_type.literary_work",
+        "ui.knowledge_guidance.source.semantic_route",
+        "ui.knowledge_guidance.source.selected_topic",
+    } | subject_keys
+    locale_paths = sorted((PLUGIN_DIR / "i18n").glob("*.json"))
+
+    assert len(locale_paths) == 8
+    for locale_path in locale_paths:
+        bundle = json.loads(locale_path.read_text(encoding="utf-8"))
+        assert required_keys <= bundle.keys(), locale_path.stem
+        assert all(bundle[key].strip() for key in required_keys), locale_path.stem
+
+    zh_cn = json.loads((PLUGIN_DIR / "i18n" / "zh-CN.json").read_text(encoding="utf-8"))
+    assert zh_cn["ui.knowledge_guidance.applied"] == "已应用知识图谱"
+    assert zh_cn["ui.knowledge_guidance.not_matched"] == (
+        "本次未匹配到可信的相关知识图谱，回答未使用其他学科节点。"
+    )
+
+
 def test_study_companion_registered_surfaces_are_brand_renderable() -> None:
     with (PLUGIN_DIR / "plugin.toml").open("rb") as handle:
         config = tomllib.load(handle)

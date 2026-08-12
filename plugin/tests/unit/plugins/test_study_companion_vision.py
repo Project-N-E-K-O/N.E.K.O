@@ -518,7 +518,8 @@ async def test_call_model_uses_vision_config_for_image_messages(
                     {"type": "image_url", "image_url": {"url": "data:image/png;base64,x"}},
                 ],
             }
-        ]
+        ],
+        operation="knowledge_semantic_route",
     )
 
     assert result == "vision reply"
@@ -526,7 +527,7 @@ async def test_call_model_uses_vision_config_for_image_messages(
     assert seen_call_kwargs[0]["base_address"] == "https://dashscope.aliyuncs.com/api/v1"
     assert seen_call_kwargs[0]["model"] == "qwen3.7-plus"
     assert seen_call_kwargs[0]["api_key"] == "vision-key"
-    assert seen_call_kwargs[0]["max_tokens"] == 3072
+    assert seen_call_kwargs[0]["max_tokens"] == 512
     assert seen_call_kwargs[0]["enable_thinking"] is False
     assert seen_call_kwargs[0]["headers"] == {
         "x-dashscope-session-cache": "enable"
@@ -542,7 +543,7 @@ async def test_call_model_uses_vision_config_for_image_messages(
             "completion_tokens": 4,
             "total_tokens": 16,
             "call_type": "vision",
-            "source": "study_companion:concept_explain",
+            "source": "study_companion:knowledge_semantic_route",
             "success": True,
         }
     ]
@@ -827,6 +828,53 @@ async def test_qwen_solution_structure_repair_has_bounded_observable_output_budg
         1536,
         1536,
     )
+
+
+@pytest.mark.asyncio
+async def test_qwen_semantic_route_uses_bounded_text_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from plugin.plugins.study_companion import qwen_native_client
+    from utils import config_manager
+
+    calls: list[dict[str, Any]] = []
+
+    class _ConfigManager:
+        def get_model_api_config(self, group: str) -> dict[str, str]:
+            assert group == "agent"
+            return {
+                "model": "qwen-plus",
+                "base_url": "https://dashscope.aliyuncs.com/api/v1",
+                "api_key": "test-key",
+            }
+
+    class _FakeGeneration:
+        @staticmethod
+        async def call(**kwargs: Any) -> SimpleNamespace:
+            calls.append(dict(kwargs))
+            return SimpleNamespace(
+                status_code=200,
+                output=SimpleNamespace(text='{"subject":"unknown"}'),
+                usage=SimpleNamespace(input_tokens=2, output_tokens=3),
+            )
+
+    async def _discard_usage(_client: object, **_kwargs: Any) -> None:
+        return None
+
+    monkeypatch.setattr(config_manager, "get_config_manager", lambda: _ConfigManager())
+    monkeypatch.setattr(qwen_native_client, "AioGeneration", _FakeGeneration)
+    monkeypatch.setattr(QwenNativeClient, "_record_usage", _discard_usage)
+    client = QwenNativeClient(logger=_Logger())
+
+    result = await client.call(
+        [{"role": "user", "content": "classify semantics"}],
+        operation="knowledge_semantic_route",
+        deadline=time.monotonic() + 10.0,
+    )
+
+    assert result.max_output_tokens == 512
+    assert calls[0]["max_tokens"] == 512
+    assert result.output_limit_reached is False
 
 
 @pytest.mark.parametrize(

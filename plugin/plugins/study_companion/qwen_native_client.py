@@ -83,6 +83,7 @@ _OUTPUT_TOKEN_BUDGETS = {
     LLM_OPERATION_DOCUMENT_CHUNK_ANALYZE: 1200,
     LLM_OPERATION_DOCUMENT_MERGE: 4096,
     "json_correction": 1536,
+    "knowledge_semantic_route": 512,
     "solution_structure_repair": 1536,
 }
 

@@ -425,6 +425,65 @@ function formatTutorDiagnostic(diagnostic) {
   return t(key, fallback);
 }
 
+function formatKnowledgeGuidanceEvidence(outcome) {
+  const status = String(outcome?.knowledge_guidance_status || '').trim().toLowerCase();
+  const hasOutcome = typeof outcome?.knowledge_guidance_applied === 'boolean' || Boolean(status);
+  if (!hasOutcome || status === 'not_applicable') return '';
+  if (status === 'not_matched') {
+    return t(
+      'ui.knowledge_guidance.not_matched',
+      'No trustworthy related knowledge graph was matched; no nodes from other subjects were used.',
+    );
+  }
+  if (status === 'low_confidence') {
+    return t(
+      'ui.knowledge_guidance.low_confidence',
+      'The knowledge graph match was uncertain, so it was not applied.',
+    );
+  }
+  if (status === 'routing_unavailable') {
+    return t(
+      'ui.knowledge_guidance.routing_unavailable',
+      'Knowledge graph routing was unavailable, so the answer continued without graph guidance.',
+    );
+  }
+  if (outcome?.knowledge_guidance_applied !== true && status !== 'applied') return '';
+
+  const focusTopic = outcome?.knowledge_guidance_focus_topic;
+  const focusLabel = String(focusTopic?.label || focusTopic?.name || '').trim();
+  if (!focusLabel) {
+    return t(
+      'ui.knowledge_guidance.not_matched',
+      'No trustworthy related knowledge graph was matched; no nodes from other subjects were used.',
+    );
+  }
+  const relatedLabels = Array.isArray(outcome?.knowledge_guidance_related_topics)
+    ? outcome.knowledge_guidance_related_topics
+      .map((topic) => String(topic?.label || topic?.name || '').trim())
+      .filter(Boolean)
+    : [];
+  const localizedValue = (group, rawValue) => {
+    const value = String(rawValue || '').trim().toLowerCase();
+    if (!value) return '';
+    return t(`ui.knowledge_guidance.${group}.${value}`, value.replaceAll('_', ' '));
+  };
+  const subject = localizedValue('subject', outcome?.knowledge_guidance_subject);
+  const contentType = localizedValue('content_type', outcome?.knowledge_guidance_content_type);
+  const entity = String(outcome?.knowledge_guidance_entity || '').trim();
+  const source = localizedValue('source', outcome?.knowledge_guidance_source);
+  return [
+    t('ui.knowledge_guidance.applied', 'Knowledge graph applied'),
+    subject ? `${t('ui.knowledge_guidance.subject', 'Subject')}: ${subject}` : '',
+    contentType ? `${t('ui.knowledge_guidance.content_type', 'Content type')}: ${contentType}` : '',
+    entity ? `${t('ui.knowledge_guidance.entity', 'Entity')}: ${entity}` : '',
+    `${t('ui.knowledge_guidance.focus_topic', 'Focus topic')}: ${focusLabel}`,
+    relatedLabels.length > 0
+      ? `${t('ui.knowledge_guidance.related_topics', 'Related topics')}: ${relatedLabels.join(', ')}`
+      : '',
+    source ? `${t('ui.knowledge_guidance.source', 'Source')}: ${source}` : '',
+  ].filter(Boolean).join('\n');
+}
+
 function setPanelBusy(busy) {
   const mainView = document.getElementById('mainView');
   if (mainView) {
@@ -1967,6 +2026,7 @@ async function explainText() {
     data.degraded
       ? formatTutorDiagnostic(data.diagnostic)
       : (data.reply || data.summary || data.transition_phrase || ''),
+    formatKnowledgeGuidanceEvidence(data),
     formatSolutionNarrationNotice(data),
   ].filter(Boolean).join('\n\n'));
   await refreshStatus({ updateReply: false });

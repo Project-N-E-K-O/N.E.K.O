@@ -175,6 +175,120 @@ def test_topic_matching_has_no_implicit_math_bonus() -> None:
     assert hinted[0]["id"] == "history_common"
 
 
+def test_topic_matching_limits_semantic_literature_query_to_chinese_subject() -> None:
+    topics = [
+        {
+            "id": "math_reading_comprehension",
+            "name": "数学阅读理解题",
+            "subject": "math",
+            "aliases": ["阅读理解"],
+        },
+        {
+            "id": "chinese_literary_text",
+            "name": "文学类文本阅读",
+            "subject": "chinese",
+            "aliases": ["小说主题", "人物形象", "情节与叙事"],
+        },
+    ]
+
+    matches = match_topics(
+        topics,
+        query="《活着》 文学类文本阅读 小说主题 人物形象 情节与叙事",
+        subject="chinese",
+        limit=5,
+    )
+
+    assert matches
+    assert matches[0]["id"] == "chinese_literary_text"
+    assert {item["subject"] for item in matches} == {"chinese"}
+
+
+def test_topic_matching_keeps_normal_math_retrieval_inside_math_subject() -> None:
+    topics = [
+        {
+            "id": "math_weighted_average",
+            "name": "加权平均数",
+            "subject": "math",
+            "aliases": ["平均分", "平均数应用题"],
+        },
+        {
+            "id": "chinese_average_description",
+            "name": "概括人物表现",
+            "subject": "chinese",
+            "aliases": ["人物表现"],
+        },
+    ]
+
+    matches = match_topics(
+        topics,
+        query="平均分应用题 加权平均数",
+        subject="math",
+        limit=5,
+    )
+
+    assert matches
+    assert matches[0]["id"] == "math_weighted_average"
+    assert {item["subject"] for item in matches} == {"math"}
+
+
+def test_topic_matching_rejects_generic_understanding_as_insufficient_evidence() -> None:
+    topics = [
+        {
+            "id": "math_reading_comprehension",
+            "name": "数学阅读理解题",
+            "subject": "math",
+        },
+        {
+            "id": "chinese_literary_text",
+            "name": "文学类文本阅读",
+            "subject": "chinese",
+        },
+    ]
+
+    assert match_topics(topics, query="理解", limit=5) == []
+    assert match_topics(topics, query="理解", subject="math", limit=5) == []
+    assert (
+        match_topics(
+            topics,
+            query="文学类文本阅读",
+            subject="unknown",
+            limit=5,
+        )
+        == []
+    )
+
+
+def test_explicit_topic_id_remains_authoritative_over_subject_scope() -> None:
+    topics = [
+        {
+            "id": "math_reading_comprehension",
+            "name": "数学阅读理解题",
+            "subject": "math",
+        },
+        {
+            "id": "chinese_literary_text",
+            "name": "文学类文本阅读",
+            "subject": "chinese",
+        },
+    ]
+
+    matches = match_topics(
+        topics,
+        topic_id="math_reading_comprehension",
+        subject="chinese",
+    )
+
+    assert matches == [
+        {
+            "id": "math_reading_comprehension",
+            "label": "数学阅读理解题",
+            "subject": "math",
+            "score": 100,
+            "match": "topic_id",
+        }
+    ]
+
+
 def test_prerequisite_question_cap_keeps_later_application_questions() -> None:
     learning_path = [
         {

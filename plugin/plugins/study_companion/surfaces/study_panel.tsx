@@ -92,6 +92,23 @@ type SolutionNarrationOutcome = {
   solution_narration_missing_sections?: string[];
 };
 
+type KnowledgeGuidanceTopic = {
+  id?: string;
+  label?: string;
+  name?: string;
+};
+
+type KnowledgeGuidanceOutcome = {
+  knowledge_guidance_applied?: boolean;
+  knowledge_guidance_status?: string;
+  knowledge_guidance_subject?: string;
+  knowledge_guidance_content_type?: string;
+  knowledge_guidance_entity?: string;
+  knowledge_guidance_focus_topic?: KnowledgeGuidanceTopic;
+  knowledge_guidance_related_topics?: KnowledgeGuidanceTopic[];
+  knowledge_guidance_source?: string;
+};
+
 type StudyTranslate = (key: string, defaultValue?: string) => string;
 
 function formatSolutionNarrationNotice(
@@ -168,6 +185,68 @@ function formatSolutionNarrationNotice(
     );
   }
   return '';
+}
+
+function formatKnowledgeGuidanceEvidence(
+  outcome: KnowledgeGuidanceOutcome,
+  translate: StudyTranslate,
+) {
+  const status = String(outcome.knowledge_guidance_status || '').trim().toLowerCase();
+  const hasOutcome = typeof outcome.knowledge_guidance_applied === 'boolean' || Boolean(status);
+  if (!hasOutcome || status === 'not_applicable') return '';
+  if (status === 'not_matched') {
+    return translate(
+      'ui.knowledge_guidance.not_matched',
+      'No trustworthy related knowledge graph was matched; no nodes from other subjects were used.',
+    );
+  }
+  if (status === 'low_confidence') {
+    return translate(
+      'ui.knowledge_guidance.low_confidence',
+      'The knowledge graph match was uncertain, so it was not applied.',
+    );
+  }
+  if (status === 'routing_unavailable') {
+    return translate(
+      'ui.knowledge_guidance.routing_unavailable',
+      'Knowledge graph routing was unavailable, so the answer continued without graph guidance.',
+    );
+  }
+  if (outcome.knowledge_guidance_applied !== true && status !== 'applied') return '';
+
+  const focusTopic = outcome.knowledge_guidance_focus_topic;
+  const focusLabel = String(focusTopic?.label || focusTopic?.name || '').trim();
+  if (!focusLabel) {
+    return translate(
+      'ui.knowledge_guidance.not_matched',
+      'No trustworthy related knowledge graph was matched; no nodes from other subjects were used.',
+    );
+  }
+  const relatedLabels = Array.isArray(outcome.knowledge_guidance_related_topics)
+    ? outcome.knowledge_guidance_related_topics
+      .map((topic) => String(topic?.label || topic?.name || '').trim())
+      .filter(Boolean)
+    : [];
+  const localizedValue = (group: 'subject' | 'content_type' | 'source', rawValue?: string) => {
+    const value = String(rawValue || '').trim().toLowerCase();
+    if (!value) return '';
+    return translate(`ui.knowledge_guidance.${group}.${value}`, value.replaceAll('_', ' '));
+  };
+  const subject = localizedValue('subject', outcome.knowledge_guidance_subject);
+  const contentType = localizedValue('content_type', outcome.knowledge_guidance_content_type);
+  const entity = String(outcome.knowledge_guidance_entity || '').trim();
+  const source = localizedValue('source', outcome.knowledge_guidance_source);
+  return [
+    translate('ui.knowledge_guidance.applied', 'Knowledge graph applied'),
+    subject ? `${translate('ui.knowledge_guidance.subject', 'Subject')}: ${subject}` : '',
+    contentType ? `${translate('ui.knowledge_guidance.content_type', 'Content type')}: ${contentType}` : '',
+    entity ? `${translate('ui.knowledge_guidance.entity', 'Entity')}: ${entity}` : '',
+    `${translate('ui.knowledge_guidance.focus_topic', 'Focus topic')}: ${focusLabel}`,
+    relatedLabels.length > 0
+      ? `${translate('ui.knowledge_guidance.related_topics', 'Related topics')}: ${relatedLabels.join(', ')}`
+      : '',
+    source ? `${translate('ui.knowledge_guidance.source', 'Source')}: ${source}` : '',
+  ].filter(Boolean).join('\n');
 }
 
 const ENTRY_TIMEOUT_MS: Record<string, number> = {
@@ -1342,13 +1421,14 @@ export default function StudyPanel(props: PluginSurfaceProps) {
         transition_phrase?: string;
         degraded?: boolean;
         diagnostic?: string;
-      } & SolutionNarrationOutcome;
+      } & SolutionNarrationOutcome & KnowledgeGuidanceOutcome;
       if (controller.signal.aborted) {
         return;
       }
       if (data.degraded) {
         setReply([
           formatTutorDiagnostic(data.diagnostic),
+          formatKnowledgeGuidanceEvidence(data, t),
           formatSolutionNarrationNotice(data, t),
         ].filter(Boolean).join('\n\n'));
         await refresh(controller.signal, { updateReply: false });
@@ -1356,8 +1436,9 @@ export default function StudyPanel(props: PluginSurfaceProps) {
       }
       shouldClearTextImage = true;
       const nextReply = data.reply || data.summary || '';
+      const knowledgeGuidanceEvidence = formatKnowledgeGuidanceEvidence(data, t);
       const narrationNotice = formatSolutionNarrationNotice(data, t);
-      setReply([nextReply, narrationNotice].filter(Boolean).join('\n\n'));
+      setReply([nextReply, knowledgeGuidanceEvidence, narrationNotice].filter(Boolean).join('\n\n'));
       await refresh(controller.signal, { updateReply: false });
     } catch (error) {
       if (controller.signal.aborted) {

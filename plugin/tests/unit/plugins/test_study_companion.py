@@ -852,6 +852,9 @@ class _FakeStudyOcrPipeline:
 class _FakeTutorAgent:
     def __init__(self) -> None:
         self.inputs: list[tuple[str, dict[str, object], str]] = []
+        self.semantic_routing_result: str | Exception | None = None
+        self.semantic_routing_calls: list[tuple[list[dict[str, object]], str]] = []
+        self.semantic_routing_deadlines: list[float] = []
         self.evaluations: list[tuple[str, str, str, dict[str, object], str]] = []
         self.summaries: list[
             tuple[list[dict[str, object]], dict[str, object], str]
@@ -859,6 +862,42 @@ class _FakeTutorAgent:
 
     def update_config(self, config: StudyConfig) -> None:
         self._config = config
+
+    async def _call_model(
+        self,
+        messages: list[dict[str, object]],
+        *,
+        operation: str = "concept_explain",
+        deadline: float | None = None,
+    ) -> str:
+        self.semantic_routing_calls.append((messages, operation))
+        if deadline is not None:
+            self.semantic_routing_deadlines.append(deadline)
+        if isinstance(self.semantic_routing_result, Exception):
+            raise self.semantic_routing_result
+        if self.semantic_routing_result is None:
+            raise RuntimeError("semantic routing unavailable")
+        return self.semantic_routing_result
+
+    def _new_operation_deadline(
+        self, operation: str, messages: list[dict[str, object]]
+    ) -> float:
+        return time.monotonic() + 30.0
+
+    def _attach_vision_image(
+        self, messages: list[dict[str, object]], image: str
+    ) -> list[dict[str, object]]:
+        self.semantic_routing_calls.append((messages, f"image:{image}"))
+        attached = [dict(message) for message in messages]
+        for message in reversed(attached):
+            if message.get("role") != "user":
+                continue
+            message["content"] = [
+                {"type": "text", "text": str(message.get("content") or "")},
+                {"type": "image_url", "image_url": {"url": image, "detail": "auto"}},
+            ]
+            break
+        return attached
 
     async def concept_explain(
         self,
@@ -7971,6 +8010,17 @@ async def test_study_explain_text_passes_knowledge_guidance_to_tutor_agent(
     result = await plugin.startup()
     assert isinstance(result, Ok)
     fake_agent = _FakeTutorAgent()
+    fake_agent.semantic_routing_result = json.dumps(
+        {
+            "subject": "math",
+            "content_type": "calculus_concept",
+            "intent": "explanation",
+            "entity": "stationary and extreme points",
+            "retrieval_concepts": ["驻点", "极值点", "导数为零"],
+            "confidence": 0.98,
+        },
+        ensure_ascii=False,
+    )
     plugin._agent = fake_agent
 
     try:
@@ -7985,6 +8035,299 @@ async def test_study_explain_text_passes_knowledge_guidance_to_tutor_agent(
         assert guidance["diagnosis_questions"]  # type: ignore[index]
         assert explained.value["knowledge_guidance"]["topic"]["id"] == "college_stationary_points"
         assert explained.value["diagnosis_questions"]
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_study_explain_text_semantically_routes_literary_work_to_chinese_graph(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "zh-CN", "default_mode": MODE_COMPANION, "auto_open_ui": False},
+            "ocr_reader": {"enabled": True},
+            "rapidocr": {"lang_type": "ch"},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    assert isinstance(result, Ok)
+    fake_agent = _FakeTutorAgent()
+    fake_agent.semantic_routing_result = json.dumps(
+        {
+            "subject": "chinese",
+            "content_type": "literary_work",
+            "intent": "interpretation",
+            "entity": "《活着》",
+            "retrieval_concepts": [
+                "文学类文本阅读",
+                "小说主题",
+                "人物形象",
+                "情节与叙事",
+            ],
+            "confidence": 0.95,
+        },
+        ensure_ascii=False,
+    )
+    plugin._agent = fake_agent
+
+    try:
+        explained = await plugin.study_explain_text("谈谈你对活着这本书的理解")
+
+        assert isinstance(explained, Ok)
+        assert [operation for _messages, operation in fake_agent.semantic_routing_calls] == [
+            "knowledge_semantic_route"
+        ]
+        context = fake_agent.inputs[-1][1]
+        guidance = context["knowledge_guidance"]  # type: ignore[index]
+        assert guidance["topic"]["id"] == "chinese_senior_literary_text"  # type: ignore[index]
+        assert guidance["topic"]["subject"] == "chinese"  # type: ignore[index]
+        assert all(
+            item.get("subject") == "chinese"
+            for item in guidance["relevant_subgraph"]["nodes"]  # type: ignore[index]
+        )
+        assert explained.value["knowledge_guidance_applied"] is True
+        assert explained.value["knowledge_guidance_status"] == "applied"
+        assert explained.value["knowledge_guidance_subject"] == "chinese"
+        assert explained.value["knowledge_guidance_focus_topic"] == {
+            "id": "chinese_senior_literary_text",
+            "label": "文学类文本阅读",
+        }
+        assert all(
+            topic["id"] != "reading_comprehension_math"
+            for topic in explained.value["knowledge_guidance_related_topics"]
+        )
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_semantic_route_failure_keeps_explanation_without_graph_injection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "zh-CN", "default_mode": MODE_COMPANION, "auto_open_ui": False},
+            "ocr_reader": {"enabled": True},
+            "rapidocr": {"lang_type": "ch"},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    assert isinstance(result, Ok)
+    fake_agent = _FakeTutorAgent()
+    fake_agent.semantic_routing_result = RuntimeError("route failed")
+    plugin._agent = fake_agent
+
+    try:
+        explained = await plugin.study_explain_text("谈谈一部作品的主题")
+
+        assert isinstance(explained, Ok)
+        assert fake_agent.inputs[-1][0] == "谈谈一部作品的主题"
+        assert "knowledge_guidance" not in fake_agent.inputs[-1][1]
+        assert explained.value["knowledge_guidance_applied"] is False
+        assert explained.value["knowledge_guidance_status"] == "routing_unavailable"
+        assert explained.value["knowledge_guidance_subject"] == "unknown"
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_semantic_route_timeout_is_short_and_does_not_block_explanation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "zh-CN", "default_mode": MODE_COMPANION, "auto_open_ui": False},
+            "ocr_reader": {"enabled": True},
+            "rapidocr": {"lang_type": "ch"},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    assert isinstance(result, Ok)
+    fake_agent = _FakeTutorAgent()
+    monkeypatch.setattr(
+        "plugin.plugins.study_companion.entry_tutor_context_support._SEMANTIC_ROUTE_TIMEOUT_SECONDS",
+        0.01,
+    )
+
+    async def _timeout_route(
+        messages: list[dict[str, object]],
+        *,
+        operation: str = "concept_explain",
+        deadline: float | None = None,
+    ) -> str:
+        fake_agent.semantic_routing_calls.append((messages, operation))
+        if deadline is not None:
+            fake_agent.semantic_routing_deadlines.append(deadline)
+        await asyncio.sleep(1)
+        return "{}"
+
+    fake_agent._call_model = _timeout_route  # type: ignore[method-assign]
+    plugin._agent = fake_agent
+
+    try:
+        started = time.monotonic()
+        explained = await plugin.study_explain_text("谈谈一部文学作品的主题")
+
+        assert isinstance(explained, Ok)
+        assert fake_agent.inputs[-1][0] == "谈谈一部文学作品的主题"
+        assert explained.value["knowledge_guidance_status"] == "routing_unavailable"
+        assert time.monotonic() - started < 0.5
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_concept_guidance_explicit_topic_skips_semantic_model_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "zh-CN", "default_mode": MODE_COMPANION, "auto_open_ui": False},
+            "ocr_reader": {"enabled": True},
+            "rapidocr": {"lang_type": "ch"},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    assert isinstance(result, Ok)
+    fake_agent = _FakeTutorAgent()
+    plugin._agent = fake_agent
+
+    try:
+        context = await plugin._build_learning_context(
+            "concept_explain",
+            input_text="为什么导数为零不一定是极值点",
+            extra={"selected_topic_id": "college_stationary_points"},
+        )
+
+        assert fake_agent.semantic_routing_calls == []
+        assert context["knowledge_guidance_status"] == "applied"
+        assert context["knowledge_guidance_source"] == "selected_topic"
+        assert context["knowledge_guidance_focus_topic"]["id"] == (
+            "college_stationary_points"
+        )
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_low_confidence_semantics_cannot_inject_cross_subject_guidance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "zh-CN", "default_mode": MODE_COMPANION, "auto_open_ui": False},
+            "ocr_reader": {"enabled": True},
+            "rapidocr": {"lang_type": "ch"},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    assert isinstance(result, Ok)
+    fake_agent = _FakeTutorAgent()
+    fake_agent.semantic_routing_result = json.dumps(
+        {
+            "subject": "math",
+            "content_type": "reading",
+            "intent": "interpretation",
+            "entity": "",
+            "retrieval_concepts": ["数学阅读理解题"],
+            "confidence": 0.3,
+        },
+        ensure_ascii=False,
+    )
+    plugin._agent = fake_agent
+
+    try:
+        explained = await plugin.study_explain_text("谈谈你的理解")
+
+        assert isinstance(explained, Ok)
+        assert "knowledge_guidance" not in fake_agent.inputs[-1][1]
+        assert explained.value["knowledge_guidance_status"] == "low_confidence"
+        assert explained.value["knowledge_guidance_applied"] is False
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_semantic_route_for_image_keeps_image_context(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {
+                "language": "zh-CN",
+                "default_mode": MODE_COMPANION,
+                "auto_open_ui": False,
+                "llm_vision_enabled": True,
+            },
+            "ocr_reader": {"enabled": True},
+            "rapidocr": {"lang_type": "ch"},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    assert isinstance(result, Ok)
+    fake_agent = _FakeTutorAgent()
+    fake_agent.semantic_routing_result = json.dumps(
+        {
+            "subject": "chinese",
+            "content_type": "literary_text",
+            "intent": "analysis",
+            "entity": "image text",
+            "retrieval_concepts": ["文学类文本阅读"],
+            "confidence": 0.9,
+        },
+        ensure_ascii=False,
+    )
+    plugin._agent = fake_agent
+
+    try:
+        context = await plugin._build_learning_context(
+            "concept_explain",
+            input_text="分析图片中的文学选段",
+            extra={
+                "source_text": "分析图片中的文学选段",
+                "vision_image_base64": "data:image/png;base64,c2FmZQ==",
+            },
+        )
+
+        operations = [operation for _messages, operation in fake_agent.semantic_routing_calls]
+        assert operations == ["image:data:image/png;base64,c2FmZQ==", "knowledge_semantic_route"]
+        route_messages = fake_agent.semantic_routing_calls[-1][0]
+        content = route_messages[-1]["content"]
+        assert isinstance(content, list)
+        assert content[-1] == {
+            "type": "image_url",
+            "image_url": {
+                "url": "data:image/png;base64,c2FmZQ==",
+                "detail": "auto",
+            },
+        }
+        assert 0 < fake_agent.semantic_routing_deadlines[-1] - time.monotonic() <= 12
+        assert context["knowledge_guidance_subject"] == "chinese"
     finally:
         await plugin.shutdown()
 

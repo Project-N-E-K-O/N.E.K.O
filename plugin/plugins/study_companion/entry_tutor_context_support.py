@@ -18,7 +18,18 @@ from .entry_common import (
     _plugin_lock,
 )
 from .knowledge_graph_guidance import build_knowledge_guidance_payload
+from .knowledge_graph_guidance import match_topics
 from .models import public_current_question_payload
+from ._semantic_routing import (
+    StudyInputSemantics,
+    build_semantic_routing_messages,
+    parse_study_input_semantics,
+)
+
+
+_SEMANTIC_ROUTE_OPERATION = "knowledge_semantic_route"
+_SEMANTIC_ROUTE_MIN_CONFIDENCE = 0.6
+_SEMANTIC_ROUTE_TIMEOUT_SECONDS = 12.0
 
 
 def _warn(logger: Any, message: str, *args: Any) -> None:
@@ -38,6 +49,50 @@ class _LearningContext(dict[str, Any]):
         self.public_knowledge_guidance = public_knowledge_guidance
 
 
+def _knowledge_guidance_outcome(
+    *,
+    status: str,
+    semantics: StudyInputSemantics | None = None,
+    guidance: dict[str, Any] | None = None,
+    source: str = "semantic_route",
+) -> dict[str, Any]:
+    topic = guidance.get("topic") if isinstance(guidance, dict) else None
+    topic = topic if isinstance(topic, dict) else {}
+    related: list[dict[str, str]] = []
+    subgraph = guidance.get("relevant_subgraph") if isinstance(guidance, dict) else None
+    nodes = subgraph.get("nodes") if isinstance(subgraph, dict) else None
+    if isinstance(nodes, list):
+        focus_id = str(topic.get("id") or "").strip()
+        for node in nodes:
+            if not isinstance(node, dict):
+                continue
+            node_id = str(node.get("id") or "").strip()
+            label = str(node.get("label") or "").strip()
+            if node_id and label and node_id != focus_id:
+                related.append({"id": node_id, "label": label})
+            if len(related) >= 4:
+                break
+    applied = status == "applied" and bool(topic.get("id"))
+    subject = semantics.subject if semantics else str(topic.get("subject") or "unknown")
+    return {
+        "knowledge_guidance_applied": applied,
+        "knowledge_guidance_status": "applied" if applied else status,
+        "knowledge_guidance_subject": subject,
+        "knowledge_guidance_content_type": semantics.content_type if semantics else "",
+        "knowledge_guidance_entity": semantics.entity if semantics else "",
+        "knowledge_guidance_focus_topic": (
+            {
+                "id": str(topic.get("id") or ""),
+                "label": str(topic.get("label") or ""),
+            }
+            if applied
+            else {}
+        ),
+        "knowledge_guidance_related_topics": related if applied else [],
+        "knowledge_guidance_source": source,
+    }
+
+
 class _TutorContextSupportMixin:
     def _invalidate_knowledge_guidance_cache(self) -> None:
         cache = getattr(self, "_knowledge_guidance_topics_cache", None)
@@ -50,12 +105,12 @@ class _TutorContextSupportMixin:
         *,
         input_text: str = "",
         context: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
         if operation in {
             LLM_OPERATION_KNOWLEDGE_TRACK,
             LLM_OPERATION_SUMMARIZE_SESSION,
         }:
-            return {}
+            return {}, _knowledge_guidance_outcome(status="not_applicable")
         seed = dict(context or {})
         query = str(
             seed.get("source_text")
@@ -72,7 +127,7 @@ class _TutorContextSupportMixin:
             or ""
         ).strip()
         if not query and not topic_id:
-            return {}
+            return {}, _knowledge_guidance_outcome(status="not_applicable")
         try:
             cache_key = "all:5000"
             cache = getattr(self, "_knowledge_guidance_topics_cache", None)
@@ -83,12 +138,103 @@ class _TutorContextSupportMixin:
             if topics is None:
                 topics = await asyncio.to_thread(self._store.list_topics, 5000, None, None)
                 cache[cache_key] = list(topics or [])
-            return build_knowledge_guidance_payload(
-                topics=list(topics or []),
-                topic_id=topic_id,
-                query=query,
+            topic_items = list(topics or [])
+            if topic_id:
+                explicit = match_topics(topic_items, topic_id=topic_id, limit=1)
+                if not explicit:
+                    return {}, _knowledge_guidance_outcome(
+                        status="not_matched", source="selected_topic"
+                    )
+                explicit_topic = explicit[0]
+                semantics = StudyInputSemantics(
+                    subject=str(explicit_topic.get("subject") or "unknown"),
+                    content_type="selected_topic",
+                    intent="explicit_topic",
+                    entity=str(explicit_topic.get("label") or ""),
+                    retrieval_concepts=(str(explicit_topic.get("label") or ""),),
+                    confidence=1.0,
+                )
+                guidance = build_knowledge_guidance_payload(
+                    topics=topic_items,
+                    topic_id=topic_id,
+                    query=query,
+                    max_depth=3,
+                    match_limit=5,
+                )
+                return guidance, _knowledge_guidance_outcome(
+                    status="applied",
+                    semantics=semantics,
+                    guidance=guidance,
+                    source="selected_topic",
+                )
+            if operation != LLM_OPERATION_CONCEPT_EXPLAIN:
+                guidance = build_knowledge_guidance_payload(
+                    topics=topic_items,
+                    query=query,
+                    max_depth=3,
+                    match_limit=5,
+                )
+                status = (
+                    "applied"
+                    if guidance.get("summary", {}).get("matched")
+                    else "not_matched"
+                )
+                return guidance, _knowledge_guidance_outcome(
+                    status=status, guidance=guidance, source="query_match"
+                )
+
+            semantics, route_status = await self._route_study_input_semantics(
+                query, context=seed
+            )
+            if semantics is None:
+                return {}, _knowledge_guidance_outcome(status=route_status)
+            if semantics.confidence < _SEMANTIC_ROUTE_MIN_CONFIDENCE:
+                return {}, _knowledge_guidance_outcome(
+                    status="low_confidence", semantics=semantics
+                )
+            if semantics.subject == "unknown":
+                return {}, _knowledge_guidance_outcome(
+                    status="not_matched", semantics=semantics
+                )
+            semantic_query = " ".join(
+                part
+                for part in (
+                    semantics.entity,
+                    semantics.content_type,
+                    semantics.intent,
+                    *semantics.retrieval_concepts,
+                )
+                if part
+            )
+            matches = match_topics(
+                topic_items,
+                query=semantic_query,
+                subject=semantics.subject,
+                limit=5,
+            )
+            if not matches or int(matches[0].get("score") or 0) < 10:
+                return {}, _knowledge_guidance_outcome(
+                    status="not_matched", semantics=semantics
+                )
+            subject_topics = [
+                topic
+                for topic in topic_items
+                if str(topic.get("subject") or "").strip().lower()
+                == semantics.subject
+            ]
+            guidance = build_knowledge_guidance_payload(
+                topics=subject_topics,
+                topic_id=str(matches[0].get("id") or ""),
+                query=semantic_query,
                 max_depth=3,
                 match_limit=5,
+            )
+            if not guidance.get("summary", {}).get("matched"):
+                return {}, _knowledge_guidance_outcome(
+                    status="not_matched", semantics=semantics
+                )
+            return guidance, _knowledge_guidance_outcome(
+                status="applied", semantics=semantics, guidance=guidance
             )
         except Exception as exc:
             _warn(
@@ -96,7 +242,50 @@ class _TutorContextSupportMixin:
                 "study knowledge graph guidance failed: {}",
                 exc,
             )
-            return {}
+            return {}, _knowledge_guidance_outcome(status="routing_unavailable")
+
+    async def _route_study_input_semantics(
+        self, input_text: str, *, context: dict[str, Any]
+    ) -> tuple[StudyInputSemantics | None, str]:
+        agent = getattr(self, "_agent", None)
+        call_model = getattr(agent, "_call_model", None)
+        if not callable(call_model):
+            return None, "routing_unavailable"
+        messages: list[dict[str, Any]] = build_semantic_routing_messages(
+            text=input_text,
+            language=self._cfg.language,
+            has_images=bool(str(context.get("vision_image_base64") or "").strip()),
+        )
+        image = str(context.get("vision_image_base64") or "").strip()
+        if image:
+            attach_image = getattr(agent, "_attach_vision_image", None)
+            if not callable(attach_image):
+                return None, "routing_unavailable"
+            messages = attach_image(messages, image)
+        new_deadline = getattr(agent, "_new_operation_deadline", None)
+        route_deadline = time.monotonic() + _SEMANTIC_ROUTE_TIMEOUT_SECONDS
+        deadline = (
+            min(new_deadline(_SEMANTIC_ROUTE_OPERATION, messages), route_deadline)
+            if callable(new_deadline)
+            else route_deadline
+        )
+        try:
+            raw = await asyncio.wait_for(
+                call_model(
+                    messages,
+                    operation=_SEMANTIC_ROUTE_OPERATION,
+                    deadline=deadline,
+                ),
+                timeout=max(0.1, deadline - time.monotonic()),
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return None, "routing_unavailable"
+        semantics = parse_study_input_semantics(raw)
+        if semantics is None:
+            return None, "routing_unavailable"
+        return semantics, "applied"
 
     def _merge_session_summary_seed(
         self,
@@ -228,11 +417,12 @@ class _TutorContextSupportMixin:
                     }
         if extra:
             context.update(extra)
-        guidance = await self._build_knowledge_guidance_context(
+        guidance, guidance_outcome = await self._build_knowledge_guidance_context(
             operation,
             input_text=input_text,
             context=context,
         )
+        context.update(guidance_outcome)
         if guidance.get("summary", {}).get("matched"):
             context.public_knowledge_guidance = guidance
             if operation == LLM_OPERATION_CONCEPT_EXPLAIN:
@@ -364,6 +554,18 @@ class _TutorContextSupportMixin:
                     if isinstance(diagnosis_questions, list)
                     else []
                 )
+        for key in (
+            "knowledge_guidance_applied",
+            "knowledge_guidance_status",
+            "knowledge_guidance_subject",
+            "knowledge_guidance_content_type",
+            "knowledge_guidance_entity",
+            "knowledge_guidance_focus_topic",
+            "knowledge_guidance_related_topics",
+            "knowledge_guidance_source",
+        ):
+            if isinstance(extra_context, dict) and key in extra_context:
+                payload[key] = extra_context[key]
         payload.update(tracking_enrichment)
         return payload
 
