@@ -148,9 +148,13 @@ async def test_sdk_context_forwards_replace_own_config() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("persisted", (False, None))
+@pytest.mark.parametrize(
+    ("success", "persisted"),
+    ((True, False), (True, None), (False, True)),
+)
 @pytest.mark.parametrize("operation", ("update", "nested_set", "root_set"))
-async def test_plugin_config_write_rejects_non_persistent_result(
+async def test_plugin_config_write_rejects_failed_or_non_persistent_result(
+    success: bool,
     persisted: bool | None,
     operation: str,
 ) -> None:
@@ -158,7 +162,7 @@ async def test_plugin_config_write_rejects_non_persistent_result(
         @staticmethod
         def _response(config: dict[str, object]) -> dict[str, object]:
             return {
-                "success": False,
+                "success": success,
                 "persisted": persisted,
                 "config": config,
                 "message": "Config persistence did not complete",
