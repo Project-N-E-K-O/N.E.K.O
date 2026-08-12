@@ -147,6 +147,30 @@ async def test_sdk_context_forwards_replace_own_config() -> None:
     assert payload == {"config": {"replacement": {"enabled": True}}}
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("persisted", (False, None))
+async def test_plugin_config_update_rejects_non_persistent_result(
+    persisted: bool | None,
+) -> None:
+    class _NonPersistentCtx(_CoreCtx):
+        async def update_own_config(
+            self,
+            updates: dict[str, object],
+            timeout: float = 10.0,
+        ) -> dict[str, object]:
+            return {
+                "success": False,
+                "persisted": persisted,
+                "config": updates,
+                "message": "Config persistence did not complete",
+            }
+
+    config = core_config.PluginConfig(_NonPersistentCtx())
+
+    with pytest.raises(TransportError, match="Config persistence did not complete"):
+        await config.update({"feature": {"enabled": True}})
+
+
 def test_core_base_and_hook_classes() -> None:
     base = _DemoPlugin(ctx=_CoreCtx())
     assert base.ctx.plugin_id == "demo"

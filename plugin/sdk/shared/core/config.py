@@ -332,6 +332,13 @@ class PluginConfig:
             raise TransportError("ctx.update_own_config is not available") from error
         except (RuntimeError, ValueError, TimeoutError, TypeError) as error:
             raise TransportError(f"failed to update runtime config: {error}") from error
+        if isinstance(raw, dict) and (
+            raw.get("success") is False
+            or ("persisted" in raw and raw.get("persisted") is not True)
+        ):
+            message = raw.get("message")
+            detail = message if isinstance(message, str) and message else "persistence did not complete"
+            raise TransportError(f"failed to update runtime config: {detail}")
         return unwrap_config_payload(raw)
 
     async def _replace_runtime_config(self, config: JsonObject, *, timeout: float) -> JsonObject:
