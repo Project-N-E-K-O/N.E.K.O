@@ -17,7 +17,7 @@ from plugin.server.infrastructure.config_toml import (
 logger = get_logger("server.infrastructure.config_queries")
 
 
-def load_plugin_base_config(plugin_id: str) -> dict[str, object]:
+def _load_plugin_resolved_config(plugin_id: str, *, config_key: str) -> dict[str, object]:
     resolved = resolve_plugin_config(
         plugin_id,
         include_effective_config=False,
@@ -25,12 +25,20 @@ def load_plugin_base_config(plugin_id: str) -> dict[str, object]:
     )
     return {
         "plugin_id": plugin_id,
-        "config": resolved["base_config"],
+        "config": resolved[config_key],
         "last_modified": resolved["last_modified"],
         "config_path": resolved["config_path"],
         "profiles_state": resolved["profiles_state"],
         "warnings": resolved["warnings"],
     }
+
+
+def load_plugin_base_config(plugin_id: str) -> dict[str, object]:
+    return _load_plugin_resolved_config(plugin_id, config_key="base_config")
+
+
+def load_plugin_effective_base_config(plugin_id: str) -> dict[str, object]:
+    return _load_plugin_resolved_config(plugin_id, config_key="effective_config")
 
 
 def load_plugin_config(plugin_id: str, *, validate: bool = True) -> dict[str, object]:
