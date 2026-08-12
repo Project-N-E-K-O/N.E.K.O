@@ -179,6 +179,9 @@
       v-model="installTaskDialogVisible"
       :title="installTaskTitle"
       width="420px"
+      append-to-body
+      align-center
+      :lock-scroll="true"
       :close-on-click-modal="false"
       :show-close="installTaskDone"
     >
@@ -217,6 +220,20 @@
         />
       </div>
       <template #footer>
+        <el-button
+          v-if="!installTaskDone"
+          :loading="installTaskCancelling"
+          :disabled="activeInstallTask?.cancel_requested"
+          @click="cancelInstallTask"
+        >
+          {{ t('market.cancelInstall') }}
+        </el-button>
+        <el-button
+          v-if="!installTaskDone"
+          @click="installTaskDialogVisible = false"
+        >
+          {{ t('market.silentInstall') }}
+        </el-button>
         <el-button
           v-if="installTaskDone"
           type="primary"
@@ -304,6 +321,7 @@ interface MarketInstallTask {
   total_bytes?: number | null
   error?: string | null
   error_code?: string | null
+  cancel_requested?: boolean
   rollback?: {
     running?: boolean
     restored?: boolean
@@ -314,10 +332,11 @@ const installTaskDialogVisible = ref(false)
 const activeInstallTask = ref<MarketInstallTask | null>(null)
 const activeInstallPluginName = ref('')
 const activeInstallMode = ref<'install' | 'upgrade' | 'reinstall'>('install')
+const installTaskCancelling = ref(false)
 
 const installTaskDone = computed(() => {
   const status = activeInstallTask.value?.status
-  return status === 'completed' || status === 'failed'
+  return status === 'completed' || status === 'failed' || status === 'canceled'
 })
 
 const installTaskPercent = computed(() =>
@@ -367,6 +386,7 @@ function beginInstallTaskTracking(
   pluginName: string,
   mode: 'install' | 'upgrade' | 'reinstall' = 'install',
 ) {
+  installTaskCancelling.value = false
   activeInstallPluginName.value = pluginName
   activeInstallMode.value = mode
   activeInstallTask.value = {
@@ -393,6 +413,30 @@ function markInstallTaskFailed(
     status: 'failed',
     stage: 'failed',
     error: options.error ?? message,
+  }
+}
+
+async function cancelInstallTask() {
+  const taskId = activeInstallTask.value?.task_id
+  if (!taskId || installTaskDone.value || installTaskCancelling.value) return
+
+  installTaskCancelling.value = true
+  try {
+    const res = await fetchBridge(`/market/tasks/${taskId}/cancel`, { method: 'POST' })
+    if (!res) {
+      ElMessage.warning(t('market.pairRequired'))
+      return
+    }
+    if (res.ok) {
+      activeInstallTask.value = (await res.json()) as MarketInstallTask
+      return
+    }
+    const err = await res.json().catch(() => ({}))
+    ElMessage.warning(err.detail || t('market.cancelInstallUnavailable'))
+  } catch {
+    ElMessage.warning(t('market.cancelInstallUnavailable'))
+  } finally {
+    installTaskCancelling.value = false
   }
 }
 
@@ -928,6 +972,10 @@ async function pollInstallTask(
         }
         if (task.status === 'failed') {
           ElMessage.error(resolveInstallTaskErrorMessage(task))
+          return false
+        }
+        if (task.status === 'canceled') {
+          ElMessage.info(t('market.installCancelled'))
           return false
         }
       }
