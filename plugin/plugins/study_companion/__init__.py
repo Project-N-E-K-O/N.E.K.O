@@ -239,6 +239,7 @@ from .entry_tutor_question_entries import _TutorQuestionEntriesMixin
 from .entry_tutor_answer_entries import _TutorAnswerEntriesMixin
 from .entry_tutor_summary_entries import _TutorSummaryEntriesMixin
 from .entry_document_analysis import _DocumentAnalysisEntriesMixin
+from .entry_document_analysis_jobs import _DocumentAnalysisJobsEntriesMixin
 from .entry_ocr_entries import _OcrEntriesMixin
 from .entry_neko_commands import (
     _INTERRUPT_COMMANDS,
@@ -274,6 +275,7 @@ class StudyCompanionPlugin(
     _TutorQuestionEntriesMixin,
     _TutorAnswerEntriesMixin,
     _TutorSummaryEntriesMixin,
+    _DocumentAnalysisJobsEntriesMixin,
     _DocumentAnalysisEntriesMixin,
     _OcrEntriesMixin,
     _NotebookEntriesMixin,
@@ -457,6 +459,9 @@ class StudyCompanionPlugin(
             self.logger.warning("study auto-open UI failed: {}", exc)
 
     async def _cleanup_after_failed_startup(self) -> None:
+        document_jobs = getattr(self, "_document_jobs", None)
+        if document_jobs is not None:
+            await document_jobs.shutdown()
         self.stop_awareness_loop()
         await self._await_awareness_stop()
         await self._unsubscribe_neko_commands()
@@ -513,6 +518,9 @@ class StudyCompanionPlugin(
 
     @lifecycle(id="shutdown")
     async def shutdown(self, **_):
+        document_jobs = getattr(self, "_document_jobs", None)
+        if document_jobs is not None:
+            await document_jobs.shutdown()
         self.stop_awareness_loop()
         await self._await_awareness_stop()
         await self._unsubscribe_neko_commands()

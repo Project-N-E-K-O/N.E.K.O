@@ -420,5 +420,13 @@ TutorLLMAgent.expand_note = expand_note  # type: ignore[method-assign]
 TutorLLMAgent.summarize_to_note = summarize_to_note  # type: ignore[method-assign]
 
 from .tutor_llm_agent_document import document_analyze
+from .tutor_llm_agent_document_chunked import (
+    analyze_document_chunk,
+    build_document_merge_messages,
+    merge_document_chunks,
+)
 
 TutorLLMAgent.document_analyze = document_analyze  # type: ignore[attr-defined]
+TutorLLMAgent.analyze_document_chunk = analyze_document_chunk  # type: ignore[attr-defined]
+TutorLLMAgent.merge_document_chunks = merge_document_chunks  # type: ignore[attr-defined]
+TutorLLMAgent.build_document_merge_messages = staticmethod(build_document_merge_messages)  # type: ignore[attr-defined]

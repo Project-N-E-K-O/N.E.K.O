@@ -2,10 +2,13 @@ import { useEffect, useRef, useState } from '@neko/plugin-ui';
 import type { PluginSurfaceProps } from '@neko/plugin-ui';
 import { callPlugin as callHostedPlugin, ensureBrandCSS } from './study_surface_utils';
 import {
+  estimateDocumentChunkCount,
+  estimatedDocumentAnalysisMode,
   metadataForEditedDocument,
   oneStudyDocument,
   readStudyDocument,
   STUDY_DOCUMENT_ANALYSIS_KINDS,
+  STUDY_DOCUMENT_DIRECT_MAX_ESTIMATED_TOKENS,
   STUDY_DOCUMENT_MAX_BYTES,
   STUDY_DOCUMENT_MAX_ESTIMATED_TOKENS,
   StudyDocumentError,
@@ -56,12 +59,40 @@ type GeneratedQuestion = {
   selected_topic_name?: string;
 };
 
+type DocumentJobState = {
+  jobId: string;
+  status: string;
+  stage: string;
+  analysisMode: string;
+  completedChunks: number;
+  totalChunks: number;
+  progress: number;
+};
+
+type DocumentJobPayload = {
+  job_id?: string;
+  status?: string;
+  stage?: string;
+  analysis_mode?: string;
+  completed_chunks?: number;
+  total_chunks?: number;
+  chunks?: number;
+  progress?: number;
+  reply?: string;
+  summary?: string;
+  degraded?: boolean;
+  diagnostic?: string;
+};
+
 const ENTRY_TIMEOUT_MS: Record<string, number> = {
   study_status: 15000,
   study_ocr_snapshot: 60000,
   study_set_mode: 15000,
   study_explain_text: 70000,
   study_analyze_document: 105000,
+  study_start_document_analysis: 30000,
+  study_document_analysis_status: 15000,
+  study_cancel_document_analysis: 15000,
   study_generate_question: 70000,
   study_question_context: 30000,
   study_generate_targeted_question: 55000,
@@ -681,9 +712,13 @@ export default function StudyPanel(props: PluginSurfaceProps) {
   const [documentInstruction, setDocumentInstruction] = useState('');
   const [documentDragging, setDocumentDragging] = useState(false);
   const [documentReading, setDocumentReading] = useState(false);
+  const [documentJob, setDocumentJob] = useState<DocumentJobState | null>(null);
   const explainControllerRef = useRef<AbortController | null>(null);
   const pasteControllerRef = useRef<AbortController | null>(null);
   const documentControllerRef = useRef<AbortController | null>(null);
+  const documentJobControllerRef = useRef<AbortController | null>(null);
+  const documentJobIdRef = useRef('');
+  const documentCancelRequestedRef = useRef(false);
   const documentInputRef = useRef<HTMLInputElement | null>(null);
   const mountedRef = useRef(false);
   const textImageRef = useRef('');
@@ -693,6 +728,8 @@ export default function StudyPanel(props: PluginSurfaceProps) {
   const replySectionRef = useRef<HTMLDivElement | null>(null);
   const currentMode = String(status.active_mode || status.mode || 'companion');
   const interactionBusy = busy || pastePending;
+  const documentJobBusy = Boolean(documentJob && ['starting', 'queued', 'running', 'cancel_requested'].includes(documentJob.status));
+  const documentInteractionBusy = interactionBusy || documentReading || documentJobBusy;
 
   useEffect(() => {
     ensureBrandCSS();
@@ -806,7 +843,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
       provider_unavailable: ['ui.error.llm_provider_unavailable', 'Qwen is temporarily unavailable. Please retry shortly.'],
       invalid_image: ['ui.error.llm_invalid_image', 'The image could not be read. Please use a valid JPEG or PNG image.'],
       document_too_large: ['ui.document.error.file_too_large', 'The document exceeds the 512 KiB size limit.'],
-      document_too_long: ['ui.document.error.too_long', 'The document exceeds the 24,000-token limit. Shorten it and retry.'],
+      document_too_long: ['ui.document.error.too_long', 'The document exceeds the 160,000-token limit. Shorten it and retry.'],
       empty_document: ['ui.document.error.empty', 'The document is empty or contains only whitespace.'],
       binary_document: ['ui.document.error.binary', 'This file appears to contain binary data.'],
       invalid_document_encoding: ['ui.document.error.encoding', 'The document encoding could not be recognized. Save it as UTF-8 and retry.'],
@@ -821,6 +858,13 @@ export default function StudyPanel(props: PluginSurfaceProps) {
       llm_call_failed: documentOperation
         ? ['ui.error.document_analysis_llm_call_failed', 'The Qwen document analysis request failed.']
         : ['ui.error.llm_call_failed', 'The Qwen request failed. Please retry.'],
+      document_job_busy: ['ui.error.document_job_busy', 'Another document analysis is already running.'],
+      document_job_not_found: ['ui.error.document_job_not_found', 'The document analysis job is no longer available.'],
+      document_split_failed: ['ui.error.document_split_failed', 'The document could not be split safely for analysis.'],
+      document_chunk_failed: ['ui.error.document_chunk_failed', 'A document section could not be analyzed.'],
+      document_merge_failed: ['ui.error.document_merge_failed', 'The document sections could not be merged into a final analysis.'],
+      document_merge_budget_exceeded: ['ui.error.document_merge_budget_exceeded', 'The section analyses are too long to merge safely.'],
+      document_canceled: ['ui.error.document_canceled', 'Document analysis canceled.'],
     };
     const [key, fallback] = messages[String(diagnostic || '').trim()]
       || ['ui.error.llm_call_failed', 'The Qwen request failed. Please retry.'];
@@ -857,7 +901,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
       binary_document: ['ui.document.error.binary', 'This file appears to contain binary data.'],
       encoding_unrecognized: ['ui.document.error.encoding', 'The document encoding could not be recognized. Save it as UTF-8 and retry.'],
       unsafe_document_content: ['ui.document.error.unsafe_content', 'The document contains an oversized embedded payload or line.'],
-      document_too_long: ['ui.document.error.too_long', 'The document is estimated to exceed the 24,000-token limit. Shorten it and retry.'],
+      document_too_long: ['ui.document.error.too_long', 'The document is estimated to exceed the 160,000-token limit. Shorten it and retry.'],
     };
     const code = error instanceof StudyDocumentError ? error.code : '';
     const [key, fallback] = messages[code]
@@ -866,7 +910,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
   }
 
   async function importDocumentFiles(files: FileList | File[]) {
-    if (isInteractionBusy()) return;
+    if (isInteractionBusy() || documentJobBusy) return;
     documentControllerRef.current?.abort();
     const controller = new AbortController();
     documentControllerRef.current = controller;
@@ -897,6 +941,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
   }
 
   function removeStudyDocument() {
+    if (documentJobBusy) return;
     documentControllerRef.current?.abort();
     documentControllerRef.current = null;
     setStudyDocument(null);
@@ -909,6 +954,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
   }
 
   function editDocumentSource(value: string) {
+    if (documentJobBusy) return;
     setDocumentSource(value);
     if (studyDocument) {
       setStudyDocument(metadataForEditedDocument(studyDocument, value));
@@ -916,8 +962,118 @@ export default function StudyPanel(props: PluginSurfaceProps) {
     }
   }
 
+  function normalizeDocumentJob(payload: DocumentJobPayload, fallbackJobId = ''): DocumentJobState {
+    const totalChunks = Math.max(0, Math.floor(Number(payload.total_chunks ?? payload.chunks) || 0));
+    const completedChunks = Math.max(0, Math.min(totalChunks || Number.MAX_SAFE_INTEGER, Math.floor(Number(payload.completed_chunks) || 0)));
+    return {
+      jobId: String(payload.job_id || fallbackJobId),
+      status: String(payload.status || 'running'),
+      stage: String(payload.stage || 'validating'),
+      analysisMode: String(payload.analysis_mode || ''),
+      completedChunks,
+      totalChunks,
+      progress: Math.max(0, Math.min(1, Number(payload.progress) || 0)),
+    };
+  }
+
+  function waitForDocumentPoll(ms: number, signal: AbortSignal) {
+    return new Promise<void>((resolve, reject) => {
+      if (signal.aborted) {
+        reject(new DOMException('Aborted', 'AbortError'));
+        return;
+      }
+      const timeoutId = window.setTimeout(resolve, ms);
+      signal.addEventListener('abort', () => {
+        window.clearTimeout(timeoutId);
+        reject(new DOMException('Aborted', 'AbortError'));
+      }, { once: true });
+    });
+  }
+
+  async function pollDocumentJob(jobId: string, controller: AbortController) {
+    let pollDelayMs = 1000;
+    let consecutiveFailures = 0;
+    try {
+      while (!controller.signal.aborted && mountedRef.current) {
+        await waitForDocumentPoll(pollDelayMs, controller.signal);
+        let data: DocumentJobPayload;
+        try {
+          data = await callStudyPlugin<DocumentJobPayload>(
+            props.api,
+            'study_document_analysis_status',
+            String(props.locale || '').trim(),
+            { job_id: jobId },
+            controller.signal,
+          );
+          consecutiveFailures = 0;
+        } catch (error) {
+          if (controller.signal.aborted) return;
+          consecutiveFailures += 1;
+          if (consecutiveFailures < 3) {
+            pollDelayMs = 2000;
+            continue;
+          }
+          throw error;
+        }
+        if (controller.signal.aborted || !mountedRef.current) return;
+        const nextJob = normalizeDocumentJob(data, jobId);
+        setDocumentJob(nextJob);
+        if (['completed', 'succeeded'].includes(nextJob.status)) {
+          setReply(data.degraded
+            ? formatTutorDiagnostic(data.diagnostic, true)
+            : (data.reply || data.summary || ''));
+          await refresh(controller.signal, { updateReply: false });
+          return;
+        }
+        if (['failed', 'canceled', 'timeout'].includes(nextJob.status)) {
+          setReply(formatTutorDiagnostic(data.diagnostic || (nextJob.status === 'canceled' ? 'document_canceled' : nextJob.status), true));
+          return;
+        }
+        pollDelayMs = 2000;
+      }
+    } catch (error) {
+      if (!controller.signal.aborted && mountedRef.current) {
+        setReply(formatPluginError(error));
+      }
+    } finally {
+      if (documentJobControllerRef.current === controller) {
+        documentJobControllerRef.current = null;
+        documentJobIdRef.current = '';
+        if (!controller.signal.aborted && mountedRef.current) setDocumentJob(null);
+      }
+    }
+  }
+
+  async function cancelDocumentJob() {
+    const jobId = documentJobIdRef.current;
+    if (!jobId) {
+      documentCancelRequestedRef.current = true;
+      setDocumentJob((current) => current ? { ...current, status: 'cancel_requested', stage: 'canceling' } : current);
+      return;
+    }
+    documentCancelRequestedRef.current = false;
+    documentJobControllerRef.current?.abort();
+    documentJobControllerRef.current = null;
+    setDocumentJob((current) => current ? { ...current, status: 'cancel_requested', stage: 'canceling' } : current);
+    try {
+      const data = await callHostedPlugin<DocumentJobPayload>(
+        props.api,
+        'study_cancel_document_analysis',
+        { job_id: jobId, locale: String(props.locale || '').trim() },
+        { timeoutMs: timeoutForEntry('study_cancel_document_analysis') },
+      );
+      if (!mountedRef.current) return;
+      setReply(formatTutorDiagnostic(data.diagnostic || 'document_canceled', true));
+    } catch (error) {
+      if (mountedRef.current) setReply(formatPluginError(error));
+    } finally {
+      documentJobIdRef.current = '';
+      if (mountedRef.current) setDocumentJob(null);
+    }
+  }
+
   async function analyzeDocument() {
-    if (isInteractionBusy() || !studyDocument) return;
+    if (isInteractionBusy() || documentJobBusy || !studyDocument) return;
     const sourceText = documentSource.trim();
     if (!sourceText) {
       setDocumentError(t('ui.document.error.empty', 'The document is empty or contains only whitespace.'));
@@ -929,31 +1085,68 @@ export default function StudyPanel(props: PluginSurfaceProps) {
       setDocumentError(t('ui.document.error.file_too_large', 'The edited document exceeds the 512 KiB size limit.'));
       return;
     }
-    const controller = beginStudyRequest();
-    setBusy(true);
+    if (currentDocument.estimatedTokens > STUDY_DOCUMENT_MAX_ESTIMATED_TOKENS) {
+      setStudyDocument(currentDocument);
+      setDocumentError(t('ui.document.error.too_long', 'The document is estimated to exceed the 160,000-token limit. Shorten it and retry.'));
+      return;
+    }
+    documentJobControllerRef.current?.abort();
+    const controller = new AbortController();
+    documentJobControllerRef.current = controller;
+    documentCancelRequestedRef.current = false;
+    setDocumentJob({
+      jobId: '',
+      status: 'starting',
+      stage: 'validating',
+      analysisMode: estimatedDocumentAnalysisMode(currentDocument.estimatedTokens),
+      completedChunks: 0,
+      totalChunks: currentDocument.estimatedTokens > STUDY_DOCUMENT_DIRECT_MAX_ESTIMATED_TOKENS
+        ? estimateDocumentChunkCount(currentDocument.estimatedTokens)
+        : 1,
+      progress: 0,
+    });
     setDocumentError('');
     setReply(t('ui.document.status.analyzing', 'Analyzing document...'));
     scrollReplyIntoView();
     try {
-      const data = await callStudyPlugin(props.api, 'study_analyze_document', props.locale, {
+      const data = await callStudyPlugin<DocumentJobPayload>(props.api, 'study_start_document_analysis', props.locale, {
         document_name: currentDocument.name,
         document_type: currentDocument.type,
         document_text: documentSource,
         analysis_kind: documentKind,
         analysis_instruction: documentInstruction.trim(),
         locale: String(props.locale || '').trim(),
-      }, controller.signal) as {
-        reply?: string;
-        summary?: string;
-        degraded?: boolean;
-        diagnostic?: string;
-      };
-      if (controller.signal.aborted) return;
-      setReply(data.degraded
-        ? formatTutorDiagnostic(data.diagnostic, true)
-        : (data.reply || data.summary || ''));
+      });
+      if (!mountedRef.current) {
+        if (data.job_id) {
+          await callHostedPlugin(
+            props.api,
+            'study_cancel_document_analysis',
+            { job_id: String(data.job_id), locale: String(props.locale || '').trim() },
+            { timeoutMs: timeoutForEntry('study_cancel_document_analysis') },
+          ).catch(() => undefined);
+        }
+        return;
+      }
+      if (data.degraded || !data.job_id) {
+        setReply(formatTutorDiagnostic(data.diagnostic || 'llm_call_failed', true));
+        return;
+      }
+      const jobId = String(data.job_id);
+      documentJobIdRef.current = jobId;
+      if (documentCancelRequestedRef.current || !mountedRef.current) {
+        await callHostedPlugin(
+          props.api,
+          'study_cancel_document_analysis',
+          { job_id: jobId, locale: String(props.locale || '').trim() },
+          { timeoutMs: timeoutForEntry('study_cancel_document_analysis') },
+        ).catch(() => undefined);
+        documentJobIdRef.current = '';
+        return;
+      }
+      setDocumentJob(normalizeDocumentJob(data, jobId));
       setStudyDocument(currentDocument);
-      await refresh(controller.signal, { updateReply: false });
+      await pollDocumentJob(jobId, controller);
     } catch (error) {
       if (!controller.signal.aborted) {
         setReply(error instanceof Error && /plugin call timed out|plugin_call_timeout/i.test(error.message)
@@ -961,8 +1154,10 @@ export default function StudyPanel(props: PluginSurfaceProps) {
           : formatPluginError(error));
       }
     } finally {
-      if (!controller.signal.aborted) setBusy(false);
-      endStudyRequest(controller);
+      if (documentJobControllerRef.current === controller && !documentJobIdRef.current) {
+        documentJobControllerRef.current = null;
+        if (!controller.signal.aborted && mountedRef.current) setDocumentJob(null);
+      }
     }
   }
 
@@ -1248,6 +1443,19 @@ export default function StudyPanel(props: PluginSurfaceProps) {
       });
     return () => {
       mountedRef.current = false;
+      const jobId = documentJobIdRef.current;
+      if (jobId) {
+        void callHostedPlugin(
+          props.api,
+          'study_cancel_document_analysis',
+          { job_id: jobId, locale: String(props.locale || '').trim() },
+          { timeoutMs: timeoutForEntry('study_cancel_document_analysis') },
+        ).catch(() => undefined);
+      }
+      documentJobIdRef.current = '';
+      documentCancelRequestedRef.current = false;
+      documentJobControllerRef.current?.abort();
+      documentJobControllerRef.current = null;
       controller.abort();
       explainControllerRef.current?.abort();
       explainControllerRef.current = null;
@@ -1402,7 +1610,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
         className={`study-panel__document-drop${documentDragging ? ' is-dragging' : ''}`}
         onDragEnter={(event) => {
           event.preventDefault();
-          if (!interactionBusy) setDocumentDragging(true);
+          if (!documentInteractionBusy) setDocumentDragging(true);
         }}
         onDragOver={(event) => {
           event.preventDefault();
@@ -1425,7 +1633,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
             className="study-panel__document-input"
             type="file"
             accept=".txt,.md,.markdown,text/plain,text/markdown"
-            disabled={interactionBusy}
+            disabled={documentInteractionBusy}
             onChange={(event) => {
               const files = event.target.files;
               if (files) void importDocumentFiles(files);
@@ -1434,7 +1642,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
           />
           <button
             type="button"
-            disabled={interactionBusy}
+            disabled={documentInteractionBusy}
             onClick={() => documentInputRef.current?.click()}
           >
             {t('ui.document.import', 'Import TXT / Markdown')}
@@ -1484,15 +1692,25 @@ export default function StudyPanel(props: PluginSurfaceProps) {
               : t('ui.document.not_retained', 'The original document will not be retained.')}</small>
             {studyDocument.estimatedTokens > STUDY_DOCUMENT_MAX_ESTIMATED_TOKENS ? (
               <small className="study-panel__document-warning">
-                {t('ui.document.estimate_warning', 'The estimate is above 24,000 tokens. The server will verify the exact token count before analysis.')}
+                {t('ui.error.document_too_long', 'The estimate is above 160,000 tokens and cannot be analyzed without shortening the document.')}
               </small>
-            ) : null}
+            ) : studyDocument.estimatedTokens > STUDY_DOCUMENT_DIRECT_MAX_ESTIMATED_TOKENS ? (
+              <small className="study-panel__document-warning">
+                {tf(
+                  'ui.document.chunked_mode_hint',
+                  'Long document: it will be analyzed in about {chunks} sections and then merged.',
+                  { chunks: estimateDocumentChunkCount(studyDocument.estimatedTokens).toLocaleString() },
+                )}
+              </small>
+            ) : (
+              <small>{t('ui.document.direct_mode_hint', 'This document will be analyzed in one pass.')}</small>
+            )}
           </div>
           <label>
             <span>{t('ui.document.kind_label', 'Analysis type')}</span>
             <select
               value={documentKind}
-              disabled={interactionBusy}
+              disabled={documentInteractionBusy}
               onChange={(event) => setDocumentKind(event.target.value as StudyDocumentAnalysisKind)}
             >
               {STUDY_DOCUMENT_ANALYSIS_KINDS.map((kind) => (
@@ -1516,7 +1734,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
             <input
               value={documentInstruction}
               maxLength={1000}
-              disabled={interactionBusy}
+              disabled={documentInteractionBusy}
               onChange={(event) => setDocumentInstruction(event.target.value)}
               placeholder={t('ui.document.instruction_placeholder', 'For example: extract exam topics')}
             />
@@ -1525,7 +1743,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
             open={documentEditorOpen}
             onToggle={(event) => {
               const nextOpen = event.currentTarget.open;
-              if (interactionBusy) {
+              if (documentInteractionBusy) {
                 event.currentTarget.open = documentEditorOpen;
                 return;
               }
@@ -1533,9 +1751,9 @@ export default function StudyPanel(props: PluginSurfaceProps) {
             }}
           >
             <summary
-              aria-disabled={interactionBusy}
+              aria-disabled={documentInteractionBusy}
               onClick={(event) => {
-                if (interactionBusy) event.preventDefault();
+                if (documentInteractionBusy) event.preventDefault();
               }}
             >
               {t('ui.document.edit', 'View or edit document text')}
@@ -1543,17 +1761,43 @@ export default function StudyPanel(props: PluginSurfaceProps) {
             <textarea
               aria-label={t('ui.document.editor_label', 'Imported document text')}
               value={documentSource}
-              readOnly={interactionBusy}
+              readOnly={documentInteractionBusy}
               onChange={(event) => editDocumentSource(event.target.value)}
             />
           </details>
+          {documentJob ? (
+            <div className="study-panel__document-progress" aria-live="polite">
+              <span>{documentJob.stage === 'analyzing_chunks' && documentJob.totalChunks > 1
+                ? tf(
+                  'ui.document.progress_chunks',
+                  'Analyzing section {completed} of {total}',
+                  {
+                    completed: documentJob.completedChunks.toLocaleString(),
+                    total: documentJob.totalChunks.toLocaleString(),
+                  },
+                )
+                : t(`ui.document.stage.${documentJob.stage}`, 'Analyzing document...')}</span>
+              <progress value={documentJob.progress} max={1} />
+              <small>{Math.round(documentJob.progress * 100)}%</small>
+            </div>
+          ) : null}
           <div className="study-panel__actions">
-            <button type="button" disabled={interactionBusy} onClick={removeStudyDocument}>
+            <button type="button" disabled={documentInteractionBusy} onClick={removeStudyDocument}>
               {t('ui.document.remove', 'Remove')}
             </button>
-            <button type="button" disabled={interactionBusy} onClick={() => void analyzeDocument()}>
-              {interactionBusy ? t('ui.button.loading', 'Loading...') : t('ui.document.analyze', 'Analyze document')}
-            </button>
+            {documentJobBusy ? (
+              <button type="button" onClick={() => void cancelDocumentJob()}>
+                {t('ui.document.cancel_analysis', 'Cancel analysis')}
+              </button>
+            ) : (
+              <button
+                type="button"
+                disabled={interactionBusy || studyDocument.estimatedTokens > STUDY_DOCUMENT_MAX_ESTIMATED_TOKENS}
+                onClick={() => void analyzeDocument()}
+              >
+                {interactionBusy ? t('ui.button.loading', 'Loading...') : t('ui.document.analyze', 'Analyze document')}
+              </button>
+            )}
           </div>
         </section>
       ) : null}

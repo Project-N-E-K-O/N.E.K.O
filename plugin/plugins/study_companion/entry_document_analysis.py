@@ -8,6 +8,7 @@ from .document_analysis import (
     DocumentValidationError,
     validate_document,
 )
+from .document_chunking import DOCUMENT_DIRECT_MAX_TOKENS
 
 
 class _DocumentAnalysisEntriesMixin:
@@ -75,6 +76,7 @@ class _DocumentAnalysisEntriesMixin:
                 analysis_instruction=analysis_instruction,
                 analysis_kind=analysis_kind,
                 locale=locale,
+                max_tokens=DOCUMENT_DIRECT_MAX_TOKENS,
             )
         except DocumentValidationError as exc:
             return Ok(

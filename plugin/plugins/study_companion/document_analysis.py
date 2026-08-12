@@ -8,7 +8,7 @@ from utils.tokenize import count_tokens
 
 
 DOCUMENT_MAX_BYTES = 512 * 1024
-DOCUMENT_MAX_TOKENS = 24_000
+DOCUMENT_MAX_TOKENS = 160_000
 DOCUMENT_INSTRUCTION_MAX_TOKENS = 300
 DOCUMENT_OUTPUT_MAX_TOKENS = 3_072
 DOCUMENT_ENTRY_TIMEOUT_SECONDS = 95.0
@@ -252,6 +252,7 @@ def validate_document(
     analysis_instruction: object = "",
     locale: object = "zh-CN",
     analysis_kind: object = "auto",
+    max_tokens: int = DOCUMENT_MAX_TOKENS,
 ) -> ValidatedDocument:
     name = normalize_document_name(document_name)
     normalized_type = _normalized_document_type(name, document_type)
@@ -262,9 +263,9 @@ def validate_document(
         )
     _validate_text_content(text)
     tokens = count_tokens(text)
-    if tokens > DOCUMENT_MAX_TOKENS:
+    if tokens > max_tokens:
         raise DocumentValidationError(
-            f"document is too long ({tokens} tokens; max {DOCUMENT_MAX_TOKENS})",
+            f"document is too long ({tokens} tokens; max {max_tokens})",
             diagnostic="document_too_long",
         )
     instruction = str(analysis_instruction or "").strip()

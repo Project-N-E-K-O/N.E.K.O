@@ -1,5 +1,7 @@
 export const STUDY_DOCUMENT_MAX_BYTES = 512 * 1024;
-export const STUDY_DOCUMENT_MAX_ESTIMATED_TOKENS = 24_000;
+export const STUDY_DOCUMENT_DIRECT_MAX_ESTIMATED_TOKENS = 48_000;
+export const STUDY_DOCUMENT_MAX_ESTIMATED_TOKENS = 160_000;
+export const STUDY_DOCUMENT_TARGET_CHUNK_TOKENS = 10_000;
 
 const SUPPORTED_EXTENSIONS = new Map([
   ['.txt', 'text/plain'],
@@ -157,6 +159,16 @@ function validateText(text: string, bytes: Uint8Array, encoding: string) {
 
 export function estimateDocumentTokens(text: string) {
   return Math.ceil(new TextEncoder().encode(text).byteLength / 3);
+}
+
+export function estimatedDocumentAnalysisMode(tokens: number): 'direct' | 'chunked' | 'over_limit' {
+  if (tokens <= STUDY_DOCUMENT_DIRECT_MAX_ESTIMATED_TOKENS) return 'direct';
+  if (tokens <= STUDY_DOCUMENT_MAX_ESTIMATED_TOKENS) return 'chunked';
+  return 'over_limit';
+}
+
+export function estimateDocumentChunkCount(tokens: number) {
+  return Math.max(1, Math.ceil(tokens / STUDY_DOCUMENT_TARGET_CHUNK_TOKENS));
 }
 
 export function metadataForEditedDocument(document: StudyDocument, text: string): StudyDocument {

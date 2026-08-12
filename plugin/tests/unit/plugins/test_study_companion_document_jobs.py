@@ -1,0 +1,478 @@
+from __future__ import annotations
+
+import asyncio
+
+import pytest
+
+from plugin.plugins.study_companion import StudyCompanionPlugin
+from plugin.plugins.study_companion.constants import (
+    LLM_OPERATION_DOCUMENT_ANALYZE,
+    LLM_OPERATION_DOCUMENT_CHUNK_ANALYZE,
+    LLM_OPERATION_DOCUMENT_MERGE,
+)
+from plugin.plugins.study_companion.document_analysis import (
+    DOCUMENT_MAX_TOKENS,
+    ValidatedDocument,
+)
+from plugin.plugins.study_companion import document_analysis as document_module
+from plugin.plugins.study_companion.document_analysis import (
+    DocumentValidationError,
+    validate_document,
+)
+from plugin.plugins.study_companion.document_analysis_jobs import (
+    DocumentAnalysisJobError,
+    DocumentAnalysisJobManager,
+)
+from plugin.plugins.study_companion.document_chunking import (
+    DOCUMENT_DIRECT_MAX_TOKENS,
+    DocumentChunk,
+)
+from plugin.plugins.study_companion.models import TutorReply
+from plugin.plugins.study_companion.qwen_native_client import (
+    _OUTPUT_TOKEN_BUDGETS,
+    operation_timeout_seconds,
+)
+from plugin.plugins.study_companion.tutor_llm_agent import TutorLLMAgent
+from plugin.plugins.study_companion.tutor_llm_agent_document_chunked import (
+    DocumentChunkAnalysisError,
+    build_document_chunk_messages,
+    build_document_merge_messages,
+)
+from plugin.sdk.plugin import Ok
+from plugin.sdk.shared.constants import EVENT_META_ATTR
+
+
+pytestmark = pytest.mark.unit
+
+
+class _Logger:
+    def warning(self, *_args, **_kwargs) -> None:
+        return None
+
+
+def test_long_document_operation_budgets_and_timeouts_are_isolated() -> None:
+    assert DOCUMENT_DIRECT_MAX_TOKENS == 48_000
+    assert DOCUMENT_MAX_TOKENS == 160_000
+    assert _OUTPUT_TOKEN_BUDGETS[LLM_OPERATION_DOCUMENT_CHUNK_ANALYZE] == 1_200
+    assert _OUTPUT_TOKEN_BUDGETS[LLM_OPERATION_DOCUMENT_MERGE] == 4_096
+    assert (
+        operation_timeout_seconds(
+            LLM_OPERATION_DOCUMENT_CHUNK_ANALYZE,
+            has_image=False,
+            configured_timeout_seconds=3600,
+        )
+        == 110.0
+    )
+    assert (
+        operation_timeout_seconds(
+            LLM_OPERATION_DOCUMENT_MERGE,
+            has_image=False,
+            configured_timeout_seconds=3600,
+        )
+        == 120.0
+    )
+
+
+def test_start_entry_marks_source_sensitive() -> None:
+    meta = getattr(StudyCompanionPlugin.study_start_document_analysis, EVENT_META_ATTR)
+    assert meta.input_schema["properties"]["document_text"] == {
+        "type": "string",
+        "writeOnly": True,
+        "x-sensitive": True,
+    }
+
+
+def test_direct_and_chunked_token_boundaries_are_exact(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def validate_at(tokens: int, *, max_tokens: int = DOCUMENT_MAX_TOKENS):
+        monkeypatch.setattr(document_module, "count_tokens", lambda _text: tokens)
+        monkeypatch.setattr(
+            document_module,
+            "count_tokens",
+            lambda text: tokens if text == "valid source" else 0,
+        )
+        return validate_document(
+            document_name="book.txt",
+            document_type="text/plain",
+            document_text="valid source",
+            locale="en",
+            max_tokens=max_tokens,
+        )
+
+    assert validate_at(48_000, max_tokens=DOCUMENT_DIRECT_MAX_TOKENS).tokens == 48_000
+    with pytest.raises(DocumentValidationError) as direct_overflow:
+        validate_at(48_001, max_tokens=DOCUMENT_DIRECT_MAX_TOKENS)
+    assert direct_overflow.value.diagnostic == "document_too_long"
+    assert validate_at(160_000).tokens == 160_000
+    with pytest.raises(DocumentValidationError) as chunked_overflow:
+        validate_at(160_001)
+    assert chunked_overflow.value.diagnostic == "document_too_long"
+
+
+@pytest.mark.asyncio
+async def test_job_manager_allows_one_active_job_and_cancel_propagates() -> None:
+    manager = DocumentAnalysisJobManager()
+    started = asyncio.Event()
+    canceled = asyncio.Event()
+
+    async def runner(_update):
+        started.set()
+        try:
+            await asyncio.Future()
+        except asyncio.CancelledError:
+            canceled.set()
+            raise
+
+    first = await manager.start(
+        analysis_mode="chunked",
+        document={"name": "book.txt", "source_retained": False},
+        total_chunks=2,
+        runner=runner,
+    )
+    await started.wait()
+    with pytest.raises(DocumentAnalysisJobError) as raised:
+        await manager.start(
+            analysis_mode="direct", document={}, total_chunks=1, runner=runner
+        )
+    assert raised.value.diagnostic == "document_job_busy"
+    result = await manager.cancel(first["job_id"])
+    assert result["status"] == "canceled"
+    assert result["diagnostic"] == "document_canceled"
+    assert canceled.is_set()
+
+
+@pytest.mark.asyncio
+async def test_job_status_never_exposes_runner_source() -> None:
+    manager = DocumentAnalysisJobManager()
+    source = "PRIVATE LONG DOCUMENT SOURCE"
+
+    async def runner(update):
+        await update("merging", 1, 1)
+        return {"reply": "safe", "summary": "safe", "degraded": False}
+
+    started = await manager.start(
+        analysis_mode="direct",
+        document={"name": "book.txt", "source_retained": False},
+        total_chunks=1,
+        runner=runner,
+    )
+    for _ in range(20):
+        status = await manager.status(started["job_id"])
+        if status["status"] == "completed":
+            break
+        await asyncio.sleep(0)
+    assert status["status"] == "completed"
+    assert source not in repr(status)
+    await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_terminal_job_is_removed_after_result_ttl(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from plugin.plugins.study_companion import document_analysis_jobs as jobs_module
+
+    monkeypatch.setattr(jobs_module, "DOCUMENT_JOB_RESULT_TTL_SECONDS", 0.01)
+    manager = DocumentAnalysisJobManager()
+
+    async def runner(_update):
+        return {"reply": "safe", "summary": "safe", "degraded": False}
+
+    started = await manager.start(
+        analysis_mode="direct",
+        document={"name": "notes.txt"},
+        total_chunks=1,
+        runner=runner,
+    )
+    for _ in range(20):
+        status = await manager.status(started["job_id"])
+        if status["status"] == "completed":
+            break
+        await asyncio.sleep(0)
+    assert status["status"] == "completed"
+    await asyncio.sleep(0.03)
+    with pytest.raises(DocumentAnalysisJobError) as raised:
+        await manager.status(started["job_id"])
+    assert raised.value.diagnostic == "document_job_not_found"
+    await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_chunk_transient_diagnostic_is_retried_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from plugin.plugins.study_companion.document_analysis import validate_document
+    from plugin.plugins.study_companion.document_chunking import split_document
+
+    document = validate_document(
+        document_name="book.txt",
+        document_type="text/plain",
+        document_text="A short chapter.",
+        locale="en",
+    )
+    chunk = split_document(document.text, document.document_type)[0]
+    agent = TutorLLMAgent(
+        logger=_Logger(), config=type("C", (), {"llm_call_timeout_seconds": 3600})()
+    )
+    calls = 0
+
+    async def fake(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            error = RuntimeError("limited")
+            error.diagnostic = "rate_limited"
+            raise error
+        return "A concise evidence memo."
+
+    monkeypatch.setattr(agent, "_call_model", fake)
+    result = await agent.analyze_document_chunk(document, chunk, 1)
+    assert result == "A concise evidence memo."
+    assert calls == 2
+
+
+@pytest.mark.asyncio
+async def test_chunk_deterministic_error_is_not_retried(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from plugin.plugins.study_companion.document_analysis import validate_document
+    from plugin.plugins.study_companion.document_chunking import split_document
+
+    document = validate_document(
+        document_name="book.txt",
+        document_type="text/plain",
+        document_text="A short chapter.",
+        locale="en",
+    )
+    chunk = split_document(document.text, document.document_type)[0]
+    agent = TutorLLMAgent(
+        logger=_Logger(), config=type("C", (), {"llm_call_timeout_seconds": 3600})()
+    )
+    calls = 0
+
+    async def fake(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        error = RuntimeError("bad credentials")
+        error.diagnostic = "authentication_failed"
+        raise error
+
+    monkeypatch.setattr(agent, "_call_model", fake)
+    with pytest.raises(DocumentChunkAnalysisError) as raised:
+        await agent.analyze_document_chunk(document, chunk, 1)
+    assert raised.value.diagnostic == "authentication_failed"
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_chunk_unknown_failure_uses_chunk_diagnostic_without_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from plugin.plugins.study_companion.document_analysis import validate_document
+    from plugin.plugins.study_companion.document_chunking import split_document
+
+    document = validate_document(
+        document_name="book.txt",
+        document_type="text/plain",
+        document_text="A short chapter.",
+        locale="en",
+    )
+    chunk = split_document(document.text, document.document_type)[0]
+    agent = TutorLLMAgent(
+        logger=_Logger(), config=type("C", (), {"llm_call_timeout_seconds": 3600})()
+    )
+    calls = 0
+
+    async def fake(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("unexpected provider response")
+
+    monkeypatch.setattr(agent, "_call_model", fake)
+    with pytest.raises(DocumentChunkAnalysisError) as raised:
+        await agent.analyze_document_chunk(document, chunk, 1)
+    assert raised.value.diagnostic == "document_chunk_failed"
+    assert calls == 1
+
+
+def test_auto_kind_is_deferred_to_merge_prompt() -> None:
+    from plugin.plugins.study_companion.document_analysis import validate_document
+    from plugin.plugins.study_companion.document_chunking import split_document
+
+    document = validate_document(
+        document_name="book.txt",
+        document_type="text/plain",
+        document_text="Chapter 1\n\nEvidence and events.",
+        analysis_kind="auto",
+        locale="en",
+    )
+    chunks = split_document(document.text, document.document_type)
+    chunk_prompt = build_document_chunk_messages(document, chunks[0], len(chunks))
+    merge_prompt = build_document_merge_messages(
+        document, chunks, tuple("Evidence memo." for _ in chunks)
+    )
+
+    assert "Do not classify the whole document" in chunk_prompt[0]["content"]
+    assert "Infer one overall content kind" in merge_prompt[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_start_direct_mode_finalizes_once_without_returning_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = "private source"
+    calls: list[str] = []
+
+    class Agent:
+        async def document_analyze(self, document):
+            return TutorReply(
+                operation=LLM_OPERATION_DOCUMENT_ANALYZE,
+                input_text=document.descriptor,
+                reply="safe analysis",
+            )
+
+    class Owner:
+        _agent = Agent()
+
+        def __init__(self) -> None:
+            self._document_jobs = DocumentAnalysisJobManager()
+
+        _document_job_manager = StudyCompanionPlugin._document_job_manager
+
+        async def _finalize_tutor_call(self, operation, reply, **kwargs):
+            calls.append(operation)
+            return {
+                "operation": operation,
+                "reply": reply.reply,
+                "summary": reply.reply,
+                "document": kwargs["public_payload"]["document"],
+                "degraded": False,
+                "diagnostic": "",
+            }
+
+    owner = Owner()
+    result = await StudyCompanionPlugin.study_start_document_analysis(
+        owner,
+        document_name="notes.txt",
+        document_type="text/plain",
+        document_text=source,
+        locale="en",
+    )
+    assert isinstance(result, Ok)
+    job_id = result.value["job_id"]
+    for _ in range(20):
+        status = await owner._document_jobs.status(job_id)
+        if status["status"] != "running":
+            break
+        await asyncio.sleep(0)
+    assert status["status"] == "completed"
+    assert calls == [LLM_OPERATION_DOCUMENT_ANALYZE]
+    assert source not in repr(status)
+
+
+@pytest.mark.asyncio
+async def test_chunked_entry_limits_concurrency_preserves_order_and_finalizes_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from plugin.plugins.study_companion import (
+        entry_document_analysis_jobs as entry_module,
+    )
+
+    source_parts = tuple(f"part-{index}\n" for index in range(5))
+    source = "".join(source_parts)
+    document = ValidatedDocument(
+        name="book.txt",
+        document_type="text/plain",
+        text=source,
+        instruction="",
+        locale="en",
+        analysis_kind="auto",
+        chars=len(source),
+        tokens=50_000,
+        sha256="a" * 64,
+    )
+    offset = 0
+    chunks = []
+    for index, text in enumerate(source_parts):
+        chunks.append(
+            DocumentChunk(
+                index=index,
+                text=text,
+                tokens=10_000,
+                start_char=offset,
+                end_char=offset + len(text),
+                heading_paths=((f"Part {index}",),),
+            )
+        )
+        offset += len(text)
+    chunk_tuple = tuple(chunks)
+    monkeypatch.setattr(entry_module, "validate_document", lambda **_kwargs: document)
+    monkeypatch.setattr(entry_module, "split_document", lambda *_args: chunk_tuple)
+
+    active = 0
+    maximum_active = 0
+    merged_memos: tuple[str, ...] = ()
+    finalized = 0
+
+    class Agent:
+        build_document_merge_messages = staticmethod(
+            lambda _document, _chunks, _memos: [{"role": "user", "content": "merge"}]
+        )
+
+        async def analyze_document_chunk(self, _document, chunk, _total):
+            nonlocal active, maximum_active
+            active += 1
+            maximum_active = max(maximum_active, active)
+            await asyncio.sleep(0.01)
+            active -= 1
+            return f"memo-{chunk.index}"
+
+        async def merge_document_chunks(self, _document, _chunks, memos, *, messages):
+            nonlocal merged_memos
+            assert messages[0]["content"] == "merge"
+            merged_memos = memos
+            return "safe whole-document analysis"
+
+    class Owner:
+        _agent = Agent()
+
+        def __init__(self) -> None:
+            self._document_jobs = DocumentAnalysisJobManager()
+
+        _document_job_manager = StudyCompanionPlugin._document_job_manager
+
+        async def _finalize_tutor_call(self, operation, reply, **kwargs):
+            nonlocal finalized
+            finalized += 1
+            return {
+                "operation": operation,
+                "reply": reply.reply,
+                "summary": reply.reply,
+                "document": kwargs["public_payload"]["document"],
+                "degraded": False,
+                "diagnostic": "",
+            }
+
+    owner = Owner()
+    result = await StudyCompanionPlugin.study_start_document_analysis(
+        owner,
+        document_name="book.txt",
+        document_type="text/plain",
+        document_text=source,
+        locale="en",
+    )
+    assert isinstance(result, Ok)
+    assert result.value["analysis_mode"] == "chunked"
+    assert result.value["chunks"] == 5
+    for _ in range(100):
+        status = await owner._document_jobs.status(result.value["job_id"])
+        if status["status"] != "running":
+            break
+        await asyncio.sleep(0.01)
+    assert status["status"] == "completed"
+    assert maximum_active == 2
+    assert merged_memos == tuple(f"memo-{index}" for index in range(5))
+    assert finalized == 1
+    assert source not in repr(status)
+    await owner._document_jobs.shutdown()

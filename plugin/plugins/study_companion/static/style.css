@@ -1225,8 +1225,8 @@ pre,
 .study-document-card > span { color: var(--muted); font-size: 13px; line-height: 1.45; }
 .study-document-card input, .study-document-card select { width: 100%; border: 1px solid rgba(31, 35, 41, 0.12); border-radius: var(--radius-sm); padding: 10px; background: var(--paper-strong); color: var(--ink); }
 .study-document-card textarea { min-height: 160px; }
-.main-view[data-busy="true"] .study-document-drop-zone, .main-view[data-busy="true"] .study-document-card { opacity: 0.68; }
-
+.study-document-card[data-busy="true"] { opacity: 0.76; }
+.study-document-progress { display: grid; gap: 5px; } .study-document-progress[hidden] { display: none; } .study-document-progress progress { width: 100%; accent-color: var(--accent); } .study-document-progress span { color: var(--muted); font-size: 13px; }
 .memory-inputs {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);

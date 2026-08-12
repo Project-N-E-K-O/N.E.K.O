@@ -450,17 +450,19 @@ function setPanelBusy(busy) {
 
 function setPastePending(pending) {
   pastePendingCount = Math.max(0, pastePendingCount + (pending ? 1 : -1));
-  setPanelBusy(pastePendingCount || documentBusy);
+  setPanelBusy(pastePendingCount);
 }
 
 function setDocumentBusy(busy) {
   documentBusy = Boolean(busy);
-  setPanelBusy(documentBusy || pastePendingCount);
+  if (studyDocumentCard) studyDocumentCard.dataset.busy = documentBusy ? 'true' : 'false';
   studyDocumentAnalyzeBtn.disabled = documentBusy || !importedDocument;
   studyDocumentRemoveBtn.disabled = studyDocumentImportBtn.disabled = studyDocumentInput.disabled = studyDocumentKindSelect.disabled = studyDocumentInstruction.disabled = documentBusy;
   studyDocumentText.readOnly = documentBusy;
   if (documentBusy) studyDocumentEditor.open = false;
   studyDocumentCancelBtn.hidden = !documentBusy;
+  if (!documentBusy) studyDocumentCancelBtn.disabled = false;
+  document.getElementById('studyDocumentProgress').hidden = !documentBusy;
 }
 
 function setPasteError(target, message) {
@@ -672,17 +674,17 @@ function updateDocumentCard(options = {}) {
   }
   const bytes = new TextEncoder().encode(documentSource).byteLength;
   const tokens = estimateDocumentTokens(documentSource);
-  const problem = documentTextProblem(documentSource) || (bytes > 524288 ? 'document_too_large' : '');
+  const problem = documentTextProblem(documentSource) || (bytes > 524288 ? 'document_too_large' : tokens > 160000 ? 'document_too_long' : '');
   importedDocument = { ...importedDocument, bytes, tokens, problem, modified: importedDocument.modified || Boolean(options.modified) };
   if (studyDocumentCard) studyDocumentCard.hidden = false;
   studyDocumentName.textContent = importedDocument.name;
   studyDocumentMeta.textContent = tf('ui.document.meta', '', { size: `${(bytes / 1024).toFixed(1)} KB`, encoding: importedDocument.encoding, chars: documentSource.length.toLocaleString(), tokens: tokens.toLocaleString() });
-  if (studyDocumentState) {
+  if (studyDocumentState && !documentBusy) {
     studyDocumentState.textContent = problem
       ? documentErrorMessage(problem)
-      : (tokens > 24000
-        ? t('ui.document.token_estimate_warning')
-        : t(importedDocument.modified ? 'ui.document.ready_modified' : 'ui.document.ready'));
+      : (tokens > 48000
+        ? tf('ui.document.chunked_mode_hint', '', { chunks: Math.ceil(tokens / 10000) })
+        : t('ui.document.direct_mode_hint'));
   }
   studyDocumentAnalyzeBtn.disabled = documentBusy || Boolean(problem);
 }
@@ -763,7 +765,7 @@ function handleDocumentDrop(event) {
 }
 function formatDocumentDiagnostic(diagnostic) {
   const code = (diagnostic || '').trim();
-  const validation = { empty_document: 'empty', binary_document: 'binary', invalid_document_encoding: 'encoding', unsupported_document_type: 'type', unsafe_document_content: 'unsafe_content', analysis_instruction_too_long: 'instruction_too_long', unsupported_document_kind: 'invalid_kind', invalid_document_name: 'invalid_name' };
+  const validation = { empty_document: 'empty', binary_document: 'binary', invalid_document_encoding: 'encoding', unsupported_document_type: 'type', unsafe_document_content: 'unsafe_content', analysis_instruction_too_long: 'instruction_too_long', unsupported_document_kind: 'invalid_kind', invalid_document_name: 'invalid_name', document_canceled: 'canceled' };
   return t(`ui.error.document_${'timeout rate_limited authentication_failed model_not_supported provider_unavailable unsafe_model_output llm_call_failed'.includes(code) ? `analysis_${code}` : validation[code] || code.replace(/^document_/, '') || 'analysis_failed'}`);
 }
 async function analyzeDocument() {
@@ -778,20 +780,19 @@ async function analyzeDocument() {
   setReply(t('ui.status.analyzing_document'));
   scrollReplyIntoView();
   try {
-    const data = await callPlugin('study_analyze_document', {
+    const data = await window.StudyDocumentJobs.run(callPlugin, {
       document_name: importedDocument.name,
       document_type: importedDocument.type,
       document_text: documentSource,
       analysis_kind: documentKind,
       analysis_instruction: studyDocumentInstruction?.value.trim() || '',
       locale: window.I18n?.lang?.() || document.documentElement.lang || '',
-    }, controller.signal);
+    }, controller.signal, () => {});
     if (controller.signal.aborted) return;
-    setStatus(data.degraded ? t('ui.status.reply_ready_fallback', 'Reply ready (fallback)') : t('ui.status.document_complete'));
-    setReply(data.degraded ? formatDocumentDiagnostic(data.diagnostic) : (data.reply || data.summary || ''));
-    if (studyDocumentState) studyDocumentState.textContent = data.degraded
-      ? formatDocumentDiagnostic(data.diagnostic)
-      : t('ui.status.document_complete');
+    const failed = data.status !== 'completed' || data.degraded;
+    setStatus(failed ? t('ui.status.error', 'Error') : t('ui.status.document_complete'));
+    setReply(failed ? formatDocumentDiagnostic(data.diagnostic) : (data.reply || data.summary || ''));
+    studyDocumentState.textContent = failed ? formatDocumentDiagnostic(data.diagnostic) : t('ui.status.document_complete');
     await refreshStatus({ updateReply: false });
   } catch (error) {
     if (controller.signal.aborted) return;
@@ -799,6 +800,7 @@ async function analyzeDocument() {
     setReply(/timed out|timeout/i.test(error.message) ? t('ui.error.document_analysis_timeout') : formatPluginError(error));
   } finally {
     if (documentRequestController === controller) documentRequestController = null;
+    window.StudyDocumentJobs.currentId = '';
     setDocumentBusy(false);
   }
 }
@@ -2236,12 +2238,7 @@ async function bootstrap() {
     studyDocumentRemoveBtn.addEventListener('click', () => removeImportedDocument());
   }
   if (studyDocumentCancelBtn) {
-    studyDocumentCancelBtn.addEventListener('click', () => {
-      documentReadGeneration += 1;
-      documentRequestController?.abort();
-      documentRequestController = null;
-      setDocumentBusy(false);
-    });
+    studyDocumentCancelBtn.addEventListener('click', () => window.StudyDocumentJobs.cancel(callPlugin, documentRequestController));
   }
   if (studyDocumentKindSelect) {
     studyDocumentKindSelect.addEventListener('change', () => { documentKind = studyDocumentKindSelect.value || 'auto'; });
@@ -2254,7 +2251,7 @@ async function bootstrap() {
       updateDocumentCard({ modified: true });
     });
   }
-  window.addEventListener('pagehide', () => documentRequestController?.abort(), { once: true });
+  window.addEventListener('pagehide', () => { window.StudyDocumentJobs.leave(PLUGIN_ID); documentRequestController?.abort(); }, { once: true });
   if (studyDocumentDropZone) {
     studyDocumentDropZone.addEventListener('dragenter', (event) => {
       event.preventDefault();

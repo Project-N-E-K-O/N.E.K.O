@@ -786,3 +786,69 @@ function documentTextProblem(text) {
   if (text.split(/\r?\n/).some((line) => line.length > 32768 || /^[A-Za-z0-9+/=]{8192,}$/.test(line.trim()))) return 'document_unsafe_content';
   return '';
 }
+
+window.StudyDocumentJobs = {
+  currentId: '',
+  cancelRequested: false,
+  render(data = {}) {
+    this.currentId = data.job_id || this.currentId;
+    const completed = Number(data.completed_chunks) || 0;
+    const total = Number(data.total_chunks) || Number(data.chunks) || 0;
+    const progress = Math.max(0, Math.min(1, Number(data.progress) || 0));
+    document.getElementById('studyDocumentProgressBar').value = progress;
+    document.getElementById('studyDocumentProgressText').textContent = total
+      ? tf('ui.document.progress_chunks', '', { completed, total })
+      : `${Math.round(progress * 100)}%`;
+    const stage = data.stage || 'validating';
+    document.getElementById('studyDocumentState').textContent = t(`ui.document.stage.${stage}`, stage);
+  },
+  async run(call, args, signal, update) {
+    this.cancelRequested = false;
+    let data = await call('study_start_document_analysis', args, signal);
+    this.currentId = data.job_id || '';
+    if (this.cancelRequested && this.currentId) {
+      try {
+        data = await call('study_cancel_document_analysis', { job_id: this.currentId }, signal);
+        this.currentId = '';
+        return data;
+      } catch (error) {
+        this.cancelRequested = false;
+        document.getElementById('studyDocumentCancelBtn').disabled = false;
+        document.getElementById('studyDocumentState').textContent = formatPluginError(error);
+      }
+    }
+    this.render(data); update(data);
+    const jobId = data.job_id;
+    if (!jobId || ['completed', 'failed', 'canceled'].includes(data.status)) return data;
+    let delay = 1000;
+    while (!signal.aborted) {
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      if (signal.aborted) break;
+      data = await call('study_document_analysis_status', { job_id: jobId }, signal);
+      this.render(data); update(data);
+      if (['completed', 'failed', 'canceled'].includes(data.status)) return data;
+      delay = 2000;
+    }
+    throw new DOMException('Aborted', 'AbortError');
+  },
+  async cancel(call, controller) {
+    this.cancelRequested = true;
+    document.getElementById('studyDocumentCancelBtn').disabled = true;
+    document.getElementById('studyDocumentState').textContent = t('ui.document.stage.canceling', 'Canceling analysis...');
+    const jobId = this.currentId;
+    if (!jobId) return;
+    try {
+      const data = await call('study_cancel_document_analysis', { job_id: jobId });
+      controller?.abort(); this.currentId = '';
+      document.getElementById('studyDocumentState').textContent = formatDocumentDiagnostic(data.diagnostic || 'document_canceled');
+    } catch (error) {
+      this.cancelRequested = false;
+      document.getElementById('studyDocumentCancelBtn').disabled = false;
+      document.getElementById('studyDocumentState').textContent = formatPluginError(error);
+    }
+  },
+  leave(pluginId) {
+    if (!this.currentId || !navigator.sendBeacon) return;
+    navigator.sendBeacon('/runs', new Blob([JSON.stringify({ plugin_id: pluginId, entry_id: 'study_cancel_document_analysis', args: { job_id: this.currentId, locale: window.I18n?.lang?.() || document.documentElement.lang || '' } })], { type: 'application/json' }));
+  },
+};

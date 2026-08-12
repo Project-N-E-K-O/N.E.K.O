@@ -229,13 +229,16 @@
               <div id="studyDocumentDropZone" class="study-document-drop-zone">
                 <button id="studyDocumentImportBtn" class="button button-secondary" type="button" data-i18n="ui.button.import_document">Import document for analysis</button>
                 <span data-i18n="ui.document.drop_hint">Drop one TXT or Markdown file here</span>
-                <button id="studyDocumentCancelBtn" class="button button-secondary" type="button" data-i18n="ui.document.cancel" hidden>Cancel</button>
               </div>
               <section id="studyDocumentCard" class="study-document-card" aria-live="polite" hidden>
                 <strong id="studyDocumentName"></strong>
                 <span id="studyDocumentMeta"></span>
                 <span id="studyDocumentPrivacy" data-i18n="ui.document.not_retained">The source document will not be saved</span>
                 <span id="studyDocumentState"></span>
+                <div id="studyDocumentProgress" class="study-document-progress" hidden>
+                  <progress id="studyDocumentProgressBar" max="1" value="0"></progress>
+                  <span id="studyDocumentProgressText"></span>
+                </div>
                 <label class="input-label" for="studyDocumentKind" data-i18n="ui.document.kind_label">Document type</label>
                 <select id="studyDocumentKind">
                   <option value="auto" data-i18n="ui.document.kind.auto">Auto detect</option>
@@ -256,6 +259,7 @@
                 </details>
                 <div class="study-document-card__actions">
                   <button id="studyDocumentAnalyzeBtn" class="button button-primary" type="button" data-i18n="ui.button.analyze_document">Analyze document</button>
+                  <button id="studyDocumentCancelBtn" class="button button-secondary" type="button" data-i18n="ui.document.cancel_analysis" hidden>Cancel analysis</button>
                   <button id="studyDocumentRemoveBtn" class="button button-secondary" type="button" data-i18n="ui.button.remove_document">Remove</button>
                 </div>
               </section>
