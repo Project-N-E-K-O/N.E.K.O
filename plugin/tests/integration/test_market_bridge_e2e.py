@@ -296,6 +296,7 @@ def test_market_task_cleanup_prunes_overflow_workers(
 
     assert "old" not in market_bridge_module._tasks
     assert "old" not in workers
+    assert "new" in market_bridge_module._tasks
     assert "new" in workers
 
 

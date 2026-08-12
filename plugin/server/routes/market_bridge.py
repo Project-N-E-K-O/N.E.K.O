@@ -713,7 +713,7 @@ async def cancel_market_install_task(
         raise HTTPException(status_code=404, detail="任务不存在")
     if task.get("status") in {"completed", "failed", "canceled"}:
         raise HTTPException(status_code=409, detail="安装任务已结束")
-    if task.get("stage") in {"backup_old", "install", "restart", "rollback", "completed"}:
+    if task.get("stage") in {"stop_old", "backup_old", "install", "restart", "rollback", "completed"}:
         raise HTTPException(status_code=409, detail="安装已进入写入阶段，无法安全取消")
 
     task["cancel_requested"] = True
@@ -2773,12 +2773,20 @@ async def _do_install(
     try:
         _raise_if_task_cancel_requested(task)
         try:
-            sha_check = _verify_sha256_file(
+            _set_task_stage(
+                task,
+                status="verifying",
+                stage="verify",
+                progress=0.7,
+                message="正在校验文件完整性...",
+            )
+            sha_check = await asyncio.to_thread(
+                _verify_sha256_file,
                 package_path,
                 payload.package_sha256,
-                task,
             )
         except ValueError as exc:
+            _raise_if_task_cancel_requested(task)
             raise _TaskError(code="package_hash_mismatch", message=str(exc)) from exc
         log_ctx["package_sha256_check"] = sha_check
         _raise_if_task_cancel_requested(task)
@@ -2903,6 +2911,7 @@ async def _do_upgrade(
     backup_dir = backup_path_for(plugin_dir)
     rollback_steps: list[Callable[[], Awaitable[None]]] = []
     was_running = await plugin_is_running(installed_plugin_id)
+    _raise_if_task_cancel_requested(task)
 
     # Step 3: lifecycle stop.
     if was_running:
@@ -2913,7 +2922,9 @@ async def _do_upgrade(
             progress=0.05,
             message="正在停止旧版本插件...",
         )
+        _raise_if_task_cancel_requested(task)
         await stop_plugin_for_upgrade(installed_plugin_id)
+        _raise_if_task_cancel_requested(task)
 
     # Step 4: rename old dir → backup.
     try:
@@ -2924,6 +2935,7 @@ async def _do_upgrade(
             progress=0.08,
             message="正在备份旧版本...",
         )
+        _raise_if_task_cancel_requested(task)
         await asyncio.to_thread(backup_dir.parent.mkdir, parents=True, exist_ok=True)
         await asyncio.to_thread(os.rename, plugin_dir, backup_dir)
         rollback_steps.append(_make_restore_dir_step(backup_dir, plugin_dir))
@@ -2964,12 +2976,20 @@ async def _do_upgrade(
         try:
             _raise_if_task_cancel_requested(task)
             try:
-                sha_check = _verify_sha256_file(
+                _set_task_stage(
+                    task,
+                    status="verifying",
+                    stage="verify",
+                    progress=0.7,
+                    message="正在校验文件完整性...",
+                )
+                sha_check = await asyncio.to_thread(
+                    _verify_sha256_file,
                     package_path,
                     payload.package_sha256,
-                    task,
                 )
             except ValueError as exc:
+                _raise_if_task_cancel_requested(task)
                 raise _TaskError(
                     code="package_hash_mismatch",
                     message=str(exc),
@@ -3089,8 +3109,13 @@ async def _do_upgrade(
         if isinstance(result, dict) and "install_source_warning" in result:
             task["install_source_warning"] = result["install_source_warning"]
 
-    except _TaskCancelled:
-        await _run_rollback(task, rollback_steps, was_running, installed_plugin_id)
+    except _TaskCancelled as exc:
+        rollback_ok = await _run_rollback(task, rollback_steps, was_running, installed_plugin_id)
+        if not rollback_ok:
+            raise _TaskError(
+                code="upgrade_rollback_incomplete",
+                message="安装取消，但回滚未完整完成，请检查插件状态",
+            ) from exc
         raise
     except _TaskError as exc:
         rollback_ok = await _run_rollback(task, rollback_steps, was_running, installed_plugin_id)
@@ -3158,19 +3183,10 @@ def _build_market_override(
 def _verify_sha256_file(
     path: Path,
     expected_hash: str | None,
-    task: dict[str, Any],
 ) -> Literal["passed", "mismatch"]:
     """Verify sha256 from a downloaded file; raise ValueError on mismatch."""
 
     raw = _normalize_required_sha256(expected_hash)
-
-    _set_task_stage(
-        task,
-        status="verifying",
-        stage="verify",
-        progress=0.7,
-        message="正在校验文件完整性...",
-    )
 
     digest = hashlib.sha256()
     with path.open("rb") as handle:
