@@ -31,50 +31,61 @@ from .entry_common import (
 
 
 IMAGE_ONLY_EXPLAIN_PROMPT_EN = (
-    "First identify the problem in the image, then provide a detailed solution "
-    "process with a formal, reproducible derivation or construction. State the "
-    "givens, target, and applicable rules; cite the formulas or theorems used; "
-    "show the key substitutions and algebraic, geometric, or logical "
-    "transformations; and check units, boundaries, or the result when necessary. "
-    "Output only the verified formal derivation. When solving a problem, use "
+    "First identify the problem in the image, then provide a concise, reproducible "
+    "solution. Output only the verified formal derivation. When solving a problem, use "
     "exactly these four headings once and in this order: \"Problem Analysis\", "
     "\"Solution Process\", \"Answer\", and \"Transfer Practice\". Put any "
-    "supplementary derivation only as numbered body text under \"Solution "
-    "Process\", never as another heading. Make \"Answer\" self-contained. Reserve "
+    "givens, target, and core rule only in \"Problem Analysis\". State the givens, "
+    "target, and applicable rules, including formulas or theorems, but no secondary "
+    "detail. In \"Solution "
+    "Process\", keep only verified key derivations, numbered by sub-question, and "
+    "show key substitutions; check units, boundaries, or the result when necessary. "
+    "Put supplementary work only as numbered body text and never add another heading. "
+    "Make \"Answer\" self-contained and cover every "
+    "sub-question. Give exactly one short variant in \"Transfer Practice\". Reserve "
     "output budget for a complete \"Answer\" and \"Transfer Practice\"; if "
     "secondary process details might crowd out either section, omit those details. "
     "\"Transfer Practice\" must be the final section with nothing after it. Do not "
     "add a preface, epilogue, note, fifth heading, draft-like exploration, "
-    "self-correction, or a repeated problem statement. Do not give only a brief "
-    "analysis. If the image is not a problem, explain the image contents instead. "
+    "self-correction, reconsideration, or a repeated problem statement. If image "
+    "information is insufficient, state the missing information in \"Answer\"; do "
+    "not guess geometry, labels, or repeatedly hypothesize about the figure. If the "
+    "image is not a problem, explain the image contents instead. "
     "If it is a choice question or item-by-item judgment question, do not assume "
     "it is single-choice; verify each item independently. If there are multiple "
     "correct options, output all correct options in \"Answer\"."
 )
 IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN = (
-    "请先识别图片中的题目，给出详细的解答过程，包含正式、可复算的推导或构造。列出已知条件、"
-    "目标和适用规律，说明所用公式或定理的依据，展示关键代入及代数、几何或逻辑变形，并检查单位、"
-    "边界或进行必要验算。只输出核验后的正式推导。回答题目时必须且只能按固定顺序各使用一次"
+    "请先识别图片中的题目，再给出精简、可复算的解答，只输出核验后的正式推导。回答题目时必须且"
+    "只能按固定顺序各使用一次"
     "“题目解析”“解题过程”“答案”和“举一反三”四个小标题。补充推导只能作为“解题过程”下的"
-    "编号正文，不得另设标题。“答案”必须自足；必须为完整的“答案”和“举一反三”预留输出预算，"
+    "编号正文，不得另设标题。“题目解析”只列出已知条件、目标和核心规律；“解题过程”只保留核验后的"
+    "关键推导，注明公式或定理的依据和关键代入，并按小问编号；必要时检查单位、边界并进行必要验算；"
+    "“答案”必须自足并覆盖所有小问；“举一反三”恰好给出一道简短变式。必须为"
+    "完整的“答案”和“举一反三”预留输出预算，"
     "若次要过程细节可能挤掉其中任一完整部分，就省略这些次要细节。“举一反三”必须是最后一节，"
-    "之后不得有任何内容。禁止前言、尾注、第五标题、草稿式探索、自我修正和重复题干。不要只给"
-    "简短“解析”。如果图片不是题目，再解释图片内容。如果是选择题或逐项判断题，不要默认是单选题；"
+    "之后不得有任何内容。禁止前言、尾注、第五标题、草稿式探索、自我修正、重新审视和重复题干。"
+    "若图像信息不足，必须在“答案”中明确缺失条件；禁止猜测几何关系、标注或反复假设图形。如果图片"
+    "不是题目，再解释图片内容。如果是选择题或逐项判断题，不要默认是单选题；"
     "必须逐项验证，若有多个正确选项，需在“答案”中输出全部正确选项。"
 )
 IMAGE_ONLY_EXPLAIN_PROMPT_ZH_TW = (
-    "請先識別圖片中的題目，給出詳細的解答過程，包含正式、可復算的推導或構造。列出已知條件、"
-    "目標和適用規律，說明所用公式或定理的依據，展示關鍵代入及代數、幾何或邏輯變形，並檢查單位、"
-    "邊界或進行必要驗算。只輸出核驗後的正式推導。回答題目時必須且只能按固定順序各使用一次"
+    "請先識別圖片中的題目，再給出精簡、可復算的解答，只輸出核驗後的正式推導。回答題目時必須且"
+    "只能按固定順序各使用一次"
     "「題目解析」「解題過程」「答案」和「舉一反三」四個小標題。補充推導只能作為「解題過程」下的"
-    "編號正文，不得另設標題。「答案」必須自足；必須為完整的「答案」和「舉一反三」預留輸出預算，"
+    "編號正文，不得另設標題。「題目解析」只列出已知條件、目標和核心規律；「解題過程」只保留核驗後的"
+    "關鍵推導，註明公式或定理的依據和關鍵代入，並按小問編號；必要時檢查單位、邊界並進行必要驗算；"
+    "「答案」必須自足並涵蓋所有小問；「舉一反三」恰好給出一道簡短變式。必須為"
+    "完整的「答案」和「舉一反三」預留輸出預算，"
     "若次要過程細節可能擠掉其中任一完整部分，就省略這些次要細節。「舉一反三」必須是最後一節，"
-    "之後不得有任何內容。禁止前言、尾註、第五標題、草稿式探索、自我修正和重複題幹。不要只給"
-    "簡短「解析」。如果圖片不是題目，再解釋圖片內容。如果是選擇題或逐項判斷題，不要預設是單選題；"
+    "之後不得有任何內容。禁止前言、尾註、第五標題、草稿式探索、自我修正、重新審視和重複題幹。"
+    "若圖像資訊不足，必須在「答案」中明確缺失條件；禁止猜測幾何關係、標註或反覆假設圖形。如果圖片"
+    "不是題目，再解釋圖片內容。如果是選擇題或逐項判斷題，不要預設是單選題；"
     "必須逐項驗證，不要找到一個正確選項就停止；若有多個正確選項，在「答案」中輸出全部正確選項。"
 )
 
-_EXPLAIN_WORK_BUDGET_SECONDS = 62.0
+_EXPLAIN_WORK_BUDGET_SECONDS = 95.0
+_SOLUTION_REPAIR_RESERVED_SECONDS = 25.0
 _SOLUTION_REPAIR_MIN_REMAINING_SECONDS = 10.0
 
 
@@ -103,7 +114,7 @@ class _TutorExplainEntriesMixin:
             },
             "required": ["image_base64"],
         },
-        timeout=70.0,
+        timeout=105.0,
         llm_result_fields=["summary", "reply", "diagnostic"],
     )
     async def study_submit_image(self, image_base64: str, text: str = "", **_):
@@ -140,7 +151,7 @@ class _TutorExplainEntriesMixin:
                 "vision_image_base64": {"type": "string", "default": ""},
             },
         },
-        timeout=70.0,
+        timeout=105.0,
         llm_result_fields=["summary", "reply", "diagnostic"],
     )
     async def study_explain_text(
@@ -148,7 +159,13 @@ class _TutorExplainEntriesMixin:
     ):
         if self._agent is None:
             return Err(SdkError("study tutor agent is not initialized"))
-        deadline_monotonic = monotonic() + _EXPLAIN_WORK_BUDGET_SECONDS
+        started_monotonic = monotonic()
+        work_deadline_monotonic = (
+            started_monotonic + _EXPLAIN_WORK_BUDGET_SECONDS
+        )
+        primary_deadline_monotonic = (
+            work_deadline_monotonic - _SOLUTION_REPAIR_RESERVED_SECONDS
+        )
         raw_text = str(text or "").strip()
         # Phase 1: detect an explicit mode intent and switch first when present.
         intent = (
@@ -238,7 +255,7 @@ class _TutorExplainEntriesMixin:
                 "mode": active_mode,
                 "mode_switch": bool(mode_switch.get("changed")),
                 "source_text": source_text,
-                "deadline_monotonic": deadline_monotonic,
+                "deadline_monotonic": primary_deadline_monotonic,
             }
             if vision_image_payload:
                 extra_context["vision_enabled"] = True
@@ -262,6 +279,9 @@ class _TutorExplainEntriesMixin:
             response_mode = str(
                 tutor_context.get("study_response_mode") or "unknown"
             ).strip().lower()
+            semantic_status = str(
+                tutor_context.get("study_semantic_status") or ""
+            ).strip().lower()
             current_question = tutor_context.get("current_question")
             trusted_internal_question_context = bool(
                 isinstance(current_question, dict)
@@ -280,22 +300,38 @@ class _TutorExplainEntriesMixin:
                 solution_structure
                 and is_solution_structure_candidate(solution_structure)
             )
+            truncated_problem_solution = bool(
+                solution_contract_required
+                and response_mode == "problem_solving"
+                and reply.diagnostic == "output_truncated"
+            )
             repair_attempted = False
             repair_invalid_response = False
             repair_time_budget_insufficient = False
-            if not reply.degraded and narration_requested and solution_candidate:
+            repair_eligible = bool(
+                not reply.degraded
+                and narration_requested
+                and solution_structure is not None
+                and not solution_structure.complete
+                and (solution_candidate or truncated_problem_solution)
+            )
+            if not reply.degraded and narration_requested and solution_structure:
                 if solution_structure is not None and solution_structure.complete:
                     if extract_solution_narration_sections(reply.reply) is None:
                         reply.reply = render_solution_structure(
                             solution_structure,
                             language=self._cfg.language,
                         )
-                else:
-                    remaining = deadline_monotonic - monotonic()
+                elif repair_eligible:
+                    remaining = work_deadline_monotonic - monotonic()
                     if remaining < _SOLUTION_REPAIR_MIN_REMAINING_SECONDS:
                         repair_time_budget_insufficient = True
                     else:
                         repair_attempted = True
+                        repair_context = dict(tutor_context)
+                        repair_context["deadline_monotonic"] = (
+                            work_deadline_monotonic
+                        )
                         try:
                             repaired_structure = await asyncio.wait_for(
                                 repair_solution_structure(
@@ -304,7 +340,7 @@ class _TutorExplainEntriesMixin:
                                     incomplete_reply=reply.reply,
                                     language=self._cfg.language,
                                     mode=active_mode,
-                                    context=tutor_context,
+                                    context=repair_context,
                                 ),
                                 timeout=remaining,
                             )
@@ -313,7 +349,7 @@ class _TutorExplainEntriesMixin:
                             repair_time_budget_insufficient = True
                         if repaired_structure is None:
                             repair_finished_after_deadline = (
-                                monotonic() >= deadline_monotonic
+                                monotonic() >= work_deadline_monotonic
                             )
                             repair_invalid_response = (
                                 not repair_time_budget_insufficient
@@ -325,6 +361,9 @@ class _TutorExplainEntriesMixin:
                             )
                         else:
                             solution_structure = repaired_structure
+                            solution_candidate = is_solution_structure_candidate(
+                                repaired_structure
+                            )
                             if repaired_structure.complete:
                                 reply.reply = render_solution_structure(
                                     repaired_structure,
@@ -354,7 +393,7 @@ class _TutorExplainEntriesMixin:
                 narration_status = "degraded"
             elif not narration_requested:
                 narration_status = "disabled"
-            elif not solution_candidate:
+            elif not (solution_candidate or truncated_problem_solution):
                 narration_status = "not_applicable"
             elif solution_structure is not None and not solution_structure.complete:
                 if repair_time_budget_insufficient:
@@ -391,15 +430,22 @@ class _TutorExplainEntriesMixin:
             payload["solution_repair_attempted"] = repair_attempted
             payload["solution_narration_missing_sections"] = (
                 list(solution_structure.missing_sections)
-                if solution_candidate and solution_structure is not None
+                if solution_contract_required and solution_structure is not None
                 else []
             )
             general_narration_scheduled = False
             general_narration_status = "not_applicable"
             general_narration_reason = "unsupported_response_mode"
+            routing_fallback_allowed = bool(
+                response_mode == "unknown"
+                and semantic_status == "routing_unavailable"
+                and not solution_contract_required
+            )
             general_response_mode = (
                 response_mode
                 if response_mode in {"general_explanation", "general_discussion"}
+                else "general_fallback"
+                if routing_fallback_allowed
                 else "unknown"
             )
             general_mode_allowed = bool(

@@ -89,6 +89,7 @@ type DocumentJobPayload = {
 };
 
 type SolutionNarrationOutcome = {
+  diagnostic?: string;
   solution_narration_scheduled?: boolean;
   solution_narration_status?: string;
   solution_narration_reason?: string;
@@ -128,6 +129,7 @@ function formatSolutionNarrationNotice(
 ) {
   const status = String(outcome.solution_narration_status || '').trim().toLowerCase();
   const reason = String(outcome.solution_narration_reason || '').trim().toLowerCase();
+  const diagnostic = String(outcome.diagnostic || '').trim().toLowerCase();
   const missingSections = Array.isArray(outcome.solution_narration_missing_sections)
     ? outcome.solution_narration_missing_sections.map((section) => String(section).trim().toLowerCase())
     : [];
@@ -149,6 +151,12 @@ function formatSolutionNarrationNotice(
     return translate(
       'ui.error.solution_narration_degraded',
       'The explanation used a fallback response, so narration was not scheduled.',
+    );
+  }
+  if (diagnostic === 'output_truncated' && reason === 'insufficient_time_budget') {
+    return translate(
+      'ui.error.solution_narration_truncated_repair_timeout',
+      'The solution was truncated after reaching the output length limit. Automatic completion could not finish within the time limit, so narration was not scheduled. Please regenerate a concise solution.',
     );
   }
   if (
@@ -331,7 +339,7 @@ const ENTRY_TIMEOUT_MS: Record<string, number> = {
   study_status: 15000,
   study_ocr_snapshot: 60000,
   study_set_mode: 15000,
-  study_explain_text: 70000,
+  study_explain_text: 120000,
   study_analyze_document: 105000,
   study_start_document_analysis: 30000,
   study_document_analysis_status: 15000,

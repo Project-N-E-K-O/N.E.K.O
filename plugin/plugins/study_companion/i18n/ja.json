@@ -4,6 +4,7 @@
     "ui.error.solution_narration_missing_answer":  "解説が不完全です。「答え」セクションがないため、朗読を予定しませんでした。もう一度解析してください。",
     "ui.error.solution_narration_incomplete":  "解説が不完全なため、朗読を予定しませんでした。もう一度解析してください。",
     "ui.error.solution_narration_repair_failed":  "解説の構成を修復できなかったため、朗読を予定しませんでした。もう一度解析してください。",
+    "ui.error.solution_narration_truncated_repair_timeout":  "解答は出力文字数の上限に達したため途中で切れました。制限時間内に自動補完を完了できなかったため、朗読は予定されていません。簡潔な解答を再生成してください。",
     "ui.error.solution_narration_runtime_unavailable":  "朗読は一時的に利用できません。解説は引き続き表示されます。",
     "ui.error.solution_narration_delivery_failed":  "朗読リクエストを送信できませんでした。もう一度お試しください。",
     "ui.error.solution_narration_degraded":  "解説がフォールバック応答を使用したため、朗読を予定しませんでした。",

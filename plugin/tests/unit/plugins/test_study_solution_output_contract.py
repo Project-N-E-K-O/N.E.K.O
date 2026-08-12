@@ -10,6 +10,10 @@ from plugin.plugins.study_companion.entry_tutor_explain_entries import (
     _image_only_explain_prompt,
 )
 from plugin.plugins.study_companion.llm_prompts import build_concept_explain_messages
+from plugin.plugins.study_companion.qwen_native_client import _OUTPUT_TOKEN_BUDGETS
+from plugin.plugins.study_companion.tutor_llm_agent_concept_explain import (
+    _SOLUTION_REPAIR_SYSTEM_PROMPT,
+)
 
 
 def _user_prompt(response_mode: str, *, language: str = "en") -> str:
@@ -54,6 +58,49 @@ def test_problem_solving_prompt_preserves_verifiable_work() -> None:
     assert "verification" in prompt
     assert "numbered body content inside Solution Process" in prompt
     assert "must not introduce another heading" in prompt
+
+
+def test_problem_solving_prompt_bounds_each_section_and_forbids_image_guessing() -> None:
+    prompt = _user_prompt("problem_solving")
+
+    assert "list only the givens, target, and core rule" in prompt
+    assert "only the verified key derivation" in prompt
+    assert "numbered by sub-question" in prompt
+    assert "Answer self-contained and cover every sub-question" in prompt
+    assert "exactly one short variant" in prompt
+    assert "identify the missing information in Answer" in prompt
+    assert "never guess geometry or labels" in prompt
+    assert "self-correction" in prompt
+    assert "reconsideration" in prompt
+    assert "reserve output budget" in prompt
+
+
+def test_solution_repair_prompt_requires_verified_compact_complete_json() -> None:
+    prompt = _SOLUTION_REPAIR_SYSTEM_PROMPT
+
+    for fragment in (
+        "original problem, image, and incomplete explanation",
+        "draft-like exploration",
+        "abandoned attempts",
+        "self-corrections",
+        "reconsiderations",
+        "Re-verify the conclusion",
+        "unreliable trailing fragments",
+        "state what is missing in answer",
+        "do not guess",
+        "exactly one JSON object",
+        "four non-empty string fields",
+        "verified key derivations numbered by sub-question",
+        "answer self-contained",
+        "cover every sub-question",
+        "transfer exactly one short variant",
+    ):
+        assert fragment in prompt
+
+
+def test_solution_fix_keeps_existing_primary_and_repair_token_budgets() -> None:
+    assert _OUTPUT_TOKEN_BUDGETS["concept_explain"] == 3072
+    assert _OUTPUT_TOKEN_BUDGETS["solution_structure_repair"] == 1536
 
 
 @pytest.mark.parametrize(

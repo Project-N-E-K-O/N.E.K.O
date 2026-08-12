@@ -9,6 +9,11 @@ import pytest
 from plugin.plugins.study_companion.entry_tutor_context_support import (
     _TutorContextSupportMixin,
 )
+from plugin.plugins.study_companion.entry_tutor_explain_entries import (
+    _EXPLAIN_WORK_BUDGET_SECONDS,
+    _SOLUTION_REPAIR_RESERVED_SECONDS,
+    _TutorExplainEntriesMixin,
+)
 from plugin.plugins.study_companion.models import StudyConfig
 from plugin.plugins.study_companion.qwen_native_client import QwenNativeResult
 from plugin.plugins.study_companion.tutor_llm_agent import TutorLLMAgent
@@ -23,6 +28,19 @@ pytestmark = pytest.mark.unit
 class _Logger:
     def warning(self, *_args: Any, **_kwargs: Any) -> None:
         return None
+
+
+def test_explain_entry_budget_reserves_a_repair_window_inside_entry_timeout() -> None:
+    explain_meta = _TutorExplainEntriesMixin.study_explain_text.__neko_event_meta__
+    image_meta = _TutorExplainEntriesMixin.study_submit_image.__neko_event_meta__
+
+    assert _EXPLAIN_WORK_BUDGET_SECONDS == 95.0
+    assert _SOLUTION_REPAIR_RESERVED_SECONDS == 25.0
+    assert _EXPLAIN_WORK_BUDGET_SECONDS - _SOLUTION_REPAIR_RESERVED_SECONDS == 70.0
+    assert explain_meta.timeout == 105.0
+    assert image_meta.timeout == 105.0
+    assert explain_meta.timeout > _EXPLAIN_WORK_BUDGET_SECONDS
+    assert image_meta.timeout > _EXPLAIN_WORK_BUDGET_SECONDS
 
 
 @pytest.mark.asyncio

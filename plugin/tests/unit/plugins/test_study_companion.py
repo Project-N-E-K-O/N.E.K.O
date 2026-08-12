@@ -6231,7 +6231,7 @@ def test_study_companion_hosted_panel_uses_long_running_entry_poll_budget() -> N
 
     assert "ENTRY_TIMEOUT_MS" in source
     assert "study_set_mode: 15000" in source
-    assert "study_explain_text: 70000" in source
+    assert "study_explain_text: 120000" in source
     assert "study_generate_question: 70000" in source
     assert "study_generate_targeted_question: 55000" in source
     assert "study_evaluate_answer: 70000" in source
@@ -6451,19 +6451,21 @@ def test_study_companion_explain_timeouts_cover_vision_solving() -> None:
         plugin_config = tomllib.load(handle)
     llm_timeout = float(plugin_config["llm"]["llm_call_timeout_seconds"])
 
-    assert "study_explain_text: 70000" in static_source
+    assert "study_explain_text: 120000" in static_source
     assert "study_generate_question: 70000" in static_source
     assert "study_evaluate_answer: 70000" in static_source
-    assert "study_explain_text: 70000" in hosted_source
+    assert "study_explain_text: 120000" in hosted_source
     assert "study_generate_question: 70000" in hosted_source
     assert "study_evaluate_answer: 70000" in hosted_source
-    assert "timeout=70.0" in explain_source
+    assert "timeout=105.0" in explain_source
     assert "timeout=70.0" in question_source
     assert "timeout=70.0" in answer_source
-    assert submit_meta.timeout == 70.0
-    assert meta.timeout == 70.0
+    assert submit_meta.timeout == 105.0
+    assert meta.timeout == 105.0
     assert question_meta.timeout == 70.0
     assert answer_meta.timeout == 70.0
+    assert 120.0 > submit_meta.timeout
+    assert 120.0 > meta.timeout
     assert "llm_call_timeout_seconds = 75" in plugin_toml
     for entry_timeout in (
         submit_meta.timeout,

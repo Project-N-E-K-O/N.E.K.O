@@ -4,6 +4,7 @@
     "ui.error.solution_narration_missing_answer":  "讲解生成不完整：缺少“答案”部分，因此未安排朗读。请重新解析。",
     "ui.error.solution_narration_incomplete":  "讲解生成不完整，因此未安排朗读。请重新解析。",
     "ui.error.solution_narration_repair_failed":  "无法修复讲解结构，因此未安排朗读。请重新解析。",
+    "ui.error.solution_narration_truncated_repair_timeout":  "解答因达到输出长度上限而被截断，自动补全未能在时限内完成，因此未安排朗读。请重新生成精简解答。",
     "ui.error.solution_narration_runtime_unavailable":  "朗读功能暂时不可用，讲解内容仍会显示。",
     "ui.error.solution_narration_delivery_failed":  "朗读请求发送失败，请重试。",
     "ui.error.solution_narration_degraded":  "讲解使用了降级回复，因此未安排朗读。",

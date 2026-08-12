@@ -4,6 +4,7 @@
     "ui.error.solution_narration_missing_answer":  "The explanation is incomplete: the Answer section is missing, so narration was not scheduled. Please analyze it again.",
     "ui.error.solution_narration_incomplete":  "The explanation is incomplete, so narration was not scheduled. Please analyze it again.",
     "ui.error.solution_narration_repair_failed":  "The explanation structure could not be repaired, so narration was not scheduled. Please analyze it again.",
+    "ui.error.solution_narration_truncated_repair_timeout":  "The solution was truncated after reaching the output length limit. Automatic completion could not finish within the time limit, so narration was not scheduled. Please regenerate a concise solution.",
     "ui.error.solution_narration_runtime_unavailable":  "Narration is temporarily unavailable. The explanation is still shown.",
     "ui.error.solution_narration_delivery_failed":  "The narration request could not be delivered. Please try again.",
     "ui.error.solution_narration_degraded":  "The explanation used a fallback response, so narration was not scheduled.",

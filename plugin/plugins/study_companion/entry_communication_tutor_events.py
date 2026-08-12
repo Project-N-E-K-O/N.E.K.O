@@ -18,7 +18,11 @@ class _CommunicationTutorEventsMixin:
         content: str,
     ) -> bool:
         normalized_mode = str(response_mode or "").strip()
-        if normalized_mode not in {"general_explanation", "general_discussion"}:
+        if normalized_mode not in {
+            "general_explanation",
+            "general_discussion",
+            "general_fallback",
+        }:
             return False
         prepared_content = prepare_general_narration_content(content)
         if not prepared_content:

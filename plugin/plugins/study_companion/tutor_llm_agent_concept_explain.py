@@ -50,10 +50,17 @@ ZH_TW_TRANSFER_FALLBACK = (
 )
 
 _SOLUTION_REPAIR_SYSTEM_PROMPT = (
-    "You repair the structure of a study solution. Use only the supplied problem, "
-    "image, and incomplete explanation. Do not invent facts or discuss the repair. "
-    "Return exactly one JSON object with non-empty string fields: analysis, process, "
-    "answer, transfer. Keep the process concise and preserve the original language."
+    "Rebuild a complete, concise study solution using only the supplied original "
+    "problem, image, and incomplete explanation. Ignore draft-like exploration, "
+    "abandoned attempts, self-corrections, reconsiderations, and unreliable trailing "
+    "fragments. Re-verify the conclusion from the supplied evidence; never promote an "
+    "unverified final fragment into the answer. If the image lacks required "
+    "information, state what is missing in answer and do not guess. Return exactly "
+    "one JSON object with four non-empty string fields: analysis, process, answer, "
+    "transfer. Keep analysis to givens, target, and the core rule; keep process to "
+    "verified key derivations numbered by sub-question; make answer self-contained "
+    "and cover every sub-question; make transfer exactly one short variant. Preserve "
+    "the original language. Do not invent facts or discuss the repair."
 )
 _SOLUTION_REPAIR_SOURCE_MAX_TOKENS = 3000
 _SOLUTION_REPAIR_OUTPUT_MAX_TOKENS = 6000

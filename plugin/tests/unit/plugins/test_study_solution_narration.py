@@ -457,11 +457,14 @@ async def test_study_explain_text_schedules_one_solution_event_for_each_input_pa
 
 
 @pytest.mark.asyncio
-async def test_study_explain_text_repairs_missing_answer_once_before_narration() -> None:
+async def test_study_explain_text_repairs_realistic_truncated_long_process_once() -> None:
+    long_process = "\n".join(
+        f"{index}. 核验后的几何推导步骤 {index}。" for index in range(1, 181)
+    )
     incomplete_reply = (
         "### 题目解析\n识别条件。\n\n"
-        "### 解题过程\n|QM|² = (3cosθ)² + (sinθ + 4)²\n\n"
-        "### 举一反三\n替换参数后复算。"
+        f"### 解题过程\n{long_process}\n"
+        "轨迹半径 r_A = |O'X| ="
     )
     repaired_json = json.dumps(
         {
@@ -473,7 +476,11 @@ async def test_study_explain_text_repairs_missing_answer_once_before_narration()
         ensure_ascii=False,
     )
     bus = _EventBus()
-    plugin = _ExplainHarness(reply=incomplete_reply, event_bus=bus)
+    plugin = _ExplainHarness(
+        reply=incomplete_reply,
+        diagnostic="output_truncated",
+        event_bus=bus,
+    )
     repair_calls = _install_repair_response(plugin, repaired_json)
 
     result = await plugin.study_explain_text(text="求 |QM| 的最大值")
@@ -492,11 +499,12 @@ async def test_study_explain_text_repairs_missing_answer_once_before_narration()
     assert result.value["solution_narration_scheduled"] is True
     assert "### 答案\n最大值为 7。" in result.value["reply"]
     assert len(bus.events) == 1
+    assert [event.name for event in bus.events] == ["solution_completed"]
     assert bus.events[0].payload["answer"] == "最大值为 7。"
 
 
 @pytest.mark.asyncio
-async def test_study_explain_text_skips_repair_when_shared_budget_is_insufficient(
+async def test_study_explain_text_reserves_work_deadline_for_repair(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     incomplete_reply = (
@@ -508,22 +516,83 @@ async def test_study_explain_text_skips_repair_when_shared_budget_is_insufficien
         reply=incomplete_reply,
         diagnostic="output_truncated",
     )
-    repair_calls = _install_repair_response(plugin, "must-not-be-used")
-    clock = iter((100.0, 157.0))
-    monkeypatch.setattr(explain_entries, "monotonic", lambda: next(clock))
+    captured: dict[str, Any] = {}
+
+    async def repair_with_reserved_budget(
+        _agent: Any,
+        *,
+        source_text: str,
+        incomplete_reply: str,
+        language: str,
+        mode: str,
+        context: dict[str, Any],
+    ) -> Any:
+        captured.update(
+            source_text=source_text,
+            incomplete_reply=incomplete_reply,
+            language=language,
+            mode=mode,
+            context=dict(context),
+        )
+        return parse_solution_structure(
+            "### 题目解析\n识别条件。\n\n"
+            "### 解题过程\n完成推导。\n\n"
+            "### 答案\n答案为 42。\n\n"
+            "### 举一反三\n替换参数后复算。"
+        )
+
+    monkeypatch.setattr(
+        explain_entries, "repair_solution_structure", repair_with_reserved_budget
+    )
+    clock = SimpleNamespace(now=100.0)
+    monkeypatch.setattr(explain_entries, "monotonic", lambda: clock.now)
 
     result = await plugin.study_explain_text(text="一道耗时较长的题")
 
     assert isinstance(result, Ok)
-    assert repair_calls == []
-    assert plugin._agent.calls[0][2]["deadline_monotonic"] == 162.0
-    assert result.value["reply"] == incomplete_reply
+    primary_deadline = plugin._agent.calls[0][2]["deadline_monotonic"]
+    repair_deadline = captured["context"]["deadline_monotonic"]
+    assert primary_deadline == pytest.approx(170.0)
+    assert repair_deadline == pytest.approx(195.0)
+    assert repair_deadline - primary_deadline == pytest.approx(25.0)
+    assert result.value["reply"] != incomplete_reply
     assert result.value["degraded"] is False
     assert result.value["diagnostic"] == "output_truncated"
-    assert result.value["solution_repair_attempted"] is False
-    assert result.value["solution_narration_status"] == "incomplete"
-    assert result.value["solution_narration_reason"] == "insufficient_time_budget"
-    assert result.value["solution_narration_missing_sections"] == ["answer"]
+    assert result.value["solution_repair_attempted"] is True
+    assert result.value["solution_narration_status"] == "scheduled"
+    assert result.value["solution_narration_reason"] == ""
+    assert result.value["solution_narration_missing_sections"] == []
+
+
+@pytest.mark.asyncio
+async def test_study_explain_text_repairs_truncation_before_second_heading() -> None:
+    incomplete_reply = "### 题目解析\n已知圆心 O 与点 A，目标是求轨迹半径。"
+    repaired_json = json.dumps(
+        {
+            "analysis": "列出已知条件与目标。",
+            "process": "1. 使用距离公式核验。",
+            "answer": "轨迹半径为 3。",
+            "transfer": "将半径改为 4 后复算。",
+        },
+        ensure_ascii=False,
+    )
+    bus = _EventBus()
+    plugin = _ExplainHarness(
+        reply=incomplete_reply,
+        diagnostic="output_truncated",
+        event_bus=bus,
+    )
+    repair_calls = _install_repair_response(plugin, repaired_json)
+
+    result = await plugin.study_explain_text(text="根据图片求轨迹半径")
+
+    assert isinstance(result, Ok)
+    assert len(repair_calls) == 1
+    assert result.value["solution_repair_attempted"] is True
+    assert result.value["solution_narration_scheduled"] is True
+    assert result.value["solution_narration_missing_sections"] == []
+    assert [event.name for event in bus.events] == ["solution_completed"]
+    assert bus.events[0].payload["answer"] == "轨迹半径为 3。"
 
 
 @pytest.mark.asyncio
@@ -541,7 +610,8 @@ async def test_study_explain_text_repair_timeout_keeps_first_reply_ok(
         await asyncio.Event().wait()
 
     monkeypatch.setattr(explain_entries, "repair_solution_structure", never_returns)
-    monkeypatch.setattr(explain_entries, "_EXPLAIN_WORK_BUDGET_SECONDS", 0.05)
+    monkeypatch.setattr(explain_entries, "_EXPLAIN_WORK_BUDGET_SECONDS", 0.2)
+    monkeypatch.setattr(explain_entries, "_SOLUTION_REPAIR_RESERVED_SECONDS", 0.15)
     monkeypatch.setattr(explain_entries, "_SOLUTION_REPAIR_MIN_REMAINING_SECONDS", 0.01)
     started = time.monotonic()
 
@@ -584,6 +654,41 @@ async def test_study_explain_text_does_not_repair_ordinary_concept_prose() -> No
         "response_mode": "general_discussion",
         "content": prose_reply,
     }
+
+
+@pytest.mark.asyncio
+async def test_general_discussion_output_truncated_does_not_trigger_solution_repair() -> None:
+    prose_reply = "《战争与和平》通过个人命运呈现历史洪流中的选择"
+    bus = _EventBus()
+    plugin = _ExplainHarness(
+        reply=prose_reply,
+        diagnostic="output_truncated",
+        event_bus=bus,
+        response_mode="general_discussion",
+    )
+    repair_calls = _install_repair_response(plugin, "must-not-be-used")
+
+    result = await plugin.study_explain_text(text="你对《战争与和平》有什么看法")
+
+    assert isinstance(result, Ok)
+    assert repair_calls == []
+    assert result.value["solution_repair_attempted"] is False
+    assert result.value["solution_narration_status"] == "not_applicable"
+    assert [event.name for event in bus.events] == ["general_response_completed"]
+
+
+@pytest.mark.asyncio
+async def test_non_truncated_natural_text_in_problem_mode_does_not_trigger_repair() -> None:
+    prose_reply = "先理解题意，再选择适合的公式。"
+    plugin = _ExplainHarness(reply=prose_reply, response_mode="problem_solving")
+    repair_calls = _install_repair_response(plugin, "must-not-be-used")
+
+    result = await plugin.study_explain_text(text="说说一般解题思路")
+
+    assert isinstance(result, Ok)
+    assert repair_calls == []
+    assert result.value["solution_repair_attempted"] is False
+    assert result.value["solution_narration_scheduled"] is False
 
 
 @pytest.mark.asyncio
@@ -812,6 +917,37 @@ async def test_study_explain_text_reports_single_failed_repair_without_narration
     assert result.value["solution_narration_missing_sections"] == ["answer"]
     assert result.value["solution_narration_scheduled"] is False
     assert bus.events == []
+
+
+@pytest.mark.asyncio
+async def test_failed_repair_logs_do_not_include_problem_image_ocr_or_full_reply() -> None:
+    ocr_sentinel = "PRIVATE_OCR_SENTINEL_92731"
+    reply_sentinel = "PRIVATE_FULL_REPLY_SENTINEL_38104"
+    incomplete_reply = (
+        f"### 题目解析\n{reply_sentinel}\n\n"
+        "### 解题过程\n推导在公式中间停止。"
+    )
+    plugin = _ExplainHarness(
+        reply=incomplete_reply,
+        diagnostic="output_truncated",
+        last_ocr_text=ocr_sentinel,
+    )
+    plugin._agent._logger = plugin.logger  # type: ignore[attr-defined]
+    repair_calls = _install_repair_response(plugin, "not-json")
+
+    result = await plugin.study_explain_text(
+        text=ocr_sentinel,
+        vision_image_base64=_PNG_IMAGE_BASE64,
+    )
+
+    assert isinstance(result, Ok)
+    assert len(repair_calls) == 1
+    assert result.value["reply"] == incomplete_reply
+    assert plugin.logger.warnings
+    logged = repr(plugin.logger.warnings)
+    assert ocr_sentinel not in logged
+    assert reply_sentinel not in logged
+    assert _PNG_IMAGE_BASE64 not in logged
 
 
 @pytest.mark.asyncio

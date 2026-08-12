@@ -63,6 +63,7 @@
   function formatSolutionNarrationNotice(outcome, translate) {
     const status = String(outcome?.solution_narration_status || '').trim().toLowerCase();
     const reason = String(outcome?.solution_narration_reason || '').trim().toLowerCase();
+    const diagnostic = String(outcome?.diagnostic || '').trim().toLowerCase();
     const missingSections = Array.isArray(outcome?.solution_narration_missing_sections)
       ? outcome.solution_narration_missing_sections.map((section) => String(section).trim().toLowerCase())
       : [];
@@ -82,6 +83,12 @@
       return translate(
         'ui.error.solution_narration_degraded',
         'The explanation used a fallback response, so narration was not scheduled.',
+      );
+    }
+    if (diagnostic === 'output_truncated' && reason === 'insufficient_time_budget') {
+      return translate(
+        'ui.error.solution_narration_truncated_repair_timeout',
+        'The solution was truncated after reaching the output length limit. Automatic completion could not finish within the time limit, so narration was not scheduled. Please regenerate a concise solution.',
       );
     }
     if (

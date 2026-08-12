@@ -4,6 +4,7 @@
     "ui.error.solution_narration_missing_answer":  "La explicación está incompleta: falta la sección «Respuesta», por lo que no se programó la narración. Vuelve a analizarla.",
     "ui.error.solution_narration_incomplete":  "La explicación está incompleta, por lo que no se programó la narración. Vuelve a analizarla.",
     "ui.error.solution_narration_repair_failed":  "No se pudo reparar la estructura de la explicación, por lo que no se programó la narración. Vuelve a analizarla.",
+    "ui.error.solution_narration_truncated_repair_timeout":  "La solución se truncó al alcanzar el límite de longitud de salida. El completado automático no pudo terminar dentro del tiempo disponible, por lo que no se programó la narración. Vuelve a generar una solución concisa.",
     "ui.error.solution_narration_runtime_unavailable":  "La narración no está disponible temporalmente. La explicación sigue visible.",
     "ui.error.solution_narration_delivery_failed":  "No se pudo entregar la solicitud de narración. Inténtalo de nuevo.",
     "ui.error.solution_narration_degraded":  "La explicación utilizó una respuesta alternativa, por lo que no se programó la narración.",

@@ -58,7 +58,9 @@ def test_study_explain_surfaces_expose_solution_narration_outcomes() -> None:
         assert "solution_narration_reason" in source
         assert "solution_repair_attempted" in source
         assert "solution_narration_missing_sections" in source
+        assert "diagnostic" in source
         assert "ui.error.solution_narration_missing_answer" in source
+        assert "ui.error.solution_narration_truncated_repair_timeout" in source
         assert "ui.error.solution_narration_incomplete" in source
         assert "ui.error.solution_narration_repair_failed" in source
         assert "ui.status.solution_narration_scheduled" in source
@@ -69,6 +71,9 @@ def test_study_explain_surfaces_expose_solution_narration_outcomes() -> None:
         assert source.index("status === 'degraded'") < source.index(
             "reason === 'missing_answer'"
         )
+        truncated_check = source.index("diagnostic === 'output_truncated'")
+        assert truncated_check < source.index("reason === 'missing_answer'")
+        assert truncated_check < source.index("missingSections.includes('answer')")
 
 
 def test_study_explain_surfaces_expose_general_narration_outcomes() -> None:
@@ -125,6 +130,10 @@ def test_general_narration_messages_and_setting_exist_in_all_locales() -> None:
 
 
 def test_solution_narration_outcome_messages_exist_in_all_locales() -> None:
+    expected_truncated_zh_cn = (
+        "解答因达到输出长度上限而被截断，自动补全未能在时限内完成，因此未安排朗读。"
+        "请重新生成精简解答。"
+    )
     expected_zh_cn = (
         "讲解生成不完整：缺少“答案”部分，因此未安排朗读。请重新解析。"
     )
@@ -132,6 +141,7 @@ def test_solution_narration_outcome_messages_exist_in_all_locales() -> None:
         "ui.status.solution_narration_scheduled",
         "ui.status.solution_narration_disabled",
         "ui.error.solution_narration_missing_answer",
+        "ui.error.solution_narration_truncated_repair_timeout",
         "ui.error.solution_narration_incomplete",
         "ui.error.solution_narration_repair_failed",
         "ui.error.solution_narration_runtime_unavailable",
@@ -158,6 +168,10 @@ def test_solution_narration_outcome_messages_exist_in_all_locales() -> None:
 
     zh_cn = json.loads((PLUGIN_DIR / "i18n" / "zh-CN.json").read_text(encoding="utf-8"))
     assert zh_cn["ui.error.solution_narration_missing_answer"] == expected_zh_cn
+    assert (
+        zh_cn["ui.error.solution_narration_truncated_repair_timeout"]
+        == expected_truncated_zh_cn
+    )
 
 
 def test_study_explain_surfaces_render_backend_knowledge_guidance_evidence() -> None:
@@ -227,6 +241,12 @@ const narrationCases = {
   attempted_repair: {
     solution_repair_attempted: true,
     solution_narration_scheduled: false,
+  },
+  truncated_repair_timeout: {
+    diagnostic: 'output_truncated',
+    solution_narration_status: 'incomplete',
+    solution_narration_reason: 'insufficient_time_budget',
+    solution_narration_missing_sections: ['answer', 'transfer'],
   },
   missing_answer_reason: { solution_narration_reason: 'missing_answer' },
   missing_answer_section: {
@@ -345,6 +365,7 @@ console.log(JSON.stringify({
         "repair_failed": "translated:ui.error.solution_narration_repair_failed",
         "invalid_repair": "translated:ui.error.solution_narration_repair_failed",
         "attempted_repair": "translated:ui.error.solution_narration_repair_failed",
+        "truncated_repair_timeout": "translated:ui.error.solution_narration_truncated_repair_timeout",
         "missing_answer_reason": "translated:ui.error.solution_narration_missing_answer",
         "missing_answer_section": "translated:ui.error.solution_narration_missing_answer",
         "incomplete": "translated:ui.error.solution_narration_incomplete",

@@ -4,6 +4,7 @@
     "ui.error.solution_narration_missing_answer":  "A explicação está incompleta: falta a seção «Resposta», portanto a narração não foi agendada. Analise novamente.",
     "ui.error.solution_narration_incomplete":  "A explicação está incompleta, portanto a narração não foi agendada. Analise novamente.",
     "ui.error.solution_narration_repair_failed":  "Não foi possível reparar a estrutura da explicação, portanto a narração não foi agendada. Analise novamente.",
+    "ui.error.solution_narration_truncated_repair_timeout":  "A solução foi truncada ao atingir o limite de tamanho da saída. O preenchimento automático não pôde ser concluído dentro do prazo, por isso a narração não foi agendada. Gere novamente uma solução concisa.",
     "ui.error.solution_narration_runtime_unavailable":  "A narração está temporariamente indisponível. A explicação continua visível.",
     "ui.error.solution_narration_delivery_failed":  "Não foi possível entregar a solicitação de narração. Tente novamente.",
     "ui.error.solution_narration_degraded":  "A explicação usou uma resposta alternativa, portanto a narração não foi agendada.",

@@ -4,6 +4,7 @@
     "ui.error.solution_narration_missing_answer":  "해설이 불완전합니다. '답' 부분이 없어 낭독을 예약하지 않았습니다. 다시 분석해 주세요.",
     "ui.error.solution_narration_incomplete":  "해설이 불완전하여 낭독을 예약하지 않았습니다. 다시 분석해 주세요.",
     "ui.error.solution_narration_repair_failed":  "해설 구조를 복구하지 못해 낭독을 예약하지 않았습니다. 다시 분석해 주세요.",
+    "ui.error.solution_narration_truncated_repair_timeout":  "해답이 출력 길이 제한에 도달해 중간에 잘렸습니다. 제한 시간 안에 자동 완성을 마치지 못해 낭독을 예약하지 않았습니다. 간결한 해답을 다시 생성해 주세요.",
     "ui.error.solution_narration_runtime_unavailable":  "낭독을 일시적으로 사용할 수 없습니다. 해설은 계속 표시됩니다.",
     "ui.error.solution_narration_delivery_failed":  "낭독 요청을 전달하지 못했습니다. 다시 시도해 주세요.",
     "ui.error.solution_narration_degraded":  "해설이 대체 응답을 사용하여 낭독을 예약하지 않았습니다.",
