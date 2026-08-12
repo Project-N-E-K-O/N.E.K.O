@@ -66,6 +66,14 @@ class _CtxFull:
         return {"config": self.base_cfg}
 
 
+class _RecordingLogger:
+    def __init__(self) -> None:
+        self.warning_messages: list[str] = []
+
+    def warning(self, message: str, *args: object, **kwargs: object) -> None:
+        self.warning_messages.append(message)
+
+
 class _CtxNoProfileApis:
     async def get_own_config(self, timeout: float = 5.0):
         return {"config": {"feature": {"enabled": True}}}
@@ -164,6 +172,42 @@ async def test_config_set_replaces_existing_table_value() -> None:
             "enabled": False,
         }
     }
+
+
+@pytest.mark.asyncio
+async def test_config_runtime_writes_warn_for_plugin_metadata() -> None:
+    class _RecordingCtx(_CtxFull):
+        def __init__(self) -> None:
+            super().__init__()
+            self.write_calls: list[tuple[str, dict[str, object]]] = []
+
+        async def update_own_config(self, updates: dict[str, object], timeout: float = 10.0):
+            self.write_calls.append(("update", updates))
+            return await super().update_own_config(updates, timeout=timeout)
+
+        async def replace_own_config(self, config: dict[str, object], timeout: float = 10.0):
+            self.write_calls.append(("replace", config))
+            return await super().replace_own_config(config, timeout=timeout)
+
+    ctx = _RecordingCtx()
+    logger = _RecordingLogger()
+    ctx.logger = logger
+    cfg = core_config.PluginConfig(ctx)
+
+    await cfg.set("plugin.version", "2.0.0")
+    await cfg.update({"plugin": {"name": "renamed"}})
+    await cfg.set("", {"plugin": {"version": "3.0.0"}})
+    await cfg.update({"feature": {"enabled": True}})
+
+    assert logger.warning_messages == [
+        "Runtime config writes under [plugin] may be ignored because plugin.toml manifest metadata is authoritative."
+    ] * 3
+    assert ctx.write_calls == [
+        ("update", {"plugin": {"version": "2.0.0"}}),
+        ("update", {"plugin": {"name": "renamed"}}),
+        ("replace", {"plugin": {"version": "3.0.0"}}),
+        ("update", {"feature": {"enabled": True}}),
+    ]
 
 
 @pytest.mark.asyncio

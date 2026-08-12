@@ -21,6 +21,12 @@ from .context import ensure_sdk_context
 from .types import JsonObject, JsonValue, LoggerLike, PluginContextProtocol
 
 
+_PLUGIN_METADATA_WRITE_WARNING = (
+    "Runtime config writes under [plugin] may be ignored because "
+    "plugin.toml manifest metadata is authoritative."
+)
+
+
 # ---------------------------------------------------------------------------
 # Utility helpers
 # ---------------------------------------------------------------------------
@@ -312,9 +318,14 @@ class PluginConfig:
 
     # --- internal helpers ---
 
+    def _warn_plugin_metadata_write(self, config: Mapping[str, JsonValue]) -> None:
+        if "plugin" in config:
+            self.logger.warning(_PLUGIN_METADATA_WRITE_WARNING)
+
     async def _update_runtime_config(self, patch: JsonObject, *, timeout: float) -> JsonObject:
         if timeout <= 0:
             raise ValidationError("timeout must be > 0")
+        self._warn_plugin_metadata_write(patch)
         try:
             raw = await self.ctx.update_own_config(dict(patch), timeout=timeout)
         except AttributeError as error:
@@ -326,6 +337,7 @@ class PluginConfig:
     async def _replace_runtime_config(self, config: JsonObject, *, timeout: float) -> JsonObject:
         if timeout <= 0:
             raise ValidationError("timeout must be > 0")
+        self._warn_plugin_metadata_write(config)
         try:
             raw = await self.ctx.replace_own_config(dict(config), timeout=timeout)
         except AttributeError as error:
