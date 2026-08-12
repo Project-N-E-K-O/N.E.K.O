@@ -111,7 +111,8 @@ def test_media_backpressure_does_not_block_control_uplink() -> None:
             for index in range(32)
         ]
         try:
-            await asyncio.sleep(0.05)
+            outcomes = await asyncio.gather(*flood, return_exceptions=True)
+            assert any(isinstance(item, TimeoutError) for item in outcomes)
             await asyncio.wait_for(
                 asyncio.to_thread(
                     child.send_uplink,
@@ -128,9 +129,6 @@ def test_media_backpressure_does_not_block_control_uplink() -> None:
                 CH_STS,
                 {"status": "control-still-responsive"},
             )
-
-            outcomes = await asyncio.gather(*flood, return_exceptions=True)
-            assert any(isinstance(item, TimeoutError) for item in outcomes)
         finally:
             for task in flood:
                 task.cancel()

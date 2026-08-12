@@ -66,15 +66,36 @@ def _is_local_plugin_media_url(url: str) -> bool:
 
 
 def _plugin_image_chat_blocks(media_parts: list[Any]) -> list[dict[str, str]]:
-    """Convert URL-backed plugin media into frontend image blocks."""
-    return [
-        {"type": "image", "url": part["url"]}
-        for part in media_parts
-        if isinstance(part, dict)
-        and part.get("type") == "image"
-        and isinstance(part.get("url"), str)
-        and _is_local_plugin_media_url(part["url"])
-    ]
+    """Convert bounded plugin image parts into frontend image blocks."""
+    blocks: list[dict[str, str]] = []
+    max_base64_chars = ((_PLUGIN_IMAGE_MAX_BYTES + 2) // 3) * 4
+    for part in media_parts:
+        if not isinstance(part, dict) or part.get("type") != "image":
+            continue
+        url = part.get("url")
+        if isinstance(url, str) and _is_local_plugin_media_url(url):
+            blocks.append({"type": "image", "url": url})
+            continue
+        encoded = part.get("binary_base64")
+        mime = str(part.get("mime") or "").strip().lower()
+        if (
+            not isinstance(encoded, str)
+            or not encoded
+            or len(encoded) > max_base64_chars
+            or not mime.startswith("image/")
+        ):
+            continue
+        try:
+            decoded = base64.b64decode(encoded, validate=True)
+        except (ValueError, TypeError):
+            continue
+        if not decoded or len(decoded) > _PLUGIN_IMAGE_MAX_BYTES:
+            continue
+        blocks.append({
+            "type": "image",
+            "url": f"data:{mime};base64,{encoded}",
+        })
+    return blocks
 
 
 async def _fetch_plugin_image_base64(url: str) -> str:

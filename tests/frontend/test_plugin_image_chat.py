@@ -186,3 +186,43 @@ def test_structured_passthrough_image_uses_the_existing_assistant_lifecycle(
     assert snapshot["bubbleRefs"] == 1
     assert snapshot["currentBubbleId"] == snapshot["message"]["id"]
     assert page_errors == []
+
+
+@pytest.mark.frontend
+def test_structured_passthrough_waits_for_the_react_host(
+    mock_page: Page,
+    running_server: str,
+) -> None:
+    _open_chat(mock_page, running_server)
+
+    result = mock_page.evaluate(
+        """(imageUrl) => {
+            const host = window.reactChatWindowHost;
+            window.reactChatWindowHost = null;
+            const accepted = window.appendMessage('caption', 'gemini', true, {
+                blocks: [
+                    { type: 'text', text: 'caption' },
+                    { type: 'image', url: imageUrl }
+                ]
+            });
+            window.setReactMessageStatus(window.currentGeminiMessage, 'assistant', 'sent');
+            const beforeRestore = host.getState().messages.length;
+            window.reactChatWindowHost = host;
+            window._tryFlushPendingHostMessages();
+            return {
+                accepted,
+                beforeRestore,
+                messages: host.getState().messages
+            };
+        }""",
+        _ONE_PIXEL_PNG,
+    )
+
+    assert result["accepted"] is True
+    assert result["beforeRestore"] == 0
+    assert len(result["messages"]) == 1
+    assert result["messages"][0]["status"] == "sent"
+    assert result["messages"][0]["blocks"] == [
+        {"type": "text", "text": "caption"},
+        {"type": "image", "url": _ONE_PIXEL_PNG},
+    ]

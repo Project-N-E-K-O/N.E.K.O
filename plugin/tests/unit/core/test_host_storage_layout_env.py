@@ -373,6 +373,125 @@ def test_plugin_process_runner_pumps_image_response_during_unfreeze(
 
 
 @pytest.mark.plugin_unit
+def test_plugin_process_runner_pumps_image_response_during_freeze(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    uploaded_parts: list[dict[str, object]] = []
+    freeze_results: list[dict[str, object]] = []
+    config_path = tmp_path / "demo" / "plugin.toml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text("[plugin]\nid='demo'\ntype='adapter'\n", encoding="utf-8")
+    image = BytesIO()
+    Image.new("RGB", (2, 2), "green").save(image, format="PNG")
+    image_bytes = image.getvalue()
+    freeze_meta = EventMeta(event_type="lifecycle", id="freeze")
+
+    class _Plugin:
+        __freezable__ = ["value"]
+
+        def __init__(self, ctx) -> None:
+            self.ctx = ctx
+            self.value = "persisted"
+            self.config = SimpleNamespace(dump_effective_sync=lambda timeout=3.0: {})
+
+        async def freeze(self) -> None:
+            uploaded_parts.append(await self.ctx.images.upload(image_bytes, timeout=1.0))
+
+        def collect_entries(self, wrap_with_hooks: bool = True) -> dict[str, EventHandler]:
+            return {
+                "freeze": EventHandler(meta=freeze_meta, handler=self.freeze),
+            }
+
+    class _Sender:
+        def __init__(self, channel: str) -> None:
+            self.channel = channel
+
+        def put(
+            self,
+            payload: dict[str, object],
+            block: bool = True,
+            timeout: float | None = None,
+        ) -> None:
+            if self.channel == host_module.CH_RES and payload.get("req_id") == "freeze-1":
+                freeze_results.append(payload)
+
+        def put_nowait(self, payload: dict[str, object]) -> None:
+            self.put(payload)
+
+    class _ChildTransport:
+        def __init__(self, *_endpoints: str) -> None:
+            self.pending_downlink: list[tuple[str, dict[str, object]]] = [(
+                host_module.CH_CMD,
+                {"type": "FREEZE", "req_id": "freeze-1"},
+            )]
+
+        def channel_sender(self, channel: str) -> _Sender:
+            return _Sender(channel)
+
+        async def send_image(
+            self,
+            request_id: str,
+            *,
+            mime: str,
+            data: bytes,
+            timeout: float,
+        ) -> None:
+            assert mime == "image/jpeg"
+            assert data.startswith(b"\xff\xd8")
+            self.pending_downlink.append((
+                host_module.CH_RESP,
+                {
+                    "type": "IMAGE_UPLOAD_RESULT",
+                    "request_id": request_id,
+                    "result": {
+                        "type": "image",
+                        "url": "http://127.0.0.1:48916/media/freeze-image",
+                        "mime": "image/jpeg",
+                    },
+                },
+            ))
+            await asyncio.sleep(0)
+
+        async def recv_downlink(self, timeout_ms: int = 1000):
+            if self.pending_downlink:
+                return self.pending_downlink.pop(0)
+            await asyncio.sleep(0)
+            return None
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(host_module, "_setup_plugin_logger", lambda *args, **kwargs: _FakeLogger())
+    monkeypatch.setattr(host_module, "_setup_logging_interception", lambda *args, **kwargs: None)
+    monkeypatch.setattr(host_module, "_prepare_child_plugin_import_roots", lambda *args, **kwargs: None)
+    monkeypatch.setattr(host_module, "_prepare_child_current_plugin_import_root", lambda *args, **kwargs: None)
+    monkeypatch.setattr(host_module, "_prepare_child_plugin_vendor_path", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        host_module,
+        "_import_plugin_module",
+        lambda *args, **kwargs: SimpleNamespace(DemoPlugin=_Plugin),
+    )
+    monkeypatch.setattr(host_module, "ChildTransport", _ChildTransport)
+
+    host_module._plugin_process_runner(
+        plugin_id="demo",
+        entry_point="tests.fake:DemoPlugin",
+        config_path=config_path,
+        downlink_endpoint="ipc://down",
+        uplink_endpoint="ipc://up",
+        image_uplink_endpoint="ipc://image",
+    )
+
+    assert uploaded_parts == [{
+        "type": "image",
+        "url": "http://127.0.0.1:48916/media/freeze-image",
+        "mime": "image/jpeg",
+    }]
+    assert freeze_results[-1]["success"] is True
+
+
+@pytest.mark.plugin_unit
 def test_plugin_process_runner_uses_timeout_when_reporting_crash(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

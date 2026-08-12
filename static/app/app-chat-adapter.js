@@ -709,7 +709,7 @@
         // still participates in the normal assistant turn lifecycle, but the
         // React host receives the already-structured blocks directly instead
         // of forcing them through the text sentence/markdown pipeline.
-        if (sender === 'gemini' && structuredResponseBlocks.length > 0 && host) {
+        if (sender === 'gemini' && structuredResponseBlocks.length > 0) {
             var structuredMessageId = nextReactMessageId('assistant');
             var structuredAuthor = getCurrentAssistantName();
             var structuredMessage = {
@@ -728,14 +728,21 @@
                 blocks: structuredResponseBlocks,
                 status: 'streaming'
             };
-            if (!appendHostMessageSafely(host, structuredMessage, 'structured_passthrough')) {
-                return false;
+            if (host && typeof host.appendMessage === 'function') {
+                _tryFlushPendingHostMessages();
+                if (!appendHostMessageSafely(host, structuredMessage, 'structured_passthrough')) {
+                    return false;
+                }
+                markAssistantVisibleResponseForAchievement();
+            } else {
+                console.warn('[ChatAdapter] host not ready, queuing structured passthrough', structuredMessageId);
+                _pendingHostMessages.push(structuredMessage);
+                _tryFlushPendingHostMessages();
             }
             var structuredRef = createVirtualBubbleRef(structuredMessageId);
             window.currentGeminiMessage = structuredRef;
             window.currentTurnGeminiBubbles = window.currentTurnGeminiBubbles || [];
             window.currentTurnGeminiBubbles.push(structuredRef);
-            markAssistantVisibleResponseForAchievement();
             return true;
         }
 
@@ -892,9 +899,14 @@
 
     function setReactMessageStatus(element, role, status) {
         var host = getHost();
-        if (!host || typeof host.updateMessage !== 'function') return;
         var messageId = element && element.dataset && element.dataset.reactChatMessageId;
         if (!messageId) return;
+        for (var i = 0; i < _pendingHostMessages.length; i++) {
+            if (_pendingHostMessages[i] && _pendingHostMessages[i].id === messageId) {
+                _pendingHostMessages[i] = Object.assign({}, _pendingHostMessages[i], { status: status });
+            }
+        }
+        if (!host || typeof host.updateMessage !== 'function') return;
         host.updateMessage(messageId, { status: status });
     }
 

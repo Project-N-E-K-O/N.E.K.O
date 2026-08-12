@@ -171,6 +171,63 @@ def test_external_image_urls_are_not_exposed_to_chat_or_model() -> None:
     }]
 
 
+def test_inline_image_is_exposed_to_chat_as_a_data_url() -> None:
+    from app.main_server.character_runtime import _plugin_image_chat_blocks
+
+    encoded = base64.b64encode(b"inline-image").decode("ascii")
+
+    assert _plugin_image_chat_blocks([{
+        "type": "image",
+        "binary_base64": encoded,
+        "mime": "image/png",
+    }]) == [{
+        "type": "image",
+        "url": f"data:image/png;base64,{encoded}",
+    }]
+
+
+@pytest.mark.asyncio
+async def test_inline_image_only_chat_blind_message_is_rendered(monkeypatch) -> None:
+    from app import main_server
+
+    manager = _manager()
+    encoded = base64.b64encode(b"inline-image").decode("ascii")
+    monkeypatch.setattr(
+        "app.main_server.character_runtime._get_session_manager",
+        lambda _name: manager,
+    )
+    monkeypatch.setattr(
+        "app.main_server.character_runtime._is_websocket_connected",
+        lambda _ws: False,
+    )
+
+    await main_server._handle_agent_event({
+        "event_type": "proactive_message",
+        "lanlan_name": "Test",
+        "text": "",
+        "channel": "plugin:inline",
+        "task_id": "inline-image-chat",
+        "delivery_mode": "silent",
+        "ai_behavior": "blind",
+        "visibility": ["chat"],
+        "media_parts": [{
+            "type": "image",
+            "binary_base64": encoded,
+            "mime": "image/png",
+        }],
+    })
+
+    manager.passthrough_to_chat_bubble.assert_awaited_once_with(
+        "",
+        request_id="inline-image-chat",
+        source="plugin",
+        blocks=[{
+            "type": "image",
+            "url": f"data:image/png;base64,{encoded}",
+        }],
+    )
+
+
 @pytest.mark.asyncio
 async def test_image_only_chat_blind_message_still_opens_a_structured_bubble(monkeypatch) -> None:
     from app import main_server
