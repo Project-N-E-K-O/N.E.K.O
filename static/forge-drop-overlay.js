@@ -26,6 +26,13 @@
   var PASSIVE_REFRESH_MS = 10 * 60 * 1000;
   var INTERACTIVE_REFRESH_THROTTLE_MS = 15 * 1000;
   var STARTUP_RETRY_DELAYS_MS = [2000, 10000, 30000];
+  // 只有这两档贴角色右下方；其余稀有度沿用屏幕中央的原始演出。
+  var AVATAR_ANCHORED_RARITIES = { N: true, R: true };
+  var ANCHOR_CARD_MAX_W = 280;
+  var ANCHOR_CARD_MIN_W = 180;
+  var CENTER_CARD_MAX_W = 360;
+  var CARD_MARGIN = 12;
+  var CARD_ASPECT = 1192 / 445;
   var queue = Promise.resolve();
   var cachedCredits = 0;
   var creditStateRevision = 0;
@@ -373,8 +380,29 @@
     return Math.round(Math.max(min, Math.min(value, max)));
   }
 
+  /**
+   * N/R 是高频掉落，贴到角色右下方以免反复挡住画面中央；
+   * SR 及以上保持原来的屏幕中央大卡演出，保留稀有掉落的仪式感。
+   */
+  function shouldAnchorToAvatar(rarity) {
+    return AVATAR_ANCHORED_RARITIES[String(rarity || '').toUpperCase()] === true;
+  }
+
+  function resolveCardWidth(rarity, avatarBounds) {
+    var availableWidth = Math.max(1, window.innerWidth - CARD_MARGIN * 2);
+    if (!shouldAnchorToAvatar(rarity)) {
+      return Math.max(1, Math.min(CENTER_CARD_MAX_W, availableWidth));
+    }
+    var avatarCardWidth = avatarBounds ? avatarBounds.width * 0.55 : ANCHOR_CARD_MAX_W;
+    return Math.max(1, Math.min(
+      ANCHOR_CARD_MAX_W,
+      availableWidth,
+      Math.max(ANCHOR_CARD_MIN_W, avatarCardWidth)
+    ));
+  }
+
   function getCardPlacement(cardWidth, cardHeight, avatarBounds) {
-    var margin = 12;
+    var margin = CARD_MARGIN;
     if (!avatarBounds) {
       return {
         left: clampCardCoordinate(
@@ -440,18 +468,8 @@
           (document.body || document.documentElement).appendChild(layer);
         }
 
-        var CARD_MAX_W = 280;
-        var CARD_MIN_W = 180;
-        var CARD_MARGIN = 12;
-        var CARD_ASPECT = 1192 / 445;
-        var avatarBounds = getActiveAvatarBounds();
-        var avatarCardWidth = avatarBounds ? avatarBounds.width * 0.55 : CARD_MAX_W;
-        var availableWidth = Math.max(1, window.innerWidth - CARD_MARGIN * 2);
-        var CARD_W = Math.max(1, Math.min(
-          CARD_MAX_W,
-          availableWidth,
-          Math.max(CARD_MIN_W, avatarCardWidth)
-        ));
+        var avatarBounds = shouldAnchorToAvatar(rarity) ? getActiveAvatarBounds() : null;
+        var CARD_W = resolveCardWidth(rarity, avatarBounds);
         var CARD_H = Math.round(CARD_W / CARD_ASPECT);
         var placement = getCardPlacement(CARD_W, CARD_H, avatarBounds);
         var startLeft = placement.left;
