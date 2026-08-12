@@ -434,7 +434,8 @@ button:focus-visible,
 textarea:focus-visible,
 input:focus-visible,
 select:focus-visible,
-a:focus-visible {
+a:focus-visible,
+summary:focus-visible {
   outline: 3px solid rgba(47, 125, 87, 0.32);
   outline-offset: 2px;
 }
@@ -1101,8 +1102,42 @@ button.loading {
 }
 
 .adaptive-practice {
+  display: block;
+}
+
+.adaptive-practice[open] {
   display: grid;
   gap: 14px;
+}
+
+.practice-panel__summary {
+  margin-bottom: 0;
+  cursor: pointer;
+  list-style: none;
+}
+
+.practice-panel__summary::-webkit-details-marker {
+  display: none;
+}
+
+.practice-panel__summary-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.practice-panel__summary-meta::after {
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid var(--brand);
+  border-bottom: 2px solid var(--brand);
+  content: "";
+  transform: rotate(45deg);
+  transition: transform 160ms ease;
+}
+
+.adaptive-practice[open] .practice-panel__summary-meta::after {
+  transform: rotate(225deg);
 }
 
 .question-context-card,

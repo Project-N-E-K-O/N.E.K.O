@@ -195,6 +195,19 @@ def _has_playwright_chromium() -> bool:
         return False
 
 
+def test_study_companion_quick_cards_follow_adaptive_practice() -> None:
+    index_html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+
+    practice_panel_start = index_html.index('id="practicePanel"')
+    practice_panel_end = index_html.index("</details>", practice_panel_start)
+    memory_panel_start = index_html.index('id="memoryPanel"')
+    memory_tag_start = index_html.rfind("<details", practice_panel_end, memory_panel_start)
+    explain_panel_start = index_html.index('id="explainPanel"')
+
+    assert practice_panel_end < memory_panel_start < explain_panel_start
+    assert not index_html[practice_panel_end + len("</details>") : memory_tag_start].strip()
+
+
 def test_study_companion_static_ui8_visual_accessibility_and_csp_contract() -> None:
     index_html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
     style_css = (STATIC_DIR / "style.css").read_text(encoding="utf-8")
@@ -264,7 +277,6 @@ def test_study_companion_static_ui8_visual_accessibility_and_csp_contract() -> N
     assert 'role="tabpanel"' in index_html
     assert 'aria-live="polite"' in index_html
     assert 'aria-expanded="false"' in index_html
-
     assert ".sr-only" in style_css
     assert re.search(
         r"button:focus-visible,\s*textarea:focus-visible,\s*input:focus-visible,\s*select:focus-visible,\s*a:focus-visible",
@@ -435,6 +447,29 @@ def test_study_companion_static_ui_browser_smoke_desktop_reduced_motion() -> Non
         expect(page.locator("#nekoCoachPrimaryAction")).to_be_visible()
         expect(page.locator("#nekoCoachSecondaryAction")).to_be_visible()
         expect(page.locator(".neko-coach__stage")).to_have_count(0)
+
+        practice_panel = page.locator("#practicePanel")
+        practice_toggle = page.locator("#practicePanel > summary")
+        page.evaluate("closeLearningProfileModal()")
+        expect(practice_panel).not_to_have_attribute("open", "")
+        expect(page.locator("#questionContextCard")).to_be_hidden()
+
+        practice_toggle.click()
+        expect(practice_panel).to_have_attribute("open", "")
+        expect(page.locator("#questionContextCard")).to_be_visible()
+
+        practice_toggle.click()
+        expect(practice_panel).not_to_have_attribute("open", "")
+        expect(page.locator("#questionContextCard")).to_be_hidden()
+
+        page.evaluate("handleFeatureAction('practice')")
+        expect(practice_panel).to_have_attribute("open", "")
+        expect(page.locator("#generateQuestionBtn")).to_be_focused()
+
+        practice_toggle.click()
+        expect(practice_panel).not_to_have_attribute("open", "")
+        page.evaluate("generateQuestion().catch(() => undefined)")
+        expect(practice_panel).to_have_attribute("open", "")
 
         metrics = page.evaluate(
             """() => {

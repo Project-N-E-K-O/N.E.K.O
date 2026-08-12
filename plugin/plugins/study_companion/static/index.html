@@ -170,11 +170,13 @@
           </div>
 
           <div class="study-workflow">
-            <section id="practicePanel" class="adaptive-practice panel" data-i18n-aria-label="ui.label.practice_flow" aria-label="Adaptive practice flow">
-              <div class="section-heading">
+            <details id="practicePanel" class="adaptive-practice panel" data-i18n-aria-label="ui.label.practice_flow" aria-label="Adaptive practice flow">
+              <summary class="section-heading practice-panel__summary">
                 <h2 data-i18n="ui.practice.title">Adaptive Practice</h2>
-                <span id="evaluationStatus" data-i18n="ui.status.ready">Ready</span>
-              </div>
+                <span class="practice-panel__summary-meta">
+                  <span id="evaluationStatus" data-i18n="ui.status.ready">Ready</span>
+                </span>
+              </summary>
               <div id="questionContextCard" class="question-context-card" data-selection-reason="loading">
                 <span class="diagnosis-label" data-i18n="ui.practice.context_label">Selection</span>
                 <strong id="selectedTopicName" data-i18n="ui.practice.context_loading">Analyzing study records...</strong>
@@ -216,7 +218,31 @@
                 <p id="masteryDeltaText"></p>
                 <pre id="feedbackText"></pre>
               </div>
-            </section>
+            </details>
+
+            <details id="memoryPanel" class="memory-panel panel" aria-live="polite" data-i18n-aria-label="ui.memory.quick_title" aria-label="Quick Cards and Review">
+              <summary class="section-heading">
+                <h2 data-i18n="ui.memory.quick_title">Quick Cards and Review</h2>
+                <span id="memoryDeckStatus">-</span>
+              </summary>
+              <div class="memory-inputs">
+                <label class="input-label" for="memoryFrontInput" data-i18n="ui.memory.front">Front</label>
+                <label class="input-label" for="memoryBackInput" data-i18n="ui.memory.back">Back</label>
+                <textarea id="memoryFrontInput" spellcheck="true" data-i18n-placeholder="ui.memory.front_placeholder" placeholder="Question or prompt"></textarea>
+                <textarea id="memoryBackInput" spellcheck="true" data-i18n-placeholder="ui.memory.back_placeholder" placeholder="Answer or recall target"></textarea>
+              </div>
+              <div class="action-row">
+                <button id="memoryRefreshBtn" class="button button-secondary" type="button" data-i18n="ui.button.refresh_deck">Refresh Deck</button>
+                <button id="memoryAddBtn" class="button button-primary" type="button" data-i18n="ui.button.save_card">Save Card</button>
+              </div>
+              <div id="memoryDueCard" class="memory-card">-</div>
+              <div class="memory-review-actions" data-i18n-aria-label="ui.memory.ratings_aria" aria-label="Memory ratings">
+                <button class="rating-again" type="button" data-memory-rating="again" data-i18n="ui.button.rating.again">Again</button>
+                <button class="rating-hard" type="button" data-memory-rating="hard" data-i18n="ui.button.rating.hard">Hard</button>
+                <button class="rating-good" type="button" data-memory-rating="good" data-i18n="ui.button.rating.good">Good</button>
+                <button class="rating-easy" type="button" data-memory-rating="easy" data-i18n="ui.button.rating.easy">Easy</button>
+              </div>
+            </details>
 
             <section id="explainPanel" class="study-workspace panel" data-i18n-aria-label="ui.label.study_workspace" aria-label="Study workspace">
               <div class="section-heading">
@@ -273,30 +299,6 @@
               </div>
             </section>
           </div>
-
-          <details id="memoryPanel" class="memory-panel panel" aria-live="polite" data-i18n-aria-label="ui.memory.quick_title" aria-label="Quick Cards and Review">
-            <summary class="section-heading">
-              <h2 data-i18n="ui.memory.quick_title">Quick Cards and Review</h2>
-              <span id="memoryDeckStatus">-</span>
-            </summary>
-            <div class="memory-inputs">
-              <label class="input-label" for="memoryFrontInput" data-i18n="ui.memory.front">Front</label>
-              <label class="input-label" for="memoryBackInput" data-i18n="ui.memory.back">Back</label>
-              <textarea id="memoryFrontInput" spellcheck="true" data-i18n-placeholder="ui.memory.front_placeholder" placeholder="Question or prompt"></textarea>
-              <textarea id="memoryBackInput" spellcheck="true" data-i18n-placeholder="ui.memory.back_placeholder" placeholder="Answer or recall target"></textarea>
-            </div>
-            <div class="action-row">
-              <button id="memoryRefreshBtn" class="button button-secondary" type="button" data-i18n="ui.button.refresh_deck">Refresh Deck</button>
-              <button id="memoryAddBtn" class="button button-primary" type="button" data-i18n="ui.button.save_card">Save Card</button>
-            </div>
-            <div id="memoryDueCard" class="memory-card">-</div>
-            <div class="memory-review-actions" data-i18n-aria-label="ui.memory.ratings_aria" aria-label="Memory ratings">
-              <button class="rating-again" type="button" data-memory-rating="again" data-i18n="ui.button.rating.again">Again</button>
-              <button class="rating-hard" type="button" data-memory-rating="hard" data-i18n="ui.button.rating.hard">Hard</button>
-              <button class="rating-good" type="button" data-memory-rating="good" data-i18n="ui.button.rating.good">Good</button>
-              <button class="rating-easy" type="button" data-memory-rating="easy" data-i18n="ui.button.rating.easy">Easy</button>
-            </div>
-          </details>
 
           <section id="replyPanel" class="reply-panel panel" aria-live="polite" data-i18n-aria-label="ui.label.reply_panel" aria-label="Reply panel" hidden>
             <div class="section-heading">

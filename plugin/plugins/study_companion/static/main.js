@@ -1682,11 +1682,19 @@ function openHostedSurface(surfaceId, featureAction = '') {
   openSurfaceDrawer(surfaceId);
 }
 
+function openPracticePanel() {
+  const practicePanel = document.getElementById('practicePanel');
+  if (practicePanel) {
+    practicePanel.open = true;
+  }
+  return practicePanel;
+}
+
 function handleFeatureAction(action) {
   closeSurfaceDrawer();
   setActiveFeature(action);
   if (action === 'practice') {
-    focusAfterScroll(document.getElementById('practicePanel'), generateQuestionBtn);
+    focusAfterScroll(openPracticePanel(), generateQuestionBtn);
   } else if (action === 'explain') {
     focusAfterScroll(document.getElementById('explainPanel'), studyInput);
   } else if (action === 'memory') {
@@ -2057,6 +2065,7 @@ async function explainText() {
 }
 
 async function generateQuestion() {
+  openPracticePanel();
   let context = currentSelectionContext;
   if (!context || !context.selection_context_id) {
     context = await loadQuestionContext({ silent: true });
