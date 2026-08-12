@@ -132,6 +132,19 @@ async def test_passthrough_can_carry_structured_image_blocks():
 
 
 @pytest.mark.unit
+async def test_passthrough_sends_image_only_blocks_without_text():
+    ws = _FakeWebsocket(connected=True)
+    mgr = _make_mgr(websocket=ws)
+    blocks = [{"type": "image", "url": "http://127.0.0.1:48916/media/example"}]
+
+    assert await mgr.passthrough_to_chat_bubble("", blocks=blocks) is True
+
+    payload = ws.send_json.await_args.args[0]
+    assert payload["text"] == ""
+    assert payload["blocks"] == blocks
+
+
+@pytest.mark.unit
 async def test_render_chat_blocks_uses_a_display_only_websocket_frame():
     ws = _FakeWebsocket(connected=True)
     mgr = _make_mgr(websocket=ws)

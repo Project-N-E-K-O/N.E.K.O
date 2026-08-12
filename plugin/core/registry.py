@@ -1334,6 +1334,22 @@ def _shutdown_host_safely(host: Any, logger: Any, plugin_id: str) -> None:
         logger.debug("Error shutting down plugin {}: {}", plugin_id, e)
 
 
+async def drain_pending_host_shutdowns() -> None:
+    """Wait for registry-scheduled host shutdowns owned by this event loop."""
+    import asyncio
+
+    current_loop = asyncio.get_running_loop()
+    while True:
+        tasks = [
+            task
+            for task in tuple(_pending_async_shutdown_tasks)
+            if not task.done() and task.get_loop() is current_loop
+        ]
+        if not tasks:
+            return
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
 def _migrate_plugin_id(
     old_pid: str,
     new_pid: str,

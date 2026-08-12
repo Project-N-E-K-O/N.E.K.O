@@ -964,6 +964,9 @@
         isMounted: function () { return I.mounted; }
     });
 
+    // The adapter may load before (index.html) or after (chat.html) this file.
+    // Keep a level-triggered flag as well as the event so either order is safe.
+    window.__nekoReactChatHostReady = true;
     window.dispatchEvent(new CustomEvent('neko:react-chat-host-ready'));
 
     delete window.__appReactChatWindowParts;

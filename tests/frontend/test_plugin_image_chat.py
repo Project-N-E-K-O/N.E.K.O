@@ -145,6 +145,44 @@ def test_display_only_plugin_image_waits_for_the_react_host(
 
 
 @pytest.mark.frontend
+def test_pending_plugin_images_are_bounded_until_the_react_host_is_ready(
+    mock_page: Page,
+    running_server: str,
+) -> None:
+    _open_chat(mock_page, running_server)
+
+    result = mock_page.evaluate(
+        """(imageUrl) => {
+            const host = window.reactChatWindowHost;
+            const originalAppendMessage = host.appendMessage;
+            let appendCalls = 0;
+            host.appendMessage = (message) => {
+                appendCalls += 1;
+                return originalAppendMessage.call(host, message);
+            };
+            window.reactChatWindowHost = null;
+            for (let index = 0; index < 55; index += 1) {
+                window.appendReactChatBlocks({
+                    request_id: `bounded-${index}`,
+                    blocks: [{ type: 'image', url: imageUrl }]
+                });
+            }
+            window.reactChatWindowHost = host;
+            window.dispatchEvent(new CustomEvent('neko:react-chat-host-ready'));
+            host.appendMessage = originalAppendMessage;
+            return { appendCalls, messages: host.getState().messages };
+        }""",
+        _ONE_PIXEL_PNG,
+    )
+
+    assert result["appendCalls"] == 50
+    assert len(result["messages"]) == 50
+    assert "bounded-0" not in result["messages"][0]["id"]
+    assert "bounded-5" in result["messages"][0]["id"]
+    assert "bounded-54" in result["messages"][-1]["id"]
+
+
+@pytest.mark.frontend
 def test_structured_passthrough_image_uses_the_existing_assistant_lifecycle(
     mock_page: Page,
     running_server: str,

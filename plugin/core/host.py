@@ -868,6 +868,9 @@ def _plugin_process_runner(
             while not stop_event.is_set():
                 result = await child_transport.recv_downlink(timeout_ms=poll_ms)
                 if result is None:
+                    # Real ZMQ polling suspends; test/in-memory transports may
+                    # return immediately and must not spin or starve callbacks.
+                    await asyncio.sleep(0)
                     continue
                 ch, msg = result
                 if ch == CH_RESP:
@@ -875,6 +878,10 @@ def _plugin_process_runner(
                     continue
                 if isinstance(msg, dict):
                     _pending_downlink.append((ch, msg))
+                    # A fake/in-memory transport may return queued commands
+                    # without suspension. Always yield so the lifecycle task
+                    # cannot be starved by a busy downlink pump.
+                    await asyncio.sleep(0)
 
         async def _run_lifecycle_with_downlink(lifecycle_callable: Any) -> None:
             stop_event = asyncio.Event()
@@ -882,17 +889,46 @@ def _plugin_process_runner(
                 _lifecycle_downlink_pump(stop_event),
                 name="lifecycle-downlink-pump",
             )
+            lifecycle_task: asyncio.Future[Any] | None = None
             try:
                 result = lifecycle_callable()
                 if inspect.isawaitable(result):
-                    await result
+                    lifecycle_task = asyncio.ensure_future(result)
+                    done, _pending = await asyncio.wait(
+                        {lifecycle_task, pump_task},
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    # A callback result/exception is authoritative when both
+                    # tasks finish in the same loop turn.
+                    if lifecycle_task in done:
+                        await lifecycle_task
+                    else:
+                        # The response path died while the callback was still
+                        # awaiting it. Fail fast instead of waiting for every
+                        # SDK call's individual timeout.
+                        await pump_task
             finally:
                 stop_event.set()
+                if lifecycle_task is not None and not lifecycle_task.done():
+                    lifecycle_task.cancel()
+                    try:
+                        await lifecycle_task
+                    except asyncio.CancelledError:
+                        pass
+                    except Exception:
+                        logger.exception(
+                            "Lifecycle callback failed while downlink pump was stopping"
+                        )
                 pump_task.cancel()
                 try:
                     await pump_task
                 except asyncio.CancelledError:
                     pass
+                except Exception:
+                    # The lifecycle result is authoritative. A background
+                    # receive failure must not replace a successful callback
+                    # result (or mask the callback's own exception).
+                    logger.exception("Lifecycle downlink pump failed during cleanup")
 
         # 生命周期：startup
         lifecycle_events = events_by_type.get("lifecycle", {})

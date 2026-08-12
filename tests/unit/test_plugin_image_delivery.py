@@ -226,7 +226,9 @@ async def test_model_image_fetches_have_count_and_aggregate_limits(monkeypatch) 
         ],
     })
 
-    assert fetch_image.await_count == 8
+    from app.main_server import character_runtime
+
+    assert fetch_image.await_count == character_runtime._PLUGIN_MODEL_IMAGE_MAX_COUNT
     assert manager.session.stream_image.await_count == 2
     assert [call.args[0] for call in manager.session.stream_image.await_args_list] == [
         encoded,

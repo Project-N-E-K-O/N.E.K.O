@@ -35,12 +35,11 @@ def test_shutdown_host_safely_prefers_async_shutdown_on_running_loop() -> None:
             calls.append(f"sync:{timeout}")
 
     async def _exercise() -> None:
-        existing_tasks = set(module._pending_async_shutdown_tasks)
         module._shutdown_host_safely(_Host(), module._DEFAULT_LOGGER, "demo")
-        new_tasks = module._pending_async_shutdown_tasks - existing_tasks
-        assert len(new_tasks) == 1
-        await asyncio.gather(*new_tasks)
+        assert len(module._pending_async_shutdown_tasks) == 1
+        await module.drain_pending_host_shutdowns()
         await asyncio.sleep(0)
+        assert not module._pending_async_shutdown_tasks
 
     asyncio.run(_exercise())
 

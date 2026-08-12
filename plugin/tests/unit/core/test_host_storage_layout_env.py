@@ -329,6 +329,85 @@ def test_plugin_process_runner_sends_startup_ready_before_auto_custom_events(
 
 
 @pytest.mark.plugin_unit
+def test_plugin_process_runner_fails_lifecycle_fast_when_downlink_pump_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    payloads: list[dict[str, object]] = []
+    config_path = tmp_path / "demo" / "plugin.toml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text("[plugin]\nid='demo'\ntype='adapter'\n", encoding="utf-8")
+    startup_meta = EventMeta(event_type="lifecycle", id="startup")
+
+    class _Plugin:
+        def __init__(self, ctx) -> None:
+            self.ctx = ctx
+            self.config = SimpleNamespace(dump_effective_sync=lambda timeout=3.0: {})
+
+        async def startup(self) -> None:
+            await asyncio.sleep(0.1)
+
+        def collect_entries(self, wrap_with_hooks: bool = True) -> dict[str, EventHandler]:
+            return {
+                "startup": EventHandler(meta=startup_meta, handler=self.startup),
+            }
+
+    class _Sender:
+        def put(
+            self,
+            payload: dict[str, object],
+            block: bool = True,
+            timeout: float | None = None,
+        ) -> None:
+            payloads.append(payload)
+
+        def put_nowait(self, payload: dict[str, object]) -> None:
+            self.put(payload)
+
+    class _ChildTransport:
+        def __init__(self, *_endpoints: str) -> None:
+            return None
+
+        def channel_sender(self, channel: str) -> _Sender:
+            return _Sender()
+
+        async def recv_downlink(self, timeout_ms: int = 1000):
+            raise RuntimeError("downlink failed")
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(host_module, "_setup_plugin_logger", lambda *args, **kwargs: _FakeLogger())
+    monkeypatch.setattr(host_module, "_setup_logging_interception", lambda *args, **kwargs: None)
+    monkeypatch.setattr(host_module, "_prepare_child_plugin_import_roots", lambda *args, **kwargs: None)
+    monkeypatch.setattr(host_module, "_prepare_child_current_plugin_import_root", lambda *args, **kwargs: None)
+    monkeypatch.setattr(host_module, "_prepare_child_plugin_vendor_path", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        host_module,
+        "_import_plugin_module",
+        lambda *args, **kwargs: SimpleNamespace(DemoPlugin=_Plugin),
+    )
+    monkeypatch.setattr(host_module, "ChildTransport", _ChildTransport)
+
+    host_module._plugin_process_runner(
+        plugin_id="demo",
+        entry_point="tests.fake:DemoPlugin",
+        config_path=config_path,
+        downlink_endpoint="ipc://down",
+        uplink_endpoint="ipc://up",
+        startup_options={"startup_failure": "fail"},
+    )
+
+    startup_payload = next(
+        payload
+        for payload in payloads
+        if payload.get("req_id") == host_module.STARTUP_RESULT_REQ_ID
+    )
+    assert startup_payload["success"] is False
+    assert "downlink failed" in str(startup_payload["error"])
+
+
+@pytest.mark.plugin_unit
 @pytest.mark.parametrize("lifecycle_id", ["unfreeze", "freeze", "shutdown"])
 def test_plugin_process_runner_pumps_image_response_during_lifecycle(
     monkeypatch: pytest.MonkeyPatch,
