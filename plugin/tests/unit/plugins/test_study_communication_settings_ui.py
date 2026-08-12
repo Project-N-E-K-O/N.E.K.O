@@ -98,7 +98,10 @@ const staticDir = process.env.STUDY_COMPANION_STATIC_DIR;
 const i18nDir = process.env.STUDY_COMPANION_I18N_DIR;
 const html = fs.readFileSync(path.join(staticDir, 'index.html'), 'utf8');
 const mainJs = fs.readFileSync(path.join(staticDir, 'main.js'), 'utf8');
+const documentControllerJs = fs.readFileSync(path.join(staticDir, 'document-controller.js'), 'utf8');
+const solutionNarrationJs = fs.readFileSync(path.join(staticDir, 'solution-narration.js'), 'utf8');
 const surfacePanelsJs = fs.readFileSync(path.join(staticDir, 'surface-panels.js'), 'utf8');
+const knowledgeMapJs = fs.readFileSync(path.join(staticDir, 'knowledge-map.js'), 'utf8');
 const i18nJs = fs.readFileSync(path.join(staticDir, 'i18n.js'), 'utf8');
 const enBundle = JSON.parse(fs.readFileSync(path.join(i18nDir, 'en.json'), 'utf8'));
 
@@ -167,7 +170,9 @@ window.fetch = async (rawUrl, options = {}) => {
 
 window.eval(i18nJs);
 window.eval(surfacePanelsJs);
-window.eval(mainJs);
+window.eval(documentControllerJs);
+window.eval(solutionNarrationJs);
+window.eval(`${knowledgeMapJs}\n${mainJs}`);
 
 async function waitFor(predicate, label) {
   const deadline = Date.now() + 3000;
@@ -264,6 +269,8 @@ def test_browser_can_enable_communication_and_save_parent_child_values() -> None
             "i18n.js": "text/javascript",
             "surface-panels.js": "text/javascript",
             "knowledge-map.js": "text/javascript",
+            "document-controller.js": "text/javascript",
+            "solution-narration.js": "text/javascript",
             "main.js": "text/javascript",
             "katex.min.js": "text/javascript",
             "katex-render.js": "text/javascript",

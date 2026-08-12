@@ -5408,7 +5408,10 @@ const staticDir = process.env.STUDY_COMPANION_STATIC_DIR;
 const i18nDir = process.env.STUDY_COMPANION_I18N_DIR;
 const html = fs.readFileSync(path.join(staticDir, 'index.html'), 'utf8');
 const mainJs = fs.readFileSync(path.join(staticDir, 'main.js'), 'utf8');
+const documentControllerJs = fs.readFileSync(path.join(staticDir, 'document-controller.js'), 'utf8');
+const solutionNarrationJs = fs.readFileSync(path.join(staticDir, 'solution-narration.js'), 'utf8');
 const surfacePanelsJs = fs.readFileSync(path.join(staticDir, 'surface-panels.js'), 'utf8');
+const knowledgeMapJs = fs.readFileSync(path.join(staticDir, 'knowledge-map.js'), 'utf8');
 const i18nJs = fs.readFileSync(path.join(staticDir, 'i18n.js'), 'utf8');
 const enBundle = JSON.parse(fs.readFileSync(path.join(i18nDir, 'en.json'), 'utf8'));
 
@@ -5477,7 +5480,9 @@ window.fetch = async (rawUrl, options = {}) => {
 
 window.eval(i18nJs);
 window.eval(surfacePanelsJs);
-window.eval(mainJs);
+window.eval(documentControllerJs);
+window.eval(solutionNarrationJs);
+window.eval(`${knowledgeMapJs}\n${mainJs}`);
 
 async function waitFor(predicate, label) {
   const deadline = Date.now() + 3000;
@@ -5575,6 +5580,9 @@ const staticDir = process.env.STUDY_COMPANION_STATIC_DIR;
 const i18nDir = process.env.STUDY_COMPANION_I18N_DIR;
 const html = fs.readFileSync(path.join(staticDir, 'index.html'), 'utf8');
 const mainJs = fs.readFileSync(path.join(staticDir, 'main.js'), 'utf8');
+const documentControllerJs = fs.readFileSync(path.join(staticDir, 'document-controller.js'), 'utf8');
+const solutionNarrationJs = fs.readFileSync(path.join(staticDir, 'solution-narration.js'), 'utf8');
+const knowledgeMapJs = fs.readFileSync(path.join(staticDir, 'knowledge-map.js'), 'utf8');
 const i18nJs = fs.readFileSync(path.join(staticDir, 'i18n.js'), 'utf8');
 const zhBundle = JSON.parse(fs.readFileSync(path.join(i18nDir, 'zh-CN.json'), 'utf8'));
 
@@ -5627,7 +5635,9 @@ window.fetch = async (rawUrl, options = {}) => {
 };
 
 window.eval(i18nJs);
-window.eval(mainJs);
+window.eval(documentControllerJs);
+window.eval(solutionNarrationJs);
+window.eval(`${knowledgeMapJs}\n${mainJs}`);
 
 async function waitFor(predicate, label) {
   const deadline = Date.now() + 3000;
@@ -5803,7 +5813,10 @@ const staticDir = process.env.STUDY_COMPANION_STATIC_DIR;
 const i18nDir = process.env.STUDY_COMPANION_I18N_DIR;
 const html = fs.readFileSync(path.join(staticDir, 'index.html'), 'utf8');
 const mainJs = fs.readFileSync(path.join(staticDir, 'main.js'), 'utf8');
+const documentControllerJs = fs.readFileSync(path.join(staticDir, 'document-controller.js'), 'utf8');
+const solutionNarrationJs = fs.readFileSync(path.join(staticDir, 'solution-narration.js'), 'utf8');
 const surfacePanelsJs = fs.readFileSync(path.join(staticDir, 'surface-panels.js'), 'utf8');
+const knowledgeMapJs = fs.readFileSync(path.join(staticDir, 'knowledge-map.js'), 'utf8');
 const i18nJs = fs.readFileSync(path.join(staticDir, 'i18n.js'), 'utf8');
 const enBundle = JSON.parse(fs.readFileSync(path.join(i18nDir, 'en.json'), 'utf8'));
 
@@ -5888,7 +5901,9 @@ window.fetch = async (rawUrl, options = {}) => {
 
 window.eval(i18nJs);
 window.eval(surfacePanelsJs);
-window.eval(mainJs);
+window.eval(documentControllerJs);
+window.eval(solutionNarrationJs);
+window.eval(`${knowledgeMapJs}\n${mainJs}`);
 
 async function waitFor(predicate, label) {
   const deadline = Date.now() + 3000;
@@ -6507,6 +6522,9 @@ const html = `<!doctype html><html><head><title>Study Companion</title></head><b
 
 const i18nJs = fs.readFileSync(process.env.STUDY_COMPANION_I18N_JS, 'utf8');
 const mainJs = fs.readFileSync(process.env.STUDY_COMPANION_STATIC_JS, 'utf8');
+const documentControllerJs = fs.readFileSync(process.env.STUDY_COMPANION_DOCUMENT_CONTROLLER_JS, 'utf8');
+const solutionNarrationJs = fs.readFileSync(process.env.STUDY_COMPANION_SOLUTION_NARRATION_JS, 'utf8');
+const knowledgeMapJs = fs.readFileSync(process.env.STUDY_COMPANION_KNOWLEDGE_MAP_JS, 'utf8');
 const enBundle = JSON.parse(fs.readFileSync(path.join(process.env.STUDY_COMPANION_I18N_DIR, 'en.json'), 'utf8'));
 
 const window = new Window({ url: 'http://testserver/plugin/study_companion/ui/?locale=en' });
@@ -6567,7 +6585,9 @@ window.fetch = async (rawUrl, options = {}) => {
 };
 
 window.eval(i18nJs);
-window.eval(mainJs);
+window.eval(documentControllerJs);
+window.eval(solutionNarrationJs);
+window.eval(`${knowledgeMapJs}\n${mainJs}`);
 
 async function waitFor(predicate, label) {
   const deadline = Date.now() + 3000;
@@ -6597,6 +6617,15 @@ if (document.querySelector('[data-mode="interactive"]').getAttribute('aria-press
     env = {
         **os.environ,
         "STUDY_COMPANION_STATIC_JS": str(plugin_dir / "static" / "main.js"),
+        "STUDY_COMPANION_DOCUMENT_CONTROLLER_JS": str(
+            plugin_dir / "static" / "document-controller.js"
+        ),
+        "STUDY_COMPANION_SOLUTION_NARRATION_JS": str(
+            plugin_dir / "static" / "solution-narration.js"
+        ),
+        "STUDY_COMPANION_KNOWLEDGE_MAP_JS": str(
+            plugin_dir / "static" / "knowledge-map.js"
+        ),
         "STUDY_COMPANION_I18N_JS": str(plugin_dir / "static" / "i18n.js"),
         "STUDY_COMPANION_I18N_DIR": str(plugin_dir / "i18n"),
     }
@@ -8015,6 +8044,7 @@ async def test_study_explain_text_passes_knowledge_guidance_to_tutor_agent(
             "subject": "math",
             "content_type": "calculus_concept",
             "intent": "explanation",
+            "response_mode": "general_explanation",
             "entity": "stationary and extreme points",
             "retrieval_concepts": ["驻点", "极值点", "导数为零"],
             "confidence": 0.98,
@@ -8032,9 +8062,10 @@ async def test_study_explain_text_passes_knowledge_guidance_to_tutor_agent(
         context = fake_agent.inputs[-1][1]
         guidance = context["knowledge_guidance"]  # type: ignore[index]
         assert guidance["topic"]["id"] == "college_stationary_points"  # type: ignore[index]
-        assert guidance["diagnosis_questions"]  # type: ignore[index]
+        assert guidance["diagnosis_questions"] == []  # type: ignore[index]
+        assert context["study_response_mode"] == "general_explanation"
         assert explained.value["knowledge_guidance"]["topic"]["id"] == "college_stationary_points"
-        assert explained.value["diagnosis_questions"]
+        assert explained.value["diagnosis_questions"] == []
     finally:
         await plugin.shutdown()
 
@@ -8062,6 +8093,7 @@ async def test_study_explain_text_semantically_routes_literary_work_to_chinese_g
             "subject": "chinese",
             "content_type": "literary_work",
             "intent": "interpretation",
+            "response_mode": "general_discussion",
             "entity": "《活着》",
             "retrieval_concepts": [
                 "文学类文本阅读",
@@ -8093,6 +8125,13 @@ async def test_study_explain_text_semantically_routes_literary_work_to_chinese_g
         assert explained.value["knowledge_guidance_applied"] is True
         assert explained.value["knowledge_guidance_status"] == "applied"
         assert explained.value["knowledge_guidance_subject"] == "chinese"
+        assert explained.value["study_semantic_status"] == "available"
+        assert explained.value["study_response_mode"] == "general_discussion"
+        assert explained.value["study_semantic_content_type"] == "literary_work"
+        assert explained.value["study_semantic_intent"] == "interpretation"
+        assert context["study_response_mode"] == "general_discussion"
+        assert guidance["model_context"]["procedure"] == []  # type: ignore[index]
+        assert guidance["model_context"]["practice_suggestions"] == []  # type: ignore[index]
         assert explained.value["knowledge_guidance_focus_topic"] == {
             "id": "chinese_senior_literary_text",
             "label": "文学类文本阅读",
@@ -8135,6 +8174,8 @@ async def test_semantic_route_failure_keeps_explanation_without_graph_injection(
         assert explained.value["knowledge_guidance_applied"] is False
         assert explained.value["knowledge_guidance_status"] == "routing_unavailable"
         assert explained.value["knowledge_guidance_subject"] == "unknown"
+        assert explained.value["study_response_mode"] == "unknown"
+        assert explained.value["study_semantic_reason"] == "call_failed"
     finally:
         await plugin.shutdown()
 
@@ -8249,6 +8290,7 @@ async def test_low_confidence_semantics_cannot_inject_cross_subject_guidance(
             "subject": "math",
             "content_type": "reading",
             "intent": "interpretation",
+            "response_mode": "problem_solving",
             "entity": "",
             "retrieval_concepts": ["数学阅读理解题"],
             "confidence": 0.3,
@@ -8264,6 +8306,7 @@ async def test_low_confidence_semantics_cannot_inject_cross_subject_guidance(
         assert "knowledge_guidance" not in fake_agent.inputs[-1][1]
         assert explained.value["knowledge_guidance_status"] == "low_confidence"
         assert explained.value["knowledge_guidance_applied"] is False
+        assert explained.value["study_response_mode"] == "unknown"
     finally:
         await plugin.shutdown()
 
@@ -8296,6 +8339,7 @@ async def test_semantic_route_for_image_keeps_image_context(
             "subject": "chinese",
             "content_type": "literary_text",
             "intent": "analysis",
+            "response_mode": "general_explanation",
             "entity": "image text",
             "retrieval_concepts": ["文学类文本阅读"],
             "confidence": 0.9,

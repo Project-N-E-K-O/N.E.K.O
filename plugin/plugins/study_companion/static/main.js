@@ -55,20 +55,6 @@ const studyInputImagePreview = document.getElementById('studyInputImagePreview')
 const studyInputImage = document.getElementById('studyInputImage');
 const studyInputImageRemove = document.getElementById('studyInputImageRemove');
 const studyInputPasteError = document.getElementById('studyInputPasteError');
-const studyDocumentDropZone = document.getElementById('studyDocumentDropZone');
-const studyDocumentInput = document.getElementById('studyDocumentInput');
-const studyDocumentImportBtn = document.getElementById('studyDocumentImportBtn');
-const studyDocumentCard = document.getElementById('studyDocumentCard');
-const studyDocumentName = document.getElementById('studyDocumentName');
-const studyDocumentMeta = document.getElementById('studyDocumentMeta');
-const studyDocumentState = document.getElementById('studyDocumentState');
-const studyDocumentCancelBtn = document.getElementById('studyDocumentCancelBtn');
-const studyDocumentKindSelect = document.getElementById('studyDocumentKind');
-const studyDocumentInstruction = document.getElementById('studyDocumentInstruction');
-const studyDocumentEditor = document.getElementById('studyDocumentEditor');
-const studyDocumentText = document.getElementById('studyDocumentText');
-const studyDocumentAnalyzeBtn = document.getElementById('studyDocumentAnalyzeBtn');
-const studyDocumentRemoveBtn = document.getElementById('studyDocumentRemoveBtn');
 const answerInputImagePreview = document.getElementById('answerInputImagePreview');
 const answerInputImage = document.getElementById('answerInputImage');
 const answerInputImageRemove = document.getElementById('answerInputImageRemove');
@@ -180,12 +166,6 @@ let lastReplyValue = '';
 let studyInputImageValue = '';
 let answerInputImageValue = '';
 let pastePendingCount = 0;
-let documentBusy = false;
-let documentReadGeneration = 0;
-let importedDocument = null;
-let documentSource = '';
-let documentKind = 'auto';
-let documentRequestController = null;
 let llmVisionMaxImagePx = DEFAULT_VISION_MAX_IMAGE_PX;
 let currentQuestion = null;
 let currentSelectionContext = null;
@@ -496,18 +476,6 @@ function setPastePending(pending) {
   setPanelBusy(pastePendingCount);
 }
 
-function setDocumentBusy(busy) {
-  documentBusy = Boolean(busy);
-  if (studyDocumentCard) studyDocumentCard.dataset.busy = documentBusy ? 'true' : 'false';
-  studyDocumentAnalyzeBtn.disabled = documentBusy || !importedDocument;
-  studyDocumentRemoveBtn.disabled = studyDocumentImportBtn.disabled = studyDocumentInput.disabled = studyDocumentKindSelect.disabled = studyDocumentInstruction.disabled = documentBusy;
-  studyDocumentText.readOnly = documentBusy;
-  if (documentBusy) studyDocumentEditor.open = false;
-  studyDocumentCancelBtn.hidden = !documentBusy;
-  if (!documentBusy) studyDocumentCancelBtn.disabled = false;
-  document.getElementById('studyDocumentProgress').hidden = !documentBusy;
-}
-
 function setPasteError(target, message) {
   if (!target) {
     return;
@@ -705,146 +673,6 @@ function createImagePasteHandler(options) {
       setPastePending(false);
     }
   };
-}
-
-function documentErrorMessage(code) {
-  return t(`ui.error.${code || 'document_read'}`);
-}
-function updateDocumentCard(options = {}) {
-  if (!importedDocument) {
-    if (studyDocumentCard) studyDocumentCard.hidden = true;
-    return;
-  }
-  const bytes = new TextEncoder().encode(documentSource).byteLength;
-  const tokens = estimateDocumentTokens(documentSource);
-  const problem = documentTextProblem(documentSource) || (bytes > 524288 ? 'document_too_large' : tokens > 160000 ? 'document_too_long' : '');
-  importedDocument = { ...importedDocument, bytes, tokens, problem, modified: importedDocument.modified || Boolean(options.modified) };
-  if (studyDocumentCard) studyDocumentCard.hidden = false;
-  studyDocumentName.textContent = importedDocument.name;
-  studyDocumentMeta.textContent = tf('ui.document.meta', '', { size: `${(bytes / 1024).toFixed(1)} KB`, encoding: importedDocument.encoding, chars: documentSource.length.toLocaleString(), tokens: tokens.toLocaleString() });
-  if (studyDocumentState && !documentBusy) {
-    studyDocumentState.textContent = problem
-      ? documentErrorMessage(problem)
-      : (tokens > 48000
-        ? tf('ui.document.chunked_mode_hint', '', { chunks: Math.ceil(tokens / 10000) })
-        : t('ui.document.direct_mode_hint'));
-  }
-  studyDocumentAnalyzeBtn.disabled = documentBusy || Boolean(problem);
-}
-function removeImportedDocument() {
-  documentReadGeneration += 1;
-  documentRequestController?.abort();
-  documentRequestController = null;
-  importedDocument = null;
-  documentSource = '';
-  documentKind = 'auto';
-  studyDocumentInput.value = studyDocumentText.value = studyDocumentInstruction.value = '';
-  studyDocumentEditor.open = false;
-  studyDocumentKindSelect.value = 'auto';
-  studyDocumentDropZone.dataset.dragging = 'false';
-  updateDocumentCard();
-  setDocumentBusy(false);
-  setPasteError(studyInputPasteError, '');
-}
-async function importDocumentFile(file) {
-  const generation = ++documentReadGeneration;
-  documentRequestController?.abort();
-  const controller = new AbortController();
-  documentRequestController = controller;
-  setPasteError(studyInputPasteError, '');
-  if (!file || !/\.(txt|md|markdown)$/i.test(file.name)) throw new Error('document_type');
-  const declaredType = String(file.type || '').toLowerCase();
-  if (declaredType && !['text/plain', 'text/markdown', 'application/octet-stream'].includes(declaredType)) throw new Error('document_type');
-  if (file.size > 524288) throw new Error('document_too_large');
-  importedDocument = { name: (file.name.split(/[\\/]/).pop().replace(/[\0-\x1f\x7f]/g, '').trim() || 'document.txt').slice(0, 255), type: file.name.toLowerCase().endsWith('.txt') ? 'text/plain' : 'text/markdown', encoding: '', modified: false };
-  studyDocumentCard.hidden = false;
-  studyDocumentName.textContent = importedDocument.name;
-  studyDocumentMeta.textContent = `${(file.size / 1024).toFixed(1)} KB`;
-  setDocumentBusy(true);
-  studyDocumentState.textContent = t('ui.document.reading');
-  try {
-    const decoded = decodeDocumentBuffer(await file.arrayBuffer());
-    if (controller.signal.aborted || generation !== documentReadGeneration) return;
-    const problem = documentTextProblem(decoded.text);
-    if (problem) throw new Error(problem);
-    importedDocument = { ...importedDocument, encoding: decoded.encoding };
-    documentSource = decoded.text;
-    documentKind = 'auto';
-    studyDocumentText.value = decoded.text;
-    studyDocumentKindSelect.value = documentKind;
-    updateDocumentCard();
-  } catch (error) {
-    if (generation === documentReadGeneration) {
-      importedDocument = null;
-      updateDocumentCard();
-    }
-    throw error;
-  } finally {
-    if (documentRequestController === controller) documentRequestController = null;
-    if (generation === documentReadGeneration) setDocumentBusy(false);
-  }
-}
-function acceptDocumentFiles(files) {
-  if (documentBusy) return;
-  const list = Array.from(files || []);
-  if (list.length !== 1) throw new Error(list.length > 1 ? 'document_multiple' : 'document_read');
-  return importDocumentFile(list[0]);
-}
-function reportDocumentImportError(error) {
-  studyDocumentInput.value = '';
-  setPasteError(studyInputPasteError, documentErrorMessage(error instanceof Error ? error.message : 'document_read'));
-}
-function handleDocumentPaste(event) {
-  const directFiles = Array.from(event.clipboardData?.files || []), itemFiles = Array.from(event.clipboardData?.items || []).filter((item) => item.kind === 'file').map((item) => item.getAsFile()).filter(Boolean);
-  const files = directFiles.length ? directFiles : itemFiles;
-  if (!files.length || files.every((file) => String(file.type || '').startsWith('image/'))) return;
-  event.preventDefault();
-  acceptDocumentFiles(files).catch(reportDocumentImportError);
-}
-function handleDocumentDrop(event) {
-  event.preventDefault();
-  studyDocumentDropZone.dataset.dragging = 'false';
-  acceptDocumentFiles(event.dataTransfer?.files).catch(reportDocumentImportError);
-}
-function formatDocumentDiagnostic(diagnostic) {
- const code=(diagnostic||'').trim(),validation={empty_document:'empty',binary_document:'binary',invalid_document_encoding:'encoding',unsupported_document_type:'type',unsafe_document_content:'unsafe_content',analysis_instruction_too_long:'instruction_too_long',unsupported_document_kind:'invalid_kind',invalid_document_name:'invalid_name',document_canceled:'canceled'};
- return t(`ui.error.document_${'timeout rate_limited authentication_failed model_not_supported provider_unavailable invalid_endpoint invalid_request unsafe_model_output llm_call_failed'.includes(code)?`analysis_${code}`:validation[code]||code.replace(/^document_/,'')||'analysis_failed'}`);
-}
-async function analyzeDocument() {
-  if (!importedDocument || documentBusy) return;
-  updateDocumentCard();
-  if (importedDocument.problem) throw new Error(importedDocument.problem);
-  const controller = new AbortController();
-  documentRequestController?.abort();
-  documentRequestController = controller;
-  setDocumentBusy(true);
-  setStatus(t('ui.status.analyzing_document'));
-  setReply(t('ui.status.analyzing_document'));
-  scrollReplyIntoView();
-  try {
-    const data = await window.StudyDocumentJobs.run(callPlugin, {
-      document_name: importedDocument.name,
-      document_type: importedDocument.type,
-      document_text: documentSource,
-      analysis_kind: documentKind,
-      analysis_instruction: studyDocumentInstruction?.value.trim() || '',
-      locale: window.I18n?.lang?.() || document.documentElement.lang || '',
-    }, controller.signal, () => {});
-    if (controller.signal.aborted) return;
-    const failed = data.status !== 'completed' || data.degraded;
-    setStatus(failed ? t('ui.status.error', 'Error') : t('ui.status.document_complete'));
-    setReply(failed ? formatDocumentDiagnostic(data.diagnostic) : (data.reply || data.summary || ''));
-    studyDocumentState.textContent = failed ? formatDocumentDiagnostic(data.diagnostic) : t('ui.status.document_complete');
-    await refreshStatus({ updateReply: false });
-  } catch (error) {
-    if (controller.signal.aborted) return;
-    setStatus(t('ui.status.error', 'Error'));
-    setReply(/timed out|timeout/i.test(error.message) ? t('ui.error.document_analysis_timeout') : formatPluginError(error));
-  } finally {
-    if (documentRequestController === controller) documentRequestController = null;
-    window.StudyDocumentJobs.currentId = '';
-    setDocumentBusy(false);
-  }
 }
 
 function compactText(value, fallback = '-') {
@@ -2245,6 +2073,20 @@ async function handleNekoCoachAction(action) {
   }
 }
 
+const documentController = window.StudyDocumentController.create({
+  pluginId: PLUGIN_ID,
+  callPlugin,
+  i18n: { t, tf },
+  ui: {
+    setStatus,
+    setReply,
+    setPasteError,
+    scrollReplyIntoView,
+    formatPluginError,
+  },
+  onAnalysisComplete: refreshStatus,
+});
+
 async function bootstrap() {
   if (window.I18n && typeof window.I18n.init === 'function') {
     await window.I18n.init(PLUGIN_ID);
@@ -2256,7 +2098,7 @@ async function bootstrap() {
   bindButton(ocrBtn, runOcr);
   bindButton(generateQuestionBtn, generateQuestion);
   bindButton(explainBtn, explainText);
-  bindButton(studyDocumentAnalyzeBtn, analyzeDocument);
+  documentController.bind();
   bindButton(evaluateAnswerBtn, evaluateAnswer);
   bindButton(summarizeBtn, summarizeSession);
   nekoCoachActionButtons.forEach((button) => {
@@ -2274,50 +2116,11 @@ async function bootstrap() {
   bindButton(memoryRefreshBtn, refreshMemoryDeck);
   bindButton(memoryAddBtn, saveMemoryCard);
   if (studyInput) {
-    studyInput.addEventListener('paste', handleDocumentPaste);
     studyInput.addEventListener('paste', createImagePasteHandler({
       textarea: studyInput,
       kind: 'study',
       errorTarget: studyInputPasteError,
     }));
-  }
-  if (studyDocumentImportBtn && studyDocumentInput) {
-    studyDocumentImportBtn.addEventListener('click', () => studyDocumentInput.click());
-    studyDocumentInput.addEventListener('change', () => {
-      acceptDocumentFiles(studyDocumentInput.files).catch(reportDocumentImportError);
-    });
-  }
-  if (studyDocumentRemoveBtn) {
-    studyDocumentRemoveBtn.addEventListener('click', () => removeImportedDocument());
-  }
-  if (studyDocumentCancelBtn) {
-    studyDocumentCancelBtn.addEventListener('click', () => window.StudyDocumentJobs.cancel(callPlugin, documentRequestController));
-  }
-  if (studyDocumentKindSelect) {
-    studyDocumentKindSelect.addEventListener('change', () => { documentKind = studyDocumentKindSelect.value || 'auto'; });
-  }
-  if (studyDocumentEditor) studyDocumentEditor.addEventListener('toggle', () => { if (documentBusy && studyDocumentEditor.open) studyDocumentEditor.open = false; });
-  if (studyDocumentText) {
-    studyDocumentText.addEventListener('input', () => {
-      if (documentBusy || !importedDocument) return;
-      documentSource = studyDocumentText.value;
-      updateDocumentCard({ modified: true });
-    });
-  }
-  window.addEventListener('pagehide', () => { window.StudyDocumentJobs.leave(PLUGIN_ID); documentRequestController?.abort(); }, { once: true });
-  if (studyDocumentDropZone) {
-    studyDocumentDropZone.addEventListener('dragenter', (event) => {
-      event.preventDefault();
-      studyDocumentDropZone.dataset.dragging = 'true';
-    });
-    studyDocumentDropZone.addEventListener('dragover', (event) => {
-      event.preventDefault();
-      if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
-    });
-    studyDocumentDropZone.addEventListener('dragleave', (event) => {
-      if (!studyDocumentDropZone.contains(event.relatedTarget)) studyDocumentDropZone.dataset.dragging = 'false';
-    });
-    studyDocumentDropZone.addEventListener('drop', handleDocumentDrop);
   }
   if (answerInput) {
     answerInput.addEventListener('paste', createImagePasteHandler({

@@ -22,7 +22,9 @@ def test_hosted_document_diagnostics_map_invalid_endpoint_and_request() -> None:
 
 
 def test_static_document_diagnostics_map_invalid_endpoint_and_request() -> None:
-    source = (_PLUGIN_DIR / "static" / "main.js").read_text(encoding="utf-8")
+    source = (_PLUGIN_DIR / "static" / "document-controller.js").read_text(
+        encoding="utf-8"
+    )
     start = source.index("function formatDocumentDiagnostic")
     end = source.index("async function analyzeDocument", start)
     formatter = source[start:end]
