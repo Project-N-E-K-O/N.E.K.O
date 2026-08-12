@@ -90,6 +90,10 @@ const error = ref('')
 const runtimeError = ref('')
 const runtimeErrorFatal = ref(false)
 let currentLoadId = 0
+let hostedRequestGeneration = 0
+let componentMounted = false
+
+const HOST_STARTUP_RETRY_DELAYS_MS = [100, 200, 400, 800, 1600] as const
 
 type HostedBridgeError = {
   message: string
@@ -526,7 +530,12 @@ async function handleHostedRequest(data: any) {
   const method = typeof data.method === 'string' ? data.method : ''
   const actionId = method === 'call' ? String(data.payload?.actionId || '') : ''
   const userInitiated = method === 'call' && data.userInitiated === true
+  const requestGeneration = hostedRequestGeneration
+  let responded = false
+  const isCurrentRequest = () => componentMounted && requestGeneration === hostedRequestGeneration
   const respond = (payload: Record<string, any>) => {
+    if (responded || !isCurrentRequest()) return
+    responded = true
     // PR #1480 review-fix 1.30: target the trusted origin instead of '*'.
     // For srcdoc iframes (opaque origin, reported as 'null'), the postMessage
     // spec rejects 'null' as a target; the standard idiom is to use '*' and
@@ -543,15 +552,40 @@ async function handleHostedRequest(data: any) {
     if (method === 'call') {
       const args = data.payload?.args && typeof data.payload.args === 'object' ? data.payload.args : {}
       const timeoutMs = Number(data.timeoutMs)
-      const result = await callPluginHostedSurfaceAction(props.pluginId, actionId, args, {
-        kind: props.surface.kind,
-        id: props.surface.id,
-        locale: String(locale.value),
-        timeoutMs: Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : undefined,
-        userInitiated,
-      })
-      respond({ ok: true, result })
-      return
+      const hasRequestDeadline = Number.isFinite(timeoutMs) && timeoutMs > 0
+      const requestDeadline = hasRequestDeadline ? Date.now() + timeoutMs : undefined
+      const pluginId = props.pluginId
+      const surfaceKind = props.surface.kind
+      const surfaceId = props.surface.id
+      const requestLocale = String(locale.value)
+      for (let attempt = 0; ; attempt += 1) {
+        try {
+          const remainingTimeoutMs = requestDeadline === undefined
+            ? undefined
+            : Math.max(1, Math.ceil(requestDeadline - Date.now()))
+          const result = await callPluginHostedSurfaceAction(pluginId, actionId, args, {
+            kind: surfaceKind,
+            id: surfaceId,
+            locale: requestLocale,
+            timeoutMs: remainingTimeoutMs,
+            userInitiated,
+          })
+          respond({ ok: true, result })
+          return
+        } catch (caught: any) {
+          const bridgeError = normalizeHostedBridgeError(caught)
+          const retryDelayMs = HOST_STARTUP_RETRY_DELAYS_MS[attempt]
+          if (userInitiated || bridgeError.code !== 'PLUGIN_NOT_RUNNING' || retryDelayMs === undefined) {
+            throw caught
+          }
+          if (!isCurrentRequest()) return
+          if (requestDeadline !== undefined && retryDelayMs >= requestDeadline - Date.now()) {
+            throw caught
+          }
+          await new Promise<void>((resolve) => window.setTimeout(resolve, retryDelayMs))
+          if (!isCurrentRequest()) return
+        }
+      }
     }
     if (method === 'refresh') {
       const context = await getPluginHostedSurfaceContext(props.pluginId, {
@@ -581,11 +615,14 @@ async function handleHostedRequest(data: any) {
 }
 
 onMounted(() => {
+  componentMounted = true
   window.addEventListener('message', handleMessage)
   loadHostedTsx()
 })
 
 onUnmounted(() => {
+  componentMounted = false
+  hostedRequestGeneration += 1
   window.removeEventListener('message', handleMessage)
 })
 
@@ -602,6 +639,7 @@ watch(
 watch(
   () => [props.pluginId, props.surface.kind, props.surface.id, props.surface.mode, props.surface.entry, props.surface.available, surfaceUrl.value, locale.value],
   () => {
+    hostedRequestGeneration += 1
     if (props.surface.mode === 'static') return
     loadHostedTsx()
   },
