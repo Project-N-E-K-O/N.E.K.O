@@ -63,6 +63,32 @@
       </div>
     </div>
 
+    <!-- 静默安装后把任务面板拉回来的入口：对话框是唯一的取消入口，
+         关掉它不该让取消能力随之消失。 -->
+    <div
+      v-if="showInstallResumeBar"
+      class="market-panel__install-resume"
+      role="status"
+      aria-live="polite"
+    >
+      <el-icon class="is-loading" aria-hidden="true"><Loading /></el-icon>
+      <span
+        class="market-panel__install-resume-text"
+        :title="activeInstallTask?.message || ''"
+      >
+        {{ installResumeText }}
+      </span>
+      <span class="market-panel__install-resume-percent">{{ installTaskPercent }}%</span>
+      <el-button
+        size="small"
+        text
+        type="primary"
+        @click="installTaskDialogVisible = true"
+      >
+        {{ t('market.viewInstallProgress') }}
+      </el-button>
+    </div>
+
     <WorkbenchFilterBar
       v-model:filter-text="filterText"
       v-model:use-regex="useRegex"
@@ -198,6 +224,13 @@
           <span v-if="downloadProgressText">{{ downloadProgressText }}</span>
         </div>
         <el-alert
+          v-if="installTaskOvertime && !installTaskDone"
+          type="info"
+          :closable="false"
+          show-icon
+          :title="t('market.installTakingLonger')"
+        />
+        <el-alert
           v-if="activeInstallTask?.rollback?.running"
           type="warning"
           :closable="false"
@@ -250,7 +283,7 @@
 import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
-import { ShoppingCart, Close, Link, Setting } from '@element-plus/icons-vue'
+import { ShoppingCart, Close, Link, Setting, Loading } from '@element-plus/icons-vue'
 import MarketPluginCard from '@/components/plugin/MarketPluginCard.vue'
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
@@ -334,6 +367,12 @@ const activeInstallPluginName = ref('')
 const activeInstallMode = ref<'install' | 'upgrade' | 'reinstall'>('install')
 const installTaskCancelling = ref(false)
 const marketInstallBusy = ref(false)
+// 超过 INSTALL_OVERTIME_MS 只换文案提示，不再把任务伪造成 failed —— 那会让
+// installTaskDone 转真，把后端仍然接受的取消按钮一起抹掉。
+const installTaskOvertime = ref(false)
+const INSTALL_OVERTIME_MS = 3 * 60 * 1000
+// 800ms 一轮，连续 15 轮（约 12 秒）查不到才判定任务已消失。
+const INSTALL_MISSING_TOLERANCE = 15
 
 const installTaskDone = computed(() => {
   const status = activeInstallTask.value?.status
@@ -342,6 +381,14 @@ const installTaskDone = computed(() => {
 
 const installTaskPercent = computed(() =>
   Math.round((activeInstallTask.value?.progress ?? 0) * 100),
+)
+
+const showInstallResumeBar = computed(
+  () =>
+    marketInstallBusy.value &&
+    !installTaskDialogVisible.value &&
+    !installTaskDone.value &&
+    !!activeInstallTask.value?.task_id,
 )
 
 const installTaskStatus = computed(() => {
@@ -366,6 +413,14 @@ const installTaskStageLabel = computed(() => {
   return translated === key ? stage : translated
 })
 
+// 常驻面板上的文案必须是本地化的：后端 message 是硬编码简体中文，
+// 只留在 title 里给悬停看。
+const installResumeText = computed(() => {
+  if (installTaskOvertime.value) return t('market.installTakingLonger')
+  const name = activeInstallPluginName.value
+  return name ? `${name} · ${installTaskStageLabel.value}` : installTaskStageLabel.value
+})
+
 function formatByteCount(value: number): string {
   if (value >= 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)} MB`
   if (value >= 1024) return `${(value / 1024).toFixed(1)} KB`
@@ -388,6 +443,7 @@ function beginInstallTaskTracking(
   mode: 'install' | 'upgrade' | 'reinstall' = 'install',
 ) {
   installTaskCancelling.value = false
+  installTaskOvertime.value = false
   activeInstallPluginName.value = pluginName
   activeInstallMode.value = mode
   activeInstallTask.value = {
@@ -430,6 +486,11 @@ async function cancelInstallTask() {
     }
     if (res.ok) {
       activeInstallTask.value = (await res.json()) as MarketInstallTask
+      return
+    }
+    // 409 的 detail 是后端硬编码简体中文，别直接吐给其他语言的用户。
+    if (res.status === 409) {
+      ElMessage.warning(t('market.cancelInstallUnavailable'))
       return
     }
     const err = await res.json().catch(() => ({}))
@@ -946,8 +1007,11 @@ async function pollInstallTask(
   const mode = options.mode ?? 'install'
   beginInstallTaskTracking(taskId, pluginName, mode)
 
-  const deadline = Date.now() + 3 * 60 * 1000
-  while (Date.now() < deadline) {
+  const overtimeAt = Date.now() + INSTALL_OVERTIME_MS
+  let consecutiveMissing = 0
+  // 面板卸载后不中止：轮询要活到任务终态，否则切走一次页面就丢掉成功提示和
+  // 注册表同步。任务消失走下面的 404 容忍收口。
+  for (;;) {
     try {
       const res = await fetchBridge(`/market/tasks/${taskId}`)
       if (!res) {
@@ -957,7 +1021,18 @@ async function pollInstallTask(
         ElMessage.warning(t('market.pairRequired'))
         return false
       }
+      if (res.status === 404) {
+        // 任务只活在后端内存里：连续查不到就是它没了（服务重启 / TTL 清理），
+        // 再轮下去也不会回来。
+        consecutiveMissing += 1
+        if (consecutiveMissing >= INSTALL_MISSING_TOLERANCE) {
+          markInstallTaskFailed(taskId, t('market.installTaskLost'))
+          ElMessage.warning(t('market.installTaskLost'))
+          return false
+        }
+      }
       if (res.ok) {
+        consecutiveMissing = 0
         const task = (await res.json()) as MarketInstallTask
         activeInstallTask.value = task
 
@@ -983,22 +1058,11 @@ async function pollInstallTask(
     } catch {
       // 继续轮询
     }
+    if (!installTaskOvertime.value && Date.now() >= overtimeAt) {
+      installTaskOvertime.value = true
+    }
     await new Promise((r) => setTimeout(r, 800))
   }
-
-  activeInstallTask.value = {
-    ...(activeInstallTask.value || {
-      task_id: taskId,
-      stage: 'failed',
-      progress: 0,
-      message: t('market.installFailed'),
-    }),
-    status: 'failed',
-    stage: 'failed',
-    error: t('market.installFailed'),
-  }
-  ElMessage.warning(t('market.installFailed'))
-  return false
 }
 
 async function handleInstall(plugin: MarketWorkbenchItem) {
@@ -1330,6 +1394,32 @@ watch(
   font-size: 12px;
   line-height: 1.4;
   color: var(--el-text-color-secondary);
+}
+
+.market-panel__install-resume {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border: 1px solid var(--el-color-primary-light-7);
+  border-radius: 6px;
+  background: var(--el-color-primary-light-9);
+  font-size: 12px;
+  color: var(--el-text-color-regular);
+}
+
+.market-panel__install-resume-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.market-panel__install-resume-percent {
+  flex: none;
+  color: var(--el-text-color-secondary);
+  font-variant-numeric: tabular-nums;
 }
 
 .market-install-progress {
