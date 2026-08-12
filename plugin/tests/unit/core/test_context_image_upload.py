@@ -165,32 +165,26 @@ def test_images_upload_scales_large_input_without_blocking_the_event_loop(tmp_pa
 
 def test_context_close_cancels_an_upload_waiting_for_its_response(tmp_path: Path) -> None:
     class _NoResponseTransport:
-        def __init__(self) -> None:
-            self.sent: asyncio.Event | None = None
+        def __init__(self, sent: asyncio.Event) -> None:
+            self.sent = sent
 
         async def send_image(self, *_args: object, **_kwargs: object) -> None:
-            self.sent = asyncio.Event()
             self.sent.set()
             return None
 
-    transport = _NoResponseTransport()
-    ctx = PluginContext(
-        plugin_id="demo",
-        config_path=tmp_path / "plugin.toml",
-        logger=_Logger(),  # type: ignore[arg-type]
-        status_queue=None,
-        _response_queue=asyncio.Queue(),
-        _image_transport=transport,
-    )
-
     async def _run() -> None:
+        sent = asyncio.Event()
+        transport = _NoResponseTransport(sent)
+        ctx = PluginContext(
+            plugin_id="demo",
+            config_path=tmp_path / "plugin.toml",
+            logger=_Logger(),  # type: ignore[arg-type]
+            status_queue=None,
+            _response_queue=asyncio.Queue(),
+            _image_transport=transport,
+        )
         upload = asyncio.create_task(ctx.images.upload(_png_bytes(), timeout=10.0))
-        for _ in range(100):
-            if transport.sent is not None:
-                break
-            await asyncio.sleep(0.01)
-        assert transport.sent is not None
-        await transport.sent.wait()
+        await asyncio.wait_for(sent.wait(), timeout=1.0)
         ctx.close()
         with pytest.raises(asyncio.CancelledError):
             await upload
