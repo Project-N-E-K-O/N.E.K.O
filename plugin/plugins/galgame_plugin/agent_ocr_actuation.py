@@ -1,6 +1,70 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from .agent_shared import *  # noqa: F401,F403
+
+
+@dataclass(frozen=True, slots=True)
+class OcrActionContext:
+    screen_type: str
+    has_stable_dialogue: bool
+    has_tentative_dialogue: bool
+    choices: tuple[dict[str, Any], ...]
+    scene_id: str
+    line_id: str
+    choices_confirmed: bool = False
+    is_ocr: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class ActionPermission:
+    allow_menu_keys: bool
+    allow_auto_advance: bool
+    has_trusted_choices: bool
+    reason: str
+
+
+class OcrActionGate:
+    @staticmethod
+    def evaluate(context: OcrActionContext) -> ActionPermission:
+        if not context.is_ocr:
+            return ActionPermission(
+                allow_menu_keys=True,
+                allow_auto_advance=True,
+                has_trusted_choices=bool(context.choices),
+                reason="non_ocr_source",
+            )
+        trusted_choices = bool(
+            context.choices_confirmed or len(context.choices) >= 2
+        )
+        if trusted_choices:
+            return ActionPermission(
+                allow_menu_keys=True,
+                allow_auto_advance=False,
+                has_trusted_choices=True,
+                reason="trusted_choices",
+            )
+        if context.has_stable_dialogue or context.has_tentative_dialogue:
+            return ActionPermission(
+                allow_menu_keys=False,
+                allow_auto_advance=True,
+                has_trusted_choices=False,
+                reason="dialogue_blocks_menu",
+            )
+        if context.screen_type == OCR_CAPTURE_PROFILE_STAGE_MENU and not context.choices:
+            return ActionPermission(
+                allow_menu_keys=True,
+                allow_auto_advance=False,
+                has_trusted_choices=False,
+                reason="menu_screen_without_choices",
+            )
+        return ActionPermission(
+            allow_menu_keys=False,
+            allow_auto_advance=True,
+            has_trusted_choices=False,
+            reason="menu_not_confirmed",
+        )
 
 
 class AgentOcrActuationMixin:
@@ -347,8 +411,8 @@ class AgentOcrActuationMixin:
         runtime = shared.get("ocr_reader_runtime")
         return isinstance(runtime, dict) and int(runtime.get("pid") or 0) > 0
 
-    @staticmethod
     def _should_block_dialogue_advance_for_visible_choices(
+        self,
         shared: dict[str, Any],
         *,
         kind: str,
@@ -356,7 +420,39 @@ class AgentOcrActuationMixin:
         if kind != "advance":
             return False
         snapshot = sanitize_snapshot_state(shared.get("latest_snapshot", {}))
-        return bool(snapshot.get("is_menu_open")) or bool(list(snapshot.get("choices", [])))
+        choices = tuple(
+            item
+            for item in list(snapshot.get("choices", []))
+            if isinstance(item, dict)
+            and str(item.get("text") or "").strip()
+            and bool(item.get("enabled", True))
+        )
+        if self._current_input_source(shared) != DATA_SOURCE_OCR_READER:
+            return bool(snapshot.get("is_menu_open")) or bool(choices)
+        screen_type = str(snapshot.get("screen_type") or "").strip()
+        if bool(snapshot.get("is_menu_open")):
+            screen_type = OCR_CAPTURE_PROFILE_STAGE_MENU
+        stability = str(snapshot.get("stability") or "")
+        has_dialogue_payload = bool(
+            str(snapshot.get("text") or "").strip()
+            or str(snapshot.get("line_id") or "").strip()
+        )
+        permission = OcrActionGate.evaluate(
+            OcrActionContext(
+                screen_type=screen_type,
+                has_stable_dialogue=bool(
+                    stability == "stable" and has_dialogue_payload
+                ),
+                has_tentative_dialogue=bool(
+                    stability == "tentative" and has_dialogue_payload
+                ),
+                choices=choices,
+                scene_id=str(snapshot.get("scene_id") or ""),
+                line_id=str(snapshot.get("line_id") or ""),
+                choices_confirmed=bool(choices),
+            )
+        )
+        return not permission.allow_auto_advance
 
     @staticmethod
     def _virtual_mouse_candidate_ids() -> tuple[str, ...]:
@@ -672,8 +768,7 @@ class AgentOcrActuationMixin:
         shared: dict[str, Any],
         snapshot: dict[str, Any],
     ) -> bool:
-        if self._current_input_source(shared) != DATA_SOURCE_OCR_READER:
-            return True
+        is_ocr = self._current_input_source(shared) == DATA_SOURCE_OCR_READER
         choices = [
             item
             for item in list(snapshot.get("choices", []))
@@ -683,6 +778,7 @@ class AgentOcrActuationMixin:
         ]
         screen_type = str(snapshot.get("screen_type") or "").strip()
         history_events = shared.get("history_events")
+        choices_confirmed = False
         if choices and isinstance(history_events, list):
             current_choice_signature = build_choice_signature(choices)
             current_line_id = str(snapshot.get("line_id") or "")
@@ -710,18 +806,27 @@ class AgentOcrActuationMixin:
                 event_scene_id = str(payload.get("scene_id") or "")
                 if current_scene_id and event_scene_id and event_scene_id != current_scene_id:
                     continue
-                return True
-        if len(choices) >= 2:
-            return True
-        has_current_dialogue = bool(
-            str(snapshot.get("stability") or "") in {"tentative", "stable"}
-            and (
-                str(snapshot.get("text") or "").strip()
-                or str(snapshot.get("line_id") or "").strip()
+                choices_confirmed = True
+                break
+        stability = str(snapshot.get("stability") or "")
+        has_dialogue_payload = bool(
+            str(snapshot.get("text") or "").strip()
+            or str(snapshot.get("line_id") or "").strip()
+        )
+        permission = OcrActionGate.evaluate(
+            OcrActionContext(
+                screen_type=screen_type,
+                has_stable_dialogue=bool(
+                    stability == "stable" and has_dialogue_payload
+                ),
+                has_tentative_dialogue=bool(
+                    stability == "tentative" and has_dialogue_payload
+                ),
+                choices=tuple(choices),
+                scene_id=str(snapshot.get("scene_id") or ""),
+                line_id=str(snapshot.get("line_id") or ""),
+                choices_confirmed=choices_confirmed,
+                is_ocr=is_ocr,
             )
         )
-        if has_current_dialogue:
-            return False
-        if screen_type == OCR_CAPTURE_PROFILE_STAGE_MENU and not choices:
-            return True
-        return False
+        return permission.allow_menu_keys

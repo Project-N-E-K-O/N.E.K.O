@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 from _galgame_test_support import *
+from plugin.plugins.galgame_plugin.agent_ocr_actuation import (
+    OcrActionContext,
+    OcrActionGate,
+)
 
 from tests.fake_clock import patch_module_clock
 from utils.result_parser import parse_push_message_content
@@ -2203,6 +2207,50 @@ def test_game_llm_agent_ocr_dialogue_without_choices_blocks_menu_actions(
     )
 
     assert agent._has_confirmed_ocr_choice_menu(shared, snapshot) is False
+
+
+@pytest.mark.parametrize(
+    ("has_tentative", "has_stable"),
+    [(True, False), (False, True)],
+)
+@pytest.mark.plugin_unit
+def test_ocr_action_gate_blocks_menu_keys_for_current_dialogue_without_choices(
+    has_tentative: bool,
+    has_stable: bool,
+) -> None:
+    permission = OcrActionGate.evaluate(
+        OcrActionContext(
+            screen_type=OCR_CAPTURE_PROFILE_STAGE_MENU,
+            has_stable_dialogue=has_stable,
+            has_tentative_dialogue=has_tentative,
+            choices=(),
+            scene_id="scene-a",
+            line_id="line-1",
+        )
+    )
+
+    assert permission.allow_menu_keys is False
+    assert permission.has_trusted_choices is False
+    assert permission.reason == "dialogue_blocks_menu"
+
+
+@pytest.mark.plugin_unit
+def test_ocr_action_gate_accepts_confirmed_single_choice() -> None:
+    permission = OcrActionGate.evaluate(
+        OcrActionContext(
+            screen_type=OCR_CAPTURE_PROFILE_STAGE_MENU,
+            has_stable_dialogue=False,
+            has_tentative_dialogue=False,
+            choices=({"choice_id": "choice-1", "text": "继续", "enabled": True},),
+            scene_id="scene-a",
+            line_id="line-1",
+            choices_confirmed=True,
+        )
+    )
+
+    assert permission.allow_menu_keys is True
+    assert permission.allow_auto_advance is False
+    assert permission.has_trusted_choices is True
 
 
 @pytest.mark.asyncio
