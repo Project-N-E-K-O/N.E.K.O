@@ -239,6 +239,12 @@ def test_forge_drop_effects_can_be_disabled_without_hiding_credit_updates():
     ) < reaction_handler.index("var now = Date.now();")
     assert "renderForgeBadge(active, true);" in play_one
     assert "playGeneration !== dropEffectsGeneration" in play_one
+    # 关闭效果的入口分支同样要按 revision 守卫，否则队尾券会用陈旧
+    # active_count 覆盖权威刷新写过的角标。
+    disabled_entry = play_one[play_one.index("if (window.forgeDropEffectsEnabled === false)"):]
+    disabled_entry = disabled_entry[: disabled_entry.index("resolve();")]
+    assert "payloadRevision === creditStateRevision" in disabled_entry
+    assert "renderForgeBadge(payload.active_count, true);" in disabled_entry
 
     for locale in ("en", "ja", "ko", "zh-CN", "zh-TW", "ru", "pt", "es"):
         locale_source = (PROJECT_ROOT / "static" / "locales" / f"{locale}.json").read_text(

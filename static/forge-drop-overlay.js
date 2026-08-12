@@ -441,8 +441,12 @@
   function playOne(payload) {
     return new Promise(function (resolve) {
       try {
+        var payloadRevision = Number(payload && payload.__credit_state_revision) || 0;
         if (window.forgeDropEffectsEnabled === false) {
-          if (payload && typeof payload.active_count === 'number') {
+          // 排队期间可能已有权威刷新推进过 revision；此时这张队尾券的
+          // active_count 已经陈旧，不能用它覆盖角标。
+          var entryRevisionFresh = !payloadRevision || payloadRevision === creditStateRevision;
+          if (payload && typeof payload.active_count === 'number' && entryRevisionFresh) {
             renderForgeBadge(payload.active_count, true);
           }
           resolve();
@@ -459,7 +463,6 @@
         var active = typeof (payload && payload.active_count) === 'number'
           ? payload.active_count
           : (cachedCredits > 0 ? cachedCredits + 1 : 1);
-        var payloadRevision = Number(payload && payload.__credit_state_revision) || 0;
 
         var layer = document.querySelector('.neko-forge-drop-layer');
         if (!layer) {
