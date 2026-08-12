@@ -1280,58 +1280,16 @@ class RuntimeMixin:
         *,
         raw_text: str = "",
     ) -> bool:
-        # This threshold is higher than _screen_classification_is_known (0.45):
-        # skipping dialogue needs stronger confidence to avoid false non-dialogue gates.
-        screen_type = str(classification.screen_type or "")
-        screen_debug = dict(classification.debug or {})
-        is_cnn_title = bool(
-            screen_type == OCR_CAPTURE_PROFILE_STAGE_TITLE
-            and str(screen_debug.get("source") or "") == "cnn_primary"
-            and str(screen_debug.get("label") or "") == "title_screen"
+        return self._dialogue_pipeline.should_skip_for_screen_classification(
+            classification,
+            raw_text=raw_text,
+            now=self._time_fn(),
+            bypass_type=self._known_screen_skip_bypass_type,
+            bypass_until=self._known_screen_skip_bypass_until,
+            has_strong_dialogue_evidence=_has_strong_ocr_dialogue_evidence,
+            has_narration_evidence=_has_conservative_title_narration_evidence,
+            stability_key=_ocr_stability_key,
         )
-        if float(classification.confidence or 0.0) < 0.5:
-            self._reset_title_narration_candidate()
-            return False
-        if is_cnn_title and _has_strong_ocr_dialogue_evidence(raw_text):
-            self._reset_title_narration_candidate()
-            classification.debug = {
-                **screen_debug,
-                "skip_dialogue_bypassed": True,
-                "skip_dialogue_bypass_reason": "ocr_dialogue_evidence",
-            }
-            return False
-        stable_title_narration = (
-            self._observe_title_narration_candidate(raw_text)
-            if is_cnn_title
-            else False
-        )
-        if not is_cnn_title:
-            self._reset_title_narration_candidate()
-        if (
-            screen_type == self._known_screen_skip_bypass_type
-            and self._time_fn() <= float(self._known_screen_skip_bypass_until or 0.0)
-        ):
-            if is_cnn_title and not stable_title_narration:
-                return True
-            classification.debug = {
-                **dict(classification.debug or {}),
-                "skip_dialogue_bypassed": True,
-                "skip_dialogue_bypass_reason": (
-                    "stable_title_narration_timeout_rescan"
-                    if is_cnn_title
-                    else "known_screen_timeout_rescan"
-                ),
-            }
-            return False
-        return screen_type in {
-            OCR_CAPTURE_PROFILE_STAGE_TITLE,
-            OCR_CAPTURE_PROFILE_STAGE_SAVE_LOAD,
-            OCR_CAPTURE_PROFILE_STAGE_CONFIG,
-            OCR_CAPTURE_PROFILE_STAGE_TRANSITION,
-            OCR_CAPTURE_PROFILE_STAGE_GALLERY,
-            OCR_CAPTURE_PROFILE_STAGE_MINIGAME,
-            OCR_CAPTURE_PROFILE_STAGE_GAME_OVER,
-        }
 
     @staticmethod
     def _screen_classification_is_known(classification: ScreenClassification) -> bool:

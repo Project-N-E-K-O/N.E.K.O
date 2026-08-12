@@ -2050,6 +2050,12 @@ def test_ocr_reader_line_reconciles_non_cnn_menu_false_positive(
     assert events[-1]["payload"]["screen_debug"]["original_screen_debug"] == {
         "reason": "visual_button_layout"
     }
+    assert manager._dialogue_pipeline.state.effective_screen_type == (
+        OCR_CAPTURE_PROFILE_STAGE_DIALOGUE
+    )
+    assert manager._dialogue_pipeline.state.reconciliation_diagnostic["reason"] == (
+        "accepted_ocr_line_overrides_screen"
+    )
 
 
 def test_dialogue_state_reset_clears_observed_stable_and_narration_candidates(
@@ -2070,6 +2076,8 @@ def test_dialogue_state_reset_clears_observed_stable_and_narration_candidates(
     manager._last_stable_line = {"line_id": "stable-1", "text": "台词"}
     manager._last_title_narration_key = "narration-key"
     manager._title_narration_streak = 2
+    manager._default_ocr_state.last_text_key = "pending-key"
+    manager._default_ocr_state.repeat_count = 1
 
     manager._reset_default_ocr_state()
 
@@ -2077,6 +2085,8 @@ def test_dialogue_state_reset_clears_observed_stable_and_narration_candidates(
     assert manager._last_stable_line == {}
     assert manager._last_title_narration_key == ""
     assert manager._title_narration_streak == 0
+    assert manager._default_ocr_state.last_text_key == ""
+    assert manager._default_ocr_state.repeat_count == 0
 
 
 def test_dialogue_pipeline_returns_one_complete_decision_and_promotes_same_scene() -> None:

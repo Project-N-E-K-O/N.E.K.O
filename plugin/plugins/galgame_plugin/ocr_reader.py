@@ -148,6 +148,22 @@ class OcrReaderManager(
     RuntimeMixin,
 ):
     @property
+    def _default_ocr_state(self) -> _StableOcrTextState:
+        return self._dialogue_pipeline.state.default_text_state
+
+    @_default_ocr_state.setter
+    def _default_ocr_state(self, value: _StableOcrTextState) -> None:
+        self._dialogue_pipeline.state.default_text_state = value
+
+    @property
+    def _aihong_menu_ocr_state(self) -> _StableOcrTextState:
+        return self._dialogue_pipeline.state.menu_text_state
+
+    @_aihong_menu_ocr_state.setter
+    def _aihong_menu_ocr_state(self, value: _StableOcrTextState) -> None:
+        self._dialogue_pipeline.state.menu_text_state = value
+
+    @property
     def _last_observed_line(self) -> dict[str, Any]:
         return self._dialogue_pipeline.state.observed_line
 
@@ -193,6 +209,8 @@ class OcrReaderManager(
         rapidocr_lang_changed_callback: Callable[[str], None] | None = None,
     ) -> None:
         self._logger = logger
+        self._dialogue_pipeline = DialoguePipeline()
+        self._last_dialogue_decision = None
         self._config = config
         self._time_fn = time_fn or time.time
         platform_checker = platform_fn or _is_windows_platform
@@ -228,8 +246,6 @@ class OcrReaderManager(
         self._last_seen_memory_reader_text_seq = 0
         self._last_heartbeat_at = 0.0
         self._attached_window: DetectedGameWindow | None = None
-        self._default_ocr_state = _StableOcrTextState()
-        self._aihong_menu_ocr_state = _StableOcrTextState()
         self._aihong_stage = _AIHONG_DIALOGUE_STAGE
         self._aihong_dialogue_idle_polls = 0
         self._aihong_menu_missing_polls = 0
@@ -254,8 +270,6 @@ class OcrReaderManager(
         self._ocr_capture_rejected_reason = ""
         self._capture_region_occluded = False
         self._capture_target_foreground = False
-        self._dialogue_pipeline = DialoguePipeline()
-        self._last_dialogue_decision = None
         self._last_capture_image_hash = ""
         self._last_capture_source_size: dict[str, float] = {}
         self._last_capture_rect: dict[str, float] = {}

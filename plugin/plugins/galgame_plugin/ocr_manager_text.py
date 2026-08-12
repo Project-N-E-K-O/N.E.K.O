@@ -138,6 +138,8 @@ class DialoguePipelineState:
     reconciliation_diagnostic: dict[str, Any] = field(default_factory=dict)
     title_narration_key: str = ""
     title_narration_streak: int = 0
+    default_text_state: _StableOcrTextState = field(default_factory=_StableOcrTextState)
+    menu_text_state: _StableOcrTextState = field(default_factory=_StableOcrTextState)
 
     def reset(self) -> None:
         self.observed_line = {}
@@ -148,6 +150,8 @@ class DialoguePipelineState:
         self.reconciliation_diagnostic = {}
         self.title_narration_key = ""
         self.title_narration_streak = 0
+        self.default_text_state.reset()
+        self.menu_text_state.reset()
 
 
 @dataclass(frozen=True, slots=True)
@@ -234,6 +238,21 @@ class DialoguePipeline:
         self.state.title_narration_key = ""
         self.state.title_narration_streak = 0
 
+    def reset_default_text_state(self) -> None:
+        self.state.default_text_state.reset()
+
+    def reset_menu_text_state(self) -> None:
+        self.state.menu_text_state.reset()
+
+    def record_reconciliation(
+        self,
+        *,
+        effective_screen_type: str,
+        diagnostic: dict[str, Any],
+    ) -> None:
+        self.state.effective_screen_type = str(effective_screen_type or "")
+        self.state.reconciliation_diagnostic = dict(diagnostic or {})
+
     def observe_title_narration_candidate(
         self,
         raw_text: str,
@@ -254,6 +273,72 @@ class DialoguePipeline:
             self.state.title_narration_key = candidate_key
             self.state.title_narration_streak = 1
         return self.state.title_narration_streak >= 2
+
+    def should_skip_for_screen_classification(
+        self,
+        classification: ScreenClassification,
+        *,
+        raw_text: str,
+        now: float,
+        bypass_type: str,
+        bypass_until: float,
+        has_strong_dialogue_evidence: Callable[[str], bool],
+        has_narration_evidence: Callable[[str], bool],
+        stability_key: Callable[[str], str],
+    ) -> bool:
+        """Apply title/non-dialogue admission policy as one domain decision."""
+
+        screen_type = str(classification.screen_type or "")
+        screen_debug = dict(classification.debug or {})
+        is_cnn_title = bool(
+            screen_type == OCR_CAPTURE_PROFILE_STAGE_TITLE
+            and str(screen_debug.get("source") or "") == "cnn_primary"
+            and str(screen_debug.get("label") or "") == "title_screen"
+        )
+        if float(classification.confidence or 0.0) < 0.5:
+            self.reset_title_narration_candidate()
+            return False
+        if is_cnn_title and has_strong_dialogue_evidence(raw_text):
+            self.reset_title_narration_candidate()
+            classification.debug = {
+                **screen_debug,
+                "skip_dialogue_bypassed": True,
+                "skip_dialogue_bypass_reason": "ocr_dialogue_evidence",
+            }
+            return False
+        stable_title_narration = (
+            self.observe_title_narration_candidate(
+                raw_text,
+                has_evidence=has_narration_evidence,
+                stability_key=stability_key,
+            )
+            if is_cnn_title
+            else False
+        )
+        if not is_cnn_title:
+            self.reset_title_narration_candidate()
+        if screen_type == bypass_type and now <= float(bypass_until or 0.0):
+            if is_cnn_title and not stable_title_narration:
+                return True
+            classification.debug = {
+                **dict(classification.debug or {}),
+                "skip_dialogue_bypassed": True,
+                "skip_dialogue_bypass_reason": (
+                    "stable_title_narration_timeout_rescan"
+                    if is_cnn_title
+                    else "known_screen_timeout_rescan"
+                ),
+            }
+            return False
+        return screen_type in {
+            OCR_CAPTURE_PROFILE_STAGE_TITLE,
+            OCR_CAPTURE_PROFILE_STAGE_SAVE_LOAD,
+            OCR_CAPTURE_PROFILE_STAGE_CONFIG,
+            OCR_CAPTURE_PROFILE_STAGE_TRANSITION,
+            OCR_CAPTURE_PROFILE_STAGE_GALLERY,
+            OCR_CAPTURE_PROFILE_STAGE_MINIGAME,
+            OCR_CAPTURE_PROFILE_STAGE_GAME_OVER,
+        }
 
 
 class TextMixin:
@@ -430,7 +515,7 @@ class TextMixin:
         candidate_key = _ocr_stability_key(candidate_text)
         if not candidate_key or not _ocr_stability_keys_match(current_key, candidate_key):
             return classification
-        return ScreenClassification(
+        reconciled = ScreenClassification(
             screen_type=OCR_CAPTURE_PROFILE_STAGE_DIALOGUE,
             confidence=_DIALOGUE_RECONCILIATION_CONFIDENCE,
             ui_elements=[],
@@ -440,6 +525,11 @@ class TextMixin:
                 reason="active_dialogue_matches_current_ocr",
             ),
         )
+        self._dialogue_pipeline.record_reconciliation(
+            effective_screen_type=reconciled.screen_type,
+            diagnostic=reconciled.debug,
+        )
+        return reconciled
 
     def _emit_dialogue_screen_reconciliation_after_line(
         self,
