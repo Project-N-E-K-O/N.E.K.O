@@ -234,6 +234,34 @@ def test_auto_only_panel_does_not_get_route_action(tmp_path: Path) -> None:
     assert actions == []
 
 
+def test_static_compat_replaces_auto_main_panel(tmp_path: Path) -> None:
+    plugin_dir = tmp_path / "demo"
+    static_dir = plugin_dir / "static"
+    static_dir.mkdir(parents=True)
+    (static_dir / "index.html").write_text("<html></html>", encoding="utf-8")
+    config_path = plugin_dir / "plugin.toml"
+    config_path.write_text("[plugin]\nid='demo'\n", encoding="utf-8")
+    plugin_ui = normalize_plugin_ui_manifest(
+        {"plugin": {"ui": {"panel": [{"id": "main", "mode": "auto"}]}}},
+        plugin_id="demo",
+    )
+    meta = {
+        "id": "demo",
+        "config_path": str(config_path),
+        "plugin_ui": plugin_ui,
+    }
+
+    surfaces, warnings = _build_surfaces_sync("demo", meta)
+    actions = _build_plugin_list_actions_from_meta("demo", meta)
+
+    assert warnings == []
+    assert [(surface["mode"], surface["legacy_static_compat"]) for surface in surfaces] == [
+        ("static", True),
+        ("auto", False),
+    ]
+    assert actions == [{"id": "open_panel", "kind": "route", "target": "/plugins/demo?tab=panel"}]
+
+
 def test_surface_action_permission_and_authorized_entry_resolution() -> None:
     assert _surface_allows_action_call({"permissions": ["state:read", "action:call"]})
     assert not _surface_allows_action_call({"permissions": ["state:read"]})

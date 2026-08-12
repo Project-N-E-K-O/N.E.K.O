@@ -337,9 +337,19 @@ def _build_surfaces_sync(
     for surface in surfaces:
         surface_warnings = surface.pop("_warnings", None)
         warnings.extend(normalize_warnings(surface_warnings))
-    seen = {(str(surface.get("kind")), str(surface.get("id"))) for surface in surfaces}
     static_surface = _build_static_compat_surface(plugin_id, plugin_meta)
-    if static_surface is not None and ("panel", "main") not in seen:
+    # An unavailable or ``auto`` main panel cannot replace static/index.html:
+    # the former has no usable entry and the latter has no frontend renderer.
+    # Keep the compatibility surface in those cases so legacy UI remains
+    # reachable and generated Open Panel actions have a valid target.
+    has_renderable_main = any(
+        surface.get("kind") == "panel"
+        and surface.get("id") == "main"
+        and surface.get("mode") != "auto"
+        and surface.get("available") is not False
+        for surface in surfaces
+    )
+    if static_surface is not None and not has_renderable_main:
         surfaces.insert(0, static_surface)
     return surfaces, warnings
 
