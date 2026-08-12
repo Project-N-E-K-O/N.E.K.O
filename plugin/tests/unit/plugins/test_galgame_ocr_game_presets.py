@@ -224,8 +224,13 @@ def test_senren_banka_frontend_profile_can_be_selected_manually() -> None:
         )
     ]
     selector = source[
-        source.index("function selectOcrGameCapturePreset") : source.index(
+        source.index("function renderOcrProfile") : source.index(
             "function renderHistory"
+        )
+    ]
+    render_helpers = source[
+        source.index("function setInputValueIfIdle") : source.index(
+            "function renderInstallTaskState"
         )
     ]
     script = f"""
@@ -274,10 +279,19 @@ const elements = {{
   ocrProfileProcessInput: {{ value: 'OtherGame.exe' }},
   ocrProfileStageSelect: {{ value: 'default' }},
   ocrProfileSaveScopeSelect: {{ value: 'window_bucket' }},
+  ocrProfileLeftInput: {{ value: '' }},
+  ocrProfileRightInput: {{ value: '' }},
+  ocrProfileTopInput: {{ value: '' }},
+  ocrProfileBottomInput: {{ value: '' }},
+  ocrProfileRuntimeHint: {{ textContent: '' }},
+  ocrProfileAutoRecalibrateBtn: {{ disabled: false, title: '' }},
+  ocrProfileApplyRecommendedBtn: {{ disabled: false, title: '' }},
+  ocrProfileRollbackBtn: {{ disabled: false, title: '' }},
+  ocrProfileAutoApplyRecommendedInput: {{ checked: false }},
 }};
-let renderedStatus = null;
 const selectorContext = {{
   document: {{
+    activeElement: elements.ocrProfileGamePresetSelect,
     getElementById(id) {{
       return elements[id] || null;
     }},
@@ -289,27 +303,20 @@ const selectorContext = {{
       height: 720,
     }},
   }},
-  resolveRuntimeDefaultSaveScope: context.resolveRuntimeDefaultSaveScope,
-  renderOcrProfile(statusValue) {{
-    renderedStatus = statusValue;
-  }},
+  uiT(_key, fallback) {{ return fallback; }},
+  uiTf(_key, fallback) {{ return fallback; }},
+  ocrProfileStageLabel(_stage, fallback) {{ return fallback; }},
+  ocrCaptureMatchSourceLabel(_source, fallback) {{ return fallback; }},
+  formatCaptureProfile() {{ return ''; }},
+  formatFixedNumber(value) {{ return String(value); }},
 }};
-vm.runInNewContext({json.dumps(constants + selector)}, selectorContext);
+vm.runInNewContext({json.dumps(constants + helpers + render_helpers + selector)}, selectorContext);
 selectorContext.selectOcrGameCapturePreset();
 assert.equal(elements.ocrProfileProcessInput.value, 'SenrenBanka.exe');
 assert.equal(elements.ocrProfileStageSelect.value, 'dialogue_stage');
 assert.equal(elements.ocrProfileSaveScopeSelect.value, 'process_fallback');
-assert.ok(renderedStatus);
-assert.deepEqual(
-  JSON.parse(JSON.stringify(renderedStatus)),
-  {{
-    ocr_reader_runtime: {{
-      process_name: 'OtherGame.exe',
-      width: 1280,
-      height: 720,
-    }},
-  }}
-);
+assert.equal(elements.ocrProfileLeftInput.value, '0.25');
+assert.equal(elements.ocrProfileTopInput.value, '0.62');
 
 elements.ocrProfileSaveScopeSelect.value = 'window_bucket';
 selectorContext.latestStatus = {{

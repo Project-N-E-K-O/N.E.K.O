@@ -6436,6 +6436,17 @@ async def test_ocr_reader_rejects_untrusted_primary_capture_before_background_ha
         capture_backend=_FakeCaptureBackend(),
         ocr_backend=_FakeOcrBackend(["不可信台词。"]),
     )
+    title_classification = ScreenClassification(
+        screen_type=OCR_CAPTURE_PROFILE_STAGE_TITLE,
+        confidence=0.97,
+        debug={"source": "cnn_primary", "label": "title_screen"},
+    )
+    narration = "我猛地坐起来，回答坐在前面的司机。"
+    assert manager._should_skip_dialogue_for_screen_classification(
+        title_classification,
+        raw_text=narration,
+    ) is True
+    assert manager._title_narration_streak == 1
     observed_background_hashes: list[str] = []
 
     async def _untrusted_capture(*_args, **_kwargs) -> OcrExtractionResult:
@@ -6473,6 +6484,15 @@ async def test_ocr_reader_rejects_untrusted_primary_capture_before_background_ha
         assert "ocr_reader ignored text from an untrusted capture source" in result.warnings
         assert manager._ocr_capture_content_trusted is False
         assert manager._ocr_capture_rejected_reason == "target_occluded"
+        assert manager._title_narration_streak == 0
+
+        manager._known_screen_skip_bypass_type = OCR_CAPTURE_PROFILE_STAGE_TITLE
+        manager._known_screen_skip_bypass_until = manager._time_fn() + 1.0
+        assert manager._should_skip_dialogue_for_screen_classification(
+            title_classification,
+            raw_text=narration,
+        ) is True
+        assert manager._title_narration_streak == 1
     finally:
         await manager.shutdown()
 

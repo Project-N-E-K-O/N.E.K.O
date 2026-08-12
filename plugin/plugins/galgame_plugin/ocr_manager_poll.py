@@ -235,6 +235,7 @@ class PollMixin:
             "ocr_reader ignored text from an untrusted capture source"
         )
         self._dialogue_pipeline.reset_default_text_state()
+        self._dialogue_pipeline.reset_title_narration_candidate()
         self._ocr_lang_detector.reset()
         self._reset_aihong_menu_state()
         return True

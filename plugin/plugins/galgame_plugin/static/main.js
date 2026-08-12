@@ -6032,9 +6032,9 @@ function renderOcrProfile(status) {
 
 function selectOcrGameCapturePreset() {
   const gamePresetSelect = document.getElementById('ocrProfileGamePresetSelect');
+  const processInput = document.getElementById('ocrProfileProcessInput');
   const selectedGamePreset = OCR_GAME_CAPTURE_PRESETS[gamePresetSelect?.value || ''];
   if (selectedGamePreset) {
-    const processInput = document.getElementById('ocrProfileProcessInput');
     const stageSelect = document.getElementById('ocrProfileStageSelect');
     const saveScopeSelect = document.getElementById('ocrProfileSaveScopeSelect');
     if (processInput) {
@@ -6054,6 +6054,9 @@ function selectOcrGameCapturePreset() {
     }
   }
   renderOcrProfile(latestStatus || { ocr_reader_runtime: {} });
+  if (selectedGamePreset && processInput) {
+    processInput.value = selectedGamePreset.process_name;
+  }
 }
 
 function renderHistory(history) {
