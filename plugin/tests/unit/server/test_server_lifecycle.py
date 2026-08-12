@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+from contextlib import nullcontext
 
 import pytest
 
@@ -8,6 +9,54 @@ from plugin.server import lifecycle as module
 
 
 pytestmark = pytest.mark.plugin_unit
+
+
+@pytest.mark.asyncio
+async def test_shutdown_marks_registry_host_drain_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _noop_async(*_args, **_kwargs):
+        return None
+
+    async def _fail_registry_drain() -> None:
+        raise RuntimeError("registry host shutdown failed")
+
+    class _State:
+        plugin_hosts: dict[str, object] = {}
+        plugins: dict[str, object] = {}
+        event_handlers: dict[str, object] = {}
+
+        @staticmethod
+        def close_plugin_resources() -> None:
+            return None
+
+        @staticmethod
+        def acquire_plugin_hosts_write_lock():
+            return nullcontext()
+
+        @staticmethod
+        def acquire_plugins_write_lock():
+            return nullcontext()
+
+        @staticmethod
+        def acquire_event_handlers_write_lock():
+            return nullcontext()
+
+    service = module.ServerLifecycleService()
+    monkeypatch.setattr(module, "state", _State())
+    monkeypatch.setattr(module, "emit_lifecycle_event", lambda _event: None)
+    monkeypatch.setattr(module, "stop_bridge", lambda: None)
+    monkeypatch.setattr(module, "stop_proactive_bridge", lambda: None)
+    monkeypatch.setattr(module.metrics_collector, "stop", _noop_async)
+    monkeypatch.setattr(module.status_manager, "shutdown_status_consumer", _noop_async)
+    monkeypatch.setattr(module.bus_subscription_manager, "stop", _noop_async)
+    monkeypatch.setattr(module.plugin_router, "stop", _noop_async)
+    monkeypatch.setattr(service, "_shutdown_hosts", _noop_async)
+    monkeypatch.setattr(module, "drain_pending_host_shutdowns", _fail_registry_drain)
+
+    result = await service._shutdown_internal()
+
+    assert result.had_errors is True
 
 
 @pytest.mark.asyncio

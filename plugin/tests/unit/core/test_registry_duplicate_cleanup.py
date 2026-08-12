@@ -5,6 +5,8 @@ import copy
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from plugin.core import registry as module
 from plugin.sdk.plugin.decorators import plugin_entry
 
@@ -44,6 +46,25 @@ def test_shutdown_host_safely_prefers_async_shutdown_on_running_loop() -> None:
     asyncio.run(_exercise())
 
     assert calls == ["async:1.0"]
+
+
+def test_drain_pending_host_shutdowns_propagates_failure_after_cleanup() -> None:
+    class _Host:
+        async def shutdown(self, timeout: float) -> None:
+            raise RuntimeError(f"shutdown failed after {timeout}")
+
+    async def _exercise() -> None:
+        module._shutdown_host_safely(_Host(), module._DEFAULT_LOGGER, "broken")
+        await asyncio.sleep(0)
+        assert len(module._pending_async_shutdown_tasks) == 1
+        try:
+            with pytest.raises(RuntimeError, match="shutdown failed after 1.0"):
+                await module.drain_pending_host_shutdowns()
+        finally:
+            module._pending_async_shutdown_tasks.clear()
+        assert not module._pending_async_shutdown_tasks
+
+    asyncio.run(_exercise())
 
 
 def test_load_plugins_from_roots_rolls_back_scanned_metadata_when_register_plugin_returns_none() -> None:

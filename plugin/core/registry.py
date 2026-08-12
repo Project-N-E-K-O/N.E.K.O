@@ -1311,13 +1311,16 @@ def _shutdown_host_safely(host: Any, logger: Any, plugin_id: str) -> None:
                     _pending_async_shutdown_tasks.add(task)
                     
                     def _on_done(t: asyncio.Task) -> None:
-                        _pending_async_shutdown_tasks.discard(t)
                         try:
-                            _ = t.exception()
+                            error = t.exception()
                         except asyncio.CancelledError:
-                            pass
+                            # Keep cancelled/failed tasks for the lifecycle
+                            # drain so server shutdown is reported as failed.
+                            return
                         except Exception:
-                            pass
+                            return
+                        if error is None:
+                            _pending_async_shutdown_tasks.discard(t)
                     
                     task.add_done_callback(_on_done)
                     logger.debug("Plugin {} scheduled async shutdown", plugin_id)
@@ -1339,15 +1342,23 @@ async def drain_pending_host_shutdowns() -> None:
     import asyncio
 
     current_loop = asyncio.get_running_loop()
+    first_error: BaseException | None = None
     while True:
         tasks = [
             task
             for task in tuple(_pending_async_shutdown_tasks)
-            if not task.done() and task.get_loop() is current_loop
+            if task.get_loop() is current_loop
         ]
         if not tasks:
+            if first_error is not None:
+                raise first_error
             return
-        await asyncio.gather(*tasks, return_exceptions=True)
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for task in tasks:
+            _pending_async_shutdown_tasks.discard(task)
+        for result in results:
+            if first_error is None and isinstance(result, BaseException):
+                first_error = result
 
 
 def _migrate_plugin_id(
