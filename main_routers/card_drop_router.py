@@ -305,19 +305,26 @@ async def _confirm_cloud_forge_debit(
         f"{base_url}/api/cards/forge-operations/"
         f"{operation_id}/debit-confirmation"
     )
-    request_payload = {
-        "client_id": client_id,
-        "client_proof": client_proof,
-        "credit_id": credit_id,
-        "card_id": card_id,
-        "voucher": _forge_voucher_attestation(
+    try:
+        voucher = _forge_voucher_attestation(
             client_id=client_id,
             client_proof=client_proof,
             operation_id=operation_id,
             credit_id=credit_id,
             card_id=card_id,
             credit=credit,
-        ),
+        )
+    except (TypeError, ValueError, OverflowError):
+        # The local ledger has already committed at this point. A malformed
+        # legacy timestamp must not turn that successful debit into an HTTP 500;
+        # leave cloud confirmation pending so a repaired record can be replayed.
+        return {"confirmed": False, "detail": "invalid_forge_voucher"}
+    request_payload = {
+        "client_id": client_id,
+        "client_proof": client_proof,
+        "credit_id": credit_id,
+        "card_id": card_id,
+        "voucher": voucher,
     }
 
     async def _post() -> tuple[httpx.Response | None, dict | None]:

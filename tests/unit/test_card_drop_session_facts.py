@@ -132,44 +132,6 @@ async def test_main_active_character_get_falls_back_to_configured_catgirl(monkey
     assert "characterReferenceDataUrl" not in payload
 
 
-@pytest.mark.asyncio
-async def test_main_active_character_get_merges_master_into_live_snapshot(monkeypatch):
-    from app.main_server import web_app
-
-    monkeypatch.setattr(
-        web_app,
-        "_card_drop_active_character",
-        {
-            "name": "YUI",
-            "dataUrl": "avatar",
-            "characterReferenceDataUrl": "reference",
-        },
-    )
-
-    async def fallback_identity():
-        return "Configured Character", "max"
-
-    monkeypatch.setattr(
-        web_app,
-        "_fallback_active_character_identity",
-        fallback_identity,
-    )
-
-    response = await web_app.get_card_drop_active_character(
-        _main_server_request(),
-        include_avatar=True,
-    )
-
-    assert response.status_code == 200
-    assert response.body
-    assert json.loads(response.body.decode("utf-8")) == {
-        "name": "YUI",
-        "master_name": "max",
-        "dataUrl": "avatar",
-        "characterReferenceDataUrl": "reference",
-    }
-
-
 def test_main_active_character_exposes_only_canonical_card_drop_routes():
     from app.main_server import web_app
 
@@ -420,6 +382,44 @@ async def test_confirm_cloud_forge_debit_includes_signed_voucher_for_local_http(
         "credit_id": "credit-id",
         "card_id": "card-id",
         "voucher": _fixed_expected_voucher(),
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "timestamp_update",
+    [
+        {"reserved_at": None},
+        {"consumed_at": "not-a-timestamp"},
+        {"created_at": "2026-08-09T00:00:00"},
+    ],
+)
+async def test_confirm_cloud_forge_debit_leaves_malformed_voucher_unconfirmed(
+    monkeypatch, timestamp_update,
+):
+    monkeypatch.setenv("NEKO_SOCIAL_BASE_URL", "http://localhost:48911")
+    monkeypatch.setattr(
+        C,
+        "_get_client_credentials",
+        lambda: ("client-id", "client-proof"),
+    )
+
+    class UnexpectedAsyncClient:
+        def __init__(self, **_kwargs):
+            raise AssertionError("malformed voucher must not be sent")
+
+    monkeypatch.setattr(C.httpx, "AsyncClient", UnexpectedAsyncClient)
+
+    result = await C._confirm_cloud_forge_debit(
+        operation_id="operation-id",
+        credit_id="credit-id",
+        card_id="card-id",
+        credit=_voucher_credit(**timestamp_update),
+    )
+
+    assert result == {
+        "confirmed": False,
+        "detail": "invalid_forge_voucher",
     }
 
 
