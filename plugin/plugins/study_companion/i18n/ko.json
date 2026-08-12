@@ -25,7 +25,6 @@
     "ui.title":  "학습 컴패니언",
     "ui.coach.label":  "Neko Coach",
     "ui.coach.title":  "고양이 소녀 학습 코치",
-    "ui.coach.sprite_alt":  "Neko 고양이 소녀 학습 동반자",
     "ui.coach.stats_label":  "고양이 소녀 학습 상태",
     "ui.coach.actions_label":  "고양이 소녀 학습 동작",
     "ui.coach.scene_label":  "장면",

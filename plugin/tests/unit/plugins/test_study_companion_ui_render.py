@@ -431,6 +431,10 @@ def test_study_companion_static_ui_browser_smoke_desktop_reduced_motion() -> Non
         expect(page.locator("#firstRunGuide")).to_be_visible(timeout=5000)
         expect(page.locator("#primaryDiagnosis")).to_have_attribute("data-severity", "ok")
         expect(page.locator("#modeSwitch")).to_have_attribute("data-ready", "true")
+        expect(page.locator("#nekoCoachRecommendation")).to_be_visible()
+        expect(page.locator("#nekoCoachPrimaryAction")).to_be_visible()
+        expect(page.locator("#nekoCoachSecondaryAction")).to_be_visible()
+        expect(page.locator(".neko-coach__stage")).to_have_count(0)
 
         metrics = page.evaluate(
             """() => {
@@ -442,6 +446,7 @@ def test_study_companion_static_ui_browser_smoke_desktop_reduced_motion() -> Non
                 const hub = document.querySelector('.study-hub').getBoundingClientRect();
                 const modeSwitch = document.querySelector('#modeSwitch').getBoundingClientRect();
                 const coach = document.querySelector('#nekoCoachPanel').getBoundingClientRect();
+                const coachBody = document.querySelector('.neko-coach__body').getBoundingClientRect();
                 const transitionDuration = getComputedStyle(
                     document.querySelector('#modeSwitch'),
                     '::before'
@@ -453,7 +458,9 @@ def test_study_companion_static_ui_browser_smoke_desktop_reduced_motion() -> Non
                     shellRight: shell.right,
                     heroWidth: hero.width,
                     coachLeft: coach.left,
+                    coachTop: coach.top,
                     coachWidth: coach.width,
+                    coachBodyTop: coachBody.top,
                     hubTop: hub.top,
                     heroTop: hero.top,
                     modeSwitchWidth: modeSwitch.width,
@@ -472,9 +479,40 @@ def test_study_companion_static_ui_browser_smoke_desktop_reduced_motion() -> Non
         assert metrics["heroWidth"] >= 1000, metrics
         assert metrics["coachWidth"] >= 300, metrics
         assert metrics["coachLeft"] >= metrics["shellRight"], metrics
+        assert 0 <= metrics["coachBodyTop"] - metrics["coachTop"] <= 64, metrics
         assert metrics["hubTop"] > metrics["heroTop"], metrics
         assert metrics["modeSwitchWidth"] >= 360, metrics
         assert metrics["scrollWidth"] <= metrics["viewportWidth"] + 1, metrics
+        assert console_errors == []
+        assert page_errors == []
+
+        page.set_viewport_size({"width": 480, "height": 900})
+        expect(page.locator("#nekoCoachPanel")).to_be_visible()
+        expect(page.locator("#nekoCoachRecommendation")).to_be_visible()
+        expect(page.locator("#nekoCoachPrimaryAction")).to_be_visible()
+        expect(page.locator("#nekoCoachSecondaryAction")).to_be_visible()
+        expect(page.locator(".neko-coach__stage")).to_have_count(0)
+
+        narrow_metrics = page.evaluate(
+            """() => {
+                const coach = document.querySelector('#nekoCoachPanel').getBoundingClientRect();
+                const coachBody = document.querySelector('.neko-coach__body').getBoundingClientRect();
+                return {
+                    coachPosition: getComputedStyle(document.querySelector('#nekoCoachPanel')).position,
+                    coachLeft: coach.left,
+                    coachRight: coach.right,
+                    coachTop: coach.top,
+                    coachBodyTop: coachBody.top,
+                    viewportWidth: window.innerWidth,
+                    scrollWidth: document.documentElement.scrollWidth,
+                };
+            }"""
+        )
+        assert narrow_metrics["coachPosition"] == "relative", narrow_metrics
+        assert narrow_metrics["coachLeft"] >= 0, narrow_metrics
+        assert narrow_metrics["coachRight"] <= narrow_metrics["viewportWidth"] + 1, narrow_metrics
+        assert 0 <= narrow_metrics["coachBodyTop"] - narrow_metrics["coachTop"] <= 64, narrow_metrics
+        assert narrow_metrics["scrollWidth"] <= narrow_metrics["viewportWidth"] + 1, narrow_metrics
         assert console_errors == []
         assert page_errors == []
 

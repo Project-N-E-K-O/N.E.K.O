@@ -6,7 +6,6 @@ import re
 import shutil
 import subprocess
 
-from PIL import Image
 import pytest
 
 pytestmark = pytest.mark.unit
@@ -498,21 +497,19 @@ def test_phase9_neko_coach_uses_static_yui_asset_with_scene_driven_copy() -> Non
     css = (PLUGIN_DIR / "static" / "style.css").read_text(encoding="utf-8")
 
     asset = PLUGIN_DIR / "static" / "assets" / "yui" / "yui_companion_upper.webp"
-    assert asset.is_file()
-    assert asset.stat().st_size < 80_000
-    asset_image = Image.open(asset).convert("RGBA")
-    assert asset_image.size == (512, 576)
-    asset_bounds = asset_image.getbbox()
-    assert asset_bounds is not None
-    assert asset_bounds[1] >= 16
-    assert asset_bounds[2] < 512
+    assert not asset.exists()
     assert 'id="nekoCoachPanel"' in index
+    assert 'class="neko-coach" data-scene="idle"' in index
     assert index.index('<aside id="nekoCoachPanel"') > index.index("</main>")
-    assert 'id="nekoCoachSprite"' in index
-    assert "./assets/yui/yui_companion_upper.webp" in index
+    assert 'class="neko-coach__body"' in index
+    assert 'id="nekoCoachTitle"' in index
     assert 'id="nekoCoachRecommendation"' in index
     assert 'id="nekoCoachPrimaryAction"' in index
     assert 'id="nekoCoachSecondaryAction"' in index
+    assert 'class="neko-coach__stage"' not in index
+    assert 'id="nekoCoachSpriteContainer"' not in index
+    assert 'id="nekoCoachSprite"' not in index
+    assert "./assets/yui/yui_companion_upper.webp" not in index
     assert "./assets/vendor/" not in index
     assert 'data-neko-coach-action="explain-current"' in index
     assert 'data-neko-coach-action="quiz-me"' in index
@@ -529,7 +526,9 @@ def test_phase9_neko_coach_uses_static_yui_asset_with_scene_driven_copy() -> Non
     assert "function renderNekoCoachActions" in main_js
     assert "PIXI.live2d.Live2DModel.from" not in main_js
     assert "renderNekoCoach(data)" in main_js
-    assert ".neko-coach__sprite" in css
+    assert ".neko-coach__stage" not in css
+    assert ".neko-coach__sprite-wrap" not in css
+    assert ".neko-coach__sprite" not in css
     assert "neko-coach-sprites.png" not in css
 
 

@@ -6676,10 +6676,23 @@ eval(source);
 
 
 def test_study_companion_i18n_scan_dom_localizes_alt_attributes() -> None:
+    plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
+    locales = ["zh-CN", "en", "ja", "ko", "ru", "zh-TW", "es", "pt"]
+    bundles = {
+        locale: json.loads(
+            (plugin_dir / "i18n" / f"{locale}.json").read_text(encoding="utf-8")
+        )
+        for locale in locales
+    }
+    en_keys = set(bundles["en"])
+    assert "ui.coach.sprite_alt" not in en_keys
+    for locale, bundle in bundles.items():
+        assert set(bundle) == en_keys, f"{locale} locale keys differ from en"
+        assert "ui.coach.sprite_alt" not in bundle
+
     if shutil.which("node") is None:
         pytest.skip("node is not installed")
 
-    plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
     script = r"""
 const fs = require('node:fs');
 const source = fs.readFileSync(process.env.STUDY_COMPANION_I18N_JS, 'utf8');
@@ -6704,8 +6717,8 @@ function element(attrs) {
 }
 
 const image = element({
-  'data-i18n-alt': 'ui.coach.sprite_alt',
-  alt: 'Neko study companion',
+  'data-i18n-alt': 'test.fixture.image_alt',
+  alt: 'Fixture image',
 });
 const root = {
   querySelectorAll(selector) {
@@ -6714,11 +6727,11 @@ const root = {
 };
 
 window.I18n._bundle = {
-  'ui.coach.sprite_alt': 'Localized companion alt',
+  'test.fixture.image_alt': 'Localized fixture alt',
 };
 window.I18n.scanDOM(root);
 
-if (image.getAttribute('alt') !== 'Localized companion alt') {
+if (image.getAttribute('alt') !== 'Localized fixture alt') {
   throw new Error(`unexpected alt: ${image.getAttribute('alt')}`);
 }
 """
