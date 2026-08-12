@@ -14,6 +14,7 @@ import { formatHttpError } from '@/utils/request'
 export type InstallPackagePathOptions = {
   pluginsRoot?: string
   profilesRoot?: string
+  installSource?: 'imported'
 }
 
 export function usePluginPackageInstaller() {
@@ -64,6 +65,7 @@ export function usePluginPackageInstaller() {
         plugins_root: pluginsRoot,
         profiles_root: profilesRoot,
         on_conflict: 'fail',
+        install_source: options.installSource,
       }
       if (plan.action === 'upgrade') {
         try {

@@ -922,7 +922,7 @@ async function handleImportFileChange(event: Event) {
   importing.value = true
   try {
     const upload = await uploadPluginPackage(file)
-    const result = await installImportedPackage(upload.path)
+    const result = await installImportedPackage(upload.path, { installSource: 'imported' })
     if (!result) return
     const count = result.installed_plugin_count ?? 0
     ElMessage.success(t('plugins.importSuccess', { name: file.name, count }))

@@ -8,7 +8,7 @@ import tomllib
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from plugin.core.plugin_layout import resolve_plugin_layout
 from plugin.logging_config import get_logger
@@ -147,6 +147,7 @@ class PluginCliService:
         on_conflict: str = "fail",
         use_staging: bool = True,
         forced_directory_name: str | None = None,
+        install_source: Literal["imported"] | None = None,
         confirm_upgrade: bool = False,
         confirmation_token: str | None = None,
     ) -> dict[str, object]:
@@ -164,7 +165,7 @@ class PluginCliService:
                 details=plan_dict,
             )
         if action == "install":
-            return await asyncio.to_thread(
+            result = await asyncio.to_thread(
                 self._install_sync,
                 package=package,
                 plugins_root=plugins_root,
@@ -172,6 +173,11 @@ class PluginCliService:
                 on_conflict=on_conflict,
                 use_staging=use_staging,
                 forced_directory_name=forced_directory_name,
+            )
+            return await self._record_requested_install_source(
+                install_result=result,
+                package=package,
+                source=install_source,
             )
 
         if not confirm_upgrade or not confirmation_token:
@@ -270,7 +276,7 @@ class PluginCliService:
                 details={"stage": exc.stage, "rollback_status": exc.rollback_status},
             ) from exc
 
-        return {
+        response = {
             **result.install_result,
             # Compatibility response for the existing Package Manager UI.
             # The shared file transaction itself is version-agnostic replace.
@@ -278,6 +284,33 @@ class PluginCliService:
             "restarted": result.restarted,
             "rollback_status": result.rollback_status,
         }
+        return await self._record_requested_install_source(
+            install_result=response,
+            package=package,
+            source=install_source,
+        )
+
+    async def _record_requested_install_source(
+        self,
+        *,
+        install_result: dict[str, object],
+        package: str,
+        source: Literal["imported"] | None,
+    ) -> dict[str, object]:
+        if source is None:
+            return install_result
+
+        package_path = self._resolve_package_path(package)
+        package_sha256 = await asyncio.to_thread(self._sha256_file, package_path)
+        warning = await self._record_install_source_best_effort(
+            install_result=install_result,
+            package_filename=package_path.name,
+            package_sha256=package_sha256,
+            override=None,
+        )
+        if warning is None:
+            return install_result
+        return {**install_result, "install_source_warning": warning}
 
     async def analyze(
         self,

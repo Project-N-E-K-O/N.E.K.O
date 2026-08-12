@@ -75,7 +75,9 @@ describe('usePluginPackageInstaller', () => {
     vi.mocked(installPluginPackage).mockResolvedValue(replaceResponse)
     const installer = usePluginPackageInstaller()
 
-    const response = await installer.installPackagePath('/packages/demo.neko-plugin')
+    const response = await installer.installPackagePath('/packages/demo.neko-plugin', {
+      installSource: 'imported',
+    })
 
     expect(planPluginInstall).toHaveBeenCalledWith({
       package: '/packages/demo.neko-plugin',
@@ -87,6 +89,7 @@ describe('usePluginPackageInstaller', () => {
       plugins_root: undefined,
       profiles_root: undefined,
       on_conflict: 'fail',
+      install_source: 'imported',
       confirm_upgrade: true,
       confirmation_token: 'a'.repeat(64),
     })

@@ -47,6 +47,49 @@ def test_resolve_plugin_config_initializes_external_config_from_example(
     }
 
 
+def test_resolve_plugin_config_applies_manifest_profile_to_external_config(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    storage_root = tmp_path / "runtime-storage"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(storage_root))
+    installed_dir = tmp_path / "plugins" / "demo"
+    installed_dir.mkdir(parents=True)
+    manifest_path = installed_dir / "plugin.toml"
+    manifest_path.write_text(
+        (
+            "[plugin]\n"
+            "id = 'demo'\n"
+            "version = '2.0.0'\n"
+            "entry = 'plugins.demo:Demo'\n"
+            "\n[plugin.config_profiles]\n"
+            "active = 'dev'\n"
+            "\n[plugin.config_profiles.files]\n"
+            "dev = 'dev.toml'\n"
+        ),
+        encoding="utf-8",
+    )
+    (installed_dir / "config.example.toml").write_text(
+        "[runtime]\nenabled = false\n",
+        encoding="utf-8",
+    )
+    (installed_dir / "dev.toml").write_text(
+        "[runtime]\nenabled = true\n",
+        encoding="utf-8",
+    )
+
+    resolved = resolve_plugin_config_from_path(
+        "demo",
+        config_path=manifest_path,
+        include_effective_config=True,
+        validate_schema=False,
+    )
+
+    assert resolved["profiles_state"]["config_profiles"]["active"] == "dev"
+    assert resolved["base_config"] == {"runtime": {"enabled": False}}
+    assert resolved["effective_config"]["runtime"] == {"enabled": True}
+
+
 def test_update_plugin_config_writes_only_external_runtime_config(
     monkeypatch,
     tmp_path: Path,

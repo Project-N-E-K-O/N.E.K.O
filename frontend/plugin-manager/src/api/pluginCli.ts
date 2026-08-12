@@ -95,6 +95,7 @@ export interface PluginCliInstallRequest {
   plugins_root?: string
   profiles_root?: string
   on_conflict?: PluginCliConflictStrategy
+  install_source?: 'imported'
   confirm_upgrade?: boolean
   confirmation_token?: string
 }
@@ -140,6 +141,7 @@ export interface PluginCliInstallResponse {
   operation: 'install' | 'upgrade'
   restarted: boolean
   rollback_status: 'not_needed' | 'completed' | 'incomplete'
+  install_source_warning?: string | null
 }
 
 export interface PluginCliAnalyzeRequest {
