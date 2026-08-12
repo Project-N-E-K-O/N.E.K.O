@@ -28,6 +28,7 @@ def _settings_config_payload(config: StudyConfig) -> dict:
             "llm_vision_enabled": config.llm_vision_enabled,
             "llm_vision_max_image_px": config.llm_vision_max_image_px,
         },
+        "communication": config.communication.to_dict(),
     }
 
 
@@ -58,6 +59,11 @@ def _apply_settings_config(current: StudyConfig, raw: dict) -> StudyConfig:
     study = raw.get("study") if isinstance(raw.get("study"), dict) else {}
     ocr = raw.get("ocr_reader") if isinstance(raw.get("ocr_reader"), dict) else {}
     llm = raw.get("llm") if isinstance(raw.get("llm"), dict) else {}
+    communication = (
+        raw.get("communication")
+        if isinstance(raw.get("communication"), dict)
+        else {}
+    )
 
     if "default_mode" in study:
         next_values["default_mode"] = study.get("default_mode")
@@ -83,6 +89,17 @@ def _apply_settings_config(current: StudyConfig, raw: dict) -> StudyConfig:
         next_values["llm_vision_max_image_px"] = _coerce_int(
             llm.get("llm_vision_max_image_px"), current.llm_vision_max_image_px
         )
+    next_communication = dict(next_values.get("communication") or {})
+    if "enabled" in communication:
+        next_communication["enabled"] = _coerce_bool(
+            communication.get("enabled"), current.communication.enabled
+        )
+    if "solution_narration_enabled" in communication:
+        next_communication["solution_narration_enabled"] = _coerce_bool(
+            communication.get("solution_narration_enabled"),
+            current.communication.solution_narration_enabled,
+        )
+    next_values["communication"] = next_communication
     return StudyConfig(**next_values)
 
 

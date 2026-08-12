@@ -450,6 +450,8 @@
     "ui.settings.llm_timeout.label":  "LLM 逾時（秒）",
     "ui.settings.llm_vision_enabled.label":  "啟用圖片解釋",
     "ui.settings.llm_vision_enabled.help":  "允許貼上的 JPEG/PNG 圖片參與解釋、出題和答案評價。需要支援視覺的模型。",
+    "ui.settings.communication.title":  "N.E.K.O 解題講述",
+    "ui.settings.solution_narration_enabled.label":  "解題完成後由 N.E.K.O 講述",
     "ui.settings.dependencies.title":  "依賴",
     "ui.settings.dependencies.summary":  "重新整理狀態以檢查 OCR 後端。",
     "ui.settings.knowledge.summary":  "知識圖譜摘要尚未載入。",

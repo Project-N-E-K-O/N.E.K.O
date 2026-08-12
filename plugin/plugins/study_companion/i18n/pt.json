@@ -450,6 +450,8 @@
     "ui.settings.llm_timeout.label":  "Tempo limite do LLM (segundos)",
     "ui.settings.llm_vision_enabled.label":  "Ativar explicação de imagem",
     "ui.settings.llm_vision_enabled.help":  "Permite usar imagens JPEG/PNG coladas para explicar, gerar perguntas e avaliar respostas. Requer um modelo com visão.",
+    "ui.settings.communication.title":  "Narração de soluções da N.E.K.O",
+    "ui.settings.solution_narration_enabled.label":  "Permitir que N.E.K.O narre as soluções concluídas",
     "ui.settings.dependencies.title":  "Dependências",
     "ui.settings.dependencies.summary":  "Atualize o status para inspecionar os backends OCR.",
     "ui.settings.knowledge.summary":  "O resumo do mapa de conhecimento ainda não foi carregado.",

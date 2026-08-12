@@ -450,6 +450,8 @@
     "ui.settings.llm_timeout.label":  "LLM タイムアウト（秒）",
     "ui.settings.llm_vision_enabled.label":  "画像説明を有効化",
     "ui.settings.llm_vision_enabled.help":  "貼り付けた JPEG/PNG 画像を説明、問題生成、答案評価に使います。ビジョン対応モデルが必要です。",
+    "ui.settings.communication.title":  "N.E.K.O の解答解説",
+    "ui.settings.solution_narration_enabled.label":  "解答完了後に N.E.K.O が解説する",
     "ui.settings.dependencies.title":  "依存関係",
     "ui.settings.dependencies.summary":  "状態を更新して OCR バックエンドを確認します。",
     "ui.settings.knowledge.summary":  "知識マップの概要はまだ読み込まれていません。",

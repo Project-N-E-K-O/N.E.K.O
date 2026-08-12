@@ -450,6 +450,8 @@
     "ui.settings.llm_timeout.label":  "LLM timeout (seconds)",
     "ui.settings.llm_vision_enabled.label":  "Enable image explanation",
     "ui.settings.llm_vision_enabled.help":  "Allows pasted JPEG/PNG images to be used for explanation, question generation, and answer evaluation. Requires a vision-capable model.",
+    "ui.settings.communication.title":  "N.E.K.O solution narration",
+    "ui.settings.solution_narration_enabled.label":  "Let N.E.K.O narrate completed solutions",
     "ui.settings.dependencies.title":  "Dependencies",
     "ui.settings.dependencies.summary":  "Refresh status to inspect OCR backends.",
     "ui.settings.knowledge.summary":  "Knowledge map summary is not loaded yet.",

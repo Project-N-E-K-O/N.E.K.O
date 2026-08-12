@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from ._solution_narration import extract_solution_narration_sections
 from .entry_common import (
     Any,
     Err,
@@ -156,6 +157,7 @@ class _TutorExplainEntriesMixin:
                         "operation": MODE_CONCEPT_EXPLAIN,
                         "input_text": raw_text,
                         "degraded": False,
+                        "solution_narration_scheduled": False,
                     }
                 )
         # Phase 2: resolve the text to explain.
@@ -226,6 +228,21 @@ class _TutorExplainEntriesMixin:
                 },
                 extra_context=tutor_context,
             )
+            narration_scheduled = False
+            communication = getattr(self._cfg, "communication", None)
+            if (
+                not reply.degraded
+                and bool(getattr(communication, "enabled", False))
+                and bool(getattr(communication, "solution_narration_enabled", True))
+            ):
+                sections = extract_solution_narration_sections(
+                    str(payload.get("reply") or "")
+                )
+                if sections is not None:
+                    narration_scheduled = await self._emit_solution_completed_event(
+                        sections
+                    )
+            payload["solution_narration_scheduled"] = narration_scheduled
             if mode_switch:
                 payload["mode_switch"] = mode_switch
             if intent.get("matched"):

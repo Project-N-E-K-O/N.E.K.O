@@ -155,7 +155,12 @@ class _FakeTutorAgent:
         return TutorReply(
             operation="concept_explain",
             input_text=text,
-            reply=f"Explained: {text}",
+            reply=(
+                "## Problem Analysis\nExplained concept analysis.\n\n"
+                "## Solution Process\nInternal process details.\n\n"
+                "## Final Answer\nExplained concept answer.\n\n"
+                "## Transfer Practice\nExplained concept transfer."
+            ),
             created_at="2026-05-11T00:00:00Z",
         )
 
@@ -276,15 +281,21 @@ async def test_neko_explain_current_pushes_with_ocr_text(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     plugin, ctx = await _started_plugin(tmp_path, monkeypatch)
-    plugin._agent = _FakeTutorAgent()
+    agent = _FakeTutorAgent()
+    plugin._agent = agent
     plugin._ocr_pipeline = _FakeStudyOcrPipeline("Derivative rules")
     try:
         result = await plugin._on_neko_command({"command": "explain_current"})
 
         assert isinstance(result, Ok)
-        await _wait_for_text(ctx, "[伴学·概念解释]")
-        await _wait_for_text(ctx, "Derivative rules")
-        assert _last_push(ctx)["visibility"] == []
+        narration = await _wait_for_text(ctx, "Explained concept analysis.")
+        assert agent.explain_inputs == ["Derivative rules"]
+        assert len(ctx.pushed_messages) == 1
+        assert _last_push(ctx)["visibility"] == ["chat"]
+        assert _last_push(ctx)["ai_behavior"] == "respond"
+        assert "Derivative rules" not in narration
+        assert "Internal process details." not in narration
+        assert "[伴学·概念解释]" not in narration
     finally:
         await plugin.shutdown()
 
@@ -796,7 +807,8 @@ async def test_neko_command_roundtrip_explain(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     plugin, ctx = await _started_plugin(tmp_path, monkeypatch)
-    plugin._agent = _FakeTutorAgent()
+    agent = _FakeTutorAgent()
+    plugin._agent = agent
     plugin._ocr_pipeline = _FakeStudyOcrPipeline("Limits and continuity")
     try:
         result = await ctx.transport.publish(
@@ -804,7 +816,14 @@ async def test_neko_command_roundtrip_explain(
         )
 
         assert isinstance(result, Ok)
-        await _wait_for_text(ctx, "Limits and continuity")
+        narration = await _wait_for_text(ctx, "Explained concept analysis.")
+        assert agent.explain_inputs == ["Limits and continuity"]
+        assert len(ctx.pushed_messages) == 1
+        assert _last_push(ctx)["visibility"] == ["chat"]
+        assert _last_push(ctx)["ai_behavior"] == "respond"
+        assert "Limits and continuity" not in narration
+        assert "Internal process details." not in narration
+        assert "[伴学·概念解释]" not in narration
     finally:
         await plugin.shutdown()
 

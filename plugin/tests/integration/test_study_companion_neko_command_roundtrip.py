@@ -140,7 +140,12 @@ class _FakeTutorAgent:
         return TutorReply(
             operation="concept_explain",
             input_text=text,
-            reply=f"Explained: {text}",
+            reply=(
+                "## Problem Analysis\nRoundtrip analysis.\n\n"
+                "## Solution Process\nRoundtrip private process.\n\n"
+                "## Final Answer\nRoundtrip answer.\n\n"
+                "## Transfer Practice\nRoundtrip transfer."
+            ),
             created_at="2026-05-11T00:00:00Z",
         )
 
@@ -233,7 +238,9 @@ async def test_roundtrip_interrupt_then_queue(
             Ok,
         )
 
-        await _wait_for_text(ctx, "Differentiation")
+        narration = await _wait_for_text(ctx, "Roundtrip analysis.")
+        assert "Differentiation" not in narration
+        assert "Roundtrip private process." not in narration
         await _wait_for_text(ctx, "What is chain rule?")
     finally:
         await plugin.shutdown()

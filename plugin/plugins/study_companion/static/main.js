@@ -125,6 +125,7 @@ const settingsOcrEnabled = document.getElementById('settingsOcrEnabled');
 const settingsOcrLanguages = document.getElementById('settingsOcrLanguages');
 const settingsLlmTimeout = document.getElementById('settingsLlmTimeout');
 const settingsLlmVisionEnabled = document.getElementById('settingsLlmVisionEnabled');
+const settingsSolutionNarrationEnabled = document.getElementById('settingsSolutionNarrationEnabled');
 const modeButtons = Array.from(document.querySelectorAll('[data-mode]'));
 const memoryReviewButtons = Array.from(document.querySelectorAll('[data-memory-rating]'));
 const MODE_SHORTCUTS = Object.freeze({
@@ -1568,6 +1569,7 @@ function applySettingsConfig(config) {
   const study = config.study || {};
   const ocr = config.ocr_reader || {};
   const llm = config.llm || {};
+  const communication = config.communication || {};
   if (settingsDefaultMode) {
     settingsDefaultMode.value = ['companion', 'interactive', 'teaching'].includes(study.default_mode) ? study.default_mode : 'companion';
   }
@@ -1583,6 +1585,9 @@ function applySettingsConfig(config) {
   }
   if (settingsLlmVisionEnabled) {
     settingsLlmVisionEnabled.checked = llm.llm_vision_enabled === true;
+  }
+  if (settingsSolutionNarrationEnabled) {
+    settingsSolutionNarrationEnabled.checked = communication.solution_narration_enabled !== false;
   }
   if (Object.prototype.hasOwnProperty.call(llm, 'llm_vision_max_image_px')) {
     applyVisionMaxImagePx(llm.llm_vision_max_image_px);
@@ -1609,12 +1614,14 @@ function collectSettingsConfig() {
   const study = ensureConfigSection(next, 'study');
   const ocr = ensureConfigSection(next, 'ocr_reader');
   const llm = ensureConfigSection(next, 'llm');
+  const communication = ensureConfigSection(next, 'communication');
   study.default_mode = settingsDefaultMode ? settingsDefaultMode.value : 'companion';
   ocr.enabled = settingsOcrEnabled ? settingsOcrEnabled.checked : true;
   ocr.languages = settingsOcrLanguages ? settingsOcrLanguages.value.trim() || 'chi_sim+jpn+eng' : 'chi_sim+jpn+eng';
   llm.llm_call_timeout_seconds = Math.max(1, Math.min(3600, Math.round(Number(settingsLlmTimeout?.value) || 30)));
   llm.llm_vision_enabled = settingsLlmVisionEnabled ? settingsLlmVisionEnabled.checked : false;
   llm.llm_vision_max_image_px = normalizeVisionMaxImagePx(llm.llm_vision_max_image_px);
+  communication.solution_narration_enabled = settingsSolutionNarrationEnabled ? settingsSolutionNarrationEnabled.checked : true;
   return next;
 }
 

@@ -450,6 +450,8 @@
     "ui.settings.llm_timeout.label":  "LLM 제한 시간(초)",
     "ui.settings.llm_vision_enabled.label":  "이미지 설명 활성화",
     "ui.settings.llm_vision_enabled.help":  "붙여넣은 JPEG/PNG 이미지를 설명, 문제 생성, 답안 평가에 사용합니다. 비전 지원 모델이 필요합니다.",
+    "ui.settings.communication.title":  "N.E.K.O 풀이 설명",
+    "ui.settings.solution_narration_enabled.label":  "풀이 완료 후 N.E.K.O가 설명",
     "ui.settings.dependencies.title":  "의존성",
     "ui.settings.dependencies.summary":  "상태를 새로고침해 OCR 백엔드를 확인합니다.",
     "ui.settings.knowledge.summary":  "지식 맵 요약이 아직 로드되지 않았습니다.",

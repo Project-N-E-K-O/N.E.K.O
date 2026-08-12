@@ -10,6 +10,24 @@ from .entry_common import (
 
 
 class _CommunicationTutorEventsMixin:
+    async def _emit_solution_completed_event(self, sections: dict[str, str]) -> bool:
+        bus = self._event_bus
+        if bus is None:
+            return False
+        payload = {
+            "analysis": str(sections.get("analysis") or "").strip(),
+            "answer": str(sections.get("answer") or "").strip(),
+            "transfer": str(sections.get("transfer") or "").strip(),
+        }
+        if any(not value for value in payload.values()):
+            return False
+        try:
+            await bus.emit(StudyEvent(name="solution_completed", payload=payload))
+        except Exception:
+            self.logger.warning("solution narration event delivery failed")
+            return False
+        return True
+
     async def _emit_answer_evaluated_event(
         self,
         *,

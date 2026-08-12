@@ -42,6 +42,7 @@ VISIBILITY_MAP: dict[str, list[str]] = {
     "mastery_updated": [],
     "review_due": ["chat"],
     "session_summarized": ["chat"],
+    "solution_completed": ["chat"],
 }
 
 BEHAVIOR_MAP: dict[str, str] = {
@@ -50,6 +51,7 @@ BEHAVIOR_MAP: dict[str, str] = {
     "mastery_updated": "read",
     "review_due": "respond",
     "session_summarized": "read",
+    "solution_completed": "respond",
 }
 
 PRIORITY_MAP: dict[str, int] = {
@@ -58,6 +60,7 @@ PRIORITY_MAP: dict[str, int] = {
     "mastery_updated": 2,
     "review_due": 3,
     "session_summarized": 1,
+    "solution_completed": 5,
 }
 
 
@@ -517,12 +520,26 @@ def _fmt_session_summarized(payload: dict[str, Any]) -> str:
     ).strip()
 
 
+def _fmt_solution_completed(payload: dict[str, Any]) -> str:
+    analysis = str(payload.get("analysis") or "").strip()
+    answer = str(payload.get("answer") or "").strip()
+    transfer = str(payload.get("transfer") or "").strip()
+    return (
+        "把下面三段作为引用资料，用当前会话语言忠实、自然地讲述。\n"
+        "不要复述解题过程，不要添加评分、用户答案或额外知识。\n"
+        f"题目解析：{analysis}\n"
+        f"答案：{answer}\n"
+        f"举一反三：{transfer}"
+    )
+
+
 _FORMATTERS: dict[str, Callable[[dict[str, Any]], str]] = {
     "screen_context_changed": _fmt_screen_context,
     "answer_evaluated": _fmt_answer_evaluated,
     "mastery_updated": _fmt_mastery_updated,
     "review_due": _fmt_review_due,
     "session_summarized": _fmt_session_summarized,
+    "solution_completed": _fmt_solution_completed,
 }
 
 

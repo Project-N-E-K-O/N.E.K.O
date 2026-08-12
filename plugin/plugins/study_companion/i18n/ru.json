@@ -450,6 +450,8 @@
     "ui.settings.llm_timeout.label":  "Таймаут LLM (секунды)",
     "ui.settings.llm_vision_enabled.label":  "Включить объяснение изображений",
     "ui.settings.llm_vision_enabled.help":  "Позволяет использовать вставленные JPEG/PNG изображения для объяснений, генерации вопросов и оценки ответов. Требуется модель с поддержкой зрения.",
+    "ui.settings.communication.title":  "Озвучивание решения N.E.K.O",
+    "ui.settings.solution_narration_enabled.label":  "Озвучивать готовые решения через N.E.K.O",
     "ui.settings.dependencies.title":  "Зависимости",
     "ui.settings.dependencies.summary":  "Обновите статус, чтобы проверить OCR-бэкенды.",
     "ui.settings.knowledge.summary":  "Сводка карты знаний еще не загружена.",
