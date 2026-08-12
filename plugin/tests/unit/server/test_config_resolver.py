@@ -159,10 +159,15 @@ def test_resolve_plugin_config_from_path_reuses_preloaded_manifest_config(
     runtime_config = {"runtime": {"enabled": False}}
     captured: list[Path] = []
 
+    def _ensure_plugin_runtime_config(plugin_id: str, *, manifest_path: Path) -> Path:
+        assert plugin_id == "demo"
+        assert manifest_path == config_path
+        return runtime_path
+
     monkeypatch.setattr(
         module,
         "ensure_plugin_runtime_config",
-        lambda plugin_id, *, manifest_path: runtime_path,
+        _ensure_plugin_runtime_config,
     )
 
     monkeypatch.setattr(

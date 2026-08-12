@@ -1433,7 +1433,7 @@ import json
 class ConfigurablePlugin(NekoPluginBase):
     def __init__(self, ctx):
         super().__init__(ctx)
-        config_file = self.config_dir / "config.json"
+        config_file = self.storage_dir / "config" / "config.json"
         if config_file.exists():
             self.config = json.loads(config_file.read_text())
         else:
@@ -1526,12 +1526,18 @@ async def on_shutdown(self, **_):
 ### 10.5 使用路径工具
 
 ```python
-# 插件目录（plugin.toml 所在位置）
-config_file = self.config_dir / "config.json"
+# 插件安装目录（代码、Manifest 和静态资源）
+template_path = self.plugin_dir / "static" / "template.json"
+
+# 用户存储目录
+config_file = self.storage_dir / "config" / "config.json"
 
 # 数据目录
-db_path = self.data_path("cache.db")       # → <plugin_dir>/data/cache.db
-logs_dir = self.data_path("logs")          # → <plugin_dir>/data/logs/
+db_path = self.data_path("records.db")     # → <storage-dir>/data/records.db
+logs_dir = self.data_path("logs")          # → <storage-dir>/data/logs/
+
+# 缓存目录
+preview_path = self.cache_path("preview.png")  # → <storage-dir>/cache/preview.png
 ```
 
 ### 10.6 插件发布检查清单
