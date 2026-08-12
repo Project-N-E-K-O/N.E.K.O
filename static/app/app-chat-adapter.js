@@ -944,14 +944,14 @@
                 return block && typeof block === 'object' && typeof block.type === 'string';
             }).map(function (block) { return Object.assign({}, block); })
             : [];
-        if (!host || typeof host.appendMessage !== 'function' || blocks.length === 0) {
+        if (blocks.length === 0) {
             return false;
         }
         var author = getCurrentAssistantName();
         var messageIdPrefix = payload.request_id
             ? 'plugin-blocks-' + String(payload.request_id)
             : 'plugin-blocks';
-        host.appendMessage({
+        var message = {
             id: nextReactMessageId(messageIdPrefix),
             role: 'assistant',
             author: author,
@@ -961,7 +961,18 @@
             avatarUrl: getAssistantAvatarUrl() || undefined,
             blocks: blocks,
             status: 'sent'
-        });
+        };
+        if (host && typeof host.appendMessage === 'function') {
+            _tryFlushPendingHostMessages();
+            if (!appendHostMessageSafely(host, message, 'plugin_chat_blocks')) {
+                return false;
+            }
+            markAssistantVisibleResponseForAchievement();
+        } else {
+            console.warn('[ChatAdapter] host not ready, queuing plugin chat blocks', message.id);
+            _pendingHostMessages.push(message);
+            _tryFlushPendingHostMessages();
+        }
         return true;
     }
 

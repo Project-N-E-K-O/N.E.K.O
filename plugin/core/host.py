@@ -851,7 +851,7 @@ def _plugin_process_runner(
         # asyncio.Queue fed from the downlink for plugin-to-plugin responses
         _response_inbox: asyncio.Queue = asyncio.Queue()
         ctx._response_queue = _response_inbox
-        _startup_pending_downlink: list[tuple[str, dict]] = []
+        _preloop_pending_downlink: list[tuple[str, dict]] = []
 
         async def _route_response(msg: Any) -> None:
             dispatch_direct = getattr(ctx, "_dispatch_direct_response", None)
@@ -863,7 +863,7 @@ def _plugin_process_runner(
                     logger.exception("Failed to dispatch SDK-owned response")
             await _response_inbox.put(msg)
 
-        async def _startup_downlink_pump(stop_event: asyncio.Event) -> None:
+        async def _preloop_downlink_pump(stop_event: asyncio.Event) -> None:
             poll_ms = int(QUEUE_GET_TIMEOUT * 1000)
             while not stop_event.is_set():
                 result = await child_transport.recv_downlink(timeout_ms=poll_ms)
@@ -877,13 +877,16 @@ def _plugin_process_runner(
                     stop_event.set()
                     break
                 if isinstance(msg, dict):
-                    _startup_pending_downlink.append((ch, msg))
+                    _preloop_pending_downlink.append((ch, msg))
 
-        async def _run_startup_with_downlink(startup_callable: Any) -> None:
+        async def _run_preloop_lifecycle_with_downlink(lifecycle_callable: Any) -> None:
             stop_event = asyncio.Event()
-            pump_task = asyncio.create_task(_startup_downlink_pump(stop_event), name="startup-downlink-pump")
+            pump_task = asyncio.create_task(
+                _preloop_downlink_pump(stop_event),
+                name="preloop-downlink-pump",
+            )
             try:
-                await startup_callable()
+                await lifecycle_callable()
             finally:
                 stop_event.set()
                 pump_task.cancel()
@@ -920,7 +923,7 @@ def _plugin_process_runner(
         if startup_fn:
             try:
                 with ctx._handler_scope("lifecycle.startup"):
-                    asyncio.run(_run_startup_with_downlink(startup_fn))
+                    asyncio.run(_run_preloop_lifecycle_with_downlink(startup_fn))
             except (KeyboardInterrupt, SystemExit):
                 # 系统级中断，直接抛出
                 raise
@@ -944,7 +947,7 @@ def _plugin_process_runner(
             try:
                 logger.info("[Plugin Process] Executing unfreeze lifecycle (restored from frozen state)...")
                 with ctx._handler_scope("lifecycle.unfreeze"):
-                    asyncio.run(unfreeze_fn())
+                    asyncio.run(_run_preloop_lifecycle_with_downlink(unfreeze_fn))
             except (KeyboardInterrupt, SystemExit):
                 raise
             except Exception as e:
@@ -1338,8 +1341,8 @@ def _plugin_process_runner(
                     pass
 
                 try:
-                    if _startup_pending_downlink:
-                        result = _startup_pending_downlink.pop(0)
+                    if _preloop_pending_downlink:
+                        result = _preloop_pending_downlink.pop(0)
                     else:
                         result = await child_transport.recv_downlink(timeout_ms=poll_ms)
                 except asyncio.CancelledError:

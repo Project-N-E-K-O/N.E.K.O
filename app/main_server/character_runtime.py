@@ -81,16 +81,35 @@ async def _fetch_plugin_image_base64(url: str) -> str:
     """Fetch one temporary plugin image without blocking the event loop."""
     if not _is_local_plugin_media_url(url):
         raise ValueError("image URL is not served by the local plugin media store")
-    response = await get_internal_http_client().get(url, timeout=2.0)
-    response.raise_for_status()
-    content = bytes(response.content)
+    client = get_internal_http_client()
+    async with client.stream(
+        "GET",
+        url,
+        timeout=2.0,
+        follow_redirects=False,
+    ) as response:
+        response.raise_for_status()
+        content_type = str(response.headers.get("content-type") or "").lower()
+        if not content_type.startswith("image/"):
+            raise ValueError("plugin media store returned a non-image response")
+        raw_content_length = str(response.headers.get("content-length") or "").strip()
+        if raw_content_length:
+            try:
+                content_length = int(raw_content_length)
+            except ValueError:
+                content_length = 0
+            if content_length > _PLUGIN_IMAGE_MAX_BYTES:
+                raise ValueError("plugin image exceeds the 8 MiB model input limit")
+        buffered = bytearray()
+        async for chunk in response.aiter_bytes():
+            if not chunk:
+                continue
+            buffered.extend(chunk)
+            if len(buffered) > _PLUGIN_IMAGE_MAX_BYTES:
+                raise ValueError("plugin image exceeds the 8 MiB model input limit")
+        content = bytes(buffered)
     if not content:
         raise ValueError("plugin media store returned an empty image")
-    if len(content) > _PLUGIN_IMAGE_MAX_BYTES:
-        raise ValueError("plugin image exceeds the 8 MiB model input limit")
-    content_type = str(response.headers.get("content-type") or "").lower()
-    if not content_type.startswith("image/"):
-        raise ValueError("plugin media store returned a non-image response")
     encoded = await asyncio.to_thread(base64.b64encode, content)
     return encoded.decode("ascii")
 
@@ -701,8 +720,17 @@ async def _handle_agent_event(event: dict):
                     visible_source = str(event.get("source_kind") or "").strip()
                     if not visible_source:
                         visible_source = "plugin" if channel.startswith("plugin:") else "system"
+                    visible_blocks: list[dict[str, str]] = []
+                    if text:
+                        visible_text = core.apply_role_placeholders(
+                            raw_text,
+                            lanlan_name=getattr(mgr, "lanlan_name", "") or "",
+                            master_name=getattr(mgr, "master_name", "") or "",
+                        )
+                        visible_blocks.append({"type": "text", "text": visible_text})
+                    visible_blocks.extend(visible_images)
                     await mgr.render_chat_blocks(
-                        visible_images,
+                        visible_blocks,
                         request_id=event.get("task_id") or None,
                         source=visible_source,
                     )

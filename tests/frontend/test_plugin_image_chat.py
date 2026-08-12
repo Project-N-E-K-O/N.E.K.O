@@ -110,6 +110,41 @@ def test_repeated_display_only_pushes_use_unique_message_ids(
 
 
 @pytest.mark.frontend
+def test_display_only_plugin_image_waits_for_the_react_host(
+    mock_page: Page,
+    running_server: str,
+) -> None:
+    _open_chat(mock_page, running_server)
+
+    result = mock_page.evaluate(
+        """(imageUrl) => {
+            const host = window.reactChatWindowHost;
+            window.reactChatWindowHost = null;
+            const accepted = window.appendReactChatBlocks({
+                request_id: 'host-startup-race',
+                blocks: [{ type: 'image', url: imageUrl }]
+            });
+            const beforeRestore = host.getState().messages.length;
+            window.reactChatWindowHost = host;
+            window._tryFlushPendingHostMessages();
+            return {
+                accepted,
+                beforeRestore,
+                messages: host.getState().messages
+            };
+        }""",
+        _ONE_PIXEL_PNG,
+    )
+
+    assert result["accepted"] is True
+    assert result["beforeRestore"] == 0
+    assert len(result["messages"]) == 1
+    assert result["messages"][0]["blocks"] == [
+        {"type": "image", "url": _ONE_PIXEL_PNG}
+    ]
+
+
+@pytest.mark.frontend
 def test_structured_passthrough_image_uses_the_existing_assistant_lifecycle(
     mock_page: Page,
     running_server: str,

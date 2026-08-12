@@ -13,6 +13,32 @@ pytestmark = pytest.mark.unit
 _IMAGE_URL = "http://127.0.0.1:48916/media/matrix-image"
 
 
+class _StreamingResponse:
+    def __init__(
+        self,
+        chunks: list[bytes],
+        *,
+        headers: dict[str, str] | None = None,
+    ) -> None:
+        self._chunks = chunks
+        self.headers = headers or {"content-type": "image/jpeg"}
+        self.chunks_read = 0
+
+    async def __aenter__(self) -> "_StreamingResponse":
+        return self
+
+    async def __aexit__(self, *_args: object) -> None:
+        return None
+
+    def raise_for_status(self) -> None:
+        return None
+
+    async def aiter_bytes(self):
+        for chunk in self._chunks:
+            self.chunks_read += 1
+            yield chunk
+
+
 def _manager() -> MagicMock:
     manager = MagicMock()
     manager.session = MagicMock()
@@ -33,11 +59,9 @@ async def test_plugin_image_url_is_fetched_asynchronously_for_model_context(monk
 
     manager = _manager()
     image_bytes = b"jpeg-from-plugin-image-store"
-    response = MagicMock(content=image_bytes)
-    response.headers = {"content-type": "image/jpeg"}
-    response.raise_for_status = MagicMock()
+    response = _StreamingResponse([image_bytes])
     client = MagicMock()
-    client.get = AsyncMock(return_value=response)
+    client.stream.return_value = response
 
     monkeypatch.setattr(
         "app.main_server.character_runtime._get_session_manager",
@@ -63,10 +87,34 @@ async def test_plugin_image_url_is_fetched_asynchronously_for_model_context(monk
         }],
     })
 
-    client.get.assert_awaited_once()
+    client.stream.assert_called_once_with(
+        "GET",
+        "http://127.0.0.1:49889/media/example",
+        timeout=2.0,
+        follow_redirects=False,
+    )
     manager.session.stream_image.assert_awaited_once_with(
         base64.b64encode(image_bytes).decode("ascii")
     )
+
+
+@pytest.mark.asyncio
+async def test_plugin_image_fetch_stops_at_the_model_input_byte_limit(monkeypatch) -> None:
+    from app.main_server.character_runtime import _fetch_plugin_image_base64
+
+    one_megabyte = b"x" * (1024 * 1024)
+    response = _StreamingResponse([one_megabyte] * 12)
+    client = MagicMock()
+    client.stream.return_value = response
+    monkeypatch.setattr(
+        "app.main_server.character_runtime.get_internal_http_client",
+        lambda: client,
+    )
+
+    with pytest.raises(ValueError, match="8 MiB model input limit"):
+        await _fetch_plugin_image_base64(_IMAGE_URL)
+
+    assert response.chunks_read == 9
 
 
 @pytest.mark.asyncio
@@ -196,10 +244,13 @@ async def test_chat_visible_respond_image_is_rendered_and_sent_to_model(monkeypa
     })
 
     manager.render_chat_blocks.assert_awaited_once_with(
-        [{
-            "type": "image",
-            "url": "http://127.0.0.1:48916/media/both",
-        }],
+        [
+            {"type": "text", "text": "describe it"},
+            {
+                "type": "image",
+                "url": "http://127.0.0.1:48916/media/both",
+            },
+        ],
         request_id="image-both",
         source="plugin",
     )
@@ -344,6 +395,15 @@ async def test_image_delivery_obeys_visibility_and_ai_behavior(
     assert manager.passthrough_to_chat_bubble.await_count == int(
         shows_original and ai_behavior == "blind"
     )
+    if shows_original and ai_behavior != "blind":
+        expected_blocks = []
+        if with_text:
+            expected_blocks.append({"type": "text", "text": "describe this"})
+        expected_blocks.append({
+            "type": "image",
+            "url": _IMAGE_URL,
+        })
+        assert manager.render_chat_blocks.await_args.args[0] == expected_blocks
 
     if ai_behavior == "read" and model_reads:
         manager.session.stream_image.assert_awaited_once_with(encoded)
