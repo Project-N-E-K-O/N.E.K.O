@@ -13,8 +13,8 @@ and prompts all speak metres.
 
 Derived values are honest about their limits: a synthesized `battleId` only
 guarantees "it changes between battles", and a synthesized `seq` only guarantees
-"it advances when the content changes". That is exactly what the cursor and the
-detector reset rules need.
+"it advances when the content or derived source status changes". That is exactly
+what the cursor and the detector reset rules need.
 """
 
 from __future__ import annotations
@@ -109,10 +109,11 @@ class WowsSchemaAdapter:
             f"{time.time()}".encode("utf-8")).hexdigest()[:12]
         self._legacy_seq = 0
         self._legacy_fingerprint: str | None = None
+        self._legacy_status: str | None = None
         self._legacy_battle_id: str | None = None
         self._legacy_battles = 0
         self._legacy_was_active = False
-        self._legacy_last_change = 0.0
+        self._legacy_last_change: float | None = None
         self._legacy_battle_seen = False
         # playerIds seen with alive=False in this battle. Corpses often leave
         # `objects` while remaining on the roster; stubs must not revive them.
@@ -182,9 +183,9 @@ class WowsSchemaAdapter:
 
     def _parse_legacy(self, payload, transport, epoch, now) -> WowsSnapshot:
         fingerprint = self._fingerprint(payload)
-        if fingerprint != self._legacy_fingerprint:
+        payload_changed = fingerprint != self._legacy_fingerprint
+        if payload_changed:
             self._legacy_fingerprint = fingerprint
-            self._legacy_seq += 1
             self._legacy_last_change = now
 
         active = bool(payload.get("active"))
@@ -201,10 +202,15 @@ class WowsSchemaAdapter:
         if not payload:
             status = STATUS_WAITING
         elif active:
-            age = now - (self._legacy_last_change or now)
+            last_change = self._legacy_last_change
+            age = 0.0 if last_change is None else now - last_change
             status = STATUS_STALE if age > LEGACY_STALE_SECONDS else STATUS_LIVE
         else:
             status = STATUS_ENDED if self._legacy_battle_seen else STATUS_WAITING
+
+        if payload_changed or status != self._legacy_status:
+            self._legacy_seq += 1
+        self._legacy_status = status
 
         capabilities = {domain: True for domain in CORE_DOMAINS}
         capabilities.update({domain: False for domain in FUTURE_DOMAINS})

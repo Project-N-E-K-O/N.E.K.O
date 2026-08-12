@@ -15,6 +15,7 @@ from ..domain.snapshot import (
     DOMAIN_ROSTER,
     STATUS_ENDED,
     STATUS_LIVE,
+    STATUS_WAITING,
 )
 from ._base import Detector, DetectorContext, GameEvent
 
@@ -72,7 +73,10 @@ class BattleLifecycleDetector(Detector):
             and previous_snapshot.status != STATUS_LIVE
         ):
             self._pending_start = True
-        if self._pending_start and snapshot.status != STATUS_LIVE:
+        # STALE is a telemetry freeze, not a battle boundary; keep retrying the
+        # start cue until delivery or a real waiting/ended transition.
+        if self._pending_start and snapshot.status in (
+                STATUS_WAITING, STATUS_ENDED):
             self._pending_start = False
         if self._pending_start:
             events.append(self._start_event(snapshot, facts))

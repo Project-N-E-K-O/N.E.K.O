@@ -246,7 +246,8 @@ class WowsServiceManager:
             )
 
     # ------------------------------------------------------------------
-    def start_if_needed(self) -> ServiceStatus:
+    def start_if_needed(
+            self, *, defer_relaunch_after_reap: bool = False) -> ServiceStatus:
         """Use an existing service, or launch one if we are allowed to."""
         health = self.health()
         if health.usable:
@@ -258,6 +259,18 @@ class WowsServiceManager:
         if health.reachable:
             self._set_detail(_conflict_detail(health))
             return self.snapshot()
+
+        with self._lock:
+            process = self._process
+            exit_code = process.poll() if process is not None else None
+            if process is not None and exit_code is None:
+                self._detail = "managed service is still running but health check failed"
+                return self.snapshot()
+        if process is not None:
+            if not self._reap(process, exit_code):
+                return self.snapshot()
+            if defer_relaunch_after_reap:
+                return self.snapshot()
 
         if not self.cfg.service_auto_start:
             self._set_detail("auto-start disabled")
@@ -289,26 +302,38 @@ class WowsServiceManager:
         """
         with self._lock:
             process = self._process
-        if process is not None and process.poll() is not None:
-            self._reap(process.poll())
+        if process is not None:
+            exit_code = process.poll()
+            if exit_code is not None:
+                self._reap(process, exit_code)
 
         now = time.monotonic()
         with self._lock:
             if self._paused or now < self._retry_not_before:
                 return self.snapshot()
-        return self.start_if_needed()
+        return self.start_if_needed(defer_relaunch_after_reap=True)
 
-    def _reap(self, exit_code: int | None) -> None:
+    def _reap(
+            self, process: subprocess.Popen[bytes], exit_code: int | None) -> bool:
         """Forget a managed child that exited on its own."""
-        self._close_log()
         with self._lock:
+            if self._process is not process:
+                return False
             self._process = None
             self._owned_instance_id = ""
+            handle = self._log_handle
+            self._log_handle = None
+        if handle is not None:
+            try:
+                handle.close()
+            except OSError:
+                pass
         self._log("warning", f"managed service exited (code={exit_code})")
         self._set_detail(f"managed service exited unexpectedly (code={exit_code})")
         # Last, so that the pause message wins when the fuse trips: which exit
         # code it was matters less than auto-management having given up.
         self.note_crash()
+        return True
 
     def stop(self) -> ServiceStatus:
         with self._lock:

@@ -351,6 +351,29 @@ def test_battle_start_repeats_until_delivery_is_acknowledged():
     assert BATTLE_STARTED not in fired([after_ack])
 
 
+def test_battle_start_stays_pending_across_stale_but_cancels_on_waiting():
+    """Telemetry freeze must not cancel an undelivered battle-start cue."""
+    registry = DetectorRegistry(build_lifecycle_detectors(CFG))
+    previous, _ = feed_one(
+        registry, None,
+        frame(seq=1, at=99.0, status=STATUS_WAITING, self_present=False))
+    previous, live = feed_one(
+        registry, previous, frame(seq=2, at=100.0, status=STATUS_LIVE))
+    assert BATTLE_STARTED in fired([live])
+    assert BATTLE_STARTED not in registry.inactive_delivery_events()
+
+    previous, stale = feed_one(
+        registry, previous, frame(seq=3, at=101.0, status=STATUS_STALE))
+    assert BATTLE_STARTED in fired([stale])
+    assert BATTLE_STARTED not in registry.inactive_delivery_events()
+
+    _, waiting = feed_one(
+        registry, previous,
+        frame(seq=4, at=102.0, status=STATUS_WAITING, self_present=False))
+    assert BATTLE_STARTED not in fired([waiting])
+    assert BATTLE_STARTED in registry.inactive_delivery_events()
+
+
 def test_lifecycle_still_runs_when_live_data_is_gone():
     """The final frame is inactive by definition; end events must survive it."""
     registry = DetectorRegistry(build_lifecycle_detectors(CFG))
@@ -1139,6 +1162,34 @@ def test_priority_target_speaks_humanized_ship_index():
     assert events
     assert events[0].detail["ship_name"] == "Yamato"
     assert "PJSB018" not in events[0].detail["ship_name"]
+
+
+def test_priority_target_uses_player_id_when_ui_id_is_missing():
+    registry = DetectorRegistry(build_targeting_detectors(CFG))
+    first = replace(enemy(ui_id=5), ui_id=None, player_id=3005)
+    second = replace(enemy(ui_id=6), ui_id=None, player_id=3006)
+
+    results = feed(registry, [
+        frame(seq=1, at=100.0, ships=(first,)),
+        frame(seq=2, at=101.0, ships=(second,)),
+    ])
+
+    assert fired(results).count(PRIORITY_TARGET) == 1
+
+
+def test_priority_target_keeps_identity_aliases_across_field_flicker():
+    registry = DetectorRegistry(build_targeting_detectors(CFG))
+    same = enemy(ui_id=5)
+    player_only = replace(same, ui_id=None)
+    ui_only = replace(same, player_id=None)
+
+    results = feed(registry, [
+        frame(seq=1, at=100.0, ships=(same,)),
+        frame(seq=2, at=101.0, ships=(player_only,)),
+        frame(seq=3, at=102.0, ships=(ui_only,)),
+    ])
+
+    assert PRIORITY_TARGET not in fired(results)
 
 
 def test_isolation_needs_a_known_ally_position():

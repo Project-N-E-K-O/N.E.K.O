@@ -759,7 +759,7 @@ def test_legacy_absent_domain_is_unknown_not_false():
     assert snapshot.availability_of(DOMAIN_BALLISTICS) == AVAIL_UNKNOWN
 
 
-def test_legacy_seq_only_advances_when_content_changes():
+def test_legacy_seq_only_advances_when_content_changes_while_status_is_stable():
     adapter = WowsSchemaAdapter()
     first = adapter.parse(flat_body(), received_at=100.0)
     repeat = adapter.parse(flat_body(), received_at=100.1)
@@ -800,6 +800,43 @@ def test_legacy_frames_go_stale_when_content_stops_changing():
     # Staleness must invalidate live domains but leave meta domains alone.
     assert gone_stale.availability_of(DOMAIN_SELF) == AVAIL_STALE
     assert gone_stale.availability_of(DOMAIN_MAP_BOUNDS) == AVAIL_AVAILABLE
+
+
+def test_legacy_frames_go_stale_when_clock_starts_at_zero():
+    adapter = WowsSchemaAdapter()
+    adapter.parse(flat_body(), received_at=0.0)
+    stale = adapter.parse(
+        flat_body(), received_at=LEGACY_STALE_SECONDS + 0.5)
+    assert stale.status == STATUS_STALE
+
+
+def test_legacy_stale_transition_advances_through_the_cursor_gate():
+    adapter = WowsSchemaAdapter()
+    gate = CursorGate()
+    payload = flat_body()
+
+    live = adapter.parse(payload, received_at=100.0)
+    assert gate.accept(live, epoch=1) == (True, "")
+
+    stale = adapter.parse(
+        payload, received_at=100.0 + LEGACY_STALE_SECONDS + 0.5)
+    assert stale.status == STATUS_STALE
+    assert stale.seq == live.seq + 1
+    assert gate.accept(stale, epoch=1) == (True, "")
+
+    repeated_stale = adapter.parse(
+        payload, received_at=100.0 + LEGACY_STALE_SECONDS + 1.0)
+    assert repeated_stale.seq == stale.seq
+    assert gate.accept(
+        repeated_stale, epoch=1) == (False, DROP_DUPLICATE_SEQ)
+
+    refreshed = adapter.parse(
+        flat_body(ts=13.0),
+        received_at=100.0 + LEGACY_STALE_SECONDS + 1.5,
+    )
+    assert refreshed.status == STATUS_LIVE
+    assert refreshed.seq == stale.seq + 1
+    assert gate.accept(refreshed, epoch=1) == (True, "")
 
 
 def test_legacy_never_reports_ended_from_a_dead_stream():

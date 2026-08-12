@@ -42,16 +42,23 @@ class PriorityTargetDetector(Detector):
     required = (DOMAIN_SELF, DOMAIN_OBJECTS)
 
     def reset(self) -> None:
-        self._current: int | None = None
+        self._current: set[tuple[str, int]] = set()
 
     def observe(self, snapshot, facts) -> None:
         best = facts.best_target
-        self._current = best.ship.ui_id if best is not None else None
+        keys = set(_ship_identity_keys(best.ship)) if best is not None else set()
+        if keys and self._current.intersection(keys):
+            self._current.update(keys)
+        else:
+            self._current = keys
 
     def detect(self, previous, current, context: DetectorContext) -> Sequence[GameEvent]:
         _snapshot, facts = current
         best = facts.best_target
-        if best is None or best.ship.ui_id == self._current:
+        if best is None:
+            return ()
+        keys = set(_ship_identity_keys(best.ship))
+        if not keys or self._current.intersection(keys):
             return ()
         return (self._event(
             PRIORITY_TARGET,

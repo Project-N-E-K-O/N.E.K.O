@@ -557,6 +557,58 @@ def freeze_clock(monkeypatch, now):
         monkeypatch, sm, monotonic=lambda: now["t"], sleep=lambda _seconds: None)
 
 
+def test_a_stale_reap_does_not_clear_a_replacement_process():
+    manager = WowsServiceManager(cfg())
+    original = FakeProcess(exit_code=1)
+    replacement = FakeProcess()
+    replacement_log = object()
+    manager._process = replacement
+    manager._owned_instance_id = "inst-b"
+    manager._log_handle = replacement_log
+
+    reaped = manager._reap(original, 1)
+
+    assert reaped is False
+    assert manager._process is replacement
+    assert manager._owned_instance_id == "inst-b"
+    assert manager._log_handle is replacement_log
+    assert manager.snapshot().crash_count == 0
+
+
+def test_direct_start_relaunches_when_owned_process_exits_during_health(
+        monkeypatch, tmp_path):
+    source = prepare_source(tmp_path)
+    original = FakeProcess()
+    replacement = FakeProcess()
+    probes = 0
+    launches = []
+
+    def fake_urlopen(url, timeout=None):
+        nonlocal probes
+        probes += 1
+        if probes == 1:
+            original._exit_code = 7
+            raise urllib.error.URLError("refused")
+        return FakeResponse(healthy_payload(instanceId="inst-b"))
+
+    monkeypatch.setattr(sm.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(
+        sm.subprocess, "Popen", lambda *a, **k: launches.append(a) or replacement)
+    monkeypatch.setattr(sm, "_which_uv", lambda: "uv")
+
+    manager = WowsServiceManager(cfg(service_source_dir=str(source)))
+    manager._process = original
+    manager._owned_instance_id = "inst-a"
+
+    status = manager.start_if_needed()
+
+    assert len(launches) == 1
+    assert manager._process is replacement
+    assert status.mode == MODE_MANAGED
+    assert status.owned_instance_id == "inst-b"
+    assert status.crash_count == 1
+
+
 def test_a_managed_service_that_dies_mid_battle_is_relaunched(monkeypatch, tmp_path):
     source = prepare_source(tmp_path)
     now = {"t": 1000.0}
@@ -589,6 +641,57 @@ def test_a_managed_service_that_dies_mid_battle_is_relaunched(monkeypatch, tmp_p
     assert len(launches) == 1
     assert recovered.mode == MODE_MANAGED
     assert recovered.owned_instance_id == "inst-b"
+
+
+def test_an_alive_managed_service_with_failed_health_is_not_relaunched(
+        monkeypatch, tmp_path):
+    source = prepare_source(tmp_path)
+    patch_urlopen(monkeypatch, error=urllib.error.URLError("refused"))
+    monkeypatch.setattr(
+        sm.subprocess, "Popen", lambda *a, **k: pytest.fail("must not launch"))
+    monkeypatch.setattr(sm, "_which_uv", lambda: "uv")
+
+    manager = WowsServiceManager(cfg(service_source_dir=str(source)))
+    process = FakeProcess()
+    manager._process = process
+    manager._owned_instance_id = "inst-a"
+
+    status = manager.supervise()
+
+    assert manager._process is process
+    assert status.mode == MODE_OFFLINE
+    assert status.pid == process.pid
+    assert status.owned_instance_id == "inst-a"
+    assert "still running" in status.detail
+    assert status.crash_count == 0
+
+
+def test_a_managed_service_exiting_during_failed_health_is_reaped_not_relaunched(
+        monkeypatch, tmp_path):
+    source = prepare_source(tmp_path)
+    process = FakeProcess()
+
+    def fake_urlopen(url, timeout=None):
+        process._exit_code = 7
+        raise urllib.error.URLError("refused")
+
+    monkeypatch.setattr(sm.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(
+        sm.subprocess, "Popen", lambda *a, **k: pytest.fail("must not launch"))
+    monkeypatch.setattr(sm, "_which_uv", lambda: "uv")
+
+    manager = WowsServiceManager(cfg(service_source_dir=str(source)))
+    manager._process = process
+    manager._owned_instance_id = "inst-a"
+
+    status = manager.supervise()
+
+    assert manager._process is None
+    assert status.mode == MODE_OFFLINE
+    assert status.pid is None
+    assert status.owned_instance_id == ""
+    assert "exited unexpectedly (code=7)" in status.detail
+    assert status.crash_count == 1
 
 
 def test_a_healthy_service_is_left_alone_by_supervision(monkeypatch, tmp_path):
