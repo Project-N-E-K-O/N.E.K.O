@@ -194,9 +194,15 @@ async def test_plugin_config_update_returns_memory_only_payload_before_persisten
     send = _Recorder()
     started = asyncio.Event()
 
-    async def _stuck_update(*, plugin_id: str, updates: object) -> dict[str, object]:
+    async def _stuck_update(
+        *,
+        plugin_id: str,
+        updates: object,
+        commit_guard: object,
+    ) -> dict[str, object]:
         assert plugin_id == "p1"
         assert updates == {"feature": {"enabled": True}}
+        assert commit_guard is not None
         started.set()
         await asyncio.sleep(10)
         return {"config": {"feature": {"enabled": True}}}
@@ -243,9 +249,15 @@ async def test_plugin_config_replace_uses_replace_command(
 ) -> None:
     send = _Recorder()
 
-    async def _replace(*, plugin_id: str, config: object) -> dict[str, object]:
+    async def _replace(
+        *,
+        plugin_id: str,
+        config: object,
+        commit_guard: object,
+    ) -> dict[str, object]:
         assert plugin_id == "p1"
         assert config == {"replacement": {"enabled": True}}
+        assert commit_guard is not None
         return {"config": config}
 
     monkeypatch.setattr(

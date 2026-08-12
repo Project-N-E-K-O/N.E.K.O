@@ -8,6 +8,7 @@ import pytest
 
 from plugin.core import context as context_module
 from plugin.core.context import PluginContext
+from plugin.server.application import config as config_application
 
 
 class _Logger:
@@ -68,6 +69,35 @@ async def test_context_effective_config_refreshes_plugin_runtime_helpers(tmp_pat
 
 
 @pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_context_uncertain_config_cache_is_reloaded_from_storage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = PluginContext(
+        plugin_id="demo",
+        config_path=tmp_path / "demo" / "plugin.toml",
+        logger=_Logger(),  # type: ignore[arg-type]
+        status_queue=None,
+    )
+    ctx._effective_config = {"optimistic": True}
+    ctx._effective_config_uncertain = True
+
+    class _QueryService:
+        async def get_plugin_config(self, *, plugin_id: str) -> dict[str, object]:
+            assert plugin_id == "demo"
+            return {"plugin_id": plugin_id, "config": {"persisted": True}}
+
+    monkeypatch.setattr(config_application, "ConfigQueryService", _QueryService)
+
+    payload = await ctx.get_own_config()
+
+    assert payload["config"] == {"persisted": True}
+    assert ctx._effective_config == {"persisted": True}
+    assert ctx._effective_config_uncertain is False
+
+
+@pytest.mark.plugin_unit
 def test_context_optimistic_merge_honors_delete_and_replace_markers() -> None:
     base = {
         "mcp_servers": {
@@ -115,9 +145,10 @@ async def test_context_update_own_config_timeout_uses_host_merge_markers(tmp_pat
 
     payload = await ctx.update_own_config({"mcp_servers": {"fetch": "__DELETE__"}})
 
-    assert payload["persisted"] is False
+    assert payload["persisted"] is None
     assert payload["config"] == {"mcp_servers": {"keep": {"url": "https://keep.test"}}}
     assert ctx._effective_config == {"mcp_servers": {"keep": {"url": "https://keep.test"}}}
+    assert ctx._effective_config_uncertain is True
 
 
 @pytest.mark.plugin_unit
@@ -141,12 +172,45 @@ async def test_context_replace_own_config_replaces_optimistic_root(tmp_path: Pat
     payload = await ctx.replace_own_config({"replacement": {"enabled": True}})
 
     assert captured["request_type"] == "PLUGIN_CONFIG_REPLACE"
-    assert captured["request_data"] == {
+    request_data = captured["request_data"]
+    assert isinstance(request_data, dict)
+    assert isinstance(request_data["_request_deadline_monotonic"], float)
+    assert {
+        key: value
+        for key, value in request_data.items()
+        if key != "_request_deadline_monotonic"
+    } == {
         "plugin_id": "demo",
         "config": {"replacement": {"enabled": True}},
     }
     assert payload["config"] == {"replacement": {"enabled": True}}
     assert ctx._effective_config == {"replacement": {"enabled": True}}
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_context_replace_timeout_keeps_requested_config_as_unknown_result(tmp_path: Path) -> None:
+    ctx = PluginContext(
+        plugin_id="demo",
+        config_path=tmp_path / "demo" / "plugin.toml",
+        logger=_Logger(),  # type: ignore[arg-type]
+        status_queue=None,
+    )
+    instance = _Instance()
+    ctx._instance = instance
+    ctx._effective_config = {"stale": {"enabled": False}}
+
+    async def _timeout(**kwargs: object) -> dict[str, object]:
+        raise TimeoutError("response arrived after the client deadline")
+
+    ctx._send_request_and_wait_async = _timeout  # type: ignore[method-assign]
+
+    with pytest.raises(TimeoutError, match="client deadline"):
+        await ctx.replace_own_config({"replacement": {"enabled": True}})
+
+    assert ctx._effective_config == {"replacement": {"enabled": True}}
+    assert ctx._effective_config_uncertain is True
+    assert instance.refreshed == [{"replacement": {"enabled": True}}]
 
 
 @pytest.mark.plugin_unit
@@ -179,7 +243,9 @@ async def test_context_update_own_config_rolls_back_rejected_updates(tmp_path: P
 
 @pytest.mark.plugin_unit
 @pytest.mark.asyncio
-async def test_context_update_own_config_rolls_back_cancelled_updates(tmp_path: Path) -> None:
+async def test_context_update_own_config_keeps_optimistic_config_when_result_is_cancelled(
+    tmp_path: Path,
+) -> None:
     ctx = PluginContext(
         plugin_id="demo",
         config_path=tmp_path / "demo" / "plugin.toml",
@@ -198,8 +264,8 @@ async def test_context_update_own_config_rolls_back_cancelled_updates(tmp_path: 
     with pytest.raises(asyncio.CancelledError):
         await ctx.update_own_config({"plugin": {"store": {"enabled": True}}})
 
-    assert ctx._effective_config == {"plugin": {"store": {"enabled": False}}}
+    assert ctx._effective_config == {"plugin": {"store": {"enabled": True}}}
+    assert ctx._effective_config_uncertain is True
     assert instance.refreshed == [
         {"plugin": {"store": {"enabled": True}}},
-        {"plugin": {"store": {"enabled": False}}},
     ]

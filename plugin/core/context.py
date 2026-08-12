@@ -168,6 +168,7 @@ class PluginContext:
     _push_batcher: Optional[Any] = None
     _restored_from_freeze: bool = False  # 标记是否从冻结状态恢复
     _effective_config: Optional[Dict[str, Any]] = None
+    _effective_config_uncertain: bool = False
     _current_lanlan: Optional[str] = None
 
     @property
@@ -287,9 +288,11 @@ class PluginContext:
     def _set_effective_config_cache(self, config_obj: object) -> Dict[str, Any] | None:
         if not isinstance(config_obj, dict):
             self._effective_config = None
+            self._effective_config_uncertain = False
             return None
         config_copy = copy.deepcopy(config_obj)
         self._effective_config = config_copy
+        self._effective_config_uncertain = False
         self._refresh_instance_runtime_config(config_copy)
         return config_copy
 
@@ -1718,7 +1721,8 @@ class PluginContext:
             service = ConfigQueryService()
             if payload_type == "config":
                 cached = getattr(self, "_effective_config", None)
-                if isinstance(cached, dict):
+                uncertain = getattr(self, "_effective_config_uncertain", False)
+                if isinstance(cached, dict) and not uncertain:
                     return {
                         "plugin_id": self.plugin_id,
                         "config": copy.deepcopy(cached),
@@ -1951,6 +1955,7 @@ class PluginContext:
         self._set_effective_config_cache(optimistic_config)
         # Keep config writes from blocking plugin actions; timeouts fall back to the optimistic in-memory config.
         request_timeout = min(float(timeout), 4.5)
+        request_deadline = time.monotonic() + request_timeout
         try:
             payload = await self._send_request_and_wait_async(
                 method_name="update_own_config",
@@ -1958,6 +1963,7 @@ class PluginContext:
                 request_data={
                     "plugin_id": self.plugin_id,
                     "updates": updates,
+                    "_request_deadline_monotonic": request_deadline,
                 },
                 timeout=request_timeout,
                 wrap_result=True,
@@ -1972,21 +1978,20 @@ class PluginContext:
                 else:
                     self._set_effective_config_cache(config_obj)
             return payload
-        except TimeoutError as e:
+        except TimeoutError:
+            self._effective_config_uncertain = True
             return {
                 "success": False,
                 "plugin_id": self.plugin_id,
                 "config": copy.deepcopy(optimistic_config),
                 "requires_reload": False,
-                "persisted": False,
-                "message": "Config persistence timed out; update is applied in plugin memory only",
+                "persisted": None,
+                "message": "Config persistence response timed out; final persistence status is unknown",
             }
         except asyncio.CancelledError:
-            if isinstance(old_effective_config, dict):
-                self._set_effective_config_cache(old_effective_config)
-            else:
-                self._effective_config = None
-                self._refresh_instance_runtime_config({})
+            # The request may already have crossed the atomic commit point.
+            # Keep the optimistic view instead of restoring a known-stale one.
+            self._effective_config_uncertain = True
             raise
         except Exception:
             if isinstance(old_effective_config, dict):
@@ -2000,6 +2005,10 @@ class PluginContext:
         if not isinstance(config, dict):
             raise TypeError("config must be a dict")
         old_effective_config = copy.deepcopy(getattr(self, "_effective_config", None))
+        optimistic_config = copy.deepcopy(config)
+        self._set_effective_config_cache(optimistic_config)
+        request_timeout = float(timeout)
+        request_deadline = time.monotonic() + request_timeout
         try:
             payload = await self._send_request_and_wait_async(
                 method_name="replace_own_config",
@@ -2007,8 +2016,9 @@ class PluginContext:
                 request_data={
                     "plugin_id": self.plugin_id,
                     "config": config,
+                    "_request_deadline_monotonic": request_deadline,
                 },
-                timeout=float(timeout),
+                timeout=request_timeout,
                 wrap_result=True,
                 error_log_template=None,
             )
@@ -2016,12 +2026,14 @@ class PluginContext:
             if isinstance(config_obj, dict):
                 self._set_effective_config_cache(config_obj)
             return payload
+        except TimeoutError:
+            # No response does not prove that the atomic replace lost its
+            # deadline race.  Keep the requested view; the next successful
+            # config read will replace it with the persisted effective config.
+            self._effective_config_uncertain = True
+            raise
         except asyncio.CancelledError:
-            if isinstance(old_effective_config, dict):
-                self._set_effective_config_cache(old_effective_config)
-            else:
-                self._effective_config = None
-                self._refresh_instance_runtime_config({})
+            self._effective_config_uncertain = True
             raise
         except Exception:
             if isinstance(old_effective_config, dict):

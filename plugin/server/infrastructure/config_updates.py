@@ -13,7 +13,7 @@ from plugin.server.infrastructure.config_merge import deep_merge
 from plugin.server.infrastructure.config_paths import ensure_plugin_runtime_config
 from plugin.server.infrastructure.config_protected import validate_protected_fields_unchanged
 from plugin.server.infrastructure.config_queries import load_plugin_config
-from plugin.server.infrastructure.config_storage import atomic_write_bytes, atomic_write_text
+from plugin.server.infrastructure.config_storage import ConfigCommitGuard, atomic_write_bytes, atomic_write_text
 from plugin.server.infrastructure.config_toml import (
     dump_toml_bytes,
     load_toml_from_stream,
@@ -171,7 +171,12 @@ def _resolve_config_path_for_update(*, operation: str, plugin_id: str) -> Path:
         ) from exc
 
 
-def replace_plugin_config(plugin_id: str, new_config: dict[str, object]) -> dict[str, object]:
+def replace_plugin_config(
+    plugin_id: str,
+    new_config: dict[str, object],
+    *,
+    commit_guard: ConfigCommitGuard | None = None,
+) -> dict[str, object]:
     normalized_new_config = _ensure_string_key_mapping(new_config, field="config")
     operation = "replace"
     config_path = _resolve_config_path_for_update(operation=operation, plugin_id=plugin_id)
@@ -203,6 +208,7 @@ def replace_plugin_config(plugin_id: str, new_config: dict[str, object]) -> dict
                     target=config_path,
                     payload=payload,
                     prefix=".plugin_config_",
+                    commit_guard=commit_guard,
                 )
             _log_config_update_success(operation=operation, plugin_id=plugin_id, config_path=config_path)
         except HTTPException as exc:
@@ -266,7 +272,12 @@ def replace_plugin_config(plugin_id: str, new_config: dict[str, object]) -> dict
     }
 
 
-def update_plugin_config(plugin_id: str, updates: dict[str, object]) -> dict[str, object]:
+def update_plugin_config(
+    plugin_id: str,
+    updates: dict[str, object],
+    *,
+    commit_guard: ConfigCommitGuard | None = None,
+) -> dict[str, object]:
     normalized_updates = _ensure_string_key_mapping(updates, field="updates")
     operation = "update"
     config_path = _resolve_config_path_for_update(operation=operation, plugin_id=plugin_id)
@@ -295,6 +306,7 @@ def update_plugin_config(plugin_id: str, updates: dict[str, object]) -> dict[str
                     target=config_path,
                     payload=payload,
                     prefix=".plugin_config_",
+                    commit_guard=commit_guard,
                 )
             _log_config_update_success(operation=operation, plugin_id=plugin_id, config_path=config_path)
         except HTTPException as exc:
