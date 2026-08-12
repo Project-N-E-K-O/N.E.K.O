@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -39,6 +40,65 @@ SURFACE_FILES = {
 
 def _read(filename: str) -> str:
     return (SURFACES_DIR / filename).read_text(encoding="utf-8")
+
+
+def test_study_explain_surfaces_expose_solution_narration_outcomes() -> None:
+    hosted = _read("study_panel.tsx")
+    fallback = (PLUGIN_DIR / "static" / "main.js").read_text(encoding="utf-8")
+
+    for source in (hosted, fallback):
+        assert "solution_narration_scheduled" in source
+        assert "solution_narration_status" in source
+        assert "solution_narration_reason" in source
+        assert "solution_repair_attempted" in source
+        assert "solution_narration_missing_sections" in source
+        assert "ui.error.solution_narration_missing_answer" in source
+        assert "ui.error.solution_narration_incomplete" in source
+        assert "ui.error.solution_narration_repair_failed" in source
+        assert "ui.status.solution_narration_scheduled" in source
+        assert "status === 'not_applicable'" in source
+        assert source.index("status === 'repair_failed'") < source.index(
+            "reason === 'missing_answer'"
+        )
+        assert source.index("status === 'degraded'") < source.index(
+            "reason === 'missing_answer'"
+        )
+
+
+def test_solution_narration_outcome_messages_exist_in_all_locales() -> None:
+    expected_zh_cn = (
+        "讲解生成不完整：缺少“答案”部分，因此未安排朗读。请重新解析。"
+    )
+    required_keys = {
+        "ui.status.solution_narration_scheduled",
+        "ui.status.solution_narration_disabled",
+        "ui.error.solution_narration_missing_answer",
+        "ui.error.solution_narration_incomplete",
+        "ui.error.solution_narration_repair_failed",
+        "ui.error.solution_narration_runtime_unavailable",
+        "ui.error.solution_narration_delivery_failed",
+        "ui.error.solution_narration_degraded",
+        "ui.error.solution_narration_not_scheduled",
+    }
+    locale_paths = sorted((PLUGIN_DIR / "i18n").glob("*.json"))
+
+    assert [path.stem for path in locale_paths] == [
+        "en",
+        "es",
+        "ja",
+        "ko",
+        "pt",
+        "ru",
+        "zh-CN",
+        "zh-TW",
+    ]
+    for locale_path in locale_paths:
+        bundle = json.loads(locale_path.read_text(encoding="utf-8"))
+        assert required_keys <= bundle.keys(), locale_path.stem
+        assert all(bundle[key].strip() for key in required_keys), locale_path.stem
+
+    zh_cn = json.loads((PLUGIN_DIR / "i18n" / "zh-CN.json").read_text(encoding="utf-8"))
+    assert zh_cn["ui.error.solution_narration_missing_answer"] == expected_zh_cn
 
 
 def test_study_companion_registered_surfaces_are_brand_renderable() -> None:

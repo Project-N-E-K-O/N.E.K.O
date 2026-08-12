@@ -14,6 +14,12 @@ from .tutor_llm_agent_common import (
     TutorReply,
     utc_now_iso,
     diagnostic_code_for_exception,
+    _bounded_prompt_text,
+)
+from ._solution_structure import (
+    SolutionStructure,
+    parse_solution_structure,
+    structure_from_mapping,
 )
 
 
@@ -40,6 +46,15 @@ ZH_TW_TRANSFER_FALLBACK = (
     "可以把題目中的條件、數值或問法換成同類型設定，"
     "仍按「題目解析 → 解題過程 → 答案」的順序梳理。"
 )
+
+_SOLUTION_REPAIR_SYSTEM_PROMPT = (
+    "You repair the structure of a study solution. Use only the supplied problem, "
+    "image, and incomplete explanation. Do not invent facts or discuss the repair. "
+    "Return exactly one JSON object with non-empty string fields: analysis, process, "
+    "answer, transfer. Keep the process concise and preserve the original language."
+)
+_SOLUTION_REPAIR_SOURCE_MAX_TOKENS = 3000
+_SOLUTION_REPAIR_OUTPUT_MAX_TOKENS = 6000
 
 
 def _vision_fallback_explanation(language: str | None) -> str:
@@ -82,6 +97,10 @@ def _ensure_transfer_section(
     )
     if not should_check_transfer:
         return reply
+    # A generic transfer paragraph must never make an explanation with no answer
+    # appear complete. The entry layer can request one bounded structure repair.
+    if "answer" in parse_solution_structure(reply).missing_sections:
+        return reply
     has_structured_solution = (
         ("题目解析" in reply or "題目解析" in reply)
         and ("解题过程" in reply or "解題過程" in reply)
@@ -105,6 +124,62 @@ def _ensure_transfer_section(
     if normalized_language.startswith(("zh-tw", "zh-hk", "zh-hant")):
         return f"{reply.rstrip()}\n\n舉一反三\n{ZH_TW_TRANSFER_FALLBACK}"
     return f"{reply.rstrip()}\n\n举一反三\n{ZH_TRANSFER_FALLBACK}"
+
+
+async def repair_solution_structure(
+    agent: Any,
+    *,
+    source_text: str,
+    incomplete_reply: str,
+    language: str | None,
+    mode: str,
+    context: dict[str, Any] | None = None,
+) -> SolutionStructure | None:
+    """Make one model call to repair an incomplete four-section solution."""
+
+    existing = parse_solution_structure(incomplete_reply)
+    if existing.complete:
+        return existing
+    prompt = (
+        f"Language: {str(language or '').strip()}\n"
+        f"Mode: {normalize_mode(mode)}\n"
+        f"Missing sections: {', '.join(existing.missing_sections)}\n\n"
+        "Original problem:\n"
+        f"{_bounded_prompt_text(source_text, max_tokens=_SOLUTION_REPAIR_SOURCE_MAX_TOKENS)}\n\n"
+        "Incomplete explanation:\n"
+        f"{_bounded_prompt_text(incomplete_reply, max_tokens=_SOLUTION_REPAIR_OUTPUT_MAX_TOKENS)}\n\n"
+        "Return only JSON: "
+        '{"analysis":"...","process":"...","answer":"...","transfer":"..."}'
+    )
+    messages: list[dict[str, Any]] = [
+        {"role": "system", "content": _SOLUTION_REPAIR_SYSTEM_PROMPT},
+        {"role": "user", "content": prompt},
+    ]
+    vision_image_base64 = str((context or {}).get("vision_image_base64") or "")
+    try:
+        if vision_image_base64:
+            messages = agent._attach_vision_image(messages, vision_image_base64)
+        deadline = agent._new_operation_deadline(
+            "solution_structure_repair", messages
+        )
+        raw_text = await agent._call_model(
+            messages,
+            operation="solution_structure_repair",
+            deadline=deadline,
+        )
+        parsed = agent._json_corrector.parse_json_object(raw_text)
+        return structure_from_mapping(parsed)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger = getattr(agent, "_logger", None)
+        if logger is not None:
+            logger.warning(
+                "study solution structure repair failed: type={} missing_sections={}",
+                exc.__class__.__name__,
+                ",".join(existing.missing_sections),
+            )
+        return None
 
 
 async def concept_explain(

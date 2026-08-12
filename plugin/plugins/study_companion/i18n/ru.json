@@ -1,4 +1,13 @@
 {
+    "ui.status.solution_narration_scheduled":  "Озвучивание запланировано.",
+    "ui.status.solution_narration_disabled":  "Озвучивание решения отключено.",
+    "ui.error.solution_narration_missing_answer":  "Объяснение неполное: отсутствует раздел «Ответ», поэтому озвучивание не было запланировано. Выполните анализ повторно.",
+    "ui.error.solution_narration_incomplete":  "Объяснение неполное, поэтому озвучивание не было запланировано. Выполните анализ повторно.",
+    "ui.error.solution_narration_repair_failed":  "Не удалось восстановить структуру объяснения, поэтому озвучивание не было запланировано. Выполните анализ повторно.",
+    "ui.error.solution_narration_runtime_unavailable":  "Озвучивание временно недоступно. Объяснение по-прежнему отображается.",
+    "ui.error.solution_narration_delivery_failed":  "Не удалось передать запрос на озвучивание. Повторите попытку.",
+    "ui.error.solution_narration_degraded":  "Для объяснения использован резервный ответ, поэтому озвучивание не было запланировано.",
+    "ui.error.solution_narration_not_scheduled":  "Озвучивание этого объяснения не было запланировано.",
     "plugin.name":  "Study Companion",
     "plugin.description":  "Учебный помощник: читает материалы через OCR и объясняет понятия с помощью настроенной LLM.",
     "plugin.short_description":  "OCR и объяснение понятий для учебных сессий.",

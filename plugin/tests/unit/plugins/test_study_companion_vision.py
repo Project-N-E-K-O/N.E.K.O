@@ -321,7 +321,7 @@ async def test_concept_explain_appends_transfer_when_reply_is_zh_but_locale_is_e
 
 
 @pytest.mark.asyncio
-async def test_concept_explain_appends_transfer_to_option_verification_reply(
+async def test_concept_explain_does_not_append_transfer_without_answer_section(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     agent = TutorLLMAgent(logger=_Logger(), config=StudyConfig(language="zh-CN"))
@@ -342,7 +342,8 @@ async def test_concept_explain_appends_transfer_to_option_verification_reply(
         context={"vision_image_base64": JPEG_IMAGE_BASE64},
     )
 
-    assert reply.reply.rstrip().endswith("举一反三\n" + ZH_TRANSFER_EXPECTED_TEXT)
+    assert "举一反三" not in reply.reply
+    assert reply.reply.rstrip().endswith("结论：B 正确。")
 
 
 @pytest.mark.asyncio
@@ -711,6 +712,147 @@ def test_qwen_multimodal_endpoint_model_allowlist(
     from plugin.plugins.study_companion import qwen_native_client
 
     assert qwen_native_client._model_requires_multimodal_endpoint(model) is expected
+
+
+@pytest.mark.asyncio
+async def test_qwen_multimodal_result_reports_nested_length_finish_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from plugin.plugins.study_companion import qwen_native_client
+    from utils import config_manager
+
+    class _ConfigManager:
+        def get_model_api_config(self, group: str) -> dict[str, str]:
+            assert group == "agent"
+            return {
+                "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                "model": "qwen3.7-plus",
+                "api_key": "agent-key",
+            }
+
+    class _FakeMultiModalConversation:
+        @staticmethod
+        async def call(**_kwargs: Any) -> SimpleNamespace:
+            return SimpleNamespace(
+                status_code=200,
+                request_id="multimodal-length-request",
+                usage=SimpleNamespace(input_tokens=17, output_tokens=29),
+                output=SimpleNamespace(
+                    choices=[
+                        SimpleNamespace(
+                            finish_reason="length",
+                            message=SimpleNamespace(
+                                content=[{"text": "truncated explanation"}]
+                            ),
+                        )
+                    ]
+                ),
+            )
+
+    async def _discard_usage(_client: object, **_kwargs: Any) -> None:
+        return None
+
+    monkeypatch.setattr(config_manager, "get_config_manager", lambda: _ConfigManager())
+    monkeypatch.setattr(
+        qwen_native_client,
+        "AioMultiModalConversation",
+        _FakeMultiModalConversation,
+    )
+    monkeypatch.setattr(QwenNativeClient, "_record_usage", _discard_usage)
+    logger = _Logger()
+    client = QwenNativeClient(logger=logger)
+
+    result = await client.call(
+        [{"role": "user", "content": "sensitive question text"}],
+        operation=LLM_OPERATION_CONCEPT_EXPLAIN,
+        deadline=time.monotonic() + 10.0,
+    )
+
+    assert result.finish_reason == "length"
+    assert result.input_tokens == 17
+    assert result.output_tokens == 29
+    assert result.max_output_tokens == 3072
+    assert result.output_limit_reached is True
+    assert logger.warnings == [
+        (
+            (
+                "study Qwen output limit reached: diagnostic=output_truncated "
+                "operation={} model_group={} "
+                "finish_reason={} output_tokens={} max_output_tokens={}",
+                LLM_OPERATION_CONCEPT_EXPLAIN,
+                "agent",
+                "length",
+                29,
+                3072,
+            ),
+            {},
+        )
+    ]
+    assert "sensitive question text" not in repr(logger.warnings)
+    assert "truncated explanation" not in repr(logger.warnings)
+
+
+@pytest.mark.asyncio
+async def test_qwen_solution_structure_repair_has_bounded_observable_output_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from plugin.plugins.study_companion import qwen_native_client
+    from utils import config_manager
+
+    calls: list[dict[str, Any]] = []
+
+    class _ConfigManager:
+        def get_model_api_config(self, group: str) -> dict[str, str]:
+            assert group == "agent"
+            return {
+                "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                "model": "qwen-plus",
+                "api_key": "agent-key",
+            }
+
+    class _FakeGeneration:
+        @staticmethod
+        async def call(**kwargs: Any) -> SimpleNamespace:
+            calls.append(dict(kwargs))
+            return SimpleNamespace(
+                status_code=200,
+                request_id="text-budget-request",
+                usage={"input_tokens": 11, "output_tokens": 1536},
+                output={
+                    "text": "complete json correction",
+                    "finish_reason": "stop",
+                },
+            )
+
+    async def _discard_usage(_client: object, **_kwargs: Any) -> None:
+        return None
+
+    monkeypatch.setattr(config_manager, "get_config_manager", lambda: _ConfigManager())
+    monkeypatch.setattr(qwen_native_client, "AioGeneration", _FakeGeneration)
+    monkeypatch.setattr(QwenNativeClient, "_record_usage", _discard_usage)
+    logger = _Logger()
+    client = QwenNativeClient(logger=logger)
+
+    result = await client.call(
+        [{"role": "user", "content": "repair json"}],
+        operation="solution_structure_repair",
+        deadline=time.monotonic() + 10.0,
+    )
+
+    assert result.finish_reason == "stop"
+    assert result.input_tokens == 11
+    assert result.output_tokens == 1536
+    assert result.max_output_tokens == 1536
+    assert result.output_limit_reached is True
+    assert calls[0]["max_tokens"] == 1536
+    assert len(logger.warnings) == 1
+    assert logger.warnings[0][0][1:] == (
+        "solution_structure_repair",
+        "agent",
+        "stop",
+        1536,
+        1536,
+    )
 
 
 @pytest.mark.parametrize(

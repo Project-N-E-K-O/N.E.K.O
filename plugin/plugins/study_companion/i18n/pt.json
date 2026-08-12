@@ -1,4 +1,13 @@
 {
+    "ui.status.solution_narration_scheduled":  "A narração foi agendada.",
+    "ui.status.solution_narration_disabled":  "A narração da solução está desativada.",
+    "ui.error.solution_narration_missing_answer":  "A explicação está incompleta: falta a seção «Resposta», portanto a narração não foi agendada. Analise novamente.",
+    "ui.error.solution_narration_incomplete":  "A explicação está incompleta, portanto a narração não foi agendada. Analise novamente.",
+    "ui.error.solution_narration_repair_failed":  "Não foi possível reparar a estrutura da explicação, portanto a narração não foi agendada. Analise novamente.",
+    "ui.error.solution_narration_runtime_unavailable":  "A narração está temporariamente indisponível. A explicação continua visível.",
+    "ui.error.solution_narration_delivery_failed":  "Não foi possível entregar a solicitação de narração. Tente novamente.",
+    "ui.error.solution_narration_degraded":  "A explicação usou uma resposta alternativa, portanto a narração não foi agendada.",
+    "ui.error.solution_narration_not_scheduled":  "A narração não foi agendada para esta explicação.",
     "plugin.name":  "Study Companion",
     "plugin.description":  "Companheiro de estudo que lê material com OCR e explica conceitos usando o LLM configurado.",
     "plugin.short_description":  "OCR e explicação de conceitos para sessões de estudo.",

@@ -76,6 +76,7 @@ _OUTPUT_TOKEN_BUDGETS = {
     LLM_OPERATION_DOCUMENT_CHUNK_ANALYZE: 1200,
     LLM_OPERATION_DOCUMENT_MERGE: 4096,
     "json_correction": 1536,
+    "solution_structure_repair": 1536,
 }
 
 
@@ -102,6 +103,9 @@ class QwenNativeResult:
     request_id: str
     input_tokens: int
     output_tokens: int
+    finish_reason: str = ""
+    max_output_tokens: int = 0
+    output_limit_reached: bool = False
 
 
 def _get(value: object, key: str, default: Any = None) -> Any:
@@ -242,6 +246,28 @@ def _extract_text(response: object) -> str:
     return str(content or "").strip()
 
 
+def _extract_finish_reason(response: object) -> str:
+    output = _get(response, "output")
+    candidates = [
+        _get(response, "finish_reason"),
+        _get(output, "finish_reason"),
+    ]
+    choices = _get(output, "choices", [])
+    if isinstance(choices, (list, tuple)) and choices:
+        first_choice = choices[0]
+        candidates.extend(
+            (
+                _get(first_choice, "finish_reason"),
+                _get(_get(first_choice, "message"), "finish_reason"),
+            )
+        )
+    for candidate in candidates:
+        normalized = str(candidate or "").strip().lower()
+        if normalized:
+            return normalized
+    return ""
+
+
 def _diagnostic_for_response(response: object) -> str:
     status_code = _as_nonnegative_int(_get(response, "status_code"))
     code = str(_get(response, "code", "") or "").lower()
@@ -313,6 +339,7 @@ class QwenNativeClient:
         request_id = ""
         success = False
         try:
+            max_output_tokens = _OUTPUT_TOKEN_BUDGETS.get(operation, 3072)
             use_multimodal_endpoint = has_image or _model_requires_multimodal_endpoint(
                 model
             )
@@ -327,7 +354,7 @@ class QwenNativeClient:
                     messages=_native_messages(messages, multimodal=True),
                     api_key=api_key,
                     result_format="message",
-                    max_tokens=_OUTPUT_TOKEN_BUDGETS.get(operation, 3072),
+                    max_tokens=max_output_tokens,
                     enable_thinking=False,
                     headers=dict(_SESSION_CACHE_HEADERS),
                     base_address=base_address,
@@ -344,7 +371,7 @@ class QwenNativeClient:
                     messages=_native_messages(messages, multimodal=False),
                     api_key=api_key,
                     result_format="message",
-                    max_tokens=_OUTPUT_TOKEN_BUDGETS.get(operation, 3072),
+                    max_tokens=max_output_tokens,
                     enable_thinking=False,
                     headers=dict(_SESSION_CACHE_HEADERS),
                     base_address=base_address,
@@ -355,6 +382,10 @@ class QwenNativeClient:
             usage = _get(response, "usage")
             input_tokens = _as_nonnegative_int(_get(usage, "input_tokens"))
             output_tokens = _as_nonnegative_int(_get(usage, "output_tokens"))
+            finish_reason = _extract_finish_reason(response)
+            output_limit_reached = finish_reason == "length" or (
+                max_output_tokens > 0 and output_tokens >= max_output_tokens
+            )
             status_code = _as_nonnegative_int(_get(response, "status_code"))
             if status_code != HTTPStatus.OK:
                 raise QwenNativeError(
@@ -362,6 +393,17 @@ class QwenNativeClient:
                     diagnostic=_diagnostic_for_response(response),
                     status_code=status_code,
                     request_id=request_id,
+                )
+            if output_limit_reached:
+                self._logger.warning(
+                    "study Qwen output limit reached: diagnostic=output_truncated "
+                    "operation={} model_group={} "
+                    "finish_reason={} output_tokens={} max_output_tokens={}",
+                    operation,
+                    model_group,
+                    finish_reason,
+                    output_tokens,
+                    max_output_tokens,
                 )
             text = _extract_text(response)
             if not text:
@@ -378,6 +420,9 @@ class QwenNativeClient:
                 request_id=request_id,
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
+                finish_reason=finish_reason,
+                max_output_tokens=max_output_tokens,
+                output_limit_reached=output_limit_reached,
             )
         finally:
             await self._record_usage(

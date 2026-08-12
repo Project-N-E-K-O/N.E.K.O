@@ -1,4 +1,13 @@
 {
+    "ui.status.solution_narration_scheduled":  "已安排朗读。",
+    "ui.status.solution_narration_disabled":  "解答朗读已关闭。",
+    "ui.error.solution_narration_missing_answer":  "讲解生成不完整：缺少“答案”部分，因此未安排朗读。请重新解析。",
+    "ui.error.solution_narration_incomplete":  "讲解生成不完整，因此未安排朗读。请重新解析。",
+    "ui.error.solution_narration_repair_failed":  "无法修复讲解结构，因此未安排朗读。请重新解析。",
+    "ui.error.solution_narration_runtime_unavailable":  "朗读功能暂时不可用，讲解内容仍会显示。",
+    "ui.error.solution_narration_delivery_failed":  "朗读请求发送失败，请重试。",
+    "ui.error.solution_narration_degraded":  "讲解使用了降级回复，因此未安排朗读。",
+    "ui.error.solution_narration_not_scheduled":  "本次讲解未安排朗读。",
     "plugin.name":  "猫娘伴学",
     "plugin.description":  "通过 OCR 读取学习内容，并使用已配置的 LLM 解释概念的伴学插件。",
     "plugin.short_description":  "用于学习场景的 OCR 与概念解释助手。",

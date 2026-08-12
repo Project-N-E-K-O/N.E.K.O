@@ -84,6 +84,92 @@ type DocumentJobPayload = {
   diagnostic?: string;
 };
 
+type SolutionNarrationOutcome = {
+  solution_narration_scheduled?: boolean;
+  solution_narration_status?: string;
+  solution_narration_reason?: string;
+  solution_repair_attempted?: boolean;
+  solution_narration_missing_sections?: string[];
+};
+
+type StudyTranslate = (key: string, defaultValue?: string) => string;
+
+function formatSolutionNarrationNotice(
+  outcome: SolutionNarrationOutcome,
+  translate: StudyTranslate,
+) {
+  const status = String(outcome.solution_narration_status || '').trim().toLowerCase();
+  const reason = String(outcome.solution_narration_reason || '').trim().toLowerCase();
+  const missingSections = Array.isArray(outcome.solution_narration_missing_sections)
+    ? outcome.solution_narration_missing_sections.map((section) => String(section).trim().toLowerCase())
+    : [];
+  const hasOutcome = typeof outcome.solution_narration_scheduled === 'boolean'
+    || Boolean(status)
+    || Boolean(reason)
+    || missingSections.length > 0
+    || typeof outcome.solution_repair_attempted === 'boolean';
+  if (!hasOutcome) return '';
+
+  if (status === 'not_applicable') return '';
+  if (outcome.solution_narration_scheduled === true || status === 'scheduled') {
+    return translate('ui.status.solution_narration_scheduled', 'Narration has been scheduled.');
+  }
+  if (status === 'disabled') {
+    return translate('ui.status.solution_narration_disabled', 'Solution narration is turned off.');
+  }
+  if (status === 'degraded') {
+    return translate(
+      'ui.error.solution_narration_degraded',
+      'The explanation used a fallback response, so narration was not scheduled.',
+    );
+  }
+  if (
+    status === 'repair_failed'
+    || reason === 'invalid_repair_response'
+    || (
+      !status
+      && outcome.solution_repair_attempted === true
+      && outcome.solution_narration_scheduled === false
+    )
+  ) {
+    return translate(
+      'ui.error.solution_narration_repair_failed',
+      'The explanation structure could not be repaired, so narration was not scheduled. Please analyze it again.',
+    );
+  }
+  if (status === 'incomplete' || reason.startsWith('missing_')) {
+    if (reason === 'missing_answer' || missingSections.includes('answer')) {
+      return translate(
+        'ui.error.solution_narration_missing_answer',
+        'The explanation is incomplete: the Answer section is missing, so narration was not scheduled. Please analyze it again.',
+      );
+    }
+    return translate(
+      'ui.error.solution_narration_incomplete',
+      'The explanation is incomplete, so narration was not scheduled. Please analyze it again.',
+    );
+  }
+  if (status === 'runtime_unavailable' || reason === 'event_bus_unavailable') {
+    return translate(
+      'ui.error.solution_narration_runtime_unavailable',
+      'Narration is temporarily unavailable. The explanation is still shown.',
+    );
+  }
+  if (status === 'delivery_failed' || reason === 'event_delivery_failed') {
+    return translate(
+      'ui.error.solution_narration_delivery_failed',
+      'The narration request could not be delivered. Please try again.',
+    );
+  }
+  if (outcome.solution_narration_scheduled === false) {
+    return translate(
+      'ui.error.solution_narration_not_scheduled',
+      'Narration was not scheduled for this explanation.',
+    );
+  }
+  return '';
+}
+
 const ENTRY_TIMEOUT_MS: Record<string, number> = {
   study_status: 15000,
   study_ocr_snapshot: 60000,
@@ -1250,18 +1336,22 @@ export default function StudyPanel(props: PluginSurfaceProps) {
         transition_phrase?: string;
         degraded?: boolean;
         diagnostic?: string;
-      };
+      } & SolutionNarrationOutcome;
       if (controller.signal.aborted) {
         return;
       }
       if (data.degraded) {
-        setReply(formatTutorDiagnostic(data.diagnostic));
+        setReply([
+          formatTutorDiagnostic(data.diagnostic),
+          formatSolutionNarrationNotice(data, t),
+        ].filter(Boolean).join('\n\n'));
         await refresh(controller.signal, { updateReply: false });
         return;
       }
       shouldClearTextImage = true;
       const nextReply = data.reply || data.summary || '';
-      setReply(nextReply);
+      const narrationNotice = formatSolutionNarrationNotice(data, t);
+      setReply([nextReply, narrationNotice].filter(Boolean).join('\n\n'));
       await refresh(controller.signal, { updateReply: false });
     } catch (error) {
       if (controller.signal.aborted) {

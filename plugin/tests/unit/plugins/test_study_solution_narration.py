@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from types import SimpleNamespace
 from typing import Any
 
@@ -9,6 +10,10 @@ import pytest
 from plugin.plugins.study_companion._solution_narration import (
     SOLUTION_NARRATION_MAX_CHARS,
     extract_solution_narration_sections,
+)
+from plugin.plugins.study_companion._solution_structure import (
+    is_solution_structure_candidate,
+    parse_solution_structure,
 )
 from plugin.plugins.study_companion.constants import (
     MODE_COMPANION,
@@ -21,6 +26,9 @@ from plugin.plugins.study_companion.entry_tutor_explain_entries import (
     _TutorExplainEntriesMixin,
 )
 from plugin.plugins.study_companion.models import TutorReply
+from plugin.plugins.study_companion.tutor_llm_agent_concept_explain import (
+    _ensure_transfer_section,
+)
 from plugin.sdk.plugin import Ok
 
 
@@ -130,6 +138,60 @@ def test_extract_solution_narration_matches_frontend_heading_variants(
 )
 def test_extract_solution_narration_requires_every_target_section(reply: str) -> None:
     assert extract_solution_narration_sections(reply) is None
+
+
+def test_solution_structure_recognizes_safe_final_answer_alias() -> None:
+    structure = parse_solution_structure(
+        "### 题目解析\n识别条件。\n\n"
+        "### 解题过程\n逐步计算。\n\n"
+        "### 最终答案\n答案是 42。\n\n"
+        "### 举一反三\n替换常数后复算。"
+    )
+
+    assert structure.complete is True
+    assert structure.answer == "答案是 42。"
+    assert structure.missing_sections == ()
+
+
+def test_solution_structure_reports_missing_answer_without_guessing_conclusion() -> None:
+    structure = parse_solution_structure(
+        "### 题目解析\n识别条件。\n\n"
+        "### 解题过程\n逐步计算。\n\n"
+        "**结论：** 点 R 的坐标为（1，2）。\n\n"
+        "### 举一反三\n替换常数后复算。"
+    )
+
+    assert structure.complete is False
+    assert structure.answer == ""
+    assert structure.missing_sections == ("answer",)
+
+
+def test_solution_structure_candidate_requires_multiple_solution_signals() -> None:
+    prose = parse_solution_structure("余华通过福贵的一生讨论苦难与生命韧性。")
+    truncated_solution = parse_solution_structure(
+        "### 题目解析\n识别条件。\n\n"
+        "### 解题过程\n推导中止。\n\n"
+        "### 举一反三\n替换参数。"
+    )
+
+    assert is_solution_structure_candidate(prose) is False
+    assert is_solution_structure_candidate(truncated_solution) is True
+
+
+def test_transfer_fallback_does_not_mask_a_missing_answer_section() -> None:
+    incomplete_reply = (
+        "### 题目解析\n识别条件。\n\n"
+        "### 解题过程\n推导在公式中止。"
+    )
+
+    result = _ensure_transfer_section(
+        incomplete_reply,
+        "zh-CN",
+        "请解题并举一反三",
+    )
+
+    assert result == incomplete_reply
+    assert "举一反三" not in result
 
 
 def _without_truncation_marker(value: str) -> str:
@@ -294,6 +356,43 @@ class _ExplainHarness(_TutorExplainEntriesMixin, _CommunicationTutorEventsMixin)
         }
 
 
+def _install_repair_response(
+    plugin: _ExplainHarness, raw_response: str
+) -> list[dict[str, Any]]:
+    calls: list[dict[str, Any]] = []
+
+    async def _call_model(
+        messages: list[dict[str, Any]], *, operation: str, deadline: float
+    ) -> str:
+        calls.append(
+            {"messages": messages, "operation": operation, "deadline": deadline}
+        )
+        return raw_response
+
+    def _attach_vision_image(
+        messages: list[dict[str, Any]], image_base64: str
+    ) -> list[dict[str, Any]]:
+        result = [dict(message) for message in messages]
+        result[-1]["content"] = [
+            {"type": "text", "text": str(result[-1]["content"])},
+            {
+                "type": "image_url",
+                "image_url": {"url": f"data:image/png;base64,{image_base64}"},
+            },
+        ]
+        return result
+
+    plugin._agent._call_model = _call_model  # type: ignore[attr-defined]
+    plugin._agent._new_operation_deadline = (  # type: ignore[attr-defined]
+        lambda _operation, _messages: 123.0
+    )
+    plugin._agent._attach_vision_image = _attach_vision_image  # type: ignore[attr-defined]
+    plugin._agent._json_corrector = SimpleNamespace(  # type: ignore[attr-defined]
+        parse_json_object=lambda raw: json.loads(raw)
+    )
+    return calls
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("kwargs", "last_ocr_text", "expected_source"),
@@ -317,6 +416,10 @@ async def test_study_explain_text_schedules_one_solution_event_for_each_input_pa
     assert isinstance(result, Ok)
     assert result.value["reply"] == _STRUCTURED_REPLY
     assert result.value["solution_narration_scheduled"] is True
+    assert result.value["solution_narration_status"] == "scheduled"
+    assert result.value["solution_narration_reason"] == ""
+    assert result.value["solution_repair_attempted"] is False
+    assert result.value["solution_narration_missing_sections"] == []
     assert len(bus.events) == 1
     event = bus.events[0]
     assert event.name == "solution_completed"
@@ -324,6 +427,139 @@ async def test_study_explain_text_schedules_one_solution_event_for_each_input_pa
     assert _PROCESS_SENTINEL not in repr(event.payload)
     assert len(plugin._agent.calls) == 1
     assert plugin._agent.calls[0][2]["source"] == expected_source
+
+
+@pytest.mark.asyncio
+async def test_study_explain_text_repairs_missing_answer_once_before_narration() -> None:
+    incomplete_reply = (
+        "### 题目解析\n识别条件。\n\n"
+        "### 解题过程\n|QM|² = (3cosθ)² + (sinθ + 4)²\n\n"
+        "### 举一反三\n替换参数后复算。"
+    )
+    repaired_json = json.dumps(
+        {
+            "analysis": "识别条件。",
+            "process": "完成剩余推导。",
+            "answer": "最大值为 7。",
+            "transfer": "替换参数后复算。",
+        },
+        ensure_ascii=False,
+    )
+    bus = _EventBus()
+    plugin = _ExplainHarness(reply=incomplete_reply, event_bus=bus)
+    repair_calls = _install_repair_response(plugin, repaired_json)
+
+    result = await plugin.study_explain_text(text="求 |QM| 的最大值")
+
+    assert isinstance(result, Ok)
+    assert len(plugin._agent.calls) == 1
+    assert len(repair_calls) == 1
+    assert repair_calls[0]["operation"] == "solution_structure_repair"
+    repair_prompt = str(repair_calls[0]["messages"][-1]["content"])
+    assert "求 |QM| 的最大值" in repair_prompt
+    assert incomplete_reply in repair_prompt
+    assert result.value["solution_repair_attempted"] is True
+    assert result.value["solution_narration_status"] == "scheduled"
+    assert result.value["solution_narration_reason"] == ""
+    assert result.value["solution_narration_missing_sections"] == []
+    assert result.value["solution_narration_scheduled"] is True
+    assert "### 答案\n最大值为 7。" in result.value["reply"]
+    assert len(bus.events) == 1
+    assert bus.events[0].payload["answer"] == "最大值为 7。"
+
+
+@pytest.mark.asyncio
+async def test_study_explain_text_does_not_repair_ordinary_concept_prose() -> None:
+    prose_reply = "余华通过福贵的一生，写出了苦难中的生命韧性。"
+    bus = _EventBus()
+    plugin = _ExplainHarness(reply=prose_reply, event_bus=bus)
+    repair_calls = _install_repair_response(plugin, "should-not-be-used")
+
+    result = await plugin.study_explain_text(text="谈谈你对《活着》的理解")
+
+    assert isinstance(result, Ok)
+    assert repair_calls == []
+    assert result.value["reply"] == prose_reply
+    assert result.value["solution_narration_scheduled"] is False
+    assert result.value["solution_narration_status"] == "not_applicable"
+    assert result.value["solution_narration_reason"] == ""
+    assert result.value["solution_narration_missing_sections"] == []
+    assert bus.events == []
+
+
+@pytest.mark.asyncio
+async def test_study_explain_text_repair_preserves_original_image_context() -> None:
+    incomplete_reply = (
+        "### Problem Analysis\nRead the diagram.\n\n"
+        "### Solution Process\nWork stops early.\n\n"
+        "### Transfer Practice\nChange one condition."
+    )
+    repaired_json = json.dumps(
+        {
+            "analysis": "Read the diagram.",
+            "process": "Complete the construction.",
+            "answer": "The answer is B.",
+            "transfer": "Change one condition.",
+        }
+    )
+    plugin = _ExplainHarness(reply=incomplete_reply)
+    repair_calls = _install_repair_response(plugin, repaired_json)
+
+    result = await plugin.study_explain_text(
+        text="solve the diagram",
+        vision_image_base64=_PNG_IMAGE_BASE64,
+    )
+
+    assert isinstance(result, Ok)
+    assert len(repair_calls) == 1
+    user_content = repair_calls[0]["messages"][-1]["content"]
+    assert isinstance(user_content, list)
+    assert user_content[1]["image_url"]["url"].endswith(_PNG_IMAGE_BASE64)
+
+
+@pytest.mark.asyncio
+async def test_study_explain_text_reports_single_failed_repair_without_narration() -> None:
+    incomplete_reply = (
+        "### 题目解析\n识别条件。\n\n"
+        "### 解题过程\n推导中止。\n\n"
+        "### 举一反三\n替换参数。"
+    )
+    bus = _EventBus()
+    plugin = _ExplainHarness(reply=incomplete_reply, event_bus=bus)
+    repair_calls = _install_repair_response(plugin, "not-json")
+
+    result = await plugin.study_explain_text(text="一道题")
+
+    assert isinstance(result, Ok)
+    assert len(repair_calls) == 1
+    assert result.value["reply"] == incomplete_reply
+    assert result.value["solution_repair_attempted"] is True
+    assert result.value["solution_narration_status"] == "repair_failed"
+    assert result.value["solution_narration_reason"] == "invalid_repair_response"
+    assert result.value["solution_narration_missing_sections"] == ["answer"]
+    assert result.value["solution_narration_scheduled"] is False
+    assert bus.events == []
+
+
+@pytest.mark.asyncio
+async def test_study_explain_text_does_not_repair_when_narration_is_disabled() -> None:
+    incomplete_reply = (
+        "### 题目解析\n识别条件。\n\n"
+        "### 解题过程\n推导中止。\n\n"
+        "### 举一反三\n替换参数。"
+    )
+    plugin = _ExplainHarness(reply=incomplete_reply, narration_enabled=False)
+    repair_calls = _install_repair_response(plugin, "must-not-be-used")
+
+    result = await plugin.study_explain_text(text="一道题")
+
+    assert isinstance(result, Ok)
+    assert repair_calls == []
+    assert result.value["reply"] == incomplete_reply
+    assert result.value["solution_repair_attempted"] is False
+    assert result.value["solution_narration_status"] == "disabled"
+    assert result.value["solution_narration_reason"] == ""
+    assert result.value["solution_narration_missing_sections"] == ["answer"]
 
 
 @pytest.mark.asyncio

@@ -1,6 +1,12 @@
 from __future__ import annotations
 
 from ._solution_narration import extract_solution_narration_sections
+from ._solution_structure import (
+    is_solution_structure_candidate,
+    parse_solution_structure,
+    render_solution_structure,
+)
+from .tutor_llm_agent_concept_explain import repair_solution_structure
 from .entry_common import (
     Any,
     Err,
@@ -158,6 +164,10 @@ class _TutorExplainEntriesMixin:
                         "input_text": raw_text,
                         "degraded": False,
                         "solution_narration_scheduled": False,
+                        "solution_narration_status": "not_applicable",
+                        "solution_narration_reason": "",
+                        "solution_repair_attempted": False,
+                        "solution_narration_missing_sections": [],
                     }
                 )
         # Phase 2: resolve the text to explain.
@@ -213,6 +223,42 @@ class _TutorExplainEntriesMixin:
                 mode=active_mode,
                 context=tutor_context,
             )
+            communication = getattr(self._cfg, "communication", None)
+            narration_requested = bool(
+                getattr(communication, "enabled", False)
+            ) and bool(
+                getattr(communication, "solution_narration_enabled", True)
+            )
+            solution_structure = parse_solution_structure(reply.reply)
+            solution_candidate = is_solution_structure_candidate(solution_structure)
+            repair_attempted = False
+            repair_invalid_response = False
+            if not reply.degraded and narration_requested and solution_candidate:
+                if solution_structure.complete:
+                    if extract_solution_narration_sections(reply.reply) is None:
+                        reply.reply = render_solution_structure(
+                            solution_structure,
+                            language=self._cfg.language,
+                        )
+                else:
+                    repair_attempted = True
+                    repaired_structure = await repair_solution_structure(
+                        self._agent,
+                        source_text=source_text,
+                        incomplete_reply=reply.reply,
+                        language=self._cfg.language,
+                        mode=active_mode,
+                        context=tutor_context,
+                    )
+                    if repaired_structure is None:
+                        repair_invalid_response = True
+                    else:
+                        solution_structure = repaired_structure
+                        if repaired_structure.complete:
+                            reply.reply = render_solution_structure(
+                                repaired_structure,
+                                language=self._cfg.language,
+                            )
             payload = await self._finalize_tutor_call(
                 LLM_OPERATION_CONCEPT_EXPLAIN,
                 reply,
@@ -229,12 +275,22 @@ class _TutorExplainEntriesMixin:
                 extra_context=tutor_context,
             )
             narration_scheduled = False
-            communication = getattr(self._cfg, "communication", None)
-            if (
-                not reply.degraded
-                and bool(getattr(communication, "enabled", False))
-                and bool(getattr(communication, "solution_narration_enabled", True))
-            ):
+            narration_status = "disabled"
+            narration_reason = ""
+            if reply.degraded:
+                narration_status = "degraded"
+            elif not narration_requested:
+                narration_status = "disabled"
+            elif not solution_candidate:
+                narration_status = "not_applicable"
+            elif not solution_structure.complete:
+                narration_status = "repair_failed" if repair_attempted else "incomplete"
+                narration_reason = (
+                    "invalid_repair_response"
+                    if repair_invalid_response
+                    else f"missing_{solution_structure.missing_sections[0]}"
+                )
+            else:
                 sections = extract_solution_narration_sections(
                     str(payload.get("reply") or "")
                 )
@@ -242,7 +298,21 @@ class _TutorExplainEntriesMixin:
                     narration_scheduled = await self._emit_solution_completed_event(
                         sections
                     )
+                if narration_scheduled:
+                    narration_status = "scheduled"
+                elif getattr(self, "_event_bus", None) is None:
+                    narration_status = "runtime_unavailable"
+                    narration_reason = "event_bus_unavailable"
+                else:
+                    narration_status = "delivery_failed"
+                    narration_reason = "event_delivery_failed"
             payload["solution_narration_scheduled"] = narration_scheduled
+            payload["solution_narration_status"] = narration_status
+            payload["solution_narration_reason"] = narration_reason
+            payload["solution_repair_attempted"] = repair_attempted
+            payload["solution_narration_missing_sections"] = (
+                list(solution_structure.missing_sections) if solution_candidate else []
+            )
             if mode_switch:
                 payload["mode_switch"] = mode_switch
             if intent.get("matched"):
