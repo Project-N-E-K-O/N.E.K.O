@@ -854,9 +854,9 @@ async def test_image_delivery_obeys_visibility_and_ai_behavior(
         ("blind", "silent", [], False, False, False),
         ("blind", "silent", ["chat"], False, False, True),
         ("read", "passive", [], False, True, False),
-        ("read", "passive", ["chat"], False, True, True),
+        ("read", "passive", ["chat"], False, True, False),
         ("respond", "proactive", [], True, False, False),
-        ("respond", "proactive", ["chat"], True, False, True),
+        ("respond", "proactive", ["chat"], True, False, False),
     ],
 )
 @pytest.mark.asyncio
@@ -869,7 +869,7 @@ async def test_text_only_delivery_obeys_visibility_and_ai_behavior(
     expects_enqueue: bool,
     expects_chat: bool,
 ) -> None:
-    """Text visibility stays independent from model delivery behavior."""
+    """The image feature leaves the existing text-only delivery path unchanged."""
     from app import main_server
 
     manager = _manager()
@@ -896,15 +896,7 @@ async def test_text_only_delivery_obeys_visibility_and_ai_behavior(
 
     fetch_image.assert_not_awaited()
     manager.session.stream_image.assert_not_awaited()
-    assert manager.render_chat_blocks.await_count == int(
-        expects_chat and ai_behavior != "blind"
-    )
-    if expects_chat and ai_behavior != "blind":
-        manager.render_chat_blocks.assert_awaited_once_with(
-            [{"type": "text", "text": "legacy text stays text"}],
-            request_id=None,
-            source="plugin",
-        )
+    manager.render_chat_blocks.assert_not_awaited()
     assert manager.submit_proactive_callback.call_count == int(expects_submit)
     assert manager.enqueue_agent_callback.call_count == int(expects_enqueue)
     assert manager.passthrough_to_chat_bubble.await_count == int(

@@ -896,7 +896,10 @@ async def _handle_agent_event(event: dict):
                         )
                         visible_blocks.append({"type": "text", "text": visible_text})
                     visible_blocks.extend(visible_images)
-                if visible_blocks:
+                # This PR adds structured rendering only for image-bearing
+                # pushes. Keep the pre-existing text-only read/respond path
+                # unchanged; its visibility semantics need a separate change.
+                if any(block["type"] == "image" for block in visible_blocks):
                     channel = str(event.get("channel") or "")
                     visible_source = str(event.get("source_kind") or "").strip()
                     if not visible_source:
