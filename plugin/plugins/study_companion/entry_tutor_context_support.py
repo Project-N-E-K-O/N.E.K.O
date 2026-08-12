@@ -301,11 +301,26 @@ class _TutorContextSupportMixin:
         extra_context: dict[str, Any] | None = None,
         public_payload: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        await self._record_tutor_result(operation, reply, extra=extra_context)
         diagnostic = str(reply.diagnostic or "")
-        if diagnostic and reply.degraded:
+        if reply.degraded:
             async with _plugin_lock(self._lock):
-                self._state.last_error = diagnostic
+                if diagnostic:
+                    self._state.last_error = diagnostic
+            if public_payload is not None:
+                payload = {
+                    "operation": reply.operation,
+                    "input_text": reply.input_text,
+                    "reply": reply.reply,
+                    "degraded": True,
+                    "diagnostic": reply.diagnostic,
+                    "created_at": reply.created_at or utc_now_iso(),
+                    **public_payload,
+                }
+                payload.setdefault("summary", reply.reply)
+                return payload
+            return build_tutor_payload(reply)
+
+        await self._record_tutor_result(operation, reply, extra=extra_context)
         await asyncio.to_thread(
             self._store.append_interaction,
             kind=history_kind,
@@ -360,51 +375,68 @@ class _TutorContextSupportMixin:
         extra_context: dict[str, Any] | None = None,
         public_payload: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        if self._agent is None or not hasattr(self._agent, "knowledge_track"):
+        if operation != LLM_OPERATION_ANSWER_EVALUATE:
             return {}
-        try:
-            track_context = await self._build_learning_context(
-                LLM_OPERATION_KNOWLEDGE_TRACK,
-                input_text=reply.input_text,
-                extra={
-                    "operation": operation,
-                    "result": public_payload or reply.payload or {"reply": reply.reply},
-                    "reply": reply.reply,
-                    "degraded": reply.degraded,
-                    "diagnostic": reply.diagnostic,
-                    **(extra_context or {}),
-                },
-            )
-            track_reply = await self._agent.knowledge_track(
-                mode=self._state.active_mode, context=track_context
-            )
-        except Exception as exc:
-            self.logger.warning("study knowledge track failed: {}", exc)
-            track_reply = TutorReply(
-                operation=LLM_OPERATION_KNOWLEDGE_TRACK,
-                input_text=reply.input_text,
-                reply="knowledge track updated",
-                payload={
-                    "topic": self._guess_track_topic(reply),
-                    "mastery_delta": 0.0,
-                    "confidence": 0.35,
-                    "weak_points": [],
-                    "next_steps": [],
-                    "screen_type": self._screen_classification_context().get(
-                        "screen_type"
-                    )
-                    or "",
-                },
-                degraded=True,
-                diagnostic=diagnostic_code_for_exception(exc),
-                created_at=utc_now_iso(),
-            )
-        await self._record_tutor_result(LLM_OPERATION_KNOWLEDGE_TRACK, track_reply)
-        if operation == LLM_OPERATION_ANSWER_EVALUATE:
-            return await self._record_answer_knowledge(
-                reply, track_reply, extra_context=extra_context
-            )
-        return {}
+        eval_payload = dict(public_payload or reply.payload or {})
+        context = dict(extra_context or {})
+        question_payload = dict(
+            context.get("question_payload") or context.get("current_question") or {}
+        )
+        related_topics = eval_payload.get("related_topics")
+        first_related_topic = (
+            str(related_topics[0] or "").strip()
+            if isinstance(related_topics, list) and related_topics
+            else ""
+        )
+        topic = str(
+            context.get("selected_topic_id")
+            or question_payload.get("selected_topic_id")
+            or question_payload.get("topic_id")
+            or question_payload.get("topic")
+            or eval_payload.get("topic")
+            or first_related_topic
+            or context.get("question")
+            or "general"
+        ).strip()[:160]
+        verdict = str(eval_payload.get("verdict") or "").strip().lower()
+        score = float(eval_payload.get("score") or 0.0)
+        mastery_delta = (
+            0.08
+            if verdict == "correct"
+            else (-0.08 if verdict in {"wrong", "dont_know"} else 0.02)
+        )
+        weak_points = [
+            str(item).strip()
+            for key in ("missing_points", "misconceptions")
+            for item in (eval_payload.get(key) or [])
+            if str(item).strip()
+        ]
+        error_type = str(eval_payload.get("error_type") or "").strip()
+        if error_type and error_type != "none" and error_type not in weak_points:
+            weak_points.append(error_type)
+        track_reply = TutorReply(
+            operation=LLM_OPERATION_KNOWLEDGE_TRACK,
+            input_text=reply.input_text,
+            reply=topic,
+            payload={
+                "topic": topic,
+                "mastery_delta": mastery_delta,
+                "confidence": max(0.0, min(1.0, score / 100.0)),
+                "weak_points": weak_points[:6],
+                "next_steps": [str(eval_payload.get("next_action") or "").strip()]
+                if str(eval_payload.get("next_action") or "").strip()
+                else [],
+                "screen_type": str(
+                    eval_payload.get("screen_type")
+                    or self._screen_classification_context().get("screen_type")
+                    or ""
+                ),
+            },
+            created_at=reply.created_at or utc_now_iso(),
+        )
+        return await self._record_answer_knowledge(
+            reply, track_reply, extra_context=extra_context
+        )
 
     async def _record_answer_knowledge(
         self,

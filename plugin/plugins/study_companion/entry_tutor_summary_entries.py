@@ -25,7 +25,7 @@ class _TutorSummaryEntriesMixin:
             "type": "object",
             "properties": {"focus": {"type": "string", "default": ""}},
         },
-        timeout=75.0,
+        timeout=85.0,
         llm_result_fields=[
             "summary",
             "markdown",
@@ -69,6 +69,8 @@ class _TutorSummaryEntriesMixin:
         payload["screen_classification"] = (
             tutor_context.get("screen_classification") or {}
         )
+        if reply.degraded:
+            return Ok(payload)
         try:
             await self._emit_session_summarized_event(payload)
         except Exception as exc:

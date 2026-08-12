@@ -2,10 +2,7 @@ from __future__ import annotations
 
 from .tutor_llm_agent_common import (
     Any,
-    Callable,
     asyncio,
-    hashlib,
-    inspect,
     re,
     STUDY_EMPTY_INPUT_DEFAULT,
     STUDY_FALLBACK_EXPLANATION_DEFAULT,
@@ -23,152 +20,30 @@ from .tutor_llm_agent_common import (
     StudyConfig,
     TutorReply,
     utc_now_iso,
-    _config_manager_module,
-    _llm_client_module,
-    _token_tracker_module,
-    _LLM_CALL_TIMEOUT_GRACE_SECONDS,
     _as_str,
     _as_dict,
     diagnostic_code_for_exception,
 )
+from .qwen_native_client import (
+    QwenNativeClient,
+    messages_have_image,
+    new_operation_deadline,
+)
 from .tutor_llm_agent_json_corrector import _JSONCorrector
-
-
-class _LLMClientCache:
-    def __init__(self, *, logger: Any) -> None:
-        self._logger = logger
-        self._cache: dict[tuple[Any, ...], Any] = {}
-        self._locks: dict[tuple[Any, ...], asyncio.Lock] = {}
-
-    def get(self, key: tuple[Any, ...]) -> Any | None:
-        return self._cache.get(key)
-
-    async def get_or_create(
-        self,
-        key: tuple[Any, ...],
-        factory: Callable[[], Any],
-    ) -> Any:
-        llm = self._cache.get(key)
-        if llm is not None:
-            return llm
-        lock = self._locks.setdefault(key, asyncio.Lock())
-        async with lock:
-            llm = self._cache.get(key)
-            if llm is None:
-                llm = factory()
-                if inspect.isawaitable(llm):
-                    llm = await llm
-                self._cache[key] = llm
-        return self._cache[key]
-
-    def close_all(self) -> None:
-        clients = list(self._cache.values())
-        self._cache.clear()
-        self._locks.clear()
-        for llm in clients:
-            self._close_cached_llm(llm)
-
-    async def close_all_async(self) -> None:
-        clients = list(self._cache.values())
-        self._cache.clear()
-        self._locks.clear()
-        for llm in clients:
-            await self._close_cached_llm_async(llm)
-
-    def _close_cached_llm(self, llm: Any) -> None:
-        found_close = False
-        for method_name in ("shutdown", "aclose"):
-            close = getattr(llm, method_name, None)
-            if not callable(close):
-                continue
-            found_close = True
-            try:
-                result = close()
-            except Exception as exc:
-                self._logger.warning(
-                    "study tutor llm close via {} failed: {}", method_name, exc
-                )
-                continue
-            if inspect.isawaitable(result):
-                self._finalize_async_close(result, method_name=method_name)
-            return
-        if not found_close:
-            self._logger.warning(
-                "study tutor llm has no shutdown or aclose method: {}",
-                type(llm).__name__,
-            )
-
-    async def _close_cached_llm_async(self, llm: Any) -> None:
-        found_close = False
-        for method_name in ("shutdown", "aclose"):
-            close = getattr(llm, method_name, None)
-            if not callable(close):
-                continue
-            found_close = True
-            try:
-                result = close()
-                if inspect.isawaitable(result):
-                    await result
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                self._logger.warning(
-                    "study tutor llm async close via {} failed: {}", method_name, exc
-                )
-                continue
-            return
-        if not found_close:
-            self._logger.warning(
-                "study tutor llm has no shutdown or aclose method: {}",
-                type(llm).__name__,
-            )
-
-    def _finalize_async_close(self, close_result: Any, *, method_name: str) -> None:
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            try:
-                asyncio.run(close_result)
-            except Exception as exc:
-                self._logger.warning(
-                    "study tutor llm async close via {} failed without running loop: {}",
-                    method_name,
-                    exc,
-                )
-            return
-        try:
-            task = loop.create_task(close_result)
-        except Exception as exc:
-            self._logger.warning(
-                "study tutor llm async close via {} could not be scheduled: {}",
-                method_name,
-                exc,
-            )
-            return
-        task.add_done_callback(self._consume_close_exception)
-
-    def _consume_close_exception(self, task: asyncio.Task[Any]) -> None:
-        try:
-            exc = task.exception()
-        except (asyncio.CancelledError, asyncio.InvalidStateError):
-            return
-        if exc is not None:
-            self._logger.warning("study tutor llm close task failed: {}", exc)
 
 
 class TutorLLMAgent:
     def __init__(self, *, logger: Any, config: StudyConfig) -> None:
         self._logger = logger
         self._config = config
-        self._client_cache = _LLMClientCache(logger=logger)
+        self._qwen_client = QwenNativeClient(logger=logger)
         self._json_corrector = _JSONCorrector(logger=logger)
 
     def update_config(self, config: StudyConfig) -> None:
-        self._client_cache.close_all()
         self._config = config
 
     async def shutdown(self) -> None:
-        await self._client_cache.close_all_async()
+        return None
 
     def _localize_reply(self, language: str | None, key: str, **values: Any) -> str:
         if key == "empty_input":
@@ -197,10 +72,12 @@ class TutorLLMAgent:
             vision_image_base64 = str(context.get("vision_image_base64") or "")
             if vision_image_base64:
                 messages = self._attach_vision_image(messages, vision_image_base64)
+            deadline = self._new_operation_deadline(operation, messages)
             raw_text = await self._json_corrector.invoke_with_correction(
                 operation=operation,
                 messages=messages,
                 call_model=self._call_model,
+                deadline=deadline,
             )
             parsed = self._json_corrector.parse_json_object(raw_text)
             payload = self._normalize_result(operation, parsed, context)
@@ -479,96 +356,26 @@ class TutorLLMAgent:
         messages: list[dict[str, Any]],
         *,
         operation: str = LLM_OPERATION_CONCEPT_EXPLAIN,
-        ) -> str:
-        get_config_manager = getattr(_config_manager_module, "get_config_manager", None)
-        create_chat_llm_async = getattr(_llm_client_module, "create_chat_llm_async", None)
-        set_call_type = getattr(_token_tracker_module, "set_call_type", None)
-        missing_runtime_deps = [
-            name
-            for name, dep in (
-                ("utils.config_manager.get_config_manager", get_config_manager),
-                ("utils.llm_client.create_chat_llm_async", create_chat_llm_async),
-                ("utils.token_tracker.set_call_type", set_call_type),
-            )
-            if not callable(dep)
-        ]
-        if missing_runtime_deps:
-            details = ", ".join(missing_runtime_deps)
-            raise SdkError(f"missing runtime dependency: {details}")
-
-        config_manager = get_config_manager()
-        has_image = any(
-            self._message_has_image_content(message) for message in messages
+        deadline: float | None = None,
+    ) -> str:
+        effective_deadline = deadline or self._new_operation_deadline(
+            operation, messages
         )
-        if has_image:
-            vision_config = config_manager.get_model_api_config("vision")
-            vision_base_url = str(vision_config.get("base_url") or "").strip()
-            vision_model = str(vision_config.get("model") or "").strip()
-            if vision_base_url and vision_model:
-                api_config = vision_config
-                model_group = "vision"
-            else:
-                api_config = config_manager.get_model_api_config("agent")
-                model_group = "agent"
-        else:
-            api_config = config_manager.get_model_api_config("agent")
-            model_group = "agent"
-        base_url = str(api_config.get("base_url") or "").strip()
-        model = str(api_config.get("model") or "").strip()
-        api_key = str(api_config.get("api_key") or "").strip()
-        if not base_url or not model:
-            raise SdkError(f"missing configured {model_group} model")
-        if (
-            has_image
-            and model_group != "vision"
-            and not self._model_supports_vision(model)
-        ):
-            self._logger.warning(
-                "vision stripped: model {} not in vision allowlist", model
-            )
-            messages = self._strip_image_content(messages)
-        key = (
-            model_group,
+        result = await self._qwen_client.call(
+            messages,
+            operation=operation,
+            deadline=effective_deadline,
+        )
+        return result.text
+
+    def _new_operation_deadline(
+        self, operation: str, messages: list[dict[str, Any]]
+    ) -> float:
+        return new_operation_deadline(
             operation,
-            base_url,
-            model,
-            self._api_key_cache_fingerprint(api_key),
-            api_config.get("provider_type"),
+            has_image=messages_have_image(messages),
+            configured_timeout_seconds=self._config.llm_call_timeout_seconds,
         )
-        timeout_seconds = (
-            float(self._config.llm_call_timeout_seconds)
-            + _LLM_CALL_TIMEOUT_GRACE_SECONDS
-        )
-        llm = await self._client_cache.get_or_create(
-            key,
-            lambda: create_chat_llm_async(
-                model=model,
-                base_url=base_url,
-                api_key=api_key,
-                timeout=timeout_seconds,
-                provider_type=api_config.get("provider_type"),
-            ),
-        )
-        if llm is None:
-            raise SdkError("failed to initialize agent model")
-        set_call_type(model_group)
-        ainvoke = getattr(llm, "ainvoke", None)
-        if callable(ainvoke):
-            response = await asyncio.wait_for(
-                ainvoke(messages), timeout=timeout_seconds
-            )
-        else:
-            response = await asyncio.wait_for(
-                asyncio.to_thread(llm.invoke, messages), timeout=timeout_seconds
-            )
-        return str(getattr(response, "content", "") or response)
-
-    @staticmethod
-    def _api_key_cache_fingerprint(api_key: str) -> tuple[str, str]:
-        if not api_key:
-            return ("empty", "")
-        digest = hashlib.sha256(api_key.encode("utf-8")).hexdigest()
-        return ("sha256", digest)
 
 
 from .tutor_llm_agent_concept_explain import concept_explain

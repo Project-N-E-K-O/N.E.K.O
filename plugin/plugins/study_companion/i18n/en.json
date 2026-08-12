@@ -485,5 +485,12 @@
     "ui.status.config_saved":  "Saved",
     "ui.status.config_load_failed":  "Could not load settings",
     "ui.status.config_save_failed":  "Could not save settings",
-    "ui.awareness.translation_pending":  "Translation pending"
+    "ui.awareness.translation_pending":  "Translation pending",
+    "ui.error.llm_timeout":  "Image understanding timed out. Please retry or paste the problem text.",
+    "ui.error.llm_rate_limited":  "Qwen is receiving too many requests. Please retry shortly.",
+    "ui.error.llm_authentication_failed":  "The Qwen API credential is invalid. Please check the API key.",
+    "ui.error.llm_model_not_supported":  "The configured model or endpoint does not support native Qwen image understanding.",
+    "ui.error.llm_provider_unavailable":  "Qwen is temporarily unavailable. Please retry shortly.",
+    "ui.error.llm_invalid_image":  "The image could not be read. Please use a valid JPEG or PNG image.",
+    "ui.error.llm_call_failed":  "The Qwen request failed. Please retry."
 }

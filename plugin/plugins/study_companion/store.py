@@ -542,11 +542,13 @@ class StudyStore:
         if not raw:
             return fallback
         merged = fallback.to_dict()
-        merged.update(raw)
+        merged.update({key: value for key, value in raw.items() if key != "language"})
         return build_config(merged)
 
     def save_config(self, config: StudyConfig) -> None:
-        self.set_raw(STORE_CONFIG, config.to_dict())
+        persisted = config.to_dict()
+        persisted.pop("language", None)
+        self.set_raw(STORE_CONFIG, persisted)
 
     def load_state(self, fallback: StudyState) -> StudyState:
         raw = self.get_raw(STORE_STATE)

@@ -38,6 +38,85 @@ from .constants import (
 from .mode_manager import normalize_mode
 
 
+_PROMPT_CONTEXT_ALLOWED_FIELDS = frozenset(
+    {
+        "operation",
+        "input_text",
+        "language",
+        "mode",
+        "source",
+        "source_text",
+        "text",
+        "question",
+        "answer",
+        "expected_answer",
+        "question_payload",
+        "current_question",
+        "public_current_question",
+        "last_answer_evaluation",
+        "session_summary_seed",
+        "screen_classification",
+        "recent_screen_classifications",
+        "recent_learning_events",
+        "last_ocr_text",
+        "last_ocr_at",
+        "history",
+        "knowledge_summary",
+        "knowledge_session_summary",
+        "knowledge_guidance",
+        "knowledge_question_params",
+        "topic_hint",
+        "topic",
+        "selected_topic_id",
+        "selected_topic_name",
+        "selection_reason",
+        "selection_reason_payload",
+        "targeted_question",
+        "result",
+        "reply",
+        "focus",
+        "screen_type",
+        "weak_points",
+        "next_steps",
+    }
+)
+_PROMPT_PRIVATE_FIELDS = frozenset(
+    {
+        "vision_image_base64",
+        "last_vision_image_base64",
+        "image_base64",
+        "deadline",
+        "deadline_monotonic",
+        "correlation_id",
+        "request_id",
+        "api_key",
+        "base_url",
+        "internal_private_payload",
+        "current_question_private",
+    }
+)
+
+
+def _sanitize_nested_prompt_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            str(key): _sanitize_nested_prompt_value(item)
+            for key, item in value.items()
+            if str(key) not in _PROMPT_PRIVATE_FIELDS
+        }
+    if isinstance(value, list):
+        return [_sanitize_nested_prompt_value(item) for item in value]
+    return value
+
+
+def _prompt_context(context: dict[str, Any]) -> dict[str, Any]:
+    return {
+        str(key): _sanitize_nested_prompt_value(value)
+        for key, value in context.items()
+        if str(key) in _PROMPT_CONTEXT_ALLOWED_FIELDS
+    }
+
+
 def _json_dump(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, indent=2, default=str)
 
@@ -101,7 +180,8 @@ def _compact_prompt_value(
 
 def _context_json_for_prompt(operation: str, context: dict[str, Any]) -> str:
     limit = STUDY_PROMPT_CONTEXT_MAX_TOKENS.get(operation, 4000)
-    raw = _json_dump(context)
+    safe_context = _prompt_context(context)
+    raw = _json_dump(safe_context)
     if count_tokens(raw) <= limit:
         return raw
     for list_limit, string_limit, dict_key_limit in (
@@ -110,7 +190,7 @@ def _context_json_for_prompt(operation: str, context: dict[str, Any]) -> str:
         (4, 240, 16),
     ):
         compact = _compact_prompt_value(
-            context,
+            safe_context,
             list_limit=list_limit,
             string_limit=string_limit,
             dict_key_limit=dict_key_limit,

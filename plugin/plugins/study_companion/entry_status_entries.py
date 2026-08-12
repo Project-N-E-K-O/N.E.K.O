@@ -5,6 +5,7 @@ from .entry_common import (
     Ok,
     StudyConfig,
     _entry_exception_error,
+    _plugin_lock,
     plugin_entry,
     tr,
     ui,
@@ -179,7 +180,15 @@ class _StatusEntriesMixin:
             "entries.status.description",
             default="Return runtime status, dependencies, and recent study interactions.",
         ),
-        input_schema={"type": "object", "properties": {}},
+        input_schema={
+            "type": "object",
+            "properties": {
+                "locale": {
+                    "type": "string",
+                    "description": "Current locale of the plugin management page.",
+                }
+            },
+        },
         llm_result_fields=[
             "status",
             "active_mode",
@@ -189,8 +198,14 @@ class _StatusEntriesMixin:
         ],
         metadata={"result_kind": "event"},
     )
-    async def study_status(self, **_):
+    async def study_status(self, locale: str = "", **_):
         try:
+            page_locale = str(locale or "").strip()
+            if page_locale:
+                async with _plugin_lock(self._lock):
+                    self._cfg.language = page_locale
+                    if self._agent is not None:
+                        self._agent.update_config(self._cfg)
             payload = await asyncio.to_thread(self._status_payload)
             return Ok(payload)
         except Exception as exc:

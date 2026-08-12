@@ -36,7 +36,7 @@ class _TutorAnswerEntriesMixin:
                 "vision_image_base64": {"type": "string", "default": ""},
             },
         },
-        timeout=310.0,
+        timeout=70.0,
         llm_result_fields=[
             "summary",
             "verdict",
@@ -202,6 +202,18 @@ class _TutorAnswerEntriesMixin:
                 },
                 extra_context=tutor_context,
             )
+            if reply.degraded:
+                if reserved_attempt:
+                    async with self._lock:
+                        if (
+                            str(self._state.current_question.get("attempt_id") or "")
+                            == state_attempt_id
+                        ):
+                            self._state.current_question.pop(
+                                "attempt_evaluation_pending", None
+                            )
+                    await self._persist_state()
+                return Ok(payload)
             payload["question"] = resolved_question
             if supplied_question_id or state_question_id:
                 payload["question_id"] = supplied_question_id or state_question_id

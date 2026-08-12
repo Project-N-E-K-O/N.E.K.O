@@ -485,5 +485,12 @@
     "ui.status.config_saved":  "Guardado",
     "ui.status.config_load_failed":  "No se pudieron cargar los ajustes",
     "ui.status.config_save_failed":  "No se pudieron guardar los ajustes",
-    "ui.awareness.translation_pending":  "Traducción pendiente"
+    "ui.awareness.translation_pending":  "Traducción pendiente",
+    "ui.error.llm_timeout":  "Se agotó el tiempo para interpretar la imagen. Reinténtalo o pega el texto del problema.",
+    "ui.error.llm_rate_limited":  "Qwen está recibiendo demasiadas solicitudes. Inténtalo de nuevo en breve.",
+    "ui.error.llm_authentication_failed":  "Las credenciales de la API de Qwen no son válidas. Revisa la API Key.",
+    "ui.error.llm_model_not_supported":  "El modelo o endpoint configurado no admite la interpretación nativa de imágenes de Qwen.",
+    "ui.error.llm_provider_unavailable":  "Qwen no está disponible temporalmente. Inténtalo de nuevo en breve.",
+    "ui.error.llm_invalid_image":  "No se pudo leer la imagen. Usa una imagen JPEG o PNG válida.",
+    "ui.error.llm_call_failed":  "La solicitud a Qwen falló. Inténtalo de nuevo."
 }

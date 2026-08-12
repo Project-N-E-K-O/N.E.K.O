@@ -429,7 +429,7 @@ class _TutorQuestionEntriesMixin:
                 "selection_context_id": {"type": "string", "default": ""},
             },
         },
-        timeout=310.0,
+        timeout=55.0,
         llm_result_fields=[
             "question",
             "hint",
@@ -505,7 +505,7 @@ class _TutorQuestionEntriesMixin:
                 "vision_image_base64": {"type": "string", "default": ""},
             },
         },
-        timeout=310.0,
+        timeout=70.0,
         llm_result_fields=[
             "summary",
             "question",

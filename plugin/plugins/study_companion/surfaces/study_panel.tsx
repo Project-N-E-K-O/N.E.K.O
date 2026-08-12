@@ -49,11 +49,11 @@ const ENTRY_TIMEOUT_MS: Record<string, number> = {
   study_status: 15000,
   study_ocr_snapshot: 60000,
   study_set_mode: 15000,
-  study_explain_text: 310000,
-  study_generate_question: 310000,
+  study_explain_text: 70000,
+  study_generate_question: 70000,
   study_question_context: 30000,
-  study_generate_targeted_question: 310000,
-  study_evaluate_answer: 310000,
+  study_generate_targeted_question: 55000,
+  study_evaluate_answer: 70000,
   study_summarize_session: 90000,
 };
 
@@ -599,10 +599,16 @@ function createPasteHandler(
 function callStudyPlugin<T = Record<string, unknown>>(
   api: PluginSurfaceProps['api'],
   entryId: string,
+  locale: PluginSurfaceProps['locale'],
   args: Record<string, unknown> = {},
   signal?: AbortSignal,
 ) {
-  return callHostedPlugin<T>(api, entryId, args, { signal, timeoutMs: timeoutForEntry(entryId) });
+  return callHostedPlugin<T>(
+    api,
+    entryId,
+    { ...args, locale: String(locale || '').trim() },
+    { signal, timeoutMs: timeoutForEntry(entryId) },
+  );
 }
 
 export default function StudyPanel(props: PluginSurfaceProps) {
@@ -733,6 +739,20 @@ export default function StudyPanel(props: PluginSurfaceProps) {
             : String(error);
   }
 
+  function formatTutorDiagnostic(diagnostic?: string) {
+    const messages: Record<string, [string, string]> = {
+      timeout: ['ui.error.llm_timeout', 'Image understanding timed out. Please retry or paste the problem text.'],
+      rate_limited: ['ui.error.llm_rate_limited', 'Qwen is receiving too many requests. Please retry shortly.'],
+      authentication_failed: ['ui.error.llm_authentication_failed', 'The Qwen API credential is invalid. Please check the API key.'],
+      model_not_supported: ['ui.error.llm_model_not_supported', 'The configured model or endpoint does not support native Qwen image understanding.'],
+      provider_unavailable: ['ui.error.llm_provider_unavailable', 'Qwen is temporarily unavailable. Please retry shortly.'],
+      invalid_image: ['ui.error.llm_invalid_image', 'The image could not be read. Please use a valid JPEG or PNG image.'],
+    };
+    const [key, fallback] = messages[String(diagnostic || '').trim()]
+      || ['ui.error.llm_call_failed', 'The Qwen request failed. Please retry.'];
+    return t(key, fallback);
+  }
+
   function compactText(value: string | undefined) {
     const trimmed = String(value || '').trim();
     if (!trimmed) {
@@ -755,7 +775,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
   }
 
   async function refresh(signal?: AbortSignal, _options: { updateReply?: boolean } = {}) {
-    const data = normalizeStudyStatus(await callStudyPlugin(props.api, 'study_status', {}, signal));
+    const data = normalizeStudyStatus(await callStudyPlugin(props.api, 'study_status', props.locale, {}, signal));
     if (signal?.aborted) {
       return;
     }
@@ -766,7 +786,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
   }
 
   async function loadQuestionContext(signal?: AbortSignal) {
-    const data = await callStudyPlugin<QuestionContext>(props.api, 'study_question_context', {}, signal);
+    const data = await callStudyPlugin<QuestionContext>(props.api, 'study_question_context', props.locale, {}, signal);
     if (!signal?.aborted) {
       setQuestionContext(data);
     }
@@ -781,7 +801,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
     setBusy(true);
     try {
       setReply('');
-      const data = await callStudyPlugin(props.api, 'study_set_mode', { mode, reason: 'ui' }, controller.signal) as {
+      const data = await callStudyPlugin(props.api, 'study_set_mode', props.locale, { mode, reason: 'ui' }, controller.signal) as {
         changed?: boolean;
         transition_phrase?: string;
         new_mode?: string;
@@ -837,12 +857,19 @@ export default function StudyPanel(props: PluginSurfaceProps) {
       }));
       setReply(textImage ? t('ui.status.solving_problem', 'Solving problem...') : t('ui.status.explaining', 'Explaining...'));
       scrollReplyIntoView();
-      const data = await callStudyPlugin(props.api, 'study_explain_text', explainArgs, controller.signal) as {
+      const data = await callStudyPlugin(props.api, 'study_explain_text', props.locale, explainArgs, controller.signal) as {
         reply?: string;
         summary?: string;
         transition_phrase?: string;
+        degraded?: boolean;
+        diagnostic?: string;
       };
       if (controller.signal.aborted) {
+        return;
+      }
+      if (data.degraded) {
+        setReply(formatTutorDiagnostic(data.diagnostic));
+        await refresh(controller.signal, { updateReply: false });
         return;
       }
       shouldClearTextImage = true;
@@ -884,13 +911,24 @@ export default function StudyPanel(props: PluginSurfaceProps) {
         setReply(t('ui.error.no_targeted_question_data', 'Not enough study records to generate a practice question yet.'));
         return;
       }
-      const data = await callStudyPlugin<GeneratedQuestion & { summary?: string; reply?: string }>(
+      const data = await callStudyPlugin<GeneratedQuestion & {
+        summary?: string;
+        reply?: string;
+        degraded?: boolean;
+        diagnostic?: string;
+      }>(
         props.api,
         'study_generate_targeted_question',
+        props.locale,
         { selection_context_id: context.selection_context_id },
         controller.signal,
       );
       if (controller.signal.aborted) {
+        return;
+      }
+      if (data.degraded) {
+        setReply(formatTutorDiagnostic(data.diagnostic));
+        await refresh(controller.signal, { updateReply: false });
         return;
       }
       setQuestion(data.question || '');
@@ -935,13 +973,20 @@ export default function StudyPanel(props: PluginSurfaceProps) {
     if (answerImage) evalArgs.vision_image_base64 = answerImage;
     let shouldClearAnswerImage = false;
     try {
-      const data = await callStudyPlugin(props.api, 'study_evaluate_answer', evalArgs, controller.signal) as {
+      const data = await callStudyPlugin(props.api, 'study_evaluate_answer', props.locale, evalArgs, controller.signal) as {
         feedback?: string;
         next_action?: string;
         summary?: string;
         reply?: string;
+        degraded?: boolean;
+        diagnostic?: string;
       };
       if (controller.signal.aborted) {
+        return;
+      }
+      if (data.degraded) {
+        setReply(formatTutorDiagnostic(data.diagnostic));
+        await refresh(controller.signal, { updateReply: false });
         return;
       }
       shouldClearAnswerImage = true;
@@ -972,15 +1017,19 @@ export default function StudyPanel(props: PluginSurfaceProps) {
     const controller = beginStudyRequest();
     setBusy(true);
     try {
-      const data = await callStudyPlugin(props.api, 'study_summarize_session', {}, controller.signal) as {
+      const data = await callStudyPlugin(props.api, 'study_summarize_session', props.locale, {}, controller.signal) as {
         markdown?: string;
         summary?: string;
         reply?: string;
+        degraded?: boolean;
+        diagnostic?: string;
       };
       if (controller.signal.aborted) {
         return;
       }
-      setReply(data.markdown || data.summary || data.reply || '');
+      setReply(data.degraded
+        ? formatTutorDiagnostic(data.diagnostic)
+        : (data.markdown || data.summary || data.reply || ''));
       await refresh(controller.signal, { updateReply: false });
     } catch (error) {
       if (!controller.signal.aborted) {
@@ -1013,7 +1062,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
       pasteControllerRef.current?.abort();
       pasteControllerRef.current = null;
     };
-  }, []);
+  }, [props.locale]);
 
   useEffect(() => {
     const panel = panelRef.current;

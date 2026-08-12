@@ -485,5 +485,12 @@
     "ui.status.config_saved":  "Сохранено",
     "ui.status.config_load_failed":  "Не удалось загрузить настройки",
     "ui.status.config_save_failed":  "Не удалось сохранить настройки",
-    "ui.awareness.translation_pending":  "Перевод ожидается"
+    "ui.awareness.translation_pending":  "Перевод ожидается",
+    "ui.error.llm_timeout":  "Время распознавания изображения истекло. Повторите попытку или вставьте текст задания.",
+    "ui.error.llm_rate_limited":  "Слишком много запросов к Qwen. Повторите попытку позже.",
+    "ui.error.llm_authentication_failed":  "Недействительные учётные данные Qwen API. Проверьте API Key.",
+    "ui.error.llm_model_not_supported":  "Настроенная модель или конечная точка не поддерживает нативное распознавание изображений Qwen.",
+    "ui.error.llm_provider_unavailable":  "Сервис Qwen временно недоступен. Повторите попытку позже.",
+    "ui.error.llm_invalid_image":  "Не удалось прочитать изображение. Используйте корректный файл JPEG или PNG.",
+    "ui.error.llm_call_failed":  "Запрос Qwen завершился ошибкой. Повторите попытку."
 }

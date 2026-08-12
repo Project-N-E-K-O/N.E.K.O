@@ -997,14 +997,14 @@ def test_study_store_round_trip_and_export(tmp_path: Path) -> None:
             context={"index": index},
         )
 
-    assert store.load_config(StudyConfig()).language == "en"
+    assert store.load_config(StudyConfig(language="zh-TW")).language == "zh-TW"
     assert store.load_state(build_initial_state()).last_ocr_text == "photosynthesis"
     assert [item["input_text"] for item in store.list_interactions(limit=10)] == [
         "e",
         "c",
     ]
     exported = store.export_json()
-    assert exported["config"]["language"] == "en"
+    assert "language" not in exported["config"]
     assert exported["sessions"][0]["id"] == "session-1"
     assert [
         item["question"]["question"] for item in store.list_qa_records(limit=2)
@@ -1017,6 +1017,67 @@ def test_study_store_round_trip_and_export(tmp_path: Path) -> None:
     assert exported["review_log"][0]["topic_id"] == "photosynthesis_topic"
     assert exported["knowledge_evidence"][0]["item_id"] == candidate["id"]
     store.close()
+
+
+def test_study_store_ignores_legacy_persisted_language(tmp_path: Path) -> None:
+    store = StudyStore(tmp_path / "study.db", tmp_path / "seed.json", _Logger())
+    store.open()
+    try:
+        store.set_raw("config", {"language": "en", "history_limit": 7})
+
+        loaded = store.load_config(StudyConfig(language="zh-CN", history_limit=50))
+
+        assert loaded.language == "zh-CN"
+        assert loaded.history_limit == 7
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_study_status_uses_plugin_page_locale_without_persisting_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "runtime"))
+    plugin = StudyCompanionPlugin(
+        _Ctx(
+            tmp_path,
+            {
+                "study": {
+                    "language": "en",
+                    "default_mode": MODE_COMPANION,
+                    "auto_open_ui": False,
+                }
+            },
+        )
+    )
+    assert isinstance(await plugin.startup(), Ok)
+
+    try:
+        result = await plugin.study_status(locale="zh-TW")
+
+        assert isinstance(result, Ok)
+        assert result.value["config"]["language"] == "zh-TW"
+        assert plugin._cfg.language == "zh-TW"
+        assert plugin._agent is not None
+        assert plugin._agent._config is plugin._cfg
+        assert "language" not in (plugin._store.get_raw("config") or {})
+    finally:
+        await plugin.shutdown()
+
+
+def test_study_companion_pages_forward_current_locale_to_plugin_entries() -> None:
+    plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
+    hosted_source = (plugin_dir / "surfaces" / "study_panel.tsx").read_text(
+        encoding="utf-8"
+    )
+    static_source = (plugin_dir / "static" / "main.js").read_text(encoding="utf-8")
+
+    assert "locale: PluginSurfaceProps['locale']" in hosted_source
+    assert "{ ...args, locale: String(locale || '').trim() }" in hosted_source
+    assert hosted_source.count("props.locale,") == 7
+    assert "}, [props.locale]);" in hosted_source
+    assert "typeof window.I18n.lang === 'function'" in static_source
+    assert "createRun(entryId, { ...args, locale }, deadline)" in static_source
 
 
 @pytest.mark.asyncio
@@ -3037,14 +3098,16 @@ def test_study_prompt_builder_compacts_large_context_and_rejects_unknown_operati
     context = {
         "text": "x" * 20000,
         "language": "en",
-        "items": [{"body": "y" * 2000} for _ in range(30)],
-        **{f"k{i}": i for i in range(90)},
+        "history": [{"output_text": "y" * 2000} for _ in range(30)],
+        "recent_learning_events": [
+            {"summary": "z" * 2000} for _ in range(30)
+        ],
     }
 
     messages = build_operation_messages("question_generate", context)
 
     assert messages[1]["content"].count("_prompt_truncated") == 1
-    assert len(messages[1]["content"]) <= 9500
+    assert len(messages[1]["content"]) <= 12000
     with pytest.raises(ValueError):
         build_operation_messages("unsupported", {})
 
@@ -6021,14 +6084,14 @@ def test_study_companion_hosted_panel_uses_long_running_entry_poll_budget() -> N
 
     assert "ENTRY_TIMEOUT_MS" in source
     assert "study_set_mode: 15000" in source
-    assert "study_explain_text: 310000" in source
-    assert "study_generate_question: 310000" in source
-    assert "study_evaluate_answer: 310000" in source
+    assert "study_explain_text: 70000" in source
+    assert "study_generate_question: 70000" in source
+    assert "study_generate_targeted_question: 55000" in source
+    assert "study_evaluate_answer: 70000" in source
+    assert "study_summarize_session: 90000" in source
     assert "callPlugin as callHostedPlugin" in source
-    assert (
-        "return callHostedPlugin<T>(api, entryId, args, { signal, timeoutMs: timeoutForEntry(entryId) });"
-        in source
-    )
+    assert "{ ...args, locale: String(locale || '').trim() }" in source
+    assert "{ signal, timeoutMs: timeoutForEntry(entryId) }" in source
     assert "fetch('/runs'" not in source
     assert "fetch(`/runs/" not in source
     assert "for (let i = 0; i < 40; i += 1)" not in source
@@ -6240,27 +6303,28 @@ def test_study_companion_explain_timeouts_cover_vision_solving() -> None:
         plugin_config = tomllib.load(handle)
     llm_timeout = float(plugin_config["llm"]["llm_call_timeout_seconds"])
 
-    assert "study_explain_text: 310000" in static_source
-    assert "study_generate_question: 310000" in static_source
-    assert "study_evaluate_answer: 310000" in static_source
-    assert "study_explain_text: 310000" in hosted_source
-    assert "study_generate_question: 310000" in hosted_source
-    assert "study_evaluate_answer: 310000" in hosted_source
-    assert "timeout=310.0" in explain_source
-    assert "timeout=310.0" in question_source
-    assert "timeout=310.0" in answer_source
-    assert submit_meta.timeout == 310.0
-    assert meta.timeout == 310.0
-    assert question_meta.timeout == 310.0
-    assert answer_meta.timeout == 310.0
-    assert "llm_call_timeout_seconds = 300" in plugin_toml
+    assert "study_explain_text: 70000" in static_source
+    assert "study_generate_question: 70000" in static_source
+    assert "study_evaluate_answer: 70000" in static_source
+    assert "study_explain_text: 70000" in hosted_source
+    assert "study_generate_question: 70000" in hosted_source
+    assert "study_evaluate_answer: 70000" in hosted_source
+    assert "timeout=70.0" in explain_source
+    assert "timeout=70.0" in question_source
+    assert "timeout=70.0" in answer_source
+    assert submit_meta.timeout == 70.0
+    assert meta.timeout == 70.0
+    assert question_meta.timeout == 70.0
+    assert answer_meta.timeout == 70.0
+    assert "llm_call_timeout_seconds = 75" in plugin_toml
     for entry_timeout in (
         submit_meta.timeout,
         meta.timeout,
         question_meta.timeout,
         answer_meta.timeout,
     ):
-        assert entry_timeout > llm_timeout + 0.5
+        assert entry_timeout > 60.0
+    assert llm_timeout == 75.0
 
 
 def test_study_companion_static_knowledge_map_groups_by_base_library_hierarchy() -> None:
@@ -7966,26 +8030,7 @@ async def test_study_evaluate_answer_custom_question_does_not_reuse_old_topic(
                     "error_type": "organelle_function",
                     "feedback": "The nucleus stores genetic material.",
                     "next_action": "Review nucleus function.",
-                },
-                created_at="2026-05-11T00:00:00Z",
-            )
-
-        async def knowledge_track(
-            self,
-            *,
-            mode: str = MODE_COMPANION,
-            context: dict[str, object] | None = None,
-        ) -> TutorReply:
-            return TutorReply(
-                operation="knowledge_track",
-                input_text=str((context or {}).get("input_text") or ""),
-                reply="cell nucleus",
-                payload={
-                    "topic": "cell_nucleus",
-                    "mastery_delta": -0.1,
-                    "confidence": 0.8,
-                    "weak_points": ["organelle_function"],
-                    "next_steps": ["Review nucleus function"],
+                    "related_topics": ["cell_nucleus"],
                 },
                 created_at="2026-05-11T00:00:00Z",
             )
@@ -8145,6 +8190,183 @@ async def test_study_evaluate_answer_persists_knowledge_tracking(
 
 
 @pytest.mark.asyncio
+async def test_degraded_tutor_calls_do_not_pollute_learning_history(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _TimeoutTutorAgent(_FakeTutorAgent):
+        @staticmethod
+        def _timeout_reply(operation: str, input_text: str) -> TutorReply:
+            return TutorReply(
+                operation=operation,
+                input_text=input_text,
+                reply="The Qwen request timed out.",
+                payload={
+                    "question": "fallback question",
+                    "answer": "fallback answer",
+                    "summary": "fallback summary",
+                },
+                degraded=True,
+                diagnostic="timeout",
+                created_at="2026-05-11T00:00:00Z",
+            )
+
+        async def concept_explain(
+            self,
+            text: str,
+            *,
+            mode: str = MODE_COMPANION,
+            context: dict[str, object] | None = None,
+        ) -> TutorReply:
+            return self._timeout_reply("concept_explain", text)
+
+        async def question_generate(
+            self,
+            text: str,
+            *,
+            mode: str = MODE_COMPANION,
+            context: dict[str, object] | None = None,
+        ) -> TutorReply:
+            return self._timeout_reply("question_generate", text)
+
+        async def summarize_session(
+            self,
+            history: list[dict[str, object]],
+            *,
+            mode: str = MODE_COMPANION,
+            context: dict[str, object] | None = None,
+        ) -> TutorReply:
+            return self._timeout_reply("summarize_session", "session")
+
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "runtime"))
+    plugin = StudyCompanionPlugin(
+        _Ctx(
+            tmp_path,
+            {
+                "study": {
+                    "language": "en",
+                    "default_mode": MODE_COMPANION,
+                    "auto_open_ui": False,
+                }
+            },
+        )
+    )
+    assert isinstance(await plugin.startup(), Ok)
+    plugin._agent = _TimeoutTutorAgent()
+    summarized_events: list[dict[str, object]] = []
+
+    async def _record_summary_event(payload: dict[str, object]) -> None:
+        summarized_events.append(dict(payload))
+
+    monkeypatch.setattr(plugin, "_emit_session_summarized_event", _record_summary_event)
+
+    try:
+        explained = await plugin.study_explain_text(text="derivative")
+        generated = await plugin.study_generate_question(text="derivative")
+        summarized = await plugin.study_summarize_session()
+
+        assert all(isinstance(result, Ok) for result in (explained, generated, summarized))
+        assert all(result.value["degraded"] is True for result in (explained, generated, summarized))
+        assert all(result.value["diagnostic"] == "timeout" for result in (explained, generated, summarized))
+        assert plugin._state.current_question == {}
+        assert plugin._state.last_session_summary == ""
+        assert plugin._state.recent_learning_events == []
+        assert plugin._state.session_summary_seed == {}
+        assert plugin._store.list_interactions(limit=20) == []
+        assert summarized_events == []
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_degraded_answer_clears_pending_without_updating_learning_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _TimeoutTutorAgent(_FakeTutorAgent):
+        async def answer_evaluate(
+            self,
+            *,
+            question: str = "",
+            answer: str = "",
+            expected_answer: str = "",
+            mode: str = MODE_COMPANION,
+            context: dict[str, object] | None = None,
+        ) -> TutorReply:
+            return TutorReply(
+                operation="answer_evaluate",
+                input_text=answer,
+                reply="The Qwen request timed out.",
+                payload={
+                    "verdict": "wrong",
+                    "score": 0,
+                    "error_type": "timeout_fallback",
+                    "feedback": "fallback feedback",
+                    "next_action": "retry",
+                    "related_topics": ["derivatives"],
+                },
+                degraded=True,
+                diagnostic="timeout",
+                created_at="2026-05-11T00:00:00Z",
+            )
+
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "runtime"))
+    plugin = StudyCompanionPlugin(
+        _Ctx(
+            tmp_path,
+            {
+                "study": {
+                    "language": "en",
+                    "default_mode": MODE_COMPANION,
+                    "auto_open_ui": False,
+                }
+            },
+        )
+    )
+    assert isinstance(await plugin.startup(), Ok)
+    plugin._agent = _TimeoutTutorAgent()
+    emitted_events: list[dict[str, object]] = []
+
+    async def _record_answer_event(**payload: object) -> None:
+        emitted_events.append(dict(payload))
+
+    monkeypatch.setattr(plugin, "_emit_answer_evaluated_event", _record_answer_event)
+
+    try:
+        plugin._store.ensure_topic(topic_id="derivatives", name="Derivatives")
+        async with plugin._lock:
+            plugin._state.current_question = {
+                "question": "What is d(x^2)/dx?",
+                "answer": "2x",
+                "topic": "derivatives",
+                "question_id": "q-timeout",
+                "attempt_id": "a-timeout",
+            }
+
+        evaluated = await plugin.study_evaluate_answer(
+            answer="x",
+            question_id="q-timeout",
+            attempt_id="a-timeout",
+        )
+
+        assert isinstance(evaluated, Ok)
+        assert evaluated.value["degraded"] is True
+        assert evaluated.value["diagnostic"] == "timeout"
+        current_question = plugin._state.current_question
+        assert "attempt_evaluation_pending" not in current_question
+        assert "attempt_evaluated" not in current_question
+        assert "answer_evaluation_cache" not in current_question
+        assert plugin._state.last_answer_evaluation == {}
+        assert plugin._state.recent_learning_events == []
+        assert plugin._state.session_summary_seed == {}
+        assert plugin._store.list_interactions(limit=20) == []
+        assert plugin._store.get_latest_mastery("derivatives") is None
+        assert plugin._store.get_fsrs_card("derivatives") is None
+        assert plugin._store.list_wrong_questions(topic_id="derivatives") == []
+        assert emitted_events == []
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_tutor_agent_prompt_and_reply_contract(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -8205,7 +8427,7 @@ async def test_tutor_agent_prompt_and_reply_contract(
 
     agent = TutorLLMAgent(logger=_Logger(), config=StudyConfig(language="en"))
 
-    async def _fake_call_model(_messages):
+    async def _fake_call_model(_messages, **_kwargs):
         return "A derivative is the slope at one point."
 
     monkeypatch.setattr(agent, "_call_model", _fake_call_model)
@@ -8394,8 +8616,11 @@ async def test_tutor_agent_structured_operations_normal_path(
 ) -> None:
     agent = TutorLLMAgent(logger=_Logger(), config=StudyConfig(language="en"))
 
-    async def _fake_call_model(_messages, *, operation: str = "concept_explain"):
+    async def _fake_call_model(
+        _messages, *, operation: str = "concept_explain", deadline: float | None = None
+    ):
         assert operation == operation_name
+        assert deadline is not None
         return json.dumps(response_json)
 
     monkeypatch.setattr(agent, "_call_model", _fake_call_model)
@@ -8467,10 +8692,11 @@ async def test_tutor_agent_structured_operations_degrade_with_generic_diagnostic
 async def test_tutor_agent_llm_cache_distinguishes_rotated_api_keys(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from utils import config_manager, llm_client, token_tracker
+    from plugin.plugins.study_companion import qwen_native_client
+    from utils import config_manager
 
     config_groups: list[str] = []
-    call_types: list[str] = []
+    native_calls: list[dict[str, object]] = []
 
     class _ConfigManager:
         def __init__(self) -> None:
@@ -8479,30 +8705,40 @@ async def test_tutor_agent_llm_cache_distinguishes_rotated_api_keys(
         def get_model_api_config(self, group: str):
             config_groups.append(group)
             return {
-                "base_url": "https://llm.example.test/v1",
-                "model": "study-model",
+                "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                "model": "qwen-plus",
                 "api_key": self.api_key,
             }
 
-    class _FakeLLM:
-        def __init__(self, api_key: str) -> None:
-            self.api_key = api_key
-
-        async def ainvoke(self, _messages):
-            return SimpleNamespace(content=f"reply from {self.api_key}")
+    class _FakeGeneration:
+        @staticmethod
+        async def call(**kwargs):
+            native_calls.append(dict(kwargs))
+            return SimpleNamespace(
+                status_code=200,
+                request_id=f"request-{len(native_calls)}",
+                output=SimpleNamespace(
+                    choices=[
+                        SimpleNamespace(
+                            message=SimpleNamespace(
+                                content=f"reply from {kwargs['api_key']}"
+                            )
+                        )
+                    ]
+                ),
+                usage=SimpleNamespace(input_tokens=3, output_tokens=4),
+            )
 
     cfg_mgr = _ConfigManager()
-    created_keys: list[str] = []
-    create_kwargs: list[dict[str, object]] = []
 
-    def _create_chat_llm(*, api_key: str, **kwargs):
-        created_keys.append(api_key)
-        create_kwargs.append(dict(kwargs))
-        return _FakeLLM(api_key)
+    async def _discard_usage(_client, **_kwargs) -> None:
+        return None
 
     monkeypatch.setattr(config_manager, "get_config_manager", lambda: cfg_mgr)
-    monkeypatch.setattr(llm_client, "create_chat_llm", _create_chat_llm)
-    monkeypatch.setattr(token_tracker, "set_call_type", call_types.append)
+    monkeypatch.setattr(qwen_native_client, "AioGeneration", _FakeGeneration)
+    monkeypatch.setattr(
+        qwen_native_client.QwenNativeClient, "_record_usage", _discard_usage
+    )
 
     agent = TutorLLMAgent(logger=_Logger(), config=StudyConfig(language="en"))
     first = await agent._call_model([{"role": "user", "content": "one"}])
@@ -8512,13 +8748,13 @@ async def test_tutor_agent_llm_cache_distinguishes_rotated_api_keys(
     assert first == "reply from old-key"
     assert second == "reply from new-key"
     assert config_groups == ["agent", "agent"]
-    assert call_types == ["agent", "agent"]
-    assert created_keys == ["old-key", "new-key"]
-    assert create_kwargs
-    assert all("temperature" not in item for item in create_kwargs)
-    assert all("max_completion_tokens" not in item for item in create_kwargs)
-    assert "old-key" not in repr(agent._client_cache._cache)
-    assert "new-key" not in repr(agent._client_cache._cache)
+    assert [call["api_key"] for call in native_calls] == ["old-key", "new-key"]
+    assert all(call["model"] == "qwen-plus" for call in native_calls)
+    assert all(call["max_tokens"] == 3072 for call in native_calls)
+    assert all(call["enable_thinking"] is False for call in native_calls)
+    assert all(call["request_timeout"] > 0 for call in native_calls)
+    assert all("temperature" not in call for call in native_calls)
+    assert not hasattr(agent, "_client_cache")
 
 
 @pytest.mark.asyncio

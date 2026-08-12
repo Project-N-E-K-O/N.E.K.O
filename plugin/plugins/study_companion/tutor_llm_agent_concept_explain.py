@@ -144,7 +144,12 @@ async def concept_explain(
     if vision_image_base64:
         messages = self._attach_vision_image(messages, vision_image_base64)
     try:
-        content = await self._call_model(messages)
+        deadline = self._new_operation_deadline(MODE_CONCEPT_EXPLAIN, messages)
+        content = await self._call_model(
+            messages,
+            operation=MODE_CONCEPT_EXPLAIN,
+            deadline=deadline,
+        )
         reply = content.strip()
         if not reply:
             raise SdkError("empty model response")

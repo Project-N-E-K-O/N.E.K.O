@@ -14,11 +14,11 @@ const ENTRY_TIMEOUT_MS = {
   study_status: 15000,
   study_ocr_snapshot: 60000,
   study_set_mode: 15000,
-  study_explain_text: 310000,
-  study_generate_question: 310000,
+  study_explain_text: 70000,
+  study_generate_question: 70000,
   study_question_context: 30000,
-  study_generate_targeted_question: 310000,
-  study_evaluate_answer: 310000,
+  study_generate_targeted_question: 55000,
+  study_evaluate_answer: 70000,
   study_summarize_session: 90000,
   study_memory_card_upsert: 30000,
   study_memory_deck: 30000,
@@ -399,6 +399,20 @@ function formatPluginError(error) {
     return t('ui.error.plugin_call_failed', 'Plugin call failed');
   }
   return error instanceof Error ? error.message : String(error);
+}
+
+function formatTutorDiagnostic(diagnostic) {
+  const messages = {
+    timeout: ['ui.error.llm_timeout', 'Image understanding timed out. Please retry or paste the problem text.'],
+    rate_limited: ['ui.error.llm_rate_limited', 'Qwen is receiving too many requests. Please retry shortly.'],
+    authentication_failed: ['ui.error.llm_authentication_failed', 'The Qwen API credential is invalid. Please check the API key.'],
+    model_not_supported: ['ui.error.llm_model_not_supported', 'The configured model or endpoint does not support native Qwen image understanding.'],
+    provider_unavailable: ['ui.error.llm_provider_unavailable', 'Qwen is temporarily unavailable. Please retry shortly.'],
+    invalid_image: ['ui.error.llm_invalid_image', 'The image could not be read. Please use a valid JPEG or PNG image.'],
+  };
+  const [key, fallback] = messages[String(diagnostic || '').trim()]
+    || ['ui.error.llm_call_failed', 'The Qwen request failed. Please retry.'];
+  return t(key, fallback);
 }
 
 function setPanelBusy(busy) {
@@ -1675,7 +1689,10 @@ async function exportRunResult(runId, deadline = Date.now() + RUN_TIMEOUT_MS) {
 
 async function callPlugin(entryId, args = {}) {
   const deadline = Date.now() + timeoutForEntry(entryId);
-  const runId = await createRun(entryId, args, deadline);
+  const locale = window.I18n && typeof window.I18n.lang === 'function'
+    ? window.I18n.lang()
+    : (document.documentElement.lang || '');
+  const runId = await createRun(entryId, { ...args, locale }, deadline);
   let delay = 250;
   while (Date.now() < deadline) {
     const waitMs = Math.min(delay, timeLeft(deadline));
@@ -1761,7 +1778,9 @@ async function explainText() {
   setStatus(data.degraded
     ? t('ui.status.reply_ready_fallback', 'Reply ready (fallback)')
     : t('ui.status.reply_ready', 'Reply ready'));
-  setReply(data.reply || data.summary || data.transition_phrase || '');
+  setReply(data.degraded
+    ? formatTutorDiagnostic(data.diagnostic)
+    : (data.reply || data.summary || data.transition_phrase || ''));
   await refreshStatus({ updateReply: false });
 }
 
@@ -1781,6 +1800,11 @@ async function generateQuestion() {
   setStatus(data.degraded
     ? t('ui.status.reply_ready_fallback', 'Reply ready (fallback)')
     : t('ui.status.reply_ready', 'Reply ready'));
+  if (data.degraded) {
+    setReply(formatTutorDiagnostic(data.diagnostic));
+    await refreshStatus({ updateReply: false });
+    return;
+  }
   setGeneratedQuestion(data);
   setQuestionContext({ ...context, ...data, no_data: false, selection_context_id: '' });
   if (answerInput) answerInput.value = '';
@@ -1811,6 +1835,11 @@ async function evaluateAnswer() {
   setStatus(data.degraded
     ? t('ui.status.reply_ready_fallback', 'Reply ready (fallback)')
     : t('ui.status.reply_ready', 'Reply ready'));
+  if (data.degraded) {
+    setReply(formatTutorDiagnostic(data.diagnostic));
+    await refreshStatus({ updateReply: false });
+    return;
+  }
   renderFeedback(data);
   const replyLines = [data.feedback || data.reply || '', data.next_action ? `Next: ${data.next_action}` : ''].filter(Boolean);
   setReply(replyLines.join('\n\n') || data.summary || '');
@@ -1823,7 +1852,9 @@ async function summarizeSession() {
   setStatus(data.degraded
     ? t('ui.status.reply_ready_fallback', 'Reply ready (fallback)')
     : t('ui.status.reply_ready', 'Reply ready'));
-  setReply(data.markdown || data.summary || data.reply || '');
+  setReply(data.degraded
+    ? formatTutorDiagnostic(data.diagnostic)
+    : (data.markdown || data.summary || data.reply || ''));
   await refreshStatus({ updateReply: false });
 }
 

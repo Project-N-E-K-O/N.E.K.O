@@ -485,5 +485,12 @@
     "ui.status.config_saved":  "저장됨",
     "ui.status.config_load_failed":  "설정을 불러올 수 없습니다",
     "ui.status.config_save_failed":  "설정을 저장할 수 없습니다",
-    "ui.awareness.translation_pending":  "번역 대기 중"
+    "ui.awareness.translation_pending":  "번역 대기 중",
+    "ui.error.llm_timeout":  "이미지 이해 시간이 초과되었습니다. 다시 시도하거나 문제 텍스트를 붙여 넣으세요.",
+    "ui.error.llm_rate_limited":  "Qwen 요청이 너무 많습니다. 잠시 후 다시 시도하세요.",
+    "ui.error.llm_authentication_failed":  "Qwen API 인증 정보가 올바르지 않습니다. API Key를 확인하세요.",
+    "ui.error.llm_model_not_supported":  "설정된 모델 또는 엔드포인트가 Qwen 네이티브 이미지 이해를 지원하지 않습니다.",
+    "ui.error.llm_provider_unavailable":  "Qwen 서비스를 일시적으로 사용할 수 없습니다. 잠시 후 다시 시도하세요.",
+    "ui.error.llm_invalid_image":  "이미지를 읽을 수 없습니다. 올바른 JPEG 또는 PNG 이미지를 사용하세요.",
+    "ui.error.llm_call_failed":  "Qwen 요청에 실패했습니다. 다시 시도하세요."
 }
