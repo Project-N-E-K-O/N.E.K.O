@@ -498,6 +498,7 @@ def _plugin_process_runner(
     uplink_endpoint: str,
     stop_event: Any | None = None,
     startup_options: dict[str, object] | None = None,
+    image_uplink_endpoint: str | None = None,
 ) -> None:
     """独立进程中的运行函数。通过 ZMQ 与宿主进程通信。"""
     # 保存进程级 stop event
@@ -515,7 +516,14 @@ def _plugin_process_runner(
         logger.warning("[Plugin Process] Failed to setup logging interception: {}", e)
     
     # ── ZMQ child-side transport ─────────────────────────────────
-    child_transport = ChildTransport(downlink_endpoint, uplink_endpoint)
+    if image_uplink_endpoint:
+        child_transport = ChildTransport(
+            downlink_endpoint,
+            uplink_endpoint,
+            image_uplink_endpoint,
+        )
+    else:
+        child_transport = ChildTransport(downlink_endpoint, uplink_endpoint)
     res_sender = child_transport.channel_sender(CH_RES)
     status_sender = child_transport.channel_sender(CH_STS)
     message_sender = child_transport.channel_sender(CH_MSG)
@@ -559,6 +567,7 @@ def _plugin_process_runner(
             _res_queue=None,
             _response_queue=None,
             _response_pending={},
+            _image_transport=child_transport,
             _entry_map=None,
             _instance=None,
         )
@@ -844,6 +853,12 @@ def _plugin_process_runner(
         ctx._response_queue = _response_inbox
         _startup_pending_downlink: list[tuple[str, dict]] = []
 
+        async def _route_response(msg: Any) -> None:
+            dispatch_direct = getattr(ctx, "_dispatch_direct_response", None)
+            if callable(dispatch_direct) and dispatch_direct(msg):
+                return
+            await _response_inbox.put(msg)
+
         async def _startup_downlink_pump(stop_event: asyncio.Event) -> None:
             poll_ms = int(QUEUE_GET_TIMEOUT * 1000)
             while not stop_event.is_set():
@@ -852,7 +867,7 @@ def _plugin_process_runner(
                     continue
                 ch, msg = result
                 if ch == CH_RESP:
-                    await _response_inbox.put(msg)
+                    await _route_response(msg)
                     continue
                 if ch == CH_CMD and isinstance(msg, dict) and msg.get("type") == "STOP":
                     stop_event.set()
@@ -1332,7 +1347,7 @@ def _plugin_process_runner(
 
                 # Plugin-to-plugin responses arrive on the downlink tagged CH_RESP
                 if ch == CH_RESP:
-                    await _response_inbox.put(msg)
+                    await _route_response(msg)
                     continue
 
                 if ch != CH_CMD or not isinstance(msg, dict):
@@ -1566,6 +1581,13 @@ class PluginHost:
                 self._process_stop_event,
                 self._startup_options,
             ),
+            kwargs={
+                "image_uplink_endpoint": getattr(
+                    self.transport,
+                    "image_uplink_endpoint",
+                    None,
+                )
+            },
             # Plugin code may spawn subprocesses/Managers; daemon process would forbid that.
             daemon=False,
         )

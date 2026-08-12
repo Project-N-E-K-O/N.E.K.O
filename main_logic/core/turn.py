@@ -1623,6 +1623,7 @@ class TurnMixin:
         self,
         text: str,
         *,
+        blocks: list[dict[str, Any]] | None = None,
         request_id: str | None = None,
         turn_id: str | None = None,
         source: str = "passthrough",
@@ -1657,7 +1658,8 @@ class TurnMixin:
         # leading/trailing whitespace, newlines, and indentation render
         # exactly as the plugin authored them.
         raw = str(text or "")
-        if not raw or not raw.strip():
+        structured_blocks = [dict(block) for block in blocks or [] if isinstance(block, dict)]
+        if (not raw or not raw.strip()) and not structured_blocks:
             return False
         effective_turn_id = turn_id or request_id or str(uuid4())
         message = {
@@ -1668,6 +1670,8 @@ class TurnMixin:
             "request_id": request_id,
             "metadata": {"source": source, "passthrough": True},
         }
+        if structured_blocks:
+            message["blocks"] = structured_blocks
         if not (
             self.websocket
             and hasattr(self.websocket, "client_state")
@@ -1680,6 +1684,39 @@ class TurnMixin:
             logger.warning(
                 "[%s] passthrough_to_chat_bubble WS send failed: %s",
                 self.lanlan_name, e,
+            )
+            return False
+        return True
+
+    async def render_chat_blocks(
+        self,
+        blocks: list[dict[str, Any]],
+        *,
+        request_id: str | None = None,
+        source: str = "plugin",
+    ) -> bool:
+        """Render structured blocks without opening an assistant/model turn."""
+        structured_blocks = [dict(block) for block in blocks if isinstance(block, dict)]
+        if not structured_blocks:
+            return False
+        if not (
+            self.websocket
+            and hasattr(self.websocket, "client_state")
+            and self.websocket.client_state == self.websocket.client_state.CONNECTED
+        ):
+            return False
+        try:
+            await self.websocket.send_json({
+                "type": "chat_blocks",
+                "blocks": structured_blocks,
+                "request_id": request_id,
+                "metadata": {"source": source, "passthrough": True},
+            })
+        except Exception as e:
+            logger.warning(
+                "[%s] render_chat_blocks WS send failed: %s",
+                self.lanlan_name,
+                e,
             )
             return False
         return True

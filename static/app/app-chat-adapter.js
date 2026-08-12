@@ -623,6 +623,11 @@
     function appendMessage(text, sender, isNewMessage, options) {
         if (typeof isNewMessage === 'undefined') isNewMessage = true;
         options = options || {};
+        var structuredResponseBlocks = Array.isArray(options.blocks)
+            ? options.blocks.filter(function (block) {
+                return block && typeof block === 'object' && typeof block.type === 'string';
+            }).map(function (block) { return Object.assign({}, block); })
+            : [];
 
         var host = getHost();
         var bubbleCountBefore = window.currentTurnGeminiBubbles ? window.currentTurnGeminiBubbles.length : 0;
@@ -698,6 +703,39 @@
                 window.updateSubtitleStreamingText(streamingText);
             }
             emitCompactCaptionUpdate(streamingText);
+        }
+
+        // Plugin chat passthrough can carry an image URL alongside text. It
+        // still participates in the normal assistant turn lifecycle, but the
+        // React host receives the already-structured blocks directly instead
+        // of forcing them through the text sentence/markdown pipeline.
+        if (sender === 'gemini' && structuredResponseBlocks.length > 0 && host) {
+            var structuredMessageId = nextReactMessageId('assistant');
+            var structuredAuthor = getCurrentAssistantName();
+            var structuredMessage = {
+                id: structuredMessageId,
+                role: 'assistant',
+                author: structuredAuthor,
+                time: getCurrentTimeString(),
+                createdAt: Date.now(),
+                turnId: window._nekoAssistantTurnId
+                    ? String(window._nekoAssistantTurnId)
+                    : undefined,
+                avatarLabel: structuredAuthor
+                    ? String(structuredAuthor).trim().slice(0, 1).toUpperCase()
+                    : undefined,
+                avatarUrl: getAssistantAvatarUrl() || undefined,
+                blocks: structuredResponseBlocks,
+                status: 'streaming'
+            };
+            if (!appendHostMessageSafely(host, structuredMessage, 'structured_passthrough')) {
+                return false;
+            }
+            var structuredRef = createVirtualBubbleRef(structuredMessageId);
+            window.currentGeminiMessage = structuredRef;
+            window.currentTurnGeminiBubbles.push(structuredRef);
+            markAssistantVisibleResponseForAchievement();
+            return true;
         }
 
         // ---------- gemini + realistic 模式 ----------
@@ -898,6 +936,33 @@
         });
     }
 
+    function appendReactChatBlocks(payload) {
+        var host = getHost();
+        var blocks = payload && Array.isArray(payload.blocks)
+            ? payload.blocks.filter(function (block) {
+                return block && typeof block === 'object' && typeof block.type === 'string';
+            }).map(function (block) { return Object.assign({}, block); })
+            : [];
+        if (!host || typeof host.appendMessage !== 'function' || blocks.length === 0) {
+            return false;
+        }
+        var author = getCurrentAssistantName();
+        host.appendMessage({
+            id: payload.request_id
+                ? 'plugin-blocks-' + String(payload.request_id)
+                : nextReactMessageId('plugin-blocks'),
+            role: 'assistant',
+            author: author,
+            time: getCurrentTimeString(),
+            createdAt: Date.now(),
+            avatarLabel: author ? String(author).trim().slice(0, 1).toUpperCase() : undefined,
+            avatarUrl: getAssistantAvatarUrl() || undefined,
+            blocks: blocks,
+            status: 'sent'
+        });
+        return true;
+    }
+
     // ======================== appendReactTopicHint（深话题预告气泡） ========================
 
     // Frontend-only teaser shown right before a proactive deep-topic opener.
@@ -970,6 +1035,7 @@
     window._clearPendingHostMessagesByIds = _clearPendingHostMessagesByIds;
     window._resetReactChatSwitchState = _resetReactChatSwitchState;
     window.appendReactTopicHint = appendReactTopicHint;
+    window.appendReactChatBlocks = appendReactChatBlocks;
     window.removeReactTopicHint = removeReactTopicHint;
 
     // 覆盖 appChat 上的方法
@@ -978,6 +1044,7 @@
         window.appChat.createGeminiBubble = createGeminiBubble;
         window.appChat.processRealisticQueue = processRealisticQueue;
         window.appChat.appendReactUserMessage = appendReactUserMessage;
+        window.appChat.appendReactChatBlocks = appendReactChatBlocks;
         window.appChat.appendReactTopicHint = appendReactTopicHint;
         window.appChat.removeReactTopicHint = removeReactTopicHint;
         window.appChat.setReactMessageStatus = setReactMessageStatus;

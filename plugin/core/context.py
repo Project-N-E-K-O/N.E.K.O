@@ -159,6 +159,9 @@ class PluginContext:
     _res_queue: Optional[Any] = None  # 结果队列（用于在等待期间处理响应）
     _response_queue: Optional[Any] = None
     _response_pending: Optional[Dict[str, Any]] = None
+    _direct_response_waiters: Optional[Dict[str, Any]] = None
+    _image_transport: Optional[Any] = None
+    _images: Optional[Any] = None
     _entry_map: Optional[Dict[str, Any]] = None  # 入口映射（用于处理命令）
     _entry_meta_map: Optional[Dict[str, Any]] = None  # entry_id -> EventMeta
     _instance: Optional[Any] = None  # 插件实例（用于处理命令）
@@ -178,11 +181,90 @@ class PluginContext:
             self._bus_hub = hub
         return cast("BusHubProtocol", hub)
 
+    @property
+    def images(self) -> Any:
+        images = self._images
+        if images is None:
+            from plugin.sdk.shared.core.images import PluginImages
+
+            images = PluginImages(self)
+            self._images = images
+        return images
+
+    async def _upload_image(
+        self,
+        data: bytes,
+        *,
+        mime: str,
+        timeout: float,
+    ) -> dict[str, object]:
+        transport = self._image_transport
+        if transport is None:
+            raise RuntimeError("temporary image transport is not available")
+        if timeout <= 0:
+            raise ValueError("image upload timeout must be positive")
+
+        request_id = str(uuid.uuid4())
+        waiters = self._direct_response_waiters
+        if waiters is None:
+            waiters = {}
+            self._direct_response_waiters = waiters
+        future = asyncio.get_running_loop().create_future()
+        waiters[request_id] = future
+        try:
+            await transport.send_image(
+                request_id,
+                mime=mime,
+                data=data,
+                timeout=timeout,
+            )
+            try:
+                response = await asyncio.wait_for(future, timeout=timeout)
+            except asyncio.TimeoutError:
+                raise TimeoutError(f"image upload timed out after {timeout}s") from None
+            return self._unwrap_image_upload_response(response)
+        finally:
+            waiters.pop(request_id, None)
+
+    def _dispatch_direct_response(self, response: Any) -> bool:
+        """Resolve SDK-owned response futures before the legacy shared inbox."""
+        if not isinstance(response, dict) or response.get("type") != "IMAGE_UPLOAD_RESULT":
+            return False
+        request_id = response.get("request_id")
+        waiters = self._direct_response_waiters
+        future = waiters.get(request_id) if waiters and request_id else None
+        if future is not None and not future.done():
+            future.set_result(response)
+        # A late image result is owned by this path too; don't leak it into the
+        # plugin-to-plugin response inbox where it can confuse correlation.
+        return True
+
+    @staticmethod
+    def _unwrap_image_upload_response(response: dict[str, Any]) -> dict[str, object]:
+        error = response.get("error")
+        if error:
+            if isinstance(error, dict):
+                message = error.get("message") or error.get("code") or "image upload failed"
+            else:
+                message = str(error)
+            raise RuntimeError(str(message))
+        result = response.get("result")
+        if not isinstance(result, dict):
+            raise RuntimeError("image upload returned no image part")
+        return dict(result)
+
     def close(self) -> None:
         """Release per-context resources such as the ZeroMQ push batcher.
 
         This is safe to call multiple times.
         """
+        waiters = getattr(self, "_direct_response_waiters", None)
+        if waiters:
+            for future in tuple(waiters.values()):
+                if not future.done():
+                    future.cancel()
+            waiters.clear()
+
         batcher = getattr(self, "_push_batcher", None)
         if batcher is not None:
             try:

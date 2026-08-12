@@ -1,9 +1,10 @@
 """ZeroMQ transport for plugin host ↔ child process communication.
 
-Replaces ``multiprocessing.Queue`` with a pair of ZMQ PUSH/PULL sockets:
+Replaces ``multiprocessing.Queue`` with ZMQ PUSH/PULL sockets:
 
 * **Downlink** (host → child): commands, plugin-to-plugin responses
 * **Uplink** (child → host): results, status, messages, plugin-to-plugin requests
+* **Image uplink** (child → host): bounded raw image uploads
 
 All messages are serialised with :mod:`pickle` (same as ``mp.Queue``) and
 carry a *channel tag* so the receiver can demux.
@@ -19,6 +20,7 @@ Channel tags
 """
 from __future__ import annotations
 
+import asyncio
 import pickle
 import threading
 from typing import Any, Optional, Tuple
@@ -35,6 +37,8 @@ CH_COMM = "comm"
 CH_RESP = "resp"
 
 _LINGER_MS = 1000
+_IMAGE_HWM = 8
+_IMAGE_MAX_BYTES = 8 * 1024 * 1024
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -68,6 +72,15 @@ class HostTransport:
         self._ul_sock.bind("tcp://127.0.0.1:*")
         self.uplink_endpoint: str = self._ul_sock.getsockopt(zmq.LAST_ENDPOINT).decode()
 
+        # Bulk image uplink: isolated from status/result/control traffic so a
+        # full media queue cannot head-of-line block the plugin control plane.
+        self._img_sock = self._ctx.socket(zmq.PULL)
+        self._img_sock.setsockopt(zmq.LINGER, 0)
+        self._img_sock.setsockopt(zmq.RCVHWM, _IMAGE_HWM)
+        self._img_sock.setsockopt(zmq.MAXMSGSIZE, _IMAGE_MAX_BYTES)
+        self._img_sock.bind("tcp://127.0.0.1:*")
+        self.image_uplink_endpoint: str = self._img_sock.getsockopt(zmq.LAST_ENDPOINT).decode()
+
         self._closed = False
 
     # ── send helpers ─────────────────────────────────────────────
@@ -89,13 +102,25 @@ class HostTransport:
             return pickle.loads(raw)  # type: ignore[return-value]
         return None
 
+    async def recv_image(self, timeout_ms: int = 1000) -> Optional[Tuple[dict, bytes]]:
+        """Receive one metadata/raw-bytes upload from the isolated media socket."""
+        if await self._img_sock.poll(timeout=timeout_ms):
+            frames = await self._img_sock.recv_multipart()
+            if len(frames) != 2:
+                raise ValueError("image upload must contain metadata and data frames")
+            metadata = pickle.loads(frames[0])
+            if not isinstance(metadata, dict):
+                raise TypeError("image upload metadata must be a dict")
+            return metadata, bytes(frames[1])
+        return None
+
     # ── lifecycle ────────────────────────────────────────────────
 
     def close(self) -> None:
         if self._closed:
             return
         self._closed = True
-        for sock in (self._dl_sock, self._ul_sock):
+        for sock in (self._dl_sock, self._ul_sock, self._img_sock):
             try:
                 sock.close(linger=0)
             except Exception:
@@ -120,7 +145,12 @@ class ChildTransport:
       event-loop thread.
     """
 
-    def __init__(self, downlink_endpoint: str, uplink_endpoint: str) -> None:
+    def __init__(
+        self,
+        downlink_endpoint: str,
+        uplink_endpoint: str,
+        image_uplink_endpoint: str | None = None,
+    ) -> None:
         # Sync context — used for the uplink PUSH socket (thread-safe via lock)
         self._sync_ctx = zmq.Context()
 
@@ -136,6 +166,13 @@ class ChildTransport:
         self._dl_sock.setsockopt(zmq.LINGER, 0)
         self._dl_sock.connect(downlink_endpoint)
 
+        self._img_sock: Any | None = None
+        if image_uplink_endpoint:
+            self._img_sock = self._async_ctx.socket(zmq.PUSH)
+            self._img_sock.setsockopt(zmq.LINGER, 0)
+            self._img_sock.setsockopt(zmq.SNDHWM, _IMAGE_HWM)
+            self._img_sock.connect(image_uplink_endpoint)
+
         self._downlink_endpoint = downlink_endpoint
         self._uplink_endpoint = uplink_endpoint
         self._closed = False
@@ -148,6 +185,30 @@ class ChildTransport:
             raw = await self._dl_sock.recv()
             return pickle.loads(raw)  # type: ignore[return-value]
         return None
+
+    async def send_image(
+        self,
+        request_id: str,
+        *,
+        mime: str,
+        data: bytes,
+        timeout: float,
+    ) -> None:
+        """Send raw image bytes without using the shared control uplink."""
+        if self._img_sock is None:
+            raise RuntimeError("image transport is not configured")
+        metadata = pickle.dumps({
+            "type": "IMAGE_UPLOAD",
+            "request_id": str(request_id),
+            "mime": str(mime),
+        })
+        try:
+            await asyncio.wait_for(
+                self._img_sock.send_multipart([metadata, bytes(data)]),
+                timeout=timeout,
+            )
+        except asyncio.TimeoutError:
+            raise TimeoutError(f"image transport send timed out after {timeout}s") from None
 
     # ── uplink (thread-safe, any thread) ─────────────────────────
 
@@ -175,7 +236,10 @@ class ChildTransport:
         if self._closed:
             return
         self._closed = True
-        for sock in (self._dl_sock, self._ul_sock):
+        sockets = [self._dl_sock, self._ul_sock]
+        if self._img_sock is not None:
+            sockets.append(self._img_sock)
+        for sock in sockets:
             try:
                 sock.close(linger=0)
             except Exception:

@@ -17,22 +17,63 @@
 
 import asyncio
 import atexit
+import base64
 import logging
 import sys
 import traceback
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from config import MONITOR_SERVER_PORT, USER_NOTIFICATION_ERROR_MAX_CHARS
+from config import MONITOR_SERVER_PORT, USER_NOTIFICATION_ERROR_MAX_CHARS, USER_PLUGIN_BASE
 from main_logic import core, cross_server
 from main_logic.agent_event_bus import notify_analyze_ack
 from utils.config_manager import get_reserved
+from utils.internal_http_client import get_internal_http_client
 
 from ._shared import runtime
 
 _IS_MAIN_PROCESS = runtime.is_main_process
 _config_manager = runtime.config_manager
 logger = runtime.logger
+
+_PLUGIN_IMAGE_MAX_BYTES = 8 * 1024 * 1024
+
+
+def _plugin_image_chat_blocks(media_parts: list[Any]) -> list[dict[str, str]]:
+    """Convert URL-backed plugin media into frontend image blocks."""
+    return [
+        {"type": "image", "url": part["url"]}
+        for part in media_parts
+        if isinstance(part, dict)
+        and part.get("type") == "image"
+        and isinstance(part.get("url"), str)
+        and part.get("url")
+    ]
+
+
+async def _fetch_plugin_image_base64(url: str) -> str:
+    """Fetch one temporary plugin image without blocking the event loop."""
+    resolve_plugin_base = runtime.resolve_user_plugin_base
+    plugin_base = (
+        resolve_plugin_base()
+        if callable(resolve_plugin_base)
+        else USER_PLUGIN_BASE.rstrip("/")
+    )
+    media_prefix = f"{plugin_base.rstrip('/')}/media/"
+    if not url.startswith(media_prefix):
+        raise ValueError("image URL is not served by the local plugin media store")
+    response = await get_internal_http_client().get(url, timeout=2.0)
+    response.raise_for_status()
+    content = bytes(response.content)
+    if not content:
+        raise ValueError("plugin media store returned an empty image")
+    if len(content) > _PLUGIN_IMAGE_MAX_BYTES:
+        raise ValueError("plugin image exceeds the 8 MiB model input limit")
+    content_type = str(response.headers.get("content-type") or "").lower()
+    if not content_type.startswith("image/"):
+        raise ValueError("plugin media store returned a non-image response")
+    encoded = await asyncio.to_thread(base64.b64encode, content)
+    return encoded.decode("ascii")
 
 
 class _SyncMessageQueue(asyncio.Queue):
@@ -546,7 +587,36 @@ async def _handle_agent_event(event: dict):
             if media_parts and ai_behavior_v2 in ("respond", "read"):
                 sess = getattr(mgr, "session", None)
                 stream_image = getattr(sess, "stream_image", None) if sess else None
-                for mp in media_parts:
+                url_image_indexes: list[int] = []
+                url_image_fetches = []
+                for index, part in enumerate(media_parts):
+                    if (
+                        isinstance(part, dict)
+                        and part.get("type") == "image"
+                        and not part.get("binary_base64")
+                        and isinstance(part.get("url"), str)
+                        and part.get("url")
+                    ):
+                        url_image_indexes.append(index)
+                        url_image_fetches.append(
+                            _fetch_plugin_image_base64(part["url"])
+                        )
+                fetched_url_images: dict[int, str] = {}
+                if url_image_fetches:
+                    fetch_results = await asyncio.gather(
+                        *url_image_fetches,
+                        return_exceptions=True,
+                    )
+                    for index, result in zip(url_image_indexes, fetch_results):
+                        if isinstance(result, BaseException):
+                            logger.warning(
+                                "[EventBus] plugin image fetch failed; dropped: %s",
+                                result,
+                            )
+                        else:
+                            fetched_url_images[index] = result
+
+                for index, mp in enumerate(media_parts):
                     if not isinstance(mp, dict):
                         continue
                     part_type = mp.get("type")
@@ -564,48 +634,61 @@ async def _handle_agent_event(event: dict):
                             mime,
                         )
                         continue
-                    if isinstance(b64, str) and b64:
-                        if ai_behavior_v2 == "respond" and text:
-                            # Defer: stream when the manager releases this cue so
-                            # the image shares the proactive response's context.
-                            # (Only when there's text — the callback that carries
-                            # these images is built in the ``if text:`` block.)
-                            deferred_proactive_images.append(b64)
-                            continue
-                        # read (passive), OR image-only respond with no text to
-                        # carry it through the pacing manager: inject now so it
-                        # isn't lost (image-only respond has no text cue to drive
-                        # a proactive turn anyway).
-                        if stream_image is None:
-                            logger.debug(
-                                "[EventBus] image media_part dropped: session=%s has no stream_image",
-                                type(sess).__name__ if sess else "None",
-                            )
-                            continue
-                        # ``stream_image`` takes a base64 STRING (not bytes); pass through
-                        try:
-                            await stream_image(b64)
-                            logger.debug(
-                                "[EventBus] image media_part injected (base64 len=%d, mime=%s)",
-                                len(b64),
-                                mime,
-                            )
-                        except Exception as e:
-                            logger.warning(
-                                "[EventBus] image media_part stream_image failed: %s", e
-                            )
-                    elif isinstance(url, str) and url:
-                        # TODO(v0.9): fetch URL → bytes → base64 → stream_image.
-                        # Until then plugin authors should inline-encode small
-                        # images (≤256KB) or pre-fetch URL-served frames into
-                        # ``parts`` themselves.
-                        logger.warning(
-                            "[EventBus] image media_part url=%s not yet fetched; dropped",
-                            url[:80],
+                    resolved_b64 = b64 if isinstance(b64, str) and b64 else None
+                    if resolved_b64 is None and isinstance(url, str) and url:
+                        resolved_b64 = fetched_url_images.get(index)
+                    if not resolved_b64:
+                        continue
+                    if ai_behavior_v2 == "respond":
+                        # Defer: stream when the manager releases this cue so
+                        # the image shares the proactive response's context.
+                        deferred_proactive_images.append(resolved_b64)
+                        continue
+                    # read (passive), OR image-only respond with no text to
+                    # carry it through the pacing manager: inject now so it
+                    # isn't lost.
+                    if stream_image is None:
+                        logger.debug(
+                            "[EventBus] image media_part dropped: session=%s has no stream_image",
+                            type(sess).__name__ if sess else "None",
                         )
-                    # else: malformed part, silently skip
+                        continue
+                    try:
+                        await stream_image(resolved_b64)
+                        logger.debug(
+                            "[EventBus] image media_part injected (base64 len=%d, mime=%s)",
+                            len(resolved_b64),
+                            mime,
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "[EventBus] image media_part stream_image failed: %s", e
+                        )
 
-            if text:
+            # ``visibility`` and ``ai_behavior`` are orthogonal. For read/respond,
+            # render URL-backed images through a display-only frame while model
+            # injection continues independently below. Blind uses the existing
+            # passthrough branch so text and image stay in one bubble.
+            visibility = event.get("visibility")
+            if (
+                ai_behavior_v2 in ("respond", "read")
+                and isinstance(visibility, list)
+                and "chat" in visibility
+                and hasattr(mgr, "render_chat_blocks")
+            ):
+                visible_images = _plugin_image_chat_blocks(media_parts)
+                if visible_images:
+                    channel = str(event.get("channel") or "")
+                    visible_source = str(event.get("source_kind") or "").strip()
+                    if not visible_source:
+                        visible_source = "plugin" if channel.startswith("plugin:") else "system"
+                    await mgr.render_chat_blocks(
+                        visible_images,
+                        request_id=event.get("task_id") or None,
+                        source=visible_source,
+                    )
+
+            if text or deferred_proactive_images:
                 if event.get("direct_reply"):
                     detail_text = (event.get("detail") or text).strip()
                     # Plugin-supplied direct_reply text bypasses the LLM and
@@ -816,11 +899,20 @@ async def _handle_agent_event(event: dict):
                             lanlan_name=getattr(mgr, "lanlan_name", "") or "",
                             master_name=getattr(mgr, "master_name", "") or "",
                         )
+                        chat_image_blocks = _plugin_image_chat_blocks(media_parts)
+                        passthrough_kwargs: dict[str, Any] = {
+                            "request_id": event.get("task_id") or None,
+                            "source": passthrough_source,
+                        }
+                        if chat_image_blocks:
+                            passthrough_kwargs["blocks"] = [
+                                {"type": "text", "text": passthrough_text},
+                                *chat_image_blocks,
+                            ]
                         passthrough_dispatched = bool(
                             await mgr.passthrough_to_chat_bubble(
                                 passthrough_text,
-                                request_id=event.get("task_id") or None,
-                                source=passthrough_source,
+                                **passthrough_kwargs,
                             )
                         )
                         logger.info(
@@ -905,6 +997,27 @@ async def _handle_agent_event(event: dict):
                         "[EventBus] agent_notification: WebSocket not connected for lanlan=%s",
                         lanlan,
                     )
+            elif (
+                ai_behavior_v2 == "blind"
+                and "chat" in (event.get("visibility") or [])
+                and hasattr(mgr, "passthrough_to_chat_bubble")
+            ):
+                image_blocks = _plugin_image_chat_blocks(media_parts)
+                if image_blocks:
+                    channel = str(event.get("channel") or "")
+                    source_kind = str(event.get("source_kind") or "").strip()
+                    if not source_kind:
+                        source_kind = "plugin" if channel.startswith("plugin:") else "system"
+                    dispatched = bool(
+                        await mgr.passthrough_to_chat_bubble(
+                            "",
+                            request_id=event.get("task_id") or None,
+                            source=source_kind,
+                            blocks=image_blocks,
+                        )
+                    )
+                    if dispatched and hasattr(mgr, "handle_proactive_complete"):
+                        await mgr.handle_proactive_complete()
         elif event_type == "agent_notification":
             ws = getattr(mgr, "websocket", None)
             if _is_websocket_connected(ws):
