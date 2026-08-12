@@ -54,7 +54,6 @@
                     operation: 'daily-intro-avatar-performance',
                     introAvatarPerformance: {
                         preset: 'bottom-rise',
-                        approachMs: 1500,
                         restore: 'half-body'
                     }
                 },

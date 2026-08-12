@@ -963,11 +963,15 @@ test('VisualRuntime routes day3 galgame wheel rotation command to the existing d
     ]);
 });
 
-test('VisualRuntime clears day four externalized chat cursor before settings tour playback', async () => {
+test('VisualRuntime releases day four externalized chat cursor ownership without hiding the PC cursor', async () => {
     const calls = [];
     const director = {
         clearExternalizedChatGuideTarget(options) {
-            calls.push(['clear-externalized-chat', options.clearCursor]);
+            calls.push([
+                'clear-externalized-chat',
+                options.clearCursor,
+                options.preservePcOverlayCursor
+            ]);
         },
         settingsTourFlow: {
             play(scene, context) {
@@ -1012,7 +1016,7 @@ test('VisualRuntime clears day four externalized chat cursor before settings tou
 
     assert.equal(result, true);
     assert.deepEqual(calls, [
-        ['clear-externalized-chat', true],
+        ['clear-externalized-chat', true, true],
         ['settings-tour', 'day4_chat_settings', 41, 'day4_intro_companion', 1, 6]
     ]);
 });
