@@ -2172,6 +2172,39 @@ def test_game_llm_agent_ocr_choice_gate_accepts_matching_single_choice_event(
     assert agent._has_confirmed_ocr_choice_menu(shared, snapshot) is False
 
 
+@pytest.mark.parametrize("stability", ["tentative", "stable"])
+@pytest.mark.plugin_unit
+def test_game_llm_agent_ocr_dialogue_without_choices_blocks_menu_actions(
+    tmp_path: Path,
+    stability: str,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    agent = GameLLMAgent(
+        plugin=plugin,
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    snapshot = _session_state(
+        scene_id="scene-a",
+        line_id="line-1",
+        text="当前对白",
+        choices=[],
+        is_menu_open=True,
+        screen_type=OCR_CAPTURE_PROFILE_STAGE_MENU,
+    )
+    snapshot["stability"] = stability
+    shared = _shared_state(
+        snapshot=snapshot,
+        active_data_source=DATA_SOURCE_OCR_READER,
+        history_events=[],
+    )
+
+    assert agent._has_confirmed_ocr_choice_menu(shared, snapshot) is False
+
+
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
 async def test_game_llm_agent_send_message_interrupts_pending_planning(tmp_path: Path) -> None:

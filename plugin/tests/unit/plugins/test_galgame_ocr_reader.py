@@ -2051,6 +2051,33 @@ def test_ocr_reader_line_reconciles_non_cnn_menu_false_positive(
     }
 
 
+def test_dialogue_state_reset_clears_observed_stable_and_narration_candidates(
+    tmp_path: Path,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=_make_config(bridge_root),
+        time_fn=lambda: 3000.0,
+        platform_fn=lambda: True,
+        window_scanner=_window,
+        capture_backend=_FakeCaptureBackend(),
+        ocr_backend=_FakeOcrBackend(),
+    )
+    manager._last_observed_line = {"line_id": "observed-1", "text": "旁白"}
+    manager._last_stable_line = {"line_id": "stable-1", "text": "台词"}
+    manager._last_title_narration_key = "narration-key"
+    manager._title_narration_streak = 2
+
+    manager._reset_default_ocr_state()
+
+    assert manager._last_observed_line == {}
+    assert manager._last_stable_line == {}
+    assert manager._last_title_narration_key == ""
+    assert manager._title_narration_streak == 0
+
+
 def test_ocr_writer_start_session_preserves_existing_game_events(tmp_path: Path) -> None:
     bridge_root = tmp_path / "bridge"
     bridge_root.mkdir()
