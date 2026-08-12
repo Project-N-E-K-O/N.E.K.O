@@ -16,6 +16,10 @@ from .document_analysis import (
     contains_full_document_source,
 )
 from .document_chunking import DocumentChunk
+from .tutor_llm_agent_document import (
+    _DocumentModelResult,
+    _call_document_model_result,
+)
 from .tutor_llm_agent_common import SdkError, diagnostic_code_for_exception
 
 
@@ -113,21 +117,20 @@ def build_document_merge_messages(
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
-async def _call_chunk_once(
+async def _call_chunk_once_result(
     self: Any, document: ValidatedDocument, chunk: DocumentChunk, total_chunks: int
-) -> str:
+) -> _DocumentModelResult:
     messages = build_document_chunk_messages(document, chunk, total_chunks)
     deadline = self._new_operation_deadline(
         LLM_OPERATION_DOCUMENT_CHUNK_ANALYZE, messages
     )
-    reply = str(
-        await self._call_model(
-            messages,
-            operation=LLM_OPERATION_DOCUMENT_CHUNK_ANALYZE,
-            deadline=deadline,
-        )
-        or ""
-    ).strip()
+    model_result = await _call_document_model_result(
+        self,
+        messages,
+        operation=LLM_OPERATION_DOCUMENT_CHUNK_ANALYZE,
+        deadline=deadline,
+    )
+    reply = model_result.text.strip()
     if not reply:
         raise DocumentChunkAnalysisError(
             "empty document chunk memo", diagnostic="document_chunk_failed"
@@ -136,15 +139,24 @@ async def _call_chunk_once(
         raise DocumentChunkAnalysisError(
             "chunk memo repeated source", diagnostic="unsafe_model_output"
         )
-    return reply
+    return _DocumentModelResult(
+        text=reply,
+        output_limit_reached=model_result.output_limit_reached,
+    )
 
 
-async def analyze_document_chunk(
+async def _call_chunk_once(
     self: Any, document: ValidatedDocument, chunk: DocumentChunk, total_chunks: int
 ) -> str:
+    return (await _call_chunk_once_result(self, document, chunk, total_chunks)).text
+
+
+async def _analyze_document_chunk_result(
+    self: Any, document: ValidatedDocument, chunk: DocumentChunk, total_chunks: int
+) -> _DocumentModelResult:
     for attempt in range(2):
         try:
-            return await _call_chunk_once(self, document, chunk, total_chunks)
+            return await _call_chunk_once_result(self, document, chunk, total_chunks)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -174,25 +186,32 @@ async def analyze_document_chunk(
     raise AssertionError("unreachable")
 
 
-async def merge_document_chunks(
+async def analyze_document_chunk(
+    self: Any, document: ValidatedDocument, chunk: DocumentChunk, total_chunks: int
+) -> str:
+    return (
+        await _analyze_document_chunk_result(self, document, chunk, total_chunks)
+    ).text
+
+
+async def _merge_document_chunks_result(
     self: Any,
     document: ValidatedDocument,
     chunks: tuple[DocumentChunk, ...],
     memos: tuple[str, ...],
     *,
     messages: list[dict[str, str]] | None = None,
-) -> str:
+) -> _DocumentModelResult:
     messages = messages or build_document_merge_messages(document, chunks, memos)
     try:
         deadline = self._new_operation_deadline(LLM_OPERATION_DOCUMENT_MERGE, messages)
-        reply = str(
-            await self._call_model(
-                messages,
-                operation=LLM_OPERATION_DOCUMENT_MERGE,
-                deadline=deadline,
-            )
-            or ""
-        ).strip()
+        model_result = await _call_document_model_result(
+            self,
+            messages,
+            operation=LLM_OPERATION_DOCUMENT_MERGE,
+            deadline=deadline,
+        )
+        reply = model_result.text.strip()
         if not reply:
             raise DocumentChunkAnalysisError(
                 "empty document merge response", diagnostic="document_merge_failed"
@@ -207,7 +226,10 @@ async def merge_document_chunks(
             raise DocumentChunkAnalysisError(
                 "document merge repeated source", diagnostic="unsafe_model_output"
             )
-        return reply
+        return _DocumentModelResult(
+            text=reply,
+            output_limit_reached=model_result.output_limit_reached,
+        )
     except asyncio.CancelledError:
         raise
     except DocumentChunkAnalysisError:
@@ -232,6 +254,25 @@ async def merge_document_chunks(
                 else "document_merge_failed"
             ),
         ) from exc
+
+
+async def merge_document_chunks(
+    self: Any,
+    document: ValidatedDocument,
+    chunks: tuple[DocumentChunk, ...],
+    memos: tuple[str, ...],
+    *,
+    messages: list[dict[str, str]] | None = None,
+) -> str:
+    return (
+        await _merge_document_chunks_result(
+            self,
+            document,
+            chunks,
+            memos,
+            messages=messages,
+        )
+    ).text
 
 
 __all__ = [

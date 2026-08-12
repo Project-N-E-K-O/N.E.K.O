@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from .constants import LLM_OPERATION_DOCUMENT_ANALYZE
+from ._general_narration import prepare_general_narration_content
 from .document_analysis import DocumentValidationError, validate_document
 from .document_analysis_jobs import DocumentAnalysisJobError, DocumentAnalysisJobManager
 from .document_chunking import (
@@ -8,8 +9,13 @@ from .document_chunking import (
     DocumentChunkingError,
     split_document,
 )
-from .entry_common import asyncio, Ok, SdkError, plugin_entry, tr, ui
+from .entry_common import asyncio, Ok, SdkError, StudyEvent, plugin_entry, tr, ui
 from .models import TutorReply, utc_now_iso
+from .tutor_llm_agent_document import _DocumentModelResult
+from .tutor_llm_agent_document_chunked import (
+    _analyze_document_chunk_result,
+    _merge_document_chunks_result,
+)
 
 
 _START_ENTRY_TIMEOUT_SECONDS = 30.0
@@ -28,6 +34,30 @@ def _failed_payload(diagnostic: str) -> dict[str, object]:
         "degraded": True,
         "diagnostic": diagnostic,
     }
+
+
+async def _analyze_chunk_with_result(agent, document, chunk, total_chunks):
+    if callable(getattr(agent, "_call_model_result", None)):
+        return await _analyze_document_chunk_result(
+            agent, document, chunk, total_chunks
+        )
+    return _DocumentModelResult(
+        text=await agent.analyze_document_chunk(document, chunk, total_chunks)
+    )
+
+
+async def _merge_chunks_with_result(
+    agent, document, chunks, memos, *, messages
+):
+    if callable(getattr(agent, "_call_model_result", None)):
+        return await _merge_document_chunks_result(
+            agent, document, chunks, memos, messages=messages
+        )
+    return _DocumentModelResult(
+        text=await agent.merge_document_chunks(
+            document, chunks, memos, messages=messages
+        )
+    )
 
 
 class _DocumentAnalysisJobsEntriesMixin:
@@ -137,7 +167,7 @@ class _DocumentAnalysisJobsEntriesMixin:
             async def runner(update):
                 job_document = runner_state["document"]
                 job_chunks = runner_state["chunks"]
-                memos: list[str | None] = []
+                memos: list[_DocumentModelResult | None] = []
                 tasks: list[asyncio.Task[None]] = []
                 try:
                     if analysis_mode == "direct":
@@ -157,8 +187,11 @@ class _DocumentAnalysisJobsEntriesMixin:
                         async def analyze_one(chunk):
                             nonlocal completed
                             async with semaphore:
-                                memo = await self._agent.analyze_document_chunk(
-                                    job_document, chunk, len(job_chunks)
+                                memo = await _analyze_chunk_with_result(
+                                    self._agent,
+                                    job_document,
+                                    chunk,
+                                    len(job_chunks),
                                 )
                             memos[chunk.index] = memo
                             async with progress_lock:
@@ -180,18 +213,32 @@ class _DocumentAnalysisJobsEntriesMixin:
                             await asyncio.gather(*tasks, return_exceptions=True)
                             raise
                         await update("merging", len(job_chunks), len(job_chunks))
-                        ordered_memos = tuple(str(memo or "") for memo in memos)
+                        ordered_memos = tuple(
+                            memo.text if memo is not None else "" for memo in memos
+                        )
                         merge_messages = await asyncio.to_thread(
                             self._agent.build_document_merge_messages,
                             job_document,
                             job_chunks,
                             ordered_memos,
                         )
-                        final_text = await self._agent.merge_document_chunks(
+                        merge_result = await _merge_chunks_with_result(
+                            self._agent,
                             job_document,
                             job_chunks,
                             ordered_memos,
                             messages=merge_messages,
+                        )
+                        truncated_chunk_count = sum(
+                            1
+                            for memo in memos
+                            if memo is not None and memo.output_limit_reached
+                        )
+                        diagnostic = (
+                            "output_truncated"
+                            if truncated_chunk_count > 0
+                            or merge_result.output_limit_reached
+                            else ""
                         )
                         reply = TutorReply(
                             operation=LLM_OPERATION_DOCUMENT_ANALYZE,
@@ -200,10 +247,16 @@ class _DocumentAnalysisJobsEntriesMixin:
                                 f"{job_document.tokens} tokens · {len(job_chunks)} chunks · "
                                 f"sha256:{job_document.sha256[:12]}"
                             ),
-                            reply=final_text,
+                            reply=merge_result.text,
                             payload={"document": job_document.public_metadata()},
+                            diagnostic=diagnostic,
                             created_at=utc_now_iso(),
                         )
+                    if analysis_mode == "direct":
+                        truncated_chunk_count = 0
+                        merge_output_truncated = False
+                    else:
+                        merge_output_truncated = merge_result.output_limit_reached
                     metadata = job_document.public_metadata()
                     metadata["chunks"] = total_chunks
                     metadata["analysis_mode"] = analysis_mode
@@ -212,16 +265,21 @@ class _DocumentAnalysisJobsEntriesMixin:
                         reply,
                         history_kind=LLM_OPERATION_DOCUMENT_ANALYZE,
                         metadata={
-                            "degraded": False,
-                            "diagnostic": "",
+                            "degraded": reply.degraded,
+                            "diagnostic": reply.diagnostic,
                             "document": metadata,
                             "locale": job_document.locale,
                             "source_retained": False,
+                            "truncated_chunk_count": truncated_chunk_count,
+                            "total_chunks": total_chunks,
+                            "merge_output_truncated": merge_output_truncated,
                         },
                         public_payload={"summary": reply.reply, "document": metadata},
                     )
                     payload.pop("input_text", None)
                     payload.pop("created_at", None)
+                    payload["degraded"] = reply.degraded
+                    payload["diagnostic"] = reply.diagnostic
                     return payload
                 finally:
                     for task in tasks:
@@ -232,11 +290,58 @@ class _DocumentAnalysisJobsEntriesMixin:
                     memos.clear()
                     runner_state.clear()
 
+            def on_completed(result):
+                result["document_narration_scheduled"] = False
+                communication = getattr(getattr(self, "_cfg", None), "communication", None)
+                if not bool(getattr(communication, "enabled", False)):
+                    result["document_narration_status"] = "disabled"
+                    result["document_narration_reason"] = "communication_disabled"
+                    return
+                if not bool(
+                    getattr(communication, "general_narration_enabled", True)
+                ):
+                    result["document_narration_status"] = "disabled"
+                    result["document_narration_reason"] = "general_narration_disabled"
+                    return
+                content = prepare_general_narration_content(
+                    str(result.get("reply") or "")
+                )
+                if not content:
+                    result["document_narration_status"] = "not_applicable"
+                    result["document_narration_reason"] = "empty_reply"
+                    return
+                bus = getattr(self, "_event_bus", None)
+                if bus is None:
+                    result["document_narration_status"] = "runtime_unavailable"
+                    result["document_narration_reason"] = "event_bus_unavailable"
+                    return
+                try:
+                    scheduled = bus.schedule_emit(
+                        StudyEvent(
+                            name="general_response_completed",
+                            payload={
+                                "response_mode": "document_analysis",
+                                "content": content,
+                            },
+                        )
+                    )
+                except Exception:
+                    self.logger.warning("document narration event scheduling failed")
+                    scheduled = None
+                if scheduled is None:
+                    result["document_narration_status"] = "delivery_failed"
+                    result["document_narration_reason"] = "event_delivery_failed"
+                    return
+                result["document_narration_scheduled"] = True
+                result["document_narration_status"] = "scheduled"
+                result["document_narration_reason"] = ""
+
             payload = await self._document_job_manager().start(
                 analysis_mode=analysis_mode,
                 document=document.public_metadata(),
                 total_chunks=total_chunks,
                 runner=runner,
+                on_completed=on_completed,
             )
             return Ok(payload)
         except (

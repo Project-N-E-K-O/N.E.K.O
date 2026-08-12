@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 import asyncio
 
@@ -25,18 +26,52 @@ _DOCUMENT_FALLBACKS = {
 }
 
 
+@dataclass(frozen=True, slots=True)
+class _DocumentModelResult:
+    text: str
+    output_limit_reached: bool = False
+
+
+async def _call_document_model_result(
+    self: Any,
+    messages: list[dict[str, Any]],
+    *,
+    operation: str,
+    deadline: float,
+) -> _DocumentModelResult:
+    # Preserve compatibility with instance-level test doubles and private callers
+    # that replace the legacy string helper directly.
+    if "_call_model" in getattr(self, "__dict__", {}):
+        content = await self._call_model(
+            messages,
+            operation=operation,
+            deadline=deadline,
+        )
+        return _DocumentModelResult(text=str(content or ""))
+    result = await self._call_model_result(
+        messages,
+        operation=operation,
+        deadline=deadline,
+    )
+    return _DocumentModelResult(
+        text=str(result.text or ""),
+        output_limit_reached=bool(result.output_limit_reached),
+    )
+
+
 async def document_analyze(self: Any, document: ValidatedDocument) -> TutorReply:
     messages = build_document_analysis_messages(document)
     try:
         deadline = self._new_operation_deadline(
             LLM_OPERATION_DOCUMENT_ANALYZE, messages
         )
-        content = await self._call_model(
+        model_result = await _call_document_model_result(
+            self,
             messages,
             operation=LLM_OPERATION_DOCUMENT_ANALYZE,
             deadline=deadline,
         )
-        reply = str(content or "").strip()
+        reply = model_result.text.strip()
         if not reply:
             raise SdkError("empty model response")
         if contains_full_document_source(reply, document.text):
@@ -49,6 +84,9 @@ async def document_analyze(self: Any, document: ValidatedDocument) -> TutorReply
             reply=reply,
             payload={"document": document.public_metadata()},
             degraded=False,
+            diagnostic=(
+                "output_truncated" if model_result.output_limit_reached else ""
+            ),
             created_at=utc_now_iso(),
         )
     except asyncio.CancelledError:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+import logging
 import secrets
 import time
 from typing import Any
@@ -13,6 +14,10 @@ DOCUMENT_JOB_RESULT_TTL_SECONDS = 30 * 60.0
 
 ProgressCallback = Callable[[str, int, int], Awaitable[None]]
 JobRunner = Callable[[ProgressCallback], Awaitable[dict[str, Any]]]
+CompletionCallback = Callable[[dict[str, Any]], None]
+
+
+_logger = logging.getLogger(__name__)
 
 
 class DocumentAnalysisJobError(RuntimeError):
@@ -78,6 +83,7 @@ class DocumentAnalysisJobManager:
         document: dict[str, object],
         total_chunks: int,
         runner: JobRunner,
+        on_completed: CompletionCallback | None = None,
     ) -> dict[str, Any]:
         async with self._lock:
             self._reap_locked()
@@ -97,7 +103,7 @@ class DocumentAnalysisJobManager:
             )
             self._jobs[job_id] = job
             self._active_job_id = job_id
-            job.task = asyncio.create_task(self._run(job, runner))
+            job.task = asyncio.create_task(self._run(job, runner, on_completed))
             return job.public_payload()
 
     async def status(self, job_id: str) -> dict[str, Any]:
@@ -156,7 +162,12 @@ class DocumentAnalysisJobManager:
             self._jobs.clear()
             self._expiry_tasks.clear()
 
-    async def _run(self, job: _Job, runner: JobRunner) -> None:
+    async def _run(
+        self,
+        job: _Job,
+        runner: JobRunner,
+        on_completed: CompletionCallback | None,
+    ) -> None:
         async def update(stage: str, completed: int, total: int) -> None:
             async with self._lock:
                 if job.status != "running":
@@ -177,6 +188,13 @@ class DocumentAnalysisJobManager:
                     job.stage = "completed"
                     job.completed_chunks = job.total_chunks
                     job.finished_at = time.monotonic()
+                    if on_completed is not None:
+                        try:
+                            on_completed(job.result)
+                        except Exception:
+                            _logger.exception(
+                                "document analysis completion callback failed"
+                            )
         except asyncio.CancelledError:
             async with self._lock:
                 if job.status == "running":
@@ -194,6 +212,7 @@ class DocumentAnalysisJobManager:
             # Drop the runner closure immediately. It may have captured the source,
             # chunks, and internal memos; terminal job records retain public data only.
             del runner
+            del on_completed
             async with self._lock:
                 if self._active_job_id == job.job_id:
                     self._active_job_id = ""
