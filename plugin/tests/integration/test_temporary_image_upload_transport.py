@@ -10,7 +10,7 @@ import pytest
 from plugin.core.communication import PluginCommunicationResourceManager
 from plugin.core.context import PluginContext
 from plugin.core.image_store import get_image_store
-from plugin.core.zmq_transport import CH_RESP, ChildTransport, HostTransport
+from plugin.core.zmq_transport import CH_RESP, CH_STS, ChildTransport, HostTransport
 
 
 pytestmark = pytest.mark.plugin_integration
@@ -82,6 +82,59 @@ def test_public_image_upload_crosses_the_dedicated_media_transport(
             pump.cancel()
             await asyncio.gather(pump, return_exceptions=True)
             await manager.shutdown()
+            child.close()
+            host.close()
+
+    asyncio.run(_run())
+
+
+def test_media_backpressure_does_not_block_control_uplink() -> None:
+    """A saturated image socket must not head-of-line block status traffic."""
+
+    async def _run() -> None:
+        host = HostTransport()
+        child = ChildTransport(
+            host.downlink_endpoint,
+            host.uplink_endpoint,
+            host.image_uplink_endpoint,
+        )
+        payload = b"x" * (512 * 1024)
+        flood = [
+            asyncio.create_task(
+                child.send_image(
+                    f"flood-{index}",
+                    mime="image/jpeg",
+                    data=payload,
+                    timeout=0.25,
+                )
+            )
+            for index in range(32)
+        ]
+        try:
+            await asyncio.sleep(0.05)
+            await asyncio.wait_for(
+                asyncio.to_thread(
+                    child.send_uplink,
+                    CH_STS,
+                    {"status": "control-still-responsive"},
+                ),
+                timeout=0.75,
+            )
+            control_message = await asyncio.wait_for(
+                host.recv(timeout_ms=500),
+                timeout=0.75,
+            )
+            assert control_message == (
+                CH_STS,
+                {"status": "control-still-responsive"},
+            )
+
+            outcomes = await asyncio.gather(*flood, return_exceptions=True)
+            assert any(isinstance(item, TimeoutError) for item in outcomes)
+        finally:
+            for task in flood:
+                task.cancel()
+            await asyncio.gather(*flood, return_exceptions=True)
             child.close()
             host.close()
 

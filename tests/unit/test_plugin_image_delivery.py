@@ -10,6 +10,9 @@ import pytest
 pytestmark = pytest.mark.unit
 
 
+_IMAGE_URL = "http://127.0.0.1:48916/media/matrix-image"
+
+
 def _manager() -> MagicMock:
     manager = MagicMock()
     manager.session = MagicMock()
@@ -272,3 +275,162 @@ async def test_multiple_plugin_image_urls_are_fetched_concurrently(monkeypatch) 
 
     assert max_active_fetches == 2
     assert manager.session.stream_image.await_count == 2
+
+
+@pytest.mark.parametrize("with_text", [False, True], ids=["image-only", "text-and-image"])
+@pytest.mark.parametrize(
+    ("visibility", "ai_behavior", "shows_original", "model_reads", "responds_now"),
+    [
+        ([], "blind", False, False, False),
+        (["chat"], "blind", True, False, False),
+        ([], "read", False, True, False),
+        (["chat"], "read", True, True, False),
+        ([], "respond", False, True, True),
+        (["chat"], "respond", True, True, True),
+    ],
+)
+@pytest.mark.asyncio
+async def test_image_delivery_obeys_visibility_and_ai_behavior(
+    monkeypatch,
+    with_text: bool,
+    visibility: list[str],
+    ai_behavior: str,
+    shows_original: bool,
+    model_reads: bool,
+    responds_now: bool,
+) -> None:
+    """The two public delivery axes stay orthogonal for both payload shapes."""
+    from app import main_server
+
+    manager = _manager()
+    encoded = base64.b64encode(b"matrix-image").decode("ascii")
+    monkeypatch.setattr(
+        "app.main_server.character_runtime._get_session_manager",
+        lambda _name: manager,
+    )
+    monkeypatch.setattr(
+        "app.main_server.character_runtime._fetch_plugin_image_base64",
+        AsyncMock(return_value=encoded),
+    )
+
+    await main_server._handle_agent_event({
+        "event_type": "proactive_message",
+        "lanlan_name": "Test",
+        "text": "describe this" if with_text else "",
+        "channel": "plugin:matrix",
+        "task_id": f"matrix-{ai_behavior}-{with_text}",
+        "delivery_mode": {
+            "blind": "silent",
+            "read": "passive",
+            "respond": "proactive",
+        }[ai_behavior],
+        "ai_behavior": ai_behavior,
+        "visibility": visibility,
+        "media_parts": [{"type": "image", "url": _IMAGE_URL, "mime": "image/jpeg"}],
+    })
+
+    assert manager.render_chat_blocks.await_count == int(
+        shows_original and ai_behavior != "blind"
+    )
+    assert manager.passthrough_to_chat_bubble.await_count == int(
+        shows_original and ai_behavior == "blind"
+    )
+
+    if ai_behavior == "read" and model_reads:
+        manager.session.stream_image.assert_awaited_once_with(encoded)
+    else:
+        manager.session.stream_image.assert_not_awaited()
+
+    assert manager.submit_proactive_callback.call_count == int(responds_now)
+    if responds_now:
+        callback = manager.submit_proactive_callback.call_args.args[0]
+        assert callback["media_images"] == [encoded]
+    if ai_behavior == "blind":
+        manager.enqueue_agent_callback.assert_not_called()
+    elif ai_behavior == "read":
+        assert manager.enqueue_agent_callback.call_count == int(with_text)
+
+
+@pytest.mark.parametrize(
+    ("ai_behavior", "delivery_mode", "visibility", "expects_submit", "expects_enqueue", "expects_chat"),
+    [
+        ("blind", "silent", [], False, False, False),
+        ("blind", "silent", ["chat"], False, False, True),
+        ("read", "passive", [], False, True, False),
+        ("read", "passive", ["chat"], False, True, False),
+        ("respond", "proactive", [], True, False, False),
+        ("respond", "proactive", ["chat"], True, False, False),
+    ],
+)
+@pytest.mark.asyncio
+async def test_text_only_delivery_keeps_its_pre_image_behavior(
+    monkeypatch,
+    ai_behavior: str,
+    delivery_mode: str,
+    visibility: list[str],
+    expects_submit: bool,
+    expects_enqueue: bool,
+    expects_chat: bool,
+) -> None:
+    """Adding image support must not redirect or duplicate existing text events."""
+    from app import main_server
+
+    manager = _manager()
+    fetch_image = AsyncMock()
+    monkeypatch.setattr(
+        "app.main_server.character_runtime._get_session_manager",
+        lambda _name: manager,
+    )
+    monkeypatch.setattr(
+        "app.main_server.character_runtime._fetch_plugin_image_base64",
+        fetch_image,
+    )
+
+    await main_server._handle_agent_event({
+        "event_type": "proactive_message",
+        "lanlan_name": "Test",
+        "text": "legacy text stays text",
+        "channel": "plugin:matrix",
+        "delivery_mode": delivery_mode,
+        "ai_behavior": ai_behavior,
+        "visibility": visibility,
+        "media_parts": [],
+    })
+
+    fetch_image.assert_not_awaited()
+    manager.session.stream_image.assert_not_awaited()
+    manager.render_chat_blocks.assert_not_awaited()
+    assert manager.submit_proactive_callback.call_count == int(expects_submit)
+    assert manager.enqueue_agent_callback.call_count == int(expects_enqueue)
+    assert manager.passthrough_to_chat_bubble.await_count == int(expects_chat)
+
+
+@pytest.mark.asyncio
+async def test_failed_plugin_image_does_not_block_text_delivery(monkeypatch) -> None:
+    """A broken temporary URL drops only the image, never the text callback."""
+    from app import main_server
+
+    manager = _manager()
+    monkeypatch.setattr(
+        "app.main_server.character_runtime._get_session_manager",
+        lambda _name: manager,
+    )
+    monkeypatch.setattr(
+        "app.main_server.character_runtime._fetch_plugin_image_base64",
+        AsyncMock(side_effect=TimeoutError("local media read timed out")),
+    )
+
+    await main_server._handle_agent_event({
+        "event_type": "proactive_message",
+        "lanlan_name": "Test",
+        "text": "the text must survive",
+        "channel": "plugin:failure",
+        "delivery_mode": "proactive",
+        "ai_behavior": "respond",
+        "visibility": [],
+        "media_parts": [{"type": "image", "url": _IMAGE_URL, "mime": "image/jpeg"}],
+    })
+
+    callback = manager.submit_proactive_callback.call_args.args[0]
+    assert callback["summary"] == "the text must survive"
+    assert callback["media_images"] == []
