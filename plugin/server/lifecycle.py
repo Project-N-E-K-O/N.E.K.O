@@ -8,7 +8,6 @@ from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
 from plugin.core.state import state
-from plugin.core.registry import drain_pending_host_shutdowns
 from plugin.core.status import status_manager
 from plugin.logging_config import get_logger
 from plugin.utils.time_utils import now_iso
@@ -325,9 +324,6 @@ class ServerLifecycleService:
             "hosts": asyncio.create_task(_stop_hosts()),
             "bus_subscriptions": asyncio.create_task(_stop_bus()),
             "router": asyncio.create_task(_stop_router()),
-            "registry_host_shutdowns": asyncio.create_task(
-                drain_pending_host_shutdowns()
-            ),
         }
 
         results = await asyncio.gather(*parallel_tasks.values(), return_exceptions=True)

@@ -1,11 +1,8 @@
 from __future__ import annotations
 
-import asyncio
 import copy
 from pathlib import Path
 from types import SimpleNamespace
-
-import pytest
 
 from plugin.core import registry as module
 from plugin.sdk.plugin.decorators import plugin_entry
@@ -24,47 +21,6 @@ class _DuplicateCleanupHost:
 
     def is_alive(self) -> bool:
         return True
-
-
-def test_shutdown_host_safely_prefers_async_shutdown_on_running_loop() -> None:
-    calls: list[str] = []
-
-    class _Host:
-        async def shutdown(self, timeout: float) -> None:
-            calls.append(f"async:{timeout}")
-
-        def shutdown_sync(self, timeout: float) -> None:
-            calls.append(f"sync:{timeout}")
-
-    async def _exercise() -> None:
-        module._shutdown_host_safely(_Host(), module._DEFAULT_LOGGER, "demo")
-        assert len(module._pending_async_shutdown_tasks) == 1
-        await module.drain_pending_host_shutdowns()
-        await asyncio.sleep(0)
-        assert not module._pending_async_shutdown_tasks
-
-    asyncio.run(_exercise())
-
-    assert calls == ["async:1.0"]
-
-
-def test_drain_pending_host_shutdowns_propagates_failure_after_cleanup() -> None:
-    class _Host:
-        async def shutdown(self, timeout: float) -> None:
-            raise RuntimeError(f"shutdown failed after {timeout}")
-
-    async def _exercise() -> None:
-        module._shutdown_host_safely(_Host(), module._DEFAULT_LOGGER, "broken")
-        await asyncio.sleep(0)
-        assert len(module._pending_async_shutdown_tasks) == 1
-        try:
-            with pytest.raises(RuntimeError, match="shutdown failed after 1.0"):
-                await module.drain_pending_host_shutdowns()
-        finally:
-            module._pending_async_shutdown_tasks.clear()
-        assert not module._pending_async_shutdown_tasks
-
-    asyncio.run(_exercise())
 
 
 def test_load_plugins_from_roots_rolls_back_scanned_metadata_when_register_plugin_returns_none() -> None:

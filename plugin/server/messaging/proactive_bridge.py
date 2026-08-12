@@ -58,68 +58,6 @@ def _aggregate_text_parts(parts: list[dict[str, Any]]) -> str:
     return "\n".join(pieces).strip()
 
 
-def _truncate_text_prefix(text: str) -> str:
-    """Apply the legacy aggregate token bound without semantic parsing."""
-    from config import TASK_DETAIL_MAX_TOKENS
-    from utils.tokenize import count_tokens, truncate_to_tokens
-
-    if count_tokens(text) <= TASK_DETAIL_MAX_TOKENS:
-        return text
-    suffix = "…"
-    suffix_tokens = count_tokens(suffix)
-    if TASK_DETAIL_MAX_TOKENS <= suffix_tokens:
-        return truncate_to_tokens(text, TASK_DETAIL_MAX_TOKENS)
-    return (
-        truncate_to_tokens(text, TASK_DETAIL_MAX_TOKENS - suffix_tokens) + suffix
-    )
-
-
-def _normalize_text_parts(parts: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Clean text in place conceptually while retaining media-relative order."""
-    try:
-        from utils.result_parser import parse_push_message_content
-
-        normalized: list[dict[str, Any]] = []
-        for part in parts:
-            if not isinstance(part, dict):
-                continue
-            copied = dict(part)
-            if copied.get("type") == "text" and isinstance(copied.get("text"), str):
-                copied["text"] = parse_push_message_content(copied["text"])
-            normalized.append(copied)
-
-        # Preserve the historical aggregate token bound.  Since the parser's
-        # truncation is prefix-based, distribute the bounded aggregate back
-        # over the original text positions and retain all media positions.
-        bounded_text = _truncate_text_prefix(_aggregate_text_parts(normalized))
-        remaining = bounded_text
-        bounded_parts: list[dict[str, Any]] = []
-        for part in normalized:
-            if part.get("type") != "text" or not isinstance(part.get("text"), str):
-                bounded_parts.append(part)
-                continue
-            if not part["text"]:
-                continue
-            if not remaining:
-                continue
-            part_text = part["text"]
-            if remaining == part_text:
-                bounded_parts.append(part)
-                remaining = ""
-            elif remaining.startswith(part_text + "\n"):
-                bounded_parts.append(part)
-                remaining = remaining[len(part_text) + 1 :]
-            else:
-                copied = dict(part)
-                copied["text"] = remaining
-                bounded_parts.append(copied)
-                remaining = ""
-        return bounded_parts
-    except Exception as exc:
-        logger.debug("parse_push_message_content failed (fallback to raw): {}", exc)
-        return [dict(part) for part in parts if isinstance(part, dict)]
-
-
 def _media_parts(parts: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Filter for image/audio/video parts (passed through to the AI session)."""
     out: list[dict[str, Any]] = []
@@ -275,8 +213,7 @@ class ProactiveBridge:
         ai_behavior = payload.get("ai_behavior")
         if ai_behavior not in AI_BEHAVIOR_VALUES:
             ai_behavior = "respond"
-        raw_parts = payload.get("parts") if isinstance(payload.get("parts"), list) else []
-        parts = _normalize_text_parts(raw_parts)
+        parts = payload.get("parts") if isinstance(payload.get("parts"), list) else []
         # Proactive-delivery hints (priority ordering + coalescing). Carried
         # through to the main_server callback so ProactiveDeliveryManager can
         # order/coalesce. Lower priority = more urgent; unspecified (0) is
@@ -343,6 +280,18 @@ class ProactiveBridge:
 
         # ---- text + media parts → proactive_message (or HUD-only) ----
         text = _aggregate_text_parts(parts)
+        # Keep the historical aggregate-once cleanup for the model/callback
+        # text. Canonical parts remain untouched for verbatim chat rendering.
+        if text:
+            try:
+                from utils.result_parser import parse_push_message_content
+
+                text = parse_push_message_content(text)
+            except Exception as exc:
+                logger.debug(
+                    "parse_push_message_content failed (fallback to raw): {}",
+                    exc,
+                )
         media = _media_parts(parts)
         has_ai_payload = bool(text) or bool(media)
 

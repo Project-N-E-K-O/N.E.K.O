@@ -1300,10 +1300,9 @@ def _shutdown_host_safely(host: Any, logger: Any, plugin_id: str) -> None:
     import asyncio
     
     try:
-        # Prefer the async path whenever the host provides it. Calling
-        # shutdown_sync from the communication owner loop would block the
-        # image consumer while the child lifecycle waits for its response.
-        if hasattr(host, "shutdown"):
+        if hasattr(host, "shutdown_sync"):
+            host.shutdown_sync(timeout=1.0)
+        elif hasattr(host, "shutdown"):
             if asyncio.iscoroutinefunction(host.shutdown):
                 try:
                     loop = asyncio.get_running_loop()
@@ -1311,16 +1310,13 @@ def _shutdown_host_safely(host: Any, logger: Any, plugin_id: str) -> None:
                     _pending_async_shutdown_tasks.add(task)
                     
                     def _on_done(t: asyncio.Task) -> None:
+                        _pending_async_shutdown_tasks.discard(t)
                         try:
-                            error = t.exception()
+                            _ = t.exception()
                         except asyncio.CancelledError:
-                            # Keep cancelled/failed tasks for the lifecycle
-                            # drain so server shutdown is reported as failed.
-                            return
+                            pass
                         except Exception:
-                            return
-                        if error is None:
-                            _pending_async_shutdown_tasks.discard(t)
+                            pass
                     
                     task.add_done_callback(_on_done)
                     logger.debug("Plugin {} scheduled async shutdown", plugin_id)
@@ -1328,37 +1324,11 @@ def _shutdown_host_safely(host: Any, logger: Any, plugin_id: str) -> None:
                     asyncio.run(host.shutdown(timeout=1.0))
             else:
                 host.shutdown(timeout=1.0)
-        elif hasattr(host, "shutdown_sync"):
-            host.shutdown_sync(timeout=1.0)
         elif hasattr(host, "process") and getattr(host, "process", None):
             host.process.terminate()
             host.process.join(timeout=1.0)
     except Exception as e:
         logger.debug("Error shutting down plugin {}: {}", plugin_id, e)
-
-
-async def drain_pending_host_shutdowns() -> None:
-    """Wait for registry-scheduled host shutdowns owned by this event loop."""
-    import asyncio
-
-    current_loop = asyncio.get_running_loop()
-    first_error: BaseException | None = None
-    while True:
-        tasks = [
-            task
-            for task in tuple(_pending_async_shutdown_tasks)
-            if task.get_loop() is current_loop
-        ]
-        if not tasks:
-            if first_error is not None:
-                raise first_error
-            return
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        for task in tasks:
-            _pending_async_shutdown_tasks.discard(task)
-        for result in results:
-            if first_error is None and isinstance(result, BaseException):
-                first_error = result
 
 
 def _migrate_plugin_id(

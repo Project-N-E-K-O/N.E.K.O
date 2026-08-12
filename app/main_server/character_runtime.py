@@ -852,7 +852,9 @@ async def _handle_agent_event(event: dict):
                         )
                         visible_blocks.append({"type": "text", "text": visible_text})
                     visible_blocks.extend(visible_images)
-                if visible_blocks:
+                # Preserve the pre-existing text-only read/respond path;
+                # structured display-only output is only for valid images.
+                if any(block["type"] == "image" for block in visible_blocks):
                     channel = str(event.get("channel") or "")
                     visible_source = str(event.get("source_kind") or "").strip()
                     if not visible_source:

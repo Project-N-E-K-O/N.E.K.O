@@ -69,7 +69,7 @@ def test_proactive_bridge_carries_one_canonical_ordered_parts_list() -> None:
     assert "media_parts" not in proactive
 
 
-def test_proactive_bridge_normalizes_text_without_reordering_images() -> None:
+def test_proactive_bridge_cleans_aggregate_text_without_mutating_parts() -> None:
     from plugin.server.messaging.proactive_bridge import ProactiveBridge
 
     sent: list[dict[str, object]] = []
@@ -97,12 +97,12 @@ def test_proactive_bridge_normalizes_text_without_reordering_images() -> None:
     assert proactive["text"] == "clean caption"
     assert proactive["parts"] == [
         {"type": "image", "url": "http://127.0.0.1:48916/media/first"},
-        {"type": "text", "text": "clean caption"},
+        {"type": "text", "text": '{"message":"clean caption"}'},
         {"type": "image", "url": "http://127.0.0.1:48916/media/last"},
     ]
 
 
-def test_proactive_bridge_bounds_ordered_text_without_reordering_images() -> None:
+def test_proactive_bridge_bounds_aggregate_text_without_mutating_parts() -> None:
     from plugin.server.messaging.proactive_bridge import ProactiveBridge
 
     sent: list[dict[str, object]] = []
@@ -111,6 +111,7 @@ def test_proactive_bridge_bounds_ordered_text_without_reordering_images() -> Non
         def send_json(self, payload, _flags) -> None:
             sent.append(payload)
 
+    raw_text = "word " * 2_000
     ProactiveBridge()._dispatch(
         {
             "plugin_id": "ordered",
@@ -119,7 +120,7 @@ def test_proactive_bridge_bounds_ordered_text_without_reordering_images() -> Non
             "ai_behavior": "blind",
             "parts": [
                 {"type": "image", "url": "http://127.0.0.1:48916/media/first"},
-                {"type": "text", "text": "word " * 2_000},
+                {"type": "text", "text": raw_text},
                 {"type": "image", "url": "http://127.0.0.1:48916/media/last"},
             ],
         },
@@ -127,13 +128,12 @@ def test_proactive_bridge_bounds_ordered_text_without_reordering_images() -> Non
     )
 
     proactive = next(item for item in sent if item["event_type"] == "proactive_message")
-    bounded_parts = proactive["parts"]
-    assert [part["type"] for part in bounded_parts] == ["image", "text", "image"]
-    assert bounded_parts[1]["text"].endswith("…")
-    assert proactive["text"] == bounded_parts[1]["text"]
+    assert proactive["parts"][1]["text"] == raw_text
+    assert proactive["text"].endswith("…")
+    assert len(proactive["text"]) < len(raw_text)
 
 
-def test_proactive_bridge_drops_blank_text_without_moving_later_caption() -> None:
+def test_proactive_bridge_preserves_blank_text_part_and_later_caption_order() -> None:
     from plugin.server.messaging.proactive_bridge import ProactiveBridge
 
     sent: list[dict[str, object]] = []
@@ -161,12 +161,14 @@ def test_proactive_bridge_drops_blank_text_without_moving_later_caption() -> Non
     proactive = next(item for item in sent if item["event_type"] == "proactive_message")
     assert proactive["parts"] == [
         {"type": "image", "url": "http://127.0.0.1:48916/media/first"},
+        {"type": "text", "text": "   "},
         {"type": "image", "url": "http://127.0.0.1:48916/media/last"},
         {"type": "text", "text": "caption"},
     ]
+    assert proactive["text"] == "caption"
 
 
-def test_proactive_bridge_does_not_parse_json_split_across_images() -> None:
+def test_proactive_bridge_parses_aggregate_without_mutating_split_parts() -> None:
     from plugin.server.messaging.proactive_bridge import ProactiveBridge
 
     sent: list[dict[str, object]] = []
@@ -195,7 +197,7 @@ def test_proactive_bridge_does_not_parse_json_split_across_images() -> None:
 
     proactive = next(item for item in sent if item["event_type"] == "proactive_message")
     assert proactive["parts"] == parts
-    assert proactive["text"] == '{\n"message":"caption"}'
+    assert proactive["text"] == "caption"
 
 
 def _manager() -> MagicMock:
@@ -757,7 +759,7 @@ async def test_text_only_delivery_obeys_visibility_and_ai_behavior(
     expects_enqueue: bool,
     expects_chat: bool,
 ) -> None:
-    """Text-only events obey the same orthogonal delivery axes as image events."""
+    """The image feature leaves the existing text-only delivery path unchanged."""
     from app import main_server
 
     manager = _manager()
@@ -779,19 +781,12 @@ async def test_text_only_delivery_obeys_visibility_and_ai_behavior(
         "delivery_mode": delivery_mode,
         "ai_behavior": ai_behavior,
         "visibility": visibility,
-        "media_parts": [],
+        "parts": [{"type": "text", "text": "legacy text stays text"}],
     })
 
     fetch_image.assert_not_awaited()
     manager.session.stream_image.assert_not_awaited()
-    expected_display = "chat" in visibility and ai_behavior != "blind"
-    assert manager.render_chat_blocks.await_count == int(expected_display)
-    if expected_display:
-        manager.render_chat_blocks.assert_awaited_once_with(
-            [{"type": "text", "text": "legacy text stays text"}],
-            request_id=None,
-            source="plugin",
-        )
+    manager.render_chat_blocks.assert_not_awaited()
     assert manager.submit_proactive_callback.call_count == int(expects_submit)
     assert manager.enqueue_agent_callback.call_count == int(expects_enqueue)
     assert manager.passthrough_to_chat_bubble.await_count == int(expects_chat)
