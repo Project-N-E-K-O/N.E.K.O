@@ -231,6 +231,8 @@
                 <textarea id="memoryFrontInput" spellcheck="true" data-i18n-placeholder="ui.memory.front_placeholder" placeholder="Question or prompt"></textarea>
                 <textarea id="memoryBackInput" spellcheck="true" data-i18n-placeholder="ui.memory.back_placeholder" placeholder="Answer or recall target"></textarea>
               </div>
+              <label class="input-label" for="memoryDeckSelect" data-i18n="ui.memory.choose_deck">Card deck</label>
+              <select id="memoryDeckSelect" data-i18n-aria-label="ui.memory.choose_deck" aria-label="Card deck"></select>
               <div class="action-row">
                 <button id="memoryRefreshBtn" class="button button-secondary" type="button" data-i18n="ui.button.refresh_deck">Refresh Deck</button>
                 <button id="memoryAddBtn" class="button button-primary" type="button" data-i18n="ui.button.save_card">Save Card</button>
@@ -297,16 +299,15 @@
               <div class="action-row">
                 <button id="explainBtn" class="button button-primary" type="button" data-i18n="ui.button.explain">Explain</button>
               </div>
+              <section id="replyPanel" class="reply-panel" aria-live="polite" data-i18n-aria-label="ui.label.reply_panel" aria-label="Reply panel" hidden>
+                <div class="section-heading">
+                  <h2 data-i18n="ui.label.reply">Reply</h2>
+                  <span>N.E.K.O</span>
+                </div>
+                <pre id="replyText"></pre>
+              </section>
             </section>
           </div>
-
-          <section id="replyPanel" class="reply-panel panel" aria-live="polite" data-i18n-aria-label="ui.label.reply_panel" aria-label="Reply panel" hidden>
-            <div class="section-heading">
-              <h2 data-i18n="ui.label.reply">Reply</h2>
-              <span>N.E.K.O</span>
-            </div>
-            <pre id="replyText"></pre>
-          </section>
         </section>
 
         <div class="advanced-toggle-row">
@@ -496,6 +497,19 @@
         </div>
       </div>
     </aside>
+    <dialog id="memoryDeckDialog" class="memory-deck-dialog" aria-labelledby="memoryDeckDialogTitle" aria-describedby="memoryDeckDialogBody">
+      <div class="memory-deck-dialog__panel">
+        <span class="diagnosis-label" data-i18n="ui.memory.first_deck_label">First card</span>
+        <h2 id="memoryDeckDialogTitle" data-i18n="ui.memory.first_deck_title">Name your first deck</h2>
+        <p id="memoryDeckDialogBody" data-i18n="ui.memory.first_deck_body">Create a deck for this card, or skip to use the default deck.</p>
+        <label class="input-label" for="memoryDeckNameInput" data-i18n="ui.label.name">Name</label>
+        <input id="memoryDeckNameInput" type="text" maxlength="120" autocomplete="off" data-i18n-placeholder="ui.memory.deck_name_placeholder" placeholder="For example: Calculus review" />
+        <div class="memory-deck-dialog__actions">
+          <button id="memoryDeckSkipBtn" class="button button-secondary" type="button" data-i18n="ui.button.skip_use_default_deck">Skip and use default</button>
+          <button id="memoryDeckCreateBtn" class="button button-primary" type="button" data-i18n="ui.button.create_and_save">Create and save</button>
+        </div>
+      </div>
+    </dialog>
     <script src="./i18n.js"></script>
     <script src="./katex.min.js?v=study-hotfix-20260615v"></script>
     <script src="./katex-render.js?v=study-hotfix-20260615v"></script>

@@ -91,6 +91,12 @@
     return t(ctx, pair[0], pair[1]);
   }
 
+  function deckDisplayName(ctx, deck) {
+    return deck?.is_default
+      ? t(ctx, 'ui.memory.default_deck_name', 'Default Deck')
+      : String(deck?.name || '');
+  }
+
   function itemTypeLabel(ctx, value) {
     return deckTypeLabel(ctx, value);
   }
@@ -498,6 +504,8 @@
     let goalAmount = 10;
     let goalUnit = 'cards';
     let status = '';
+    let expandedDeckId = '';
+    const itemsByDeck = new Map();
 
     async function refresh() {
       const payload = await ctx.callPlugin('study_memory_list_decks', { limit: 100 });
@@ -543,6 +551,63 @@
       }
     }
 
+    async function toggleDeckItems(deckId) {
+      if (expandedDeckId === deckId) {
+        expandedDeckId = '';
+        draw();
+        return;
+      }
+      expandedDeckId = deckId;
+      draw();
+      if (itemsByDeck.has(deckId)) return;
+      try {
+        const payload = await ctx.callPlugin('study_memory_list_deck_items', { deck_id: deckId, limit: 500 });
+        itemsByDeck.set(deckId, safeList(payload, 'items'));
+      } catch (error) {
+        status = errText(error);
+        itemsByDeck.set(deckId, []);
+      }
+      draw();
+    }
+
+    function deckRow(deck) {
+      const wrapper = el('div', 'study-panel__deck');
+      wrapper.appendChild(row(
+        tf(ctx, 'ui.memory.deck_summary', '{name} / {type} / {count} cards', {
+          name: deckDisplayName(ctx, deck),
+          type: deckTypeLabel(ctx, deck.deck_type),
+          count: deck.item_count || 0,
+        }),
+        button(
+          expandedDeckId === deck.id
+            ? t(ctx, 'ui.button.hide_cards', 'Hide cards')
+            : t(ctx, 'ui.button.view_cards', 'View cards'),
+          () => toggleDeckItems(deck.id),
+        ),
+        button(t(ctx, 'ui.daily_goal.set_for_deck', 'Set Goal'), () => saveGoal(deck.id)),
+        button(t(ctx, 'ui.button.delete', 'Delete'), () => deleteDeck(deck.id)),
+      ));
+      if (expandedDeckId === deck.id) {
+        const itemList = el('div', 'study-panel__deck-items');
+        const items = itemsByDeck.get(deck.id);
+        if (items?.length) {
+          items.forEach((item) => {
+            const itemRow = row(
+              item.prompt || '-',
+              item.answer || '-',
+              itemTypeLabel(ctx, item.item_type),
+            );
+            itemRow.classList.add('study-panel__deck-item');
+            itemList.appendChild(itemRow);
+          });
+        } else {
+          itemList.appendChild(el('p', 'study-panel__empty', t(ctx, 'ui.memory.empty_deck', 'No cards in this deck')));
+        }
+        wrapper.appendChild(itemList);
+      }
+      return wrapper;
+    }
+
     function draw() {
       if (!valid(root, token)) return;
       const nameInput = input(name);
@@ -553,7 +618,7 @@
       goalInput.addEventListener('input', () => { goalAmount = Math.max(1, Number(goalInput.value) || 1); });
       const unitSelect = select(goalUnit, unitOptions(ctx));
       unitSelect.addEventListener('change', () => { goalUnit = unitSelect.value; });
-      replace(root, ctx, 'memory-deck-list', status || String(decks.length), [
+      replace(root, ctx, 'memory-deck-list', status || tf(ctx, 'ui.memory.deck_count', '{count} decks', { count: decks.length }), [
         state([
           [t(ctx, 'ui.memory.title', 'Memory Deck'), decks.length],
           [t(ctx, 'ui.label.name', 'Name'), name || '-'],
@@ -566,11 +631,7 @@
           labeled(t(ctx, 'ui.memory.deck_goal_unit', 'Unit'), unitSelect),
           button(t(ctx, 'ui.button.create', 'Create'), createDeck, true),
         ], 'study-panel__actions--form'),
-        actions(decks.map((deck) => row(
-          `${deck.name} / ${deckTypeLabel(ctx, deck.deck_type)} / ${deck.item_count || 0}`,
-          button(t(ctx, 'ui.daily_goal.set_for_deck', 'Set Goal'), () => saveGoal(deck.id)),
-          button(t(ctx, 'ui.button.delete', 'Delete'), () => deleteDeck(deck.id)),
-        )), 'study-panel__actions--list'),
+        actions(decks.map(deckRow), 'study-panel__actions--list'),
       ]);
     }
 

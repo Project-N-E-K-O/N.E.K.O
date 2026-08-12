@@ -79,6 +79,9 @@ class _MemoryReviewEntriesMixin:
         **_,
     ):
         try:
+            due_before = await asyncio.to_thread(
+                self._memory_deck_store.count_due_reviews
+            )
             payload = await asyncio.to_thread(
                 self._memory_deck_store.review_item,
                 item_id=item_id,
@@ -105,6 +108,20 @@ class _MemoryReviewEntriesMixin:
                     }
             try:
                 await self._emit_memory_review_answer_event(payload)
+                if due_before > 0:
+                    due_after = await asyncio.to_thread(
+                        self._memory_deck_store.count_due_reviews
+                    )
+                    if due_after == 0:
+                        item = payload.get("item") or {}
+                        deck = await asyncio.to_thread(
+                            self._memory_deck_store.get_deck,
+                            str(item.get("deck_id") or ""),
+                        )
+                        await self._emit_review_session_completed_event(
+                            reviewed_count=1,
+                            deck_name=str((deck or {}).get("name") or ""),
+                        )
             except Exception as emit_exc:
                 self.logger.warning(
                     "memory review event emission degraded: {}", emit_exc

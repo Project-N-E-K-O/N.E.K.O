@@ -31,6 +31,7 @@ class _MemoryCardEntriesMixin:
                 "difficulty": {"type": "number", "default": 0.5},
                 "tags": {"type": "array", "items": {"type": "string"}, "default": []},
                 "source": {"type": "string", "default": "manual"},
+                "deck_id": {"type": "string", "default": ""},
             },
             "required": ["front", "back"],
         },
@@ -46,14 +47,23 @@ class _MemoryCardEntriesMixin:
         difficulty: float = 0.5,
         tags: list[str] | None = None,
         source: str = "manual",
+        deck_id: str = "",
         **_,
     ):
         try:
             topic_key = str(topic_id or "").strip()
-            deck = await asyncio.to_thread(
-                self._memory_deck_store.get_or_create_default_deck,
-                deck_type="custom",
-            )
+            deck_key = str(deck_id or "").strip()
+            if deck_key:
+                deck = await asyncio.to_thread(
+                    self._memory_deck_store.get_deck, deck_key
+                )
+                if deck is None:
+                    raise ValueError("deck not found")
+            else:
+                deck = await asyncio.to_thread(
+                    self._memory_deck_store.get_or_create_default_deck,
+                    deck_type="custom",
+                )
             result = await asyncio.to_thread(
                 self._memory_deck_store.upsert_item,
                 deck_id=str(deck.get("id") or ""),
@@ -81,6 +91,7 @@ class _MemoryCardEntriesMixin:
                     if isinstance(result, dict)
                     else False,
                     "card": self._memory_deck_store.compat_card_payload(item),
+                    "deck": deck,
                 }
             )
         except Exception as exc:
@@ -113,30 +124,59 @@ class _MemoryCardEntriesMixin:
     ):
         try:
             topic_key = str(topic_id or "").strip()
-            deck = await asyncio.to_thread(
-                self._memory_deck_store.get_or_create_default_deck,
-                deck_type="custom",
+            due_before = await asyncio.to_thread(
+                self._memory_deck_store.count_due_reviews
             )
             try:
                 payload = await asyncio.to_thread(
                     self._memory_deck_store.review_item,
                     item_id=topic_key,
                     rating=rating,
-                    deck_id=str(deck.get("id") or ""),
                 )
             except MemoryItemNotFoundError:
-                # Not a memory/custom item: a knowledge-graph topic card surfaced
-                # via study_memory_deck(include_topic_cards=True) is reviewed through
-                # the topic FSRS backend instead.
-                return Ok(
-                    await asyncio.to_thread(
-                        self._knowledge_tracker.review_memory_card,
-                        topic_id=topic_key,
-                        rating=rating,
-                        answer=answer,
-                    )
+                default_deck = await asyncio.to_thread(
+                    self._memory_deck_store.get_or_create_default_deck,
+                    deck_type="custom",
                 )
+                try:
+                    payload = await asyncio.to_thread(
+                        self._memory_deck_store.review_item,
+                        item_id=topic_key,
+                        rating=rating,
+                        deck_id=str(default_deck.get("id") or ""),
+                    )
+                except MemoryItemNotFoundError:
+                    # Not a memory/custom item: a knowledge-graph topic card surfaced
+                    # via study_memory_deck(include_topic_cards=True) is reviewed through
+                    # the topic FSRS backend instead.
+                    return Ok(
+                        await asyncio.to_thread(
+                            self._knowledge_tracker.review_memory_card,
+                            topic_id=topic_key,
+                            rating=rating,
+                            answer=answer,
+                        )
+                    )
             item = payload.get("item") if isinstance(payload, dict) else {}
+            try:
+                await self._emit_memory_review_answer_event(payload)
+                if due_before > 0:
+                    due_after = await asyncio.to_thread(
+                        self._memory_deck_store.count_due_reviews
+                    )
+                    if due_after == 0:
+                        reviewed_deck = await asyncio.to_thread(
+                            self._memory_deck_store.get_deck,
+                            str(item.get("deck_id") or ""),
+                        )
+                        await self._emit_review_session_completed_event(
+                            reviewed_count=1,
+                            deck_name=str((reviewed_deck or {}).get("name") or ""),
+                        )
+            except Exception as emit_exc:
+                self.logger.warning(
+                    "memory card review event emission degraded: {}", emit_exc
+                )
             return Ok(
                 {
                     "topic_id": topic_key,

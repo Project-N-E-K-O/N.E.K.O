@@ -397,6 +397,32 @@ export const BRAND_CSS = `
     background: rgba(255, 255, 255, 0.84);
   }
 
+  .study-panel__deck {
+    display: grid;
+    gap: 8px;
+    width: 100%;
+  }
+
+  .study-panel__deck-items {
+    display: grid;
+    gap: 7px;
+    margin-left: 18px;
+    padding-left: 12px;
+    border-left: 2px solid rgba(47, 125, 87, 0.2);
+  }
+
+  .study-panel__deck-item {
+    grid-template-columns: minmax(160px, 0.8fr) minmax(220px, 1fr) minmax(90px, auto);
+    background: rgba(248, 251, 249, 0.9);
+  }
+
+  .study-panel__empty {
+    margin: 0;
+    padding: 12px;
+    color: var(--muted);
+    text-align: center;
+  }
+
   .study-panel label {
     display: grid;
     gap: 6px;

@@ -35,6 +35,27 @@ class _CommunicationReviewEventsMixin:
         except Exception as exc:
             self.logger.warning("study review due event emit failed: {}", exc)
 
+    async def _emit_review_session_completed_event(
+        self, *, reviewed_count: int, deck_name: str = ""
+    ) -> bool:
+        bus = self._event_bus
+        if bus is None:
+            return False
+        try:
+            await bus.emit(
+                StudyEvent(
+                    name="review_session_completed",
+                    payload={
+                        "reviewed_count": max(1, int(reviewed_count or 1)),
+                        "deck_name": str(deck_name or "").strip(),
+                    },
+                )
+            )
+        except Exception:
+            self.logger.warning("review completion event delivery failed")
+            return False
+        return True
+
     def _build_review_due_payload(self) -> dict[str, Any]:
         memory_due_count = int(self._memory_deck_store.count_due_reviews() or 0)
         topic_due_count = int(self._knowledge_tracker.count_due_reviews() or 0)

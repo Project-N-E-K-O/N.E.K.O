@@ -392,6 +392,8 @@ def test_study_companion_surfaces_share_ui8_interaction_styles_and_messages() ->
     assert "STUDY_SURFACE_MESSAGE_TYPES.memoryDeckUpdated" in word_review
     assert "STUDY_SURFACE_MESSAGE_TYPES.memoryDeckUpdated" in due_review
     assert "STUDY_SURFACE_MESSAGE_TYPES.memoryDeckUpdated" in memory_decks
+    assert "study_memory_list_deck_items" in memory_decks
+    assert "ui.button.view_cards" in memory_decks
     assert "data-mastery={nodeMasteryLevel(node)}" in knowledge_map
     assert "Number.isFinite(mastery)" in knowledge_map
     assert "masteryText" in knowledge_map

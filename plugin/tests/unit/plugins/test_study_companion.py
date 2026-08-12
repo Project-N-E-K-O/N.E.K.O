@@ -9692,6 +9692,7 @@ async def test_study_plugin_starts_and_collects_entries(
     assert "study_memory_deck" in entries
     assert "study_memory_card_review" in entries
     assert "study_memory_create_deck" in entries
+    assert "study_memory_list_deck_items" in entries
     assert "study_memory_import_words" in entries
     assert "study_memory_import_passage" in entries
     assert "study_memory_due_reviews" in entries
@@ -9702,6 +9703,35 @@ async def test_study_plugin_starts_and_collects_entries(
         fmt="markdown", preview_only=True, title="Default Notes"
     )
     assert isinstance(disabled_export, Err)
+    selected_deck = await plugin.study_memory_create_deck(
+        name="Selected Deck", deck_type="custom", source="ui"
+    )
+    assert isinstance(selected_deck, Ok)
+    selected_card = await plugin.study_memory_card_upsert(
+        deck_id=selected_deck.value["id"],
+        front="Selected prompt",
+        back="Selected answer",
+        source="ui",
+    )
+    assert isinstance(selected_card, Ok)
+    assert selected_card.value["deck"]["id"] == selected_deck.value["id"]
+    selected_items = await plugin.study_memory_list_deck_items(
+        deck_id=selected_deck.value["id"]
+    )
+    assert isinstance(selected_items, Ok)
+    assert selected_items.value["deck"]["name"] == "Selected Deck"
+    assert [item["prompt"] for item in selected_items.value["items"]] == [
+        "Selected prompt"
+    ]
+    selected_review = await plugin.study_memory_card_review(
+        topic_id=selected_card.value["card"]["item_id"], rating="good"
+    )
+    assert isinstance(selected_review, Ok)
+    decks_after_selected_review = await plugin.study_memory_list_decks()
+    assert isinstance(decks_after_selected_review, Ok)
+    assert [deck["name"] for deck in decks_after_selected_review.value["decks"]] == [
+        "Selected Deck"
+    ]
     memory_card = await plugin.study_memory_card_upsert(
         topic_id="phase7_plugin_memory",
         front="What does the study memory deck store?",
@@ -10172,6 +10202,42 @@ async def test_memory_review_emits_answer_evaluated(
         assert isinstance(reviewed, Ok)
         await _drain_scheduled_events()
         assert any("[Answer Evaluated]" in text for text in _study_push_texts(ctx))
+        assert any(
+            "[Review Session Completed]" in text for text in _study_push_texts(ctx)
+        )
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_memory_review_does_not_emit_completion_while_due_cards_remain(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(tmp_path, {"study": {"language": "en", "auto_open_ui": False}})
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    try:
+        assert isinstance(result, Ok)
+        deck = plugin._memory_deck_store.create_deck(name="Two Cards", deck_type="word")
+        first = plugin._memory_deck_store.add_word(
+            deck_id=deck["id"], word="one", meaning="1"
+        )["item"]
+        plugin._memory_deck_store.add_word(
+            deck_id=deck["id"], word="two", meaning="2"
+        )
+
+        reviewed = await plugin.study_memory_review_item(
+            item_id=first["id"], rating="good", correct=True
+        )
+
+        assert isinstance(reviewed, Ok)
+        await _drain_scheduled_events()
+        assert not any(
+            "[Review Session Completed]" in text for text in _study_push_texts(ctx)
+        )
     finally:
         await plugin.shutdown()
 

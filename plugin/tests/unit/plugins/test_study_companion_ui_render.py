@@ -208,6 +208,87 @@ def test_study_companion_quick_cards_follow_adaptive_practice() -> None:
     assert not index_html[practice_panel_end + len("</details>") : memory_tag_start].strip()
 
 
+def test_study_input_area_label_is_localized() -> None:
+    expected = {
+        "zh-CN": "输入区",
+        "zh-TW": "輸入區",
+        "en": "Input area",
+        "es": "Área de entrada",
+        "ja": "入力エリア",
+        "ko": "입력 영역",
+        "pt": "Área de entrada",
+        "ru": "Область ввода",
+    }
+
+    for locale, label in expected.items():
+        bundle = json.loads((PLUGIN_DIR / "i18n" / f"{locale}.json").read_text(encoding="utf-8"))
+        assert bundle["ui.label.text"] == label
+
+
+def test_study_reply_is_combined_with_the_input_module() -> None:
+    index_html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+
+    input_start = index_html.index('id="explainPanel"')
+    input_end = index_html.index("\n            </section>\n          </div>", input_start)
+    input_module = index_html[input_start:input_end]
+
+    assert input_module.index('id="studyInput"') < input_module.index('id="replyPanel"')
+    assert '<section id="replyPanel" class="reply-panel"' in input_module
+    assert index_html.count('id="replyPanel"') == 1
+    assert index_html.count('id="replyText"') == 1
+
+
+def test_memory_card_first_save_prompts_for_deck_and_supports_skip() -> None:
+    index_html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    main_js = (STATIC_DIR / "main.js").read_text(encoding="utf-8")
+    style_css = (STATIC_DIR / "style.css").read_text(encoding="utf-8")
+
+    assert 'id="memoryDeckSelect"' in index_html
+    assert 'id="memoryDeckDialog"' in index_html
+    assert 'id="memoryDeckNameInput"' in index_html
+    assert 'id="memoryDeckCreateBtn"' in index_html
+    assert 'id="memoryDeckSkipBtn"' in index_html
+    assert "async function chooseDeckForFirstCard()" in main_js
+    assert "callPlugin('study_memory_list_decks'" in main_js
+    assert "callPlugin('study_memory_create_deck'" in main_js
+    assert "deck_id: deckId" in main_js
+    assert "memory-deck-dialog" in style_css
+
+
+def test_memory_deck_management_can_expand_concrete_cards() -> None:
+    fallback = (STATIC_DIR / "surface-panels.js").read_text(encoding="utf-8")
+    hosted = (SURFACES_DIR / "memory_deck_list.tsx").read_text(encoding="utf-8")
+
+    for source in (fallback, hosted):
+        assert "study_memory_list_deck_items" in source
+        assert "ui.button.view_cards" in source
+        assert "ui.button.hide_cards" in source
+        assert "ui.memory.empty_deck" in source
+
+    required_keys = {
+        "ui.memory.default_deck_name",
+        "ui.memory.deck_summary",
+        "ui.memory.deck_count",
+        "ui.memory.card_count",
+        "ui.memory.choose_deck",
+        "ui.memory.first_deck_title",
+        "ui.memory.first_deck_body",
+        "ui.memory.deck_name_placeholder",
+        "ui.memory.empty_deck",
+        "ui.button.view_cards",
+        "ui.button.hide_cards",
+        "ui.button.create_and_save",
+        "ui.button.skip_use_default_deck",
+    }
+    bundles = [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in sorted((PLUGIN_DIR / "i18n").glob("*.json"))
+    ]
+    assert len(bundles) == 8
+    for bundle in bundles:
+        assert required_keys <= bundle.keys()
+
+
 def test_study_companion_static_ui8_visual_accessibility_and_csp_contract() -> None:
     index_html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
     style_css = (STATIC_DIR / "style.css").read_text(encoding="utf-8")

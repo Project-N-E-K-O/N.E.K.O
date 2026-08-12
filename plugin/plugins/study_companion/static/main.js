@@ -22,6 +22,8 @@ const ENTRY_TIMEOUT_MS = {
   study_evaluate_answer: 70000,
   study_summarize_session: 90000,
   study_memory_card_upsert: 30000,
+  study_memory_list_decks: 30000,
+  study_memory_create_deck: 30000,
   study_memory_deck: 30000,
   study_memory_card_review: 30000,
   study_export_notes: 90000,
@@ -43,6 +45,8 @@ if (!outcomeFormatters) {
 }
 let currentMode = 'companion';
 let currentMemoryCard = null;
+let memoryDecks = [];
+let memoryDeckDialogResolve = null;
 let mapRequestId=0;
 
 const statusLine = document.getElementById('statusLine');
@@ -81,6 +85,11 @@ const evaluationStatus = document.getElementById('evaluationStatus');
 const memoryDeckStatus = document.getElementById('memoryDeckStatus');
 const memoryFrontInput = document.getElementById('memoryFrontInput');
 const memoryBackInput = document.getElementById('memoryBackInput');
+const memoryDeckSelect = document.getElementById('memoryDeckSelect');
+const memoryDeckDialog = document.getElementById('memoryDeckDialog');
+const memoryDeckNameInput = document.getElementById('memoryDeckNameInput');
+const memoryDeckCreateBtn = document.getElementById('memoryDeckCreateBtn');
+const memoryDeckSkipBtn = document.getElementById('memoryDeckSkipBtn');
 const memoryRefreshBtn = document.getElementById('memoryRefreshBtn');
 const memoryAddBtn = document.getElementById('memoryAddBtn');
 const memoryDueCard = document.getElementById('memoryDueCard');
@@ -1122,6 +1131,10 @@ function setMemoryDeckState(deck = {}) {
     ? Number(deck.card_count)
     : (Number.isFinite(Number(deck.item_count)) ? Number(deck.item_count) : cards.length);
   const dueCount = Number.isFinite(Number(deck.due_count)) ? Number(deck.due_count) : dueCards.length;
+  if (Array.isArray(deck.decks)) {
+    memoryDecks = deck.decks;
+    renderMemoryDeckOptions();
+  }
   currentMemoryCard = dueCards[0] || null;
   if (quickReviewCount) {
     quickReviewCount.textContent = String(dueCount);
@@ -1152,6 +1165,78 @@ function setMemoryDeckState(deck = {}) {
   memoryReviewButtons.forEach((button) => {
     button.disabled = !currentMemoryCard;
   });
+}
+
+function memoryDeckDisplayName(deck = {}) {
+  return deck.is_default
+    ? t('ui.memory.default_deck_name', 'Default Deck')
+    : String(deck.name || '');
+}
+
+function renderMemoryDeckOptions() {
+  if (!memoryDeckSelect) return;
+  const selected = memoryDeckSelect.value;
+  memoryDeckSelect.replaceChildren();
+  if (!memoryDecks.length) {
+    const option = document.createElement('option');
+    option.value = '';
+    option.textContent = t('ui.memory.choose_when_saving', 'Choose when saving');
+    memoryDeckSelect.appendChild(option);
+    memoryDeckSelect.disabled = true;
+    return;
+  }
+  memoryDeckSelect.disabled = false;
+  memoryDecks.forEach((deck) => {
+    const option = document.createElement('option');
+    option.value = String(deck.id || '');
+    option.textContent = memoryDeckDisplayName(deck);
+    memoryDeckSelect.appendChild(option);
+  });
+  memoryDeckSelect.value = memoryDecks.some((deck) => String(deck.id || '') === selected)
+    ? selected
+    : String(memoryDecks[0]?.id || '');
+}
+
+function finishMemoryDeckDialog(value) {
+  const resolve = memoryDeckDialogResolve;
+  memoryDeckDialogResolve = null;
+  if (memoryDeckDialog?.open) memoryDeckDialog.close();
+  if (resolve) resolve(value);
+}
+
+async function chooseDeckForFirstCard() {
+  if (memoryDecks.length) {
+    return memoryDeckSelect?.value || String(memoryDecks[0]?.id || '');
+  }
+  const payload = await callPlugin('study_memory_list_decks', { limit: 100 });
+  memoryDecks = Array.isArray(payload.decks) ? payload.decks : [];
+  renderMemoryDeckOptions();
+  if (memoryDecks.length) {
+    return memoryDeckSelect?.value || String(memoryDecks[0]?.id || '');
+  }
+  if (!memoryDeckDialog || typeof memoryDeckDialog.showModal !== 'function') {
+    return '';
+  }
+  if (memoryDeckNameInput) {
+    memoryDeckNameInput.value = '';
+    memoryDeckNameInput.setCustomValidity('');
+  }
+  const choice = await new Promise((resolve) => {
+    memoryDeckDialogResolve = resolve;
+    memoryDeckDialog.showModal();
+    memoryDeckNameInput?.focus();
+  });
+  if (choice === null) return null;
+  if (choice === '') return '';
+  const created = await callPlugin('study_memory_create_deck', {
+    name: choice,
+    deck_type: 'custom',
+    source: 'ui',
+  });
+  memoryDecks = [...memoryDecks, created];
+  renderMemoryDeckOptions();
+  if (memoryDeckSelect) memoryDeckSelect.value = String(created.id || '');
+  return String(created.id || '');
 }
 
 function setStatusLine(data) {
@@ -1893,11 +1978,14 @@ async function saveMemoryCard() {
   if (!front || !back) {
     throw new Error(t('ui.memory.error_missing_card', 'Please enter both sides of the card.'));
   }
+  const deckId = await chooseDeckForFirstCard();
+  if (deckId === null) return;
   setStatus(t('ui.memory.saving', 'Saving memory card...'));
   const data = await callPlugin('study_memory_card_upsert', {
     front,
     back,
     source: 'ui',
+    deck_id: deckId,
   });
   if (memoryFrontInput) {
     memoryFrontInput.value = '';
@@ -2060,6 +2148,27 @@ async function bootstrap() {
   }
   bindButton(memoryRefreshBtn, refreshMemoryDeck);
   bindButton(memoryAddBtn, saveMemoryCard);
+  if (memoryDeckCreateBtn) {
+    memoryDeckCreateBtn.addEventListener('click', () => {
+      const name = memoryDeckNameInput?.value.trim() || '';
+      if (!name) {
+        memoryDeckNameInput?.setCustomValidity(t('ui.memory.error_missing_deck_name', 'Deck name is required'));
+        memoryDeckNameInput?.reportValidity();
+        return;
+      }
+      memoryDeckNameInput?.setCustomValidity('');
+      finishMemoryDeckDialog(name);
+    });
+  }
+  if (memoryDeckSkipBtn) {
+    memoryDeckSkipBtn.addEventListener('click', () => finishMemoryDeckDialog(''));
+  }
+  if (memoryDeckDialog) {
+    memoryDeckDialog.addEventListener('cancel', (event) => {
+      event.preventDefault();
+      finishMemoryDeckDialog(null);
+    });
+  }
   if (studyInput) {
     studyInput.addEventListener('paste', createImagePasteHandler({
       textarea: studyInput,

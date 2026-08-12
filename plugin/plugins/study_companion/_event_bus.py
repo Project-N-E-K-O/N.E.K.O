@@ -43,6 +43,7 @@ VISIBILITY_MAP: dict[str, list[str]] = {
     "review_due": ["chat"],
     "session_summarized": ["chat"],
     "solution_completed": ["chat"],
+    "review_session_completed": ["chat"],
 }
 
 BEHAVIOR_MAP: dict[str, str] = {
@@ -52,6 +53,7 @@ BEHAVIOR_MAP: dict[str, str] = {
     "review_due": "respond",
     "session_summarized": "read",
     "solution_completed": "respond",
+    "review_session_completed": "respond",
 }
 
 PRIORITY_MAP: dict[str, int] = {
@@ -61,6 +63,7 @@ PRIORITY_MAP: dict[str, int] = {
     "review_due": 3,
     "session_summarized": 1,
     "solution_completed": 5,
+    "review_session_completed": 5,
 }
 
 
@@ -540,6 +543,17 @@ def _fmt_solution_completed(payload: dict[str, Any]) -> str:
     )
 
 
+def _fmt_review_session_completed(payload: dict[str, Any]) -> str:
+    deck_name = str(payload.get("deck_name") or "").strip()
+    deck_line = f"Deck: {deck_name}\n" if deck_name else ""
+    return (
+        "[Review Session Completed]\n"
+        f"{deck_line}The due review queue is now empty. Tell the user naturally that the "
+        "review is complete and acknowledge their effort with a brief message such as "
+        "‘复习完成了，辛苦了！’ Do not add new study tasks unless asked."
+    )
+
+
 _FORMATTERS: dict[str, Callable[[dict[str, Any]], str]] = {
     "screen_context_changed": _fmt_screen_context,
     "answer_evaluated": _fmt_answer_evaluated,
@@ -547,6 +561,7 @@ _FORMATTERS: dict[str, Callable[[dict[str, Any]], str]] = {
     "review_due": _fmt_review_due,
     "session_summarized": _fmt_session_summarized,
     "solution_completed": _fmt_solution_completed,
+    "review_session_completed": _fmt_review_session_completed,
 }
 
 

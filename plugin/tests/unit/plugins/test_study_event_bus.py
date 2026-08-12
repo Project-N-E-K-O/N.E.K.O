@@ -479,6 +479,26 @@ async def test_format_session_summarized_includes_insight() -> None:
 
 
 @pytest.mark.asyncio
+async def test_review_session_completed_asks_neko_to_congratulate_user() -> None:
+    ctx = _Ctx()
+    bus = StudyEventBus(plugin_ctx=ctx)
+
+    await bus.emit(
+        StudyEvent(
+            name="review_session_completed",
+            payload={"reviewed_count": 3, "deck_name": "Exam Words"},
+        )
+    )
+
+    assert ctx.messages[0]["ai_behavior"] == "respond"
+    assert ctx.messages[0]["visibility"] == ["chat"]
+    message_text = ctx.messages[0]["parts"][0]["text"]
+    assert "[Review Session Completed]" in message_text
+    assert "Exam Words" in message_text
+    assert "辛苦了" in message_text
+
+
+@pytest.mark.asyncio
 async def test_schedule_emit_logs_on_exception(
     caplog: pytest.LogCaptureFixture,
     monkeypatch: pytest.MonkeyPatch,

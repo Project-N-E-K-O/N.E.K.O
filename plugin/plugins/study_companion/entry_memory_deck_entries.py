@@ -194,6 +194,47 @@ class _MemoryDeckEntriesMixin:
 
     @ui.action()
     @plugin_entry(
+        id="study_memory_list_deck_items",
+        name=tr(
+            "entries.memory_list_deck_items.name",
+            default="List Study Memory Deck Cards",
+        ),
+        description=tr(
+            "entries.memory_list_deck_items.description",
+            default="List the concrete cards saved in one local memory deck.",
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "deck_id": {"type": "string", "default": ""},
+                "limit": {"type": "integer", "default": 200},
+            },
+            "required": ["deck_id"],
+        },
+        llm_result_fields=["deck", "items"],
+    )
+    async def study_memory_list_deck_items(
+        self, deck_id: str = "", limit: int = 200, **_
+    ):
+        try:
+            deck_key = str(deck_id or "").strip()
+            deck = await asyncio.to_thread(self._memory_deck_store.get_deck, deck_key)
+            if deck is None:
+                raise ValueError("deck not found")
+            items = await asyncio.to_thread(
+                self._memory_deck_store.list_items,
+                deck_id=deck_key,
+                limit=max(1, min(500, int(limit or 200))),
+                include_archived=False,
+            )
+            return Ok({"deck": deck, "items": items})
+        except Exception as exc:
+            return _entry_exception_error(
+                self, exc, operation="study_memory_list_deck_items"
+            )
+
+    @ui.action()
+    @plugin_entry(
         id="study_memory_delete_deck",
         name=tr("entries.memory_delete_deck.name", default="Delete Study Memory Deck"),
         description=tr(

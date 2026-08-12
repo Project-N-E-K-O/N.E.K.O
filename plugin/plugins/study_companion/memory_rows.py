@@ -66,13 +66,16 @@ def memory_counts(conn: Any, *, deck_id: str = "") -> dict[str, int]:
 def deck_from_row(row: Any) -> dict[str, Any] | None:
     if row is None:
         return None
+    name = str(row["name"] or "")
+    source = str(row["source"] or "")
     return {
         "id": str(row["id"]),
-        "name": str(row["name"] or ""),
+        "name": name,
         "deck_type": str(row["deck_type"] or ""),
         "subject": str(row["subject"] or ""),
         "language": str(row["language"] or ""),
-        "source": str(row["source"] or ""),
+        "source": source,
+        "is_default": source == "runtime" and name == "Default Memory Deck",
         "created_at": str(row["created_at"] or ""),
         "updated_at": str(row["updated_at"] or ""),
         "item_count": safe_int(_optional_column(row, "item_count", 0), 0),
