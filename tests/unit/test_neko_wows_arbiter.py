@@ -25,6 +25,8 @@ from plugin.plugins.neko_wows.domain.catalog import (
     spec_for,
 )
 from plugin.plugins.neko_wows.domain.contracts import (
+    CATEGORY_GEOMETRY,
+    INTRUSION_NO_INTERRUPT,
     LANE_NORMAL,
     LANE_URGENT,
     WowsConfig,
@@ -40,6 +42,7 @@ from plugin.plugins.neko_wows.policy.arbiter import (
     REASON_ONCE_PER_BATTLE,
     REASON_PAUSED,
     REASON_PREEMPTED,
+    REASON_QUIET_WINDOW,
 )
 from plugin.plugins.neko_wows.policy.tactic_policy import AdviceCandidate
 
@@ -198,6 +201,61 @@ def test_cancel_events_removes_only_matching_queued_candidates():
     assert arbiter.cancel_events({BATTLE_ENDED}) == 1
     decision = arbiter.decide([], 100.0)
     assert decision.chosen.event_id == DAMAGE_MILESTONE
+
+
+def test_apply_config_drops_queued_candidates_for_disabled_category():
+    cfg = WowsConfig.from_mapping({
+        "dialogue_intrusion_mode": INTRUSION_NO_INTERRUPT,
+        "user_chat_quiet_window_seconds": 60.0,
+        "urgent_ttl_seconds": 120.0,
+        "normal_ttl_seconds": 120.0,
+    })
+    arbiter = Arbiter(cfg)
+    arbiter.note_user_activity(100.0)
+
+    # BOUNDARY_RISK has no preempt, so the normal-lane sibling stays queued.
+    held = arbiter.decide([
+        candidate(BOUNDARY_RISK, at=101.0, ttl=120.0),
+        candidate(DAMAGE_MILESTONE, at=101.0, ttl=120.0),
+    ], 101.0)
+    assert held.chosen is None
+    assert REASON_QUIET_WINDOW in outcomes(held, BOUNDARY_RISK)
+    assert arbiter.stats()["queued"] == 2
+
+    cfg.disabled_categories = (CATEGORY_GEOMETRY,)
+    arbiter.apply_config(cfg)
+
+    assert arbiter.stats()["queued"] == 1
+    released = arbiter.decide([], 200.0)
+    assert released.chosen is not None
+    assert released.chosen.event_id == DAMAGE_MILESTONE
+
+
+def test_apply_config_drops_queued_candidates_for_disabled_lane():
+    cfg = WowsConfig.from_mapping({
+        "dialogue_intrusion_mode": INTRUSION_NO_INTERRUPT,
+        "user_chat_quiet_window_seconds": 60.0,
+        "urgent_ttl_seconds": 120.0,
+        "normal_ttl_seconds": 120.0,
+    })
+    arbiter = Arbiter(cfg)
+    arbiter.note_user_activity(100.0)
+
+    held = arbiter.decide([
+        candidate(BOUNDARY_RISK, at=101.0, ttl=120.0),
+        candidate(DAMAGE_MILESTONE, at=101.0, ttl=120.0),
+    ], 101.0)
+    assert held.chosen is None
+    assert arbiter.stats()["queued"] == 2
+
+    cfg.disabled_lanes = (LANE_URGENT,)
+    arbiter.apply_config(cfg)
+
+    assert arbiter.stats()["queued"] == 1
+    released = arbiter.decide([], 200.0)
+    assert released.chosen is not None
+    assert released.chosen.event_id == DAMAGE_MILESTONE
+    assert released.chosen.lane == LANE_NORMAL
 
 
 def test_lane_ttls_come_from_config():

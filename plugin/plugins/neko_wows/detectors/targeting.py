@@ -70,13 +70,23 @@ class PriorityTargetDetector(Detector):
         ),)
 
 
+def _ship_identity_keys(ship) -> tuple[tuple[str, int], ...]:
+    """Collect player_id and ui_id keys so identity flips do not re-announce."""
+    keys: list[tuple[str, int]] = []
+    if isinstance(ship.player_id, int) and not isinstance(ship.player_id, bool):
+        keys.append(("player", ship.player_id))
+    if isinstance(ship.ui_id, int) and not isinstance(ship.ui_id, bool):
+        keys.append(("ui", ship.ui_id))
+    return tuple(keys)
+
+
 class LowHpTargetDetector(Detector):
     name = "low_hp_target"
     events = (LOW_HP_TARGET,)
     required = (DOMAIN_OBJECTS,)
 
     def reset(self) -> None:
-        self._announced: set[int] = set()
+        self._announced: set[tuple[str, int]] = set()
 
     def detect(self, previous, current, context: DetectorContext) -> Sequence[GameEvent]:
         _snapshot, facts = current
@@ -85,10 +95,14 @@ class LowHpTargetDetector(Detector):
             return ()
         if target.ship.hp_ratio > self.cfg.low_hp_target_ratio:
             return ()
-        key = target.ship.ui_id
-        if key is None or key in self._announced:
+        keys = _ship_identity_keys(target.ship)
+        if not keys:
             return ()
-        self._announced.add(key)
+        if self._announced.intersection(keys):
+            # Absorb newly appeared identities for the same ship.
+            self._announced.update(keys)
+            return ()
+        self._announced.update(keys)
         return (self._event(
             LOW_HP_TARGET,
             severity=int(45 + (self.cfg.low_hp_target_ratio - target.ship.hp_ratio) * 60),

@@ -505,6 +505,11 @@ def test_plugin_declares_exactly_one_official_lookup_tool():
 class CountingOfficialClient:
     def __init__(self) -> None:
         self.calls = []
+        self.name_calls = []
+
+    def query_ship(self, ship, *, configuration, language):
+        self.name_calls.append((ship, configuration, language))
+        return {"ok": True, "code": "ok", "data": {"ship": ship}}
 
     def query_ship_id(self, ship_id, *, configuration, language):
         self.calls.append((ship_id, configuration, language))
@@ -620,10 +625,11 @@ def test_text_tool_query_resolves_exact_offline_alias_and_closes_snapshot():
     assert snapshot.closed is True
 
 
-def test_text_tool_query_never_fuzzy_searches_when_offline_alias_misses():
+def test_text_tool_query_falls_back_to_official_name_when_catalog_unavailable():
     plugin = tool_target(WowsConfig(
         official_api_enabled=True,
         official_api_application_id="configured",
+        official_api_language="en",
     ))
     snapshot = SimpleNamespace(
         meta=None,
@@ -633,7 +639,54 @@ def test_text_tool_query_never_fuzzy_searches_when_offline_alias_misses():
     )
     plugin.ship_catalog_store = SimpleNamespace(snapshot=lambda: snapshot)
 
-    result = asyncio.run(plugin.wows_query_ship_official("Yamto"))
+    result = asyncio.run(plugin.wows_query_ship_official("Yamato"))
 
-    assert result["code"] == "catalog_unavailable"
+    assert result["ok"] is True
     assert plugin.official_api.calls == []
+    assert plugin.official_api.name_calls == [("Yamato", "top", "en")]
+
+
+def test_text_tool_query_falls_back_to_official_name_when_catalog_misses():
+    plugin = tool_target(WowsConfig(
+        official_api_enabled=True,
+        official_api_application_id="configured",
+        official_api_language="en",
+    ))
+    closed = {"value": False}
+
+    class MissSnapshot:
+        meta = object()
+
+        def alias_candidates(self, _alias):
+            return ()
+
+        def primary_profile(self, _ship_id):
+            return None
+
+        def close(self):
+            closed["value"] = True
+
+    plugin.ship_catalog_store = SimpleNamespace(snapshot=lambda: MissSnapshot())
+
+    result = asyncio.run(plugin.wows_query_ship_official("Yamato"))
+
+    assert result["ok"] is True
+    assert closed["value"] is True
+    assert plugin.official_api.calls == []
+    assert plugin.official_api.name_calls == [("Yamato", "top", "en")]
+
+
+def test_text_tool_query_falls_back_to_official_name_when_catalog_errors():
+    plugin = tool_target(WowsConfig(
+        official_api_enabled=True,
+        official_api_application_id="configured",
+        official_api_language="en",
+    ))
+    plugin.ship_catalog_store = SimpleNamespace(
+        snapshot=lambda: (_ for _ in ()).throw(RuntimeError("catalog down")))
+
+    result = asyncio.run(plugin.wows_query_ship_official("Yamato"))
+
+    assert result["ok"] is True
+    assert plugin.official_api.calls == []
+    assert plugin.official_api.name_calls == [("Yamato", "top", "en")]

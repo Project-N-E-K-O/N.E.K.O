@@ -102,6 +102,17 @@ class Arbiter:
     # ------------------------------------------------------------------
     def apply_config(self, cfg) -> None:
         self.cfg = cfg
+        # Preferences filter new candidates in TacticPolicy; already-queued
+        # items must be dropped here or a just-disabled category/lane can still
+        # deliver after a quiet window or lane gap clears.
+        self._queue = [
+            candidate
+            for candidate in self._queue
+            if (
+                self.cfg.lane_enabled(candidate.lane)
+                and self.cfg.category_enabled(candidate.coalesce_key)
+            )
+        ]
 
     @property
     def paused(self) -> bool:

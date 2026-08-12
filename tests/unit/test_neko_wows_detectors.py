@@ -907,6 +907,28 @@ def test_low_hp_target_is_reported_once_per_ship():
     assert fired(results).count(LOW_HP_TARGET) == 1
 
 
+def test_low_hp_target_uses_player_id_when_ui_id_is_missing():
+    registry = DetectorRegistry(build_targeting_detectors(CFG))
+    wounded = replace(enemy(ui_id=5, hp_ratio=0.1), ui_id=None)
+    results = feed(registry, [
+        frame(seq=1, at=100.0, ships=(wounded,)),
+        frame(seq=2, at=101.0, ships=(wounded,)),
+    ])
+    assert fired(results).count(LOW_HP_TARGET) == 1
+
+
+def test_low_hp_target_stays_once_when_player_id_appears_after_ui_id():
+    registry = DetectorRegistry(build_targeting_detectors(CFG))
+    without_player = replace(enemy(ui_id=5, hp_ratio=0.1), player_id=None)
+    with_player = enemy(ui_id=5, hp_ratio=0.1)
+    results = feed(registry, [
+        frame(seq=1, at=100.0, ships=(without_player,)),
+        frame(seq=2, at=101.0, ships=(without_player,)),
+        frame(seq=3, at=102.0, ships=(with_player,)),
+    ])
+    assert fired(results).count(LOW_HP_TARGET) == 1
+
+
 # --- outnumbered / isolation --------------------------------------------
 
 def test_team_counts_are_not_confirmed_without_own_visible_object():

@@ -704,6 +704,54 @@ def test_persistent_preference_failure_keeps_runtime_unchanged(
         assert getattr(target.cfg, field) == value
 
 
+def test_disabling_a_category_drops_queued_callouts_for_that_category():
+    target = _action_target(guarded=False)
+    cfg = WowsConfig.from_mapping({
+        "dialogue_intrusion_mode": INTRUSION_NO_INTERRUPT,
+        "user_chat_quiet_window_seconds": 60.0,
+        "urgent_ttl_seconds": 120.0,
+    })
+    target.cfg = cfg
+    target.policy = WowsTacticPolicy(cfg)
+    target.arbiter = Arbiter(cfg)
+    target.arbiter.note_user_activity(100.0)
+    held = target.arbiter.decide(
+        [candidate(LOW_HEALTH, at=101.0, cfg=cfg)], 101.0)
+    assert held.chosen is None
+    assert target.arbiter.stats()["queued"] == 1
+
+    result = asyncio.run(target.set_category_enabled(
+        category=CATEGORY_SURVIVAL, enabled=False))
+
+    assert result.is_ok()
+    assert target.arbiter.stats()["queued"] == 0
+    assert target.arbiter.decide([], 200.0).chosen is None
+
+
+def test_disabling_a_lane_drops_queued_callouts_on_that_lane():
+    target = _action_target(guarded=False)
+    cfg = WowsConfig.from_mapping({
+        "dialogue_intrusion_mode": INTRUSION_NO_INTERRUPT,
+        "user_chat_quiet_window_seconds": 60.0,
+        "urgent_ttl_seconds": 120.0,
+    })
+    target.cfg = cfg
+    target.policy = WowsTacticPolicy(cfg)
+    target.arbiter = Arbiter(cfg)
+    target.arbiter.note_user_activity(100.0)
+    held = target.arbiter.decide(
+        [candidate(LOW_HEALTH, at=101.0, cfg=cfg)], 101.0)
+    assert held.chosen is None
+    assert target.arbiter.stats()["queued"] == 1
+
+    result = asyncio.run(target.set_lane_enabled(
+        lane=LANE_URGENT, enabled=False))
+
+    assert result.is_ok()
+    assert target.arbiter.stats()["queued"] == 0
+    assert target.arbiter.decide([], 200.0).chosen is None
+
+
 def test_pause_resume_and_chat_activity_are_pipeline_state_transitions():
     target = _action_target()
 

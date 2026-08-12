@@ -1663,6 +1663,7 @@ class NekoWowsPlugin(NekoPluginBase):
             with self._pipeline_lock:
                 self.cfg.disabled_categories = next_disabled
                 self.policy.apply_config(self.cfg)
+                self.arbiter.apply_config(self.cfg)
             return Ok({"disabled_categories": list(next_disabled)})
 
     @ui.action(id="set_lane_enabled", label="设置通道开关", tone="primary",
@@ -1695,6 +1696,7 @@ class NekoWowsPlugin(NekoPluginBase):
             with self._pipeline_lock:
                 self.cfg.disabled_lanes = next_disabled
                 self.policy.apply_config(self.cfg)
+                self.arbiter.apply_config(self.cfg)
             return Ok({"disabled_lanes": list(next_disabled)})
 
     @ui.action(id="set_lane_timing", label="设置通道时序", tone="primary",
@@ -1787,29 +1789,42 @@ class NekoWowsPlugin(NekoPluginBase):
         if not value:
             return official_error("ship_not_found")
         if value.isdecimal():
-            ship_id = int(value)
-        else:
-            catalog = None
-            try:
-                catalog = self.ship_catalog_store.snapshot()
-                if getattr(catalog, "meta", None) is None:
-                    return official_error("catalog_unavailable")
-                resolution = ShipResolver(catalog).resolve(value)
-                if not resolution.resolved or resolution.ship is None:
-                    return official_error("ship_not_found")
-                ship_id = resolution.ship.ship_id
-            except Exception:
-                return official_error("catalog_unavailable")
-            finally:
-                if catalog is not None:
-                    try:
-                        catalog.close()
-                    except Exception:
-                        pass
+            return await asyncio.to_thread(
+                self.official_api.query_ship_id,
+                int(value),
+                configuration=configuration,
+                language=selected_language,
+            )
 
+        # Prefer offline catalog id resolution; fall back to official exact
+        # name lookup when the catalog is missing, incomplete, or misses.
+        catalog = None
+        ship_id = None
+        try:
+            catalog = self.ship_catalog_store.snapshot()
+            if getattr(catalog, "meta", None) is not None:
+                resolution = ShipResolver(catalog).resolve(value)
+                if resolution.resolved and resolution.ship is not None:
+                    ship_id = resolution.ship.ship_id
+        except Exception:
+            ship_id = None
+        finally:
+            if catalog is not None:
+                try:
+                    catalog.close()
+                except Exception:
+                    pass
+
+        if ship_id is not None:
+            return await asyncio.to_thread(
+                self.official_api.query_ship_id,
+                ship_id,
+                configuration=configuration,
+                language=selected_language,
+            )
         return await asyncio.to_thread(
-            self.official_api.query_ship_id,
-            ship_id,
+            self.official_api.query_ship,
+            value,
             configuration=configuration,
             language=selected_language,
         )
