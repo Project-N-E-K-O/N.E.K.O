@@ -161,7 +161,7 @@ def test_resolve_plugin_config_from_path_reuses_preloaded_manifest_config(
 
     def _ensure_plugin_runtime_config(plugin_id: str, *, manifest_path: Path) -> Path:
         assert plugin_id == "demo"
-        assert manifest_path == config_path
+        assert manifest_path == config_path.resolve(strict=False)
         return runtime_path
 
     monkeypatch.setattr(
