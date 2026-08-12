@@ -196,7 +196,10 @@ def test_credit_drop_uses_yui_ticket_art_for_every_drop_rarity():
     assert "var CARD_ASPECT = 1192 / 445;" in overlay
     assert "window.innerWidth - CARD_MARGIN * 2" in overlay
     assert "function getActiveAvatarBounds()" in overlay
+    assert "live3d: window.vrmManager" in overlay
     assert "manager.getModelScreenBounds()" in overlay
+    assert "var availableWidth = Math.max(1, window.innerWidth - CARD_MARGIN * 2);" in overlay
+    assert "function clampCardCoordinate(value, size, viewportSize, margin)" in overlay
     assert "function getCardPlacement(cardWidth, cardHeight, avatarBounds)" in overlay
     assert "avatarBounds.right - overlapX" in overlay
     assert "avatarBounds.bottom - cardHeight - liftY" in overlay

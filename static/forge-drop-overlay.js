@@ -328,6 +328,7 @@
     var configuredType = String(window.lanlan_config && window.lanlan_config.model_type || '').toLowerCase();
     var managers = {
       live2d: window.live2dManager,
+      live3d: window.vrmManager,
       vrm: window.vrmManager,
       mmd: window.mmdManager,
     };
@@ -354,26 +355,46 @@
     return null;
   }
 
+  function clampCardCoordinate(value, size, viewportSize, margin) {
+    var max = Math.max(0, viewportSize - size);
+    var min = Math.min(margin, max);
+    return Math.round(Math.max(min, Math.min(value, max)));
+  }
+
   function getCardPlacement(cardWidth, cardHeight, avatarBounds) {
     var margin = 12;
     if (!avatarBounds) {
       return {
-        left: Math.round(window.innerWidth * 0.5 - cardWidth / 2),
-        top: Math.round(window.innerHeight * 0.42 - cardHeight / 2),
+        left: clampCardCoordinate(
+          window.innerWidth * 0.5 - cardWidth / 2,
+          cardWidth,
+          window.innerWidth,
+          margin
+        ),
+        top: clampCardCoordinate(
+          window.innerHeight * 0.42 - cardHeight / 2,
+          cardHeight,
+          window.innerHeight,
+          margin
+        ),
       };
     }
     // 券卡从角色右下侧探出：保留少量重叠，视觉上仍与 N.E.K.O 绑定。
     var overlapX = cardWidth * 0.18;
     var liftY = Math.max(28, Math.min(64, avatarBounds.height * 0.08));
     return {
-      left: Math.round(Math.max(margin, Math.min(
+      left: clampCardCoordinate(
         avatarBounds.right - overlapX,
-        window.innerWidth - cardWidth - margin
-      ))),
-      top: Math.round(Math.max(margin, Math.min(
+        cardWidth,
+        window.innerWidth,
+        margin
+      ),
+      top: clampCardCoordinate(
         avatarBounds.bottom - cardHeight - liftY,
-        window.innerHeight - cardHeight - margin
-      ))),
+        cardHeight,
+        window.innerHeight,
+        margin
+      ),
     };
   }
 
@@ -405,10 +426,11 @@
         var CARD_ASPECT = 1192 / 445;
         var avatarBounds = getActiveAvatarBounds();
         var avatarCardWidth = avatarBounds ? avatarBounds.width * 0.55 : CARD_MAX_W;
+        var availableWidth = Math.max(1, window.innerWidth - CARD_MARGIN * 2);
         var CARD_W = Math.max(1, Math.min(
           CARD_MAX_W,
-          Math.max(CARD_MIN_W, avatarCardWidth),
-          window.innerWidth - CARD_MARGIN * 2
+          availableWidth,
+          Math.max(CARD_MIN_W, avatarCardWidth)
         ));
         var CARD_H = Math.round(CARD_W / CARD_ASPECT);
         var placement = getCardPlacement(CARD_W, CARD_H, avatarBounds);
