@@ -137,17 +137,9 @@ def test_open_platform_group_mentions_distinguish_bot_from_other_users():
     assert with_other_user["mentions_other_user"] is True
 
 
-def test_focus_rise_window_boosts_the_focus_until_the_window_expires():
-    """The rise window hands a freshly focused group a linear bonus
-    (0 -> +2.0); once the window passes the bonus is gone and the score
-    falls back to the raw one.
-
-    These assertions follow attention_service as implemented. The case
-    originally asserted the opposite semantic (a new focus scaled down to
-    half and climbing back up), contradicting the implementation landed in
-    the same commit, so it never passed. Which direction the window should
-    have is a product call for the plugin side; this pins the one that is
-    actually live."""
+def test_focus_score_tracks_raw_attention_scalar():
+    """Under the periodic model attention is a scalar: get_focus_score returns the raw score with
+    no extra bonus; phase advance is idempotent on last_decay_at and leaves attention unchanged when unset."""
     from types import SimpleNamespace
 
     from plugin.plugins.qq_auto_reply.attention_service import QQAttentionService, QQGroupAttentionState
@@ -155,10 +147,8 @@ def test_focus_rise_window_boosts_the_focus_until_the_window_expires():
     plugin = SimpleNamespace(
         _qq_settings={
             "enable_group_attention": True,
-            "group_attention_focus_rise_seconds": 10,
             "group_attention_focus_threshold": 4,
             "group_attention_min_threshold": 1,
-            "group_attention_decay_per_second": 0.02,
         },
         backlog_store=None,
         group_permission_mgr=None,
@@ -171,27 +161,94 @@ def test_focus_rise_window_boosts_the_focus_until_the_window_expires():
         "focus": QQGroupAttentionState(
             group_id="focus",
             attention_score=8.0,
-            urgency=0.8,
-            interest=0.8,
-            momentum=0.8,
-            intimacy=0.4,
             focus_acquired_at=95,
         ).to_dict(),
         "other": QQGroupAttentionState(
             group_id="other",
             attention_score=6.5,
-            urgency=0.7,
-            interest=0.7,
-            momentum=0.7,
-            intimacy=0.3,
         ).to_dict(),
     }
 
-    # 窗口过半（5s / 10s）：原始分 8.0 之上加满额 2.0 的一半。
-    assert service.get_focus_score() == pytest.approx(9.0, rel=1e-3)
+    assert service.get_focus_score() == pytest.approx(8.0, rel=1e-3)
     assert service.get_snapshot()["focus_group_id"] == "focus"
 
-    # 窗口结束后加成归零，回到原始分。
+    # 时间推进但 last_decay_at 未置 → 幂等推进，注意力保持原始分。
     service._current_time = lambda: 106
     assert service.get_focus_score() == pytest.approx(8.0, rel=1e-3)
     assert service.get_snapshot()["focus_group_id"] == "focus"
+
+
+def test_rise_phase_does_not_clamp_above_focus_line():
+    """The rise phase must not clamp scores above the focus line.
+
+    Old logic `min(focus_line, score + rate*dt)` shaved an @bot-won 8.0 back to
+    the focus line (4.0); decay_all runs every 5s, so high attention evaporated
+    almost instantly. Now rise grows only below the line, keeps higher scores
+    unchanged, and records focus_acquired_at.
+    """
+    from types import SimpleNamespace
+
+    from plugin.plugins.qq_auto_reply.attention_service import QQAttentionService, QQGroupAttentionState
+
+    plugin = SimpleNamespace(
+        _qq_settings={
+            "enable_group_attention": True,
+            "attention_base_rise_rate": 0.02,
+            "attention_honeymoon_seconds": 60,
+            "attention_fall_seconds": 240,
+            "attention_fall_rate": 0.015,
+            "group_attention_max_score": 10.0,
+            "group_attention_focus_threshold": 4.0,
+            "group_attention_min_threshold": 1.0,
+        },
+        backlog_store=None,
+        group_permission_mgr=None,
+        permission_mgr=None,
+        _emit_log=lambda *a, **k: None,
+    )
+    service = QQAttentionService(plugin)
+    now = [100]
+    service._current_time = lambda: now[0]
+
+    state = QQGroupAttentionState(group_id="g1", attention_score=8.0, phase="rise")
+    state.last_decay_at = 90  # 10 秒前，保证 dt=10 正常推进
+    service._write_state(state)
+
+    # 推进 10 秒：rise 相位不应把 8.0 砍回焦点线
+    now[0] += 10
+    after = service._apply_decay(service._load_state("g1"), now[0])
+
+    assert after.attention_score == pytest.approx(8.0, rel=1e-3)
+    assert after.focus_acquired_at == 110  # 本来就高于线，夺冠计时已记录
+    assert after.phase == "rise"
+
+
+def test_zero_attention_settings_are_honored():
+    """Saved 0 values must be honored, not fall back to defaults via or-default.
+
+    Old ``get(key, d) or d`` treated 0 as falsy: attention_consume_ratio=0
+    (disable reply consumption) read back 0.10, attention_fall_rate=0 read back 0.015.
+    """
+    from types import SimpleNamespace
+
+    from plugin.plugins.qq_auto_reply.attention_service import QQAttentionService
+
+    plugin = SimpleNamespace(
+        _qq_settings={
+            "enable_group_attention": True,
+            "attention_consume_ratio": 0,      # 禁用回复消耗
+            "attention_fall_rate": 0,          # 禁用回落
+            "attention_fall_seconds": 0,       # fall 相位最短 0 秒
+            "attention_base_rise_rate": 0,     # 禁用时间自然上升
+        },
+        backlog_store=None,
+        group_permission_mgr=None,
+        permission_mgr=None,
+        _emit_log=lambda *a, **k: None,
+    )
+    service = QQAttentionService(plugin)
+
+    assert service._consume_ratio() == 0.0
+    assert service._fall_rate() == 0.0
+    assert service._fall_seconds() == 0
+    assert service._rise_rate() == 0.0

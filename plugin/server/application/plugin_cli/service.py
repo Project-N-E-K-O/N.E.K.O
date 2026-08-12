@@ -8,8 +8,9 @@ import tomllib
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
+from plugin.core.plugin_layout import resolve_plugin_layout
 from plugin.logging_config import get_logger
 from plugin.neko_plugin_cli.core.install import PackageInstaller
 from plugin.neko_plugin_cli.core.models import InstalledPlugin, InstallResult
@@ -146,6 +147,7 @@ class PluginCliService:
         on_conflict: str = "fail",
         use_staging: bool = True,
         forced_directory_name: str | None = None,
+        install_source: Literal["imported"] | None = None,
         confirm_upgrade: bool = False,
         confirmation_token: str | None = None,
     ) -> dict[str, object]:
@@ -163,7 +165,7 @@ class PluginCliService:
                 details=plan_dict,
             )
         if action == "install":
-            return await asyncio.to_thread(
+            result = await asyncio.to_thread(
                 self._install_sync,
                 package=package,
                 plugins_root=plugins_root,
@@ -171,6 +173,11 @@ class PluginCliService:
                 on_conflict=on_conflict,
                 use_staging=use_staging,
                 forced_directory_name=forced_directory_name,
+            )
+            return await self._record_requested_install_source(
+                install_result=result,
+                package=package,
+                source=install_source,
             )
 
         if not confirm_upgrade or not confirmation_token:
@@ -247,22 +254,21 @@ class PluginCliService:
                 raise ValueError("installed plugin identity does not match the upgrade plan")
 
         async def start(plugin_id: str) -> None:
-            await upgrade_support.start_plugin_after_upgrade(plugin_id, strict=True)
+            await upgrade_support.start_plugin_after_replace(plugin_id, strict=True)
 
         try:
-            result = await upgrade_support.perform_safe_upgrade(
-                plan=plan,
-                target_dir=target_dir,
+            result = await upgrade_support.replace_plugin(
+                layout=resolve_plugin_layout(plan.plugin_id, target_dir),
                 install_new=install_new,
                 validate_new=validate_new,
                 is_running=upgrade_support.plugin_is_running,
-                stop=upgrade_support.stop_plugin_for_upgrade,
+                stop=upgrade_support.stop_plugin_for_replace,
                 start=start,
                 cleanup_backup=upgrade_support.remove_directory,
                 additional_targets=(profile_dir,),
                 preserve_targets=(profile_dir,),
             )
-        except upgrade_support.SafeUpgradeError as exc:
+        except upgrade_support.ReplacePluginError as exc:
             raise ServerDomainError(
                 code="PLUGIN_UPGRADE_ROLLED_BACK",
                 message="plugin upgrade failed and rollback was attempted",
@@ -270,12 +276,52 @@ class PluginCliService:
                 details={"stage": exc.stage, "rollback_status": exc.rollback_status},
             ) from exc
 
-        return {
+        response = {
             **result.install_result,
-            "operation": result.operation,
+            # Compatibility response for the existing Package Manager UI.
+            # The shared file transaction itself is version-agnostic replace.
+            "operation": "upgrade",
             "restarted": result.restarted,
             "rollback_status": result.rollback_status,
         }
+        return await self._record_requested_install_source(
+            install_result=response,
+            package=package,
+            source=install_source,
+        )
+
+    async def _record_requested_install_source(
+        self,
+        *,
+        install_result: dict[str, object],
+        package: str,
+        source: Literal["imported"] | None,
+    ) -> dict[str, object]:
+        if source is None:
+            return install_result
+
+        try:
+            package_path = self._resolve_package_path(package)
+            package_sha256 = await asyncio.to_thread(self._sha256_file, package_path)
+        except Exception as exc:
+            logger.warning(
+                "prepare install source failed: err_type={}, err={}",
+                type(exc).__name__,
+                str(exc),
+            )
+            return {
+                **install_result,
+                "install_source_warning": f"install_source_prepare_failed: {exc}",
+            }
+        warning = await self._record_install_source_best_effort(
+            install_result=install_result,
+            package_filename=package_path.name,
+            package_sha256=package_sha256,
+            override=None,
+        )
+        if warning is None:
+            return install_result
+        return {**install_result, "install_source_warning": warning}
 
     async def analyze(
         self,

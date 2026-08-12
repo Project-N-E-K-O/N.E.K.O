@@ -3990,6 +3990,7 @@
         "twitter": "트위터/X (Twitter/X)",
         "reddit": "레딧 (Reddit)",
         "netease": "넷이즈 뮤직 (NetEase)",
+        "qqmusic": "QQ 뮤직",
         "saveConfig": "설정 저장",
         "encryptStorage": "로컬 파일에 안전하게 암호화 저장",
         "localMonitoring": "로컬 상태 모니터링",
@@ -4028,7 +4029,8 @@
             "weibo": "<b>대상:</b> <code>m.weibo.cn</code>에 접속하여 해당 쿠키를 가져오세요.",
             "twitter": "<b>대상:</b> <code>x.com</code>에 접속하여 해당 쿠키를 가져오세요.",
             "reddit": "<b>대상:</b> <code>reddit.com</code>에 접속하여 해당 쿠키를 가져오세요.",
-            "netease": "<b>대상:</b> <code>music.163.com</code>에 접속하여 해당 쿠키를 가져오세요."
+            "netease": "<b>대상:</b> <code>music.163.com</code>에 접속하여 해당 쿠키를 가져오세요.",
+            "qqmusic": "<b>대상:</b> <code>y.qq.com</code>에 접속하여 해당 쿠키를 가져오세요."
         },
         "guide": {
             "title": "초보자를 위한 공통 가이드",
@@ -4143,6 +4145,14 @@
             "MUSIC_U": {
                 "label": "MUSIC_U",
                 "desc": "핵심 신원 증명 (필수)"
+            },
+            "qqmusicUin": {
+                "label": "uin",
+                "desc": "QQ 계정 식별자(일반적으로 o 뒤에 숫자가 붙음)"
+            },
+            "qqmusicKey": {
+                "label": "qqmusic_key",
+                "desc": "QQ 뮤직 로그인 자격 증명(필수)"
             },
             "NMTID": {
                 "label": "NMTID",

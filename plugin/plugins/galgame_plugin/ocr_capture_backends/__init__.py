@@ -18,6 +18,8 @@ __all__ = [
     "_is_window_on_primary_monitor",
     "_require_visible_capture_target",
     "_require_visible_capture_target_win32",
+    "_require_foreground_screen_capture_target",
+    "_require_foreground_screen_capture_target_win32",
     "_run_with_thread_dpi_awareness",
     "_target_client_rect",
     "_target_client_rect_win32",

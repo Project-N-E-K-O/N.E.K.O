@@ -12,7 +12,13 @@ from plugin.server.domain.errors import ServerDomainError
 async def test_replace_plugin_config_maps_http_exception(monkeypatch: pytest.MonkeyPatch) -> None:
     service = ConfigCommandService()
 
-    def _raise_http(plugin_id: str, config: dict[str, object]) -> dict[str, object]:
+    def _raise_http(
+        plugin_id: str,
+        config: dict[str, object],
+        *,
+        commit_guard: object,
+    ) -> dict[str, object]:
+        assert commit_guard is None
         raise HTTPException(status_code=404, detail="missing")
 
     monkeypatch.setattr(
@@ -33,7 +39,13 @@ async def test_replace_plugin_config_maps_http_exception(monkeypatch: pytest.Mon
 async def test_update_plugin_config_maps_runtime_error(monkeypatch: pytest.MonkeyPatch) -> None:
     service = ConfigCommandService()
 
-    def _raise_runtime(plugin_id: str, updates: dict[str, object]) -> dict[str, object]:
+    def _raise_runtime(
+        plugin_id: str,
+        updates: dict[str, object],
+        *,
+        commit_guard: object,
+    ) -> dict[str, object]:
+        assert commit_guard is None
         raise ValueError("boom")
 
     monkeypatch.setattr(

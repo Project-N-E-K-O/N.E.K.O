@@ -21,6 +21,12 @@ from .context import ensure_sdk_context
 from .types import JsonObject, JsonValue, LoggerLike, PluginContextProtocol
 
 
+_PLUGIN_METADATA_WRITE_WARNING = (
+    "Runtime config writes under [plugin] may be ignored because "
+    "plugin.toml manifest metadata is authoritative."
+)
+
+
 # ---------------------------------------------------------------------------
 # Utility helpers
 # ---------------------------------------------------------------------------
@@ -37,6 +43,17 @@ def unwrap_config_payload(value: object) -> JsonObject:
     if not isinstance(config, dict):
         raise ValidationError(f"expected dict config, got {type(config)!r}")
     return config
+
+
+def _unwrap_persistent_config_write(value: object, *, operation: str) -> JsonObject:
+    if isinstance(value, dict) and (
+        value.get("success") is False
+        or ("persisted" in value and value.get("persisted") is not True)
+    ):
+        message = value.get("message")
+        detail = message if isinstance(message, str) and message else "persistence did not complete"
+        raise TransportError(f"failed to {operation} runtime config: {detail}")
+    return unwrap_config_payload(value)
 
 
 def unwrap_profiles_state(value: object) -> JsonObject:
@@ -146,7 +163,7 @@ class PluginConfig:
     """Plugin-facing config API.
 
     - `get/require/dump` read the current effective config
-    - `set/update` write to the active profile overlay
+    - `set/update` write to the plugin's persistent runtime config
     - `profile_*` methods manage profiles
     - `base_dump/base_get` read the base (non-profile) config
     """
@@ -195,16 +212,16 @@ class PluginConfig:
         return value
 
     async def set(self, path: str, value: JsonValue, *, timeout: float = 5.0) -> None:
-        active = await self._require_active_name(timeout=timeout)
-        current = await self._fetch_profile(active, timeout=timeout)
-        updated = _set_by_path(dict(current), path, value)
-        await self._upsert_profile(active, updated, timeout=timeout)
+        if path == "":
+            patch = _set_by_path({}, path, value)
+            await self._replace_runtime_config(patch, timeout=timeout)
+        else:
+            replacement = {**value, "__replace__": True} if isinstance(value, dict) else value
+            patch = _set_by_path({}, path, replacement)
+            await self._update_runtime_config(patch, timeout=timeout)
 
     async def update(self, patch: Mapping[str, JsonValue], *, timeout: float = 5.0) -> JsonObject:
-        active = await self._require_active_name(timeout=timeout)
-        current = await self._fetch_profile(active, timeout=timeout)
-        merged = deep_merge_config(current, patch)
-        return await self._upsert_profile(active, merged, timeout=timeout)
+        return await self._update_runtime_config(dict(patch), timeout=timeout)
 
     # --- base config reads ---
 
@@ -311,6 +328,34 @@ class PluginConfig:
         return normalized
 
     # --- internal helpers ---
+
+    def _warn_plugin_metadata_write(self, config: Mapping[str, JsonValue]) -> None:
+        if "plugin" in config:
+            self.logger.warning(_PLUGIN_METADATA_WRITE_WARNING)
+
+    async def _update_runtime_config(self, patch: JsonObject, *, timeout: float) -> JsonObject:
+        if timeout <= 0:
+            raise ValidationError("timeout must be > 0")
+        self._warn_plugin_metadata_write(patch)
+        try:
+            raw = await self.ctx.update_own_config(dict(patch), timeout=timeout)
+        except AttributeError as error:
+            raise TransportError("ctx.update_own_config is not available") from error
+        except (RuntimeError, ValueError, TimeoutError, TypeError) as error:
+            raise TransportError(f"failed to update runtime config: {error}") from error
+        return _unwrap_persistent_config_write(raw, operation="update")
+
+    async def _replace_runtime_config(self, config: JsonObject, *, timeout: float) -> JsonObject:
+        if timeout <= 0:
+            raise ValidationError("timeout must be > 0")
+        self._warn_plugin_metadata_write(config)
+        try:
+            raw = await self.ctx.replace_own_config(dict(config), timeout=timeout)
+        except AttributeError as error:
+            raise TransportError("ctx.replace_own_config is not available") from error
+        except (RuntimeError, ValueError, TimeoutError, TypeError) as error:
+            raise TransportError(f"failed to replace runtime config: {error}") from error
+        return _unwrap_persistent_config_write(raw, operation="replace")
 
     async def _require_active_name(self, *, timeout: float) -> str:
         active = await self.profile_active(timeout=timeout)

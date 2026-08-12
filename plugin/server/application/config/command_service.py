@@ -29,6 +29,7 @@ from plugin.server.infrastructure.config_profiles_write import (
 from plugin.server.infrastructure.config_profiles_write import (
     upsert_profile_config as infrastructure_upsert_profile_config,
 )
+from plugin.server.infrastructure.config_storage import ConfigCommitGuard
 
 logger = get_logger("server.application.config.command")
 
@@ -123,13 +124,20 @@ def _normalize_payload(payload: object, *, context: str) -> dict[str, object]:
 
 
 class ConfigCommandService:
-    async def replace_plugin_config(self, *, plugin_id: str, config: object) -> dict[str, object]:
+    async def replace_plugin_config(
+        self,
+        *,
+        plugin_id: str,
+        config: object,
+        commit_guard: ConfigCommitGuard | None = None,
+    ) -> dict[str, object]:
         normalized_config = _normalize_config_updates(config)
         try:
             payload = await asyncio.to_thread(
                 infrastructure_replace_plugin_config,
                 plugin_id,
                 normalized_config,
+                commit_guard=commit_guard,
             )
             return _normalize_payload(payload, context="replace_plugin_config")
         except HTTPException as exc:
@@ -152,13 +160,20 @@ class ConfigCommandService:
                 details={"plugin_id": plugin_id, "error_type": type(exc).__name__},
             ) from exc
 
-    async def update_plugin_config(self, *, plugin_id: str, updates: object) -> dict[str, object]:
+    async def update_plugin_config(
+        self,
+        *,
+        plugin_id: str,
+        updates: object,
+        commit_guard: ConfigCommitGuard | None = None,
+    ) -> dict[str, object]:
         normalized_updates = _normalize_config_updates(updates)
         try:
             payload = await asyncio.to_thread(
                 infrastructure_update_plugin_config,
                 plugin_id,
                 normalized_updates,
+                commit_guard=commit_guard,
             )
             return _normalize_payload(payload, context="update_plugin_config")
         except HTTPException as exc:

@@ -64,7 +64,6 @@ class _FakePlugin:
                 "character_mode": state.character_mode,
                 "character_fixed_name": state.character_fixed_name,
                 "character_mode_stale": state.character_mode_stale,
-                "cross_scene_memory": json_copy(state.cross_scene_memory),
                 "character_runtime_state": json_copy(state.character_runtime_state),
                 "last_push_seq": state.last_push_seq,
                 "plugin_error": state.plugin_error,
@@ -96,7 +95,6 @@ class _FakePlugin:
             state.character_mode = str(payload.get("character_mode", "off"))
             state.character_fixed_name = str(payload.get("character_fixed_name", ""))
             state.character_mode_stale = bool(payload.get("character_mode_stale", False))
-            state.cross_scene_memory = json_copy(payload.get("cross_scene_memory", {}))
             state.character_runtime_state = json_copy(payload.get("character_runtime_state", {}))
             state.last_push_seq = int(payload.get("last_push_seq", 0) or 0)
             state.plugin_error = str(payload["plugin_error"])
@@ -243,7 +241,6 @@ def test_host_play_mode_state_defaults() -> None:
     assert state.character_mode == "off"
     assert state.character_fixed_name == ""
     assert state.character_mode_stale is False
-    assert state.cross_scene_memory == {}
     assert state.character_runtime_state == {}
     assert state.last_push_seq == 0
 

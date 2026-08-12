@@ -126,6 +126,7 @@ def validate_platform_fields(platform: str, cookies: Dict[str, str]):
 
     platform_validations = {
         "netease": ["MUSIC_U"],
+        "qqmusic": ["uin", "qqmusic_key"],
         "bilibili": ["SESSDATA"],
         "xhh": ["user_heybox_id", "user_pkey"],
         "douyin": ["sessionid", "ttwid"],

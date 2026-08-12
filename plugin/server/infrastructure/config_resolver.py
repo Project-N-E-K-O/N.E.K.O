@@ -3,10 +3,12 @@ from __future__ import annotations
 import os
 from datetime import datetime
 from pathlib import Path
+from typing import Mapping
 
 from plugin.config.plugin_toml_semantics import PluginConfigWarning, collect_plugin_toml_semantic_warnings
 from plugin.logging_config import get_logger
-from plugin.server.infrastructure.config_paths import get_plugin_config_path
+from plugin.server.infrastructure.config_merge import deep_merge
+from plugin.server.infrastructure.config_paths import ensure_plugin_runtime_config, get_plugin_manifest_path
 from plugin.server.infrastructure.config_profiles import apply_user_config_profiles, get_profiles_state
 from plugin.server.infrastructure.config_toml import load_toml_from_file
 
@@ -65,35 +67,45 @@ def _resolve_plugin_config_core(
     plugin_id: str,
     *,
     config_path: Path,
+    manifest_path: Path,
+    manifest_config: dict[str, object],
     base_config: dict[str, object],
     include_effective_config: bool,
     validate_schema: bool,
 ) -> dict[str, object]:
-    semantic_warnings = collect_plugin_toml_semantic_warnings(base_config, toml_path=config_path)
+    manifest_plugin = manifest_config.get("plugin")
+    effective_config = deep_merge(manifest_config, base_config)
+    if isinstance(manifest_plugin, Mapping):
+        effective_config["plugin"] = dict(manifest_plugin)
+    if include_effective_config:
+        effective_config = apply_user_config_profiles(
+            plugin_id=plugin_id,
+            base_config=effective_config,
+            config_path=manifest_path,
+        )
+
+    if isinstance(manifest_plugin, Mapping):
+        effective_config = dict(effective_config)
+        effective_config["plugin"] = dict(manifest_plugin)
+
+    semantic_warnings = collect_plugin_toml_semantic_warnings(effective_config, toml_path=manifest_path)
     schema_validation_errors = (
-        _validate_config_schema(base_config, plugin_id)
+        _validate_config_schema(effective_config, plugin_id)
         if validate_schema and _SCHEMA_VALIDATION_ENABLED
         else []
     )
     schema_warnings = _schema_warning_items(schema_validation_errors)
 
-    effective_config = base_config
-    if include_effective_config:
-        effective_config = apply_user_config_profiles(
-            plugin_id=plugin_id,
-            base_config=base_config,
-            config_path=config_path,
-        )
-
     profiles_state = get_profiles_state(
         plugin_id=plugin_id,
-        config_path=config_path,
+        config_path=manifest_path,
     )
     stat = config_path.stat()
 
     return {
         "plugin_id": plugin_id,
         "config_path": str(config_path),
+        "manifest_path": str(manifest_path),
         "last_modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),
         "base_config": base_config,
         "effective_config": effective_config,
@@ -111,11 +123,16 @@ def resolve_plugin_config_from_path(
     include_effective_config: bool = True,
     validate_schema: bool = True,
 ) -> dict[str, object]:
-    normalized_base_config = base_config if isinstance(base_config, dict) else load_toml_from_file(config_path)
+    manifest_path = config_path.resolve(strict=False)
+    manifest_config = base_config if isinstance(base_config, dict) else load_toml_from_file(manifest_path)
+    runtime_config_path = ensure_plugin_runtime_config(plugin_id, manifest_path=manifest_path)
+    runtime_config = load_toml_from_file(runtime_config_path)
     return _resolve_plugin_config_core(
         plugin_id,
-        config_path=config_path,
-        base_config=normalized_base_config,
+        config_path=runtime_config_path,
+        manifest_path=manifest_path,
+        manifest_config=manifest_config,
+        base_config=runtime_config,
         include_effective_config=include_effective_config,
         validate_schema=validate_schema,
     )
@@ -127,12 +144,10 @@ def resolve_plugin_config(
     include_effective_config: bool = True,
     validate_schema: bool = True,
 ) -> dict[str, object]:
-    config_path = get_plugin_config_path(plugin_id)
-    base_config = load_toml_from_file(config_path)
-    return _resolve_plugin_config_core(
+    manifest_path = get_plugin_manifest_path(plugin_id)
+    return resolve_plugin_config_from_path(
         plugin_id,
-        config_path=config_path,
-        base_config=base_config,
+        config_path=manifest_path,
         include_effective_config=include_effective_config,
         validate_schema=validate_schema,
     )

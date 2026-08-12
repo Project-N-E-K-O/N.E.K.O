@@ -3990,6 +3990,7 @@
         "twitter": "Twitter/X",
         "reddit": "Reddit",
         "netease": "NetEase Cloud Music",
+        "qqmusic": "QQ Music",
         "saveConfig": "Сохранить конфигурацию",
         "encryptStorage": "Безопасное шифрование и сохранение в локальный файл",
         "localMonitoring": "Мониторинг локального статуса",
@@ -4028,7 +4029,8 @@
             "weibo": "<b>Цель:</b> Перейдите на <code>m.weibo.cn</code>, чтобы получить эти файлы cookie.",
             "twitter": "<b>Цель:</b> Перейдите на <code>x.com</code>, чтобы получить эти файлы cookie.",
             "reddit": "<b>Цель:</b> Перейдите на <code>reddit.com</code>, чтобы получить эти файлы cookie.",
-            "netease": "<b>Цель:</b> Перейдите на <code>music.163.com</code>, чтобы получить эти файлы cookie."
+            "netease": "<b>Цель:</b> Перейдите на <code>music.163.com</code>, чтобы получить эти файлы cookie.",
+            "qqmusic": "<b>Цель:</b> Перейдите на <code>y.qq.com</code>, чтобы получить эти файлы cookie."
         },
         "guide": {
             "title": "Универсальное руководство для новичков",
@@ -4143,6 +4145,14 @@
             "MUSIC_U": {
                 "label": "MUSIC_U",
                 "desc": "Основные учётные данные (Обязательно)"
+            },
+            "qqmusicUin": {
+                "label": "uin",
+                "desc": "Идентификатор аккаунта QQ (обычно начинается с o и цифр)"
+            },
+            "qqmusicKey": {
+                "label": "qqmusic_key",
+                "desc": "Учётные данные для входа в QQ Music (обязательно)"
             },
             "NMTID": {
                 "label": "NMTID",

@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import hmac
 import html
 import json
 import logging
@@ -279,6 +280,7 @@ async def _confirm_cloud_forge_debit(
     operation_id: str,
     credit_id: str,
     card_id: str,
+    credit: dict,
 ) -> dict:
     """Tell the cloud about a debit only after the local ledger has committed it."""
     credentials = await asyncio.to_thread(_get_client_credentials)
@@ -289,15 +291,13 @@ async def _confirm_cloud_forge_debit(
     try:
         parsed_base_url = urlparse(base_url)
         base_hostname = parsed_base_url.hostname
-        if parsed_base_url.scheme == "https" and base_hostname:
-            send_client_proof = True
-        elif (
+        valid_https = parsed_base_url.scheme == "https" and bool(base_hostname)
+        valid_loopback_http = (
             parsed_base_url.scheme == "http"
             and base_hostname
             and base_hostname.lower() in _LOOPBACK_HOSTS
-        ):
-            send_client_proof = False
-        else:
+        )
+        if not (valid_https or valid_loopback_http):
             return {"confirmed": False, "detail": "invalid_cloud_base_url"}
     except ValueError:
         return {"confirmed": False, "detail": "invalid_cloud_base_url"}
@@ -305,13 +305,27 @@ async def _confirm_cloud_forge_debit(
         f"{base_url}/api/cards/forge-operations/"
         f"{operation_id}/debit-confirmation"
     )
+    try:
+        voucher = _forge_voucher_attestation(
+            client_id=client_id,
+            client_proof=client_proof,
+            operation_id=operation_id,
+            credit_id=credit_id,
+            card_id=card_id,
+            credit=credit,
+        )
+    except (TypeError, ValueError, OverflowError):
+        # The local ledger has already committed at this point. A malformed
+        # legacy timestamp must not turn that successful debit into an HTTP 500;
+        # leave cloud confirmation pending so a repaired record can be replayed.
+        return {"confirmed": False, "detail": "invalid_forge_voucher"}
     request_payload = {
         "client_id": client_id,
+        "client_proof": client_proof,
         "credit_id": credit_id,
         "card_id": card_id,
+        "voucher": voucher,
     }
-    if send_client_proof:
-        request_payload["client_proof"] = client_proof
 
     async def _post() -> tuple[httpx.Response | None, dict | None]:
         try:
@@ -330,9 +344,8 @@ async def _confirm_cloud_forge_debit(
 
     # A rejection naming an unknown client is usually this install's first cloud
     # call after the cloud lost (or never had) the row. Register, then retry once.
-    # Not gated on send_client_proof: loopback HTTP omits the proof from this
-    # request, yet ensure_client_registered() may still register over it, so
-    # gating here would leave loopback debits unconfirmed until a restart.
+    # The voucher signature requires the binding proof even on loopback. HTTPS
+    # remains mandatory for every non-loopback cloud endpoint.
     detail = payload.get("detail") if isinstance(payload, dict) else None
     if client_registration.looks_unregistered(response.status_code, detail):
         if await client_registration.ensure_client_registered(base_url, force=True):
@@ -354,6 +367,53 @@ async def _confirm_cloud_forge_debit(
         and bool(payload.get("confirmed_at"))
     )
     return {"confirmed": confirmed}
+
+
+_FORGE_VOUCHER_KEY_CONTEXT = b"N.E.K.O forge voucher attestation v1"
+
+
+def _forge_voucher_timestamp(value: object) -> str:
+    from datetime import UTC, datetime
+
+    if not isinstance(value, str):
+        raise ValueError("invalid_forge_voucher_timestamp")
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError("invalid_forge_voucher_timestamp")
+    return parsed.astimezone(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
+
+
+def _forge_voucher_attestation(
+    *,
+    client_id: str,
+    client_proof: str,
+    operation_id: str,
+    credit_id: str,
+    card_id: str,
+    credit: dict,
+) -> dict:
+    voucher = {
+        "version": 1,
+        "operation_id": operation_id,
+        "credit_id": credit_id,
+        "card_id": card_id,
+        "rarity": str(credit.get("rarity") or ""),
+        "created_at": _forge_voucher_timestamp(credit.get("created_at")),
+        "expires_at": _forge_voucher_timestamp(credit.get("expires_at")),
+        "reserved_at": _forge_voucher_timestamp(credit.get("reserved_at")),
+        "consumed_at": _forge_voucher_timestamp(credit.get("consumed_at")),
+    }
+    document = {**voucher, "client_id": client_id}
+    message = json.dumps(
+        document, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    signing_key = hmac.new(
+        client_proof.encode("utf-8"),
+        _FORGE_VOUCHER_KEY_CONTEXT,
+        hashlib.sha256,
+    ).digest()
+    voucher["signature"] = hmac.new(signing_key, message, hashlib.sha256).hexdigest()
+    return voucher
 
 
 def _origin_port(parsed) -> int | None:
@@ -2154,6 +2214,7 @@ async def commit_credit_endpoint(
         operation_id=operation_id,
         credit_id=credit_id,
         card_id=str(payload.get("card_id") or ""),
+        credit=result["credit"],
     )
     return JSONResponse(
         {

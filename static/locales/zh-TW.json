@@ -3990,6 +3990,7 @@
         "twitter": "Twitter/X",
         "reddit": "Reddit",
         "netease": "網易雲音樂",
+        "qqmusic": "QQ音樂",
         "saveConfig": "儲存設定",
         "encryptStorage": "安全加密儲存至本地檔案",
         "localMonitoring": "本地狀態監控",
@@ -4028,7 +4029,8 @@
             "weibo": "<b>目標：</b> 請前往 <code>m.weibo.cn</code> 獲取這些 Cookies。",
             "twitter": "<b>目標：</b> 請前往 <code>x.com</code> 獲取這些 Cookies。",
             "reddit": "<b>目標：</b> 請前往 <code>reddit.com</code> 獲取這些 Cookies。",
-            "netease": "<b>目標：</b> 請前往 <code>music.163.com</code> 獲取這些 Cookies。"
+            "netease": "<b>目標：</b> 請前往 <code>music.163.com</code> 獲取這些 Cookies。",
+            "qqmusic": "<b>目標：</b> 請前往 <code>y.qq.com</code> 獲取這些 Cookies。"
         },
         "guide": {
             "title": "新手通用獲取教學",
@@ -4143,6 +4145,14 @@
             "MUSIC_U": {
                 "label": "MUSIC_U",
                 "desc": "核心身份憑證 (必填)"
+            },
+            "qqmusicUin": {
+                "label": "uin",
+                "desc": "QQ 帳號識別碼（通常以 o 加數字開頭）"
+            },
+            "qqmusicKey": {
+                "label": "qqmusic_key",
+                "desc": "QQ 音樂登入憑證（必填）"
             },
             "NMTID": {
                 "label": "NMTID",

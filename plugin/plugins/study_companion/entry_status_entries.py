@@ -187,6 +187,7 @@ class _StatusEntriesMixin:
             "current_question",
             "last_answer_evaluation",
         ],
+        metadata={"result_kind": "event"},
     )
     async def study_status(self, **_):
         try:

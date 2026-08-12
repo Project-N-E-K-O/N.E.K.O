@@ -3990,6 +3990,7 @@
         "twitter": "Twitter/X",
         "reddit": "Reddit",
         "netease": "网易云音乐",
+        "qqmusic": "QQ音乐",
         "saveConfig": "保存配置",
         "encryptStorage": "安全加密存储至本地文件",
         "localMonitoring": "本地状态监控",
@@ -4028,7 +4029,8 @@
             "weibo": "<b>目标：</b> 请前往 <code>m.weibo.cn</code> 获取这些 Cookies。",
             "twitter": "<b>目标：</b> 请前往 <code>x.com</code> 获取这些 Cookies。",
             "reddit": "<b>目标：</b> 请前往 <code>reddit.com</code> 获取这些 Cookies。",
-            "netease": "<b>目标：</b> 请前往 <code>music.163.com</code> 获取这些 Cookies。"
+            "netease": "<b>目标：</b> 请前往 <code>music.163.com</code> 获取这些 Cookies。",
+            "qqmusic": "<b>目标：</b> 请前往 <code>y.qq.com</code> 获取这些 Cookies。"
         },
         "guide": {
             "title": "新手通用获取教程",
@@ -4143,6 +4145,14 @@
             "MUSIC_U": {
                 "label": "MUSIC_U",
                 "desc": "核心身份凭证 (必填)"
+            },
+            "qqmusicUin": {
+                "label": "uin",
+                "desc": "QQ 账号标识（通常以 o 加数字开头）"
+            },
+            "qqmusicKey": {
+                "label": "qqmusic_key",
+                "desc": "QQ 音乐登录凭证（必填）"
             },
             "NMTID": {
                 "label": "NMTID",

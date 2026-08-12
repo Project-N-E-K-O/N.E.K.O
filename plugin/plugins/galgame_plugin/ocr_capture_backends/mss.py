@@ -2,7 +2,12 @@ from __future__ import annotations
 import threading
 from typing import Any
 from ..ocr_runtime_types import DetectedGameWindow, OcrCaptureProfile, _CAPTURE_BACKEND_MSS
-from ._helpers import _require_visible_capture_target, _target_screen_capture_rect, _crop_window_image
+from ._helpers import (
+    _crop_window_image,
+    _require_foreground_screen_capture_target,
+    _require_visible_capture_target,
+    _target_screen_capture_rect,
+)
 class MssCaptureBackend:
     kind = _CAPTURE_BACKEND_MSS
 
@@ -44,7 +49,17 @@ class MssCaptureBackend:
         }
         with self._sct_lock:
             sct = self._sct_instance()
+            _require_foreground_screen_capture_target(
+                target,
+                backend_kind=self.kind,
+                failure_marker="target_not_foreground_for_screen_capture",
+            )
             shot = sct.grab(monitor)
+            _require_foreground_screen_capture_target(
+                target,
+                backend_kind=self.kind,
+                failure_marker="foreground_changed_during_screen_capture",
+            )
         # mss returns BGRA; convert to RGB via PIL.
         image = Image.frombytes("RGB", shot.size, shot.rgb)
         return _crop_window_image(

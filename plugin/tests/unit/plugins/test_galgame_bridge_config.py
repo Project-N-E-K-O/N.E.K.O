@@ -278,7 +278,7 @@ def test_tail_events_handles_utf8_crlf_and_partial_line(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
-async def test_startup_binds_latest_session_and_exposes_ui(tmp_path: Path) -> None:
+async def test_first_bridge_poll_binds_latest_session_and_exposes_ui(tmp_path: Path) -> None:
     plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
     _create_game_dir(
         bridge_root,
@@ -305,6 +305,8 @@ async def test_startup_binds_latest_session_and_exposes_ui(tmp_path: Path) -> No
     plugin = GalgameBridgePlugin(ctx)
     startup = await plugin.startup()
     assert isinstance(startup, Ok)
+    assert startup.value["result"]["available_game_ids"] == []
+    await plugin._poll_bridge(force=True)
 
     status = await plugin.galgame_get_status()
     snapshot = await plugin.galgame_get_snapshot()
@@ -364,6 +366,42 @@ async def test_startup_auto_opens_ui_only_when_enabled(
 
     assert isinstance(enabled_startup, Ok)
     assert opened_urls == ["http://127.0.0.1:49001/plugin/galgame_plugin/ui/"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_bridge_tick_initializes_vision_once_outside_event_loop(tmp_path: Path) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    plugin = GalgameBridgePlugin(_Ctx(plugin_dir, _make_effective_config(bridge_root)))
+    plugin._cfg = build_config(_make_effective_config(bridge_root))
+    event_loop_thread_id = threading.get_ident()
+
+    class _LazyVisionManager:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.initialized = False
+            self.thread_id = 0
+
+        def vision_classifier_initialization_pending(self) -> bool:
+            return not self.initialized
+
+        def initialize_vision_classifier_if_needed(self) -> None:
+            self.calls += 1
+            self.thread_id = threading.get_ident()
+            self.initialized = True
+
+    manager = _LazyVisionManager()
+    plugin._ocr_reader_manager = manager  # type: ignore[assignment]
+    plugin._refresh_ocr_foreground_state = lambda: None  # type: ignore[method-assign]
+    plugin._ocr_foreground_advance_monitor_active = lambda: True  # type: ignore[method-assign]
+    plugin._start_background_bridge_poll = lambda: False  # type: ignore[method-assign]
+    plugin._start_ocr_fast_loop = lambda: False  # type: ignore[method-assign]
+
+    await plugin.bridge_tick()
+    await plugin.bridge_tick()
+
+    assert manager.calls == 1
+    assert manager.thread_id != event_loop_thread_id
 
 
 @pytest.mark.asyncio
@@ -699,6 +737,52 @@ async def test_shutdown_logs_noncritical_cleanup_failures(tmp_path: Path) -> Non
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
+async def test_shutdown_defers_ocr_cancellation_until_all_resources_close(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    cleanup_order: list[str] = []
+
+    class _CancellingOcrReader:
+        async def shutdown(self) -> None:
+            cleanup_order.append("ocr")
+            raise asyncio.CancelledError()
+
+    class _GameAgent:
+        async def drain_summary_tasks(self, *, timeout: float) -> None:
+            assert timeout == 5.0
+            cleanup_order.append("agent-drain")
+
+        async def shutdown(self) -> None:
+            cleanup_order.append("agent")
+
+    class _ShutdownResource:
+        def __init__(self, label: str) -> None:
+            self.label = label
+
+        async def shutdown(self) -> None:
+            cleanup_order.append(self.label)
+
+    class _Store:
+        async def close(self) -> None:
+            cleanup_order.append("store")
+
+    plugin._ocr_reader_manager = _CancellingOcrReader()
+    plugin._game_agent = _GameAgent()
+    plugin._llm_gateway = _ShutdownResource("llm")
+    plugin._host_agent_adapter = _ShutdownResource("host")
+    plugin.store = _Store()
+
+    with pytest.raises(asyncio.CancelledError):
+        await plugin.shutdown()
+
+    assert cleanup_order == ["ocr", "agent-drain", "agent", "llm", "host", "store"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
 async def test_bridge_tick_cancels_stale_background_poll(tmp_path: Path) -> None:
     plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
     ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
@@ -856,6 +940,7 @@ async def test_set_mode_and_bind_game_persist_across_restart(tmp_path: Path) -> 
     ctx1 = _Ctx(plugin_dir, _make_effective_config(bridge_root))
     plugin1 = GalgameBridgePlugin(ctx1)
     await plugin1.startup()
+    await plugin1._poll_bridge(force=True)
 
     mode_result = await plugin1.galgame_set_mode(
         mode="choice_advisor",
@@ -868,6 +953,7 @@ async def test_set_mode_and_bind_game_persist_across_restart(tmp_path: Path) -> 
     ctx2 = _Ctx(plugin_dir, _make_effective_config(bridge_root))
     plugin2 = GalgameBridgePlugin(ctx2)
     await plugin2.startup()
+    await plugin2._poll_bridge(force=True)
     status = await plugin2.galgame_get_status()
     assert isinstance(status, Ok)
     assert status.value["mode"] == "choice_advisor"
@@ -968,6 +1054,7 @@ async def test_save_loaded_and_repeated_line_do_not_duplicate_stable_history(tmp
     ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
     plugin = GalgameBridgePlugin(ctx)
     await plugin.startup()
+    await plugin._poll_bridge(force=True)
     history = await plugin.galgame_get_history(limit=20, include_events=True)
     assert isinstance(history, Ok)
     assert len(history.value["events"]) == 4
@@ -1158,9 +1245,24 @@ async def test_restart_restores_cursor_and_processes_new_tail(tmp_path: Path) ->
     ctx1 = _Ctx(plugin_dir, _make_effective_config(bridge_root))
     plugin1 = GalgameBridgePlugin(ctx1)
     await plugin1.startup()
+    await plugin1._poll_bridge(force=True)
 
-    new_event = _event(
+    repeated_event = _event(
         seq=3,
+        event_type="line_changed",
+        session_id=session_id,
+        game_id=game_id,
+        payload={
+            "speaker": "雪乃",
+            "text": "旧台词",
+            "line_id": "line-1",
+            "scene_id": "scene-a",
+            "route_id": "",
+        },
+        ts="2026-04-21T08:30:04Z",
+    )
+    new_event = _event(
+        seq=4,
         event_type="line_changed",
         session_id=session_id,
         game_id=game_id,
@@ -1174,16 +1276,17 @@ async def test_restart_restores_cursor_and_processes_new_tail(tmp_path: Path) ->
         ts="2026-04-21T08:30:05Z",
     )
     with (game_dir / "events.jsonl").open("ab") as handle:
-        handle.write(
-            json.dumps(new_event, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-            + b"\n"
-        )
+        for event in (repeated_event, new_event):
+            handle.write(
+                json.dumps(event, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+                + b"\n"
+            )
     _write_session(
         game_dir / "session.json",
         _session(
             game_id=game_id,
             session_id=session_id,
-            last_seq=3,
+            last_seq=4,
             state=_session_state(
                 speaker="雪乃",
                 text="重启后新增台词",
@@ -1197,10 +1300,14 @@ async def test_restart_restores_cursor_and_processes_new_tail(tmp_path: Path) ->
     ctx2 = _Ctx(plugin_dir, _make_effective_config(bridge_root))
     plugin2 = GalgameBridgePlugin(ctx2)
     await plugin2.startup()
+    await plugin2._poll_bridge(force=True)
     history = await plugin2.galgame_get_history(limit=20, include_events=True)
     assert isinstance(history, Ok)
-    assert history.value["events"][-1]["seq"] == 3
-    assert history.value["stable_lines"][-1]["line_id"] == "line-2"
+    assert history.value["events"][-1]["seq"] == 4
+    assert [item["line_id"] for item in history.value["stable_lines"]] == [
+        "line-1",
+        "line-2",
+    ]
 
 
 @pytest.mark.asyncio
@@ -1303,6 +1410,7 @@ async def test_stale_then_new_event_recovers_to_active(tmp_path: Path) -> None:
     ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
     plugin = GalgameBridgePlugin(ctx)
     await plugin.startup()
+    await plugin._poll_bridge(force=True)
 
     with plugin._state_lock:
         plugin._state.last_seen_data_monotonic = time.monotonic() - 5.0
@@ -1386,7 +1494,8 @@ def test_summarize_context_uses_observed_lines_when_stable_history_is_empty() ->
     assert context["stable_lines"] == []
     assert len(context["observed_lines"]) == 1
     assert context["recent_lines"][0]["stability"] == "tentative"
-    assert "算了，没事。" in context["scene_summary_seed"]
+    assert "算了，没事。" not in context["scene_summary_seed"]
+    assert "暂时没有足够台词上下文" in context["scene_summary_seed"]
 
 
 @pytest.mark.plugin_unit

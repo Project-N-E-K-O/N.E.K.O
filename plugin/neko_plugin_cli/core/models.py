@@ -151,17 +151,20 @@ class PluginSource:
     plugin_dir: Path
     plugin_toml_path: Path
     pyproject_toml_path: Path | None = None
+    config_example_path: Path | None = None
     plugin_id: str = ""
     name: str = ""
     version: str = ""
     package_type: str = "plugin"
     plugin_toml: dict[str, object] = field(default_factory=dict)
     pyproject_toml: dict[str, object] | None = None
+    config_example_toml: dict[str, object] | None = None
 
     def __post_init__(self) -> None:
         self.plugin_dir = _normalize_path(self.plugin_dir)
         self.plugin_toml_path = _normalize_path(self.plugin_toml_path)
         self.pyproject_toml_path = _normalize_optional_path(self.pyproject_toml_path)
+        self.config_example_path = _normalize_optional_path(self.config_example_path)
         self.plugin_id = _normalize_plugin_id(self.plugin_id)
         self.name = _normalize_required_string(self.name, field_name="name")
         self.version = _normalize_required_string(self.version, field_name="version")
@@ -170,6 +173,8 @@ class PluginSource:
             raise TypeError("plugin_toml must be a dict")
         if self.pyproject_toml is not None and not isinstance(self.pyproject_toml, dict):
             raise TypeError("pyproject_toml must be a dict or None")
+        if self.config_example_toml is not None and not isinstance(self.config_example_toml, dict):
+            raise TypeError("config_example_toml must be a dict or None")
 
     @property
     def has_pyproject(self) -> bool:
@@ -179,6 +184,12 @@ class PluginSource:
     def plugin_table(self) -> dict[str, object]:
         value = self.plugin_toml.get("plugin")
         return value if isinstance(value, dict) else {}
+
+    @property
+    def runtime_config_defaults(self) -> dict[str, object]:
+        if self.config_example_toml is not None:
+            return self.config_example_toml
+        return self.plugin_toml
 
     @property
     def description(self) -> str:

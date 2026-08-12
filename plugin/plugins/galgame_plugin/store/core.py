@@ -25,7 +25,6 @@ from ..models import (
     STORE_CHARACTER_PROFILE_VERSION,
     STORE_CHARACTER_PROFILES,
     STORE_CONTEXT_SNAPSHOT,
-    STORE_CROSS_SCENE_MEMORY,
     STORE_DEDUPE_WINDOW,
     STORE_EVENTS_BYTE_OFFSET,
     STORE_EVENTS_FILE_SIZE,
@@ -59,6 +58,8 @@ from ..models import (
     parse_ocr_capture_profile_bucket_key,
     _RAPIDOCR_OCR_VERSIONS,
 )
+
+_LEGACY_CROSS_SCENE_MEMORY_KEY = "cross_scene_memory"
 
 
 class GalgameStore:
@@ -614,11 +615,23 @@ class GalgameStore:
 
     def load(self) -> tuple[dict[str, Any], list[str]]:
         warnings: list[str] = []
-        raw_mode = self._read(STORE_MODE, "")
+        with self._locked_store():
+            self._load_values(force=True, locked=True)
+            values = json_copy(self._values)
+
+        legacy_cross_scene_memory = values.get(_LEGACY_CROSS_SCENE_MEMORY_KEY)
+        if legacy_cross_scene_memory not in ({}, None):
+            self._write(_LEGACY_CROSS_SCENE_MEMORY_KEY, {})
+            warnings.append("legacy cross_scene_memory cleared")
+
+        def read(key: str, default: Any) -> Any:
+            return values.get(key, default)
+
+        raw_mode = read(STORE_MODE, "")
         mode = raw_mode if isinstance(raw_mode, str) and raw_mode in MODES else "companion"
         if raw_mode not in ("", mode):
             warnings.append(f"invalid store mode dropped: {raw_mode!r}")
-        raw_advance_speed = self._read(STORE_ADVANCE_SPEED, "")
+        raw_advance_speed = read(STORE_ADVANCE_SPEED, "")
         advance_speed = (
             raw_advance_speed
             if isinstance(raw_advance_speed, str) and raw_advance_speed in ADVANCE_SPEEDS
@@ -627,7 +640,7 @@ class GalgameStore:
         if raw_advance_speed not in ("", advance_speed):
             warnings.append(f"invalid advance_speed dropped: {raw_advance_speed!r}")
 
-        raw_window = self._read(STORE_DEDUPE_WINDOW, [])
+        raw_window = read(STORE_DEDUPE_WINDOW, [])
         dedupe_window: list[dict[str, str]] = []
         if isinstance(raw_window, list):
             for item in raw_window:
@@ -635,10 +648,12 @@ class GalgameStore:
                     warnings.append("invalid dedupe_window item dropped: non-object")
                     continue
                 game_id = item.get("game_id")
+                scene_id = item.get("scene_id", "")
                 line_id = item.get("line_id")
                 normalized_text = item.get("normalized_text")
                 if not (
                     isinstance(game_id, str)
+                    and isinstance(scene_id, str)
                     and isinstance(line_id, str)
                     and isinstance(normalized_text, str)
                 ):
@@ -647,6 +662,7 @@ class GalgameStore:
                 dedupe_window.append(
                     {
                         "game_id": game_id,
+                        "scene_id": scene_id,
                         "line_id": line_id,
                         "normalized_text": normalized_text,
                     }
@@ -654,39 +670,39 @@ class GalgameStore:
         elif raw_window not in (None, []):
             warnings.append("invalid dedupe_window dropped: non-array")
 
-        raw_last_error = self._read(STORE_LAST_ERROR, {})
+        raw_last_error = read(STORE_LAST_ERROR, {})
         last_error = dict(raw_last_error) if isinstance(raw_last_error, dict) else {}
         if raw_last_error not in ({}, last_error):
             warnings.append("invalid last_error dropped: non-object")
         ocr_capture_profiles, profile_warnings = self._sanitize_ocr_capture_profiles(
-            self._read(STORE_OCR_CAPTURE_PROFILES, {})
+            read(STORE_OCR_CAPTURE_PROFILES, {})
         )
         warnings.extend(profile_warnings)
         ocr_window_target, target_warnings = self._sanitize_ocr_window_target(
-            self._read(STORE_OCR_WINDOW_TARGET, {})
+            read(STORE_OCR_WINDOW_TARGET, {})
         )
         warnings.extend(target_warnings)
         memory_reader_target, memory_target_warnings = self._sanitize_memory_reader_target(
-            self._read(STORE_MEMORY_READER_TARGET, {})
+            read(STORE_MEMORY_READER_TARGET, {})
         )
         warnings.extend(memory_target_warnings)
 
         def read_dict_store_value(key: str, label: str) -> dict[str, Any]:
-            raw_value = self._read(key, {})
+            raw_value = read(key, {})
             if isinstance(raw_value, dict):
                 return json_copy(raw_value)
             if raw_value not in ({}, None):
                 warnings.append(f"invalid {label} dropped: non-object")
             return {}
 
-        raw_character_profile_version = self._read(STORE_CHARACTER_PROFILE_VERSION, "")
+        raw_character_profile_version = read(STORE_CHARACTER_PROFILE_VERSION, "")
         character_profile_version = (
             raw_character_profile_version if isinstance(raw_character_profile_version, str) else ""
         )
         if raw_character_profile_version not in ("", character_profile_version):
             warnings.append("invalid character_profile_version dropped: non-string")
 
-        raw_character_mode = self._read(STORE_CHARACTER_MODE, "off")
+        raw_character_mode = read(STORE_CHARACTER_MODE, "off")
         character_mode = (
             raw_character_mode
             if isinstance(raw_character_mode, str) and raw_character_mode in {"off", "fixed"}
@@ -695,20 +711,20 @@ class GalgameStore:
         if raw_character_mode not in ("", character_mode):
             warnings.append(f"invalid character_mode dropped: {raw_character_mode!r}")
 
-        raw_character_fixed_name = self._read(STORE_CHARACTER_FIXED_NAME, "")
+        raw_character_fixed_name = read(STORE_CHARACTER_FIXED_NAME, "")
         character_fixed_name = raw_character_fixed_name if isinstance(raw_character_fixed_name, str) else ""
         if raw_character_fixed_name not in ("", character_fixed_name):
             warnings.append("invalid character_fixed_name dropped: non-string")
 
         restored = {
-            STORE_BOUND_GAME_ID: self._read(STORE_BOUND_GAME_ID, ""),
+            STORE_BOUND_GAME_ID: read(STORE_BOUND_GAME_ID, ""),
             STORE_MODE: mode,
-            STORE_PUSH_NOTIFICATIONS: bool(self._read(STORE_PUSH_NOTIFICATIONS, True)),
+            STORE_PUSH_NOTIFICATIONS: bool(read(STORE_PUSH_NOTIFICATIONS, True)),
             STORE_ADVANCE_SPEED: advance_speed,
-            STORE_SESSION_ID: self._read(STORE_SESSION_ID, ""),
-            STORE_EVENTS_BYTE_OFFSET: max(0, int(self._read(STORE_EVENTS_BYTE_OFFSET, 0) or 0)),
-            STORE_EVENTS_FILE_SIZE: max(0, int(self._read(STORE_EVENTS_FILE_SIZE, 0) or 0)),
-            STORE_LAST_SEQ: max(0, int(self._read(STORE_LAST_SEQ, 0) or 0)),
+            STORE_SESSION_ID: read(STORE_SESSION_ID, ""),
+            STORE_EVENTS_BYTE_OFFSET: max(0, int(read(STORE_EVENTS_BYTE_OFFSET, 0) or 0)),
+            STORE_EVENTS_FILE_SIZE: max(0, int(read(STORE_EVENTS_FILE_SIZE, 0) or 0)),
+            STORE_LAST_SEQ: max(0, int(read(STORE_LAST_SEQ, 0) or 0)),
             STORE_DEDUPE_WINDOW: dedupe_window,
             STORE_LAST_ERROR: last_error,
             STORE_OCR_CAPTURE_PROFILES: ocr_capture_profiles,
@@ -721,10 +737,6 @@ class GalgameStore:
             STORE_CHARACTER_PROFILE_VERSION: character_profile_version,
             STORE_CHARACTER_MODE: character_mode,
             STORE_CHARACTER_FIXED_NAME: character_fixed_name,
-            STORE_CROSS_SCENE_MEMORY: read_dict_store_value(
-                STORE_CROSS_SCENE_MEMORY,
-                "cross_scene_memory",
-            ),
             STORE_CHARACTER_RUNTIME_STATE: read_dict_store_value(
                 STORE_CHARACTER_RUNTIME_STATE,
                 "character_runtime_state",

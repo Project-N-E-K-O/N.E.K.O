@@ -2304,6 +2304,130 @@ def test_plugin_terminal_status_defaults_and_run_data_overrides():
     assert _plugin_terminal_status(False, {"status": "blocked", "observation_only": True}) == "failed"
 
 
+def test_plugin_result_contract_runtime_static_and_default(monkeypatch):
+    from app.agent_server.channels import user_plugin
+
+    executor = type(
+        "Executor",
+        (),
+        {
+            "plugin_list": [
+                {
+                    "id": "demo",
+                    "entries": [
+                        {
+                            "id": "status",
+                            "metadata": {
+                                "result_kind": "event",
+                                "expires_in_s": 30,
+                            },
+                        },
+                        {"id": "action", "metadata": {}},
+                    ],
+                }
+            ]
+        },
+    )()
+    monkeypatch.setattr(user_plugin._shared.Modules, "task_executor", executor)
+
+    assert user_plugin._resolve_plugin_result_contract("demo", "status", None) == (
+        "event",
+        30.0,
+    )
+    runtime = {
+        "meta": {
+            "agent": {
+                "result_kind": "task_result",
+                "expires_in_s": 5,
+            }
+        }
+    }
+    assert user_plugin._resolve_plugin_result_contract("demo", "status", runtime) == (
+        "task_result",
+        None,
+    )
+    assert user_plugin._resolve_plugin_result_contract("demo", "action", None) == (
+        "task_result",
+        None,
+    )
+
+
+def test_plugin_result_contract_invalid_runtime_falls_back_to_static(monkeypatch):
+    from app.agent_server.channels import user_plugin
+
+    executor = type(
+        "Executor",
+        (),
+        {
+            "plugin_list": [
+                {
+                    "id": "demo",
+                    "entries": [
+                        {
+                            "id": "status",
+                            "metadata": {
+                                "result_kind": "event",
+                                "expires_in_s": 20,
+                            },
+                        }
+                    ],
+                }
+            ]
+        },
+    )()
+    monkeypatch.setattr(user_plugin._shared.Modules, "task_executor", executor)
+    runtime = {
+        "meta": {
+            "agent": {
+                "result_kind": "not-a-kind",
+                "expires_in_s": float("nan"),
+            }
+        }
+    }
+
+    assert user_plugin._resolve_plugin_result_contract("demo", "status", runtime) == (
+        "event",
+        20.0,
+    )
+
+
+def test_plugin_contract_lookups_use_executor_resolved_entry_ids():
+    def _assert_resolved_entry_arg(func_node, result_name):
+        target_calls = {
+            "_lookup_llm_result_fields": [],
+            "_resolve_plugin_result_contract": [],
+        }
+        for node in ast.walk(func_node):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id in target_calls
+            ):
+                target_calls[node.func.id].append(node)
+        for call_name, calls in target_calls.items():
+            assert len(calls) == 1, f"expected one {call_name} call"
+            entry_arg = calls[0].args[1]
+            assert isinstance(entry_arg, ast.Attribute)
+            assert entry_arg.attr == "entry_id"
+            assert isinstance(entry_arg.value, ast.Name)
+            assert entry_arg.value.id == result_name
+
+    _assert_resolved_entry_arg(
+        _get_function_def(
+            "app/agent_server/channels/user_plugin.py",
+            "dispatch",
+        ),
+        "up_result",
+    )
+    _assert_resolved_entry_arg(
+        _get_function_def(
+            "app/agent_server/api_runtime.py",
+            "plugin_execute_direct",
+        ),
+        "res",
+    )
+
+
 def test_callback_instruction_renders_blocked_plugin_result_as_not_executed():
     from main_logic.core import _build_callback_instruction
 

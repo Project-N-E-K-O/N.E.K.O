@@ -5252,11 +5252,17 @@ def test_study_companion_ui_refactor_static_and_hosted_contracts() -> None:
     assert "openSurface" in plugin_ui_frame
     assert "payload.pluginId.trim()" in plugin_ui_frame
     assert "payload.kind.trim()" in plugin_ui_frame
-    assert "sendStudySurfaceMessage" in plugin_ui_frame
+    assert "sendSurfaceMessage" in plugin_ui_frame
+    assert "pendingSurfaceMessages" in plugin_ui_frame
+    assert "flushSurfaceMessages()" in plugin_ui_frame
+    assert "iframeGeneration" in plugin_ui_frame
+    assert "isCurrentIframeEvent" in plugin_ui_frame
     assert '@open-surface="openHostedSurfaceFromStaticUi"' in plugin_detail
     assert '@message="relayHostedSurfaceMessageToStaticUi"' in plugin_detail
-    assert "studySurfaceRelayMessageTypes" in plugin_detail
-    assert "staticUiFrameRef.value?.sendStudySurfaceMessage(data)" in plugin_detail
+    assert "studySurfaceRelayMessageTypes" not in plugin_detail
+    assert "staticUiFrameRef.value?.sendSurfaceMessage(data)" in plugin_detail
+    assert "const staticUiPluginId = ref('')" in plugin_detail
+    assert "const hasCurrentStaticUI = computed" in plugin_detail
     assert "const preferGuide = payload.kind === 'guide' || payload.kind === 'docs'" in plugin_detail
     assert "activeGuideSurfaceId.value = guide.id" in plugin_detail
     assert "surface: activeSurfaceId" in plugin_detail
@@ -8946,6 +8952,7 @@ async def test_study_plugin_starts_and_collects_entries(
     assert isinstance(result, Ok)
     entries = plugin.collect_entries()
     assert "study_status" in entries
+    assert entries["study_status"].meta.metadata["result_kind"] == "event"
     assert "study_explain_text" in entries
     assert "study_ocr_snapshot" in entries
     assert "study_set_mode" in entries

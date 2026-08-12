@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 from _galgame_test_support import *
+from plugin.plugins.galgame_plugin.agent_ocr_actuation import (
+    OcrActionContext,
+    OcrActionGate,
+)
 
 from tests.fake_clock import patch_module_clock
+from utils.result_parser import parse_push_message_content
 
 @pytest.mark.plugin_unit
 def test_game_llm_agent_menu_stage_without_choices_is_choice_menu(tmp_path: Path) -> None:
@@ -35,6 +40,67 @@ def test_game_llm_agent_menu_stage_without_choices_is_choice_menu(tmp_path: Path
         now=1000.0,
         scene_changed=False,
     ) == "choice_menu"
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_game_llm_agent_scene_change_forwards_confirmed_boundary_to_consultation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    agent = GameLLMAgent(
+        plugin=plugin,
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    shared_scene_a = _shared_state(
+        mode="companion",
+        push_notifications=True,
+        snapshot=_session_state(
+            scene_id="scene-a",
+            line_id="line-a",
+            text="上一场景。",
+        ),
+    )
+    await agent._observe(shared_scene_a)
+
+    scheduled: list[str] = []
+    consultation_scene_flags: list[bool] = []
+
+    def _record_schedule(**kwargs: Any) -> None:
+        scheduled.append(str(kwargs.get("trigger") or ""))
+
+    async def _record_consult(
+        _shared: dict[str, Any],
+        *,
+        snapshot: dict[str, Any],
+        scene_changed: bool,
+    ) -> None:
+        del snapshot
+        consultation_scene_flags.append(scene_changed)
+
+    monkeypatch.setattr(agent, "_schedule_scene_summary_task", _record_schedule)
+    monkeypatch.setattr(agent, "_maybe_consult_cat", _record_consult)
+    shared_scene_b = _shared_state(
+        mode="companion",
+        push_notifications=True,
+        snapshot=_session_state(
+            scene_id="scene-b",
+            line_id="line-b",
+            text="新场景。",
+        ),
+    )
+
+    await agent._observe(shared_scene_b)
+
+    assert agent._observed_scene_id == "scene-b"
+    assert scheduled == []
+    assert consultation_scene_flags == [True]
+    assert ctx.pushed_messages == []
 
 
 @pytest.mark.asyncio
@@ -93,6 +159,58 @@ async def test_game_llm_agent_ocr_menu_without_bridge_choices_uses_keyboard_fall
     assert agent._ocr_choice_fallback_attempts == 1
     assert agent._actuation is not None
     assert agent._actuation["state"] == "awaiting_bridge"
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_game_llm_agent_ocr_menu_with_dialogue_does_not_use_keyboard_fallback(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    local_calls: list[dict[str, object]] = []
+
+    def _local_input(
+        _shared: dict[str, object],
+        actuation: dict[str, object],
+    ) -> dict[str, object]:
+        local_calls.append(dict(actuation))
+        return {"success": True}
+
+    agent = GameLLMAgent(
+        plugin=plugin,
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+        local_input_actuator=_local_input,
+    )
+    snapshot = _session_state(
+        text="我猛地坐起来，回答坐在前面的司机。",
+        line_id="ocr:dialogue-line",
+        choices=[],
+        is_menu_open=False,
+        screen_type=OCR_CAPTURE_PROFILE_STAGE_MENU,
+        screen_confidence=0.99,
+    )
+    snapshot["stability"] = "stable"
+    shared = _shared_state(
+        snapshot=snapshot,
+        active_data_source=DATA_SOURCE_OCR_READER,
+        ocr_reader_runtime={
+            "enabled": True,
+            "status": "active",
+            "pid": 4242,
+            "target_is_foreground": True,
+            "input_target_foreground": True,
+        },
+    )
+
+    await agent.tick(shared)
+
+    assert local_calls == []
+    assert agent._ocr_choice_fallback_attempts == 0
+    assert agent._actuation is None
 
 
 @pytest.mark.asyncio
@@ -486,7 +604,7 @@ async def test_game_llm_agent_passes_cat_opinions_to_choice_planning(
 
 
 @pytest.mark.plugin_unit
-def test_build_suggest_context_includes_cross_scene_memory() -> None:
+def test_build_suggest_context_ignores_cross_scene_memory() -> None:
     shared = _shared_state(
         snapshot=_session_state(
             speaker="Yukino",
@@ -519,17 +637,13 @@ def test_build_suggest_context_includes_cross_scene_memory() -> None:
 
     context = build_suggest_context(shared)
 
-    assert "Yukino" in context["cross_scene_memory_context"]
-    assert "keeps the oath" in context["cross_scene_memory_context"]
-    assert "betrayal clue" in context["cross_scene_memory_context"]
-    assert context["cross_scene_memory"]["characters"]["Yukino"]["arc"] == (
-        "keeps the oath from scene-a"
-    )
+    assert "cross_scene_memory" not in context
+    assert "cross_scene_memory_context" not in context
 
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
-async def test_game_llm_agent_passes_cross_scene_memory_to_choice_planning(
+async def test_game_llm_agent_ignores_cross_scene_memory_for_choice_planning(
     tmp_path: Path,
 ) -> None:
     plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
@@ -556,24 +670,9 @@ async def test_game_llm_agent_passes_cross_scene_memory_to_choice_planning(
             is_menu_open=True,
         ),
     )
-    with plugin._state_lock:
-        plugin._state.cross_scene_memory = {
-            "characters": {
-                "Yukino": {
-                    "arc": "trusts the right path after scene-a",
-                    "current_emotion": "quiet resolve",
-                    "confidence": 0.8,
-                }
-            },
-            "plot_threads": [
-                {
-                    "thread": "route-secret",
-                    "status": "betrayal clue remains unresolved",
-                    "key_scenes": ["scene-a"],
-                    "confidence": 0.7,
-                }
-            ],
-        }
+    shared["cross_scene_memory"] = {
+        "characters": {"Yukino": {"arc": "trusts the right path after scene-a"}}
+    }
     agent._planning_choice_signature = (
         ("choice-1", "left", 0),
         ("choice-2", "right", 1),
@@ -581,13 +680,8 @@ async def test_game_llm_agent_passes_cross_scene_memory_to_choice_planning(
 
     await agent._run_choice_planning_inline(shared, context={}, now=time.monotonic())
 
-    assert "cross_scene_memory" not in shared
-    assert "trusts the right path" in fake_gateway.suggest_calls[-1][
-        "cross_scene_memory_context"
-    ]
-    assert fake_gateway.suggest_calls[-1]["cross_scene_memory"]["characters"][
-        "Yukino"
-    ]["current_emotion"] == "quiet resolve"
+    assert "cross_scene_memory" not in fake_gateway.suggest_calls[-1]
+    assert "cross_scene_memory_context" not in fake_gateway.suggest_calls[-1]
 
 
 @pytest.mark.asyncio
@@ -1593,7 +1687,40 @@ async def test_game_llm_agent_outbound_message_queue_and_ack(tmp_path: Path) -> 
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
-async def test_game_llm_agent_push_includes_cross_scene_memory(tmp_path: Path) -> None:
+async def test_game_llm_agent_push_ignores_cross_scene_memory(tmp_path: Path) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    agent = GameLLMAgent(
+        plugin=plugin,
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    shared = _shared_state(mode="companion")
+    shared["cross_scene_memory"] = {
+        "characters": {"Yukino": {"arc": "protects the promise from scene-a"}}
+    }
+
+    await agent._push_agent_message(
+        shared,
+        kind="scene_summary",
+        content="current scene summary",
+        scene_id="scene-b",
+        route_id="",
+    )
+
+    content = str(ctx.pushed_messages[-1]["content"])
+    assert "Cross-scene memory" not in content
+    assert "protects the promise" not in content
+    assert "current scene summary" in content
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_scene_summary_ignores_legacy_memory_input(
+    tmp_path: Path,
+) -> None:
     plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
     ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
     plugin = GalgameBridgePlugin(ctx)
@@ -1605,37 +1732,26 @@ async def test_game_llm_agent_push_includes_cross_scene_memory(tmp_path: Path) -
     )
     shared = _shared_state(mode="companion")
     with plugin._state_lock:
-        plugin._state.cross_scene_memory = {
-            "characters": {
-                "Yukino": {
-                    "arc": "protects the promise from scene-a",
-                    "current_emotion": "watchful",
-                    "confidence": 0.8,
-                }
-            },
-            "plot_threads": [
-                {
-                    "thread": "route-secret",
-                    "status": "betrayal clue remains unresolved",
-                    "key_scenes": ["scene-a"],
-                    "confidence": 0.7,
-                }
-            ],
-        }
+        plugin._state.character_mode = "off"
+        plugin._state.character_fixed_name = ""
+    shared["cross_scene_memory"] = {
+        "characters": {"Murasame": {"arc": "叢雨仍在追寻封印背后的真相，" * 40}}
+    }
 
     await agent._push_agent_message(
         shared,
         kind="scene_summary",
-        content="current scene summary",
+        content="CURRENT OCR SCENE SUMMARY MUST SURVIVE",
         scene_id="scene-b",
         route_id="",
     )
 
-    content = str(ctx.pushed_messages[-1]["content"])
-    assert "Cross-scene memory" in content
-    assert "protects the promise" in content
-    assert "betrayal clue" in content
-    assert "current scene summary" in content
+    pushed_content = str(ctx.pushed_messages[-1]["content"])
+    host_visible_content = parse_push_message_content(pushed_content)
+
+    assert "======[角色身份]" not in pushed_content
+    assert "Cross-scene memory" not in pushed_content
+    assert "CURRENT OCR SCENE SUMMARY MUST SURVIVE" in host_visible_content
 
 
 @pytest.mark.plugin_unit
@@ -1977,7 +2093,7 @@ async def test_game_llm_agent_cat_choice_advice_can_select_first_visible_choice(
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
-async def test_game_llm_agent_ocr_choice_planning_waits_for_confirmed_choices_event(
+async def test_game_llm_agent_ocr_choice_planning_accepts_two_visible_choices(
     tmp_path: Path,
 ) -> None:
     plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
@@ -2004,45 +2120,172 @@ async def test_game_llm_agent_ocr_choice_planning_waits_for_confirmed_choices_ev
         is_menu_open=True,
         ts="2026-04-21T08:31:00Z",
     )
-    shared_unconfirmed = _shared_state(
+    shared_visible = _shared_state(
         snapshot=snapshot,
         active_data_source=DATA_SOURCE_OCR_READER,
         history_events=[],
     )
 
-    await agent.tick(shared_unconfirmed)
+    await agent.tick(shared_visible)
     await asyncio.sleep(0)
 
     assert fake_gateway.suggest_calls == []
     assert fake_host.started == []
+    assert agent._pending_choice_advice is not None
+    assert ctx.pushed_messages[-1]["metadata"]["kind"] == "choice_advice_request"
 
-    shared_confirmed = _shared_state(
+
+@pytest.mark.plugin_unit
+def test_game_llm_agent_ocr_choice_gate_accepts_matching_single_choice_event(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    agent = GameLLMAgent(
+        plugin=plugin,
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    choice = {"choice_id": "choice-1", "text": "继续", "index": 0, "enabled": True}
+    snapshot = _session_state(
+        scene_id="scene-a",
+        line_id="line-1",
+        choices=[choice],
+        is_menu_open=True,
+        screen_type=OCR_CAPTURE_PROFILE_STAGE_MENU,
+    )
+    shared = _shared_state(
         snapshot=snapshot,
         active_data_source=DATA_SOURCE_OCR_READER,
-        last_seq=3,
         history_events=[
             {
-                "seq": 3,
-                "ts": "2026-04-21T08:31:01Z",
                 "type": "choices_shown",
-                "session_id": "sess-a",
-                "game_id": "demo.alpha",
                 "payload": {
                     "line_id": "line-1",
                     "scene_id": "scene-a",
-                    "route_id": "",
-                    "choices": visible_choices,
+                    "choices": [choice],
                 },
             }
         ],
     )
 
-    await agent.tick(shared_confirmed)
-    await asyncio.sleep(0)
+    assert agent._has_confirmed_ocr_choice_menu(shared, snapshot) is True
+    shared["history_events"] = []
+    assert agent._has_confirmed_ocr_choice_menu(shared, snapshot) is False
 
-    assert fake_gateway.suggest_calls == []
-    assert agent._pending_choice_advice is not None
-    assert ctx.pushed_messages[-1]["metadata"]["kind"] == "choice_advice_request"
+
+@pytest.mark.parametrize("stability", ["tentative", "stable"])
+@pytest.mark.plugin_unit
+def test_game_llm_agent_ocr_dialogue_without_choices_blocks_menu_actions(
+    tmp_path: Path,
+    stability: str,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    agent = GameLLMAgent(
+        plugin=plugin,
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    snapshot = _session_state(
+        scene_id="scene-a",
+        line_id="line-1",
+        text="当前对白",
+        choices=[],
+        is_menu_open=True,
+        screen_type=OCR_CAPTURE_PROFILE_STAGE_MENU,
+    )
+    snapshot["stability"] = stability
+    shared = _shared_state(
+        snapshot=snapshot,
+        active_data_source=DATA_SOURCE_OCR_READER,
+        history_events=[],
+    )
+
+    assert agent._has_confirmed_ocr_choice_menu(shared, snapshot) is False
+
+
+@pytest.mark.parametrize(
+    "screen_type",
+    ["", OCR_CAPTURE_PROFILE_STAGE_DIALOGUE],
+)
+@pytest.mark.plugin_unit
+def test_game_llm_agent_ocr_open_menu_normalizes_inconsistent_screen_type(
+    tmp_path: Path,
+    screen_type: str,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    agent = GameLLMAgent(
+        plugin=plugin,
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    snapshot = _session_state(
+        scene_id="scene-a",
+        line_id="",
+        text="",
+        choices=[],
+        is_menu_open=True,
+        screen_type=screen_type,
+    )
+    shared = _shared_state(
+        snapshot=snapshot,
+        active_data_source=DATA_SOURCE_OCR_READER,
+        history_events=[],
+    )
+
+    assert agent._has_confirmed_ocr_choice_menu(shared, snapshot) is True
+
+
+@pytest.mark.parametrize(
+    ("has_tentative", "has_stable"),
+    [(True, False), (False, True)],
+)
+@pytest.mark.plugin_unit
+def test_ocr_action_gate_blocks_menu_keys_for_current_dialogue_without_choices(
+    has_tentative: bool,
+    has_stable: bool,
+) -> None:
+    permission = OcrActionGate.evaluate(
+        OcrActionContext(
+            screen_type=OCR_CAPTURE_PROFILE_STAGE_MENU,
+            has_stable_dialogue=has_stable,
+            has_tentative_dialogue=has_tentative,
+            choices=(),
+            scene_id="scene-a",
+            line_id="line-1",
+        )
+    )
+
+    assert permission.allow_menu_keys is False
+    assert permission.has_trusted_choices is False
+    assert permission.reason == "dialogue_blocks_menu"
+
+
+@pytest.mark.plugin_unit
+def test_ocr_action_gate_accepts_confirmed_single_choice() -> None:
+    permission = OcrActionGate.evaluate(
+        OcrActionContext(
+            screen_type=OCR_CAPTURE_PROFILE_STAGE_MENU,
+            has_stable_dialogue=False,
+            has_tentative_dialogue=False,
+            choices=({"choice_id": "choice-1", "text": "继续", "enabled": True},),
+            scene_id="scene-a",
+            line_id="line-1",
+            choices_confirmed=True,
+        )
+    )
+
+    assert permission.allow_menu_keys is True
+    assert permission.allow_auto_advance is False
+    assert permission.has_trusted_choices is True
 
 
 @pytest.mark.asyncio
@@ -3792,8 +4035,8 @@ async def test_game_llm_agent_set_standby_interrupts_awaiting_bridge_without_hos
     ("mode", "expected_kinds"),
     [
         ("silent", []),
-        ("companion", ["scene_summary", "choice_reason"]),
-        ("choice_advisor", ["scene_summary", "choice_reason"]),
+        ("companion", ["choice_reason"]),
+        ("choice_advisor", ["choice_reason"]),
     ],
 )
 async def test_game_llm_agent_mode_controls_push_types(
@@ -5097,7 +5340,180 @@ async def test_game_llm_agent_scene_summary_fallback_marks_observed_as_tentative
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
-async def test_game_llm_agent_scene_summary_does_not_block_observe(
+async def test_scene_summary_401_fallback_ignores_unreviewed_snapshot_text(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    gateway = _FakeLLMGateway(
+        summarize_payload={
+            "degraded": True,
+            "summary": "",
+            "diagnostic": "401 Unauthorized",
+        }
+    )
+    agent = GameLLMAgent(
+        plugin=plugin,
+        logger=_Logger(),
+        llm_gateway=gateway,
+        host_adapter=_FakeHostAdapter(),
+    )
+    context = build_summarize_context(
+        _shared_state(
+            active_data_source=DATA_SOURCE_OCR_READER,
+            snapshot=_session_state(
+                speaker="",
+                text="",
+                scene_id="scene-new",
+                line_id="",
+            ),
+            history_lines=[],
+            history_observed_lines=[],
+        ),
+        scene_id="scene-new",
+    )
+    unreviewed_snapshot = _session_state(
+        speaker="旁白",
+        text="动画设置 主动搭话 隐私模式 角色设置 API密钥 声纹身份",
+        scene_id="scene-new",
+        line_id="ocr:raw-unreviewed",
+    )
+
+    content, meta = await agent._summarize_scene_context_for_cat(
+        context,
+        scene_id="scene-new",
+        route_id="ocr",
+        snapshot=unreviewed_snapshot,
+    )
+
+    assert meta["summary_source"] == "local_context"
+    assert meta["summary_diagnostic"] == "401 Unauthorized"
+    assert "动画设置" not in content
+    assert "API密钥" not in content
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_redacted_seq_384_392_replay_stays_clean_through_401_outbound(
+    tmp_path: Path,
+) -> None:
+    scene_old = "ocr:game:scene-old"
+    scene_new = "ocr:game:scene-new"
+    ui_prefix = "动画设置 主动搭话 隐私模式 角色设置 API密钥 +++声纹身份 "
+
+    def line_event(seq: int, event_type: str, text: str, line_id: str, scene_id: str):
+        return {
+            "seq": seq,
+            "ts": f"2026-08-11T07:15:{seq - 340:02d}Z",
+            "type": event_type,
+            "session_id": "ocr-session",
+            "game_id": "ocr-game",
+            "payload": {
+                "speaker": "旁白",
+                "text": text,
+                "line_id": line_id,
+                "scene_id": scene_id,
+                "route_id": "ocr",
+                "stability": "stable" if event_type == "line_changed" else "tentative",
+            },
+        }
+
+    events = [
+        line_event(384, "line_changed", "单位圆内接正八边形平方和最大值为16。", "old-math", scene_old),
+        {
+            "seq": 385,
+            "ts": "2026-08-11T07:15:45Z",
+            "type": "scene_changed",
+            "session_id": "ocr-session",
+            "game_id": "ocr-game",
+            "payload": {"scene_id": scene_new, "route_id": "ocr"},
+        },
+        line_event(386, "line_observed", ui_prefix + "出家门后，算上换乘我一共坐了2个小时的电车。S英", "ui-s", scene_new),
+        line_event(387, "line_observed", ui_prefix + "出家门后，算上换乘我一共坐了2个小时的电车。区记忆浏", "ui-memory", scene_new),
+        line_event(388, "line_observed", "出家门后，算上换乘我一共坐了2个小时的电车。", "line-train", scene_new),
+        line_event(389, "line_changed", "出家门后，算上换乘我一共坐了2个小时的电车。", "line-train", scene_new),
+        line_event(390, "line_observed", "出家门后，算上换乘我一共坐了2个小时的电车。", "line-train", scene_new),
+        line_event(391, "line_observed", "原因之一便是在于这城镇风貌。", "line-town", scene_new),
+        {
+            "seq": 392,
+            "ts": "2026-08-11T07:15:52Z",
+            "type": "screen_classified",
+            "session_id": "ocr-session",
+            "game_id": "ocr-game",
+            "payload": {"screen_type": "dialogue", "screen_confidence": 0.91},
+        },
+    ]
+    history_events, stable, observed, choices, dedupe, snapshot = (
+        galgame_service.rebuild_histories_from_events(
+            events=events,
+            snapshot={},
+            dedupe_window=[],
+            config=galgame_service.build_config({}),
+            game_id="ocr-game",
+        )
+    )
+    shared = _shared_state(
+        mode="companion",
+        game_id="ocr-game",
+        session_id="ocr-session",
+        last_seq=392,
+        active_data_source=DATA_SOURCE_OCR_READER,
+        snapshot=snapshot,
+        history_events=history_events,
+        history_lines=stable,
+        history_observed_lines=observed,
+        history_choices=choices,
+    )
+    context = build_summarize_context(shared, scene_id=scene_new)
+
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    agent = GameLLMAgent(
+        plugin=plugin,
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(
+            summarize_payload={
+                "degraded": True,
+                "summary": "",
+                "diagnostic": "401 Unauthorized",
+            }
+        ),
+        host_adapter=_FakeHostAdapter(),
+    )
+    content, meta = await agent._summarize_scene_context_for_cat(
+        context,
+        scene_id=scene_new,
+        route_id="ocr",
+        snapshot=snapshot,
+    )
+    await agent._push_agent_message(
+        shared,
+        kind="scene_summary",
+        content=content,
+        scene_id=scene_new,
+        route_id="ocr",
+        metadata=meta,
+    )
+    outbound = str(ctx.pushed_messages[-1]["content"])
+
+    assert "出家门后，算上换乘我一共坐了2个小时的电车。" in outbound
+    assert "原因之一便是在于这城镇风貌。" in outbound
+    assert "动画设置" not in outbound
+    assert "API密钥" not in outbound
+    assert "S英" not in outbound
+    assert "区记忆浏" not in outbound
+    assert "单位圆" not in outbound
+    assert "最大值为16" not in outbound
+    assert "Cross-scene memory" not in outbound
+    candidate_section = outbound.split("待确认候选：", 1)[-1]
+    assert "出家门后，算上换乘我一共坐了2个小时的电车。" not in candidate_section
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_game_llm_agent_scene_change_does_not_schedule_summary(
     tmp_path: Path,
 ) -> None:
     plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
@@ -5113,17 +5529,17 @@ async def test_game_llm_agent_scene_summary_does_not_block_observe(
     shared_before = _shared_state(
         mode="companion",
         connection_state="idle",
-        snapshot=_session_state(text="第一幕。", scene_id="scene-a", line_id="line-1"),
+        snapshot=_session_state(text="scene a", scene_id="scene-a", line_id="line-1"),
     )
     shared_after = _shared_state(
         mode="companion",
         connection_state="idle",
-        snapshot=_session_state(text="第二幕。", scene_id="scene-b", line_id="line-2"),
+        snapshot=_session_state(text="scene b", scene_id="scene-b", line_id="line-2"),
         history_lines=[
             {
                 "line_id": "line-2",
-                "speaker": "雪乃",
-                "text": "第二幕。",
+                "speaker": "Yukino",
+                "text": "scene b",
                 "scene_id": "scene-b",
                 "route_id": "",
                 "ts": "2026-04-21T08:34:00Z",
@@ -5133,21 +5549,15 @@ async def test_game_llm_agent_scene_summary_does_not_block_observe(
 
     await agent.tick(shared_before)
     await asyncio.wait_for(agent.tick(shared_after), timeout=0.5)
-    await asyncio.wait_for(gateway.summary_started.wait(), timeout=0.5)
 
     assert ctx.pushed_messages == []
-
-    gateway.release_summary.set()
-    await _drain_agent_summary_tasks(agent)
-
-    assert ctx.pushed_messages[-1]["metadata"]["kind"] == "scene_summary"
-    assert ctx.pushed_messages[-1]["metadata"]["scene_id"] == "scene-b"
-    assert "llm summary for scene-b" in ctx.pushed_messages[-1]["content"]
+    assert gateway.summary_started.is_set() is False
+    assert agent._summary_tasks == set()
 
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
-async def test_game_llm_agent_discards_stale_background_scene_summary(
+async def test_game_llm_agent_repeated_scene_changes_do_not_schedule_summaries(
     tmp_path: Path,
 ) -> None:
     plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
@@ -5165,36 +5575,31 @@ async def test_game_llm_agent_discards_stale_background_scene_summary(
         _shared_state(
             mode="companion",
             connection_state="idle",
-            snapshot=_session_state(text="第一幕。", scene_id="scene-a", line_id="line-1"),
+            snapshot=_session_state(text="scene a", scene_id="scene-a", line_id="line-1"),
         )
     )
     await agent.tick(
         _shared_state(
             mode="companion",
             connection_state="idle",
-            snapshot=_session_state(text="第二幕。", scene_id="scene-b", line_id="line-2"),
+            snapshot=_session_state(text="scene b", scene_id="scene-b", line_id="line-2"),
         )
     )
-    await asyncio.wait_for(gateway.summary_started.wait(), timeout=0.5)
-    gateway.summary_started.clear()
-
     await asyncio.wait_for(
         agent.tick(
             _shared_state(
                 mode="companion",
                 connection_state="idle",
-                snapshot=_session_state(text="第三幕。", scene_id="scene-c", line_id="line-3"),
+                snapshot=_session_state(text="scene c", scene_id="scene-c", line_id="line-3"),
             )
         ),
         timeout=0.5,
     )
-    await asyncio.wait_for(gateway.summary_started.wait(), timeout=0.5)
-    gateway.release_summary.set()
-    await _drain_agent_summary_tasks(agent)
 
-    pushed_scene_ids = [item["metadata"]["scene_id"] for item in ctx.pushed_messages]
-    assert "scene-b" not in pushed_scene_ids
-    assert pushed_scene_ids == ["scene-c"]
+    assert agent._observed_scene_id == "scene-c"
+    assert gateway.summary_started.is_set() is False
+    assert agent._summary_tasks == set()
+    assert ctx.pushed_messages == []
 
 
 @pytest.mark.asyncio

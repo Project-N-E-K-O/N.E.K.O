@@ -71,6 +71,7 @@
 
     function revealPreparedTutorialLive2D(reason) {
         try {
+            window.nekoYuiGuideLive2dPreparing = false;
             if (document && document.body) {
                 document.body.classList.remove('yui-guide-live2d-preparing');
             }

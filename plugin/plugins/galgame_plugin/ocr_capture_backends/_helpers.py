@@ -113,6 +113,8 @@ __all__ = [
     "_intersect_screen_rect",
     "_require_visible_capture_target",
     "_require_visible_capture_target_win32",
+    "_require_foreground_screen_capture_target",
+    "_require_foreground_screen_capture_target_win32",
     "_run_with_thread_dpi_awareness",
     "_target_client_rect",
     "_target_client_rect_win32",
@@ -537,6 +539,58 @@ def _require_visible_capture_target_win32(
         raise RuntimeError(
             f"{backend_kind}: target_window_visibility_check_failed: {exc}"
         ) from exc
+
+
+def _require_foreground_screen_capture_target(
+    target: DetectedGameWindow,
+    *,
+    backend_kind: str,
+    failure_marker: str,
+) -> None:
+    """Fail closed before/after a Windows desktop-pixel capture.
+
+    Non-Windows capture policy is intentionally unchanged. PrintWindow must
+    not call this helper because it captures a window DC rather than visible
+    desktop pixels.
+    """
+    from ..capture_platform import is_windows  # noqa: PLC0415
+
+    if is_windows():
+        _require_foreground_screen_capture_target_win32(
+            target,
+            backend_kind=backend_kind,
+            failure_marker=failure_marker,
+        )
+
+
+def _require_foreground_screen_capture_target_win32(
+    target: DetectedGameWindow,
+    *,
+    backend_kind: str,
+    failure_marker: str,
+) -> None:
+    """Require the target HWND (or its root) to be the live foreground HWND."""
+    try:
+        import win32con
+        import win32gui
+
+        target_hwnd = int(getattr(target, "hwnd", 0) or 0)
+        foreground_hwnd = int(win32gui.GetForegroundWindow() or 0)
+        if not target_hwnd or not foreground_hwnd:
+            raise RuntimeError(f"{backend_kind}: {failure_marker}")
+        if target_hwnd == foreground_hwnd:
+            return
+
+        target_root = int(win32gui.GetAncestor(target_hwnd, win32con.GA_ROOT) or 0)
+        foreground_root = int(
+            win32gui.GetAncestor(foreground_hwnd, win32con.GA_ROOT) or 0
+        )
+        if not target_root or not foreground_root or target_root != foreground_root:
+            raise RuntimeError(f"{backend_kind}: {failure_marker}")
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        raise RuntimeError(f"{backend_kind}: {failure_marker}") from exc
 
 
 def _crop_window_image(

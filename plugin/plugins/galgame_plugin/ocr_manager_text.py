@@ -119,7 +119,262 @@ from .ocr_input_hooks import *
 from .ocr_bridge_writer import *
 from . import ocr_reader as _ocr_reader_module
 
+_DIALOGUE_RECONCILIATION_CONFIDENCE = 0.5
+_CNN_DIALOGUE_BOUNDARY_LABELS = {
+    OCR_CAPTURE_PROFILE_STAGE_TITLE: "title_screen",
+    OCR_CAPTURE_PROFILE_STAGE_MENU: "choice_menu",
+}
+
+
+@dataclass(slots=True)
+class DialoguePipelineState:
+    """Mutable state owned by the OCR dialogue domain pipeline."""
+
+    observed_line: dict[str, Any] = field(default_factory=dict)
+    stable_line: dict[str, Any] = field(default_factory=dict)
+    stability_key: str = ""
+    repeat_count: int = 0
+    effective_screen_type: str = ""
+    reconciliation_diagnostic: dict[str, Any] = field(default_factory=dict)
+    title_narration_key: str = ""
+    title_narration_streak: int = 0
+    default_text_state: _StableOcrTextState = field(default_factory=_StableOcrTextState)
+    menu_text_state: _StableOcrTextState = field(default_factory=_StableOcrTextState)
+
+    def reset(self) -> None:
+        self.observed_line = {}
+        self.stable_line = {}
+        self.stability_key = ""
+        self.repeat_count = 0
+        self.effective_screen_type = ""
+        self.reconciliation_diagnostic = {}
+        self.title_narration_key = ""
+        self.title_narration_streak = 0
+        self.default_text_state.reset()
+        self.menu_text_state.reset()
+
+
+@dataclass(frozen=True, slots=True)
+class DialogueDecision:
+    """Complete result of processing one OCR dialogue input."""
+
+    accepted: bool
+    stability: str
+    line_payload: dict[str, Any]
+    effective_screen_type: str
+    events: tuple[str, ...]
+    rejection_reason: str | None = None
+
+
+class DialoguePipeline:
+    """Own dialogue admission results, promotion state, and reconciliation state."""
+
+    def __init__(self, state: DialoguePipelineState | None = None) -> None:
+        self.state = state or DialoguePipelineState()
+
+    def reset(self, *, reason: str = "") -> None:
+        del reason
+        self.state.reset()
+
+    def process(
+        self,
+        *,
+        accepted: bool,
+        stability: str,
+        line_payload: dict[str, Any] | None,
+        effective_screen_type: str,
+        events: Iterable[str] = (),
+        rejection_reason: str | None = None,
+        capture_trusted: bool = True,
+        stability_key: str = "",
+        repeat_count: int | None = None,
+        reconciliation_diagnostic: dict[str, Any] | None = None,
+    ) -> DialogueDecision:
+        """Record one atomic dialogue outcome and return the full decision."""
+
+        if not capture_trusted:
+            return DialogueDecision(
+                accepted=False,
+                stability="",
+                line_payload={},
+                effective_screen_type=str(effective_screen_type or ""),
+                events=(),
+                rejection_reason="capture_untrusted",
+            )
+        if not accepted:
+            return DialogueDecision(
+                accepted=False,
+                stability=str(stability or ""),
+                line_payload=dict(line_payload or {}),
+                effective_screen_type=str(effective_screen_type or ""),
+                events=(),
+                rejection_reason=str(rejection_reason or "dialogue_rejected"),
+            )
+
+        normalized_stability = str(stability or "")
+        payload = dict(line_payload or {})
+        if normalized_stability == "tentative":
+            self.state.observed_line = payload
+        elif normalized_stability == "stable":
+            self.state.stable_line = payload
+            self.state.observed_line = payload
+        self.state.stability_key = str(stability_key or "")
+        if repeat_count is not None:
+            self.state.repeat_count = max(0, int(repeat_count))
+        self.state.effective_screen_type = str(effective_screen_type or "")
+        self.state.reconciliation_diagnostic = dict(
+            reconciliation_diagnostic or {}
+        )
+        return DialogueDecision(
+            accepted=True,
+            stability=normalized_stability,
+            line_payload=payload,
+            effective_screen_type=self.state.effective_screen_type,
+            events=tuple(str(event) for event in events),
+            rejection_reason=None,
+        )
+
+    def reset_title_narration_candidate(self) -> None:
+        self.state.title_narration_key = ""
+        self.state.title_narration_streak = 0
+
+    def reset_default_text_state(self) -> None:
+        self.state.default_text_state.reset()
+
+    def reset_menu_text_state(self) -> None:
+        self.state.menu_text_state.reset()
+
+    def record_reconciliation(
+        self,
+        *,
+        effective_screen_type: str,
+        diagnostic: dict[str, Any],
+    ) -> None:
+        self.state.effective_screen_type = str(effective_screen_type or "")
+        self.state.reconciliation_diagnostic = dict(diagnostic or {})
+
+    def observe_title_narration_candidate(
+        self,
+        raw_text: str,
+        *,
+        has_evidence: Callable[[str], bool],
+        stability_key: Callable[[str], str],
+    ) -> bool:
+        if not has_evidence(raw_text):
+            self.reset_title_narration_candidate()
+            return False
+        candidate_key = stability_key(normalize_text(str(raw_text or "")))
+        if not candidate_key:
+            self.reset_title_narration_candidate()
+            return False
+        if candidate_key == self.state.title_narration_key:
+            self.state.title_narration_streak += 1
+        else:
+            self.state.title_narration_key = candidate_key
+            self.state.title_narration_streak = 1
+        return self.state.title_narration_streak >= 2
+
+    def should_skip_for_screen_classification(
+        self,
+        classification: ScreenClassification,
+        *,
+        raw_text: str,
+        now: float,
+        bypass_type: str,
+        bypass_until: float,
+        has_strong_dialogue_evidence: Callable[[str], bool],
+        has_narration_evidence: Callable[[str], bool],
+        stability_key: Callable[[str], str],
+    ) -> bool:
+        """Apply title/non-dialogue admission policy as one domain decision."""
+
+        screen_type = str(classification.screen_type or "")
+        screen_debug = dict(classification.debug or {})
+        is_cnn_title = bool(
+            screen_type == OCR_CAPTURE_PROFILE_STAGE_TITLE
+            and str(screen_debug.get("source") or "") == "cnn_primary"
+            and str(screen_debug.get("label") or "") == "title_screen"
+        )
+        if float(classification.confidence or 0.0) < 0.5:
+            self.reset_title_narration_candidate()
+            return False
+        if is_cnn_title and has_strong_dialogue_evidence(raw_text):
+            self.reset_title_narration_candidate()
+            classification.debug = {
+                **screen_debug,
+                "skip_dialogue_bypassed": True,
+                "skip_dialogue_bypass_reason": "ocr_dialogue_evidence",
+            }
+            return False
+        stable_title_narration = (
+            self.observe_title_narration_candidate(
+                raw_text,
+                has_evidence=has_narration_evidence,
+                stability_key=stability_key,
+            )
+            if is_cnn_title
+            else False
+        )
+        if not is_cnn_title:
+            self.reset_title_narration_candidate()
+        if screen_type == bypass_type and now <= float(bypass_until or 0.0):
+            if is_cnn_title and not stable_title_narration:
+                return True
+            classification.debug = {
+                **dict(classification.debug or {}),
+                "skip_dialogue_bypassed": True,
+                "skip_dialogue_bypass_reason": (
+                    "stable_title_narration_timeout_rescan"
+                    if is_cnn_title
+                    else "known_screen_timeout_rescan"
+                ),
+            }
+            return False
+        return screen_type in {
+            OCR_CAPTURE_PROFILE_STAGE_TITLE,
+            OCR_CAPTURE_PROFILE_STAGE_SAVE_LOAD,
+            OCR_CAPTURE_PROFILE_STAGE_CONFIG,
+            OCR_CAPTURE_PROFILE_STAGE_TRANSITION,
+            OCR_CAPTURE_PROFILE_STAGE_GALLERY,
+            OCR_CAPTURE_PROFILE_STAGE_MINIGAME,
+            OCR_CAPTURE_PROFILE_STAGE_GAME_OVER,
+        }
+
+
 class TextMixin:
+    def _complete_dialogue_decision(
+        self,
+        *,
+        accepted: bool,
+        stability: str = "",
+        line_payload: dict[str, Any] | None = None,
+        events: Iterable[str] = (),
+        rejection_reason: str | None = None,
+        tracker: _StableOcrTextState | None = None,
+        reconciliation_diagnostic: dict[str, Any] | None = None,
+    ) -> DialogueDecision:
+        writer_state = self._writer.current_state or {}
+        decision = self._dialogue_pipeline.process(
+            accepted=accepted,
+            stability=stability,
+            line_payload=line_payload,
+            effective_screen_type=str(writer_state.get("screen_type") or ""),
+            events=events,
+            rejection_reason=rejection_reason,
+            capture_trusted=bool(
+                getattr(self, "_ocr_capture_content_trusted", True)
+            ),
+            stability_key=str(
+                (tracker.stable_text_key or tracker.last_text_key)
+                if tracker is not None
+                else ""
+            ),
+            repeat_count=(tracker.repeat_count if tracker is not None else None),
+            reconciliation_diagnostic=reconciliation_diagnostic,
+        )
+        self._last_dialogue_decision = decision
+        return decision
+
     """OCR 文本提取、语言检测、文本去重、台词 emit"""
 
     @staticmethod
@@ -184,17 +439,153 @@ class TextMixin:
             ts=utc_now_iso(now),
         )
 
+    @staticmethod
+    def _is_cnn_dialogue_boundary_classification(
+        classification: ScreenClassification,
+    ) -> bool:
+        screen_type = str(classification.screen_type or "")
+        expected_label = _CNN_DIALOGUE_BOUNDARY_LABELS.get(screen_type, "")
+        if not expected_label:
+            return False
+        debug = dict(classification.debug or {})
+        return bool(
+            str(debug.get("source") or "") == "cnn_primary"
+            and str(debug.get("label") or "") == expected_label
+        )
+
+    def _has_current_cnn_menu_classification(self) -> bool:
+        state = self._writer.current_state or {}
+        debug = dict(state.get("screen_debug") or {})
+        return bool(
+            str(state.get("screen_type") or "") == OCR_CAPTURE_PROFILE_STAGE_MENU
+            and str(debug.get("source") or "") == "cnn_primary"
+            and str(debug.get("label") or "") == "choice_menu"
+        )
+
+    @staticmethod
+    def _dialogue_reconciliation_debug(
+        classification: ScreenClassification,
+        *,
+        reason: str,
+    ) -> dict[str, Any]:
+        return {
+            "source": "ocr_dialogue_reconciliation",
+            "reason": reason,
+            "confidence_source": "rule",
+            "original_screen_type": str(classification.screen_type or ""),
+            "original_screen_confidence": float(classification.confidence or 0.0),
+            "original_screen_debug": json_copy(classification.debug or {}),
+        }
+
+    def _reconcile_screen_classification_with_active_dialogue(
+        self,
+        classification: ScreenClassification,
+    ) -> ScreenClassification:
+        if not self._is_cnn_dialogue_boundary_classification(classification):
+            return classification
+        # A persisted dialogue crop cannot disprove a fresh full-frame menu
+        # classification: real choice screens commonly retain the prompt while
+        # rendering buttons outside the dialogue crop.  A newly emitted line can
+        # still reconcile a false menu result through the post-line path below.
+        if classification.screen_type == OCR_CAPTURE_PROFILE_STAGE_MENU:
+            return classification
+        state = self._writer.current_state or {}
+        if (
+            str(state.get("screen_type") or "") != OCR_CAPTURE_PROFILE_STAGE_DIALOGUE
+            or str(state.get("stability") or "") not in {"tentative", "stable"}
+            or bool(state.get("is_menu_open"))
+            or bool(state.get("choices"))
+        ):
+            return classification
+        current_text = str(state.get("text") or "").strip()
+        if not current_text:
+            return classification
+        raw_text = "\n".join(str(line or "") for line in classification.raw_ocr_text)
+        if _looks_like_self_ui_text(raw_text):
+            return classification
+        _content_text, cleaned_text = self._clean_ocr_dialogue_for_emit(raw_text)
+        if (
+            _looks_like_noise_normalized_text(cleaned_text)
+            or _looks_like_game_overlay_normalized_text(cleaned_text)
+            or not _looks_like_ocr_dialogue_normalized_text(cleaned_text)
+        ):
+            return classification
+        _speaker, candidate_text = OcrReaderBridgeWriter._split_speaker_text(cleaned_text)
+        current_key = _ocr_stability_key(current_text)
+        candidate_key = _ocr_stability_key(candidate_text)
+        if not candidate_key or not _ocr_stability_keys_match(current_key, candidate_key):
+            return classification
+        reconciled = ScreenClassification(
+            screen_type=OCR_CAPTURE_PROFILE_STAGE_DIALOGUE,
+            confidence=_DIALOGUE_RECONCILIATION_CONFIDENCE,
+            ui_elements=[],
+            raw_ocr_text=list(classification.raw_ocr_text),
+            debug=self._dialogue_reconciliation_debug(
+                classification,
+                reason="active_dialogue_matches_current_ocr",
+            ),
+        )
+        self._dialogue_pipeline.record_reconciliation(
+            effective_screen_type=reconciled.screen_type,
+            diagnostic=reconciled.debug,
+        )
+        return reconciled
+
+    def _emit_dialogue_screen_reconciliation_after_line(
+        self,
+        *,
+        now: float,
+        raw_text: str,
+    ) -> bool:
+        state = self._writer.current_state or {}
+        original = ScreenClassification(
+            screen_type=str(state.get("screen_type") or ""),
+            confidence=float(state.get("screen_confidence") or 0.0),
+            ui_elements=list(state.get("screen_ui_elements") or []),
+            raw_ocr_text=_stripped_ocr_lines(raw_text)[:20],
+            debug=dict(state.get("screen_debug") or {}),
+        )
+        if original.screen_type not in _CNN_DIALOGUE_BOUNDARY_LABELS:
+            return False
+        # A fresh full-frame CNN menu gets one complete menu-profile poll before
+        # dialogue reconciliation can overrule it. Real choice screens commonly
+        # introduce a new prompt in the dialogue crop while their buttons live
+        # outside that crop. If the next menu-profile capture still yields the
+        # same stable line and no choices, the existing false-positive recovery
+        # remains available below.
+        if (
+            self._has_current_cnn_menu_classification()
+            and str(state.get("stability") or "") != "stable"
+        ):
+            return False
+        return self._writer.emit_screen_classified(
+            screen_type=OCR_CAPTURE_PROFILE_STAGE_DIALOGUE,
+            confidence=_DIALOGUE_RECONCILIATION_CONFIDENCE,
+            ui_elements=[],
+            raw_ocr_text=original.raw_ocr_text,
+            screen_debug=self._dialogue_reconciliation_debug(
+                original,
+                reason="accepted_ocr_line_overrides_screen",
+            ),
+            ts=utc_now_iso(now),
+        )
+
     def _classification_from_vision_result(
         self,
         result: dict[str, Any],
         *,
         extraction: OcrExtractionResult,
     ) -> ScreenClassification:
+        try:
+            model_confidence_raw = float(result.get("confidence") or 0.0)
+        except (TypeError, ValueError):
+            model_confidence_raw = 0.0
         debug = {
             "source": "cnn_primary",
             "reason": "cnn_high_confidence",
             "label": str(result.get("label") or ""),
             "model_name": str(result.get("model_name") or ""),
+            "model_confidence_raw": model_confidence_raw,
             "latency_ms": result.get("latency_ms"),
             "all_scores": json_copy(result.get("all_scores") or {}),
         }
@@ -206,7 +597,7 @@ class TextMixin:
         return ScreenClassification(
             screen_type=normalize_screen_type(result.get("screen_type")),
             confidence=round(
-                max(0.0, min(float(result.get("confidence") or 0.0), 0.99)),
+                max(0.0, min(model_confidence_raw, 0.99)),
                 4,
             ),
             ui_elements=[],
@@ -578,6 +969,10 @@ class TextMixin:
             or _looks_like_game_overlay_normalized_text(cleaned_text)
             or not _looks_like_ocr_dialogue_normalized_text(cleaned_text)
         ):
+            self._complete_dialogue_decision(
+                accepted=False,
+                rejection_reason="dialogue_evidence_rejected",
+            )
             return False
         self._record_accepted_ocr_text(content_text)
         self._maybe_auto_switch_rapidocr_lang(
@@ -589,6 +984,10 @@ class TextMixin:
             cleaned_text = dialogue_library_match.canonical_text()
             text_source = "dialogue_library"
         speaker, text = OcrReaderBridgeWriter._split_speaker_text(cleaned_text)
+        decision_events: list[str] = []
+        decision_payload: dict[str, Any] = {}
+        decision_stability = ""
+        reconciliation_diagnostic: dict[str, Any] = {}
         had_pending_visual_scene = bool(self._pending_visual_scene_hash)
         if self._pending_visual_scene_hash:
             self._resolve_pending_visual_scene_for_dialogue(
@@ -609,15 +1008,62 @@ class TextMixin:
                 text=text,
                 now=now,
             )
-        if emit_observed and self._writer.emit_line_observed(
-            cleaned_text,
-            ts=utc_now_iso(now),
-            ocr_confidence=ocr_confidence,
-            text_source=text_source,
-        ):
-            observed = self._line_payload_from_writer(stability="tentative")
-            self._last_observed_line = observed
+        pending_visual_scene = bool(self._pending_visual_scene_hash)
+        if emit_observed:
+            if pending_visual_scene:
+                state_obj = getattr(self._writer, "_state", {})
+                route_id = (
+                    str(state_obj.get("route_id") or "")
+                    if isinstance(state_obj, dict)
+                    else ""
+                )
+                if text:
+                    decision_payload = {
+                        "line_id": "",
+                        "speaker": speaker,
+                        "text": text,
+                        "scene_id": "",
+                        "route_id": route_id,
+                        "stability": "tentative",
+                        "ts": utc_now_iso(now),
+                    }
+                    decision_stability = "tentative"
+                    self._last_observed_at = utc_now_iso(now)
+            elif self._writer.emit_line_observed(
+                cleaned_text,
+                ts=utc_now_iso(now),
+                ocr_confidence=ocr_confidence,
+                text_source=text_source,
+                capture_backend_kind=str(getattr(self, "_capture_backend_kind", "") or ""),
+                target_foreground=bool(getattr(self, "_capture_target_foreground", False)),
+                capture_region_occluded=bool(getattr(self, "_capture_region_occluded", False)),
+                capture_content_trusted=bool(getattr(self, "_ocr_capture_content_trusted", True)),
+                capture_untrusted_reason=str(getattr(self, "_ocr_capture_rejected_reason", "") or ""),
+            ):
+                decision_payload = self._line_payload_from_writer(stability="tentative")
+                decision_stability = "tentative"
+                decision_events.append("line_observed")
+                if self._emit_dialogue_screen_reconciliation_after_line(
+                    now=now,
+                    raw_text=raw_text,
+                ):
+                    decision_events.append("screen_classified")
+                    reconciliation_diagnostic = dict(
+                        (self._writer.current_state or {}).get("screen_debug") or {}
+                    )
         tracker = state or self._default_ocr_state
+        if pending_visual_scene:
+            current_key = _ocr_stability_key(cleaned_text)
+            stable_key = tracker.stable_text_key or _ocr_stability_key(
+                tracker.stable_text
+            )
+            if _ocr_stability_keys_match(current_key, stable_key):
+                # The same short line can legitimately occur on both sides of a
+                # confirmed visual boundary (for example "……").  Start a fresh
+                # repeat window only after the boundary survived continuation
+                # suppression, so the prior scene's stable key cannot block the
+                # pending scene forever.
+                tracker.reset()
         effective_repeat_threshold = (
             self._line_changed_repeat_threshold()
             if repeat_threshold is None
@@ -625,32 +1071,64 @@ class TextMixin:
         )
         if dialogue_library_match is not None:
             effective_repeat_threshold = 1
-        if tracker.stable_text and int(effective_repeat_threshold or 1) > 1:
-            cleaned_key = _ocr_stability_key(cleaned_text)
-            stable_key = tracker.stable_text_key or _ocr_stability_key(tracker.stable_text)
-            if (
-                cleaned_key
-                and stable_key
-                and not _ocr_stability_keys_match(cleaned_key, stable_key)
-            ):
-                effective_repeat_threshold = 1
+        if self._has_current_cnn_menu_classification():
+            effective_repeat_threshold = max(2, int(effective_repeat_threshold or 1))
+        if pending_visual_scene:
+            effective_repeat_threshold = max(2, int(effective_repeat_threshold or 1))
         if not self._stabilize_text_key(
             cleaned_text,
             state=tracker,
             repeat_threshold=effective_repeat_threshold,
         ):
+            self._complete_dialogue_decision(
+                accepted=bool(decision_payload),
+                stability=decision_stability,
+                line_payload=decision_payload,
+                events=decision_events,
+                rejection_reason=(None if decision_payload else tracker.last_block_reason),
+                tracker=tracker,
+                reconciliation_diagnostic=reconciliation_diagnostic,
+            )
             return False
         emitted_text = tracker.stable_text or cleaned_text
+        if pending_visual_scene:
+            self._commit_pending_visual_scene(
+                now=now,
+                diagnostic=self._pending_visual_scene_commit_diagnostic
+                or "pending_scene_committed_with_stable_line",
+            )
         emitted = self._writer.emit_line(
             emitted_text,
             ts=utc_now_iso(now),
             ocr_confidence=ocr_confidence,
             text_source=text_source,
+            capture_backend_kind=str(getattr(self, "_capture_backend_kind", "") or ""),
+            target_foreground=bool(getattr(self, "_capture_target_foreground", False)),
+            capture_region_occluded=bool(getattr(self, "_capture_region_occluded", False)),
+            capture_content_trusted=bool(getattr(self, "_ocr_capture_content_trusted", True)),
+            capture_untrusted_reason=str(getattr(self, "_ocr_capture_rejected_reason", "") or ""),
         )
         if emitted:
-            stable_line = self._line_payload_from_writer(stability="stable")
-            self._last_stable_line = stable_line
-            self._last_observed_line = stable_line
+            decision_payload = self._line_payload_from_writer(stability="stable")
+            decision_stability = "stable"
+            decision_events.append("line_changed")
+            if self._emit_dialogue_screen_reconciliation_after_line(
+                now=now,
+                raw_text=raw_text,
+            ):
+                decision_events.append("screen_classified")
+                reconciliation_diagnostic = dict(
+                    (self._writer.current_state or {}).get("screen_debug") or {}
+                )
+        self._complete_dialogue_decision(
+            accepted=bool(decision_payload),
+            stability=decision_stability,
+            line_payload=decision_payload,
+            events=decision_events,
+            rejection_reason=(None if decision_payload else "duplicate_stable_text"),
+            tracker=tracker,
+            reconciliation_diagnostic=reconciliation_diagnostic,
+        )
         return emitted
 
 
@@ -882,6 +1360,9 @@ class TextMixin:
             vision_classification = self._apply_screen_classification_stability(
                 vision_classification
             )
+            vision_classification = self._reconcile_screen_classification_with_active_dialogue(
+                vision_classification
+            )
             self._screen_awareness_model_detail = "skipped_cnn_primary"
             self._update_capture_profile_recommendation(
                 extraction,
@@ -916,6 +1397,9 @@ class TextMixin:
             target=target,
         )
         classification = self._apply_screen_classification_stability(classification)
+        classification = self._reconcile_screen_classification_with_active_dialogue(
+            classification
+        )
         self._update_capture_profile_recommendation(
             extraction,
             classification=classification,

@@ -768,28 +768,10 @@ body.neko-game-active [id$="-lock-icon"] {
     --neko-idle-return-facing-transform: scaleX(1);
 }
 
-[data-neko-live2d-peek-anchor="left"] .neko-idle-return-art {
-    --neko-idle-return-edge-transform: rotate(60deg);
-}
-
-[data-neko-live2d-peek-anchor="right"] .neko-idle-return-art {
-    --neko-idle-return-edge-transform: rotate(-60deg);
-}
-
-[data-neko-live2d-peek-anchor="top-left"] .neko-idle-return-art {
-    --neko-idle-return-edge-transform: rotate(45deg);
-}
-
-[data-neko-live2d-peek-anchor="top-right"] .neko-idle-return-art {
-    --neko-idle-return-edge-transform: rotate(-45deg);
-}
-
-[data-neko-live2d-peek-anchor="bottom-left"] .neko-idle-return-art {
-    --neko-idle-return-edge-transform: rotate(45deg);
-}
-
-[data-neko-live2d-peek-anchor="bottom-right"] .neko-idle-return-art {
-    --neko-idle-return-edge-transform: rotate(-45deg);
+[data-neko-live2d-peek-anchor] .neko-idle-return-art {
+    /* The transferred Live2D anchor controls placement only. Cat edge-peek
+       rotation is reserved for a drag performed after entering cat form. */
+    --neko-idle-return-edge-transform: rotate(0deg);
 }
 
 .neko-idle-thought-bubble {

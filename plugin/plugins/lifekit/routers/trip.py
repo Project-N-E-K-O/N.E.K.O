@@ -2,15 +2,24 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Dict, List
 
-from plugin.sdk.plugin import plugin_entry, quick_action, Ok, Err, SdkError
+from plugin.sdk.plugin import Ok, plugin_entry, quick_action, tr
 from plugin.sdk.shared.core.router import PluginRouter
 
-from .._routing import RoutingService, format_duration, format_distance, haversine_km, suggest_modes
+from .._advice_policy import DEFAULT_ADVICE_POLICY
 from .._api import RAIN_CODES
 from .._chat import push_lifekit_content
 from .._contracts import TripAdviceParams, TripAdviceResult
+from .._geodesy import haversine_km
+from .._location import LocationPurpose
+from .._location_entry import (
+    apply_location_assumptions,
+    location_unavailable_result,
+    upstream_unavailable_result,
+)
+from .._routing import RoutingService, format_distance, format_duration
 
 
 class TripRouter(PluginRouter):
@@ -21,13 +30,8 @@ class TripRouter(PluginRouter):
 
     @plugin_entry(
         id="trip_advice",
-        name="出行规划",
-        description=(
-            "规划从起点到终点的出行方案，结合天气给出综合建议。"
-            "支持保存的地点标签（如'家'、'公司'）或城市名。"
-            "自动推荐合适的出行方式（步行/骑行/公交/驾车）。"
-            "规划完成后可用 food_recommend 查看目的地美食。"
-        ),
+        name=tr("entries.tripAdvice.name", default="Plan a trip"),
+        description=tr("entries.tripAdvice.description", default="Plan routes between cities or saved locations and combine them with weather advice."),
         params=TripAdviceParams,
         llm_result_model=TripAdviceResult,
     )
@@ -50,39 +54,74 @@ class TripRouter(PluginRouter):
         i18n = plugin._i18n
 
         if not destination.strip():
-            return Err(SdkError(i18n.t("trip.no_destination")))
+            return location_unavailable_result("error.no_location", i18n)
 
-        # 解析起点
-        origin_loc, origin_err = await plugin._resolve_location(origin or None)
+        # 起终点彼此独立，并发解析，避免把两段 geocoding 延迟串起来。
+        (origin_loc, origin_err), (dest_loc, dest_err) = await asyncio.gather(
+            plugin._resolve_location(
+                origin or None,
+                purpose=LocationPurpose.ROUTE_ORIGIN,
+            ),
+            plugin._resolve_location(
+                destination,
+                purpose=LocationPurpose.ROUTE_DESTINATION,
+            ),
+        )
         if not origin_loc:
-            return Err(SdkError(i18n.t(origin_err or "error.no_location") + " (origin)"))
-
-        # 解析终点
-        dest_loc, dest_err = await plugin._resolve_location(destination)
+            return location_unavailable_result(origin_err, i18n)
         if not dest_loc:
-            return Err(SdkError(i18n.t(dest_err or "error.no_location") + " (destination)"))
+            return location_unavailable_result(dest_err, i18n)
 
         # 直线距离
         dist_km = haversine_km(origin_loc["lat"], origin_loc["lon"], dest_loc["lat"], dest_loc["lon"])
 
         # 路线规划
         svc = RoutingService(plugin._cfg)
-        # 校验 mode：未识别的值（如 "drive" / "car"）会被 RoutingService 静默丢弃返回空 routes，
-        # 调用方/LLM 看到的是 Ok(空结果)，分不清是"无路线"还是"参数错"，所以这里提前拒掉喵。
-        mode_clean = mode.strip().lower() if mode else ""
+        mode_raw = mode.strip().lower() if mode else ""
         _VALID_MODES = {"transit", "walking", "bicycling", "driving"}
-        if mode_clean and mode_clean not in _VALID_MODES:
-            return Err(SdkError(i18n.t("trip.invalid_mode", mode=mode_clean, valid=", ".join(sorted(_VALID_MODES)))))
+        mode_aliases = {
+            "walk": "walking",
+            "foot": "walking",
+            "bike": "bicycling",
+            "bicycle": "bicycling",
+            "cycle": "bicycling",
+            "drive": "driving",
+            "car": "driving",
+            "bus": "transit",
+            "subway": "transit",
+            "metro": "transit",
+            "public transport": "transit",
+        }
+        mode_clean = mode_aliases.get(mode_raw, mode_raw)
+        mode_assumption = ""
+        if mode_clean not in _VALID_MODES:
+            if mode_clean:
+                mode_assumption = i18n.t(
+                    "trip.invalid_mode",
+                    mode=mode_raw,
+                    valid=", ".join(
+                        _mode_label(value, i18n)
+                        for value in sorted(_VALID_MODES)
+                    ),
+                )
+            mode_clean = ""
+        selected_mode = mode_clean or "auto"
         modes = [mode_clean] if mode_clean else None
-        routing = await svc.plan(
-            origin_loc["lat"], origin_loc["lon"],
-            dest_loc["lat"], dest_loc["lon"],
-            modes=modes,
+        routing, (origin_weather, _), (dest_weather, _) = await asyncio.gather(
+            svc.plan(
+                origin_loc["lat"], origin_loc["lon"],
+                dest_loc["lat"], dest_loc["lon"],
+                modes=modes,
+            ),
+            plugin._get_weather_data(origin_loc),
+            plugin._get_weather_data(dest_loc),
         )
-
-        # 两地天气
-        origin_weather, _ = await plugin._get_weather_data(origin_loc)
-        dest_weather, _ = await plugin._get_weather_data(dest_loc)
+        if routing.error and not routing.routes:
+            return upstream_unavailable_result(
+                i18n.t("trip.route_unavailable"),
+                i18n,
+                location=dest_loc,
+            )
 
         # 构建路线摘要
         route_summaries: List[Dict[str, Any]] = []
@@ -91,13 +130,17 @@ class TripRouter(PluginRouter):
                 "mode": route.mode,
                 "distance": format_distance(route.distance_m),
                 "duration": format_duration(route.duration_s),
-                "summary": route.summary or _mode_label(route.mode),
+                "summary": route.summary or _mode_label(route.mode, i18n),
             }
             if route.cost:
                 entry["cost"] = route.cost
             if route.steps:
                 entry["steps"] = [
-                    {"instruction": s.instruction, "mode": s.mode, "duration": format_duration(s.duration_s)}
+                    {
+                        "instruction": _localized_step_instruction(s, i18n),
+                        "mode": s.mode,
+                        "duration": format_duration(s.duration_s),
+                    }
                     for s in route.steps[:8]
                 ]
             route_summaries.append(entry)
@@ -106,7 +149,7 @@ class TripRouter(PluginRouter):
         weather_tips = _build_weather_tips(origin_weather, dest_weather, origin_loc, dest_loc, i18n, plugin)
 
         # 出行方式建议
-        mode_advice = _build_mode_advice(dist_km, origin_weather, dest_weather)
+        mode_advice = _build_mode_advice(dist_km, origin_weather, dest_weather, i18n)
 
         # 总结
         summary_parts = [
@@ -115,25 +158,30 @@ class TripRouter(PluginRouter):
         ]
         if routing.routes:
             best = routing.routes[0]
-            summary_parts.append(f"{i18n.t('trip.recommended')}: {_mode_label(best.mode)} {format_duration(best.duration_s)}")
+            summary_parts.append(f"{i18n.t('trip.recommended')}: {_mode_label(best.mode, i18n)} {format_duration(best.duration_s)}")
         if mode_advice:
             summary_parts.append(mode_advice)
+        if mode_assumption:
+            summary_parts.append(mode_assumption)
         summary_parts.extend(weather_tips)
 
         # 推送出行规划卡片到聊天框
         card_lines = [f"📍 {origin_loc['city']} → {dest_loc['city']}  ({dist_km:.1f}km)"]
         for r in route_summaries[:3]:
-            card_lines.append(f"{_mode_label(r['mode'])}  {r['distance']}  ⏱{r['duration']}")
+            card_lines.append(f"{_mode_label(r['mode'], i18n)}  {r['distance']}  ⏱{r['duration']}")
         if weather_tips:
             card_lines.append(" ".join(weather_tips))
         if mode_advice:
             card_lines.append(mode_advice)
+        if mode_assumption:
+            card_lines.append(mode_assumption)
         push_lifekit_content(plugin, [
             {"type": "text", "text": f"🗺️ {origin_loc['city']} → {dest_loc['city']}"},
             {"type": "text", "text": "\n".join(card_lines)},
         ])
 
-        return Ok({
+        return Ok(apply_location_assumptions({
+            "status": "ready",
             "origin": origin_loc["city"],
             "destination": dest_loc["city"],
             "distance_km": round(dist_km, 1),
@@ -141,13 +189,36 @@ class TripRouter(PluginRouter):
             "routes": route_summaries,
             "weather_tips": weather_tips,
             "mode_advice": mode_advice,
+            "requested_mode": mode_raw,
+            "selected_mode": selected_mode,
+            "mode_assumption": mode_assumption,
             "provider": routing.provider,
-            "next_actions": [f"food_recommend location={dest_loc['city']} — 目的地美食", f"search_nearby location={dest_loc['city']} — 目的地附近搜索", "currency_convert — 汇率换算"],
-        })
+            "next_actions": [
+                f"food_recommend location={dest_loc['city']}",
+                f"search_nearby request={dest_loc['city']} location_hint={dest_loc['city']} place_intent=explore",
+                "currency_convert",
+            ],
+        }, (origin_loc, dest_loc), i18n))
 
 
-def _mode_label(mode: str) -> str:
-    return {"transit": "🚇 公交/地铁", "walking": "🚶 步行", "bicycling": "🚲 骑行", "driving": "🚗 驾车"}.get(mode, mode)
+def _mode_label(mode: str, i18n: Any) -> str:
+    key = {
+        "transit": "trip.mode_transit",
+        "walking": "trip.mode_walking",
+        "bicycling": "trip.mode_bicycling",
+        "driving": "trip.mode_driving",
+    }.get(mode)
+    return i18n.t(key) if key else mode
+
+
+def _localized_step_instruction(step: Any, i18n: Any) -> str:
+    if step.instruction:
+        return step.instruction
+    if step.mode == "walk":
+        return i18n.t("trip.step_walk", distance=format_distance(step.distance_m))
+    if step.line_name:
+        return i18n.t("trip.step_take", line=step.line_name)
+    return _mode_label(step.mode, i18n)
 
 
 def _build_weather_tips(
@@ -173,13 +244,18 @@ def _build_weather_tips(
     # 温差大 → 提醒
     if o_temp is not None and d_temp is not None:
         diff = abs(o_temp - d_temp)
-        if diff >= 5:
+        if diff >= DEFAULT_ADVICE_POLICY.notable_temperature_difference_c:
             tips.append(f"🌡️ {origin_loc['city']} {o_temp}°C → {dest_loc['city']} {d_temp}°C")
 
     return tips
 
 
-def _build_mode_advice(dist_km: float, origin_data: Any, dest_data: Any) -> str:
+def _build_mode_advice(
+    dist_km: float,
+    origin_data: Any,
+    dest_data: Any,
+    i18n: Any,
+) -> str:
     """根据距离和天气给出出行方式建议。"""
     has_rain = False
     if origin_data:
@@ -191,10 +267,14 @@ def _build_mode_advice(dist_km: float, origin_data: Any, dest_data: Any) -> str:
         if code in RAIN_CODES:
             has_rain = True
 
-    if dist_km <= 1:
-        return "🚶 距离很近，建议步行" if not has_rain else "🚇 有雨，建议公交/地铁"
-    if dist_km <= 3 and not has_rain:
-        return "🚲 距离适中，天气好适合骑行"
-    if dist_km <= 5:
-        return "🚇 建议公交/地铁" if not has_rain else "🚇 有雨，建议公交/地铁"
+    advised_mode = DEFAULT_ADVICE_POLICY.primary_advice_mode(
+        dist_km,
+        has_rain=has_rain,
+    )
+    if advised_mode == "walking":
+        return i18n.t("trip.near_walk")
+    if advised_mode == "bicycling":
+        return i18n.t("trip.good_bike")
+    if advised_mode == "transit":
+        return i18n.t("trip.rain_transit") if has_rain else i18n.t("trip.transit_advice")
     return ""

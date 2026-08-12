@@ -28,6 +28,7 @@ _SDK_CONTEXT_METHOD_NAMES = (
     "get_own_profile_config",
     "get_own_effective_config",
     "update_own_config",
+    "replace_own_config",
     "upsert_own_profile_config",
     "delete_own_profile_config",
     "set_own_active_profile",
@@ -62,6 +63,8 @@ class _HostContextProtocol(Protocol):
     async def get_own_effective_config(self, profile_name: str | None = None, timeout: float = 5.0) -> object: ...
 
     async def update_own_config(self, updates: dict[str, Any], timeout: float = 10.0) -> object: ...
+
+    async def replace_own_config(self, config: dict[str, Any], timeout: float = 10.0) -> object: ...
 
     async def upsert_own_profile_config(
         self,
@@ -231,6 +234,9 @@ class SdkContext:
 
     async def update_own_config(self, updates: dict[str, Any], timeout: float = 10.0) -> object:
         return await self._host_ctx.update_own_config(updates, timeout=timeout)
+
+    async def replace_own_config(self, config: dict[str, Any], timeout: float = 10.0) -> object:
+        return await self._host_ctx.replace_own_config(config, timeout=timeout)
 
     async def upsert_own_profile_config(
         self,

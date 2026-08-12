@@ -42,6 +42,8 @@ async def _emit_task_result(
     source_kind: Optional[str] = None,
     source_name: Optional[str] = None,
     delivery_mode: str = "proactive",
+    result_kind: str = "task_result",
+    expires_in_s: Optional[float] = None,
 ) -> None:
     """Emit a structured task_result event to main_server.
 
@@ -87,6 +89,8 @@ async def _emit_task_result(
         source_kind=source_kind or "",
         source_name=source_name or "",
         delivery_mode=delivery_mode,
+        result_kind=result_kind,
+        expires_in_s=expires_in_s,
         timestamp=_now_iso(),
     )
 

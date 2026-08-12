@@ -522,3 +522,17 @@ def test_galgame_plugin_toml_defaults_to_internal_backend() -> None:
         payload = tomllib.load(handle)
 
     assert payload["llm"]["target_entry_ref"] == ""
+
+
+@pytest.mark.plugin_unit
+def test_galgame_plugin_toml_allows_slow_cold_start() -> None:
+    path = (
+        Path(__file__).resolve().parents[3]
+        / "plugins"
+        / "galgame_plugin"
+        / "plugin.toml"
+    )
+    with path.open("rb") as handle:
+        payload = tomllib.load(handle)
+
+    assert payload["plugin_runtime"]["timeout"] == 30

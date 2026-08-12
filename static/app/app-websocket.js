@@ -641,267 +641,6 @@
         dispatchMusicPlayUrlResponse(response, 'websocket');
     }
 
-    function showMusicRequestFailure(response) {
-        if (typeof window.showStatusToast !== 'function') return;
-        var errorCode = (response && response.error_code) || 'track_not_found';
-        var query = (response && response.query) || '';
-        var message;
-        if (errorCode === 'cookie_invalid') {
-            message = (window.t && window.t('music.cookieExpired')) || '音乐Cookie已失效';
-        } else if (errorCode === 'login_required') {
-            message = (window.t && window.t('music.loginRequired')) || '请先配置网易云音乐 Cookie';
-        } else if (errorCode === 'playlist_ambiguous') {
-            message = (window.t && window.t('music.playlistAmbiguous')) || '存在重名歌单，请提供更明确的歌单名';
-        } else if (errorCode === 'source_empty') {
-            message = (window.t && window.t('music.sourceEmpty')) || '该音乐来源暂无可播放歌曲';
-        } else if (errorCode === 'upstream_error' || errorCode === 'playback_failed') {
-            message = (window.t && window.t('music.searchFailed')) || '音乐搜索失败';
-        } else {
-            message = (window.t && window.t('music.notFound', {
-                    query: query,
-                    defaultValue: '找不到歌曲: ' + query
-                })) || ('找不到歌曲: ' + query);
-        }
-        window.showStatusToast(message, 3000);
-    }
-
-    function reportMusicRequestPlaybackFailure(response) {
-        var requestId = Number(response && response.request_id);
-        if (!Number.isFinite(requestId) || requestId <= 0) return;
-        var socket = S.socket;
-        if (!socket || socket.readyState !== WebSocket.OPEN) return;
-        try {
-            socket.send(JSON.stringify({
-                action: 'music_request_playback_failed',
-                request_id: requestId
-            }));
-        } catch (error) {
-            console.warn('[Music] 上报候选播放失败异常:', error);
-        }
-    }
-
-    async function dispatchMusicPlayCandidatesResponse(response, reason) {
-        var tracks = response && Array.isArray(response.tracks) ? response.tracks : [];
-        for (var index = 0; index < tracks.length; index++) {
-            if (response._clientDispatchEpoch !== window._musicCandidateDispatchEpoch) {
-                return false;
-            }
-            var track = tracks[index];
-            if (!track || !track.url) continue;
-            var candidateKey = getMusicPlayUrlClaimKey(track);
-            var existingClaim = getValidMusicPlayUrlClaim(candidateKey);
-            if (existingClaim && existingClaim.sender !== MUSIC_PLAY_URL_SENDER_ID) {
-                console.log('[Music] 跳过用户点歌候选：其他窗口已接管播放', track.url);
-                return false;
-            }
-            var candidateClaimToken = claimMusicPlayUrl(candidateKey);
-            var dispatchResult;
-            try {
-                if (typeof window.dispatchMusicPlayDetailed === 'function') {
-                    dispatchResult = await window.dispatchMusicPlayDetailed(track, {
-                        source: 'user',
-                        requestId: response.request_id
-                    });
-                } else if (typeof window.dispatchMusicPlay === 'function') {
-                    var accepted = await window.dispatchMusicPlay(track, {
-                        source: 'user',
-                        requestId: response.request_id
-                    });
-                    if (accepted === 'queued') {
-                        if (response._clientDispatchEpoch !== window._musicCandidateDispatchEpoch) {
-                            if (typeof window.cancelQueuedMusicDispatch === 'function') {
-                                window.cancelQueuedMusicDispatch(response.request_id);
-                            }
-                            releaseMusicPlayUrlClaim(candidateKey, candidateClaimToken);
-                            return false;
-                        }
-                        console.log('[Music] 用户点歌仍在等待播放器接口就绪');
-                        return 'queued';
-                    }
-                    dispatchResult = {
-                        ok: accepted === true,
-                        canTryNextCandidate: false
-                    };
-                } else {
-                    console.warn('[Music] 没有可用的音乐派发接口');
-                    releaseMusicPlayUrlClaim(candidateKey, candidateClaimToken);
-                    break;
-                }
-            } catch (error) {
-                console.warn('[Music] 用户点歌派发异常，尝试下一条候选:', error);
-                dispatchResult = { ok: false, canTryNextCandidate: true };
-            }
-            if (response._clientDispatchEpoch !== window._musicCandidateDispatchEpoch) {
-                releaseMusicPlayUrlClaim(candidateKey, candidateClaimToken);
-                return false;
-            }
-            if (dispatchResult && dispatchResult.ok === true) {
-                return true;
-            }
-            releaseMusicPlayUrlClaim(candidateKey, candidateClaimToken);
-            if (!dispatchResult || dispatchResult.canTryNextCandidate !== true) {
-                break;
-            }
-            console.warn('[Music] 用户点歌候选不可用，尝试下一条:', track.url, reason);
-        }
-        if (response._clientDispatchEpoch === window._musicCandidateDispatchEpoch) {
-            reportMusicRequestPlaybackFailure(response);
-            showMusicRequestFailure({ error_code: 'playback_failed' });
-        }
-        return false;
-    }
-
-    function queueMusicPlayCandidatesResponse(response, reason) {
-        var previous = window._musicCandidateDispatchQueue || Promise.resolve();
-        var queued = previous.catch(function () {}).then(function () {
-            if (response._clientDispatchEpoch !== window._musicCandidateDispatchEpoch) {
-                return false;
-            }
-            return dispatchMusicPlayCandidatesResponse(response, reason);
-        }).catch(function (error) {
-            console.warn('[Music] 候选派发队列异常:', error);
-            if (response._clientDispatchEpoch === window._musicCandidateDispatchEpoch) {
-                try {
-                    reportMusicRequestPlaybackFailure(response);
-                    showMusicRequestFailure({ error_code: 'playback_failed' });
-                } catch (failureError) {
-                    console.warn('[Music] 候选派发失败提示异常:', failureError);
-                }
-            }
-            return false;
-        });
-        window._musicCandidateDispatchQueue = queued;
-    }
-
-    function resetMusicCandidateRequestScope(scope, force) {
-        var nextScope = String(scope || '');
-        if (!force && window._musicCandidateRequestScope === nextScope) return;
-        if (typeof window.cancelPendingMusicMediaReady === 'function') {
-            window.cancelPendingMusicMediaReady(Number.MAX_SAFE_INTEGER);
-        }
-        if (typeof window.cancelQueuedMusicDispatch === 'function') {
-            window.cancelQueuedMusicDispatch(Number.MAX_SAFE_INTEGER);
-        }
-        window._musicCandidateRequestScope = nextScope;
-        window._latestMusicCandidateRequestId = 0;
-        window._pendingMusicCandidateRequestId = 0;
-        window._musicCandidateDispatchEpoch = (window._musicCandidateDispatchEpoch || 0) + 1;
-    }
-
-    function handleMusicRequestStartedResponse(response) {
-        var requestId = Number(response && response.request_id);
-        if (!Number.isFinite(requestId) || requestId <= 0) {
-            console.warn('[Music] 忽略缺少有效 request_id 的开始响应');
-            return;
-        }
-        var latestRequestId = Number(window._latestMusicCandidateRequestId || 0);
-        if (latestRequestId > 0 && requestId <= latestRequestId) return;
-        if (typeof window.cancelPendingMusicMediaReady === 'function') {
-            var mediaCancelStatus = window.cancelPendingMusicMediaReady(requestId);
-            if (mediaCancelStatus === 'stale') return;
-        }
-        if (typeof window.cancelQueuedMusicDispatch === 'function') {
-            var queuedCancelStatus = window.cancelQueuedMusicDispatch(requestId);
-            if (queuedCancelStatus === 'stale') return;
-        }
-        window._latestMusicCandidateRequestId = requestId;
-        window._pendingMusicCandidateRequestId = requestId;
-        window._musicCandidateDispatchEpoch = (window._musicCandidateDispatchEpoch || 0) + 1;
-    }
-
-    function handleMusicPlayCandidatesResponse(response) {
-        var tracks = response && Array.isArray(response.tracks) ? response.tracks : [];
-        if (tracks.length === 0) return;
-        var requestId = Number(response.request_id);
-        if (!Number.isFinite(requestId) || requestId <= 0) {
-            console.warn('[Music] 忽略缺少有效 request_id 的候选响应');
-            return;
-        }
-        var latestRequestId = Number(window._latestMusicCandidateRequestId || 0);
-        var pendingRequestId = Number(window._pendingMusicCandidateRequestId || 0);
-        if (
-            latestRequestId > 0
-            && (
-                requestId < latestRequestId
-                || (requestId === latestRequestId && requestId !== pendingRequestId)
-            )
-        ) return;
-        if (typeof window.cancelPendingMusicMediaReady === 'function') {
-            var mediaCancelStatus = window.cancelPendingMusicMediaReady(requestId);
-            if (mediaCancelStatus === 'stale') return;
-        }
-        if (typeof window.cancelQueuedMusicDispatch === 'function') {
-            var queuedCancelStatus = window.cancelQueuedMusicDispatch(requestId);
-            if (queuedCancelStatus === 'stale') return;
-        }
-        window._latestMusicCandidateRequestId = requestId;
-        window._pendingMusicCandidateRequestId = 0;
-        window._musicCandidateDispatchEpoch = (window._musicCandidateDispatchEpoch || 0) + 1;
-        response._clientDispatchEpoch = window._musicCandidateDispatchEpoch;
-        var firstTrack = tracks[0];
-        var key = getMusicPlayUrlClaimKey(firstTrack);
-        getMusicPlayUrlCoordChannel();
-
-        if (isStandaloneChatPageForMusic() && !hasLocalMusicOwnerOrPending()) {
-            setTimeout(function () {
-                if (shouldSkipMusicPlayUrlForOtherWindow(key)) return;
-                setTimeout(function () {
-                    if (shouldSkipMusicPlayUrlForOtherWindow(key)) return;
-                    queueMusicPlayCandidatesResponse(response, 'chat-fallback');
-                }, MUSIC_PLAY_URL_SECONDARY_CONFIRM_MS);
-            }, getMusicPlayUrlFollowerGraceMs());
-            return;
-        }
-        if (shouldSkipMusicPlayUrlForOtherWindow(key)) return;
-        queueMusicPlayCandidatesResponse(response, 'websocket');
-    }
-
-    function handleMusicRequestFailureResponse(response) {
-        var requestId = Number(response && response.request_id);
-        if (!Number.isFinite(requestId) || requestId <= 0) {
-            console.warn('[Music] 忽略缺少有效 request_id 的失败响应');
-            return;
-        }
-        var latestRequestId = Number(window._latestMusicCandidateRequestId || 0);
-        if (latestRequestId > 0 && requestId < latestRequestId) return;
-        if (typeof window.cancelPendingMusicMediaReady === 'function') {
-            var mediaCancelStatus = window.cancelPendingMusicMediaReady(requestId);
-            if (mediaCancelStatus === 'stale') return;
-        }
-        if (typeof window.cancelQueuedMusicDispatch === 'function') {
-            var queuedCancelStatus = window.cancelQueuedMusicDispatch(requestId);
-            if (queuedCancelStatus === 'stale') return;
-        }
-        window._latestMusicCandidateRequestId = requestId;
-        window._pendingMusicCandidateRequestId = 0;
-        window._musicCandidateDispatchEpoch = (window._musicCandidateDispatchEpoch || 0) + 1;
-        showMusicRequestFailure(response);
-    }
-
-    function handleMusicRequestCancelledResponse(response) {
-        var requestId = Number(response && response.request_id);
-        if (!Number.isFinite(requestId) || requestId <= 0) {
-            console.warn('[Music] 忽略缺少有效 request_id 的取消响应');
-            return;
-        }
-        var latestRequestId = Number(window._latestMusicCandidateRequestId || 0);
-        if (latestRequestId > 0 && requestId < latestRequestId) return;
-        if (typeof window.cancelPendingMusicMediaReady === 'function') {
-            var mediaCancelStatus = window.cancelPendingMusicMediaReady(requestId);
-            if (mediaCancelStatus === 'stale') return;
-        }
-        if (typeof window.cancelQueuedMusicDispatch === 'function') {
-            var queuedCancelStatus = window.cancelQueuedMusicDispatch(requestId);
-            if (queuedCancelStatus === 'stale') return;
-        }
-        window._latestMusicCandidateRequestId = requestId;
-        window._pendingMusicCandidateRequestId = 0;
-        window._musicCandidateDispatchEpoch = (window._musicCandidateDispatchEpoch || 0) + 1;
-        if (typeof window.cancelActiveMusicPlayback === 'function') {
-            window.cancelActiveMusicPlayback();
-        }
-    }
-
     function readNewUserIcebreakerStore() {
         try {
             if (typeof localStorage === 'undefined') return null;
@@ -2049,8 +1788,15 @@
         if (S.socket && S.socket.readyState === WebSocket.OPEN && S.socket.url === wsUrl) {
             return;
         }
-        resetMusicCandidateRequestScope(currentLanlanName, true);
-
+        // A queued proactive/plugin dispatch belongs to the connection and
+        // character that created it. Invalidate both asynchronous playback
+        // stages before replacing that scope.
+        if (typeof window.cancelPendingMusicMediaReady === 'function') {
+            window.cancelPendingMusicMediaReady();
+        }
+        if (typeof window.cancelQueuedMusicDispatch === 'function') {
+            window.cancelQueuedMusicDispatch();
+        }
         // 新连接重置模型就绪标志，等待模型重新加载
         S._modelReady = false;
 
@@ -2593,6 +2339,7 @@
                         window.dispatchEvent(new CustomEvent('neko:user-voice-content-received', {
                             detail: {
                                 requestId: resolveAssistantRequestId(response.request_id, response.meta),
+                                text: normalizedVoiceTranscript,
                                 source: 'voice'
                             }
                         }));
@@ -4423,27 +4170,14 @@
                     }
                 // -------- music allowlist add --------
                 } else if (response.type === 'music_allowlist_add') {
-                    if (window.MusicPluginAPI && response.domains) {
-                        console.log('[Music] Received allowlist update from backend:', response.domains);
-                        window.MusicPluginAPI.addAllowlist(response.domains);
+                    if (window.MusicPluginAPI && (response.domains || response.http_urls)) {
+                        console.log('[Music] Received allowlist update from backend:', response.domains, response.http_urls);
+                        window.MusicPluginAPI.addAllowlist(response.domains || [], response.http_urls || []);
                     }
 
                 // -------- music play url --------
                 } else if (response.type === 'music_play_url') {
                     handleMusicPlayUrlResponse(response);
-
-                } else if (response.type === 'music_request_started') {
-                    handleMusicRequestStartedResponse(response);
-
-                } else if (response.type === 'music_play_candidates') {
-                    handleMusicPlayCandidatesResponse(response);
-
-                // -------- user music request failed --------
-                } else if (response.type === 'music_request_failed') {
-                    handleMusicRequestFailureResponse(response);
-
-                } else if (response.type === 'music_request_cancelled') {
-                    handleMusicRequestCancelledResponse(response);
 
                 // -------- repetition_warning --------
                 } else if (response.type === 'repetition_warning') {

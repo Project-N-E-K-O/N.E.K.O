@@ -2104,7 +2104,7 @@ class LifecycleMixin:
             # superseded cue must not deliver, and gets purged from the live
             # queue (ack False) rather than lingering until the next drain.
             self._retract_stale_coalesced(candidates)
-            self._purge_retracted_agent_callbacks()
+            self._purge_undeliverable_callbacks()
             candidates = [
                 cb for cb in candidates if not cb.get(DELIVERY_RETRACTED_KEY)
             ]
@@ -2292,6 +2292,12 @@ class LifecycleMixin:
                 final_prime_text = ""  # Initialize to empty string to prevent NameError
                 logger.debug(f"🔄 No incremental cache found. 缓存长度: {len(self.message_cache_for_new_session)}, 快照长度: {self.initial_cache_snapshot_len}")
 
+            # Re-check queue-backed and orphan voice mirrors at the final
+            # render boundary. They may have expired while this pending session
+            # was warming up, after leaving the proactive delivery manager.
+            self.pending_extra_replies = self.filter_deliverable_callbacks(
+                list(self.pending_extra_replies)
+            )
             # 若存在需要植入的额外提示，则指示模型忽略上一条消息，并在下一次响应中统一向用户补充这些提示
             if self.pending_extra_replies and len(self.pending_extra_replies) > 0:
                 _lang = normalize_language_code(self.user_language, format='short')
@@ -2721,7 +2727,7 @@ class LifecycleMixin:
                 self.message_handler_task = asyncio.create_task(self.session.handle_messages())
         finally:
             self._release_swap_prime_passive_claims(_passive_sel)
-            self._purge_retracted_agent_callbacks()
+            self._purge_undeliverable_callbacks()
             self.is_hot_swap_imminent = False  # Always reset this flag
             if self.final_swap_task and self.final_swap_task.done():
                 self.final_swap_task = None

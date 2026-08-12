@@ -26,6 +26,27 @@ def test_xhh_credential_tab_is_present():
     assert "static_asset_version | default('0')" in template
 
 
+def test_qqmusic_credential_tab_and_required_fields_are_present():
+    template = Path("templates/cookies_login.html").read_text(encoding="utf-8")
+    script = Path("static/js/cookies_login.js").read_text(encoding="utf-8")
+
+    assert "switchTab('qqmusic', this)" in template
+    assert "'qqmusic': {" in script
+    assert "key: 'uin'" in script
+    assert "key: 'qqmusic_key'" in script
+
+    for locale_path in Path("static/locales").glob("*.json"):
+        cookies_login = json.loads(locale_path.read_text(encoding="utf-8"))["cookiesLogin"]
+        assert cookies_login["qqmusic"].strip(), locale_path
+        assert cookies_login["instructions"]["qqmusic"].strip(), locale_path
+        assert cookies_login["fields"]["qqmusicUin"]["label"] == "uin", locale_path
+        assert cookies_login["fields"]["qqmusicKey"]["label"] == "qqmusic_key", locale_path
+
+    validate_platform_fields("qqmusic", {"uin": "o123", "qqmusic_key": "secret"})
+    with pytest.raises(HTTPException, match="qqmusic_key"):
+        validate_platform_fields("qqmusic", {"uin": "o123"})
+
+
 def test_xhh_local_save_failure_message_is_localized():
     for locale_path in Path("static/locales").glob("*.json"):
         locale = json.loads(locale_path.read_text(encoding="utf-8"))

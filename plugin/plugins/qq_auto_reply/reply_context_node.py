@@ -2,123 +2,14 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from main_logic.omni_offline_client import route_supports_tool_calls
 from utils.config_manager import get_config_manager
 
-from .memory_tool_service import (
-    resolve_group_recall_subjects,
-    resolve_participant_recall_subjects,
-)
 from .pipeline_models import is_synthetic_source, QQInstructionBundle, QQPipelineStageTrace, QQReplyContext
-from .prompt_fragment_templates import LONG_TERM_MEMORY_SECTION
 
 
 class QQReplyContextNode:
     def __init__(self, plugin: Any):
         self.plugin = plugin
-
-    async def _build_recalled_memory_text(
-        self,
-        *,
-        used_member_subject_out: list | None = None,
-        her_name: str,
-        message: str,
-        should_use_memory_context: bool,
-        attachments: list[dict[str, Any]] | None,
-        is_group: bool = False,
-        group_id: str | None = None,
-        sender_id: str = "",
-        participant_memory: bool = False,
-    ) -> str:
-        if not should_use_memory_context:
-            return ""
-        if is_group and not bool(
-            (getattr(self.plugin, "_qq_settings", {}) or {}).get(
-                "group_memory_enabled", False,
-            )
-        ):
-            # 读点前复检实时策略：请求构造时捕获的 use=True 在上下文构建的
-            # await 窗口里可能已被 opt-out 反超——persist 侧有 prime 门控，
-            # 读侧也不得在 OFF 之后把 scoped 召回注入群回复。
-            return ""
-        if self.plugin._should_skip_direct_llm_fallback_for_images(message=message, attachments=attachments):
-            return ""
-        normalized_message = str(message or "").strip()
-        if not normalized_message:
-            return ""
-        group_id = str(group_id or "").strip()
-        if is_group and not group_id:
-            # 先标准化再判：空白串不得越界生成 subject_id="qq:" 无效 subject。
-            # Fail-closed（与 session_instruction_service._build_core_memory_
-            # section 对齐）：畸形群事件缺 group_id 时不能让 subjects 退化成
-            # None——bridge 侧 None 的语义是「legacy 私聊调用方」，会把主人的
-            # 私聊记忆召回进群回复。
-            return ""
-        try:
-            subjects = None
-            used_member_subject = False
-            if is_group and group_id:
-                # subject 组装与 recall_memory 工具 handler 共用一处（含
-                # member 开关的读点实时复检、sender 规范化）：两条召回通道
-                # 授权的域必须一致，线路切换不得悄悄改变群轮能读什么。
-                subjects, used_member_subject = await resolve_group_recall_subjects(
-                    self.plugin, group_id=group_id, memory_sender_id=sender_id,
-                )
-            elif participant_memory:
-                # 私聊 participant 轮：subject 组装与 tool handler / 核心
-                # 记忆段共用 resolver（含开关实时复检、sender 规范化）。
-                # resolver fail-closed 返回 []——bridge 对 [] 直接空结果，
-                # **绝不**让 subjects 保持 None 落进 legacy 主人语料。
-                subjects = resolve_participant_recall_subjects(
-                    self.plugin, memory_sender_id=sender_id,
-                )
-            if used_member_subject and used_member_subject_out is not None:
-                # 回传给调用方：召回是否真的带上了 participant 域。绑定
-                # bootstrap 段是否非空是错的——bootstrap 为空、召回命中
-                # participant 的组合下，member 撤销时不会撤这段召回。
-                used_member_subject_out.append(True)
-            recall_result = await self.plugin.memory_bridge.query_relevant_memory(
-                her_name,
-                normalized_message,
-                subjects=subjects,
-            )
-            if used_member_subject and not bool(
-                (getattr(self.plugin, "_qq_settings", {}) or {}).get(
-                    "group_member_memory_enabled", False,
-                )
-            ):
-                # member 侧读后复检：召回结果混合群域与 participant 域、
-                # 事后无法拆分，opt-out 落在这次调用飞行期间时整体丢弃。
-                return ""
-            if is_group and not bool(
-                (getattr(self.plugin, "_qq_settings", {}) or {}).get(
-                    "group_memory_enabled", False,
-                )
-            ):
-                # 读后复检：opt-out 可能落在上面这次网络调用飞行期间——
-                # 数据已读回也要丢弃，不注入 opt-out 之后的群回复。此处是
-                # 读侧最后的收敛点：该轮的 persist 已由转变盖章+prime 门控
-                # 挡住。
-                return ""
-            if participant_memory and not bool(
-                (getattr(self.plugin, "_qq_settings", {}) or {}).get(
-                    "private_participant_memory_enabled", False,
-                )
-            ):
-                # participant 侧读后复检（对偶上面两处）：opt-out 落在召回
-                # 飞行期间时，已读回的 participant 域内容整体丢弃。
-                return ""
-            if not recall_result.text:
-                return ""
-            self.plugin.logger.info(
-                "QQ 长期记忆召回完成: hits=%s elapsed=%.0fms",
-                recall_result.hit_count,
-                recall_result.elapsed_ms,
-            )
-            return LONG_TERM_MEMORY_SECTION.format(memory_context=recall_result.text)
-        except Exception as e:
-            self.plugin.logger.warning(f"QQ 长期记忆召回失败: {e}")
-            return ""
 
     def _strip_section_if_member_revoked(
         self, system_prompt: str, section_text: str, used_member_subject: bool,
@@ -474,49 +365,21 @@ class QQReplyContextNode:
         system_prompt = instruction_bundle.system_prompt
         core_memory_text = instruction_bundle.core_memory_text
         memory_context_used = instruction_bundle.memory_context_used
-        recall_used_member: list = []
-        recall_via_tool = False
-        if should_use_memory_context:
-            # 召回通道决策：线路支持 tool call 就把召回交给模型自主决定
-            # （reply_generation_service 按轮挂载 recall_memory 工具，构建
-            # 期不再同步召回）；免费代理只暴露 OpenAI-compat 且会静默丢
-            # tools，那批用户回落到构建期同步召回，否则群记忆会静默归零。
-            # 判定出错按回落处理——回落路径至少确定生效。
-            try:
-                conversation_config = config_manager.get_model_api_config(
-                    "conversation",
-                )
-                recall_via_tool = route_supports_tool_calls(
-                    str(conversation_config.get("model") or ""),
-                    str(conversation_config.get("base_url") or ""),
-                )
-            except Exception:
-                recall_via_tool = False
-        recalled_memory_text = ""
-        if not recall_via_tool:
-            recalled_memory_text = await self._build_recalled_memory_text(
-                used_member_subject_out=recall_used_member,
-                her_name=her_name,
-                message=message,
-                should_use_memory_context=should_use_memory_context,
-                attachments=attachments,
-                is_group=is_group,
-                group_id=group_id,
-                sender_id=memory_sender_id,
-                participant_memory=participant_memory_snapshot,
-            )
-        recalled_memory_used = bool(recalled_memory_text)
+        # 召回只有 recall_memory 工具这一条通道：generation service 按轮挂
+        # 工具，由模型自己决定这轮要不要查。构建期一次检索都不发——上下文
+        # 构建拿不到"这轮到底需不需要记忆"的信息，在这里查就是每轮无条件付
+        # 一次检索（HTTP + prompt token），无论结果用不用得上。
+        # recalled_memory_text / used 留空由 execute_recall 在真的读到内容
+        # 时回填（主会话空回复时的 direct fallback 读它）。
         traces.append(
             QQPipelineStageTrace(
                 stage="context_memory_recall",
                 status=(
-                    "tool_deferred" if recall_via_tool
-                    else ("used" if recalled_memory_used else "skipped")
+                    "tool_deferred" if should_use_memory_context else "skipped"
                 ),
                 metadata={
-                    "recalled_memory_used": recalled_memory_used,
-                    "recalled_memory_length": len(recalled_memory_text),
-                    "recall_via_tool": recall_via_tool,
+                    "recalled_memory_used": False,
+                    "recalled_memory_length": 0,
                 },
             )
         )
@@ -613,8 +476,8 @@ class QQReplyContextNode:
             system_prompt=system_prompt,
             memory_context_used=memory_context_used,
             core_memory_text=core_memory_text,
-            recalled_memory_text=recalled_memory_text,
-            recalled_memory_used=recalled_memory_used,
+            recalled_memory_text="",
+            recalled_memory_used=False,
             login_status=login_status,
             login_self_id=login_self_id,
             login_nickname=login_nickname,
@@ -631,7 +494,6 @@ class QQReplyContextNode:
             private_permission_level_at_receipt=(
                 private_permission_level_at_receipt
             ),
-            recall_via_tool=recall_via_tool,
             cross_group_section=(
                 getattr(instruction_bundle, "cross_group_section", "")
                 if cross_group_alive else ""
@@ -640,12 +502,11 @@ class QQReplyContextNode:
                 getattr(instruction_bundle, "cross_session_section", "")
                 if cross_session_alive else ""
             ),
+            # 只剩 bootstrap 段这一个构建期来源：召回侧的 participant 域是
+            # 生成中途才可能读到的，由 execute_recall 命中 member 域时置位。
             used_member_subject=bool(
-                (
-                    core_memory_alive
-                    and getattr(instruction_bundle, "used_member_subject", False)
-                )
-                or (recall_used_member and recalled_memory_text)
+                core_memory_alive
+                and getattr(instruction_bundle, "used_member_subject", False)
             ),
             traces=traces,
         )

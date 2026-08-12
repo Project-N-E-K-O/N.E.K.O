@@ -3990,6 +3990,7 @@
         "twitter": "Twitter/X",
         "reddit": "Reddit",
         "netease": "Música en la nube NetEase",
+        "qqmusic": "QQ Music",
         "saveConfig": "Guardar configuración",
         "encryptStorage": "Cifre y almacene de forma segura en un archivo local",
         "localMonitoring": "Monitoreo de estado local",
@@ -4028,7 +4029,8 @@
             "weibo": "<b>Destino:</b> Vaya a <code>m.weibo.cn</code> para buscar estas cookies.",
             "twitter": "<b>Destino:</b> Vaya a <code>x.com</code> para buscar estas cookies.",
             "reddit": "<b>Destino:</b> Vaya a <code>reddit.com</code> para buscar estas cookies.",
-            "netease": "<b>Destino:</b> Vaya a <code>music.163.com</code> para buscar estas cookies."
+            "netease": "<b>Destino:</b> Vaya a <code>music.163.com</code> para buscar estas cookies.",
+            "qqmusic": "<b>Destino:</b> Vaya a <code>y.qq.com</code> para buscar estas cookies."
         },
         "guide": {
             "title": "Guía universal para principiantes",
@@ -4143,6 +4145,14 @@
             "MUSIC_U": {
                 "label": "MÚSICA_U",
                 "desc": "Credencial de identidad principal (obligatoria)"
+            },
+            "qqmusicUin": {
+                "label": "uin",
+                "desc": "Identificador de cuenta QQ (normalmente comienza con la letra o, seguida de dígitos)"
+            },
+            "qqmusicKey": {
+                "label": "qqmusic_key",
+                "desc": "Credencial de inicio de sesión de QQ Music (obligatoria)"
             },
             "NMTID": {
                 "label": "NMTID",

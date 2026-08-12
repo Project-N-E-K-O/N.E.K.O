@@ -18,6 +18,7 @@ import asyncio
 import os
 import re
 import sys
+import time
 from unittest.mock import AsyncMock, MagicMock
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
@@ -28,7 +29,11 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"
 # state/session/lock 结构，然后直接调用 trigger_agent_callbacks 的关键分支。
 import main_logic.core as core_module
 from main_logic.omni_offline_client import OmniOfflineClient
-from main_logic.proactive_delivery import DELIVERY_ACK_FUTURE_KEY, DELIVERY_RETRACTED_KEY
+from main_logic.proactive_delivery import (
+    CALLBACK_EXPIRES_AT_KEY,
+    DELIVERY_ACK_FUTURE_KEY,
+    DELIVERY_RETRACTED_KEY,
+)
 from main_logic.session_state import (
     ProactivePhase,
     SessionEvent,
@@ -613,6 +618,44 @@ async def test_voice_mode_rechecks_retracted_callbacks_before_inject():
     assert mgr.pending_extra_replies == []
 
 
+async def test_voice_mode_drops_callback_expired_during_media_before_inject():
+    """A callback expiring during media streaming never reaches text inject."""
+    sess = _make_voice_sess()
+    mgr = _make_mgr(session=sess)
+    future = asyncio.get_running_loop().create_future()
+    cb = {
+        "_callback_delivery_id": "id-expired-during-media",
+        "status": "completed",
+        "summary": "stale event",
+        CALLBACK_EXPIRES_AT_KEY: time.monotonic() + 60,
+        DELIVERY_ACK_FUTURE_KEY: future,
+    }
+    extra = {
+        "_callback_delivery_id": "id-expired-during-media",
+        "origin": "event",
+        "summary": "stale event",
+        CALLBACK_EXPIRES_AT_KEY: cb[CALLBACK_EXPIRES_AT_KEY],
+    }
+    mgr.pending_agent_callbacks = [cb]
+    mgr.pending_extra_replies = [extra]
+
+    async def _stream_then_expire(*_args, **_kwargs):
+        cb[CALLBACK_EXPIRES_AT_KEY] = time.monotonic() - 1
+        return True
+
+    mgr._stream_cb_media = _stream_then_expire
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+
+    assert delivered is False
+    assert sess.injected == []
+    assert mgr.pending_agent_callbacks == []
+    assert mgr.pending_extra_replies == []
+    assert future.done() and future.result() is False
+    assert cb.get("_voice_delivery_committed") is None
+    mgr.proactive_manager.release_inflight_noop.assert_called_once()
+
+
 async def test_text_mode_acks_only_callbacks_that_reach_prompt():
     sess = _FakeOmniOffline(delivered=True)
     mgr = _make_mgr(session=sess)
@@ -644,6 +687,36 @@ async def test_text_mode_acks_only_callbacks_that_reach_prompt():
     assert not dropped_future.done()
     assert active_future.done()
     assert active_future.result() is True
+
+
+async def test_trigger_releases_inflight_when_callback_expires_during_claim():
+    sess = _FakeOmniOffline(delivered=True)
+    mgr = _make_mgr(session=sess)
+    future = asyncio.get_running_loop().create_future()
+    callback = {
+        "_callback_delivery_id": "id-expired-during-trigger-claim",
+        "status": "completed",
+        "summary": "stale event",
+        CALLBACK_EXPIRES_AT_KEY: time.monotonic() + 60,
+        DELIVERY_ACK_FUTURE_KEY: future,
+    }
+    mgr.pending_agent_callbacks = [callback]
+    original_try_start = mgr.state.try_start_proactive
+
+    async def _try_start_and_expire(*args, **kwargs):
+        claimed = await original_try_start(*args, **kwargs)
+        callback[CALLBACK_EXPIRES_AT_KEY] = time.monotonic() - 1
+        return claimed
+
+    mgr.state.try_start_proactive = _try_start_and_expire
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+
+    assert delivered is False
+    assert sess.called_with == []
+    assert mgr.pending_agent_callbacks == []
+    assert future.done() and future.result() is False
+    mgr.proactive_manager.release_inflight_noop.assert_called_once()
 
 
 async def test_text_mode_resolves_delivery_ack_after_committed_output_before_completion_flush():
@@ -1672,9 +1745,10 @@ def test_submit_proactive_callback_persists_when_goodbye_silent():
     assert mgr.pending_extra_replies == [
         {
             "_callback_delivery_id": cb["_callback_delivery_id"],
-            "coalesce_key": "same-source",
-            "_coalesce_submit_seq": cb["_coalesce_submit_seq"],
-            "origin": "event",
+                "coalesce_key": "same-source",
+                "_coalesce_submit_seq": cb["_coalesce_submit_seq"],
+                CALLBACK_EXPIRES_AT_KEY: None,
+                "origin": "event",
             "summary": "queued",
             "detail": "",
             "status": "completed",
@@ -1999,6 +2073,47 @@ async def test_deliver_agent_callbacks_text_drops_topic_hook_when_voice_takes_ov
     assert fut.done() and fut.result() is False
     assert sess.called_with == []  # dropped at the prompt-adjacent re-gate
     assert mgr._voice_delivery_blocked.call_count == 2
+    mgr.proactive_manager.release_inflight_noop.assert_called_once()
+
+
+async def test_deliver_agent_callbacks_text_drops_callback_expired_during_claim():
+    """An out-of-queue snapshot is rechecked after the proactive claim awaits."""
+    sess = _FakeOmniOffline(delivered=True)
+    mgr = _make_mgr(session=sess)
+    future = asyncio.get_running_loop().create_future()
+    cb = {
+        "_callback_delivery_id": "id-expired-during-claim",
+        "status": "completed",
+        "summary": "stale event",
+        CALLBACK_EXPIRES_AT_KEY: time.monotonic() + 60,
+        DELIVERY_ACK_FUTURE_KEY: future,
+    }
+    extra = {
+        "_callback_delivery_id": "id-expired-during-claim",
+        "origin": "event",
+        "summary": "stale event",
+        CALLBACK_EXPIRES_AT_KEY: cb[CALLBACK_EXPIRES_AT_KEY],
+    }
+    mgr.pending_extra_replies = [extra]
+    original_fire = mgr.state.fire
+
+    async def _fire_and_expire(event, **payload):
+        await original_fire(event, **payload)
+        if event is SessionEvent.PROACTIVE_PHASE2:
+            cb[CALLBACK_EXPIRES_AT_KEY] = time.monotonic() - 1
+
+    mgr.state.fire = _fire_and_expire
+
+    snapshot = [cb]
+    delivered = await core_module.LLMSessionManager._deliver_agent_callbacks_text(
+        mgr, snapshot
+    )
+
+    assert delivered is False
+    assert sess.called_with == []
+    assert snapshot == []
+    assert mgr.pending_extra_replies == []
+    assert future.done() and future.result() is False
     mgr.proactive_manager.release_inflight_noop.assert_called_once()
 
 
