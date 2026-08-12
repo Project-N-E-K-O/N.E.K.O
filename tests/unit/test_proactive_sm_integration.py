@@ -18,7 +18,10 @@ import asyncio
 import os
 import re
 import sys
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
@@ -28,7 +31,11 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"
 # state/session/lock 结构，然后直接调用 trigger_agent_callbacks 的关键分支。
 import main_logic.core as core_module
 from main_logic.omni_offline_client import OmniOfflineClient
-from main_logic.proactive_delivery import DELIVERY_ACK_FUTURE_KEY, DELIVERY_RETRACTED_KEY
+from main_logic.proactive_delivery import (
+    DELIVERY_ACK_FUTURE_KEY,
+    DELIVERY_RETRACTED_KEY,
+    SWAP_PRIME_DELIVERY_CLAIM_KEY,
+)
 from main_logic.session_state import (
     ProactivePhase,
     SessionEvent,
@@ -116,6 +123,144 @@ def _make_mgr(session=None) -> core_module.LLMSessionManager:
     # 在测试里我们只关心 OmniOfflineClient 分支，其他分支显式构造。
     mgr.start_session = AsyncMock()
     return mgr
+
+
+async def test_passive_callback_media_stages_at_text_turn_then_drains():
+    session = MagicMock(spec=OmniOfflineClient)
+    session.stream_images = AsyncMock()
+    mgr = _make_mgr(session=session)
+    callback = {
+        "delivery_mode": "passive",
+        "summary": "remember this image",
+        "media_images": ["first-image", "second-image"],
+    }
+    mgr.pending_agent_callbacks = [callback]
+
+    rendered = await mgr.drain_agent_callbacks_for_llm_with_media()
+    session.stream_images.assert_awaited_once_with([
+        "first-image",
+        "second-image",
+    ])
+    assert "media_images" not in callback
+    assert "remember this image" in rendered
+    assert mgr.pending_agent_callbacks == []
+
+
+async def test_offline_stream_images_commits_one_batch_with_one_extend():
+    from main_logic.omni_offline_client._media import _MediaMixin
+
+    pending = MagicMock(wraps=["existing-image"])
+    session = SimpleNamespace(_pending_images=pending)
+
+    await _MediaMixin.stream_images(
+        session,
+        ["first-image", "", "second-image"],
+    )
+
+    pending.extend.assert_called_once_with(["first-image", "second-image"])
+
+
+async def test_failed_passive_callback_media_stays_queued_for_later_turn():
+    session = MagicMock(spec=OmniOfflineClient)
+    session.stream_images = AsyncMock(side_effect=RuntimeError("session closing"))
+    mgr = _make_mgr(session=session)
+    callback = {
+        "delivery_mode": "passive",
+        "summary": "remember this image",
+        "media_images": ["deferred-image"],
+    }
+    mgr.pending_agent_callbacks = [callback]
+
+    rendered = await mgr.drain_agent_callbacks_for_llm_with_media()
+
+    assert rendered == ""
+    assert callback["media_images"] == ["deferred-image"]
+    assert mgr.pending_agent_callbacks == [callback]
+    assert not callback.get(SWAP_PRIME_DELIVERY_CLAIM_KEY)
+
+
+async def test_text_drain_streams_media_only_for_its_budgeted_snapshot(monkeypatch):
+    from main_logic.core import proactive as proactive_module
+
+    session = MagicMock(spec=OmniOfflineClient)
+    session.stream_images = AsyncMock()
+    mgr = _make_mgr(session=session)
+    selected = {
+        "delivery_mode": "passive",
+        "summary": "selected",
+        "media_images": ["selected-image"],
+    }
+    deferred = {
+        "delivery_mode": "passive",
+        "summary": "deferred",
+        "media_images": ["deferred-image"],
+    }
+    mgr.pending_agent_callbacks = [selected, deferred]
+    monkeypatch.setattr(
+        proactive_module,
+        "_select_callbacks_within_token_budget",
+        lambda callbacks, _budget: ([callbacks[0]], callbacks[1:]),
+    )
+
+    rendered = await mgr.drain_agent_callbacks_for_llm_with_media()
+
+    session.stream_images.assert_awaited_once_with(["selected-image"])
+    assert "selected" in rendered and "deferred" not in rendered
+    assert mgr.pending_agent_callbacks == [deferred]
+    assert deferred["media_images"] == ["deferred-image"]
+
+
+async def test_cancelled_text_media_drain_releases_provider_claim():
+    entered = asyncio.Event()
+
+    async def _block(_image, **_kwargs):
+        entered.set()
+        await asyncio.Future()
+
+    session = MagicMock(spec=OmniOfflineClient)
+    session.stream_images = AsyncMock(side_effect=_block)
+    mgr = _make_mgr(session=session)
+    callback = {
+        "delivery_mode": "passive",
+        "summary": "cancelled",
+        "media_images": ["deferred-image"],
+    }
+    mgr.pending_agent_callbacks = [callback]
+
+    task = asyncio.create_task(mgr.drain_agent_callbacks_for_llm_with_media())
+    await entered.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert mgr.pending_agent_callbacks == [callback]
+    assert not callback.get(SWAP_PRIME_DELIVERY_CLAIM_KEY)
+
+
+async def test_realtime_passive_media_bypasses_throttle_and_returns_description(
+    monkeypatch,
+):
+    from main_logic.core import proactive as proactive_module
+
+    class _RealtimeSession:
+        def __init__(self):
+            self.stream_image = AsyncMock(return_value="a small chart")
+
+    monkeypatch.setattr(proactive_module, "OmniRealtimeClient", _RealtimeSession)
+    session = _RealtimeSession()
+    mgr = _make_mgr(session=session)
+
+    context = await mgr._stream_passive_callback_media(
+        [{"media_images": ["deferred-image"]}],
+        session,
+    )
+
+    session.stream_image.assert_awaited_once_with(
+        "deferred-image",
+        bypass_rate_limit=True,
+        cache_latest=False,
+    )
+    assert context == "\n[实时屏幕截图或相机画面]: a small chart"
 
 
 def test_enqueue_agent_callback_uses_generic_context_source_budget(monkeypatch):

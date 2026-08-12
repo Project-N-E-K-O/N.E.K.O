@@ -391,6 +391,10 @@ inline `data: bytes` 由 SDK 自动 base64 编码后随 payload 传出。
 >
 > `images.upload()` 只准备当前运行期可用的临时资源；它不会显示图片、不会写入
 > 模型上下文，也不会触发回复。投递语义仍完全由 `push_message()` 控制。
+> 请在 plugin entry、timer、message 或 custom event handler 中调用。lifecycle
+> handler（`startup` / `freeze` / `unfreeze` / `shutdown` / `config_change`）
+> 执行时不处理这类 request/response 上传，调用会立即抛出 `RuntimeError`，
+> 而不是等待 timeout。
 
 ##### 常见组合
 

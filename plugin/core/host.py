@@ -418,13 +418,14 @@ async def _handle_config_update_command(
         if config_change_handler:
             logger.debug("[Plugin Process] Triggering config_change lifecycle event")
             try:
-                result = config_change_handler(
-                    old_config=old_config,
-                    new_config=ctx._effective_config,
-                    mode=mode,
-                )
-                if inspect.isawaitable(result):
-                    await result
+                with ctx._handler_scope("lifecycle.config_change"):
+                    result = config_change_handler(
+                        old_config=old_config,
+                        new_config=ctx._effective_config,
+                        mode=mode,
+                    )
+                    if inspect.isawaitable(result):
+                        await result
                 logger.info("[Plugin Process] config_change handler executed successfully")
             except Exception as e:
                 logger.exception("[Plugin Process] config_change handler failed")

@@ -40,6 +40,18 @@ class _MediaMixin:
         self._pending_images.append(image_b64)
         logger.info(f"Added image to pending queue (total: {len(self._pending_images)})")
 
+    async def stream_images(self, images_b64: list[str]) -> None:
+        """Atomically stage one callback's image batch for the next text turn."""
+        images = [image for image in images_b64 if image]
+        if not images:
+            return
+        self._pending_images.extend(images)
+        logger.info(
+            "Added image batch to pending queue (batch=%d, total=%d)",
+            len(images),
+            len(self._pending_images),
+        )
+
     def has_pending_images(self) -> bool:
         """Check if there are pending images waiting to be sent."""
         return len(self._pending_images) > 0

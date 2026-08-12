@@ -701,7 +701,7 @@ async def _handle_agent_event(event: dict):
             # (or drop it when no session exists yet) while the text is held back
             # by the manager — the eventual proactive response would then lack
             # its matching visual context.
-            deferred_proactive_images: list[str] = []
+            deferred_callback_images: list[str] = []
             if media_parts and ai_behavior_v2 in ("respond", "read"):
                 sess = getattr(mgr, "session", None)
                 stream_image = getattr(sess, "stream_image", None) if sess else None
@@ -799,19 +799,24 @@ async def _handle_agent_event(event: dict):
                     if ai_behavior_v2 == "respond":
                         # Defer: stream when the manager releases this cue so
                         # the image shares the proactive response's context.
-                        deferred_proactive_images.append(resolved_b64)
+                        deferred_callback_images.append(resolved_b64)
                         continue
-                    # read (passive), OR image-only respond with no text to
-                    # carry it through the pacing manager: inject now so it
-                    # isn't lost.
+                    # ``read`` is passive: inject immediately when a session
+                    # exists, otherwise retain it on the bounded callback queue
+                    # for the next session.  Dropping here would make an image
+                    # pushed between sessions disappear from model context.
                     if stream_image is None:
                         logger.debug(
-                            "[EventBus] image media_part dropped: session=%s has no stream_image",
+                            "[EventBus] image media_part deferred: session=%s has no stream_image",
                             type(sess).__name__ if sess else "None",
                         )
+                        deferred_callback_images.append(resolved_b64)
                         continue
                     try:
-                        await stream_image(resolved_b64)
+                        await stream_image(
+                            resolved_b64,
+                            bypass_rate_limit=True,
+                        )
                         logger.debug(
                             "[EventBus] image media_part injected (base64 len=%d, mime=%s)",
                             len(resolved_b64),
@@ -865,7 +870,7 @@ async def _handle_agent_event(event: dict):
                         source=visible_source,
                     )
 
-            if text or deferred_proactive_images:
+            if text or deferred_callback_images:
                 if event.get("direct_reply"):
                     detail_text = (event.get("detail") or text).strip()
                     # Plugin-supplied direct_reply text bypasses the LLM and
@@ -992,9 +997,10 @@ async def _handle_agent_event(event: dict):
                     "delivery_mode": delivery_mode,
                     "priority": cb_priority,
                     "coalesce_key": cb_coalesce_key,
-                    # Images to stream at manager-release time (respond only;
-                    # empty for read, which already streamed above).
-                    "media_images": deferred_proactive_images,
+                    # Respond images stream at manager release. Read images are
+                    # present only when no model session existed at event time;
+                    # the next text drain or natural voice swap consumes them.
+                    "media_images": deferred_callback_images,
                     "timestamp": event.get("timestamp") or "",
                     "metadata": event_metadata,
                     "context_type": event_metadata.get("context_type") or "",

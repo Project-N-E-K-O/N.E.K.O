@@ -231,3 +231,34 @@ def test_images_upload_times_out_when_the_service_does_not_respond(tmp_path: Pat
             await ctx.images.upload(_png_bytes(), timeout=0.05)
 
     asyncio.run(asyncio.wait_for(_run(), timeout=1.0))
+
+
+@pytest.mark.parametrize(
+    "lifecycle_name",
+    ["startup", "freeze", "unfreeze", "shutdown", "config_change"],
+)
+def test_images_upload_fails_fast_in_lifecycle_handlers(
+    tmp_path: Path,
+    lifecycle_name: str,
+) -> None:
+    responses: asyncio.Queue[dict[str, object]] = asyncio.Queue()
+    transport = _ImageTransport(responses)
+    ctx = PluginContext(
+        plugin_id="demo",
+        config_path=tmp_path / "plugin.toml",
+        logger=_Logger(),  # type: ignore[arg-type]
+        status_queue=None,
+        _response_queue=responses,
+        _image_transport=transport,
+    )
+
+    async def _run() -> None:
+        with ctx._handler_scope(f"lifecycle.{lifecycle_name}"):
+            with pytest.raises(
+                RuntimeError,
+                match="not available from lifecycle handlers",
+            ):
+                await ctx.images.upload(_png_bytes(), timeout=10.0)
+
+    asyncio.run(asyncio.wait_for(_run(), timeout=1.0))
+    assert transport.uploaded == []

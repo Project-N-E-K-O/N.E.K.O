@@ -459,14 +459,16 @@ class StreamingMixin:
                     # 废，passive callback 跟用户输入一起留在 history 让 AI
                     # 后续仍能 reference）。
                     #
-                    # best-effort 注入：drain 的 ``finally clear`` 是 PR #1032
-                    # 的设计决定（passive=单次软通知），即便 drain 或 stream_text
-                    # 失败也不回填——延续到这条路径仍是这样，不在 caller 加
-                    # snapshot 回滚。
+                    # 成功 drain 后仍延续 PR #1032 的单次软通知语义：
+                    # 后续 stream_text 失败不回填。图片 staging 失败的 callback
+                    # 则不属于成功 drain，会留队等下一轮。
                     _agent_cb_ctx = ""
                     if self.pending_agent_callbacks:
                         try:
-                            _agent_cb_ctx = self.drain_agent_callbacks_for_llm() or ""
+                            _agent_cb_ctx = (
+                                await self.drain_agent_callbacks_for_llm_with_media()
+                                or ""
+                            )
                         except Exception as _cb_err:
                             logger.warning(f"⚠️ Agent callback drain failed: {_cb_err}")
                             _agent_cb_ctx = ""

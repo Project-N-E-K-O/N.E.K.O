@@ -255,8 +255,47 @@ async def test_plugin_image_url_is_fetched_asynchronously_for_model_context(monk
         follow_redirects=False,
     )
     manager.session.stream_image.assert_awaited_once_with(
-        base64.b64encode(image_bytes).decode("ascii")
+        base64.b64encode(image_bytes).decode("ascii"),
+        bypass_rate_limit=True,
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("text", ["", "remember this image"], ids=["image-only", "text-and-image"])
+async def test_read_image_waits_in_callback_when_no_model_session(
+    monkeypatch,
+    text: str,
+) -> None:
+    """A passive image survives until the next model session is available."""
+    from app import main_server
+
+    manager = _manager()
+    manager.session = None
+    encoded = base64.b64encode(b"deferred-read-image").decode("ascii")
+    monkeypatch.setattr(
+        "app.main_server.character_runtime._get_session_manager",
+        lambda _name: manager,
+    )
+    monkeypatch.setattr(
+        "app.main_server.character_runtime._fetch_plugin_image_base64",
+        AsyncMock(return_value=encoded),
+    )
+
+    await main_server._handle_agent_event({
+        "event_type": "proactive_message",
+        "lanlan_name": "Test",
+        "text": text,
+        "channel": "plugin:demo",
+        "delivery_mode": "passive",
+        "ai_behavior": "read",
+        "visibility": [],
+        "media_parts": [{"type": "image", "url": _IMAGE_URL, "mime": "image/jpeg"}],
+    })
+
+    callback = manager.enqueue_agent_callback.call_args.args[0]
+    assert callback["delivery_mode"] == "passive"
+    assert callback["media_images"] == [encoded]
+    manager.submit_proactive_callback.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -724,7 +763,10 @@ async def test_image_delivery_obeys_visibility_and_ai_behavior(
         assert manager.render_chat_blocks.await_args.args[0] == expected_blocks
 
     if ai_behavior == "read" and model_reads:
-        manager.session.stream_image.assert_awaited_once_with(encoded)
+        manager.session.stream_image.assert_awaited_once_with(
+            encoded,
+            bypass_rate_limit=True,
+        )
     else:
         manager.session.stream_image.assert_not_awaited()
 

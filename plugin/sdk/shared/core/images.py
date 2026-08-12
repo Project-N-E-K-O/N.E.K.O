@@ -58,7 +58,18 @@ class PluginImages:
         mime: str | None = None,
         timeout: float = 3.0,
     ) -> dict[str, object]:
-        """Upload one temporary image without delivering it to chat or the model."""
+        """Upload one temporary image without delivering it to chat or the model.
+
+        Lifecycle handlers cannot perform request/response media IPC because
+        the plugin command loop is not servicing upload responses while those
+        handlers run. Reject there before decoding or transport submission.
+        """
+        handler_ctx = getattr(self._host_ctx, "handler_ctx", None)
+        if isinstance(handler_ctx, str) and handler_ctx.startswith("lifecycle."):
+            raise RuntimeError(
+                "ctx.images.upload() is not available from lifecycle handlers; "
+                "use a plugin entry, timer, message, or custom event handler"
+            )
         _ = mime  # Input format is detected by Pillow; output is always JPEG.
         if not isinstance(data, (bytes, bytearray)):
             raise TypeError("image data must be bytes or bytearray")

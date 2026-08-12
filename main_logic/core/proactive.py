@@ -45,6 +45,51 @@ from .callback_render import _build_callback_instruction, _select_callbacks_with
 class ProactiveMixin:
     """Proactive delivery methods (see module docstring)."""
 
+    async def _stream_passive_callback_media(
+        self,
+        callbacks: list,
+        session,
+    ) -> str:
+        """Stream callback-owned passive images at their actual text/voice
+        delivery boundary and return any non-native vision descriptions."""
+        stream_image = getattr(session, "stream_image", None) if session else None
+        if stream_image is None and any(
+            isinstance(callback, dict) and callback.get("media_images")
+            for callback in callbacks
+        ):
+            raise RuntimeError("model session cannot accept passive callback images")
+
+        descriptions: list[str] = []
+        for callback in callbacks:
+            if not isinstance(callback, dict):
+                continue
+            images = list(callback.get("media_images") or [])
+            if not images:
+                continue
+            if isinstance(session, OmniOfflineClient):
+                stream_images = getattr(session, "stream_images", None)
+                if not callable(stream_images):
+                    raise RuntimeError(
+                        "offline model session cannot atomically stage callback images"
+                    )
+                await stream_images(images)
+                continue
+            for image_b64 in images:
+                if isinstance(session, OmniRealtimeClient):
+                    description = await stream_image(
+                        image_b64,
+                        bypass_rate_limit=True,
+                        cache_latest=False,
+                    )
+                    if isinstance(description, str) and description.strip():
+                        descriptions.append(description.strip())
+                else:
+                    await stream_image(image_b64, bypass_rate_limit=True)
+        return "".join(
+            f"\n[实时屏幕截图或相机画面]: {description}"
+            for description in descriptions
+        )
+
     def note_user_engagement(self, *, at: float | None = None) -> None:
         """Record a genuine user interaction for silence-aware proactive guards."""
         engagement_at = float(time.time() if at is None else at)
@@ -2503,23 +2548,11 @@ class ProactiveMixin:
             # Pruning is best-effort housekeeping — never let it break callback bookkeeping.
             pass
 
-    def drain_agent_callbacks_for_llm(self) -> str:
-        """Drain pending_agent_callbacks and format as a system context string.
-
-        Clears pending_agent_callbacks (NOT pending_extra_replies, which is
-        consumed separately by the voice-mode hot-swap path).
-        Returns an empty string if there are no callbacks.
-
-        Renders with the same grouped/source-aware logic as
-        :meth:`trigger_agent_callbacks` but in passive mode — so the resulting
-        string already includes its own outer header (PASSIVE for delivery
-        ``"passive"`` callbacks, PROACTIVE for any "proactive" ones that
-        ended up here because the SM denied the claim earlier). The caller
-        therefore should NOT prepend an additional notification template.
-        """
+    def _select_agent_callbacks_for_text_drain(self) -> list:
+        """Select and provider-claim one budgeted text-turn snapshot."""
         self._purge_retracted_agent_callbacks()
         if not self.pending_agent_callbacks:
-            return ""
+            return []
         candidate_callbacks = list(self.pending_agent_callbacks)
         if self._retract_unavailable_topic_hook_snapshots(candidate_callbacks):
             logger.info(
@@ -2539,7 +2572,7 @@ class ProactiveMixin:
             and not cb.get(SWAP_PRIME_DELIVERY_CLAIM_KEY)
         ]
         if not active_callbacks:
-            return ""
+            return []
         from config import AGENT_CALLBACK_TOTAL_MAX_TOKENS
         # Budget-aware selection: render (and ack) only the callbacks that fit
         # the total budget this turn; defer the rest to the next drain instead
@@ -2547,6 +2580,14 @@ class ProactiveMixin:
         callbacks_snapshot, _deferred = _select_callbacks_within_token_budget(
             active_callbacks, AGENT_CALLBACK_TOTAL_MAX_TOKENS
         )
+        for callback in callbacks_snapshot:
+            callback[SWAP_PRIME_DELIVERY_CLAIM_KEY] = True
+        return callbacks_snapshot
+
+    def _render_and_remove_text_drain_callbacks(self, callbacks_snapshot: list) -> str:
+        """Render and dequeue an already-claimed text-turn snapshot."""
+        if not callbacks_snapshot:
+            return ""
         delivered_to_prompt = False
         try:
             # 同上；user_language 为空时才回落全局语言（此前回落的是短码）。
@@ -2573,3 +2614,48 @@ class ProactiveMixin:
                 cb for cb in self.pending_agent_callbacks
                 if id(cb) not in delivered_obj_ids
             ]
+
+    async def drain_agent_callbacks_for_llm_with_media(self) -> str:
+        """Drain one text-turn callback snapshot together with its images.
+
+        Selection, provider claim, media staging, rendering, and removal share
+        one snapshot. A callback whose media fails remains queued; cancellation
+        releases every claim in ``finally``.
+        """
+        callbacks_snapshot = self._select_agent_callbacks_for_text_drain()
+        delivered_callbacks: list = []
+        try:
+            for callback in callbacks_snapshot:
+                try:
+                    await self._stream_passive_callback_media(
+                        [callback],
+                        self.session,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "[%s] passive callback media stream failed; retaining for retry: %s",
+                        self.lanlan_name,
+                        exc,
+                    )
+                    continue
+                callback.pop("media_images", None)
+                delivered_callbacks.append(callback)
+            return self._render_and_remove_text_drain_callbacks(
+                delivered_callbacks
+            )
+        finally:
+            self._release_swap_prime_passive_claims(callbacks_snapshot)
+
+    def drain_agent_callbacks_for_llm(self) -> str:
+        """Drain one budgeted callback snapshot without async media staging.
+
+        Retained for non-streaming callers and tests; the real text input path
+        uses :meth:`drain_agent_callbacks_for_llm_with_media`.
+        """
+        callbacks_snapshot = self._select_agent_callbacks_for_text_drain()
+        try:
+            return self._render_and_remove_text_drain_callbacks(
+                callbacks_snapshot
+            )
+        finally:
+            self._release_swap_prime_passive_claims(callbacks_snapshot)
