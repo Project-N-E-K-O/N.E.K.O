@@ -11,6 +11,7 @@ from PIL import Image, ImageOps
 MAX_IMAGE_EDGE = 2048
 MAX_UPLOADED_IMAGE_BYTES = 8 * 1024 * 1024
 MAX_SOURCE_IMAGE_BYTES = 32 * 1024 * 1024
+MAX_SOURCE_IMAGE_PIXELS = 16 * 1024 * 1024
 
 
 def _normalize_to_jpeg(data: bytes) -> bytes:
@@ -21,6 +22,9 @@ def _normalize_to_jpeg(data: bytes) -> bytes:
 
     with Image.open(BytesIO(bytes(data))) as source:
         source.seek(0)
+        width, height = source.size
+        if width * height > MAX_SOURCE_IMAGE_PIXELS:
+            raise ValueError("source image exceeds the 16 megapixel decode limit")
         image = ImageOps.exif_transpose(source)
         image.thumbnail((MAX_IMAGE_EDGE, MAX_IMAGE_EDGE), Image.Resampling.LANCZOS)
         if image.mode in ("RGBA", "LA") or (

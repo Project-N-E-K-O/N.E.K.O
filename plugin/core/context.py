@@ -20,7 +20,7 @@ import functools
 import itertools
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Optional, cast
@@ -160,6 +160,11 @@ class PluginContext:
     _response_queue: Optional[Any] = None
     _response_pending: Optional[Dict[str, Any]] = None
     _direct_response_waiters: Optional[Dict[str, Any]] = None
+    _direct_response_lock: Any = field(
+        default_factory=threading.Lock,
+        init=False,
+        repr=False,
+    )
     _image_transport: Optional[Any] = None
     _images: Optional[Any] = None
     _entry_map: Optional[Dict[str, Any]] = None  # 入口映射（用于处理命令）
@@ -205,12 +210,14 @@ class PluginContext:
             raise ValueError("image upload timeout must be positive")
 
         request_id = str(uuid.uuid4())
-        waiters = self._direct_response_waiters
-        if waiters is None:
-            waiters = {}
-            self._direct_response_waiters = waiters
-        future = asyncio.get_running_loop().create_future()
-        waiters[request_id] = future
+        loop = asyncio.get_running_loop()
+        future = loop.create_future()
+        with self._direct_response_lock:
+            waiters = self._direct_response_waiters
+            if waiters is None:
+                waiters = {}
+                self._direct_response_waiters = waiters
+            waiters[request_id] = (loop, future)
         try:
             await transport.send_image(
                 request_id,
@@ -224,20 +231,43 @@ class PluginContext:
                 raise TimeoutError(f"image upload timed out after {timeout}s") from None
             return self._unwrap_image_upload_response(response)
         finally:
-            waiters.pop(request_id, None)
+            with self._direct_response_lock:
+                waiters.pop(request_id, None)
 
     def _dispatch_direct_response(self, response: Any) -> bool:
         """Resolve SDK-owned response futures before the legacy shared inbox."""
         if not isinstance(response, dict) or response.get("type") != "IMAGE_UPLOAD_RESULT":
             return False
         request_id = response.get("request_id")
-        waiters = self._direct_response_waiters
-        future = waiters.get(request_id) if waiters and request_id else None
-        if future is not None and not future.done():
-            future.set_result(response)
+        with self._direct_response_lock:
+            waiters = self._direct_response_waiters
+            waiter = waiters.get(request_id) if waiters and request_id else None
+        if waiter is not None:
+            loop, future = waiter
+            try:
+                loop.call_soon_threadsafe(
+                    self._resolve_direct_response,
+                    future,
+                    response,
+                )
+            except RuntimeError:
+                pass
         # A late image result is owned by this path too; don't leak it into the
         # plugin-to-plugin response inbox where it can confuse correlation.
         return True
+
+    @staticmethod
+    def _resolve_direct_response(
+        future: asyncio.Future[Any],
+        response: dict[str, Any],
+    ) -> None:
+        if not future.done():
+            future.set_result(response)
+
+    @staticmethod
+    def _cancel_direct_response(future: asyncio.Future[Any]) -> None:
+        if not future.done():
+            future.cancel()
 
     @staticmethod
     def _unwrap_image_upload_response(response: dict[str, Any]) -> dict[str, object]:
@@ -258,12 +288,16 @@ class PluginContext:
 
         This is safe to call multiple times.
         """
-        waiters = getattr(self, "_direct_response_waiters", None)
-        if waiters:
-            for future in tuple(waiters.values()):
-                if not future.done():
-                    future.cancel()
-            waiters.clear()
+        with self._direct_response_lock:
+            waiters = getattr(self, "_direct_response_waiters", None)
+            pending = tuple(waiters.values()) if waiters else ()
+            if waiters:
+                waiters.clear()
+        for loop, future in pending:
+            try:
+                loop.call_soon_threadsafe(self._cancel_direct_response, future)
+            except RuntimeError:
+                pass
 
         batcher = getattr(self, "_push_batcher", None)
         if batcher is not None:

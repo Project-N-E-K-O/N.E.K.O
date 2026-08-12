@@ -2277,6 +2277,10 @@
                 }
 
                 if (response.type === 'chat_blocks') {
+                    if (S.suppressAssistantStreamUntilNextSession) {
+                        console.log('[App] discard chat blocks after session ended by server');
+                        return;
+                    }
                     if (typeof window.appendReactChatBlocks === 'function') {
                         window.appendReactChatBlocks(response);
                     }

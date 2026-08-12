@@ -6,8 +6,9 @@ Replaces ``multiprocessing.Queue`` with ZMQ PUSH/PULL sockets:
 * **Uplink** (child → host): results, status, messages, plugin-to-plugin requests
 * **Image uplink** (child → host): bounded raw image uploads
 
-All messages are serialised with :mod:`pickle` (same as ``mp.Queue``) and
-carry a *channel tag* so the receiver can demux.
+Control messages are serialised with :mod:`pickle` (same as ``mp.Queue``) and
+carry a *channel tag* so the receiver can demux. Image-upload metadata uses
+JSON and the image bytes travel in a separate frame.
 
 Channel tags
 ~~~~~~~~~~~~
@@ -21,8 +22,10 @@ Channel tags
 from __future__ import annotations
 
 import asyncio
+import json
 import pickle
 import threading
+import time
 from typing import Any, Optional, Tuple
 
 import zmq
@@ -108,9 +111,14 @@ class HostTransport:
             frames = await self._img_sock.recv_multipart()
             if len(frames) != 2:
                 raise ValueError("image upload must contain metadata and data frames")
-            metadata = pickle.loads(frames[0])
+            try:
+                metadata = json.loads(frames[0].decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise ValueError("image upload metadata must be valid JSON") from exc
             if not isinstance(metadata, dict):
                 raise TypeError("image upload metadata must be a dict")
+            if not all(isinstance(key, str) for key in metadata):
+                raise TypeError("image upload metadata keys must be strings")
             return metadata, bytes(frames[1])
         return None
 
@@ -167,8 +175,9 @@ class ChildTransport:
         self._dl_sock.connect(downlink_endpoint)
 
         self._img_sock: Any | None = None
+        self._img_lock = threading.Lock()
         if image_uplink_endpoint:
-            self._img_sock = self._async_ctx.socket(zmq.PUSH)
+            self._img_sock = self._sync_ctx.socket(zmq.PUSH)
             self._img_sock.setsockopt(zmq.LINGER, 0)
             self._img_sock.setsockopt(zmq.SNDHWM, _IMAGE_HWM)
             self._img_sock.connect(image_uplink_endpoint)
@@ -197,18 +206,55 @@ class ChildTransport:
         """Send raw image bytes without using the shared control uplink."""
         if self._img_sock is None:
             raise RuntimeError("image transport is not configured")
-        metadata = pickle.dumps({
-            "type": "IMAGE_UPLOAD",
-            "request_id": str(request_id),
-            "mime": str(mime),
-        })
-        try:
-            await asyncio.wait_for(
-                self._img_sock.send_multipart([metadata, bytes(data)]),
-                timeout=timeout,
+        payload = bytes(data)
+        if len(payload) > _IMAGE_MAX_BYTES:
+            raise ValueError(
+                f"image payload exceeds the {_IMAGE_MAX_BYTES} byte transport limit"
             )
-        except asyncio.TimeoutError:
-            raise TimeoutError(f"image transport send timed out after {timeout}s") from None
+        metadata = json.dumps(
+            {
+                "type": "IMAGE_UPLOAD",
+                "request_id": str(request_id),
+                "mime": str(mime),
+            },
+            separators=(",", ":"),
+        ).encode("utf-8")
+        await asyncio.to_thread(
+            self._send_image_sync,
+            metadata,
+            payload,
+            timeout,
+        )
+
+    def _send_image_sync(
+        self,
+        metadata: bytes,
+        payload: bytes,
+        timeout: float,
+    ) -> None:
+        """Bound one image send while serialising access across plugin threads."""
+        if timeout <= 0:
+            raise ValueError("image transport timeout must be positive")
+        started_at = time.monotonic()
+        if not self._img_lock.acquire(timeout=timeout):
+            raise TimeoutError(f"image transport send timed out after {timeout}s")
+        try:
+            if self._closed or self._img_sock is None:
+                raise RuntimeError("image transport is closed")
+            remaining = timeout - (time.monotonic() - started_at)
+            if remaining <= 0 or not self._img_sock.poll(
+                timeout=max(1, int(remaining * 1000)),
+                flags=zmq.POLLOUT,
+            ):
+                raise TimeoutError(f"image transport send timed out after {timeout}s")
+            try:
+                self._img_sock.send_multipart([metadata, payload], flags=zmq.NOBLOCK)
+            except zmq.Again:
+                raise TimeoutError(
+                    f"image transport send timed out after {timeout}s"
+                ) from None
+        finally:
+            self._img_lock.release()
 
     # ── uplink (thread-safe, any thread) ─────────────────────────
 
@@ -236,14 +282,17 @@ class ChildTransport:
         if self._closed:
             return
         self._closed = True
-        sockets = [self._dl_sock, self._ul_sock]
-        if self._img_sock is not None:
-            sockets.append(self._img_sock)
-        for sock in sockets:
+        for sock in (self._dl_sock, self._ul_sock):
             try:
                 sock.close(linger=0)
             except Exception:
                 pass
+        with self._img_lock:
+            if self._img_sock is not None:
+                try:
+                    self._img_sock.close(linger=0)
+                except Exception:
+                    pass
         for ctx in (self._async_ctx, self._sync_ctx):
             try:
                 ctx.term()

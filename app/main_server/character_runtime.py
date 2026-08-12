@@ -18,13 +18,15 @@
 import asyncio
 import atexit
 import base64
+import ipaddress
 import logging
 import sys
 import traceback
 from dataclasses import dataclass
 from typing import Any, Optional
+from urllib.parse import urlsplit
 
-from config import MONITOR_SERVER_PORT, USER_NOTIFICATION_ERROR_MAX_CHARS, USER_PLUGIN_BASE
+from config import MONITOR_SERVER_PORT, USER_NOTIFICATION_ERROR_MAX_CHARS
 from main_logic import core, cross_server
 from main_logic.agent_event_bus import notify_analyze_ack
 from utils.config_manager import get_reserved
@@ -39,6 +41,30 @@ logger = runtime.logger
 _PLUGIN_IMAGE_MAX_BYTES = 8 * 1024 * 1024
 
 
+def _is_local_plugin_media_url(url: str) -> bool:
+    """Accept temporary media on any loopback port selected by the plugin host."""
+    try:
+        parsed = urlsplit(url)
+        host = parsed.hostname
+        port = parsed.port
+        media_id = parsed.path.removeprefix("/media/")
+        return (
+            parsed.scheme == "http"
+            and parsed.username is None
+            and parsed.password is None
+            and host is not None
+            and ipaddress.ip_address(host).is_loopback
+            and port is not None
+            and not parsed.query
+            and not parsed.fragment
+            and parsed.path.startswith("/media/")
+            and bool(media_id)
+            and "/" not in media_id
+        )
+    except ValueError:
+        return False
+
+
 def _plugin_image_chat_blocks(media_parts: list[Any]) -> list[dict[str, str]]:
     """Convert URL-backed plugin media into frontend image blocks."""
     return [
@@ -47,20 +73,13 @@ def _plugin_image_chat_blocks(media_parts: list[Any]) -> list[dict[str, str]]:
         if isinstance(part, dict)
         and part.get("type") == "image"
         and isinstance(part.get("url"), str)
-        and part.get("url")
+        and _is_local_plugin_media_url(part["url"])
     ]
 
 
 async def _fetch_plugin_image_base64(url: str) -> str:
     """Fetch one temporary plugin image without blocking the event loop."""
-    resolve_plugin_base = runtime.resolve_user_plugin_base
-    plugin_base = (
-        resolve_plugin_base()
-        if callable(resolve_plugin_base)
-        else USER_PLUGIN_BASE.rstrip("/")
-    )
-    media_prefix = f"{plugin_base.rstrip('/')}/media/"
-    if not url.startswith(media_prefix):
+    if not _is_local_plugin_media_url(url):
         raise ValueError("image URL is not served by the local plugin media store")
     response = await get_internal_http_client().get(url, timeout=2.0)
     response.raise_for_status()

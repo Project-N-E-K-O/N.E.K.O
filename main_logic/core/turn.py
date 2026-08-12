@@ -1646,8 +1646,8 @@ class TurnMixin:
 
         Returns ``True`` iff a ``gemini_response`` frame was actually
         handed to ``send_json`` without raising. ``False`` covers every
-        no-op path: empty/whitespace text, websocket missing or
-        disconnected, and ``send_json`` failures swallowed below. Callers
+        no-op path: no visible text or structured blocks, websocket missing
+        or disconnected, and ``send_json`` failures swallowed below. Callers
         that open an assistant-turn lifecycle on the frontend (e.g.
         ``main_server`` chat-blind) MUST gate their turn-end emit on this
         flag — a swallowed send means the frontend never opened a turn,

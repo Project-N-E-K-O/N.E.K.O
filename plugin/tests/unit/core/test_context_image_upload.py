@@ -163,6 +163,26 @@ def test_images_upload_scales_large_input_without_blocking_the_event_loop(tmp_pa
         assert uploaded_image.size == (2048, 683)
 
 
+def test_images_upload_rejects_excessive_pixel_count_before_decode(tmp_path: Path) -> None:
+    responses: asyncio.Queue[dict[str, object]] = asyncio.Queue()
+    transport = _ImageTransport(responses)
+    ctx = PluginContext(
+        plugin_id="demo",
+        config_path=tmp_path / "plugin.toml",
+        logger=_Logger(),  # type: ignore[arg-type]
+        status_queue=None,
+        _response_queue=responses,
+        _image_transport=transport,
+    )
+    output = BytesIO()
+    Image.new("1", (4097, 4097)).save(output, format="PNG")
+
+    with pytest.raises(ValueError, match="16 megapixel decode limit"):
+        asyncio.run(ctx.images.upload(output.getvalue()))
+
+    assert transport.uploaded == []
+
+
 def test_context_close_cancels_an_upload_waiting_for_its_response(tmp_path: Path) -> None:
     class _NoResponseTransport:
         def __init__(self, sent: asyncio.Event) -> None:

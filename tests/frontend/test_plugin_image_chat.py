@@ -77,11 +77,36 @@ def test_display_only_plugin_image_reaches_react_without_opening_an_assistant_tu
         "assistantTurnId": "existing-turn",
         "bubbleRefs": 0,
     }
-    assert message["id"] == "plugin-blocks-plugin-image-display-only"
+    assert message["id"].startswith("plugin-blocks-plugin-image-display-only-")
     assert message["role"] == "assistant"
     assert message["status"] == "sent"
     assert message["blocks"] == [{"type": "image", "url": _ONE_PIXEL_PNG}]
     assert page_errors == []
+
+
+@pytest.mark.frontend
+def test_repeated_display_only_pushes_use_unique_message_ids(
+    mock_page: Page,
+    running_server: str,
+) -> None:
+    _open_chat(mock_page, running_server)
+
+    message_ids = mock_page.evaluate(
+        """(imageUrl) => {
+            const payload = {
+                request_id: 'same-plugin-request',
+                blocks: [{ type: 'image', url: imageUrl }]
+            };
+            window.appendReactChatBlocks(payload);
+            window.appendReactChatBlocks(payload);
+            return window.reactChatWindowHost.getState().messages.map((item) => item.id);
+        }""",
+        _ONE_PIXEL_PNG,
+    )
+
+    assert len(message_ids) == 2
+    assert len(set(message_ids)) == 2
+    assert all(item.startswith("plugin-blocks-same-plugin-request-") for item in message_ids)
 
 
 @pytest.mark.frontend
@@ -96,7 +121,7 @@ def test_structured_passthrough_image_uses_the_existing_assistant_lifecycle(
     accepted = mock_page.evaluate(
         """(imageUrl) => {
             window._nekoAssistantTurnId = 'plugin-passthrough-turn';
-            window.currentTurnGeminiBubbles = [];
+            delete window.currentTurnGeminiBubbles;
             return window.appendMessage('', 'gemini', true, {
                 blocks: [{ type: 'image', url: imageUrl }]
             });

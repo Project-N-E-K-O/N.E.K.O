@@ -48,11 +48,6 @@ async def test_plugin_image_url_is_fetched_asynchronously_for_model_context(monk
         lambda: client,
         raising=False,
     )
-    monkeypatch.setattr(
-        "app.main_server.character_runtime.runtime.resolve_user_plugin_base",
-        lambda: "http://127.0.0.1:49888",
-    )
-
     await main_server._handle_agent_event({
         "event_type": "proactive_message",
         "lanlan_name": "Test",
@@ -63,7 +58,7 @@ async def test_plugin_image_url_is_fetched_asynchronously_for_model_context(monk
         "visibility": [],
         "media_parts": [{
             "type": "image",
-            "url": "http://127.0.0.1:49888/media/example",
+            "url": "http://127.0.0.1:49889/media/example",
             "mime": "image/jpeg",
         }],
     })
@@ -104,6 +99,7 @@ async def test_chat_blind_plugin_image_is_forwarded_as_structured_blocks(monkeyp
         }],
     })
 
+    manager.passthrough_to_chat_bubble.assert_awaited_once()
     call = manager.passthrough_to_chat_bubble.await_args
     assert call.kwargs["blocks"] == [
         {"type": "text", "text": "look at this"},
@@ -112,6 +108,19 @@ async def test_chat_blind_plugin_image_is_forwarded_as_structured_blocks(monkeyp
             "url": "http://127.0.0.1:48916/media/example",
         },
     ]
+
+
+def test_external_image_urls_are_not_exposed_to_chat_or_model() -> None:
+    from app.main_server.character_runtime import _plugin_image_chat_blocks
+
+    assert _plugin_image_chat_blocks([
+        {"type": "image", "url": "https://example.com/media/not-local"},
+        {"type": "image", "url": "http://localhost:48916/media/not-an-ip"},
+        {"type": "image", "url": "http://127.0.0.1:48916/media/valid"},
+    ]) == [{
+        "type": "image",
+        "url": "http://127.0.0.1:48916/media/valid",
+    }]
 
 
 @pytest.mark.asyncio

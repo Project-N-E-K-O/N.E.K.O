@@ -733,6 +733,7 @@
             }
             var structuredRef = createVirtualBubbleRef(structuredMessageId);
             window.currentGeminiMessage = structuredRef;
+            window.currentTurnGeminiBubbles = window.currentTurnGeminiBubbles || [];
             window.currentTurnGeminiBubbles.push(structuredRef);
             markAssistantVisibleResponseForAchievement();
             return true;
@@ -947,10 +948,11 @@
             return false;
         }
         var author = getCurrentAssistantName();
+        var messageIdPrefix = payload.request_id
+            ? 'plugin-blocks-' + String(payload.request_id)
+            : 'plugin-blocks';
         host.appendMessage({
-            id: payload.request_id
-                ? 'plugin-blocks-' + String(payload.request_id)
-                : nextReactMessageId('plugin-blocks'),
+            id: nextReactMessageId(messageIdPrefix),
             role: 'assistant',
             author: author,
             time: getCurrentTimeString(),

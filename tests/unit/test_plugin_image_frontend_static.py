@@ -15,3 +15,11 @@ def test_structured_passthrough_blocks_reach_the_react_chat_host() -> None:
     assert "response.type === 'chat_blocks'" in websocket
     assert "window.appendReactChatBlocks(response)" in websocket
     assert "function appendReactChatBlocks(payload)" in adapter
+    chat_blocks_branch = websocket.split("if (response.type === 'chat_blocks')", 1)[1].split(
+        "// -------- gemini_response --------",
+        1,
+    )[0]
+    assert "if (S.suppressAssistantStreamUntilNextSession)" in chat_blocks_branch
+    assert chat_blocks_branch.index("if (S.suppressAssistantStreamUntilNextSession)") < chat_blocks_branch.index(
+        "window.appendReactChatBlocks(response)"
+    )

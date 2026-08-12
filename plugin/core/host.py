@@ -855,8 +855,12 @@ def _plugin_process_runner(
 
         async def _route_response(msg: Any) -> None:
             dispatch_direct = getattr(ctx, "_dispatch_direct_response", None)
-            if callable(dispatch_direct) and dispatch_direct(msg):
-                return
+            if callable(dispatch_direct):
+                try:
+                    if dispatch_direct(msg):
+                        return
+                except Exception:
+                    logger.exception("Failed to dispatch SDK-owned response")
             await _response_inbox.put(msg)
 
         async def _startup_downlink_pump(stop_event: asyncio.Event) -> None:
