@@ -1074,7 +1074,7 @@ def test_study_companion_pages_forward_current_locale_to_plugin_entries() -> Non
 
     assert "locale: PluginSurfaceProps['locale']" in hosted_source
     assert "{ ...args, locale: String(locale || '').trim() }" in hosted_source
-    assert hosted_source.count("props.locale,") == 7
+    assert hosted_source.count("props.locale,") == 8
     assert "}, [props.locale]);" in hosted_source
     assert "typeof window.I18n.lang === 'function'" in static_source
     assert "createRun(entryId, { ...args, locale }, deadline)" in static_source
@@ -6193,7 +6193,8 @@ def test_study_companion_hosted_panel_supports_image_paste_contract() -> None:
     assert "study-panel__paste-error" in source
     assert "beginPasteSignal" in source
     assert "signal.aborted" in source
-    assert "onPaste={handleTextPaste}" in source
+    assert "onPaste={handleStudyPaste}" in source
+    assert "await handleTextPaste(event);" in source
     assert "onPaste={handleAnswerPaste}" in source
     assert "const [pastePending, setPastePending] = useState(false);" in source
     assert "pastePendingRef.current = value;" in source

@@ -1,6 +1,15 @@
 import { useEffect, useRef, useState } from '@neko/plugin-ui';
 import type { PluginSurfaceProps } from '@neko/plugin-ui';
 import { callPlugin as callHostedPlugin, ensureBrandCSS } from './study_surface_utils';
+import {
+  metadataForEditedDocument,
+  oneStudyDocument,
+  readStudyDocument,
+  STUDY_DOCUMENT_MAX_BYTES,
+  STUDY_DOCUMENT_MAX_ESTIMATED_TOKENS,
+  StudyDocumentError,
+  type StudyDocument,
+} from './study_document_utils';
 
 type StudyStatus = {
   status?: string;
@@ -50,6 +59,7 @@ const ENTRY_TIMEOUT_MS: Record<string, number> = {
   study_ocr_snapshot: 60000,
   study_set_mode: 15000,
   study_explain_text: 70000,
+  study_analyze_document: 105000,
   study_generate_question: 70000,
   study_question_context: 30000,
   study_generate_targeted_question: 55000,
@@ -612,10 +622,40 @@ function callStudyPlugin<T = Record<string, unknown>>(
 }
 
 export default function StudyPanel(props: PluginSurfaceProps) {
-  const t = (key: string, defaultValue?: string) => {
-    const translated = props.t?.(key);
-    return translated && translated !== key ? translated : defaultValue || key;
+  const documentKeyAliases: Record<string, string> = {
+    'ui.document.import': 'ui.button.import_document',
+    'ui.document.analyze': 'ui.button.analyze_document',
+    'ui.document.remove': 'ui.button.remove_document',
+    'ui.document.cancel_reading': 'ui.button.remove_document',
+    'ui.document.drop_now': 'ui.document.drop_hint',
+    'ui.document.card_label': 'ui.document.ready',
+    'ui.document.modified': 'ui.document.ready_modified',
+    'ui.document.estimate_warning': 'ui.document.token_estimate_warning',
+    'ui.document.instruction': 'ui.document.instruction_label',
+    'ui.document.status.analyzing': 'ui.status.analyzing_document',
+    'ui.document.error.multiple_files': 'ui.error.document_multiple',
+    'ui.document.error.unsupported_type': 'ui.error.document_type',
+    'ui.document.error.file_too_large': 'ui.error.document_too_large',
+    'ui.document.error.empty': 'ui.error.document_empty',
+    'ui.document.error.binary': 'ui.error.document_binary',
+    'ui.document.error.encoding': 'ui.error.document_encoding',
+    'ui.document.error.too_long': 'ui.error.document_too_long',
+    'ui.document.error.unsafe_content': 'ui.error.document_unsafe_content',
+    'ui.document.error.read_failed': 'ui.error.document_read',
+    'ui.document.error.timeout': 'ui.error.document_analysis_timeout',
+    'ui.document.error.instruction_too_long': 'ui.error.document_analysis_failed',
   };
+  const t = (key: string, defaultValue?: string) => {
+    const effectiveKey = documentKeyAliases[key] || key;
+    const translated = props.t?.(effectiveKey);
+    return translated && translated !== effectiveKey ? translated : defaultValue || key;
+  };
+  const tf = (key: string, fallback: string, values: Record<string, string>) => (
+    Object.entries(values).reduce(
+      (message, [name, value]) => message.replace(`{${name}}`, value),
+      t(key, fallback),
+    )
+  );
   const [status, setStatus] = useState<StudyStatus>({});
   const [text, setText] = useState('');
   const [question, setQuestion] = useState('');
@@ -629,8 +669,15 @@ export default function StudyPanel(props: PluginSurfaceProps) {
   const [answerImage, setAnswerImage] = useState('');
   const [textPasteError, setTextPasteError] = useState('');
   const [answerPasteError, setAnswerPasteError] = useState('');
+  const [studyDocument, setStudyDocument] = useState<StudyDocument | null>(null);
+  const [documentError, setDocumentError] = useState('');
+  const [documentInstruction, setDocumentInstruction] = useState('');
+  const [documentDragging, setDocumentDragging] = useState(false);
+  const [documentReading, setDocumentReading] = useState(false);
   const explainControllerRef = useRef<AbortController | null>(null);
   const pasteControllerRef = useRef<AbortController | null>(null);
+  const documentControllerRef = useRef<AbortController | null>(null);
+  const documentInputRef = useRef<HTMLInputElement | null>(null);
   const mountedRef = useRef(false);
   const textImageRef = useRef('');
   const pastePendingRef = useRef(false);
@@ -739,14 +786,24 @@ export default function StudyPanel(props: PluginSurfaceProps) {
             : String(error);
   }
 
-  function formatTutorDiagnostic(diagnostic?: string) {
+  function formatTutorDiagnostic(diagnostic?: string, documentOperation = false) {
     const messages: Record<string, [string, string]> = {
-      timeout: ['ui.error.llm_timeout', 'Image understanding timed out. Please retry or paste the problem text.'],
+      timeout: documentOperation
+        ? ['ui.document.error.timeout', 'Document analysis timed out. Please retry shortly.']
+        : ['ui.error.llm_timeout', 'Image understanding timed out. Please retry or paste the problem text.'],
       rate_limited: ['ui.error.llm_rate_limited', 'Qwen is receiving too many requests. Please retry shortly.'],
       authentication_failed: ['ui.error.llm_authentication_failed', 'The Qwen API credential is invalid. Please check the API key.'],
       model_not_supported: ['ui.error.llm_model_not_supported', 'The configured model or endpoint does not support native Qwen image understanding.'],
       provider_unavailable: ['ui.error.llm_provider_unavailable', 'Qwen is temporarily unavailable. Please retry shortly.'],
       invalid_image: ['ui.error.llm_invalid_image', 'The image could not be read. Please use a valid JPEG or PNG image.'],
+      document_too_large: ['ui.document.error.file_too_large', 'The document exceeds the 512 KiB size limit.'],
+      document_too_long: ['ui.document.error.too_long', 'The document exceeds the 24,000-token limit. Shorten it and retry.'],
+      empty_document: ['ui.document.error.empty', 'The document is empty or contains only whitespace.'],
+      binary_document: ['ui.document.error.binary', 'This file appears to contain binary data.'],
+      invalid_document_encoding: ['ui.document.error.encoding', 'The document encoding could not be recognized. Save it as UTF-8 and retry.'],
+      unsupported_document_type: ['ui.document.error.unsupported_type', 'Only .txt, .md, and .markdown files are supported.'],
+      unsafe_document_content: ['ui.document.error.unsafe_content', 'The document contains an oversized embedded payload or line.'],
+      analysis_instruction_too_long: ['ui.document.error.instruction_too_long', 'The analysis instruction is too long.'],
     };
     const [key, fallback] = messages[String(diagnostic || '').trim()]
       || ['ui.error.llm_call_failed', 'The Qwen request failed. Please retry.'];
@@ -772,6 +829,121 @@ export default function StudyPanel(props: PluginSurfaceProps) {
 
   function getVisionMaxImagePx() {
     return visionMaxImagePxRef.current;
+  }
+
+  function formatDocumentError(error: unknown) {
+    const messages: Record<string, [string, string]> = {
+      multiple_files: ['ui.document.error.multiple_files', 'Please choose exactly one document.'],
+      unsupported_type: ['ui.document.error.unsupported_type', 'Only .txt, .md, and .markdown files are supported.'],
+      file_too_large: ['ui.document.error.file_too_large', 'The document exceeds the 512 KiB size limit.'],
+      empty_document: ['ui.document.error.empty', 'The document is empty or contains only whitespace.'],
+      binary_document: ['ui.document.error.binary', 'This file appears to contain binary data.'],
+      encoding_unrecognized: ['ui.document.error.encoding', 'The document encoding could not be recognized. Save it as UTF-8 and retry.'],
+      unsafe_document_content: ['ui.document.error.unsafe_content', 'The document contains an oversized embedded payload or line.'],
+      document_too_long: ['ui.document.error.too_long', 'The document is estimated to exceed the 24,000-token limit. Shorten it and retry.'],
+    };
+    const code = error instanceof StudyDocumentError ? error.code : '';
+    const [key, fallback] = messages[code]
+      || ['ui.document.error.read_failed', 'The document could not be read.'];
+    return t(key, fallback);
+  }
+
+  async function importDocumentFiles(files: FileList | File[]) {
+    if (isInteractionBusy()) return;
+    documentControllerRef.current?.abort();
+    const controller = new AbortController();
+    documentControllerRef.current = controller;
+    setPastePendingState(true);
+    setDocumentReading(true);
+    setDocumentError('');
+    try {
+      const file = oneStudyDocument(files);
+      const loaded = await readStudyDocument(file, controller.signal);
+      if (controller.signal.aborted || !mountedRef.current) return;
+      setText(loaded.text);
+      setStudyDocument(loaded.document);
+      setTextImageValue('');
+      setTextPasteError('');
+    } catch (error) {
+      if (!controller.signal.aborted && mountedRef.current) {
+        setDocumentError(formatDocumentError(error));
+      }
+    } finally {
+      if (documentControllerRef.current === controller) {
+        documentControllerRef.current = null;
+      }
+      if (!controller.signal.aborted && mountedRef.current) {
+        setPastePendingState(false);
+        setDocumentReading(false);
+      }
+    }
+  }
+
+  function removeStudyDocument() {
+    documentControllerRef.current?.abort();
+    documentControllerRef.current = null;
+    setStudyDocument(null);
+    setDocumentError('');
+    setDocumentInstruction('');
+    setText('');
+    if (documentInputRef.current) documentInputRef.current.value = '';
+  }
+
+  function editStudyText(value: string) {
+    setText(value);
+    if (studyDocument) {
+      setStudyDocument(metadataForEditedDocument(studyDocument, value));
+      setDocumentError('');
+    }
+  }
+
+  async function analyzeDocument() {
+    if (isInteractionBusy() || !studyDocument) return;
+    const sourceText = text.trim();
+    if (!sourceText) {
+      setDocumentError(t('ui.document.error.empty', 'The document is empty or contains only whitespace.'));
+      return;
+    }
+    const currentDocument = metadataForEditedDocument(studyDocument, text);
+    if (currentDocument.size > STUDY_DOCUMENT_MAX_BYTES) {
+      setStudyDocument(currentDocument);
+      setDocumentError(t('ui.document.error.file_too_large', 'The edited document exceeds the 512 KiB size limit.'));
+      return;
+    }
+    const controller = beginStudyRequest();
+    setBusy(true);
+    setDocumentError('');
+    setReply(t('ui.document.status.analyzing', 'Analyzing document...'));
+    scrollReplyIntoView();
+    try {
+      const data = await callStudyPlugin(props.api, 'study_analyze_document', props.locale, {
+        document_name: currentDocument.name,
+        document_type: currentDocument.type,
+        document_text: text,
+        analysis_instruction: documentInstruction.trim(),
+        locale: String(props.locale || '').trim(),
+      }, controller.signal) as {
+        reply?: string;
+        summary?: string;
+        degraded?: boolean;
+        diagnostic?: string;
+      };
+      if (controller.signal.aborted) return;
+      setReply(data.degraded
+        ? formatTutorDiagnostic(data.diagnostic, true)
+        : (data.reply || data.summary || ''));
+      setStudyDocument(currentDocument);
+      await refresh(controller.signal, { updateReply: false });
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        setReply(error instanceof Error && /plugin call timed out|plugin_call_timeout/i.test(error.message)
+          ? t('ui.document.error.timeout', 'Document analysis timed out. Please retry shortly.')
+          : formatPluginError(error));
+      }
+    } finally {
+      if (!controller.signal.aborted) setBusy(false);
+      endStudyRequest(controller);
+    }
   }
 
   async function refresh(signal?: AbortSignal, _options: { updateReply?: boolean } = {}) {
@@ -1061,6 +1233,8 @@ export default function StudyPanel(props: PluginSurfaceProps) {
       explainControllerRef.current = null;
       pasteControllerRef.current?.abort();
       pasteControllerRef.current = null;
+      documentControllerRef.current?.abort();
+      documentControllerRef.current = null;
     };
   }, [props.locale]);
 
@@ -1110,6 +1284,24 @@ export default function StudyPanel(props: PluginSurfaceProps) {
     () => mountedRef.current,
     beginPasteSignal,
   );
+  const handleStudyPaste = async (event: {
+    clipboardData?: DataTransfer;
+    preventDefault: () => void;
+    target: EventTarget | null;
+  }) => {
+    const directFiles = Array.from(event.clipboardData?.files || []);
+    const itemFiles = Array.from(event.clipboardData?.items || [])
+      .filter((item) => item.kind === 'file')
+      .map((item) => item.getAsFile())
+      .filter((file): file is File => Boolean(file));
+    const files = directFiles.length ? directFiles : itemFiles;
+    if (files.length > 1 || (files.length === 1 && !files[0].type.startsWith('image/'))) {
+      event.preventDefault();
+      await importDocumentFiles(files);
+      return;
+    }
+    await handleTextPaste(event);
+  };
   const handleAnswerPaste = createPasteHandler(
     {
       setImage: setAnswerImage,
@@ -1186,14 +1378,117 @@ export default function StudyPanel(props: PluginSurfaceProps) {
           <strong>{questionContext?.selection_reason || '-'}</strong>
         </div>
       </section>
-      <textarea
-        aria-label={t('ui.label.text', 'Text')}
-        placeholder={t('ui.placeholder.input', 'Paste a concept, problem statement, or OCR text here.')}
-        value={text}
-        readOnly={interactionBusy}
-        onChange={(event) => setText(event.target.value)}
-        onPaste={handleTextPaste}
-      />
+      <div
+        className={`study-panel__document-drop${documentDragging ? ' is-dragging' : ''}`}
+        onDragEnter={(event) => {
+          event.preventDefault();
+          if (!interactionBusy) setDocumentDragging(true);
+        }}
+        onDragOver={(event) => {
+          event.preventDefault();
+          if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
+        }}
+        onDragLeave={(event) => {
+          if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+            setDocumentDragging(false);
+          }
+        }}
+        onDrop={(event) => {
+          event.preventDefault();
+          setDocumentDragging(false);
+          void importDocumentFiles(event.dataTransfer.files);
+        }}
+      >
+        <div className="study-panel__document-toolbar">
+          <input
+            ref={documentInputRef}
+            className="study-panel__document-input"
+            type="file"
+            accept=".txt,.md,.markdown,text/plain,text/markdown"
+            disabled={interactionBusy}
+            onChange={(event) => {
+              const files = event.target.files;
+              if (files) void importDocumentFiles(files);
+              event.target.value = '';
+            }}
+          />
+          <button
+            type="button"
+            disabled={interactionBusy}
+            onClick={() => documentInputRef.current?.click()}
+          >
+            {t('ui.document.import', 'Import TXT / Markdown')}
+          </button>
+          {documentReading ? (
+            <button
+              type="button"
+              onClick={() => {
+                documentControllerRef.current?.abort();
+                documentControllerRef.current = null;
+                setDocumentReading(false);
+                setPastePendingState(false);
+              }}
+            >
+              {t('ui.document.cancel_reading', 'Cancel reading')}
+            </button>
+          ) : null}
+          <span>{documentDragging
+            ? t('ui.document.drop_now', 'Drop the document here')
+            : t('ui.document.drop_hint', 'or drag a document into this editor')}</span>
+        </div>
+        <textarea
+          aria-label={t('ui.label.text', 'Text')}
+          placeholder={t('ui.placeholder.input', 'Paste a concept, problem statement, or OCR text here.')}
+          value={text}
+          readOnly={interactionBusy}
+          onChange={(event) => editStudyText(event.target.value)}
+          onPaste={handleStudyPaste}
+        />
+      </div>
+      {studyDocument ? (
+        <section className="study-panel__document-card" aria-label={t('ui.document.card_label', 'Imported document')}>
+          <div>
+            <strong>{studyDocument.name}</strong>
+            <span>{tf(
+              'ui.document.meta',
+              '{size} · {encoding} · {chars} characters · about {tokens} tokens',
+              {
+                size: `${(studyDocument.size / 1024).toFixed(1)} KiB`,
+                encoding: studyDocument.encoding,
+                chars: studyDocument.chars.toLocaleString(),
+                tokens: studyDocument.estimatedTokens.toLocaleString(),
+              },
+            )}</span>
+            <small>{studyDocument.modified
+              ? t('ui.document.modified', 'Content modified; token count has been re-estimated.')
+              : t('ui.document.not_retained', 'The original document will not be retained.')}</small>
+            {studyDocument.estimatedTokens > STUDY_DOCUMENT_MAX_ESTIMATED_TOKENS ? (
+              <small className="study-panel__document-warning">
+                {t('ui.document.estimate_warning', 'The estimate is above 24,000 tokens. The server will verify the exact token count before analysis.')}
+              </small>
+            ) : null}
+          </div>
+          <label>
+            <span>{t('ui.document.instruction', 'Analysis instruction (optional)')}</span>
+            <input
+              value={documentInstruction}
+              maxLength={1000}
+              disabled={interactionBusy}
+              onChange={(event) => setDocumentInstruction(event.target.value)}
+              placeholder={t('ui.document.instruction_placeholder', 'For example: extract exam topics')}
+            />
+          </label>
+          <div className="study-panel__actions">
+            <button type="button" disabled={interactionBusy} onClick={removeStudyDocument}>
+              {t('ui.document.remove', 'Remove')}
+            </button>
+            <button type="button" disabled={interactionBusy} onClick={() => void analyzeDocument()}>
+              {interactionBusy ? t('ui.button.loading', 'Loading...') : t('ui.document.analyze', 'Analyze document')}
+            </button>
+          </div>
+        </section>
+      ) : null}
+      {documentError ? <div className="study-panel__paste-error" role="alert">{documentError}</div> : null}
       {textImage ? (
         <div className="study-panel__image-preview">
           <img src={textImage} alt="pasted study context" />
@@ -1226,7 +1521,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
       <button
         type="button"
         className={interactionBusy ? 'loading' : ''}
-        disabled={interactionBusy}
+        disabled={interactionBusy || !!studyDocument}
         aria-busy={interactionBusy}
         aria-label={explainLabel}
         onClick={interactionBusy ? undefined : explain}

@@ -325,6 +325,58 @@ export const BRAND_CSS = `
     background-size: 100% 1.5em;
   }
 
+  .study-panel__document-drop {
+    display: grid;
+    gap: 8px;
+    border: 1px dashed rgba(47, 125, 87, 0.34);
+    border-radius: var(--radius-sm);
+    padding: 10px;
+    transition: border-color var(--transition-fast), background var(--transition-fast);
+  }
+
+  .study-panel__document-drop.is-dragging {
+    border-color: var(--brand);
+    background: rgba(47, 125, 87, 0.09);
+  }
+
+  .study-panel__document-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    color: var(--muted);
+    font-size: 13px;
+  }
+
+  .study-panel__document-input {
+    display: none;
+  }
+
+  .study-panel__document-card {
+    display: grid;
+    gap: 10px;
+    border: 1px solid rgba(47, 125, 87, 0.22);
+    border-left: 4px solid var(--brand);
+    border-radius: var(--radius-sm);
+    background: rgba(47, 125, 87, 0.06);
+    padding: 12px;
+  }
+
+  .study-panel__document-card > div:first-child {
+    display: grid;
+    gap: 3px;
+  }
+
+  .study-panel__document-card span,
+  .study-panel__document-card small {
+    color: var(--muted);
+  }
+
+  .study-panel__document-card .study-panel__document-warning {
+    color: var(--warning-strong);
+    font-weight: 700;
+  }
+
   .study-panel__actions {
     display: flex;
     flex-wrap: wrap;

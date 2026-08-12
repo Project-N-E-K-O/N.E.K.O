@@ -4,6 +4,10 @@ const RUN_TIMEOUT_MS = 60000;
 const RUN_EXPORT_RETRY_COUNT = 3;
 const RUN_EXPORT_RETRY_DELAY_MS = 400;
 const LOAD_IMAGE_TIMEOUT_MS = 30000;
+const DOCUMENT_MAX_BYTES = 512 * 1024;
+const DOCUMENT_MAX_TOKENS = 24000;
+const DOCUMENT_EDIT_DEBOUNCE_MS = 180;
+const SUPPORTED_DOCUMENT_EXTENSIONS = new Set(['.txt', '.md', '.markdown']);
 const TARGET_DATA_URL_LENGTH = 1000000;
 const DEFAULT_VISION_MAX_IMAGE_PX = 768;
 const SUPPORTED_PASTE_IMAGE_TYPES = new Set(['image/png', 'image/jpeg']);
@@ -15,6 +19,7 @@ const ENTRY_TIMEOUT_MS = {
   study_ocr_snapshot: 60000,
   study_set_mode: 15000,
   study_explain_text: 70000,
+  study_analyze_document: 105000,
   study_generate_question: 70000,
   study_question_context: 30000,
   study_generate_targeted_question: 55000,
@@ -54,6 +59,16 @@ const studyInputImagePreview = document.getElementById('studyInputImagePreview')
 const studyInputImage = document.getElementById('studyInputImage');
 const studyInputImageRemove = document.getElementById('studyInputImageRemove');
 const studyInputPasteError = document.getElementById('studyInputPasteError');
+const studyDocumentDropZone = document.getElementById('studyDocumentDropZone');
+const studyDocumentInput = document.getElementById('studyDocumentInput');
+const studyDocumentImportBtn = document.getElementById('studyDocumentImportBtn');
+const studyDocumentCard = document.getElementById('studyDocumentCard');
+const studyDocumentName = document.getElementById('studyDocumentName');
+const studyDocumentMeta = document.getElementById('studyDocumentMeta');
+const studyDocumentState = document.getElementById('studyDocumentState');
+const studyDocumentInstruction = document.getElementById('studyDocumentInstruction');
+const studyDocumentAnalyzeBtn = document.getElementById('studyDocumentAnalyzeBtn');
+const studyDocumentRemoveBtn = document.getElementById('studyDocumentRemoveBtn');
 const answerInputImagePreview = document.getElementById('answerInputImagePreview');
 const answerInputImage = document.getElementById('answerInputImage');
 const answerInputImageRemove = document.getElementById('answerInputImageRemove');
@@ -161,6 +176,10 @@ let lastReplyValue = '';
 let studyInputImageValue = '';
 let answerInputImageValue = '';
 let pastePendingCount = 0;
+let documentBusy = false;
+let documentReadGeneration = 0;
+let documentEditTimer = 0;
+let importedDocument = null;
 let llmVisionMaxImagePx = DEFAULT_VISION_MAX_IMAGE_PX;
 let currentQuestion = null;
 let currentSelectionContext = null;
@@ -425,7 +444,18 @@ function setPanelBusy(busy) {
 
 function setPastePending(pending) {
   pastePendingCount = Math.max(0, pastePendingCount + (pending ? 1 : -1));
-  setPanelBusy(pastePendingCount > 0);
+  setPanelBusy(pastePendingCount > 0 || documentBusy);
+}
+
+function setDocumentBusy(busy) {
+  documentBusy = Boolean(busy);
+  setPanelBusy(documentBusy || pastePendingCount > 0);
+  if (studyDocumentAnalyzeBtn) studyDocumentAnalyzeBtn.disabled = documentBusy || !importedDocument;
+  if (studyDocumentRemoveBtn) studyDocumentRemoveBtn.disabled = false;
+  if (studyDocumentImportBtn) studyDocumentImportBtn.disabled = documentBusy;
+  if (studyDocumentInput) studyDocumentInput.disabled = documentBusy;
+  if (studyDocumentInstruction) studyDocumentInstruction.disabled = documentBusy;
+  if (studyInput) studyInput.readOnly = documentBusy;
 }
 
 function setPasteError(target, message) {
@@ -571,6 +601,9 @@ function insertPastedText(textarea, text) {
 function createImagePasteHandler(options) {
   const { textarea, kind, errorTarget } = options;
   return async function handleImagePaste(event) {
+    if (event.defaultPrevented) {
+      return;
+    }
     const items = event.clipboardData?.items;
     if (!items) {
       return;
@@ -622,6 +655,204 @@ function createImagePasteHandler(options) {
       setPastePending(false);
     }
   };
+}
+
+function documentExtension(name) {
+  const match = String(name || '').toLowerCase().match(/(\.[^.\\/]+)$/);
+  return match ? match[1] : '';
+}
+function safeDocumentName(name) {
+  return (String(name || '').split(/[\\/]/).pop().replace(/[\u0000-\u001f\u007f]/g, '').trim() || 'document.txt').slice(0, 255);
+}
+function documentMimeType(name) {
+  return documentExtension(name) === '.txt' ? 'text/plain' : 'text/markdown';
+}
+function estimateDocumentTokens(text) {
+  return Math.max(1, Math.ceil(new TextEncoder().encode(String(text || '')).byteLength / 3));
+}
+function formatDocumentBytes(bytes) {
+  return bytes < 1024 ? `${bytes} B` : `${(bytes / 1024).toFixed(bytes < 10240 ? 1 : 0)} KB`;
+}
+function decodeDocumentBuffer(buffer) {
+  const bytes = new Uint8Array(buffer);
+  const candidates = [];
+  if (bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) {
+    candidates.push(['UTF-8', 'utf-8', bytes.subarray(3)]);
+  } else if (bytes[0] === 0xff && bytes[1] === 0xfe) {
+    candidates.push(['UTF-16 LE', 'utf-16le', bytes.subarray(2)]);
+  } else if (bytes[0] === 0xfe && bytes[1] === 0xff) {
+    candidates.push(['UTF-16 BE', 'utf-16be', bytes.subarray(2)]);
+  } else {
+    candidates.push(['UTF-8', 'utf-8', bytes], ['GB18030', 'gb18030', bytes]);
+  }
+  for (const [label, encoding, content] of candidates) {
+    try {
+      return { text: new TextDecoder(encoding, { fatal: true }).decode(content), encoding: label };
+    } catch {}
+  }
+  throw new Error('document_encoding');
+}
+function documentTextProblem(text) {
+  if (!String(text || '').trim()) return 'document_empty';
+  let controls = 0;
+  let replacements = 0;
+  for (const character of text) {
+    const code = character.codePointAt(0);
+    if (code === 0xfffd) replacements += 1;
+    if ((code < 32 && ![9, 10, 13].includes(code)) || code === 127) controls += 1;
+  }
+  if (text.includes('\u0000') || controls / text.length > 0.01) return 'document_binary';
+  if (replacements / text.length > 0.001) return 'document_encoding';
+  if (/data:[^\s,;]+(?:;[^\s,;=]+)*;base64,[A-Za-z0-9+/=]{4096,}/i.test(text)) return 'document_unsafe_content';
+  if (text.split(/\r?\n/).some((line) => line.length > 32768 || /^[A-Za-z0-9+/=]{8192,}$/.test(line.trim()))) return 'document_unsafe_content';
+  return '';
+}
+function documentErrorMessage(code) {
+  return t(`ui.error.${String(code || 'document_read')}`);
+}
+function updateDocumentCard(options = {}) {
+  if (!importedDocument) {
+    if (studyDocumentCard) studyDocumentCard.hidden = true;
+    if (explainBtn) explainBtn.disabled = false;
+    return;
+  }
+  const text = studyInput?.value || '';
+  const bytes = new TextEncoder().encode(text).byteLength;
+  const tokens = estimateDocumentTokens(text);
+  const problem = documentTextProblem(text) || (bytes > DOCUMENT_MAX_BYTES ? 'document_too_large' : '');
+  importedDocument = { ...importedDocument, bytes, tokens, problem, modified: importedDocument.modified || Boolean(options.modified) };
+  if (studyDocumentCard) studyDocumentCard.hidden = false;
+  if (studyDocumentName) studyDocumentName.textContent = importedDocument.name;
+  if (studyDocumentMeta) {
+    studyDocumentMeta.textContent = tf(
+      'ui.document.meta',
+      '',
+      { size: formatDocumentBytes(bytes), encoding: importedDocument.encoding, chars: text.length.toLocaleString(), tokens: tokens.toLocaleString() },
+    );
+  }
+  if (studyDocumentState) {
+    studyDocumentState.textContent = problem
+      ? documentErrorMessage(problem)
+      : (tokens > DOCUMENT_MAX_TOKENS
+        ? t('ui.document.token_estimate_warning')
+        : t(importedDocument.modified ? 'ui.document.ready_modified' : 'ui.document.ready'));
+  }
+  if (studyDocumentAnalyzeBtn) studyDocumentAnalyzeBtn.disabled = documentBusy || Boolean(problem);
+  if (explainBtn) explainBtn.disabled = true;
+}
+function removeImportedDocument(options = {}) {
+  documentReadGeneration += 1;
+  importedDocument = null;
+  window.clearTimeout(documentEditTimer);
+  if (options.clearText !== false && studyInput) studyInput.value = '';
+  if (studyDocumentInput) studyDocumentInput.value = '';
+  if (studyDocumentInstruction) studyDocumentInstruction.value = '';
+  if (studyDocumentDropZone) studyDocumentDropZone.dataset.dragging = 'false';
+  updateDocumentCard();
+  setDocumentBusy(false);
+  setPasteError(studyInputPasteError, '');
+}
+async function importDocumentFile(file) {
+  const generation = ++documentReadGeneration;
+  setPasteError(studyInputPasteError, '');
+  if (!file || !SUPPORTED_DOCUMENT_EXTENSIONS.has(documentExtension(file.name))) {
+    throw new Error('document_type');
+  }
+  const declaredType = String(file.type || '').toLowerCase();
+  if (declaredType && !['text/plain', 'text/markdown', 'application/octet-stream'].includes(declaredType)) {
+    throw new Error('document_type');
+  }
+  if (file.size > DOCUMENT_MAX_BYTES) throw new Error('document_too_large');
+  importedDocument = {
+    name: safeDocumentName(file.name),
+    type: documentMimeType(file.name),
+    encoding: '',
+    modified: false,
+  };
+  if (studyDocumentCard) studyDocumentCard.hidden = false;
+  if (studyDocumentName) studyDocumentName.textContent = importedDocument.name;
+  if (studyDocumentMeta) studyDocumentMeta.textContent = formatDocumentBytes(file.size);
+  setDocumentBusy(true);
+  if (studyDocumentState) studyDocumentState.textContent = t('ui.document.reading');
+  try {
+    const decoded = decodeDocumentBuffer(await file.arrayBuffer());
+    if (generation !== documentReadGeneration) return;
+    const problem = documentTextProblem(decoded.text);
+    if (problem) throw new Error(problem);
+    importedDocument = { ...importedDocument, encoding: decoded.encoding };
+    if (studyInput) studyInput.value = decoded.text;
+    updateDocumentCard();
+  } catch (error) {
+    if (generation === documentReadGeneration) {
+      importedDocument = null;
+      updateDocumentCard();
+    }
+    throw error;
+  } finally {
+    if (generation === documentReadGeneration) setDocumentBusy(false);
+  }
+}
+async function acceptDocumentFiles(files) {
+  if (documentBusy) return;
+  const list = Array.from(files || []);
+  if (list.length !== 1) throw new Error(list.length > 1 ? 'document_multiple' : 'document_read');
+  await importDocumentFile(list[0]);
+}
+function reportDocumentImportError(error) {
+  if (studyDocumentInput) studyDocumentInput.value = '';
+  setPasteError(studyInputPasteError, documentErrorMessage(error instanceof Error ? error.message : 'document_read'));
+}
+function handleDocumentPaste(event) {
+  const directFiles = Array.from(event.clipboardData?.files || []);
+  const itemFiles = Array.from(event.clipboardData?.items || [])
+    .filter((item) => item.kind === 'file')
+    .map((item) => item.getAsFile())
+    .filter(Boolean);
+  const files = directFiles.length ? directFiles : itemFiles;
+  if (!files.length || files.every((file) => String(file.type || '').startsWith('image/'))) return;
+  event.preventDefault();
+  acceptDocumentFiles(files).catch(reportDocumentImportError);
+}
+function handleDocumentDrop(event) {
+  event.preventDefault();
+  studyDocumentDropZone.dataset.dragging = 'false';
+  acceptDocumentFiles(event.dataTransfer?.files).catch(reportDocumentImportError);
+}
+function formatDocumentDiagnostic(diagnostic) {
+  const code = String(diagnostic || '').trim();
+  return t(`ui.error.document_analysis_${code === 'timeout' ? 'timeout' : code === 'rate_limited' ? 'rate_limited' : 'failed'}`);
+}
+async function analyzeDocument() {
+  if (!importedDocument || !studyInput) return;
+  updateDocumentCard();
+  if (importedDocument.problem) throw new Error(importedDocument.problem);
+  setDocumentBusy(true);
+  setStatus(t('ui.status.analyzing_document'));
+  setReply(t('ui.status.analyzing_document'));
+  scrollReplyIntoView();
+  try {
+    const data = await callPlugin('study_analyze_document', {
+      document_name: importedDocument.name,
+      document_type: importedDocument.type,
+      document_text: studyInput.value,
+      analysis_instruction: studyDocumentInstruction?.value.trim() || '',
+    });
+    setStatus(data.degraded ? t('ui.status.reply_ready_fallback', 'Reply ready (fallback)') : t('ui.status.document_complete'));
+    setReply(data.degraded ? formatDocumentDiagnostic(data.diagnostic) : (data.reply || data.summary || ''));
+    if (studyDocumentState) studyDocumentState.textContent = data.degraded
+      ? formatDocumentDiagnostic(data.diagnostic)
+      : t('ui.status.document_complete');
+    await refreshStatus({ updateReply: false });
+  } catch (error) {
+    const timeout = error instanceof Error && /timed out|timeout|plugin_call_timeout/i.test(error.message);
+    const tooLong = error instanceof Error && /document_(?:too_long|token|tokens)|24000/i.test(error.message);
+    setStatus(t('ui.status.error', 'Error'));
+    setReply(timeout
+      ? t('ui.error.document_analysis_timeout')
+      : (tooLong ? t('ui.error.document_too_long') : formatPluginError(error)));
+  } finally {
+    setDocumentBusy(false);
+  }
 }
 
 function compactText(value, fallback = '-') {
@@ -2014,6 +2245,7 @@ async function bootstrap() {
   bindButton(ocrBtn, runOcr);
   bindButton(generateQuestionBtn, generateQuestion);
   bindButton(explainBtn, explainText);
+  bindButton(studyDocumentAnalyzeBtn, analyzeDocument);
   bindButton(evaluateAnswerBtn, evaluateAnswer);
   bindButton(summarizeBtn, summarizeSession);
   nekoCoachActionButtons.forEach((button) => {
@@ -2031,11 +2263,40 @@ async function bootstrap() {
   bindButton(memoryRefreshBtn, refreshMemoryDeck);
   bindButton(memoryAddBtn, saveMemoryCard);
   if (studyInput) {
+    studyInput.addEventListener('paste', handleDocumentPaste);
     studyInput.addEventListener('paste', createImagePasteHandler({
       textarea: studyInput,
       kind: 'study',
       errorTarget: studyInputPasteError,
     }));
+    studyInput.addEventListener('input', () => {
+      if (!importedDocument || documentBusy) return;
+      window.clearTimeout(documentEditTimer);
+      documentEditTimer = window.setTimeout(() => updateDocumentCard({ modified: true }), DOCUMENT_EDIT_DEBOUNCE_MS);
+    });
+  }
+  if (studyDocumentImportBtn && studyDocumentInput) {
+    studyDocumentImportBtn.addEventListener('click', () => studyDocumentInput.click());
+    studyDocumentInput.addEventListener('change', () => {
+      acceptDocumentFiles(studyDocumentInput.files).catch(reportDocumentImportError);
+    });
+  }
+  if (studyDocumentRemoveBtn) {
+    studyDocumentRemoveBtn.addEventListener('click', () => removeImportedDocument());
+  }
+  if (studyDocumentDropZone) {
+    studyDocumentDropZone.addEventListener('dragenter', (event) => {
+      event.preventDefault();
+      studyDocumentDropZone.dataset.dragging = 'true';
+    });
+    studyDocumentDropZone.addEventListener('dragover', (event) => {
+      event.preventDefault();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
+    });
+    studyDocumentDropZone.addEventListener('dragleave', (event) => {
+      if (!studyDocumentDropZone.contains(event.relatedTarget)) studyDocumentDropZone.dataset.dragging = 'false';
+    });
+    studyDocumentDropZone.addEventListener('drop', handleDocumentDrop);
   }
   if (answerInput) {
     answerInput.addEventListener('paste', createImagePasteHandler({

@@ -418,3 +418,7 @@ from .tutor_llm_agent_notebook import expand_note, summarize_to_note
 
 TutorLLMAgent.expand_note = expand_note  # type: ignore[method-assign]
 TutorLLMAgent.summarize_to_note = summarize_to_note  # type: ignore[method-assign]
+
+from .tutor_llm_agent_document import document_analyze
+
+TutorLLMAgent.document_analyze = document_analyze  # type: ignore[attr-defined]
