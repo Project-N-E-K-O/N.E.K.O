@@ -59,20 +59,29 @@ class ProactiveMixin:
         ):
             raise RuntimeError("model session cannot accept passive callback images")
 
+        if isinstance(session, OmniOfflineClient):
+            images = [
+                image_b64
+                for callback in callbacks
+                if isinstance(callback, dict)
+                for image_b64 in list(callback.get("media_images") or [])
+            ]
+            if not images:
+                return ""
+            stream_images = getattr(session, "stream_images", None)
+            if not callable(stream_images):
+                raise RuntimeError(
+                    "offline model session cannot atomically stage callback images"
+                )
+            await stream_images(images)
+            return ""
+
         descriptions: list[str] = []
         for callback in callbacks:
             if not isinstance(callback, dict):
                 continue
             images = list(callback.get("media_images") or [])
             if not images:
-                continue
-            if isinstance(session, OmniOfflineClient):
-                stream_images = getattr(session, "stream_images", None)
-                if not callable(stream_images):
-                    raise RuntimeError(
-                        "offline model session cannot atomically stage callback images"
-                    )
-                await stream_images(images)
                 continue
             for image_b64 in images:
                 if isinstance(session, OmniRealtimeClient):
@@ -2584,36 +2593,32 @@ class ProactiveMixin:
             callback[SWAP_PRIME_DELIVERY_CLAIM_KEY] = True
         return callbacks_snapshot
 
-    def _render_and_remove_text_drain_callbacks(self, callbacks_snapshot: list) -> str:
-        """Render and dequeue an already-claimed text-turn snapshot."""
+    def _render_text_drain_callbacks(self, callbacks_snapshot: list) -> str:
+        """Render an already-claimed text-turn snapshot without consuming it."""
         if not callbacks_snapshot:
             return ""
-        delivered_to_prompt = False
-        try:
-            # 同上；user_language 为空时才回落全局语言（此前回落的是短码）。
-            _lang = normalize_language_code(
-                getattr(self, 'user_language', '') or get_global_language_full(), format='full'
-            )
-            rendered = _build_callback_instruction(
-                callbacks_snapshot,
-                lang=_lang,
-                lanlan_name=getattr(self, "lanlan_name", "") or "",
-                master_name=getattr(self, "master_name", "") or "",
-                passive=False,
-            )
-            delivered_to_prompt = True
-            return rendered
-        finally:
-            if delivered_to_prompt:
-                for cb in callbacks_snapshot:
-                    resolve_callback_delivery_ack(cb, True)
-            # Keep claimed and over-budget callbacks in their original order;
-            # only the entries actually rendered by this drain leave the queue.
-            delivered_obj_ids = {id(cb) for cb in callbacks_snapshot}
-            self.pending_agent_callbacks = [
-                cb for cb in self.pending_agent_callbacks
-                if id(cb) not in delivered_obj_ids
-            ]
+        # 同上；user_language 为空时才回落全局语言（此前回落的是短码）。
+        _lang = normalize_language_code(
+            getattr(self, 'user_language', '') or get_global_language_full(), format='full'
+        )
+        return _build_callback_instruction(
+            callbacks_snapshot,
+            lang=_lang,
+            lanlan_name=getattr(self, "lanlan_name", "") or "",
+            master_name=getattr(self, "master_name", "") or "",
+            passive=False,
+        )
+
+    def _remove_text_drain_callbacks(self, callbacks_snapshot: list) -> None:
+        """Acknowledge and dequeue a snapshot after every payload is ready."""
+        for callback in callbacks_snapshot:
+            resolve_callback_delivery_ack(callback, True)
+        delivered_obj_ids = {id(callback) for callback in callbacks_snapshot}
+        self.pending_agent_callbacks = [
+            callback
+            for callback in self.pending_agent_callbacks
+            if id(callback) not in delivered_obj_ids
+        ]
 
     async def drain_agent_callbacks_for_llm_with_media(self) -> str:
         """Drain one text-turn callback snapshot together with its images.
@@ -2623,26 +2628,24 @@ class ProactiveMixin:
         releases every claim in ``finally``.
         """
         callbacks_snapshot = self._select_agent_callbacks_for_text_drain()
-        delivered_callbacks: list = []
         try:
+            rendered = self._render_text_drain_callbacks(callbacks_snapshot)
+            try:
+                await self._stream_passive_callback_media(
+                    callbacks_snapshot,
+                    self.session,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[%s] passive callback media batch failed; retaining snapshot for retry: %s",
+                    self.lanlan_name,
+                    exc,
+                )
+                return ""
             for callback in callbacks_snapshot:
-                try:
-                    await self._stream_passive_callback_media(
-                        [callback],
-                        self.session,
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "[%s] passive callback media stream failed; retaining for retry: %s",
-                        self.lanlan_name,
-                        exc,
-                    )
-                    continue
                 callback.pop("media_images", None)
-                delivered_callbacks.append(callback)
-            return self._render_and_remove_text_drain_callbacks(
-                delivered_callbacks
-            )
+            self._remove_text_drain_callbacks(callbacks_snapshot)
+            return rendered
         finally:
             self._release_swap_prime_passive_claims(callbacks_snapshot)
 
@@ -2654,8 +2657,8 @@ class ProactiveMixin:
         """
         callbacks_snapshot = self._select_agent_callbacks_for_text_drain()
         try:
-            return self._render_and_remove_text_drain_callbacks(
-                callbacks_snapshot
-            )
+            rendered = self._render_text_drain_callbacks(callbacks_snapshot)
+            self._remove_text_drain_callbacks(callbacks_snapshot)
+            return rendered
         finally:
             self._release_swap_prime_passive_claims(callbacks_snapshot)

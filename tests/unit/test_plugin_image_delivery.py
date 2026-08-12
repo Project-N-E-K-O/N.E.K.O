@@ -292,6 +292,7 @@ async def test_read_image_waits_in_callback_when_no_model_session(
         "media_parts": [{"type": "image", "url": _IMAGE_URL, "mime": "image/jpeg"}],
     })
 
+    manager.enqueue_agent_callback.assert_called_once()
     callback = manager.enqueue_agent_callback.call_args.args[0]
     assert callback["delivery_mode"] == "passive"
     assert callback["media_images"] == [encoded]

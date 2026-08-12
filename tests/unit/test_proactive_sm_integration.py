@@ -179,6 +179,35 @@ async def test_failed_passive_callback_media_stays_queued_for_later_turn():
     assert not callback.get(SWAP_PRIME_DELIVERY_CLAIM_KEY)
 
 
+async def test_text_drain_render_failure_keeps_callback_and_media_unstaged(
+    monkeypatch,
+):
+    from main_logic.core import proactive as proactive_module
+
+    session = MagicMock(spec=OmniOfflineClient)
+    session.stream_images = AsyncMock()
+    mgr = _make_mgr(session=session)
+    callback = {
+        "delivery_mode": "passive",
+        "summary": "retry after render failure",
+        "media_images": ["deferred-image"],
+    }
+    mgr.pending_agent_callbacks = [callback]
+    monkeypatch.setattr(
+        proactive_module,
+        "_build_callback_instruction",
+        MagicMock(side_effect=RuntimeError("render failed")),
+    )
+
+    with pytest.raises(RuntimeError, match="render failed"):
+        await mgr.drain_agent_callbacks_for_llm_with_media()
+
+    session.stream_images.assert_not_awaited()
+    assert mgr.pending_agent_callbacks == [callback]
+    assert callback["media_images"] == ["deferred-image"]
+    assert not callback.get(SWAP_PRIME_DELIVERY_CLAIM_KEY)
+
+
 async def test_text_drain_streams_media_only_for_its_budgeted_snapshot(monkeypatch):
     from main_logic.core import proactive as proactive_module
 
