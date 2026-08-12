@@ -30,11 +30,14 @@ from main_logic.omni_offline_client import OmniOfflineClient
 from utils.llm_client import AIMessage
 from main_logic.session_state import SessionEvent, ProactivePhase
 from main_logic.proactive_delivery import (
+    CALLBACK_IMAGE_MAX_BYTES,
+    CALLBACK_IMAGE_MAX_COUNT,
     CALLBACK_EXPIRES_AT_KEY,
     DELIVERY_RETRACTED_KEY,
     SWAP_PRIME_DELIVERY_CLAIM_KEY,
     VOICE_DELIVERY_COMMITTED_KEY,
     callback_is_expired,
+    callback_image_decoded_size,
     resolve_callback_delivery_ack,
 )
 from config import ANTI_REPEAT_EXEMPT_SOURCE_TAGS
@@ -2671,6 +2674,28 @@ class ProactiveMixin:
         callbacks_snapshot, _deferred = _select_callbacks_within_token_budget(
             active_callbacks, AGENT_CALLBACK_TOTAL_MAX_TOKENS
         )
+        media_bounded_snapshot = []
+        image_count = 0
+        image_bytes = 0
+        for callback in callbacks_snapshot:
+            images = [
+                image
+                for image in list(callback.get("media_images") or [])
+                if isinstance(image, str) and image
+            ]
+            next_count = image_count + len(images)
+            next_bytes = image_bytes + sum(
+                callback_image_decoded_size(image) for image in images
+            )
+            if (
+                next_count > CALLBACK_IMAGE_MAX_COUNT
+                or next_bytes > CALLBACK_IMAGE_MAX_BYTES
+            ):
+                break
+            media_bounded_snapshot.append(callback)
+            image_count = next_count
+            image_bytes = next_bytes
+        callbacks_snapshot = media_bounded_snapshot
         for callback in callbacks_snapshot:
             callback[SWAP_PRIME_DELIVERY_CLAIM_KEY] = True
         return callbacks_snapshot
@@ -2702,6 +2727,24 @@ class ProactiveMixin:
             if id(callback) not in delivered_obj_ids
         ]
 
+    def _render_and_remove_legacy_text_callbacks(self, callbacks_snapshot: list) -> str:
+        """Preserve the pre-image drain behavior for text-only callbacks."""
+        delivered_to_prompt = False
+        try:
+            rendered = self._render_text_drain_callbacks(callbacks_snapshot)
+            delivered_to_prompt = True
+            return rendered
+        finally:
+            if delivered_to_prompt:
+                for callback in callbacks_snapshot:
+                    resolve_callback_delivery_ack(callback, True)
+            delivered_obj_ids = {id(callback) for callback in callbacks_snapshot}
+            self.pending_agent_callbacks = [
+                callback
+                for callback in self.pending_agent_callbacks
+                if id(callback) not in delivered_obj_ids
+            ]
+
     async def drain_agent_callbacks_for_llm_with_media(self) -> str:
         """Drain one text-turn callback snapshot together with its images.
 
@@ -2711,9 +2754,16 @@ class ProactiveMixin:
         """
         callbacks_snapshot = self._select_agent_callbacks_for_text_drain()
         try:
+            if not any(
+                isinstance(callback, dict) and callback.get("media_images")
+                for callback in callbacks_snapshot
+            ):
+                return self._render_and_remove_legacy_text_callbacks(
+                    callbacks_snapshot
+                )
             rendered = self._render_text_drain_callbacks(callbacks_snapshot)
             try:
-                await self._stream_passive_callback_media(
+                media_context = await self._stream_passive_callback_media(
                     callbacks_snapshot,
                     self.session,
                 )
@@ -2727,7 +2777,7 @@ class ProactiveMixin:
             for callback in callbacks_snapshot:
                 callback.pop("media_images", None)
             self._remove_text_drain_callbacks(callbacks_snapshot)
-            return rendered
+            return rendered + media_context
         finally:
             self._release_swap_prime_passive_claims(callbacks_snapshot)
 
@@ -2739,8 +2789,8 @@ class ProactiveMixin:
         """
         callbacks_snapshot = self._select_agent_callbacks_for_text_drain()
         try:
-            rendered = self._render_text_drain_callbacks(callbacks_snapshot)
-            self._remove_text_drain_callbacks(callbacks_snapshot)
-            return rendered
+            return self._render_and_remove_legacy_text_callbacks(
+                callbacks_snapshot
+            )
         finally:
             self._release_swap_prime_passive_claims(callbacks_snapshot)

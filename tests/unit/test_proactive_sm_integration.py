@@ -210,6 +210,28 @@ async def test_text_drain_render_failure_keeps_callback_and_media_unstaged(
     assert not callback.get(SWAP_PRIME_DELIVERY_CLAIM_KEY)
 
 
+async def test_text_only_drain_preserves_legacy_render_failure_removal(monkeypatch):
+    from main_logic.core import proactive as proactive_module
+
+    mgr = _make_mgr(session=MagicMock(spec=OmniOfflineClient))
+    callback = {
+        "delivery_mode": "passive",
+        "summary": "legacy text-only callback",
+    }
+    mgr.pending_agent_callbacks = [callback]
+    monkeypatch.setattr(
+        proactive_module,
+        "_build_callback_instruction",
+        MagicMock(side_effect=RuntimeError("render failed")),
+    )
+
+    with pytest.raises(RuntimeError, match="render failed"):
+        await mgr.drain_agent_callbacks_for_llm_with_media()
+
+    assert mgr.pending_agent_callbacks == []
+    assert not callback.get(SWAP_PRIME_DELIVERY_CLAIM_KEY)
+
+
 async def test_text_drain_streams_media_only_for_its_budgeted_snapshot(monkeypatch):
     from main_logic.core import proactive as proactive_module
 
@@ -292,6 +314,88 @@ async def test_realtime_passive_media_bypasses_throttle_and_returns_description(
         cache_latest=False,
     )
     assert context == "\n[实时屏幕截图或相机画面]: a small chart"
+
+
+async def test_text_drain_includes_non_native_image_description(monkeypatch):
+    from main_logic.core import proactive as proactive_module
+
+    class _RealtimeSession:
+        def __init__(self):
+            self.stream_image = AsyncMock(return_value="a small chart")
+
+    monkeypatch.setattr(proactive_module, "OmniRealtimeClient", _RealtimeSession)
+    session = _RealtimeSession()
+    mgr = _make_mgr(session=session)
+    callback = {
+        "delivery_mode": "passive",
+        "summary": "remember this image",
+        "media_images": ["deferred-image"],
+    }
+    mgr.pending_agent_callbacks = [callback]
+
+    rendered = await mgr.drain_agent_callbacks_for_llm_with_media()
+
+    session.stream_image.assert_awaited_once_with(
+        "deferred-image",
+        bypass_rate_limit=True,
+        cache_latest=False,
+    )
+    assert "remember this image" in rendered
+    assert "[实时屏幕截图或相机画面]: a small chart" in rendered
+    assert mgr.pending_agent_callbacks == []
+
+
+async def test_text_drain_bounds_images_across_callback_snapshot():
+    session = MagicMock(spec=OmniOfflineClient)
+    session.stream_images = AsyncMock()
+    mgr = _make_mgr(session=session)
+    callbacks = [
+        {
+            "delivery_mode": "passive",
+            "summary": f"callback-{index}",
+            "media_images": ["eA=="],
+        }
+        for index in range(9)
+    ]
+    mgr.pending_agent_callbacks = callbacks.copy()
+
+    rendered = await mgr.drain_agent_callbacks_for_llm_with_media()
+
+    session.stream_images.assert_awaited_once_with(["eA=="] * 8)
+    assert "callback-7" in rendered
+    assert "callback-8" not in rendered
+    assert mgr.pending_agent_callbacks == [callbacks[8]]
+
+
+async def test_text_drain_bounds_total_image_bytes_across_callback_snapshot(
+    monkeypatch,
+):
+    from main_logic.core import proactive as proactive_module
+
+    monkeypatch.setattr(proactive_module, "CALLBACK_IMAGE_MAX_BYTES", 2)
+    session = MagicMock(spec=OmniOfflineClient)
+    session.stream_images = AsyncMock()
+    mgr = _make_mgr(session=session)
+    callbacks = [
+        {
+            "delivery_mode": "passive",
+            "summary": "first callback",
+            "media_images": ["eA=="],
+        },
+        {
+            "delivery_mode": "passive",
+            "summary": "second callback",
+            "media_images": ["eHg="],
+        },
+    ]
+    mgr.pending_agent_callbacks = callbacks.copy()
+
+    rendered = await mgr.drain_agent_callbacks_for_llm_with_media()
+
+    session.stream_images.assert_awaited_once_with(["eA=="])
+    assert "first callback" in rendered
+    assert "second callback" not in rendered
+    assert mgr.pending_agent_callbacks == [callbacks[1]]
 
 
 def test_enqueue_agent_callback_uses_generic_context_source_budget(monkeypatch):

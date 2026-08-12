@@ -30,9 +30,7 @@ def normalize_image_to_jpeg(data: bytes) -> bytes:
             raise ValueError("source image exceeds the 16 megapixel decode limit")
         image = ImageOps.exif_transpose(source)
         image.thumbnail((MAX_IMAGE_EDGE, MAX_IMAGE_EDGE), Image.Resampling.LANCZOS)
-        if image.mode in ("RGBA", "LA") or (
-            image.mode == "P" and "transparency" in image.info
-        ):
+        if image.mode in ("RGBA", "LA") or "transparency" in image.info:
             rgba = image.convert("RGBA")
             normalized = Image.new("RGB", rgba.size, "white")
             normalized.paste(rgba, mask=rgba.getchannel("A"))
@@ -93,4 +91,4 @@ class PluginImages:
         return dict(result)
 
 
-__all__ = ["PluginImages", "normalize_image_to_jpeg"]
+__all__ = ["PluginImages"]

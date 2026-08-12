@@ -69,6 +69,16 @@ DELIVERY_RETRACTED_KEY = "_proactive_delivery_retracted"
 CALLBACK_EXPIRES_AT_KEY = "_expires_at_monotonic"
 VOICE_DELIVERY_COMMITTED_KEY = "_voice_delivery_committed"
 SWAP_PRIME_DELIVERY_CLAIM_KEY = "_swap_prime_delivery_claimed"
+CALLBACK_IMAGE_MAX_COUNT = 8
+CALLBACK_IMAGE_MAX_BYTES = 8 * 1024 * 1024
+
+
+def callback_image_decoded_size(encoded: str) -> int:
+    """Return decoded bytes for canonical base64 without allocating them."""
+    if not isinstance(encoded, str) or not encoded:
+        return 0
+    padding = 2 if encoded.endswith("==") else int(encoded.endswith("="))
+    return max(0, (len(encoded) * 3) // 4 - padding)
 
 
 def resolve_callback_delivery_ack(callback: dict, delivered: bool) -> None:

@@ -129,6 +129,36 @@ def test_images_upload_accepts_common_browser_image_formats(
         assert uploaded_image.size == (7, 5)
 
 
+def test_images_upload_composites_rgb_color_key_transparency_on_white(
+    tmp_path: Path,
+) -> None:
+    responses: asyncio.Queue[dict[str, object]] = asyncio.Queue()
+    transport = _ImageTransport(responses)
+    ctx = PluginContext(
+        plugin_id="demo",
+        config_path=tmp_path / "plugin.toml",
+        logger=_Logger(),  # type: ignore[arg-type]
+        status_queue=None,
+        _response_queue=responses,
+        _image_transport=transport,
+    )
+    transport.on_response = ctx._dispatch_direct_response
+    image = Image.new("RGB", (20, 10), "blue")
+    for x in range(10):
+        for y in range(10):
+            image.putpixel((x, y), (255, 0, 0))
+    output = BytesIO()
+    image.save(output, format="PNG", transparency=(255, 0, 0))
+
+    asyncio.run(ctx.images.upload(output.getvalue(), mime="image/png"))
+
+    with Image.open(BytesIO(transport.uploaded[0][2])) as uploaded_image:
+        left = uploaded_image.getpixel((2, 5))
+        right = uploaded_image.getpixel((17, 5))
+    assert min(left) > 240
+    assert right[2] > 200 and right[0] < 50 and right[1] < 50
+
+
 def test_images_upload_scales_large_input_without_blocking_the_event_loop(tmp_path: Path) -> None:
     responses: asyncio.Queue[dict[str, object]] = asyncio.Queue()
     transport = _ImageTransport(responses)

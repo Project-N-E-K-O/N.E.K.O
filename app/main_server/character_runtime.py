@@ -30,7 +30,12 @@ from urllib.parse import urlsplit
 from config import MONITOR_SERVER_PORT, USER_NOTIFICATION_ERROR_MAX_CHARS
 from main_logic import core, cross_server
 from main_logic.agent_event_bus import notify_analyze_ack
-from main_logic.proactive_delivery import CALLBACK_EXPIRES_AT_KEY
+from main_logic.proactive_delivery import (
+    CALLBACK_EXPIRES_AT_KEY,
+    CALLBACK_IMAGE_MAX_BYTES,
+    CALLBACK_IMAGE_MAX_COUNT,
+    callback_image_decoded_size,
+)
 from plugin.sdk.shared.core.images import normalize_image_to_jpeg
 from utils.config_manager import get_reserved
 from utils.internal_http_client import get_internal_http_client
@@ -42,9 +47,7 @@ _config_manager = runtime.config_manager
 logger = runtime.logger
 
 _PLUGIN_IMAGE_MAX_BYTES = 8 * 1024 * 1024
-_PLUGIN_MODEL_IMAGE_MAX_COUNT = 8
 _PLUGIN_MODEL_IMAGE_FETCH_BATCH_SIZE = 2
-_PLUGIN_MODEL_IMAGE_AGGREGATE_MAX_BYTES = 8 * 1024 * 1024
 
 
 def _is_local_plugin_media_url(url: str) -> bool:
@@ -69,12 +72,6 @@ def _is_local_plugin_media_url(url: str) -> bool:
         )
     except ValueError:
         return False
-
-
-def _base64_decoded_size(encoded: str) -> int:
-    """Return decoded size for canonical base64 without allocating bytes."""
-    padding = 2 if encoded.endswith("==") else int(encoded.endswith("="))
-    return max(0, (len(encoded) * 3) // 4 - padding)
 
 
 def _normalize_inline_plugin_image_for_model(encoded: str) -> str:
@@ -718,11 +715,9 @@ async def _handle_agent_event(event: dict):
             text = raw_text.strip()
 
             # v2 push_message: media parts (image/audio/video) ride on the
-            # same proactive_message event.  Image parts go straight to the
-            # realtime session via ``stream_image`` (the public vision-input
-            # API on OmniRealtimeClient/OmniOfflineClient) before the (text
-            # → callback) path so the AI sees them in the same context
-            # window as the text it's about to respond to.
+            # same proactive_message event. Image parts are either injected
+            # into the active model session or retained on the callback that
+            # owns their eventual text/voice delivery boundary.
             #
             # Audio / video aren't supported here — ``stream_audio`` is the
             # live-mic PCM pipeline (specific sample rate + RNNoise gate),
@@ -767,7 +762,7 @@ async def _handle_agent_event(event: dict):
                     is_local_url = isinstance(url, str) and _is_local_plugin_media_url(url)
                     if not is_inline and not is_local_url:
                         continue
-                    if len(model_image_indexes) >= _PLUGIN_MODEL_IMAGE_MAX_COUNT:
+                    if len(model_image_indexes) >= CALLBACK_IMAGE_MAX_COUNT:
                         logger.warning(
                             "[EventBus] plugin image count exceeds model limit; dropped index=%d",
                             index,
@@ -800,11 +795,11 @@ async def _handle_agent_event(event: dict):
                             continue
                         if not isinstance(result, str) or not result:
                             continue
-                        decoded_size = _base64_decoded_size(result)
+                        decoded_size = callback_image_decoded_size(result)
                         if (
                             decoded_size <= 0
                             or aggregate_image_bytes + decoded_size
-                            > _PLUGIN_MODEL_IMAGE_AGGREGATE_MAX_BYTES
+                            > CALLBACK_IMAGE_MAX_BYTES
                         ):
                             logger.warning(
                                 "[EventBus] plugin image aggregate exceeds model limit; dropped index=%d",
@@ -836,6 +831,13 @@ async def _handle_agent_event(event: dict):
                     if ai_behavior_v2 == "respond":
                         # Defer: stream when the manager releases this cue so
                         # the image shares the proactive response's context.
+                        deferred_callback_images.append(resolved_b64)
+                        continue
+                    if getattr(sess, "_supports_native_image", None) is False:
+                        # Non-native realtime providers turn callback-owned
+                        # images into a description at the callback drain
+                        # boundary. The ambient-frame path below does not
+                        # inject that description into a natural text turn.
                         deferred_callback_images.append(resolved_b64)
                         continue
                     # ``read`` is passive: inject immediately when a session
@@ -1037,8 +1039,8 @@ async def _handle_agent_event(event: dict):
                     "priority": cb_priority,
                     "coalesce_key": cb_coalesce_key,
                     # Respond images stream at manager release. Read images are
-                    # present only when no model session existed at event time;
-                    # the next text drain or natural voice swap consumes them.
+                    # retained when immediate model injection is unavailable or
+                    # fails; the next text drain or natural voice swap consumes them.
                     "media_images": deferred_callback_images,
                     "timestamp": event.get("timestamp") or "",
                     "metadata": event_metadata,

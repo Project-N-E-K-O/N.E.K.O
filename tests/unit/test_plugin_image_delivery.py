@@ -298,6 +298,41 @@ async def test_read_image_waits_in_callback_when_no_model_session(
     callback = manager.enqueue_agent_callback.call_args.args[0]
     assert callback["delivery_mode"] == "passive"
     assert callback["media_images"] == [encoded]
+
+
+@pytest.mark.asyncio
+async def test_read_image_waits_for_callback_drain_on_non_native_realtime(
+    monkeypatch,
+) -> None:
+    from app import main_server
+
+    manager = _manager()
+    manager.session._supports_native_image = False
+    encoded = base64.b64encode(b"non-native-read-image").decode("ascii")
+    monkeypatch.setattr(
+        "app.main_server.character_runtime._get_session_manager",
+        lambda _name: manager,
+    )
+    monkeypatch.setattr(
+        "app.main_server.character_runtime._fetch_plugin_image_base64",
+        AsyncMock(return_value=encoded),
+    )
+
+    await main_server._handle_agent_event({
+        "event_type": "proactive_message",
+        "lanlan_name": "Test",
+        "text": "remember it",
+        "channel": "plugin:demo",
+        "delivery_mode": "passive",
+        "ai_behavior": "read",
+        "visibility": [],
+        "media_parts": [{"type": "image", "url": _IMAGE_URL, "mime": "image/jpeg"}],
+    })
+
+    manager.session.stream_image.assert_not_awaited()
+    manager.enqueue_agent_callback.assert_called_once()
+    callback = manager.enqueue_agent_callback.call_args.args[0]
+    assert callback["media_images"] == [encoded]
     manager.submit_proactive_callback.assert_not_called()
 
 
@@ -328,6 +363,10 @@ async def test_read_image_stream_failure_keeps_image_for_next_turn(monkeypatch) 
         "media_parts": [{"type": "image", "url": _IMAGE_URL, "mime": "image/jpeg"}],
     })
 
+    manager.session.stream_image.assert_awaited_once_with(
+        encoded,
+        bypass_rate_limit=True,
+    )
     manager.enqueue_agent_callback.assert_called_once()
     callback = manager.enqueue_agent_callback.call_args.args[0]
     assert callback["media_images"] == [encoded]
@@ -522,7 +561,7 @@ async def test_model_image_fetches_have_count_and_aggregate_limits(monkeypatch) 
         fetch_image,
     )
     monkeypatch.setattr(
-        "app.main_server.character_runtime._PLUGIN_MODEL_IMAGE_AGGREGATE_MAX_BYTES",
+        "app.main_server.character_runtime.CALLBACK_IMAGE_MAX_BYTES",
         10,
     )
 
@@ -546,7 +585,7 @@ async def test_model_image_fetches_have_count_and_aggregate_limits(monkeypatch) 
 
     from app.main_server import character_runtime
 
-    assert fetch_image.await_count == character_runtime._PLUGIN_MODEL_IMAGE_MAX_COUNT
+    assert fetch_image.await_count == character_runtime.CALLBACK_IMAGE_MAX_COUNT
     assert manager.session.stream_image.await_count == 2
     assert [call.args[0] for call in manager.session.stream_image.await_args_list] == [
         encoded,
