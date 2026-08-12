@@ -1166,15 +1166,34 @@ def test_daily_intro_avatar_motion_presets_are_fixed_per_day():
         assert "{ at: 0, command: 'operation.run', operation: 'daily-intro-avatar-performance', blocking: false }" in scene_block
 
 
-def test_day3_intro_bottom_rise_uses_slow_half_body_motion_after_day_swap():
+def test_day3_intro_bottom_rise_uses_shared_two_second_opening_motion_after_day_swap():
     source = DAY3_GUIDE_PATH.read_text(encoding="utf-8")
+    avatar_stage_source = (ROOT / "static" / "tutorial/avatar/yui-stage.js").read_text(encoding="utf-8")
+    director_source = read_director_source(ROOT)
     scene_block = source.split("id: 'day3_intro_context'", 1)[1].split(
         "id: 'day3_personalization_space'",
         1,
     )[0]
+    daily_intro_block = director_source.split("async runDailyIntroAvatarPerformance(scene, day, options)", 1)[1].split(
+        "async runIntroGreetingHugPerformance()",
+        1,
+    )[0]
+    probe_motion_block = avatar_stage_source.split(
+        "async function playTutorialAvatarProbeFrameMotion(options, preset)",
+        1,
+    )[1].split("async function playAvatarMotion(options)", 1)[0]
+    play_motion_block = avatar_stage_source.split("async function playAvatarMotion(options)", 1)[1].split(
+        "async function playSettingsPeekPanic(options)",
+        1,
+    )[0]
 
     assert "preset: 'bottom-rise'" in scene_block
-    assert "approachMs: 1500" in scene_block
+    assert "approachMs:" not in scene_block
+    assert "narrationBudgeted: tutorialDay >= 2 && tutorialDay <= 7" in daily_intro_block
+    assert "if (normalizedOptions.narrationBudgeted === true)" in play_motion_block
+    assert "return playTutorialAvatarProbeFrameMotion(normalizedOptions, preset);" in play_motion_block
+    assert "const TUTORIAL_AVATAR_PROBE_APPROACH_MS = 2000;" in avatar_stage_source
+    assert "enterMs: TUTORIAL_AVATAR_PROBE_APPROACH_MS" in probe_motion_block
     assert "restore: 'half-body'" in scene_block
 
 
@@ -1248,23 +1267,22 @@ def test_corner_intro_avatar_motions_rotate_floating_buttons_with_model_when_mod
     assert "rotateFloatingButtons: performance.rotateFloatingButtons === true" in director_source
 
 
-def test_peek_intro_half_body_fade_in_restores_full_opacity_after_fadeout():
+def test_peek_intro_half_body_session_fades_out_and_restores_full_opacity():
     source = (ROOT / "static" / "tutorial/avatar/yui-stage.js").read_text(encoding="utf-8")
     corner_block = source.split("async function playTimedAvatarCornerPeek(options, position)", 1)[1].split(
         "async function playFrameAvatarMotion",
         1,
     )[0]
-    fade_in_block = source.split("async function fadeInAvatarMotionHalfBodyPlacement(options)", 1)[1].split(
-        "async function playTimedAvatarCornerPeek",
+    corner_session_block = source.split("class Live2DAvatarCornerPeekSession", 1)[1].split(
+        "class Live2DSettingsPeekPanicSession",
         1,
     )[0]
 
-    assert "const targetAlpha = 1;" in fade_in_block
-    assert "const targetDisplayAlpha = 1;" in fade_in_block
-    assert "readModelAlpha(context.model)" not in fade_in_block
-    assert "captureAvatarMotionHalfBodyFadeTarget" not in source
-    assert "await fadeOutAvatarMotionVisibleLayer(normalizedOptions);" in corner_block
-    assert "await fadeInAvatarMotionHalfBodyPlacement(normalizedOptions);" in corner_block
+    assert "restoreMode: normalizedOptions.restore || normalizedOptions.restoreMode || 'half-body'" in corner_block
+    assert "await handle.stop('avatar_motion_complete');" in corner_block
+    assert "this.restoreAlpha = this.restoreMode === 'half-body' ? 1 : this.initialAlpha;" in corner_session_block
+    assert "lerp(1, 0, progress)" in corner_session_block
+    assert "lerp(0, this.restoreAlpha, progress)" in corner_session_block
 
 
 def test_avatar_floating_intro_motion_reveals_prepared_tutorial_model():

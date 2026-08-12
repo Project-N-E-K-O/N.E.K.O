@@ -314,17 +314,6 @@ def handle_music_playback_state(manager: Any, event: dict[str, Any]) -> bool:
         "error": f"播放器未能正常播放{title}{by_artist}。",
     }
     detail = facts[state]
-    acknowledge_key = (playback_id, request_id)
-    should_respond = (
-        state == "playing"
-        and source == "user"
-        and getattr(manager, "_music_playback_acknowledged_key", None)
-        != acknowledge_key
-    )
-    if should_respond:
-        manager._music_playback_acknowledged_key = acknowledge_key
-        detail += " 请简短自然地确认已经开始播放，不要再次调用音乐播放工具。"
-
     callback = {
         "event": "agent_task_callback",
         "origin": "event",
@@ -336,7 +325,10 @@ def handle_music_playback_state(manager: Any, event: dict[str, Any]) -> bool:
         "detail": detail,
         "source_kind": "music",
         "source_name": "music_player",
-        "delivery_mode": "proactive" if should_respond else "passive",
+        # 用户的明确点歌已经在当前对话轮得到一次“正在处理”的回复。
+        # 播放器状态只用于补充后续上下文；若在开播后再主动触发一次 LLM，
+        # 同一请求会产生第二条消息和第二轮 TTS。
+        "delivery_mode": "passive",
         "priority": 10,
         "coalesce_key": f"music-playback-state:{getattr(manager, 'lanlan_name', '')}",
         "metadata": {
@@ -351,23 +343,10 @@ def handle_music_playback_state(manager: Any, event: dict[str, Any]) -> bool:
         "context_type": "music_playback",
     }
 
-    if should_respond and callable(getattr(manager, "submit_proactive_callback", None)):
-        manager.submit_proactive_callback(
-            callback,
-            priority=callback["priority"],
-            coalesce_key=callback["coalesce_key"],
-        )
-        return True
-
     enqueue = getattr(manager, "enqueue_agent_callback", None)
     if not callable(enqueue):
         return False
     enqueue(callback)
-    if should_respond:
-        trigger = getattr(manager, "trigger_agent_callbacks", None)
-        fire_task = getattr(manager, "_fire_task", None)
-        if callable(trigger) and callable(fire_task):
-            fire_task(trigger())
     return True
 
 

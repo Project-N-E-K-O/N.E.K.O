@@ -138,6 +138,14 @@ function _nekoIsLive2DContainerHidden() {
 function ensureLive2DVisibleOnce(reason) {
     try {
         if (window.nekoYuiGuideAvatarCornerPeekActive === true) return;
+        if (
+            window.nekoYuiGuideLive2dPreparing === true
+            || (
+                document.body
+                && document.body.classList
+                && document.body.classList.contains('yui-guide-live2d-preparing')
+            )
+        ) return;
         if (!_nekoShouldSelfHealLive2D()) return;
         // goodbye / 切换中属于合法隐藏，交给各自链路，不打扰。
         if (window.live2dManager && window.live2dManager._goodbyeClicked) return;
@@ -165,9 +173,31 @@ function ensureLive2DVisibleSoon(reason) {
 
 function revealInitialLive2DModelWhenUiReady(reason) {
     let revealed = false;
-    const reveal = () => {
+    let preparingObserver = null;
+    function revealAfterPreparing() {
+        reveal();
+    }
+    function clearPreparingRevealWatch() {
+        window.removeEventListener('neko:yui-guide:live2d-prepared-revealed', revealAfterPreparing);
+        window.removeEventListener('neko:yui-guide:tutorial-lifecycle-ended', revealAfterPreparing);
+        if (preparingObserver) {
+            preparingObserver.disconnect();
+            preparingObserver = null;
+        }
+    }
+    function reveal() {
         if (revealed) {
             return true;
+        }
+        if (
+            window.nekoYuiGuideLive2dPreparing === true
+            || (
+                document.body
+                && document.body.classList
+                && document.body.classList.contains('yui-guide-live2d-preparing')
+            )
+        ) {
+            return false;
         }
         if (typeof window.showLive2d !== 'function') {
             return false;
@@ -179,8 +209,9 @@ function revealInitialLive2DModelWhenUiReady(reason) {
             return false;
         }
         revealed = true;
+        clearPreparingRevealWatch();
         return true;
-    };
+    }
 
     if (reveal()) {
         return;
@@ -191,6 +222,16 @@ function revealInitialLive2DModelWhenUiReady(reason) {
             reveal();
         }, delayMs);
     });
+
+    window.addEventListener('neko:yui-guide:live2d-prepared-revealed', revealAfterPreparing);
+    window.addEventListener('neko:yui-guide:tutorial-lifecycle-ended', revealAfterPreparing);
+    if (typeof MutationObserver === 'function' && document.body) {
+        preparingObserver = new MutationObserver(revealAfterPreparing);
+        preparingObserver.observe(document.body, {
+            attributes: true,
+            attributeFilter: ['class']
+        });
+    }
 
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', reveal, { once: true });
