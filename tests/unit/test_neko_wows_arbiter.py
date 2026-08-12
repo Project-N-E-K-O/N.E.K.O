@@ -12,10 +12,16 @@ from plugin.plugins.neko_wows.domain.catalog import (
     DEVASTATING_STRIKE,
     ENEMY_CLOSING,
     HIGH_DAMAGE,
+    LOCALLY_ISOLATED,
+    LOW_HP_TARGET,
     LOW_HEALTH,
+    MULTI_DIRECTION_THREAT,
+    OWN_BROADSIDE_EXPOSED,
     OWN_SHIP_SUNK,
+    OUTNUMBERED,
     PRIORITY_TARGET,
     RAPID_DAMAGE,
+    SITUATION_ADVICE,
     spec_for,
 )
 from plugin.plugins.neko_wows.domain.contracts import (
@@ -25,6 +31,7 @@ from plugin.plugins.neko_wows.domain.contracts import (
 )
 from plugin.plugins.neko_wows.policy.arbiter import (
     Arbiter,
+    REASON_ATTACHED,
     REASON_CHOSEN,
     REASON_COALESCED,
     REASON_COOLDOWN,
@@ -39,13 +46,21 @@ from plugin.plugins.neko_wows.policy.tactic_policy import AdviceCandidate
 CFG = WowsConfig()
 
 
-def candidate(event_id, *, at=100.0, severity=50, ttl=None, seq=1):
+def candidate(
+    event_id,
+    *,
+    at=100.0,
+    priority=None,
+    severity=50,
+    ttl=None,
+    seq=1,
+):
     spec = spec_for(event_id)
     lane_ttl = ttl if ttl is not None else CFG.ttl_for(spec.lane)
     return AdviceCandidate(
         event_id=event_id,
         lane=spec.lane,
-        priority=spec.priority,
+        priority=spec.priority if priority is None else priority,
         severity=severity,
         at=at,
         seq=seq,
@@ -76,11 +91,62 @@ def test_severity_breaks_a_priority_tie():
     assert decision.chosen.severity == 95
 
 
-def test_only_one_candidate_is_chosen_per_round():
+def test_only_one_candidate_is_primary_per_round():
     arbiter = Arbiter(CFG)
     decision = arbiter.decide(
         [candidate(LOW_HEALTH), candidate(ENEMY_CLOSING)], 100.0)
-    assert decision.chosen is not None
+    assert decision.chosen.event_id == LOW_HEALTH
+    assert tuple(item.event_id for item in decision.attached) == (
+        ENEMY_CLOSING,
+    )
+    assert decision.queued == 0
+
+
+def test_decide_bundles_an_eligible_event_from_a_recent_queue_round():
+    arbiter = Arbiter(CFG)
+    arbiter.submit([candidate(BOUNDARY_RISK, at=100.0)], 100.0)
+
+    decision = arbiter.decide(
+        [candidate(DEVASTATING_STRIKE, at=101.0)], 101.0)
+
+    assert tuple(item.event_id for item in decision.candidates) == (
+        BOUNDARY_RISK,
+        DEVASTATING_STRIKE,
+    )
+    assert REASON_ATTACHED in outcomes(decision, DEVASTATING_STRIKE)
+    assert decision.queued == 0
+
+
+def test_attach_window_includes_fifteen_and_excludes_sixteen():
+    decision = Arbiter(CFG).decide([
+        candidate(BOUNDARY_RISK, priority=70),
+        candidate(BATTLE_STARTED, priority=55),
+        candidate(HIGH_DAMAGE, priority=54),
+    ], 100.0)
+
+    assert tuple(item.event_id for item in decision.candidates) == (
+        BOUNDARY_RISK,
+        BATTLE_STARTED,
+    )
+    assert decision.queued == 1
+
+
+def test_decide_caps_the_bundle_at_four_in_stable_rank_order():
+    arbiter = Arbiter(CFG)
+    decision = arbiter.decide([
+        candidate(BOUNDARY_RISK, priority=80, severity=60, at=100.0),
+        candidate(BATTLE_ENDED, priority=75, severity=40, at=100.0),
+        candidate(LOCALLY_ISOLATED, priority=75, severity=90, at=100.0),
+        candidate(HIGH_DAMAGE, priority=70, severity=50, at=102.0),
+        candidate(LOW_HP_TARGET, priority=70, severity=50, at=101.0),
+    ], 103.0)
+
+    assert tuple(item.event_id for item in decision.candidates) == (
+        BOUNDARY_RISK,
+        LOCALLY_ISOLATED,
+        BATTLE_ENDED,
+        LOW_HP_TARGET,
+    )
     assert decision.queued == 1
 
 
@@ -88,13 +154,20 @@ def test_ranking_is_reproducible_regardless_of_input_order():
     events = [DAMAGE_MILESTONE, ENEMY_CLOSING, LOW_HEALTH, PRIORITY_TARGET]
     first = Arbiter(CFG).decide([candidate(e) for e in events], 100.0)
     second = Arbiter(CFG).decide([candidate(e) for e in reversed(events)], 100.0)
-    assert first.chosen.event_id == second.chosen.event_id
+    assert tuple(item.event_id for item in first.candidates) == tuple(
+        item.event_id for item in second.candidates
+    )
 
 
 def test_devastating_is_below_urgent_but_above_normal_events():
     assert spec_for(BOUNDARY_RISK).priority > spec_for(DEVASTATING_STRIKE).priority
     assert spec_for(DEVASTATING_STRIKE).priority > spec_for(BATTLE_ENDED).priority
     assert spec_for(HIGH_DAMAGE).priority > spec_for(DAMAGE_MILESTONE).priority
+
+
+def test_situation_advice_and_outnumbered_priorities_are_swapped():
+    assert spec_for(SITUATION_ADVICE).priority == 50
+    assert spec_for(OUTNUMBERED).priority == 25
 
 
 # --- TTL -----------------------------------------------------------------
@@ -118,11 +191,11 @@ def test_a_queued_candidate_expires_while_waiting():
 def test_cancel_events_removes_only_matching_queued_candidates():
     arbiter = Arbiter(CFG)
     arbiter.submit([
-        candidate(LOW_HEALTH, at=100.0),
+        candidate(BATTLE_ENDED, at=100.0),
         candidate(DAMAGE_MILESTONE, at=100.0),
     ], 100.0)
 
-    assert arbiter.cancel_events({LOW_HEALTH}) == 1
+    assert arbiter.cancel_events({BATTLE_ENDED}) == 1
     decision = arbiter.decide([], 100.0)
     assert decision.chosen.event_id == DAMAGE_MILESTONE
 
@@ -175,6 +248,23 @@ def test_lanes_pace_independently():
     assert normal.chosen.event_id == DAMAGE_MILESTONE
 
 
+def test_a_blocked_candidate_is_not_attached_and_keeps_its_audit_reason():
+    arbiter = Arbiter(CFG)
+    first = arbiter.decide(
+        [candidate(DEVASTATING_STRIKE, at=100.0)], 100.0)
+    arbiter.commit(first.chosen, 100.0, outcome_reason="delivered")
+
+    decision = arbiter.decide([
+        candidate(BOUNDARY_RISK, at=101.0),
+        candidate(DEVASTATING_STRIKE, at=101.0),
+    ], 101.0)
+
+    assert tuple(item.event_id for item in decision.candidates) == (
+        BOUNDARY_RISK,
+    )
+    assert REASON_COOLDOWN in outcomes(decision, DEVASTATING_STRIKE)
+
+
 # --- once per battle -----------------------------------------------------
 
 def test_once_per_battle_is_spent_after_a_delivery():
@@ -212,6 +302,45 @@ def test_commit_reports_whether_the_detector_may_latch(reason, committed):
     decision = arbiter.decide([candidate(BATTLE_STARTED)], 100.0)
     assert arbiter.commit(
         decision.chosen, 100.0, outcome_reason=reason) is committed
+
+
+def test_commit_applies_the_delivery_outcome_to_every_bundled_event():
+    arbiter = Arbiter(CFG)
+    decision = arbiter.decide([
+        candidate(BOUNDARY_RISK, at=100.0),
+        candidate(BATTLE_STARTED, at=100.0),
+    ], 100.0)
+
+    assert arbiter.commit(
+        decision.candidates,
+        100.0,
+        outcome_reason="delivered",
+    ) is True
+    assert arbiter.stats()["cooldowns"] == 2
+    assert arbiter.stats()["fired_once_per_battle"] == [BATTLE_STARTED]
+    assert arbiter.stats()["lanes"][LANE_URGENT] == 100.0
+    assert arbiter.stats()["lanes"][LANE_NORMAL] == 100.0
+
+
+def test_failed_bundle_applies_and_resume_clears_every_failure_cooldown():
+    arbiter = Arbiter(CFG)
+    decision = arbiter.decide([
+        candidate(BOUNDARY_RISK, at=100.0),
+        candidate(BATTLE_STARTED, at=100.0),
+    ], 100.0)
+
+    assert arbiter.commit(
+        decision.candidates,
+        100.0,
+        outcome_reason="failed",
+    ) is False
+    assert arbiter.stats()["cooldowns"] == 2
+    assert arbiter.stats()["fired_once_per_battle"] == []
+    assert arbiter.stats()["lanes"][LANE_URGENT] == 0.0
+    assert arbiter.stats()["lanes"][LANE_NORMAL] == 0.0
+
+    arbiter.resume()
+    assert arbiter.stats()["cooldowns"] == 0
 
 
 @pytest.mark.parametrize("reason", ["paused", "expired"])
@@ -336,6 +465,40 @@ def test_a_preempting_event_clears_lower_priority_queue_entries():
     steps = arbiter.submit([candidate(OWN_SHIP_SUNK, at=101.0)], 101.0)
     assert REASON_PREEMPTED in [step.outcome for step in steps]
     assert arbiter.stats()["queued"] == 1
+
+
+def test_a_preempting_event_keeps_candidates_inside_the_attach_window():
+    arbiter = Arbiter(CFG)
+    arbiter.submit([
+        candidate(OWN_BROADSIDE_EXPOSED, at=100.0),
+        candidate(DEVASTATING_STRIKE, at=100.0),
+        candidate(BATTLE_ENDED, at=100.0),
+    ], 100.0)
+
+    decision = arbiter.decide(
+        [candidate(MULTI_DIRECTION_THREAT, at=101.0)], 101.0)
+
+    assert tuple(item.event_id for item in decision.candidates) == (
+        MULTI_DIRECTION_THREAT,
+        OWN_BROADSIDE_EXPOSED,
+        DEVASTATING_STRIKE,
+    )
+    assert REASON_PREEMPTED in outcomes(decision, BATTLE_ENDED)
+
+
+def test_same_round_preemption_drops_a_later_outside_window_candidate():
+    arbiter = Arbiter(CFG)
+
+    decision = arbiter.decide([
+        candidate(OWN_SHIP_SUNK, at=100.0),
+        candidate(DAMAGE_MILESTONE, at=100.0),
+    ], 100.0)
+
+    assert tuple(item.event_id for item in decision.candidates) == (
+        OWN_SHIP_SUNK,
+    )
+    assert REASON_PREEMPTED in outcomes(decision, DAMAGE_MILESTONE)
+    assert decision.queued == 0
 
 
 def test_preemption_never_touches_something_already_handed_over():

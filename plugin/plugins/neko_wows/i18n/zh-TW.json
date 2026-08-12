@@ -44,6 +44,7 @@
   "format.outcome.delivery.output_enabled": "已開啟真實輸出",
   "format.outcome.delivery.resumed": "已恢復",
   "format.outcome.arbiter.chosen": "選中",
+  "format.outcome.arbiter.attached": "附加至主事件",
   "format.outcome.arbiter.queued": "入隊",
   "format.outcome.arbiter.cooldown": "冷卻中",
   "format.outcome.arbiter.lane_gap": "通道間隔未到",

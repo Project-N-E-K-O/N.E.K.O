@@ -1,4 +1,4 @@
-"""Picks at most one call-out per round, and explains why.
+"""Picks one call-out containing up to four ranked events, and explains why.
 
 The queue is the only place preemption happens. Once a candidate has been handed
 to the host, this module makes no claim about being able to take it back -- the
@@ -37,6 +37,10 @@ REASON_PREEMPTED = "preempted"
 REASON_PAUSED = "paused"
 REASON_EMPTY = "no_candidates"
 REASON_QUIET_WINDOW = "quiet_window"
+REASON_ATTACHED = "attached"
+
+ATTACH_PRIORITY_WINDOW = 15
+MAX_DECISION_EVENTS = 4
 
 # Dispatcher outcomes that consumed the candidate. Anything else leaves
 # `once_per_battle` unspent and the lane gap untouched.
@@ -59,6 +63,13 @@ class ArbiterDecision:
     chosen: AdviceCandidate | None
     chain: tuple[DecisionStep, ...] = ()
     queued: int = 0
+    attached: tuple[AdviceCandidate, ...] = ()
+
+    @property
+    def candidates(self) -> tuple[AdviceCandidate, ...]:
+        if self.chosen is None:
+            return ()
+        return (self.chosen, *self.attached)
 
     @property
     def reason(self) -> str:
@@ -178,7 +189,20 @@ class Arbiter:
 
         incoming, collapsed = self._collapse_incoming(eligible)
         steps.extend(collapsed)
+        active_preemptor: AdviceCandidate | None = None
         for candidate in incoming:
+            if (
+                active_preemptor is not None
+                and candidate.priority
+                < active_preemptor.priority - ATTACH_PRIORITY_WINDOW
+            ):
+                steps.append(DecisionStep(
+                    candidate.event_id,
+                    candidate.lane,
+                    REASON_PREEMPTED,
+                    f"preempted by {active_preemptor.event_id}",
+                ))
+                continue
 
             key = candidate.coalesce_key
             if key:
@@ -191,9 +215,15 @@ class Arbiter:
                             f"replaced by newer {candidate.event_id}"))
 
             if candidate.spec.preempt:
-                dropped = [c for c in self._queue if c.priority < candidate.priority]
+                if (
+                    active_preemptor is None
+                    or candidate.rank < active_preemptor.rank
+                ):
+                    active_preemptor = candidate
+                attach_floor = candidate.priority - ATTACH_PRIORITY_WINDOW
+                dropped = [c for c in self._queue if c.priority < attach_floor]
                 if dropped:
-                    self._queue = [c for c in self._queue if c.priority >= candidate.priority]
+                    self._queue = [c for c in self._queue if c.priority >= attach_floor]
                     for old in dropped:
                         steps.append(DecisionStep(
                             old.event_id, old.lane, REASON_PREEMPTED,
@@ -255,7 +285,7 @@ class Arbiter:
         candidates: Sequence[AdviceCandidate],
         now: float,
     ) -> ArbiterDecision:
-        """Submit, then return the single best eligible candidate, if any."""
+        """Submit, then return one primary and nearby eligible attachments."""
         steps = list(self.submit(candidates, now))
 
         if self._paused:
@@ -271,41 +301,83 @@ class Arbiter:
                     candidate.event_id, candidate.lane, REASON_EXPIRED,
                     "TTL elapsed while queued"))
 
-        for candidate in sorted(self._queue, key=lambda c: c.rank):
+        ranked = sorted(self._queue, key=lambda c: c.rank)
+        for candidate in ranked:
             blocked = self._blocked_reason(candidate, now)
             if blocked is None:
                 self._queue.remove(candidate)
                 steps.append(DecisionStep(
                     candidate.event_id, candidate.lane, REASON_CHOSEN))
-                return ArbiterDecision(candidate, tuple(steps), queued=len(self._queue))
+                attached: list[AdviceCandidate] = []
+                for sibling in ranked:
+                    if sibling is candidate:
+                        continue
+                    if sibling.rank < candidate.rank:
+                        continue
+                    if sibling.priority < candidate.priority - ATTACH_PRIORITY_WINDOW:
+                        break
+                    if len(attached) >= MAX_DECISION_EVENTS - 1:
+                        break
+                    sibling_blocked = self._blocked_reason(sibling, now)
+                    if sibling_blocked is not None:
+                        steps.append(DecisionStep(
+                            sibling.event_id,
+                            sibling.lane,
+                            sibling_blocked[0],
+                            sibling_blocked[1],
+                        ))
+                        continue
+                    self._queue.remove(sibling)
+                    attached.append(sibling)
+                    steps.append(DecisionStep(
+                        sibling.event_id, sibling.lane, REASON_ATTACHED,
+                        f"attached to {candidate.event_id}"))
+                return ArbiterDecision(
+                    candidate,
+                    tuple(steps),
+                    queued=len(self._queue),
+                    attached=tuple(attached),
+                )
             steps.append(DecisionStep(
                 candidate.event_id, candidate.lane, blocked[0], blocked[1]))
 
         return ArbiterDecision(None, tuple(steps), queued=len(self._queue))
 
     # ------------------------------------------------------------------
-    def commit(self, candidate: AdviceCandidate, now: float, *, outcome_reason: str) -> bool:
-        """Record an attempt and report whether output was committed.
+    def commit(
+        self,
+        candidate: AdviceCandidate | Sequence[AdviceCandidate],
+        now: float,
+        *,
+        outcome_reason: str,
+    ) -> bool:
+        """Record one bundled attempt and report whether output was committed.
 
         A dry-run counts as committed so the shadow chain throttles exactly like
         the real one; `clear_shadow_state` wipes that when output is turned on.
         """
-        spec = candidate.spec
-        if outcome_reason in COOLDOWN_REASONS:
-            self._cooldowns[candidate.event_id] = now + spec.cooldown_seconds
-        if outcome_reason == "failed":
-            self._failure_cooldowns.add(candidate.event_id)
-        elif outcome_reason in COMMITTED_REASONS:
-            self._failure_cooldowns.discard(candidate.event_id)
-
         committed = outcome_reason in COMMITTED_REASONS
-        if not committed:
-            return False
-        if spec.once_per_battle:
-            self._fired_once.add(candidate.event_id)
-        lane = self._lanes.setdefault(candidate.lane, _LaneState())
-        lane.last_output_at = now
-        return True
+        candidates = (
+            (candidate,)
+            if isinstance(candidate, AdviceCandidate)
+            else tuple(candidate)
+        )
+        for item in candidates:
+            spec = item.spec
+            if outcome_reason in COOLDOWN_REASONS:
+                self._cooldowns[item.event_id] = now + spec.cooldown_seconds
+            if outcome_reason == "failed":
+                self._failure_cooldowns.add(item.event_id)
+            elif committed:
+                self._failure_cooldowns.discard(item.event_id)
+
+            if not committed:
+                continue
+            if spec.once_per_battle:
+                self._fired_once.add(item.event_id)
+            lane = self._lanes.setdefault(item.lane, _LaneState())
+            lane.last_output_at = now
+        return bool(candidates) and committed
 
     # ------------------------------------------------------------------
     def _blocked_reason(
@@ -361,6 +433,7 @@ __all__ = [
     "COMMITTED_REASONS",
     "COOLDOWN_REASONS",
     "REASON_CHOSEN",
+    "REASON_ATTACHED",
     "REASON_COALESCED",
     "REASON_COOLDOWN",
     "REASON_EMPTY",

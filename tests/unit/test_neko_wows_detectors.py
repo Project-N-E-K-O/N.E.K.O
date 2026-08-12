@@ -951,6 +951,30 @@ def test_outnumbered_uses_only_confirmed_visible_team_counts():
         "confirmed_visible_enemies": 4,
         "gap": 2,
     }
+    assert events[0].severity == 16
+
+
+def test_outnumbered_strength_is_capped_at_twenty_five():
+    registry = DetectorRegistry(build_survival_detectors(CFG))
+    own = Ship(
+        ui_id=1, player_id=2000, team_id=0, relation=0,
+        name="OwnShip", alive=True, visible=True,
+    )
+    ships = (own, *(enemy(ui_id=ui_id) for ui_id in range(2, 10)))
+
+    results = feed(registry, [
+        frame(seq=1, at=100.0, ships=ships),
+        frame(seq=2, at=101.0, ships=ships),
+    ])
+    event = next(
+        event
+        for result in results
+        for event in result.events
+        if event.event_id == OUTNUMBERED
+    )
+
+    assert event.detail["gap"] == 7
+    assert event.severity == 25
 
 
 def test_outnumbered_still_fires_when_some_enemies_are_dark():

@@ -254,7 +254,7 @@ class OutnumberedDetector(Detector):
         self._announced_gap = gap
         return (self._event(
             OUTNUMBERED,
-            severity=int(40 + min(30, gap * 6)),
+            severity=int(10 + min(15, gap * 3)),
             facts=facts,
             detail={
                 "confirmed_visible_allies": allies,

@@ -248,14 +248,14 @@ class Pipeline:
             if decision.chosen is None:
                 return
             request = self.router.build(
-                decision.chosen,
+                decision.candidates,
                 PromptProfile(
                     channel_mode=CHANNEL_DUAL, dry_run=self.cfg.dry_run),
                 self.tactics.search(decision.chosen.summary, limit=3, budget=0),
             )
             outcome = self.dispatcher.deliver(request)
             NekoWowsPlugin._commit_callout_outcome(
-                self, decision.chosen, self.now, outcome)
+                self, decision.candidates, self.now, outcome)
             self.delivered.append((request.event_id, outcome.reason))
         finally:
             if snapshot.status == STATUS_ENDED:

@@ -44,6 +44,7 @@
   "format.outcome.delivery.output_enabled": "Live output enabled",
   "format.outcome.delivery.resumed": "Resumed",
   "format.outcome.arbiter.chosen": "Selected",
+  "format.outcome.arbiter.attached": "Attached to primary",
   "format.outcome.arbiter.queued": "Queued",
   "format.outcome.arbiter.cooldown": "On cooldown",
   "format.outcome.arbiter.lane_gap": "Lane gap active",

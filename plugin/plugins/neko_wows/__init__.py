@@ -95,7 +95,12 @@ from .presentation.instructions import (
     validate_sections,
 )
 from .presentation.prompt_router import PromptProfile, WowsPromptRouter
-from .policy.arbiter import Arbiter, REASON_CHOSEN, REASON_EXPIRED
+from .policy.arbiter import (
+    Arbiter,
+    REASON_ATTACHED,
+    REASON_CHOSEN,
+    REASON_EXPIRED,
+)
 from .policy.tactic_policy import AdviceCandidate, WowsTacticPolicy
 from .ship_data.context import BattleShipContextManager, ContextObservation
 from .ship_data.official_api import (
@@ -716,7 +721,11 @@ class NekoWowsPlugin(NekoPluginBase):
         for step in decision.chain:
             if (
                 (not result.events or repeat_pending)
-                and step.outcome not in (REASON_CHOSEN, REASON_EXPIRED)
+                and step.outcome not in (
+                    REASON_CHOSEN,
+                    REASON_ATTACHED,
+                    REASON_EXPIRED,
+                )
             ):
                 continue
             self.timeline.record(
@@ -727,6 +736,7 @@ class NekoWowsPlugin(NekoPluginBase):
             return
 
         chosen = decision.chosen
+        bundled = decision.candidates
         with self._state_lock:
             self._last_candidate = chosen
         profile = PromptProfile(
@@ -738,9 +748,9 @@ class NekoWowsPlugin(NekoPluginBase):
             live_vision_active=self._live_vision_active(),
         )
         excerpts = self._reference_for(chosen, snapshot)
-        request = self.router.build(chosen, profile, excerpts)
+        request = self.router.build(bundled, profile, excerpts)
         outcome = self.dispatcher.deliver(request)
-        self._commit_callout_outcome(chosen, facts.at, outcome)
+        self._commit_callout_outcome(bundled, facts.at, outcome)
 
         self.timeline.record(
             STAGE_DELIVERY, outcome.reason, seq=snapshot.seq,
@@ -748,6 +758,16 @@ class NekoWowsPlugin(NekoPluginBase):
             detail={
                 "lane": chosen.lane,
                 "severity": chosen.severity,
+                "event_ids": [item.event_id for item in bundled],
+                "events": [
+                    {
+                        "event_id": item.event_id,
+                        "lane": item.lane,
+                        "priority": item.priority,
+                        "severity": item.severity,
+                    }
+                    for item in bundled
+                ],
                 "host_calls": outcome.host_calls,
                 "prompt_revision": bundle.revision_id,
                 "excerpts": [excerpt.title for excerpt in excerpts],
@@ -757,12 +777,17 @@ class NekoWowsPlugin(NekoPluginBase):
         )
 
     def _commit_callout_outcome(self, candidate, now: float, outcome) -> bool:
-        """Commit output state and acknowledge detector-owned latches."""
+        """Commit one output bundle and acknowledge detector-owned latches."""
+        candidates = (
+            tuple(candidate)
+            if isinstance(candidate, (tuple, list))
+            else (candidate,)
+        )
         committed = self.arbiter.commit(
-            candidate, now, outcome_reason=outcome.reason)
+            candidates, now, outcome_reason=outcome.reason)
         if committed:
-            self.registry.acknowledge_delivery(
-                candidate.event_id, candidate.detail)
+            for item in candidates:
+                self.registry.acknowledge_delivery(item.event_id, item.detail)
         if self.dispatcher.paused:
             self.arbiter.pause()
         return committed

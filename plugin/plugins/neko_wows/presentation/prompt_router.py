@@ -1,4 +1,4 @@
-"""Builds the `DeliveryRequest` for one chosen candidate.
+"""Builds one `DeliveryRequest` for a primary event and its attachments.
 
 `build` already takes `excerpts` even though P1 always passes an empty tuple: the
 document layer lands later and this signature is what it plugs into. When
@@ -69,12 +69,20 @@ class WowsPromptRouter:
 
     def build(
         self,
-        candidate: AdviceCandidate,
+        candidate: AdviceCandidate | Sequence[AdviceCandidate],
         profile: PromptProfile,
         excerpts: Sequence[TacticExcerpt] = (),
     ) -> DeliveryRequest:
+        candidates = (
+            (candidate,)
+            if isinstance(candidate, AdviceCandidate)
+            else tuple(candidate)
+        )
+        if not candidates:
+            raise ValueError("at least one advice candidate is required")
+        primary = candidates[0]
         bundle = profile.bundle or DEFAULT_BUNDLE
-        sections = [bundle.instructions_for(candidate.lane, profile.channel_mode)]
+        sections = [bundle.instructions_for(primary.lane, profile.channel_mode)]
         # Only ever one of the two. Telling her to call the screenshot tool on a
         # turn that already carries the shared frame would buy the same picture
         # twice, once at the price this whole path exists to avoid.
@@ -83,37 +91,57 @@ class WowsPromptRouter:
         elif profile.screenshot_enabled:
             sections.append(VISION_LOOK_BEFORE_SPEAK.strip())
 
-        sections.append(
-            f"事件：{candidate.summary}（{candidate.event_id}）\n"
-            f"事实：{_render_facts(candidate.detail)}\n"
-            f"战况：{_render_facts(candidate.context)}"
-        )
+        newest = max(candidates, key=lambda item: (item.at, item.seq))
+        sections.append(_render_primary(primary, newest.context))
+        if len(candidates) > 1:
+            sections.append(_render_attached(candidates[1:]))
 
-        if candidate.claim_limits:
+        claim_limits = tuple(dict.fromkeys(
+            limit
+            for item in candidates
+            for limit in item.claim_limits
+        ))
+        if claim_limits:
             sections.append("表述限制：\n" + "\n".join(
-                f"- {limit}" for limit in candidate.claim_limits))
+                f"- {limit}" for limit in claim_limits))
 
-        reference, excerpts_used = _render_reference(excerpts, candidate.lane)
+        reference, excerpts_used = _render_reference(excerpts, primary.lane)
         if reference:
             sections.append(reference)
+        expires_at = min(
+            (item.expires_at for item in candidates if item.expires_at > 0.0),
+            default=0.0,
+        )
 
         return DeliveryRequest(
-            event_id=candidate.event_id,
-            lane=candidate.lane,
-            priority=candidate.priority,
+            event_id=primary.event_id,
+            lane=primary.lane,
+            priority=primary.priority,
             text="\n\n".join(sections),
-            coalesce_key=candidate.coalesce_key,
+            coalesce_key=primary.coalesce_key,
             # The character words the call-out herself; the plugin never speaks
             # verbatim, which is why `visibility` stays empty.
             ai_behavior="respond",
             visibility=(),
             metadata={
                 "plugin": "neko_wows",
-                "event_id": candidate.event_id,
-                "lane": candidate.lane,
-                "severity": candidate.severity,
-                "seq": candidate.seq,
-                "battle_id": candidate.battle_id,
+                "event_id": primary.event_id,
+                "event_ids": [item.event_id for item in candidates],
+                "event_count": len(candidates),
+                "events": [
+                    {
+                        "event_id": item.event_id,
+                        "lane": item.lane,
+                        "priority": item.priority,
+                        "severity": item.severity,
+                        "seq": item.seq,
+                    }
+                    for item in candidates
+                ],
+                "lane": primary.lane,
+                "severity": primary.severity,
+                "seq": primary.seq,
+                "battle_id": primary.battle_id,
                 "channel_mode": profile.channel_mode,
                 "excerpt_count": excerpts_used,
                 "screenshot_enabled": bool(profile.screenshot_enabled),
@@ -129,8 +157,35 @@ class WowsPromptRouter:
                 "prompt_revision": bundle.revision_id,
             },
             target_lanlan=profile.target_lanlan,
-            expires_at=candidate.expires_at,
+            expires_at=expires_at,
         )
+
+
+def _render_primary(
+    candidate: AdviceCandidate,
+    current_context: dict[str, Any],
+) -> str:
+    return (
+        f"主事件：{candidate.summary}（{candidate.event_id}）\n"
+        f"仲裁优先级：{candidate.priority}\n"
+        f"实时强度：{candidate.severity}\n"
+        f"发生序号：{candidate.seq}\n"
+        f"事实：{_render_facts(candidate.detail)}\n"
+        f"当前战况：{_render_facts(current_context)}"
+    )
+
+
+def _render_attached(candidates: Sequence[AdviceCandidate]) -> str:
+    rendered = []
+    for index, candidate in enumerate(candidates, start=1):
+        rendered.append(
+            f"{index}. {candidate.summary}（{candidate.event_id}）\n"
+            f"   仲裁优先级：{candidate.priority}\n"
+            f"   实时强度：{candidate.severity}\n"
+            f"   发生序号：{candidate.seq}\n"
+            f"   事实：{_render_facts(candidate.detail)}"
+        )
+    return "附加事件：\n" + "\n".join(rendered)
 
 
 def _render_facts(payload: dict[str, Any]) -> str:

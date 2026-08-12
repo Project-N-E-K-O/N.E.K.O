@@ -134,7 +134,7 @@ _SPECS: tuple[EventSpec, ...] = (
     EventSpec(
         event_id=OUTNUMBERED,
         lane=LANE_NORMAL,
-        priority=50,
+        priority=25,
         summary="视野内舰数劣势",
         cooldown_seconds=45.0,
         coalesce_key="wows_situation",
@@ -264,7 +264,7 @@ _SPECS: tuple[EventSpec, ...] = (
     EventSpec(
         event_id=SITUATION_ADVICE,
         lane=LANE_NORMAL,
-        priority=25,
+        priority=50,
         summary="局势建议",
         cooldown_seconds=90.0,
         coalesce_key="wows_situation",

@@ -130,7 +130,12 @@ export function outcomeLabel(
 }
 
 export function outcomeTone(stage?: string, outcome?: string): Tone {
-  if (outcome === "delivered" || outcome === "chosen" || outcome === "events") {
+  if (
+    outcome === "delivered"
+    || outcome === "chosen"
+    || outcome === "attached"
+    || outcome === "events"
+  ) {
     return "success"
   }
   if (outcome === "failed" || outcome === "error" || outcome === "rejected") {

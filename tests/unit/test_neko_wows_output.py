@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -20,6 +21,7 @@ from plugin.plugins.neko_wows.adapters.neko_dispatcher import (
 from plugin.plugins.neko_wows.adapters.runtime_timeline import (
     STAGE_ARBITER,
     STAGE_DETECT,
+    STAGE_DELIVERY,
     STAGE_SHIP_CATALOG,
 )
 from plugin.plugins.neko_wows.domain.catalog import (
@@ -42,6 +44,8 @@ from plugin.plugins.neko_wows.policy.tactic_policy import (
     WowsTacticPolicy,
 )
 from plugin.plugins.neko_wows.policy.arbiter import (
+    REASON_ATTACHED,
+    REASON_CHOSEN,
     REASON_COOLDOWN,
     REASON_LANE_GAP,
     REASON_QUEUED,
@@ -317,13 +321,18 @@ def _catalog_order_target(*, catalog_error: Exception | None = None):
     chosen = SimpleNamespace(
         event_id="battle_started",
         lane="normal",
+        priority=60,
         severity=20,
         summary="开局",
         detail={},
     )
     plugin.policy = SimpleNamespace(expand=lambda *_args: (chosen,))
     plugin.arbiter = SimpleNamespace(
-        decide=lambda *_args: SimpleNamespace(chosen=chosen, chain=()),
+        decide=lambda *_args: SimpleNamespace(
+            chosen=chosen,
+            candidates=(chosen,),
+            chain=(),
+        ),
         commit=lambda *_args, **_kwargs: True,
         cancel_events=lambda *_args: 0,
     )
@@ -369,6 +378,105 @@ def test_ship_catalog_observation_runs_after_scene_and_before_response():
     assert calls == ["scene", "ship", "respond"]
 
 
+def test_committed_bundle_acknowledges_every_detector_event():
+    plugin = object.__new__(NekoWowsPlugin)
+    committed = []
+    acknowledged = []
+    plugin.arbiter = SimpleNamespace(
+        commit=lambda candidates, *_args, **_kwargs: (
+            committed.extend(candidates) or True
+        ),
+    )
+    plugin.registry = SimpleNamespace(
+        acknowledge_delivery=lambda event_id, detail: acknowledged.append(
+            (event_id, detail)
+        ),
+    )
+    plugin.dispatcher = SimpleNamespace(paused=False)
+    candidates = (
+        SimpleNamespace(event_id="primary", detail={"order": 1}),
+        SimpleNamespace(event_id="attached", detail={"order": 2}),
+    )
+
+    result = NekoWowsPlugin._commit_callout_outcome(
+        plugin,
+        candidates,
+        100.0,
+        SimpleNamespace(reason="delivered"),
+    )
+
+    assert result is True
+    assert committed == list(candidates)
+    assert acknowledged == [
+        ("primary", {"order": 1}),
+        ("attached", {"order": 2}),
+    ]
+
+
+def test_evaluation_routes_commits_and_records_the_whole_decision_bundle():
+    plugin, snapshot, calls = _catalog_order_target()
+    primary = SimpleNamespace(
+        event_id="battle_started",
+        lane="normal",
+        priority=60,
+        severity=40,
+        summary="开局",
+        detail={"order": 1},
+    )
+    attached = SimpleNamespace(
+        event_id="locally_isolated",
+        lane="normal",
+        priority=55,
+        severity=35,
+        summary="局部孤立",
+        detail={"order": 2},
+    )
+    candidates = (primary, attached)
+    routed = []
+    committed = []
+    acknowledged = []
+    plugin.policy = SimpleNamespace(expand=lambda *_args: candidates)
+    plugin.arbiter = SimpleNamespace(
+        decide=lambda *_args: SimpleNamespace(
+            chosen=primary,
+            candidates=candidates,
+            chain=(),
+        ),
+        commit=lambda bundled, *_args, **_kwargs: (
+            committed.extend(bundled) or True
+        ),
+        cancel_events=lambda *_args: 0,
+    )
+    plugin.registry.acknowledge_delivery = (
+        lambda event_id, detail: acknowledged.append((event_id, detail))
+    )
+    plugin.router = SimpleNamespace(
+        build=lambda bundled, *_args: (
+            routed.append(bundled)
+            or SimpleNamespace(text="respond", event_id=primary.event_id)
+        ),
+    )
+
+    NekoWowsPlugin._evaluate_locked(plugin, snapshot)
+
+    assert routed == [candidates]
+    assert committed == list(candidates)
+    assert acknowledged == [
+        ("battle_started", {"order": 1}),
+        ("locally_isolated", {"order": 2}),
+    ]
+    assert calls.count("respond") == 1
+    delivery = next(
+        kwargs
+        for args, kwargs in plugin.timeline.records
+        if args[0] == STAGE_DELIVERY
+    )
+    assert delivery["detail"]["event_ids"] == [
+        "battle_started",
+        "locally_isolated",
+    ]
+
+
 def test_a_no_event_frame_drains_the_arbiter_queue():
     plugin, snapshot, calls = _catalog_order_target()
     queued = plugin.arbiter.decide((), 100.0).chosen
@@ -383,7 +491,11 @@ def test_a_no_event_frame_drains_the_arbiter_queue():
 
     def decide(candidates, now):
         decide_calls.append((tuple(candidates), now))
-        return SimpleNamespace(chosen=queued, chain=())
+        return SimpleNamespace(
+            chosen=queued,
+            candidates=(queued,) if queued is not None else (),
+            chain=(),
+        )
 
     plugin.arbiter.decide = decide
 
@@ -399,6 +511,8 @@ def test_a_no_event_frame_drains_the_arbiter_queue():
     (REASON_COOLDOWN, []),
     (REASON_LANE_GAP, []),
     (REASON_EXPIRED, [REASON_EXPIRED]),
+    (REASON_CHOSEN, [REASON_CHOSEN]),
+    (REASON_ATTACHED, [REASON_ATTACHED]),
 ])
 def test_no_event_frame_only_records_arbiter_state_changes(outcome, expected):
     plugin, snapshot, _calls = _catalog_order_target()
@@ -417,6 +531,7 @@ def test_no_event_frame_only_records_arbiter_state_changes(outcome, expected):
     )
     plugin.arbiter.decide = lambda *_args: SimpleNamespace(
         chosen=None,
+        candidates=(),
         chain=(step,),
     )
 
@@ -454,6 +569,7 @@ def test_unchanged_pending_retries_do_not_flood_the_timeline():
     )
     plugin.arbiter.decide = lambda *_args: SimpleNamespace(
         chosen=None,
+        candidates=(),
         chain=(step_queued, step_paused),
     )
 
@@ -770,6 +886,67 @@ def test_the_request_carries_the_event_facts():
     assert built.metadata["lane"] == "urgent"
 
 
+def test_the_request_carries_an_ordered_event_bundle_in_one_prompt():
+    router = WowsPromptRouter(WowsConfig())
+    candidates = (
+        build_candidate(LOW_HEALTH, hp_ratio=0.12),
+        build_candidate(RAPID_DAMAGE, hp_drop_ratio=0.25),
+    )
+
+    built = router.build(
+        candidates,
+        PromptProfile(channel_mode=CHANNEL_DUAL, dry_run=True),
+    )
+
+    assert built.event_id == LOW_HEALTH
+    assert built.text.index("主事件：") < built.text.index("附加事件：")
+    assert built.text.index(LOW_HEALTH) < built.text.index(RAPID_DAMAGE)
+    assert "实时强度：70" in built.text
+    assert built.metadata["event_ids"] == [LOW_HEALTH, RAPID_DAMAGE]
+    assert built.metadata["event_count"] == 2
+    assert [item["severity"] for item in built.metadata["events"]] == [70, 70]
+
+
+def test_bundled_prompt_uses_the_newest_event_context_as_current_battle_state():
+    primary = replace(
+        build_candidate(LOW_HEALTH),
+        at=100.0,
+        seq=1,
+        context={"own_hp_ratio": 0.8},
+    )
+    attached = replace(
+        build_candidate(RAPID_DAMAGE),
+        at=101.0,
+        seq=2,
+        context={"own_hp_ratio": 0.2},
+    )
+
+    built = WowsPromptRouter(WowsConfig()).build(
+        (primary, attached),
+        PromptProfile(channel_mode=CHANNEL_DUAL, dry_run=True),
+    )
+
+    assert '"own_hp_ratio": 0.2' in built.text
+    assert '"own_hp_ratio": 0.8' not in built.text
+
+
+def test_bundled_request_uses_the_earliest_nonzero_event_expiry():
+    primary = replace(build_candidate(LOW_HEALTH), expires_at=200.0)
+    attached = replace(build_candidate(RAPID_DAMAGE), expires_at=150.0)
+
+    built = WowsPromptRouter(WowsConfig()).build(
+        (primary, attached),
+        PromptProfile(channel_mode=CHANNEL_DUAL, dry_run=True),
+    )
+
+    assert built.expires_at == 150.0
+    host = FakePlugin()
+    cfg = WowsConfig(dry_run=False)
+    outcome = NekoDispatcher(host, cfg, clock=FakeClock(151.0)).deliver(built)
+    assert outcome.reason == REASON_EXPIRED
+    assert host.calls == []
+
+
 def test_absent_measurements_are_omitted_rather_than_shown_as_null():
     router = WowsPromptRouter(WowsConfig())
     candidate = build_candidate(LOW_HEALTH, hp_ratio=0.12, nearest_enemy_m=None)
@@ -791,6 +968,19 @@ def test_claim_limits_reach_the_prompt():
             PromptProfile(channel_mode=CHANNEL_DUAL, dry_run=True))
         assert "表述限制" in built.text, event_id
         assert forbidden in built.text, event_id
+
+
+def test_bundled_claim_limits_are_merged_without_duplicate_global_rules():
+    low_health = build_candidate(LOW_HEALTH)
+    rapid_damage = build_candidate(RAPID_DAMAGE)
+
+    built = WowsPromptRouter(WowsConfig()).build(
+        (low_health, rapid_damage),
+        PromptProfile(channel_mode=CHANNEL_DUAL, dry_run=True),
+    )
+
+    assert "不能说“被集火”" in built.text
+    assert built.text.count(low_health.claim_limits[0]) == 1
 
 
 def test_the_character_words_the_call_out_herself():

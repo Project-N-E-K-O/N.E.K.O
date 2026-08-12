@@ -481,6 +481,7 @@ def test_dynamic_panel_statuses_are_localized_instead_of_exposing_codes():
             "external", "managed", "offline", "conflict", "disabled")),
         *(f"format.outcome.documents.{value}" for value in (
             "imported", "duplicate", "rejected", "deleted", "cleared")),
+        "format.outcome.arbiter.attached",
         "format.outcome.prompts.activated",
         "format.outcome.prompts.reset",
     }
