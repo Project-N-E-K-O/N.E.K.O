@@ -203,3 +203,43 @@ test('director Node harness keeps cross-page handoff routed through the existing
     );
     assert.deepEqual(handoffCalls, [['memory_browser', { token: 'node-harness' }]]);
 });
+
+test('daily opening reveal fallback cancels the pending avatar motion', async () => {
+    const { window } = createHarness();
+    let motionOptions = null;
+    let resolveMotion = null;
+    const revealReasons = [];
+    window.YuiGuideAvatarStage = {
+        playAvatarMotion(options) {
+            motionOptions = options;
+            return new Promise((resolve) => {
+                resolveMotion = resolve;
+            });
+        }
+    };
+    const director = window.createYuiGuideDirector({ page: 'home' });
+
+    const revealed = await director.runDailyIntroAvatarPerformance({
+        id: 'day2_daily_intro',
+        text: 'test',
+        introAvatarPerformance: {
+            preset: 'bottom-rise',
+            durationMs: 6000
+        }
+    }, 2, {
+        isFirstDailyScene: true,
+        revealReadyFallbackMs: 1,
+        reducedMotion: false,
+        revealPrepared(reason) {
+            revealReasons.push(reason);
+        }
+    });
+
+    assert.equal(revealed, true);
+    assert.deepEqual(revealReasons, ['daily-intro-avatar-reveal-timeout']);
+    assert.equal(typeof motionOptions.isCancelled, 'function');
+    assert.equal(motionOptions.isCancelled(), true);
+
+    resolveMotion({ result: 'cancelled', reason: 'cancelled' });
+    await Promise.resolve();
+});
