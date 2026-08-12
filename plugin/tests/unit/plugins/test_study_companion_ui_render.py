@@ -298,6 +298,13 @@ def test_study_companion_static_ui8_visual_accessibility_and_csp_contract() -> N
     assert "knowledge-stage-selector" in style_css
     assert "knowledgeMapActiveStage" in knowledge_map_js
     assert '<script src="./knowledge-map.js?v=study-hotfix-20260714-review"></script>' in index_html
+    outcome_formatters_script = (
+        '<script src="./outcome-formatters.js?v=study-hotfix-20260812"></script>'
+    )
+    main_script = '<script src="./main.js?v=study-hotfix-20260621-yui-static"></script>'
+    assert outcome_formatters_script in index_html
+    assert "solution-narration.js" not in index_html
+    assert index_html.index(outcome_formatters_script) < index_html.index(main_script)
     assert '<span class="hero-paw" aria-hidden="true">🐾</span>' in index_html
     assert '<span class="hero-title__cat" aria-hidden="true">🐱</span>' in index_html
     assert '<span data-i18n="ui.title">Study Companion</span>' in index_html
@@ -330,7 +337,7 @@ def test_study_companion_static_ui_browser_smoke_desktop_reduced_motion() -> Non
         "i18n.js": ("text/javascript", (STATIC_DIR / "i18n.js").read_text(encoding="utf-8")),
         "surface-panels.js": ("text/javascript", (STATIC_DIR / "surface-panels.js").read_text(encoding="utf-8")),
         "knowledge-map.js": ("text/javascript", (STATIC_DIR / "knowledge-map.js").read_text(encoding="utf-8")),
-        "solution-narration.js": ("text/javascript", (STATIC_DIR / "solution-narration.js").read_text(encoding="utf-8")),
+        "outcome-formatters.js": ("text/javascript", (STATIC_DIR / "outcome-formatters.js").read_text(encoding="utf-8")),
         "document-controller.js": ("text/javascript", (STATIC_DIR / "document-controller.js").read_text(encoding="utf-8")),
         "main.js": ("text/javascript", (STATIC_DIR / "main.js").read_text(encoding="utf-8")),
         "katex.min.js": ("text/javascript", (STATIC_DIR / "katex.min.js").read_text(encoding="utf-8")),

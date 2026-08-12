@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -46,7 +49,7 @@ def test_study_explain_surfaces_expose_solution_narration_outcomes() -> None:
     hosted = _read("study_panel.tsx")
     fallback = "\n".join(
         (PLUGIN_DIR / "static" / filename).read_text(encoding="utf-8")
-        for filename in ("solution-narration.js", "main.js")
+        for filename in ("outcome-formatters.js", "main.js")
     )
 
     for source in (hosted, fallback):
@@ -106,7 +109,10 @@ def test_solution_narration_outcome_messages_exist_in_all_locales() -> None:
 
 def test_study_explain_surfaces_render_backend_knowledge_guidance_evidence() -> None:
     hosted = _read("study_panel.tsx")
-    fallback = (PLUGIN_DIR / "static" / "main.js").read_text(encoding="utf-8")
+    fallback = "\n".join(
+        (PLUGIN_DIR / "static" / filename).read_text(encoding="utf-8")
+        for filename in ("outcome-formatters.js", "main.js")
+    )
 
     required_contract_fields = {
         "knowledge_guidance_applied",
@@ -131,6 +137,160 @@ def test_study_explain_surfaces_render_backend_knowledge_guidance_evidence() -> 
         formatter = source[source.index("function formatKnowledgeGuidanceEvidence") :]
         formatter = formatter[: formatter.index("\n}\n") + 3]
         assert "data.reply" not in formatter
+
+
+def test_outcome_formatters_are_pure_frozen_and_cover_all_outcomes() -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not installed")
+
+    source_path = PLUGIN_DIR / "static" / "outcome-formatters.js"
+    script = r"""
+const fs = require('node:fs');
+global.window = {};
+global.t = () => { throw new Error('implicit global translator used'); };
+global.fetch = () => { throw new Error('fetch used'); };
+Object.defineProperty(global, 'document', {
+  configurable: true,
+  get() { throw new Error('document used'); },
+});
+eval(fs.readFileSync(process.env.OUTCOME_FORMATTERS_JS, 'utf8'));
+
+const api = window.StudyOutcomeFormatters;
+const calls = [];
+const translate = (key, fallback) => {
+  calls.push([key, fallback]);
+  return `translated:${key}`;
+};
+const narrationCases = {
+  empty: {},
+  not_applicable: { solution_narration_status: 'not_applicable' },
+  scheduled_flag: { solution_narration_scheduled: true },
+  scheduled_status: { solution_narration_status: 'scheduled' },
+  disabled: { solution_narration_status: 'disabled' },
+  degraded: { solution_narration_status: 'degraded' },
+  repair_failed: { solution_narration_status: 'repair_failed' },
+  invalid_repair: { solution_narration_reason: 'invalid_repair_response' },
+  attempted_repair: {
+    solution_repair_attempted: true,
+    solution_narration_scheduled: false,
+  },
+  missing_answer_reason: { solution_narration_reason: 'missing_answer' },
+  missing_answer_section: {
+    solution_narration_status: 'incomplete',
+    solution_narration_missing_sections: ['Answer'],
+  },
+  incomplete: { solution_narration_status: 'incomplete' },
+  runtime_unavailable: { solution_narration_status: 'runtime_unavailable' },
+  event_bus_unavailable: { solution_narration_reason: 'event_bus_unavailable' },
+  delivery_failed: { solution_narration_status: 'delivery_failed' },
+  event_delivery_failed: { solution_narration_reason: 'event_delivery_failed' },
+  not_scheduled: { solution_narration_scheduled: false },
+  unknown: { solution_narration_status: 'future_status' },
+};
+const narration = Object.fromEntries(
+  Object.entries(narrationCases).map(([name, outcome]) => [
+    name,
+    api.formatSolutionNarrationNotice(outcome, translate),
+  ]),
+);
+const knowledgeCases = {
+  not_applicable: { knowledge_guidance_status: 'not_applicable' },
+  not_matched: { knowledge_guidance_status: 'not_matched' },
+  low_confidence: { knowledge_guidance_status: 'low_confidence' },
+  routing_unavailable: { knowledge_guidance_status: 'routing_unavailable' },
+  applied: {
+    knowledge_guidance_status: 'applied',
+    knowledge_guidance_applied: true,
+    knowledge_guidance_subject: 'math',
+    knowledge_guidance_content_type: 'concept_map',
+    knowledge_guidance_entity: 'Triangle',
+    knowledge_guidance_focus_topic: { label: 'Pythagoras' },
+    knowledge_guidance_related_topics: [{ name: 'Distance' }, { label: 'Vectors' }],
+    knowledge_guidance_source: 'semantic_route',
+  },
+  missing_focus: {
+    knowledge_guidance_status: 'applied',
+    knowledge_guidance_applied: true,
+  },
+  unknown: {
+    knowledge_guidance_status: 'future_status',
+    knowledge_guidance_applied: false,
+  },
+};
+const knowledge = Object.fromEntries(
+  Object.entries(knowledgeCases).map(([name, outcome]) => [
+    name,
+    api.formatKnowledgeGuidanceEvidence(outcome, translate),
+  ]),
+);
+console.log(JSON.stringify({
+  frozen: Object.isFrozen(api),
+  keys: Object.keys(api).sort(),
+  calls,
+  narration,
+  knowledge,
+}));
+"""
+    result = subprocess.run(
+        [node, "-e", script],
+        check=True,
+        capture_output=True,
+        encoding="utf-8",
+        env={**os.environ, "OUTCOME_FORMATTERS_JS": str(source_path)},
+        timeout=10,
+    )
+    payload = json.loads(result.stdout)
+
+    assert payload["frozen"] is True
+    assert payload["keys"] == [
+        "formatKnowledgeGuidanceEvidence",
+        "formatSolutionNarrationNotice",
+    ]
+    assert payload["narration"] == {
+        "empty": "",
+        "not_applicable": "",
+        "scheduled_flag": "translated:ui.status.solution_narration_scheduled",
+        "scheduled_status": "translated:ui.status.solution_narration_scheduled",
+        "disabled": "translated:ui.status.solution_narration_disabled",
+        "degraded": "translated:ui.error.solution_narration_degraded",
+        "repair_failed": "translated:ui.error.solution_narration_repair_failed",
+        "invalid_repair": "translated:ui.error.solution_narration_repair_failed",
+        "attempted_repair": "translated:ui.error.solution_narration_repair_failed",
+        "missing_answer_reason": "translated:ui.error.solution_narration_missing_answer",
+        "missing_answer_section": "translated:ui.error.solution_narration_missing_answer",
+        "incomplete": "translated:ui.error.solution_narration_incomplete",
+        "runtime_unavailable": "translated:ui.error.solution_narration_runtime_unavailable",
+        "event_bus_unavailable": "translated:ui.error.solution_narration_runtime_unavailable",
+        "delivery_failed": "translated:ui.error.solution_narration_delivery_failed",
+        "event_delivery_failed": "translated:ui.error.solution_narration_delivery_failed",
+        "not_scheduled": "translated:ui.error.solution_narration_not_scheduled",
+        "unknown": "",
+    }
+    assert payload["knowledge"]["not_applicable"] == ""
+    assert payload["knowledge"]["not_matched"] == (
+        "translated:ui.knowledge_guidance.not_matched"
+    )
+    assert payload["knowledge"]["low_confidence"] == (
+        "translated:ui.knowledge_guidance.low_confidence"
+    )
+    assert payload["knowledge"]["routing_unavailable"] == (
+        "translated:ui.knowledge_guidance.routing_unavailable"
+    )
+    assert payload["knowledge"]["missing_focus"] == (
+        "translated:ui.knowledge_guidance.not_matched"
+    )
+    assert payload["knowledge"]["unknown"] == ""
+    assert payload["knowledge"]["applied"].splitlines() == [
+        "translated:ui.knowledge_guidance.applied",
+        "translated:ui.knowledge_guidance.subject: translated:ui.knowledge_guidance.subject.math",
+        "translated:ui.knowledge_guidance.content_type: translated:ui.knowledge_guidance.content_type.concept_map",
+        "translated:ui.knowledge_guidance.entity: Triangle",
+        "translated:ui.knowledge_guidance.focus_topic: Pythagoras",
+        "translated:ui.knowledge_guidance.related_topics: Distance, Vectors",
+        "translated:ui.knowledge_guidance.source: translated:ui.knowledge_guidance.source.semantic_route",
+    ]
+    assert payload["calls"]
 
 
 def test_knowledge_guidance_evidence_messages_exist_in_all_locales() -> None:

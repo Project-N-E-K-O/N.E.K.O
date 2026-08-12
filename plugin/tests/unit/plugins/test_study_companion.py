@@ -5409,7 +5409,7 @@ const i18nDir = process.env.STUDY_COMPANION_I18N_DIR;
 const html = fs.readFileSync(path.join(staticDir, 'index.html'), 'utf8');
 const mainJs = fs.readFileSync(path.join(staticDir, 'main.js'), 'utf8');
 const documentControllerJs = fs.readFileSync(path.join(staticDir, 'document-controller.js'), 'utf8');
-const solutionNarrationJs = fs.readFileSync(path.join(staticDir, 'solution-narration.js'), 'utf8');
+const outcomeFormattersJs = fs.readFileSync(path.join(staticDir, 'outcome-formatters.js'), 'utf8');
 const surfacePanelsJs = fs.readFileSync(path.join(staticDir, 'surface-panels.js'), 'utf8');
 const knowledgeMapJs = fs.readFileSync(path.join(staticDir, 'knowledge-map.js'), 'utf8');
 const i18nJs = fs.readFileSync(path.join(staticDir, 'i18n.js'), 'utf8');
@@ -5481,7 +5481,7 @@ window.fetch = async (rawUrl, options = {}) => {
 window.eval(i18nJs);
 window.eval(surfacePanelsJs);
 window.eval(documentControllerJs);
-window.eval(solutionNarrationJs);
+window.eval(outcomeFormattersJs);
 window.eval(`${knowledgeMapJs}\n${mainJs}`);
 
 async function waitFor(predicate, label) {
@@ -5581,7 +5581,7 @@ const i18nDir = process.env.STUDY_COMPANION_I18N_DIR;
 const html = fs.readFileSync(path.join(staticDir, 'index.html'), 'utf8');
 const mainJs = fs.readFileSync(path.join(staticDir, 'main.js'), 'utf8');
 const documentControllerJs = fs.readFileSync(path.join(staticDir, 'document-controller.js'), 'utf8');
-const solutionNarrationJs = fs.readFileSync(path.join(staticDir, 'solution-narration.js'), 'utf8');
+const outcomeFormattersJs = fs.readFileSync(path.join(staticDir, 'outcome-formatters.js'), 'utf8');
 const knowledgeMapJs = fs.readFileSync(path.join(staticDir, 'knowledge-map.js'), 'utf8');
 const i18nJs = fs.readFileSync(path.join(staticDir, 'i18n.js'), 'utf8');
 const zhBundle = JSON.parse(fs.readFileSync(path.join(i18nDir, 'zh-CN.json'), 'utf8'));
@@ -5636,7 +5636,7 @@ window.fetch = async (rawUrl, options = {}) => {
 
 window.eval(i18nJs);
 window.eval(documentControllerJs);
-window.eval(solutionNarrationJs);
+window.eval(outcomeFormattersJs);
 window.eval(`${knowledgeMapJs}\n${mainJs}`);
 
 async function waitFor(predicate, label) {
@@ -5814,7 +5814,7 @@ const i18nDir = process.env.STUDY_COMPANION_I18N_DIR;
 const html = fs.readFileSync(path.join(staticDir, 'index.html'), 'utf8');
 const mainJs = fs.readFileSync(path.join(staticDir, 'main.js'), 'utf8');
 const documentControllerJs = fs.readFileSync(path.join(staticDir, 'document-controller.js'), 'utf8');
-const solutionNarrationJs = fs.readFileSync(path.join(staticDir, 'solution-narration.js'), 'utf8');
+const outcomeFormattersJs = fs.readFileSync(path.join(staticDir, 'outcome-formatters.js'), 'utf8');
 const surfacePanelsJs = fs.readFileSync(path.join(staticDir, 'surface-panels.js'), 'utf8');
 const knowledgeMapJs = fs.readFileSync(path.join(staticDir, 'knowledge-map.js'), 'utf8');
 const i18nJs = fs.readFileSync(path.join(staticDir, 'i18n.js'), 'utf8');
@@ -5902,7 +5902,7 @@ window.fetch = async (rawUrl, options = {}) => {
 window.eval(i18nJs);
 window.eval(surfacePanelsJs);
 window.eval(documentControllerJs);
-window.eval(solutionNarrationJs);
+window.eval(outcomeFormattersJs);
 window.eval(`${knowledgeMapJs}\n${mainJs}`);
 
 async function waitFor(predicate, label) {
@@ -6523,7 +6523,7 @@ const html = `<!doctype html><html><head><title>Study Companion</title></head><b
 const i18nJs = fs.readFileSync(process.env.STUDY_COMPANION_I18N_JS, 'utf8');
 const mainJs = fs.readFileSync(process.env.STUDY_COMPANION_STATIC_JS, 'utf8');
 const documentControllerJs = fs.readFileSync(process.env.STUDY_COMPANION_DOCUMENT_CONTROLLER_JS, 'utf8');
-const solutionNarrationJs = fs.readFileSync(process.env.STUDY_COMPANION_SOLUTION_NARRATION_JS, 'utf8');
+const outcomeFormattersJs = fs.readFileSync(process.env.STUDY_COMPANION_OUTCOME_FORMATTERS_JS, 'utf8');
 const knowledgeMapJs = fs.readFileSync(process.env.STUDY_COMPANION_KNOWLEDGE_MAP_JS, 'utf8');
 const enBundle = JSON.parse(fs.readFileSync(path.join(process.env.STUDY_COMPANION_I18N_DIR, 'en.json'), 'utf8'));
 
@@ -6586,7 +6586,7 @@ window.fetch = async (rawUrl, options = {}) => {
 
 window.eval(i18nJs);
 window.eval(documentControllerJs);
-window.eval(solutionNarrationJs);
+window.eval(outcomeFormattersJs);
 window.eval(`${knowledgeMapJs}\n${mainJs}`);
 
 async function waitFor(predicate, label) {
@@ -6620,8 +6620,8 @@ if (document.querySelector('[data-mode="interactive"]').getAttribute('aria-press
         "STUDY_COMPANION_DOCUMENT_CONTROLLER_JS": str(
             plugin_dir / "static" / "document-controller.js"
         ),
-        "STUDY_COMPANION_SOLUTION_NARRATION_JS": str(
-            plugin_dir / "static" / "solution-narration.js"
+        "STUDY_COMPANION_OUTCOME_FORMATTERS_JS": str(
+            plugin_dir / "static" / "outcome-formatters.js"
         ),
         "STUDY_COMPANION_KNOWLEDGE_MAP_JS": str(
             plugin_dir / "static" / "knowledge-map.js"

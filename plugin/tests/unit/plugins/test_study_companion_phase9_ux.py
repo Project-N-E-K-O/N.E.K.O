@@ -28,7 +28,14 @@ def test_phase9_static_math_assets_are_local_and_registered() -> None:
     assert '<link rel="stylesheet" href="./katex.min.css?v=study-hotfix-20260615v" />' in index
     assert '<script src="./katex.min.js?v=study-hotfix-20260615v"></script>' in index
     assert '<script src="./katex-render.js?v=study-hotfix-20260615v"></script>' in index
-    assert '<script src="./main.js?v=study-hotfix-20260621-yui-static"></script>' in index
+    outcome_formatters_script = (
+        '<script src="./outcome-formatters.js?v=study-hotfix-20260812"></script>'
+    )
+    main_script = '<script src="./main.js?v=study-hotfix-20260621-yui-static"></script>'
+    assert outcome_formatters_script in index
+    assert main_script in index
+    assert "solution-narration.js" not in index
+    assert index.index(outcome_formatters_script) < index.index(main_script)
     assert ".study-panel__image-preview[hidden]" in css
     assert ".study-panel__image-preview:not([hidden])" in css
     assert "window.renderMathInText" in renderer
