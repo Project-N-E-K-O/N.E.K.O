@@ -274,6 +274,31 @@ def bridge_e2e_env(
 # ─── Tests ────────────────────────────────────────────────────────────
 
 
+def test_market_task_cleanup_prunes_overflow_workers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Capacity pruning releases both task states and their worker handles."""
+    from plugin.server.routes import market_bridge as market_bridge_module
+
+    monkeypatch.setattr(market_bridge_module, "_TASK_MAX_ENTRIES", 1)
+    monkeypatch.setattr(
+        market_bridge_module,
+        "_tasks",
+        {
+            "old": {"created_at": 1.0, "completed_at": None},
+            "new": {"created_at": 2.0, "completed_at": None},
+        },
+    )
+    workers = {"old": object(), "new": object()}
+    monkeypatch.setattr(market_bridge_module, "_task_workers", workers)
+
+    market_bridge_module._cleanup_tasks()
+
+    assert "old" not in market_bridge_module._tasks
+    assert "old" not in workers
+    assert "new" in workers
+
+
 @pytest.mark.asyncio
 async def test_market_install_task_can_be_cancelled_before_work_starts(
     bridge_e2e_env: dict[str, Any],

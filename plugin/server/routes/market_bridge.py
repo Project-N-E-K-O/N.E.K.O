@@ -247,6 +247,7 @@ def _cleanup_tasks() -> None:
     )
     for task_id, _task in ordered[:overflow]:
         _tasks.pop(task_id, None)
+        _task_workers.pop(task_id, None)
 
 
 def _plugin_config_roots() -> tuple[Path, ...]:
@@ -712,7 +713,7 @@ async def cancel_market_install_task(
         raise HTTPException(status_code=404, detail="任务不存在")
     if task.get("status") in {"completed", "failed", "canceled"}:
         raise HTTPException(status_code=409, detail="安装任务已结束")
-    if task.get("stage") in {"install", "restart", "rollback", "completed"}:
+    if task.get("stage") in {"backup_old", "install", "restart", "rollback", "completed"}:
         raise HTTPException(status_code=409, detail="安装已进入写入阶段，无法安全取消")
 
     task["cancel_requested"] = True
@@ -2977,6 +2978,7 @@ async def _do_upgrade(
             _raise_if_task_cancel_requested(task)
 
             inspected = await asyncio.to_thread(inspect_package, package_path)
+            _raise_if_task_cancel_requested(task)
             package_id = str(inspected.package_id).strip()
             if (
                 not package_id
@@ -3006,9 +3008,11 @@ async def _do_upgrade(
             profile_backup_dir = backup_path_for(profile_dir)
             if profile_dir.exists():
                 await asyncio.to_thread(profile_backup_dir.parent.mkdir, parents=True, exist_ok=True)
+                _raise_if_task_cancel_requested(task)
                 await asyncio.to_thread(os.rename, profile_dir, profile_backup_dir)
                 rollback_steps.append(_make_restore_dir_step(profile_backup_dir, profile_dir))
                 task["rollback"]["profile_backup_dir"] = str(profile_backup_dir)
+                _raise_if_task_cancel_requested(task)
 
             # Step 6: unpack + record_market_upgrade (single atomic call).
             _set_task_stage(

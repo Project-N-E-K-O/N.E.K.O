@@ -333,6 +333,7 @@ const activeInstallTask = ref<MarketInstallTask | null>(null)
 const activeInstallPluginName = ref('')
 const activeInstallMode = ref<'install' | 'upgrade' | 'reinstall'>('install')
 const installTaskCancelling = ref(false)
+const marketInstallBusy = ref(false)
 
 const installTaskDone = computed(() => {
   const status = activeInstallTask.value?.status
@@ -1001,23 +1002,29 @@ async function pollInstallTask(
 }
 
 async function handleInstall(plugin: MarketWorkbenchItem) {
+  if (marketInstallBusy.value) {
+    ElMessage.warning(t('market.installAlreadyRunning'))
+    return
+  }
   if (!plugin.has_release) {
     ElMessage.warning(t('market.noVersionAvailable'))
     return
   }
-  const payload = await resolveInstallPayload(plugin)
-  if (!payload) {
-    ElMessage.warning(t('market.noDownloadUrl'))
-    return
-  }
-  if (!payload.package_sha256) {
-    ElMessage.error(t('market.installFailed'))
-    return
-  }
-
-  installingId.value = plugin.id
-
+  marketInstallBusy.value = true
+  let packageUrl = ''
   try {
+    const payload = await resolveInstallPayload(plugin)
+    if (!payload) {
+      ElMessage.warning(t('market.noDownloadUrl'))
+      return
+    }
+    if (!payload.package_sha256) {
+      ElMessage.error(t('market.installFailed'))
+      return
+    }
+
+    packageUrl = payload.package_url
+    installingId.value = plugin.id
     const res = await fetchBridge('/market/install', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1055,9 +1062,11 @@ async function handleInstall(plugin: MarketWorkbenchItem) {
       ElMessage.error(err.detail || t('market.installFailed'))
     }
   } catch {
-    openExternalUrl(payload.package_url)
+    if (packageUrl) openExternalUrl(packageUrl)
+    else ElMessage.error(t('market.installFailed'))
   } finally {
     installingId.value = null
+    marketInstallBusy.value = false
   }
 }
 
@@ -1071,22 +1080,27 @@ async function handleInstall(plugin: MarketWorkbenchItem) {
  *   - 错误码识别在 pollInstallTask 内统一处理。
  */
 async function handleUpgrade(plugin: MarketWorkbenchItem) {
+  if (marketInstallBusy.value) {
+    ElMessage.warning(t('market.installAlreadyRunning'))
+    return
+  }
   if (!plugin.has_release) {
     ElMessage.warning(t('market.noVersionAvailable'))
     return
   }
-  const payload = await resolveInstallPayload(plugin)
-  if (!payload) {
-    ElMessage.warning(t('market.noDownloadUrl'))
-    return
-  }
-  if (!payload.package_sha256) {
-    ElMessage.error(t('market.installFailed'))
-    return
-  }
-
-  upgradingId.value = plugin.id
+  marketInstallBusy.value = true
   try {
+    const payload = await resolveInstallPayload(plugin)
+    if (!payload) {
+      ElMessage.warning(t('market.noDownloadUrl'))
+      return
+    }
+    if (!payload.package_sha256) {
+      ElMessage.error(t('market.installFailed'))
+      return
+    }
+
+    upgradingId.value = plugin.id
     const res = await fetchBridge('/market/install', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1132,6 +1146,7 @@ async function handleUpgrade(plugin: MarketWorkbenchItem) {
     ElMessage.error(t('market.installFailed'))
   } finally {
     upgradingId.value = null
+    marketInstallBusy.value = false
   }
 }
 
