@@ -621,5 +621,12 @@
     "ui.knowledge_guidance.subject.unknown": "不明",
     "ui.knowledge_guidance.content_type.literary_work": "文学作品",
     "ui.knowledge_guidance.source.semantic_route": "意味ルーティング",
-    "ui.knowledge_guidance.source.selected_topic": "選択済みトピック"
+    "ui.knowledge_guidance.source.selected_topic": "選択済みトピック",
+    "ui.status.general_narration_scheduled": "一般回答の読み上げを予約しました。",
+    "ui.status.general_narration_disabled": "一般回答の読み上げは無効です。",
+    "ui.error.general_narration_degraded": "回答が代替内容であるか読み上げ可能な内容がないため、一般回答の読み上げを予約しませんでした。",
+    "ui.error.general_narration_runtime_unavailable": "一般回答の読み上げは一時的に利用できません。回答は引き続き表示されます。",
+    "ui.error.general_narration_delivery_failed": "一般回答の読み上げリクエストを送信できませんでした。もう一度お試しください。",
+    "ui.settings.general_narration_enabled.label": "一般回答の読み上げ",
+    "ui.settings.general_narration_enabled.help": "一般的な説明やディスカッションを N.E.K.O が自然に読み上げます。"
 }

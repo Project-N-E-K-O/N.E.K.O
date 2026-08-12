@@ -275,10 +275,12 @@ class CheckinConfig:
 class CommunicationConfig:
     enabled: bool = True
     solution_narration_enabled: bool = True
+    general_narration_enabled: bool = True
 
     def __post_init__(self) -> None:
         self.enabled = bool(self.enabled)
         self.solution_narration_enabled = bool(self.solution_narration_enabled)
+        self.general_narration_enabled = bool(self.general_narration_enabled)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -853,6 +855,12 @@ def build_config(raw: dict[str, Any]) -> StudyConfig:
                 "solution_narration_enabled",
                 True,
                 "solution_narration_enabled",
+            ),
+            general_narration_enabled=_bool(
+                communication,
+                "general_narration_enabled",
+                True,
+                "general_narration_enabled",
             ),
         ),
         awareness=AwarenessConfig(

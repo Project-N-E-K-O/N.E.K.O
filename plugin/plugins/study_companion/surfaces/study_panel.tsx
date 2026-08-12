@@ -92,6 +92,13 @@ type SolutionNarrationOutcome = {
   solution_narration_missing_sections?: string[];
 };
 
+type GeneralNarrationOutcome = {
+  general_narration_scheduled?: boolean;
+  general_narration_status?: string;
+  general_narration_reason?: string;
+  general_narration_response_mode?: string;
+};
+
 type KnowledgeGuidanceTopic = {
   id?: string;
   label?: string;
@@ -183,6 +190,73 @@ function formatSolutionNarrationNotice(
       'ui.error.solution_narration_not_scheduled',
       'Narration was not scheduled for this explanation.',
     );
+  }
+  return '';
+}
+
+function formatGeneralNarrationNotice(
+  outcome: GeneralNarrationOutcome,
+  translate: StudyTranslate,
+) {
+  const status = String(outcome.general_narration_status || '').trim().toLowerCase();
+  const reason = String(outcome.general_narration_reason || '').trim().toLowerCase();
+  const hasOutcome = typeof outcome.general_narration_scheduled === 'boolean'
+    || Boolean(status)
+    || Boolean(reason)
+    || Boolean(String(outcome.general_narration_response_mode || '').trim());
+  if (!hasOutcome || status === 'not_applicable') return '';
+
+  if (status) {
+    if (status === 'scheduled') {
+      return translate('ui.status.general_narration_scheduled', 'General narration has been scheduled.');
+    }
+    if (status === 'disabled') {
+      return translate('ui.status.general_narration_disabled', 'General narration is turned off.');
+    }
+    if (status === 'degraded') {
+      return translate(
+        'ui.error.general_narration_degraded',
+        'The response used a fallback or had no narratable content, so general narration was not scheduled.',
+      );
+    }
+    if (status === 'runtime_unavailable') {
+      return translate(
+        'ui.error.general_narration_runtime_unavailable',
+        'General narration is temporarily unavailable. The response is still shown.',
+      );
+    }
+    if (status === 'delivery_failed') {
+      return translate(
+        'ui.error.general_narration_delivery_failed',
+        'The general narration request could not be delivered. Please try again.',
+      );
+    }
+    return '';
+  }
+
+  if (reason === 'communication_disabled' || reason === 'general_narration_disabled') {
+    return translate('ui.status.general_narration_disabled', 'General narration is turned off.');
+  }
+  if (reason === 'degraded_reply' || reason === 'empty_reply') {
+    return translate(
+      'ui.error.general_narration_degraded',
+      'The response used a fallback or had no narratable content, so general narration was not scheduled.',
+    );
+  }
+  if (reason === 'event_bus_unavailable') {
+    return translate(
+      'ui.error.general_narration_runtime_unavailable',
+      'General narration is temporarily unavailable. The response is still shown.',
+    );
+  }
+  if (reason === 'event_delivery_failed') {
+    return translate(
+      'ui.error.general_narration_delivery_failed',
+      'The general narration request could not be delivered. Please try again.',
+    );
+  }
+  if (outcome.general_narration_scheduled === true) {
+    return translate('ui.status.general_narration_scheduled', 'General narration has been scheduled.');
   }
   return '';
 }
@@ -1421,7 +1495,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
         transition_phrase?: string;
         degraded?: boolean;
         diagnostic?: string;
-      } & SolutionNarrationOutcome & KnowledgeGuidanceOutcome;
+      } & SolutionNarrationOutcome & GeneralNarrationOutcome & KnowledgeGuidanceOutcome;
       if (controller.signal.aborted) {
         return;
       }
@@ -1430,6 +1504,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
           formatTutorDiagnostic(data.diagnostic),
           formatKnowledgeGuidanceEvidence(data, t),
           formatSolutionNarrationNotice(data, t),
+          formatGeneralNarrationNotice(data, t),
         ].filter(Boolean).join('\n\n'));
         await refresh(controller.signal, { updateReply: false });
         return;
@@ -1438,7 +1513,13 @@ export default function StudyPanel(props: PluginSurfaceProps) {
       const nextReply = data.reply || data.summary || '';
       const knowledgeGuidanceEvidence = formatKnowledgeGuidanceEvidence(data, t);
       const narrationNotice = formatSolutionNarrationNotice(data, t);
-      setReply([nextReply, knowledgeGuidanceEvidence, narrationNotice].filter(Boolean).join('\n\n'));
+      const generalNarrationNotice = formatGeneralNarrationNotice(data, t);
+      setReply([
+        nextReply,
+        knowledgeGuidanceEvidence,
+        narrationNotice,
+        generalNarrationNotice,
+      ].filter(Boolean).join('\n\n'));
       await refresh(controller.signal, { updateReply: false });
     } catch (error) {
       if (controller.signal.aborted) {

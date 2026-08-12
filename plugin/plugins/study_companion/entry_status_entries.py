@@ -128,6 +128,11 @@ def _apply_settings_config(current: StudyConfig, raw: dict) -> StudyConfig:
             communication.get("solution_narration_enabled"),
             current.communication.solution_narration_enabled,
         )
+    if "general_narration_enabled" in communication:
+        next_communication["general_narration_enabled"] = _coerce_bool(
+            communication.get("general_narration_enabled"),
+            current.communication.general_narration_enabled,
+        )
     next_values["communication"] = next_communication
     return StudyConfig(**next_values)
 

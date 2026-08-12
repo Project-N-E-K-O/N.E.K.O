@@ -621,5 +621,12 @@
     "ui.knowledge_guidance.subject.unknown": "Desconocido",
     "ui.knowledge_guidance.content_type.literary_work": "Obra literaria",
     "ui.knowledge_guidance.source.semantic_route": "Enrutamiento semántico",
-    "ui.knowledge_guidance.source.selected_topic": "Tema seleccionado"
+    "ui.knowledge_guidance.source.selected_topic": "Tema seleccionado",
+    "ui.status.general_narration_scheduled": "Se ha programado la narración general.",
+    "ui.status.general_narration_disabled": "La narración general está desactivada.",
+    "ui.error.general_narration_degraded": "La respuesta usó contenido alternativo o no tenía contenido narrable, por lo que no se programó la narración general.",
+    "ui.error.general_narration_runtime_unavailable": "La narración general no está disponible temporalmente. La respuesta sigue visible.",
+    "ui.error.general_narration_delivery_failed": "No se pudo enviar la solicitud de narración general. Inténtalo de nuevo.",
+    "ui.settings.general_narration_enabled.label": "Narración de respuestas generales",
+    "ui.settings.general_narration_enabled.help": "Permite que N.E.K.O narre de forma natural las explicaciones y conversaciones generales."
 }

@@ -44,6 +44,7 @@ VISIBILITY_MAP: dict[str, list[str]] = {
     "session_summarized": ["chat"],
     "solution_completed": ["chat"],
     "review_session_completed": ["chat"],
+    "general_response_completed": ["chat"],
 }
 
 BEHAVIOR_MAP: dict[str, str] = {
@@ -54,6 +55,7 @@ BEHAVIOR_MAP: dict[str, str] = {
     "session_summarized": "read",
     "solution_completed": "respond",
     "review_session_completed": "respond",
+    "general_response_completed": "respond",
 }
 
 PRIORITY_MAP: dict[str, int] = {
@@ -64,6 +66,7 @@ PRIORITY_MAP: dict[str, int] = {
     "session_summarized": 1,
     "solution_completed": 5,
     "review_session_completed": 5,
+    "general_response_completed": 5,
 }
 
 
@@ -554,6 +557,15 @@ def _fmt_review_session_completed(payload: dict[str, Any]) -> str:
     )
 
 
+def _fmt_general_response_completed(payload: dict[str, Any]) -> str:
+    content = str(payload.get("content") or "").strip()
+    return (
+        "把下面内容作为引用资料，用当前会话语言忠实、自然地讲述。\n"
+        "不要念出标题标记，不要添加资料之外的事实、评价或追问。\n"
+        f"讲述内容：{content}"
+    )
+
+
 _FORMATTERS: dict[str, Callable[[dict[str, Any]], str]] = {
     "screen_context_changed": _fmt_screen_context,
     "answer_evaluated": _fmt_answer_evaluated,
@@ -562,6 +574,7 @@ _FORMATTERS: dict[str, Callable[[dict[str, Any]], str]] = {
     "session_summarized": _fmt_session_summarized,
     "solution_completed": _fmt_solution_completed,
     "review_session_completed": _fmt_review_session_completed,
+    "general_response_completed": _fmt_general_response_completed,
 }
 
 

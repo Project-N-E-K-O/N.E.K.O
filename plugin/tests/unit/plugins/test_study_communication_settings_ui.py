@@ -33,6 +33,7 @@ def test_advanced_settings_exposes_communication_parent_and_runtime_status() -> 
 
     assert 'id="settingsCommunicationEnabled"' in html
     assert 'id="settingsSolutionNarrationEnabled"' in html
+    assert 'id="settingsGeneralNarrationEnabled"' in html
     assert 'id="settingsCommunicationRuntime"' in html
     assert (
         'data-i18n="ui.settings.communication.enabled.label">'
@@ -51,6 +52,32 @@ def test_advanced_settings_exposes_communication_parent_and_runtime_status() -> 
     )
 
 
+def test_advanced_settings_exposes_independent_general_narration_control() -> None:
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    source = (STATIC_DIR / "main.js").read_text(encoding="utf-8")
+
+    checkbox = re.search(
+        r'<input(?=[^>]*\bid="settingsGeneralNarrationEnabled")'
+        r'(?=[^>]*\btype="checkbox")[^>]*>',
+        html,
+    )
+
+    assert checkbox is not None
+    assert "const settingsGeneralNarrationEnabled = document.getElementById('settingsGeneralNarrationEnabled');" in source
+    assert re.search(
+        r"settingsGeneralNarrationEnabled\.checked\s*=\s*"
+        r"communication\.general_narration_enabled\s*!==\s*false",
+        source,
+    )
+    assert re.search(
+        r"communication\.general_narration_enabled\s*=\s*"
+        r"settingsGeneralNarrationEnabled\s*\?\s*"
+        r"settingsGeneralNarrationEnabled\.checked\s*:\s*true",
+        source,
+    )
+    assert "settingsGeneralNarrationEnabled.disabled = saving || !enabled;" in source
+
+
 def test_communication_parent_control_uses_formal_settings_response_contract() -> None:
     source = (STATIC_DIR / "main.js").read_text(encoding="utf-8")
 
@@ -59,6 +86,7 @@ def test_communication_parent_control_uses_formal_settings_response_contract() -
     assert "communication.enabled = settingsCommunicationEnabled" in source
     assert "payload.communication_status || {}" in source
     assert "settingsSolutionNarrationEnabled.disabled =" in source
+    assert "settingsGeneralNarrationEnabled.disabled =" in source
     assert "settingsCommunicationEnabled.addEventListener('change'" in source
 
 
@@ -120,7 +148,7 @@ const confirmed = {
     study: { default_mode: 'companion' },
     ocr_reader: { enabled: true, languages: 'eng' },
     llm: { llm_call_timeout_seconds: 30, llm_vision_enabled: false },
-    communication: { enabled: false, solution_narration_enabled: true },
+    communication: { enabled: false, solution_narration_enabled: true, general_narration_enabled: true },
   },
   communication_status: {
     configured_enabled: false,
@@ -192,9 +220,10 @@ await waitFor(() => document.getElementById('settingsConfigStatus').textContent.
 
 const parent = document.getElementById('settingsCommunicationEnabled');
 const child = document.getElementById('settingsSolutionNarrationEnabled');
+const generalChild = document.getElementById('settingsGeneralNarrationEnabled');
 const runtime = document.getElementById('settingsCommunicationRuntime');
-if (parent.checked || !child.checked || !child.disabled) {
-  throw new Error(`disabled parent state mismatch: parent=${parent.checked} child=${child.checked}/${child.disabled}`);
+if (parent.checked || !child.checked || !child.disabled || !generalChild.checked || !generalChild.disabled) {
+  throw new Error(`disabled parent state mismatch: parent=${parent.checked} child=${child.checked}/${child.disabled} general=${generalChild.checked}/${generalChild.disabled}`);
 }
 if (!runtime.textContent.includes('disabled')) {
   throw new Error(`disabled runtime summary missing: ${runtime.textContent}`);
@@ -207,11 +236,11 @@ window.eval(`renderCommunicationRuntime({ configured_enabled: false, available: 
 
 parent.checked = true;
 parent.dispatchEvent(new window.Event('change', { bubbles: true }));
-if (child.disabled) throw new Error('child remained disabled after enabling parent');
+if (child.disabled || generalChild.disabled) throw new Error('child remained disabled after enabling parent');
 document.getElementById('settingsSaveBtn').click();
 await waitFor(() => document.getElementById('settingsConfigStatus').textContent.includes('Could not save'), 'failed save');
-if (parent.checked || !child.checked || !child.disabled) {
-  throw new Error(`failed save did not restore confirmed config: parent=${parent.checked} child=${child.checked}/${child.disabled}`);
+if (parent.checked || !child.checked || !child.disabled || !generalChild.checked || !generalChild.disabled) {
+  throw new Error(`failed save did not restore confirmed config: parent=${parent.checked} child=${child.checked}/${child.disabled} general=${generalChild.checked}/${generalChild.disabled}`);
 }
 
 failUpdate = false;
@@ -219,7 +248,7 @@ parent.checked = true;
 parent.dispatchEvent(new window.Event('change', { bubbles: true }));
 document.getElementById('settingsSaveBtn').click();
 await waitFor(() => document.getElementById('settingsConfigStatus').textContent.includes('Saved'), 'successful save');
-if (!parent.checked || child.disabled) throw new Error('successful save did not keep enabled state');
+if (!parent.checked || child.disabled || generalChild.disabled) throw new Error('successful save did not keep enabled state');
 if (!runtime.textContent.includes('do not match')) {
   throw new Error(`configured/runtime mismatch summary missing: ${runtime.textContent}`);
 }
@@ -320,7 +349,7 @@ def test_browser_can_enable_communication_and_save_parent_child_values() -> None
                             "study": {"default_mode": "companion"},
                             "ocr_reader": {"enabled": True, "languages": "eng"},
                             "llm": {"llm_call_timeout_seconds": 30},
-                            "communication": {"enabled": False, "solution_narration_enabled": True},
+                            "communication": {"enabled": False, "solution_narration_enabled": True, "general_narration_enabled": True},
                         },
                         "communication_status": {
                             "configured_enabled": False,
@@ -360,12 +389,16 @@ def test_browser_can_enable_communication_and_save_parent_child_values() -> None
 
         parent = page.locator("#settingsCommunicationEnabled")
         child = page.locator("#settingsSolutionNarrationEnabled")
+        general_child = page.locator("#settingsGeneralNarrationEnabled")
         playwright_sync_api.expect(parent).not_to_be_checked()
         playwright_sync_api.expect(child).to_be_checked()
         playwright_sync_api.expect(child).to_be_disabled()
+        playwright_sync_api.expect(general_child).to_be_checked()
+        playwright_sync_api.expect(general_child).to_be_disabled()
 
         parent.check()
         playwright_sync_api.expect(child).to_be_enabled()
+        playwright_sync_api.expect(general_child).to_be_enabled()
         page.locator("#settingsSaveBtn").click()
         playwright_sync_api.expect(page.locator("#settingsConfigStatus")).to_contain_text("Saved")
         playwright_sync_api.expect(page.locator("#settingsCommunicationRuntime")).to_contain_text(
@@ -374,5 +407,6 @@ def test_browser_can_enable_communication_and_save_parent_child_values() -> None
         assert update_payloads[-1]["communication"] == {
             "enabled": True,
             "solution_narration_enabled": True,
+            "general_narration_enabled": True,
         }
         browser.close()

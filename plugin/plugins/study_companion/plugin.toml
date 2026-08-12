@@ -68,6 +68,7 @@ distraction_detection = true
 [study_companion.communication]
 enabled = true
 solution_narration_enabled = true
+general_narration_enabled = true
 
 [llm]
 llm_call_timeout_seconds = 75

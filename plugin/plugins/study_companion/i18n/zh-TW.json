@@ -621,5 +621,12 @@
     "ui.knowledge_guidance.subject.unknown": "未知",
     "ui.knowledge_guidance.content_type.literary_work": "文學作品",
     "ui.knowledge_guidance.source.semantic_route": "語意路由",
-    "ui.knowledge_guidance.source.selected_topic": "已選主題"
+    "ui.knowledge_guidance.source.selected_topic": "已選主題",
+    "ui.status.general_narration_scheduled": "已安排通用講述。",
+    "ui.status.general_narration_disabled": "通用講述已關閉。",
+    "ui.error.general_narration_degraded": "本次回答使用了降級內容或沒有可講述內容，因此未安排通用講述。",
+    "ui.error.general_narration_runtime_unavailable": "通用講述暫時不可用，回答仍會正常顯示。",
+    "ui.error.general_narration_delivery_failed": "通用講述請求未能送達，請重試。",
+    "ui.settings.general_narration_enabled.label": "通用回答講述",
+    "ui.settings.general_narration_enabled.help": "讓 N.E.K.O 自然講述通用解釋與開放討論。"
 }

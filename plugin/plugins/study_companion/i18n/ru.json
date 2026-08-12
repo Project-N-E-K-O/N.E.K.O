@@ -621,5 +621,12 @@
     "ui.knowledge_guidance.subject.unknown": "Неизвестно",
     "ui.knowledge_guidance.content_type.literary_work": "Литературное произведение",
     "ui.knowledge_guidance.source.semantic_route": "Семантическая маршрутизация",
-    "ui.knowledge_guidance.source.selected_topic": "Выбранная тема"
+    "ui.knowledge_guidance.source.selected_topic": "Выбранная тема",
+    "ui.status.general_narration_scheduled": "Озвучивание общего ответа запланировано.",
+    "ui.status.general_narration_disabled": "Озвучивание общих ответов отключено.",
+    "ui.error.general_narration_degraded": "Ответ создан в резервном режиме или не содержит текста для озвучивания, поэтому озвучивание не запланировано.",
+    "ui.error.general_narration_runtime_unavailable": "Озвучивание общих ответов временно недоступно. Ответ по-прежнему отображается.",
+    "ui.error.general_narration_delivery_failed": "Не удалось передать запрос на озвучивание общего ответа. Повторите попытку.",
+    "ui.settings.general_narration_enabled.label": "Озвучивание общих ответов",
+    "ui.settings.general_narration_enabled.help": "Позволяет N.E.K.O естественно озвучивать общие объяснения и обсуждения."
 }

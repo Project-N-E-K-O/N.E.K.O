@@ -141,6 +141,7 @@ const settingsLlmTimeout = document.getElementById('settingsLlmTimeout');
 const settingsLlmVisionEnabled = document.getElementById('settingsLlmVisionEnabled');
 const settingsCommunicationEnabled = document.getElementById('settingsCommunicationEnabled');
 const settingsSolutionNarrationEnabled = document.getElementById('settingsSolutionNarrationEnabled');
+const settingsGeneralNarrationEnabled = document.getElementById('settingsGeneralNarrationEnabled');
 const settingsCommunicationRequiresEnabled = document.getElementById('settingsCommunicationRequiresEnabled');
 const settingsCommunicationRuntime = document.getElementById('settingsCommunicationRuntime');
 const modeButtons = Array.from(document.querySelectorAll('[data-mode]'));
@@ -1651,6 +1652,7 @@ function syncCommunicationControls(saving = false) {
   const enabled = settingsCommunicationEnabled.checked;
   settingsCommunicationEnabled.disabled = saving;
   settingsSolutionNarrationEnabled.disabled = saving || !enabled;
+  settingsGeneralNarrationEnabled.disabled = saving || !enabled;
   settingsCommunicationRequiresEnabled.hidden = enabled;
 }
 
@@ -1676,6 +1678,7 @@ function applySettingsConfig(config) {
   if (settingsLlmVisionEnabled) settingsLlmVisionEnabled.checked = llm.llm_vision_enabled === true;
   if (settingsCommunicationEnabled) settingsCommunicationEnabled.checked = communication.enabled !== false;
   if (settingsSolutionNarrationEnabled) settingsSolutionNarrationEnabled.checked = communication.solution_narration_enabled !== false;
+  if (settingsGeneralNarrationEnabled) settingsGeneralNarrationEnabled.checked = communication.general_narration_enabled !== false;
   syncCommunicationControls();
   renderCommunicationRuntime();
   if (Object.prototype.hasOwnProperty.call(llm, 'llm_vision_max_image_px')) applyVisionMaxImagePx(llm.llm_vision_max_image_px);
@@ -1712,6 +1715,7 @@ function collectSettingsConfig() {
   llm.llm_vision_max_image_px = normalizeVisionMaxImagePx(llm.llm_vision_max_image_px);
   communication.enabled = settingsCommunicationEnabled ? settingsCommunicationEnabled.checked : true;
   communication.solution_narration_enabled = settingsSolutionNarrationEnabled ? settingsSolutionNarrationEnabled.checked : true;
+  communication.general_narration_enabled = settingsGeneralNarrationEnabled ? settingsGeneralNarrationEnabled.checked : true;
   return next;
 }
 
@@ -1886,6 +1890,7 @@ async function explainText() {
       : (data.reply || data.summary || data.transition_phrase || ''),
     outcomeFormatters.formatKnowledgeGuidanceEvidence(data, t),
     outcomeFormatters.formatSolutionNarrationNotice(data, t),
+    outcomeFormatters.formatGeneralNarrationNotice(data, t),
   ].filter(Boolean).join('\n\n'));
   await refreshStatus({ updateReply: false });
 }

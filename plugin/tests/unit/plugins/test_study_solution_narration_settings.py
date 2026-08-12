@@ -10,6 +10,7 @@ import pytest
 from plugin.plugins.study_companion.entry_status_entries import (
     _StatusEntriesMixin,
     _apply_settings_config,
+    _communication_status_payload,
     _settings_config_payload,
 )
 from plugin.plugins.study_companion.models import (
@@ -46,26 +47,71 @@ class _SettingsOwner(_StatusEntriesMixin):
         self.persisted_config = self._cfg.to_dict()
 
 
+def test_general_narration_setting_defaults_true_and_old_config_remains_compatible() -> None:
+    defaults = CommunicationConfig()
+    restored = build_config(
+        {
+            "communication": {
+                "enabled": True,
+                "solution_narration_enabled": False,
+            }
+        }
+    )
+
+    assert defaults.general_narration_enabled is True
+    assert restored.communication.general_narration_enabled is True
+
+
+@pytest.mark.asyncio
+async def test_general_narration_setting_round_trips_and_updates_without_restart() -> None:
+    owner = _SettingsOwner(StudyConfig())
+
+    result = await owner.study_update_settings_config(
+        config={"communication": {"general_narration_enabled": False}}
+    )
+
+    assert isinstance(result, Ok)
+    assert owner._cfg.communication.enabled is True
+    assert owner._cfg.communication.solution_narration_enabled is True
+    assert owner._cfg.communication.general_narration_enabled is False
+    assert result.value["config"]["communication"]["general_narration_enabled"] is False
+    assert owner.persisted_config is not None
+    assert owner.persisted_config["communication"]["general_narration_enabled"] is False
+    assert "general_narration_enabled" not in _communication_status_payload(owner)
+
+
 def test_communication_config_defaults_normalizes_booleans_and_serializes() -> None:
     defaults = CommunicationConfig()
 
     assert defaults.enabled is True
     assert defaults.solution_narration_enabled is True
+    assert defaults.general_narration_enabled is True
     assert defaults.to_dict() == {
         "enabled": True,
         "solution_narration_enabled": True,
+        "general_narration_enabled": True,
     }
 
-    disabled = CommunicationConfig(enabled=0, solution_narration_enabled=0)
-    enabled = CommunicationConfig(enabled=1, solution_narration_enabled=1)
+    disabled = CommunicationConfig(
+        enabled=0,
+        solution_narration_enabled=0,
+        general_narration_enabled=0,
+    )
+    enabled = CommunicationConfig(
+        enabled=1,
+        solution_narration_enabled=1,
+        general_narration_enabled=1,
+    )
 
     assert disabled.to_dict() == {
         "enabled": False,
         "solution_narration_enabled": False,
+        "general_narration_enabled": False,
     }
     assert enabled.to_dict() == {
         "enabled": True,
         "solution_narration_enabled": True,
+        "general_narration_enabled": True,
     }
 
 
@@ -76,6 +122,7 @@ def test_build_config_reads_nested_and_persisted_top_level_communication() -> No
                 "communication": {
                     "enabled": False,
                     "solution_narration_enabled": True,
+                    "general_narration_enabled": False,
                 }
             }
         }
@@ -92,10 +139,12 @@ def test_build_config_reads_nested_and_persisted_top_level_communication() -> No
     assert nested.communication.to_dict() == {
         "enabled": False,
         "solution_narration_enabled": True,
+        "general_narration_enabled": False,
     }
     assert restored.communication.to_dict() == {
         "enabled": True,
         "solution_narration_enabled": False,
+        "general_narration_enabled": True,
     }
 
 
@@ -114,6 +163,7 @@ def test_settings_payload_and_apply_round_trip_communication_booleans() -> None:
             "communication": {
                 "enabled": "false",
                 "solution_narration_enabled": "off",
+                "general_narration_enabled": "no",
             }
         },
     )
@@ -121,10 +171,12 @@ def test_settings_payload_and_apply_round_trip_communication_booleans() -> None:
     assert payload["communication"] == {
         "enabled": True,
         "solution_narration_enabled": True,
+        "general_narration_enabled": True,
     }
     assert updated.communication.to_dict() == {
         "enabled": False,
         "solution_narration_enabled": False,
+        "general_narration_enabled": False,
     }
 
 
@@ -149,6 +201,7 @@ async def test_settings_update_applies_solution_narration_immediately_and_persis
     assert result.value["config"]["communication"] == {
         "enabled": True,
         "solution_narration_enabled": False,
+        "general_narration_enabled": True,
     }
     assert owner.refresh_calls == 1
     assert owner.persist_calls == 1
@@ -156,6 +209,7 @@ async def test_settings_update_applies_solution_narration_immediately_and_persis
     assert owner.persisted_config["communication"] == {
         "enabled": True,
         "solution_narration_enabled": False,
+        "general_narration_enabled": True,
     }
 
 
@@ -166,6 +220,7 @@ def test_plugin_toml_enables_solution_narration_by_default() -> None:
     assert manifest["study_companion"]["communication"] == {
         "enabled": True,
         "solution_narration_enabled": True,
+        "general_narration_enabled": True,
     }
 
 

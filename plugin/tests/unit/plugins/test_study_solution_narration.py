@@ -294,6 +294,7 @@ class _ExplainHarness(_TutorExplainEntriesMixin, _CommunicationTutorEventsMixin)
         degraded: bool = False,
         communication_enabled: bool = True,
         narration_enabled: bool = True,
+        general_narration_enabled: bool = True,
         event_bus: _EventBus | None = None,
         last_ocr_text: str = "",
         response_mode: str = "problem_solving",
@@ -304,6 +305,7 @@ class _ExplainHarness(_TutorExplainEntriesMixin, _CommunicationTutorEventsMixin)
             communication=SimpleNamespace(
                 enabled=communication_enabled,
                 solution_narration_enabled=narration_enabled,
+                general_narration_enabled=general_narration_enabled,
             ),
         )
         self._state = SimpleNamespace(
@@ -494,7 +496,16 @@ async def test_study_explain_text_does_not_repair_ordinary_concept_prose() -> No
     assert result.value["solution_narration_status"] == "not_applicable"
     assert result.value["solution_narration_reason"] == ""
     assert result.value["solution_narration_missing_sections"] == []
-    assert bus.events == []
+    assert result.value["general_narration_scheduled"] is True
+    assert result.value["general_narration_status"] == "scheduled"
+    assert result.value["general_narration_reason"] == ""
+    assert result.value["general_narration_response_mode"] == "general_discussion"
+    assert len(bus.events) == 1
+    assert bus.events[0].name == "general_response_completed"
+    assert bus.events[0].payload == {
+        "response_mode": "general_discussion",
+        "content": prose_reply,
+    }
 
 
 @pytest.mark.asyncio
@@ -524,7 +535,151 @@ async def test_general_discussion_ignores_accidental_solution_headings(
     assert result.value["solution_repair_attempted"] is False
     assert result.value["solution_narration_missing_sections"] == []
     assert repair_calls == []
+    assert result.value["general_narration_scheduled"] is True
+    assert result.value["general_narration_status"] == "scheduled"
+    assert len(bus.events) == 1
+    assert bus.events[0].name == "general_response_completed"
+    assert bus.events[0].payload["response_mode"] == "general_discussion"
+
+
+@pytest.mark.asyncio
+async def test_general_explanation_schedules_general_narration_once() -> None:
+    reply = "Opportunity cost is the value of the best alternative you give up."
+    bus = _EventBus()
+    plugin = _ExplainHarness(
+        reply=reply,
+        event_bus=bus,
+        response_mode="general_explanation",
+    )
+
+    result = await plugin.study_explain_text(text="What is opportunity cost?")
+
+    assert isinstance(result, Ok)
+    assert result.value["general_narration_scheduled"] is True
+    assert result.value["general_narration_status"] == "scheduled"
+    assert result.value["general_narration_response_mode"] == "general_explanation"
+    assert [event.name for event in bus.events] == ["general_response_completed"]
+    assert len(plugin._agent.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_problem_solving_never_schedules_duplicate_general_narration() -> None:
+    bus = _EventBus()
+    plugin = _ExplainHarness(event_bus=bus, response_mode="problem_solving")
+
+    result = await plugin.study_explain_text(text="Solve the derivative problem")
+
+    assert isinstance(result, Ok)
+    assert result.value["solution_narration_scheduled"] is True
+    assert result.value["general_narration_scheduled"] is False
+    assert result.value["general_narration_status"] == "not_applicable"
+    assert [event.name for event in bus.events] == ["solution_completed"]
+
+
+@pytest.mark.asyncio
+async def test_unknown_response_mode_does_not_schedule_either_narration() -> None:
+    bus = _EventBus()
+    plugin = _ExplainHarness(
+        reply="A safe natural response.",
+        event_bus=bus,
+        response_mode="unknown",
+    )
+
+    result = await plugin.study_explain_text(text="Please explain this")
+
+    assert isinstance(result, Ok)
+    assert result.value["solution_narration_scheduled"] is False
+    assert result.value["general_narration_scheduled"] is False
+    assert result.value["general_narration_status"] == "not_applicable"
+    assert result.value["general_narration_reason"] == "unsupported_response_mode"
     assert bus.events == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("communication_enabled", "general_narration_enabled", "reason"),
+    [
+        (False, True, "communication_disabled"),
+        (True, False, "general_narration_disabled"),
+    ],
+)
+async def test_general_narration_respects_independent_switches(
+    communication_enabled: bool,
+    general_narration_enabled: bool,
+    reason: str,
+) -> None:
+    bus = _EventBus()
+    plugin = _ExplainHarness(
+        reply="A literary discussion.",
+        event_bus=bus,
+        response_mode="general_discussion",
+        communication_enabled=communication_enabled,
+        general_narration_enabled=general_narration_enabled,
+    )
+
+    result = await plugin.study_explain_text(text="Discuss this novel")
+
+    assert isinstance(result, Ok)
+    assert result.value["solution_narration_status"] == "not_applicable"
+    assert result.value["general_narration_scheduled"] is False
+    assert result.value["general_narration_status"] == "disabled"
+    assert result.value["general_narration_reason"] == reason
+    assert bus.events == []
+
+
+@pytest.mark.asyncio
+async def test_general_narration_reports_degraded_without_delivery() -> None:
+    bus = _EventBus()
+    plugin = _ExplainHarness(
+        reply="Temporary fallback prose.",
+        degraded=True,
+        event_bus=bus,
+        response_mode="general_discussion",
+    )
+
+    result = await plugin.study_explain_text(text="Discuss this novel")
+
+    assert isinstance(result, Ok)
+    assert result.value["solution_narration_status"] == "not_applicable"
+    assert result.value["general_narration_scheduled"] is False
+    assert result.value["general_narration_status"] == "degraded"
+    assert result.value["general_narration_reason"] == "degraded_reply"
+    assert bus.events == []
+
+
+@pytest.mark.asyncio
+async def test_general_narration_reports_event_bus_unavailable() -> None:
+    plugin = _ExplainHarness(
+        reply="A literary discussion.",
+        response_mode="general_discussion",
+    )
+    plugin._event_bus = None
+
+    result = await plugin.study_explain_text(text="Discuss this novel")
+
+    assert isinstance(result, Ok)
+    assert result.value["general_narration_scheduled"] is False
+    assert result.value["general_narration_status"] == "runtime_unavailable"
+    assert result.value["general_narration_reason"] == "event_bus_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_general_narration_reports_delivery_failure_without_losing_reply() -> None:
+    reply = "A literary discussion that must remain visible."
+    bus = _EventBus(fail=True)
+    plugin = _ExplainHarness(
+        reply=reply,
+        event_bus=bus,
+        response_mode="general_discussion",
+    )
+
+    result = await plugin.study_explain_text(text="Discuss this novel")
+
+    assert isinstance(result, Ok)
+    assert result.value["reply"] == reply
+    assert result.value["general_narration_scheduled"] is False
+    assert result.value["general_narration_status"] == "delivery_failed"
+    assert result.value["general_narration_reason"] == "event_delivery_failed"
 
 
 @pytest.mark.asyncio

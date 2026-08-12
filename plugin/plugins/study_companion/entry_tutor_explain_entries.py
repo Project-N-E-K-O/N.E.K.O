@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from ._general_narration import prepare_general_narration_content
 from ._solution_narration import extract_solution_narration_sections
 from ._solution_structure import (
     is_solution_structure_candidate,
@@ -168,6 +169,10 @@ class _TutorExplainEntriesMixin:
                         "solution_narration_reason": "",
                         "solution_repair_attempted": False,
                         "solution_narration_missing_sections": [],
+                        "general_narration_scheduled": False,
+                        "general_narration_status": "not_applicable",
+                        "general_narration_reason": "unsupported_response_mode",
+                        "general_narration_response_mode": "unknown",
                     }
                 )
         # Phase 2: resolve the text to explain.
@@ -296,7 +301,9 @@ class _TutorExplainEntriesMixin:
             narration_scheduled = False
             narration_status = "disabled"
             narration_reason = ""
-            if reply.degraded:
+            if not solution_contract_required:
+                narration_status = "not_applicable"
+            elif reply.degraded:
                 narration_status = "degraded"
             elif not narration_requested:
                 narration_status = "disabled"
@@ -334,6 +341,58 @@ class _TutorExplainEntriesMixin:
                 if solution_candidate and solution_structure is not None
                 else []
             )
+            general_narration_scheduled = False
+            general_narration_status = "not_applicable"
+            general_narration_reason = "unsupported_response_mode"
+            general_response_mode = (
+                response_mode
+                if response_mode in {"general_explanation", "general_discussion"}
+                else "unknown"
+            )
+            general_mode_allowed = bool(
+                general_response_mode != "unknown" and not solution_contract_required
+            )
+            general_narration_enabled = bool(
+                getattr(communication, "general_narration_enabled", True)
+            )
+            prepared_general_content = (
+                prepare_general_narration_content(str(payload.get("reply") or ""))
+                if general_mode_allowed and not reply.degraded
+                else ""
+            )
+            if general_mode_allowed:
+                if reply.degraded:
+                    general_narration_status = "degraded"
+                    general_narration_reason = "degraded_reply"
+                elif not bool(getattr(communication, "enabled", False)):
+                    general_narration_status = "disabled"
+                    general_narration_reason = "communication_disabled"
+                elif not general_narration_enabled:
+                    general_narration_status = "disabled"
+                    general_narration_reason = "general_narration_disabled"
+                elif not prepared_general_content:
+                    general_narration_status = "not_applicable"
+                    general_narration_reason = "empty_reply"
+                elif getattr(self, "_event_bus", None) is None:
+                    general_narration_status = "runtime_unavailable"
+                    general_narration_reason = "event_bus_unavailable"
+                else:
+                    general_narration_scheduled = (
+                        await self._emit_general_response_completed_event(
+                            response_mode=general_response_mode,
+                            content=prepared_general_content,
+                        )
+                    )
+                    if general_narration_scheduled:
+                        general_narration_status = "scheduled"
+                        general_narration_reason = ""
+                    else:
+                        general_narration_status = "delivery_failed"
+                        general_narration_reason = "event_delivery_failed"
+            payload["general_narration_scheduled"] = general_narration_scheduled
+            payload["general_narration_status"] = general_narration_status
+            payload["general_narration_reason"] = general_narration_reason
+            payload["general_narration_response_mode"] = general_response_mode
             payload["study_response_mode"] = response_mode
             if mode_switch:
                 payload["mode_switch"] = mode_switch

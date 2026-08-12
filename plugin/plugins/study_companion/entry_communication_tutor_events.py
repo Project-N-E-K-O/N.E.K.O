@@ -7,9 +7,40 @@ from .entry_common import (
     _event_ratio,
     _event_nonnegative_float,
 )
+from ._general_narration import prepare_general_narration_content
 
 
 class _CommunicationTutorEventsMixin:
+    async def _emit_general_response_completed_event(
+        self,
+        *,
+        response_mode: str,
+        content: str,
+    ) -> bool:
+        normalized_mode = str(response_mode or "").strip()
+        if normalized_mode not in {"general_explanation", "general_discussion"}:
+            return False
+        prepared_content = prepare_general_narration_content(content)
+        if not prepared_content:
+            return False
+        bus = self._event_bus
+        if bus is None:
+            return False
+        try:
+            await bus.emit(
+                StudyEvent(
+                    name="general_response_completed",
+                    payload={
+                        "response_mode": normalized_mode,
+                        "content": prepared_content,
+                    },
+                )
+            )
+        except Exception:
+            self.logger.warning("general narration event delivery failed")
+            return False
+        return True
+
     async def _emit_solution_completed_event(self, sections: dict[str, str]) -> bool:
         bus = self._event_bus
         if bus is None:

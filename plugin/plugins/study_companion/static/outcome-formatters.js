@@ -127,7 +127,72 @@
     return '';
   }
 
+  function formatGeneralNarrationNotice(outcome, translate) {
+    const status = String(outcome?.general_narration_status || '').trim().toLowerCase();
+    const reason = String(outcome?.general_narration_reason || '').trim().toLowerCase();
+    const hasOutcome = typeof outcome?.general_narration_scheduled === 'boolean'
+      || Boolean(status)
+      || Boolean(reason)
+      || Boolean(String(outcome?.general_narration_response_mode || '').trim());
+    if (!hasOutcome || status === 'not_applicable') return '';
+
+    if (status) {
+      if (status === 'scheduled') {
+        return translate('ui.status.general_narration_scheduled', 'General narration has been scheduled.');
+      }
+      if (status === 'disabled') {
+        return translate('ui.status.general_narration_disabled', 'General narration is turned off.');
+      }
+      if (status === 'degraded') {
+        return translate(
+          'ui.error.general_narration_degraded',
+          'The response used a fallback or had no narratable content, so general narration was not scheduled.',
+        );
+      }
+      if (status === 'runtime_unavailable') {
+        return translate(
+          'ui.error.general_narration_runtime_unavailable',
+          'General narration is temporarily unavailable. The response is still shown.',
+        );
+      }
+      if (status === 'delivery_failed') {
+        return translate(
+          'ui.error.general_narration_delivery_failed',
+          'The general narration request could not be delivered. Please try again.',
+        );
+      }
+      return '';
+    }
+
+    if (reason === 'communication_disabled' || reason === 'general_narration_disabled') {
+      return translate('ui.status.general_narration_disabled', 'General narration is turned off.');
+    }
+    if (reason === 'degraded_reply' || reason === 'empty_reply') {
+      return translate(
+        'ui.error.general_narration_degraded',
+        'The response used a fallback or had no narratable content, so general narration was not scheduled.',
+      );
+    }
+    if (reason === 'event_bus_unavailable') {
+      return translate(
+        'ui.error.general_narration_runtime_unavailable',
+        'General narration is temporarily unavailable. The response is still shown.',
+      );
+    }
+    if (reason === 'event_delivery_failed') {
+      return translate(
+        'ui.error.general_narration_delivery_failed',
+        'The general narration request could not be delivered. Please try again.',
+      );
+    }
+    if (outcome?.general_narration_scheduled === true) {
+      return translate('ui.status.general_narration_scheduled', 'General narration has been scheduled.');
+    }
+    return '';
+  }
+
   window.StudyOutcomeFormatters = Object.freeze({
+    formatGeneralNarrationNotice,
     formatKnowledgeGuidanceEvidence,
     formatSolutionNarrationNotice,
   });

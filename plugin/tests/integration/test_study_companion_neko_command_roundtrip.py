@@ -128,10 +128,26 @@ class _FakeStudyOcrPipeline:
 
 
 class _FakeTutorAgent:
+    def __init__(self) -> None:
+        self.response_mode = "problem_solving"
+
     def update_config(self, config: StudyConfig) -> None:
         self._config = config
 
     async def _call_model(self, *_args, **_kwargs) -> str:
+        if self.response_mode == "general_discussion":
+            return json.dumps(
+                {
+                    "subject": "chinese",
+                    "content_type": "literary_work",
+                    "intent": "interpretation",
+                    "response_mode": "general_discussion",
+                    "entity": "《活着》",
+                    "retrieval_concepts": ["文学类文本阅读", "小说主题"],
+                    "confidence": 0.98,
+                },
+                ensure_ascii=False,
+            )
         return json.dumps(
             {
                 "subject": "math",
@@ -151,15 +167,20 @@ class _FakeTutorAgent:
         mode: str = MODE_COMPANION,
         context: dict[str, object] | None = None,
     ) -> TutorReply:
-        return TutorReply(
-            operation="concept_explain",
-            input_text=text,
-            reply=(
+        reply = (
+            "Yu Hua presents endurance as an ordinary but profound form of life."
+            if self.response_mode == "general_discussion"
+            else (
                 "## Problem Analysis\nRoundtrip analysis.\n\n"
                 "## Solution Process\nRoundtrip private process.\n\n"
                 "## Final Answer\nRoundtrip answer.\n\n"
                 "## Transfer Practice\nRoundtrip transfer."
-            ),
+            )
+        )
+        return TutorReply(
+            operation="concept_explain",
+            input_text=text,
+            reply=reply,
             created_at="2026-05-11T00:00:00Z",
         )
 
@@ -400,5 +421,40 @@ async def test_roundtrip_hot_toggle_enables_solution_narration_without_restart(
         assert isinstance(explained_after_disable, Ok)
         assert explained_after_disable.value["solution_narration_scheduled"] is False
         assert not _texts(ctx)
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_roundtrip_general_discussion_uses_only_general_narration_event(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(tmp_path)
+    ctx._config["communication"] = {
+        "enabled": True,
+        "solution_narration_enabled": True,
+        "general_narration_enabled": True,
+    }
+    plugin = StudyCompanionPlugin(ctx)
+    startup = await plugin.startup()
+    assert isinstance(startup, Ok)
+    agent = _FakeTutorAgent()
+    agent.response_mode = "general_discussion"
+    plugin._agent = agent
+    try:
+        explained = await plugin.study_explain_text(
+            text="谈谈你对《活着》这本书的理解"
+        )
+
+        assert isinstance(explained, Ok)
+        assert explained.value["study_response_mode"] == "general_discussion"
+        assert explained.value["solution_narration_scheduled"] is False
+        assert explained.value["general_narration_scheduled"] is True
+        assert explained.value["general_narration_status"] == "scheduled"
+        narration = await _wait_for_text(ctx, "Yu Hua presents endurance")
+        assert "Problem Analysis" not in narration
+        assert len(ctx.pushed_messages) == 1
     finally:
         await plugin.shutdown()

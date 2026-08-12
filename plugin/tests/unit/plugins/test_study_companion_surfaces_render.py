@@ -71,6 +71,59 @@ def test_study_explain_surfaces_expose_solution_narration_outcomes() -> None:
         )
 
 
+def test_study_explain_surfaces_expose_general_narration_outcomes() -> None:
+    hosted = _read("study_panel.tsx")
+    fallback_main = (PLUGIN_DIR / "static" / "main.js").read_text(encoding="utf-8")
+    fallback = "\n".join(
+        (PLUGIN_DIR / "static" / filename).read_text(encoding="utf-8")
+        for filename in ("outcome-formatters.js", "main.js")
+    )
+
+    required_contract_fields = {
+        "general_narration_scheduled",
+        "general_narration_status",
+        "general_narration_reason",
+        "general_narration_response_mode",
+    }
+    for source in (hosted, fallback):
+        assert all(field in source for field in required_contract_fields)
+        assert "formatGeneralNarrationNotice" in source
+        assert "ui.status.general_narration_scheduled" in source
+        assert "ui.status.general_narration_disabled" in source
+        assert "ui.error.general_narration_degraded" in source
+        assert "ui.error.general_narration_runtime_unavailable" in source
+        assert "ui.error.general_narration_delivery_failed" in source
+        formatter = source[source.index("function formatGeneralNarrationNotice") :]
+        formatter = formatter[: formatter.index("\n}") + 2]
+        assert "data.reply" not in formatter
+
+    assert "formatGeneralNarrationNotice(data, t)" in hosted
+    assert "outcomeFormatters.formatGeneralNarrationNotice(data, t)" in fallback_main
+
+
+def test_general_narration_messages_and_setting_exist_in_all_locales() -> None:
+    required_keys = {
+        "ui.status.general_narration_scheduled",
+        "ui.status.general_narration_disabled",
+        "ui.error.general_narration_degraded",
+        "ui.error.general_narration_runtime_unavailable",
+        "ui.error.general_narration_delivery_failed",
+        "ui.settings.general_narration_enabled.label",
+        "ui.settings.general_narration_enabled.help",
+    }
+    locale_paths = sorted((PLUGIN_DIR / "i18n").glob("*.json"))
+
+    assert len(locale_paths) == 8
+    for locale_path in locale_paths:
+        bundle = json.loads(locale_path.read_text(encoding="utf-8"))
+        assert required_keys <= bundle.keys(), locale_path.stem
+        assert all(bundle[key].strip() for key in required_keys), locale_path.stem
+
+    zh_cn = json.loads((PLUGIN_DIR / "i18n" / "zh-CN.json").read_text(encoding="utf-8"))
+    assert zh_cn["ui.status.general_narration_scheduled"] == "已安排通用讲述。"
+    assert zh_cn["ui.settings.general_narration_enabled.label"] == "通用回答讲述"
+
+
 def test_solution_narration_outcome_messages_exist_in_all_locales() -> None:
     expected_zh_cn = (
         "讲解生成不完整：缺少“答案”部分，因此未安排朗读。请重新解析。"
@@ -194,6 +247,39 @@ const narration = Object.fromEntries(
     api.formatSolutionNarrationNotice(outcome, translate),
   ]),
 );
+const generalNarrationCases = {
+  empty: {},
+  not_applicable: { general_narration_status: 'not_applicable' },
+  scheduled_flag: { general_narration_scheduled: true },
+  scheduled_status: { general_narration_status: 'scheduled' },
+  disabled: { general_narration_status: 'disabled' },
+  degraded: { general_narration_status: 'degraded' },
+  degraded_reason: { general_narration_reason: 'degraded_reply' },
+  empty_reply: { general_narration_reason: 'empty_reply' },
+  runtime_unavailable: { general_narration_status: 'runtime_unavailable' },
+  event_bus_unavailable: { general_narration_reason: 'event_bus_unavailable' },
+  delivery_failed: { general_narration_status: 'delivery_failed' },
+  event_delivery_failed: { general_narration_reason: 'event_delivery_failed' },
+  communication_disabled: { general_narration_reason: 'communication_disabled' },
+  general_narration_disabled: { general_narration_reason: 'general_narration_disabled' },
+  unsupported: { general_narration_reason: 'unsupported_response_mode' },
+  false_only: { general_narration_scheduled: false },
+  unknown: { general_narration_status: 'future_status' },
+  status_over_flag: {
+    general_narration_status: 'delivery_failed',
+    general_narration_scheduled: true,
+  },
+  status_over_reason: {
+    general_narration_status: 'scheduled',
+    general_narration_reason: 'event_delivery_failed',
+  },
+};
+const generalNarration = Object.fromEntries(
+  Object.entries(generalNarrationCases).map(([name, outcome]) => [
+    name,
+    api.formatGeneralNarrationNotice(outcome, translate),
+  ]),
+);
 const knowledgeCases = {
   not_applicable: { knowledge_guidance_status: 'not_applicable' },
   not_matched: { knowledge_guidance_status: 'not_matched' },
@@ -229,6 +315,7 @@ console.log(JSON.stringify({
   keys: Object.keys(api).sort(),
   calls,
   narration,
+  generalNarration,
   knowledge,
 }));
 """
@@ -244,6 +331,7 @@ console.log(JSON.stringify({
 
     assert payload["frozen"] is True
     assert payload["keys"] == [
+        "formatGeneralNarrationNotice",
         "formatKnowledgeGuidanceEvidence",
         "formatSolutionNarrationNotice",
     ]
@@ -266,6 +354,27 @@ console.log(JSON.stringify({
         "event_delivery_failed": "translated:ui.error.solution_narration_delivery_failed",
         "not_scheduled": "translated:ui.error.solution_narration_not_scheduled",
         "unknown": "",
+    }
+    assert payload["generalNarration"] == {
+        "empty": "",
+        "not_applicable": "",
+        "scheduled_flag": "translated:ui.status.general_narration_scheduled",
+        "scheduled_status": "translated:ui.status.general_narration_scheduled",
+        "disabled": "translated:ui.status.general_narration_disabled",
+        "degraded": "translated:ui.error.general_narration_degraded",
+        "degraded_reason": "translated:ui.error.general_narration_degraded",
+        "empty_reply": "translated:ui.error.general_narration_degraded",
+        "runtime_unavailable": "translated:ui.error.general_narration_runtime_unavailable",
+        "event_bus_unavailable": "translated:ui.error.general_narration_runtime_unavailable",
+        "delivery_failed": "translated:ui.error.general_narration_delivery_failed",
+        "event_delivery_failed": "translated:ui.error.general_narration_delivery_failed",
+        "communication_disabled": "translated:ui.status.general_narration_disabled",
+        "general_narration_disabled": "translated:ui.status.general_narration_disabled",
+        "unsupported": "",
+        "false_only": "",
+        "unknown": "",
+        "status_over_flag": "translated:ui.error.general_narration_delivery_failed",
+        "status_over_reason": "translated:ui.status.general_narration_scheduled",
     }
     assert payload["knowledge"]["not_applicable"] == ""
     assert payload["knowledge"]["not_matched"] == (

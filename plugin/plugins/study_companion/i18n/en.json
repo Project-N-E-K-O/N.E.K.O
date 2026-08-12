@@ -621,5 +621,12 @@
     "ui.knowledge_guidance.subject.unknown": "Unknown",
     "ui.knowledge_guidance.content_type.literary_work": "Literary work",
     "ui.knowledge_guidance.source.semantic_route": "Semantic routing",
-    "ui.knowledge_guidance.source.selected_topic": "Selected topic"
+    "ui.knowledge_guidance.source.selected_topic": "Selected topic",
+    "ui.status.general_narration_scheduled": "General narration has been scheduled.",
+    "ui.status.general_narration_disabled": "General narration is turned off.",
+    "ui.error.general_narration_degraded": "The response used a fallback or had no narratable content, so general narration was not scheduled.",
+    "ui.error.general_narration_runtime_unavailable": "General narration is temporarily unavailable. The response is still shown.",
+    "ui.error.general_narration_delivery_failed": "The general narration request could not be delivered. Please try again.",
+    "ui.settings.general_narration_enabled.label": "General response narration",
+    "ui.settings.general_narration_enabled.help": "Let N.E.K.O naturally narrate general explanations and discussions."
 }

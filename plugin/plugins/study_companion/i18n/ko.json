@@ -621,5 +621,12 @@
     "ui.knowledge_guidance.subject.unknown": "알 수 없음",
     "ui.knowledge_guidance.content_type.literary_work": "문학 작품",
     "ui.knowledge_guidance.source.semantic_route": "의미 기반 라우팅",
-    "ui.knowledge_guidance.source.selected_topic": "선택한 주제"
+    "ui.knowledge_guidance.source.selected_topic": "선택한 주제",
+    "ui.status.general_narration_scheduled": "일반 답변 낭독이 예약되었습니다.",
+    "ui.status.general_narration_disabled": "일반 답변 낭독이 꺼져 있습니다.",
+    "ui.error.general_narration_degraded": "답변이 대체 내용이거나 낭독할 내용이 없어 일반 답변 낭독을 예약하지 않았습니다.",
+    "ui.error.general_narration_runtime_unavailable": "일반 답변 낭독을 일시적으로 사용할 수 없습니다. 답변은 계속 표시됩니다.",
+    "ui.error.general_narration_delivery_failed": "일반 답변 낭독 요청을 전달하지 못했습니다. 다시 시도해 주세요.",
+    "ui.settings.general_narration_enabled.label": "일반 답변 낭독",
+    "ui.settings.general_narration_enabled.help": "N.E.K.O가 일반 설명과 토론을 자연스럽게 낭독합니다."
 }
