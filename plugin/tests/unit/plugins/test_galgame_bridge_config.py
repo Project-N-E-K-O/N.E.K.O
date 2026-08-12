@@ -737,6 +737,52 @@ async def test_shutdown_logs_noncritical_cleanup_failures(tmp_path: Path) -> Non
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
+async def test_shutdown_defers_ocr_cancellation_until_all_resources_close(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    cleanup_order: list[str] = []
+
+    class _CancellingOcrReader:
+        async def shutdown(self) -> None:
+            cleanup_order.append("ocr")
+            raise asyncio.CancelledError()
+
+    class _GameAgent:
+        async def drain_summary_tasks(self, *, timeout: float) -> None:
+            assert timeout == 5.0
+            cleanup_order.append("agent-drain")
+
+        async def shutdown(self) -> None:
+            cleanup_order.append("agent")
+
+    class _ShutdownResource:
+        def __init__(self, label: str) -> None:
+            self.label = label
+
+        async def shutdown(self) -> None:
+            cleanup_order.append(self.label)
+
+    class _Store:
+        async def close(self) -> None:
+            cleanup_order.append("store")
+
+    plugin._ocr_reader_manager = _CancellingOcrReader()
+    plugin._game_agent = _GameAgent()
+    plugin._llm_gateway = _ShutdownResource("llm")
+    plugin._host_agent_adapter = _ShutdownResource("host")
+    plugin.store = _Store()
+
+    with pytest.raises(asyncio.CancelledError):
+        await plugin.shutdown()
+
+    assert cleanup_order == ["ocr", "agent-drain", "agent", "llm", "host", "store"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
 async def test_bridge_tick_cancels_stale_background_poll(tmp_path: Path) -> None:
     plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
     ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))

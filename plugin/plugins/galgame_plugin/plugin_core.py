@@ -3241,6 +3241,7 @@ class GalgamePlugin(
         await self._cancel_ocr_fast_loop()
         await self._cancel_ocr_foreground_advance_monitor()
         await self._cancel_background_bridge_poll()
+        cancelled: asyncio.CancelledError | None = None
         if self._memory_reader_manager is not None:
             try:
                 await self._memory_reader_manager.shutdown()
@@ -3254,6 +3255,8 @@ class GalgamePlugin(
         if self._ocr_reader_manager is not None:
             try:
                 await self._ocr_reader_manager.shutdown()
+            except asyncio.CancelledError as exc:
+                cancelled = exc
             except Exception as exc:
                 _log_plugin_noncritical(
                     self.logger,
@@ -3301,6 +3304,8 @@ class GalgamePlugin(
                 "galgame store shutdown failed: {}",
                 exc,
             )
+        if cancelled is not None:
+            raise cancelled
         return Ok({"status": "stopped"})
 
     @timer_interval(id="bridge_tick", seconds=1, auto_start=True)

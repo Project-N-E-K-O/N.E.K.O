@@ -42,6 +42,8 @@ def test_win32_occlusion_scan_preserves_pointer_sized_hwnds(
 ) -> None:
     large_hwnd = 0x1234567887654321
     visible_candidates: list[int] = []
+    rect_reads_in_dpi_context: list[bool] = []
+    dpi_context_active = False
 
     class _Win32Function:
         def __init__(self, callback) -> None:
@@ -64,11 +66,20 @@ def test_win32_occlusion_scan_preserves_pointer_sized_hwnds(
         return 1
 
     def _get_rect(_hwnd: int, rect_pointer) -> int:
+        rect_reads_in_dpi_context.append(dpi_context_active)
         rect_pointer._obj.left = 0
         rect_pointer._obj.top = 0
         rect_pointer._obj.right = 20
         rect_pointer._obj.bottom = 20
         return 1
+
+    def _run_with_dpi_context(callback):
+        nonlocal dpi_context_active
+        dpi_context_active = True
+        try:
+            return callback()
+        finally:
+            dpi_context_active = False
 
     user32 = SimpleNamespace(
         IsWindow=_Win32Function(lambda _hwnd: 1),
@@ -89,6 +100,12 @@ def test_win32_occlusion_scan_preserves_pointer_sized_hwnds(
         "_capture_region_rect",
         lambda _target_value, _profile: (0, 0, 20, 20),
     )
+    monkeypatch.setattr(
+        win32_backend,
+        "_run_with_thread_dpi_awareness",
+        _run_with_dpi_context,
+        raising=False,
+    )
 
     assert win32_backend._win32_capture_region_occluded(
         _target(),
@@ -100,6 +117,7 @@ def test_win32_occlusion_scan_preserves_pointer_sized_hwnds(
         win32_backend.ctypes.wintypes.UINT,
     ]
     assert visible_candidates == [large_hwnd]
+    assert rect_reads_in_dpi_context == [True]
 
 
 def _install_foreground_api(
@@ -402,6 +420,43 @@ def test_explicit_pixel_backend_rejects_occluded_capture_region(
         backend.last_capture_untrusted_reason
         == "capture_region_occluded_by_other_window"
     )
+
+
+@pytest.mark.parametrize("selection", ["auto", "dxcam", "mss", "pyautogui"])
+def test_explicit_pixel_backend_checks_occlusion_with_stale_background_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+    selection: str,
+) -> None:
+    class _PixelBackend:
+        kind = selection
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def is_available(self) -> bool:
+            return True
+
+        def capture_frame(self, _target, _profile):
+            self.calls += 1
+            return "unsafe-frame"
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    pixel_backend = _PixelBackend()
+    occlusion_checks: list[bool] = []
+    backend = Win32CaptureBackend(
+        selection=selection,
+        occlusion_checker=lambda _target, _profile: bool(
+            occlusion_checks.append(True) or True
+        ),
+    )
+    backend._backends = [pixel_backend]
+
+    with pytest.raises(RuntimeError, match="capture_region_occluded_by_other_window"):
+        backend.capture_frame(_target(foreground=False), OcrCaptureProfile())
+
+    assert occlusion_checks == [True]
+    assert pixel_backend.calls == 0
+    assert backend.last_capture_content_trusted is False
 
 
 @pytest.mark.parametrize("selection", ["auto", "dxcam", "mss", "pyautogui"])
