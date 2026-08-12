@@ -45,7 +45,10 @@ class MyPlugin(NekoPluginBase):
 |------|------|------|
 | `self.ctx` | `PluginContext` | 运行时上下文（由宿主注入） |
 | `self.plugin_id` | `str` | 本插件的唯一标识符 |
-| `self.config_dir` | `Path` | 包含 `plugin.toml` 的目录 |
+| `self.plugin_dir` | `Path` | 包含代码、Manifest 和静态资源的插件安装目录 |
+| `self.config_dir` | `Path` | `self.plugin_dir` 的兼容别名 |
+| `self.storage_dir` | `Path` | 分配给插件的用户存储根目录 |
+| `self.runtime_config_path` | `Path` | 外部运行配置文件路径 |
 | `self.metadata` | `dict` | 来自 `plugin.toml` 的插件元数据 |
 | `self.bus` | `SdkBusContext` | 宿主状态的 read/watch 门面；没有 publish/emit API |
 | `self.plugins` | `Plugins` | 跨插件调用辅助工具 |
@@ -96,7 +99,17 @@ v1 字段（`message_type`、`content`、`delivery`、`reply` 及其他旧别名
 获取插件 `data/` 目录下的路径。
 
 ```python
-db_path = self.data_path("cache.db")  # → <plugin_dir>/data/cache.db
+db_path = self.data_path("records.db")
+# → <storage-root>/plugins/<plugin_id>/data/records.db
+```
+
+#### `cache_path(*parts) -> Path`
+
+获取插件可清理缓存目录下的路径。
+
+```python
+preview_path = self.cache_path("preview.png")
+# → <storage-root>/plugins/<plugin_id>/cache/preview.png
 ```
 
 #### `register_dynamic_entry(entry_id, handler, ...) -> bool`
