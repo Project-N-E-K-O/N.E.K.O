@@ -98,6 +98,55 @@ async def test_context_uncertain_config_cache_is_reloaded_from_storage(
 
 
 @pytest.mark.plugin_unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failed_operation", ("update", "replace"))
+async def test_context_failed_write_preserves_prior_uncertain_cache_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failed_operation: str,
+) -> None:
+    ctx = PluginContext(
+        plugin_id="demo",
+        config_path=tmp_path / "demo" / "plugin.toml",
+        logger=_Logger(),  # type: ignore[arg-type]
+        status_queue=None,
+    )
+    ctx._effective_config = {"feature": {"generation": 0}}
+    outcomes: list[BaseException] = [
+        TimeoutError("first write result is unknown"),
+        RuntimeError("second write was rejected"),
+    ]
+
+    async def _write(**kwargs: object) -> dict[str, object]:
+        raise outcomes.pop(0)
+
+    ctx._send_request_and_wait_async = _write  # type: ignore[method-assign]
+
+    first = await ctx.update_own_config({"feature": {"generation": 1}})
+    assert first["persisted"] is None
+
+    with pytest.raises(RuntimeError, match="second write was rejected"):
+        if failed_operation == "update":
+            await ctx.update_own_config({"feature": {"generation": 2}})
+        else:
+            await ctx.replace_own_config({"feature": {"generation": 2}})
+
+    class _QueryService:
+        async def get_plugin_config(self, *, plugin_id: str) -> dict[str, object]:
+            assert plugin_id == "demo"
+            return {
+                "plugin_id": plugin_id,
+                "config": {"feature": {"generation": 0}},
+            }
+
+    monkeypatch.setattr(config_application, "ConfigQueryService", _QueryService)
+
+    payload = await ctx.get_own_config()
+
+    assert payload["config"] == {"feature": {"generation": 0}}
+
+
+@pytest.mark.plugin_unit
 def test_context_optimistic_merge_honors_delete_and_replace_markers() -> None:
     base = {
         "mcp_servers": {

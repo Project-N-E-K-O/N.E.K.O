@@ -1951,6 +1951,11 @@ class PluginContext:
         if not isinstance(updates, dict):
             raise TypeError("updates must be a dict")
         old_effective_config = copy.deepcopy(getattr(self, "_effective_config", None))
+        old_effective_config_uncertain = getattr(
+            self,
+            "_effective_config_uncertain",
+            False,
+        )
         optimistic_config = self._merge_config_copy(old_effective_config, updates)
         self._set_effective_config_cache(optimistic_config)
         # Keep config writes from blocking plugin actions; timeouts fall back to the optimistic in-memory config.
@@ -1999,12 +2004,18 @@ class PluginContext:
             else:
                 self._effective_config = None
                 self._refresh_instance_runtime_config({})
+            self._effective_config_uncertain = old_effective_config_uncertain
             raise
 
     async def replace_own_config(self, config: Dict[str, Any], timeout: float = 10.0) -> Dict[str, Any]:
         if not isinstance(config, dict):
             raise TypeError("config must be a dict")
         old_effective_config = copy.deepcopy(getattr(self, "_effective_config", None))
+        old_effective_config_uncertain = getattr(
+            self,
+            "_effective_config_uncertain",
+            False,
+        )
         optimistic_config = copy.deepcopy(config)
         self._set_effective_config_cache(optimistic_config)
         request_timeout = float(timeout)
@@ -2041,4 +2052,5 @@ class PluginContext:
             else:
                 self._effective_config = None
                 self._refresh_instance_runtime_config({})
+            self._effective_config_uncertain = old_effective_config_uncertain
             raise
