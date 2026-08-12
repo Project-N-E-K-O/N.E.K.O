@@ -23,3 +23,11 @@ def test_structured_passthrough_blocks_reach_the_react_chat_host() -> None:
     assert chat_blocks_branch.index("if (S.suppressAssistantStreamUntilNextSession)") < chat_blocks_branch.index(
         "window.appendReactChatBlocks(response)"
     )
+
+
+def test_chat_adapter_loads_before_the_chat_page_opens_its_websocket() -> None:
+    template = (ROOT / "templates/chat.html").read_text(encoding="utf-8")
+
+    assert template.index("/static/app/app-chat-adapter.js") < template.index(
+        "/static/app/app.js"
+    )

@@ -74,42 +74,75 @@ def _base64_decoded_size(encoded: str) -> int:
     return max(0, (len(encoded) * 3) // 4 - padding)
 
 
+def _build_plugin_image_chat_block(part: Any) -> dict[str, str] | None:
+    """Synchronously validate one plugin image part for frontend rendering."""
+    max_base64_chars = ((_PLUGIN_IMAGE_MAX_BYTES + 2) // 3) * 4
+    if not isinstance(part, dict) or part.get("type") != "image":
+        return None
+    url = part.get("url")
+    if isinstance(url, str) and _is_local_plugin_media_url(url):
+        return {"type": "image", "url": url}
+    encoded = part.get("binary_base64")
+    mime = str(part.get("mime") or "").strip().lower()
+    if (
+        not isinstance(encoded, str)
+        or not encoded
+        or len(encoded) > max_base64_chars
+        or not mime.startswith("image/")
+    ):
+        return None
+    try:
+        decoded = base64.b64decode(encoded, validate=True)
+    except (ValueError, TypeError):
+        return None
+    if not decoded or len(decoded) > _PLUGIN_IMAGE_MAX_BYTES:
+        return None
+    return {
+        "type": "image",
+        "url": f"data:{mime};base64,{encoded}",
+    }
+
+
 def _build_plugin_image_chat_blocks(media_parts: list[Any]) -> list[dict[str, str]]:
     """Synchronously validate plugin image parts and build frontend blocks."""
+    return [
+        block
+        for part in media_parts
+        if (block := _build_plugin_image_chat_block(part)) is not None
+    ]
+
+
+def _build_ordered_plugin_chat_blocks(parts: list[Any]) -> list[dict[str, str]]:
+    """Build supported frontend blocks without changing canonical part order."""
     blocks: list[dict[str, str]] = []
-    max_base64_chars = ((_PLUGIN_IMAGE_MAX_BYTES + 2) // 3) * 4
-    for part in media_parts:
-        if not isinstance(part, dict) or part.get("type") != "image":
+    for part in parts:
+        if not isinstance(part, dict):
             continue
-        url = part.get("url")
-        if isinstance(url, str) and _is_local_plugin_media_url(url):
-            blocks.append({"type": "image", "url": url})
+        if part.get("type") == "text" and isinstance(part.get("text"), str):
+            blocks.append({"type": "text", "text": part["text"]})
             continue
-        encoded = part.get("binary_base64")
-        mime = str(part.get("mime") or "").strip().lower()
-        if (
-            not isinstance(encoded, str)
-            or not encoded
-            or len(encoded) > max_base64_chars
-            or not mime.startswith("image/")
-        ):
-            continue
-        try:
-            decoded = base64.b64decode(encoded, validate=True)
-        except (ValueError, TypeError):
-            continue
-        if not decoded or len(decoded) > _PLUGIN_IMAGE_MAX_BYTES:
-            continue
-        blocks.append({
-            "type": "image",
-            "url": f"data:{mime};base64,{encoded}",
-        })
+        image_block = _build_plugin_image_chat_block(part)
+        if image_block is not None:
+            blocks.append(image_block)
     return blocks
 
 
 async def _plugin_image_chat_blocks(media_parts: list[Any]) -> list[dict[str, str]]:
     """Build frontend image blocks without decoding base64 on the event loop."""
     return await asyncio.to_thread(_build_plugin_image_chat_blocks, media_parts)
+
+
+async def _ordered_plugin_chat_blocks(parts: list[Any], mgr: Any) -> list[dict[str, str]]:
+    """Build ordered blocks off-loop and expand role placeholders in text."""
+    blocks = await asyncio.to_thread(_build_ordered_plugin_chat_blocks, parts)
+    for block in blocks:
+        if block["type"] == "text":
+            block["text"] = core.apply_role_placeholders(
+                block["text"],
+                lanlan_name=getattr(mgr, "lanlan_name", "") or "",
+                master_name=getattr(mgr, "master_name", "") or "",
+            )
+    return blocks
 
 
 async def _fetch_plugin_image_base64(url: str) -> str:
@@ -643,10 +676,22 @@ async def _handle_agent_event(event: dict):
             # live-mic PCM pipeline (specific sample rate + RNNoise gate),
             # not a generic file injector, and we have no video API.
             # ai_behavior=blind suppresses injection entirely.
+            ordered_parts = (
+                event.get("parts") if isinstance(event.get("parts"), list) else None
+            )
             media_parts = (
-                event.get("media_parts")
-                if isinstance(event.get("media_parts"), list)
-                else []
+                [
+                    part
+                    for part in ordered_parts
+                    if isinstance(part, dict)
+                    and part.get("type") in ("image", "audio", "video")
+                ]
+                if ordered_parts is not None
+                else (
+                    event.get("media_parts")
+                    if isinstance(event.get("media_parts"), list)
+                    else []
+                )
             )
             ai_behavior_v2 = event.get("ai_behavior")
             # Images that must travel WITH a proactive (respond) callback so they
@@ -788,20 +833,25 @@ async def _handle_agent_event(event: dict):
                 and "chat" in visibility
                 and hasattr(mgr, "render_chat_blocks")
             ):
-                visible_images = (
-                    await _plugin_image_chat_blocks(media_parts)
-                    if media_parts
-                    else []
-                )
-                visible_blocks: list[dict[str, str]] = []
-                if text:
-                    visible_text = core.apply_role_placeholders(
-                        raw_text,
-                        lanlan_name=getattr(mgr, "lanlan_name", "") or "",
-                        master_name=getattr(mgr, "master_name", "") or "",
+                if ordered_parts is not None:
+                    visible_blocks = await _ordered_plugin_chat_blocks(
+                        ordered_parts, mgr
                     )
-                    visible_blocks.append({"type": "text", "text": visible_text})
-                visible_blocks.extend(visible_images)
+                else:
+                    visible_images = (
+                        await _plugin_image_chat_blocks(media_parts)
+                        if media_parts
+                        else []
+                    )
+                    visible_blocks = []
+                    if text:
+                        visible_text = core.apply_role_placeholders(
+                            raw_text,
+                            lanlan_name=getattr(mgr, "lanlan_name", "") or "",
+                            master_name=getattr(mgr, "master_name", "") or "",
+                        )
+                        visible_blocks.append({"type": "text", "text": visible_text})
+                    visible_blocks.extend(visible_images)
                 if visible_blocks:
                     channel = str(event.get("channel") or "")
                     visible_source = str(event.get("source_kind") or "").strip()
@@ -1024,12 +1074,25 @@ async def _handle_agent_event(event: dict):
                             lanlan_name=getattr(mgr, "lanlan_name", "") or "",
                             master_name=getattr(mgr, "master_name", "") or "",
                         )
-                        chat_image_blocks = await _plugin_image_chat_blocks(media_parts)
+                        ordered_chat_blocks = (
+                            await _ordered_plugin_chat_blocks(ordered_parts, mgr)
+                            if ordered_parts is not None
+                            else None
+                        )
+                        chat_image_blocks = (
+                            []
+                            if ordered_chat_blocks is not None
+                            else await _plugin_image_chat_blocks(media_parts)
+                        )
                         passthrough_kwargs: dict[str, Any] = {
                             "request_id": event.get("task_id") or None,
                             "source": passthrough_source,
                         }
-                        if chat_image_blocks:
+                        if ordered_chat_blocks is not None and any(
+                            block["type"] == "image" for block in ordered_chat_blocks
+                        ):
+                            passthrough_kwargs["blocks"] = ordered_chat_blocks
+                        elif chat_image_blocks:
                             passthrough_kwargs["blocks"] = [
                                 {"type": "text", "text": passthrough_text},
                                 *chat_image_blocks,
@@ -1127,7 +1190,11 @@ async def _handle_agent_event(event: dict):
                 and "chat" in (event.get("visibility") or [])
                 and hasattr(mgr, "passthrough_to_chat_bubble")
             ):
-                image_blocks = await _plugin_image_chat_blocks(media_parts)
+                image_blocks = (
+                    await _ordered_plugin_chat_blocks(ordered_parts, mgr)
+                    if ordered_parts is not None
+                    else await _plugin_image_chat_blocks(media_parts)
+                )
                 if image_blocks:
                     channel = str(event.get("channel") or "")
                     source_kind = str(event.get("source_kind") or "").strip()

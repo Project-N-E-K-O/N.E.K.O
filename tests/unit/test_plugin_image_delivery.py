@@ -39,6 +39,165 @@ class _StreamingResponse:
             yield chunk
 
 
+def test_proactive_bridge_carries_one_canonical_ordered_parts_list() -> None:
+    from plugin.server.messaging.proactive_bridge import ProactiveBridge
+
+    sent: list[dict[str, object]] = []
+
+    class _PushSocket:
+        def send_json(self, payload, _flags) -> None:
+            sent.append(payload)
+
+    parts = [
+        {"type": "image", "url": "http://127.0.0.1:48916/media/first"},
+        {"type": "text", "text": "caption"},
+        {"type": "image", "url": "http://127.0.0.1:48916/media/last"},
+    ]
+    ProactiveBridge()._dispatch(
+        {
+            "plugin_id": "ordered",
+            "schema": "push_message.v2",
+            "visibility": ["chat"],
+            "ai_behavior": "blind",
+            "parts": parts,
+        },
+        _PushSocket(),
+    )
+
+    proactive = next(item for item in sent if item["event_type"] == "proactive_message")
+    assert proactive["parts"] == parts
+    assert "media_parts" not in proactive
+
+
+def test_proactive_bridge_normalizes_text_without_reordering_images() -> None:
+    from plugin.server.messaging.proactive_bridge import ProactiveBridge
+
+    sent: list[dict[str, object]] = []
+
+    class _PushSocket:
+        def send_json(self, payload, _flags) -> None:
+            sent.append(payload)
+
+    ProactiveBridge()._dispatch(
+        {
+            "plugin_id": "ordered",
+            "schema": "push_message.v2",
+            "visibility": ["chat"],
+            "ai_behavior": "blind",
+            "parts": [
+                {"type": "image", "url": "http://127.0.0.1:48916/media/first"},
+                {"type": "text", "text": '{"message":"clean caption"}'},
+                {"type": "image", "url": "http://127.0.0.1:48916/media/last"},
+            ],
+        },
+        _PushSocket(),
+    )
+
+    proactive = next(item for item in sent if item["event_type"] == "proactive_message")
+    assert proactive["text"] == "clean caption"
+    assert proactive["parts"] == [
+        {"type": "image", "url": "http://127.0.0.1:48916/media/first"},
+        {"type": "text", "text": "clean caption"},
+        {"type": "image", "url": "http://127.0.0.1:48916/media/last"},
+    ]
+
+
+def test_proactive_bridge_bounds_ordered_text_without_reordering_images() -> None:
+    from plugin.server.messaging.proactive_bridge import ProactiveBridge
+
+    sent: list[dict[str, object]] = []
+
+    class _PushSocket:
+        def send_json(self, payload, _flags) -> None:
+            sent.append(payload)
+
+    ProactiveBridge()._dispatch(
+        {
+            "plugin_id": "ordered",
+            "schema": "push_message.v2",
+            "visibility": ["chat"],
+            "ai_behavior": "blind",
+            "parts": [
+                {"type": "image", "url": "http://127.0.0.1:48916/media/first"},
+                {"type": "text", "text": "word " * 2_000},
+                {"type": "image", "url": "http://127.0.0.1:48916/media/last"},
+            ],
+        },
+        _PushSocket(),
+    )
+
+    proactive = next(item for item in sent if item["event_type"] == "proactive_message")
+    bounded_parts = proactive["parts"]
+    assert [part["type"] for part in bounded_parts] == ["image", "text", "image"]
+    assert bounded_parts[1]["text"].endswith("…")
+    assert proactive["text"] == bounded_parts[1]["text"]
+
+
+def test_proactive_bridge_drops_blank_text_without_moving_later_caption() -> None:
+    from plugin.server.messaging.proactive_bridge import ProactiveBridge
+
+    sent: list[dict[str, object]] = []
+
+    class _PushSocket:
+        def send_json(self, payload, _flags) -> None:
+            sent.append(payload)
+
+    ProactiveBridge()._dispatch(
+        {
+            "plugin_id": "ordered",
+            "schema": "push_message.v2",
+            "visibility": ["chat"],
+            "ai_behavior": "blind",
+            "parts": [
+                {"type": "image", "url": "http://127.0.0.1:48916/media/first"},
+                {"type": "text", "text": "   "},
+                {"type": "image", "url": "http://127.0.0.1:48916/media/last"},
+                {"type": "text", "text": "caption"},
+            ],
+        },
+        _PushSocket(),
+    )
+
+    proactive = next(item for item in sent if item["event_type"] == "proactive_message")
+    assert proactive["parts"] == [
+        {"type": "image", "url": "http://127.0.0.1:48916/media/first"},
+        {"type": "image", "url": "http://127.0.0.1:48916/media/last"},
+        {"type": "text", "text": "caption"},
+    ]
+
+
+def test_proactive_bridge_does_not_parse_json_split_across_images() -> None:
+    from plugin.server.messaging.proactive_bridge import ProactiveBridge
+
+    sent: list[dict[str, object]] = []
+
+    class _PushSocket:
+        def send_json(self, payload, _flags) -> None:
+            sent.append(payload)
+
+    parts = [
+        {"type": "image", "url": "http://127.0.0.1:48916/media/first"},
+        {"type": "text", "text": "{"},
+        {"type": "image", "url": "http://127.0.0.1:48916/media/middle"},
+        {"type": "text", "text": '"message":"caption"}'},
+        {"type": "image", "url": "http://127.0.0.1:48916/media/last"},
+    ]
+    ProactiveBridge()._dispatch(
+        {
+            "plugin_id": "ordered",
+            "schema": "push_message.v2",
+            "visibility": ["chat"],
+            "ai_behavior": "blind",
+            "parts": parts,
+        },
+        _PushSocket(),
+    )
+
+    proactive = next(item for item in sent if item["event_type"] == "proactive_message")
+    assert proactive["parts"] == parts
+    assert proactive["text"] == '{\n"message":"caption"}'
+
+
 def _manager() -> MagicMock:
     manager = MagicMock()
     manager.session = MagicMock()
@@ -156,6 +315,56 @@ async def test_chat_blind_plugin_image_is_forwarded_as_structured_blocks(monkeyp
             "url": "http://127.0.0.1:48916/media/example",
         },
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ai_behavior", ["blind", "read", "respond"])
+async def test_plugin_chat_blocks_preserve_canonical_part_order(
+    monkeypatch,
+    ai_behavior: str,
+) -> None:
+    from app import main_server
+
+    manager = _manager()
+    monkeypatch.setattr(
+        "app.main_server.character_runtime._get_session_manager",
+        lambda _name: manager,
+    )
+    monkeypatch.setattr(
+        "app.main_server.character_runtime._is_websocket_connected",
+        lambda _ws: False,
+    )
+    parts = [
+        {"type": "image", "url": "http://127.0.0.1:48916/media/first"},
+        {"type": "text", "text": "between"},
+        {"type": "image", "url": "http://127.0.0.1:48916/media/last"},
+    ]
+
+    await main_server._handle_agent_event({
+        "event_type": "proactive_message",
+        "lanlan_name": "Test",
+        "text": "between",
+        "channel": "plugin:ordered",
+        "task_id": f"ordered-{ai_behavior}",
+        "delivery_mode": {
+            "blind": "silent",
+            "read": "passive",
+            "respond": "proactive",
+        }[ai_behavior],
+        "ai_behavior": ai_behavior,
+        "visibility": ["chat"],
+        "parts": parts,
+    })
+
+    expected = [
+        {"type": "image", "url": "http://127.0.0.1:48916/media/first"},
+        {"type": "text", "text": "between"},
+        {"type": "image", "url": "http://127.0.0.1:48916/media/last"},
+    ]
+    if ai_behavior == "blind":
+        assert manager.passthrough_to_chat_bubble.await_args.kwargs["blocks"] == expected
+    else:
+        assert manager.render_chat_blocks.await_args.args[0] == expected
 
 
 @pytest.mark.asyncio
