@@ -244,6 +244,7 @@
     "ui.button.export":  "匯出",
     "ui.status.enabled":  "已啟用",
     "ui.status.disabled":  "已停用",
+    "ui.status.export_unavailable":  "筆記匯出已在外掛設定中停用。",
     "ui.status.checkin_done":  "今日已打卡",
     "ui.status.checkin_pending":  "待打卡",
     "ui.status.exporting":  "匯出中...",

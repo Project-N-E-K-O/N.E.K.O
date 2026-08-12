@@ -244,6 +244,7 @@
     "ui.button.export":  "Экспорт",
     "ui.status.enabled":  "Включено",
     "ui.status.disabled":  "Отключено",
+    "ui.status.export_unavailable":  "Экспорт заметок отключён в настройках плагина.",
     "ui.status.checkin_done":  "Сегодня отмечено",
     "ui.status.checkin_pending":  "Ожидает отметки",
     "ui.status.exporting":  "Экспорт...",

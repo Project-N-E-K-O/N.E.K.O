@@ -244,6 +244,7 @@
     "ui.button.export":  "エクスポート",
     "ui.status.enabled":  "有効",
     "ui.status.disabled":  "無効",
+    "ui.status.export_unavailable":  "ノートのエクスポートはプラグイン設定で無効になっています。",
     "ui.status.checkin_done":  "本日チェックイン済み",
     "ui.status.checkin_pending":  "未チェックイン",
     "ui.status.exporting":  "エクスポート中...",

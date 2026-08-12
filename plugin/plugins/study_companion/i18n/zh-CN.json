@@ -244,6 +244,7 @@
     "ui.button.export":  "导出",
     "ui.status.enabled":  "已启用",
     "ui.status.disabled":  "已禁用",
+    "ui.status.export_unavailable":  "笔记导出已在插件设置中禁用。",
     "ui.status.checkin_done":  "今日已打卡",
     "ui.status.checkin_pending":  "待打卡",
     "ui.status.exporting":  "导出中...",

@@ -5842,6 +5842,7 @@ let configPayload = {
     study: { default_mode: 'interactive', language: 'en', history_limit: 50, auto_open_ui: false },
     ocr_reader: { enabled: false, backend_selection: 'rapidocr', languages: 'eng' },
     llm: { llm_call_timeout_seconds: 45, llm_vision_enabled: false, llm_vision_max_image_px: 1024 },
+    doc_export: { enabled: true, xmind_enabled: false },
   },
 };
 let statusPayload = {
@@ -6101,6 +6102,10 @@ await waitFor(
 
 document.querySelector('[data-feature-action="export"]').click();
 assertSurfaceDrawer('note-exporter');
+await waitFor(
+  () => !document.querySelector('#surfaceDrawerBody [data-surface-action="export-preview"]')?.disabled,
+  'export drawer availability',
+);
 document.querySelector('#surfaceDrawerBody [data-surface-action="export-preview"]').click();
 await waitFor(
   () => runEntries.some((entry) => entry.entry_id === 'study_export_notes' && entry.args.fmt),
@@ -6133,6 +6138,80 @@ if (consoleErrors.length) {
         **os.environ,
         "STUDY_COMPANION_STATIC_DIR": str(plugin_dir / "static"),
         "STUDY_COMPANION_I18N_DIR": str(plugin_dir / "i18n"),
+    }
+    completed = subprocess.run(
+        ["node", "--input-type=module", "-e", script],
+        cwd=frontend_dir,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr or completed.stdout
+
+
+def test_study_companion_static_export_panel_blocks_disabled_entry() -> None:
+    if shutil.which("node") is None:
+        pytest.skip("node is not installed")
+
+    plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
+    frontend_dir = Path(__file__).resolve().parents[4] / "frontend" / "plugin-manager"
+    if not (frontend_dir / "node_modules" / "happy-dom").is_dir():
+        pytest.skip(
+            "frontend/plugin-manager node_modules with happy-dom is not installed"
+        )
+
+    script = r"""
+import { Window } from 'happy-dom';
+import fs from 'node:fs';
+import path from 'node:path';
+
+const staticDir = process.env.STUDY_COMPANION_STATIC_DIR;
+const source = fs.readFileSync(path.join(staticDir, 'surface-panels.js'), 'utf8');
+const window = new Window({ url: 'http://testserver/plugin/study_companion/ui/' });
+const { document } = window;
+const calls = [];
+
+window.eval(source);
+const root = window.StudyCompanionSurfacePanels.render('note-exporter', {
+  t: (_key, fallback) => fallback,
+  label: () => 'Export',
+  callPlugin: async (entryId, args = {}) => {
+    calls.push({ entryId, args });
+    if (entryId === 'study_get_settings_config') {
+      return { config: { doc_export: { enabled: false, xmind_enabled: false } } };
+    }
+    throw new Error(`unexpected entry call: ${entryId}`);
+  },
+});
+document.body.appendChild(root);
+
+for (let attempt = 0; attempt < 20; attempt += 1) {
+  if (calls.some((call) => call.entryId === 'study_get_settings_config')) break;
+  await new Promise((resolve) => window.setTimeout(resolve, 0));
+}
+await new Promise((resolve) => window.setTimeout(resolve, 0));
+
+const previewButton = root.querySelector('[data-surface-action="export-preview"]');
+const exportButton = root.querySelector('[data-surface-action="export-download"]');
+if (!previewButton?.disabled || !exportButton?.disabled) {
+  throw new Error('disabled export must keep preview and download unavailable');
+}
+previewButton.click();
+exportButton.click();
+await new Promise((resolve) => window.setTimeout(resolve, 0));
+
+if (calls.some((call) => call.entryId === 'study_export_notes')) {
+  throw new Error('disabled export must not call study_export_notes');
+}
+if (!root.textContent.includes('Export is disabled by doc_export.enabled')) {
+  throw new Error(`disabled export status missing: ${root.textContent}`);
+}
+"""
+    env = {
+        **os.environ,
+        "STUDY_COMPANION_STATIC_DIR": str(plugin_dir / "static"),
     }
     completed = subprocess.run(
         ["node", "--input-type=module", "-e", script],

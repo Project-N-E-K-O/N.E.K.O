@@ -244,6 +244,7 @@
     "ui.button.export":  "내보내기",
     "ui.status.enabled":  "사용됨",
     "ui.status.disabled":  "사용 안 됨",
+    "ui.status.export_unavailable":  "노트 내보내기가 플러그인 설정에서 비활성화되어 있습니다.",
     "ui.status.checkin_done":  "오늘 체크인 완료",
     "ui.status.checkin_pending":  "체크인 대기",
     "ui.status.exporting":  "내보내는 중...",

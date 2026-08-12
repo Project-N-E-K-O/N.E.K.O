@@ -244,6 +244,7 @@
     "ui.button.export":  "Exportar",
     "ui.status.enabled":  "Activado",
     "ui.status.disabled":  "Desactivado",
+    "ui.status.export_unavailable":  "La exportación de notas está desactivada en la configuración del plugin.",
     "ui.status.checkin_done":  "Registro de hoy completado",
     "ui.status.checkin_pending":  "Registro pendiente",
     "ui.status.exporting":  "Exportando...",

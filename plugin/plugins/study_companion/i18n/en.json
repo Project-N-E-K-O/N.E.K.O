@@ -244,6 +244,7 @@
     "ui.button.export":  "Export",
     "ui.status.enabled":  "Enabled",
     "ui.status.disabled":  "Disabled",
+    "ui.status.export_unavailable":  "Note export is disabled in the plugin settings.",
     "ui.status.checkin_done":  "Checked in today",
     "ui.status.checkin_pending":  "Check-in pending",
     "ui.status.exporting":  "Exporting...",

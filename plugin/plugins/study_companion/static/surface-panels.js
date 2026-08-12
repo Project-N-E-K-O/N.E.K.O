@@ -656,8 +656,39 @@
     let style = 'neko';
     let markdown = '';
     let status = '';
+    let availabilityResolved = false;
+    let exportAvailable = false;
+    let exportFormats = [];
+
+    function exportUnavailableText() {
+      return t(ctx, 'ui.status.export_unavailable', 'Export is disabled by doc_export.enabled');
+    }
+
+    async function loadExportAvailability() {
+      try {
+        const payload = await ctx.callPlugin('study_get_settings_config');
+        const config = payload?.config && typeof payload.config === 'object' ? payload.config : payload;
+        const docExport = config?.doc_export && typeof config.doc_export === 'object' ? config.doc_export : {};
+        exportAvailable = docExport.enabled === true;
+        exportFormats = exportAvailable ? ['markdown', 'pdf', 'docx'] : [];
+        if (exportAvailable && docExport.xmind_enabled === true) exportFormats.push('xmind');
+        if (!exportAvailable) status = exportUnavailableText();
+      } catch (error) {
+        exportAvailable = false;
+        exportFormats = [];
+        status = errText(error);
+      } finally {
+        availabilityResolved = true;
+        draw();
+      }
+    }
 
     async function exportNotes(previewOnly) {
+      if (!availabilityResolved || !exportAvailable) {
+        status = exportUnavailableText();
+        draw();
+        return;
+      }
       status = t(ctx, 'ui.status.exporting', 'Exporting...');
       draw();
       try {
@@ -673,7 +704,9 @@
 
     function draw() {
       if (!valid(root, token, true)) return;
-      const fmtSelect = select(fmt, [['markdown', formatLabel(ctx, 'markdown')], ['pdf', formatLabel(ctx, 'pdf')], ['docx', formatLabel(ctx, 'docx')], ['xmind', formatLabel(ctx, 'xmind')]]);
+      const visibleFormats = exportFormats.length ? exportFormats : ['markdown'];
+      if (!visibleFormats.includes(fmt)) fmt = visibleFormats[0];
+      const fmtSelect = select(fmt, visibleFormats.map((value) => [value, formatLabel(ctx, value)]));
       fmtSelect.addEventListener('change', () => { fmt = fmtSelect.value; draw(); });
       const styleSelect = select(style, [['neko', exportStyleLabel(ctx, 'neko')], ['academic', exportStyleLabel(ctx, 'academic')], ['compact', exportStyleLabel(ctx, 'compact')]]);
       styleSelect.addEventListener('change', () => { style = styleSelect.value; draw(); });
@@ -681,11 +714,21 @@
       previewButton.dataset.surfaceAction = 'export-preview';
       const exportButton = button(t(ctx, 'ui.button.export', 'Export'), () => exportNotes(false), true);
       exportButton.dataset.surfaceAction = 'export-download';
-      replace(root, ctx, 'note-exporter', status || t(ctx, 'ui.feature.export.body', 'Export notes or session artifacts'), [
+      const controlsDisabled = !availabilityResolved || !exportAvailable;
+      fmtSelect.disabled = controlsDisabled;
+      styleSelect.disabled = controlsDisabled;
+      previewButton.disabled = controlsDisabled;
+      exportButton.disabled = controlsDisabled;
+      const currentStatus = status || (!availabilityResolved
+        ? t(ctx, 'ui.status.config_loading', 'Loading settings...')
+        : exportAvailable
+          ? t(ctx, 'ui.feature.export.body', 'Export notes or session artifacts')
+          : exportUnavailableText());
+      replace(root, ctx, 'note-exporter', currentStatus, [
         state([
           [t(ctx, 'ui.label.format', 'Format'), formatLabel(ctx, fmt)],
           [t(ctx, 'ui.label.style', 'Style'), exportStyleLabel(ctx, style)],
-          [t(ctx, 'ui.label.reply', 'Reply'), status || t(ctx, 'ui.status.pending', 'Pending')],
+          [t(ctx, 'ui.label.reply', 'Reply'), currentStatus],
         ]),
         actions([
           labeled(t(ctx, 'ui.label.format', 'Format'), fmtSelect),
@@ -698,6 +741,7 @@
     }
 
     draw();
+    loadExportAvailability();
     return root;
   }
 
