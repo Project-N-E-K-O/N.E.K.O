@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 import wave
 from pathlib import Path
 
@@ -10,6 +11,23 @@ from main_logic.asr_client.endpointing.smart_turn_audio_evidence import (
     SMART_TURN_AUDIO_EVIDENCE_ENABLED_ENV,
     create_smart_turn_audio_evidence_recorder,
 )
+
+
+def _wait_for_written_run_dir(target: Path, timeout_s: float = 10.0) -> list[Path]:
+    # 等落盘：close() 只给写线程一个很短的确认窗口，不是落盘保证。正常路径下写线程
+    # 几毫秒就写完了，但 Windows CI 上磁盘会抖到超过那个窗口，close() 一返回就
+    # iterdir 会撞上还没建出来的目录。
+    deadline = time.monotonic() + timeout_s
+    while True:
+        try:
+            run_dirs = list(target.iterdir())
+        except FileNotFoundError:
+            run_dirs = []
+        if run_dirs and all((d / "index.jsonl").exists() for d in run_dirs):
+            return run_dirs
+        if time.monotonic() >= deadline:
+            return run_dirs
+        time.sleep(0.01)
 
 
 async def test_audio_evidence_is_off_without_explicit_opt_in(tmp_path: Path) -> None:
@@ -54,7 +72,7 @@ async def test_audio_evidence_writes_local_wav_and_index_under_data(
     )
     await recorder.close()
 
-    run_dirs = list(target.iterdir())
+    run_dirs = _wait_for_written_run_dir(target)
     assert recorder.enabled is True
     assert len(run_dirs) == 1
     run_dir = run_dirs[0]
