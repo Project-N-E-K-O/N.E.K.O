@@ -11,6 +11,74 @@
 })(typeof window !== 'undefined' ? window : globalThis, function (root) {
     'use strict';
 
+    const DEFAULT_TUTORIAL_STAND_IN_TIMING = Object.freeze({
+        fadeOutMs: 1500,
+        approachMs: 2000,
+        holdMs: 2500,
+        returnMs: 2000
+    });
+
+    function resolveCueDuration(value, fallback) {
+        return Number.isFinite(Number(value))
+            ? Math.max(0, Math.floor(Number(value)))
+            : fallback;
+    }
+
+    function resolveTutorialStandInTiming() {
+        const avatarStage = root && root.YuiGuideAvatarStage;
+        const sharedTiming = avatarStage && avatarStage.TUTORIAL_AVATAR_PROBE_TIMING;
+        return {
+            fadeOutMs: resolveCueDuration(
+                sharedTiming && sharedTiming.fadeOutMs,
+                DEFAULT_TUTORIAL_STAND_IN_TIMING.fadeOutMs
+            ),
+            approachMs: resolveCueDuration(
+                sharedTiming && sharedTiming.approachMs,
+                DEFAULT_TUTORIAL_STAND_IN_TIMING.approachMs
+            ),
+            holdMs: resolveCueDuration(
+                sharedTiming && sharedTiming.holdMs,
+                DEFAULT_TUTORIAL_STAND_IN_TIMING.holdMs
+            ),
+            returnMs: resolveCueDuration(
+                sharedTiming && sharedTiming.returnMs,
+                DEFAULT_TUTORIAL_STAND_IN_TIMING.returnMs
+            )
+        };
+    }
+
+    function resolveCueTiming(cue, scene, director) {
+        const narrationDurationMs = director && typeof director.getAvatarFloatingNarrationDurationMs === 'function'
+            ? resolveCueDuration(director.getAvatarFloatingNarrationDurationMs(
+                scene && scene.voiceKey,
+                scene && scene.text
+            ), 0)
+            : 0;
+        const timing = resolveTutorialStandInTiming();
+        const hideMs = timing.fadeOutMs;
+        const appearMs = timing.approachMs;
+        const holdMs = timing.holdMs;
+        const entryMs = hideMs + appearMs;
+        const exitMs = hideMs + timing.returnMs;
+        const totalDurationMs = entryMs + holdMs;
+        const fullDurationMs = totalDurationMs + exitMs;
+        const rawDelayMs = Number.isFinite(Number(cue.delay))
+            ? Number(cue.delay)
+            : Number(cue.delayMs);
+        const preferredDelayMs = Math.max(0, Number.isFinite(rawDelayMs) ? rawDelayMs : 0);
+        const delayMs = narrationDurationMs > 0
+            ? Math.min(preferredDelayMs, Math.max(0, narrationDurationMs - fullDurationMs))
+            : preferredDelayMs;
+        return Object.assign({}, cue, {
+            delay: delayMs,
+            hideMs: hideMs,
+            appearMs: appearMs,
+            holdMs: holdMs,
+            totalDurationMs: totalDurationMs,
+            fullDurationMs: fullDurationMs
+        });
+    }
+
     class AvatarStandInController {
         constructor(director) {
             this.director = director;
@@ -33,10 +101,11 @@
                 this.clear({ clearPending: true, restoreModel: true });
                 return false;
             }
-            const cue = this.getCue(day, scene.id);
-            if (!cue) {
+            const rawCue = this.getCue(day, scene.id);
+            if (!rawCue) {
                 return false;
             }
+            const cue = resolveCueTiming(rawCue, scene, director);
             this.clear({ clearPending: true, restoreModel: true });
             const token = director.avatarStandInToken + 1;
             director.avatarStandInToken = token;
@@ -86,6 +155,7 @@
     }
 
     return {
-        AvatarStandInController
+        AvatarStandInController,
+        resolveCueTiming
     };
 });

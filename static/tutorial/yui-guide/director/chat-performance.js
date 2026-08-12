@@ -549,9 +549,26 @@
 
         async runDailyIntroAvatarPerformance(scene, day, options) {
             const normalizedOptions = options || {};
+            const tutorialDay = Number.isFinite(Number(day))
+                ? Number(day)
+                : Number(normalizedOptions.day);
             const api = window.YuiGuideAvatarStage;
+            const performance = scene && scene.introAvatarPerformance
+                ? scene.introAvatarPerformance
+                : {};
+            const normalizedPreset = String(performance.preset || 'wave-zoom')
+                .trim()
+                .toLowerCase()
+                .replace(/_/g, '-');
+            const isCornerPeekPerformance = normalizedPreset === 'corner-peek'
+                || normalizedPreset === 'top-peek';
             let revealed = false;
+            let revealReadyTimedOut = false;
             const resolveOnReveal = normalizedOptions.isFirstDailyScene === true;
+            const externalCancelCheck = typeof normalizedOptions.isCancelled === 'function'
+                ? normalizedOptions.isCancelled
+                : () => this.isStopping();
+            const isMotionCancelled = () => revealReadyTimedOut || externalCancelCheck();
             let revealReadyResolve = null;
             let revealReadySettled = false;
             let revealReadyFallbackTimer = 0;
@@ -560,7 +577,7 @@
             });
             const revealReadyFallbackMs = Number.isFinite(Number(normalizedOptions.revealReadyFallbackMs))
                 ? Math.max(0, Math.floor(Number(normalizedOptions.revealReadyFallbackMs)))
-                : 1600;
+                : (resolveOnReveal ? 3000 : (isCornerPeekPerformance ? 0 : 1600));
             const resolveRevealReady = (value) => {
                 if (revealReadySettled) {
                     return;
@@ -591,9 +608,6 @@
                 resolveRevealReady(false);
                 return resolveOnReveal ? revealReadyPromise : null;
             }
-            const performance = scene && scene.introAvatarPerformance
-                ? scene.introAvatarPerformance
-                : {};
             const voiceKey = scene && scene.voiceKey ? scene.voiceKey : '';
             const text = scene && scene.text ? scene.text : '';
             const durationMs = Number.isFinite(Number(performance.durationMs))
@@ -603,6 +617,10 @@
                 preset: performance.preset || 'wave-zoom',
                 position: performance.position || performance.targetPosition || '',
                 durationMs: durationMs,
+                narrationBudgeted: tutorialDay >= 2 && tutorialDay <= 7,
+                isOpeningProbe: tutorialDay >= 2
+                    && tutorialDay <= 7
+                    && resolveOnReveal,
                 restore: performance.restore || 'half-body',
                 approachMs: Number.isFinite(Number(performance.approachMs))
                     ? Math.max(0, Math.floor(Number(performance.approachMs)))
@@ -628,20 +646,19 @@
                     : undefined,
                 readyWaitMs: Number.isFinite(Number(performance.readyWaitMs))
                     ? Math.max(0, Math.floor(Number(performance.readyWaitMs)))
-                    : undefined,
+                    : (resolveOnReveal ? 12000 : undefined),
                 freezeFloatingButtons: performance.freezeFloatingButtons === false ? false : undefined,
                 rotateFloatingButtons: performance.rotateFloatingButtons === true,
                 revealPrepared: revealPrepared,
                 reducedMotion: typeof normalizedOptions.reducedMotion === 'boolean'
                     ? normalizedOptions.reducedMotion
                     : this.shouldReduceTutorialMotion(),
-                isCancelled: typeof normalizedOptions.isCancelled === 'function'
-                    ? normalizedOptions.isCancelled
-                    : () => this.isStopping()
+                isCancelled: isMotionCancelled
             });
             if (resolveOnReveal) {
                 if (!revealReadySettled && revealReadyFallbackMs > 0 && typeof window.setTimeout === 'function') {
                     revealReadyFallbackTimer = window.setTimeout(() => {
+                        revealReadyTimedOut = true;
                         if (revealPrepared) {
                             revealPrepared('daily-intro-avatar-reveal-timeout');
                             return;
@@ -650,7 +667,16 @@
                     }, revealReadyFallbackMs);
                 }
                 motionPromise.then(
-                    () => {
+                    (result) => {
+                        if (result && result.result === 'fallback') {
+                            console.warn('[YuiGuide] 首日开场模型演出不可用，显示普通半身兜底:', result.reason || 'unknown');
+                            if (revealPrepared) {
+                                revealPrepared('daily-intro-avatar-motion-fallback');
+                                return;
+                            }
+                            resolveRevealReady(false);
+                            return;
+                        }
                         resolveRevealReady(true);
                     },
                     (error) => {
@@ -861,7 +887,11 @@
                 return await api.startAvatarCornerPeek({
                     position: normalizedOptions.position,
                     targetPreset: normalizedOptions.targetPreset,
+                    hideMs: normalizedOptions.hideMs,
+                    appearMs: normalizedOptions.appearMs,
+                    holdMs: normalizedOptions.holdMs,
                     performanceLockKey: normalizedOptions.performanceLockKey,
+                    useCompositorOpacity: true,
                     reducedMotion: normalizedOptions.reducedMotion === true || this.shouldReduceTutorialMotion(),
                     isCancelled: typeof normalizedOptions.isCancelled === 'function'
                         ? normalizedOptions.isCancelled
