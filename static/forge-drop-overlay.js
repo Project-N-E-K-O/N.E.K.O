@@ -334,6 +334,20 @@
       vrm: window.vrmManager,
       mmd: window.mmdManager,
     };
+    function getPngtuberBounds() {
+      var pngAvatar = document.querySelector(
+        '#pngtuber-container .pngtuber-image:not([style*="display: none"]), ' +
+        '#pngtuber-container .pngtuber-layered-canvas:not([style*="display: none"])'
+      );
+      if (!pngAvatar) return null;
+      try { return normalizeAvatarBounds(pngAvatar.getBoundingClientRect()); } catch (_) { return null; }
+    }
+    // 当前配置明确为 PNGtuber 时必须优先使用它的 DOM；其他 manager 可能仍是
+    // 上一次模型切换留下的实例，不能让旧边界抢走当前模型的掉券定位。
+    if (configuredType === 'pngtuber') {
+      var configuredPngBounds = getPngtuberBounds();
+      if (configuredPngBounds) return configuredPngBounds;
+    }
     var activeLive3dManager = live3dSubType === 'mmd' ? managers.mmd : managers.vrm;
     var order = configuredType === 'live3d'
       ? [activeLive3dManager, live3dSubType === 'mmd' ? managers.vrm : managers.mmd]
@@ -350,14 +364,7 @@
     }
 
     // PNGtuber 没有统一的 manager 边界 API，直接使用当前可见形象的 DOM 边界。
-    var pngAvatar = document.querySelector(
-      '#pngtuber-container .pngtuber-image:not([style*="display: none"]), ' +
-      '#pngtuber-container .pngtuber-layered-canvas:not([style*="display: none"])'
-    );
-    if (pngAvatar) {
-      try { return normalizeAvatarBounds(pngAvatar.getBoundingClientRect()); } catch (_) {}
-    }
-    return null;
+    return getPngtuberBounds();
   }
 
   function clampCardCoordinate(value, size, viewportSize, margin) {
@@ -517,6 +524,9 @@
         setTimeout(function () {
           if (playGeneration !== dropEffectsGeneration || window.forgeDropEffectsEnabled === false) {
             try { card.remove(); } catch (_) {}
+            if (!payloadRevision || payloadRevision === creditStateRevision) {
+              renderForgeBadge(active, true);
+            }
             resolve();
             return;
           }

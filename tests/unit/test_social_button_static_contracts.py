@@ -1,8 +1,10 @@
 import re
+import shutil
 import struct
 from pathlib import Path
 
 import pytest
+from tests.node_harness import run_node_stdin
 from tests.static_app_parts import read_js_parts
 
 
@@ -14,6 +16,33 @@ FORGE_DROP_OVERLAY_PATH = PROJECT_ROOT / "static" / "forge-drop-overlay.js"
 FORGE_AVATAR_REACTION_PATH = PROJECT_ROOT / "static" / "forge-avatar-reaction.js"
 FORGE_DROP_TOKENS_PATH = PROJECT_ROOT / "static" / "forge-drop-tokens.js"
 FORGE_SOUND_DIR = PROJECT_ROOT / "static" / "sounds" / "forge"
+
+
+def _extract_js_function(source: str, signature: str) -> str:
+    start = source.index(signature)
+    brace = source.index("{", start)
+    depth = 0
+    quote = None
+    escaped = False
+    for index in range(brace, len(source)):
+        char = source[index]
+        if quote:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+            continue
+        if char in ("'", '"', "`"):
+            quote = char
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return source[start:index + 1]
+    raise AssertionError(f"unterminated JavaScript function: {signature}")
 
 
 @pytest.mark.unit
@@ -198,16 +227,78 @@ def test_forge_drop_effects_can_be_disabled_without_hiding_credit_updates():
     assert "neko-forge-drop-effects-changed" in popup
     assert "forgeDropEffectsEnabled: currentForgeDropEffects" in settings
     assert "window.forgeDropEffectsEnabled = settings.forgeDropEffectsEnabled;" in settings
-    assert "window.forgeDropEffectsEnabled === false" in overlay
-    assert "renderForgeBadge(detail.active_count, true);" in overlay
-    assert "audio.pause();" in overlay
-    assert "if (window.forgeDropEffectsEnabled === false) return;" in reaction
+    drop_handler = _extract_js_function(overlay, "function onCreditDropEvent(event)")
+    effects_handler = _extract_js_function(overlay, "function onDropEffectsChanged(event)")
+    reaction_handler = _extract_js_function(reaction, "function react(detail)")
+    play_one = _extract_js_function(overlay, "function playOne(payload)")
+    assert "if (window.forgeDropEffectsEnabled === false)" in drop_handler
+    assert "renderForgeBadge(detail.active_count, true);" in drop_handler
+    assert "audio.pause();" in effects_handler
+    assert reaction_handler.index(
+        "if (window.forgeDropEffectsEnabled === false) return;"
+    ) < reaction_handler.index("var now = Date.now();")
+    assert "renderForgeBadge(active, true);" in play_one
+    assert "playGeneration !== dropEffectsGeneration" in play_one
 
     for locale in ("en", "ja", "ko", "zh-CN", "zh-TW", "ru", "pt", "es"):
         locale_source = (PROJECT_ROOT / "static" / "locales" / f"{locale}.json").read_text(
             encoding="utf-8"
         )
         assert '"forgeDropEffects"' in locale_source
+
+
+@pytest.mark.unit
+def test_credit_drop_avatar_bounds_and_clamp_execute_for_each_model_type():
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node not found")
+    overlay = FORGE_DROP_OVERLAY_PATH.read_text(encoding="utf-8")
+    functions = "\n".join(
+        _extract_js_function(overlay, signature)
+        for signature in (
+            "function normalizeAvatarBounds(bounds)",
+            "function getActiveAvatarBounds()",
+            "function clampCardCoordinate(value, size, viewportSize, margin)",
+        )
+    )
+    script = f"""
+const assert = require('node:assert/strict');
+global.window = {{}};
+let pngBounds = null;
+global.document = {{
+  querySelector() {{
+    return pngBounds ? {{ getBoundingClientRect: () => pngBounds }} : null;
+  }}
+}};
+{functions}
+const bounds = (left) => ({{ left, top: 20, right: left + 100, bottom: 220 }});
+const manager = (left) => ({{ getModelScreenBounds: () => bounds(left) }});
+window.live2dManager = manager(10);
+window.vrmManager = manager(110);
+window.mmdManager = manager(210);
+
+window.lanlan_config = {{ model_type: 'live2d' }};
+assert.equal(getActiveAvatarBounds().left, 10);
+window.lanlan_config = {{ model_type: 'live3d', live3d_sub_type: 'vrm' }};
+assert.equal(getActiveAvatarBounds().left, 110);
+window.lanlan_config = {{ model_type: 'live3d', live3d_sub_type: 'mmd' }};
+assert.equal(getActiveAvatarBounds().left, 210);
+pngBounds = bounds(310);
+window.lanlan_config = {{ model_type: 'pngtuber' }};
+assert.equal(getActiveAvatarBounds().left, 310);
+
+window.live2dManager = null;
+window.vrmManager = null;
+window.mmdManager = null;
+window.lanlan_config = {{ model_type: 'unknown' }};
+assert.equal(getActiveAvatarBounds().left, 310);
+pngBounds = null;
+assert.equal(getActiveAvatarBounds(), null);
+assert.equal(clampCardCoordinate(-50, 180, 160, 12), 0);
+assert.equal(clampCardCoordinate(999, 80, 160, 12), 80);
+"""
+    result = run_node_stdin(node, script, capture_output=True, check=False)
+    assert result.returncode == 0, result.stderr
 
 
 @pytest.mark.unit

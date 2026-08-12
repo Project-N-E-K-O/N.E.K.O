@@ -560,7 +560,8 @@
         'userLanguage',
         'textGuardMaxLength',
         'renderQuality',
-        'targetFrameRate'
+        'targetFrameRate',
+        'forgeDropEffectsEnabled'
     ];
 
     function _defaultConversationSettingsForReset() {
