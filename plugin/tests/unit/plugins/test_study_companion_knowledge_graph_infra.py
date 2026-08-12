@@ -115,6 +115,73 @@ def test_compact_confusion_labels_use_related_topic_label() -> None:
     assert payload["model_context"]["confusions"] == ["Other Topic"]
 
 
+def test_general_discussion_guidance_filters_exam_procedure_and_practice() -> None:
+    payload = build_knowledge_guidance_payload(
+        topics=[
+            {
+                "id": "literary",
+                "name": "Literary Reading",
+                "subject": "chinese",
+                "stage": "senior_high",
+                "chapter": "Chinese",
+                "unit": "Reading",
+                "prerequisites": [],
+                "related": [
+                    {"id": "answer_template", "relation": "procedure_step"},
+                    {"id": "character", "relation": "application"},
+                    {"id": "theme", "relation": "supports"},
+                ],
+            },
+            {"id": "answer_template", "name": "Answer Template", "subject": "chinese", "prerequisites": [], "related": []},
+            {
+                "id": "character",
+                "name": "Character Analysis",
+                "subject": "chinese",
+                "prerequisites": [],
+                "related": [
+                    {"id": "exam_training", "relation": "application"},
+                ],
+            },
+            {"id": "theme", "name": "Theme", "subject": "chinese", "prerequisites": [], "related": []},
+            {"id": "exam_training", "name": "Exam Training", "subject": "chinese", "prerequisites": [], "related": []},
+        ],
+        topic_id="literary",
+        response_mode="general_discussion",
+    )
+
+    context = payload["model_context"]
+    assert context["procedure"] == []
+    assert "Answer Template" not in json.dumps(context)
+    assert payload["diagnosis_questions"] == []
+    assert "Character Analysis" in json.dumps(context)
+    assert "Exam Training" not in json.dumps(context)
+
+
+def test_unknown_response_mode_does_not_inject_solution_procedure() -> None:
+    payload = build_knowledge_guidance_payload(
+        topics=[
+            {
+                "id": "focus",
+                "name": "Selected Topic",
+                "subject": "math",
+                "prerequisites": [],
+                "related": [
+                    {"id": "procedure", "relation": "procedure_step"},
+                    {"id": "foundation", "relation": "prerequisite"},
+                ],
+            },
+            {"id": "procedure", "name": "Solution Procedure", "subject": "math"},
+            {"id": "foundation", "name": "Foundation", "subject": "math"},
+        ],
+        topic_id="focus",
+        response_mode="unknown",
+    )
+
+    assert payload["model_context"]["procedure"] == []
+    assert "Solution Procedure" not in json.dumps(payload["model_context"])
+    assert "Foundation" in json.dumps(payload["model_context"])
+
+
 def test_graph_topic_helpers_skip_blank_candidates() -> None:
     assert topic_id({"id": "   ", "topic_id": "fallback_id"}) == "fallback_id"
     assert (

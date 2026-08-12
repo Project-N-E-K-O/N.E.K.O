@@ -229,12 +229,31 @@ class _TutorExplainEntriesMixin:
             ) and bool(
                 getattr(communication, "solution_narration_enabled", True)
             )
-            solution_structure = parse_solution_structure(reply.reply)
-            solution_candidate = is_solution_structure_candidate(solution_structure)
+            response_mode = str(
+                tutor_context.get("study_response_mode") or "unknown"
+            ).strip().lower()
+            current_question = tutor_context.get("current_question")
+            trusted_internal_question_context = bool(
+                isinstance(current_question, dict)
+                and str(current_question.get("question") or "").strip()
+                and source_text == str(current_question.get("question") or "").strip()
+            )
+            solution_contract_required = (
+                response_mode == "problem_solving" or trusted_internal_question_context
+            )
+            solution_structure = (
+                parse_solution_structure(reply.reply)
+                if solution_contract_required
+                else None
+            )
+            solution_candidate = bool(
+                solution_structure
+                and is_solution_structure_candidate(solution_structure)
+            )
             repair_attempted = False
             repair_invalid_response = False
             if not reply.degraded and narration_requested and solution_candidate:
-                if solution_structure.complete:
+                if solution_structure is not None and solution_structure.complete:
                     if extract_solution_narration_sections(reply.reply) is None:
                         reply.reply = render_solution_structure(
                             solution_structure,
@@ -283,7 +302,7 @@ class _TutorExplainEntriesMixin:
                 narration_status = "disabled"
             elif not solution_candidate:
                 narration_status = "not_applicable"
-            elif not solution_structure.complete:
+            elif solution_structure is not None and not solution_structure.complete:
                 narration_status = "repair_failed" if repair_attempted else "incomplete"
                 narration_reason = (
                     "invalid_repair_response"
@@ -311,8 +330,11 @@ class _TutorExplainEntriesMixin:
             payload["solution_narration_reason"] = narration_reason
             payload["solution_repair_attempted"] = repair_attempted
             payload["solution_narration_missing_sections"] = (
-                list(solution_structure.missing_sections) if solution_candidate else []
+                list(solution_structure.missing_sections)
+                if solution_candidate and solution_structure is not None
+                else []
             )
+            payload["study_response_mode"] = response_mode
             if mode_switch:
                 payload["mode_switch"] = mode_switch
             if intent.get("matched"):

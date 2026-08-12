@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from typing import Any
 
@@ -129,6 +130,19 @@ class _FakeStudyOcrPipeline:
 class _FakeTutorAgent:
     def update_config(self, config: StudyConfig) -> None:
         self._config = config
+
+    async def _call_model(self, *_args, **_kwargs) -> str:
+        return json.dumps(
+            {
+                "subject": "math",
+                "content_type": "calculation_problem",
+                "intent": "solve",
+                "response_mode": "problem_solving",
+                "entity": "differentiation",
+                "retrieval_concepts": ["derivative", "chain rule"],
+                "confidence": 0.98,
+            }
+        )
 
     async def concept_explain(
         self,

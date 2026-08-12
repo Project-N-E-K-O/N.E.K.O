@@ -16,6 +16,7 @@ from plugin.plugins.study_companion.llm_prompts import (
     _context_json_for_prompt,
     build_operation_messages,
 )
+from plugin.plugins.study_companion.llm_prompts import build_concept_explain_messages
 
 pytestmark = pytest.mark.unit
 
@@ -127,3 +128,33 @@ def test_prompt_context_excludes_images_deadlines_request_ids_and_credentials() 
         "current_question_private",
     ):
         assert private_field not in rendered
+
+
+@pytest.mark.parametrize(
+    ("response_mode", "required", "forbidden"),
+    [
+        ("problem_solving", "Problem Analysis", "Do not use solution headings"),
+        ("general_explanation", "Explain the core meaning", "Problem Analysis"),
+        ("general_discussion", "Discuss the supplied object", "Problem Analysis"),
+        ("unknown", "Respond naturally", "Problem Analysis"),
+    ],
+)
+def test_concept_prompt_uses_backend_confirmed_response_mode(
+    response_mode: str, required: str, forbidden: str
+) -> None:
+    messages = build_concept_explain_messages(
+        text="Discuss a literary work",
+        language="en",
+        context={
+            "study_response_mode": response_mode,
+            "study_semantic_content_type": "literary_work",
+            "study_semantic_intent": "interpretation",
+        },
+    )
+    combined = "\n".join(message["content"] for message in messages)
+
+    assert f"Response mode: {response_mode}" in combined
+    assert "Content type: literary_work" in combined
+    assert "Intent: interpretation" in combined
+    assert required in combined
+    assert forbidden not in combined

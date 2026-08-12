@@ -230,7 +230,11 @@ async def concept_explain(
             raise SdkError("empty model response")
         if teaching_prefix and not reply.startswith(teaching_prefix):
             reply = f"{teaching_prefix}\n\n{reply}"
-        reply = _ensure_transfer_section(reply, self._config.language, normalized)
+        response_mode = str(
+            (context or {}).get("study_response_mode") or "unknown"
+        ).strip().lower()
+        if response_mode == "problem_solving":
+            reply = _ensure_transfer_section(reply, self._config.language, normalized)
         return TutorReply(
             operation=MODE_CONCEPT_EXPLAIN,
             input_text=normalized,

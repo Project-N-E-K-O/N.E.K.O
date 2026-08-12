@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+import plugin.plugins.study_companion.entry_tutor_explain_entries as explain_entries
 
 from plugin.plugins.study_companion._solution_narration import (
     SOLUTION_NARRATION_MAX_CHARS,
@@ -295,6 +296,7 @@ class _ExplainHarness(_TutorExplainEntriesMixin, _CommunicationTutorEventsMixin)
         narration_enabled: bool = True,
         event_bus: _EventBus | None = None,
         last_ocr_text: str = "",
+        response_mode: str = "problem_solving",
     ) -> None:
         self._cfg = SimpleNamespace(
             language="zh-CN",
@@ -312,6 +314,7 @@ class _ExplainHarness(_TutorExplainEntriesMixin, _CommunicationTutorEventsMixin)
         self._agent = _TutorAgent(reply, degraded=degraded)
         self._event_bus = event_bus if event_bus is not None else _EventBus()
         self.logger = _Logger()
+        self._response_mode = response_mode
 
     async def _apply_mode_switch(
         self,
@@ -337,7 +340,12 @@ class _ExplainHarness(_TutorExplainEntriesMixin, _CommunicationTutorEventsMixin)
         input_text: str = "",
         extra: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        return {"operation": operation, "input_text": input_text, **dict(extra or {})}
+        return {
+            "operation": operation,
+            "input_text": input_text,
+            "study_response_mode": self._response_mode,
+            **dict(extra or {}),
+        }
 
     async def _finalize_tutor_call(
         self,
@@ -472,7 +480,9 @@ async def test_study_explain_text_repairs_missing_answer_once_before_narration()
 async def test_study_explain_text_does_not_repair_ordinary_concept_prose() -> None:
     prose_reply = "余华通过福贵的一生，写出了苦难中的生命韧性。"
     bus = _EventBus()
-    plugin = _ExplainHarness(reply=prose_reply, event_bus=bus)
+    plugin = _ExplainHarness(
+        reply=prose_reply, event_bus=bus, response_mode="general_discussion"
+    )
     repair_calls = _install_repair_response(plugin, "should-not-be-used")
 
     result = await plugin.study_explain_text(text="谈谈你对《活着》的理解")
@@ -484,6 +494,36 @@ async def test_study_explain_text_does_not_repair_ordinary_concept_prose() -> No
     assert result.value["solution_narration_status"] == "not_applicable"
     assert result.value["solution_narration_reason"] == ""
     assert result.value["solution_narration_missing_sections"] == []
+    assert bus.events == []
+
+
+@pytest.mark.asyncio
+async def test_general_discussion_ignores_accidental_solution_headings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bus = _EventBus()
+    plugin = _ExplainHarness(
+        reply=_STRUCTURED_REPLY,
+        event_bus=bus,
+        response_mode="general_discussion",
+    )
+    repair_calls = _install_repair_response(plugin, "must-not-be-used")
+    monkeypatch.setattr(
+        explain_entries,
+        "parse_solution_structure",
+        lambda _reply: (_ for _ in ()).throw(
+            AssertionError("general discussion must not enter the solution parser")
+        ),
+    )
+
+    result = await plugin.study_explain_text(text="谈谈你对一部文学作品的理解")
+
+    assert isinstance(result, Ok)
+    assert result.value["solution_narration_scheduled"] is False
+    assert result.value["solution_narration_status"] == "not_applicable"
+    assert result.value["solution_repair_attempted"] is False
+    assert result.value["solution_narration_missing_sections"] == []
+    assert repair_calls == []
     assert bus.events == []
 
 

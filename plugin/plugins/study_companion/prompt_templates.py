@@ -8,6 +8,14 @@ STUDY_PROMPT_CONTEXT_MAX_TOKENS = {
     "summarize_session": 2000,
 }
 
+STUDY_CONCEPT_RESPONSE_MODE_SYSTEM_PROMPT = (
+    "You are a concise study tutor. Explain the concept clearly, "
+    "identify relevant prerequisite ideas, and follow the backend-provided "
+    "response contract exactly. Do not infer a different response mode from "
+    "keywords or from knowledge-graph labels. "
+    "Do not invent source material beyond the supplied text."
+)
+
 STUDY_CONCEPT_EXPLAIN_SYSTEM_PROMPT = (
     "You are a concise study tutor. Explain the concept clearly, "
     "identify prerequisite ideas, and give one short check question. "
@@ -170,6 +178,45 @@ STUDY_STRUCTURED_USER_TEMPLATE = "{requirements}{example_json}\n\ncontext:\n{con
 STUDY_STRUCTURED_MODE_PREFIX_TEMPLATE = "Mode: {mode}\n\n{prompt}"
 
 STUDY_CONCEPT_EXPLAIN_SYSTEM_WITH_MODE_TEMPLATE = "{system_prompt}\nMode guidance: {mode_guidance}"
+STUDY_CONCEPT_RESPONSE_MODE_GUIDANCE = {
+    "problem_solving": (
+        "Solve the concrete problem. Use explicit sections: Problem Analysis, "
+        "Solution Process, Answer, and Transfer Practice. For Chinese output, use "
+        "the headings 题目解析, 解题过程, 答案, and 举一反三. For choice or "
+        "option-judgement questions, verify every option independently and include "
+        "all correct options in Answer."
+    ),
+    "general_explanation": (
+        "Explain the core meaning, mechanism, relevant background, examples, and "
+        "important boundaries naturally. Do not use solution headings or present "
+        "the response as an exam answer."
+    ),
+    "general_discussion": (
+        "Discuss the supplied object or viewpoint naturally. Separate supported "
+        "facts, common interpretations, and evaluation; use relevant themes, people, "
+        "narrative choices, effects, and personal understanding when appropriate. "
+        "Do not use solution headings or present a standard exam answer."
+    ),
+    "unknown": (
+        "Respond naturally and conservatively. Do not assume the request is a problem, "
+        "and do not use solution headings unless the backend explicitly classifies it "
+        "as problem_solving."
+    ),
+}
+STUDY_CONCEPT_RESPONSE_MODE_USER_TEMPLATE = (
+    "Language: {language}\n"
+    "Source: {source}\n"
+    "Mode: {mode}\n"
+    "Task: concept_explain\n"
+    "Response mode: {response_mode}\n"
+    "Content type: {content_type}\n"
+    "Intent: {intent}\n"
+    "Response contract: {response_guidance}\n\n"
+    "Study text:\n{text}"
+)
+
+# Backward-compatible public template for callers that still render this constant
+# directly. Runtime concept explanations use STUDY_CONCEPT_RESPONSE_MODE_USER_TEMPLATE.
 STUDY_CONCEPT_EXPLAIN_USER_TEMPLATE = (
     "Language: {language}\n"
     "Source: {source}\n"

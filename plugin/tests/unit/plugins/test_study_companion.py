@@ -7930,7 +7930,8 @@ async def test_learning_context_includes_knowledge_graph_guidance_for_explain(
         guidance = context["knowledge_guidance"]
         assert guidance["topic"]["id"] == "extrema"
         assert guidance["learning_path"][0]["from"] == "derivative"
-        assert guidance["diagnosis_questions"][0]["kind"] == "prerequisite_probe"
+        assert guidance["diagnosis_questions"] == []
+        assert context["study_response_mode"] == "unknown"
     finally:
         await plugin.shutdown()
 

@@ -275,7 +275,10 @@ async def test_concept_explain_appends_missing_zh_transfer_section(
 
     reply = await agent.concept_explain(
         IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN,
-        context={"vision_image_base64": JPEG_IMAGE_BASE64},
+        context={
+            "vision_image_base64": JPEG_IMAGE_BASE64,
+            "study_response_mode": "problem_solving",
+        },
     )
 
     expected_tail = "举一反三\n" + ZH_TRANSFER_EXPECTED_TEXT
@@ -296,7 +299,10 @@ async def test_concept_explain_appends_transfer_to_numbered_zh_solution(
 
     reply = await agent.concept_explain(
         IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN,
-        context={"vision_image_base64": JPEG_IMAGE_BASE64},
+        context={
+            "vision_image_base64": JPEG_IMAGE_BASE64,
+            "study_response_mode": "problem_solving",
+        },
     )
 
     assert reply.reply.rstrip().endswith("举一反三\n" + ZH_TRANSFER_EXPECTED_TEXT)
@@ -315,7 +321,10 @@ async def test_concept_explain_appends_transfer_when_reply_is_zh_but_locale_is_e
 
     reply = await agent.concept_explain(
         IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN,
-        context={"vision_image_base64": JPEG_IMAGE_BASE64},
+        context={
+            "vision_image_base64": JPEG_IMAGE_BASE64,
+            "study_response_mode": "problem_solving",
+        },
     )
 
     assert reply.reply.rstrip().endswith("举一反三\n" + ZH_TRANSFER_EXPECTED_TEXT)

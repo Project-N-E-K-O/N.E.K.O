@@ -8,8 +8,9 @@ from .prompt_templates import (
     STUDY_ANSWER_EVALUATE_REQUIREMENTS,
     STUDY_ANSWER_EVALUATE_SYSTEM_PROMPT,
     STUDY_CONCEPT_EXPLAIN_SYSTEM_WITH_MODE_TEMPLATE,
-    STUDY_CONCEPT_EXPLAIN_SYSTEM_PROMPT,
-    STUDY_CONCEPT_EXPLAIN_USER_TEMPLATE,
+    STUDY_CONCEPT_RESPONSE_MODE_SYSTEM_PROMPT,
+    STUDY_CONCEPT_RESPONSE_MODE_USER_TEMPLATE,
+    STUDY_CONCEPT_RESPONSE_MODE_GUIDANCE,
     STUDY_KNOWLEDGE_TRACK_EXAMPLE,
     STUDY_KNOWLEDGE_TRACK_REQUIREMENTS,
     STUDY_KNOWLEDGE_TRACK_SYSTEM_PROMPT,
@@ -250,6 +251,9 @@ def build_concept_explain_messages(
     context = context if isinstance(context, dict) else {}
     source = str(context.get("source") or "manual").strip() or "manual"
     selected_mode = normalize_mode(context.get("mode") or mode)
+    response_mode = str(context.get("study_response_mode") or "unknown").strip().lower()
+    if response_mode not in STUDY_CONCEPT_RESPONSE_MODE_GUIDANCE:
+        response_mode = "unknown"
     guidance = context.get("knowledge_guidance")
     guidance_block = ""
     if isinstance(guidance, dict) and guidance:
@@ -266,16 +270,20 @@ def build_concept_explain_messages(
         {
             "role": "system",
             "content": STUDY_CONCEPT_EXPLAIN_SYSTEM_WITH_MODE_TEMPLATE.format(
-                system_prompt=STUDY_CONCEPT_EXPLAIN_SYSTEM_PROMPT,
+                system_prompt=STUDY_CONCEPT_RESPONSE_MODE_SYSTEM_PROMPT,
                 mode_guidance=_mode_guidance(selected_mode),
             ),
         },
         {
             "role": "user",
-            "content": STUDY_CONCEPT_EXPLAIN_USER_TEMPLATE.format(
+            "content": STUDY_CONCEPT_RESPONSE_MODE_USER_TEMPLATE.format(
                 language=language,
                 source=source,
                 mode=selected_mode,
+                response_mode=response_mode,
+                content_type=str(context.get("study_semantic_content_type") or "unknown"),
+                intent=str(context.get("study_semantic_intent") or "unknown"),
+                response_guidance=STUDY_CONCEPT_RESPONSE_MODE_GUIDANCE[response_mode],
                 text=f"{text.strip()}{guidance_block}",
             ),
         },

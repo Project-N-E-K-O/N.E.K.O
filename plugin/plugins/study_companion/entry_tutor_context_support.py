@@ -55,6 +55,9 @@ def _knowledge_guidance_outcome(
     semantics: StudyInputSemantics | None = None,
     guidance: dict[str, Any] | None = None,
     source: str = "semantic_route",
+    semantic_status: str = "not_applicable",
+    semantic_reason: str = "",
+    response_mode: str | None = None,
 ) -> dict[str, Any]:
     topic = guidance.get("topic") if isinstance(guidance, dict) else None
     topic = topic if isinstance(topic, dict) else {}
@@ -90,6 +93,17 @@ def _knowledge_guidance_outcome(
         ),
         "knowledge_guidance_related_topics": related if applied else [],
         "knowledge_guidance_source": source,
+        "study_semantic_status": semantic_status,
+        "study_semantic_reason": semantic_reason,
+        "study_response_mode": (
+            response_mode
+            if response_mode is not None
+            else semantics.response_mode if semantics else "unknown"
+        ),
+        "study_semantic_subject": semantics.subject if semantics else "unknown",
+        "study_semantic_content_type": semantics.content_type if semantics else "unknown",
+        "study_semantic_intent": semantics.intent if semantics else "unknown",
+        "study_semantic_entity": semantics.entity if semantics else "",
     }
 
 
@@ -150,6 +164,7 @@ class _TutorContextSupportMixin:
                     subject=str(explicit_topic.get("subject") or "unknown"),
                     content_type="selected_topic",
                     intent="explicit_topic",
+                    response_mode="unknown",
                     entity=str(explicit_topic.get("label") or ""),
                     retrieval_concepts=(str(explicit_topic.get("label") or ""),),
                     confidence=1.0,
@@ -158,6 +173,11 @@ class _TutorContextSupportMixin:
                     topics=topic_items,
                     topic_id=topic_id,
                     query=query,
+                    response_mode=(
+                        semantics.response_mode
+                        if operation == LLM_OPERATION_CONCEPT_EXPLAIN
+                        else "problem_solving"
+                    ),
                     max_depth=3,
                     match_limit=5,
                 )
@@ -166,6 +186,7 @@ class _TutorContextSupportMixin:
                     semantics=semantics,
                     guidance=guidance,
                     source="selected_topic",
+                    semantic_status="not_applicable",
                 )
             if operation != LLM_OPERATION_CONCEPT_EXPLAIN:
                 guidance = build_knowledge_guidance_payload(
@@ -183,18 +204,25 @@ class _TutorContextSupportMixin:
                     status=status, guidance=guidance, source="query_match"
                 )
 
-            semantics, route_status = await self._route_study_input_semantics(
+            semantics, route_status, route_reason = await self._route_study_input_semantics(
                 query, context=seed
             )
             if semantics is None:
-                return {}, _knowledge_guidance_outcome(status=route_status)
+                return {}, _knowledge_guidance_outcome(
+                    status=route_status,
+                    semantic_status=route_status,
+                    semantic_reason=route_reason,
+                )
             if semantics.confidence < _SEMANTIC_ROUTE_MIN_CONFIDENCE:
                 return {}, _knowledge_guidance_outcome(
-                    status="low_confidence", semantics=semantics
+                    status="low_confidence", semantics=semantics,
+                    semantic_status="low_confidence", semantic_reason="low_confidence",
+                    response_mode="unknown",
                 )
             if semantics.subject == "unknown":
                 return {}, _knowledge_guidance_outcome(
-                    status="not_matched", semantics=semantics
+                    status="not_matched", semantics=semantics,
+                    semantic_status="available",
                 )
             semantic_query = " ".join(
                 part
@@ -214,7 +242,8 @@ class _TutorContextSupportMixin:
             )
             if not matches or int(matches[0].get("score") or 0) < 10:
                 return {}, _knowledge_guidance_outcome(
-                    status="not_matched", semantics=semantics
+                    status="not_matched", semantics=semantics,
+                    semantic_status="available",
                 )
             subject_topics = [
                 topic
@@ -226,15 +255,18 @@ class _TutorContextSupportMixin:
                 topics=subject_topics,
                 topic_id=str(matches[0].get("id") or ""),
                 query=semantic_query,
+                response_mode=semantics.response_mode,
                 max_depth=3,
                 match_limit=5,
             )
             if not guidance.get("summary", {}).get("matched"):
                 return {}, _knowledge_guidance_outcome(
-                    status="not_matched", semantics=semantics
+                    status="not_matched", semantics=semantics,
+                    semantic_status="available",
                 )
             return guidance, _knowledge_guidance_outcome(
-                status="applied", semantics=semantics, guidance=guidance
+                status="applied", semantics=semantics, guidance=guidance,
+                semantic_status="available",
             )
         except Exception as exc:
             _warn(
@@ -242,15 +274,19 @@ class _TutorContextSupportMixin:
                 "study knowledge graph guidance failed: {}",
                 exc,
             )
-            return {}, _knowledge_guidance_outcome(status="routing_unavailable")
+            return {}, _knowledge_guidance_outcome(
+                status="routing_unavailable",
+                semantic_status="routing_unavailable",
+                semantic_reason="call_failed",
+            )
 
     async def _route_study_input_semantics(
         self, input_text: str, *, context: dict[str, Any]
-    ) -> tuple[StudyInputSemantics | None, str]:
+    ) -> tuple[StudyInputSemantics | None, str, str]:
         agent = getattr(self, "_agent", None)
         call_model = getattr(agent, "_call_model", None)
         if not callable(call_model):
-            return None, "routing_unavailable"
+            return None, "routing_unavailable", "model_unavailable"
         messages: list[dict[str, Any]] = build_semantic_routing_messages(
             text=input_text,
             language=self._cfg.language,
@@ -260,7 +296,7 @@ class _TutorContextSupportMixin:
         if image:
             attach_image = getattr(agent, "_attach_vision_image", None)
             if not callable(attach_image):
-                return None, "routing_unavailable"
+                return None, "routing_unavailable", "model_unavailable"
             messages = attach_image(messages, image)
         new_deadline = getattr(agent, "_new_operation_deadline", None)
         route_deadline = time.monotonic() + _SEMANTIC_ROUTE_TIMEOUT_SECONDS
@@ -280,12 +316,14 @@ class _TutorContextSupportMixin:
             )
         except asyncio.CancelledError:
             raise
+        except asyncio.TimeoutError:
+            return None, "routing_unavailable", "timeout"
         except Exception:
-            return None, "routing_unavailable"
+            return None, "routing_unavailable", "call_failed"
         semantics = parse_study_input_semantics(raw)
         if semantics is None:
-            return None, "routing_unavailable"
-        return semantics, "applied"
+            return None, "routing_unavailable", "invalid_response"
+        return semantics, "available", ""
 
     def _merge_session_summary_seed(
         self,
@@ -423,6 +461,19 @@ class _TutorContextSupportMixin:
             context=context,
         )
         context.update(guidance_outcome)
+        trusted_question = str(
+            (context.get("current_question") or {}).get("question")
+            if isinstance(context.get("current_question"), dict)
+            else ""
+        ).strip()
+        source_text = str(context.get("source_text") or input_text or "").strip()
+        if (
+            operation == LLM_OPERATION_CONCEPT_EXPLAIN
+            and context.get("study_response_mode") == "unknown"
+            and trusted_question
+            and source_text == trusted_question
+        ):
+            context["study_response_mode"] = "problem_solving"
         if guidance.get("summary", {}).get("matched"):
             context.public_knowledge_guidance = guidance
             if operation == LLM_OPERATION_CONCEPT_EXPLAIN:
@@ -563,6 +614,13 @@ class _TutorContextSupportMixin:
             "knowledge_guidance_focus_topic",
             "knowledge_guidance_related_topics",
             "knowledge_guidance_source",
+            "study_semantic_status",
+            "study_semantic_reason",
+            "study_response_mode",
+            "study_semantic_subject",
+            "study_semantic_content_type",
+            "study_semantic_intent",
+            "study_semantic_entity",
         ):
             if isinstance(extra_context, dict) and key in extra_context:
                 payload[key] = extra_context[key]

@@ -17,6 +17,9 @@ KnowledgeGuidanceStatus: TypeAlias = Literal[
     "applied", "not_matched", "low_confidence", "routing_unavailable",
     "not_applicable",
 ]
+ResponseMode: TypeAlias = Literal[
+    "problem_solving", "general_explanation", "general_discussion", "unknown"
+]
 
 ALLOWED_SUBJECTS = frozenset(
     {
@@ -28,12 +31,18 @@ ALLOWED_SUBJECTS = frozenset(
 KNOWLEDGE_GUIDANCE_STATUSES = frozenset(
     {"applied", "not_matched", "low_confidence", "routing_unavailable", "not_applicable"}
 )
+RESPONSE_MODES = frozenset(
+    {"problem_solving", "general_explanation", "general_discussion", "unknown"}
+)
 MAX_RETRIEVAL_CONCEPTS = 6
 MAX_RETRIEVAL_CONCEPT_LENGTH = 64
 MAX_CLASSIFICATION_LENGTH = 64
 MAX_ENTITY_LENGTH = 120
 _SEMANTIC_FIELDS = frozenset(
-    {"subject", "content_type", "intent", "entity", "retrieval_concepts", "confidence"}
+    {
+        "subject", "content_type", "intent", "response_mode", "entity",
+        "retrieval_concepts", "confidence",
+    }
 )
 _JSON_FENCE_RE = re.compile(r"\A```(?:json)?\s*\n(?P<body>.*)\n```\s*\Z", re.DOTALL)
 
@@ -43,6 +52,7 @@ class StudyInputSemantics:
     subject: Subject
     content_type: str
     intent: str
+    response_mode: ResponseMode
     entity: str
     retrieval_concepts: tuple[str, ...]
     confidence: float
@@ -90,6 +100,12 @@ def parse_study_input_semantics(payload: object) -> StudyInputSemantics | None:
     intent = _bounded_text(
         values.get("intent"), limit=MAX_CLASSIFICATION_LENGTH, allow_empty=False
     )
+    response_mode_value = values.get("response_mode")
+    if not isinstance(response_mode_value, str):
+        return None
+    response_mode = response_mode_value.strip().lower()
+    if response_mode not in RESPONSE_MODES:
+        return None
     entity = _bounded_text(values.get("entity"), limit=MAX_ENTITY_LENGTH, allow_empty=True)
     if content_type is None or intent is None or entity is None:
         return None
@@ -115,6 +131,7 @@ def parse_study_input_semantics(payload: object) -> StudyInputSemantics | None:
         subject=cast(Subject, subject),
         content_type=content_type,
         intent=intent,
+        response_mode=cast(ResponseMode, response_mode),
         entity=entity,
         retrieval_concepts=tuple(concepts),
         confidence=confidence,
@@ -129,6 +146,7 @@ def build_semantic_routing_messages(
         "subject": sorted(ALLOWED_SUBJECTS),
         "content_type": "string, max 64 chars",
         "intent": "string, max 64 chars",
+        "response_mode": sorted(RESPONSE_MODES),
         "entity": "string, max 120 chars; empty when absent",
         "retrieval_concepts": "array of up to 6 strings, each max 64 chars",
         "confidence": "number from 0 to 1",
@@ -148,6 +166,13 @@ def build_semantic_routing_messages(
         "knowledge graph. Never return graph node IDs or claim that any graph node "
         "was matched. When the subject cannot be determined reliably, set subject to "
         "unknown and retrieval_concepts to an empty array."
+        " Classify response_mode from the complete request: use problem_solving only "
+        "for a concrete calculation, proof, option judgement, verification, or exercise; "
+        "use general_explanation for explaining a concept or mechanism; use "
+        "general_discussion for discussing a work, person, event, viewpoint, or value "
+        "judgement. The same literary work can be general_discussion when discussing "
+        "its meaning and problem_solving when answering a specific exam question. "
+        "When task intent is uncertain, set response_mode to unknown."
     )
     return [
         {"role": "system", "content": system},
@@ -160,6 +185,6 @@ def build_semantic_routing_messages(
 
 __all__ = [
     "ALLOWED_SUBJECTS", "KNOWLEDGE_GUIDANCE_STATUSES", "KnowledgeGuidanceStatus",
-    "StudyInputSemantics", "Subject", "build_semantic_routing_messages",
+    "RESPONSE_MODES", "ResponseMode", "StudyInputSemantics", "Subject", "build_semantic_routing_messages",
     "parse_study_input_semantics",
 ]
