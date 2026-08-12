@@ -73,6 +73,25 @@ class _FakeOmniOffline(OmniOfflineClient):
         pass
 
 
+class _CapturingImageOmniOffline(_FakeOmniOffline):
+    def __init__(self):
+        super().__init__(delivered=True)
+        self.image_batches: list[list[str]] = []
+
+    async def prompt_ephemeral(
+        self,
+        instruction: str,
+        *,
+        images=None,
+        on_committed=None,
+    ) -> bool:
+        self.called_with.append(instruction)
+        self.image_batches.append(list(images or []))
+        if on_committed:
+            on_committed()
+        return True
+
+
 def _make_mgr(session=None) -> core_module.LLMSessionManager:
     mgr = core_module.LLMSessionManager.__new__(core_module.LLMSessionManager)
     mgr.lanlan_name = "Test"
@@ -370,9 +389,9 @@ async def test_text_drain_bounds_images_across_callback_snapshot():
 async def test_text_drain_bounds_total_image_bytes_across_callback_snapshot(
     monkeypatch,
 ):
-    from main_logic.core import proactive as proactive_module
+    from main_logic import proactive_delivery
 
-    monkeypatch.setattr(proactive_module, "CALLBACK_IMAGE_MAX_BYTES", 2)
+    monkeypatch.setattr(proactive_delivery, "CALLBACK_IMAGE_MAX_BYTES", 2)
     session = MagicMock(spec=OmniOfflineClient)
     session.stream_images = AsyncMock()
     mgr = _make_mgr(session=session)
@@ -1023,6 +1042,64 @@ async def test_text_mode_resolves_delivery_ack_after_committed_output_before_com
     assert future.result() is True
 
 
+async def test_respond_batch_defers_callbacks_beyond_image_count_budget():
+    sess = _CapturingImageOmniOffline()
+    mgr = _make_mgr(session=sess)
+    callbacks = [
+        {
+            "delivery_mode": "proactive",
+            "status": "completed",
+            "summary": f"callback-{index}",
+            "media_images": ["eA=="],
+        }
+        for index in range(9)
+    ]
+    mgr.pending_agent_callbacks = callbacks.copy()
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+
+    assert delivered is True
+    assert sess.image_batches == [["eA=="] * 8]
+    assert mgr.pending_agent_callbacks == [callbacks[8]]
+
+    delivered_again = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+
+    assert delivered_again is True
+    assert sess.image_batches == [["eA=="] * 8, ["eA=="]]
+    assert mgr.pending_agent_callbacks == []
+
+
+async def test_respond_batch_defers_callbacks_beyond_image_byte_budget(
+    monkeypatch,
+):
+    from main_logic import proactive_delivery
+
+    monkeypatch.setattr(proactive_delivery, "CALLBACK_IMAGE_MAX_BYTES", 2)
+    sess = _CapturingImageOmniOffline()
+    mgr = _make_mgr(session=sess)
+    callbacks = [
+        {
+            "delivery_mode": "proactive",
+            "status": "completed",
+            "summary": "first callback",
+            "media_images": ["eA=="],
+        },
+        {
+            "delivery_mode": "proactive",
+            "status": "completed",
+            "summary": "second callback",
+            "media_images": ["eHg="],
+        },
+    ]
+    mgr.pending_agent_callbacks = callbacks.copy()
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+
+    assert delivered is True
+    assert sess.image_batches == [["eA=="]]
+    assert mgr.pending_agent_callbacks == [callbacks[1]]
+
+
 async def test_text_mode_resolves_delivery_ack_false_when_prompt_has_no_committed_output():
     sess = _FakeOmniOffline(delivered=False)
     mgr = _make_mgr(session=sess)
@@ -1566,6 +1643,44 @@ async def test_voice_mode_drops_permanently_oversized_image_and_delivers_text():
     assert sess.inject_calls == 1
     assert cb["media_images"] == ["valid-prefix", "valid-tail"]
     assert mgr.pending_agent_callbacks == []
+
+
+async def test_voice_respond_batch_defers_callbacks_beyond_image_budget():
+    sess = _make_voice_sess()
+    sess._supports_native_image = True
+    streamed: list[str] = []
+
+    async def _stream_image(
+        image_b64,
+        *,
+        bypass_rate_limit=False,
+        cache_latest=True,
+        on_rejected=None,
+    ):
+        assert bypass_rate_limit is True
+        assert cache_latest is False
+        assert on_rejected is not None
+        streamed.append(image_b64)
+
+    sess.stream_image = _stream_image
+    mgr = _make_mgr(session=sess)
+    callbacks = [
+        {
+            "delivery_mode": "proactive",
+            "status": "completed",
+            "summary": f"callback-{index}",
+            "media_images": ["eA=="],
+        }
+        for index in range(9)
+    ]
+    mgr.pending_agent_callbacks = callbacks.copy()
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+
+    assert delivered is True
+    assert streamed == ["eA=="] * 8
+    assert sess.inject_calls == 1
+    assert mgr.pending_agent_callbacks == [callbacks[8]]
 
 
 async def test_standard_step_callback_image_description_shares_inject_ticket():

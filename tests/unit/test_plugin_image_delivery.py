@@ -15,6 +15,12 @@ pytestmark = pytest.mark.unit
 _IMAGE_URL = "http://127.0.0.1:48916/media/matrix-image"
 
 
+def _inline_png_base64() -> str:
+    source = BytesIO()
+    Image.new("RGB", (2, 2), "blue").save(source, format="PNG")
+    return base64.b64encode(source.getvalue()).decode("ascii")
+
+
 class _StreamingResponse:
     def __init__(
         self,
@@ -533,7 +539,7 @@ async def test_external_image_urls_are_not_exposed_to_chat_or_model() -> None:
 async def test_inline_image_is_exposed_to_chat_as_a_data_url() -> None:
     from app.main_server.character_runtime import _plugin_image_chat_blocks
 
-    encoded = base64.b64encode(b"inline-image").decode("ascii")
+    encoded = _inline_png_base64()
 
     assert await _plugin_image_chat_blocks([{
         "type": "image",
@@ -543,6 +549,74 @@ async def test_inline_image_is_exposed_to_chat_as_a_data_url() -> None:
         "type": "image",
         "url": f"data:image/png;base64,{encoded}",
     }]
+
+
+@pytest.mark.asyncio
+async def test_truncated_inline_image_is_not_exposed_to_chat() -> None:
+    from app.main_server.character_runtime import _plugin_image_chat_blocks
+
+    source = BytesIO()
+    Image.new("RGB", (2, 2), "blue").save(source, format="PNG")
+    encoded = base64.b64encode(source.getvalue()[:-8]).decode("ascii")
+
+    assert await _plugin_image_chat_blocks([{
+        "type": "image",
+        "binary_base64": encoded,
+        "mime": "image/png",
+    }]) == []
+
+
+def test_chat_image_limit_short_circuits_image_validation(monkeypatch) -> None:
+    from app.main_server import character_runtime
+
+    calls = 0
+    original = character_runtime._build_plugin_image_chat_block
+
+    def _counted_build(part):
+        nonlocal calls
+        calls += 1
+        return original(part)
+
+    monkeypatch.setattr(
+        character_runtime,
+        "_build_plugin_image_chat_block",
+        _counted_build,
+    )
+    parts = [
+        {"type": "image", "url": f"http://127.0.0.1:48916/media/image-{index}"}
+        for index in range(9)
+    ]
+    parts.append({"type": "text", "text": "caption survives"})
+
+    blocks = character_runtime._build_ordered_plugin_chat_blocks(parts)
+
+    assert calls == 8
+    assert blocks[-1] == {"type": "text", "text": "caption survives"}
+
+
+def test_chat_inline_byte_limit_short_circuits_later_images(monkeypatch) -> None:
+    from app.main_server import character_runtime
+
+    encoded = _inline_png_base64()
+    decoded_size = len(base64.b64decode(encoded))
+    monkeypatch.setattr(
+        character_runtime,
+        "CALLBACK_IMAGE_MAX_BYTES",
+        decoded_size,
+    )
+    parts = [
+        {"type": "image", "binary_base64": encoded, "mime": "image/png"},
+        {"type": "image", "binary_base64": encoded, "mime": "image/png"},
+        {"type": "image", "url": "http://127.0.0.1:48916/media/later"},
+        {"type": "text", "text": "caption survives"},
+    ]
+
+    blocks = character_runtime._build_ordered_plugin_chat_blocks(parts)
+
+    assert blocks == [
+        {"type": "image", "url": f"data:image/png;base64,{encoded}"},
+        {"type": "text", "text": "caption survives"},
+    ]
 
 
 @pytest.mark.asyncio
@@ -598,7 +672,7 @@ async def test_inline_image_only_chat_blind_message_is_rendered(monkeypatch) -> 
     from app import main_server
 
     manager = _manager()
-    encoded = base64.b64encode(b"inline-image").decode("ascii")
+    encoded = _inline_png_base64()
     monkeypatch.setattr(
         "app.main_server.character_runtime._get_session_manager",
         lambda _name: manager,
@@ -633,6 +707,43 @@ async def test_inline_image_only_chat_blind_message_is_rendered(monkeypatch) -> 
             "url": f"data:image/png;base64,{encoded}",
         }],
     )
+
+
+@pytest.mark.asyncio
+async def test_chat_visible_inline_image_rejects_excessive_pixel_count(
+    monkeypatch,
+) -> None:
+    from app import main_server
+
+    manager = _manager()
+    source = BytesIO()
+    Image.new("1", (4097, 4097)).save(source, format="PNG")
+    encoded = base64.b64encode(source.getvalue()).decode("ascii")
+    monkeypatch.setattr(
+        "app.main_server.character_runtime._get_session_manager",
+        lambda _name: manager,
+    )
+    monkeypatch.setattr(
+        "app.main_server.character_runtime._is_websocket_connected",
+        lambda _ws: False,
+    )
+
+    await main_server._handle_agent_event({
+        "event_type": "proactive_message",
+        "lanlan_name": "Test",
+        "text": "",
+        "channel": "plugin:inline",
+        "delivery_mode": "silent",
+        "ai_behavior": "blind",
+        "visibility": ["chat"],
+        "parts": [{
+            "type": "image",
+            "binary_base64": encoded,
+            "mime": "image/png",
+        }],
+    })
+
+    manager.passthrough_to_chat_bubble.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -674,6 +785,47 @@ async def test_image_only_chat_blind_message_still_opens_a_structured_bubble(mon
             "url": "http://127.0.0.1:48916/media/image-only",
         }],
     )
+
+
+@pytest.mark.asyncio
+async def test_chat_visible_plugin_message_limits_images_without_dropping_text(
+    monkeypatch,
+) -> None:
+    from app import main_server
+
+    manager = _manager()
+    monkeypatch.setattr(
+        "app.main_server.character_runtime._get_session_manager",
+        lambda _name: manager,
+    )
+    monkeypatch.setattr(
+        "app.main_server.character_runtime._is_websocket_connected",
+        lambda _ws: False,
+    )
+    parts = [
+        {"type": "image", "url": f"http://127.0.0.1:48916/media/image-{index}"}
+        for index in range(9)
+    ]
+    parts.insert(5, {"type": "text", "text": "caption survives"})
+
+    await main_server._handle_agent_event({
+        "event_type": "proactive_message",
+        "lanlan_name": "Test",
+        "text": "caption survives",
+        "channel": "plugin:demo",
+        "delivery_mode": "silent",
+        "ai_behavior": "blind",
+        "visibility": ["chat"],
+        "parts": parts,
+    })
+
+    blocks = manager.passthrough_to_chat_bubble.await_args.kwargs["blocks"]
+    assert sum(block["type"] == "image" for block in blocks) == 8
+    assert {"type": "text", "text": "caption survives"} in blocks
+    assert blocks[-1] == {
+        "type": "image",
+        "url": "http://127.0.0.1:48916/media/image-7",
+    }
 
 
 @pytest.mark.asyncio

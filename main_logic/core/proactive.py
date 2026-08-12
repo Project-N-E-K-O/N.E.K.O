@@ -30,15 +30,13 @@ from main_logic.omni_offline_client import OmniOfflineClient
 from utils.llm_client import AIMessage
 from main_logic.session_state import SessionEvent, ProactivePhase
 from main_logic.proactive_delivery import (
-    CALLBACK_IMAGE_MAX_BYTES,
-    CALLBACK_IMAGE_MAX_COUNT,
     CALLBACK_EXPIRES_AT_KEY,
     DELIVERY_RETRACTED_KEY,
     SWAP_PRIME_DELIVERY_CLAIM_KEY,
     VOICE_DELIVERY_COMMITTED_KEY,
     callback_is_expired,
-    callback_image_decoded_size,
     resolve_callback_delivery_ack,
+    select_callbacks_within_image_budget,
 )
 from config import ANTI_REPEAT_EXEMPT_SOURCE_TAGS
 from utils.language_utils import normalize_language_code, get_global_language_full
@@ -745,6 +743,7 @@ class ProactiveMixin:
         # piggy-backed onto any later proactive trigger — silently breaking
         # ``delivery="passive"``'s "don't interrupt" promise.
         proactive_cbs = _active_proactive_callbacks(self.pending_agent_callbacks)
+        proactive_cbs = select_callbacks_within_image_budget(proactive_cbs)
         if not proactive_cbs:
             logger.debug(
                 "[%s] trigger_agent_callbacks: queue has only passive callbacks (n=%d); deferring to next user turn",
@@ -781,6 +780,7 @@ class ProactiveMixin:
                 # injected+pruned these cbs while we waited on the lock.
                 self._purge_undeliverable_callbacks()
                 proactive_cbs = _active_proactive_callbacks(self.pending_agent_callbacks)
+                proactive_cbs = select_callbacks_within_image_budget(proactive_cbs)
                 if not proactive_cbs:
                     return False
                 # Playback-aware gate: ``_voice_playback_active`` is True
@@ -1823,10 +1823,10 @@ class ProactiveMixin:
     async def _deliver_proactive_batch(self, callbacks: list) -> None:
         """Release hook invoked by ProactiveDeliveryManager when the gate is
         open. Enqueues the WHOLE batch then fires ONE trigger — trigger drains
-        all pending proactive callbacks into a single LLM turn, restoring the
-        legacy "several near-simultaneous cues batched into one turn"
-        behaviour (the manager only governs WHEN the batch is released, not
-        how many cues per turn)."""
+        pending proactive callbacks into one LLM turn when the media budget
+        permits. Overflow remains queued for later callback-atomic FIFO turns.
+        The manager governs when the batch is released, while the trigger owns
+        the final per-turn media bound."""
         callbacks = self.filter_deliverable_callbacks(callbacks)
         callbacks = self._drop_receipts_shadowed_by_terminal_result(callbacks)
         # Topic hooks re-validate the delivery gate at RELEASE: the submit-time
@@ -2674,28 +2674,7 @@ class ProactiveMixin:
         callbacks_snapshot, _deferred = _select_callbacks_within_token_budget(
             active_callbacks, AGENT_CALLBACK_TOTAL_MAX_TOKENS
         )
-        media_bounded_snapshot = []
-        image_count = 0
-        image_bytes = 0
-        for callback in callbacks_snapshot:
-            images = [
-                image
-                for image in list(callback.get("media_images") or [])
-                if isinstance(image, str) and image
-            ]
-            next_count = image_count + len(images)
-            next_bytes = image_bytes + sum(
-                callback_image_decoded_size(image) for image in images
-            )
-            if (
-                next_count > CALLBACK_IMAGE_MAX_COUNT
-                or next_bytes > CALLBACK_IMAGE_MAX_BYTES
-            ):
-                break
-            media_bounded_snapshot.append(callback)
-            image_count = next_count
-            image_bytes = next_bytes
-        callbacks_snapshot = media_bounded_snapshot
+        callbacks_snapshot = select_callbacks_within_image_budget(callbacks_snapshot)
         for callback in callbacks_snapshot:
             callback[SWAP_PRIME_DELIVERY_CLAIM_KEY] = True
         return callbacks_snapshot

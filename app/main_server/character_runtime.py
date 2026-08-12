@@ -24,8 +24,11 @@ import sys
 import time
 import traceback
 from dataclasses import dataclass
+from io import BytesIO
 from typing import Any, Optional
 from urllib.parse import urlsplit
+
+from PIL import Image
 
 from config import MONITOR_SERVER_PORT, USER_NOTIFICATION_ERROR_MAX_CHARS
 from main_logic import core, cross_server
@@ -36,7 +39,10 @@ from main_logic.proactive_delivery import (
     CALLBACK_IMAGE_MAX_COUNT,
     callback_image_decoded_size,
 )
-from plugin.sdk.shared.core.images import normalize_image_to_jpeg
+from plugin.sdk.shared.core.images import (
+    MAX_SOURCE_IMAGE_PIXELS,
+    normalize_image_to_jpeg,
+)
 from utils.config_manager import get_reserved
 from utils.internal_http_client import get_internal_http_client
 
@@ -95,14 +101,16 @@ async def _resolve_plugin_model_image(part: dict[str, Any]) -> str:
     return await _fetch_plugin_image_base64(url)
 
 
-def _build_plugin_image_chat_block(part: Any) -> dict[str, str] | None:
-    """Synchronously validate one plugin image part for frontend rendering."""
+def _build_plugin_image_chat_block(
+    part: Any,
+) -> tuple[dict[str, str], int] | None:
+    """Validate one frontend image part and return its inline byte cost."""
     max_base64_chars = ((_PLUGIN_IMAGE_MAX_BYTES + 2) // 3) * 4
     if not isinstance(part, dict) or part.get("type") != "image":
         return None
     url = part.get("url")
     if isinstance(url, str) and _is_local_plugin_media_url(url):
-        return {"type": "image", "url": url}
+        return {"type": "image", "url": url}, 0
     encoded = part.get("binary_base64")
     mime = str(part.get("mime") or "").strip().lower()
     if (
@@ -118,34 +126,72 @@ def _build_plugin_image_chat_block(part: Any) -> dict[str, str] | None:
         return None
     if not decoded or len(decoded) > _PLUGIN_IMAGE_MAX_BYTES:
         return None
-    return {
-        "type": "image",
-        "url": f"data:{mime};base64,{encoded}",
-    }
+    try:
+        with Image.open(BytesIO(decoded)) as image:
+            width, height = image.size
+            image.verify()
+    except (OSError, SyntaxError, ValueError, Image.DecompressionBombError):
+        return None
+    if width <= 0 or height <= 0 or width * height > MAX_SOURCE_IMAGE_PIXELS:
+        return None
+    return (
+        {
+            "type": "image",
+            "url": f"data:{mime};base64,{encoded}",
+        },
+        len(decoded),
+    )
+
+
+def _build_plugin_chat_blocks(
+    parts: list[Any],
+    *,
+    include_text: bool,
+) -> list[dict[str, str]]:
+    """Build one ordered, bounded projection of canonical plugin parts."""
+    blocks: list[dict[str, str]] = []
+    image_count = 0
+    inline_image_bytes = 0
+    image_budget_exhausted = False
+    for part in parts:
+        if not isinstance(part, dict):
+            continue
+        if (
+            include_text
+            and part.get("type") == "text"
+            and isinstance(part.get("text"), str)
+        ):
+            blocks.append({"type": "text", "text": part["text"]})
+            continue
+        if (
+            part.get("type") != "image"
+            or image_budget_exhausted
+            or image_count >= CALLBACK_IMAGE_MAX_COUNT
+        ):
+            continue
+        image_result = _build_plugin_image_chat_block(part)
+        if image_result is None:
+            continue
+        image_block, inline_bytes = image_result
+        if (
+            inline_image_bytes + inline_bytes > CALLBACK_IMAGE_MAX_BYTES
+        ):
+            image_budget_exhausted = True
+            continue
+        blocks.append(image_block)
+        image_count += 1
+        inline_image_bytes += inline_bytes
+    return blocks
 
 
 def _build_plugin_image_chat_blocks(media_parts: list[Any]) -> list[dict[str, str]]:
     """Synchronously validate plugin image parts and build frontend blocks."""
-    return [
-        block
-        for part in media_parts
-        if (block := _build_plugin_image_chat_block(part)) is not None
-    ]
+    return _build_plugin_chat_blocks(media_parts, include_text=False)
 
 
 def _build_ordered_plugin_chat_blocks(parts: list[Any]) -> list[dict[str, str]]:
     """Build supported frontend blocks without changing canonical part order."""
-    blocks: list[dict[str, str]] = []
-    for part in parts:
-        if not isinstance(part, dict):
-            continue
-        if part.get("type") == "text" and isinstance(part.get("text"), str):
-            blocks.append({"type": "text", "text": part["text"]})
-            continue
-        image_block = _build_plugin_image_chat_block(part)
-        if image_block is not None:
-            blocks.append(image_block)
-    return blocks
+    return _build_plugin_chat_blocks(parts, include_text=True)
 
 
 async def _plugin_image_chat_blocks(media_parts: list[Any]) -> list[dict[str, str]]:
