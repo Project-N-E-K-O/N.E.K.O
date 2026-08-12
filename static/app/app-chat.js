@@ -526,6 +526,17 @@
 
     window.dispatchMusicPlayDetailed = async function (trackInfo, options) {
         options = options || {};
+        if (
+            options.source === 'proactive'
+            && !options.cardScopeId
+            && window._proactiveMusicCardScopeId
+        ) {
+            options = Object.assign({}, options, {
+                cardScopeId: window._proactiveMusicCardScopeId,
+                deferFailureUi: window._proactiveMusicHasNextCandidate === true,
+                fallbackDeadlineAt: window._proactiveMusicFallbackDeadlineAt
+            });
+        }
 
         // 拦截逻辑：如果是主动搭话触发的切歌，且本地正在放歌 / 加载中 /
         // 其他窗口（chat.html 与 index.html 互为兄弟）也在放歌，则拦截。

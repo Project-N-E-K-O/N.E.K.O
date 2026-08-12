@@ -15,8 +15,24 @@ type MessageBlockViewProps = {
   onAction?: (message: ChatMessage, action: MessageAction) => void;
 };
 
+const MUSIC_MESSAGE_ID_PREFIX = 'music-';
+const MUSIC_COVER_PLACEHOLDER_URL = '/static/assets/music/music-cover-placeholder.png';
+
 function handleImageLoadError(event: SyntheticEvent<HTMLImageElement>, url: string) {
   swapImageToMemeLoadFailedSticker(event.currentTarget, url);
+}
+
+function handleLinkThumbnailLoadError(event: SyntheticEvent<HTMLImageElement>, messageId: string) {
+  if (!messageId.startsWith(MUSIC_MESSAGE_ID_PREFIX)) return;
+
+  const image = event.currentTarget;
+  if (
+    image.dataset.nekoMusicCoverFallback === 'true'
+    || image.getAttribute('src') === MUSIC_COVER_PLACEHOLDER_URL
+  ) return;
+
+  image.dataset.nekoMusicCoverFallback = 'true';
+  image.src = MUSIC_COVER_PLACEHOLDER_URL;
 }
 
 export function isGuideMessage(message: ChatMessage) {
@@ -75,7 +91,12 @@ export default function MessageBlockView({
       >
         {block.thumbnailUrl ? (
           <div className="message-link-thumb">
-            <img src={block.thumbnailUrl} alt="" loading="lazy" />
+            <img
+              src={block.thumbnailUrl}
+              alt=""
+              loading="lazy"
+              onError={(event) => handleLinkThumbnailLoadError(event, message.id)}
+            />
           </div>
         ) : null}
         <div className="message-link-copy">

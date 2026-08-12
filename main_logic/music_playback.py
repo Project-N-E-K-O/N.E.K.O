@@ -358,6 +358,9 @@ def handle_music_request_playback_failed(
     request_id = _clean_music_request_id(event.get("request_id"))
     if request_id is None or not _is_current_music_request(manager, request_id):
         return False
+    if getattr(manager, "_music_request_playback_failed_epoch", None) == request_id:
+        return False
+    manager._music_request_playback_failed_epoch = request_id
     _enqueue_music_request_failure_context(
         manager,
         request_id,

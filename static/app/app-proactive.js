@@ -24,12 +24,18 @@
     const NEW_USER_ICEBREAKER_STORAGE_KEY = 'neko.new_user_icebreaker.v1';
     const NEW_USER_ICEBREAKER_BLOCKING_WINDOW_MS = 2 * 60 * 60 * 1000;
     const MEME_LOAD_FAILED_STICKER_URL = '/static/icons/meme-image-load-failed-sticker.png';
+    const MUSIC_CANDIDATE_FALLBACK_BUDGET_MS = 10000;
 
     function isMusicOccupiedNow() {
         if (typeof window.isMusicOccupied === 'function') return window.isMusicOccupied();
         return ((typeof window.isMusicPlaying === 'function') && window.isMusicPlaying())
             || ((typeof window.isMusicPending === 'function') && window.isMusicPending())
             || ((typeof window.isRemoteMusicActive === 'function') && window.isRemoteMusicActive());
+    }
+
+    function isUserMusicRequestActiveNow() {
+        return typeof window.isUserMusicRequestActive === 'function'
+            && window.isUserMusicRequestActive();
     }
 
     function getDesktopProvider() {
@@ -989,6 +995,10 @@
                 console.log('[ProactiveChat] 新用户破冰期未结束，跳过主动搭话');
                 return false;
             }
+            if (isUserMusicRequestActiveNow()) {
+                console.log('[ProactiveChat] 用户点歌仍在搜索或候选兜底中，跳过主动搭话');
+                return false;
+            }
 
             // 主备协调：本窗口非 leader 时不触发，避免和 Pet 主窗口重复发请求。
             // 这里再 guard 一次是为了防止 leader 切换后旧定时器仍然触发。
@@ -1421,6 +1431,9 @@
                     console.log('主动搭话已发送:', result.message, result.source_mode ? '(来源: ' + result.source_mode + ')' : '');
 
                     var dispatchedTrackUrl = null;
+                    var proactiveMusicCardScopeId = 'proactive:' + (
+                        result.turn_id || (Date.now() + '-' + Math.random().toString(36).slice(2, 8))
+                    );
 
                     // 如果模式包含音乐信号，按顺序尝试音轨；候选 URL 或媒体自身
                     // 的错误（包括加载超时）才回退，播放器/调度错误结束本轮推荐。
@@ -1453,6 +1466,7 @@
                                 if (!unknownTrack || unknownTrack === 'music.unknownTrack') unknownTrack = 'Unknown Track';
                                 if (!unknownArtist || unknownArtist === 'music.unknownArtist') unknownArtist = 'Unknown Artist';
 
+                                var proactiveMusicFallbackDeadlineAt = Date.now() + MUSIC_CANDIDATE_FALLBACK_BUDGET_MS;
                                 for (var musicIndex = 0; musicIndex < musicLinks.length; musicIndex++) {
                                     var musicLink = musicLinks[musicIndex];
                                     var track = {
@@ -1464,7 +1478,18 @@
                                     console.log('[ProactiveChat] 尝试音乐候选 ' + (musicIndex + 1) + '/' + musicLinks.length + ':', track);
                                     var dispatchResult;
                                     if (typeof window.dispatchMusicPlayDetailed === 'function') {
-                                        dispatchResult = await window.dispatchMusicPlayDetailed(track, { source: 'proactive' });
+                                        window._proactiveMusicCardScopeId = proactiveMusicCardScopeId;
+                                        window._proactiveMusicHasNextCandidate = musicIndex < musicLinks.length - 1;
+                                        window._proactiveMusicFallbackDeadlineAt = proactiveMusicFallbackDeadlineAt;
+                                        try {
+                                            dispatchResult = await window.dispatchMusicPlayDetailed(track, { source: 'proactive' });
+                                        } finally {
+                                            if (window._proactiveMusicCardScopeId === proactiveMusicCardScopeId) {
+                                                window._proactiveMusicCardScopeId = null;
+                                                window._proactiveMusicHasNextCandidate = false;
+                                                window._proactiveMusicFallbackDeadlineAt = null;
+                                            }
+                                        }
                                     } else {
                                         var legacyAccepted = await window.dispatchMusicPlay(track, { source: 'proactive' });
                                         dispatchResult = {
