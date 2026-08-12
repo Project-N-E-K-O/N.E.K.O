@@ -5,7 +5,7 @@ import threading
 import time
 from typing import Any, Callable
 from ..ocr_runtime_types import DetectedGameWindow, OcrCaptureProfile, _CAPTURE_BACKEND_SMART, _CAPTURE_BACKEND_DXCAM, _CAPTURE_BACKEND_MSS, _CAPTURE_BACKEND_PRINTWINDOW, _CAPTURE_BACKEND_PYAUTOGUI, _CAPTURE_BACKEND_IMAGEGRAB, _CAPTURE_BACKEND_AUTO, _LOGGER
-from ._helpers import _crop_window_image, _require_visible_capture_target, _require_visible_capture_target_win32, _run_with_thread_dpi_awareness, _target_screen_capture_rect
+from ._helpers import _require_visible_capture_target, _require_visible_capture_target_win32, _target_screen_capture_rect, _crop_window_image
 from .mss import MssCaptureBackend
 from .pyautogui import PyAutoGuiCaptureBackend
 from .printwindow import PrintWindowCaptureBackend
@@ -96,22 +96,14 @@ def _win32_capture_region_occluded(
             if bool(user32.IsWindowVisible(candidate)) and not bool(user32.IsIconic(candidate)):
                 candidate_pid = ctypes.wintypes.DWORD()
                 user32.GetWindowThreadProcessId(candidate, ctypes.byref(candidate_pid))
-
-                def _read_candidate_rect() -> tuple[int, int, int, int]:
-                    rect = ctypes.wintypes.RECT()
-                    if not bool(user32.GetWindowRect(candidate, ctypes.byref(rect))):
-                        return (0, 0, 0, 0)
-                    return (
-                        int(rect.left),
-                        int(rect.top),
-                        int(rect.right),
-                        int(rect.bottom),
-                    )
-
-                candidate_rect = _run_with_thread_dpi_awareness(_read_candidate_rect)
+                rect = ctypes.wintypes.RECT()
                 if (
                     int(candidate_pid.value or 0) != int(target_pid.value or 0)
-                    and _rects_intersect(capture_rect, candidate_rect)
+                    and bool(user32.GetWindowRect(candidate, ctypes.byref(rect)))
+                    and _rects_intersect(
+                        capture_rect,
+                        (int(rect.left), int(rect.top), int(rect.right), int(rect.bottom)),
+                    )
                 ):
                     return True
             candidate = int(user32.GetWindow(candidate, GW_HWNDPREV) or 0)
@@ -369,13 +361,9 @@ class Win32CaptureBackend:
         selection_may_fallback_to_pixels = (
             pixel_only_selection or self.selection == _CAPTURE_BACKEND_PRINTWINDOW
         )
-        target_was_foreground = bool(getattr(target, "is_foreground", False))
-        should_check_occlusion = (is_windows() and pixel_only_selection) or (
-            target_was_foreground
-            and (
-                self.selection == _CAPTURE_BACKEND_SMART
-                or (is_windows() and selection_may_fallback_to_pixels)
-            )
+        should_check_occlusion = bool(getattr(target, "is_foreground", False)) and (
+            self.selection == _CAPTURE_BACKEND_SMART
+            or (is_windows() and selection_may_fallback_to_pixels)
         )
         if should_check_occlusion:
             try:
