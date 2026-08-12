@@ -114,7 +114,7 @@
     function restoreLive2DDisplaySurface(reason) {
         const preserveAvatarCornerPeekOpacity = window.nekoYuiGuideAvatarCornerPeekActive === true;
         const preserveYuiGuidePreparing = shouldPreserveYuiGuideLive2DPreparing();
-        if (!preserveYuiGuidePreparing) {
+        if (!preserveYuiGuidePreparing && !preserveAvatarCornerPeekOpacity) {
             restoreYuiGuideLive2DPreparingControls();
         }
         if (document.body && document.body.classList) {
@@ -256,7 +256,8 @@
         const container = document.getElementById('live2d-container');
         console.log('[App] showLive2d调用前，容器类列表:', container.classList.toString());
         const preserveYuiGuidePreparing = shouldPreserveYuiGuideLive2DPreparing();
-        if (preserveYuiGuidePreparing) {
+        const preserveYuiGuideAvatarMotion = window.nekoYuiGuideAvatarCornerPeekActive === true;
+        if (preserveYuiGuidePreparing || preserveYuiGuideAvatarMotion) {
             hideYuiGuideLive2DPreparingControls();
         }
 
@@ -287,7 +288,7 @@
         }
 
         // 确保浮动按钮显示
-        if (!preserveYuiGuidePreparing && floatingButtons) {
+        if (!preserveYuiGuidePreparing && !preserveYuiGuideAvatarMotion && floatingButtons) {
             floatingButtons.style.setProperty('display', 'flex', 'important');
             floatingButtons.style.setProperty('visibility', 'visible', 'important');
             floatingButtons.style.setProperty('opacity', '1', 'important');
@@ -295,12 +296,12 @@
         }
 
         const lockIcon = document.getElementById('live2d-lock-icon');
-        if (!preserveYuiGuidePreparing && lockIcon) {
+        if (!preserveYuiGuidePreparing && !preserveYuiGuideAvatarMotion && lockIcon) {
             lockIcon.style.removeProperty('display');
             lockIcon.style.removeProperty('visibility');
             lockIcon.style.removeProperty('opacity');
             lockIcon.style.removeProperty('pointer-events');
-        } else if (preserveYuiGuidePreparing) {
+        } else if (preserveYuiGuidePreparing || preserveYuiGuideAvatarMotion) {
             hideYuiGuideLive2DPreparingControls();
         }
 
@@ -345,6 +346,17 @@
         if (window._returnFadeTimer) {
             clearTimeout(window._returnFadeTimer);
             window._returnFadeTimer = null;
+        }
+
+        if (preserveYuiGuidePreparing || preserveYuiGuideAvatarMotion) {
+            // 教程准备/探身演出期间只恢复渲染宿主，不启动普通半身淡入；演出负责逐帧揭示。
+            const reason = preserveYuiGuideAvatarMotion
+                ? 'show-live2d-yui-guide-avatar-motion'
+                : 'show-live2d-yui-guide-preparing';
+            restoreLive2DDisplaySurface(reason);
+            activateLive2DRenderForDisplay(reason);
+            console.log('[App] showLive2d: YUI 教程显示演出中，跳过普通模型淡入');
+            return;
         }
 
         // 如果模型已经可见，跳过淡入动画
