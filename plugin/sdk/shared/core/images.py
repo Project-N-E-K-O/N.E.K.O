@@ -14,11 +14,14 @@ MAX_SOURCE_IMAGE_BYTES = 32 * 1024 * 1024
 MAX_SOURCE_IMAGE_PIXELS = 16 * 1024 * 1024
 
 
-def _normalize_to_jpeg(data: bytes) -> bytes:
+def normalize_image_to_jpeg(data: bytes) -> bytes:
+    """Decode one supported image payload and return bounded JPEG bytes."""
     if not isinstance(data, (bytes, bytearray)):
         raise TypeError("image data must be bytes or bytearray")
     if not data:
         raise ValueError("image data must not be empty")
+    if len(data) > MAX_SOURCE_IMAGE_BYTES:
+        raise ValueError("source image exceeds the 32 MiB decode limit")
 
     with Image.open(BytesIO(bytes(data))) as source:
         source.seek(0)
@@ -77,7 +80,7 @@ class PluginImages:
             raise ValueError("image data must not be empty")
         if len(data) > MAX_SOURCE_IMAGE_BYTES:
             raise ValueError("source image exceeds the 32 MiB decode limit")
-        jpeg = await asyncio.to_thread(_normalize_to_jpeg, bytes(data))
+        jpeg = await asyncio.to_thread(normalize_image_to_jpeg, bytes(data))
         result = await self._host_ctx._upload_image(
             jpeg,
             mime="image/jpeg",
@@ -90,4 +93,4 @@ class PluginImages:
         return dict(result)
 
 
-__all__ = ["PluginImages"]
+__all__ = ["PluginImages", "normalize_image_to_jpeg"]

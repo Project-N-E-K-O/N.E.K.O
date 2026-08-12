@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from io import BytesIO
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from PIL import Image
 
 
 pytestmark = pytest.mark.unit
@@ -297,6 +299,71 @@ async def test_read_image_waits_in_callback_when_no_model_session(
     assert callback["delivery_mode"] == "passive"
     assert callback["media_images"] == [encoded]
     manager.submit_proactive_callback.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_read_image_stream_failure_keeps_image_for_next_turn(monkeypatch) -> None:
+    from app import main_server
+
+    manager = _manager()
+    manager.session.stream_image.side_effect = ConnectionError("session closed")
+    encoded = base64.b64encode(b"deferred-after-stream-failure").decode("ascii")
+    monkeypatch.setattr(
+        "app.main_server.character_runtime._get_session_manager",
+        lambda _name: manager,
+    )
+    monkeypatch.setattr(
+        "app.main_server.character_runtime._fetch_plugin_image_base64",
+        AsyncMock(return_value=encoded),
+    )
+
+    await main_server._handle_agent_event({
+        "event_type": "proactive_message",
+        "lanlan_name": "Test",
+        "text": "",
+        "channel": "plugin:demo",
+        "delivery_mode": "passive",
+        "ai_behavior": "read",
+        "visibility": [],
+        "media_parts": [{"type": "image", "url": _IMAGE_URL, "mime": "image/jpeg"}],
+    })
+
+    manager.enqueue_agent_callback.assert_called_once()
+    callback = manager.enqueue_agent_callback.call_args.args[0]
+    assert callback["media_images"] == [encoded]
+
+
+@pytest.mark.asyncio
+async def test_inline_png_is_normalized_to_jpeg_before_model_injection(monkeypatch) -> None:
+    from app import main_server
+
+    source = BytesIO()
+    Image.new("RGBA", (2, 2), (255, 0, 0, 128)).save(source, format="PNG")
+    encoded = base64.b64encode(source.getvalue()).decode("ascii")
+    manager = _manager()
+    monkeypatch.setattr(
+        "app.main_server.character_runtime._get_session_manager",
+        lambda _name: manager,
+    )
+
+    await main_server._handle_agent_event({
+        "event_type": "proactive_message",
+        "lanlan_name": "Test",
+        "text": "remember it",
+        "channel": "plugin:inline",
+        "delivery_mode": "passive",
+        "ai_behavior": "read",
+        "visibility": [],
+        "parts": [{"type": "image", "binary_base64": encoded, "mime": "image/png"}],
+    })
+
+    manager.session.stream_image.assert_awaited_once()
+    model_bytes = base64.b64decode(
+        manager.session.stream_image.await_args.args[0],
+        validate=True,
+    )
+    with Image.open(BytesIO(model_bytes)) as model_image:
+        assert model_image.format == "JPEG"
 
 
 @pytest.mark.asyncio
@@ -787,9 +854,9 @@ async def test_image_delivery_obeys_visibility_and_ai_behavior(
         ("blind", "silent", [], False, False, False),
         ("blind", "silent", ["chat"], False, False, True),
         ("read", "passive", [], False, True, False),
-        ("read", "passive", ["chat"], False, True, False),
+        ("read", "passive", ["chat"], False, True, True),
         ("respond", "proactive", [], True, False, False),
-        ("respond", "proactive", ["chat"], True, False, False),
+        ("respond", "proactive", ["chat"], True, False, True),
     ],
 )
 @pytest.mark.asyncio
@@ -802,7 +869,7 @@ async def test_text_only_delivery_obeys_visibility_and_ai_behavior(
     expects_enqueue: bool,
     expects_chat: bool,
 ) -> None:
-    """The image feature leaves the existing text-only delivery path unchanged."""
+    """Text visibility stays independent from model delivery behavior."""
     from app import main_server
 
     manager = _manager()
@@ -829,10 +896,20 @@ async def test_text_only_delivery_obeys_visibility_and_ai_behavior(
 
     fetch_image.assert_not_awaited()
     manager.session.stream_image.assert_not_awaited()
-    manager.render_chat_blocks.assert_not_awaited()
+    assert manager.render_chat_blocks.await_count == int(
+        expects_chat and ai_behavior != "blind"
+    )
+    if expects_chat and ai_behavior != "blind":
+        manager.render_chat_blocks.assert_awaited_once_with(
+            [{"type": "text", "text": "legacy text stays text"}],
+            request_id=None,
+            source="plugin",
+        )
     assert manager.submit_proactive_callback.call_count == int(expects_submit)
     assert manager.enqueue_agent_callback.call_count == int(expects_enqueue)
-    assert manager.passthrough_to_chat_bubble.await_count == int(expects_chat)
+    assert manager.passthrough_to_chat_bubble.await_count == int(
+        expects_chat and ai_behavior == "blind"
+    )
 
 
 @pytest.mark.asyncio

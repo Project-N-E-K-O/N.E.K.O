@@ -31,6 +31,7 @@ from config import MONITOR_SERVER_PORT, USER_NOTIFICATION_ERROR_MAX_CHARS
 from main_logic import core, cross_server
 from main_logic.agent_event_bus import notify_analyze_ack
 from main_logic.proactive_delivery import CALLBACK_EXPIRES_AT_KEY
+from plugin.sdk.shared.core.images import normalize_image_to_jpeg
 from utils.config_manager import get_reserved
 from utils.internal_http_client import get_internal_http_client
 
@@ -74,6 +75,27 @@ def _base64_decoded_size(encoded: str) -> int:
     """Return decoded size for canonical base64 without allocating bytes."""
     padding = 2 if encoded.endswith("==") else int(encoded.endswith("="))
     return max(0, (len(encoded) * 3) // 4 - padding)
+
+
+def _normalize_inline_plugin_image_for_model(encoded: str) -> str:
+    """Validate and convert one inline plugin image to the model's JPEG wire format."""
+    source = base64.b64decode(encoded, validate=True)
+    jpeg = normalize_image_to_jpeg(source)
+    return base64.b64encode(jpeg).decode("ascii")
+
+
+async def _resolve_plugin_model_image(part: dict[str, Any]) -> str:
+    """Resolve one canonical image part without blocking the event loop."""
+    encoded = part.get("binary_base64")
+    if isinstance(encoded, str) and encoded:
+        return await asyncio.to_thread(
+            _normalize_inline_plugin_image_for_model,
+            encoded,
+        )
+    url = part.get("url")
+    if not isinstance(url, str) or not url:
+        raise ValueError("plugin image part has no usable payload")
+    return await _fetch_plugin_image_base64(url)
 
 
 def _build_plugin_image_chat_block(part: Any) -> dict[str, str] | None:
@@ -762,32 +784,17 @@ async def _handle_agent_event(event: dict):
                     batch_indexes = model_image_indexes[
                         offset : offset + _PLUGIN_MODEL_IMAGE_FETCH_BATCH_SIZE
                     ]
-                    url_indexes = [
-                        index
-                        for index in batch_indexes
-                        if not media_parts[index].get("binary_base64")
-                        and isinstance(media_parts[index].get("url"), str)
-                        and media_parts[index].get("url")
-                    ]
-                    fetch_results = await asyncio.gather(
+                    resolve_results = await asyncio.gather(
                         *(
-                            _fetch_plugin_image_base64(media_parts[index]["url"])
-                            for index in url_indexes
+                            _resolve_plugin_model_image(media_parts[index])
+                            for index in batch_indexes
                         ),
                         return_exceptions=True,
                     )
-                    fetched_batch = dict(zip(url_indexes, fetch_results))
-                    for index in batch_indexes:
-                        part = media_parts[index]
-                        encoded = part.get("binary_base64")
-                        result: Any = (
-                            encoded
-                            if isinstance(encoded, str) and encoded
-                            else fetched_batch.get(index)
-                        )
+                    for index, result in zip(batch_indexes, resolve_results):
                         if isinstance(result, BaseException):
                             logger.warning(
-                                "[EventBus] plugin image fetch failed; dropped: %s",
+                                "[EventBus] plugin image resolve failed; dropped: %s",
                                 result,
                             )
                             continue
@@ -854,8 +861,10 @@ async def _handle_agent_event(event: dict):
                         )
                     except Exception as e:
                         logger.warning(
-                            "[EventBus] image media_part stream_image failed: %s", e
+                            "[EventBus] image media_part stream_image failed; deferred: %s",
+                            e,
                         )
+                        deferred_callback_images.append(resolved_b64)
 
             # ``visibility`` and ``ai_behavior`` are orthogonal. For read/respond,
             # render URL-backed images through a display-only frame while model
@@ -887,9 +896,7 @@ async def _handle_agent_event(event: dict):
                         )
                         visible_blocks.append({"type": "text", "text": visible_text})
                     visible_blocks.extend(visible_images)
-                # Preserve the pre-existing text-only read/respond path;
-                # structured display-only output is only for valid images.
-                if any(block["type"] == "image" for block in visible_blocks):
+                if visible_blocks:
                     channel = str(event.get("channel") or "")
                     visible_source = str(event.get("source_kind") or "").strip()
                     if not visible_source:

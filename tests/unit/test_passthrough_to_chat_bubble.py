@@ -379,15 +379,12 @@ async def test_main_server_proactive_chat_blind_preserves_verbatim_whitespace(mo
 
 @pytest.mark.unit
 async def test_main_server_proactive_chat_respond_does_not_invoke_passthrough(monkeypatch):
-    """When ai_behavior != "blind", the passthrough branch must NOT fire
-    even if visibility includes "chat" — non-blind ai_behavior already
-    enqueues the LLM callback, and the AI's own response is what fills
-    the chat bubble.
-    """
+    """Non-blind chat visibility uses display-only blocks plus an AI callback."""
     from app import main_server
 
     fake_mgr = MagicMock()
     fake_mgr.passthrough_to_chat_bubble = AsyncMock()
+    fake_mgr.render_chat_blocks = AsyncMock(return_value=True)
     fake_mgr.enqueue_agent_callback = MagicMock()
     fake_mgr.submit_proactive_callback = MagicMock()
     fake_mgr.trigger_agent_callbacks = AsyncMock()
@@ -414,6 +411,11 @@ async def test_main_server_proactive_chat_respond_does_not_invoke_passthrough(mo
     await main_server._handle_agent_event(event)
 
     fake_mgr.passthrough_to_chat_bubble.assert_not_called()
+    fake_mgr.render_chat_blocks.assert_awaited_once_with(
+        [{"type": "text", "text": "tell the user something"}],
+        request_id="task-43",
+        source="plugin",
+    )
     # respond → handed to the proactive delivery manager (which enqueues +
     # triggers at release time, gated on the playback/min-gap pacing).
     fake_mgr.submit_proactive_callback.assert_called_once()

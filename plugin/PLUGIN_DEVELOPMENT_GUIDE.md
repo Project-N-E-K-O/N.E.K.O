@@ -596,8 +596,9 @@ return await self.finish(
 宿主只允许成功的 `user_plugin task_result` 降级为 `event`，不能把
 `proactive_message` 反向伪装成任务完成。
 
-> `delivery` / `ai_behavior` 只控制时机（立即起 turn / 等下次用户开口 / 完全静默），
-> 不再决定外层 prompt 的措辞。两个轴正交，组合 6 种都合理。
+> `push_message()` 中，`visibility` 控制 parts 向哪些前端目标展示，`ai_behavior`
+> 控制模型是否处理以及何时触发 turn；`delivery` 只是兼容旧调用方的已弃用参数。
+> `result_kind` 与这些投递轴正交，只决定外层 prompt 的措辞。
 
 #### 写"角色感知文本"：`{MASTER_NAME}` / `{LANLAN_NAME}` 占位符
 
