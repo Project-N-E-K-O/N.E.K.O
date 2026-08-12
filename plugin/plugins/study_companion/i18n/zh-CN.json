@@ -497,7 +497,7 @@
     "ui.error.llm_timeout":  "图片理解超时，请重试或粘贴题目文字。",
     "ui.error.llm_rate_limited":  "Qwen 请求过于频繁，请稍后重试。",
     "ui.error.llm_authentication_failed":  "Qwen API 凭证无效，请检查 API Key。",
-    "ui.error.llm_model_not_supported":  "当前模型或接口不支持 Qwen 原生图片理解。",
+    "ui.error.llm_model_not_supported":  "当前配置的 Qwen 模型或原生接口不支持此请求。",
     "ui.error.llm_provider_unavailable":  "Qwen 服务暂时不可用，请稍后重试。",
     "ui.error.llm_invalid_image":  "无法读取图片，请使用有效的 JPEG 或 PNG 图片。",
     "ui.error.llm_call_failed":  "Qwen 请求失败，请重试。",

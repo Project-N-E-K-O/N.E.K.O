@@ -5078,6 +5078,16 @@ def test_study_knowledge_map_weak_topic_count_matches_visible_nodes() -> None:
 def test_study_companion_i18n_bundles_are_present() -> None:
     plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
     locales = ["zh-CN", "en", "ja", "ko", "ru", "zh-TW", "es", "pt"]
+    expected_model_not_supported = {
+        "zh-CN": "当前配置的 Qwen 模型或原生接口不支持此请求。",
+        "en": "The configured Qwen model or native endpoint does not support this request.",
+        "ja": "設定されている Qwen モデルまたはネイティブエンドポイントは、このリクエストをサポートしていません。",
+        "ko": "구성된 Qwen 모델 또는 네이티브 엔드포인트가 이 요청을 지원하지 않습니다.",
+        "ru": "Настроенная модель Qwen или нативная конечная точка не поддерживает этот запрос.",
+        "zh-TW": "目前設定的 Qwen 模型或原生介面不支援此請求。",
+        "es": "El modelo Qwen configurado o el endpoint nativo no admite esta solicitud.",
+        "pt": "O modelo Qwen configurado ou o endpoint nativo não oferece suporte a esta solicitação.",
+    }
     phase3_keys = [
         "ui.label.screen",
         "ui.label.question",
@@ -5125,6 +5135,10 @@ def test_study_companion_i18n_bundles_are_present() -> None:
         assert "entries.set_knowledge_contribution_opt_in.name" in bundle
         assert "entries.export_notes.name" in bundle
         assert "ui.profile.stage.cross_stage" in bundle
+        assert (
+            bundle["ui.error.llm_model_not_supported"]
+            == expected_model_not_supported[locale]
+        )
 
     en_bundle = json.loads(
         (plugin_dir / "i18n" / "en.json").read_text(encoding="utf-8")

@@ -497,7 +497,7 @@
     "ui.error.llm_timeout":  "O tempo para interpretar a imagem se esgotou. Tente novamente ou cole o texto do problema.",
     "ui.error.llm_rate_limited":  "O Qwen está recebendo solicitações demais. Tente novamente em instantes.",
     "ui.error.llm_authentication_failed":  "As credenciais da API do Qwen são inválidas. Verifique a API Key.",
-    "ui.error.llm_model_not_supported":  "O modelo ou endpoint configurado não oferece suporte à interpretação nativa de imagens do Qwen.",
+    "ui.error.llm_model_not_supported":  "O modelo Qwen configurado ou o endpoint nativo não oferece suporte a esta solicitação.",
     "ui.error.llm_provider_unavailable":  "O Qwen está temporariamente indisponível. Tente novamente em instantes.",
     "ui.error.llm_invalid_image":  "Não foi possível ler a imagem. Use uma imagem JPEG ou PNG válida.",
     "ui.error.llm_call_failed":  "A solicitação ao Qwen falhou. Tente novamente.",

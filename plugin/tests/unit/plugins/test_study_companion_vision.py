@@ -547,6 +547,173 @@ async def test_call_model_uses_vision_config_for_image_messages(
 
 
 @pytest.mark.parametrize(
+    "model",
+    ["qwen3.7-plus", "qwen3.7-plus-2026-05-26"],
+)
+@pytest.mark.asyncio
+async def test_qwen37_plus_text_uses_agent_config_with_multimodal_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+    model: str,
+) -> None:
+    from plugin.plugins.study_companion import qwen_native_client
+    from utils import config_manager
+
+    config_groups: list[str] = []
+    multimodal_calls: list[dict[str, Any]] = []
+
+    class _ConfigManager:
+        def get_model_api_config(self, group: str) -> dict[str, str]:
+            config_groups.append(group)
+            assert group == "agent"
+            return {
+                "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                "model": model,
+                "api_key": "agent-key",
+            }
+
+    class _FakeMultiModalConversation:
+        @staticmethod
+        async def call(**kwargs: Any) -> SimpleNamespace:
+            multimodal_calls.append(dict(kwargs))
+            return SimpleNamespace(
+                status_code=200,
+                request_id="text-request",
+                usage=SimpleNamespace(input_tokens=8, output_tokens=5),
+                output=SimpleNamespace(
+                    choices=[
+                        SimpleNamespace(
+                            message=SimpleNamespace(
+                                content=[{"text": "《活着》呈现了苦难中的生命韧性。"}]
+                            )
+                        )
+                    ]
+                ),
+            )
+
+    class _UnexpectedGeneration:
+        @staticmethod
+        async def call(**_kwargs: Any) -> SimpleNamespace:
+            raise AssertionError("qwen3.7-plus must use multimodal-generation")
+
+    async def _discard_usage(_client: object, **_kwargs: Any) -> None:
+        return None
+
+    monkeypatch.setattr(config_manager, "get_config_manager", lambda: _ConfigManager())
+    monkeypatch.setattr(
+        qwen_native_client,
+        "AioMultiModalConversation",
+        _FakeMultiModalConversation,
+    )
+    monkeypatch.setattr(qwen_native_client, "AioGeneration", _UnexpectedGeneration)
+    monkeypatch.setattr(QwenNativeClient, "_record_usage", _discard_usage)
+    client = QwenNativeClient(logger=_Logger())
+
+    result = await client.call(
+        [{"role": "user", "content": "谈谈你对活着这本书的理解"}],
+        operation=LLM_OPERATION_CONCEPT_EXPLAIN,
+        deadline=time.monotonic() + 10.0,
+    )
+
+    assert result.text == "《活着》呈现了苦难中的生命韧性。"
+    assert result.model_group == "agent"
+    assert config_groups == ["agent"]
+    assert len(multimodal_calls) == 1
+    assert multimodal_calls[0]["model"] == model
+    assert multimodal_calls[0]["messages"] == [
+        {
+            "role": "user",
+            "content": [{"text": "谈谈你对活着这本书的理解"}],
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    "model",
+    ["qwen-plus", "qwen3.7-plus-future", "qwen-future-experimental"],
+)
+@pytest.mark.asyncio
+async def test_other_qwen_text_models_keep_text_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+    model: str,
+) -> None:
+    from plugin.plugins.study_companion import qwen_native_client
+    from utils import config_manager
+
+    generation_calls: list[dict[str, Any]] = []
+
+    class _ConfigManager:
+        def get_model_api_config(self, group: str) -> dict[str, str]:
+            assert group == "agent"
+            return {
+                "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                "model": model,
+                "api_key": "agent-key",
+            }
+
+    class _FakeGeneration:
+        @staticmethod
+        async def call(**kwargs: Any) -> SimpleNamespace:
+            generation_calls.append(dict(kwargs))
+            return SimpleNamespace(
+                status_code=200,
+                request_id="text-request",
+                usage=SimpleNamespace(input_tokens=1, output_tokens=1),
+                output=SimpleNamespace(text="text reply"),
+            )
+
+    class _UnexpectedMultiModalConversation:
+        @staticmethod
+        async def call(**_kwargs: Any) -> SimpleNamespace:
+            raise AssertionError("unregistered models must keep text-generation")
+
+    async def _discard_usage(_client: object, **_kwargs: Any) -> None:
+        return None
+
+    monkeypatch.setattr(config_manager, "get_config_manager", lambda: _ConfigManager())
+    monkeypatch.setattr(qwen_native_client, "AioGeneration", _FakeGeneration)
+    monkeypatch.setattr(
+        qwen_native_client,
+        "AioMultiModalConversation",
+        _UnexpectedMultiModalConversation,
+    )
+    monkeypatch.setattr(QwenNativeClient, "_record_usage", _discard_usage)
+    client = QwenNativeClient(logger=_Logger())
+
+    result = await client.call(
+        [{"role": "user", "content": "hello"}],
+        operation=LLM_OPERATION_CONCEPT_EXPLAIN,
+        deadline=time.monotonic() + 10.0,
+    )
+
+    assert result.text == "text reply"
+    assert result.model_group == "agent"
+    assert len(generation_calls) == 1
+    assert generation_calls[0]["model"] == model
+    assert generation_calls[0]["messages"] == [
+        {"role": "user", "content": "hello"}
+    ]
+
+
+@pytest.mark.parametrize(
+    ("model", "expected"),
+    [
+        ("qwen3.7-plus", True),
+        (" QWEN3.7-PLUS-2026-05-26 ", True),
+        ("qwen3.7-plus-future", False),
+        ("qwen-plus", False),
+        ("qwen-future-experimental", False),
+    ],
+)
+def test_qwen_multimodal_endpoint_model_allowlist(
+    model: str,
+    expected: bool,
+) -> None:
+    from plugin.plugins.study_companion import qwen_native_client
+
+    assert qwen_native_client._model_requires_multimodal_endpoint(model) is expected
+
+
+@pytest.mark.parametrize(
     ("status_code", "code", "message", "expected"),
     [
         (401, "InvalidApiKey", "unauthorized", "authentication_failed"),

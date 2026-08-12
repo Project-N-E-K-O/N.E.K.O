@@ -432,7 +432,7 @@ function formatTutorDiagnostic(diagnostic) {
     timeout: ['ui.error.llm_timeout', 'Image understanding timed out. Please retry or paste the problem text.'],
     rate_limited: ['ui.error.llm_rate_limited', 'Qwen is receiving too many requests. Please retry shortly.'],
     authentication_failed: ['ui.error.llm_authentication_failed', 'The Qwen API credential is invalid. Please check the API key.'],
-    model_not_supported: ['ui.error.llm_model_not_supported', 'The configured model or endpoint does not support native Qwen image understanding.'],
+    model_not_supported: ['ui.error.llm_model_not_supported', 'The configured Qwen model or native endpoint does not support this request.'],
     provider_unavailable: ['ui.error.llm_provider_unavailable', 'Qwen is temporarily unavailable. Please retry shortly.'],
     invalid_image: ['ui.error.llm_invalid_image', 'The image could not be read. Please use a valid JPEG or PNG image.'],
   };

@@ -59,6 +59,10 @@ _VISION_TIMEOUT_SECONDS = 60.0
 _LONG_FORM_TIMEOUT_SECONDS = 75.0
 _DOCUMENT_CHUNK_TIMEOUT_SECONDS = 110.0
 _DOCUMENT_MERGE_TIMEOUT_SECONDS = 120.0
+_MULTIMODAL_ENDPOINT_MODELS = {
+    "qwen3.7-plus",
+    "qwen3.7-plus-2026-05-26",
+}
 
 _OUTPUT_TOKEN_BUDGETS = {
     LLM_OPERATION_CONCEPT_EXPLAIN: 3072,
@@ -125,6 +129,11 @@ def _message_has_image(message: dict[str, Any]) -> bool:
 
 def messages_have_image(messages: list[dict[str, Any]]) -> bool:
     return any(_message_has_image(message) for message in messages)
+
+
+def _model_requires_multimodal_endpoint(model: str) -> bool:
+    normalized_model = model.strip().lower()
+    return normalized_model in _MULTIMODAL_ENDPOINT_MODELS
 
 
 def operation_timeout_seconds(
@@ -304,7 +313,10 @@ class QwenNativeClient:
         request_id = ""
         success = False
         try:
-            if has_image:
+            use_multimodal_endpoint = has_image or _model_requires_multimodal_endpoint(
+                model
+            )
+            if use_multimodal_endpoint:
                 if AioMultiModalConversation is None:
                     raise QwenNativeError(
                         "DashScope multimodal client is unavailable",

@@ -839,7 +839,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
       authentication_failed: ['ui.error.llm_authentication_failed', 'The Qwen API credential is invalid. Please check the API key.'],
       model_not_supported: documentOperation
         ? ['ui.error.document_analysis_model_not_supported', 'The configured model does not support document analysis.']
-        : ['ui.error.llm_model_not_supported', 'The configured model or endpoint does not support native Qwen image understanding.'],
+        : ['ui.error.llm_model_not_supported', 'The configured Qwen model or native endpoint does not support this request.'],
       provider_unavailable: ['ui.error.llm_provider_unavailable', 'Qwen is temporarily unavailable. Please retry shortly.'],
       invalid_image: ['ui.error.llm_invalid_image', 'The image could not be read. Please use a valid JPEG or PNG image.'],
       document_too_large: ['ui.document.error.file_too_large', 'The document exceeds the 512 KiB size limit.'],

@@ -497,7 +497,7 @@
     "ui.error.llm_timeout":  "画像の理解がタイムアウトしました。再試行するか、問題文を貼り付けてください。",
     "ui.error.llm_rate_limited":  "Qwen へのリクエストが多すぎます。しばらくしてから再試行してください。",
     "ui.error.llm_authentication_failed":  "Qwen API の認証情報が無効です。API Key を確認してください。",
-    "ui.error.llm_model_not_supported":  "設定されたモデルまたはエンドポイントは Qwen ネイティブ画像理解に対応していません。",
+    "ui.error.llm_model_not_supported":  "設定されている Qwen モデルまたはネイティブエンドポイントは、このリクエストをサポートしていません。",
     "ui.error.llm_provider_unavailable":  "Qwen は一時的に利用できません。しばらくしてから再試行してください。",
     "ui.error.llm_invalid_image":  "画像を読み取れません。有効な JPEG または PNG 画像を使用してください。",
     "ui.error.llm_call_failed":  "Qwen リクエストに失敗しました。再試行してください。",
