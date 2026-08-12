@@ -326,15 +326,18 @@
   /** 读取当前模型的真实屏幕边界，四种模型共用同一套掉券定位。 */
   function getActiveAvatarBounds() {
     var configuredType = String(window.lanlan_config && window.lanlan_config.model_type || '').toLowerCase();
+    var live3dSubType = String(window.lanlan_config && window.lanlan_config.live3d_sub_type || '').toLowerCase();
     var managers = {
       live2d: window.live2dManager,
-      live3d: window.vrmManager,
       vrm: window.vrmManager,
       mmd: window.mmdManager,
     };
-    var order = configuredType && managers[configuredType]
-      ? [managers[configuredType]]
-      : [managers.live2d, managers.vrm, managers.mmd];
+    var activeLive3dManager = live3dSubType === 'mmd' ? managers.mmd : managers.vrm;
+    var order = configuredType === 'live3d'
+      ? [activeLive3dManager, live3dSubType === 'mmd' ? managers.vrm : managers.mmd]
+      : (configuredType && managers[configuredType]
+        ? [managers[configuredType]]
+        : [managers.live2d, managers.vrm, managers.mmd]);
     for (var i = 0; i < order.length; i += 1) {
       var manager = order[i];
       if (!manager || typeof manager.getModelScreenBounds !== 'function') continue;
