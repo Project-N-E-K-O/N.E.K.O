@@ -112,6 +112,25 @@ def test_invalid_permissions_shape_does_not_fall_back_to_default_permissions() -
     assert {item["code"] for item in manifest["warnings"]} == {"invalid_permissions"}
 
 
+def test_document_parse_is_a_supported_explicit_permission() -> None:
+    manifest = normalize_plugin_ui_manifest({
+        "plugin": {
+            "ui": {
+                "panel": [{
+                    "id": "study",
+                    "mode": "hosted-tsx",
+                    "entry": "surfaces/study.tsx",
+                    "permissions": ["state:read", "document:parse"],
+                }],
+            },
+        },
+    })
+
+    assert manifest is not None
+    assert manifest["panel"][0]["permissions"] == ["state:read", "document:parse"]
+    assert "warnings" not in manifest
+
+
 def test_surfaces_and_actions_use_manifest_and_static_compat(tmp_path: Path) -> None:
     plugin_dir = tmp_path / "demo"
     static_dir = plugin_dir / "static"

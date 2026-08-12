@@ -63,6 +63,31 @@ def test_txt_recognizes_chinese_and_english_chapters_but_not_body_mentions() -> 
     assert "".join(chunk.text for chunk in chunks) == source
 
 
+@pytest.mark.parametrize(
+    "document_type",
+    [
+        "application/pdf",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ],
+)
+def test_extracted_pdf_and_docx_use_plain_text_boundaries(document_type: str) -> None:
+    source = "第一章：开始\n\n正文。\n\nChapter 2 - Review\n\nSummary."
+
+    chunks = split_document(
+        source,
+        document_type,
+        token_counter=_chars,
+        target_tokens=20,
+        max_tokens=30,
+        min_preferred_tokens=1,
+    )
+
+    paths = [path for chunk in chunks for path in chunk.heading_paths]
+    assert ("第一章：开始",) in paths
+    assert ("Chapter 2 - Review",) in paths
+    assert "".join(chunk.text for chunk in chunks) == source
+
+
 def test_unstructured_text_falls_back_to_paragraphs_then_sentences() -> None:
     source = "第一句内容。第二句内容。第三句内容。第四句内容。\n\n末尾段落。"
 

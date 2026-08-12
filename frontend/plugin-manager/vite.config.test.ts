@@ -14,4 +14,13 @@ describe('Vite Market proxy', () => {
       )
     ).toBe(true)
   })
+
+  it('forwards only the hosted document API namespace during local development', () => {
+    const proxy = (config as {
+      server?: { proxy?: Record<string, unknown> }
+    }).server?.proxy ?? {}
+
+    expect(proxy).toHaveProperty('/api/documents')
+    expect(proxy).not.toHaveProperty('/api')
+  })
 })

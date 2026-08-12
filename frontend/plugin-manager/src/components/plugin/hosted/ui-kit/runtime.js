@@ -578,7 +578,7 @@ function patchProps(dom, oldProps, newProps) {
     if (oldProps[name] !== newProps[name]) setProp(dom, name, oldProps[name], newProps[name]);
   });
 }
-const __hostedUserActionEvents = new Set(['click', 'submit', 'keydown', 'change', 'input']);
+const __hostedUserActionEvents = new Set(['click', 'submit', 'keydown', 'change', 'input', 'drop']);
 let __hostedUserActionDepth = 0;
 const __hostedConfirmedActionCredits = [];
 function retainHostedConfirmedAction() {
@@ -1965,12 +1965,14 @@ function requestHost(method, payload, options) {
   const timeoutMs = Number.isFinite(requestedTimeoutMs) && requestedTimeoutMs > 0 ? requestedTimeoutMs : 30000;
   return new Promise((resolve, reject) => {
     __pendingRequests.set(requestId, { resolve, reject });
-    const userInitiated = method === 'call' && options && options.userInitiated === true;
+    const userInitiated = (method === 'call' || method === 'parseDocument') && options && options.userInitiated === true;
     parent.postMessage({ type: 'neko-hosted-surface-request', requestId, method, payload, timeoutMs, userInitiated }, hostedTargetOrigin());
     window.setTimeout(() => {
       if (!__pendingRequests.has(requestId)) return;
       __pendingRequests.delete(requestId);
-      reject(new Error('Hosted surface request timed out'));
+      const error = new Error(method === 'parseDocument' ? 'Document parsing timed out' : 'Hosted surface request timed out');
+      if (method === 'parseDocument') error.code = 'document_parse_timeout';
+      reject(error);
     }, timeoutMs);
   });
 }
@@ -1984,6 +1986,19 @@ const api = {
     return requestHost('call', { actionId, args: args || {} }, {
       ...requestOptions,
       userInitiated: requestOptions.userInitiated === true || __hostedUserActionDepth > 0 || confirmedUserAction,
+    });
+  },
+  parseDocument(file, options) {
+    if (typeof File === 'undefined' || !(file instanceof File)) {
+      const error = new TypeError('parseDocument requires a File');
+      error.code = 'unsupported_document';
+      return Promise.reject(error);
+    }
+    const requestOptions = options || {};
+    const confirmedUserAction = consumeHostedConfirmedAction();
+    return requestHost('parseDocument', { file }, {
+      timeoutMs: requestOptions.timeoutMs,
+      userInitiated: __hostedUserActionDepth > 0 || confirmedUserAction,
     });
   },
   async refresh() {

@@ -304,6 +304,8 @@
     let errorText = '';
     let refreshTimer = 0;
     let refreshing = false;
+    let focusMinutes = '25';
+    let durationInitialized = false;
 
     function activeTimerState() {
       return ['focusing', 'short_break', 'long_break'].includes(String(status.state || ''));
@@ -334,6 +336,11 @@
       refreshing = true;
       try {
         status = await ctx.callPlugin('study_pomodoro_status');
+        if (!durationInitialized) {
+          const configuredMinutes = Number(status.config?.focus_minutes);
+          focusMinutes = String(Number.isFinite(configuredMinutes) && configuredMinutes >= 1 && configuredMinutes <= 120 ? Math.round(configuredMinutes) : 25);
+          durationInitialized = true;
+        }
         errorText = '';
         draw();
         scheduleRefresh();
@@ -342,10 +349,10 @@
       }
     }
 
-    async function act(entryId) {
+    async function act(entryId, args = {}) {
       try {
         stopTimer();
-        status = await ctx.callPlugin(entryId);
+        status = await ctx.callPlugin(entryId, args);
         errorText = '';
       } catch (error) {
         errorText = errText(error);
@@ -356,25 +363,110 @@
 
     function draw() {
       if (!valid(root, token, true)) return;
+      const stateKey = String(status.state || 'idle');
+      const modeKey = String(status.mode || 'focus');
+      const stateLabel = pomodoroStateLabel(ctx, stateKey);
+      const modeLabel = pomodoroModeLabel(ctx, modeKey);
+      const remaining = formatSeconds(status.remaining_seconds);
+      const isFocusing = stateKey === 'focusing';
+      const isPaused = stateKey === 'paused';
+      const isBreak = stateKey === 'short_break' || stateKey === 'long_break';
+      const isRunning = isFocusing || isPaused || isBreak;
+      const selectedMinutes = Math.min(120, Math.max(1, Math.round(Number(focusMinutes) || 25)));
+      const modeMinutes = modeKey === 'break_short'
+        ? Number(status.config?.short_break_minutes || 5)
+        : modeKey === 'break_long'
+          ? Number(status.config?.long_break_minutes || 15)
+          : Number(status.current_focus_session?.planned_minutes || selectedMinutes);
+      const totalSeconds = Math.max(60, modeMinutes * 60);
+      const displaySeconds = isRunning ? Number(status.remaining_seconds || 0) : selectedMinutes * 60;
+      const progress = isRunning ? Math.min(1, Math.max(0, Number(status.remaining_seconds || 0) / totalSeconds)) : 1;
       const children = [];
       if (errorText) children.push(pre(errorText));
+
+      const durationInput = input(focusMinutes, { type: 'number', min: 1, max: 120, step: 1, inputmode: 'numeric' });
+      durationInput.disabled = isRunning;
+      durationInput.addEventListener('input', () => {
+        focusMinutes = durationInput.value;
+        if (!isRunning) {
+          const preview = root.querySelector('.pomodoro-ring__time');
+          if (preview) preview.textContent = formatSeconds(Math.min(120, Math.max(1, Math.round(Number(focusMinutes) || 25))) * 60);
+        }
+      });
+      durationInput.addEventListener('blur', () => {
+        focusMinutes = String(Math.min(120, Math.max(1, Math.round(Number(focusMinutes) || 25))));
+        durationInput.value = focusMinutes;
+      });
+      const duration = el('label', 'pomodoro-duration');
+      duration.append(
+        el('span', '', t(ctx, 'ui.label.focus_minutes', 'Focus minutes')),
+        durationInput,
+        el('small', '', '1–120'),
+      );
+
+      const stage = el('section', 'pomodoro-stage');
+      const ring = el('div', 'pomodoro-ring');
+      ring.dataset.mode = modeKey;
+      const progressSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      progressSvg.setAttribute('class', 'pomodoro-ring__progress');
+      progressSvg.setAttribute('viewBox', '0 0 260 260');
+      progressSvg.setAttribute('aria-hidden', 'true');
+      const ticks = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      const track = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      const value = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      [['class', 'pomodoro-ring__ticks'], ['cx', '130'], ['cy', '130'], ['r', '123'], ['pathLength', '100']].forEach(([key, val]) => ticks.setAttribute(key, val));
+      [['class', 'pomodoro-ring__track'], ['cx', '130'], ['cy', '130'], ['r', '112'], ['pathLength', '100']].forEach(([key, val]) => track.setAttribute(key, val));
+      [['class', 'pomodoro-ring__value'], ['cx', '130'], ['cy', '130'], ['r', '112'], ['pathLength', '100'], ['stroke-dasharray', '100'], ['stroke-dashoffset', String(100 - progress * 100)]].forEach(([key, val]) => value.setAttribute(key, val));
+      progressSvg.append(ticks, track, value);
+      const core = el('div', 'pomodoro-ring__core');
+      core.append(
+        el('span', 'pomodoro-ring__mode', modeLabel),
+        el('strong', 'pomodoro-ring__time', formatSeconds(displaySeconds)),
+        el('span', 'pomodoro-ring__state', stateLabel),
+      );
+      ring.append(progressSvg, core);
+      stage.appendChild(ring);
+      children.push(stage, duration);
+
       children.push(
         state([
-          [t(ctx, 'ui.label.remaining', 'Remaining'), formatSeconds(status.remaining_seconds)],
+          [t(ctx, 'ui.label.remaining', 'Remaining'), remaining],
           [t(ctx, 'ui.label.sessions', 'Sessions'), status.session_count || 0],
-          [t(ctx, 'ui.label.mode', 'Mode'), pomodoroModeLabel(ctx, status.mode)],
+          [t(ctx, 'ui.label.mode', 'Mode'), modeLabel],
         ]),
       );
-      const ring = el('div', 'pomodoro-ring', formatSeconds(status.remaining_seconds));
-      ring.dataset.mode = String(status.mode || 'focus');
-      children.push(ring, actions([
-        button(t(ctx, 'ui.button.start', 'Start'), () => act('study_pomodoro_start')),
-        button(t(ctx, 'ui.button.pause', 'Pause'), () => act('study_pomodoro_pause')),
-        button(t(ctx, 'ui.button.resume', 'Resume'), () => act('study_pomodoro_resume')),
-        button(t(ctx, 'ui.button.stop', 'Stop'), () => act('study_pomodoro_stop')),
-        button(t(ctx, 'ui.button.skip_break', 'Skip break'), () => act('study_pomodoro_skip_break')),
-      ], 'study-panel__actions--primary'));
-      replace(root, ctx, 'pomodoro-panel', pomodoroStateLabel(ctx, status.state), children);
+      children.at(-1).classList.add('pomodoro-metrics');
+
+      function action(label, entryId, actionKey, enabled, primary = false, danger = false, args = {}) {
+        const item = button(label, () => act(entryId, typeof args === 'function' ? args() : args), false);
+        item.classList.add('pomodoro-action');
+        if (primary) item.classList.add('is-primary');
+        if (danger) item.classList.add('is-danger');
+        item.dataset.action = actionKey;
+        item.disabled = !enabled;
+        return item;
+      }
+
+      children.push(actions([
+        action(t(ctx, 'ui.button.start', 'Start'), 'study_pomodoro_start', 'start', !isRunning, !isRunning, false, () => ({ focus_minutes: Math.min(120, Math.max(1, Math.round(Number(focusMinutes) || 25))) })),
+        action(t(ctx, 'ui.button.pause', 'Pause'), 'study_pomodoro_pause', 'pause', isFocusing, isFocusing),
+        action(t(ctx, 'ui.button.resume', 'Resume'), 'study_pomodoro_resume', 'resume', isPaused, isPaused),
+        action(t(ctx, 'ui.button.stop', 'Stop'), 'study_pomodoro_stop', 'stop', isRunning, false, true),
+        action(t(ctx, 'ui.button.skip_break', 'Skip break'), 'study_pomodoro_skip_break', 'skip-break', isBreak, isBreak),
+      ], 'study-panel__actions--primary pomodoro-actions'));
+      replace(root, ctx, 'pomodoro-panel', stateLabel, children);
+      root.dataset.state = stateKey;
+      root.dataset.mode = modeKey;
+      const title = root.querySelector('.study-panel__title');
+      if (title) {
+        const mark = el('span', 'pomodoro-title__mark', '◷');
+        mark.setAttribute('aria-hidden', 'true');
+        title.classList.add('pomodoro-title');
+        title.prepend(mark);
+      }
+      const statusChip = root.querySelector('.study-panel__status-chip');
+      statusChip?.setAttribute('role', 'status');
+      statusChip?.setAttribute('aria-live', 'polite');
     }
 
     refresh().catch((error) => { errorText = errText(error); refreshing = false; draw(); scheduleRefresh(); });

@@ -58,7 +58,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Document, Loading, WarningFilled } from '@element-plus/icons-vue'
-import { callPluginHostedSurfaceAction, getPluginHostedSurfaceContext, getPluginHostedSurfaceSource } from '@/api/plugins'
+import { callPluginHostedSurfaceAction, getPluginHostedSurfaceContext, getPluginHostedSurfaceSource, parseHostedDocument } from '@/api/plugins'
 import { buildHostedTsxDocument } from '@/components/plugin/hosted/tsxRuntime'
 import { openExternalUrl, openLocalPath } from '@/utils/openExternal'
 import type { PluginUiSurface } from '@/types/api'
@@ -92,8 +92,14 @@ const runtimeErrorFatal = ref(false)
 let currentLoadId = 0
 let hostedRequestGeneration = 0
 let componentMounted = false
+const hostedDocumentControllers = new Set<AbortController>()
 
 const HOST_STARTUP_RETRY_DELAYS_MS = [100, 200, 400, 800, 1600] as const
+const MAX_HOSTED_DOCUMENT_BYTES = 16 * 1024 * 1024
+const HOSTED_DOCUMENT_MIME_BY_EXTENSION = {
+  pdf: 'application/pdf',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+} as const
 
 type HostedBridgeError = {
   message: string
@@ -529,7 +535,7 @@ async function handleHostedRequest(data: any) {
   const requestId = typeof data.requestId === 'string' ? data.requestId : ''
   const method = typeof data.method === 'string' ? data.method : ''
   const actionId = method === 'call' ? String(data.payload?.actionId || '') : ''
-  const userInitiated = method === 'call' && data.userInitiated === true
+  const userInitiated = (method === 'call' || method === 'parseDocument') && data.userInitiated === true
   const requestGeneration = hostedRequestGeneration
   let responded = false
   const isCurrentRequest = () => componentMounted && requestGeneration === hostedRequestGeneration
@@ -596,6 +602,59 @@ async function handleHostedRequest(data: any) {
       respond({ ok: true, result: context })
       return
     }
+    if (method === 'parseDocument') {
+      if (!props.surface.permissions?.includes('document:parse')) {
+        respond({
+          ok: false,
+          error: 'This hosted surface is not allowed to parse documents.',
+          code: 'document_parse_permission_denied',
+        })
+        return
+      }
+      if (!userInitiated) {
+        respond({
+          ok: false,
+          error: 'Document parsing must be started by a user action.',
+          code: 'document_parse_permission_denied',
+        })
+        return
+      }
+      const file = data.payload?.file
+      if (typeof File === 'undefined' || !(file instanceof File)) {
+        respond({ ok: false, error: 'parseDocument requires one File.', code: 'unsupported_document' })
+        return
+      }
+      if (file.size > MAX_HOSTED_DOCUMENT_BYTES) {
+        respond({ ok: false, error: 'Document exceeds the 16 MiB upload limit.', code: 'document_too_large' })
+        return
+      }
+      const extension = file.name.split('.').pop()?.toLowerCase() || ''
+      const expectedMime = HOSTED_DOCUMENT_MIME_BY_EXTENSION[extension as keyof typeof HOSTED_DOCUMENT_MIME_BY_EXTENSION]
+      if (!expectedMime || (file.type && ![expectedMime, 'application/octet-stream'].includes(file.type))) {
+        respond({ ok: false, error: 'Only PDF and DOCX documents are supported.', code: 'unsupported_document' })
+        return
+      }
+      const requestedTimeoutMs = Number(data.timeoutMs)
+      const timeoutMs = Number.isFinite(requestedTimeoutMs) && requestedTimeoutMs > 0 ? requestedTimeoutMs : 30000
+      const controller = new AbortController()
+      hostedDocumentControllers.add(controller)
+      const timeoutId = window.setTimeout(() => controller.abort('timeout'), timeoutMs)
+      try {
+        const parsed = await parseHostedDocument(file, { timeoutMs, signal: controller.signal })
+        if (!parsed?.document) throw new Error('Document parser returned an invalid response.')
+        respond({ ok: true, result: parsed.document })
+      } catch (caught: any) {
+        if (controller.signal.aborted && controller.signal.reason === 'timeout') {
+          respond({ ok: false, error: 'Document parsing timed out.', code: 'document_parse_timeout' })
+          return
+        }
+        throw caught
+      } finally {
+        window.clearTimeout(timeoutId)
+        hostedDocumentControllers.delete(controller)
+      }
+      return
+    }
     respond({ ok: false, error: `Unsupported hosted surface method: ${method}` })
   } catch (caught: any) {
     const bridgeError = normalizeHostedBridgeError(caught)
@@ -623,6 +682,8 @@ onMounted(() => {
 onUnmounted(() => {
   componentMounted = false
   hostedRequestGeneration += 1
+  for (const controller of hostedDocumentControllers) controller.abort('surface-disposed')
+  hostedDocumentControllers.clear()
   window.removeEventListener('message', handleMessage)
 })
 
@@ -640,6 +701,8 @@ watch(
   () => [props.pluginId, props.surface.kind, props.surface.id, props.surface.mode, props.surface.entry, props.surface.available, surfaceUrl.value, locale.value],
   () => {
     hostedRequestGeneration += 1
+    for (const controller of hostedDocumentControllers) controller.abort('surface-changed')
+    hostedDocumentControllers.clear()
     if (props.surface.mode === 'static') return
     loadHostedTsx()
   },

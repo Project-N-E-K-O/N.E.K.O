@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+from time import monotonic
+
 from ._general_narration import prepare_general_narration_content
 from ._solution_narration import extract_solution_narration_sections
 from ._solution_structure import (
@@ -29,30 +32,50 @@ from .entry_common import (
 
 IMAGE_ONLY_EXPLAIN_PROMPT_EN = (
     "First identify the problem in the image, then provide a detailed solution "
-    "process: list the givens, show the key derivation or construction, verify "
-    "the result, and clearly state the final answer or option. When solving a "
-    "problem, your response must include four headings: \"Problem Analysis\", "
-    "\"Solution Process\", \"Answer\", and \"Transfer Practice\". Do not give "
-    "only a brief analysis. Do not only summarize the problem statement; "
-    "if the image is not a problem, explain the image contents instead. If it "
-    "is a choice question or item-by-item judgment question, do not assume it "
-    "is single-choice; verify each item independently. If there are multiple "
+    "process with a formal, reproducible derivation or construction. State the "
+    "givens, target, and applicable rules; cite the formulas or theorems used; "
+    "show the key substitutions and algebraic, geometric, or logical "
+    "transformations; and check units, boundaries, or the result when necessary. "
+    "Output only the verified formal derivation. When solving a problem, use "
+    "exactly these four headings once and in this order: \"Problem Analysis\", "
+    "\"Solution Process\", \"Answer\", and \"Transfer Practice\". Put any "
+    "supplementary derivation only as numbered body text under \"Solution "
+    "Process\", never as another heading. Make \"Answer\" self-contained. Reserve "
+    "output budget for a complete \"Answer\" and \"Transfer Practice\"; if "
+    "secondary process details might crowd out either section, omit those details. "
+    "\"Transfer Practice\" must be the final section with nothing after it. Do not "
+    "add a preface, epilogue, note, fifth heading, draft-like exploration, "
+    "self-correction, or a repeated problem statement. Do not give only a brief "
+    "analysis. If the image is not a problem, explain the image contents instead. "
+    "If it is a choice question or item-by-item judgment question, do not assume "
+    "it is single-choice; verify each item independently. If there are multiple "
     "correct options, output all correct options in \"Answer\"."
 )
 IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN = (
-    "请先识别图片中的题目，给出详细的解答过程：列出已知条件、展示关键推导或构造、"
-    "验证结果，并明确最终答案或选项。回答题目时必须包含“题目解析”“解题过程”“答案”"
-    "和“举一反三”四个小标题，不要只给简短“解析”。不要只总结题意；如果图片不是题目，"
-    "再解释图片内容。如果是选择题或逐项判断题，不要默认是单选题；必须逐项验证，"
-    "若有多个正确选项，需在“答案”中输出全部正确选项。"
+    "请先识别图片中的题目，给出详细的解答过程，包含正式、可复算的推导或构造。列出已知条件、"
+    "目标和适用规律，说明所用公式或定理的依据，展示关键代入及代数、几何或逻辑变形，并检查单位、"
+    "边界或进行必要验算。只输出核验后的正式推导。回答题目时必须且只能按固定顺序各使用一次"
+    "“题目解析”“解题过程”“答案”和“举一反三”四个小标题。补充推导只能作为“解题过程”下的"
+    "编号正文，不得另设标题。“答案”必须自足；必须为完整的“答案”和“举一反三”预留输出预算，"
+    "若次要过程细节可能挤掉其中任一完整部分，就省略这些次要细节。“举一反三”必须是最后一节，"
+    "之后不得有任何内容。禁止前言、尾注、第五标题、草稿式探索、自我修正和重复题干。不要只给"
+    "简短“解析”。如果图片不是题目，再解释图片内容。如果是选择题或逐项判断题，不要默认是单选题；"
+    "必须逐项验证，若有多个正确选项，需在“答案”中输出全部正确选项。"
 )
 IMAGE_ONLY_EXPLAIN_PROMPT_ZH_TW = (
-    "請先識別圖片中的題目，然後給出可見的解答過程：列出已知條件、展示關鍵推導或構造、"
-    "驗證結果，並明確最終答案或選項。回答題目時必須包含「題目解析」「解題過程」「答案」"
-    "和「舉一反三」四個小標題，不要只給簡短「解析」。不要只總結題意；如果圖片不是題目，"
-    "再解釋圖片內容。如果是選擇題或逐項判斷題，不要預設是單選題；必須逐項驗證，"
-    "不要找到一個正確選項就停止；若有多個正確選項，在「答案」中輸出全部正確選項。"
+    "請先識別圖片中的題目，給出詳細的解答過程，包含正式、可復算的推導或構造。列出已知條件、"
+    "目標和適用規律，說明所用公式或定理的依據，展示關鍵代入及代數、幾何或邏輯變形，並檢查單位、"
+    "邊界或進行必要驗算。只輸出核驗後的正式推導。回答題目時必須且只能按固定順序各使用一次"
+    "「題目解析」「解題過程」「答案」和「舉一反三」四個小標題。補充推導只能作為「解題過程」下的"
+    "編號正文，不得另設標題。「答案」必須自足；必須為完整的「答案」和「舉一反三」預留輸出預算，"
+    "若次要過程細節可能擠掉其中任一完整部分，就省略這些次要細節。「舉一反三」必須是最後一節，"
+    "之後不得有任何內容。禁止前言、尾註、第五標題、草稿式探索、自我修正和重複題幹。不要只給"
+    "簡短「解析」。如果圖片不是題目，再解釋圖片內容。如果是選擇題或逐項判斷題，不要預設是單選題；"
+    "必須逐項驗證，不要找到一個正確選項就停止；若有多個正確選項，在「答案」中輸出全部正確選項。"
 )
+
+_EXPLAIN_WORK_BUDGET_SECONDS = 62.0
+_SOLUTION_REPAIR_MIN_REMAINING_SECONDS = 10.0
 
 
 def _image_only_explain_prompt(language: str) -> str:
@@ -125,6 +148,7 @@ class _TutorExplainEntriesMixin:
     ):
         if self._agent is None:
             return Err(SdkError("study tutor agent is not initialized"))
+        deadline_monotonic = monotonic() + _EXPLAIN_WORK_BUDGET_SECONDS
         raw_text = str(text or "").strip()
         # Phase 1: detect an explicit mode intent and switch first when present.
         intent = (
@@ -214,6 +238,7 @@ class _TutorExplainEntriesMixin:
                 "mode": active_mode,
                 "mode_switch": bool(mode_switch.get("changed")),
                 "source_text": source_text,
+                "deadline_monotonic": deadline_monotonic,
             }
             if vision_image_payload:
                 extra_context["vision_enabled"] = True
@@ -257,6 +282,7 @@ class _TutorExplainEntriesMixin:
             )
             repair_attempted = False
             repair_invalid_response = False
+            repair_time_budget_insufficient = False
             if not reply.degraded and narration_requested and solution_candidate:
                 if solution_structure is not None and solution_structure.complete:
                     if extract_solution_narration_sections(reply.reply) is None:
@@ -265,24 +291,45 @@ class _TutorExplainEntriesMixin:
                             language=self._cfg.language,
                         )
                 else:
-                    repair_attempted = True
-                    repaired_structure = await repair_solution_structure(
-                        self._agent,
-                        source_text=source_text,
-                        incomplete_reply=reply.reply,
-                        language=self._cfg.language,
-                        mode=active_mode,
-                        context=tutor_context,
-                    )
-                    if repaired_structure is None:
-                        repair_invalid_response = True
+                    remaining = deadline_monotonic - monotonic()
+                    if remaining < _SOLUTION_REPAIR_MIN_REMAINING_SECONDS:
+                        repair_time_budget_insufficient = True
                     else:
-                        solution_structure = repaired_structure
-                        if repaired_structure.complete:
-                            reply.reply = render_solution_structure(
-                                repaired_structure,
-                                language=self._cfg.language,
+                        repair_attempted = True
+                        try:
+                            repaired_structure = await asyncio.wait_for(
+                                repair_solution_structure(
+                                    self._agent,
+                                    source_text=source_text,
+                                    incomplete_reply=reply.reply,
+                                    language=self._cfg.language,
+                                    mode=active_mode,
+                                    context=tutor_context,
+                                ),
+                                timeout=remaining,
                             )
+                        except asyncio.TimeoutError:
+                            repaired_structure = None
+                            repair_time_budget_insufficient = True
+                        if repaired_structure is None:
+                            repair_finished_after_deadline = (
+                                monotonic() >= deadline_monotonic
+                            )
+                            repair_invalid_response = (
+                                not repair_time_budget_insufficient
+                                and not repair_finished_after_deadline
+                            )
+                            repair_time_budget_insufficient = (
+                                repair_time_budget_insufficient
+                                or repair_finished_after_deadline
+                            )
+                        else:
+                            solution_structure = repaired_structure
+                            if repaired_structure.complete:
+                                reply.reply = render_solution_structure(
+                                    repaired_structure,
+                                    language=self._cfg.language,
+                                )
             payload = await self._finalize_tutor_call(
                 LLM_OPERATION_CONCEPT_EXPLAIN,
                 reply,
@@ -310,12 +357,18 @@ class _TutorExplainEntriesMixin:
             elif not solution_candidate:
                 narration_status = "not_applicable"
             elif solution_structure is not None and not solution_structure.complete:
-                narration_status = "repair_failed" if repair_attempted else "incomplete"
-                narration_reason = (
-                    "invalid_repair_response"
-                    if repair_invalid_response
-                    else f"missing_{solution_structure.missing_sections[0]}"
-                )
+                if repair_time_budget_insufficient:
+                    narration_status = "incomplete"
+                    narration_reason = "insufficient_time_budget"
+                else:
+                    narration_status = (
+                        "repair_failed" if repair_attempted else "incomplete"
+                    )
+                    narration_reason = (
+                        "invalid_repair_response"
+                        if repair_invalid_response
+                        else f"missing_{solution_structure.missing_sections[0]}"
+                    )
             else:
                 sections = extract_solution_narration_sections(
                     str(payload.get("reply") or "")

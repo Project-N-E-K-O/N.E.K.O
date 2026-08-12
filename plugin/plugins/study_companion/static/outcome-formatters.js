@@ -20,7 +20,7 @@
     if (status === 'routing_unavailable') {
       return translate(
         'ui.knowledge_guidance.routing_unavailable',
-        'Knowledge graph routing was unavailable, so the answer continued without graph guidance.',
+        'Knowledge graph routing was not applicable, so the answer continued without graph guidance.',
       );
     }
     if (outcome?.knowledge_guidance_applied !== true && status !== 'applied') return '';

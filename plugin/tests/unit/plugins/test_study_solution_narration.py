@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from types import SimpleNamespace
 from typing import Any
 
@@ -263,9 +264,16 @@ class _EventBus:
 
 
 class _TutorAgent:
-    def __init__(self, reply: str, *, degraded: bool = False) -> None:
+    def __init__(
+        self,
+        reply: str,
+        *,
+        degraded: bool = False,
+        diagnostic: str | None = None,
+    ) -> None:
         self.reply = reply
         self.degraded = degraded
+        self.diagnostic = diagnostic
         self.calls: list[tuple[str, str, dict[str, Any]]] = []
 
     async def concept_explain(
@@ -281,7 +289,11 @@ class _TutorAgent:
             input_text=text,
             reply=self.reply,
             degraded=self.degraded,
-            diagnostic="timeout" if self.degraded else "",
+            diagnostic=(
+                self.diagnostic
+                if self.diagnostic is not None
+                else ("timeout" if self.degraded else "")
+            ),
             created_at="2026-08-12T00:00:00Z",
         )
 
@@ -292,6 +304,7 @@ class _ExplainHarness(_TutorExplainEntriesMixin, _CommunicationTutorEventsMixin)
         *,
         reply: str = _STRUCTURED_REPLY,
         degraded: bool = False,
+        diagnostic: str | None = None,
         communication_enabled: bool = True,
         narration_enabled: bool = True,
         general_narration_enabled: bool = True,
@@ -313,7 +326,11 @@ class _ExplainHarness(_TutorExplainEntriesMixin, _CommunicationTutorEventsMixin)
             last_ocr_text=last_ocr_text,
         )
         self._lock = asyncio.Lock()
-        self._agent = _TutorAgent(reply, degraded=degraded)
+        self._agent = _TutorAgent(
+            reply,
+            degraded=degraded,
+            diagnostic=diagnostic,
+        )
         self._event_bus = event_bus if event_bus is not None else _EventBus()
         self.logger = _Logger()
         self._response_mode = response_mode
@@ -394,7 +411,7 @@ def _install_repair_response(
 
     plugin._agent._call_model = _call_model  # type: ignore[attr-defined]
     plugin._agent._new_operation_deadline = (  # type: ignore[attr-defined]
-        lambda _operation, _messages: 123.0
+        lambda _operation, _messages: time.monotonic() + 60.0
     )
     plugin._agent._attach_vision_image = _attach_vision_image  # type: ignore[attr-defined]
     plugin._agent._json_corrector = SimpleNamespace(  # type: ignore[attr-defined]
@@ -476,6 +493,67 @@ async def test_study_explain_text_repairs_missing_answer_once_before_narration()
     assert "### 答案\n最大值为 7。" in result.value["reply"]
     assert len(bus.events) == 1
     assert bus.events[0].payload["answer"] == "最大值为 7。"
+
+
+@pytest.mark.asyncio
+async def test_study_explain_text_skips_repair_when_shared_budget_is_insufficient(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    incomplete_reply = (
+        "### 题目解析\n识别条件。\n\n"
+        "### 解题过程\n推导中止。\n\n"
+        "### 举一反三\n替换参数。"
+    )
+    plugin = _ExplainHarness(
+        reply=incomplete_reply,
+        diagnostic="output_truncated",
+    )
+    repair_calls = _install_repair_response(plugin, "must-not-be-used")
+    clock = iter((100.0, 157.0))
+    monkeypatch.setattr(explain_entries, "monotonic", lambda: next(clock))
+
+    result = await plugin.study_explain_text(text="一道耗时较长的题")
+
+    assert isinstance(result, Ok)
+    assert repair_calls == []
+    assert plugin._agent.calls[0][2]["deadline_monotonic"] == 162.0
+    assert result.value["reply"] == incomplete_reply
+    assert result.value["degraded"] is False
+    assert result.value["diagnostic"] == "output_truncated"
+    assert result.value["solution_repair_attempted"] is False
+    assert result.value["solution_narration_status"] == "incomplete"
+    assert result.value["solution_narration_reason"] == "insufficient_time_budget"
+    assert result.value["solution_narration_missing_sections"] == ["answer"]
+
+
+@pytest.mark.asyncio
+async def test_study_explain_text_repair_timeout_keeps_first_reply_ok(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    incomplete_reply = (
+        "### 题目解析\n识别条件。\n\n"
+        "### 解题过程\n推导中止。\n\n"
+        "### 举一反三\n替换参数。"
+    )
+    plugin = _ExplainHarness(reply=incomplete_reply)
+
+    async def never_returns(*_args: Any, **_kwargs: Any) -> None:
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(explain_entries, "repair_solution_structure", never_returns)
+    monkeypatch.setattr(explain_entries, "_EXPLAIN_WORK_BUDGET_SECONDS", 0.05)
+    monkeypatch.setattr(explain_entries, "_SOLUTION_REPAIR_MIN_REMAINING_SECONDS", 0.01)
+    started = time.monotonic()
+
+    result = await plugin.study_explain_text(text="一道修复调用不返回的题")
+
+    assert time.monotonic() - started < 0.5
+    assert isinstance(result, Ok)
+    assert result.value["reply"] == incomplete_reply
+    assert result.value["solution_repair_attempted"] is True
+    assert result.value["solution_narration_status"] == "incomplete"
+    assert result.value["solution_narration_reason"] == "insufficient_time_budget"
+    assert result.value["solution_narration_missing_sections"] == ["answer"]
 
 
 @pytest.mark.asyncio

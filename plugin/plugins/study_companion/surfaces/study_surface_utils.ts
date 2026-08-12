@@ -775,23 +775,210 @@ export const BRAND_CSS = `
     font-weight: 800;
   }
 
-  .pomodoro-ring {
-    display: grid;
-    place-items: center;
-    min-height: 128px;
-    border: 10px solid var(--pomodoro-focus);
-    border-radius: 999px;
-    color: var(--ink);
-    font-size: 28px;
-    font-weight: 900;
+  .surface-shell[data-surface="pomodoro-panel"] {
+    --pomodoro-color: var(--pomodoro-focus);
+    --pomodoro-color-strong: #991b1b;
+    --pomodoro-color-soft: rgba(239, 68, 68, 0.10);
+    overflow: hidden;
+    border-left-color: rgba(239, 68, 68, 0.62);
+    background:
+      radial-gradient(circle at 50% 42%, var(--pomodoro-color-soft), transparent 36%),
+      linear-gradient(135deg, rgba(255, 255, 255, 0.98), rgba(255, 247, 245, 0.90));
   }
 
+  .surface-shell[data-surface="pomodoro-panel"][data-mode="break_short"] {
+    --pomodoro-color: var(--pomodoro-break-short);
+    --pomodoro-color-strong: #166534;
+    --pomodoro-color-soft: rgba(34, 197, 94, 0.10);
+    border-left-color: rgba(34, 197, 94, 0.62);
+  }
+
+  .surface-shell[data-surface="pomodoro-panel"][data-mode="break_long"] {
+    --pomodoro-color: var(--pomodoro-break-long);
+    --pomodoro-color-strong: #1d4f91;
+    --pomodoro-color-soft: rgba(59, 130, 246, 0.10);
+    border-left-color: rgba(59, 130, 246, 0.62);
+  }
+
+  .pomodoro-title {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 10px;
+    align-items: center;
+  }
+
+  .pomodoro-title__mark {
+    display: grid;
+    width: 36px;
+    height: 36px;
+    place-items: center;
+    border: 1px solid rgba(239, 68, 68, 0.22);
+    border-radius: 50%;
+    background: rgba(239, 68, 68, 0.09);
+    color: var(--pomodoro-color-strong);
+    font-size: 22px;
+    line-height: 1;
+  }
+
+  .pomodoro-duration {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 110px auto;
+    gap: 10px;
+    align-items: center;
+    padding: 10px 12px;
+    border: 1px solid rgba(239, 68, 68, 0.16);
+    border-radius: var(--radius-sm);
+    background: rgba(255, 255, 255, 0.78);
+    color: var(--ink);
+    font-weight: 800;
+    box-shadow: 0 8px 20px rgba(31, 52, 40, 0.05);
+  }
+
+  .pomodoro-duration input {
+    min-height: 40px;
+    border-color: var(--pomodoro-color);
+    font-size: 17px;
+    font-weight: 900;
+    text-align: center;
+  }
+
+  .pomodoro-duration small { color: var(--muted); font-size: 12px; }
+
+  .pomodoro-stage {
+    position: relative;
+    display: grid;
+    place-items: center;
+    min-height: 300px;
+    overflow: hidden;
+    border: 1px solid rgba(31, 41, 36, 0.08);
+    border-radius: var(--radius);
+    background:
+      radial-gradient(ellipse at 50% 55%, var(--pomodoro-color-soft), transparent 38%),
+      linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(252, 250, 247, 0.88));
+  }
+
+  .pomodoro-stage::before {
+    content: "";
+    position: absolute;
+    width: 266px;
+    height: 26px;
+    top: calc(50% + 120px);
+    border-radius: 50%;
+    background: rgba(63, 42, 34, 0.08);
+    filter: blur(10px);
+  }
+
+  .pomodoro-stage::after {
+    content: "";
+    position: absolute;
+    width: 294px;
+    height: 294px;
+    border: 1px solid var(--pomodoro-color-soft);
+    border-radius: 50%;
+    opacity: 0.55;
+  }
+
+  .pomodoro-ring {
+    position: relative;
+    z-index: 1;
+    display: grid;
+    width: 260px;
+    height: 260px;
+    place-items: center;
+    border: 7px solid #fff;
+    border-radius: 50%;
+    background: linear-gradient(145deg, #fff, #fffaf8);
+    box-shadow:
+      0 18px 34px rgba(62, 40, 32, 0.11),
+      0 8px 18px var(--pomodoro-color-soft),
+      inset 0 0 0 1px rgba(31, 41, 36, 0.06);
+  }
+
+  .pomodoro-ring__progress { position: absolute; inset: -1px; width: calc(100% + 2px); height: calc(100% + 2px); overflow: visible; transform: rotate(-90deg); }
+  .pomodoro-ring__ticks, .pomodoro-ring__track, .pomodoro-ring__value { fill: none; }
+  .pomodoro-ring__ticks { stroke: var(--pomodoro-color-strong); stroke-width: 1.4; stroke-dasharray: 0.45 4.55; opacity: 0.18; }
+  .pomodoro-ring__track { stroke: var(--pomodoro-color-soft); stroke-width: 10; }
+  .pomodoro-ring__value { stroke: var(--pomodoro-color); stroke-width: 10; stroke-linecap: round; }
+
+  .surface-shell[data-surface="pomodoro-panel"][data-state="paused"] .pomodoro-ring__value { opacity: 0.48; stroke-dasharray: 3 2; }
+
   .pomodoro-ring[data-mode="break_short"] {
-    border-color: var(--pomodoro-break-short);
+    --pomodoro-color: var(--pomodoro-break-short);
+    --pomodoro-color-strong: #166534;
+    --pomodoro-color-soft: rgba(34, 197, 94, 0.10);
   }
 
   .pomodoro-ring[data-mode="break_long"] {
-    border-color: var(--pomodoro-break-long);
+    --pomodoro-color: var(--pomodoro-break-long);
+    --pomodoro-color-strong: #1d4f91;
+    --pomodoro-color-soft: rgba(59, 130, 246, 0.10);
+  }
+
+  .pomodoro-ring__core {
+    position: relative;
+    z-index: 2;
+    display: grid;
+    min-width: 150px;
+    justify-items: center;
+    gap: 9px;
+  }
+
+  .pomodoro-ring__mode,
+  .pomodoro-ring__state {
+    color: var(--pomodoro-color-strong);
+    font-size: 12px;
+    font-weight: 800;
+  }
+
+  .pomodoro-ring__mode {
+    padding: 5px 12px;
+    border: 1px solid var(--pomodoro-color-soft);
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--pomodoro-color) 8%, #fff);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+
+  .pomodoro-ring__time {
+    color: var(--pomodoro-color-strong);
+    font-size: 52px;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.055em;
+    line-height: 0.96;
+  }
+
+  .pomodoro-ring__state { padding-top: 2px; color: var(--muted); font-size: 11px; letter-spacing: 0.08em; }
+
+  .pomodoro-metrics > div {
+    border-left-color: var(--pomodoro-color);
+    background: rgba(255, 255, 255, 0.88);
+  }
+
+  .pomodoro-actions {
+    justify-content: center;
+    padding: 12px;
+    background: rgba(255, 255, 255, 0.66);
+  }
+
+  .pomodoro-action {
+    min-width: 88px;
+  }
+
+  .pomodoro-action.is-primary {
+    border-color: var(--pomodoro-color);
+    background: var(--pomodoro-color);
+    color: #fff;
+    box-shadow: 0 8px 18px var(--pomodoro-color-soft);
+  }
+
+  .pomodoro-action.is-danger:not(:disabled) {
+    border-color: rgba(153, 27, 27, 0.26);
+    color: #991b1b;
+  }
+
+  @media (max-width: 640px) {
+    .pomodoro-duration { grid-template-columns: minmax(0, 1fr) 88px; }
+    .pomodoro-duration small { grid-column: 1 / -1; }
   }
 
   .study-panel__toolbar {

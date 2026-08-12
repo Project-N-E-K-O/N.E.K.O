@@ -15,8 +15,14 @@ DOCUMENT_ENTRY_TIMEOUT_SECONDS = 95.0
 DOCUMENT_MODEL_TIMEOUT_SECONDS = 75.0
 DOCUMENT_UI_TIMEOUT_SECONDS = 105.0
 
-_SUPPORTED_EXTENSIONS = {".txt": "text/plain", ".md": "text/markdown", ".markdown": "text/markdown"}
-_SUPPORTED_TYPES = frozenset({"text/plain", "text/markdown"})
+_SUPPORTED_EXTENSIONS = {
+    ".txt": "text/plain",
+    ".md": "text/markdown",
+    ".markdown": "text/markdown",
+    ".pdf": "application/pdf",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+}
+_SUPPORTED_TYPES = frozenset(_SUPPORTED_EXTENSIONS.values())
 _SUPPORTED_LOCALES = frozenset({"en", "zh-CN", "zh-TW", "ja", "ko", "es", "pt", "ru"})
 DOCUMENT_ANALYSIS_KINDS = (
     "auto",
@@ -191,7 +197,7 @@ def _normalized_document_type(name: str, document_type: object) -> str:
     expected = _SUPPORTED_EXTENSIONS.get(suffix)
     if expected is None:
         raise DocumentValidationError(
-            "only .txt, .md, and .markdown documents are supported",
+            "only .txt, .md, .markdown, .pdf, and .docx documents are supported",
             diagnostic="unsupported_document_type",
         )
     supplied = str(document_type or expected).strip().lower()

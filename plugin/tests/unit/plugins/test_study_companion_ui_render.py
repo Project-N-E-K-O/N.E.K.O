@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import json
 import gzip
+import os
 import re
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -241,18 +244,105 @@ def test_study_reply_is_combined_with_the_input_module() -> None:
 def test_memory_card_first_save_prompts_for_deck_and_supports_skip() -> None:
     index_html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
     main_js = (STATIC_DIR / "main.js").read_text(encoding="utf-8")
+    controller_js = (STATIC_DIR / "quick-card-controller.js").read_text(encoding="utf-8")
     style_css = (STATIC_DIR / "style.css").read_text(encoding="utf-8")
 
+    assert 'id="memoryItemTypeSelect"' in index_html
+    for item_type in ("custom", "word", "cloze", "sentence", "paragraph"):
+        assert f'<option value="{item_type}" data-i18n="ui.memory.item_type.{item_type}">' in index_html
     assert 'id="memoryDeckSelect"' in index_html
+    assert 'id="memoryCreateDeckBtn"' in index_html
+    assert "#memoryDeckSelect {" in style_css
+    assert "#memoryDeckSelect:hover:not(:disabled)" in style_css
+    assert "#memoryDeckSelect:focus-visible" in style_css
+    assert "#memoryDeckSelect:disabled" in style_css
     assert 'id="memoryDeckDialog"' in index_html
     assert 'id="memoryDeckNameInput"' in index_html
+    assert 'id="memoryDeckTypeSelect"' in index_html
+    for deck_type in ("word", "passage", "formula", "custom"):
+        assert f'<option value="{deck_type}" data-i18n="ui.memory.deck_type.{deck_type}">' in index_html
     assert 'id="memoryDeckCreateBtn"' in index_html
     assert 'id="memoryDeckSkipBtn"' in index_html
     assert "async function chooseDeckForFirstCard()" in main_js
     assert "callPlugin('study_memory_list_decks'" in main_js
     assert "callPlugin('study_memory_create_deck'" in main_js
+    assert "deck_type: deckType" in main_js
     assert "deck_id: deckId" in main_js
+    assert "item_type: quickCardController?.getItemType()" in main_js
+    assert "word: 'word'" in controller_js
+    assert "passage: 'paragraph'" in controller_js
+    assert "formula: 'custom'" in controller_js
+    assert "custom: 'custom'" in controller_js
+    assert "itemTypeOverridden" in controller_js
+    assert "applyDeckDefault(selectedDeck()?.deck_type);" in controller_js
+    assert "applyDeckDefault(selectedDeck()?.deck_type, true);" not in controller_js
+    assert "option.textContent = label" in controller_js
+    assert "event.stopImmediatePropagation()" in controller_js
+    assert '<script src="./quick-card-controller.js?v=study-quick-card-types-20260812"></script>' in index_html
     assert "memory-deck-dialog" in style_css
+
+
+def test_quick_card_controller_preserves_manual_item_type_override() -> None:
+    if shutil.which("node") is None:
+        pytest.skip("node is not installed")
+    frontend_dir = Path(__file__).resolve().parents[4] / "frontend" / "plugin-manager"
+    if not (frontend_dir / "node_modules" / "happy-dom").is_dir():
+        pytest.skip("frontend/plugin-manager node_modules with happy-dom is not installed")
+
+    script = r"""
+import { Window } from 'happy-dom';
+import fs from 'node:fs';
+import path from 'node:path';
+
+const staticDir = process.env.STUDY_COMPANION_STATIC_DIR;
+const html = fs.readFileSync(path.join(staticDir, 'index.html'), 'utf8');
+const source = fs.readFileSync(path.join(staticDir, 'quick-card-controller.js'), 'utf8');
+const window = new Window({ url: 'http://testserver/plugin/study_companion/ui/?locale=en' });
+const { document } = window;
+document.write(html);
+document.close();
+window.eval(source);
+
+const decks = [
+  { id: 'word-deck', name: 'Vocabulary', deck_type: 'word' },
+  { id: 'passage-deck', name: 'Reading', deck_type: 'passage' },
+];
+const deckSelect = document.getElementById('memoryDeckSelect');
+for (const deck of decks) {
+  const option = document.createElement('option');
+  option.value = deck.id;
+  option.textContent = deck.name;
+  deckSelect.appendChild(option);
+}
+const itemTypeSelect = document.getElementById('memoryItemTypeSelect');
+const controller = window.StudyQuickCardController.create({
+  t: (_key, fallback) => fallback,
+  getDecks: () => decks,
+});
+controller.decorateDeckOptions();
+if (deckSelect.options[0].textContent !== 'Vocabulary / Word') {
+  throw new Error(`deck label was not decorated: ${deckSelect.options[0].textContent}`);
+}
+deckSelect.value = 'word-deck';
+deckSelect.dispatchEvent(new window.Event('change'));
+if (itemTypeSelect.value !== 'word') throw new Error('word deck default was not applied');
+
+itemTypeSelect.value = 'cloze';
+itemTypeSelect.dispatchEvent(new window.Event('change'));
+deckSelect.value = 'passage-deck';
+deckSelect.dispatchEvent(new window.Event('change'));
+if (itemTypeSelect.value !== 'cloze') throw new Error('manual item type override was lost');
+"""
+    completed = subprocess.run(
+        ["node", "--input-type=module", "-e", script],
+        cwd=frontend_dir,
+        env={**os.environ, "STUDY_COMPANION_STATIC_DIR": str(STATIC_DIR)},
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr or completed.stdout
 
 
 def test_memory_deck_management_can_expand_concrete_cards() -> None:
@@ -317,7 +407,7 @@ def test_study_companion_static_ui8_visual_accessibility_and_csp_contract() -> N
     assert 'style="' not in index_html
     assert "<style" not in index_html
 
-    assert "@media (min-width: 1180px)" in style_css
+    assert "@media (min-width: 1360px)" in style_css
     assert "responsive" not in index_html.lower()
     assert "responsive" not in style_css.lower()
     assert "responsive" not in main_js.lower()
@@ -382,7 +472,7 @@ def test_study_companion_static_ui8_visual_accessibility_and_csp_contract() -> N
     outcome_formatters_script = (
         '<script src="./outcome-formatters.js?v=study-hotfix-20260812"></script>'
     )
-    main_script = '<script src="./main.js?v=study-hotfix-20260621-yui-static"></script>'
+    main_script = '<script src="./main.js?v=study-ocr-dependencies-knowledge-dialog-20260812"></script>'
     assert outcome_formatters_script in index_html
     assert "solution-narration.js" not in index_html
     assert index_html.index(outcome_formatters_script) < index_html.index(main_script)
@@ -420,6 +510,8 @@ def test_study_companion_static_ui_browser_smoke_desktop_reduced_motion() -> Non
         "knowledge-map.js": ("text/javascript", (STATIC_DIR / "knowledge-map.js").read_text(encoding="utf-8")),
         "outcome-formatters.js": ("text/javascript", (STATIC_DIR / "outcome-formatters.js").read_text(encoding="utf-8")),
         "document-controller.js": ("text/javascript", (STATIC_DIR / "document-controller.js").read_text(encoding="utf-8")),
+        "dependency-controller.js": ("text/javascript", (STATIC_DIR / "dependency-controller.js").read_text(encoding="utf-8")),
+        "quick-card-controller.js": ("text/javascript", (STATIC_DIR / "quick-card-controller.js").read_text(encoding="utf-8")),
         "main.js": ("text/javascript", (STATIC_DIR / "main.js").read_text(encoding="utf-8")),
         "katex.min.js": ("text/javascript", (STATIC_DIR / "katex.min.js").read_text(encoding="utf-8")),
         "katex-render.js": ("text/javascript", (STATIC_DIR / "katex-render.js").read_text(encoding="utf-8")),
@@ -581,8 +673,10 @@ def test_study_companion_static_ui_browser_smoke_desktop_reduced_motion() -> Non
                     domContentLoaded: navigation ? navigation.domContentLoadedEventEnd : performance.now(),
                     shellWidth: shell.width,
                     shellRight: shell.right,
+                    coachGap: coach.left - shell.right,
                     heroWidth: hero.width,
                     coachLeft: coach.left,
+                    coachRightGap: window.innerWidth - coach.right,
                     coachTop: coach.top,
                     coachWidth: coach.width,
                     coachBodyTop: coachBody.top,
@@ -600,16 +694,60 @@ def test_study_companion_static_ui_browser_smoke_desktop_reduced_motion() -> Non
         assert paint_or_dom_ready <= 1200, metrics
         assert metrics["reducedMotion"] is True
         assert metrics["transitionDuration"] in {"0.001s", "1ms"}, metrics
-        assert metrics["shellWidth"] >= 1000, metrics
-        assert metrics["heroWidth"] >= 1000, metrics
-        assert metrics["coachWidth"] >= 300, metrics
+        assert metrics["shellWidth"] >= 690, metrics
+        assert metrics["heroWidth"] >= 690, metrics
+        assert metrics["coachWidth"] >= 580, metrics
         assert metrics["coachLeft"] >= metrics["shellRight"], metrics
+        assert 82 <= metrics["coachGap"] <= 86, metrics
+        assert 48 <= metrics["coachRightGap"] <= 52, metrics
         assert 0 <= metrics["coachBodyTop"] - metrics["coachTop"] <= 64, metrics
         assert metrics["hubTop"] > metrics["heroTop"], metrics
         assert metrics["modeSwitchWidth"] >= 360, metrics
         assert metrics["scrollWidth"] <= metrics["viewportWidth"] + 1, metrics
         assert console_errors == []
         assert page_errors == []
+
+        original_url = page.url
+        page.evaluate("openHostedSurface('knowledge-map', 'knowledge')")
+        surface_drawer = page.locator("#surfaceDrawer")
+        expect(surface_drawer).to_have_attribute("data-presentation", "dialog")
+        expect(surface_drawer).to_have_attribute("role", "dialog")
+        expect(surface_drawer).to_have_attribute("aria-modal", "true")
+        dialog_metrics = page.locator(".surface-drawer__panel").evaluate(
+            """panel => {
+                const rect = panel.getBoundingClientRect();
+                return {
+                    left: rect.left,
+                    right: window.innerWidth - rect.right,
+                    top: rect.top,
+                    bottom: window.innerHeight - rect.bottom,
+                };
+            }"""
+        )
+        assert abs(dialog_metrics["left"] - dialog_metrics["right"]) <= 1, dialog_metrics
+        assert abs(dialog_metrics["top"] - dialog_metrics["bottom"]) <= 1, dialog_metrics
+        assert page.url == original_url
+        assert len(context.pages) == 1
+
+        page.locator("#surfaceDrawerCloseBtn").click()
+        expect(surface_drawer).to_have_attribute("aria-hidden", "true")
+        page.evaluate("openSurfaceDrawer('pomodoro-panel')")
+        expect(surface_drawer).to_have_attribute("data-presentation", "drawer")
+        expect(surface_drawer).not_to_have_attribute("role", "dialog")
+        expect(surface_drawer).not_to_have_attribute("aria-modal", "true")
+        page.wait_for_timeout(20)
+        drawer_metrics = page.locator(".surface-drawer__panel").evaluate(
+            """panel => {
+                const rect = panel.getBoundingClientRect();
+                return {
+                    left: rect.left,
+                    right: window.innerWidth - rect.right,
+                };
+            }"""
+        )
+        assert 12 <= drawer_metrics["right"] <= 16, drawer_metrics
+        assert drawer_metrics["left"] > drawer_metrics["right"], drawer_metrics
+        page.locator("#surfaceDrawerCloseBtn").click()
 
         page.set_viewport_size({"width": 480, "height": 900})
         expect(page.locator("#nekoCoachPanel")).to_be_visible()
@@ -748,6 +886,35 @@ def test_study_companion_static_ui_copy_is_i18n_backed() -> None:
             assert broken == [], f"{locale}: {broken}"
 
 
+def test_study_companion_static_dependency_ui_contract() -> None:
+    index_html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    main_js = (STATIC_DIR / "main.js").read_text(encoding="utf-8")
+    style_css = (STATIC_DIR / "style.css").read_text(encoding="utf-8")
+    dependency_js = (STATIC_DIR / "dependency-controller.js").read_text(encoding="utf-8")
+
+    assert "const DEPENDENCY_KEYS = Object.freeze(['rapidocr', 'tesseract', 'dxcam']);" in main_js
+    assert "Object.values(deps).filter" not in main_js
+    assert "Object.values(dependencies).filter" not in main_js
+    assert "dependencies.ocr_readiness || {}" in main_js
+    assert "ui.diagnosis.text_ready.title" in main_js
+    assert "ui.diagnosis.ocr_unavailable.title" in main_js
+    assert "ui.diagnosis.knowledge_empty.title" in main_js
+    assert "ui.diagnosis.multiple_issues.title" in main_js
+
+    for dependency in ("rapidocr", "tesseract", "dxcam"):
+        assert f'data-dependency="{dependency}"' in index_html
+    assert 'data-dependency-action="tesseract"' in index_html
+    assert 'data-dependency-action="rapidocr_models"' in index_html
+    assert "item.can_download_models === true" in dependency_js
+    assert "String(item.detail || '').toLowerCase() === 'missing_model_files'" in dependency_js
+    assert "/ui-api/tesseract/install" in dependency_js
+    assert "/ui-api/rapidocr-models" in dependency_js
+    assert "new EventSource" in dependency_js
+    assert "attempt < 3" in dependency_js
+    assert "await refreshStatus({ updateReply: false });" in main_js
+    assert "StudyDependencyController?.initialize" in main_js
+    assert ".dependency-progress[hidden]" in style_css
+
 def test_study_companion_neko_coach_actions_avoid_stale_ocr_and_unused_scene_cache() -> None:
     main_js = (STATIC_DIR / "main.js").read_text(encoding="utf-8")
 
@@ -761,7 +928,7 @@ def test_study_companion_neko_coach_actions_avoid_stale_ocr_and_unused_scene_cac
     assert "String(ocrData?.text || '').trim() || studyInputImageValue" in main_js
 
 
-def test_study_companion_feature_dock_and_quick_panels_open_in_page_drawer() -> None:
+def test_study_companion_feature_dock_opens_knowledge_map_in_centered_dialog() -> None:
     index_html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
     main_js = (STATIC_DIR / "main.js").read_text(encoding="utf-8")
     knowledge_map_js = (STATIC_DIR / "knowledge-map.js").read_text(encoding="utf-8")
@@ -812,6 +979,15 @@ def test_study_companion_feature_dock_and_quick_panels_open_in_page_drawer() -> 
     assert "surface-panels.js" in index_html
     assert "study_knowledge_map" in main_js
     assert "loadKnowledgeMapIntoDrawer" in main_js
+    assert "const isDialog = surfaceId === 'knowledge-map';" in main_js
+    assert "surfaceDrawer.dataset.presentation = isDialog ? 'dialog' : 'drawer';" in main_js
+    assert "surfaceDrawer.setAttribute('role', 'dialog');" in main_js
+    assert "surfaceDrawer.setAttribute('aria-modal', 'true');" in main_js
+    assert "surfaceDrawer.removeAttribute('role');" in main_js
+    assert "surfaceDrawer.removeAttribute('aria-modal');" in main_js
+    assert "window.open(" not in main_js
+    assert "window.close(" not in main_js
+    assert "dedicatedSurfaceId" not in main_js
     assert "study-panel surface-shell" in main_js
     assert "knowledge-node" in knowledge_map_js
     for entry_id in (
@@ -823,12 +999,24 @@ def test_study_companion_feature_dock_and_quick_panels_open_in_page_drawer() -> 
     ):
         assert entry_id in surface_panels_js
     assert "pomodoro-ring" in surface_panels_js
+    assert "pomodoro-ring__time" in surface_panels_js
+    assert "pomodoro-actions" in surface_panels_js
+    assert "pomodoro-duration" in surface_panels_js
+    assert "focus_minutes: Math.min(120" in surface_panels_js
+    assert "pomodoro-ring__value" in surface_panels_js
+    assert "stroke-dashoffset" in surface_panels_js
     assert ".surface-shell" in (STATIC_DIR / "style.css").read_text(encoding="utf-8")
     assert "window.location.assign(managerUrl)" not in main_js
     assert "window.parent === window" not in main_js
     assert "/ui/plugins" not in main_js
     assert "surfaceDrawerFrame" not in main_js
     assert 'id="surfaceDrawerFrame"' not in index_html
+    style_css = (STATIC_DIR / "style.css").read_text(encoding="utf-8")
+    assert '.surface-drawer[data-presentation="dialog"] {' in style_css
+    assert 'place-items: center;' in style_css
+    assert '.surface-drawer[data-presentation="dialog"] .surface-drawer__panel' in style_css
+    assert '.surface-drawer[data-presentation="dialog"][data-open="true"] .surface-drawer__panel' in style_css
+    assert 'data-dedicated-surface' not in style_css
 
 
 def test_study_companion_advanced_settings_surface_entries_are_complete() -> None:

@@ -9,6 +9,23 @@ from .entry_common import (
 
 
 class _CommunicationReviewEventsMixin:
+    def _resolve_study_target_lanlan(
+        self, kwargs: dict[str, Any] | None = None
+    ) -> str | None:
+        if isinstance(kwargs, dict):
+            ctx_payload = kwargs.get("_ctx")
+            if isinstance(ctx_payload, dict):
+                lanlan_name = str(ctx_payload.get("lanlan_name") or "").strip()
+                if lanlan_name:
+                    return lanlan_name
+        lanlan_name = str(getattr(self.ctx, "_current_lanlan", "") or "").strip()
+        return lanlan_name or None
+
+    def _count_total_due_reviews(self) -> int:
+        memory_due_count = int(self._memory_deck_store.count_due_reviews() or 0)
+        topic_due_count = int(self._knowledge_tracker.count_due_reviews() or 0)
+        return memory_due_count + topic_due_count
+
     def _require_event_bus(self) -> StudyEventBus:
         if self._event_bus is None:
             raise RuntimeError(
@@ -31,12 +48,20 @@ class _CommunicationReviewEventsMixin:
                     self._review_due_payload_future = None
             if not payload:
                 return
+            payload = {
+                **payload,
+                "target_lanlan": self._resolve_study_target_lanlan(),
+            }
             bus.schedule_emit(StudyEvent(name="review_due", payload=payload))
         except Exception as exc:
             self.logger.warning("study review due event emit failed: {}", exc)
 
     async def _emit_review_session_completed_event(
-        self, *, reviewed_count: int, deck_name: str = ""
+        self,
+        *,
+        reviewed_count: int,
+        deck_name: str = "",
+        target_lanlan: str | None = None,
     ) -> bool:
         bus = self._event_bus
         if bus is None:
@@ -48,6 +73,7 @@ class _CommunicationReviewEventsMixin:
                     payload={
                         "reviewed_count": max(1, int(reviewed_count or 1)),
                         "deck_name": str(deck_name or "").strip(),
+                        "target_lanlan": str(target_lanlan or "").strip() or None,
                     },
                 )
             )
@@ -57,9 +83,7 @@ class _CommunicationReviewEventsMixin:
         return True
 
     def _build_review_due_payload(self) -> dict[str, Any]:
-        memory_due_count = int(self._memory_deck_store.count_due_reviews() or 0)
-        topic_due_count = int(self._knowledge_tracker.count_due_reviews() or 0)
-        due_count = memory_due_count + topic_due_count
+        due_count = self._count_total_due_reviews()
         if due_count <= 0:
             return {}
         memory_reviews = self._memory_deck_store.due_reviews(limit=50)

@@ -179,6 +179,7 @@ from main_routers.capture_router import router as capture_router  # noqa
 from main_routers.characters_router import router as characters_router  # noqa
 from main_routers.cloudsave_router import router as cloudsave_router  # noqa
 from main_routers.config_router import router as config_router  # noqa
+from main_routers.documents_router import router as documents_router  # noqa
 from main_routers.proactive_router import router as proactive_router  # noqa
 from main_routers.galgame_router import router as galgame_router  # noqa
 from main_routers.widget_mode_router import router as widget_mode_router  # noqa
@@ -499,6 +500,7 @@ app.include_router(storage_location_router)
 app.include_router(websocket_router)
 app.include_router(agent_router)
 app.include_router(avatar_drop_router)
+app.include_router(documents_router)
 app.include_router(system_router)
 app.include_router(tool_router)
 app.include_router(music_router)

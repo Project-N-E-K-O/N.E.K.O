@@ -84,6 +84,14 @@ class _RuntimeOwner(_StatusEntriesMixin):
         self.fail_subscribe = False
         self.fail_unsubscribe = False
         self.fail_persist_once = False
+        self.start_review_due_calls = 0
+        self.cancel_review_due_calls = 0
+
+    def _start_review_due_task(self) -> None:
+        self.start_review_due_calls += 1
+
+    async def _cancel_review_due_task(self) -> None:
+        self.cancel_review_due_calls += 1
 
     async def _subscribe_neko_commands(self) -> None:
         self.subscribe_calls += 1
@@ -166,6 +174,7 @@ async def test_enabling_communication_starts_runtime_once_and_persists() -> None
     assert owner._event_bus is first_bus
     assert owner.subscribe_calls == 1
     assert owner.start_worker_calls == 1
+    assert owner.start_review_due_calls == 1
     assert owner.persist_calls == 2
     assert first.value["communication_status"] == {
         "configured_enabled": True,
@@ -249,6 +258,7 @@ async def test_disabling_communication_detaches_runtime_before_cleanup() -> None
     assert owner._event_bus is None
     assert owner.unsubscribe_calls == 1
     assert owner.cancel_worker_calls == 1
+    assert owner.cancel_review_due_calls == 1
     assert first.value["communication_status"]["available"] is False
 
 

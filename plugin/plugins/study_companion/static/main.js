@@ -7,6 +7,8 @@ const LOAD_IMAGE_TIMEOUT_MS = 30000;
 const TARGET_DATA_URL_LENGTH = 1000000;
 const DEFAULT_VISION_MAX_IMAGE_PX = 768;
 const SUPPORTED_PASTE_IMAGE_TYPES = new Set(['image/png', 'image/jpeg']);
+const DEPENDENCY_KEYS = Object.freeze(['rapidocr', 'tesseract', 'dxcam']);
+// Legacy translation key retained for older static UI bundles: ui.settings.dependencies.ready_summary
 const LEARNING_PROFILE_STORAGE_KEY = 'study_companion.learning_profile.v1';
 const LEARNING_STAGE_OPTIONS = ['primary', 'junior_high', 'senior_high', 'college', 'cross_stage', 'postgraduate', 'custom'];
 const KNOWLEDGE_SUBJECT_OPTIONS = ['math', 'english', 'chinese', 'physics', 'chemistry', 'biology', 'history', 'geography', 'politics', 'computer_science', 'economics'];
@@ -86,8 +88,10 @@ const memoryDeckStatus = document.getElementById('memoryDeckStatus');
 const memoryFrontInput = document.getElementById('memoryFrontInput');
 const memoryBackInput = document.getElementById('memoryBackInput');
 const memoryDeckSelect = document.getElementById('memoryDeckSelect');
+const memoryItemTypeSelect = document.getElementById('memoryItemTypeSelect');
 const memoryDeckDialog = document.getElementById('memoryDeckDialog');
 const memoryDeckNameInput = document.getElementById('memoryDeckNameInput');
+const memoryDeckTypeSelect = document.getElementById('memoryDeckTypeSelect');
 const memoryDeckCreateBtn = document.getElementById('memoryDeckCreateBtn');
 const memoryDeckSkipBtn = document.getElementById('memoryDeckSkipBtn');
 const memoryRefreshBtn = document.getElementById('memoryRefreshBtn');
@@ -803,13 +807,14 @@ function goalProgressFromHabit(habit = {}) {
 
 function buildDiagnosis(data = {}) {
   const dependencies = data.dependencies || {};
-  const dependencyValues = Object.values(dependencies).filter((value) => value && typeof value === 'object');
+  const dependencyValues = DEPENDENCY_KEYS.map((key) => dependencies[key]).filter((value) => value && typeof value === 'object');
+  const readiness = dependencies.ocr_readiness || {};
   const llm = data.llm || data.llm_status || {};
   const llmStatus = String(llm.status || llm.state || '').toLowerCase();
   const llmError = data.llm_available === false || llm.available === false || llm.ok === false || ['error', 'failed', 'unavailable'].includes(llmStatus);
   const errorBody = data.last_error || llm.message || llm.error || llm.reason;
   const hasDependencyStatus = dependencyValues.length > 0;
-  const dependenciesReady = hasDependencyStatus && dependencyValues.every(dependencyReady);
+  const dependenciesReady = readiness.ready === true || (!Object.keys(readiness).length && hasDependencyStatus && dependencyValues.every(dependencyReady));
   const topicCount = countFromSummary(data.knowledge_summary || {}, ['topic_count', 'topics', 'node_count', 'nodes']);
   const hasKnowledge = topicCount > 0 || (Array.isArray(data.mastery_overview) && data.mastery_overview.length > 0);
   if (errorBody || data.status === 'error' || llmError) {
@@ -826,6 +831,19 @@ function buildDiagnosis(data = {}) {
       body: tf('ui.diagnosis.ok.body', '{count} knowledge topics loaded and OCR dependencies are ready.', { count: topicCount }),
     };
   }
+  if (readiness.diagnostic === 'ocr_disabled') {
+    return hasKnowledge
+      ? { severity: 'ok', title: t('ui.diagnosis.text_ready.title', 'Text study is ready'), body: t('ui.diagnosis.text_ready.body', 'Knowledge topics are loaded. OCR is currently disabled.') }
+      : { severity: 'warning', title: t('ui.diagnosis.knowledge_empty.title', 'Knowledge topics are not loaded'), body: t('ui.settings.knowledge.empty_summary', 'Knowledge map has no loaded topics yet.') };
+  }
+  const ocrIssue = readiness.diagnostic && !['ready', 'ocr_disabled'].includes(readiness.diagnostic)
+    ? t(`ui.diagnosis.ocr.${readiness.diagnostic}.body`, 'The selected OCR path is unavailable.') : '';
+  if (ocrIssue && !hasKnowledge) {
+    const issues = `${ocrIssue} ${t('ui.diagnosis.knowledge_empty.body', 'The knowledge map has no loaded topics yet.')}`;
+    return { severity: 'warning', title: t('ui.diagnosis.multiple_issues.title', 'Study setup needs attention'), body: tf('ui.diagnosis.multiple_issues.body', 'Resolve these items: {issues}', { issues }) };
+  }
+  if (ocrIssue) return { severity: 'warning', title: t('ui.diagnosis.ocr_unavailable.title', 'The selected OCR backend is unavailable'), body: ocrIssue };
+  if (!hasKnowledge && readiness.ready === true) return { severity: 'warning', title: t('ui.diagnosis.knowledge_empty.title', 'Knowledge topics are not loaded'), body: t('ui.diagnosis.knowledge_empty.body', 'OCR is ready, but the knowledge map has no loaded topics yet.') };
   if (hasDependencyStatus || data.status === 'ready') {
     return {
       severity: 'warning',
@@ -1003,8 +1021,9 @@ function updateStudySummaries(data = {}) {
     quickCheckinStatus.textContent = checkinStatusLabel(habit);
   }
   const deps = data.dependencies || {};
-  const dependencyCount = Object.values(deps).filter((value) => value && typeof value === 'object').length;
-  const readyCount = Object.values(deps).filter(dependencyReady).length;
+  const dependencyValues = DEPENDENCY_KEYS.map((key) => deps[key]).filter((value) => value && typeof value === 'object');
+  const dependencyCount = dependencyValues.length;
+  const readyCount = dependencyValues.filter(dependencyReady).length;
   const knowledge = data.knowledge_summary || {};
   const topicCount = countFromSummary(knowledge, ['topic_count', 'topics', 'node_count', 'nodes']);
   const edgeCount = countFromSummary(knowledge, ['edge_count', 'edges']);
@@ -1021,8 +1040,9 @@ function updateStudySummaries(data = {}) {
     ? tf('ui.settings.ocr.ready_summary', '{ready}/{total} OCR dependencies ready', { ready: readyCount, total: dependencyCount })
     : t('ui.settings.ocr.no_status', 'Dependency status is not loaded yet.'));
   setText('settingsDependencySummary', dependencyCount
-    ? tf('ui.settings.dependencies.ready_summary', '{ready}/{total} runtime dependencies available', { ready: readyCount, total: dependencyCount })
+    ? tf('ui.settings.dependencies.component_summary', '{ready}/{total} components installed', { ready: readyCount, total: dependencyCount })
     : t('ui.settings.dependencies.no_status', 'Refresh status to inspect OCR backends.'));
+  window.StudyDependencyController?.render(deps);
   setText('settingsKnowledgeSummary', topicCount
     ? tf('ui.settings.knowledge.loaded_summary', '{topics} topics and {edges} edges loaded.', { topics: topicCount, edges: edgeCount })
     : t('ui.settings.knowledge.empty_summary', 'Knowledge map has no loaded topics yet.'));
@@ -1205,6 +1225,32 @@ function finishMemoryDeckDialog(value) {
   if (resolve) resolve(value);
 }
 
+async function createQuickCardDeck({ name, deckType = 'custom' }) {
+  const created = await callPlugin('study_memory_create_deck', {
+    name,
+    deck_type: deckType,
+    source: 'ui',
+  });
+  memoryDecks = [
+    ...memoryDecks.filter((deck) => String(deck.id || '') !== String(created.id || '')),
+    created,
+  ];
+  renderMemoryDeckOptions();
+  if (memoryDeckSelect) memoryDeckSelect.value = String(created.id || '');
+  quickCardController?.decorateDeckOptions();
+  return created;
+}
+
+const quickCardController = window.StudyQuickCardController?.create({
+  t,
+  getDecks: () => memoryDecks,
+  createDeck: createQuickCardDeck,
+  reportError: (error) => {
+    setStatus(t('ui.status.error', 'Error'));
+    setReply(formatPluginError(error));
+  },
+});
+
 async function chooseDeckForFirstCard() {
   if (memoryDecks.length) {
     return memoryDeckSelect?.value || String(memoryDecks[0]?.id || '');
@@ -1214,6 +1260,14 @@ async function chooseDeckForFirstCard() {
   renderMemoryDeckOptions();
   if (memoryDecks.length) {
     return memoryDeckSelect?.value || String(memoryDecks[0]?.id || '');
+  }
+  if (quickCardController) {
+    const choice = await quickCardController.requestFirstDeck();
+    if (choice === null) return null;
+    if (choice.skip) return '';
+    const created = await createQuickCardDeck(choice);
+    quickCardController.applyDeckDefault(created.deck_type || choice.deckType);
+    return String(created.id || '');
   }
   if (!memoryDeckDialog || typeof memoryDeckDialog.showModal !== 'function') {
     return '';
@@ -1231,7 +1285,7 @@ async function chooseDeckForFirstCard() {
   if (choice === '') return '';
   const created = await callPlugin('study_memory_create_deck', {
     name: choice,
-    deck_type: 'custom',
+    deck_type: memoryDeckTypeSelect?.value || 'custom',
     source: 'ui',
   });
   memoryDecks = [...memoryDecks, created];
@@ -1490,7 +1544,16 @@ function openSurfaceDrawer(surfaceId) {
   if (surfaceDrawerTitle) {
     surfaceDrawerTitle.textContent = hostedSurfaceLabel(surfaceId);
   }
+  const isDialog = surfaceId === 'knowledge-map';
   surfaceDrawer.dataset.surfaceId = surfaceId;
+  surfaceDrawer.dataset.presentation = isDialog ? 'dialog' : 'drawer';
+  if (isDialog) {
+    surfaceDrawer.setAttribute('role', 'dialog');
+    surfaceDrawer.setAttribute('aria-modal', 'true');
+  } else {
+    surfaceDrawer.removeAttribute('role');
+    surfaceDrawer.removeAttribute('aria-modal');
+  }
   surfaceDrawerBody.replaceChildren(renderSurfaceDrawerBody(surfaceId));
   surfaceDrawer.dataset.open = 'true';
   surfaceDrawer.setAttribute('aria-hidden', 'false');
@@ -1989,6 +2052,7 @@ async function saveMemoryCard() {
   const data = await callPlugin('study_memory_card_upsert', {
     front,
     back,
+    item_type: quickCardController?.getItemType() || memoryItemTypeSelect?.value || 'custom',
     source: 'ui',
     deck_id: deckId,
   });
@@ -2129,8 +2193,8 @@ async function bootstrap() {
   if (window.I18n && typeof window.I18n.init === 'function') {
     await window.I18n.init(PLUGIN_ID);
     window.I18n.scanDOM();
-    document.title = t('ui.title', 'Study Companion');
   }
+  document.title = t('ui.title', 'Study Companion');
   syncLearningProfileUi();
   bindButton(refreshBtn, refreshStatus);
   bindButton(ocrBtn, runOcr);
@@ -2320,3 +2384,4 @@ bootstrap().catch((error) => {
   setStatus(t('ui.status.not_ready', 'Not ready'));
   setReply(formatPluginError(error));
 });
+window.StudyDependencyController?.initialize({ refresh: () => refreshStatus({ updateReply: false }) });

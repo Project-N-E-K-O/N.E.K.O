@@ -166,6 +166,7 @@ class _StatusEntriesMixin:
             try:
                 await self._subscribe_neko_commands()
                 self._start_command_worker()
+                self._start_review_due_task()
             except BaseException:
                 if self._event_bus is event_bus:
                     self._event_bus = None
@@ -183,6 +184,7 @@ class _StatusEntriesMixin:
         if event_bus is None:
             return
         self._event_bus = None
+        await self._cancel_review_due_task()
         await self._close_communication_runtime(event_bus)
 
     def _apply_runtime_settings_config(self, config: StudyConfig) -> None:

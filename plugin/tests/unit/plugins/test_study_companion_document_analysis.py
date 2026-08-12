@@ -80,10 +80,33 @@ def test_validate_document_accepts_txt_and_markdown_and_builds_safe_metadata() -
 
 
 @pytest.mark.parametrize(
+    ("name", "document_type"),
+    [
+        ("lesson.pdf", "application/pdf"),
+        (
+            "lesson.docx",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ),
+    ],
+)
+def test_validate_document_accepts_extracted_pdf_and_docx_text(
+    name: str, document_type: str
+) -> None:
+    document = _document(
+        document_name=name,
+        document_type=document_type,
+        document_text="Extracted study material.",
+    )
+
+    assert document.name == name
+    assert document.document_type == document_type
+
+
+@pytest.mark.parametrize(
     ("overrides", "diagnostic"),
     [
         ({"document_text": "  \n"}, "empty_document"),
-        ({"document_name": "notes.pdf"}, "unsupported_document_type"),
+        ({"document_name": "notes.xlsx"}, "unsupported_document_type"),
         ({"document_name": "notes.txt", "document_type": "text/markdown"}, "document_type_mismatch"),
         ({"document_text": "abc\x00def"}, "binary_document"),
         ({"document_text": "bad\ufffd"}, "invalid_document_encoding"),

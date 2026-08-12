@@ -9,6 +9,7 @@ const apiMocks = vi.hoisted(() => ({
   callPluginHostedSurfaceAction: vi.fn(),
   getPluginHostedSurfaceContext: vi.fn(),
   getPluginHostedSurfaceSource: vi.fn(),
+  parseHostedDocument: vi.fn(),
 }))
 
 vi.mock('@/api/plugins', () => apiMocks)
@@ -45,6 +46,10 @@ function makeSurface(id = 'main', url = 'data:text/html,<html></html>'): PluginU
     available: true,
     url,
   } as PluginUiSurface
+}
+
+function makeDocumentSurface(permissions = ['document:parse']): PluginUiSurface {
+  return { ...makeSurface(), permissions }
 }
 
 function makeNotRunningError() {
@@ -156,6 +161,17 @@ function callRequest(options: { userInitiated?: boolean; requestId?: string; tim
   }
 }
 
+function parseDocumentRequest(file: File, options: { userInitiated?: boolean; requestId?: string; timeoutMs?: number } = {}) {
+  return {
+    type: 'neko-hosted-surface-request',
+    requestId: options.requestId || 'parse-1',
+    method: 'parseDocument',
+    userInitiated: options.userInitiated === true,
+    timeoutMs: options.timeoutMs,
+    payload: { file },
+  }
+}
+
 describe('HostedSurfaceFrame automatic startup retry', () => {
   beforeEach(() => {
     vi.useFakeTimers()
@@ -163,6 +179,7 @@ describe('HostedSurfaceFrame automatic startup retry', () => {
     apiMocks.callPluginHostedSurfaceAction.mockReset()
     apiMocks.getPluginHostedSurfaceContext.mockReset()
     apiMocks.getPluginHostedSurfaceSource.mockReset()
+    apiMocks.parseHostedDocument.mockReset()
   })
 
   afterEach(() => {
@@ -360,6 +377,176 @@ describe('HostedSurfaceFrame automatic startup retry', () => {
     await flushPromises()
 
     expect(apiMocks.callPluginHostedSurfaceAction).toHaveBeenCalledTimes(1)
+    expect(frame.postMessage).not.toHaveBeenCalled()
+  })
+
+  it('uploads an allowed PDF from a user action and returns the unwrapped document', async () => {
+    const document = { name: 'notes.pdf', sourceType: 'pdf', content: 'notes' }
+    apiMocks.parseHostedDocument.mockResolvedValue({ ok: true, document })
+    const frame = await mountFrame()
+    await frame.setSurface(makeDocumentSurface())
+
+    frame.dispatchRequest(parseDocumentRequest(
+      new File(['pdf'], 'notes.pdf', { type: 'application/pdf' }),
+      { userInitiated: true, timeoutMs: 5000 },
+    ))
+    await flushPromises()
+
+    expect(apiMocks.parseHostedDocument).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'notes.pdf' }),
+      expect.objectContaining({ timeoutMs: 5000, signal: expect.any(AbortSignal) }),
+    )
+    expect(frame.postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ requestId: 'parse-1', ok: true, result: document }),
+      '*',
+    )
+  })
+
+  it('allows an octet-stream DOCX and leaves signature validation to the backend', async () => {
+    const document = { name: 'notes.docx', sourceType: 'docx', content: 'notes' }
+    apiMocks.parseHostedDocument.mockResolvedValue({ ok: true, document })
+    const frame = await mountFrame()
+    await frame.setSurface(makeDocumentSurface())
+
+    frame.dispatchRequest(parseDocumentRequest(
+      new File(['docx'], 'notes.docx', { type: 'application/octet-stream' }),
+      { userInitiated: true },
+    ))
+    await flushPromises()
+
+    expect(apiMocks.parseHostedDocument).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'notes.docx' }),
+      expect.any(Object),
+    )
+    expect(frame.postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ requestId: 'parse-1', ok: true, result: document }),
+      '*',
+    )
+  })
+
+  it('rejects document parsing without the dedicated surface permission', async () => {
+    const frame = await mountFrame()
+    await frame.setSurface(makeDocumentSurface([]))
+
+    frame.dispatchRequest(parseDocumentRequest(
+      new File(['pdf'], 'notes.pdf', { type: 'application/pdf' }),
+      { userInitiated: true },
+    ))
+    await flushPromises()
+
+    expect(apiMocks.parseHostedDocument).not.toHaveBeenCalled()
+    expect(frame.postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ ok: false, code: 'document_parse_permission_denied' }),
+      '*',
+    )
+  })
+
+  it('rejects non-user-initiated and oversized document requests before upload', async () => {
+    const frame = await mountFrame()
+    await frame.setSurface(makeDocumentSurface())
+    const pdf = new File(['pdf'], 'notes.pdf', { type: 'application/pdf' })
+
+    frame.dispatchRequest(parseDocumentRequest(pdf))
+    await flushPromises()
+    expect(frame.postMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ ok: false, code: 'document_parse_permission_denied' }),
+      '*',
+    )
+
+    const oversized = new File(['x'], 'large.pdf', { type: 'application/pdf' })
+    Object.defineProperty(oversized, 'size', { value: 16 * 1024 * 1024 + 1 })
+    frame.dispatchRequest(parseDocumentRequest(oversized, { requestId: 'parse-large', userInitiated: true }))
+    await flushPromises()
+
+    expect(apiMocks.parseHostedDocument).not.toHaveBeenCalled()
+    expect(frame.postMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ requestId: 'parse-large', ok: false, code: 'document_too_large' }),
+      '*',
+    )
+  })
+
+  it('rejects unsupported document types before upload', async () => {
+    const frame = await mountFrame()
+    await frame.setSurface(makeDocumentSurface())
+
+    frame.dispatchRequest(parseDocumentRequest(
+      new File(['text'], 'notes.txt', { type: 'text/plain' }),
+      { userInitiated: true },
+    ))
+    await flushPromises()
+
+    expect(apiMocks.parseHostedDocument).not.toHaveBeenCalled()
+    expect(frame.postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ ok: false, code: 'unsupported_document' }),
+      '*',
+    )
+  })
+
+  it('preserves a backend document error code in the hosted response', async () => {
+    apiMocks.parseHostedDocument.mockRejectedValue(Object.assign(new Error('No readable text'), {
+      response: {
+        status: 422,
+        data: { detail: { code: 'no_readable_text', message: 'No readable text' } },
+      },
+    }))
+    const frame = await mountFrame()
+    await frame.setSurface(makeDocumentSurface())
+
+    frame.dispatchRequest(parseDocumentRequest(
+      new File(['pdf'], 'scan.pdf', { type: 'application/pdf' }),
+      { userInitiated: true },
+    ))
+    await flushPromises()
+
+    expect(frame.postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ok: false,
+        code: 'no_readable_text',
+        error: 'No readable text',
+        status: 422,
+      }),
+      '*',
+    )
+  })
+
+  it('aborts and returns the document timeout error code at the request deadline', async () => {
+    apiMocks.parseHostedDocument.mockImplementation((_file: File, options: { signal: AbortSignal }) => (
+      new Promise((_resolve, reject) => options.signal.addEventListener('abort', () => reject(new Error('canceled'))))
+    ))
+    const frame = await mountFrame()
+    await frame.setSurface(makeDocumentSurface())
+
+    frame.dispatchRequest(parseDocumentRequest(
+      new File(['pdf'], 'notes.pdf', { type: 'application/pdf' }),
+      { userInitiated: true, timeoutMs: 100 },
+    ))
+    await vi.advanceTimersByTimeAsync(100)
+    await flushPromises()
+
+    expect(frame.postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ ok: false, code: 'document_parse_timeout' }),
+      '*',
+    )
+  })
+
+  it('aborts an in-flight upload when the surface changes', async () => {
+    let signal: AbortSignal | undefined
+    apiMocks.parseHostedDocument.mockImplementation((_file: File, options: { signal: AbortSignal }) => {
+      signal = options.signal
+      return new Promise((_resolve, reject) => options.signal.addEventListener('abort', () => reject(new Error('canceled'))))
+    })
+    const frame = await mountFrame()
+    await frame.setSurface(makeDocumentSurface())
+
+    frame.dispatchRequest(parseDocumentRequest(
+      new File(['pdf'], 'notes.pdf', { type: 'application/pdf' }),
+      { userInitiated: true },
+    ))
+    await flushPromises()
+    await frame.setSurface({ ...makeDocumentSurface(), id: 'secondary' })
+    await flushPromises()
+
+    expect(signal?.aborted).toBe(true)
     expect(frame.postMessage).not.toHaveBeenCalled()
   })
 })

@@ -25,6 +25,7 @@ from plugin.plugins.study_companion.qwen_compatible_transport import QwenCompati
 from plugin.plugins.study_companion.qwen_native_client import (
     QwenNativeClient,
     QwenNativeError,
+    QwenNativeResult,
 )
 from plugin.plugins.study_companion.state import build_initial_state
 from plugin.plugins.study_companion.study_ocr_pipeline import StudyOcrPipeline
@@ -47,6 +48,20 @@ class _Logger:
     def debug(self, *_args: object, **_kwargs: object) -> None:
         self.debugs.append((_args, _kwargs))
         return None
+
+
+def _model_result(text: str, *, output_limit_reached: bool = False) -> QwenNativeResult:
+    return QwenNativeResult(
+        text=text,
+        model="qwen-test",
+        model_group="vision",
+        request_id="test-request",
+        input_tokens=1,
+        output_tokens=1,
+        finish_reason="length" if output_limit_reached else "stop",
+        max_output_tokens=3072,
+        output_limit_reached=output_limit_reached,
+    )
 
 
 class _FakeOcrBackend:
@@ -245,11 +260,11 @@ async def test_concept_explain_attaches_vision_context(
     agent = TutorLLMAgent(logger=_Logger(), config=StudyConfig(language="en"))
     seen: list[dict[str, Any]] = []
 
-    async def _fake_call_model(messages: list[dict[str, Any]], **_kwargs: Any):
+    async def _fake_call_model_result(messages: list[dict[str, Any]], **_kwargs: Any):
         seen.extend(messages)
-        return "vision reply"
+        return _model_result("vision reply")
 
-    monkeypatch.setattr(agent, "_call_model", _fake_call_model)
+    monkeypatch.setattr(agent, "_call_model_result", _fake_call_model_result)
 
     reply = await agent.concept_explain(
         "solve this",
@@ -268,10 +283,12 @@ async def test_concept_explain_appends_missing_zh_transfer_section(
 ) -> None:
     agent = TutorLLMAgent(logger=_Logger(), config=StudyConfig(language="zh-CN"))
 
-    async def _fake_call_model(_messages: list[dict[str, Any]], **_kwargs: Any):
-        return "题目解析\n分析题意。\n\n解题过程\n列式计算。\n\n答案\nA"
+    async def _fake_call_model_result(
+        _messages: list[dict[str, Any]], **_kwargs: Any
+    ):
+        return _model_result("题目解析\n分析题意。\n\n解题过程\n列式计算。\n\n答案\nA")
 
-    monkeypatch.setattr(agent, "_call_model", _fake_call_model)
+    monkeypatch.setattr(agent, "_call_model_result", _fake_call_model_result)
 
     reply = await agent.concept_explain(
         IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN,
@@ -292,10 +309,12 @@ async def test_concept_explain_appends_transfer_to_numbered_zh_solution(
 ) -> None:
     agent = TutorLLMAgent(logger=_Logger(), config=StudyConfig(language="zh-CN"))
 
-    async def _fake_call_model(_messages: list[dict[str, Any]], **_kwargs: Any):
-        return "1. 分析条件。\n\n2. 计算总和。\n\n答案\nA"
+    async def _fake_call_model_result(
+        _messages: list[dict[str, Any]], **_kwargs: Any
+    ):
+        return _model_result("1. 分析条件。\n\n2. 计算总和。\n\n答案\nA")
 
-    monkeypatch.setattr(agent, "_call_model", _fake_call_model)
+    monkeypatch.setattr(agent, "_call_model_result", _fake_call_model_result)
 
     reply = await agent.concept_explain(
         IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN,
@@ -314,10 +333,12 @@ async def test_concept_explain_appends_transfer_when_reply_is_zh_but_locale_is_e
 ) -> None:
     agent = TutorLLMAgent(logger=_Logger(), config=StudyConfig(language="en"))
 
-    async def _fake_call_model(_messages: list[dict[str, Any]], **_kwargs: Any):
-        return "4. 计算期望并验证\n\n对分数进行约分。\n\n答案\nA"
+    async def _fake_call_model_result(
+        _messages: list[dict[str, Any]], **_kwargs: Any
+    ):
+        return _model_result("4. 计算期望并验证\n\n对分数进行约分。\n\n答案\nA")
 
-    monkeypatch.setattr(agent, "_call_model", _fake_call_model)
+    monkeypatch.setattr(agent, "_call_model_result", _fake_call_model_result)
 
     reply = await agent.concept_explain(
         IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN,
@@ -336,8 +357,10 @@ async def test_concept_explain_does_not_append_transfer_without_answer_section(
 ) -> None:
     agent = TutorLLMAgent(logger=_Logger(), config=StudyConfig(language="zh-CN"))
 
-    async def _fake_call_model(_messages: list[dict[str, Any]], **_kwargs: Any):
-        return (
+    async def _fake_call_model_result(
+        _messages: list[dict[str, Any]], **_kwargs: Any
+    ):
+        return _model_result(
             "验证 C：若 AB ⊥ CD，则 CD ⊥ 平面 ABD。\n\n"
             "结论：C 错误。\n\n"
             "验证 D：若 AB ⊥ 平面 ACD，则 AC ⊥ AD。\n\n"
@@ -345,7 +368,7 @@ async def test_concept_explain_does_not_append_transfer_without_answer_section(
             "结论：B 正确。"
         )
 
-    monkeypatch.setattr(agent, "_call_model", _fake_call_model)
+    monkeypatch.setattr(agent, "_call_model_result", _fake_call_model_result)
 
     reply = await agent.concept_explain(
         IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN,
@@ -362,10 +385,12 @@ async def test_concept_explain_vision_failure_uses_image_specific_fallback(
 ) -> None:
     agent = TutorLLMAgent(logger=_Logger(), config=StudyConfig(language="zh-CN"))
 
-    async def _broken_call_model(_messages: list[dict[str, Any]], **_kwargs: Any):
+    async def _broken_call_model_result(
+        _messages: list[dict[str, Any]], **_kwargs: Any
+    ):
         raise RuntimeError("llm unavailable")
 
-    monkeypatch.setattr(agent, "_call_model", _broken_call_model)
+    monkeypatch.setattr(agent, "_call_model_result", _broken_call_model_result)
 
     reply = await agent.concept_explain(
         IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN,

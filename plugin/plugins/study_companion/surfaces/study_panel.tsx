@@ -4,13 +4,17 @@ import { callPlugin as callHostedPlugin, ensureBrandCSS } from './study_surface_
 import {
   estimateDocumentChunkCount,
   estimatedDocumentAnalysisMode,
+  assertParsedStudyDocumentFile,
+  isParsedStudyDocumentFile,
   metadataForEditedDocument,
   oneStudyDocument,
+  parsedStudyDocument,
   readStudyDocument,
   STUDY_DOCUMENT_ANALYSIS_KINDS,
   STUDY_DOCUMENT_DIRECT_MAX_ESTIMATED_TOKENS,
   STUDY_DOCUMENT_MAX_BYTES,
   STUDY_DOCUMENT_MAX_ESTIMATED_TOKENS,
+  STUDY_DOCUMENT_PARSE_TIMEOUT_MS,
   StudyDocumentError,
   type StudyDocument,
   type StudyDocumentAnalysisKind,
@@ -283,7 +287,7 @@ function formatKnowledgeGuidanceEvidence(
   if (status === 'routing_unavailable') {
     return translate(
       'ui.knowledge_guidance.routing_unavailable',
-      'Knowledge graph routing was unavailable, so the answer continued without graph guidance.',
+      'Knowledge graph routing was not applicable, so the answer continued without graph guidance.',
     );
   }
   if (outcome.knowledge_guidance_applied !== true && status !== 'applied') return '';
@@ -1147,8 +1151,23 @@ export default function StudyPanel(props: PluginSurfaceProps) {
       encoding_unrecognized: ['ui.document.error.encoding', 'The document encoding could not be recognized. Save it as UTF-8 and retry.'],
       unsafe_document_content: ['ui.document.error.unsafe_content', 'The document contains an oversized embedded payload or line.'],
       document_too_long: ['ui.document.error.too_long', 'The document is estimated to exceed the 160,000-token limit. Shorten it and retry.'],
+      unsupported_document: ['ui.error.document_type', 'Only TXT, Markdown, PDF, and DOCX files are supported.'],
+      document_too_large: ['ui.error.document_parse_too_large', 'PDF and DOCX files must not exceed 16 MiB.'],
+      invalid_pdf: ['ui.error.document_invalid_pdf', 'The PDF file is invalid or damaged.'],
+      invalid_ooxml: ['ui.error.document_invalid_ooxml', 'The DOCX file is invalid or damaged.'],
+      encrypted_pdf_unsupported: ['ui.error.document_encrypted_pdf_unsupported', 'Encrypted PDF files are not supported.'],
+      legacy_office_unsupported: ['ui.error.document_legacy_office_unsupported', 'Legacy Microsoft Office files are not supported. Use DOCX instead.'],
+      macro_document_unsupported: ['ui.error.document_macro_document_unsupported', 'Macro-enabled Office documents are not supported.'],
+      no_readable_text: ['ui.error.document_no_readable_text', 'No readable text was found. Scanned PDF OCR is not supported yet.'],
+      garbled_text: ['ui.error.document_garbled_text', 'The extracted document text is unreadable.'],
+      document_parse_failed: ['ui.error.document_parse_failed', 'The document could not be parsed.'],
+      document_parse_timeout: ['ui.error.document_parse_timeout', 'Document parsing timed out. Please retry.'],
+      document_parse_permission_denied: ['ui.error.document_parse_permission_denied', 'This panel is not permitted to parse documents.'],
     };
-    const code = error instanceof StudyDocumentError ? error.code : '';
+    const candidate = error as { code?: unknown; message?: unknown } | null;
+    const code = error instanceof StudyDocumentError
+      ? error.code
+      : String(candidate?.code || candidate?.message || '');
     const [key, fallback] = messages[code]
       || ['ui.document.error.read_failed', 'The document could not be read.'];
     return t(key, fallback);
@@ -1164,7 +1183,19 @@ export default function StudyPanel(props: PluginSurfaceProps) {
     setDocumentError('');
     try {
       const file = oneStudyDocument(files);
-      const loaded = await readStudyDocument(file, controller.signal);
+      let loaded;
+      if (isParsedStudyDocumentFile(file)) {
+        assertParsedStudyDocumentFile(file);
+        const response = await props.api.parseDocument(file, { timeoutMs: STUDY_DOCUMENT_PARSE_TIMEOUT_MS });
+        if (controller.signal.aborted) return;
+        const raw = response && typeof response === 'object' ? response as Record<string, unknown> : {};
+        const payload = raw.document && typeof raw.document === 'object'
+          ? raw.document as Record<string, unknown>
+          : raw;
+        loaded = parsedStudyDocument(file, payload);
+      } else {
+        loaded = await readStudyDocument(file, controller.signal);
+      }
       if (controller.signal.aborted || !mountedRef.current) return;
       setDocumentSource(loaded.text);
       setStudyDocument(loaded.document);
@@ -1325,7 +1356,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
       return;
     }
     const currentDocument = metadataForEditedDocument(studyDocument, documentSource);
-    if (currentDocument.size > STUDY_DOCUMENT_MAX_BYTES) {
+    if (new TextEncoder().encode(documentSource).byteLength > STUDY_DOCUMENT_MAX_BYTES) {
       setStudyDocument(currentDocument);
       setDocumentError(t('ui.document.error.file_too_large', 'The edited document exceeds the 512 KiB size limit.'));
       return;
@@ -1356,7 +1387,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
     try {
       const data = await callStudyPlugin<DocumentJobPayload>(props.api, 'study_start_document_analysis', props.locale, {
         document_name: currentDocument.name,
-        document_type: currentDocument.type,
+        document_type: currentDocument.analysisType,
         document_text: documentSource,
         analysis_kind: documentKind,
         analysis_instruction: documentInstruction.trim(),
@@ -1890,7 +1921,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
             ref={documentInputRef}
             className="study-panel__document-input"
             type="file"
-            accept=".txt,.md,.markdown,text/plain,text/markdown"
+            accept=".txt,.md,.markdown,.pdf,.docx,text/plain,text/markdown,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
             disabled={documentInteractionBusy}
             onChange={(event) => {
               const files = event.target.files;
@@ -1903,7 +1934,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
             disabled={documentInteractionBusy}
             onClick={() => documentInputRef.current?.click()}
           >
-            {t('ui.document.import', 'Import TXT / Markdown')}
+            {t('ui.document.import', 'Import file')}
           </button>
           {documentReading ? (
             <button
@@ -1920,7 +1951,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
           ) : null}
           <span>{documentDragging
             ? t('ui.document.drop_now', 'Drop the document here')
-            : t('ui.document.drop_hint', 'or drag a document into this editor')}</span>
+            : t('ui.document.drop_hint', 'Drop a file here')}</span>
         </div>
         <textarea
           aria-label={t('ui.label.text', 'Text')}
@@ -1939,12 +1970,17 @@ export default function StudyPanel(props: PluginSurfaceProps) {
               'ui.document.meta',
               '{size} · {encoding} · {chars} characters · about {tokens} tokens',
               {
-                size: `${(studyDocument.size / 1024).toFixed(1)} KiB`,
+                size: `${(studyDocument.originalSize / 1024).toFixed(1)} KiB`,
                 encoding: studyDocument.encoding,
                 chars: studyDocument.chars.toLocaleString(),
                 tokens: studyDocument.estimatedTokens.toLocaleString(),
               },
             )}</span>
+            {studyDocument.truncated ? (
+              <small className="study-panel__document-warning">
+                {t('ui.document.truncated_warning', 'The document exceeded the extraction limit. Only the extracted portion will be analyzed.')}
+              </small>
+            ) : null}
             <small>{studyDocument.modified
               ? t('ui.document.modified', 'Content modified; token count has been re-estimated.')
               : t('ui.document.not_retained', 'The original document will not be retained.')}</small>

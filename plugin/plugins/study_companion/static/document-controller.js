@@ -25,6 +25,7 @@
     const studyDocumentName = document.getElementById('studyDocumentName');
     const studyDocumentMeta = document.getElementById('studyDocumentMeta');
     const studyDocumentState = document.getElementById('studyDocumentState');
+    const studyDocumentTruncated = document.getElementById('studyDocumentTruncated');
     const studyDocumentCancelBtn = document.getElementById('studyDocumentCancelBtn');
     const studyDocumentKindSelect = document.getElementById('studyDocumentKind');
     const studyDocumentInstruction = document.getElementById('studyDocumentInstruction');
@@ -99,6 +100,18 @@
         unsupported_document_kind: 'invalid_kind',
         invalid_document_name: 'invalid_name',
         document_canceled: 'canceled',
+        unsupported_document: 'type',
+        document_too_large: 'parse_too_large',
+        invalid_pdf: 'invalid_pdf',
+        invalid_ooxml: 'invalid_ooxml',
+        encrypted_pdf_unsupported: 'encrypted_pdf_unsupported',
+        legacy_office_unsupported: 'legacy_office_unsupported',
+        macro_document_unsupported: 'macro_document_unsupported',
+        no_readable_text: 'no_readable_text',
+        garbled_text: 'garbled_text',
+        document_parse_failed: 'parse_failed',
+        document_parse_timeout: 'parse_timeout',
+        document_parse_permission_denied: 'parse_permission_denied',
       };
       const analysisErrors = 'timeout rate_limited authentication_failed model_not_supported provider_unavailable invalid_endpoint invalid_request unsafe_model_output llm_call_failed';
       return t(`ui.error.document_${analysisErrors.includes(code) ? `analysis_${code}` : validation[code] || code.replace(/^document_/, '') || 'analysis_failed'}`);
@@ -199,6 +212,7 @@
     function updateDocumentCard(options = {}) {
       if (!importedDocument) {
         if (studyDocumentCard) studyDocumentCard.hidden = true;
+        if (studyDocumentTruncated) studyDocumentTruncated.hidden = true;
         return;
       }
       const bytes = new TextEncoder().encode(documentSource).byteLength;
@@ -208,11 +222,12 @@
       if (studyDocumentCard) studyDocumentCard.hidden = false;
       studyDocumentName.textContent = importedDocument.name;
       studyDocumentMeta.textContent = tf('ui.document.meta', '', {
-        size: `${(bytes / 1024).toFixed(1)} KB`,
+        size: `${(importedDocument.originalSize / 1024).toFixed(1)} KB`,
         encoding: importedDocument.encoding,
         chars: documentSource.length.toLocaleString(),
         tokens: tokens.toLocaleString(),
       });
+      if (studyDocumentTruncated) studyDocumentTruncated.hidden = !importedDocument.truncated;
       if (studyDocumentState && !documentBusy) {
         studyDocumentState.textContent = problem
           ? documentErrorMessage(problem)
@@ -245,14 +260,37 @@
       const controller = new AbortController();
       documentRequestController = controller;
       setPasteError(studyInputPasteError, '');
-      if (!file || !/\.(txt|md|markdown)$/i.test(file.name)) throw new Error('document_type');
+      if (!file) throw new Error('document_read');
+      if (/\.doc$/i.test(file.name)) throw new Error('document_legacy_office_unsupported');
+      if (/\.docm$/i.test(file.name)) throw new Error('document_macro_document_unsupported');
+      if (!/\.(txt|md|markdown|pdf|docx)$/i.test(file.name)) throw new Error('document_type');
       const declaredType = String(file.type || '').toLowerCase();
-      if (declaredType && !['text/plain', 'text/markdown', 'application/octet-stream'].includes(declaredType)) throw new Error('document_type');
-      if (file.size > 524288) throw new Error('document_too_large');
+      const parsedDocument = /\.(pdf|docx)$/i.test(file.name);
+      const expectedParsedType = /\.pdf$/i.test(file.name)
+        ? 'application/pdf'
+        : 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+      const allowedTypes = parsedDocument
+        ? [expectedParsedType, 'application/octet-stream']
+        : ['text/plain', 'text/markdown', 'application/octet-stream'];
+      if (declaredType && !allowedTypes.includes(declaredType)) throw new Error('document_type');
+      if (file.size > (parsedDocument ? 16 * 1024 * 1024 : 524288)) {
+        throw new Error(parsedDocument ? 'document_parse_too_large' : 'document_too_large');
+      }
+      const lowerName = file.name.toLowerCase();
+      const sourceType = lowerName.endsWith('.pdf') ? 'pdf'
+        : lowerName.endsWith('.docx') ? 'docx'
+          : lowerName.endsWith('.txt') ? 'txt' : 'markdown';
+      const analysisType = sourceType === 'pdf' ? 'application/pdf'
+        : sourceType === 'docx' ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+          : sourceType === 'txt' ? 'text/plain' : 'text/markdown';
       importedDocument = {
         name: (file.name.split(/[\\/]/).pop().replace(/[\0-\x1f\x7f]/g, '').trim() || 'document.txt').slice(0, 255),
-        type: file.name.toLowerCase().endsWith('.txt') ? 'text/plain' : 'text/markdown',
+        sourceType,
+        type: analysisType,
+        originalSize: file.size,
         encoding: '',
+        truncated: false,
+        meta: {},
         modified: false,
       };
       studyDocumentCard.hidden = false;
@@ -261,7 +299,51 @@
       setDocumentBusy(true);
       studyDocumentState.textContent = t('ui.document.reading');
       try {
-        const decoded = decodeDocumentBuffer(await file.arrayBuffer());
+        let decoded;
+        if (parsedDocument) {
+          const formData = new FormData();
+          formData.append('file', file, file.name);
+          let response;
+          let parseTimedOut = false;
+          const parseTimeout = setTimeout(() => {
+            parseTimedOut = true;
+            controller.abort();
+          }, 45000);
+          try {
+            response = await fetch('/api/documents/parse', {
+              method: 'POST',
+              body: formData,
+              signal: controller.signal,
+            });
+          } catch (error) {
+            if (parseTimedOut) throw new Error('document_parse_timeout');
+            if (controller.signal.aborted) throw error;
+            throw new Error(error instanceof DOMException && error.name === 'TimeoutError'
+              ? 'document_parse_timeout'
+              : 'document_parse_failed');
+          } finally {
+            clearTimeout(parseTimeout);
+          }
+          const body = await response.json().catch(() => ({}));
+          if (!response.ok) {
+            throw new Error(body?.detail?.code || body?.code || 'document_parse_failed');
+          }
+          const payload = body?.document || body?.item || body;
+          const returnedType = String(payload?.sourceType || payload?.documentType || sourceType).toLowerCase();
+          if (returnedType !== sourceType || typeof payload?.content !== 'string') {
+            throw new Error('document_parse_failed');
+          }
+          decoded = { text: payload.content, encoding: String(payload.encoding || 'document-parser') };
+          importedDocument = {
+            ...importedDocument,
+            name: String(payload.name || importedDocument.name).slice(0, 255),
+            originalSize: Number(payload.originalSize ?? payload.size ?? file.size) || file.size,
+            truncated: payload.truncated === true,
+            meta: payload.meta && typeof payload.meta === 'object' ? payload.meta : {},
+          };
+        } else {
+          decoded = decodeDocumentBuffer(await file.arrayBuffer());
+        }
         if (controller.signal.aborted || generation !== documentReadGeneration) return;
         const problem = documentTextProblem(decoded.text);
         if (problem) throw new Error(problem);

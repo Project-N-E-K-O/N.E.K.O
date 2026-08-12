@@ -53,11 +53,13 @@ class _CommunicationTutorEventsMixin:
         if any(not value for value in payload.values()):
             return False
         try:
-            await bus.emit(StudyEvent(name="solution_completed", payload=payload))
+            scheduled = bus.schedule_emit(
+                StudyEvent(name="solution_completed", payload=payload)
+            )
         except Exception:
             self.logger.warning("solution narration event delivery failed")
             return False
-        return True
+        return scheduled is not None
 
     async def _emit_answer_evaluated_event(
         self,

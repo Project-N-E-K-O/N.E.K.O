@@ -67,6 +67,20 @@ def test_static_document_busy_isolated_and_budget_hints_match_backend_modes() ->
     assert '.main-view[data-busy="true"] .study-document-card' not in style
 
 
+def test_static_document_import_supports_pdf_docx_and_truncation_notice() -> None:
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    controller = (STATIC / "document-controller.js").read_text(encoding="utf-8")
+
+    assert ".pdf,.docx" in html
+    assert 'id="studyDocumentTruncated"' in html
+    assert "fetch('/api/documents/parse'" in controller
+    assert "formData.append('file', file, file.name)" in controller
+    assert "16 * 1024 * 1024" in controller
+    assert "document_parse_timeout" in controller
+    assert "payload.truncated === true" in controller
+    assert "studyDocumentTruncated.hidden = !importedDocument.truncated" in controller
+
+
 def test_static_document_controller_lifecycle_is_frozen_and_idempotent() -> None:
     if shutil.which("node") is None:
         pytest.skip("node is not installed")

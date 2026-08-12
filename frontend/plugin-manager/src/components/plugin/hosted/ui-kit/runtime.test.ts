@@ -57,6 +57,7 @@ describe('hosted ui runtime', () => {
     ['keydown', 'input', 'onKeyDown'],
     ['change', 'select', 'onChange'],
     ['input', 'input', 'onInput'],
+    ['drop', 'div', 'onDrop'],
   ])('marks hosted action calls triggered by a trusted iframe %s as user initiated', (eventName, tagName, propName) => {
     let requestMessage: any
     Object.defineProperty(window, 'parent', {
@@ -85,6 +86,72 @@ describe('hosted ui runtime', () => {
       method: 'call',
       userInitiated: true,
     })
+  })
+
+  it('posts a File through the structured-clone bridge for document parsing', async () => {
+    let requestMessage: any
+    Object.defineProperty(window, 'parent', {
+      value: {
+        postMessage(message: any) {
+          requestMessage = message
+          window.dispatchEvent(new MessageEvent('message', {
+            data: {
+              type: 'neko-hosted-surface-response',
+              requestId: message.requestId,
+              ok: true,
+              result: { name: 'notes.pdf', sourceType: 'pdf', content: 'notes' },
+            },
+          }))
+        },
+      },
+      configurable: true,
+    })
+    const file = new File(['pdf'], 'notes.pdf', { type: 'application/pdf' })
+    let result: any
+    ui.render(ui.h('input', {
+      onChange: () => {
+        void ui.api.parseDocument(file, { timeoutMs: 4321 }).then((value: any) => { result = value })
+      },
+    }), root)
+    const event = new Event('change', { bubbles: true })
+    Object.defineProperty(event, 'isTrusted', { value: true })
+    fireEvent(root.querySelector('input')!, event)
+    await flushMicrotasks()
+
+    expect(requestMessage).toMatchObject({
+      method: 'parseDocument',
+      payload: { file },
+      timeoutMs: 4321,
+      userInitiated: true,
+    })
+    expect(result).toMatchObject({ name: 'notes.pdf', sourceType: 'pdf' })
+  })
+
+  it('rejects a non-File parseDocument argument without messaging the host', async () => {
+    const postMessage = vi.fn()
+    Object.defineProperty(window, 'parent', { value: { postMessage }, configurable: true })
+
+    await expect(ui.api.parseDocument('notes.pdf')).rejects.toMatchObject({
+      code: 'unsupported_document',
+    })
+    expect(postMessage).not.toHaveBeenCalled()
+  })
+
+  it('uses the document timeout error contract when the host does not respond', async () => {
+    vi.useFakeTimers()
+    Object.defineProperty(window, 'parent', {
+      value: { postMessage: vi.fn() },
+      configurable: true,
+    })
+    const promise = ui.api.parseDocument(
+      new File(['pdf'], 'notes.pdf', { type: 'application/pdf' }),
+      { timeoutMs: 100 },
+    )
+    const rejection = expect(promise).rejects.toMatchObject({ code: 'document_parse_timeout' })
+
+    await vi.advanceTimersByTimeAsync(100)
+    await rejection
+    vi.useRealTimers()
   })
 
   it('does not attribute a later automatic call to an earlier iframe interaction', () => {
@@ -181,11 +248,11 @@ describe('hosted ui runtime', () => {
   })
 
   it('keeps synthetic ActionButton clicks automatic', async () => {
-    let requestMessage: any
+    const requestMessages: any[] = []
     Object.defineProperty(window, 'parent', {
       value: {
         postMessage(message: any) {
-          requestMessage = message
+          requestMessages.push(message)
           window.dispatchEvent(new MessageEvent('message', {
             data: { type: 'neko-hosted-surface-response', requestId: message.requestId, ok: true, result: {} },
           }))
@@ -199,7 +266,7 @@ describe('hosted ui runtime', () => {
     fireEvent(root.querySelector('button')!, event)
     await flushMicrotasks()
 
-    expect(requestMessage).toMatchObject({
+    expect(requestMessages.find((message) => message.method === 'call')).toMatchObject({
       method: 'call',
       userInitiated: false,
     })

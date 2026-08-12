@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from typing import Any
 
@@ -96,14 +97,21 @@ async def test_solution_completed_ignores_answer_cooldown_and_pending_respond_sl
 
 
 class _RecordingBus:
-    def __init__(self, *, failure: Exception | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        accepted: bool = True,
+        failure: Exception | None = None,
+    ) -> None:
+        self.accepted = accepted
         self.failure = failure
         self.events: list[StudyEvent] = []
 
-    async def emit(self, event: StudyEvent) -> None:
+    def schedule_emit(self, event: StudyEvent) -> object | None:
         self.events.append(event)
         if self.failure is not None:
             raise self.failure
+        return object() if self.accepted else None
 
 
 class _RecordingLogger:
@@ -152,7 +160,19 @@ async def test_solution_communication_helper_returns_false_without_bus() -> None
 
 
 @pytest.mark.asyncio
-async def test_solution_communication_helper_hides_content_when_push_fails() -> None:
+async def test_solution_communication_helper_returns_false_when_queue_rejects() -> None:
+    bus = _RecordingBus(accepted=False)
+    harness = _CommunicationHarness(bus)
+
+    scheduled = await harness._emit_solution_completed_event(_narration_sections())
+
+    assert scheduled is False
+    assert len(bus.events) == 1
+    assert harness.logger.warnings == []
+
+
+@pytest.mark.asyncio
+async def test_solution_communication_helper_hides_content_when_scheduling_fails() -> None:
     bus = _RecordingBus(failure=RuntimeError("transport rejected the message"))
     harness = _CommunicationHarness(bus)
 
@@ -164,6 +184,35 @@ async def test_solution_communication_helper_hides_content_when_push_fails() -> 
     rendered_logs = repr(harness.logger.warnings)
     for secret in (_ANALYSIS, _ANSWER, _TRANSFER, _PROCESS, _OCR):
         assert secret not in rendered_logs
+
+
+@pytest.mark.asyncio
+async def test_solution_communication_helper_does_not_wait_for_push_message() -> None:
+    push_started = asyncio.Event()
+    release_push = asyncio.Event()
+
+    class _SlowCtx(_RecordingCtx):
+        async def push_message(self, **kwargs: Any) -> dict[str, bool]:
+            push_started.set()
+            await release_push.wait()
+            self.messages.append(dict(kwargs))
+            return {"submitted": True}
+
+    ctx = _SlowCtx()
+    bus = StudyEventBus(plugin_ctx=ctx)
+    harness = _CommunicationHarness(bus)
+
+    scheduled = await harness._emit_solution_completed_event(_narration_sections())
+
+    assert scheduled is True
+    assert ctx.messages == []
+    await asyncio.wait_for(push_started.wait(), timeout=1.0)
+    assert ctx.messages == []
+
+    release_push.set()
+    await asyncio.wait_for(bus._queue.join(), timeout=1.0)
+    assert len(ctx.messages) == 1
+    await bus.stop_worker()
 
 
 class _SnapshotPipeline:

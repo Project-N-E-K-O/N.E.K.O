@@ -27,7 +27,20 @@ export type HostedAction = {
 
 export type HostedApi = {
   call: (actionId: string, args?: Record<string, any>, options?: { timeoutMs?: number; userInitiated?: boolean }) => Promise<any>
+  parseDocument: (file: File, options?: { timeoutMs?: number }) => Promise<ParsedHostedDocument>
   refresh: () => Promise<any>
+}
+
+export type ParsedHostedDocument = {
+  name: string
+  sourceType: "pdf" | "docx"
+  mime: string
+  originalSize: number
+  chars: number
+  encoding: string
+  truncated: boolean
+  content: string
+  meta?: Record<string, any>
 }
 
 export type HostedI18n = {

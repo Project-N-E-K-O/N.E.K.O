@@ -8922,10 +8922,13 @@ async def test_tutor_agent_prompt_and_reply_contract(
 
     agent = TutorLLMAgent(logger=_Logger(), config=StudyConfig(language="en"))
 
-    async def _fake_call_model(_messages, **_kwargs):
-        return "A derivative is the slope at one point."
+    async def _fake_call_model_result(_messages, **_kwargs):
+        return SimpleNamespace(
+            text="A derivative is the slope at one point.",
+            output_limit_reached=False,
+        )
 
-    monkeypatch.setattr(agent, "_call_model", _fake_call_model)
+    monkeypatch.setattr(agent, "_call_model_result", _fake_call_model_result)
     reply = await agent.concept_explain("derivative", mode=MODE_INTERACTIVE)
 
     assert reply.operation == "concept_explain"
@@ -8942,10 +8945,13 @@ async def test_tutor_agent_teaching_prefix_is_applied_once(
         MODE_TEACHING, language="en", outcome="changed"
     )
 
-    async def _fake_call_model(_messages):
-        return f"{teaching_prefix}\n\nA derivative is the slope at one point."
+    async def _fake_call_model_result(_messages, **_kwargs):
+        return SimpleNamespace(
+            text=f"{teaching_prefix}\n\nA derivative is the slope at one point.",
+            output_limit_reached=False,
+        )
 
-    monkeypatch.setattr(agent, "_call_model", _fake_call_model)
+    monkeypatch.setattr(agent, "_call_model_result", _fake_call_model_result)
     reply = await agent.concept_explain("derivative", mode=MODE_TEACHING)
 
     assert reply.operation == "concept_explain"
@@ -8961,10 +8967,10 @@ async def test_tutor_agent_handles_empty_and_model_failures() -> None:
     assert empty.degraded is True
     assert empty.diagnostic == "empty_input"
 
-    async def _broken_call_model(_messages):
+    async def _broken_call_model_result(_messages, **_kwargs):
         raise RuntimeError("llm unavailable")
 
-    agent._call_model = _broken_call_model  # type: ignore[method-assign]
+    agent._call_model_result = _broken_call_model_result  # type: ignore[method-assign]
     fallback = await agent.concept_explain("photosynthesis converts light")
 
     assert fallback.degraded is True
@@ -8976,7 +8982,7 @@ async def test_tutor_agent_handles_empty_and_model_failures() -> None:
     assert zh_empty.diagnostic == "empty_input"
     assert "请先提供文本" in zh_empty.reply
 
-    zh_agent._call_model = _broken_call_model  # type: ignore[method-assign]
+    zh_agent._call_model_result = _broken_call_model_result  # type: ignore[method-assign]
     zh_fallback = await zh_agent.concept_explain("光合作用")
     assert zh_fallback.diagnostic == "llm_call_failed"
     assert "关键文本：光合作用" in zh_fallback.reply
@@ -8985,7 +8991,7 @@ async def test_tutor_agent_handles_empty_and_model_failures() -> None:
     ja_empty = await ja_agent.concept_explain(" ")
     assert "テキスト" in ja_empty.reply
 
-    ja_agent._call_model = _broken_call_model  # type: ignore[method-assign]
+    ja_agent._call_model_result = _broken_call_model_result  # type: ignore[method-assign]
     ja_fallback = await ja_agent.concept_explain("微分")
     assert ja_fallback.diagnostic == "llm_call_failed"
     assert "重要なテキスト：微分" in ja_fallback.reply
@@ -9455,14 +9461,22 @@ async def test_study_pomodoro_start_offloads_blocking_operations(
     plugin._checkin_manager = object()
     plugin._pomodoro_timer = _Timer()
     plugin._supervision = supervision
+    plugin.ctx = SimpleNamespace(_current_lanlan="fallback-character")
 
-    status = await plugin.study_pomodoro_start(goal_id="goal-1", focus_minutes=30)
+    status = await plugin.study_pomodoro_start(
+        goal_id="goal-1",
+        focus_minutes=30,
+        _ctx={"lanlan_name": "yui-at-start"},
+    )
+    plugin.ctx._current_lanlan = "another-character"
 
     assert isinstance(status, Ok)
     assert status.value["state"] == "focusing"
     assert to_thread_calls == ["status", "start", "get_goal"]
     assert supervision.goal == {"id": "goal-1", "title": "read"}
     assert supervision.planned_minutes == 30.0
+    assert plugin._pomodoro_session_id == "focus-2"
+    assert plugin._pomodoro_target_lanlan == "yui-at-start"
 
 
 @pytest.mark.asyncio
@@ -9658,6 +9672,75 @@ async def test_study_supervision_toggle_parses_string_false() -> None:
     assert isinstance(result, Ok)
     assert result.value["enabled"] is False
     assert supervision.calls == [False]
+
+
+class _MemoryCardItemTypeStore:
+    def __init__(self) -> None:
+        self.item_types: list[str] = []
+
+    def get_or_create_default_deck(self, *, deck_type: str):
+        assert deck_type == "custom"
+        return {"id": "default-deck"}
+
+    def upsert_item(self, *, item_type: str, **_kwargs):
+        self.item_types.append(item_type)
+        return {
+            "created": True,
+            "item": {"id": f"item-{item_type}", "item_type": item_type},
+        }
+
+    def compat_card_payload(self, item):
+        return {"item": item}
+
+
+@pytest.mark.asyncio
+async def test_memory_card_upsert_item_type_schema_and_default() -> None:
+    schema = StudyCompanionPlugin.study_memory_card_upsert.__neko_event_meta__.input_schema
+    assert schema["properties"]["item_type"] == {
+        "type": "string",
+        "enum": ["word", "sentence", "paragraph", "cloze", "custom"],
+        "default": "custom",
+    }
+    plugin = StudyCompanionPlugin.__new__(StudyCompanionPlugin)
+    store = _MemoryCardItemTypeStore()
+    plugin._memory_deck_store = store
+
+    result = await plugin.study_memory_card_upsert(front="Prompt", back="Answer")
+
+    assert isinstance(result, Ok)
+    assert store.item_types == ["custom"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "item_type", ["word", "sentence", "paragraph", "cloze", "custom"]
+)
+async def test_memory_card_upsert_accepts_supported_item_types(item_type: str) -> None:
+    plugin = StudyCompanionPlugin.__new__(StudyCompanionPlugin)
+    store = _MemoryCardItemTypeStore()
+    plugin._memory_deck_store = store
+
+    result = await plugin.study_memory_card_upsert(
+        front="Prompt", back="Answer", item_type=item_type
+    )
+
+    assert isinstance(result, Ok)
+    assert store.item_types == [item_type]
+
+
+@pytest.mark.asyncio
+async def test_memory_card_upsert_rejects_unsupported_item_type() -> None:
+    plugin = StudyCompanionPlugin.__new__(StudyCompanionPlugin)
+    store = _MemoryCardItemTypeStore()
+    plugin._memory_deck_store = store
+
+    result = await plugin.study_memory_card_upsert(
+        front="Prompt", back="Answer", item_type="formula"
+    )
+
+    assert isinstance(result, Err)
+    assert "unsupported memory item type" in str(result.error)
+    assert store.item_types == []
 
 
 @pytest.mark.asyncio
@@ -10243,6 +10326,92 @@ async def test_memory_review_does_not_emit_completion_while_due_cards_remain(
 
 
 @pytest.mark.asyncio
+async def test_memory_review_does_not_complete_while_knowledge_review_is_due(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(tmp_path, {"study": {"language": "en", "auto_open_ui": False}})
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    try:
+        assert isinstance(result, Ok)
+        deck = plugin._memory_deck_store.create_deck(
+            name="Mixed Reviews", deck_type="word"
+        )
+        item = plugin._memory_deck_store.add_word(
+            deck_id=deck["id"], word="one", meaning="1"
+        )["item"]
+        plugin._store.ensure_topic(topic_id="topic-due", name="Topic Due")
+        topic_card = plugin._knowledge_tracker.fsrs.new_knowledge_card(
+            "topic-due"
+        ).to_dict()
+        plugin._store.upsert_fsrs_card(
+            topic_id="topic-due", card=topic_card, last_rating=0
+        )
+
+        reviewed = await plugin.study_memory_review_item(
+            item_id=item["id"], rating="good", correct=True
+        )
+
+        assert isinstance(reviewed, Ok)
+        await _drain_scheduled_events()
+        assert not any(
+            "[Review Session Completed]" in text for text in _study_push_texts(ctx)
+        )
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_knowledge_card_review_emits_completion_for_total_queue_transition(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(tmp_path, {"study": {"language": "en", "auto_open_ui": False}})
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    completed: list[dict[str, object]] = []
+
+    async def _capture_completion(**kwargs) -> bool:
+        completed.append(dict(kwargs))
+        return True
+
+    try:
+        assert isinstance(result, Ok)
+        plugin._emit_review_session_completed_event = (  # type: ignore[method-assign]
+            _capture_completion
+        )
+        plugin._store.ensure_topic(topic_id="derivatives", name="Derivatives")
+        topic_card = plugin._knowledge_tracker.fsrs.new_knowledge_card(
+            "derivatives"
+        ).to_dict()
+        plugin._store.upsert_fsrs_card(
+            topic_id="derivatives", card=topic_card, last_rating=0
+        )
+
+        reviewed = await plugin.study_memory_card_review(
+            topic_id="derivatives",
+            rating="good",
+            _ctx={"lanlan_name": "active-character"},
+        )
+
+        assert isinstance(reviewed, Ok)
+        assert completed == [
+            {
+                "reviewed_count": 1,
+                "deck_name": "Derivatives",
+                "target_lanlan": "active-character",
+            }
+        ]
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_memory_review_event_failure_does_not_fail_review(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -10417,6 +10586,64 @@ async def test_recitation_emits_answer_evaluated(
         assert any("[Answer Evaluated]" in text for text in _study_push_texts(ctx))
     finally:
         await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_recitation_emits_completion_for_total_queue_transition(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(tmp_path, {"study": {"language": "en", "auto_open_ui": False}})
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    completed: list[dict[str, object]] = []
+
+    async def _capture_completion(**kwargs) -> bool:
+        completed.append(dict(kwargs))
+        return True
+
+    try:
+        assert isinstance(result, Ok)
+        plugin.ctx._current_lanlan = "fallback-character"
+        plugin._emit_review_session_completed_event = (  # type: ignore[method-assign]
+            _capture_completion
+        )
+        deck = plugin._memory_deck_store.create_deck(
+            name="Recitation", deck_type="passage"
+        )
+        imported = plugin._memory_deck_store.import_passage(
+            deck_id=deck["id"], title="One Line", text="Only sentence."
+        )
+
+        recited = await plugin.study_memory_recitation_attempt(
+            item_id=imported["items"][0]["id"],
+            user_input_text="Only sentence.",
+        )
+
+        assert isinstance(recited, Ok)
+        assert completed == [
+            {
+                "reviewed_count": 1,
+                "deck_name": "Recitation",
+                "target_lanlan": "fallback-character",
+            }
+        ]
+    finally:
+        await plugin.shutdown()
+
+
+def test_study_target_lanlan_resolution_prefers_entry_context() -> None:
+    plugin = StudyCompanionPlugin.__new__(StudyCompanionPlugin)
+    plugin.ctx = SimpleNamespace(_current_lanlan="fallback-character")
+
+    assert plugin._resolve_study_target_lanlan(
+        {"_ctx": {"lanlan_name": "entry-character"}}
+    ) == "entry-character"
+    assert plugin._resolve_study_target_lanlan({}) == "fallback-character"
+    plugin.ctx._current_lanlan = ""
+    assert plugin._resolve_study_target_lanlan({}) is None
 
 
 @pytest.mark.asyncio

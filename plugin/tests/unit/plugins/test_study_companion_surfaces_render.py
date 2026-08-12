@@ -526,6 +526,13 @@ def test_study_companion_surfaces_share_ui8_interaction_styles_and_messages() ->
     assert "setSelectedNode(null)" in knowledge_map
     assert "ui.button.close" in knowledge_map
     assert 'className="pomodoro-ring"' in pomodoro
+    assert 'className="pomodoro-ring__time"' in pomodoro
+    assert 'data-action="start"' in pomodoro
+    assert 'disabled={!isFocusing}' in pomodoro
+    assert "focus_minutes: normalizedFocusMinutes()" in pomodoro
+    assert 'className="pomodoro-duration"' in pomodoro
+    assert 'className="pomodoro-ring__value"' in pomodoro
+    assert "strokeDashoffset={progressOffset}" in pomodoro
     assert "useRef<AbortController | null>(null)" in study_panel
     assert "event.key !== 'Escape'" in study_panel
     assert "explainControllerRef.current?.abort()" in study_panel

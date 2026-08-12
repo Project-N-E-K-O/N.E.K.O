@@ -7,7 +7,7 @@
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; font-src 'self'; img-src 'self' data: blob:; connect-src 'self'; base-uri 'self'; object-src 'none'" />
     <title>Study Companion</title>
     <link rel="stylesheet" href="./katex.min.css?v=study-hotfix-20260615v" />
-    <link rel="stylesheet" href="./style.css?v=study-hotfix-20260620-i18n" />
+    <link rel="stylesheet" href="./style.css?v=study-pomodoro-dial-knowledge-dialog-xxl-20260812" />
   </head>
   <body>
     <main class="page-shell">
@@ -231,8 +231,19 @@
                 <textarea id="memoryFrontInput" spellcheck="true" data-i18n-placeholder="ui.memory.front_placeholder" placeholder="Question or prompt"></textarea>
                 <textarea id="memoryBackInput" spellcheck="true" data-i18n-placeholder="ui.memory.back_placeholder" placeholder="Answer or recall target"></textarea>
               </div>
+              <label class="input-label" for="memoryItemTypeSelect" data-i18n="ui.memory.item_type">Card type</label>
+              <select id="memoryItemTypeSelect" data-i18n-aria-label="ui.memory.item_type" aria-label="Card type">
+                <option value="custom" data-i18n="ui.memory.item_type.custom">Question and answer</option>
+                <option value="word" data-i18n="ui.memory.item_type.word">Word</option>
+                <option value="cloze" data-i18n="ui.memory.item_type.cloze">Cloze</option>
+                <option value="sentence" data-i18n="ui.memory.item_type.sentence">Sentence recall</option>
+                <option value="paragraph" data-i18n="ui.memory.item_type.paragraph">Paragraph recall</option>
+              </select>
               <label class="input-label" for="memoryDeckSelect" data-i18n="ui.memory.choose_deck">Card deck</label>
-              <select id="memoryDeckSelect" data-i18n-aria-label="ui.memory.choose_deck" aria-label="Card deck"></select>
+              <div class="memory-deck-picker">
+                <select id="memoryDeckSelect" data-i18n-aria-label="ui.memory.choose_deck" aria-label="Card deck"></select>
+                <button id="memoryCreateDeckBtn" class="button button-secondary" type="button" data-i18n="ui.button.create_deck">Create deck</button>
+              </div>
               <div class="action-row">
                 <button id="memoryRefreshBtn" class="button button-secondary" type="button" data-i18n="ui.button.refresh_deck">Refresh Deck</button>
                 <button id="memoryAddBtn" class="button button-primary" type="button" data-i18n="ui.button.save_card">Save Card</button>
@@ -253,15 +264,16 @@
               </div>
               <label class="input-label" for="studyInput" data-i18n="ui.label.text">Text</label>
               <textarea id="studyInput" spellcheck="true" placeholder="Paste a concept, problem statement, or OCR text here." data-i18n-placeholder="ui.placeholder.input"></textarea>
-              <input id="studyDocumentInput" type="file" accept=".txt,.md,.markdown,text/plain,text/markdown" hidden />
+              <input id="studyDocumentInput" type="file" accept=".txt,.md,.markdown,.pdf,.docx,text/plain,text/markdown,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" hidden />
               <div id="studyDocumentDropZone" class="study-document-drop-zone">
-                <button id="studyDocumentImportBtn" class="button button-secondary" type="button" data-i18n="ui.button.import_document">Import document for analysis</button>
-                <span data-i18n="ui.document.drop_hint">Drop one TXT or Markdown file here</span>
+                <button id="studyDocumentImportBtn" class="button button-secondary" type="button" data-i18n="ui.button.import_document">Import file</button>
+                <span data-i18n="ui.document.drop_hint">Drop a file here</span>
               </div>
               <section id="studyDocumentCard" class="study-document-card" aria-live="polite" hidden>
                 <strong id="studyDocumentName"></strong>
                 <span id="studyDocumentMeta"></span>
                 <span id="studyDocumentPrivacy" data-i18n="ui.document.not_retained">The source document will not be saved</span>
+                <span id="studyDocumentTruncated" class="study-document-warning" data-i18n="ui.document.truncated_warning" hidden>The document exceeded the extraction limit. Only the extracted portion will be analyzed.</span>
                 <span id="studyDocumentState"></span>
                 <div id="studyDocumentProgress" class="study-document-progress" hidden>
                   <progress id="studyDocumentProgressBar" max="1" value="0"></progress>
@@ -409,6 +421,31 @@
               <article class="settings-card">
                 <h3 data-i18n="ui.settings.dependencies.title">Dependencies</h3>
                 <p id="settingsDependencySummary" data-i18n="ui.settings.dependencies.summary">Refresh status to inspect OCR backends.</p>
+                <p id="settingsOcrChainStatus" class="dependency-chain-status" aria-live="polite"></p>
+                <div id="settingsDependencyList" class="dependency-list">
+                  <div class="dependency-row" data-dependency="rapidocr">
+                    <span data-i18n="ui.settings.dependencies.name_rapidocr">RapidOCR</span>
+                    <span class="dependency-row__role"></span>
+                    <strong class="dependency-row__status"></strong>
+                    <button class="button button-secondary dependency-row__action" type="button" data-dependency-action="rapidocr_models" hidden></button>
+                  </div>
+                  <div class="dependency-row" data-dependency="tesseract">
+                    <span data-i18n="ui.settings.dependencies.name_tesseract">Tesseract</span>
+                    <span class="dependency-row__role"></span>
+                    <strong class="dependency-row__status"></strong>
+                    <button class="button button-secondary dependency-row__action" type="button" data-dependency-action="tesseract" hidden></button>
+                  </div>
+                  <div class="dependency-row" data-dependency="dxcam">
+                    <span data-i18n="ui.settings.dependencies.name_dxcam">Screen capture</span>
+                    <span class="dependency-row__role"></span>
+                    <strong class="dependency-row__status"></strong>
+                  </div>
+                </div>
+                <p id="settingsDependencyHelp" class="dependency-help" hidden></p>
+                <div id="settingsDependencyProgress" class="dependency-progress" hidden>
+                  <progress max="100" value="0"></progress>
+                  <span aria-live="polite"></span>
+                </div>
               </article>
               </div>
               <div class="settings-actions">
@@ -504,11 +541,18 @@
     </aside>
     <dialog id="memoryDeckDialog" class="memory-deck-dialog" aria-labelledby="memoryDeckDialogTitle" aria-describedby="memoryDeckDialogBody">
       <div class="memory-deck-dialog__panel">
-        <span class="diagnosis-label" data-i18n="ui.memory.first_deck_label">First card</span>
+        <span id="memoryDeckDialogLabel" class="diagnosis-label" data-i18n="ui.memory.first_deck_label">First card</span>
         <h2 id="memoryDeckDialogTitle" data-i18n="ui.memory.first_deck_title">Name your first deck</h2>
         <p id="memoryDeckDialogBody" data-i18n="ui.memory.first_deck_body">Create a deck for this card, or skip to use the default deck.</p>
         <label class="input-label" for="memoryDeckNameInput" data-i18n="ui.label.name">Name</label>
         <input id="memoryDeckNameInput" type="text" maxlength="120" autocomplete="off" data-i18n-placeholder="ui.memory.deck_name_placeholder" placeholder="For example: Calculus review" />
+        <label class="input-label" for="memoryDeckTypeSelect" data-i18n="ui.memory.deck_type">Deck Type</label>
+        <select id="memoryDeckTypeSelect" data-i18n-aria-label="ui.memory.deck_type" aria-label="Deck Type">
+          <option value="word" data-i18n="ui.memory.deck_type.word">Word</option>
+          <option value="passage" data-i18n="ui.memory.deck_type.passage">Passage</option>
+          <option value="formula" data-i18n="ui.memory.deck_type.formula">Formula</option>
+          <option value="custom" data-i18n="ui.memory.deck_type.custom">Custom</option>
+        </select>
         <div class="memory-deck-dialog__actions">
           <button id="memoryDeckSkipBtn" class="button button-secondary" type="button" data-i18n="ui.button.skip_use_default_deck">Skip and use default</button>
           <button id="memoryDeckCreateBtn" class="button button-primary" type="button" data-i18n="ui.button.create_and_save">Create and save</button>
@@ -518,10 +562,12 @@
     <script src="./i18n.js"></script>
     <script src="./katex.min.js?v=study-hotfix-20260615v"></script>
     <script src="./katex-render.js?v=study-hotfix-20260615v"></script>
-    <script src="./surface-panels.js?v=study-hotfix-20260620-i18n"></script>
+    <script src="./surface-panels.js?v=study-pomodoro-progress-20260812"></script>
     <script src="./knowledge-map.js?v=study-hotfix-20260714-review"></script>
     <script src="./document-controller.js?v=study-hotfix-20260812"></script>
+    <script src="./dependency-controller.js?v=study-ocr-dependencies-20260812"></script>
+    <script src="./quick-card-controller.js?v=study-quick-card-types-20260812"></script>
     <script src="./outcome-formatters.js?v=study-hotfix-20260812"></script>
-    <script src="./main.js?v=study-hotfix-20260621-yui-static"></script>
+    <script src="./main.js?v=study-ocr-dependencies-knowledge-dialog-20260812"></script>
   </body>
 </html>

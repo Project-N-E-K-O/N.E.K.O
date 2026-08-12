@@ -119,7 +119,7 @@ id = "study-panel"
 title = "Study Panel"
 entry = "surfaces/study_panel.tsx"
 context = "study"
-permissions = ["state:read", "action:call"]
+permissions = ["state:read", "action:call", "document:parse"]
 
 [[plugin.ui.panel]]
 id = "knowledge-map"

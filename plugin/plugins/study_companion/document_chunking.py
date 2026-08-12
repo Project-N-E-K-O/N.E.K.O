@@ -75,7 +75,7 @@ def split_document(
     min_preferred_tokens: int = DOCUMENT_CHUNK_MIN_PREFERRED_TOKENS,
     max_chunks: int = DOCUMENT_MAX_CHUNKS,
 ) -> tuple[DocumentChunk, ...]:
-    """Split a validated TXT/Markdown source without dropping or reordering text.
+    """Split validated extracted document text without dropping or reordering it.
 
     Structural boundaries are preferred. Oversized structural sections are split at
     paragraph boundaries, then sentence boundaries. An indivisible over-budget
@@ -84,7 +84,12 @@ def split_document(
 
     if not text:
         raise DocumentChunkingError("document is empty")
-    if document_type not in {"text/plain", "text/markdown"}:
+    if document_type not in {
+        "text/plain",
+        "text/markdown",
+        "application/pdf",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    }:
         raise DocumentChunkingError("document type is not supported")
     if not (0 < min_preferred_tokens <= target_tokens <= max_tokens):
         raise ValueError("chunk token budgets must satisfy 0 < min <= target <= max")

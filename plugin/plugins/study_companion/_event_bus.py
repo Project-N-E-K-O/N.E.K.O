@@ -44,6 +44,8 @@ VISIBILITY_MAP: dict[str, list[str]] = {
     "session_summarized": ["chat"],
     "solution_completed": ["chat"],
     "review_session_completed": ["chat"],
+    "pomodoro_focus_completed": ["chat"],
+    "pomodoro_break_completed": ["chat"],
     "general_response_completed": ["chat"],
 }
 
@@ -55,6 +57,8 @@ BEHAVIOR_MAP: dict[str, str] = {
     "session_summarized": "read",
     "solution_completed": "respond",
     "review_session_completed": "respond",
+    "pomodoro_focus_completed": "respond",
+    "pomodoro_break_completed": "respond",
     "general_response_completed": "respond",
 }
 
@@ -66,6 +70,8 @@ PRIORITY_MAP: dict[str, int] = {
     "session_summarized": 1,
     "solution_completed": 5,
     "review_session_completed": 5,
+    "pomodoro_focus_completed": 7,
+    "pomodoro_break_completed": 6,
     "general_response_completed": 5,
 }
 
@@ -265,16 +271,23 @@ class StudyEventBus:
             text = self._format(event)
             visibility = VISIBILITY_MAP.get(event.name, [])
             priority = PRIORITY_MAP.get(event.name, 2)
+            message: dict[str, Any] = {
+                "visibility": visibility,
+                "ai_behavior": behavior,
+                "priority": priority,
+                "parts": [{"type": "text", "text": text}],
+                "source": "study_companion",
+            }
+            target_lanlan = _target_lanlan(event.payload)
+            if target_lanlan is not None:
+                message["target_lanlan"] = target_lanlan
+            coalesce_key = _coalesce_key(event)
+            if coalesce_key is not None:
+                message["coalesce_key"] = coalesce_key
             prepared = _PreparedEmit(
                 decision=decision,
                 mark_respond=mark_respond,
-                message={
-                    "visibility": visibility,
-                    "ai_behavior": behavior,
-                    "priority": priority,
-                    "parts": [{"type": "text", "text": text}],
-                    "source": "study_companion",
-                },
+                message=message,
             )
             self._reserve_emit(decision, mark_respond=mark_respond)
 
@@ -450,6 +463,35 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
     return number if math.isfinite(number) else default
 
 
+def _target_lanlan(payload: dict[str, Any]) -> str | None:
+    value = payload.get("target_lanlan")
+    if not isinstance(value, str):
+        return None
+    return value.strip() or None
+
+
+def _coalesce_key(event: StudyEvent) -> str | None:
+    if event.name == "review_due":
+        return "study:review_due"
+    if event.name == "review_session_completed":
+        return "study:review_session_completed"
+    if event.name not in {
+        "pomodoro_focus_completed",
+        "pomodoro_break_completed",
+    }:
+        return None
+
+    session_id = str(
+        event.payload.get("session_id")
+        or event.payload.get("focus_session_id")
+        or f"event-{event.timestamp:.9f}"
+    ).strip()
+    if event.name == "pomodoro_focus_completed":
+        return f"study:pomodoro:{session_id}:focus_completed"
+    break_type = str(event.payload.get("break_type") or "break").strip()
+    return f"study:pomodoro:{session_id}:{break_type}:completed"
+
+
 def _ratio(value: Any) -> float:
     number = _safe_float(value, 0.0)
     if number > 1.0:
@@ -516,10 +558,18 @@ def _fmt_review_due(payload: dict[str, Any]) -> str:
     urgent = int(_safe_float(payload.get("urgent_count"), 0.0))
     topics = ", ".join(str(item) for item in payload.get("topics") or [] if item)
     suggestion = str(payload.get("suggestion") or "").strip()
-    return (
-        f"[Review Due] {due} card(s) due ({urgent} overdue)\n"
-        f"Topics: {topics}\n{suggestion}"
-    ).strip()
+    details = [
+        f"[Review Due] {due} card(s) due ({urgent} overdue)",
+        f"Topics: {topics}",
+    ]
+    if suggestion:
+        details.append(f"Suggestion: {suggestion}")
+    details.append(
+        "In the current character voice and current conversation language, "
+        "naturally and briefly remind the user that it is time to review. "
+        "Do not read the bracketed label or invent additional study tasks."
+    )
+    return "\n".join(details)
 
 
 def _fmt_session_summarized(payload: dict[str, Any]) -> str:
@@ -551,9 +601,31 @@ def _fmt_review_session_completed(payload: dict[str, Any]) -> str:
     deck_line = f"Deck: {deck_name}\n" if deck_name else ""
     return (
         "[Review Session Completed]\n"
-        f"{deck_line}The due review queue is now empty. Tell the user naturally that the "
-        "review is complete and acknowledge their effort with a brief message such as "
-        "‘复习完成了，辛苦了！’ Do not add new study tasks unless asked."
+        f"{deck_line}The due review queue is now empty. In the current character voice "
+        "and current conversation language, naturally tell the user that the review is "
+        "complete and briefly acknowledge their effort. Do not read the bracketed label "
+        "or add new study tasks unless asked."
+    )
+
+
+def _fmt_pomodoro_focus_completed(payload: dict[str, Any]) -> str:
+    duration = int(_safe_float(payload.get("duration_minutes"), 0.0))
+    duration_line = f"Focus duration: {duration} minute(s).\n" if duration > 0 else ""
+    return (
+        "[Pomodoro Focus Completed]\n"
+        f"{duration_line}The focus interval has ended. In the current character voice "
+        "and current conversation language, naturally and briefly remind the user that "
+        "it is time to take a break. Do not read the bracketed label."
+    )
+
+
+def _fmt_pomodoro_break_completed(payload: dict[str, Any]) -> str:
+    break_type = str(payload.get("break_type") or "break").strip()
+    return (
+        "[Pomodoro Break Completed]\n"
+        f"Break type: {break_type}. The break has ended. In the current character voice "
+        "and current conversation language, naturally and briefly remind the user that "
+        "it is time to continue studying. Do not read the bracketed label."
     )
 
 
@@ -574,6 +646,8 @@ _FORMATTERS: dict[str, Callable[[dict[str, Any]], str]] = {
     "session_summarized": _fmt_session_summarized,
     "solution_completed": _fmt_solution_completed,
     "review_session_completed": _fmt_review_session_completed,
+    "pomodoro_focus_completed": _fmt_pomodoro_focus_completed,
+    "pomodoro_break_completed": _fmt_pomodoro_break_completed,
     "general_response_completed": _fmt_general_response_completed,
 }
 

@@ -26,6 +26,7 @@ from .tutor_llm_agent_common import (
 )
 from .qwen_native_client import (
     QwenNativeClient,
+    QwenNativeResult,
     messages_have_image,
     new_operation_deadline,
 )
@@ -358,15 +359,28 @@ class TutorLLMAgent:
         operation: str = LLM_OPERATION_CONCEPT_EXPLAIN,
         deadline: float | None = None,
     ) -> str:
+        result = await self._call_model_result(
+            messages,
+            operation=operation,
+            deadline=deadline,
+        )
+        return result.text
+
+    async def _call_model_result(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        operation: str = LLM_OPERATION_CONCEPT_EXPLAIN,
+        deadline: float | None = None,
+    ) -> QwenNativeResult:
         effective_deadline = deadline or self._new_operation_deadline(
             operation, messages
         )
-        result = await self._qwen_client.call(
+        return await self._qwen_client.call(
             messages,
             operation=operation,
             deadline=effective_deadline,
         )
-        return result.text
 
     def _new_operation_deadline(
         self, operation: str, messages: list[dict[str, Any]]

@@ -26,6 +26,13 @@ export default defineConfig({
       allow: ['..']
     },
     proxy: {
+      // Hosted document parsing uses a deliberately narrow API proxy. Do not
+      // expose the entire /api namespace through the plugin-manager dev server.
+      '/api/documents': {
+        target: BACKEND_TARGET,
+        changeOrigin: true,
+        secure: false
+      },
       // 代理所有插件服务器 API 请求
       '/plugin/': {
         target: BACKEND_TARGET,

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 from .tutor_llm_agent_common import (
     Any,
     asyncio,
@@ -55,6 +57,22 @@ _SOLUTION_REPAIR_SYSTEM_PROMPT = (
 )
 _SOLUTION_REPAIR_SOURCE_MAX_TOKENS = 3000
 _SOLUTION_REPAIR_OUTPUT_MAX_TOKENS = 6000
+
+
+def _entry_deadline(context: dict[str, Any] | None) -> float | None:
+    value = (context or {}).get("deadline_monotonic")
+    if isinstance(value, bool):
+        return None
+    try:
+        deadline = float(value)
+    except (TypeError, ValueError):
+        return None
+    return deadline if deadline > 0 else None
+
+
+def _clamp_deadline(deadline: float, context: dict[str, Any] | None) -> float:
+    request_deadline = _entry_deadline(context)
+    return min(deadline, request_deadline) if request_deadline is not None else deadline
 
 
 def _vision_fallback_explanation(language: str | None) -> str:
@@ -159,9 +177,12 @@ async def repair_solution_structure(
     try:
         if vision_image_base64:
             messages = agent._attach_vision_image(messages, vision_image_base64)
-        deadline = agent._new_operation_deadline(
-            "solution_structure_repair", messages
+        deadline = _clamp_deadline(
+            agent._new_operation_deadline("solution_structure_repair", messages),
+            context,
         )
+        if deadline <= time.monotonic():
+            return None
         raw_text = await agent._call_model(
             messages,
             operation="solution_structure_repair",
@@ -219,12 +240,16 @@ async def concept_explain(
     if vision_image_base64:
         messages = self._attach_vision_image(messages, vision_image_base64)
     try:
-        deadline = self._new_operation_deadline(MODE_CONCEPT_EXPLAIN, messages)
-        content = await self._call_model(
+        deadline = _clamp_deadline(
+            self._new_operation_deadline(MODE_CONCEPT_EXPLAIN, messages),
+            context,
+        )
+        model_result = await self._call_model_result(
             messages,
             operation=MODE_CONCEPT_EXPLAIN,
             deadline=deadline,
         )
+        content = model_result.text
         reply = content.strip()
         if not reply:
             raise SdkError("empty model response")
@@ -240,6 +265,11 @@ async def concept_explain(
             input_text=normalized,
             reply=reply,
             degraded=False,
+            diagnostic=(
+                "output_truncated"
+                if model_result.output_limit_reached
+                else ""
+            ),
             created_at=utc_now_iso(),
         )
     except asyncio.CancelledError:

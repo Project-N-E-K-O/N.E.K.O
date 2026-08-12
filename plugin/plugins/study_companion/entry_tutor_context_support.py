@@ -305,6 +305,17 @@ class _TutorContextSupportMixin:
             if callable(new_deadline)
             else route_deadline
         )
+        request_deadline = context.get("deadline_monotonic")
+        if not isinstance(request_deadline, bool):
+            try:
+                parsed_request_deadline = float(request_deadline)
+            except (TypeError, ValueError):
+                parsed_request_deadline = 0.0
+            if parsed_request_deadline > 0:
+                deadline = min(deadline, parsed_request_deadline)
+        remaining_seconds = deadline - time.monotonic()
+        if remaining_seconds <= 0:
+            return None, "routing_unavailable", "timeout"
         try:
             raw = await asyncio.wait_for(
                 call_model(
@@ -312,7 +323,7 @@ class _TutorContextSupportMixin:
                     operation=_SEMANTIC_ROUTE_OPERATION,
                     deadline=deadline,
                 ),
-                timeout=max(0.1, deadline - time.monotonic()),
+                timeout=remaining_seconds,
             )
         except asyncio.CancelledError:
             raise
