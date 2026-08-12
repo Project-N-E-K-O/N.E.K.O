@@ -829,7 +829,7 @@ def test_music_playback_keeps_core_entrypoints_thin() -> None:
     assert "play_music" not in tool_source
 
 
-def test_confirmed_user_music_playback_uses_existing_callback_delivery() -> None:
+def test_confirmed_user_music_playback_stays_passive_after_request_reply() -> None:
     manager = SimpleNamespace(
         lanlan_name="YUI",
         _music_request_epoch=7,
@@ -847,15 +847,15 @@ def test_confirmed_user_music_playback_uses_existing_callback_delivery() -> None
     }
 
     assert music_playback.handle_music_playback_state(manager, event) is True
-    callback = manager.submit_proactive_callback.call_args.args[0]
-    assert callback["delivery_mode"] == "proactive"
+    callback = manager.enqueue_agent_callback.call_args.args[0]
+    assert callback["delivery_mode"] == "passive"
     assert callback["channel"] == "music_playback"
     assert "播放器已确认开始播放《大喜》（泠鸢yousa）" in callback["detail"]
-    assert "不要再次调用音乐播放工具" in callback["detail"]
-    manager.enqueue_agent_callback.assert_not_called()
+    assert "不要再次调用音乐播放工具" not in callback["detail"]
+    manager.submit_proactive_callback.assert_not_called()
 
     assert music_playback.handle_music_playback_state(manager, event) is False
-    manager.submit_proactive_callback.assert_called_once()
+    manager.enqueue_agent_callback.assert_called_once()
 
 
 def test_non_user_music_state_is_passive_and_coalesced() -> None:
@@ -945,7 +945,8 @@ def test_music_playback_keeps_current_owner_during_replacement_search() -> None:
     manager._music_request_epoch = 8
     event["state"] = "ended"
     assert music_playback.handle_music_playback_state(manager, event) is True
-    manager.enqueue_agent_callback.assert_called_once()
+    assert manager.enqueue_agent_callback.call_count == 2
+    manager.submit_proactive_callback.assert_not_called()
 
 
 def test_music_playback_rejects_stale_windows_and_request_epochs() -> None:
