@@ -3261,6 +3261,7 @@
                         window.dispatchEvent(new CustomEvent('neko:user-content-sent', {
                             detail: {
                                 requestId: requestId,
+                                text: text,
                                 source: messageSource || 'text'
                             }
                         }));

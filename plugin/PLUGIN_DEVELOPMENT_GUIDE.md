@@ -555,14 +555,14 @@ return await self.finish(data={"summary": "..."}, delivery="silent")
 > 两条独立轴（见上面 `push_message(**kwargs) -> PushMessageResult` 节）。旧 `delivery=`
 > / `reply=` 仍能用但会 emit DeprecationWarning，v0.9 移除。
 
-#### "任务汇报"vs"事件回应"：宿主自动分类
+#### "任务汇报"vs"事件回应"：声明结果语义
 
-主 AI 在收到通知时，会被套上一层外层 prompt。**外层 prompt 的措辞分两类**——
-插件作者**不能也无需指定**，宿主根据你调用的 SDK 方法自动判定：
+主 AI 在收到通知时，会被套上一层外层 prompt。**外层 prompt 的措辞分两类**：
 
 | 你调用 | 宿主分类 | AI 收到的外层 prompt 大意 |
 |---|---|---|
-| `await self.finish(...)` | `task_result` | "来自{你的插件}的任务已完成，请向主人**汇报**..." |
+| `await self.finish(...)`（默认） | `task_result` | "来自{你的插件}的任务已完成，请向主人**汇报**..." |
+| 查询/即时回执 entry 声明 `result_kind="event"` | `event` | "来自{你的插件}的**新消息**，请按内容**回应**主人..." |
 | `self.push_message(...)` | `event` | "来自{你的插件}的**新消息**，请按内容**回应**主人..." |
 
 设计原因——"任务汇报"和"事件流"是两种完全不同的语义：
@@ -573,10 +573,29 @@ return await self.finish(data={"summary": "..."}, delivery="silent")
 旧版本曾经把所有 `ai_behavior="respond"` 的 push 也套上"任务已完成"模板，导致
 弹幕插件让兰兰用"我刚才处理了一下弹幕"这种汇报型口吻回观众——这是 bug，已修复。
 
-> **关键**：宿主从 `event_type`（`task_result` 还是 `proactive_message`）派生
-> 这个分类，源头在 `agent_server._emit_task_result()` vs `proactive_bridge` 两条
-> 入站路径。插件作者既不会，也无法把"事件流"伪装成"任务完成"。
->
+查询、状态读取或“已开始”一类即时回执应显式降级为事件语义。可静态声明：
+
+```python
+@plugin_entry(
+    id="service_status",
+    metadata={"result_kind": "event", "expires_in_s": 30},
+)
+```
+
+也可由某次运行结果覆盖静态声明：
+
+```python
+return await self.finish(
+    data={"status": "running"},
+    meta={"agent": {"result_kind": "event", "expires_in_s": 10}},
+)
+```
+
+解析优先级为“运行时 `meta.agent` > entry 静态 `metadata` > 默认
+`task_result`”。`expires_in_s` 只对 `event` 结果生效；过期回执不会再进入主 AI。
+宿主只允许成功的 `user_plugin task_result` 降级为 `event`，不能把
+`proactive_message` 反向伪装成任务完成。
+
 > `delivery` / `ai_behavior` 只控制时机（立即起 turn / 等下次用户开口 / 完全静默），
 > 不再决定外层 prompt 的措辞。两个轴正交，组合 6 种都合理。
 

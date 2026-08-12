@@ -4032,11 +4032,12 @@ function CompactChatApp({
   }, [closeCompactInputToolFanFromUserClick]);
 
   // ── compact surface 控件「按住拖动对话框」手势 ────────────────────────────
-  // 在 toggle / fan 中心 / 毛球 / 胶囊 / textarea 按下后移动超阈值 → 把 surface
+  // 在 toggle / fan 中心 / 毛球 / 胶囊按下后移动超阈值 → 把 surface
   // 拖拽交给宿主（web: app-react-chat-window / Electron: preload-chat-react.js）经
   // neko:compact-surface-drag-grab 接管。
   // 点按（无移动）语义保持原样：toggle 展开/关闭，fan 原点收起，毛球折叠，胶囊进入 input，
-  // textarea 正常聚焦输入。
+  // textarea、input 与 contenteditable 正常聚焦/选择。文本编辑控件中的指针移动始终留给光标与文本选择，
+  // 不能被父层冒泡的 pointer 事件重新解释为窗口拖拽。
   // 用独立的 compactToolOriginSuppressClickRef 抑制拖动后补发的 click——不能复用
   // compactInputToolWheelSuppressClickRef，因为关闭轮盘的 effect 会把它清掉（见下方 fan 关闭 effect）。
   const clearCompactToolOriginDocumentListeners = useCallback(() => {
@@ -4206,6 +4207,8 @@ function CompactChatApp({
 
   const beginCompactToolOriginDrag = useCallback((event: ReactPointerEvent) => {
     if (event.pointerType === 'mouse' && event.button !== 0) return;
+    const eventTarget = event.target instanceof Element ? event.target : null;
+    if (eventTarget?.closest('textarea, input, [contenteditable]:not([contenteditable="false"])')) return;
     const existing = compactToolOriginDragRef.current;
     if (existing && existing.pointerId === event.pointerId) return;
     if (existing) {

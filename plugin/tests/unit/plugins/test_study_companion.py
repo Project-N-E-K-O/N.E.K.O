@@ -8946,6 +8946,7 @@ async def test_study_plugin_starts_and_collects_entries(
     assert isinstance(result, Ok)
     entries = plugin.collect_entries()
     assert "study_status" in entries
+    assert entries["study_status"].meta.metadata["result_kind"] == "event"
     assert "study_explain_text" in entries
     assert "study_ocr_snapshot" in entries
     assert "study_set_mode" in entries

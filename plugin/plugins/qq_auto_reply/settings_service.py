@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from copy import deepcopy
@@ -14,6 +15,32 @@ from .group_permission import GroupPermissionManager
 class QQSettingsService:
     def __init__(self, plugin: Any):
         self.plugin = plugin
+
+    @staticmethod
+    def _clamp_attention_float(
+        value: Any,
+        name: str,
+        *,
+        floor: float | None = None,
+        ceiling: float | None = None,
+    ) -> float:
+        """校验注意力配置浮点参数：拒绝非有限值，再按需钳制到 [floor, ceiling]。
+
+        inf/-inf/NaN 不能靠 max()/min() 安全丢弃——max(0.0, inf)=inf 会保存
+        正无穷，min()/max() 对 NaN 的比较恒为 False、落到哪个分支取决于实参
+        顺序，行为不可靠。先 math.isfinite 拒绝，再钳制。
+        """
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            raise ValueError(f"{name} 必须是数字")
+        if not math.isfinite(parsed):
+            raise ValueError(f"{name} 必须是有限数值（不能为 inf/-inf/NaN）")
+        if floor is not None:
+            parsed = max(floor, parsed)
+        if ceiling is not None:
+            parsed = min(ceiling, parsed)
+        return parsed
 
     def _stamp_group_memory_transition(self, *, enabled_after: bool) -> None:
         """同步（无 await）给"转变时刻已存在"的群会话打标：后台任务只处理
@@ -661,7 +688,6 @@ class QQSettingsService:
         self.plugin._backlog_summary_threshold = max(1, int(settings.get("backlog_summary_threshold", 10) or 10))
         self.plugin._backlog_notify_cooldown_seconds = max(60, int(settings.get("backlog_notify_cooldown_seconds", 900) or 900))
         self.plugin._backlog_issue_notify_threshold = max(1, int(settings.get("backlog_issue_notify_threshold", 1) or 1))
-        self.plugin._sticker_cooldown_messages = max(0, int(settings.get("sticker_cooldown_messages", 5) or 5))
         # 猫娘动态注意力策略配置
         self.plugin._strategy_mode = self.plugin.config_store._normalize_strategy_mode(settings.get("strategy_mode"))
         self._enforce_attention_for_dynamic_mode()
@@ -945,46 +971,41 @@ class QQSettingsService:
             self.plugin._truth_reply_probability = value
         if backlog_labels is not None:
             self.plugin._qq_settings["backlog_labels"] = self.plugin.config_store.normalize_backlog_labels(backlog_labels)
-        proactive_silence_seconds = kwargs.get("proactive_silence_seconds")
-        if proactive_silence_seconds is not None:
-            self.plugin._qq_settings["proactive_silence_seconds"] = max(0, int(proactive_silence_seconds))
-        sticker_cooldown_messages = kwargs.get("sticker_cooldown_messages")
-        if sticker_cooldown_messages is not None:
-            self.plugin._qq_settings["sticker_cooldown_messages"] = max(0, int(sticker_cooldown_messages))
-            self.plugin._sticker_cooldown_messages = max(0, int(sticker_cooldown_messages))
-        group_attention_decay_per_second = kwargs.get("group_attention_decay_per_second")
-        if group_attention_decay_per_second is not None:
-            self.plugin._qq_settings["group_attention_decay_per_second"] = max(0.001, float(group_attention_decay_per_second))
-        group_attention_message_recovery = kwargs.get("group_attention_message_recovery")
-        if group_attention_message_recovery is not None:
-            self.plugin._qq_settings["group_attention_message_recovery"] = max(0.0, float(group_attention_message_recovery))
-        group_attention_reply_penalty = kwargs.get("group_attention_reply_penalty")
-        if group_attention_reply_penalty is not None:
-            self.plugin._qq_settings["group_attention_reply_penalty"] = max(0.0, float(group_attention_reply_penalty))
-        group_attention_keyword_boost_scale = kwargs.get("group_attention_keyword_boost_scale")
-        if group_attention_keyword_boost_scale is not None:
-            self.plugin._qq_settings["group_attention_keyword_boost_scale"] = max(0.1, float(group_attention_keyword_boost_scale))
-        group_attention_focus_lock_seconds = kwargs.get("group_attention_focus_lock_seconds")
-        if group_attention_focus_lock_seconds is not None:
-            self.plugin._qq_settings["group_attention_focus_lock_seconds"] = max(0, int(group_attention_focus_lock_seconds))
         group_attention_max_score = kwargs.get("group_attention_max_score")
         if group_attention_max_score is not None:
-            self.plugin._qq_settings["group_attention_max_score"] = max(1.0, float(group_attention_max_score))
+            # 上限与前端 max=10、config 默认 10.0 对齐
+            self.plugin._qq_settings["group_attention_max_score"] = self._clamp_attention_float(group_attention_max_score, "group_attention_max_score", floor=1.0, ceiling=10.0)
         group_attention_focus_threshold = kwargs.get("group_attention_focus_threshold")
         if group_attention_focus_threshold is not None:
-            self.plugin._qq_settings["group_attention_focus_threshold"] = max(0.1, float(group_attention_focus_threshold))
+            self.plugin._qq_settings["group_attention_focus_threshold"] = self._clamp_attention_float(group_attention_focus_threshold, "group_attention_focus_threshold", floor=0.1)
         group_attention_min_threshold = kwargs.get("group_attention_min_threshold")
         if group_attention_min_threshold is not None:
-            self.plugin._qq_settings["group_attention_min_threshold"] = max(0.0, float(group_attention_min_threshold))
+            self.plugin._qq_settings["group_attention_min_threshold"] = self._clamp_attention_float(group_attention_min_threshold, "group_attention_min_threshold", floor=0.0)
         group_attention_message_gain = kwargs.get("group_attention_message_gain")
         if group_attention_message_gain is not None:
-            self.plugin._qq_settings["group_attention_message_gain"] = max(0.0, float(group_attention_message_gain))
-        group_attention_focus_cooldown_seconds = kwargs.get("group_attention_focus_cooldown_seconds")
-        if group_attention_focus_cooldown_seconds is not None:
-            self.plugin._qq_settings["group_attention_focus_cooldown_seconds"] = max(10, int(group_attention_focus_cooldown_seconds))
-        group_attention_focus_rise_seconds = kwargs.get("group_attention_focus_rise_seconds")
-        if group_attention_focus_rise_seconds is not None:
-            self.plugin._qq_settings["group_attention_focus_rise_seconds"] = max(0, int(group_attention_focus_rise_seconds))
+            self.plugin._qq_settings["group_attention_message_gain"] = self._clamp_attention_float(group_attention_message_gain, "group_attention_message_gain", floor=0.0)
+        attention_base_rise_rate = kwargs.get("attention_base_rise_rate")
+        if attention_base_rise_rate is not None:
+            # floor=0：0 表示禁用自然上升（rise 相位不随时间增长）
+            self.plugin._qq_settings["attention_base_rise_rate"] = self._clamp_attention_float(attention_base_rise_rate, "attention_base_rise_rate", floor=0.0)
+        attention_message_boost = kwargs.get("attention_message_boost")
+        if attention_message_boost is not None:
+            self.plugin._qq_settings["attention_message_boost"] = self._clamp_attention_float(attention_message_boost, "attention_message_boost", floor=0.0)
+        attention_keyword_boost_ratio = kwargs.get("attention_keyword_boost_ratio")
+        if attention_keyword_boost_ratio is not None:
+            self.plugin._qq_settings["attention_keyword_boost_ratio"] = self._clamp_attention_float(attention_keyword_boost_ratio, "attention_keyword_boost_ratio", floor=0.0)
+        attention_honeymoon_seconds = kwargs.get("attention_honeymoon_seconds")
+        if attention_honeymoon_seconds is not None:
+            self.plugin._qq_settings["attention_honeymoon_seconds"] = max(0, int(attention_honeymoon_seconds))
+        attention_fall_seconds = kwargs.get("attention_fall_seconds")
+        if attention_fall_seconds is not None:
+            self.plugin._qq_settings["attention_fall_seconds"] = max(0, int(attention_fall_seconds))
+        attention_fall_rate = kwargs.get("attention_fall_rate")
+        if attention_fall_rate is not None:
+            self.plugin._qq_settings["attention_fall_rate"] = self._clamp_attention_float(attention_fall_rate, "attention_fall_rate", floor=0.0)
+        attention_consume_ratio = kwargs.get("attention_consume_ratio")
+        if attention_consume_ratio is not None:
+            self.plugin._qq_settings["attention_consume_ratio"] = self._clamp_attention_float(attention_consume_ratio, "attention_consume_ratio", floor=0.0, ceiling=1.0)
         icebreaker_cold_threshold = kwargs.get("icebreaker_cold_threshold")
         if icebreaker_cold_threshold is not None:
             self.plugin._qq_settings["icebreaker_cold_threshold"] = max(0, int(icebreaker_cold_threshold))
