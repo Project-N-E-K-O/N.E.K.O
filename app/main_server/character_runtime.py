@@ -39,6 +39,9 @@ _config_manager = runtime.config_manager
 logger = runtime.logger
 
 _PLUGIN_IMAGE_MAX_BYTES = 8 * 1024 * 1024
+_PLUGIN_MODEL_IMAGE_MAX_COUNT = 8
+_PLUGIN_MODEL_IMAGE_FETCH_BATCH_SIZE = 2
+_PLUGIN_MODEL_IMAGE_AGGREGATE_MAX_BYTES = 8 * 1024 * 1024
 
 
 def _is_local_plugin_media_url(url: str) -> bool:
@@ -65,8 +68,14 @@ def _is_local_plugin_media_url(url: str) -> bool:
         return False
 
 
-def _plugin_image_chat_blocks(media_parts: list[Any]) -> list[dict[str, str]]:
-    """Convert bounded plugin image parts into frontend image blocks."""
+def _base64_decoded_size(encoded: str) -> int:
+    """Return decoded size for canonical base64 without allocating bytes."""
+    padding = 2 if encoded.endswith("==") else int(encoded.endswith("="))
+    return max(0, (len(encoded) * 3) // 4 - padding)
+
+
+def _build_plugin_image_chat_blocks(media_parts: list[Any]) -> list[dict[str, str]]:
+    """Synchronously validate plugin image parts and build frontend blocks."""
     blocks: list[dict[str, str]] = []
     max_base64_chars = ((_PLUGIN_IMAGE_MAX_BYTES + 2) // 3) * 4
     for part in media_parts:
@@ -96,6 +105,11 @@ def _plugin_image_chat_blocks(media_parts: list[Any]) -> list[dict[str, str]]:
             "url": f"data:{mime};base64,{encoded}",
         })
     return blocks
+
+
+async def _plugin_image_chat_blocks(media_parts: list[Any]) -> list[dict[str, str]]:
+    """Build frontend image blocks without decoding base64 on the event loop."""
+    return await asyncio.to_thread(_build_plugin_image_chat_blocks, media_parts)
 
 
 async def _fetch_plugin_image_base64(url: str) -> str:
@@ -646,41 +660,82 @@ async def _handle_agent_event(event: dict):
             if media_parts and ai_behavior_v2 in ("respond", "read"):
                 sess = getattr(mgr, "session", None)
                 stream_image = getattr(sess, "stream_image", None) if sess else None
-                url_image_indexes: list[int] = []
-                url_image_fetches = []
+                model_image_indexes: list[int] = []
                 for index, part in enumerate(media_parts):
-                    if (
-                        isinstance(part, dict)
-                        and part.get("type") == "image"
-                        and not part.get("binary_base64")
-                        and isinstance(part.get("url"), str)
-                        and part.get("url")
-                    ):
-                        url_image_indexes.append(index)
-                        url_image_fetches.append(
-                            _fetch_plugin_image_base64(part["url"])
+                    if not isinstance(part, dict) or part.get("type") != "image":
+                        continue
+                    encoded = part.get("binary_base64")
+                    url = part.get("url")
+                    is_inline = isinstance(encoded, str) and bool(encoded)
+                    is_local_url = isinstance(url, str) and _is_local_plugin_media_url(url)
+                    if not is_inline and not is_local_url:
+                        continue
+                    if len(model_image_indexes) >= _PLUGIN_MODEL_IMAGE_MAX_COUNT:
+                        logger.warning(
+                            "[EventBus] plugin image count exceeds model limit; dropped index=%d",
+                            index,
                         )
-                fetched_url_images: dict[int, str] = {}
-                if url_image_fetches:
+                        continue
+                    model_image_indexes.append(index)
+                resolved_model_images: dict[int, str] = {}
+                aggregate_image_bytes = 0
+                for offset in range(
+                    0,
+                    len(model_image_indexes),
+                    _PLUGIN_MODEL_IMAGE_FETCH_BATCH_SIZE,
+                ):
+                    batch_indexes = model_image_indexes[
+                        offset : offset + _PLUGIN_MODEL_IMAGE_FETCH_BATCH_SIZE
+                    ]
+                    url_indexes = [
+                        index
+                        for index in batch_indexes
+                        if not media_parts[index].get("binary_base64")
+                        and isinstance(media_parts[index].get("url"), str)
+                        and media_parts[index].get("url")
+                    ]
                     fetch_results = await asyncio.gather(
-                        *url_image_fetches,
+                        *(
+                            _fetch_plugin_image_base64(media_parts[index]["url"])
+                            for index in url_indexes
+                        ),
                         return_exceptions=True,
                     )
-                    for index, result in zip(url_image_indexes, fetch_results):
+                    fetched_batch = dict(zip(url_indexes, fetch_results))
+                    for index in batch_indexes:
+                        part = media_parts[index]
+                        encoded = part.get("binary_base64")
+                        result: Any = (
+                            encoded
+                            if isinstance(encoded, str) and encoded
+                            else fetched_batch.get(index)
+                        )
                         if isinstance(result, BaseException):
                             logger.warning(
                                 "[EventBus] plugin image fetch failed; dropped: %s",
                                 result,
                             )
-                        else:
-                            fetched_url_images[index] = result
+                            continue
+                        if not isinstance(result, str) or not result:
+                            continue
+                        decoded_size = _base64_decoded_size(result)
+                        if (
+                            decoded_size <= 0
+                            or aggregate_image_bytes + decoded_size
+                            > _PLUGIN_MODEL_IMAGE_AGGREGATE_MAX_BYTES
+                        ):
+                            logger.warning(
+                                "[EventBus] plugin image aggregate exceeds model limit; dropped index=%d",
+                                index,
+                            )
+                            continue
+                        aggregate_image_bytes += decoded_size
+                        resolved_model_images[index] = result
 
                 for index, mp in enumerate(media_parts):
                     if not isinstance(mp, dict):
                         continue
                     part_type = mp.get("type")
-                    b64 = mp.get("binary_base64")
-                    url = mp.get("url")
                     mime = mp.get("mime") or ""
                     if part_type != "image":
                         # ``audio`` / ``video`` need provider-specific transport
@@ -693,9 +748,7 @@ async def _handle_agent_event(event: dict):
                             mime,
                         )
                         continue
-                    resolved_b64 = b64 if isinstance(b64, str) and b64 else None
-                    if resolved_b64 is None and isinstance(url, str) and url:
-                        resolved_b64 = fetched_url_images.get(index)
+                    resolved_b64 = resolved_model_images.get(index)
                     if not resolved_b64:
                         continue
                     if ai_behavior_v2 == "respond":
@@ -735,21 +788,25 @@ async def _handle_agent_event(event: dict):
                 and "chat" in visibility
                 and hasattr(mgr, "render_chat_blocks")
             ):
-                visible_images = _plugin_image_chat_blocks(media_parts)
-                if visible_images:
+                visible_images = (
+                    await _plugin_image_chat_blocks(media_parts)
+                    if media_parts
+                    else []
+                )
+                visible_blocks: list[dict[str, str]] = []
+                if text:
+                    visible_text = core.apply_role_placeholders(
+                        raw_text,
+                        lanlan_name=getattr(mgr, "lanlan_name", "") or "",
+                        master_name=getattr(mgr, "master_name", "") or "",
+                    )
+                    visible_blocks.append({"type": "text", "text": visible_text})
+                visible_blocks.extend(visible_images)
+                if visible_blocks:
                     channel = str(event.get("channel") or "")
                     visible_source = str(event.get("source_kind") or "").strip()
                     if not visible_source:
                         visible_source = "plugin" if channel.startswith("plugin:") else "system"
-                    visible_blocks: list[dict[str, str]] = []
-                    if text:
-                        visible_text = core.apply_role_placeholders(
-                            raw_text,
-                            lanlan_name=getattr(mgr, "lanlan_name", "") or "",
-                            master_name=getattr(mgr, "master_name", "") or "",
-                        )
-                        visible_blocks.append({"type": "text", "text": visible_text})
-                    visible_blocks.extend(visible_images)
                     await mgr.render_chat_blocks(
                         visible_blocks,
                         request_id=event.get("task_id") or None,
@@ -967,7 +1024,7 @@ async def _handle_agent_event(event: dict):
                             lanlan_name=getattr(mgr, "lanlan_name", "") or "",
                             master_name=getattr(mgr, "master_name", "") or "",
                         )
-                        chat_image_blocks = _plugin_image_chat_blocks(media_parts)
+                        chat_image_blocks = await _plugin_image_chat_blocks(media_parts)
                         passthrough_kwargs: dict[str, Any] = {
                             "request_id": event.get("task_id") or None,
                             "source": passthrough_source,
@@ -1070,7 +1127,7 @@ async def _handle_agent_event(event: dict):
                 and "chat" in (event.get("visibility") or [])
                 and hasattr(mgr, "passthrough_to_chat_bubble")
             ):
-                image_blocks = _plugin_image_chat_blocks(media_parts)
+                image_blocks = await _plugin_image_chat_blocks(media_parts)
                 if image_blocks:
                     channel = str(event.get("channel") or "")
                     source_kind = str(event.get("source_kind") or "").strip()

@@ -366,7 +366,10 @@ inline `data: bytes` 由 SDK 自动 base64 编码后随 payload 传出。
 > - `ai_behavior in ("respond","read")` 时，inline `image` parts 和
 >   `ctx.images.upload()` 返回的本地临时 URL 都能进入 LLM 上下文（最终走
 >   `session.stream_image(base64)`）。任意外部 URL 仍会被拒绝，避免把远端抓取
->   引入 agent event 投递路径。
+>   引入 agent event 投递路径。单条消息最多向模型注入 8 张、合计 8 MiB 图片；
+>   超出的 image parts 仍可按 `visibility` 显示，但不会进入模型上下文。
+> - `visibility=["chat"]` 可显示 image parts；HUD 通知目前只渲染 text part，
+>   不显示 image part。
 > - `audio` / `video` 当前没有对应的 realtime 注入通道（`stream_audio` 是 PCM 实时
 >   麦克风专用，video 完全没有 API），都会 warn-drop。这两种 type 现阶段只
 >   推荐配合 `ai_behavior="blind"` + `ui_action` 走纯前端展示。

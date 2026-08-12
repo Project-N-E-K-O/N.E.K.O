@@ -883,7 +883,9 @@ def _plugin_process_runner(
                 name="lifecycle-downlink-pump",
             )
             try:
-                await lifecycle_callable()
+                result = lifecycle_callable()
+                if inspect.isawaitable(result):
+                    await result
             finally:
                 stop_event.set()
                 pump_task.cancel()
@@ -1472,9 +1474,7 @@ def _plugin_process_runner(
         if shutdown_fn:
             try:
                 with ctx._handler_scope("lifecycle.shutdown"):
-                    result = shutdown_fn()
-                    if asyncio.iscoroutine(result):
-                        asyncio.run(result)
+                    asyncio.run(_run_lifecycle_with_downlink(shutdown_fn))
             except (KeyboardInterrupt, SystemExit):
                 raise
             except Exception as e:
@@ -1501,9 +1501,7 @@ def _plugin_process_runner(
             shutdown_fn = lifecycle_events.get("shutdown")
             if shutdown_fn:
                 with ctx._handler_scope("lifecycle.shutdown"):
-                    result = shutdown_fn()
-                    if asyncio.iscoroutine(result):
-                        asyncio.run(result)
+                    asyncio.run(_run_lifecycle_with_downlink(shutdown_fn))
         except BaseException:
             pass
         try:
@@ -1741,8 +1739,8 @@ class PluginHost:
         
         按顺序关闭：
         1. 发送停止命令
-        2. 关闭通信资源
-        3. 关闭进程
+        2. 等待插件进程完成 shutdown 生命周期
+        3. 关闭通信资源
         """
         self.logger.info(f"Shutting down plugin {self.plugin_id}")
 
@@ -1756,15 +1754,14 @@ class PluginHost:
         # 1. 发送停止命令
         await self.comm_manager.send_stop_command()
 
-        # 2. 关闭通信资源
-        await self.comm_manager.shutdown(timeout=timeout)
+        # 2. Keep transport alive until lifecycle.shutdown finishes. The hook
+        # may still await SDK responses such as ctx.images.upload().
+        success = await asyncio.to_thread(self._shutdown_process, timeout)
 
-        # 3. Unregister downlink sender & close ZMQ transport
+        # 3. Close communication resources after the child has exited.
+        await self.comm_manager.shutdown(timeout=timeout)
         state.remove_downlink_sender(self.plugin_id)
         self.transport.close()
-
-        # 4. 关闭进程
-        success = await asyncio.to_thread(self._shutdown_process, timeout)
         
         if success:
             self.logger.info(f"Plugin {self.plugin_id} shutdown successfully")
@@ -1783,19 +1780,20 @@ class PluginHost:
         except Exception:
             pass
 
-        # 尽量通知通信管理器停止（即使不等待）
+        # Keep response consumers and transport alive while the child runs its
+        # shutdown hook. This synchronous fallback cannot await their cleanup,
+        # but it must not pre-empt SDK calls made by that hook.
+        self._shutdown_process(timeout=timeout)
+
         if getattr(self, "comm_manager", None) is not None:
             try:
-                _ev = getattr(self.comm_manager, "_shutdown_event", None)
-                if _ev is not None:
-                    _ev.set()
+                shutdown_event = getattr(self.comm_manager, "_shutdown_event", None)
+                if shutdown_event is not None:
+                    shutdown_event.set()
             except Exception:
                 pass
-
         state.remove_downlink_sender(self.plugin_id)
         self.transport.close()
-
-        self._shutdown_process(timeout=timeout)
     
     async def trigger(self, entry_id: str, args: dict, timeout: float | None = PLUGIN_TRIGGER_TIMEOUT) -> Any:
         """

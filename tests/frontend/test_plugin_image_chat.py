@@ -126,7 +126,7 @@ def test_display_only_plugin_image_waits_for_the_react_host(
             });
             const beforeRestore = host.getState().messages.length;
             window.reactChatWindowHost = host;
-            window._tryFlushPendingHostMessages();
+            window.dispatchEvent(new CustomEvent('neko:react-chat-host-ready'));
             return {
                 accepted,
                 beforeRestore,

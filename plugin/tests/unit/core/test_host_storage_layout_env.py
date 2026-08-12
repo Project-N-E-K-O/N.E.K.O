@@ -70,6 +70,96 @@ class _FakeLogger:
         pass
 
 
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_host_shutdown_keeps_transport_alive_for_child_lifecycle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    order: list[str] = []
+
+    class _StopEvent:
+        def set(self) -> None:
+            order.append("signal")
+
+    class _CommManager:
+        async def send_stop_command(self) -> None:
+            order.append("stop")
+
+        async def shutdown(self, timeout: float) -> None:
+            order.append("comm")
+
+    class _Transport:
+        def close(self) -> None:
+            order.append("transport")
+
+    host = object.__new__(host_module.PluginHost)
+    host.plugin_id = "demo"
+    host.logger = _FakeLogger()
+    host._process_stop_event = _StopEvent()
+    host.comm_manager = _CommManager()
+    host.transport = _Transport()
+    host._shutdown_process = lambda timeout: order.append("process") or True
+    monkeypatch.setattr(
+        host_module.state,
+        "remove_downlink_sender",
+        lambda _plugin_id: order.append("unregister"),
+    )
+
+    await host.shutdown(timeout=1.0)
+
+    assert order == [
+        "signal",
+        "stop",
+        "process",
+        "comm",
+        "unregister",
+        "transport",
+    ]
+
+
+@pytest.mark.plugin_unit
+def test_host_shutdown_sync_keeps_transport_alive_for_child_lifecycle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    order: list[str] = []
+
+    class _StopEvent:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def set(self) -> None:
+            order.append(self.name)
+
+    class _CommManager:
+        _shutdown_event = _StopEvent("comm")
+
+    class _Transport:
+        def close(self) -> None:
+            order.append("transport")
+
+    host = object.__new__(host_module.PluginHost)
+    host.plugin_id = "demo"
+    host._process_stop_event = _StopEvent("signal")
+    host.comm_manager = _CommManager()
+    host.transport = _Transport()
+    host._shutdown_process = lambda timeout: order.append("process") or True
+    monkeypatch.setattr(
+        host_module.state,
+        "remove_downlink_sender",
+        lambda _plugin_id: order.append("unregister"),
+    )
+
+    host.shutdown_sync(timeout=1.0)
+
+    assert order == [
+        "signal",
+        "process",
+        "comm",
+        "unregister",
+        "transport",
+    ]
+
+
 class _FakeResponseSender:
     def __init__(self) -> None:
         self.payloads: list[dict[str, object]] = []
@@ -239,18 +329,21 @@ def test_plugin_process_runner_sends_startup_ready_before_auto_custom_events(
 
 
 @pytest.mark.plugin_unit
-def test_plugin_process_runner_pumps_image_response_during_unfreeze(
+@pytest.mark.parametrize("lifecycle_id", ["unfreeze", "freeze", "shutdown"])
+def test_plugin_process_runner_pumps_image_response_during_lifecycle(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    lifecycle_id: str,
 ) -> None:
     uploaded_parts: list[dict[str, object]] = []
+    freeze_results: list[dict[str, object]] = []
     config_path = tmp_path / "demo" / "plugin.toml"
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text("[plugin]\nid='demo'\ntype='adapter'\n", encoding="utf-8")
     image = BytesIO()
     Image.new("RGB", (2, 2), "blue").save(image, format="PNG")
     image_bytes = image.getvalue()
-    unfreeze_meta = EventMeta(event_type="lifecycle", id="unfreeze")
+    lifecycle_meta = EventMeta(event_type="lifecycle", id=lifecycle_id)
 
     class _Persistence:
         async def has_saved_state(self) -> bool:
@@ -267,16 +360,20 @@ def test_plugin_process_runner_pumps_image_response_during_unfreeze(
 
         def __init__(self, ctx) -> None:
             self.ctx = ctx
-            self.value = "restored"
-            self._state_persistence = _Persistence()
+            self.value = "persisted"
+            if lifecycle_id == "unfreeze":
+                self._state_persistence = _Persistence()
             self.config = SimpleNamespace(dump_effective_sync=lambda timeout=3.0: {})
 
-        async def unfreeze(self) -> None:
+        async def run_lifecycle(self) -> None:
             uploaded_parts.append(await self.ctx.images.upload(image_bytes, timeout=1.0))
 
         def collect_entries(self, wrap_with_hooks: bool = True) -> dict[str, EventHandler]:
             return {
-                "unfreeze": EventHandler(meta=unfreeze_meta, handler=self.unfreeze),
+                lifecycle_id: EventHandler(
+                    meta=lifecycle_meta,
+                    handler=self.run_lifecycle,
+                ),
             }
 
     class _Sender:
@@ -290,11 +387,12 @@ def test_plugin_process_runner_pumps_image_response_during_unfreeze(
             block: bool = True,
             timeout: float | None = None,
         ) -> None:
-            if (
-                self.channel == host_module.CH_RES
-                and payload.get("req_id") == host_module.STARTUP_RESULT_REQ_ID
-            ):
+            if self.channel != host_module.CH_RES:
+                return
+            if payload.get("req_id") == host_module.STARTUP_RESULT_REQ_ID:
                 self.transport.ready = True
+            elif payload.get("req_id") == "freeze-1":
+                freeze_results.append(payload)
 
         def put_nowait(self, payload: dict[str, object]) -> None:
             self.put(payload)
@@ -302,6 +400,11 @@ def test_plugin_process_runner_pumps_image_response_during_unfreeze(
     class _ChildTransport:
         def __init__(self, *_endpoints: str) -> None:
             self.pending_downlink: list[tuple[str, dict[str, object]]] = []
+            if lifecycle_id == "freeze":
+                self.pending_downlink.append((
+                    host_module.CH_CMD,
+                    {"type": "FREEZE", "req_id": "freeze-1"},
+                ))
             self.ready = False
             self.stopped = False
 
@@ -325,7 +428,7 @@ def test_plugin_process_runner_pumps_image_response_during_unfreeze(
                     "request_id": request_id,
                     "result": {
                         "type": "image",
-                        "url": "http://127.0.0.1:48916/media/unfreeze-image",
+                        "url": f"http://127.0.0.1:48916/media/{lifecycle_id}-image",
                         "mime": "image/jpeg",
                     },
                 },
@@ -367,128 +470,11 @@ def test_plugin_process_runner_pumps_image_response_during_unfreeze(
 
     assert uploaded_parts == [{
         "type": "image",
-        "url": "http://127.0.0.1:48916/media/unfreeze-image",
+        "url": f"http://127.0.0.1:48916/media/{lifecycle_id}-image",
         "mime": "image/jpeg",
     }]
-
-
-@pytest.mark.plugin_unit
-def test_plugin_process_runner_pumps_image_response_during_freeze(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    uploaded_parts: list[dict[str, object]] = []
-    freeze_results: list[dict[str, object]] = []
-    config_path = tmp_path / "demo" / "plugin.toml"
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    config_path.write_text("[plugin]\nid='demo'\ntype='adapter'\n", encoding="utf-8")
-    image = BytesIO()
-    Image.new("RGB", (2, 2), "green").save(image, format="PNG")
-    image_bytes = image.getvalue()
-    freeze_meta = EventMeta(event_type="lifecycle", id="freeze")
-
-    class _Plugin:
-        __freezable__ = ["value"]
-
-        def __init__(self, ctx) -> None:
-            self.ctx = ctx
-            self.value = "persisted"
-            self.config = SimpleNamespace(dump_effective_sync=lambda timeout=3.0: {})
-
-        async def freeze(self) -> None:
-            uploaded_parts.append(await self.ctx.images.upload(image_bytes, timeout=1.0))
-
-        def collect_entries(self, wrap_with_hooks: bool = True) -> dict[str, EventHandler]:
-            return {
-                "freeze": EventHandler(meta=freeze_meta, handler=self.freeze),
-            }
-
-    class _Sender:
-        def __init__(self, channel: str) -> None:
-            self.channel = channel
-
-        def put(
-            self,
-            payload: dict[str, object],
-            block: bool = True,
-            timeout: float | None = None,
-        ) -> None:
-            if self.channel == host_module.CH_RES and payload.get("req_id") == "freeze-1":
-                freeze_results.append(payload)
-
-        def put_nowait(self, payload: dict[str, object]) -> None:
-            self.put(payload)
-
-    class _ChildTransport:
-        def __init__(self, *_endpoints: str) -> None:
-            self.pending_downlink: list[tuple[str, dict[str, object]]] = [(
-                host_module.CH_CMD,
-                {"type": "FREEZE", "req_id": "freeze-1"},
-            )]
-
-        def channel_sender(self, channel: str) -> _Sender:
-            return _Sender(channel)
-
-        async def send_image(
-            self,
-            request_id: str,
-            *,
-            mime: str,
-            data: bytes,
-            timeout: float,
-        ) -> None:
-            assert mime == "image/jpeg"
-            assert data.startswith(b"\xff\xd8")
-            self.pending_downlink.append((
-                host_module.CH_RESP,
-                {
-                    "type": "IMAGE_UPLOAD_RESULT",
-                    "request_id": request_id,
-                    "result": {
-                        "type": "image",
-                        "url": "http://127.0.0.1:48916/media/freeze-image",
-                        "mime": "image/jpeg",
-                    },
-                },
-            ))
-            await asyncio.sleep(0)
-
-        async def recv_downlink(self, timeout_ms: int = 1000):
-            if self.pending_downlink:
-                return self.pending_downlink.pop(0)
-            await asyncio.sleep(0)
-            return None
-
-        def close(self) -> None:
-            return None
-
-    monkeypatch.setattr(host_module, "_setup_plugin_logger", lambda *args, **kwargs: _FakeLogger())
-    monkeypatch.setattr(host_module, "_setup_logging_interception", lambda *args, **kwargs: None)
-    monkeypatch.setattr(host_module, "_prepare_child_plugin_import_roots", lambda *args, **kwargs: None)
-    monkeypatch.setattr(host_module, "_prepare_child_current_plugin_import_root", lambda *args, **kwargs: None)
-    monkeypatch.setattr(host_module, "_prepare_child_plugin_vendor_path", lambda *args, **kwargs: None)
-    monkeypatch.setattr(
-        host_module,
-        "_import_plugin_module",
-        lambda *args, **kwargs: SimpleNamespace(DemoPlugin=_Plugin),
-    )
-    monkeypatch.setattr(host_module, "ChildTransport", _ChildTransport)
-
-    host_module._plugin_process_runner(
-        plugin_id="demo",
-        entry_point="tests.fake:DemoPlugin",
-        config_path=config_path,
-        downlink_endpoint="ipc://down",
-        uplink_endpoint="ipc://up",
-        image_uplink_endpoint="ipc://image",
-    )
-
-    assert uploaded_parts == [{
-        "type": "image",
-        "url": "http://127.0.0.1:48916/media/freeze-image",
-        "mime": "image/jpeg",
-    }]
-    assert freeze_results[-1]["success"] is True
+    if lifecycle_id == "freeze":
+        assert freeze_results[-1]["success"] is True
 
 
 @pytest.mark.plugin_unit

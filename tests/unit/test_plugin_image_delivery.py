@@ -158,10 +158,11 @@ async def test_chat_blind_plugin_image_is_forwarded_as_structured_blocks(monkeyp
     ]
 
 
-def test_external_image_urls_are_not_exposed_to_chat_or_model() -> None:
+@pytest.mark.asyncio
+async def test_external_image_urls_are_not_exposed_to_chat_or_model() -> None:
     from app.main_server.character_runtime import _plugin_image_chat_blocks
 
-    assert _plugin_image_chat_blocks([
+    assert await _plugin_image_chat_blocks([
         {"type": "image", "url": "https://example.com/media/not-local"},
         {"type": "image", "url": "http://localhost:48916/media/not-an-ip"},
         {"type": "image", "url": "http://127.0.0.1:48916/media/valid"},
@@ -171,12 +172,13 @@ def test_external_image_urls_are_not_exposed_to_chat_or_model() -> None:
     }]
 
 
-def test_inline_image_is_exposed_to_chat_as_a_data_url() -> None:
+@pytest.mark.asyncio
+async def test_inline_image_is_exposed_to_chat_as_a_data_url() -> None:
     from app.main_server.character_runtime import _plugin_image_chat_blocks
 
     encoded = base64.b64encode(b"inline-image").decode("ascii")
 
-    assert _plugin_image_chat_blocks([{
+    assert await _plugin_image_chat_blocks([{
         "type": "image",
         "binary_base64": encoded,
         "mime": "image/png",
@@ -184,6 +186,52 @@ def test_inline_image_is_exposed_to_chat_as_a_data_url() -> None:
         "type": "image",
         "url": f"data:image/png;base64,{encoded}",
     }]
+
+
+@pytest.mark.asyncio
+async def test_model_image_fetches_have_count_and_aggregate_limits(monkeypatch) -> None:
+    from app import main_server
+
+    manager = _manager()
+    encoded = base64.b64encode(b"four").decode("ascii")
+    fetch_image = AsyncMock(return_value=encoded)
+    monkeypatch.setattr(
+        "app.main_server.character_runtime._get_session_manager",
+        lambda _name: manager,
+    )
+    monkeypatch.setattr(
+        "app.main_server.character_runtime._fetch_plugin_image_base64",
+        fetch_image,
+    )
+    monkeypatch.setattr(
+        "app.main_server.character_runtime._PLUGIN_MODEL_IMAGE_AGGREGATE_MAX_BYTES",
+        10,
+    )
+
+    await main_server._handle_agent_event({
+        "event_type": "proactive_message",
+        "lanlan_name": "Test",
+        "text": "",
+        "channel": "plugin:demo",
+        "delivery_mode": "passive",
+        "ai_behavior": "read",
+        "visibility": [],
+        "media_parts": [
+            {
+                "type": "image",
+                "url": f"http://127.0.0.1:48916/media/image-{index}",
+                "mime": "image/jpeg",
+            }
+            for index in range(12)
+        ],
+    })
+
+    assert fetch_image.await_count == 8
+    assert manager.session.stream_image.await_count == 2
+    assert [call.args[0] for call in manager.session.stream_image.await_args_list] == [
+        encoded,
+        encoded,
+    ]
 
 
 @pytest.mark.asyncio
@@ -489,7 +537,7 @@ async def test_image_delivery_obeys_visibility_and_ai_behavior(
     ],
 )
 @pytest.mark.asyncio
-async def test_text_only_delivery_keeps_its_pre_image_behavior(
+async def test_text_only_delivery_obeys_visibility_and_ai_behavior(
     monkeypatch,
     ai_behavior: str,
     delivery_mode: str,
@@ -498,7 +546,7 @@ async def test_text_only_delivery_keeps_its_pre_image_behavior(
     expects_enqueue: bool,
     expects_chat: bool,
 ) -> None:
-    """Adding image support must not redirect or duplicate existing text events."""
+    """Text-only events obey the same orthogonal delivery axes as image events."""
     from app import main_server
 
     manager = _manager()
@@ -525,7 +573,14 @@ async def test_text_only_delivery_keeps_its_pre_image_behavior(
 
     fetch_image.assert_not_awaited()
     manager.session.stream_image.assert_not_awaited()
-    manager.render_chat_blocks.assert_not_awaited()
+    expected_display = "chat" in visibility and ai_behavior != "blind"
+    assert manager.render_chat_blocks.await_count == int(expected_display)
+    if expected_display:
+        manager.render_chat_blocks.assert_awaited_once_with(
+            [{"type": "text", "text": "legacy text stays text"}],
+            request_id=None,
+            source="plugin",
+        )
     assert manager.submit_proactive_callback.call_count == int(expects_submit)
     assert manager.enqueue_agent_callback.call_count == int(expects_enqueue)
     assert manager.passthrough_to_chat_bubble.await_count == int(expects_chat)

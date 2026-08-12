@@ -1300,9 +1300,10 @@ def _shutdown_host_safely(host: Any, logger: Any, plugin_id: str) -> None:
     import asyncio
     
     try:
-        if hasattr(host, "shutdown_sync"):
-            host.shutdown_sync(timeout=1.0)
-        elif hasattr(host, "shutdown"):
+        # Prefer the async path whenever the host provides it. Calling
+        # shutdown_sync from the communication owner loop would block the
+        # image consumer while the child lifecycle waits for its response.
+        if hasattr(host, "shutdown"):
             if asyncio.iscoroutinefunction(host.shutdown):
                 try:
                     loop = asyncio.get_running_loop()
@@ -1324,6 +1325,8 @@ def _shutdown_host_safely(host: Any, logger: Any, plugin_id: str) -> None:
                     asyncio.run(host.shutdown(timeout=1.0))
             else:
                 host.shutdown(timeout=1.0)
+        elif hasattr(host, "shutdown_sync"):
+            host.shutdown_sync(timeout=1.0)
         elif hasattr(host, "process") and getattr(host, "process", None):
             host.process.terminate()
             host.process.join(timeout=1.0)

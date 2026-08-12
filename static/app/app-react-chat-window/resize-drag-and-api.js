@@ -964,5 +964,7 @@
         isMounted: function () { return I.mounted; }
     });
 
+    window.dispatchEvent(new CustomEvent('neko:react-chat-host-ready'));
+
     delete window.__appReactChatWindowParts;
 })();
