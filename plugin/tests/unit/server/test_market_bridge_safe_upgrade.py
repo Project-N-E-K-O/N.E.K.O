@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 import shutil
 from types import SimpleNamespace
@@ -156,6 +157,100 @@ async def test_market_upgrade_rolls_back_plugin_profile_with_plugin_directory(
 
     assert (plugin_dir / "plugin.toml").read_text(encoding="utf-8") == "version = '1.0.0'\n"
     assert (profile_dir / "default.toml").read_text(encoding="utf-8") == "version = 1\n"
+
+
+@pytest.mark.asyncio
+async def test_market_upgrade_exposes_rollback_while_files_are_being_restored(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from plugin.server.application.plugins import upgrade_support
+
+    plugins_root = tmp_path / "plugins"
+    profiles_root = tmp_path / "profiles"
+    plugin_dir = plugins_root / "demo"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "plugin.toml").write_text("version = '1.0.0'\n", encoding="utf-8")
+    package_path = tmp_path / "demo.neko-plugin"
+    package_path.write_bytes(b"package")
+
+    _configure_paths(monkeypatch, plugins_root=plugins_root, profiles_root=profiles_root)
+    monkeypatch.setattr(market_bridge, "plugin_is_running", lambda _plugin_id: _async_false())
+    monkeypatch.setattr(market_bridge, "_download_package", lambda _url, _task: _async_value(package_path))
+    monkeypatch.setattr(market_bridge, "_verify_sha256_file", lambda *args, **kwargs: "passed")
+    monkeypatch.setattr(market_bridge, "_cleanup_download_file", lambda _path: None)
+    monkeypatch.setattr(
+        market_bridge,
+        "_cli_service",
+        SimpleNamespace(
+            upload_and_install=lambda **_kwargs: _async_raise(RuntimeError("install failed")),
+        ),
+    )
+
+    rollback_started = asyncio.Event()
+    allow_rollback = asyncio.Event()
+    remove_directory = upgrade_support.remove_directory
+
+    async def pause_during_rollback(path: Path) -> None:
+        rollback_started.set()
+        await allow_rollback.wait()
+        await remove_directory(path)
+
+    monkeypatch.setattr(upgrade_support, "remove_directory", pause_during_rollback)
+
+    task: dict[str, Any] = {}
+    operation = asyncio.create_task(market_bridge._do_upgrade(task, _payload(), {}))
+    await asyncio.wait_for(rollback_started.wait(), timeout=1)
+
+    assert task["stage"] == "rollback"
+    assert task["rollback"]["running"] is True
+    assert task["rollback"]["restored"] is False
+
+    allow_rollback.set()
+    with pytest.raises(market_bridge._TaskError) as exc_info:
+        await operation
+
+    assert exc_info.value.code == "upgrade_rollback_completed"
+    assert task["rollback"]["running"] is False
+    assert task["rollback"]["restored"] is True
+
+
+@pytest.mark.asyncio
+async def test_market_upgrade_preserves_install_source_error_after_rollback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugins_root = tmp_path / "plugins"
+    profiles_root = tmp_path / "profiles"
+    plugin_dir = plugins_root / "demo"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "plugin.toml").write_text("version = '1.0.0'\n", encoding="utf-8")
+    package_path = tmp_path / "demo.neko-plugin"
+    package_path.write_bytes(b"package")
+
+    _configure_paths(monkeypatch, plugins_root=plugins_root, profiles_root=profiles_root)
+    monkeypatch.setattr(market_bridge, "plugin_is_running", lambda _plugin_id: _async_false())
+    monkeypatch.setattr(market_bridge, "_download_package", lambda _url, _task: _async_value(package_path))
+    monkeypatch.setattr(market_bridge, "_verify_sha256_file", lambda *args, **kwargs: "passed")
+    monkeypatch.setattr(market_bridge, "_cleanup_download_file", lambda _path: None)
+    monkeypatch.setattr(
+        market_bridge,
+        "_cli_service",
+        SimpleNamespace(
+            upload_and_install=lambda **_kwargs: _async_raise(
+                market_bridge.InstallSourceError("lock_write_failed", "lock is read-only")
+            ),
+        ),
+    )
+
+    task: dict[str, Any] = {}
+    with pytest.raises(market_bridge._TaskError) as exc_info:
+        await market_bridge._do_upgrade(task, _payload(), {})
+
+    assert exc_info.value.code == "lock_write_failed"
+    assert task["rollback"]["running"] is False
+    assert task["rollback"]["restored"] is True
+    assert (plugin_dir / "plugin.toml").read_text(encoding="utf-8") == "version = '1.0.0'\n"
 
 
 @pytest.mark.asyncio

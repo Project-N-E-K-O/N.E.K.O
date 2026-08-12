@@ -113,6 +113,42 @@ async def test_replace_plugin_initializes_runtime_config_from_old_payload_before
 
 
 @pytest.mark.asyncio
+async def test_replace_plugin_rejects_invalid_preserve_target_before_side_effects(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "plugins" / "demo"
+    target.mkdir(parents=True)
+    (target / "plugin.toml").write_text(
+        '[plugin]\nid = "demo"\nversion = "1.0.0"\n',
+        encoding="utf-8",
+    )
+    storage_root = tmp_path / "state"
+    events: list[str] = []
+
+    async def is_running(plugin_id: str) -> bool:
+        events.append(f"running:{plugin_id}")
+        return True
+
+    async def stop(plugin_id: str) -> None:
+        events.append(f"stop:{plugin_id}")
+
+    with pytest.raises(ValueError, match="preserve targets"):
+        await replace_plugin(
+            layout=resolve_plugin_layout("demo", target, storage_root=storage_root),
+            install_new=lambda: _async_none(),  # type: ignore[arg-type]
+            validate_new=_async_none,
+            is_running=is_running,
+            stop=stop,
+            start=lambda _plugin_id: _async_none(),
+            cleanup_backup=remove_directory,
+            preserve_targets=(tmp_path / "not-a-replacement-target",),
+        )
+
+    assert events == []
+    assert not storage_root.exists()
+
+
+@pytest.mark.asyncio
 async def test_run_rollback_removes_new_directory_restores_backup_and_restarts(tmp_path: Path) -> None:
     target = tmp_path / "demo"
     backup = tmp_path / "demo.bak"
@@ -189,6 +225,81 @@ async def test_backup_failure_restarts_running_plugin_without_installing(
     assert exc_info.value.stage == "backup"
     assert exc_info.value.rollback_status == "completed"
     assert events == ["stop:demo", "start:demo"]
+
+
+@pytest.mark.asyncio
+async def test_backup_failure_rolls_back_when_rollback_observer_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "demo"
+    target.mkdir()
+    (target / "plugin.toml").write_text("old", encoding="utf-8")
+    additional_target = tmp_path / "profile"
+    additional_target.mkdir()
+    (additional_target / "default.toml").write_text("old profile", encoding="utf-8")
+    original_rename = Path.rename
+
+    def fail_second_backup(source: Path, destination: Path) -> Path:
+        if source == additional_target:
+            raise PermissionError("profile backup denied")
+        return original_rename(source, destination)
+
+    monkeypatch.setattr(Path, "rename", fail_second_backup)
+
+    def fail_observer() -> None:
+        raise RuntimeError("observer failed")
+
+    with pytest.raises(ReplacePluginError) as exc_info:
+        await replace_plugin(
+            layout=resolve_plugin_layout("demo", target),
+            install_new=lambda: _async_none(),  # type: ignore[arg-type]
+            validate_new=_async_none,
+            is_running=lambda _plugin_id: _async_false(),
+            stop=lambda _plugin_id: _async_none(),
+            start=lambda _plugin_id: _async_none(),
+            cleanup_backup=remove_directory,
+            additional_targets=(additional_target,),
+            on_rollback_start=fail_observer,
+        )
+
+    assert exc_info.value.stage == "backup"
+    assert isinstance(exc_info.value.cause, PermissionError)
+    assert (target / "plugin.toml").read_text(encoding="utf-8") == "old"
+    assert (additional_target / "default.toml").read_text(encoding="utf-8") == "old profile"
+
+
+@pytest.mark.asyncio
+async def test_install_failure_rolls_back_when_rollback_observer_fails(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "demo"
+    target.mkdir()
+    (target / "plugin.toml").write_text("old", encoding="utf-8")
+
+    async def fail_install() -> dict[str, object]:
+        target.mkdir()
+        (target / "plugin.toml").write_text("new", encoding="utf-8")
+        raise RuntimeError("install failed")
+
+    def fail_observer() -> None:
+        raise RuntimeError("observer failed")
+
+    with pytest.raises(ReplacePluginError) as exc_info:
+        await replace_plugin(
+            layout=resolve_plugin_layout("demo", target),
+            install_new=fail_install,
+            validate_new=_async_none,
+            is_running=lambda _plugin_id: _async_false(),
+            stop=lambda _plugin_id: _async_none(),
+            start=lambda _plugin_id: _async_none(),
+            cleanup_backup=remove_directory,
+            on_rollback_start=fail_observer,
+        )
+
+    assert exc_info.value.stage == "install"
+    assert str(exc_info.value.cause) == "install failed"
+    assert (target / "plugin.toml").read_text(encoding="utf-8") == "old"
 
 
 @pytest.mark.asyncio

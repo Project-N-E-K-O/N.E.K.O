@@ -179,6 +179,18 @@ async def _rollback_targets(
     return restored
 
 
+def _notify_rollback_start(callback: Callable[[], None] | None) -> None:
+    if callback is None:
+        return
+    try:
+        callback()
+    except Exception as exc:
+        logger.warning(
+            "plugin replacement rollback observer failed err_type={}",
+            type(exc).__name__,
+        )
+
+
 async def replace_plugin(
     *,
     layout: PluginLayout,
@@ -190,6 +202,7 @@ async def replace_plugin(
     cleanup_backup: Callable[[Path], Awaitable[None]],
     additional_targets: tuple[Path, ...] = (),
     preserve_targets: tuple[Path, ...] = (),
+    on_rollback_start: Callable[[], None] | None = None,
 ) -> ReplacePluginResult:
     plugin_id = layout.plugin_id
     target_dir = layout.installed_dir
@@ -197,6 +210,9 @@ async def replace_plugin(
         raise ValueError("plugin replacement requires a plugin id")
     if not target_dir.is_dir():
         raise FileNotFoundError(f"installed plugin directory is missing: {target_dir.name}")
+    targets = (target_dir, *additional_targets)
+    if any(target not in targets for target in preserve_targets):
+        raise ValueError("preserve targets must also be replacement targets")
 
     await asyncio.to_thread(
         ensure_plugin_layout_runtime_config,
@@ -206,9 +222,6 @@ async def replace_plugin(
     if was_running:
         await stop(plugin_id)
 
-    targets = (target_dir, *additional_targets)
-    if any(target not in targets for target in preserve_targets):
-        raise ValueError("preserve targets must also be replacement targets")
     preexisting_targets = frozenset(target for target in targets if target.exists())
     backups: dict[Path, Path] = {}
     backup_dir = backup_path_for(target_dir)
@@ -223,6 +236,7 @@ async def replace_plugin(
             await asyncio.to_thread(target.rename, backup)
             backups[target] = backup
     except Exception as exc:
+        _notify_rollback_start(on_rollback_start)
         recovered = await _rollback_targets(
             targets=targets,
             backups=backups,
@@ -274,6 +288,7 @@ async def replace_plugin(
             backup_dir=backup_dir,
         )
     except Exception as exc:
+        _notify_rollback_start(on_rollback_start)
         restored = await _rollback_targets(
             targets=targets,
             backups=backups,

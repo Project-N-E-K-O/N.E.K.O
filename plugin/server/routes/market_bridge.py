@@ -2819,15 +2819,12 @@ async def _do_upgrade(
         async def install_new() -> dict[str, object]:
             nonlocal source_write_attempted
             source_write_attempted = True
-            try:
-                return await _cli_service.upload_and_install(
-                    filename=_extract_filename(payload.package_url),
-                    package_path=str(package_path),
-                    on_conflict="fail",
-                    install_source_override=market_override,
-                )
-            except InstallSourceError as exc:
-                raise RuntimeError(str(exc.message)) from exc
+            return await _cli_service.upload_and_install(
+                filename=_extract_filename(payload.package_url),
+                package_path=str(package_path),
+                on_conflict="fail",
+                install_source_override=market_override,
+            )
 
         async def validate_new() -> None:
             actual_plugin_id = _read_plugin_toml_id(plugin_dir / "plugin.toml")
@@ -2838,6 +2835,20 @@ async def _do_upgrade(
 
         async def start(plugin_id: str) -> None:
             await start_plugin_after_upgrade(plugin_id, strict=True)
+
+        def mark_rollback_running() -> None:
+            _set_task_stage(
+                task,
+                status="installing",
+                stage="rollback",
+                progress=0.9,
+                message="安装失败，正在回滚...",
+            )
+            task["rollback"] = {
+                "prepared": True,
+                "restored": False,
+                "running": True,
+            }
 
         _set_task_stage(
             task,
@@ -2858,6 +2869,7 @@ async def _do_upgrade(
                 cleanup_backup=_async_remove_dir,
                 additional_targets=(profile_dir,),
                 preserve_targets=(profile_dir,),
+                on_rollback_start=mark_rollback_running,
             )
         except ReplacePluginError as exc:
             source_restored = True
@@ -2873,24 +2885,30 @@ async def _do_upgrade(
                         restore_exc,
                     )
             rollback_ok = exc.rollback_status == "completed" and source_restored
-            _set_task_stage(
-                task,
-                status="installing",
-                stage="rollback",
-                progress=0.9,
-                message="安装失败，正在回滚...",
+            cause_code = exc.cause.code if isinstance(exc.cause, InstallSourceError) else None
+            cause_message = (
+                str(exc.cause.message)
+                if isinstance(exc.cause, InstallSourceError)
+                else str(exc.cause)
             )
             task["rollback"] = {
                 "prepared": True,
                 "restored": rollback_ok,
                 "running": False,
+                "cause_code": cause_code,
             }
             raise _TaskError(
-                code=("upgrade_rollback_completed" if rollback_ok else "upgrade_rollback_incomplete"),
-                message=(
-                    f"升级失败已回滚: {exc.cause}"
+                code=(
+                    cause_code
+                    if rollback_ok and cause_code is not None
+                    else "upgrade_rollback_completed"
                     if rollback_ok
-                    else f"升级失败且回滚未完整完成: {exc.cause}"
+                    else "upgrade_rollback_incomplete"
+                ),
+                message=(
+                    f"升级失败已回滚: {cause_message}"
+                    if rollback_ok
+                    else f"升级失败且回滚未完整完成: {cause_message}"
                 ),
             ) from exc
 
