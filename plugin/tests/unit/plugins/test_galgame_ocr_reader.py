@@ -2078,6 +2078,93 @@ def test_dialogue_state_reset_clears_observed_stable_and_narration_candidates(
     assert manager._title_narration_streak == 0
 
 
+def test_dialogue_pipeline_returns_one_complete_decision_and_promotes_same_scene() -> None:
+    pipeline = galgame_ocr_manager_text.DialoguePipeline()
+    observed = {
+        "line_id": "line-1",
+        "scene_id": "scene-a",
+        "text": "当前对白",
+        "stability": "tentative",
+    }
+    stable = {**observed, "stability": "stable"}
+
+    tentative_decision = pipeline.process(
+        accepted=True,
+        stability="tentative",
+        line_payload=observed,
+        effective_screen_type=OCR_CAPTURE_PROFILE_STAGE_DIALOGUE,
+        events=("line_observed",),
+        stability_key="current-dialogue",
+        repeat_count=1,
+    )
+    stable_decision = pipeline.process(
+        accepted=True,
+        stability="stable",
+        line_payload=stable,
+        effective_screen_type=OCR_CAPTURE_PROFILE_STAGE_DIALOGUE,
+        events=("line_changed",),
+        stability_key="current-dialogue",
+        repeat_count=2,
+    )
+
+    assert tentative_decision.events == ("line_observed",)
+    assert stable_decision.accepted is True
+    assert stable_decision.stability == "stable"
+    assert pipeline.state.observed_line == stable
+    assert pipeline.state.stable_line == stable
+    assert pipeline.state.stability_key == "current-dialogue"
+    assert pipeline.state.repeat_count == 2
+
+
+def test_dialogue_pipeline_rejected_untrusted_capture_does_not_advance_state() -> None:
+    pipeline = galgame_ocr_manager_text.DialoguePipeline()
+    pipeline.process(
+        accepted=True,
+        stability="tentative",
+        line_payload={"line_id": "line-1", "scene_id": "scene-a", "text": "旧对白"},
+        effective_screen_type=OCR_CAPTURE_PROFILE_STAGE_DIALOGUE,
+        events=("line_observed",),
+    )
+    before = galgame_ocr_manager_text.replace(pipeline.state)
+
+    decision = pipeline.process(
+        accepted=True,
+        capture_trusted=False,
+        stability="stable",
+        line_payload={"line_id": "line-2", "scene_id": "scene-a", "text": "新对白"},
+        effective_screen_type=OCR_CAPTURE_PROFILE_STAGE_DIALOGUE,
+        events=("line_changed",),
+    )
+
+    assert decision.accepted is False
+    assert decision.events == ()
+    assert decision.rejection_reason == "capture_untrusted"
+    assert pipeline.state == before
+
+
+def test_dialogue_pipeline_reset_drops_all_pending_dialogue_state() -> None:
+    pipeline = galgame_ocr_manager_text.DialoguePipeline()
+    pipeline.process(
+        accepted=True,
+        stability="tentative",
+        line_payload={"line_id": "line-1", "scene_id": "scene-a", "text": "待确认"},
+        effective_screen_type=OCR_CAPTURE_PROFILE_STAGE_DIALOGUE,
+        events=("line_observed",),
+        stability_key="pending",
+        repeat_count=1,
+        reconciliation_diagnostic={"reason": "test"},
+    )
+
+    pipeline.reset(reason="cancel")
+
+    assert pipeline.state.observed_line == {}
+    assert pipeline.state.stable_line == {}
+    assert pipeline.state.stability_key == ""
+    assert pipeline.state.repeat_count == 0
+    assert pipeline.state.effective_screen_type == ""
+    assert pipeline.state.reconciliation_diagnostic == {}
+
+
 def test_ocr_writer_start_session_preserves_existing_game_events(tmp_path: Path) -> None:
     bridge_root = tmp_path / "bridge"
     bridge_root.mkdir()

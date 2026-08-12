@@ -126,6 +126,130 @@ _CNN_DIALOGUE_BOUNDARY_LABELS = {
 }
 
 
+@dataclass(slots=True)
+class DialoguePipelineState:
+    """Mutable state owned by the OCR dialogue domain pipeline."""
+
+    observed_line: dict[str, Any] = field(default_factory=dict)
+    stable_line: dict[str, Any] = field(default_factory=dict)
+    stability_key: str = ""
+    repeat_count: int = 0
+    effective_screen_type: str = ""
+    reconciliation_diagnostic: dict[str, Any] = field(default_factory=dict)
+    title_narration_key: str = ""
+    title_narration_streak: int = 0
+
+    def reset(self) -> None:
+        self.observed_line = {}
+        self.stable_line = {}
+        self.stability_key = ""
+        self.repeat_count = 0
+        self.effective_screen_type = ""
+        self.reconciliation_diagnostic = {}
+        self.title_narration_key = ""
+        self.title_narration_streak = 0
+
+
+@dataclass(frozen=True, slots=True)
+class DialogueDecision:
+    """Complete result of processing one OCR dialogue input."""
+
+    accepted: bool
+    stability: str
+    line_payload: dict[str, Any]
+    effective_screen_type: str
+    events: tuple[str, ...]
+    rejection_reason: str | None = None
+
+
+class DialoguePipeline:
+    """Own dialogue admission results, promotion state, and reconciliation state."""
+
+    def __init__(self, state: DialoguePipelineState | None = None) -> None:
+        self.state = state or DialoguePipelineState()
+
+    def reset(self, *, reason: str = "") -> None:
+        del reason
+        self.state.reset()
+
+    def process(
+        self,
+        *,
+        accepted: bool,
+        stability: str,
+        line_payload: dict[str, Any] | None,
+        effective_screen_type: str,
+        events: Iterable[str] = (),
+        rejection_reason: str | None = None,
+        capture_trusted: bool = True,
+        stability_key: str = "",
+        repeat_count: int | None = None,
+        reconciliation_diagnostic: dict[str, Any] | None = None,
+    ) -> DialogueDecision:
+        """Record one atomic dialogue outcome and return the full decision."""
+
+        if not capture_trusted:
+            return DialogueDecision(
+                accepted=False,
+                stability="",
+                line_payload={},
+                effective_screen_type=str(effective_screen_type or ""),
+                events=(),
+                rejection_reason="capture_untrusted",
+            )
+        if not accepted:
+            return DialogueDecision(
+                accepted=False,
+                stability=str(stability or ""),
+                line_payload=dict(line_payload or {}),
+                effective_screen_type=str(effective_screen_type or ""),
+                events=(),
+                rejection_reason=str(rejection_reason or "dialogue_rejected"),
+            )
+
+        normalized_stability = str(stability or "")
+        payload = dict(line_payload or {})
+        if normalized_stability == "tentative":
+            self.state.observed_line = payload
+        elif normalized_stability == "stable":
+            self.state.stable_line = payload
+            self.state.observed_line = payload
+        self.state.stability_key = str(stability_key or "")
+        if repeat_count is not None:
+            self.state.repeat_count = max(0, int(repeat_count))
+        self.state.effective_screen_type = str(effective_screen_type or "")
+        self.state.reconciliation_diagnostic = dict(
+            reconciliation_diagnostic or {}
+        )
+        return DialogueDecision(
+            accepted=True,
+            stability=normalized_stability,
+            line_payload=payload,
+            effective_screen_type=self.state.effective_screen_type,
+            events=tuple(str(event) for event in events),
+            rejection_reason=None,
+        )
+
+    def reset_title_narration_candidate(self) -> None:
+        self.state.title_narration_key = ""
+        self.state.title_narration_streak = 0
+
+    def observe_title_narration_candidate(self, raw_text: str) -> bool:
+        if not _has_conservative_title_narration_evidence(raw_text):
+            self.reset_title_narration_candidate()
+            return False
+        candidate_key = _ocr_stability_key(normalize_text(str(raw_text or "")))
+        if not candidate_key:
+            self.reset_title_narration_candidate()
+            return False
+        if candidate_key == self.state.title_narration_key:
+            self.state.title_narration_streak += 1
+        else:
+            self.state.title_narration_key = candidate_key
+            self.state.title_narration_streak = 1
+        return self.state.title_narration_streak >= 2
+
+
 class TextMixin:
     """OCR 文本提取、语言检测、文本去重、台词 emit"""
 
