@@ -104,7 +104,7 @@
   function ensureStyles() {
     // 版本号覆盖，避免 Pet 残留旧样式（右下角 HUD / 错误 transform 飞出）。
     var STYLE_ID = 'neko-forge-drop-styles';
-    var STYLE_VER = 'v9-prominent-hd-ticket';
+    var STYLE_VER = 'v10-avatar-lower-right';
     var existing = document.getElementById(STYLE_ID);
     if (existing && existing.getAttribute('data-ver') === STYLE_VER) return;
     if (existing) try { existing.remove(); } catch (_) {}
@@ -305,6 +305,78 @@
     };
   }
 
+  function normalizeAvatarBounds(bounds) {
+    if (!bounds) return null;
+    var left = Number(bounds.left != null ? bounds.left : bounds.x);
+    var top = Number(bounds.top != null ? bounds.top : bounds.y);
+    var right = Number(bounds.right != null ? bounds.right : left + Number(bounds.width));
+    var bottom = Number(bounds.bottom != null ? bounds.bottom : top + Number(bounds.height));
+    if (![left, top, right, bottom].every(Number.isFinite)) return null;
+    if (right <= left || bottom <= top) return null;
+    return {
+      left: left,
+      top: top,
+      right: right,
+      bottom: bottom,
+      width: right - left,
+      height: bottom - top,
+    };
+  }
+
+  /** 读取当前模型的真实屏幕边界，四种模型共用同一套掉券定位。 */
+  function getActiveAvatarBounds() {
+    var configuredType = String(window.lanlan_config && window.lanlan_config.model_type || '').toLowerCase();
+    var managers = {
+      live2d: window.live2dManager,
+      vrm: window.vrmManager,
+      mmd: window.mmdManager,
+    };
+    var order = configuredType && managers[configuredType]
+      ? [managers[configuredType]]
+      : [managers.live2d, managers.vrm, managers.mmd];
+    for (var i = 0; i < order.length; i += 1) {
+      var manager = order[i];
+      if (!manager || typeof manager.getModelScreenBounds !== 'function') continue;
+      try {
+        var bounds = normalizeAvatarBounds(manager.getModelScreenBounds());
+        if (bounds) return bounds;
+      } catch (_) {}
+    }
+
+    // PNGtuber 没有统一的 manager 边界 API，直接使用当前可见形象的 DOM 边界。
+    var pngAvatar = document.querySelector(
+      '#pngtuber-container .pngtuber-image:not([style*="display: none"]), ' +
+      '#pngtuber-container .pngtuber-layered-canvas:not([style*="display: none"])'
+    );
+    if (pngAvatar) {
+      try { return normalizeAvatarBounds(pngAvatar.getBoundingClientRect()); } catch (_) {}
+    }
+    return null;
+  }
+
+  function getCardPlacement(cardWidth, cardHeight, avatarBounds) {
+    var margin = 12;
+    if (!avatarBounds) {
+      return {
+        left: Math.round(window.innerWidth * 0.5 - cardWidth / 2),
+        top: Math.round(window.innerHeight * 0.42 - cardHeight / 2),
+      };
+    }
+    // 券卡从角色右下侧探出：保留少量重叠，视觉上仍与 N.E.K.O 绑定。
+    var overlapX = cardWidth * 0.18;
+    var liftY = Math.max(28, Math.min(64, avatarBounds.height * 0.08));
+    return {
+      left: Math.round(Math.max(margin, Math.min(
+        avatarBounds.right - overlapX,
+        window.innerWidth - cardWidth - margin
+      ))),
+      top: Math.round(Math.max(margin, Math.min(
+        avatarBounds.bottom - cardHeight - liftY,
+        window.innerHeight - cardHeight - margin
+      ))),
+    };
+  }
+
   function playOne(payload) {
     return new Promise(function (resolve) {
       try {
@@ -327,15 +399,21 @@
           (document.body || document.documentElement).appendChild(layer);
         }
 
-        var CARD_MAX_W = 360;
+        var CARD_MAX_W = 280;
+        var CARD_MIN_W = 180;
         var CARD_MARGIN = 12;
         var CARD_ASPECT = 1192 / 445;
-        var CARD_W = Math.max(1, Math.min(CARD_MAX_W, window.innerWidth - CARD_MARGIN * 2));
+        var avatarBounds = getActiveAvatarBounds();
+        var avatarCardWidth = avatarBounds ? avatarBounds.width * 0.55 : CARD_MAX_W;
+        var CARD_W = Math.max(1, Math.min(
+          CARD_MAX_W,
+          Math.max(CARD_MIN_W, avatarCardWidth),
+          window.innerWidth - CARD_MARGIN * 2
+        ));
         var CARD_H = Math.round(CARD_W / CARD_ASPECT);
-        var originX = window.innerWidth * 0.5;
-        var originY = window.innerHeight * 0.42;
-        var startLeft = Math.round(originX - CARD_W / 2);
-        var startTop = Math.round(originY - CARD_H / 2);
+        var placement = getCardPlacement(CARD_W, CARD_H, avatarBounds);
+        var startLeft = placement.left;
+        var startTop = placement.top;
 
         var card = document.createElement('div');
         card.className = 'neko-forge-card';

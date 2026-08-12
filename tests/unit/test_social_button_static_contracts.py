@@ -190,10 +190,16 @@ def test_credit_drop_uses_yui_ticket_art_for_every_drop_rarity():
 
     assert "ticketArt.className = 'ticket-art';" in overlay
     assert "t.ticketPath(rarity)" in overlay
-    assert "var CARD_MAX_W = 360;" in overlay
+    assert "var CARD_MAX_W = 280;" in overlay
+    assert "var CARD_MIN_W = 180;" in overlay
     assert "var CARD_MARGIN = 12;" in overlay
     assert "var CARD_ASPECT = 1192 / 445;" in overlay
     assert "window.innerWidth - CARD_MARGIN * 2" in overlay
+    assert "function getActiveAvatarBounds()" in overlay
+    assert "manager.getModelScreenBounds()" in overlay
+    assert "function getCardPlacement(cardWidth, cardHeight, avatarBounds)" in overlay
+    assert "avatarBounds.right - overlapX" in overlay
+    assert "avatarBounds.bottom - cardHeight - liftY" in overlay
     assert "ticketAuraArt.className = 'ticket-aura-art';" in overlay
     assert "spark.textContent" not in overlay
     assert "className = 'rk'" not in overlay
