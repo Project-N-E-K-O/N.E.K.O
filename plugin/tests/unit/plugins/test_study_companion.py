@@ -9395,7 +9395,11 @@ async def test_communication_disabled_skips_eventbus(
         status = await plugin.study_neko_communication_status()
         assert isinstance(status, Ok)
         assert status.value == {
+            "configured_enabled": False,
+            "solution_narration_enabled": True,
             "available": False,
+            "command_subscription_active": False,
+            "command_worker_active": False,
             "events_emitted": 0,
             "events_blocked": 0,
         }

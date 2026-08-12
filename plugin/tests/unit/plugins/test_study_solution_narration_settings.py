@@ -180,7 +180,7 @@ def test_static_settings_exposes_neko_solution_narration_checkbox() -> None:
 
     assert checkbox is not None
     assert (
-        'data-i18n="ui.settings.communication.title">N.E.K.O solution narration'
+        'data-i18n="ui.settings.communication.title">N.E.K.O proactive communication'
         in html
     )
     assert (
@@ -215,14 +215,14 @@ def test_static_settings_applies_and_collects_solution_narration_config() -> Non
 
 def test_solution_narration_copy_is_complete_for_all_locales_and_never_mentions_yui() -> None:
     expected_titles = {
-        "en": "N.E.K.O solution narration",
-        "es": "Narración de soluciones de N.E.K.O",
-        "ja": "N.E.K.O の解答解説",
-        "ko": "N.E.K.O 풀이 설명",
-        "pt": "Narração de soluções da N.E.K.O",
-        "ru": "Озвучивание решения N.E.K.O",
-        "zh-CN": "N.E.K.O 解题讲述",
-        "zh-TW": "N.E.K.O 解題講述",
+        "en": "N.E.K.O proactive communication",
+        "es": "Comunicación proactiva de N.E.K.O",
+        "ja": "N.E.K.O 能動通信",
+        "ko": "N.E.K.O 능동 통신",
+        "pt": "Comunicação proativa da N.E.K.O",
+        "ru": "Инициативная связь N.E.K.O",
+        "zh-CN": "N.E.K.O 主动通信",
+        "zh-TW": "N.E.K.O 主動通訊",
     }
     expected_labels = {
         "en": "Let N.E.K.O narrate completed solutions",

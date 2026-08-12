@@ -164,6 +164,13 @@ class StudyEventBus:
             if self._worker_task is task:
                 self._worker_task = None
 
+    async def close(self) -> None:
+        """Finish an in-flight emit, discard the backlog, and stop the worker."""
+
+        self._drop_queued_events_after_worker_stop()
+        await self._queue.join()
+        await self.stop_worker()
+
     async def _consume_queue(self) -> None:
         task = asyncio.current_task()
         try:

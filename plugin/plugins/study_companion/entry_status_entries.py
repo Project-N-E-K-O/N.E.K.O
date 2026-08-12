@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from ._event_bus import StudyEventBus
 from .entry_common import (
     asyncio,
     Ok,
@@ -30,6 +31,34 @@ def _settings_config_payload(config: StudyConfig) -> dict:
         },
         "communication": config.communication.to_dict(),
     }
+
+
+def _communication_status_payload(owner) -> dict[str, bool | int]:
+    config = owner._cfg.communication
+    bus = getattr(owner, "_event_bus", None)
+    transport = getattr(owner, "_neko_command_transport", None)
+    handler = getattr(owner, "_neko_command_handler", None)
+    watcher = getattr(owner, "_neko_command_watcher", None)
+    worker = getattr(owner, "_command_worker_task", None)
+    return {
+        "configured_enabled": bool(config.enabled),
+        "solution_narration_enabled": bool(config.solution_narration_enabled),
+        "available": bus is not None,
+        "command_subscription_active": bool(
+            watcher is not None or (transport is not None and handler is not None)
+        ),
+        "command_worker_active": bool(worker is not None and not worker.done()),
+        "events_emitted": int(bus.emit_count if bus is not None else 0),
+        "events_blocked": int(bus.block_count if bus is not None else 0),
+    }
+
+
+def _communication_settings_lock(owner) -> asyncio.Lock:
+    lock = getattr(owner, "_communication_settings_lock", None)
+    if lock is None:
+        lock = asyncio.Lock()
+        owner._communication_settings_lock = lock
+    return lock
 
 
 def _coerce_bool(value: object, default: bool) -> bool:
@@ -104,6 +133,144 @@ def _apply_settings_config(current: StudyConfig, raw: dict) -> StudyConfig:
 
 
 class _StatusEntriesMixin:
+    async def _close_communication_runtime(self, event_bus) -> None:
+        first_error: BaseException | None = None
+        for cleanup in (
+            event_bus.close,
+            self._unsubscribe_neko_commands,
+            self._cancel_command_worker,
+        ):
+            try:
+                await cleanup()
+            except BaseException as exc:
+                if first_error is None:
+                    first_error = exc
+                else:
+                    self.logger.warning(
+                        "study communication runtime cleanup failed: {}", exc
+                    )
+        if first_error is not None:
+            raise first_error
+
+    async def _set_communication_runtime(self, enabled: bool) -> None:
+        if enabled:
+            if getattr(self, "_event_bus", None) is not None:
+                return
+            event_bus = StudyEventBus(plugin_ctx=self.ctx)
+            self._event_bus = event_bus
+            try:
+                await self._subscribe_neko_commands()
+                self._start_command_worker()
+            except BaseException:
+                if self._event_bus is event_bus:
+                    self._event_bus = None
+                try:
+                    await self._close_communication_runtime(event_bus)
+                except BaseException as cleanup_error:
+                    self.logger.warning(
+                        "study communication enable cleanup failed: {}",
+                        cleanup_error,
+                    )
+                raise
+            return
+
+        event_bus = getattr(self, "_event_bus", None)
+        if event_bus is None:
+            return
+        self._event_bus = None
+        await self._close_communication_runtime(event_bus)
+
+    def _apply_runtime_settings_config(self, config: StudyConfig) -> None:
+        self._cfg = config
+        if self._ocr_pipeline is not None:
+            self._ocr_pipeline.update_config(config)
+        if self._agent is not None:
+            self._agent.update_config(config)
+        if self._pomodoro_timer is not None:
+            self._pomodoro_timer.config = config.pomodoro
+            self._pomodoro_timer.auto_derive_from_session = (
+                config.checkin.auto_derive_from_session
+            )
+            self._pomodoro_timer.checkin_timezone = config.checkin.streak_timezone
+        if self._supervision is not None:
+            self._supervision.config = config.supervision
+            self._supervision.set_enabled(config.supervision.enabled)
+        if self._checkin_manager is not None:
+            self._checkin_manager.makeup_window_days = (
+                config.checkin.makeup_window_days
+            )
+
+    def _restore_runtime_settings_config(self, config: StudyConfig) -> None:
+        self._cfg = config
+        restore_steps: list[tuple[str, object]] = []
+        if self._ocr_pipeline is not None:
+            restore_steps.append(
+                ("ocr", lambda: self._ocr_pipeline.update_config(config))
+            )
+        if self._agent is not None:
+            restore_steps.append(("agent", lambda: self._agent.update_config(config)))
+
+        def restore_pomodoro() -> None:
+            self._pomodoro_timer.config = config.pomodoro
+            self._pomodoro_timer.auto_derive_from_session = (
+                config.checkin.auto_derive_from_session
+            )
+            self._pomodoro_timer.checkin_timezone = config.checkin.streak_timezone
+
+        if self._pomodoro_timer is not None:
+            restore_steps.append(("pomodoro", restore_pomodoro))
+
+        def restore_supervision() -> None:
+            self._supervision.config = config.supervision
+            self._supervision.set_enabled(config.supervision.enabled)
+
+        if self._supervision is not None:
+            restore_steps.append(("supervision", restore_supervision))
+        if self._checkin_manager is not None:
+            restore_steps.append(
+                (
+                    "checkin",
+                    lambda: setattr(
+                        self._checkin_manager,
+                        "makeup_window_days",
+                        config.checkin.makeup_window_days,
+                    ),
+                )
+            )
+        for component_name, restore in restore_steps:
+            try:
+                restore()
+            except BaseException as exc:
+                self.logger.warning(
+                    "study settings {} rollback failed: {}", component_name, exc
+                )
+
+    async def _rollback_settings_update(
+        self,
+        previous_config: StudyConfig,
+        *,
+        previous_runtime_enabled: bool,
+        runtime_reconciled: bool,
+        persist_previous_config: bool,
+    ) -> None:
+        self._restore_runtime_settings_config(previous_config)
+        if runtime_reconciled:
+            try:
+                await self._set_communication_runtime(previous_runtime_enabled)
+            except BaseException as exc:
+                self.logger.warning(
+                    "study communication runtime rollback failed: {}", exc
+                )
+        try:
+            await self._refresh_dependency_status()
+        except BaseException as exc:
+            self.logger.warning("study settings dependency rollback failed: {}", exc)
+        if persist_previous_config:
+            try:
+                await self._persist_state()
+            except BaseException as exc:
+                self.logger.warning("study settings persistence rollback failed: {}", exc)
+
     @ui.context(id="study", title="Study Companion")
     async def study_hosted_ui_context(self, **_):
         return {"ready": True}
@@ -137,10 +304,15 @@ class _StatusEntriesMixin:
             default="Return the running study companion settings used by the static UI.",
         ),
         input_schema={"type": "object", "properties": {}},
-        llm_result_fields=["config"],
+        llm_result_fields=["config", "communication_status"],
     )
     async def study_get_settings_config(self, **_):
-        return Ok({"config": _settings_config_payload(self._cfg)})
+        return Ok(
+            {
+                "config": _settings_config_payload(self._cfg),
+                "communication_status": _communication_status_payload(self),
+            }
+        )
 
     @plugin_entry(
         id="study_update_settings_config",
@@ -157,33 +329,47 @@ class _StatusEntriesMixin:
             "properties": {"config": {"type": "object"}},
             "required": ["config"],
         },
-        llm_result_fields=["config"],
+        llm_result_fields=["config", "communication_status"],
     )
     async def study_update_settings_config(self, config: dict | None = None, **_):
         try:
             raw_config = config if isinstance(config, dict) else {}
-            next_config = _apply_settings_config(self._cfg, raw_config)
-            self._cfg = next_config
-            if self._ocr_pipeline is not None:
-                self._ocr_pipeline.update_config(next_config)
-            if self._agent is not None:
-                self._agent.update_config(next_config)
-            if self._pomodoro_timer is not None:
-                self._pomodoro_timer.config = next_config.pomodoro
-                self._pomodoro_timer.auto_derive_from_session = (
-                    next_config.checkin.auto_derive_from_session
+            communication = (
+                raw_config.get("communication")
+                if isinstance(raw_config.get("communication"), dict)
+                else {}
+            )
+            runtime_reconciled = "enabled" in communication
+            async with _communication_settings_lock(self):
+                previous_config = self._cfg
+                previous_runtime_enabled = (
+                    getattr(self, "_event_bus", None) is not None
                 )
-                self._pomodoro_timer.checkin_timezone = next_config.checkin.streak_timezone
-            if self._supervision is not None:
-                self._supervision.config = next_config.supervision
-                self._supervision.set_enabled(next_config.supervision.enabled)
-            if self._checkin_manager is not None:
-                self._checkin_manager.makeup_window_days = (
-                    next_config.checkin.makeup_window_days
+                next_config = _apply_settings_config(previous_config, raw_config)
+                config_application_attempted = False
+                try:
+                    if runtime_reconciled:
+                        await self._set_communication_runtime(
+                            next_config.communication.enabled
+                        )
+                    config_application_attempted = True
+                    self._apply_runtime_settings_config(next_config)
+                    await self._refresh_dependency_status()
+                    await self._persist_state()
+                except BaseException:
+                    await self._rollback_settings_update(
+                        previous_config,
+                        previous_runtime_enabled=previous_runtime_enabled,
+                        runtime_reconciled=runtime_reconciled,
+                        persist_previous_config=config_application_attempted,
+                    )
+                    raise
+                return Ok(
+                    {
+                        "config": _settings_config_payload(next_config),
+                        "communication_status": _communication_status_payload(self),
+                    }
                 )
-            await self._refresh_dependency_status()
-            await self._persist_state()
-            return Ok({"config": _settings_config_payload(next_config)})
         except Exception as exc:
             return _entry_exception_error(
                 self, exc, operation="study_update_settings_config"
@@ -239,17 +425,18 @@ class _StatusEntriesMixin:
             default="Return whether real-time neko communication is active.",
         ),
         input_schema={"type": "object", "properties": {}},
-        llm_result_fields=["available", "events_emitted", "events_blocked"],
+        llm_result_fields=[
+            "configured_enabled",
+            "solution_narration_enabled",
+            "available",
+            "command_subscription_active",
+            "command_worker_active",
+            "events_emitted",
+            "events_blocked",
+        ],
     )
     async def study_neko_communication_status(self, **_):
-        bus = self._event_bus
-        return Ok(
-            {
-                "available": bus is not None,
-                "events_emitted": bus.emit_count if bus is not None else 0,
-                "events_blocked": bus.block_count if bus is not None else 0,
-            }
-        )
+        return Ok(_communication_status_payload(self))
 
     @ui.action()
     @plugin_entry(

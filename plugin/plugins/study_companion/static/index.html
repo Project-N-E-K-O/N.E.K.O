@@ -365,11 +365,19 @@
                   <p id="settingsLlmVisionHelp" data-i18n="ui.settings.llm_vision_enabled.help">Allows pasted JPEG/PNG images to be used for explanation, question generation, and answer evaluation. Requires a vision-capable model.</p>
                 </article>
                 <article class="settings-card">
-                  <h3 data-i18n="ui.settings.communication.title">N.E.K.O solution narration</h3>
+                  <h3 data-i18n="ui.settings.communication.title">N.E.K.O proactive communication</h3>
                   <label class="setting-toggle">
-                    <input id="settingsSolutionNarrationEnabled" type="checkbox" />
+                    <input id="settingsCommunicationEnabled" type="checkbox" aria-describedby="settingsCommunicationHelp settingsCommunicationRuntime" />
+                    <span data-i18n="ui.settings.communication.enabled.label">Enable Study Companion communication with N.E.K.O</span>
+                  </label>
+                  <p id="settingsCommunicationHelp" data-i18n="ui.settings.communication.enabled.help">Controls proactive Study Companion messages and N.E.K.O command communication.</p>
+                  <label class="setting-toggle">
+                    <input id="settingsSolutionNarrationEnabled" type="checkbox" aria-describedby="settingsSolutionNarrationHelp settingsCommunicationRequiresEnabled" />
                     <span data-i18n="ui.settings.solution_narration_enabled.label">Let N.E.K.O narrate completed solutions</span>
                   </label>
+                  <p id="settingsSolutionNarrationHelp" data-i18n="ui.settings.solution_narration_enabled.help">Narrates only the problem analysis, answer, and transfer practice.</p>
+                  <p id="settingsCommunicationRequiresEnabled" data-i18n="ui.settings.communication.requires_enabled" hidden>Enable N.E.K.O proactive communication first.</p>
+                  <p id="settingsCommunicationRuntime" class="settings-status" aria-live="polite"></p>
                 </article>
               <article class="settings-card">
                 <h3 data-i18n="ui.settings.dependencies.title">Dependencies</h3>

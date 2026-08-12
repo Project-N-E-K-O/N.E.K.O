@@ -140,7 +140,10 @@ const settingsOcrEnabled = document.getElementById('settingsOcrEnabled');
 const settingsOcrLanguages = document.getElementById('settingsOcrLanguages');
 const settingsLlmTimeout = document.getElementById('settingsLlmTimeout');
 const settingsLlmVisionEnabled = document.getElementById('settingsLlmVisionEnabled');
+const settingsCommunicationEnabled = document.getElementById('settingsCommunicationEnabled');
 const settingsSolutionNarrationEnabled = document.getElementById('settingsSolutionNarrationEnabled');
+const settingsCommunicationRequiresEnabled = document.getElementById('settingsCommunicationRequiresEnabled');
+const settingsCommunicationRuntime = document.getElementById('settingsCommunicationRuntime');
 const modeButtons = Array.from(document.querySelectorAll('[data-mode]'));
 const memoryReviewButtons = Array.from(document.querySelectorAll('[data-memory-rating]'));
 const MODE_SHORTCUTS = Object.freeze({
@@ -166,6 +169,7 @@ const NEKO_COACH_SCENE_ACTIONS = Object.freeze({
 });
 let lastStatusPayload = {};
 let settingsConfig = null;
+let settingsCommunicationStatus = {};
 let settingsConfigLoading = false;
 let firstRunDismissed = false;
 let advancedSettingsOpen = false;
@@ -1796,6 +1800,51 @@ function ensureConfigSection(config, key) {
   return config[key];
 }
 
+function syncCommunicationControls(options = {}) {
+  const communicationEnabled = settingsCommunicationEnabled ? settingsCommunicationEnabled.checked : true;
+  const saving = options.saving === true;
+  if (settingsCommunicationEnabled) {
+    settingsCommunicationEnabled.disabled = saving;
+  }
+  if (settingsSolutionNarrationEnabled) {
+    settingsSolutionNarrationEnabled.disabled = saving || !communicationEnabled;
+  }
+  if (settingsCommunicationRequiresEnabled) {
+    settingsCommunicationRequiresEnabled.hidden = communicationEnabled;
+  }
+}
+
+function renderCommunicationRuntime(status = {}) {
+  if (!settingsCommunicationRuntime) return;
+  const configuredEnabled = status.configured_enabled === true;
+  const available = status.available === true;
+  if (configuredEnabled !== available) {
+    settingsCommunicationRuntime.textContent = t(
+      'ui.settings.communication.runtime_unavailable',
+      'N.E.K.O communication configuration and runtime status do not match.',
+    );
+    return;
+  }
+  if (!configuredEnabled) {
+    settingsCommunicationRuntime.textContent = t(
+      'ui.settings.communication.requires_enabled',
+      'Enable N.E.K.O proactive communication first.',
+    );
+    return;
+  }
+  if (status.command_subscription_active !== true || status.command_worker_active !== true) {
+    settingsCommunicationRuntime.textContent = t(
+      'ui.settings.communication.commands_unavailable',
+      'Proactive narration is ready, but N.E.K.O command communication is unavailable.',
+    );
+    return;
+  }
+  settingsCommunicationRuntime.textContent = t(
+    'ui.settings.communication.runtime_ready',
+    'N.E.K.O proactive communication is ready.',
+  );
+}
+
 function applySettingsConfig(config) {
   const study = config.study || {};
   const ocr = config.ocr_reader || {};
@@ -1817,9 +1866,14 @@ function applySettingsConfig(config) {
   if (settingsLlmVisionEnabled) {
     settingsLlmVisionEnabled.checked = llm.llm_vision_enabled === true;
   }
+  if (settingsCommunicationEnabled) {
+    settingsCommunicationEnabled.checked = communication.enabled !== false;
+  }
   if (settingsSolutionNarrationEnabled) {
     settingsSolutionNarrationEnabled.checked = communication.solution_narration_enabled !== false;
   }
+  syncCommunicationControls();
+  renderCommunicationRuntime(settingsCommunicationStatus);
   if (Object.prototype.hasOwnProperty.call(llm, 'llm_vision_max_image_px')) {
     applyVisionMaxImagePx(llm.llm_vision_max_image_px);
   }
@@ -1830,7 +1884,9 @@ async function loadSettingsConfig(options = {}) {
   settingsConfigLoading = true;
   setSettingsConfigStatus('ui.status.config_loading', 'Loading settings...');
   try {
-    settingsConfig = cloneConfig(getConfigRoot(await callPlugin('study_get_settings_config')));
+    const payload = await callPlugin('study_get_settings_config');
+    settingsConfig = cloneConfig(getConfigRoot(payload));
+    settingsCommunicationStatus = cloneConfig(payload.communication_status || {});
     applySettingsConfig(settingsConfig);
     setSettingsConfigStatus('ui.status.config_loaded', 'Settings loaded');
   } catch (error) {
@@ -1852,6 +1908,7 @@ function collectSettingsConfig() {
   llm.llm_call_timeout_seconds = Math.max(1, Math.min(3600, Math.round(Number(settingsLlmTimeout?.value) || 30)));
   llm.llm_vision_enabled = settingsLlmVisionEnabled ? settingsLlmVisionEnabled.checked : false;
   llm.llm_vision_max_image_px = normalizeVisionMaxImagePx(llm.llm_vision_max_image_px);
+  communication.enabled = settingsCommunicationEnabled ? settingsCommunicationEnabled.checked : true;
   communication.solution_narration_enabled = settingsSolutionNarrationEnabled ? settingsSolutionNarrationEnabled.checked : true;
   return next;
 }
@@ -1862,20 +1919,29 @@ async function saveSettingsConfig() {
     setSettingsConfigStatus('ui.status.config_load_failed', 'Could not load settings');
     return;
   }
+  const previousConfig = cloneConfig(settingsConfig);
+  const previousCommunicationStatus = cloneConfig(settingsCommunicationStatus);
   const next = collectSettingsConfig();
   if (settingsLearningStage) {
     setLearningProfileStage(settingsLearningStage.value);
   }
   if (settingsSaveBtn) settingsSaveBtn.disabled = true;
+  syncCommunicationControls({ saving: true });
   setSettingsConfigStatus('ui.status.config_saving', 'Saving settings...');
   try {
-    settingsConfig = cloneConfig(getConfigRoot(await callPlugin('study_update_settings_config', { config: next })) || next);
+    const payload = await callPlugin('study_update_settings_config', { config: next });
+    settingsConfig = cloneConfig(getConfigRoot(payload) || next);
+    settingsCommunicationStatus = cloneConfig(payload.communication_status || {});
     applySettingsConfig(settingsConfig);
     setSettingsConfigStatus('ui.status.config_saved', 'Saved');
   } catch (error) {
+    settingsConfig = previousConfig;
+    settingsCommunicationStatus = previousCommunicationStatus;
+    applySettingsConfig(settingsConfig);
     setSettingsConfigStatus('ui.status.config_save_failed', 'Could not save settings');
   } finally {
     if (settingsSaveBtn) settingsSaveBtn.disabled = false;
+    syncCommunicationControls();
   }
 }
 
@@ -2346,6 +2412,11 @@ async function bootstrap() {
     settingsConfigForm.addEventListener('submit', (event) => {
       event.preventDefault();
       saveSettingsConfig();
+    });
+  }
+  if (settingsCommunicationEnabled) {
+    settingsCommunicationEnabled.addEventListener('change', () => {
+      syncCommunicationControls();
     });
   }
   if (settingsLearningStage) {

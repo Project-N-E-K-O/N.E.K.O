@@ -320,3 +320,71 @@ async def test_roundtrip_shutdown_with_pending_commands(
     assert plugin._interruptible_task is None
     assert plugin._command_queue.empty()
     release.set()
+
+
+@pytest.mark.asyncio
+async def test_roundtrip_hot_toggle_enables_solution_narration_without_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(tmp_path)
+    ctx._config["communication"] = {
+        "enabled": False,
+        "solution_narration_enabled": True,
+    }
+    plugin = StudyCompanionPlugin(ctx)
+    startup = await plugin.startup()
+    assert isinstance(startup, Ok)
+    plugin._agent = _FakeTutorAgent()
+    try:
+        initial_status = await plugin.study_neko_communication_status()
+        assert isinstance(initial_status, Ok)
+        assert initial_status.value["configured_enabled"] is False
+        assert initial_status.value["available"] is False
+
+        enabled = await plugin.study_update_settings_config(
+            config={"communication": {"enabled": True}}
+        )
+        assert isinstance(enabled, Ok)
+        assert enabled.value["communication_status"]["available"] is True
+
+        explained = await plugin.study_explain_text(text="Differentiate x squared")
+        assert isinstance(explained, Ok)
+        assert explained.value["solution_narration_scheduled"] is True
+        narration = await _wait_for_text(ctx, "Roundtrip analysis.")
+        assert "Roundtrip private process." not in narration
+
+        enabled_status = await plugin.study_neko_communication_status()
+        assert isinstance(enabled_status, Ok)
+        assert enabled_status.value["events_emitted"] == 1
+
+        persisted_enabled = plugin._store.load_config(StudyConfig())
+        assert persisted_enabled.communication.enabled is True
+        await plugin.shutdown()
+        plugin = StudyCompanionPlugin(ctx)
+        restarted = await plugin.startup()
+        assert isinstance(restarted, Ok)
+        plugin._agent = _FakeTutorAgent()
+        restarted_status = await plugin.study_neko_communication_status()
+        assert isinstance(restarted_status, Ok)
+        assert restarted_status.value["configured_enabled"] is True
+        assert restarted_status.value["available"] is True
+
+        disabled = await plugin.study_update_settings_config(
+            config={"communication": {"enabled": False}}
+        )
+        assert isinstance(disabled, Ok)
+        assert disabled.value["communication_status"]["available"] is False
+        persisted_disabled = plugin._store.load_config(StudyConfig())
+        assert persisted_disabled.communication.enabled is False
+
+        ctx.pushed_messages.clear()
+        explained_after_disable = await plugin.study_explain_text(
+            text="Differentiate x cubed"
+        )
+        assert isinstance(explained_after_disable, Ok)
+        assert explained_after_disable.value["solution_narration_scheduled"] is False
+        assert not _texts(ctx)
+    finally:
+        await plugin.shutdown()

@@ -705,3 +705,57 @@ async def test_schedule_emit_ignores_cancelled_error(
     assert caplog.text == ""
     with contextlib.suppress(asyncio.CancelledError):
         await bus.stop_worker()
+
+
+@pytest.mark.asyncio
+async def test_close_finishes_in_flight_emit_and_drops_queued_events() -> None:
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    class _SlowCtx(_Ctx):
+        async def push_message(self, **kwargs):
+            entered.set()
+            await release.wait()
+            self.messages.append(dict(kwargs))
+            return {"ok": True}
+
+    ctx = _SlowCtx()
+    bus = StudyEventBus(plugin_ctx=ctx)
+    for index in range(3):
+        bus.schedule_emit(
+            StudyEvent(
+                name="session_summarized",
+                payload={"duration_minutes": index, "questions_attempted": 1},
+            )
+        )
+
+    await asyncio.wait_for(entered.wait(), timeout=1.0)
+    close_task = asyncio.create_task(bus.close())
+    await asyncio.sleep(0)
+
+    assert not close_task.done()
+    assert bus._queue.empty()
+    assert bus.scheduled_emit_count == 1
+    assert bus.dropped_emit_count == 2
+
+    release.set()
+    await asyncio.wait_for(close_task, timeout=1.0)
+
+    assert len(ctx.messages) == 1
+    assert bus._worker_task is None
+    assert bus.scheduled_emit_count == 0
+    assert bus.dropped_emit_count == 2
+    await asyncio.wait_for(bus._queue.join(), timeout=1.0)
+
+
+@pytest.mark.asyncio
+async def test_close_is_idempotent_without_a_worker() -> None:
+    bus = StudyEventBus(plugin_ctx=_Ctx())
+
+    await bus.close()
+    await bus.close()
+
+    assert bus._worker_task is None
+    assert bus._queue.empty()
+    assert bus.scheduled_emit_count == 0
+    assert bus.dropped_emit_count == 0

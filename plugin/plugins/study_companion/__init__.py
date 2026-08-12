@@ -285,6 +285,7 @@ class StudyCompanionPlugin(
         self.file_logger = self.enable_file_logging(log_level="INFO")
         self.logger = self.file_logger
         self._lock = asyncio.Lock()
+        self._communication_settings_lock = asyncio.Lock()
         self._targeted_context_lock = threading.Lock()
         self._install_in_progress = False
         self._rapidocr_models_in_progress = False
