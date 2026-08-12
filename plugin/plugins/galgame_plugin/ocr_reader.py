@@ -113,7 +113,7 @@ from .ocr_window_scanner import (
 
 from .ocr_bridge_writer import *
 from .ocr_manager_capture import CaptureMixin
-from .ocr_manager_text import TextMixin
+from .ocr_manager_text import DialoguePipeline, TextMixin
 from .ocr_manager_poll import PollMixin
 from .ocr_manager_observe import ObserveMixin
 from .ocr_manager_runtime import RuntimeMixin
@@ -147,6 +147,38 @@ class OcrReaderManager(
     ObserveMixin,
     RuntimeMixin,
 ):
+    @property
+    def _last_observed_line(self) -> dict[str, Any]:
+        return self._dialogue_pipeline.state.observed_line
+
+    @_last_observed_line.setter
+    def _last_observed_line(self, value: dict[str, Any]) -> None:
+        self._dialogue_pipeline.state.observed_line = dict(value or {})
+
+    @property
+    def _last_stable_line(self) -> dict[str, Any]:
+        return self._dialogue_pipeline.state.stable_line
+
+    @_last_stable_line.setter
+    def _last_stable_line(self, value: dict[str, Any]) -> None:
+        self._dialogue_pipeline.state.stable_line = dict(value or {})
+
+    @property
+    def _last_title_narration_key(self) -> str:
+        return self._dialogue_pipeline.state.title_narration_key
+
+    @_last_title_narration_key.setter
+    def _last_title_narration_key(self, value: str) -> None:
+        self._dialogue_pipeline.state.title_narration_key = str(value or "")
+
+    @property
+    def _title_narration_streak(self) -> int:
+        return self._dialogue_pipeline.state.title_narration_streak
+
+    @_title_narration_streak.setter
+    def _title_narration_streak(self, value: int) -> None:
+        self._dialogue_pipeline.state.title_narration_streak = max(0, int(value))
+
     def __init__(
         self,
         *,
@@ -222,8 +254,8 @@ class OcrReaderManager(
         self._ocr_capture_rejected_reason = ""
         self._capture_region_occluded = False
         self._capture_target_foreground = False
-        self._last_observed_line: dict[str, Any] = {}
-        self._last_stable_line: dict[str, Any] = {}
+        self._dialogue_pipeline = DialoguePipeline()
+        self._last_dialogue_decision = None
         self._last_capture_image_hash = ""
         self._last_capture_source_size: dict[str, float] = {}
         self._last_capture_rect: dict[str, float] = {}
@@ -253,8 +285,6 @@ class OcrReaderManager(
         self._clear_vision_snapshot()
         self._last_screen_classification_type = ""
         self._last_screen_classification_streak = 0
-        self._last_title_narration_key = ""
-        self._title_narration_streak = 0
         self._known_screen_stuck_since: float | None = None
         self._last_known_screen_type = ""
         self._known_screen_skip_bypass_until = 0.0

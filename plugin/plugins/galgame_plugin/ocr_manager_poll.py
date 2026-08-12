@@ -128,7 +128,8 @@ class PollMixin:
 
     def _reset_default_ocr_state(self) -> None:
         self._default_ocr_state.reset()
-        self._reset_title_narration_candidate()
+        self._dialogue_pipeline.reset(reason="ocr_runtime_reset")
+        self._last_dialogue_decision = None
         self._consecutive_no_text_polls = 0
         self._last_capture_error = ""
         self._last_raw_ocr_text = ""
@@ -136,8 +137,6 @@ class PollMixin:
         self._ocr_capture_rejected_reason = ""
         self._capture_region_occluded = False
         self._capture_target_foreground = False
-        self._last_observed_line = {}
-        self._last_stable_line = {}
         self._last_capture_image_hash = ""
         self._last_capture_source_size = {}
         self._last_capture_rect = {}

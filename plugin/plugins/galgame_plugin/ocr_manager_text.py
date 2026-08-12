@@ -234,11 +234,17 @@ class DialoguePipeline:
         self.state.title_narration_key = ""
         self.state.title_narration_streak = 0
 
-    def observe_title_narration_candidate(self, raw_text: str) -> bool:
-        if not _has_conservative_title_narration_evidence(raw_text):
+    def observe_title_narration_candidate(
+        self,
+        raw_text: str,
+        *,
+        has_evidence: Callable[[str], bool],
+        stability_key: Callable[[str], str],
+    ) -> bool:
+        if not has_evidence(raw_text):
             self.reset_title_narration_candidate()
             return False
-        candidate_key = _ocr_stability_key(normalize_text(str(raw_text or "")))
+        candidate_key = stability_key(normalize_text(str(raw_text or "")))
         if not candidate_key:
             self.reset_title_narration_candidate()
             return False
@@ -251,6 +257,39 @@ class DialoguePipeline:
 
 
 class TextMixin:
+    def _complete_dialogue_decision(
+        self,
+        *,
+        accepted: bool,
+        stability: str = "",
+        line_payload: dict[str, Any] | None = None,
+        events: Iterable[str] = (),
+        rejection_reason: str | None = None,
+        tracker: _StableOcrTextState | None = None,
+        reconciliation_diagnostic: dict[str, Any] | None = None,
+    ) -> DialogueDecision:
+        writer_state = self._writer.current_state or {}
+        decision = self._dialogue_pipeline.process(
+            accepted=accepted,
+            stability=stability,
+            line_payload=line_payload,
+            effective_screen_type=str(writer_state.get("screen_type") or ""),
+            events=events,
+            rejection_reason=rejection_reason,
+            capture_trusted=bool(
+                getattr(self, "_ocr_capture_content_trusted", True)
+            ),
+            stability_key=str(
+                (tracker.stable_text_key or tracker.last_text_key)
+                if tracker is not None
+                else ""
+            ),
+            repeat_count=(tracker.repeat_count if tracker is not None else None),
+            reconciliation_diagnostic=reconciliation_diagnostic,
+        )
+        self._last_dialogue_decision = decision
+        return decision
+
     """OCR 文本提取、语言检测、文本去重、台词 emit"""
 
     @staticmethod
@@ -840,6 +879,10 @@ class TextMixin:
             or _looks_like_game_overlay_normalized_text(cleaned_text)
             or not _looks_like_ocr_dialogue_normalized_text(cleaned_text)
         ):
+            self._complete_dialogue_decision(
+                accepted=False,
+                rejection_reason="dialogue_evidence_rejected",
+            )
             return False
         self._record_accepted_ocr_text(content_text)
         self._maybe_auto_switch_rapidocr_lang(
@@ -851,6 +894,10 @@ class TextMixin:
             cleaned_text = dialogue_library_match.canonical_text()
             text_source = "dialogue_library"
         speaker, text = OcrReaderBridgeWriter._split_speaker_text(cleaned_text)
+        decision_events: list[str] = []
+        decision_payload: dict[str, Any] = {}
+        decision_stability = ""
+        reconciliation_diagnostic: dict[str, Any] = {}
         had_pending_visual_scene = bool(self._pending_visual_scene_hash)
         if self._pending_visual_scene_hash:
             self._resolve_pending_visual_scene_for_dialogue(
@@ -881,7 +928,7 @@ class TextMixin:
                     else ""
                 )
                 if text:
-                    self._last_observed_line = {
+                    decision_payload = {
                         "line_id": "",
                         "speaker": speaker,
                         "text": text,
@@ -890,6 +937,7 @@ class TextMixin:
                         "stability": "tentative",
                         "ts": utc_now_iso(now),
                     }
+                    decision_stability = "tentative"
                     self._last_observed_at = utc_now_iso(now)
             elif self._writer.emit_line_observed(
                 cleaned_text,
@@ -902,12 +950,17 @@ class TextMixin:
                 capture_content_trusted=bool(getattr(self, "_ocr_capture_content_trusted", True)),
                 capture_untrusted_reason=str(getattr(self, "_ocr_capture_rejected_reason", "") or ""),
             ):
-                observed = self._line_payload_from_writer(stability="tentative")
-                self._last_observed_line = observed
-                self._emit_dialogue_screen_reconciliation_after_line(
+                decision_payload = self._line_payload_from_writer(stability="tentative")
+                decision_stability = "tentative"
+                decision_events.append("line_observed")
+                if self._emit_dialogue_screen_reconciliation_after_line(
                     now=now,
                     raw_text=raw_text,
-                )
+                ):
+                    decision_events.append("screen_classified")
+                    reconciliation_diagnostic = dict(
+                        (self._writer.current_state or {}).get("screen_debug") or {}
+                    )
         tracker = state or self._default_ocr_state
         if pending_visual_scene:
             current_key = _ocr_stability_key(cleaned_text)
@@ -937,6 +990,15 @@ class TextMixin:
             state=tracker,
             repeat_threshold=effective_repeat_threshold,
         ):
+            self._complete_dialogue_decision(
+                accepted=bool(decision_payload),
+                stability=decision_stability,
+                line_payload=decision_payload,
+                events=decision_events,
+                rejection_reason=(None if decision_payload else tracker.last_block_reason),
+                tracker=tracker,
+                reconciliation_diagnostic=reconciliation_diagnostic,
+            )
             return False
         emitted_text = tracker.stable_text or cleaned_text
         if pending_visual_scene:
@@ -957,13 +1019,26 @@ class TextMixin:
             capture_untrusted_reason=str(getattr(self, "_ocr_capture_rejected_reason", "") or ""),
         )
         if emitted:
-            stable_line = self._line_payload_from_writer(stability="stable")
-            self._last_stable_line = stable_line
-            self._last_observed_line = stable_line
-            self._emit_dialogue_screen_reconciliation_after_line(
+            decision_payload = self._line_payload_from_writer(stability="stable")
+            decision_stability = "stable"
+            decision_events.append("line_changed")
+            if self._emit_dialogue_screen_reconciliation_after_line(
                 now=now,
                 raw_text=raw_text,
-            )
+            ):
+                decision_events.append("screen_classified")
+                reconciliation_diagnostic = dict(
+                    (self._writer.current_state or {}).get("screen_debug") or {}
+                )
+        self._complete_dialogue_decision(
+            accepted=bool(decision_payload),
+            stability=decision_stability,
+            line_payload=decision_payload,
+            events=decision_events,
+            rejection_reason=(None if decision_payload else "duplicate_stable_text"),
+            tracker=tracker,
+            reconciliation_diagnostic=reconciliation_diagnostic,
+        )
         return emitted
 
 

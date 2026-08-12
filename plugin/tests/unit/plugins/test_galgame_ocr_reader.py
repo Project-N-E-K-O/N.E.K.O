@@ -25,6 +25,7 @@ from plugin.plugins.galgame_plugin.ocr_capture_backends import dxcam as galgame_
 from plugin.plugins.galgame_plugin.ocr_capture_backends import pyautogui as galgame_pyautogui_backend
 from plugin.plugins.galgame_plugin.ocr_capture_backends import _helpers as galgame_ocr_capture_helpers
 from plugin.plugins.galgame_plugin import ocr_manager_text as galgame_ocr_manager_text
+from plugin.plugins.galgame_plugin.ocr_manager_observe import SceneObservation
 from plugin.plugins.galgame_plugin import ocr_text_normalize as galgame_ocr_text_normalize
 from plugin.plugins.galgame_plugin import ocr_rapidocr_backend as galgame_ocr_rapidocr_backend
 from plugin.plugins.galgame_plugin import ocr_reader as galgame_ocr_reader
@@ -2163,6 +2164,34 @@ def test_dialogue_pipeline_reset_drops_all_pending_dialogue_state() -> None:
     assert pipeline.state.repeat_count == 0
     assert pipeline.state.effective_screen_type == ""
     assert pipeline.state.reconciliation_diagnostic == {}
+
+
+def test_scene_observation_exposes_visual_facts_without_dialogue_policy(
+    tmp_path: Path,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=_make_config(bridge_root),
+        time_fn=lambda: 3000.0,
+        platform_fn=lambda: True,
+        window_scanner=_window,
+        capture_backend=_FakeCaptureBackend(),
+        ocr_backend=_FakeOcrBackend(),
+    )
+    manager._last_background_hash = "background-a"
+    manager._pending_visual_scene_hash = "pending-scene-a"
+    manager._ocr_capture_content_trusted = False
+
+    observation = manager.scene_observation()
+
+    assert observation == SceneObservation(
+        raw_screen_type="",
+        background_hash="background-a",
+        pending_scene_id="pending-scene-a",
+        capture_trusted=False,
+    )
 
 
 def test_ocr_writer_start_session_preserves_existing_game_events(tmp_path: Path) -> None:

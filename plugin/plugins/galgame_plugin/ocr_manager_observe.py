@@ -126,8 +126,27 @@ def _foreground_window_handle() -> int:
     return _ocr_reader_module._foreground_window_handle()
 
 
+@dataclass(frozen=True, slots=True)
+class SceneObservation:
+    """Visual facts supplied to dialogue processing without dialogue policy."""
+
+    raw_screen_type: str
+    background_hash: str | None
+    pending_scene_id: str | None
+    capture_trusted: bool
+
+
 class ObserveMixin:
     """窗口扫描、目标匹配、前景检测、vision snapshot"""
+
+    def scene_observation(self) -> SceneObservation:
+        writer_state = self._writer.current_state or {}
+        return SceneObservation(
+            raw_screen_type=str(writer_state.get("screen_type") or ""),
+            background_hash=str(self._last_background_hash or "") or None,
+            pending_scene_id=str(self._pending_visual_scene_hash or "") or None,
+            capture_trusted=bool(self._ocr_capture_content_trusted),
+        )
 
     def _observe_memory_reader_text_progress(
         self,

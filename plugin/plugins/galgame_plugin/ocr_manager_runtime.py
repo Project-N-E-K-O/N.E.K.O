@@ -1265,23 +1265,14 @@ class RuntimeMixin:
         return classification
 
     def _reset_title_narration_candidate(self) -> None:
-        self._last_title_narration_key = ""
-        self._title_narration_streak = 0
+        self._dialogue_pipeline.reset_title_narration_candidate()
 
     def _observe_title_narration_candidate(self, raw_text: str) -> bool:
-        if not _has_conservative_title_narration_evidence(raw_text):
-            self._reset_title_narration_candidate()
-            return False
-        candidate_key = _ocr_stability_key(normalize_text(str(raw_text or "")))
-        if not candidate_key:
-            self._reset_title_narration_candidate()
-            return False
-        if candidate_key == self._last_title_narration_key:
-            self._title_narration_streak += 1
-        else:
-            self._last_title_narration_key = candidate_key
-            self._title_narration_streak = 1
-        return self._title_narration_streak >= 2
+        return self._dialogue_pipeline.observe_title_narration_candidate(
+            raw_text,
+            has_evidence=_has_conservative_title_narration_evidence,
+            stability_key=_ocr_stability_key,
+        )
 
     def _should_skip_dialogue_for_screen_classification(
         self,
