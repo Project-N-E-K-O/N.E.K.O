@@ -69,6 +69,47 @@ async def test_replace_plugin_replaces_only_payload_and_preserves_external_user_
 
 
 @pytest.mark.asyncio
+async def test_replace_plugin_preserves_manifest_adjacent_user_profiles(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "plugins" / "demo"
+    target.mkdir(parents=True)
+    (target / "plugin.toml").write_text("version = 1\n", encoding="utf-8")
+    (target / "profiles.toml").write_text(
+        "[config_profiles]\nactive = 'dev'\n",
+        encoding="utf-8",
+    )
+    (target / "profiles").mkdir()
+    (target / "profiles" / "dev.toml").write_text(
+        "[feature]\nenabled = true\n",
+        encoding="utf-8",
+    )
+
+    async def install_new() -> dict[str, object]:
+        target.mkdir()
+        (target / "plugin.toml").write_text("version = 2\n", encoding="utf-8")
+        return {"installed": True}
+
+    await replace_plugin(
+        layout=resolve_plugin_layout("demo", target),
+        install_new=install_new,
+        validate_new=_async_none,
+        is_running=lambda _plugin_id: _async_false(),
+        stop=lambda _plugin_id: _async_none(),
+        start=lambda _plugin_id: _async_none(),
+        cleanup_backup=remove_directory,
+    )
+
+    assert (target / "plugin.toml").read_text(encoding="utf-8") == "version = 2\n"
+    assert (target / "profiles.toml").read_text(encoding="utf-8") == (
+        "[config_profiles]\nactive = 'dev'\n"
+    )
+    assert (target / "profiles" / "dev.toml").read_text(encoding="utf-8") == (
+        "[feature]\nenabled = true\n"
+    )
+
+
+@pytest.mark.asyncio
 async def test_replace_plugin_initializes_runtime_config_from_old_payload_before_backup(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

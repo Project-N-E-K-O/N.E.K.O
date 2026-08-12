@@ -195,10 +195,12 @@ class PluginConfig:
         return value
 
     async def set(self, path: str, value: JsonValue, *, timeout: float = 5.0) -> None:
-        patch = _set_by_path({}, path, value)
         if path == "":
+            patch = _set_by_path({}, path, value)
             await self._replace_runtime_config(patch, timeout=timeout)
         else:
+            replacement = {**value, "__replace__": True} if isinstance(value, dict) else value
+            patch = _set_by_path({}, path, replacement)
             await self._update_runtime_config(patch, timeout=timeout)
 
     async def update(self, patch: Mapping[str, JsonValue], *, timeout: float = 5.0) -> JsonObject:

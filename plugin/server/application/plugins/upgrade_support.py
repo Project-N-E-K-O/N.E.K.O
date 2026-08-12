@@ -14,6 +14,8 @@ from plugin.server.infrastructure.config_paths import ensure_plugin_layout_runti
 
 logger = get_logger("server.application.plugins.upgrade_support")
 
+_MANIFEST_ADJACENT_PROFILE_PATHS = (Path("profiles.toml"), Path("profiles"))
+
 
 @dataclass(frozen=True, slots=True)
 class ReplacePluginResult:
@@ -111,6 +113,21 @@ async def merge_directory_contents(source_dir: Path, target_dir: Path) -> None:
         raise NotADirectoryError(source_dir)
     await asyncio.to_thread(target_dir.mkdir, parents=True, exist_ok=True)
     await asyncio.to_thread(shutil.copytree, source_dir, target_dir, dirs_exist_ok=True)
+
+
+async def _restore_manifest_adjacent_profiles(backup_dir: Path, target_dir: Path) -> None:
+    for relative_path in _MANIFEST_ADJACENT_PROFILE_PATHS:
+        source = backup_dir / relative_path
+        if not source.exists():
+            continue
+        target = target_dir / relative_path
+        if source.is_dir():
+            await merge_directory_contents(source, target)
+            continue
+        if not source.is_file():
+            raise OSError(f"unsupported profile path: {source}")
+        await asyncio.to_thread(target.parent.mkdir, parents=True, exist_ok=True)
+        await asyncio.to_thread(shutil.copy2, source, target)
 
 
 async def run_rollback(
@@ -268,6 +285,7 @@ async def replace_plugin(
             backup = backups.get(target)
             if backup is not None:
                 await merge_directory_contents(backup, target)
+        await _restore_manifest_adjacent_profiles(backup_dir, target_dir)
         if was_running:
             stage = "restart"
             await start(plugin_id)

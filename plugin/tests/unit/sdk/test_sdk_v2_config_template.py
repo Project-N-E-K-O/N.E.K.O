@@ -152,6 +152,21 @@ async def test_config_set_empty_path_replaces_runtime_config_root() -> None:
 
 
 @pytest.mark.asyncio
+async def test_config_set_replaces_existing_table_value() -> None:
+    ctx = _CtxFull()
+    cfg = core_config.PluginConfig(ctx)
+
+    await cfg.set("feature", {"enabled": False})
+
+    assert ctx.updated == {
+        "feature": {
+            "__replace__": True,
+            "enabled": False,
+        }
+    }
+
+
+@pytest.mark.asyncio
 async def test_config_template_error_paths() -> None:
     cfg = core_config.PluginConfig(_CtxFull())
     with pytest.raises((ValidationError, TransportError)):

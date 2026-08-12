@@ -234,7 +234,9 @@ export function verifyPluginPackage(payload: PluginCliPackageRef): Promise<Plugi
  * 安装插件包或整合包
  */
 export function installPluginPackage(payload: PluginCliInstallRequest): Promise<PluginCliInstallResponse> {
-  return post('/plugin-cli/install', payload)
+  return post('/plugin-cli/install', payload, {
+    timeout: 120_000,
+  })
 }
 
 /**
