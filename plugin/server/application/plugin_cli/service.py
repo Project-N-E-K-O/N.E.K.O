@@ -300,8 +300,19 @@ class PluginCliService:
         if source is None:
             return install_result
 
-        package_path = self._resolve_package_path(package)
-        package_sha256 = await asyncio.to_thread(self._sha256_file, package_path)
+        try:
+            package_path = self._resolve_package_path(package)
+            package_sha256 = await asyncio.to_thread(self._sha256_file, package_path)
+        except Exception as exc:
+            logger.warning(
+                "prepare install source failed: err_type={}, err={}",
+                type(exc).__name__,
+                str(exc),
+            )
+            return {
+                **install_result,
+                "install_source_warning": f"install_source_prepare_failed: {exc}",
+            }
         warning = await self._record_install_source_best_effort(
             install_result=install_result,
             package_filename=package_path.name,

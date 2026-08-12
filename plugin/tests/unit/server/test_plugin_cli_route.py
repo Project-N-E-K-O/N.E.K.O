@@ -674,6 +674,50 @@ async def test_plugin_cli_install_records_uploaded_package_as_imported(
 
 
 @pytest.mark.asyncio
+async def test_plugin_cli_install_remains_successful_when_import_hashing_fails(
+    plugin_cli_test_app: FastAPI,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_id = "route_import_hash_failure"
+    source = _make_plugin_dir(tmp_path / "source", plugin_id=plugin_id)
+    packages_root = tmp_path / "packages"
+    packages_root.mkdir()
+    package_path = packages_root / f"{plugin_id}.neko-plugin"
+    pack_plugin(source, package_path)
+    user_root = tmp_path / "user-plugins"
+    _patch_plugin_cli_settings(
+        monkeypatch,
+        builtin_root=tmp_path / "builtin",
+        user_root=user_root,
+        packages_root=packages_root,
+        profiles_root=tmp_path / "profiles",
+    )
+    def _hash_failure(_path: Path) -> str:
+        raise OSError("package archive disappeared")
+
+    monkeypatch.setattr(plugin_cli_routes.service, "_sha256_file", _hash_failure)
+    transport = ASGITransport(app=plugin_cli_test_app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/plugin-cli/install",
+            json={
+                "package": str(package_path),
+                "install_source": "imported",
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["operation"] == "install"
+    assert result["installed_plugin_count"] == 1
+    assert result["install_source_warning"] == (
+        "install_source_prepare_failed: package archive disappeared"
+    )
+    assert (user_root / plugin_id / "plugin.toml").is_file()
+
+
+@pytest.mark.asyncio
 async def test_plugin_cli_upload_and_install_failure_cleans_staging_and_saved_package(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
