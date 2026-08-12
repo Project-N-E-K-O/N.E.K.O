@@ -66,6 +66,7 @@
   }
 
   function react(detail) {
+    if (window.forgeDropEffectsEnabled === false) return;
     var now = Date.now();
     if (now - lastReactionAt < DEBOUNCE_MS) return;
     lastReactionAt = now;

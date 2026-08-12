@@ -2901,6 +2901,7 @@
             "fullscreenTracking": "Rastreamento em tela cheia",
             "localTracking": "Rastreamento Local",
             "lockedHoverFade": "Desbotamento de foco bloqueado",
+            "forgeDropEffects": "Efeitos ao receber bilhete",
             "textGuardMaxLength": "Limite de comprimento de resposta",
             "unlimited": "Ilimitado",
             "characters": "caracteres",

@@ -2901,6 +2901,7 @@
             "fullscreenTracking": "전체 화면 추적",
             "localTracking": "로컬 추적",
             "lockedHoverFade": "잠금 호버 페이드",
+            "forgeDropEffects": "티켓 획득 연출 및 효과음",
             "textGuardMaxLength": "응답 길이 상한",
             "unlimited": "무제한",
             "characters": "자",

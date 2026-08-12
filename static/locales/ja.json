@@ -2901,6 +2901,7 @@
             "fullscreenTracking": "フルスクリーン追跡",
             "localTracking": "ローカル追跡",
             "lockedHoverFade": "ロック時ホバー透過",
+            "forgeDropEffects": "チケット獲得演出・効果音",
             "textGuardMaxLength": "返信長さ上限",
             "unlimited": "無制限",
             "characters": "文字",

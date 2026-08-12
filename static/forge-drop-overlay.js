@@ -38,6 +38,7 @@
   var expiryRefreshTimer = null;
   var forgeBadgeObserver = null;
   var dropSoundAudioByRarity = {};
+  var dropEffectsGeneration = 0;
   // 浮动按钮栏未聚焦时会被 display:none；此时 getBoundingClientRect=0 → 会误飞左上角。
   // 缓存上次可见位置，并在隐藏时用 style.left/top 估算。
   var lastSocialCenter = null;
@@ -90,6 +91,7 @@
 
   function playDropSound(rarity) {
     try {
+      if (window.forgeDropEffectsEnabled === false) return;
       var normalized = tokens().normalizeRarity(rarity);
       var audio = dropSoundAudioByRarity[normalized] || createDropSoundAudio(normalized);
       if (!audio) return;
@@ -404,6 +406,14 @@
   function playOne(payload) {
     return new Promise(function (resolve) {
       try {
+        if (window.forgeDropEffectsEnabled === false) {
+          if (payload && typeof payload.active_count === 'number') {
+            renderForgeBadge(payload.active_count, true);
+          }
+          resolve();
+          return;
+        }
+        var playGeneration = dropEffectsGeneration;
         ensureStyles();
         var t = tokens();
         var rarity = t.normalizeRarity(payload && payload.rarity);
@@ -505,6 +515,11 @@
 
         var hold = reduced ? 1200 : HOLD_MS;
         setTimeout(function () {
+          if (playGeneration !== dropEffectsGeneration || window.forgeDropEffectsEnabled === false) {
+            try { card.remove(); } catch (_) {}
+            resolve();
+            return;
+          }
           var prevBtnStyle = null;
           try {
             // 0) 短暂亮起浮动栏，避免隐藏时 rect=0 飞向左上，也让终点可见
@@ -684,7 +699,31 @@
       // 动画飞入结束后再 bump；这里先缓存，避免角标抢先跳
       cachedCredits = Math.max(0, detail.active_count - 1);
     }
+    if (window.forgeDropEffectsEnabled === false) {
+      if (typeof detail.active_count === 'number') {
+        renderForgeBadge(detail.active_count, true);
+      }
+      return;
+    }
     play(queuedDetail);
+  }
+
+  function onDropEffectsChanged(event) {
+    if (!event || !event.detail || event.detail.enabled !== false) return;
+    dropEffectsGeneration += 1;
+    try {
+      var layer = document.querySelector('.neko-forge-drop-layer');
+      if (layer) layer.replaceChildren();
+    } catch (_) {}
+    Object.keys(dropSoundAudioByRarity).forEach(function (rarity) {
+      try {
+        var audio = dropSoundAudioByRarity[rarity];
+        if (audio) {
+          audio.pause();
+          audio.currentTime = 0;
+        }
+      } catch (_) {}
+    });
   }
 
   function boot() {
@@ -695,6 +734,7 @@
     renderForgeBadge(cachedCredits || 0, false);
     refreshCreditsWithRetry();
     window.addEventListener('neko-forge-credit-drop', onCreditDropEvent);
+    window.addEventListener('neko-forge-drop-effects-changed', onDropEffectsChanged);
     // 从外部社区页兑券返回时尽快校准；节流避免 focus/visibilitychange 连发。
     window.addEventListener('focus', requestInteractiveRefresh);
     window.addEventListener('pageshow', requestInteractiveRefresh);

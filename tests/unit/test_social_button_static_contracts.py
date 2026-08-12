@@ -8,7 +8,10 @@ from tests.static_app_parts import read_js_parts
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 APP_UI_PATH = PROJECT_ROOT / "static" / "app" / "app-ui"
+APP_SETTINGS_PATH = PROJECT_ROOT / "static" / "app" / "app-settings.js"
+AVATAR_UI_POPUP_PATH = PROJECT_ROOT / "static" / "avatar" / "avatar-ui-popup.js"
 FORGE_DROP_OVERLAY_PATH = PROJECT_ROOT / "static" / "forge-drop-overlay.js"
+FORGE_AVATAR_REACTION_PATH = PROJECT_ROOT / "static" / "forge-avatar-reaction.js"
 FORGE_DROP_TOKENS_PATH = PROJECT_ROOT / "static" / "forge-drop-tokens.js"
 FORGE_SOUND_DIR = PROJECT_ROOT / "static" / "sounds" / "forge"
 
@@ -181,6 +184,30 @@ def test_credit_drop_event_plays_forge_overlay_animation():
 
     assert "cachedCredits = Math.max(0, detail.active_count - 1);" in handler
     assert "play(queuedDetail);" in handler
+
+
+@pytest.mark.unit
+def test_forge_drop_effects_can_be_disabled_without_hiding_credit_updates():
+    popup = AVATAR_UI_POPUP_PATH.read_text(encoding="utf-8")
+    settings = APP_SETTINGS_PATH.read_text(encoding="utf-8")
+    overlay = FORGE_DROP_OVERLAY_PATH.read_text(encoding="utf-8")
+    reaction = FORGE_AVATAR_REACTION_PATH.read_text(encoding="utf-8")
+
+    assert "settings.toggles.forgeDropEffects" in popup
+    assert "window.forgeDropEffectsEnabled = enabled;" in popup
+    assert "neko-forge-drop-effects-changed" in popup
+    assert "forgeDropEffectsEnabled: currentForgeDropEffects" in settings
+    assert "window.forgeDropEffectsEnabled = settings.forgeDropEffectsEnabled;" in settings
+    assert "window.forgeDropEffectsEnabled === false" in overlay
+    assert "renderForgeBadge(detail.active_count, true);" in overlay
+    assert "audio.pause();" in overlay
+    assert "if (window.forgeDropEffectsEnabled === false) return;" in reaction
+
+    for locale in ("en", "ja", "ko", "zh-CN", "zh-TW", "ru", "pt", "es"):
+        locale_source = (PROJECT_ROOT / "static" / "locales" / f"{locale}.json").read_text(
+            encoding="utf-8"
+        )
+        assert '"forgeDropEffects"' in locale_source
 
 
 @pytest.mark.unit

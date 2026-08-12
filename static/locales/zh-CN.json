@@ -2901,6 +2901,7 @@
             "fullscreenTracking": "全屏跟踪",
             "localTracking": "局部跟踪",
             "lockedHoverFade": "锁定悬停淡化",
+            "forgeDropEffects": "掉券动画与音效",
             "textGuardMaxLength": "回复长度上限",
             "unlimited": "无限制",
             "characters": "字",

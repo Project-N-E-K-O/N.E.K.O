@@ -2901,6 +2901,7 @@
             "fullscreenTracking": "Seguimiento de pantalla completa",
             "localTracking": "Seguimiento local",
             "lockedHoverFade": "Desvanecimiento de desplazamiento bloqueado",
+            "forgeDropEffects": "Efectos al recibir cupón",
             "textGuardMaxLength": "Límite de longitud de respuesta",
             "unlimited": "Ilimitado",
             "characters": "caracteres",
