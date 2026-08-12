@@ -9,6 +9,7 @@ from plugin.plugins.study_companion import StudyCompanionPlugin
 from plugin.plugins.study_companion import document_analysis as document_module
 from plugin.plugins.study_companion.constants import LLM_OPERATION_DOCUMENT_ANALYZE
 from plugin.plugins.study_companion.document_analysis import (
+    DOCUMENT_ANALYSIS_KINDS,
     DOCUMENT_ENTRY_TIMEOUT_SECONDS,
     DOCUMENT_MAX_BYTES,
     DOCUMENT_MAX_TOKENS,
@@ -75,6 +76,7 @@ def test_validate_document_accepts_txt_and_markdown_and_builds_safe_metadata() -
     assert plain.text not in plain.descriptor
     assert plain.public_metadata()["source_retained"] is False
     assert "text" not in plain.public_metadata()
+    assert plain.public_metadata()["requested_kind"] == "auto"
 
 
 @pytest.mark.parametrize(
@@ -87,6 +89,7 @@ def test_validate_document_accepts_txt_and_markdown_and_builds_safe_metadata() -
         ({"document_text": "bad\ufffd"}, "invalid_document_encoding"),
         ({"locale": "fr"}, "unsupported_locale"),
         ({"analysis_instruction": "x" * 1001}, "analysis_instruction_too_long"),
+        ({"analysis_kind": "spreadsheet"}, "unsupported_document_kind"),
     ],
 )
 def test_validate_document_rejects_invalid_inputs(
@@ -124,6 +127,39 @@ def test_document_prompt_treats_source_and_instruction_as_untrusted() -> None:
     assert messages[1]["content"].count("<untrusted_document>") == 1
     assert source in messages[1]["content"]
     assert instruction in messages[1]["content"]
+    assert "does not imply a book" in messages[0]["content"]
+    assert "does not imply a design document" in messages[0]["content"]
+
+
+@pytest.mark.parametrize("analysis_kind", DOCUMENT_ANALYSIS_KINDS[1:])
+def test_manual_document_kind_has_priority_and_uses_selected_structure(
+    analysis_kind: str,
+) -> None:
+    system = build_document_analysis_messages(
+        _document(document_text="Plain content without type hints.", analysis_kind=analysis_kind)
+    )[0]["content"]
+    assert f"explicitly selected `{analysis_kind}`" in system
+    assert "Infer the closest content kind" not in system
+
+
+@pytest.mark.parametrize(
+    ("locale", "heading"),
+    [
+        ("en", "Design document analysis"),
+        ("zh-CN", "设计文档分析"),
+        ("zh-TW", "設計文件分析"),
+        ("ja", "設計文書の分析"),
+        ("ko", "설계 문서 분석"),
+        ("es", "Análisis del documento de diseño"),
+        ("pt", "Análise do documento de design"),
+        ("ru", "Анализ проектного документа"),
+    ],
+)
+def test_manual_kind_headings_are_localized(locale: str, heading: str) -> None:
+    system = build_document_analysis_messages(
+        _document(locale=locale, analysis_kind="design_document")
+    )[0]["content"]
+    assert heading in system
 
 
 @pytest.mark.parametrize(
@@ -158,6 +194,9 @@ def test_document_entry_schema_is_sensitive_and_redacts_run_events(
         "writeOnly": True,
         "x-sensitive": True,
     }
+    assert schema["properties"]["analysis_kind"]["enum"] == list(
+        DOCUMENT_ANALYSIS_KINDS
+    )
     handler = SimpleNamespace(meta=meta)
     monkeypatch.setattr(
         trigger_service.state,
@@ -272,6 +311,54 @@ async def test_agent_rejects_complete_short_source_echo(monkeypatch: pytest.Monk
 
 
 @pytest.mark.asyncio
+async def test_agent_allows_normal_summary_with_necessary_source_phrases(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = TutorLLMAgent(logger=_Logger(), config=StudyConfig(llm_call_timeout_seconds=90))
+    source = " ".join(f"source-word-{index}" for index in range(120))
+
+    async def summarize(*_args, **_kwargs):
+        return "# Summary\nThe key concepts include source-word-2 and source-word-50."
+
+    monkeypatch.setattr(agent, "_call_model", summarize)
+    reply = await agent.document_analyze(_document(document_text=source, locale="en"))
+    assert reply.degraded is False
+
+
+@pytest.mark.asyncio
+async def test_agent_rejects_high_ratio_contiguous_copy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = TutorLLMAgent(logger=_Logger(), config=StudyConfig(llm_call_timeout_seconds=90))
+    words = [f"private-{index}" for index in range(120)]
+    source = " ".join(words)
+
+    async def mostly_copy(*_args, **_kwargs):
+        return "# Analysis\n" + " ".join(words[:72]) + "\nBrief comment."
+
+    monkeypatch.setattr(agent, "_call_model", mostly_copy)
+    reply = await agent.document_analyze(_document(document_text=source, locale="en"))
+    assert reply.degraded is True
+    assert reply.diagnostic == "unsafe_model_output"
+
+
+@pytest.mark.asyncio
+async def test_agent_rejects_reply_made_mostly_from_part_of_long_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = TutorLLMAgent(logger=_Logger(), config=StudyConfig(llm_call_timeout_seconds=90))
+    source = "".join(chr(0x4E00 + index % 2000) for index in range(2400))
+
+    async def copy_excerpt(*_args, **_kwargs):
+        return "# 分析\n" + source[800:1200]
+
+    monkeypatch.setattr(agent, "_call_model", copy_excerpt)
+    reply = await agent.document_analyze(_document(document_text=source, locale="zh-CN"))
+    assert reply.degraded is True
+    assert reply.diagnostic == "unsafe_model_output"
+
+
+@pytest.mark.asyncio
 async def test_entry_validates_off_loop_and_persists_only_descriptor(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -314,6 +401,7 @@ async def test_entry_validates_off_loop_and_persists_only_descriptor(
         document_name="chapter.md",
         document_type="text/markdown",
         document_text=source,
+        analysis_kind="academic_paper",
         locale="zh-CN",
     )
 
@@ -324,6 +412,7 @@ async def test_entry_validates_off_loop_and_persists_only_descriptor(
     assert source not in calls["reply"].input_text
     assert source not in repr(calls["finalize"])
     assert calls["finalize"]["metadata"]["source_retained"] is False
+    assert payload["document"]["requested_kind"] == "academic_paper"
 
 
 @pytest.mark.asyncio

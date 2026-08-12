@@ -4,10 +4,6 @@ const RUN_TIMEOUT_MS = 60000;
 const RUN_EXPORT_RETRY_COUNT = 3;
 const RUN_EXPORT_RETRY_DELAY_MS = 400;
 const LOAD_IMAGE_TIMEOUT_MS = 30000;
-const DOCUMENT_MAX_BYTES = 512 * 1024;
-const DOCUMENT_MAX_TOKENS = 24000;
-const DOCUMENT_EDIT_DEBOUNCE_MS = 180;
-const SUPPORTED_DOCUMENT_EXTENSIONS = new Set(['.txt', '.md', '.markdown']);
 const TARGET_DATA_URL_LENGTH = 1000000;
 const DEFAULT_VISION_MAX_IMAGE_PX = 768;
 const SUPPORTED_PASTE_IMAGE_TYPES = new Set(['image/png', 'image/jpeg']);
@@ -66,7 +62,11 @@ const studyDocumentCard = document.getElementById('studyDocumentCard');
 const studyDocumentName = document.getElementById('studyDocumentName');
 const studyDocumentMeta = document.getElementById('studyDocumentMeta');
 const studyDocumentState = document.getElementById('studyDocumentState');
+const studyDocumentCancelBtn = document.getElementById('studyDocumentCancelBtn');
+const studyDocumentKindSelect = document.getElementById('studyDocumentKind');
 const studyDocumentInstruction = document.getElementById('studyDocumentInstruction');
+const studyDocumentEditor = document.getElementById('studyDocumentEditor');
+const studyDocumentText = document.getElementById('studyDocumentText');
 const studyDocumentAnalyzeBtn = document.getElementById('studyDocumentAnalyzeBtn');
 const studyDocumentRemoveBtn = document.getElementById('studyDocumentRemoveBtn');
 const answerInputImagePreview = document.getElementById('answerInputImagePreview');
@@ -182,8 +182,10 @@ let answerInputImageValue = '';
 let pastePendingCount = 0;
 let documentBusy = false;
 let documentReadGeneration = 0;
-let documentEditTimer = 0;
 let importedDocument = null;
+let documentSource = '';
+let documentKind = 'auto';
+let documentRequestController = null;
 let llmVisionMaxImagePx = DEFAULT_VISION_MAX_IMAGE_PX;
 let currentQuestion = null;
 let currentSelectionContext = null;
@@ -448,18 +450,17 @@ function setPanelBusy(busy) {
 
 function setPastePending(pending) {
   pastePendingCount = Math.max(0, pastePendingCount + (pending ? 1 : -1));
-  setPanelBusy(pastePendingCount > 0 || documentBusy);
+  setPanelBusy(pastePendingCount || documentBusy);
 }
 
 function setDocumentBusy(busy) {
   documentBusy = Boolean(busy);
-  setPanelBusy(documentBusy || pastePendingCount > 0);
-  if (studyDocumentAnalyzeBtn) studyDocumentAnalyzeBtn.disabled = documentBusy || !importedDocument;
-  if (studyDocumentRemoveBtn) studyDocumentRemoveBtn.disabled = false;
-  if (studyDocumentImportBtn) studyDocumentImportBtn.disabled = documentBusy;
-  if (studyDocumentInput) studyDocumentInput.disabled = documentBusy;
-  if (studyDocumentInstruction) studyDocumentInstruction.disabled = documentBusy;
-  if (studyInput) studyInput.readOnly = documentBusy;
+  setPanelBusy(documentBusy || pastePendingCount);
+  studyDocumentAnalyzeBtn.disabled = documentBusy || !importedDocument;
+  studyDocumentRemoveBtn.disabled = studyDocumentImportBtn.disabled = studyDocumentInput.disabled = studyDocumentKindSelect.disabled = studyDocumentInstruction.disabled = documentBusy;
+  studyDocumentText.readOnly = documentBusy;
+  if (documentBusy) studyDocumentEditor.open = false;
+  studyDocumentCancelBtn.hidden = !documentBusy;
 }
 
 function setPasteError(target, message) {
@@ -661,130 +662,71 @@ function createImagePasteHandler(options) {
   };
 }
 
-function documentExtension(name) {
-  const match = String(name || '').toLowerCase().match(/(\.[^.\\/]+)$/);
-  return match ? match[1] : '';
-}
-function safeDocumentName(name) {
-  return (String(name || '').split(/[\\/]/).pop().replace(/[\u0000-\u001f\u007f]/g, '').trim() || 'document.txt').slice(0, 255);
-}
-function documentMimeType(name) {
-  return documentExtension(name) === '.txt' ? 'text/plain' : 'text/markdown';
-}
-function estimateDocumentTokens(text) {
-  return Math.max(1, Math.ceil(new TextEncoder().encode(String(text || '')).byteLength / 3));
-}
-function formatDocumentBytes(bytes) {
-  return bytes < 1024 ? `${bytes} B` : `${(bytes / 1024).toFixed(bytes < 10240 ? 1 : 0)} KB`;
-}
-function decodeDocumentBuffer(buffer) {
-  const bytes = new Uint8Array(buffer);
-  const candidates = [];
-  if (bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) {
-    candidates.push(['UTF-8', 'utf-8', bytes.subarray(3)]);
-  } else if (bytes[0] === 0xff && bytes[1] === 0xfe) {
-    candidates.push(['UTF-16 LE', 'utf-16le', bytes.subarray(2)]);
-  } else if (bytes[0] === 0xfe && bytes[1] === 0xff) {
-    candidates.push(['UTF-16 BE', 'utf-16be', bytes.subarray(2)]);
-  } else {
-    candidates.push(['UTF-8', 'utf-8', bytes], ['GB18030', 'gb18030', bytes]);
-  }
-  for (const [label, encoding, content] of candidates) {
-    try {
-      return { text: new TextDecoder(encoding, { fatal: true }).decode(content), encoding: label };
-    } catch {}
-  }
-  throw new Error('document_encoding');
-}
-function documentTextProblem(text) {
-  if (!String(text || '').trim()) return 'document_empty';
-  let controls = 0;
-  let replacements = 0;
-  for (const character of text) {
-    const code = character.codePointAt(0);
-    if (code === 0xfffd) replacements += 1;
-    if ((code < 32 && ![9, 10, 13].includes(code)) || code === 127) controls += 1;
-  }
-  if (text.includes('\u0000') || controls / text.length > 0.01) return 'document_binary';
-  if (replacements / text.length > 0.001) return 'document_encoding';
-  if (/data:[^\s,;]+(?:;[^\s,;=]+)*;base64,[A-Za-z0-9+/=]{4096,}/i.test(text)) return 'document_unsafe_content';
-  if (text.split(/\r?\n/).some((line) => line.length > 32768 || /^[A-Za-z0-9+/=]{8192,}$/.test(line.trim()))) return 'document_unsafe_content';
-  return '';
-}
 function documentErrorMessage(code) {
-  return t(`ui.error.${String(code || 'document_read')}`);
+  return t(`ui.error.${code || 'document_read'}`);
 }
 function updateDocumentCard(options = {}) {
   if (!importedDocument) {
     if (studyDocumentCard) studyDocumentCard.hidden = true;
-    if (explainBtn) explainBtn.disabled = false;
     return;
   }
-  const text = studyInput?.value || '';
-  const bytes = new TextEncoder().encode(text).byteLength;
-  const tokens = estimateDocumentTokens(text);
-  const problem = documentTextProblem(text) || (bytes > DOCUMENT_MAX_BYTES ? 'document_too_large' : '');
+  const bytes = new TextEncoder().encode(documentSource).byteLength;
+  const tokens = estimateDocumentTokens(documentSource);
+  const problem = documentTextProblem(documentSource) || (bytes > 524288 ? 'document_too_large' : '');
   importedDocument = { ...importedDocument, bytes, tokens, problem, modified: importedDocument.modified || Boolean(options.modified) };
   if (studyDocumentCard) studyDocumentCard.hidden = false;
-  if (studyDocumentName) studyDocumentName.textContent = importedDocument.name;
-  if (studyDocumentMeta) {
-    studyDocumentMeta.textContent = tf(
-      'ui.document.meta',
-      '',
-      { size: formatDocumentBytes(bytes), encoding: importedDocument.encoding, chars: text.length.toLocaleString(), tokens: tokens.toLocaleString() },
-    );
-  }
+  studyDocumentName.textContent = importedDocument.name;
+  studyDocumentMeta.textContent = tf('ui.document.meta', '', { size: `${(bytes / 1024).toFixed(1)} KB`, encoding: importedDocument.encoding, chars: documentSource.length.toLocaleString(), tokens: tokens.toLocaleString() });
   if (studyDocumentState) {
     studyDocumentState.textContent = problem
       ? documentErrorMessage(problem)
-      : (tokens > DOCUMENT_MAX_TOKENS
+      : (tokens > 24000
         ? t('ui.document.token_estimate_warning')
         : t(importedDocument.modified ? 'ui.document.ready_modified' : 'ui.document.ready'));
   }
-  if (studyDocumentAnalyzeBtn) studyDocumentAnalyzeBtn.disabled = documentBusy || Boolean(problem);
-  if (explainBtn) explainBtn.disabled = true;
+  studyDocumentAnalyzeBtn.disabled = documentBusy || Boolean(problem);
 }
-function removeImportedDocument(options = {}) {
+function removeImportedDocument() {
   documentReadGeneration += 1;
+  documentRequestController?.abort();
+  documentRequestController = null;
   importedDocument = null;
-  window.clearTimeout(documentEditTimer);
-  if (options.clearText !== false && studyInput) studyInput.value = '';
-  if (studyDocumentInput) studyDocumentInput.value = '';
-  if (studyDocumentInstruction) studyDocumentInstruction.value = '';
-  if (studyDocumentDropZone) studyDocumentDropZone.dataset.dragging = 'false';
+  documentSource = '';
+  documentKind = 'auto';
+  studyDocumentInput.value = studyDocumentText.value = studyDocumentInstruction.value = '';
+  studyDocumentEditor.open = false;
+  studyDocumentKindSelect.value = 'auto';
+  studyDocumentDropZone.dataset.dragging = 'false';
   updateDocumentCard();
   setDocumentBusy(false);
   setPasteError(studyInputPasteError, '');
 }
 async function importDocumentFile(file) {
   const generation = ++documentReadGeneration;
+  documentRequestController?.abort();
+  const controller = new AbortController();
+  documentRequestController = controller;
   setPasteError(studyInputPasteError, '');
-  if (!file || !SUPPORTED_DOCUMENT_EXTENSIONS.has(documentExtension(file.name))) {
-    throw new Error('document_type');
-  }
+  if (!file || !/\.(txt|md|markdown)$/i.test(file.name)) throw new Error('document_type');
   const declaredType = String(file.type || '').toLowerCase();
-  if (declaredType && !['text/plain', 'text/markdown', 'application/octet-stream'].includes(declaredType)) {
-    throw new Error('document_type');
-  }
-  if (file.size > DOCUMENT_MAX_BYTES) throw new Error('document_too_large');
-  importedDocument = {
-    name: safeDocumentName(file.name),
-    type: documentMimeType(file.name),
-    encoding: '',
-    modified: false,
-  };
-  if (studyDocumentCard) studyDocumentCard.hidden = false;
-  if (studyDocumentName) studyDocumentName.textContent = importedDocument.name;
-  if (studyDocumentMeta) studyDocumentMeta.textContent = formatDocumentBytes(file.size);
+  if (declaredType && !['text/plain', 'text/markdown', 'application/octet-stream'].includes(declaredType)) throw new Error('document_type');
+  if (file.size > 524288) throw new Error('document_too_large');
+  importedDocument = { name: (file.name.split(/[\\/]/).pop().replace(/[\0-\x1f\x7f]/g, '').trim() || 'document.txt').slice(0, 255), type: file.name.toLowerCase().endsWith('.txt') ? 'text/plain' : 'text/markdown', encoding: '', modified: false };
+  studyDocumentCard.hidden = false;
+  studyDocumentName.textContent = importedDocument.name;
+  studyDocumentMeta.textContent = `${(file.size / 1024).toFixed(1)} KB`;
   setDocumentBusy(true);
-  if (studyDocumentState) studyDocumentState.textContent = t('ui.document.reading');
+  studyDocumentState.textContent = t('ui.document.reading');
   try {
     const decoded = decodeDocumentBuffer(await file.arrayBuffer());
-    if (generation !== documentReadGeneration) return;
+    if (controller.signal.aborted || generation !== documentReadGeneration) return;
     const problem = documentTextProblem(decoded.text);
     if (problem) throw new Error(problem);
     importedDocument = { ...importedDocument, encoding: decoded.encoding };
-    if (studyInput) studyInput.value = decoded.text;
+    documentSource = decoded.text;
+    documentKind = 'auto';
+    studyDocumentText.value = decoded.text;
+    studyDocumentKindSelect.value = documentKind;
     updateDocumentCard();
   } catch (error) {
     if (generation === documentReadGeneration) {
@@ -793,25 +735,22 @@ async function importDocumentFile(file) {
     }
     throw error;
   } finally {
+    if (documentRequestController === controller) documentRequestController = null;
     if (generation === documentReadGeneration) setDocumentBusy(false);
   }
 }
-async function acceptDocumentFiles(files) {
+function acceptDocumentFiles(files) {
   if (documentBusy) return;
   const list = Array.from(files || []);
   if (list.length !== 1) throw new Error(list.length > 1 ? 'document_multiple' : 'document_read');
-  await importDocumentFile(list[0]);
+  return importDocumentFile(list[0]);
 }
 function reportDocumentImportError(error) {
-  if (studyDocumentInput) studyDocumentInput.value = '';
+  studyDocumentInput.value = '';
   setPasteError(studyInputPasteError, documentErrorMessage(error instanceof Error ? error.message : 'document_read'));
 }
 function handleDocumentPaste(event) {
-  const directFiles = Array.from(event.clipboardData?.files || []);
-  const itemFiles = Array.from(event.clipboardData?.items || [])
-    .filter((item) => item.kind === 'file')
-    .map((item) => item.getAsFile())
-    .filter(Boolean);
+  const directFiles = Array.from(event.clipboardData?.files || []), itemFiles = Array.from(event.clipboardData?.items || []).filter((item) => item.kind === 'file').map((item) => item.getAsFile()).filter(Boolean);
   const files = directFiles.length ? directFiles : itemFiles;
   if (!files.length || files.every((file) => String(file.type || '').startsWith('image/'))) return;
   event.preventDefault();
@@ -823,13 +762,17 @@ function handleDocumentDrop(event) {
   acceptDocumentFiles(event.dataTransfer?.files).catch(reportDocumentImportError);
 }
 function formatDocumentDiagnostic(diagnostic) {
-  const code = String(diagnostic || '').trim();
-  return t(`ui.error.document_analysis_${code === 'timeout' ? 'timeout' : code === 'rate_limited' ? 'rate_limited' : 'failed'}`);
+  const code = (diagnostic || '').trim();
+  const validation = { empty_document: 'empty', binary_document: 'binary', invalid_document_encoding: 'encoding', unsupported_document_type: 'type', unsafe_document_content: 'unsafe_content', analysis_instruction_too_long: 'instruction_too_long', unsupported_document_kind: 'invalid_kind', invalid_document_name: 'invalid_name' };
+  return t(`ui.error.document_${'timeout rate_limited authentication_failed model_not_supported provider_unavailable unsafe_model_output llm_call_failed'.includes(code) ? `analysis_${code}` : validation[code] || code.replace(/^document_/, '') || 'analysis_failed'}`);
 }
 async function analyzeDocument() {
-  if (!importedDocument || !studyInput) return;
+  if (!importedDocument || documentBusy) return;
   updateDocumentCard();
   if (importedDocument.problem) throw new Error(importedDocument.problem);
+  const controller = new AbortController();
+  documentRequestController?.abort();
+  documentRequestController = controller;
   setDocumentBusy(true);
   setStatus(t('ui.status.analyzing_document'));
   setReply(t('ui.status.analyzing_document'));
@@ -838,9 +781,12 @@ async function analyzeDocument() {
     const data = await callPlugin('study_analyze_document', {
       document_name: importedDocument.name,
       document_type: importedDocument.type,
-      document_text: studyInput.value,
+      document_text: documentSource,
+      analysis_kind: documentKind,
       analysis_instruction: studyDocumentInstruction?.value.trim() || '',
-    });
+      locale: window.I18n?.lang?.() || document.documentElement.lang || '',
+    }, controller.signal);
+    if (controller.signal.aborted) return;
     setStatus(data.degraded ? t('ui.status.reply_ready_fallback', 'Reply ready (fallback)') : t('ui.status.document_complete'));
     setReply(data.degraded ? formatDocumentDiagnostic(data.diagnostic) : (data.reply || data.summary || ''));
     if (studyDocumentState) studyDocumentState.textContent = data.degraded
@@ -848,13 +794,11 @@ async function analyzeDocument() {
       : t('ui.status.document_complete');
     await refreshStatus({ updateReply: false });
   } catch (error) {
-    const timeout = error instanceof Error && /timed out|timeout|plugin_call_timeout/i.test(error.message);
-    const tooLong = error instanceof Error && /document_(?:too_long|token|tokens)|24000/i.test(error.message);
+    if (controller.signal.aborted) return;
     setStatus(t('ui.status.error', 'Error'));
-    setReply(timeout
-      ? t('ui.error.document_analysis_timeout')
-      : (tooLong ? t('ui.error.document_too_long') : formatPluginError(error)));
+    setReply(/timed out|timeout/i.test(error.message) ? t('ui.error.document_analysis_timeout') : formatPluginError(error));
   } finally {
+    if (documentRequestController === controller) documentRequestController = null;
     setDocumentBusy(false);
   }
 }
@@ -1595,7 +1539,6 @@ function knowledgeStageLabel(stage) {
   return normalized ? learningStageLabel(normalized) : t('ui.profile.stage_uncategorized', 'Uncategorized');
 }
 
-// Knowledge-map fallback rendering is kept in knowledge-map.js to keep this bootstrap bundle small.
 
 
 function renderGenericLocalPanel(surfaceId) {
@@ -1727,7 +1670,6 @@ function handleStudySurfaceMessage(event) {
     requestStudyStatusRefresh();
     return;
   }
-  // Ignore unrelated parent/child messages; this surface only owns the study message namespace above.
   if (message.type !== STUDY_SURFACE_MESSAGE_TYPES.memoryDeckUpdated) {
     return;
   }
@@ -1760,16 +1702,18 @@ function isAbortError(error) {
   return error instanceof DOMException && error.name === 'AbortError';
 }
 
-async function fetchWithTimeout(url, init = {}, timeoutMs = RUN_TIMEOUT_MS) {
+async function fetchWithTimeout(url, init = {}, timeoutMs = RUN_TIMEOUT_MS, signal) {
   if (timeoutMs <= 0) {
     throw new Error(t('ui.error.plugin_call_timeout', 'Plugin call timed out'));
   }
   const controller = new AbortController();
+  signal?.addEventListener('abort', () => controller.abort(), { once: true });
   const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
   try {
     return await fetch(url, { ...init, signal: controller.signal });
   } catch (error) {
     if (isAbortError(error)) {
+      if (signal?.aborted) throw new Error('plugin_call_aborted');
       throw new Error(t('ui.error.plugin_call_timeout', 'Plugin call timed out'));
     }
     throw error;
@@ -1779,70 +1723,36 @@ async function fetchWithTimeout(url, init = {}, timeoutMs = RUN_TIMEOUT_MS) {
 }
 
 function setSettingsConfigStatus(key, fallback) {
-  if (settingsConfigStatus) {
-    settingsConfigStatus.textContent = t(key, fallback);
-  }
+  if (settingsConfigStatus) settingsConfigStatus.textContent = t(key, fallback);
 }
 
 function cloneConfig(value) {
-  // Config is JSON-compatible primitive data; this intentionally drops Date/undefined values.
   return JSON.parse(JSON.stringify(value || {}));
 }
 
 function getConfigRoot(payload) {
-  return payload && typeof payload.config === 'object' && payload.config ? payload.config : payload;
+  return payload?.config && typeof payload.config === 'object' ? payload.config : payload;
 }
 
 function ensureConfigSection(config, key) {
-  if (!config[key] || typeof config[key] !== 'object') {
-    config[key] = {};
-  }
+  if (!config[key] || typeof config[key] !== 'object') config[key] = {};
   return config[key];
 }
 
-function syncCommunicationControls(options = {}) {
-  const communicationEnabled = settingsCommunicationEnabled ? settingsCommunicationEnabled.checked : true;
-  const saving = options.saving === true;
-  if (settingsCommunicationEnabled) {
-    settingsCommunicationEnabled.disabled = saving;
-  }
-  if (settingsSolutionNarrationEnabled) {
-    settingsSolutionNarrationEnabled.disabled = saving || !communicationEnabled;
-  }
-  if (settingsCommunicationRequiresEnabled) {
-    settingsCommunicationRequiresEnabled.hidden = communicationEnabled;
-  }
+function syncCommunicationControls(saving = false) {
+  const enabled = settingsCommunicationEnabled.checked;
+  settingsCommunicationEnabled.disabled = saving;
+  settingsSolutionNarrationEnabled.disabled = saving || !enabled;
+  settingsCommunicationRequiresEnabled.hidden = enabled;
 }
 
-function renderCommunicationRuntime(status = {}) {
+function renderCommunicationRuntime(status = settingsCommunicationStatus) {
   if (!settingsCommunicationRuntime) return;
-  const configuredEnabled = status.configured_enabled === true;
-  const available = status.available === true;
-  if (configuredEnabled !== available) {
-    settingsCommunicationRuntime.textContent = t(
-      'ui.settings.communication.runtime_unavailable',
-      'N.E.K.O communication configuration and runtime status do not match.',
-    );
-    return;
-  }
-  if (!configuredEnabled) {
-    settingsCommunicationRuntime.textContent = t(
-      'ui.settings.communication.requires_enabled',
-      'Enable N.E.K.O proactive communication first.',
-    );
-    return;
-  }
-  if (status.command_subscription_active !== true || status.command_worker_active !== true) {
-    settingsCommunicationRuntime.textContent = t(
-      'ui.settings.communication.commands_unavailable',
-      'Proactive narration is ready, but N.E.K.O command communication is unavailable.',
-    );
-    return;
-  }
-  settingsCommunicationRuntime.textContent = t(
-    'ui.settings.communication.runtime_ready',
-    'N.E.K.O proactive communication is ready.',
-  );
+  const enabled = status.configured_enabled === true;
+  const key = enabled !== (status.available === true) ? 'runtime_unavailable'
+    : !enabled ? 'requires_enabled'
+      : status.command_subscription_active !== true || status.command_worker_active !== true ? 'commands_unavailable' : 'runtime_ready';
+  settingsCommunicationRuntime.textContent = t(`ui.settings.communication.${key}`);
 }
 
 function applySettingsConfig(config) {
@@ -1850,37 +1760,21 @@ function applySettingsConfig(config) {
   const ocr = config.ocr_reader || {};
   const llm = config.llm || {};
   const communication = config.communication || {};
-  if (settingsDefaultMode) {
-    settingsDefaultMode.value = ['companion', 'interactive', 'teaching'].includes(study.default_mode) ? study.default_mode : 'companion';
-  }
+  if (settingsDefaultMode) settingsDefaultMode.value = ['companion', 'interactive', 'teaching'].includes(study.default_mode) ? study.default_mode : 'companion';
   syncLearningProfileUi();
-  if (settingsOcrEnabled) {
-    settingsOcrEnabled.checked = ocr.enabled !== false;
-  }
-  if (settingsOcrLanguages) {
-    settingsOcrLanguages.value = String(ocr.languages || 'chi_sim+jpn+eng');
-  }
-  if (settingsLlmTimeout) {
-    settingsLlmTimeout.value = String(Number.isFinite(Number(llm.llm_call_timeout_seconds)) ? Number(llm.llm_call_timeout_seconds) : 30);
-  }
-  if (settingsLlmVisionEnabled) {
-    settingsLlmVisionEnabled.checked = llm.llm_vision_enabled === true;
-  }
-  if (settingsCommunicationEnabled) {
-    settingsCommunicationEnabled.checked = communication.enabled !== false;
-  }
-  if (settingsSolutionNarrationEnabled) {
-    settingsSolutionNarrationEnabled.checked = communication.solution_narration_enabled !== false;
-  }
+  if (settingsOcrEnabled) settingsOcrEnabled.checked = ocr.enabled !== false;
+  if (settingsOcrLanguages) settingsOcrLanguages.value = String(ocr.languages || 'chi_sim+jpn+eng');
+  if (settingsLlmTimeout) settingsLlmTimeout.value = String(Number.isFinite(Number(llm.llm_call_timeout_seconds)) ? Number(llm.llm_call_timeout_seconds) : 30);
+  if (settingsLlmVisionEnabled) settingsLlmVisionEnabled.checked = llm.llm_vision_enabled === true;
+  if (settingsCommunicationEnabled) settingsCommunicationEnabled.checked = communication.enabled !== false;
+  if (settingsSolutionNarrationEnabled) settingsSolutionNarrationEnabled.checked = communication.solution_narration_enabled !== false;
   syncCommunicationControls();
-  renderCommunicationRuntime(settingsCommunicationStatus);
-  if (Object.prototype.hasOwnProperty.call(llm, 'llm_vision_max_image_px')) {
-    applyVisionMaxImagePx(llm.llm_vision_max_image_px);
-  }
+  renderCommunicationRuntime();
+  if (Object.prototype.hasOwnProperty.call(llm, 'llm_vision_max_image_px')) applyVisionMaxImagePx(llm.llm_vision_max_image_px);
 }
 
-async function loadSettingsConfig(options = {}) {
-  if (!settingsConfigForm || settingsConfigLoading || (settingsConfig && !options.force)) return;
+async function loadSettingsConfig(force = false) {
+  if (!settingsConfigForm || settingsConfigLoading || (settingsConfig && !force)) return;
   settingsConfigLoading = true;
   setSettingsConfigStatus('ui.status.config_loading', 'Loading settings...');
   try {
@@ -1914,19 +1808,16 @@ function collectSettingsConfig() {
 }
 
 async function saveSettingsConfig() {
-  if (!settingsConfig) await loadSettingsConfig({ force: true });
+  if (!settingsConfig) await loadSettingsConfig(true);
   if (!settingsConfig) {
     setSettingsConfigStatus('ui.status.config_load_failed', 'Could not load settings');
     return;
   }
-  const previousConfig = cloneConfig(settingsConfig);
-  const previousCommunicationStatus = cloneConfig(settingsCommunicationStatus);
+  const previous = [cloneConfig(settingsConfig), cloneConfig(settingsCommunicationStatus)];
   const next = collectSettingsConfig();
-  if (settingsLearningStage) {
-    setLearningProfileStage(settingsLearningStage.value);
-  }
+  if (settingsLearningStage) setLearningProfileStage(settingsLearningStage.value);
   if (settingsSaveBtn) settingsSaveBtn.disabled = true;
-  syncCommunicationControls({ saving: true });
+  syncCommunicationControls(true);
   setSettingsConfigStatus('ui.status.config_saving', 'Saving settings...');
   try {
     const payload = await callPlugin('study_update_settings_config', { config: next });
@@ -1935,8 +1826,7 @@ async function saveSettingsConfig() {
     applySettingsConfig(settingsConfig);
     setSettingsConfigStatus('ui.status.config_saved', 'Saved');
   } catch (error) {
-    settingsConfig = previousConfig;
-    settingsCommunicationStatus = previousCommunicationStatus;
+    [settingsConfig, settingsCommunicationStatus] = previous;
     applySettingsConfig(settingsConfig);
     setSettingsConfigStatus('ui.status.config_save_failed', 'Could not save settings');
   } finally {
@@ -1945,12 +1835,12 @@ async function saveSettingsConfig() {
   }
 }
 
-async function createRun(entryId, args = {}, deadline = Date.now() + RUN_TIMEOUT_MS) {
+async function createRun(entryId, args = {}, deadline = Date.now() + RUN_TIMEOUT_MS, signal) {
   const response = await fetchWithTimeout(RUNS_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ plugin_id: PLUGIN_ID, entry_id: entryId, args }),
-  }, timeLeft(deadline));
+  }, timeLeft(deadline), signal);
   if (!response.ok) {
     throw new Error(tf('ui.error.run_create_failed', 'Run create failed: HTTP {status}', { status: response.status }));
   }
@@ -1962,10 +1852,10 @@ async function createRun(entryId, args = {}, deadline = Date.now() + RUN_TIMEOUT
   return runId;
 }
 
-async function exportRunResult(runId, deadline = Date.now() + RUN_TIMEOUT_MS) {
+async function exportRunResult(runId, deadline = Date.now() + RUN_TIMEOUT_MS, signal) {
   let lastStatus = 0;
   for (let attempt = 0; attempt < RUN_EXPORT_RETRY_COUNT; attempt += 1) {
-    const response = await fetchWithTimeout(`${RUNS_URL}/${runId}/export`, {}, timeLeft(deadline));
+    const response = await fetchWithTimeout(`${RUNS_URL}/${runId}/export`, {}, timeLeft(deadline), signal);
     lastStatus = response.status;
     if (response.ok) {
       const payload = await response.json();
@@ -1991,12 +1881,12 @@ async function exportRunResult(runId, deadline = Date.now() + RUN_TIMEOUT_MS) {
   throw new Error(tf('ui.error.run_export_failed', 'Run export failed: HTTP {status}', { status: lastStatus }));
 }
 
-async function callPlugin(entryId, args = {}) {
+async function callPlugin(entryId, args = {}, signal) {
   const deadline = Date.now() + timeoutForEntry(entryId);
   const locale = window.I18n && typeof window.I18n.lang === 'function'
     ? window.I18n.lang()
     : (document.documentElement.lang || '');
-  const runId = await createRun(entryId, { ...args, locale }, deadline);
+  const runId = await createRun(entryId, { ...args, locale }, deadline, signal);
   let delay = 250;
   while (Date.now() < deadline) {
     const waitMs = Math.min(delay, timeLeft(deadline));
@@ -2005,13 +1895,13 @@ async function callPlugin(entryId, args = {}) {
     }
     await sleep(waitMs);
     delay = Math.min(Math.round(delay * 1.5), 2000);
-    const response = await fetchWithTimeout(`${RUNS_URL}/${runId}`, {}, timeLeft(deadline));
+    const response = await fetchWithTimeout(`${RUNS_URL}/${runId}`, {}, timeLeft(deadline), signal);
     if (!response.ok) {
       continue;
     }
     const record = await response.json();
     if (record.status === 'succeeded') {
-      return await exportRunResult(runId, deadline);
+      return await exportRunResult(runId, deadline, signal);
     }
     if (['failed', 'canceled', 'timeout'].includes(record.status)) {
       throw new Error(record.error?.message || record.message || record.status);
@@ -2335,11 +2225,6 @@ async function bootstrap() {
       kind: 'study',
       errorTarget: studyInputPasteError,
     }));
-    studyInput.addEventListener('input', () => {
-      if (!importedDocument || documentBusy) return;
-      window.clearTimeout(documentEditTimer);
-      documentEditTimer = window.setTimeout(() => updateDocumentCard({ modified: true }), DOCUMENT_EDIT_DEBOUNCE_MS);
-    });
   }
   if (studyDocumentImportBtn && studyDocumentInput) {
     studyDocumentImportBtn.addEventListener('click', () => studyDocumentInput.click());
@@ -2350,6 +2235,26 @@ async function bootstrap() {
   if (studyDocumentRemoveBtn) {
     studyDocumentRemoveBtn.addEventListener('click', () => removeImportedDocument());
   }
+  if (studyDocumentCancelBtn) {
+    studyDocumentCancelBtn.addEventListener('click', () => {
+      documentReadGeneration += 1;
+      documentRequestController?.abort();
+      documentRequestController = null;
+      setDocumentBusy(false);
+    });
+  }
+  if (studyDocumentKindSelect) {
+    studyDocumentKindSelect.addEventListener('change', () => { documentKind = studyDocumentKindSelect.value || 'auto'; });
+  }
+  if (studyDocumentEditor) studyDocumentEditor.addEventListener('toggle', () => { if (documentBusy && studyDocumentEditor.open) studyDocumentEditor.open = false; });
+  if (studyDocumentText) {
+    studyDocumentText.addEventListener('input', () => {
+      if (documentBusy || !importedDocument) return;
+      documentSource = studyDocumentText.value;
+      updateDocumentCard({ modified: true });
+    });
+  }
+  window.addEventListener('pagehide', () => documentRequestController?.abort(), { once: true });
   if (studyDocumentDropZone) {
     studyDocumentDropZone.addEventListener('dragenter', (event) => {
       event.preventDefault();

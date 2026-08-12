@@ -1261,15 +1261,15 @@ pre,
   margin-top: 10px;
 }
 
-.study-document-drop-zone { position: relative; border-radius: var(--radius-sm); transition: background-color 120ms ease, box-shadow 120ms ease; }
+.study-document-drop-zone { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; padding: 8px; border-radius: var(--radius-sm); transition: background-color 120ms ease, box-shadow 120ms ease; }
 .study-document-drop-zone[data-dragging="true"] { background: rgba(47, 125, 87, 0.10); box-shadow: 0 0 0 3px rgba(47, 125, 87, 0.22); }
-.study-document-drop-zone__hint { display: none; position: absolute; inset: 12px; place-items: center; border: 2px dashed rgba(47, 125, 87, 0.52); border-radius: var(--radius-sm); background: rgba(247, 253, 249, 0.94); color: var(--brand-strong); font-weight: 800; pointer-events: none; }
-.study-document-drop-zone[data-dragging="true"] .study-document-drop-zone__hint { display: grid; }
-.study-document-toolbar, .study-document-card__actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.study-document-drop-zone > span { color: var(--muted); font-size: 13px; }
+.study-document-card__actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
 .study-document-card { display: grid; gap: 5px; margin-top: 10px; padding: 12px; border: 1px solid rgba(47, 125, 87, 0.18); border-radius: var(--radius-sm); background: rgba(247, 253, 249, 0.78); overflow-wrap: anywhere; }
 .study-document-card[hidden] { display: none; }
 .study-document-card > span { color: var(--muted); font-size: 13px; line-height: 1.45; }
-.study-document-card input { width: 100%; border: 1px solid rgba(31, 35, 41, 0.12); border-radius: var(--radius-sm); padding: 10px; background: var(--paper-strong); color: var(--ink); }
+.study-document-card input, .study-document-card select { width: 100%; border: 1px solid rgba(31, 35, 41, 0.12); border-radius: var(--radius-sm); padding: 10px; background: var(--paper-strong); color: var(--ink); }
+.study-document-card textarea { min-height: 160px; }
 .main-view[data-busy="true"] .study-document-drop-zone, .main-view[data-busy="true"] .study-document-card { opacity: 0.68; }
 
 .memory-inputs {

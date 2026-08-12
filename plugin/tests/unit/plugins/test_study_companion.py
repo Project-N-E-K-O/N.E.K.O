@@ -1077,7 +1077,7 @@ def test_study_companion_pages_forward_current_locale_to_plugin_entries() -> Non
     assert hosted_source.count("props.locale,") == 8
     assert "}, [props.locale]);" in hosted_source
     assert "typeof window.I18n.lang === 'function'" in static_source
-    assert "createRun(entryId, { ...args, locale }, deadline)" in static_source
+    assert "createRun(entryId, { ...args, locale }, deadline, signal)" in static_source
 
 
 @pytest.mark.asyncio

@@ -3,6 +3,7 @@ from __future__ import annotations
 from .entry_common import asyncio, Err, Ok, SdkError, plugin_entry, tr, ui
 from .constants import LLM_OPERATION_DOCUMENT_ANALYZE
 from .document_analysis import (
+    DOCUMENT_ANALYSIS_KINDS,
     DOCUMENT_ENTRY_TIMEOUT_SECONDS,
     DocumentValidationError,
     validate_document,
@@ -36,6 +37,11 @@ class _DocumentAnalysisEntriesMixin:
                     "maxLength": 1000,
                     "default": "",
                 },
+                "analysis_kind": {
+                    "type": "string",
+                    "enum": list(DOCUMENT_ANALYSIS_KINDS),
+                    "default": "auto",
+                },
                 "locale": {"type": "string", "maxLength": 16},
             },
             "required": [
@@ -54,6 +60,7 @@ class _DocumentAnalysisEntriesMixin:
         document_type: str,
         document_text: str,
         analysis_instruction: str = "",
+        analysis_kind: str = "auto",
         locale: str = "zh-CN",
         **_,
     ):
@@ -66,6 +73,7 @@ class _DocumentAnalysisEntriesMixin:
                 document_type=document_type,
                 document_text=document_text,
                 analysis_instruction=analysis_instruction,
+                analysis_kind=analysis_kind,
                 locale=locale,
             )
         except DocumentValidationError as exc:

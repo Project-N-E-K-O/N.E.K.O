@@ -752,3 +752,37 @@
     },
   };
 }());
+
+function estimateDocumentTokens(text) {
+  return Math.ceil(new TextEncoder().encode(text).byteLength / 3) || 1;
+}
+
+function decodeDocumentBuffer(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let candidates;
+  if (bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) candidates = [['UTF-8', 'utf-8', bytes.subarray(3)]];
+  else if (bytes[0] === 0xff && bytes[1] === 0xfe) candidates = [['UTF-16 LE', 'utf-16le', bytes.subarray(2)]];
+  else if (bytes[0] === 0xfe && bytes[1] === 0xff) candidates = [['UTF-16 BE', 'utf-16be', bytes.subarray(2)]];
+  else candidates = [['UTF-8', 'utf-8', bytes], ['GB18030', 'gb18030', bytes]];
+  for (const [label, encoding, content] of candidates) {
+    try {
+      return { text: new TextDecoder(encoding, { fatal: true }).decode(content), encoding: label };
+    } catch {}
+  }
+  throw new Error('document_encoding');
+}
+
+function documentTextProblem(text) {
+  if (!text.trim()) return 'document_empty';
+  let controls = 0, replacements = 0;
+  for (const character of text) {
+    const code = character.codePointAt(0);
+    if (code === 0xfffd) replacements += 1;
+    if ((code < 32 && ![9, 10, 13].includes(code)) || code === 127) controls += 1;
+  }
+  if (text.includes('\0') || controls / text.length > .01) return 'document_binary';
+  if (replacements / text.length > .001) return 'document_encoding';
+  if (/data:[^\s,;]+(?:;[^\s,;=]+)*;base64,[A-Za-z0-9+/=]{4096,}/i.test(text)) return 'document_unsafe_content';
+  if (text.split(/\r?\n/).some((line) => line.length > 32768 || /^[A-Za-z0-9+/=]{8192,}$/.test(line.trim()))) return 'document_unsafe_content';
+  return '';
+}

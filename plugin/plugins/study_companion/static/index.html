@@ -224,21 +224,36 @@
                 <span data-i18n="ui.label.explain_input">Explain input</span>
               </div>
               <label class="input-label" for="studyInput" data-i18n="ui.label.text">Text</label>
-              <div id="studyDocumentDropZone" class="study-document-drop-zone">
-                <textarea id="studyInput" spellcheck="true" placeholder="Paste a concept, problem statement, or OCR text here." data-i18n-placeholder="ui.placeholder.input"></textarea>
-                <span class="study-document-drop-zone__hint" data-i18n="ui.document.drop_hint">Drop one TXT or Markdown file here</span>
-              </div>
+              <textarea id="studyInput" spellcheck="true" placeholder="Paste a concept, problem statement, or OCR text here." data-i18n-placeholder="ui.placeholder.input"></textarea>
               <input id="studyDocumentInput" type="file" accept=".txt,.md,.markdown,text/plain,text/markdown" hidden />
-              <div class="study-document-toolbar">
-                <button id="studyDocumentImportBtn" class="button button-secondary" type="button" data-i18n="ui.button.import_document">Import TXT / Markdown</button>
+              <div id="studyDocumentDropZone" class="study-document-drop-zone">
+                <button id="studyDocumentImportBtn" class="button button-secondary" type="button" data-i18n="ui.button.import_document">Import document for analysis</button>
+                <span data-i18n="ui.document.drop_hint">Drop one TXT or Markdown file here</span>
+                <button id="studyDocumentCancelBtn" class="button button-secondary" type="button" data-i18n="ui.document.cancel" hidden>Cancel</button>
               </div>
               <section id="studyDocumentCard" class="study-document-card" aria-live="polite" hidden>
                 <strong id="studyDocumentName"></strong>
                 <span id="studyDocumentMeta"></span>
                 <span id="studyDocumentPrivacy" data-i18n="ui.document.not_retained">The source document will not be saved</span>
                 <span id="studyDocumentState"></span>
+                <label class="input-label" for="studyDocumentKind" data-i18n="ui.document.kind_label">Document type</label>
+                <select id="studyDocumentKind">
+                  <option value="auto" data-i18n="ui.document.kind.auto">Auto detect</option>
+                  <option value="literary_book" data-i18n="ui.document.kind.literary_book">Literary book</option>
+                  <option value="nonfiction_book" data-i18n="ui.document.kind.nonfiction_book">Nonfiction book</option>
+                  <option value="design_document" data-i18n="ui.document.kind.design_document">Design document</option>
+                  <option value="academic_paper" data-i18n="ui.document.kind.academic_paper">Academic paper</option>
+                  <option value="exam" data-i18n="ui.document.kind.exam">Exam</option>
+                  <option value="course_material" data-i18n="ui.document.kind.course_material">Course material</option>
+                  <option value="general_notes" data-i18n="ui.document.kind.general_notes">General notes</option>
+                </select>
                 <label class="input-label" for="studyDocumentInstruction" data-i18n="ui.document.instruction_label">Optional analysis focus</label>
                 <input id="studyDocumentInstruction" type="text" maxlength="1000" data-i18n-placeholder="ui.document.instruction_placeholder" placeholder="For example: extract exam topics" />
+                <details id="studyDocumentEditor">
+                  <summary data-i18n="ui.document.edit">Edit document</summary>
+                  <label class="input-label" for="studyDocumentText" data-i18n="ui.document.editor_label">Document content</label>
+                  <textarea id="studyDocumentText" spellcheck="true"></textarea>
+                </details>
                 <div class="study-document-card__actions">
                   <button id="studyDocumentAnalyzeBtn" class="button button-primary" type="button" data-i18n="ui.button.analyze_document">Analyze document</button>
                   <button id="studyDocumentRemoveBtn" class="button button-secondary" type="button" data-i18n="ui.button.remove_document">Remove</button>

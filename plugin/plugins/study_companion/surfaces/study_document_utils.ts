@@ -17,6 +17,27 @@ export type StudyDocument = {
   modified: boolean;
 };
 
+export type StudyDocumentAnalysisKind =
+  | 'auto'
+  | 'literary_book'
+  | 'nonfiction_book'
+  | 'design_document'
+  | 'academic_paper'
+  | 'exam'
+  | 'course_material'
+  | 'general_notes';
+
+export const STUDY_DOCUMENT_ANALYSIS_KINDS: readonly StudyDocumentAnalysisKind[] = [
+  'auto',
+  'literary_book',
+  'nonfiction_book',
+  'design_document',
+  'academic_paper',
+  'exam',
+  'course_material',
+  'general_notes',
+];
+
 export type StudyDocumentErrorCode =
   | 'multiple_files'
   | 'unsupported_type'
