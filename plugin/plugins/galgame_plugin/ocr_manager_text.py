@@ -597,7 +597,7 @@ class TextMixin:
         return ScreenClassification(
             screen_type=normalize_screen_type(result.get("screen_type")),
             confidence=round(
-                max(0.0, min(float(result.get("confidence") or 0.0), 0.99)),
+                max(0.0, min(model_confidence_raw, 0.99)),
                 4,
             ),
             ui_elements=[],

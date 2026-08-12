@@ -777,6 +777,8 @@ class AgentOcrActuationMixin:
             and bool(item.get("enabled", True))
         ]
         screen_type = str(snapshot.get("screen_type") or "").strip()
+        if bool(snapshot.get("is_menu_open")):
+            screen_type = OCR_CAPTURE_PROFILE_STAGE_MENU
         history_events = shared.get("history_events")
         choices_confirmed = False
         if choices and isinstance(history_events, list):

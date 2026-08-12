@@ -2210,6 +2210,41 @@ def test_game_llm_agent_ocr_dialogue_without_choices_blocks_menu_actions(
 
 
 @pytest.mark.parametrize(
+    "screen_type",
+    ["", OCR_CAPTURE_PROFILE_STAGE_DIALOGUE],
+)
+@pytest.mark.plugin_unit
+def test_game_llm_agent_ocr_open_menu_normalizes_inconsistent_screen_type(
+    tmp_path: Path,
+    screen_type: str,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    agent = GameLLMAgent(
+        plugin=plugin,
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    snapshot = _session_state(
+        scene_id="scene-a",
+        line_id="",
+        text="",
+        choices=[],
+        is_menu_open=True,
+        screen_type=screen_type,
+    )
+    shared = _shared_state(
+        snapshot=snapshot,
+        active_data_source=DATA_SOURCE_OCR_READER,
+        history_events=[],
+    )
+
+    assert agent._has_confirmed_ocr_choice_menu(shared, snapshot) is True
+
+
+@pytest.mark.parametrize(
     ("has_tentative", "has_stable"),
     [(True, False), (False, True)],
 )

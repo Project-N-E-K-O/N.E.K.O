@@ -1631,6 +1631,35 @@ def test_ocr_reader_screen_stability_keeps_raw_cnn_confidence(
     assert classification.debug["model_confidence_raw"] == pytest.approx(0.889123)
 
 
+def test_ocr_reader_invalid_cnn_confidence_falls_back_to_zero(
+    tmp_path: Path,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=_make_config(bridge_root),
+        time_fn=lambda: 3000.0,
+        platform_fn=lambda: True,
+        window_scanner=_window,
+        capture_backend=_FakeCaptureBackend(),
+        ocr_backend=_FakeOcrBackend(),
+    )
+
+    classification = manager._classification_from_vision_result(
+        {
+            "label": "choice_menu",
+            "screen_type": OCR_CAPTURE_PROFILE_STAGE_MENU,
+            "confidence": "invalid",
+            "model_name": "test_model",
+        },
+        extraction=OcrExtractionResult(text="Config"),
+    )
+
+    assert classification.confidence == 0.0
+    assert classification.debug["model_confidence_raw"] == 0.0
+
+
 def test_cnn_dialogue_boundary_requires_known_nonempty_label(tmp_path: Path) -> None:
     bridge_root = tmp_path / "bridge"
     bridge_root.mkdir()
