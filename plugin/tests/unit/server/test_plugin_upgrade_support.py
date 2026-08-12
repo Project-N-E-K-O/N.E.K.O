@@ -110,6 +110,54 @@ async def test_replace_plugin_preserves_manifest_adjacent_user_profiles(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("relative_path", "link_target_exists"),
+    (("profiles.toml", True), ("profiles", True), ("profiles.toml", False)),
+)
+async def test_replace_plugin_rejects_manifest_adjacent_profile_symlinks(
+    tmp_path: Path,
+    relative_path: str,
+    link_target_exists: bool,
+) -> None:
+    target = tmp_path / "plugins" / "demo"
+    target.mkdir(parents=True)
+    (target / "plugin.toml").write_text("version = 1\n", encoding="utf-8")
+    link_target = tmp_path / f"external-{relative_path.replace('.', '-')}"
+    if link_target_exists:
+        if relative_path == "profiles":
+            link_target.mkdir()
+            (link_target / "dev.toml").write_text("external\n", encoding="utf-8")
+        else:
+            link_target.write_text("external\n", encoding="utf-8")
+    profile_path = target / relative_path
+    try:
+        profile_path.symlink_to(link_target, target_is_directory=relative_path == "profiles")
+    except (NotImplementedError, OSError) as exc:
+        pytest.skip(f"symbolic links are unavailable: {exc}")
+
+    async def install_new() -> dict[str, object]:
+        target.mkdir()
+        (target / "plugin.toml").write_text("version = 2\n", encoding="utf-8")
+        return {"installed": True}
+
+    with pytest.raises(ReplacePluginError) as exc_info:
+        await replace_plugin(
+            layout=resolve_plugin_layout("demo", target),
+            install_new=install_new,
+            validate_new=_async_none,
+            is_running=lambda _plugin_id: _async_false(),
+            stop=lambda _plugin_id: _async_none(),
+            start=lambda _plugin_id: _async_none(),
+            cleanup_backup=remove_directory,
+        )
+
+    assert exc_info.value.stage == "preserve"
+    assert exc_info.value.rollback_status == "completed"
+    assert (target / "plugin.toml").read_text(encoding="utf-8") == "version = 1\n"
+    assert profile_path.is_symlink()
+
+
+@pytest.mark.asyncio
 async def test_replace_plugin_initializes_runtime_config_from_old_payload_before_backup(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

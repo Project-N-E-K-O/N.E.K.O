@@ -118,6 +118,8 @@ async def merge_directory_contents(source_dir: Path, target_dir: Path) -> None:
 async def _restore_manifest_adjacent_profiles(backup_dir: Path, target_dir: Path) -> None:
     for relative_path in _MANIFEST_ADJACENT_PROFILE_PATHS:
         source = backup_dir / relative_path
+        if source.is_symlink():
+            raise OSError(f"symbolic links are not supported for profile paths: {source}")
         if not source.exists():
             continue
         target = target_dir / relative_path

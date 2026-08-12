@@ -615,6 +615,38 @@ async def test_plugin_cli_route_upgrades_in_place_after_confirmation(
 
 
 @pytest.mark.asyncio
+async def test_plugin_cli_install_returns_structured_rollback_details(
+    plugin_cli_test_app: FastAPI,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fail_install(**_kwargs: object) -> dict[str, object]:
+        raise ServerDomainError(
+            code="PLUGIN_UPGRADE_ROLLED_BACK",
+            message="Plugin replacement failed and rollback completed",
+            status_code=500,
+            details={"stage": "install", "rollback_status": "completed"},
+        )
+
+    monkeypatch.setattr(plugin_cli_routes.service, "install", fail_install)
+    transport = ASGITransport(app=plugin_cli_test_app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/plugin-cli/install",
+            json={"package": "/packages/demo.neko-plugin"},
+        )
+
+    assert response.status_code == 500
+    assert response.headers["x-error-code"] == "PLUGIN_UPGRADE_ROLLED_BACK"
+    assert response.json() == {
+        "detail": {
+            "code": "PLUGIN_UPGRADE_ROLLED_BACK",
+            "message": "Plugin replacement failed and rollback completed",
+            "details": {"stage": "install", "rollback_status": "completed"},
+        }
+    }
+
+
+@pytest.mark.asyncio
 async def test_plugin_cli_install_records_uploaded_package_as_imported(
     plugin_cli_test_app: FastAPI,
     tmp_path: Path,

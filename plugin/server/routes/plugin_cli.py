@@ -324,7 +324,11 @@ async def plugin_cli_install(
             confirmation_token=payload.confirmation_token,
         )
     except ServerDomainError as error:
-        raise_http_from_domain(error, logger=logger)
+        raise_http_from_domain(
+            error,
+            logger=logger,
+            include_details=error.code == "PLUGIN_UPGRADE_ROLLED_BACK",
+        )
 
 
 @router.post("/plugin-cli/install-plan", response_model=PluginCliInstallPlanResponse)
