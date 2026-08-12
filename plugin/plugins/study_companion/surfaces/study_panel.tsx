@@ -927,6 +927,12 @@ export default function StudyPanel(props: PluginSurfaceProps) {
         ? ['ui.error.document_analysis_model_not_supported', 'The configured model does not support document analysis.']
         : ['ui.error.llm_model_not_supported', 'The configured Qwen model or native endpoint does not support this request.'],
       provider_unavailable: ['ui.error.llm_provider_unavailable', 'Qwen is temporarily unavailable. Please retry shortly.'],
+      invalid_endpoint: documentOperation
+        ? ['ui.error.document_analysis_invalid_endpoint', 'The configured Qwen API endpoint is invalid or unsupported.']
+        : ['ui.error.llm_call_failed', 'The configured Qwen API endpoint is invalid or unsupported.'],
+      invalid_request: documentOperation
+        ? ['ui.error.document_analysis_invalid_request', 'Qwen rejected the document analysis request as invalid.']
+        : ['ui.error.llm_call_failed', 'Qwen rejected the request as invalid.'],
       invalid_image: ['ui.error.llm_invalid_image', 'The image could not be read. Please use a valid JPEG or PNG image.'],
       document_too_large: ['ui.document.error.file_too_large', 'The document exceeds the 512 KiB size limit.'],
       document_too_long: ['ui.document.error.too_long', 'The document exceeds the 160,000-token limit. Shorten it and retry.'],

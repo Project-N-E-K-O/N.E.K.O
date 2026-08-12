@@ -8724,7 +8724,7 @@ async def test_tutor_agent_llm_cache_distinguishes_rotated_api_keys(
     from utils import config_manager
 
     config_groups: list[str] = []
-    native_calls: list[dict[str, object]] = []
+    compatible_calls: list[dict[str, object]] = []
 
     class _ConfigManager:
         def __init__(self) -> None:
@@ -8738,23 +8738,19 @@ async def test_tutor_agent_llm_cache_distinguishes_rotated_api_keys(
                 "api_key": self.api_key,
             }
 
-    class _FakeGeneration:
-        @staticmethod
-        async def call(**kwargs):
-            native_calls.append(dict(kwargs))
-            return SimpleNamespace(
-                status_code=200,
-                request_id=f"request-{len(native_calls)}",
-                output=SimpleNamespace(
-                    choices=[
-                        SimpleNamespace(
-                            message=SimpleNamespace(
-                                content=f"reply from {kwargs['api_key']}"
-                            )
-                        )
-                    ]
-                ),
-                usage=SimpleNamespace(input_tokens=3, output_tokens=4),
+    class _CompatibleTransport:
+        async def chat_completions(self, **kwargs):
+            from plugin.plugins.study_companion.qwen_compatible_transport import (
+                QwenCompatibleResult,
+            )
+
+            compatible_calls.append(dict(kwargs))
+            return QwenCompatibleResult(
+                text=f"reply from {kwargs['api_key']}",
+                model=str(kwargs["model"]),
+                request_id=f"request-{len(compatible_calls)}",
+                input_tokens=3,
+                output_tokens=4,
             )
 
     cfg_mgr = _ConfigManager()
@@ -8763,12 +8759,12 @@ async def test_tutor_agent_llm_cache_distinguishes_rotated_api_keys(
         return None
 
     monkeypatch.setattr(config_manager, "get_config_manager", lambda: cfg_mgr)
-    monkeypatch.setattr(qwen_native_client, "AioGeneration", _FakeGeneration)
     monkeypatch.setattr(
         qwen_native_client.QwenNativeClient, "_record_usage", _discard_usage
     )
 
     agent = TutorLLMAgent(logger=_Logger(), config=StudyConfig(language="en"))
+    agent._qwen_client._compatible_transport = _CompatibleTransport()
     first = await agent._call_model([{"role": "user", "content": "one"}])
     cfg_mgr.api_key = "new-key"
     second = await agent._call_model([{"role": "user", "content": "two"}])
@@ -8776,12 +8772,11 @@ async def test_tutor_agent_llm_cache_distinguishes_rotated_api_keys(
     assert first == "reply from old-key"
     assert second == "reply from new-key"
     assert config_groups == ["agent", "agent"]
-    assert [call["api_key"] for call in native_calls] == ["old-key", "new-key"]
-    assert all(call["model"] == "qwen-plus" for call in native_calls)
-    assert all(call["max_tokens"] == 3072 for call in native_calls)
-    assert all(call["enable_thinking"] is False for call in native_calls)
-    assert all(call["request_timeout"] > 0 for call in native_calls)
-    assert all("temperature" not in call for call in native_calls)
+    assert [call["api_key"] for call in compatible_calls] == ["old-key", "new-key"]
+    assert all(call["model"] == "qwen-plus" for call in compatible_calls)
+    assert all(call["max_tokens"] == 3072 for call in compatible_calls)
+    assert all(call["timeout_seconds"] > 0 for call in compatible_calls)
+    assert all("temperature" not in call for call in compatible_calls)
     assert not hasattr(agent, "_client_cache")
 
 

@@ -21,6 +21,7 @@ from plugin.plugins.study_companion.entry_tutor_explain_entries import (
     IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN,
 )
 from plugin.plugins.study_companion.models import StudyConfig
+from plugin.plugins.study_companion.qwen_compatible_transport import QwenCompatibleResult
 from plugin.plugins.study_companion.qwen_native_client import (
     QwenNativeClient,
     QwenNativeError,
@@ -552,7 +553,7 @@ async def test_call_model_uses_vision_config_for_image_messages(
     ["qwen3.7-plus", "qwen3.7-plus-2026-05-26"],
 )
 @pytest.mark.asyncio
-async def test_qwen37_plus_text_uses_agent_config_with_multimodal_endpoint(
+async def test_qwen37_plus_text_uses_agent_config_with_compatible_endpoint(
     monkeypatch: pytest.MonkeyPatch,
     model: str,
 ) -> None:
@@ -560,7 +561,7 @@ async def test_qwen37_plus_text_uses_agent_config_with_multimodal_endpoint(
     from utils import config_manager
 
     config_groups: list[str] = []
-    multimodal_calls: list[dict[str, Any]] = []
+    compatible_calls: list[dict[str, Any]] = []
 
     class _ConfigManager:
         def get_model_api_config(self, group: str) -> dict[str, str]:
@@ -572,29 +573,26 @@ async def test_qwen37_plus_text_uses_agent_config_with_multimodal_endpoint(
                 "api_key": "agent-key",
             }
 
-    class _FakeMultiModalConversation:
-        @staticmethod
-        async def call(**kwargs: Any) -> SimpleNamespace:
-            multimodal_calls.append(dict(kwargs))
-            return SimpleNamespace(
-                status_code=200,
+    class _CompatibleTransport:
+        async def chat_completions(self, **kwargs: Any) -> QwenCompatibleResult:
+            compatible_calls.append(dict(kwargs))
+            return QwenCompatibleResult(
+                text="《活着》呈现了苦难中的生命韧性。",
+                model=model,
                 request_id="text-request",
-                usage=SimpleNamespace(input_tokens=8, output_tokens=5),
-                output=SimpleNamespace(
-                    choices=[
-                        SimpleNamespace(
-                            message=SimpleNamespace(
-                                content=[{"text": "《活着》呈现了苦难中的生命韧性。"}]
-                            )
-                        )
-                    ]
-                ),
+                input_tokens=8,
+                output_tokens=5,
             )
 
     class _UnexpectedGeneration:
         @staticmethod
         async def call(**_kwargs: Any) -> SimpleNamespace:
-            raise AssertionError("qwen3.7-plus must use multimodal-generation")
+            raise AssertionError("compatible text must not use native generation")
+
+    class _UnexpectedMultiModalConversation:
+        @staticmethod
+        async def call(**_kwargs: Any) -> SimpleNamespace:
+            raise AssertionError("text-only requests must not use multimodal generation")
 
     async def _discard_usage(_client: object, **_kwargs: Any) -> None:
         return None
@@ -603,11 +601,12 @@ async def test_qwen37_plus_text_uses_agent_config_with_multimodal_endpoint(
     monkeypatch.setattr(
         qwen_native_client,
         "AioMultiModalConversation",
-        _FakeMultiModalConversation,
+        _UnexpectedMultiModalConversation,
     )
     monkeypatch.setattr(qwen_native_client, "AioGeneration", _UnexpectedGeneration)
     monkeypatch.setattr(QwenNativeClient, "_record_usage", _discard_usage)
     client = QwenNativeClient(logger=_Logger())
+    client._compatible_transport = _CompatibleTransport()  # type: ignore[assignment]
 
     result = await client.call(
         [{"role": "user", "content": "谈谈你对活着这本书的理解"}],
@@ -618,13 +617,10 @@ async def test_qwen37_plus_text_uses_agent_config_with_multimodal_endpoint(
     assert result.text == "《活着》呈现了苦难中的生命韧性。"
     assert result.model_group == "agent"
     assert config_groups == ["agent"]
-    assert len(multimodal_calls) == 1
-    assert multimodal_calls[0]["model"] == model
-    assert multimodal_calls[0]["messages"] == [
-        {
-            "role": "user",
-            "content": [{"text": "谈谈你对活着这本书的理解"}],
-        }
+    assert len(compatible_calls) == 1
+    assert compatible_calls[0]["model"] == model
+    assert compatible_calls[0]["messages"] == [
+        {"role": "user", "content": "谈谈你对活着这本书的理解"}
     ]
 
 
@@ -640,7 +636,7 @@ async def test_other_qwen_text_models_keep_text_endpoint(
     from plugin.plugins.study_companion import qwen_native_client
     from utils import config_manager
 
-    generation_calls: list[dict[str, Any]] = []
+    compatible_calls: list[dict[str, Any]] = []
 
     class _ConfigManager:
         def get_model_api_config(self, group: str) -> dict[str, str]:
@@ -651,16 +647,21 @@ async def test_other_qwen_text_models_keep_text_endpoint(
                 "api_key": "agent-key",
             }
 
-    class _FakeGeneration:
-        @staticmethod
-        async def call(**kwargs: Any) -> SimpleNamespace:
-            generation_calls.append(dict(kwargs))
-            return SimpleNamespace(
-                status_code=200,
+    class _CompatibleTransport:
+        async def chat_completions(self, **kwargs: Any) -> QwenCompatibleResult:
+            compatible_calls.append(dict(kwargs))
+            return QwenCompatibleResult(
+                text="text reply",
+                model=model,
                 request_id="text-request",
-                usage=SimpleNamespace(input_tokens=1, output_tokens=1),
-                output=SimpleNamespace(text="text reply"),
+                input_tokens=1,
+                output_tokens=1,
             )
+
+    class _UnexpectedGeneration:
+        @staticmethod
+        async def call(**_kwargs: Any) -> SimpleNamespace:
+            raise AssertionError("compatible text must not use native generation")
 
     class _UnexpectedMultiModalConversation:
         @staticmethod
@@ -671,7 +672,7 @@ async def test_other_qwen_text_models_keep_text_endpoint(
         return None
 
     monkeypatch.setattr(config_manager, "get_config_manager", lambda: _ConfigManager())
-    monkeypatch.setattr(qwen_native_client, "AioGeneration", _FakeGeneration)
+    monkeypatch.setattr(qwen_native_client, "AioGeneration", _UnexpectedGeneration)
     monkeypatch.setattr(
         qwen_native_client,
         "AioMultiModalConversation",
@@ -679,6 +680,7 @@ async def test_other_qwen_text_models_keep_text_endpoint(
     )
     monkeypatch.setattr(QwenNativeClient, "_record_usage", _discard_usage)
     client = QwenNativeClient(logger=_Logger())
+    client._compatible_transport = _CompatibleTransport()  # type: ignore[assignment]
 
     result = await client.call(
         [{"role": "user", "content": "hello"}],
@@ -688,34 +690,15 @@ async def test_other_qwen_text_models_keep_text_endpoint(
 
     assert result.text == "text reply"
     assert result.model_group == "agent"
-    assert len(generation_calls) == 1
-    assert generation_calls[0]["model"] == model
-    assert generation_calls[0]["messages"] == [
+    assert len(compatible_calls) == 1
+    assert compatible_calls[0]["model"] == model
+    assert compatible_calls[0]["messages"] == [
         {"role": "user", "content": "hello"}
     ]
 
 
-@pytest.mark.parametrize(
-    ("model", "expected"),
-    [
-        ("qwen3.7-plus", True),
-        (" QWEN3.7-PLUS-2026-05-26 ", True),
-        ("qwen3.7-plus-future", False),
-        ("qwen-plus", False),
-        ("qwen-future-experimental", False),
-    ],
-)
-def test_qwen_multimodal_endpoint_model_allowlist(
-    model: str,
-    expected: bool,
-) -> None:
-    from plugin.plugins.study_companion import qwen_native_client
-
-    assert qwen_native_client._model_requires_multimodal_endpoint(model) is expected
-
-
 @pytest.mark.asyncio
-async def test_qwen_multimodal_result_reports_nested_length_finish_reason(
+async def test_qwen_compatible_result_reports_length_finish_reason(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from plugin.plugins.study_companion import qwen_native_client
@@ -730,23 +713,15 @@ async def test_qwen_multimodal_result_reports_nested_length_finish_reason(
                 "api_key": "agent-key",
             }
 
-    class _FakeMultiModalConversation:
-        @staticmethod
-        async def call(**_kwargs: Any) -> SimpleNamespace:
-            return SimpleNamespace(
-                status_code=200,
-                request_id="multimodal-length-request",
-                usage=SimpleNamespace(input_tokens=17, output_tokens=29),
-                output=SimpleNamespace(
-                    choices=[
-                        SimpleNamespace(
-                            finish_reason="length",
-                            message=SimpleNamespace(
-                                content=[{"text": "truncated explanation"}]
-                            ),
-                        )
-                    ]
-                ),
+    class _CompatibleTransport:
+        async def chat_completions(self, **_kwargs: Any) -> QwenCompatibleResult:
+            return QwenCompatibleResult(
+                text="truncated explanation",
+                model="qwen3.7-plus",
+                request_id="compatible-length-request",
+                input_tokens=17,
+                output_tokens=29,
+                finish_reason="length",
             )
 
     async def _discard_usage(_client: object, **_kwargs: Any) -> None:
@@ -756,11 +731,12 @@ async def test_qwen_multimodal_result_reports_nested_length_finish_reason(
     monkeypatch.setattr(
         qwen_native_client,
         "AioMultiModalConversation",
-        _FakeMultiModalConversation,
+        None,
     )
     monkeypatch.setattr(QwenNativeClient, "_record_usage", _discard_usage)
     logger = _Logger()
     client = QwenNativeClient(logger=logger)
+    client._compatible_transport = _CompatibleTransport()  # type: ignore[assignment]
 
     result = await client.call(
         [{"role": "user", "content": "sensitive question text"}],
@@ -810,28 +786,26 @@ async def test_qwen_solution_structure_repair_has_bounded_observable_output_budg
                 "api_key": "agent-key",
             }
 
-    class _FakeGeneration:
-        @staticmethod
-        async def call(**kwargs: Any) -> SimpleNamespace:
+    class _CompatibleTransport:
+        async def chat_completions(self, **kwargs: Any) -> QwenCompatibleResult:
             calls.append(dict(kwargs))
-            return SimpleNamespace(
-                status_code=200,
+            return QwenCompatibleResult(
+                text="complete json correction",
+                model="qwen-plus",
                 request_id="text-budget-request",
-                usage={"input_tokens": 11, "output_tokens": 1536},
-                output={
-                    "text": "complete json correction",
-                    "finish_reason": "stop",
-                },
+                input_tokens=11,
+                output_tokens=1536,
+                finish_reason="stop",
             )
 
     async def _discard_usage(_client: object, **_kwargs: Any) -> None:
         return None
 
     monkeypatch.setattr(config_manager, "get_config_manager", lambda: _ConfigManager())
-    monkeypatch.setattr(qwen_native_client, "AioGeneration", _FakeGeneration)
     monkeypatch.setattr(QwenNativeClient, "_record_usage", _discard_usage)
     logger = _Logger()
     client = QwenNativeClient(logger=logger)
+    client._compatible_transport = _CompatibleTransport()  # type: ignore[assignment]
 
     result = await client.call(
         [{"role": "user", "content": "repair json"}],
@@ -863,6 +837,15 @@ async def test_qwen_solution_structure_repair_has_bounded_observable_output_budg
         (429, "Throttling", "too many requests", "rate_limited"),
         (503, "ServiceUnavailable", "provider down", "provider_unavailable"),
         (400, "InvalidParameter", "invalid image payload", "invalid_image"),
+        (
+            400,
+            "InvalidParameter",
+            "url error; https://help.aliyun.com/zh/model-studio/error-code#error-url",
+            "invalid_endpoint",
+        ),
+        (400, "InvalidParameter", "unsupported request parameter", "invalid_request"),
+        (404, "NotFound", "route not found", "invalid_endpoint"),
+        (400, "ModelNotFound", "configured model is unavailable", "model_not_supported"),
     ],
 )
 def test_qwen_native_response_diagnostics(
@@ -903,13 +886,14 @@ async def test_qwen_native_deadline_exhaustion_skips_sdk_request(
     monkeypatch.setattr(qwen_native_client, "AioGeneration", _FakeGeneration)
     client = QwenNativeClient(logger=_Logger())
 
-    with pytest.raises(asyncio.TimeoutError):
+    with pytest.raises(QwenNativeError) as raised:
         await client.call(
             [{"role": "user", "content": "hello"}],
             operation="concept_explain",
             deadline=time.monotonic() - 1.0,
         )
 
+    assert raised.value.diagnostic == "timeout"
     assert calls == []
 
 
@@ -926,7 +910,7 @@ async def test_qwen_native_timeout_cancels_sdk_call_without_background_close_tas
         def get_model_api_config(self, group: str) -> dict[str, str]:
             assert group == "agent"
             return {
-                "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                "base_url": "https://dashscope.aliyuncs.com/api/v1",
                 "model": "qwen-plus",
                 "api_key": "text-key",
             }
@@ -1021,7 +1005,7 @@ async def test_qwen_json_correction_uses_text_client_and_1536_token_budget(
         def get_model_api_config(self, group: str) -> dict[str, str]:
             assert group == "agent"
             return {
-                "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                "base_url": "https://dashscope.aliyuncs.com/api/v1",
                 "model": "qwen-plus",
                 "api_key": "text-key",
             }

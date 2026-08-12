@@ -570,6 +570,8 @@
     "ui.error.document_analysis_authentication_failed":  "Недействительные учётные данные Qwen API.",
     "ui.error.document_analysis_model_not_supported":  "Настроенная модель не поддерживает анализ документов.",
     "ui.error.document_analysis_provider_unavailable":  "Сервис Qwen временно недоступен.",
+    "ui.error.document_analysis_invalid_endpoint":  "Настроенная конечная точка Qwen API недействительна или не поддерживается.",
+    "ui.error.document_analysis_invalid_request":  "Qwen отклонил недействительный запрос на анализ документа.",
     "ui.error.document_instruction_too_long":  "Фокус анализа слишком длинный.",
     "ui.error.document_invalid_kind":  "Выберите поддерживаемый тип документа.",
     "ui.error.document_type_mismatch":  "Тип документа не соответствует имени файла.",

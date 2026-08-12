@@ -266,6 +266,66 @@ async def test_chunk_deterministic_error_is_not_retried(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("diagnostic", ["invalid_endpoint", "invalid_request"])
+async def test_chunk_preserves_transport_diagnostic(
+    monkeypatch: pytest.MonkeyPatch, diagnostic: str
+) -> None:
+    from plugin.plugins.study_companion.document_analysis import validate_document
+    from plugin.plugins.study_companion.document_chunking import split_document
+
+    document = validate_document(
+        document_name="book.txt",
+        document_type="text/plain",
+        document_text="A short chapter.",
+        locale="en",
+    )
+    chunk = split_document(document.text, document.document_type)[0]
+    agent = TutorLLMAgent(
+        logger=_Logger(), config=type("C", (), {"llm_call_timeout_seconds": 3600})()
+    )
+
+    async def fake(*_args, **_kwargs):
+        error = RuntimeError("safe transport failure")
+        error.diagnostic = diagnostic
+        raise error
+
+    monkeypatch.setattr(agent, "_call_model", fake)
+    with pytest.raises(DocumentChunkAnalysisError) as raised:
+        await agent.analyze_document_chunk(document, chunk, 1)
+    assert raised.value.diagnostic == diagnostic
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("diagnostic", ["invalid_endpoint", "invalid_request"])
+async def test_merge_preserves_transport_diagnostic(
+    monkeypatch: pytest.MonkeyPatch, diagnostic: str
+) -> None:
+    from plugin.plugins.study_companion.document_analysis import validate_document
+    from plugin.plugins.study_companion.document_chunking import split_document
+
+    document = validate_document(
+        document_name="book.txt",
+        document_type="text/plain",
+        document_text="A short chapter.",
+        locale="en",
+    )
+    chunks = split_document(document.text, document.document_type)
+    agent = TutorLLMAgent(
+        logger=_Logger(), config=type("C", (), {"llm_call_timeout_seconds": 3600})()
+    )
+
+    async def fake(*_args, **_kwargs):
+        error = RuntimeError("safe transport failure")
+        error.diagnostic = diagnostic
+        raise error
+
+    monkeypatch.setattr(agent, "_call_model", fake)
+    with pytest.raises(DocumentChunkAnalysisError) as raised:
+        await agent.merge_document_chunks(document, chunks, ("memo",))
+    assert raised.value.diagnostic == diagnostic
+
+
+@pytest.mark.asyncio
 async def test_chunk_unknown_failure_uses_chunk_diagnostic_without_retry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -570,6 +570,8 @@
     "ui.error.document_analysis_authentication_failed":  "Qwen API 憑證無效。",
     "ui.error.document_analysis_model_not_supported":  "目前模型不支援文件分析。",
     "ui.error.document_analysis_provider_unavailable":  "Qwen 服務暫時無法使用。",
+    "ui.error.document_analysis_invalid_endpoint":  "設定的 Qwen API 端點無效或不受支援。",
+    "ui.error.document_analysis_invalid_request":  "Qwen 拒絕了無效的文件分析請求。",
     "ui.error.document_instruction_too_long":  "分析重點過長。",
     "ui.error.document_invalid_kind":  "請選擇支援的文件類型。",
     "ui.error.document_type_mismatch":  "文件類型與檔名不相符。",

@@ -164,6 +164,8 @@ async def analyze_document_chunk(
                         "provider_unavailable",
                         "authentication_failed",
                         "model_not_supported",
+                        "invalid_endpoint",
+                        "invalid_request",
                         "unsafe_model_output",
                     }
                     else "document_chunk_failed"
@@ -223,6 +225,8 @@ async def merge_document_chunks(
                     "provider_unavailable",
                     "authentication_failed",
                     "model_not_supported",
+                    "invalid_endpoint",
+                    "invalid_request",
                     "unsafe_model_output",
                 }
                 else "document_merge_failed"

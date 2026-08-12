@@ -570,6 +570,8 @@
     "ui.error.document_analysis_authentication_failed":  "Las credenciales de Qwen API no son válidas.",
     "ui.error.document_analysis_model_not_supported":  "El modelo configurado no admite el análisis de documentos.",
     "ui.error.document_analysis_provider_unavailable":  "Qwen no está disponible temporalmente.",
+    "ui.error.document_analysis_invalid_endpoint":  "El endpoint configurado de la API de Qwen no es válido o no es compatible.",
+    "ui.error.document_analysis_invalid_request":  "Qwen rechazó la solicitud de análisis del documento por no ser válida.",
     "ui.error.document_instruction_too_long":  "El enfoque del análisis es demasiado largo.",
     "ui.error.document_invalid_kind":  "Elige un tipo de documento compatible.",
     "ui.error.document_type_mismatch":  "El tipo de documento no coincide con el nombre del archivo.",

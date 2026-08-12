@@ -570,6 +570,8 @@
     "ui.error.document_analysis_authentication_failed":  "The Qwen API credential is invalid.",
     "ui.error.document_analysis_model_not_supported":  "The configured model does not support document analysis.",
     "ui.error.document_analysis_provider_unavailable":  "Qwen is temporarily unavailable.",
+    "ui.error.document_analysis_invalid_endpoint":  "The configured Qwen API endpoint is invalid or unsupported.",
+    "ui.error.document_analysis_invalid_request":  "Qwen rejected the document analysis request as invalid.",
     "ui.error.document_instruction_too_long":  "The analysis focus is too long.",
     "ui.error.document_invalid_kind":  "Choose a supported document type.",
     "ui.error.document_type_mismatch":  "The document type does not match its filename.",

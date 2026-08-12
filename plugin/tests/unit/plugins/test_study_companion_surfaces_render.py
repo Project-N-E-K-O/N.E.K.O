@@ -44,7 +44,10 @@ def _read(filename: str) -> str:
 
 def test_study_explain_surfaces_expose_solution_narration_outcomes() -> None:
     hosted = _read("study_panel.tsx")
-    fallback = (PLUGIN_DIR / "static" / "main.js").read_text(encoding="utf-8")
+    fallback = "\n".join(
+        (PLUGIN_DIR / "static" / filename).read_text(encoding="utf-8")
+        for filename in ("solution-narration.js", "main.js")
+    )
 
     for source in (hosted, fallback):
         assert "solution_narration_scheduled" in source

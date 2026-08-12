@@ -570,6 +570,8 @@
     "ui.error.document_analysis_authentication_failed":  "Qwen API の認証情報が無効です。",
     "ui.error.document_analysis_model_not_supported":  "設定されたモデルは文書分析に対応していません。",
     "ui.error.document_analysis_provider_unavailable":  "Qwen は一時的に利用できません。",
+    "ui.error.document_analysis_invalid_endpoint":  "設定された Qwen API エンドポイントが無効か、サポートされていません。",
+    "ui.error.document_analysis_invalid_request":  "無効な文書分析リクエストとして Qwen に拒否されました。",
     "ui.error.document_instruction_too_long":  "分析ポイントが長すぎます。",
     "ui.error.document_invalid_kind":  "対応する文書タイプを選択してください。",
     "ui.error.document_type_mismatch":  "文書タイプとファイル名が一致しません。",

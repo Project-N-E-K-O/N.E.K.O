@@ -267,8 +267,6 @@ function setStatus(text) {
 }
 
 // SECURITY: renderMathInText MUST HTML-escape all non-math text.
-// LLM replies echo untrusted user input. Never replace innerHTML with
-// a code path that skips escapeHTML().
 function setReply(text) {
   const value = text || '';
   const replyPanel = replyText?.closest('.reply-panel');
@@ -415,103 +413,16 @@ function renderFeedback(data = {}) {
 }
 
 function formatPluginError(error) {
-  if (error instanceof Error && error.message === 'plugin_call_timeout') {
-    return t('ui.error.plugin_call_timeout', 'Plugin call timed out');
-  }
-  if (error instanceof Error && error.message === 'run_id_missing') {
-    return t('ui.error.run_id_missing', 'Run id missing');
-  }
-  if (error instanceof Error && error.message === 'plugin_call_failed') {
-    return t('ui.error.plugin_call_failed', 'Plugin call failed');
-  }
+  if(error instanceof Error&&error.message==='plugin_call_timeout')return t('ui.error.plugin_call_timeout','Plugin call timed out');
+  if(error instanceof Error&&error.message==='run_id_missing')return t('ui.error.run_id_missing','Run id missing');
+  if(error instanceof Error&&error.message==='plugin_call_failed')return t('ui.error.plugin_call_failed','Plugin call failed');
   return error instanceof Error ? error.message : String(error);
 }
 
 function formatTutorDiagnostic(diagnostic) {
-  const messages = {
-    timeout: ['ui.error.llm_timeout', 'Image understanding timed out. Please retry or paste the problem text.'],
-    rate_limited: ['ui.error.llm_rate_limited', 'Qwen is receiving too many requests. Please retry shortly.'],
-    authentication_failed: ['ui.error.llm_authentication_failed', 'The Qwen API credential is invalid. Please check the API key.'],
-    model_not_supported: ['ui.error.llm_model_not_supported', 'The configured Qwen model or native endpoint does not support this request.'],
-    provider_unavailable: ['ui.error.llm_provider_unavailable', 'Qwen is temporarily unavailable. Please retry shortly.'],
-    invalid_image: ['ui.error.llm_invalid_image', 'The image could not be read. Please use a valid JPEG or PNG image.'],
-  };
-  const [key, fallback] = messages[String(diagnostic || '').trim()]
-    || ['ui.error.llm_call_failed', 'The Qwen request failed. Please retry.'];
+  const messages={timeout:['ui.error.llm_timeout','Image understanding timed out. Please retry or paste the problem text.'],rate_limited:['ui.error.llm_rate_limited','Qwen is receiving too many requests. Please retry shortly.'],authentication_failed:['ui.error.llm_authentication_failed','The Qwen API credential is invalid. Please check the API key.'],model_not_supported:['ui.error.llm_model_not_supported','The configured Qwen model or native endpoint does not support this request.'],provider_unavailable:['ui.error.llm_provider_unavailable','Qwen is temporarily unavailable. Please retry shortly.'],invalid_image:['ui.error.llm_invalid_image','The image could not be read. Please use a valid JPEG or PNG image.']};
+  const [key,fallback]=messages[String(diagnostic||'').trim()]||['ui.error.llm_call_failed','The Qwen request failed. Please retry.'];
   return t(key, fallback);
-}
-
-function formatSolutionNarrationNotice(outcome) {
-  const status = String(outcome?.solution_narration_status || '').trim().toLowerCase();
-  const reason = String(outcome?.solution_narration_reason || '').trim().toLowerCase();
-  const missingSections = Array.isArray(outcome?.solution_narration_missing_sections)
-    ? outcome.solution_narration_missing_sections.map((section) => String(section).trim().toLowerCase())
-    : [];
-  const hasOutcome = typeof outcome?.solution_narration_scheduled === 'boolean'
-    || Boolean(status)
-    || Boolean(reason)
-    || missingSections.length > 0
-    || typeof outcome?.solution_repair_attempted === 'boolean';
-  if (!hasOutcome) return '';
-
-  if (status === 'not_applicable') return '';
-  if (outcome.solution_narration_scheduled === true || status === 'scheduled') {
-    return t('ui.status.solution_narration_scheduled', 'Narration has been scheduled.');
-  }
-  if (status === 'disabled') {
-    return t('ui.status.solution_narration_disabled', 'Solution narration is turned off.');
-  }
-  if (status === 'degraded') {
-    return t(
-      'ui.error.solution_narration_degraded',
-      'The explanation used a fallback response, so narration was not scheduled.',
-    );
-  }
-  if (
-    status === 'repair_failed'
-    || reason === 'invalid_repair_response'
-    || (
-      !status
-      && outcome.solution_repair_attempted === true
-      && outcome.solution_narration_scheduled === false
-    )
-  ) {
-    return t(
-      'ui.error.solution_narration_repair_failed',
-      'The explanation structure could not be repaired, so narration was not scheduled. Please analyze it again.',
-    );
-  }
-  if (status === 'incomplete' || reason.startsWith('missing_')) {
-    if (reason === 'missing_answer' || missingSections.includes('answer')) {
-      return t(
-        'ui.error.solution_narration_missing_answer',
-        'The explanation is incomplete: the Answer section is missing, so narration was not scheduled. Please analyze it again.',
-      );
-    }
-    return t(
-      'ui.error.solution_narration_incomplete',
-      'The explanation is incomplete, so narration was not scheduled. Please analyze it again.',
-    );
-  }
-  if (status === 'runtime_unavailable' || reason === 'event_bus_unavailable') {
-    return t(
-      'ui.error.solution_narration_runtime_unavailable',
-      'Narration is temporarily unavailable. The explanation is still shown.',
-    );
-  }
-  if (status === 'delivery_failed' || reason === 'event_delivery_failed') {
-    return t(
-      'ui.error.solution_narration_delivery_failed',
-      'The narration request could not be delivered. Please try again.',
-    );
-  }
-  if (outcome.solution_narration_scheduled === false) {
-    return t(
-      'ui.error.solution_narration_not_scheduled',
-      'Narration was not scheduled for this explanation.',
-    );
-  }
-  return '';
 }
 
 function setPanelBusy(busy) {
@@ -837,9 +748,8 @@ function handleDocumentDrop(event) {
   acceptDocumentFiles(event.dataTransfer?.files).catch(reportDocumentImportError);
 }
 function formatDocumentDiagnostic(diagnostic) {
-  const code = (diagnostic || '').trim();
-  const validation = { empty_document: 'empty', binary_document: 'binary', invalid_document_encoding: 'encoding', unsupported_document_type: 'type', unsafe_document_content: 'unsafe_content', analysis_instruction_too_long: 'instruction_too_long', unsupported_document_kind: 'invalid_kind', invalid_document_name: 'invalid_name', document_canceled: 'canceled' };
-  return t(`ui.error.document_${'timeout rate_limited authentication_failed model_not_supported provider_unavailable unsafe_model_output llm_call_failed'.includes(code) ? `analysis_${code}` : validation[code] || code.replace(/^document_/, '') || 'analysis_failed'}`);
+ const code=(diagnostic||'').trim(),validation={empty_document:'empty',binary_document:'binary',invalid_document_encoding:'encoding',unsupported_document_type:'type',unsafe_document_content:'unsafe_content',analysis_instruction_too_long:'instruction_too_long',unsupported_document_kind:'invalid_kind',invalid_document_name:'invalid_name',document_canceled:'canceled'};
+ return t(`ui.error.document_${'timeout rate_limited authentication_failed model_not_supported provider_unavailable invalid_endpoint invalid_request unsafe_model_output llm_call_failed'.includes(code)?`analysis_${code}`:validation[code]||code.replace(/^document_/,'')||'analysis_failed'}`);
 }
 async function analyzeDocument() {
   if (!importedDocument || documentBusy) return;
@@ -1683,11 +1593,9 @@ function openHostedSurface(surfaceId, featureAction = '') {
 }
 
 function openPracticePanel() {
-  const practicePanel = document.getElementById('practicePanel');
-  if (practicePanel) {
-    practicePanel.open = true;
-  }
-  return practicePanel;
+  const practicePanel=document.getElementById('practicePanel');
+  if(practicePanel)practicePanel.open=true;
+  return practicePanel
 }
 
 function handleFeatureAction(action) {

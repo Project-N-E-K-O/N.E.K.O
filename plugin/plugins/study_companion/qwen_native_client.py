@@ -4,7 +4,8 @@ import asyncio
 from dataclasses import dataclass
 from http import HTTPStatus
 import time
-from typing import Any
+from typing import Any, NoReturn
+from urllib.parse import urlsplit
 
 from .constants import (
     LLM_OPERATION_ANSWER_EVALUATE,
@@ -17,6 +18,10 @@ from .constants import (
     LLM_OPERATION_QUESTION_GENERATE,
     LLM_OPERATION_SUMMARIZE_SESSION,
     LLM_OPERATION_SUMMARIZE_TO_NOTE,
+)
+from .qwen_compatible_transport import (
+    QwenCompatibleTransport,
+    QwenCompatibleTransportError,
 )
 
 try:
@@ -54,16 +59,18 @@ else:
 
 
 _SESSION_CACHE_HEADERS = {"x-dashscope-session-cache": "enable"}
+_DASHSCOPE_TEXT_HOSTS = frozenset(
+    {
+        "dashscope.aliyuncs.com",
+        "dashscope-intl.aliyuncs.com",
+        "dashscope-us.aliyuncs.com",
+    }
+)
 _TEXT_TIMEOUT_SECONDS = 45.0
 _VISION_TIMEOUT_SECONDS = 60.0
 _LONG_FORM_TIMEOUT_SECONDS = 75.0
 _DOCUMENT_CHUNK_TIMEOUT_SECONDS = 110.0
 _DOCUMENT_MERGE_TIMEOUT_SECONDS = 120.0
-_MULTIMODAL_ENDPOINT_MODELS = {
-    "qwen3.7-plus",
-    "qwen3.7-plus-2026-05-26",
-}
-
 _OUTPUT_TOKEN_BUDGETS = {
     LLM_OPERATION_CONCEPT_EXPLAIN: 3072,
     LLM_OPERATION_QUESTION_GENERATE: 1024,
@@ -88,11 +95,15 @@ class QwenNativeError(RuntimeError):
         diagnostic: str,
         status_code: int = 0,
         request_id: str = "",
+        provider_code: str = "",
+        operation: str = "",
     ) -> None:
         super().__init__(message)
         self.diagnostic = diagnostic
         self.status_code = status_code
         self.request_id = request_id
+        self.provider_code = provider_code
+        self.operation = operation
 
 
 @dataclass(frozen=True)
@@ -133,11 +144,6 @@ def _message_has_image(message: dict[str, Any]) -> bool:
 
 def messages_have_image(messages: list[dict[str, Any]]) -> bool:
     return any(_message_has_image(message) for message in messages)
-
-
-def _model_requires_multimodal_endpoint(model: str) -> bool:
-    normalized_model = model.strip().lower()
-    return normalized_model in _MULTIMODAL_ENDPOINT_MODELS
 
 
 def operation_timeout_seconds(
@@ -273,22 +279,70 @@ def _diagnostic_for_response(response: object) -> str:
     code = str(_get(response, "code", "") or "").lower()
     message = str(_get(response, "message", "") or "").lower()
     combined = f"{code} {message}"
+    normalized_code = "".join(character for character in code if character.isalnum())
     if status_code in {HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN}:
         return "authentication_failed"
     if status_code == HTTPStatus.TOO_MANY_REQUESTS or "rate" in combined:
         return "rate_limited"
     if "image" in combined or "multimodal" in combined:
         return "invalid_image"
-    if status_code in {HTTPStatus.BAD_REQUEST, HTTPStatus.NOT_FOUND} and "model" in combined:
+    if normalized_code in {
+        "invalidmodel",
+        "modelaccessdenied",
+        "modelnotexist",
+        "modelnotfound",
+        "modelnotsupported",
+    }:
         return "model_not_supported"
+    if status_code == HTTPStatus.NOT_FOUND:
+        return "invalid_endpoint"
+    if status_code == HTTPStatus.BAD_REQUEST:
+        if "url error" in message or "endpoint" in message:
+            return "invalid_endpoint"
+        return "invalid_request"
     if status_code >= HTTPStatus.INTERNAL_SERVER_ERROR:
         return "provider_unavailable"
     return "llm_call_failed"
 
 
+def _text_transport_kind(base_url: str) -> str:
+    try:
+        parsed = urlsplit(base_url.strip())
+        port = parsed.port
+    except ValueError as exc:
+        raise QwenNativeError(
+            "configured agent endpoint is invalid",
+            diagnostic="invalid_endpoint",
+        ) from exc
+    host = str(parsed.hostname or "").lower().rstrip(".")
+    path = parsed.path.rstrip("/")
+    if (
+        parsed.scheme.lower() != "https"
+        or host not in _DASHSCOPE_TEXT_HOSTS
+        or port is not None
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise QwenNativeError(
+            "configured agent endpoint is not an official DashScope endpoint",
+            diagnostic="invalid_endpoint",
+        )
+    if path == "/compatible-mode/v1":
+        return "compatible"
+    if path == "/api/v1":
+        return "native"
+    raise QwenNativeError(
+        "configured agent endpoint uses an unsupported DashScope path",
+        diagnostic="invalid_endpoint",
+    )
+
+
 class QwenNativeClient:
     def __init__(self, *, logger: Any) -> None:
         self._logger = logger
+        self._compatible_transport = QwenCompatibleTransport()
 
     async def call(
         self,
@@ -315,24 +369,61 @@ class QwenNativeClient:
         model = str(api_config.get("model") or "").strip()
         api_key = str(api_config.get("api_key") or "").strip()
         if not model or "qwen" not in model.lower():
-            raise QwenNativeError(
-                f"configured {model_group} model is not a Qwen model",
-                diagnostic="model_not_supported",
+            await self._raise_preflight_error(
+                QwenNativeError(
+                    f"configured {model_group} model is not a Qwen model",
+                    diagnostic="model_not_supported",
+                    operation=operation,
+                ),
+                model=model,
+                model_group=model_group,
+                operation=operation,
             )
         if not api_key:
-            raise QwenNativeError(
-                f"configured {model_group} API key is missing",
-                diagnostic="authentication_failed",
+            await self._raise_preflight_error(
+                QwenNativeError(
+                    f"configured {model_group} API key is missing",
+                    diagnostic="authentication_failed",
+                    operation=operation,
+                ),
+                model=model,
+                model_group=model_group,
+                operation=operation,
+            )
+        try:
+            text_transport = "native" if has_image else _text_transport_kind(base_url)
+        except QwenNativeError as exc:
+            exc.operation = operation
+            await self._raise_preflight_error(
+                exc,
+                model=model,
+                model_group=model_group,
+                operation=operation,
             )
         base_address = str(dashscope_http_url_from_base(base_url, "") or "").strip()
-        if not base_address:
-            raise QwenNativeError(
-                f"configured {model_group} endpoint is not a DashScope endpoint",
-                diagnostic="model_not_supported",
+        if has_image and not base_address:
+            await self._raise_preflight_error(
+                QwenNativeError(
+                    f"configured {model_group} endpoint is not a DashScope endpoint",
+                    diagnostic="invalid_endpoint",
+                    operation=operation,
+                ),
+                model=model,
+                model_group=model_group,
+                operation=operation,
             )
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            raise asyncio.TimeoutError("study tutor Qwen deadline exhausted")
+            await self._raise_preflight_error(
+                QwenNativeError(
+                    "study tutor Qwen deadline exhausted",
+                    diagnostic="timeout",
+                    operation=operation,
+                ),
+                model=model,
+                model_group=model_group,
+                operation=operation,
+            )
 
         input_tokens = 0
         output_tokens = 0
@@ -340,10 +431,7 @@ class QwenNativeClient:
         success = False
         try:
             max_output_tokens = _OUTPUT_TOKEN_BUDGETS.get(operation, 3072)
-            use_multimodal_endpoint = has_image or _model_requires_multimodal_endpoint(
-                model
-            )
-            if use_multimodal_endpoint:
+            if has_image:
                 if AioMultiModalConversation is None:
                     raise QwenNativeError(
                         "DashScope multimodal client is unavailable",
@@ -359,6 +447,45 @@ class QwenNativeClient:
                     headers=dict(_SESSION_CACHE_HEADERS),
                     base_address=base_address,
                     request_timeout=remaining,
+                )
+            elif text_transport == "compatible":
+                compatible_result = await self._compatible_transport.chat_completions(
+                    base_url=base_url,
+                    api_key=api_key,
+                    model=model,
+                    messages=_native_messages(messages, multimodal=False),
+                    max_tokens=_OUTPUT_TOKEN_BUDGETS.get(operation, 3072),
+                    timeout_seconds=remaining,
+                )
+                request_id = compatible_result.request_id
+                input_tokens = compatible_result.input_tokens
+                output_tokens = compatible_result.output_tokens
+                finish_reason = compatible_result.finish_reason
+                output_limit_reached = finish_reason == "length" or (
+                    max_output_tokens > 0 and output_tokens >= max_output_tokens
+                )
+                if output_limit_reached:
+                    self._logger.warning(
+                        "study Qwen output limit reached: diagnostic=output_truncated "
+                        "operation={} model_group={} "
+                        "finish_reason={} output_tokens={} max_output_tokens={}",
+                        operation,
+                        model_group,
+                        finish_reason,
+                        output_tokens,
+                        max_output_tokens,
+                    )
+                success = True
+                return QwenNativeResult(
+                    text=compatible_result.text,
+                    model=model,
+                    model_group=model_group,
+                    request_id=request_id,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    finish_reason=finish_reason,
+                    max_output_tokens=max_output_tokens,
+                    output_limit_reached=output_limit_reached,
                 )
             else:
                 if AioGeneration is None:
@@ -389,10 +516,12 @@ class QwenNativeClient:
             status_code = _as_nonnegative_int(_get(response, "status_code"))
             if status_code != HTTPStatus.OK:
                 raise QwenNativeError(
-                    str(_get(response, "message", "") or "DashScope request failed"),
+                    "DashScope native request was rejected",
                     diagnostic=_diagnostic_for_response(response),
                     status_code=status_code,
                     request_id=request_id,
+                    provider_code=str(_get(response, "code", "") or ""),
+                    operation=operation,
                 )
             if output_limit_reached:
                 self._logger.warning(
@@ -424,6 +553,36 @@ class QwenNativeClient:
                 max_output_tokens=max_output_tokens,
                 output_limit_reached=output_limit_reached,
             )
+        except QwenCompatibleTransportError as exc:
+            error = QwenNativeError(
+                "DashScope compatible request failed",
+                diagnostic=exc.diagnostic,
+                status_code=exc.status_code,
+                request_id=exc.request_id,
+                provider_code=exc.provider_code,
+                operation=operation,
+            )
+            self._logger.warning(
+                "study Qwen request failed: operation={} status_code={} "
+                "provider_code={} request_id={} diagnostic={}",
+                operation,
+                error.status_code,
+                error.provider_code,
+                error.request_id,
+                error.diagnostic,
+            )
+            raise error from exc
+        except QwenNativeError as exc:
+            self._logger.warning(
+                "study Qwen request failed: operation={} status_code={} "
+                "provider_code={} request_id={} diagnostic={}",
+                exc.operation or operation,
+                exc.status_code,
+                exc.provider_code,
+                exc.request_id,
+                exc.diagnostic,
+            )
+            raise
         finally:
             await self._record_usage(
                 model=model,
@@ -433,6 +592,33 @@ class QwenNativeClient:
                 output_tokens=output_tokens,
                 success=success,
             )
+
+    async def _raise_preflight_error(
+        self,
+        error: QwenNativeError,
+        *,
+        model: str,
+        model_group: str,
+        operation: str,
+    ) -> NoReturn:
+        self._logger.warning(
+            "study Qwen request failed: operation={} status_code={} "
+            "provider_code={} request_id={} diagnostic={}",
+            operation,
+            error.status_code,
+            error.provider_code,
+            error.request_id,
+            error.diagnostic,
+        )
+        await self._record_usage(
+            model=model,
+            model_group=model_group,
+            operation=operation,
+            input_tokens=0,
+            output_tokens=0,
+            success=False,
+        )
+        raise error
 
     async def _record_usage(
         self,
