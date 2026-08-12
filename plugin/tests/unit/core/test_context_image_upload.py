@@ -19,8 +19,14 @@ class _Logger:
 
 
 class _ImageTransport:
-    def __init__(self, responses: asyncio.Queue[dict[str, object]]) -> None:
+    def __init__(
+        self,
+        responses: asyncio.Queue[dict[str, object]],
+        *,
+        result_url: str = "http://127.0.0.1:48916/media/test-image",
+    ) -> None:
         self.responses = responses
+        self.result_url = result_url
         self.uploaded: list[tuple[str, str, bytes]] = []
         self.on_response = None
 
@@ -38,7 +44,7 @@ class _ImageTransport:
             "request_id": request_id,
             "result": {
                 "type": "image",
-                "url": "http://127.0.0.1:48916/media/test-image",
+                "url": self.result_url,
                 "mime": "image/jpeg",
             },
         }
@@ -87,6 +93,27 @@ def test_images_upload_returns_a_push_message_compatible_image_part(tmp_path: Pa
     with Image.open(BytesIO(uploaded_data)) as uploaded_image:
         assert uploaded_image.mode == "RGB"
         assert uploaded_image.size == (4, 3)
+
+
+@pytest.mark.parametrize("invalid_url", ["", "   "])
+def test_images_upload_rejects_empty_result_url(
+    tmp_path: Path,
+    invalid_url: str,
+) -> None:
+    responses: asyncio.Queue[dict[str, object]] = asyncio.Queue()
+    transport = _ImageTransport(responses, result_url=invalid_url)
+    ctx = PluginContext(
+        plugin_id="demo",
+        config_path=tmp_path / "plugin.toml",
+        logger=_Logger(),  # type: ignore[arg-type]
+        status_queue=None,
+        _response_queue=responses,
+        _image_transport=transport,
+    )
+    transport.on_response = ctx._dispatch_direct_response
+
+    with pytest.raises(RuntimeError, match="valid image part"):
+        asyncio.run(ctx.images.upload(_png_bytes(), mime="image/png"))
 
 
 @pytest.mark.parametrize(

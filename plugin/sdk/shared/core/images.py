@@ -86,7 +86,12 @@ class PluginImages:
         )
         if not isinstance(result, dict):
             raise RuntimeError("image upload returned an invalid result")
-        if result.get("type") != "image" or not isinstance(result.get("url"), str):
+        url = result.get("url")
+        if (
+            result.get("type") != "image"
+            or not isinstance(url, str)
+            or not url.strip()
+        ):
             raise RuntimeError("image upload did not return a valid image part")
         return dict(result)
 
