@@ -196,7 +196,10 @@ class PluginConfig:
 
     async def set(self, path: str, value: JsonValue, *, timeout: float = 5.0) -> None:
         patch = _set_by_path({}, path, value)
-        await self._update_runtime_config(patch, timeout=timeout)
+        if path == "":
+            await self._replace_runtime_config(patch, timeout=timeout)
+        else:
+            await self._update_runtime_config(patch, timeout=timeout)
 
     async def update(self, patch: Mapping[str, JsonValue], *, timeout: float = 5.0) -> JsonObject:
         return await self._update_runtime_config(dict(patch), timeout=timeout)
@@ -316,6 +319,17 @@ class PluginConfig:
             raise TransportError("ctx.update_own_config is not available") from error
         except (RuntimeError, ValueError, TimeoutError, TypeError) as error:
             raise TransportError(f"failed to update runtime config: {error}") from error
+        return unwrap_config_payload(raw)
+
+    async def _replace_runtime_config(self, config: JsonObject, *, timeout: float) -> JsonObject:
+        if timeout <= 0:
+            raise ValidationError("timeout must be > 0")
+        try:
+            raw = await self.ctx.replace_own_config(dict(config), timeout=timeout)
+        except AttributeError as error:
+            raise TransportError("ctx.replace_own_config is not available") from error
+        except (RuntimeError, ValueError, TimeoutError, TypeError) as error:
+            raise TransportError(f"failed to replace runtime config: {error}") from error
         return unwrap_config_payload(raw)
 
     async def _require_active_name(self, *, timeout: float) -> str:

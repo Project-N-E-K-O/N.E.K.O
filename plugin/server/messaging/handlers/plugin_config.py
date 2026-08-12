@@ -269,3 +269,33 @@ async def handle_plugin_config_update(request: dict[str, object], send_response:
             timeout=timeout,
             message=error.message,
         )
+
+
+async def handle_plugin_config_replace(request: dict[str, object], send_response: SendResponse) -> None:
+    common_fields = resolve_common_fields(request)
+    if common_fields is None:
+        return
+    from_plugin, request_id, timeout = common_fields
+
+    try:
+        target_plugin_id = _resolve_target_plugin_id(request=request, from_plugin=from_plugin)
+        _ensure_own_plugin_scope(
+            from_plugin=from_plugin,
+            target_plugin_id=target_plugin_id,
+            message="Permission denied: can only replace own config",
+        )
+        config = _normalize_updates_payload(request.get("config"))
+        payload = await config_command_service.replace_plugin_config(
+            plugin_id=target_plugin_id,
+            config=config,
+        )
+        send_response(from_plugin, request_id, payload, None, timeout=timeout)
+    except ServerDomainError as error:
+        logger.warning("PLUGIN_CONFIG_REPLACE failed: code={}, message={}", error.code, error.message)
+        _send_error(
+            send_response=send_response,
+            from_plugin=from_plugin,
+            request_id=request_id,
+            timeout=timeout,
+            message=error.message,
+        )

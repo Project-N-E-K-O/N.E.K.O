@@ -30,6 +30,9 @@ class _CtxOk:
     async def update_own_config(self, updates: dict[str, object], timeout: float = 10.0) -> dict[str, object]:
         return {"config": updates}
 
+    async def replace_own_config(self, config: dict[str, object], timeout: float = 10.0) -> dict[str, object]:
+        return {"config": config}
+
     async def query_plugins(self, filters: dict[str, object], timeout: float = 5.0) -> dict[str, object]:
         return {"plugins": [{"plugin_id": "p"}, "skip"]}
 

@@ -122,6 +122,35 @@ async def test_context_update_own_config_timeout_uses_host_merge_markers(tmp_pat
 
 @pytest.mark.plugin_unit
 @pytest.mark.asyncio
+async def test_context_replace_own_config_replaces_optimistic_root(tmp_path: Path) -> None:
+    ctx = PluginContext(
+        plugin_id="demo",
+        config_path=tmp_path / "demo" / "plugin.toml",
+        logger=_Logger(),  # type: ignore[arg-type]
+        status_queue=None,
+    )
+    ctx._effective_config = {"stale": {"enabled": False}}
+    captured: dict[str, object] = {}
+
+    async def _replace(**kwargs: object) -> dict[str, object]:
+        captured.update(kwargs)
+        return {"config": {"replacement": {"enabled": True}}}
+
+    ctx._send_request_and_wait_async = _replace  # type: ignore[method-assign]
+
+    payload = await ctx.replace_own_config({"replacement": {"enabled": True}})
+
+    assert captured["request_type"] == "PLUGIN_CONFIG_REPLACE"
+    assert captured["request_data"] == {
+        "plugin_id": "demo",
+        "config": {"replacement": {"enabled": True}},
+    }
+    assert payload["config"] == {"replacement": {"enabled": True}}
+    assert ctx._effective_config == {"replacement": {"enabled": True}}
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
 async def test_context_update_own_config_rolls_back_rejected_updates(tmp_path: Path) -> None:
     ctx = PluginContext(
         plugin_id="demo",

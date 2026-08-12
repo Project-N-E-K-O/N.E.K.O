@@ -77,6 +77,9 @@ class _CoreCtx:
     async def update_own_config(self, updates: dict[str, object], timeout: float = 10.0) -> dict[str, object]:
         return {"config": updates}
 
+    async def replace_own_config(self, config: dict[str, object], timeout: float = 10.0) -> dict[str, object]:
+        return {"config": config}
+
     async def query_plugins(self, filters: dict[str, object], timeout: float = 5.0) -> dict[str, object]:
         return {"plugins": [{"plugin_id": "p", "name": "Plugin"}]}
 
@@ -133,6 +136,15 @@ async def test_sdk_context_forwards_update_own_config() -> None:
     payload = await ctx.update_own_config({"mcp_servers": {"fetch": {"url": "https://example.com"}}})
 
     assert payload == {"config": {"mcp_servers": {"fetch": {"url": "https://example.com"}}}}
+
+
+@pytest.mark.asyncio
+async def test_sdk_context_forwards_replace_own_config() -> None:
+    ctx = SdkContext(_CoreCtx())
+
+    payload = await ctx.replace_own_config({"replacement": {"enabled": True}})
+
+    assert payload == {"config": {"replacement": {"enabled": True}}}
 
 
 def test_core_base_and_hook_classes() -> None:

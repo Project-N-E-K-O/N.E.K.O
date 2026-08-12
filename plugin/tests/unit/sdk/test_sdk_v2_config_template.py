@@ -60,6 +60,11 @@ class _CtxFull:
         self.updated = updates
         return {"config": updates}
 
+    async def replace_own_config(self, config: dict[str, object], timeout: float = 10.0):
+        self.updated = config
+        self.base_cfg = dict(config)
+        return {"config": self.base_cfg}
+
 
 class _CtxNoProfileApis:
     async def get_own_config(self, timeout: float = 5.0):
@@ -134,6 +139,16 @@ async def test_config_template_main_view_write_semantics() -> None:
     assert (await no_active.profile_active()) == "runtime"
     await no_active.set("x", 1)
     assert no_active_ctx.updated == {"x": 1}
+
+
+@pytest.mark.asyncio
+async def test_config_set_empty_path_replaces_runtime_config_root() -> None:
+    ctx = _CtxFull()
+    cfg = core_config.PluginConfig(ctx)
+
+    await cfg.set("", {"replacement": {"enabled": True}})
+
+    assert ctx.base_cfg == {"replacement": {"enabled": True}}
 
 
 @pytest.mark.asyncio

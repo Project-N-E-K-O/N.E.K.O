@@ -1995,3 +1995,38 @@ class PluginContext:
                 self._effective_config = None
                 self._refresh_instance_runtime_config({})
             raise
+
+    async def replace_own_config(self, config: Dict[str, Any], timeout: float = 10.0) -> Dict[str, Any]:
+        if not isinstance(config, dict):
+            raise TypeError("config must be a dict")
+        old_effective_config = copy.deepcopy(getattr(self, "_effective_config", None))
+        try:
+            payload = await self._send_request_and_wait_async(
+                method_name="replace_own_config",
+                request_type="PLUGIN_CONFIG_REPLACE",
+                request_data={
+                    "plugin_id": self.plugin_id,
+                    "config": config,
+                },
+                timeout=float(timeout),
+                wrap_result=True,
+                error_log_template=None,
+            )
+            config_obj = payload.get("config") if isinstance(payload, dict) else None
+            if isinstance(config_obj, dict):
+                self._set_effective_config_cache(config_obj)
+            return payload
+        except asyncio.CancelledError:
+            if isinstance(old_effective_config, dict):
+                self._set_effective_config_cache(old_effective_config)
+            else:
+                self._effective_config = None
+                self._refresh_instance_runtime_config({})
+            raise
+        except Exception:
+            if isinstance(old_effective_config, dict):
+                self._set_effective_config_cache(old_effective_config)
+            else:
+                self._effective_config = None
+                self._refresh_instance_runtime_config({})
+            raise

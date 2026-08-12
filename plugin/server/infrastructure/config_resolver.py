@@ -7,6 +7,7 @@ from typing import Mapping
 
 from plugin.config.plugin_toml_semantics import PluginConfigWarning, collect_plugin_toml_semantic_warnings
 from plugin.logging_config import get_logger
+from plugin.server.infrastructure.config_merge import deep_merge
 from plugin.server.infrastructure.config_paths import ensure_plugin_runtime_config, get_plugin_manifest_path
 from plugin.server.infrastructure.config_profiles import apply_user_config_profiles, get_profiles_state
 from plugin.server.infrastructure.config_toml import load_toml_from_file
@@ -73,14 +74,13 @@ def _resolve_plugin_config_core(
     validate_schema: bool,
 ) -> dict[str, object]:
     manifest_plugin = manifest_config.get("plugin")
-    effective_config = base_config
+    effective_config = deep_merge(manifest_config, base_config)
+    if isinstance(manifest_plugin, Mapping):
+        effective_config["plugin"] = dict(manifest_plugin)
     if include_effective_config:
-        profile_base_config = dict(base_config)
-        if isinstance(manifest_plugin, Mapping):
-            profile_base_config["plugin"] = dict(manifest_plugin)
         effective_config = apply_user_config_profiles(
             plugin_id=plugin_id,
-            base_config=profile_base_config,
+            base_config=effective_config,
             config_path=manifest_path,
         )
 
