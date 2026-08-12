@@ -450,6 +450,9 @@
             this.avatarStandInActive = true;
             Promise.resolve(this.startAvatarCornerPeekPerformance({
                 position: cue.position,
+                hideMs: cue.hideMs,
+                appearMs: cue.appearMs,
+                holdMs: cue.holdMs,
                 isCancelled: () => token !== this.avatarStandInToken
                     || this.isStopping()
                     || this.destroyed
@@ -467,9 +470,11 @@
                     return;
                 }
                 this.avatarStandInPerformanceHandle = handle;
-                const rawDurationMs = Number.isFinite(Number(cue.duration))
+                const rawDurationMs = Number.isFinite(Number(cue.totalDurationMs))
+                    ? Number(cue.totalDurationMs)
+                    : (Number.isFinite(Number(cue.duration))
                     ? Number(cue.duration)
-                    : Number(cue.durationMs);
+                    : Number(cue.durationMs));
                 const durationMs = Math.max(0, Number.isFinite(rawDurationMs) ? rawDurationMs : 0);
                 this.avatarStandInHideTimer = window.setTimeout(() => {
                     if (token === this.avatarStandInToken) {
