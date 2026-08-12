@@ -38,6 +38,7 @@ from ._audio import _AudioMixin
 from ._transport import _TransportMixin
 from ._responses import _ResponseMixin
 from ._response_arbiter import RealtimeResponseArbiter
+from ._protocol_capabilities import resolve_realtime_protocol_capabilities
 from ._gemini_support import _GeminiMixin
 
 
@@ -183,11 +184,15 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         # here (``handle_new_message`` off a text input or independent ASR), so
         # on those the epoch is unchanged and only the speech id moves. #2612.
         self._current_turn_host_id: str | None = None
+        self._realtime_protocol_capabilities = (
+            resolve_realtime_protocol_capabilities(api_type, base_url)
+        )
         self._response_arbiter = RealtimeResponseArbiter(
             self.send_event,
             abort_transport=self._abort_failed_transport,
             fail_open=response_arbiter_fail_open_enabled(),
             on_stuck_release=self._on_arbiter_stuck_release,
+            protocol_capabilities=self._realtime_protocol_capabilities,
         )
         # Track printing state for input and output transcripts
         self._is_first_text_chunk = False

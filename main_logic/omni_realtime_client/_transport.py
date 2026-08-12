@@ -39,6 +39,7 @@ from ._shared import (
     uuid,
     websockets,
 )
+from ._protocol_capabilities import ID_BEARING_RESPONSE_CONTENT_EVENT_TYPES
 
 
 def _response_id_text(value: Any) -> str | None:
@@ -80,7 +81,6 @@ _STUCK_RELEASE_STEP_TIMEOUT = 0.5
 # arrives right behind its original, so this only has to outlive the events
 # interleaved between them; it is a leak guard, not a history.
 _USAGE_RECORDED_ID_LIMIT = 32
-
 
 # `error` 事件的致命性判定是一串子串匹配（'429' / '1008' / '503' / 'quota' ...）。它
 # 过去匹配在 `str(event['error'])` 上，也就是整个 dict 的 repr —— 里面回显着我们自己
@@ -190,6 +190,13 @@ class _TransportMixin:
         # connection (flag may be leftover from a previous failed session
         # when the same OmniRealtimeClient instance is reused).
         self._fatal_error_occurred = False
+        capabilities = self._realtime_protocol_capabilities
+        logger.info(
+            "Realtime protocol profile resolved "
+            "(route=%s response_start_evidence=%s)",
+            capabilities.route_key,
+            capabilities.response_start_evidence.value,
+        )
 
         # 启动静默检测任务（只在启用时）
         self._last_speech_time = time.time()
@@ -1207,6 +1214,23 @@ class _TransportMixin:
         # 确保中断标志在响应结束时清除，防止阻塞下一轮 text.delta
         self._interrupted = False
 
+    def _begin_response_lifecycle(self, response_id: Any) -> None:
+        """Apply the host-side state shared by all accepted start evidence."""
+
+        self._current_response_id = response_id
+        self._is_responding = True
+        self._turn_epoch += 1
+        self._current_turn_epoch = self._turn_epoch
+        self._current_turn_host_id = self._read_host_turn_id()
+        self._interrupted = False
+        # A stable successor id also closes the id-less quarantine opened by
+        # a fail-open release; ordered socket delivery puts this evidence
+        # before any later id-less event from the successor.
+        self._idless_quarantine = False
+        self._is_first_text_chunk = self._is_first_transcript_chunk = True
+        self._output_transcript_buffer = ""
+        self._current_response_transcript = ""
+
     def _read_host_turn_id(self) -> str | None:
         """Sample the host's live speech id, or None for "no answer".
 
@@ -1720,6 +1744,15 @@ class _TransportMixin:
                         await self.close()
                     continue
 
+                if event_type in ID_BEARING_RESPONSE_CONTENT_EVENT_TYPES:
+                    content_started = self._response_arbiter.notify_response_content(
+                        event
+                    )
+                    if content_started:
+                        self._begin_response_lifecycle(
+                            _response_id_text(event.get("response_id"))
+                        )
+
                 # A cancelled response can still emit buffered events after a
                 # replacement response has become current.  Providers that
                 # include response identity let us reject those late events
@@ -1935,23 +1968,9 @@ class _TransportMixin:
                     if not expose_response:
                         continue
                     self._announces_responses = True
-                    self._current_response_id = event.get("response", {}).get("id")
-                    self._is_responding = True
-                    self._turn_epoch += 1
-                    self._current_turn_epoch = self._turn_epoch
-                    self._current_turn_host_id = self._read_host_turn_id()
-                    self._interrupted = False  # Clear interruption flag on new response
-                    # Closes the id-less quarantine a fail-open release opened.
-                    # Safe as the sole exit: a release only happens when the
-                    # abandoned response HAD an id, ids are written only here,
-                    # and this socket is consumed by one ordered ``async for`` —
-                    # so a successor's announcement always precedes its own
-                    # id-less events and none of them are ever suppressed.
-                    self._idless_quarantine = False
-                    self._is_first_text_chunk = self._is_first_transcript_chunk = True
-                    # 清空转录 buffer，防止累积旧内容
-                    self._output_transcript_buffer = ""
-                    self._current_response_transcript = ""  # 重置当前回复转录
+                    self._begin_response_lifecycle(
+                        event.get("response", {}).get("id")
+                    )
                 elif event_type == "response.output_item.added":
                     self._current_item_id = event.get("item", {}).get("id")
                 elif event_type == "input_audio_buffer.committed":

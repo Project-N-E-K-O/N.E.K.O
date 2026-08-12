@@ -8,6 +8,12 @@ import pytest
 
 from main_logic.omni_realtime_client import OmniRealtimeClient
 import main_logic.omni_realtime_client._response_arbiter as arbiter_module
+from main_logic.omni_realtime_client._protocol_capabilities import (
+    LANLAN_APP_REALTIME_PROTOCOL_CAPABILITIES,
+    STRICT_REALTIME_PROTOCOL_CAPABILITIES,
+    ResponseStartEvidence,
+    resolve_realtime_protocol_capabilities,
+)
 from main_logic.tool_calling import ToolResult
 
 _DEFAULT_RESPONSE_DONE_TIMEOUT = arbiter_module._DEFAULT_RESPONSE_DONE_TIMEOUT
@@ -882,6 +888,222 @@ async def test_a_terminal_for_a_never_announced_id_belongs_to_the_owner():
     assert "response.cancel" not in [event["type"] for event in sent]
     assert arbiter.is_busy is False, "the lane must reopen for the next turn"
     await arbiter.shutdown()
+
+
+@pytest.mark.parametrize(
+    ("api_type", "route_url", "expected_route", "allows_content_start"),
+    [
+        ("free", "wss://lanlan.app/realtime", "lanlan_app_gemini", True),
+        ("free", "wss://edge.lanlan.app/realtime", "lanlan_app_gemini", True),
+        ("free", "wss://lanlan.tech/realtime", "lanlan_tech_stepfun", False),
+        ("free", "wss://edge.lanlan.tech/realtime", "lanlan_tech_stepfun", False),
+        ("free", "wss://notlanlan.tech/realtime", "strict_default", False),
+        ("free", "wss://other.example/realtime", "strict_default", False),
+        ("gpt", "wss://lanlan.app/realtime", "strict_default", False),
+    ],
+)
+def test_realtime_protocol_capabilities_are_resolved_by_concrete_route(
+    api_type,
+    route_url,
+    expected_route,
+    allows_content_start,
+):
+    capabilities = resolve_realtime_protocol_capabilities(api_type, route_url)
+
+    assert capabilities.route_key == expected_route
+    assert (
+        capabilities.accepts_id_bearing_content_start is allows_content_start
+    )
+    if allows_content_start:
+        assert capabilities.response_start_evidence is (
+            ResponseStartEvidence.ANNOUNCEMENT_OR_ID_BEARING_CONTENT
+        )
+
+
+@pytest.mark.asyncio
+async def test_lanlan_app_id_bearing_content_starts_a_long_owned_response():
+    sent = []
+    aborted = []
+
+    async def send(event):
+        sent.append(dict(event))
+
+    async def abort(reason):
+        aborted.append(reason)
+
+    arbiter = RealtimeResponseArbiter(
+        send,
+        abort_transport=abort,
+        protocol_capabilities=LANLAN_APP_REALTIME_PROTOCOL_CAPABILITIES,
+    )
+    ticket = await arbiter.enqueue(
+        source="tool_result",
+        response_started_timeout=0.02,
+        cancel_timeout=0.01,
+    )
+    await asyncio.wait_for(ticket.sent, 0.2)
+
+    assert arbiter.notify_response_content(
+        {
+            "type": "response.audio.delta",
+            "response_id": "resp-owner",
+            "item_id": "item-owner",
+        }
+    )
+    await asyncio.wait_for(ticket.started, 0.2)
+
+    # This response deliberately outlives the old five-second phase (scaled
+    # down here). Content-start evidence must prevent cancel/fail-close while
+    # the matching response is still healthy and streaming.
+    await asyncio.sleep(0.04)
+    assert "response.cancel" not in [event["type"] for event in sent]
+    assert aborted == []
+
+    assert arbiter.notify_response_terminal(
+        {
+            "type": "response.done",
+            "response": {"id": "resp-owner", "status": "completed"},
+        }
+    )
+    await asyncio.wait_for(ticket.done, 0.2)
+    assert arbiter.is_busy is False
+    await arbiter.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_strict_route_does_not_accept_content_in_place_of_announcement():
+    sent = []
+    aborted = asyncio.Event()
+
+    async def send(event):
+        sent.append(dict(event))
+
+    async def abort(_reason):
+        aborted.set()
+
+    arbiter = RealtimeResponseArbiter(
+        send,
+        abort_transport=abort,
+        protocol_capabilities=STRICT_REALTIME_PROTOCOL_CAPABILITIES,
+    )
+    ticket = await arbiter.enqueue(
+        source="tool_result",
+        response_started_timeout=0.02,
+        cancel_timeout=0.01,
+    )
+    await asyncio.wait_for(ticket.sent, 0.2)
+
+    assert not arbiter.notify_response_content(
+        {"type": "response.audio.delta", "response_id": "resp-unannounced"}
+    )
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(ticket.done, 0.5)
+    assert aborted.is_set()
+    assert [event["type"] for event in sent] == [
+        "response.create",
+        "response.cancel",
+    ]
+    await arbiter.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_content_start_requires_a_new_id_and_matching_terminal():
+    async def send(_event):
+        return None
+
+    arbiter = RealtimeResponseArbiter(
+        send,
+        protocol_capabilities=LANLAN_APP_REALTIME_PROTOCOL_CAPABILITIES,
+    )
+    first = await arbiter.enqueue(source="first")
+    await asyncio.wait_for(first.sent, 0.2)
+    assert not arbiter.notify_response_content(
+        {"type": "response.output_item.added", "response_id": "resp-first"}
+    )
+    assert not arbiter.notify_response_content(
+        {"type": "response.audio.delta", "response_id": ""}
+    )
+    assert arbiter.notify_response_content(
+        {"type": "response.audio.delta", "response_id": "resp-first"}
+    )
+    assert not arbiter.notify_response_terminal(
+        {
+            "type": "response.done",
+            "response": {"id": "resp-other", "status": "completed"},
+        }
+    )
+    assert first.done.done() is False
+    assert arbiter.notify_response_terminal(
+        {
+            "type": "response.done",
+            "response": {"id": "resp-first", "status": "completed"},
+        }
+    )
+    await asyncio.wait_for(first.done, 0.2)
+
+    second = await arbiter.enqueue(source="second")
+    await asyncio.wait_for(second.sent, 0.2)
+    assert not arbiter.notify_response_content(
+        {"type": "response.audio.delta", "response_id": "resp-first"}
+    )
+    assert arbiter.notify_response_content(
+        {"type": "response.audio.delta", "response_id": "resp-second"}
+    )
+    arbiter.notify_response_terminal(
+        {
+            "type": "response.done",
+            "response": {"id": "resp-second", "status": "completed"},
+        }
+    )
+    await asyncio.wait_for(second.done, 0.2)
+    await arbiter.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_lanlan_app_transport_forwards_content_start_to_arbiter():
+    client = OmniRealtimeClient(
+        "wss://lanlan.app/realtime",
+        "test-key",
+        model="free-model",
+        api_type="free",
+    )
+    socket = AsyncMock()
+    client.ws = socket
+    ticket = await client._response_arbiter.enqueue(
+        source="tool_result",
+        response_started_timeout=0.1,
+        cancel_timeout=0.02,
+    )
+    await asyncio.wait_for(ticket.sent, 0.2)
+
+    async def response_events():
+        yield json.dumps(
+            {
+                "type": "response.audio.delta",
+                "response_id": "resp-app",
+                "item_id": "item-app",
+                "delta": "AAA=",
+            }
+        )
+        yield json.dumps(
+            {
+                "type": "response.done",
+                "response": {"id": "resp-app", "status": "completed"},
+            }
+        )
+        # Let the arbiter worker consume its terminal future before ending the
+        # synthetic socket; a real WebSocket stays open after response.done.
+        await asyncio.wait_for(ticket.done, 0.2)
+
+    socket.__aiter__.side_effect = response_events
+
+    await client.handle_messages()
+
+    await asyncio.wait_for(ticket.done, 0.2)
+    sent_types = [json.loads(call.args[0])["type"] for call in socket.send.call_args_list]
+    assert sent_types == ["response.create"]
+    assert client._response_created_total == 0
+    await client._response_arbiter.shutdown()
 
 
 @pytest.mark.asyncio
