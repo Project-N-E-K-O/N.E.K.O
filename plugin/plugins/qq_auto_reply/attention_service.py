@@ -369,6 +369,31 @@ class QQAttentionService:
             ),
         )
 
+    def _held_focus_state(self, states: list[QQGroupAttentionState]) -> QQGroupAttentionState | None:
+        """当前被**保持**的焦点：曾夺得焦点（focus_acquired_at>0）且分数仍 >= 发送保持线
+        （``_focus_send_threshold``，默认 2.0）的群。
+
+        焦点线（``_focus_threshold``，默认 4.0）是「赢得焦点」的资格线；一旦赢得，
+        只要分数不掉破发送保持线（2.0）就继续持有——否则焦点群回复一次（分数被
+        消耗到 2.x）就跌出焦点线、下一条消息被当非焦点拦下，发送门控形同虚设。
+        多个曾夺得焦点的群取最近夺得的那个。无则返回 None。
+        """
+        held = [
+            state for state in states
+            if int(state.focus_acquired_at or 0) > 0
+            and float(state.attention_score) >= self._focus_send_threshold()
+        ]
+        if not held:
+            return None
+        return max(
+            held,
+            key=lambda item: (
+                int(item.last_focus_at or 0),
+                int(item.focus_acquired_at or 0),
+                float(item.attention_score),
+            ),
+        )
+
     def _choose_focus_state(
         self,
         states: list[QQGroupAttentionState],
@@ -378,11 +403,16 @@ class QQAttentionService:
     ) -> QQGroupAttentionState | None:
         if not states:
             return None
+        # 新焦点候选：必须达到焦点线（_focus_threshold，默认 4.0）
         candidate = self._top_candidate_state(states, now)
+        # 焦点保持：曾夺得焦点的群只要分数 >= 发送保持线（2.0）就继续持有，
+        # 即使低于焦点线；只有更高分的挑战者（>= 焦点线）才能抢走。
+        held = self._held_focus_state(states)
         if candidate is None:
-            return None
-        current_id = self._current_focus_group_id(states)
-        if stamp_transition and candidate.group_id != current_id:
+            return held
+        if held is not None and held.attention_score >= candidate.attention_score:
+            return held
+        if stamp_transition:
             candidate.focus_acquired_at = now
             candidate.last_focus_reason = "highest_attention"
         return candidate
