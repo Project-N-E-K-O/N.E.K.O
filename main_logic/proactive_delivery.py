@@ -39,12 +39,10 @@ WHICH cue and WHEN to hand one off, applying:
   Minecraft opts in per category (alert / completion / in_progress /
   keep_going).
 * **Batched + playback gate** — cues that pile up while she is speaking are
-  released together (the legacy "one LLM turn for several near-simultaneous
-  cues" behaviour), unless their aggregate media exceeds the per-turn budget;
-  overflow is deferred in callback-atomic FIFO order. Nothing is released
-  while audio is playing. Release happens after the FRONTEND reports
-  ``voice_play_end`` (or ``text_end``), plus a min-gap. Only one batch is in
-  flight at a time.
+  released TOGETHER as one batch (the legacy "one LLM turn for several
+  near-simultaneous cues" behaviour), and never while audio is playing.
+  Release happens after the FRONTEND reports ``voice_play_end`` (or
+  ``text_end``), plus a min-gap. Only one batch is in flight at a time.
 * **Min-gap pacing** — never release within ``min_gap_s`` of the last
   playback end (anti-flood).
 * **Preemption / staleness** — when the gate opens the current highest
@@ -71,44 +69,6 @@ DELIVERY_RETRACTED_KEY = "_proactive_delivery_retracted"
 CALLBACK_EXPIRES_AT_KEY = "_expires_at_monotonic"
 VOICE_DELIVERY_COMMITTED_KEY = "_voice_delivery_committed"
 SWAP_PRIME_DELIVERY_CLAIM_KEY = "_swap_prime_delivery_claimed"
-CALLBACK_IMAGE_MAX_COUNT = 8
-CALLBACK_IMAGE_MAX_BYTES = 8 * 1024 * 1024
-
-
-def callback_image_decoded_size(encoded: str) -> int:
-    """Return decoded bytes for canonical base64 without allocating them."""
-    if not isinstance(encoded, str) or not encoded:
-        return 0
-    padding = 2 if encoded.endswith("==") else int(encoded.endswith("="))
-    return max(0, (len(encoded) * 3) // 4 - padding)
-
-
-def select_callbacks_within_image_budget(
-    callbacks: list[dict],
-) -> list[dict]:
-    """Select the FIFO prefix that fits the aggregate media limits."""
-    selected: list[dict] = []
-    image_count = 0
-    image_bytes = 0
-    for callback in callbacks:
-        images = [
-            image
-            for image in list(callback.get("media_images") or [])
-            if isinstance(image, str) and image
-        ]
-        next_count = image_count + len(images)
-        next_bytes = image_bytes + sum(
-            callback_image_decoded_size(image) for image in images
-        )
-        if (
-            next_count > CALLBACK_IMAGE_MAX_COUNT
-            or next_bytes > CALLBACK_IMAGE_MAX_BYTES
-        ):
-            break
-        selected.append(callback)
-        image_count = next_count
-        image_bytes = next_bytes
-    return selected
 
 
 def resolve_callback_delivery_ack(callback: dict, delivered: bool) -> None:
@@ -455,12 +415,11 @@ class ProactiveDeliveryManager:
                 self._schedule_pump(self._busy_recheck_s)
                 return
         # Gate open: release the ENTIRE pending batch in one shot (sorted by
-        # priority). The delivery core normally drains it into one LLM turn,
-        # but defers a callback-atomic FIFO suffix when media exceeds the
-        # per-turn budget. The playback gate above already guaranteed she has
-        # finished speaking, so this batch won't interrupt audio. Cues that
-        # arrive while she speaks accumulate and go out as the next batch after
-        # voice_play_end + min-gap.
+        # priority), preserving the legacy "near-simultaneous proactive cues
+        # are drained into ONE LLM turn" behaviour. The playback gate above
+        # already guaranteed she has finished speaking, so this batch won't
+        # interrupt audio. Cues that arrive while she speaks accumulate and go
+        # out as the next batch after voice_play_end + min-gap.
         batch = sorted(self._queue, key=lambda c: c.sort_key)
         self._queue = []
         self._inflight = True

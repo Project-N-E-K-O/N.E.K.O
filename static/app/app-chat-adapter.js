@@ -359,31 +359,33 @@
     // ======================== createGeminiBubble（覆盖） ========================
 
     // ---- host 未就绪时的待重发队列 ----
-    // Match the React host's own retained-history limit.
-    var _PENDING_HOST_MESSAGES_MAX = 50;
     var _pendingHostMessages = [];
-
-    function _queuePendingHostMessage(message) {
-        if (!message) return;
-        if (_pendingHostMessages.length >= _PENDING_HOST_MESSAGES_MAX) {
-            var overflow = _pendingHostMessages.length - _PENDING_HOST_MESSAGES_MAX + 1;
-            _pendingHostMessages.splice(0, overflow);
-            console.warn('[ChatAdapter] pending host queue full; dropped oldest messages', overflow);
-        }
-        _pendingHostMessages.push(message);
-    }
+    var _pendingFlushTimer = null;
 
     function _tryFlushPendingHostMessages() {
         var host = getHost();
         if (_pendingHostMessages.length === 0) {
+            // 队列已空，停止重试
+            if (_pendingFlushTimer) { clearInterval(_pendingFlushTimer); _pendingFlushTimer = null; }
             return;
         }
         if (!host || typeof host.appendMessage !== 'function') {
-            // 最终 React host 会发送 neko:react-chat-host-ready；在此之前只保留消息，
-            // 不轮询，避免初始化永久失败时留下 timer 与大型 data URL 队列。
+            // host 尚未就绪，启动轮询重试（200ms 间隔，最多重试 50 次 ≈ 10s）
+            if (!_pendingFlushTimer) {
+                var _retryCount = 0;
+                _pendingFlushTimer = setInterval(function () {
+                    _retryCount++;
+                    if (_retryCount > 50 || _pendingHostMessages.length === 0) {
+                        clearInterval(_pendingFlushTimer); _pendingFlushTimer = null;
+                        return;
+                    }
+                    _tryFlushPendingHostMessages();
+                }, 200);
+            }
             return;
         }
-        // host 就绪，flush 全部
+        // host 就绪，flush 全部并停止重试
+        if (_pendingFlushTimer) { clearInterval(_pendingFlushTimer); _pendingFlushTimer = null; }
         var batch = _pendingHostMessages.splice(0);
         for (var i = 0; i < batch.length; i++) {
             if (appendHostMessageSafely(host, batch[i], 'flush_pending_host_message')) {
@@ -404,6 +406,10 @@
 
     function _resetReactChatSwitchState() {
         _pendingHostMessages = [];
+        if (_pendingFlushTimer) {
+            clearInterval(_pendingFlushTimer);
+            _pendingFlushTimer = null;
+        }
     }
 
     function markAssistantVisibleResponseForAchievement() {
@@ -454,7 +460,7 @@
         } else if (msg) {
             // host 尚未初始化，放入待重发队列而非静默丢弃
             console.warn('[ChatAdapter] host not ready, queuing message', msgId);
-            _queuePendingHostMessage(msg);
+            _pendingHostMessages.push(msg);
         }
 
         var ref = createVirtualBubbleRef(msgId);
@@ -730,7 +736,7 @@
                 markAssistantVisibleResponseForAchievement();
             } else {
                 console.warn('[ChatAdapter] host not ready, queuing structured passthrough', structuredMessageId);
-                _queuePendingHostMessage(structuredMessage);
+                _pendingHostMessages.push(structuredMessage);
                 _tryFlushPendingHostMessages();
             }
             var structuredRef = createVirtualBubbleRef(structuredMessageId);
@@ -976,7 +982,7 @@
             markAssistantVisibleResponseForAchievement();
         } else {
             console.warn('[ChatAdapter] host not ready, queuing plugin chat blocks', message.id);
-            _queuePendingHostMessage(message);
+            _pendingHostMessages.push(message);
             _tryFlushPendingHostMessages();
         }
         return true;
@@ -1073,18 +1079,11 @@
     window.addEventListener('chat-avatar-preview-updated', refreshReactAssistantAvatars);
     window.addEventListener('chat-avatar-preview-cleared', refreshReactAssistantAvatars);
     window.addEventListener('neko:tutorial-chat-identity-changed', refreshReactAssistantAvatars);
-    window.addEventListener('neko:react-chat-host-ready', _tryFlushPendingHostMessages);
-
     // init() 的 chat-avatar-preview-updated 事件可能在本脚本或 reactChatWindowHost 就绪前触发，
     // 延迟到所有同步脚本加载完成后主动刷新一次
     setTimeout(refreshReactAssistantAvatars, 0);
-    // 同时尝试重放 host 未就绪期间缓存的消息。chat.html 的 host 脚本在
-    // adapter 之前加载，因此用 level flag 覆盖已经发生过的 ready event。
-    if (window.__nekoReactChatHostReady) {
-        _tryFlushPendingHostMessages();
-    } else {
-        setTimeout(_tryFlushPendingHostMessages, 0);
-    }
+    // 同时尝试重放 host 未就绪期间缓存的消息
+    setTimeout(_tryFlushPendingHostMessages, 0);
 
     // ======================== 隐藏旧 chat container ========================
 

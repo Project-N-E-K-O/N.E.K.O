@@ -24,25 +24,13 @@ import sys
 import time
 import traceback
 from dataclasses import dataclass
-from io import BytesIO
 from typing import Any, Optional
 from urllib.parse import urlsplit
-
-from PIL import Image
 
 from config import MONITOR_SERVER_PORT, USER_NOTIFICATION_ERROR_MAX_CHARS
 from main_logic import core, cross_server
 from main_logic.agent_event_bus import notify_analyze_ack
-from main_logic.proactive_delivery import (
-    CALLBACK_EXPIRES_AT_KEY,
-    CALLBACK_IMAGE_MAX_BYTES,
-    CALLBACK_IMAGE_MAX_COUNT,
-    callback_image_decoded_size,
-)
-from plugin.sdk.shared.core.images import (
-    MAX_SOURCE_IMAGE_PIXELS,
-    normalize_image_to_jpeg,
-)
+from main_logic.proactive_delivery import CALLBACK_EXPIRES_AT_KEY
 from utils.config_manager import get_reserved
 from utils.internal_http_client import get_internal_http_client
 
@@ -53,7 +41,7 @@ _config_manager = runtime.config_manager
 logger = runtime.logger
 
 _PLUGIN_IMAGE_MAX_BYTES = 8 * 1024 * 1024
-_PLUGIN_MODEL_IMAGE_FETCH_BATCH_SIZE = 2
+_PLUGIN_IMAGE_FETCH_BATCH_SIZE = 4
 
 
 def _is_local_plugin_media_url(url: str) -> bool:
@@ -80,73 +68,15 @@ def _is_local_plugin_media_url(url: str) -> bool:
         return False
 
 
-def _normalize_inline_plugin_image_for_model(encoded: str) -> str:
-    """Validate and convert one inline plugin image to the model's JPEG wire format."""
-    source = base64.b64decode(encoded, validate=True)
-    jpeg = normalize_image_to_jpeg(source)
-    return base64.b64encode(jpeg).decode("ascii")
-
-
 async def _resolve_plugin_model_image(part: dict[str, Any]) -> str:
-    """Resolve one canonical image part without blocking the event loop."""
+    """Resolve one canonical image part to the model's base64 input."""
     encoded = part.get("binary_base64")
     if isinstance(encoded, str) and encoded:
-        return await asyncio.to_thread(
-            _normalize_inline_plugin_image_for_model,
-            encoded,
-        )
+        return encoded
     url = part.get("url")
     if not isinstance(url, str) or not url:
         raise ValueError("plugin image part has no usable payload")
     return await _fetch_plugin_image_base64(url)
-
-
-def _build_plugin_image_chat_block(
-    part: Any,
-) -> tuple[dict[str, str], int] | None:
-    """Validate one frontend image part and return its inline byte cost."""
-    max_base64_chars = ((_PLUGIN_IMAGE_MAX_BYTES + 2) // 3) * 4
-    if not isinstance(part, dict) or part.get("type") != "image":
-        return None
-    url = part.get("url")
-    if isinstance(url, str) and _is_local_plugin_media_url(url):
-        return {"type": "image", "url": url}, 0
-    encoded = part.get("binary_base64")
-    declared_mime = str(part.get("mime") or "").strip().lower()
-    if (
-        not isinstance(encoded, str)
-        or not encoded
-        or len(encoded) > max_base64_chars
-        or not declared_mime.startswith("image/")
-    ):
-        return None
-    try:
-        decoded = base64.b64decode(encoded, validate=True)
-    except (ValueError, TypeError):
-        return None
-    if not decoded or len(decoded) > _PLUGIN_IMAGE_MAX_BYTES:
-        return None
-    try:
-        with Image.open(BytesIO(decoded)) as image:
-            width, height = image.size
-            detected_mime = str(image.get_format_mimetype() or "").lower()
-            image.verify()
-    except (OSError, SyntaxError, ValueError, Image.DecompressionBombError):
-        return None
-    if (
-        width <= 0
-        or height <= 0
-        or width * height > MAX_SOURCE_IMAGE_PIXELS
-        or not detected_mime.startswith("image/")
-    ):
-        return None
-    return (
-        {
-            "type": "image",
-            "url": f"data:{detected_mime};base64,{encoded}",
-        },
-        len(decoded),
-    )
 
 
 def _build_plugin_chat_blocks(
@@ -154,11 +84,8 @@ def _build_plugin_chat_blocks(
     *,
     include_text: bool,
 ) -> list[dict[str, str]]:
-    """Build one ordered, bounded projection of canonical plugin parts."""
+    """Project canonical plugin parts to the frontend's supported blocks."""
     blocks: list[dict[str, str]] = []
-    image_count = 0
-    inline_image_bytes = 0
-    image_budget_exhausted = False
     for part in parts:
         if not isinstance(part, dict):
             continue
@@ -169,24 +96,16 @@ def _build_plugin_chat_blocks(
         ):
             blocks.append({"type": "text", "text": part["text"]})
             continue
-        if (
-            part.get("type") != "image"
-            or image_budget_exhausted
-            or image_count >= CALLBACK_IMAGE_MAX_COUNT
-        ):
+        if part.get("type") != "image":
             continue
-        image_result = _build_plugin_image_chat_block(part)
-        if image_result is None:
+        url = part.get("url")
+        if isinstance(url, str) and _is_local_plugin_media_url(url):
+            blocks.append({"type": "image", "url": url})
             continue
-        image_block, inline_bytes = image_result
-        if (
-            inline_image_bytes + inline_bytes > CALLBACK_IMAGE_MAX_BYTES
-        ):
-            image_budget_exhausted = True
-            continue
-        blocks.append(image_block)
-        image_count += 1
-        inline_image_bytes += inline_bytes
+        encoded = part.get("binary_base64")
+        mime = str(part.get("mime") or "").strip().lower()
+        if isinstance(encoded, str) and encoded and mime.startswith("image/"):
+            blocks.append({"type": "image", "url": f"data:{mime};base64,{encoded}"})
     return blocks
 
 
@@ -200,14 +119,9 @@ def _build_ordered_plugin_chat_blocks(parts: list[Any]) -> list[dict[str, str]]:
     return _build_plugin_chat_blocks(parts, include_text=True)
 
 
-async def _plugin_image_chat_blocks(media_parts: list[Any]) -> list[dict[str, str]]:
-    """Build frontend image blocks without decoding base64 on the event loop."""
-    return await asyncio.to_thread(_build_plugin_image_chat_blocks, media_parts)
-
-
-async def _ordered_plugin_chat_blocks(parts: list[Any], mgr: Any) -> list[dict[str, str]]:
-    """Build ordered blocks off-loop and expand role placeholders in text."""
-    blocks = await asyncio.to_thread(_build_ordered_plugin_chat_blocks, parts)
+def _ordered_plugin_chat_blocks(parts: list[Any], mgr: Any) -> list[dict[str, str]]:
+    """Build ordered blocks and expand role placeholders in text."""
+    blocks = _build_ordered_plugin_chat_blocks(parts)
     for block in blocks:
         if block["type"] == "text":
             block["text"] = core.apply_role_placeholders(
@@ -804,62 +718,19 @@ async def _handle_agent_event(event: dict):
             if media_parts and ai_behavior_v2 in ("respond", "read"):
                 sess = getattr(mgr, "session", None)
                 stream_image = getattr(sess, "stream_image", None) if sess else None
-                model_image_indexes: list[int] = []
-                for index, part in enumerate(media_parts):
-                    if not isinstance(part, dict) or part.get("type") != "image":
-                        continue
-                    encoded = part.get("binary_base64")
-                    url = part.get("url")
-                    is_inline = isinstance(encoded, str) and bool(encoded)
-                    is_local_url = isinstance(url, str) and _is_local_plugin_media_url(url)
-                    if not is_inline and not is_local_url:
-                        continue
-                    if len(model_image_indexes) >= CALLBACK_IMAGE_MAX_COUNT:
-                        logger.warning(
-                            "[EventBus] plugin image count exceeds model limit; dropped index=%d",
-                            index,
-                        )
-                        continue
-                    model_image_indexes.append(index)
-                resolved_model_images: dict[int, str] = {}
-                aggregate_image_bytes = 0
-                for offset in range(
-                    0,
-                    len(model_image_indexes),
-                    _PLUGIN_MODEL_IMAGE_FETCH_BATCH_SIZE,
-                ):
-                    batch_indexes = model_image_indexes[
-                        offset : offset + _PLUGIN_MODEL_IMAGE_FETCH_BATCH_SIZE
-                    ]
-                    resolve_results = await asyncio.gather(
-                        *(
-                            _resolve_plugin_model_image(media_parts[index])
-                            for index in batch_indexes
-                        ),
+                image_indexes = [
+                    index
+                    for index, part in enumerate(media_parts)
+                    if isinstance(part, dict) and part.get("type") == "image"
+                ]
+                resolved_model_images: dict[int, str | BaseException] = {}
+                for offset in range(0, len(image_indexes), _PLUGIN_IMAGE_FETCH_BATCH_SIZE):
+                    batch = image_indexes[offset : offset + _PLUGIN_IMAGE_FETCH_BATCH_SIZE]
+                    results = await asyncio.gather(
+                        *(_resolve_plugin_model_image(media_parts[index]) for index in batch),
                         return_exceptions=True,
                     )
-                    for index, result in zip(batch_indexes, resolve_results):
-                        if isinstance(result, BaseException):
-                            logger.warning(
-                                "[EventBus] plugin image resolve failed; dropped: %s",
-                                result,
-                            )
-                            continue
-                        if not isinstance(result, str) or not result:
-                            continue
-                        decoded_size = callback_image_decoded_size(result)
-                        if (
-                            decoded_size <= 0
-                            or aggregate_image_bytes + decoded_size
-                            > CALLBACK_IMAGE_MAX_BYTES
-                        ):
-                            logger.warning(
-                                "[EventBus] plugin image aggregate exceeds model limit; dropped index=%d",
-                                index,
-                            )
-                            continue
-                        aggregate_image_bytes += decoded_size
-                        resolved_model_images[index] = result
+                    resolved_model_images.update(zip(batch, results))
 
                 for index, mp in enumerate(media_parts):
                     if not isinstance(mp, dict):
@@ -878,23 +749,23 @@ async def _handle_agent_event(event: dict):
                         )
                         continue
                     resolved_b64 = resolved_model_images.get(index)
-                    if not resolved_b64:
+                    if isinstance(resolved_b64, BaseException):
+                        logger.warning(
+                            "[EventBus] plugin image resolve failed; dropped: %s",
+                            resolved_b64,
+                        )
+                        continue
+                    if not isinstance(resolved_b64, str) or not resolved_b64:
                         continue
                     if ai_behavior_v2 == "respond":
                         # Defer: stream when the manager releases this cue so
                         # the image shares the proactive response's context.
                         deferred_callback_images.append(resolved_b64)
                         continue
-                    if isinstance(
-                        sess,
-                        (core.OmniOfflineClient, core.OmniRealtimeClient),
-                    ):
-                        # Plugin-owned read media stays on its passive callback
-                        # until a real text drain or natural voice swap consumes
-                        # it. Offline immediate staging would merge separately
-                        # bounded events; realtime immediate staging has no
-                        # positive provider acknowledgement and would also
-                        # pollute the ambient latest-frame cache.
+                    if isinstance(sess, core.OmniOfflineClient):
+                        # Offline stream_image stores frames until the next
+                        # text prompt. Keep the image on its callback so its
+                        # text and image share the same drain snapshot.
                         deferred_callback_images.append(resolved_b64)
                         continue
                     if getattr(sess, "_supports_native_image", None) is False:
@@ -919,6 +790,7 @@ async def _handle_agent_event(event: dict):
                         await stream_image(
                             resolved_b64,
                             bypass_rate_limit=True,
+                            cache_latest=False,
                         )
                         logger.debug(
                             "[EventBus] image media_part injected (base64 len=%d, mime=%s)",
@@ -944,15 +816,9 @@ async def _handle_agent_event(event: dict):
                 and hasattr(mgr, "render_chat_blocks")
             ):
                 if ordered_parts is not None:
-                    visible_blocks = await _ordered_plugin_chat_blocks(
-                        ordered_parts, mgr
-                    )
+                    visible_blocks = _ordered_plugin_chat_blocks(ordered_parts, mgr)
                 else:
-                    visible_images = (
-                        await _plugin_image_chat_blocks(media_parts)
-                        if media_parts
-                        else []
-                    )
+                    visible_images = _build_plugin_image_chat_blocks(media_parts)
                     visible_blocks = []
                     if text:
                         visible_text = core.apply_role_placeholders(
@@ -1119,15 +985,6 @@ async def _handle_agent_event(event: dict):
                         # enqueue_agent_callback still honors coalesce_key so a
                         # passive stream can dedup queued snapshots by key.
                         mgr.enqueue_agent_callback(callback)
-                        if (
-                            deferred_callback_images
-                            and isinstance(sess, core.OmniRealtimeClient)
-                            and getattr(sess, "_supports_native_image", False)
-                        ):
-                            await mgr.try_stream_passive_callback_media_now(
-                                callback,
-                                sess,
-                            )
                         logger.info(
                             "[EventBus] %s enqueued callback (passive); next user turn will carry it",
                             event_type,
@@ -1198,14 +1055,14 @@ async def _handle_agent_event(event: dict):
                             master_name=getattr(mgr, "master_name", "") or "",
                         )
                         ordered_chat_blocks = (
-                            await _ordered_plugin_chat_blocks(ordered_parts, mgr)
+                            _ordered_plugin_chat_blocks(ordered_parts, mgr)
                             if ordered_parts is not None
                             else None
                         )
                         chat_image_blocks = (
                             []
                             if ordered_chat_blocks is not None
-                            else await _plugin_image_chat_blocks(media_parts)
+                            else _build_plugin_image_chat_blocks(media_parts)
                         )
                         passthrough_kwargs: dict[str, Any] = {
                             "request_id": event.get("task_id") or None,
@@ -1314,9 +1171,9 @@ async def _handle_agent_event(event: dict):
                 and hasattr(mgr, "passthrough_to_chat_bubble")
             ):
                 image_blocks = (
-                    await _ordered_plugin_chat_blocks(ordered_parts, mgr)
+                    _ordered_plugin_chat_blocks(ordered_parts, mgr)
                     if ordered_parts is not None
-                    else await _plugin_image_chat_blocks(media_parts)
+                    else _build_plugin_image_chat_blocks(media_parts)
                 )
                 if image_blocks:
                     channel = str(event.get("channel") or "")

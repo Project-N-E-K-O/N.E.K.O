@@ -214,7 +214,6 @@ def _manager() -> MagicMock:
     manager.session.stream_image = AsyncMock()
     manager.enqueue_agent_callback = MagicMock()
     manager.submit_proactive_callback = MagicMock()
-    manager.try_stream_passive_callback_media_now = AsyncMock()
     manager.passthrough_to_chat_bubble = AsyncMock(return_value=True)
     manager.render_chat_blocks = AsyncMock(return_value=True)
     manager.handle_proactive_complete = AsyncMock()
@@ -266,11 +265,12 @@ async def test_plugin_image_url_is_fetched_asynchronously_for_model_context(monk
     manager.session.stream_image.assert_awaited_once_with(
         base64.b64encode(image_bytes).decode("ascii"),
         bypass_rate_limit=True,
+        cache_latest=False,
     )
 
 
 @pytest.mark.asyncio
-async def test_native_realtime_read_keeps_plugin_image_on_passive_callback(
+async def test_native_realtime_read_does_not_cache_plugin_image(
     monkeypatch,
 ) -> None:
     from app import main_server
@@ -302,14 +302,14 @@ async def test_native_realtime_read_keeps_plugin_image_on_passive_callback(
         "media_parts": [{"type": "image", "url": _IMAGE_URL, "mime": "image/jpeg"}],
     })
 
-    manager.enqueue_agent_callback.assert_called_once()
+    session.stream_image.assert_awaited_once_with(
+        encoded,
+        bypass_rate_limit=True,
+        cache_latest=False,
+    )
     callback = manager.enqueue_agent_callback.call_args.args[0]
     assert callback["delivery_mode"] == "passive"
-    assert callback["media_images"] == [encoded]
-    manager.try_stream_passive_callback_media_now.assert_awaited_once_with(
-        callback,
-        session,
-    )
+    assert callback["media_images"] == []
 
 
 @pytest.mark.asyncio
@@ -460,43 +460,11 @@ async def test_read_image_stream_failure_keeps_image_for_next_turn(monkeypatch) 
     manager.session.stream_image.assert_awaited_once_with(
         encoded,
         bypass_rate_limit=True,
+        cache_latest=False,
     )
     manager.enqueue_agent_callback.assert_called_once()
     callback = manager.enqueue_agent_callback.call_args.args[0]
     assert callback["media_images"] == [encoded]
-
-
-@pytest.mark.asyncio
-async def test_inline_png_is_normalized_to_jpeg_before_model_injection(monkeypatch) -> None:
-    from app import main_server
-
-    source = BytesIO()
-    Image.new("RGBA", (2, 2), (255, 0, 0, 128)).save(source, format="PNG")
-    encoded = base64.b64encode(source.getvalue()).decode("ascii")
-    manager = _manager()
-    monkeypatch.setattr(
-        "app.main_server.character_runtime._get_session_manager",
-        lambda _name: manager,
-    )
-
-    await main_server._handle_agent_event({
-        "event_type": "proactive_message",
-        "lanlan_name": "Test",
-        "text": "remember it",
-        "channel": "plugin:inline",
-        "delivery_mode": "passive",
-        "ai_behavior": "read",
-        "visibility": [],
-        "parts": [{"type": "image", "binary_base64": encoded, "mime": "image/png"}],
-    })
-
-    manager.session.stream_image.assert_awaited_once()
-    model_bytes = base64.b64decode(
-        manager.session.stream_image.await_args.args[0],
-        validate=True,
-    )
-    with Image.open(BytesIO(model_bytes)) as model_image:
-        assert model_image.format == "JPEG"
 
 
 @pytest.mark.asyncio
@@ -609,11 +577,10 @@ async def test_plugin_chat_blocks_preserve_canonical_part_order(
         assert manager.render_chat_blocks.await_args.args[0] == expected
 
 
-@pytest.mark.asyncio
-async def test_external_image_urls_are_not_exposed_to_chat_or_model() -> None:
-    from app.main_server.character_runtime import _plugin_image_chat_blocks
+def test_external_image_urls_are_not_exposed_to_chat_or_model() -> None:
+    from app.main_server.character_runtime import _build_plugin_image_chat_blocks
 
-    assert await _plugin_image_chat_blocks([
+    assert _build_plugin_image_chat_blocks([
         {"type": "image", "url": "https://example.com/media/not-local"},
         {"type": "image", "url": "http://localhost:48916/media/not-an-ip"},
         {"type": "image", "url": "http://127.0.0.1:48916/media/valid"},
@@ -623,13 +590,12 @@ async def test_external_image_urls_are_not_exposed_to_chat_or_model() -> None:
     }]
 
 
-@pytest.mark.asyncio
-async def test_inline_image_is_exposed_to_chat_as_a_data_url() -> None:
-    from app.main_server.character_runtime import _plugin_image_chat_blocks
+def test_inline_image_is_exposed_to_chat_as_a_data_url() -> None:
+    from app.main_server.character_runtime import _build_plugin_image_chat_blocks
 
     encoded = _inline_png_base64()
 
-    assert await _plugin_image_chat_blocks([{
+    assert _build_plugin_image_chat_blocks([{
         "type": "image",
         "binary_base64": encoded,
         "mime": "image/png",
@@ -637,138 +603,6 @@ async def test_inline_image_is_exposed_to_chat_as_a_data_url() -> None:
         "type": "image",
         "url": f"data:image/png;base64,{encoded}",
     }]
-
-
-@pytest.mark.asyncio
-async def test_inline_image_uses_detected_mime_for_chat_data_url() -> None:
-    from app.main_server.character_runtime import _plugin_image_chat_blocks
-
-    encoded = _inline_png_base64()
-
-    assert await _plugin_image_chat_blocks([{
-        "type": "image",
-        "binary_base64": encoded,
-        "mime": "image/svg+xml,%3csvg%3e",
-    }]) == [{
-        "type": "image",
-        "url": f"data:image/png;base64,{encoded}",
-    }]
-
-
-@pytest.mark.asyncio
-async def test_truncated_inline_image_is_not_exposed_to_chat() -> None:
-    from app.main_server.character_runtime import _plugin_image_chat_blocks
-
-    source = BytesIO()
-    Image.new("RGB", (2, 2), "blue").save(source, format="PNG")
-    encoded = base64.b64encode(source.getvalue()[:-8]).decode("ascii")
-
-    assert await _plugin_image_chat_blocks([{
-        "type": "image",
-        "binary_base64": encoded,
-        "mime": "image/png",
-    }]) == []
-
-
-def test_chat_image_limit_short_circuits_image_validation(monkeypatch) -> None:
-    from app.main_server import character_runtime
-
-    calls = 0
-    original = character_runtime._build_plugin_image_chat_block
-
-    def _counted_build(part):
-        nonlocal calls
-        calls += 1
-        return original(part)
-
-    monkeypatch.setattr(
-        character_runtime,
-        "_build_plugin_image_chat_block",
-        _counted_build,
-    )
-    parts = [
-        {"type": "image", "url": f"http://127.0.0.1:48916/media/image-{index}"}
-        for index in range(9)
-    ]
-    parts.append({"type": "text", "text": "caption survives"})
-
-    blocks = character_runtime._build_ordered_plugin_chat_blocks(parts)
-
-    assert calls == 8
-    assert blocks[-1] == {"type": "text", "text": "caption survives"}
-
-
-def test_chat_inline_byte_limit_short_circuits_later_images(monkeypatch) -> None:
-    from app.main_server import character_runtime
-
-    encoded = _inline_png_base64()
-    decoded_size = len(base64.b64decode(encoded))
-    monkeypatch.setattr(
-        character_runtime,
-        "CALLBACK_IMAGE_MAX_BYTES",
-        decoded_size,
-    )
-    parts = [
-        {"type": "image", "binary_base64": encoded, "mime": "image/png"},
-        {"type": "image", "binary_base64": encoded, "mime": "image/png"},
-        {"type": "image", "url": "http://127.0.0.1:48916/media/later"},
-        {"type": "text", "text": "caption survives"},
-    ]
-
-    blocks = character_runtime._build_ordered_plugin_chat_blocks(parts)
-
-    assert blocks == [
-        {"type": "image", "url": f"data:image/png;base64,{encoded}"},
-        {"type": "text", "text": "caption survives"},
-    ]
-
-
-@pytest.mark.asyncio
-async def test_model_image_fetches_have_count_and_aggregate_limits(monkeypatch) -> None:
-    from app import main_server
-
-    manager = _manager()
-    encoded = base64.b64encode(b"four").decode("ascii")
-    fetch_image = AsyncMock(return_value=encoded)
-    monkeypatch.setattr(
-        "app.main_server.character_runtime._get_session_manager",
-        lambda _name: manager,
-    )
-    monkeypatch.setattr(
-        "app.main_server.character_runtime._fetch_plugin_image_base64",
-        fetch_image,
-    )
-    monkeypatch.setattr(
-        "app.main_server.character_runtime.CALLBACK_IMAGE_MAX_BYTES",
-        10,
-    )
-
-    await main_server._handle_agent_event({
-        "event_type": "proactive_message",
-        "lanlan_name": "Test",
-        "text": "",
-        "channel": "plugin:demo",
-        "delivery_mode": "passive",
-        "ai_behavior": "read",
-        "visibility": [],
-        "media_parts": [
-            {
-                "type": "image",
-                "url": f"http://127.0.0.1:48916/media/image-{index}",
-                "mime": "image/jpeg",
-            }
-            for index in range(12)
-        ],
-    })
-
-    from app.main_server import character_runtime
-
-    assert fetch_image.await_count == character_runtime.CALLBACK_IMAGE_MAX_COUNT
-    assert manager.session.stream_image.await_count == 2
-    assert [call.args[0] for call in manager.session.stream_image.await_args_list] == [
-        encoded,
-        encoded,
-    ]
 
 
 @pytest.mark.asyncio
@@ -814,43 +648,6 @@ async def test_inline_image_only_chat_blind_message_is_rendered(monkeypatch) -> 
 
 
 @pytest.mark.asyncio
-async def test_chat_visible_inline_image_rejects_excessive_pixel_count(
-    monkeypatch,
-) -> None:
-    from app import main_server
-
-    manager = _manager()
-    source = BytesIO()
-    Image.new("1", (4097, 4097)).save(source, format="PNG")
-    encoded = base64.b64encode(source.getvalue()).decode("ascii")
-    monkeypatch.setattr(
-        "app.main_server.character_runtime._get_session_manager",
-        lambda _name: manager,
-    )
-    monkeypatch.setattr(
-        "app.main_server.character_runtime._is_websocket_connected",
-        lambda _ws: False,
-    )
-
-    await main_server._handle_agent_event({
-        "event_type": "proactive_message",
-        "lanlan_name": "Test",
-        "text": "",
-        "channel": "plugin:inline",
-        "delivery_mode": "silent",
-        "ai_behavior": "blind",
-        "visibility": ["chat"],
-        "parts": [{
-            "type": "image",
-            "binary_base64": encoded,
-            "mime": "image/png",
-        }],
-    })
-
-    manager.passthrough_to_chat_bubble.assert_not_awaited()
-
-
-@pytest.mark.asyncio
 async def test_image_only_chat_blind_message_still_opens_a_structured_bubble(monkeypatch) -> None:
     from app import main_server
 
@@ -889,47 +686,6 @@ async def test_image_only_chat_blind_message_still_opens_a_structured_bubble(mon
             "url": "http://127.0.0.1:48916/media/image-only",
         }],
     )
-
-
-@pytest.mark.asyncio
-async def test_chat_visible_plugin_message_limits_images_without_dropping_text(
-    monkeypatch,
-) -> None:
-    from app import main_server
-
-    manager = _manager()
-    monkeypatch.setattr(
-        "app.main_server.character_runtime._get_session_manager",
-        lambda _name: manager,
-    )
-    monkeypatch.setattr(
-        "app.main_server.character_runtime._is_websocket_connected",
-        lambda _ws: False,
-    )
-    parts = [
-        {"type": "image", "url": f"http://127.0.0.1:48916/media/image-{index}"}
-        for index in range(9)
-    ]
-    parts.insert(5, {"type": "text", "text": "caption survives"})
-
-    await main_server._handle_agent_event({
-        "event_type": "proactive_message",
-        "lanlan_name": "Test",
-        "text": "caption survives",
-        "channel": "plugin:demo",
-        "delivery_mode": "silent",
-        "ai_behavior": "blind",
-        "visibility": ["chat"],
-        "parts": parts,
-    })
-
-    blocks = manager.passthrough_to_chat_bubble.await_args.kwargs["blocks"]
-    assert sum(block["type"] == "image" for block in blocks) == 8
-    assert {"type": "text", "text": "caption survives"} in blocks
-    assert blocks[-1] == {
-        "type": "image",
-        "url": "http://127.0.0.1:48916/media/image-7",
-    }
 
 
 @pytest.mark.asyncio
@@ -1129,6 +885,7 @@ async def test_image_delivery_obeys_visibility_and_ai_behavior(
         manager.session.stream_image.assert_awaited_once_with(
             encoded,
             bypass_rate_limit=True,
+            cache_latest=False,
         )
     else:
         manager.session.stream_image.assert_not_awaited()

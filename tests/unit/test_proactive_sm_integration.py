@@ -148,7 +148,7 @@ def _make_mgr(session=None) -> core_module.LLMSessionManager:
 
 async def test_passive_callback_media_stages_at_text_turn_then_drains():
     session = MagicMock(spec=OmniOfflineClient)
-    session.stream_images = AsyncMock()
+    session.stream_image = AsyncMock()
     mgr = _make_mgr(session=session)
     callback = {
         "delivery_mode": "passive",
@@ -158,87 +158,17 @@ async def test_passive_callback_media_stages_at_text_turn_then_drains():
     mgr.pending_agent_callbacks = [callback]
 
     rendered = await mgr.drain_agent_callbacks_for_llm_with_media()
-    session.stream_images.assert_awaited_once_with([
-        "first-image",
-        "second-image",
-    ])
+    assert [call.args[0] for call in session.stream_image.await_args_list] == [
+        "first-image", "second-image"
+    ]
     assert "media_images" not in callback
     assert "remember this image" in rendered
     assert mgr.pending_agent_callbacks == []
 
 
-async def test_offline_stream_images_commits_one_batch_with_one_extend():
-    from main_logic.omni_offline_client._media import _MediaMixin
-
-    pending = MagicMock(wraps=["existing-image"])
-    session = _MediaMixin()
-    session._pending_images = pending
-
-    await _MediaMixin.stream_images(
-        session,
-        ["first-image", "", "second-image"],
-    )
-
-    pending.extend.assert_called_once_with(["first-image", "second-image"])
-
-
-async def test_offline_stream_images_rejects_batch_over_remaining_turn_budget(
-    monkeypatch,
-):
-    from main_logic.omni_offline_client import _media
-
-    existing = "eA=="
-    incoming = "eHg="
-    pending = [existing]
-    session = _media._MediaMixin()
-    session._pending_images = pending
-    monkeypatch.setattr(_media, "CALLBACK_IMAGE_MAX_BYTES", 1, raising=False)
-
-    with pytest.raises(ValueError, match="image byte budget"):
-        await _media._MediaMixin.stream_images(session, [incoming])
-
-    assert pending == [existing]
-
-
-async def test_offline_single_image_cannot_overfill_callback_staging(
-    monkeypatch,
-):
-    from main_logic.omni_offline_client import _media
-
-    session = _media._MediaMixin()
-    session._pending_images = ["existing"]
-    monkeypatch.setattr(_media, "CALLBACK_IMAGE_MAX_COUNT", 1, raising=False)
-
-    with pytest.raises(ValueError, match="image count budget"):
-        await session.stream_image("new-user-frame")
-
-    assert session._pending_images == ["existing"]
-
-
-def test_offline_proactive_screenshot_does_not_overfill_pending_turn(
-    monkeypatch,
-):
-    from main_logic.omni_offline_client import _media
-
-    session = _media._MediaMixin()
-    session._pending_images = ["existing"]
-    session._proactive_image_to_inject = "old-shot"
-    session._proactive_image_staged_at = 1.0
-    session._proactive_image_history_len = 1
-    session._conversation_history = []
-    monkeypatch.setattr(_media, "CALLBACK_IMAGE_MAX_COUNT", 1, raising=False)
-
-    session.set_proactive_screenshot("new-shot")
-
-    assert session._pending_images == ["existing"]
-    assert session._proactive_image_to_inject is None
-    assert session._proactive_image_staged_at == 0.0
-    assert session._proactive_image_history_len == 0
-
-
 async def test_failed_passive_callback_media_stays_queued_for_later_turn():
     session = MagicMock(spec=OmniOfflineClient)
-    session.stream_images = AsyncMock(side_effect=RuntimeError("session closing"))
+    session.stream_image = AsyncMock(side_effect=RuntimeError("session closing"))
     mgr = _make_mgr(session=session)
     callback = {
         "delivery_mode": "passive",
@@ -255,13 +185,55 @@ async def test_failed_passive_callback_media_stays_queued_for_later_turn():
     assert not callback.get(SWAP_PRIME_DELIVERY_CLAIM_KEY)
 
 
+async def test_offline_multi_image_failure_rolls_back_partial_staging():
+    session = MagicMock(spec=OmniOfflineClient)
+    session._pending_images = ["existing-user-image"]
+
+    async def _stream(image):
+        if image == "bad-image":
+            raise RuntimeError("decode failed")
+        session._pending_images.append(image)
+
+    session.stream_image = AsyncMock(side_effect=_stream)
+    mgr = _make_mgr(session=session)
+    callback = {
+        "delivery_mode": "passive",
+        "summary": "retry the whole callback",
+        "media_images": ["first-image", "bad-image"],
+    }
+    mgr.pending_agent_callbacks = [callback]
+
+    assert await mgr.drain_agent_callbacks_for_llm_with_media() == ""
+    assert session._pending_images == ["existing-user-image"]
+    assert mgr.pending_agent_callbacks == [callback]
+
+
+async def test_failed_media_callback_does_not_block_text_only_callback():
+    session = MagicMock(spec=OmniOfflineClient)
+    session._pending_images = []
+    session.stream_image = AsyncMock(side_effect=RuntimeError("decode failed"))
+    mgr = _make_mgr(session=session)
+    text_callback = {"delivery_mode": "passive", "summary": "plain text"}
+    image_callback = {
+        "delivery_mode": "passive",
+        "summary": "broken image",
+        "media_images": ["bad-image"],
+    }
+    mgr.pending_agent_callbacks = [text_callback, image_callback]
+
+    rendered = await mgr.drain_agent_callbacks_for_llm_with_media()
+
+    assert "plain text" in rendered and "broken image" not in rendered
+    assert mgr.pending_agent_callbacks == [image_callback]
+
+
 async def test_text_drain_render_failure_keeps_callback_and_media_unstaged(
     monkeypatch,
 ):
     from main_logic.core import proactive as proactive_module
 
     session = MagicMock(spec=OmniOfflineClient)
-    session.stream_images = AsyncMock()
+    session.stream_image = AsyncMock()
     mgr = _make_mgr(session=session)
     callback = {
         "delivery_mode": "passive",
@@ -278,7 +250,7 @@ async def test_text_drain_render_failure_keeps_callback_and_media_unstaged(
     with pytest.raises(RuntimeError, match="render failed"):
         await mgr.drain_agent_callbacks_for_llm_with_media()
 
-    session.stream_images.assert_not_awaited()
+    session.stream_image.assert_not_awaited()
     assert mgr.pending_agent_callbacks == [callback]
     assert callback["media_images"] == ["deferred-image"]
     assert not callback.get(SWAP_PRIME_DELIVERY_CLAIM_KEY)
@@ -310,7 +282,7 @@ async def test_text_drain_streams_media_only_for_its_budgeted_snapshot(monkeypat
     from main_logic.core import proactive as proactive_module
 
     session = MagicMock(spec=OmniOfflineClient)
-    session.stream_images = AsyncMock()
+    session.stream_image = AsyncMock()
     mgr = _make_mgr(session=session)
     selected = {
         "delivery_mode": "passive",
@@ -331,7 +303,7 @@ async def test_text_drain_streams_media_only_for_its_budgeted_snapshot(monkeypat
 
     rendered = await mgr.drain_agent_callbacks_for_llm_with_media()
 
-    session.stream_images.assert_awaited_once_with(["selected-image"])
+    session.stream_image.assert_awaited_once_with("selected-image")
     assert "selected" in rendered and "deferred" not in rendered
     assert mgr.pending_agent_callbacks == [deferred]
     assert deferred["media_images"] == ["deferred-image"]
@@ -345,7 +317,7 @@ async def test_cancelled_text_media_drain_releases_provider_claim():
         await asyncio.Future()
 
     session = MagicMock(spec=OmniOfflineClient)
-    session.stream_images = AsyncMock(side_effect=_block)
+    session.stream_image = AsyncMock(side_effect=_block)
     mgr = _make_mgr(session=session)
     callback = {
         "delivery_mode": "passive",
@@ -388,229 +360,6 @@ async def test_realtime_passive_media_bypasses_throttle_and_returns_description(
         cache_latest=False,
     )
     assert context == "\n[实时屏幕截图或相机画面]: a small chart"
-
-
-async def test_immediate_native_read_restores_media_after_async_rejection():
-    rejection_handlers = []
-    session = _make_voice_sess()
-    session._supports_native_image = True
-
-    async def _stream_image(
-        _image_b64,
-        *,
-        bypass_rate_limit=False,
-        cache_latest=True,
-        on_rejected=None,
-    ):
-        assert bypass_rate_limit is True
-        assert cache_latest is False
-        rejection_handlers.append(on_rejected)
-
-    session.stream_image = _stream_image
-    mgr = _make_mgr(session=session)
-    callback = {
-        "origin": "event",
-        "status": "completed",
-        "summary": "remember this image",
-        "detail": "remember this image",
-        "delivery_mode": "passive",
-        "media_images": ["deferred-image"],
-    }
-    mgr.enqueue_agent_callback(callback)
-
-    streamed = await mgr.try_stream_passive_callback_media_now(
-        callback,
-        session,
-    )
-
-    assert streamed is True
-    assert callback["media_images"] == ["deferred-image"]
-    assert mgr.pending_agent_callbacks == [callback]
-    assert len(rejection_handlers) == 1
-    assert callable(rejection_handlers[0])
-
-    # The text may be consumed before the provider's asynchronous error
-    # arrives. Recovery must not depend on the original object staying queued.
-    mgr.pending_agent_callbacks = []
-    rejection_handlers[0]("provider rejected image")
-    rejection_handlers[0]("duplicate rejection")
-
-    assert len(mgr.pending_agent_callbacks) == 1
-    recovery = mgr.pending_agent_callbacks[0]
-    assert recovery is not callback
-    assert recovery["summary"] == ""
-    assert recovery["detail"] == ""
-    assert recovery["media_images"] == ["deferred-image"]
-    assert not recovery.get(SWAP_PRIME_DELIVERY_CLAIM_KEY)
-
-
-async def test_immediate_native_read_stops_batch_after_sync_rejection():
-    streamed = []
-    session = _make_voice_sess()
-    session._supports_native_image = True
-
-    async def _stream_image(
-        image_b64,
-        *,
-        bypass_rate_limit=False,
-        cache_latest=True,
-        on_rejected=None,
-    ):
-        streamed.append(image_b64)
-        on_rejected("provider rejected image")
-
-    session.stream_image = _stream_image
-    mgr = _make_mgr(session=session)
-    callback = {
-        "origin": "event",
-        "status": "completed",
-        "summary": "remember these images",
-        "delivery_mode": "passive",
-        "media_images": ["first-image", "second-image"],
-    }
-    mgr.enqueue_agent_callback(callback)
-
-    assert await mgr.try_stream_passive_callback_media_now(
-        callback,
-        session,
-    ) is False
-    assert streamed == ["first-image"]
-    assert callback["media_images"] == ["first-image", "second-image"]
-    assert mgr.pending_agent_callbacks == [callback]
-
-
-async def test_cancelled_native_read_clears_delivery_for_same_session_retry():
-    entered = asyncio.Event()
-    release = asyncio.Event()
-    session = _make_voice_sess()
-    session._supports_native_image = True
-    streamed = []
-
-    async def _stream_image(
-        image_b64,
-        *,
-        bypass_rate_limit=False,
-        cache_latest=True,
-        on_rejected=None,
-    ):
-        streamed.append(image_b64)
-        entered.set()
-        await release.wait()
-
-    session.stream_image = _stream_image
-    mgr = _make_mgr(session=session)
-    callback = {
-        "origin": "event",
-        "status": "completed",
-        "summary": "remember this image",
-        "delivery_mode": "passive",
-        "media_images": ["deferred-image"],
-    }
-    mgr.enqueue_agent_callback(callback)
-
-    delivery = asyncio.create_task(
-        mgr.try_stream_passive_callback_media_now(callback, session)
-    )
-    await entered.wait()
-    delivery.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await delivery
-
-    assert callback["media_images"] == ["deferred-image"]
-    assert not callback.get(SWAP_PRIME_DELIVERY_CLAIM_KEY)
-
-    release.set()
-    assert await mgr.try_stream_passive_callback_media_now(
-        callback,
-        session,
-    ) is True
-    assert streamed == ["deferred-image", "deferred-image"]
-
-
-async def test_immediate_native_read_reuses_media_only_in_same_session():
-    first_session = _make_voice_sess()
-    first_session._supports_native_image = True
-    first_session.stream_image = AsyncMock()
-    second_session = _make_voice_sess()
-    second_session._supports_native_image = True
-    second_session.stream_image = AsyncMock()
-    mgr = _make_mgr(session=first_session)
-    callback = {
-        "origin": "event",
-        "status": "completed",
-        "summary": "remember this image",
-        "detail": "remember this image",
-        "delivery_mode": "passive",
-        "media_images": ["deferred-image"],
-    }
-    mgr.enqueue_agent_callback(callback)
-
-    assert await mgr.try_stream_passive_callback_media_now(
-        callback,
-        first_session,
-    ) is True
-    assert await mgr._stream_passive_callback_media(
-        [callback],
-        first_session,
-    ) == ""
-    first_session.stream_image.assert_awaited_once()
-
-    assert await mgr._stream_passive_callback_media(
-        [callback],
-        second_session,
-    ) == ""
-    second_session.stream_image.assert_awaited_once()
-
-
-async def test_old_session_rejection_cannot_undo_new_session_delivery():
-    rejection_handlers = []
-
-    def _session():
-        session = _make_voice_sess()
-        session._supports_native_image = True
-
-        async def _stream_image(
-            _image_b64,
-            *,
-            bypass_rate_limit=False,
-            cache_latest=True,
-            on_rejected=None,
-        ):
-            rejection_handlers.append(on_rejected)
-
-        session.stream_image = _stream_image
-        return session
-
-    first_session = _session()
-    second_session = _session()
-    mgr = _make_mgr(session=first_session)
-    callback = {
-        "origin": "event",
-        "status": "completed",
-        "summary": "remember this image",
-        "detail": "remember this image",
-        "delivery_mode": "passive",
-        "media_images": ["deferred-image"],
-    }
-    mgr.enqueue_agent_callback(callback)
-
-    assert await mgr.try_stream_passive_callback_media_now(
-        callback,
-        first_session,
-    ) is True
-    assert await mgr._stream_passive_callback_media(
-        [callback],
-        second_session,
-    ) == ""
-
-    rejection_handlers[0]("old session rejected late")
-
-    assert mgr.pending_agent_callbacks == [callback]
-    assert await mgr._stream_passive_callback_media(
-        [callback],
-        second_session,
-    ) == ""
-    assert len(rejection_handlers) == 2
 
 
 async def test_text_drain_includes_non_native_image_description(monkeypatch):
@@ -669,59 +418,6 @@ async def test_text_drain_retains_image_when_non_native_description_is_empty(
     assert mgr.pending_agent_callbacks == [callback]
     assert callback["media_images"] == ["deferred-image"]
     assert not callback.get(SWAP_PRIME_DELIVERY_CLAIM_KEY)
-
-
-async def test_text_drain_bounds_images_across_callback_snapshot():
-    session = MagicMock(spec=OmniOfflineClient)
-    session.stream_images = AsyncMock()
-    mgr = _make_mgr(session=session)
-    callbacks = [
-        {
-            "delivery_mode": "passive",
-            "summary": f"callback-{index}",
-            "media_images": ["eA=="],
-        }
-        for index in range(9)
-    ]
-    mgr.pending_agent_callbacks = callbacks.copy()
-
-    rendered = await mgr.drain_agent_callbacks_for_llm_with_media()
-
-    session.stream_images.assert_awaited_once_with(["eA=="] * 8)
-    assert "callback-7" in rendered
-    assert "callback-8" not in rendered
-    assert mgr.pending_agent_callbacks == [callbacks[8]]
-
-
-async def test_text_drain_bounds_total_image_bytes_across_callback_snapshot(
-    monkeypatch,
-):
-    from main_logic import proactive_delivery
-
-    monkeypatch.setattr(proactive_delivery, "CALLBACK_IMAGE_MAX_BYTES", 2)
-    session = MagicMock(spec=OmniOfflineClient)
-    session.stream_images = AsyncMock()
-    mgr = _make_mgr(session=session)
-    callbacks = [
-        {
-            "delivery_mode": "passive",
-            "summary": "first callback",
-            "media_images": ["eA=="],
-        },
-        {
-            "delivery_mode": "passive",
-            "summary": "second callback",
-            "media_images": ["eHg="],
-        },
-    ]
-    mgr.pending_agent_callbacks = callbacks.copy()
-
-    rendered = await mgr.drain_agent_callbacks_for_llm_with_media()
-
-    session.stream_images.assert_awaited_once_with(["eA=="])
-    assert "first callback" in rendered
-    assert "second callback" not in rendered
-    assert mgr.pending_agent_callbacks == [callbacks[1]]
 
 
 def test_enqueue_agent_callback_uses_generic_context_source_budget(monkeypatch):
@@ -1372,69 +1068,6 @@ async def test_text_mode_resolves_delivery_ack_after_committed_output_before_com
     assert future.result() is True
 
 
-async def test_respond_batch_continues_callbacks_beyond_image_count_budget():
-    sess = _CapturingImageOmniOffline()
-    mgr = _make_mgr(session=sess)
-    retry_complete = asyncio.Event()
-    retry_tasks: list[asyncio.Task] = []
-
-    def _run_retry(coro):
-        task = asyncio.create_task(coro)
-        retry_tasks.append(task)
-        task.add_done_callback(lambda _task: retry_complete.set())
-
-    mgr._fire_task = _run_retry
-    callbacks = [
-        {
-            "delivery_mode": "proactive",
-            "status": "completed",
-            "summary": f"callback-{index}",
-            "media_images": ["eA=="],
-        }
-        for index in range(9)
-    ]
-    mgr.pending_agent_callbacks = callbacks.copy()
-
-    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
-
-    assert delivered is True
-    await asyncio.wait_for(retry_complete.wait(), timeout=1.0)
-    await asyncio.gather(*retry_tasks)
-    assert sess.image_batches == [["eA=="] * 8, ["eA=="]]
-    assert mgr.pending_agent_callbacks == []
-
-
-async def test_respond_batch_defers_callbacks_beyond_image_byte_budget(
-    monkeypatch,
-):
-    from main_logic import proactive_delivery
-
-    monkeypatch.setattr(proactive_delivery, "CALLBACK_IMAGE_MAX_BYTES", 2)
-    sess = _CapturingImageOmniOffline()
-    mgr = _make_mgr(session=sess)
-    callbacks = [
-        {
-            "delivery_mode": "proactive",
-            "status": "completed",
-            "summary": "first callback",
-            "media_images": ["eA=="],
-        },
-        {
-            "delivery_mode": "proactive",
-            "status": "completed",
-            "summary": "second callback",
-            "media_images": ["eHg="],
-        },
-    ]
-    mgr.pending_agent_callbacks = callbacks.copy()
-
-    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
-
-    assert delivered is True
-    assert sess.image_batches == [["eA=="]]
-    assert mgr.pending_agent_callbacks == [callbacks[1]]
-
-
 async def test_text_mode_resolves_delivery_ack_false_when_prompt_has_no_committed_output():
     sess = _FakeOmniOffline(delivered=False)
     mgr = _make_mgr(session=sess)
@@ -2016,44 +1649,6 @@ async def test_voice_mode_drops_permanently_oversized_image_and_delivers_text():
     assert sess.inject_calls == 1
     assert cb["media_images"] == ["valid-prefix", "valid-tail"]
     assert mgr.pending_agent_callbacks == []
-
-
-async def test_voice_respond_batch_defers_callbacks_beyond_image_budget():
-    sess = _make_voice_sess()
-    sess._supports_native_image = True
-    streamed: list[str] = []
-
-    async def _stream_image(
-        image_b64,
-        *,
-        bypass_rate_limit=False,
-        cache_latest=True,
-        on_rejected=None,
-    ):
-        assert bypass_rate_limit is True
-        assert cache_latest is False
-        assert on_rejected is not None
-        streamed.append(image_b64)
-
-    sess.stream_image = _stream_image
-    mgr = _make_mgr(session=sess)
-    callbacks = [
-        {
-            "delivery_mode": "proactive",
-            "status": "completed",
-            "summary": f"callback-{index}",
-            "media_images": ["eA=="],
-        }
-        for index in range(9)
-    ]
-    mgr.pending_agent_callbacks = callbacks.copy()
-
-    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
-
-    assert delivered is True
-    assert streamed == ["eA=="] * 8
-    assert sess.inject_calls == 1
-    assert mgr.pending_agent_callbacks == [callbacks[8]]
 
 
 async def test_standard_step_callback_image_description_shares_inject_ticket():
