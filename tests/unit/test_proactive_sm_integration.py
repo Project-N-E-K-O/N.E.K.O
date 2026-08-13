@@ -2574,3 +2574,90 @@ async def test_cat_greeting_episode_scene_is_request_local_and_keeps_existing_gu
         assert get_cat_greeting_episode_scene(episode, "en") in name_session.called_with[0]
         if master_name:
             assert master_name in name_session.called_with[0]
+
+
+# ---------------------------------------------------------------------------
+# Per-turn image budget at the two real consumption points
+#
+# Both paths flatten EVERY pending callback into one model turn. Batches build
+# up whenever the proactive claim is denied (user mid-conversation) and release
+# together, so a per-push cap alone does not bound the request. An over-limit
+# request also re-queues its whole snapshot on failure — it would retry forever
+# and wedge every later cue behind it.
+# ---------------------------------------------------------------------------
+
+
+def _budget_cb(name: str, image_count: int) -> dict:
+    return {
+        "_callback_delivery_id": "id-%s" % name,
+        "status": "completed",
+        "summary": "cue %s" % name,
+        "media_images": ["%s-img%d" % (name, i) for i in range(image_count)],
+    }
+
+
+async def test_text_mode_bounds_images_across_one_proactive_turn():
+    from main_logic.proactive_delivery import CALLBACK_IMAGE_MAX_COUNT
+
+    assert CALLBACK_IMAGE_MAX_COUNT == 8
+    sess = _CapturingImageOmniOffline()
+    mgr = _make_mgr(session=sess)
+    cbs = [_budget_cb("a", 4), _budget_cb("b", 4), _budget_cb("c", 4)]
+    mgr.pending_agent_callbacks = list(cbs)
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+
+    assert delivered is True
+    assert len(sess.image_batches) == 1
+    assert sess.image_batches[0] == [
+        "a-img0", "a-img1", "a-img2", "a-img3",
+        "b-img0", "b-img1", "b-img2", "b-img3",
+    ]
+    # The third cue is DEFERRED, not dropped: it goes back on the queue for the
+    # next turn rather than silently losing its images.
+    assert mgr.pending_agent_callbacks == [cbs[2]]
+
+
+async def test_text_mode_under_budget_batch_is_untouched():
+    """The bound must not disturb ordinary multi-cue batches."""
+    sess = _CapturingImageOmniOffline()
+    mgr = _make_mgr(session=sess)
+    cbs = [_budget_cb("a", 1), _budget_cb("b", 2)]
+    mgr.pending_agent_callbacks = list(cbs)
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+
+    assert delivered is True
+    assert sess.image_batches == [["a-img0", "b-img0", "b-img1"]]
+    assert mgr.pending_agent_callbacks == []
+
+
+async def test_voice_mode_bounds_images_across_one_proactive_turn():
+    sess = _make_voice_sess()
+    streamed: list[str] = []
+
+    async def _stream_image(
+        image_b64,
+        *,
+        bypass_rate_limit=False,
+        cache_latest=True,
+        on_rejected=None,
+    ):
+        streamed.append(image_b64)
+
+    sess.stream_image = _stream_image
+    mgr = _make_mgr(session=sess)
+    cbs = [_budget_cb("a", 4), _budget_cb("b", 4), _budget_cb("c", 4)]
+    mgr.pending_agent_callbacks = list(cbs)
+    mgr.pending_extra_replies = []
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+
+    assert delivered is True
+    assert streamed == [
+        "a-img0", "a-img1", "a-img2", "a-img3",
+        "b-img0", "b-img1", "b-img2", "b-img3",
+    ]
+    # Voice prunes pending only after a successful inject, so the deferred cue
+    # is re-queued by construction — it was simply never taken.
+    assert mgr.pending_agent_callbacks == [cbs[2]]

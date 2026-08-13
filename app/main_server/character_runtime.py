@@ -24,13 +24,22 @@ import sys
 import time
 import traceback
 from dataclasses import dataclass
+from io import BytesIO
 from typing import Any, Optional
 from urllib.parse import urlsplit
+
+from PIL import Image
 
 from config import MONITOR_SERVER_PORT, USER_NOTIFICATION_ERROR_MAX_CHARS
 from main_logic import core, cross_server
 from main_logic.agent_event_bus import notify_analyze_ack
-from main_logic.proactive_delivery import CALLBACK_EXPIRES_AT_KEY
+from main_logic.proactive_delivery import (
+    CALLBACK_EXPIRES_AT_KEY,
+    CALLBACK_IMAGE_MAX_COUNT,
+    CALLBACK_IMAGE_MAX_TOTAL_BYTES,
+    approx_base64_decoded_bytes,
+)
+from plugin.sdk.shared.core.images import MAX_SOURCE_IMAGE_PIXELS
 from utils.config_manager import get_reserved
 from utils.internal_http_client import get_internal_http_client
 
@@ -51,18 +60,59 @@ _PLUGIN_IMAGE_FETCH_BATCH_SIZE = 4
 #
 # The 8 images / 8 MiB figures are the contract PLUGIN_DEVELOPMENT_GUIDE.md
 # already advertises to plugin authors ("单条消息最多向模型注入 8 张、合计
-# 8 MiB 图片"); keep them in step with that doc.
-_PLUGIN_IMAGE_MAX_COUNT = 8
-_PLUGIN_IMAGE_TOTAL_MAX_BYTES = 8 * 1024 * 1024
+# 8 MiB 图片"). One push is one turn's worth, so share the constants with the
+# per-turn budget in proactive_delivery rather than keeping a second spelling.
+_PLUGIN_IMAGE_MAX_COUNT = CALLBACK_IMAGE_MAX_COUNT
+_PLUGIN_IMAGE_TOTAL_MAX_BYTES = CALLBACK_IMAGE_MAX_TOTAL_BYTES
 # The chat path is separate: URL-backed blocks cost the frontend a fetch (count
 # only), while inline data: URLs ride the WebSocket frame itself (count+bytes).
 _PLUGIN_CHAT_IMAGE_MAX_COUNT = 8
 _PLUGIN_CHAT_INLINE_TOTAL_MAX_BYTES = 8 * 1024 * 1024
+# Bounded base64 prefix that the dimension probe reads. Large enough for PNG
+# and JPEG headers; formats Pillow cannot parse from a truncated stream fall
+# back to a full decode.
+_PLUGIN_CHAT_HEADER_PREFIX_B64_CHARS = 64 * 1024
+
+_approx_decoded_bytes = approx_base64_decoded_bytes
 
 
-def _approx_decoded_bytes(encoded: str) -> int:
-    """Decoded size of a base64 payload, without materializing the bytes."""
-    return len(encoded) * 3 // 4
+def _inline_image_pixels_ok(encoded: str) -> bool:
+    """Reject decompression bombs before a data: URL reaches the browser.
+
+    The byte budget is structurally blind to these: a 20000x20000 single-colour
+    PNG compresses to ~1.2 MiB, sails through an 8 MiB cap, and costs the
+    renderer ~1.6 GB to decode. Only a pixel count catches it.
+
+    Reads the dimensions from a bounded base64 prefix so the probe does not
+    scale with payload size (~0.1 ms flat, against ~14 ms to base64-decode a
+    full 8 MiB payload just to read its header). WebP is the one format Pillow
+    cannot open from a truncated stream, so it takes the full-decode fallback —
+    harmless, because a weaponized image is small by construction.
+
+    Returns False when the dimensions cannot be established at all: an image
+    this host cannot inspect is one it should not hand to the renderer.
+    """
+    head = encoded[:_PLUGIN_CHAT_HEADER_PREFIX_B64_CHARS]
+    head = head[: len(head) - (len(head) % 4)]
+    for candidate in (head, encoded):
+        if not candidate:
+            continue
+        try:
+            raw = base64.b64decode(candidate)
+        except Exception:
+            return False
+        try:
+            with Image.open(BytesIO(raw)) as image:
+                width, height = image.size
+        except Image.DecompressionBombError:
+            # Already past Pillow's own ceiling; a full decode cannot help.
+            return False
+        except Exception:
+            continue
+        if width <= 0 or height <= 0:
+            return False
+        return width * height <= MAX_SOURCE_IMAGE_PIXELS
+    return False
 
 
 def _is_local_plugin_media_url(url: str) -> bool:
@@ -114,6 +164,7 @@ def _build_plugin_chat_blocks(
     image_count = 0
     inline_bytes = 0
     dropped_images = 0
+    bomb_images = 0
     for part in parts:
         if not isinstance(part, dict):
             continue
@@ -141,6 +192,11 @@ def _build_plugin_chat_blocks(
             if inline_bytes + decoded_bytes > _PLUGIN_CHAT_INLINE_TOTAL_MAX_BYTES:
                 dropped_images += 1
                 continue
+            if not _inline_image_pixels_ok(encoded):
+                # Bytes and pixels are independent axes; the budget above
+                # cannot see a bomb, so this check is not redundant with it.
+                bomb_images += 1
+                continue
             inline_bytes += decoded_bytes
             blocks.append({"type": "image", "url": f"data:{mime};base64,{encoded}"})
             image_count += 1
@@ -151,6 +207,13 @@ def _build_plugin_chat_blocks(
             dropped_images,
             _PLUGIN_CHAT_IMAGE_MAX_COUNT,
             _PLUGIN_CHAT_INLINE_TOTAL_MAX_BYTES,
+        )
+    if bomb_images:
+        logger.warning(
+            "[EventBus] %d inline chat image(s) dropped: unreadable header or "
+            "over the %d pixel decode limit",
+            bomb_images,
+            MAX_SOURCE_IMAGE_PIXELS,
         )
     return blocks
 

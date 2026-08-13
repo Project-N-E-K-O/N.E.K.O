@@ -36,6 +36,7 @@ from main_logic.proactive_delivery import (
     VOICE_DELIVERY_COMMITTED_KEY,
     callback_is_expired,
     resolve_callback_delivery_ack,
+    split_callbacks_by_image_budget,
 )
 from config import ANTI_REPEAT_EXEMPT_SOURCE_TAGS
 from utils.language_utils import normalize_language_code, get_global_language_full
@@ -959,6 +960,22 @@ class ProactiveMixin:
                 if not voice_snapshot:
                     self.proactive_manager.release_inflight_noop()
                     return False
+                # Same one-turn image budget as the text path. Trim BEFORE the
+                # commit mark so deferred cbs are never marked committed; they
+                # are still in pending_agent_callbacks (voice prunes only after
+                # a successful inject), so dropping them here re-queues them by
+                # construction — no explicit put-back.
+                _voice_taken, _voice_overflow = split_callbacks_by_image_budget(
+                    voice_snapshot
+                )
+                if _voice_overflow:
+                    voice_snapshot[:] = _voice_taken
+                    logger.info(
+                        "[%s] proactive image budget (voice): streaming %d cb(s), deferring %d to the next turn",
+                        self.lanlan_name,
+                        len(_voice_taken),
+                        len(_voice_overflow),
+                    )
                 self._mark_voice_delivery_committed(voice_snapshot)
                 voice_commit_snapshot = tuple(voice_snapshot)
                 voice_media_events: list[tuple[dict, dict]] = []
@@ -1394,6 +1411,29 @@ class ProactiveMixin:
             if not active_callbacks:
                 if topic_hint_sent:
                     await self.send_cancel_topic_hint(turn_id=proactive_sid)
+                self.proactive_manager.release_inflight_noop()
+                return False
+            # One turn's image budget. Every pending proactive callback drains
+            # into this single prompt_ephemeral, so without the split a batch
+            # that accumulated while the user was talking can exceed the
+            # provider's request limit — and the caller's exception path
+            # re-queues the WHOLE snapshot, so an over-limit batch would retry
+            # forever and wedge every later cue behind it.
+            active_callbacks, _image_overflow = split_callbacks_by_image_budget(
+                active_callbacks
+            )
+            if _image_overflow:
+                # Still pruned from pending above; put them back so the next
+                # turn picks them up instead of dropping them on the floor.
+                self.pending_agent_callbacks.extend(_image_overflow)
+                logger.info(
+                    "[%s] proactive image budget: delivering %d cb(s), deferring %d to the next turn",
+                    self.lanlan_name,
+                    len(active_callbacks),
+                    len(_image_overflow),
+                )
+            callbacks_snapshot[:] = active_callbacks
+            if not active_callbacks:
                 self.proactive_manager.release_inflight_noop()
                 return False
             _proactive_images: list = []

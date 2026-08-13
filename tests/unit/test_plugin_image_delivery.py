@@ -8,6 +8,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from PIL import Image
 
+from plugin.sdk.shared.core.images import MAX_SOURCE_IMAGE_PIXELS
+
 
 pytestmark = pytest.mark.unit
 
@@ -1189,6 +1191,35 @@ def test_chat_blocks_cap_image_count_and_keep_text_in_order() -> None:
     assert blocks[1] == {"type": "text", "text": "caption 0"}
 
 
+def _noise_png_base64(target_bytes: int) -> str:
+    """A REAL png of roughly ``target_bytes``, with a modest pixel count.
+
+    Random noise does not compress, so the payload tracks the raw pixel bytes.
+    Must be a decodable image: the inline path now probes dimensions, so a
+    ``"A" * n`` stand-in would be rejected as unreadable rather than by budget.
+    """
+    import os
+
+    width = 1000
+    height = max(1, target_bytes // 3 // width)
+    source = BytesIO()
+    Image.frombytes(
+        "RGB", (width, height), os.urandom(width * height * 3)
+    ).save(source, format="PNG")
+    return base64.b64encode(source.getvalue()).decode("ascii")
+
+
+def _bomb_png_base64(width: int = 12000, height: int = 12000) -> str:
+    """A decompression bomb: ~440 KiB on the wire, ~0.58 GB decoded.
+
+    12000x12000 = 144 MP sits UNDER Pillow's own 178 MP ceiling on purpose, so
+    this exercises the host's pixel check rather than Pillow's built-in guard.
+    """
+    source = BytesIO()
+    Image.new("RGB", (width, height), "white").save(source, format="PNG")
+    return base64.b64encode(source.getvalue()).decode("ascii")
+
+
 def test_chat_blocks_cap_inline_data_url_bytes(monkeypatch) -> None:
     """Inline base64 rides the WebSocket frame, so it gets a byte budget too."""
     from app.main_server import character_runtime
@@ -1198,7 +1229,7 @@ def test_chat_blocks_cap_inline_data_url_bytes(monkeypatch) -> None:
         "_PLUGIN_CHAT_INLINE_TOTAL_MAX_BYTES",
         3 * 1024 * 1024,
     )
-    two_mib_b64 = "A" * (2 * 1024 * 1024 * 4 // 3)
+    two_mib_b64 = _noise_png_base64(2 * 1024 * 1024)
     parts = [
         {"type": "image", "binary_base64": two_mib_b64, "mime": "image/png"}
         for _ in range(3)
@@ -1207,6 +1238,81 @@ def test_chat_blocks_cap_inline_data_url_bytes(monkeypatch) -> None:
     blocks = character_runtime._build_ordered_plugin_chat_blocks(parts)
 
     assert len([b for b in blocks if b["type"] == "image"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# Decompression bombs
+#
+# Bytes and pixels are independent axes. A single-colour 12000x12000 PNG is
+# ~440 KiB on the wire — it sails through any byte budget — while the renderer
+# pays ~0.58 GB to decode it. Only a pixel check catches this class.
+# ---------------------------------------------------------------------------
+
+
+def test_decompression_bomb_is_invisible_to_the_byte_budget() -> None:
+    """Establishes WHY the pixel check is not redundant with the byte cap."""
+    from app.main_server import character_runtime
+
+    bomb = _bomb_png_base64()
+
+    assert character_runtime._approx_decoded_bytes(bomb) < (
+        character_runtime._PLUGIN_CHAT_INLINE_TOTAL_MAX_BYTES
+    )
+    assert 12000 * 12000 > MAX_SOURCE_IMAGE_PIXELS
+
+
+def test_chat_blocks_drop_decompression_bombs() -> None:
+    """A bomb never becomes a data: URL the renderer has to decode."""
+    from app.main_server.character_runtime import _build_ordered_plugin_chat_blocks
+
+    blocks = _build_ordered_plugin_chat_blocks([
+        {"type": "image", "binary_base64": _bomb_png_base64(), "mime": "image/png"},
+        {"type": "text", "text": "surrounding caption"},
+    ])
+
+    assert [b["type"] for b in blocks] == ["text"]
+
+
+def test_chat_blocks_keep_ordinary_inline_images() -> None:
+    """The pixel check must not reject legitimate images."""
+    from app.main_server.character_runtime import _build_ordered_plugin_chat_blocks
+
+    blocks = _build_ordered_plugin_chat_blocks([
+        {"type": "image", "binary_base64": _inline_png_base64(), "mime": "image/png"},
+    ])
+
+    assert len(blocks) == 1
+    assert blocks[0]["url"].startswith("data:image/png;base64,")
+
+
+def test_chat_blocks_drop_unreadable_inline_payloads() -> None:
+    """Bytes this host cannot inspect are not handed to the renderer."""
+    from app.main_server.character_runtime import _build_ordered_plugin_chat_blocks
+
+    blocks = _build_ordered_plugin_chat_blocks([
+        {"type": "image", "binary_base64": "bm90LWFuLWltYWdl", "mime": "image/png"},
+    ])
+
+    assert blocks == []
+
+
+def test_pixel_probe_reads_dimensions_from_a_bounded_prefix() -> None:
+    """The probe must not scale with payload size.
+
+    A full base64 decode of an 8 MiB payload costs ~14 ms; reading the header
+    off a bounded prefix is ~0.1 ms regardless of size. Guard the prefix bound
+    so nobody "simplifies" it into a full decode.
+    """
+    from app.main_server import character_runtime
+
+    assert character_runtime._PLUGIN_CHAT_HEADER_PREFIX_B64_CHARS == 64 * 1024
+    big = _noise_png_base64(4 * 1024 * 1024)
+    assert len(big) > character_runtime._PLUGIN_CHAT_HEADER_PREFIX_B64_CHARS
+    # Truncating everything past the prefix still yields a verdict, which is
+    # only possible if the probe never needed the tail.
+    head = big[: character_runtime._PLUGIN_CHAT_HEADER_PREFIX_B64_CHARS]
+    assert character_runtime._inline_image_pixels_ok(head) is True
+    assert character_runtime._inline_image_pixels_ok(big) is True
 
 
 def test_chat_blocks_url_images_cost_no_inline_budget() -> None:
