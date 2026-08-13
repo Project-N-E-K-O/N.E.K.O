@@ -12,6 +12,7 @@ import pytest
 
 from main_routers.characters_router import language_preference as preference_router
 from main_routers.characters_router import crud as characters_crud
+from main_routers.config_router import language as config_language_router
 from main_routers.system_router import _shared as system_router_shared
 from main_logic import cross_server
 from main_logic.core.lifecycle import LifecycleMixin
@@ -28,6 +29,16 @@ LANGUAGE_LISTENERS_START_ANCHOR = (
 LANGUAGE_LISTENERS_END_ANCHOR = (
     "window.addEventListener('neko:new-user-icebreaker-ended'"
 )
+
+
+def _allow_ui_language_mutation(monkeypatch):
+    monkeypatch.setattr(
+        config_language_router,
+        "_validate_local_mutation_request",
+        lambda *_args, **_kwargs: None,
+    )
+
+
 def _slice_between(source: str, start_anchor: str, end_anchor: str, label: str) -> str:
     start = source.find(start_anchor)
     assert start >= 0, f"{label} 起始锚点已失效，请同步更新测试"
@@ -1362,7 +1373,7 @@ def test_conversation_language_hydration_timeout_and_late_response_runtime(node_
     ).read_text(encoding="utf-8")
     slices = {
         "RESOLVERS": _slice_between(
-            websocket_source, "function getConversationLanguageForCurrentCharacter()",
+            websocket_source, "function getLiveRendererLanguage()",
             HYDRATION_START_ANCHOR, "conversation language resolvers",
         ),
         "HYDRATION": _slice_between(
@@ -1388,6 +1399,7 @@ def test_conversation_language_hydration_timeout_and_late_response_runtime(node_
         """
         const assert = require('node:assert/strict');
         let fallback = 'en', cached = '', untrusted = false, character = 'Mimi';
+        const preferenceRevisions = new Map();
         const S = {
           _conversationLanguageHydrationId: 0,
           _conversationLanguageClearPending: null,
@@ -1400,12 +1412,15 @@ def test_conversation_language_hydration_timeout_and_late_response_runtime(node_
           addEventListener(type, callback) { listeners[type] = callback; },
           setConversationLanguagePreference(language, characterName, options) {
             untrusted = false;
+            preferenceRevisions.set(characterName, (preferenceRevisions.get(characterName) || 0) + 1);
             events.push({ type: 'cache', language, characterName, options });
           },
           clearConversationLanguagePreference(characterName, options) {
             untrusted = false;
+            preferenceRevisions.set(characterName, (preferenceRevisions.get(characterName) || 0) + 1);
             events.push({ type: 'clear-cache', characterName, options });
           },
+          getConversationLanguagePreferenceRevision: name => preferenceRevisions.get(name) || 0,
           getConversationLanguagePreference: () => fallback,
           getCachedConversationLanguagePreference: () => cached,
           getExplicitConversationLanguagePreference: () => untrusted ? '' : cached,
@@ -1610,6 +1625,77 @@ def test_conversation_language_hydration_timeout_and_late_response_runtime(node_
           assert.deepEqual(kinds().slice(-3), ['cache', 'sync', 'greeting']);
           cached = '';
 
+          // A successful empty response uses the renderer locale that is live
+          // when it applies, not the backend's stale effective fallback.
+          resetEvents();
+          task = start('Renderer', 'en');
+          const rendererFetch = fetches.at(-1);
+          fallback = 'ja';
+          rendererFetch.resolve(response({
+            success: true, language: '', effective_language: 'ru'
+          }));
+          assert.equal(await task, 'ja');
+          assert.deepEqual(state(), ['', '']);
+          assert.equal(events.at(-2).payload.render_language, 'ja');
+
+          // Shared storage can expose a newer explicit value before this
+          // document receives its storage event. Preserve only values that
+          // appeared while the request was in flight.
+          resetEvents();
+          cached = '';
+          task = start('SiblingWrite', 'en');
+          const siblingFetch = fetches.at(-1);
+          cached = 'ja';
+          siblingFetch.resolve(response({
+            success: true, language: '', effective_language: 'ru'
+          }));
+          assert.equal(await task, 'ja');
+          assert.deepEqual(state(), ['ja', 'ja']);
+          assert.deepEqual(kinds(), ['cache', 'sync', 'greeting']);
+
+          resetEvents();
+          cached = 'ko';
+          task = start('StartupCache', 'en');
+          fetches.at(-1).resolve(response({
+            success: true, language: '', effective_language: 'ru'
+          }));
+          assert.equal(await task, 'en');
+          assert.deepEqual(state(), ['', '']);
+          assert.deepEqual(kinds(), ['clear-cache', 'socket-send', 'greeting']);
+
+          resetEvents();
+          cached = 'ko';
+          task = start('RevisionClear', 'en');
+          window.clearConversationLanguagePreference('RevisionClear', {
+            dispatch: false, source: 'server'
+          });
+          cached = '';
+          resetEvents();
+          fetches.at(-1).resolve(response({ success: true, language: 'ko' }));
+          assert.equal(await task, 'en');
+          assert.deepEqual(state(), ['', '']);
+          assert.deepEqual(kinds(), ['greeting']);
+
+          resetEvents();
+          cached = 'ja';
+          task = start('RevisionTimeout', 'en');
+          window.setConversationLanguagePreference('ja', 'RevisionTimeout', {
+            dispatch: false, source: 'server'
+          });
+          resetEvents();
+          assert.equal(await timeout(task), 'ja');
+          assert.equal(untrusted, false);
+          assert.deepEqual(state(), ['ja', 'ja']);
+          assert.deepEqual(kinds(), ['greeting']);
+          await resolveLate(fetches.length - 1, {
+            success: true, language: 'ko'
+          });
+          assert.equal(untrusted, false);
+          assert.deepEqual(state(), ['ja', 'ja']);
+          assert.deepEqual(kinds(), ['greeting', 'greeting']);
+          cached = '';
+          character = 'Mimi';
+
           resetEvents();
           fallback = 'pt';
           listeners.storage({
@@ -1659,6 +1745,22 @@ def test_conversation_language_hydration_timeout_and_late_response_runtime(node_
     for marker, source in slices.items():
         harness = harness.replace(f"__{marker}__", source)
     _assert_node_ok(node_path, harness)
+
+
+@pytest.mark.unit
+def test_character_form_retranslates_locale_dependent_content():
+    source = (
+        PROJECT_ROOT
+        / "static/js/character_card_manager/card-form-and-actions.js"
+    ).read_text(encoding="utf-8")
+
+    assert "window.removeEventListener('localechange', previousForm._localeChangeHandler)" in source
+    assert "window.addEventListener('localechange', form._localeChangeHandler)" in source
+    assert "form._voiceLocaleRefreshSequence !== refreshSequence" in source
+    assert "form._voicesLoadPromise = refreshVoiceCatalog(voiceSelect.value);" in source
+    assert "data-i18n=\"character.personalitySelect\"" in source
+    assert "data-i18n=\"character.personalityClear\"" in source
+    assert "defaultOption.dataset.i18n = 'character.voiceNotSet'" in source
 
 
 @pytest.mark.unit
@@ -1950,3 +2052,199 @@ async def test_memory_barrier_timeout_keeps_late_cleanup_armed():
         "Mimi",
     )
     assert calls == ["clear", "clear"]
+
+
+class _UiLanguageRequest:
+    base_url = "http://localhost:48911/"
+    method = "PUT"
+    url = SimpleNamespace(path="/api/config/ui-language")
+
+    def __init__(self, language="ja", headers=None):
+        self.language = language
+        self.headers = headers or {}
+
+    async def json(self):
+        return {"language": self.language}
+
+
+def _ui_payload(result):
+    return result if isinstance(result, dict) else json.loads(result.body)
+
+
+def _install_ui_language_runtime(
+    monkeypatch,
+    *,
+    apply_language,
+    save_language,
+    previous="en",
+    current="Mimi",
+):
+    class ConfigManager:
+        async def aload_characters(self):
+            characters = {current: {}} if current else {}
+            return {"当前猫娘": current, "猫娘": characters}
+
+    async def load_language():
+        return previous
+
+    monkeypatch.setattr(config_language_router, "aload_ui_language_override", load_language)
+    monkeypatch.setattr(config_language_router, "asave_ui_language_override", save_language)
+    monkeypatch.setattr(config_language_router, "get_config_manager", lambda: ConfigManager())
+    monkeypatch.setattr(
+        preference_router,
+        "apply_character_language_preference",
+        apply_language,
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_ui_language_mutation_requires_local_request_auth(monkeypatch):
+    saved = []
+
+    async def save_language(language):
+        saved.append(language)
+        return True
+
+    async def apply_language(_name, language):
+        return {"success": True, "language": language}
+
+    _install_ui_language_runtime(
+        monkeypatch,
+        apply_language=apply_language,
+        save_language=save_language,
+        current="",
+    )
+    monkeypatch.setattr(system_router_shared, "AUTOSTART_CSRF_TOKEN", "token")
+    monkeypatch.setattr(
+        system_router_shared,
+        "AUTOSTART_ALLOWED_ORIGINS",
+        ("http://localhost:48911",),
+    )
+
+    denied = await config_language_router.set_ui_language_api(_UiLanguageRequest())
+    assert denied.status_code == 403
+    assert saved == []
+
+    accepted = await config_language_router.set_ui_language_api(
+        _UiLanguageRequest(headers={
+            "X-CSRF-Token": "token",
+            "origin": "http://localhost:48911",
+        })
+    )
+    assert accepted["success"] is True
+    assert accepted["language"] == "ja"
+    assert saved == ["ja"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("mode", "status", "saved", "ui_language", "partial"),
+    [
+        ("partial", None, ["ja"], None, False),
+        ("rollback", 500, ["ja", "en"], "en", False),
+        ("rollback_false", 500, ["ja", "en"], "ja", True),
+        ("exception", 503, ["ja", "en"], "ja", True),
+    ],
+)
+async def test_ui_language_sync_reports_durable_outcome(
+    monkeypatch,
+    mode,
+    status,
+    saved,
+    ui_language,
+    partial,
+):
+    _allow_ui_language_mutation(monkeypatch)
+    save_calls = []
+
+    async def save_language(language):
+        save_calls.append(language)
+        if len(save_calls) > 1 and mode == "rollback_false":
+            return False
+        if len(save_calls) > 1 and mode == "exception":
+            raise OSError("disk unavailable")
+        return True
+
+    async def apply_language(_name, language):
+        if mode == "partial":
+            return {
+                "success": False,
+                "partial_success": True,
+                "language": language,
+                "error": "recent context cleanup failed",
+            }
+        if mode == "exception":
+            raise RuntimeError("memory server unavailable")
+        return {"success": False, "error": "character sync failed"}
+
+    _install_ui_language_runtime(
+        monkeypatch,
+        apply_language=apply_language,
+        save_language=save_language,
+    )
+    result = await config_language_router.set_ui_language_api(_UiLanguageRequest())
+    payload = _ui_payload(result)
+
+    assert (getattr(result, "status_code", None)) == status
+    assert save_calls == saved
+    if mode == "partial":
+        assert payload["success"] is True
+        assert payload["partial_success"] is True
+        assert payload["conversation_sync"]["language"] == "ja"
+    else:
+        assert payload["success"] is False
+        assert payload["ui_language"] == ui_language
+        assert payload["ui_language_rollback_succeeded"] is (not partial)
+        assert payload.get("partial_persistence", False) is partial
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_ui_language_sync_serializes_rollback_before_newer_write(monkeypatch):
+    _allow_ui_language_mutation(monkeypatch)
+    current = {"value": "en"}
+    saved = []
+    first_sync_started = asyncio.Event()
+    release_first_sync = asyncio.Event()
+
+    async def load_language():
+        return current["value"]
+
+    async def save_language(language):
+        saved.append(language)
+        current["value"] = language
+        return True
+
+    async def apply_language(_name, language):
+        if language == "ja":
+            first_sync_started.set()
+            await release_first_sync.wait()
+            return {"success": False, "error": "sync failed"}
+        return {"success": True, "language": language}
+
+    _install_ui_language_runtime(
+        monkeypatch,
+        apply_language=apply_language,
+        save_language=save_language,
+    )
+    monkeypatch.setattr(config_language_router, "aload_ui_language_override", load_language)
+
+    first = asyncio.create_task(
+        config_language_router.set_ui_language_api(_UiLanguageRequest("ja"))
+    )
+    await asyncio.wait_for(first_sync_started.wait(), timeout=1)
+    second = asyncio.create_task(
+        config_language_router.set_ui_language_api(_UiLanguageRequest("ko"))
+    )
+    await asyncio.sleep(0)
+    assert saved == ["ja"]
+    assert not second.done()
+
+    release_first_sync.set()
+    first_result, second_result = await asyncio.gather(first, second)
+    assert getattr(first_result, "status_code", None) == 500
+    assert second_result["language"] == "ko"
+    assert saved == ["ja", "en", "ko"]
+    assert current["value"] == "ko"

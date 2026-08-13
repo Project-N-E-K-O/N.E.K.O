@@ -433,6 +433,125 @@ def test_character_card_manager_voice_dropdown_prefers_clone_prefix(
 
 
 @pytest.mark.frontend
+def test_character_language_fallback_can_be_pinned_by_reselecting_it(
+    mock_page: Page,
+    running_server: str,
+):
+    _open_character_card_manager(mock_page, running_server)
+
+    state = mock_page.evaluate(
+        """
+        async () => {
+            const originalFetch = window.fetch.bind(window);
+            const saves = [];
+            window.getConversationLanguagePreference = () => '';
+            window.getExplicitConversationLanguagePreference = () => '';
+            window.clearConversationLanguagePreference = () => {};
+            window.setConversationLanguagePreference = () => {};
+            window.nekoLocalMutationSecurity = {
+                getMutationHeaders: async () => ({ 'X-CSRF-Token': 'test-token' })
+            };
+            window.fetch = async (input, init = {}) => {
+                const url = typeof input === 'string' ? input : input.url;
+                const path = new URL(url, window.location.origin).pathname;
+                if (path === '/api/characters/character/Mimi/language-preference') {
+                    if ((init.method || 'GET').toUpperCase() === 'PUT') {
+                        saves.push(JSON.parse(init.body));
+                        return new Response(JSON.stringify({
+                            success: true,
+                            language: 'ja'
+                        }), {
+                            status: 200,
+                            headers: { 'Content-Type': 'application/json' }
+                        });
+                    }
+                    return new Response(JSON.stringify({
+                        success: true,
+                        language: '',
+                        effective_language: 'ja'
+                    }), {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                }
+                if (path === '/api/characters/voices') {
+                    return new Response(JSON.stringify({
+                        voices: {}, free_voices: {}, native_voices: {}
+                    }), {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                }
+                if (path === '/api/characters/custom_tts_voices') {
+                    return new Response(JSON.stringify({ success: true, voices: [] }), {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                }
+                return originalFetch(input, init);
+            };
+
+            const host = document.createElement('div');
+            document.body.appendChild(host);
+            buildCatgirlDetailForm('Mimi', {}, false, host);
+
+            const select = host.querySelector('[data-testid="character-language-preference"]');
+            const customSelect = host.querySelector('.language-preference-custom-select');
+            for (let attempt = 0; attempt < 50; attempt += 1) {
+                if (!select.disabled && select.dataset.durableLanguagePreference === '') break;
+                await new Promise(resolve => setTimeout(resolve, 10));
+            }
+
+            const optionValues = Array.from(select.options).map(option => option.value);
+            const before = {
+                value: select.value,
+                durable: select.dataset.durableLanguagePreference,
+                saves: saves.length,
+                disabled: select.disabled
+            };
+            customSelect.querySelector('.voice-select-header').click();
+            customSelect.querySelector('.voice-select-option.selected').click();
+            for (let attempt = 0; attempt < 50 && saves.length < 1; attempt += 1) {
+                await new Promise(resolve => setTimeout(resolve, 10));
+            }
+            for (let attempt = 0; attempt < 50 && select.disabled; attempt += 1) {
+                await new Promise(resolve => setTimeout(resolve, 10));
+            }
+
+            // Once the same value is durable, selecting it again is a no-op.
+            customSelect.querySelector('.voice-select-header').click();
+            customSelect.querySelector('.voice-select-option.selected').click();
+            await new Promise(resolve => setTimeout(resolve, 20));
+
+            return {
+                before,
+                after: {
+                    value: select.value,
+                    durable: select.dataset.durableLanguagePreference,
+                    saves,
+                    disabled: select.disabled
+                },
+                optionValues
+            };
+        }
+        """
+    )
+
+    assert state["optionValues"] == [
+        "zh-CN", "zh-TW", "en", "ja", "ko", "ru", "es", "pt"
+    ]
+    assert state["before"] == {
+        "value": "ja", "durable": "", "saves": 0, "disabled": False
+    }
+    assert state["after"] == {
+        "value": "ja",
+        "durable": "ja",
+        "saves": [{"language": "ja"}],
+        "disabled": False,
+    }
+
+
+@pytest.mark.frontend
 def test_character_card_manager_voice_dropdown_groups_by_provider_source(
     mock_page: Page,
     running_server: str,

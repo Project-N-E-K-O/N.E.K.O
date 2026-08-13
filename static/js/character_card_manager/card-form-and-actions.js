@@ -84,10 +84,32 @@ function _isCharacterLanguageHydrationCurrent(select, hydrationId) {
     return select.dataset.languageHydrationId === hydrationId;
 }
 
+function _setCharacterLanguageDurableEvidence(select, language) {
+    const normalizedLanguage = String(language || '').trim();
+    if (
+        normalizedLanguage
+        && !CHARACTER_LANGUAGE_OPTIONS.some(option => option.code === normalizedLanguage)
+    ) {
+        // An invalid non-empty server value does not prove that the character
+        // has no durable preference. Keep the state unknown instead of making
+        // the displayed fallback eligible for an overwrite.
+        delete select.dataset.durableLanguagePreference;
+        return;
+    }
+    select.dataset.durableLanguagePreference = normalizedLanguage;
+}
+
+function _canPersistDisplayedCharacterLanguage(select, language) {
+    return select.dataset.durableLanguagePreference === ''
+        && select.value === language
+        && CHARACTER_LANGUAGE_OPTIONS.some(option => option.code === language);
+}
+
 function _applyCharacterLanguagePreferenceEvent(select, selectUi, language) {
     _nextCharacterLanguageHydrationId(select);
     select.value = language;
     select.dataset.previousValue = language;
+    _setCharacterLanguageDurableEvidence(select, language);
     select.dataset.i18nTitle = 'character.languagePreferenceDescription';
     select.title = _characterLanguageT(
         'character.languagePreferenceDescription',
@@ -138,6 +160,7 @@ async function _hydrateCharacterLanguagePreference(name, select, selectUi) {
             return;
         }
         const language = payload.language || payload.effective_language;
+        _setCharacterLanguageDurableEvidence(select, payload.language);
         if (!payload.language && typeof window.clearConversationLanguagePreference === 'function') {
             // A successful empty response is authoritative even if a malformed
             // effective fallback cannot be shown by the control.
@@ -202,6 +225,7 @@ async function _saveCharacterLanguagePreference(name, select, selectUi) {
         );
         if (durableSave && payload.language === language) {
             select.dataset.previousValue = language;
+            select.dataset.durableLanguagePreference = language;
             _cacheCharacterLanguagePreference(name, language, 'character-card-manager');
         }
         if (partialSave) {
@@ -258,6 +282,9 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     }
     if (previousForm && previousForm._languageSelectCleanup) {
         previousForm._languageSelectCleanup();
+    }
+    if (previousForm && previousForm._localeChangeHandler) {
+        window.removeEventListener('localechange', previousForm._localeChangeHandler);
     }
     if (previousForm && previousForm._characterPersonalityUpdateHandler) {
         window.removeEventListener('neko:character-personality-updated', previousForm._characterPersonalityUpdateHandler);
@@ -446,6 +473,10 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
         languageSelect.dataset.previousValue = languageSelect.value;
         languageField.appendChild(languageSelect);
         const languageSelectUi = _panelCreateVoiceSelectUi(languageSelect);
+        languageSelectUi.setOnReselect(function (language) {
+            if (!_canPersistDisplayedCharacterLanguage(languageSelect, language)) return;
+            void _saveCharacterLanguagePreference(name, languageSelect, languageSelectUi);
+        });
         languageSelect.addEventListener('change', function () {
             void _saveCharacterLanguagePreference(name, languageSelect, languageSelectUi);
         });
@@ -501,6 +532,7 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
         textareaEl.placeholder = (window.t && typeof window.t === 'function')
             ? window.t('character.detailDescriptionPlaceholder')
             : '可输入详细描述';
+        textareaEl.dataset.i18nPlaceholder = 'character.detailDescriptionPlaceholder';
         textareaEl.value = cat[k];
         fr.appendChild(textareaEl);
         wrapper.appendChild(fr);
@@ -613,6 +645,7 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
         textareaEl.placeholder = (window.t && typeof window.t === 'function')
             ? window.t('character.detailDescriptionPlaceholder')
             : '可输入详细描述';
+        textareaEl.dataset.i18nPlaceholder = 'character.detailDescriptionPlaceholder';
         fr.appendChild(textareaEl);
         wrapper.appendChild(fr);
 
@@ -701,6 +734,7 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     const personalityWrapper = document.createElement('div');
     personalityWrapper.className = 'field-row-wrapper personality-row';
     const personalityLabel = document.createElement('label');
+    personalityLabel.dataset.i18n = 'character.personalitySetting';
     personalityLabel.textContent = window.t ? window.t('character.personalitySetting') : '人格设定';
     personalityLabel.style.fontSize = '1rem';
     personalityWrapper.appendChild(personalityLabel);
@@ -719,6 +753,9 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     personalitySummary.textContent = personalitySelection.hasOverride
         ? personalitySelection.displayName
         : (window.t ? window.t('character.personalityUseDefault') : '跟随角色卡默认设定');
+    if (!personalitySelection.hasOverride) {
+        personalitySummary.dataset.i18n = 'character.personalityUseDefault';
+    }
     personalityRow.appendChild(personalitySummary);
     personalityWrapper.appendChild(personalityRow);
 
@@ -726,7 +763,7 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     personalitySelectBtn.type = 'button';
     personalitySelectBtn.className = 'btn sm row-action-btn personality-select-action';
     personalitySelectBtn.dataset.testid = 'character-personality-select';
-    personalitySelectBtn.innerHTML = '<img src="/static/icons/character_icon.png" alt="" class="personality-icon"> <span>'
+    personalitySelectBtn.innerHTML = '<img src="/static/icons/character_icon.png" alt="" class="personality-icon"> <span data-i18n="character.personalitySelect">'
         + (window.t ? window.t('character.personalitySelect') : '选择人格') + '</span>';
     personalitySelectBtn.disabled = !!isNew;
     personalitySelectBtn.addEventListener('click', async function () {
@@ -747,7 +784,7 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     personalityClearBtn.type = 'button';
     personalityClearBtn.className = 'btn sm delete row-action-btn personality-clear-action';
     personalityClearBtn.dataset.testid = 'character-personality-clear';
-    personalityClearBtn.innerHTML = '<img src="/static/icons/roload_icon.png" alt="" class="restore-icon"> <span>'
+    personalityClearBtn.innerHTML = '<img src="/static/icons/roload_icon.png" alt="" class="restore-icon"> <span data-i18n="character.personalityClear">'
         + (window.t ? window.t('character.personalityClear') : '恢复默认') + '</span>';
     personalityClearBtn.disabled = !personalitySelection.hasOverride;
     personalityClearBtn.addEventListener('click', async function () {
@@ -804,6 +841,7 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     const voiceWrapper = document.createElement('div');
     voiceWrapper.className = 'field-row-wrapper voice-row';
     const voiceLabel = document.createElement('label');
+    voiceLabel.dataset.i18n = 'character.voiceSetting';
     voiceLabel.textContent = window.t ? window.t('character.voiceSetting') : '音色设定';
     voiceLabel.style.fontSize = '1rem';
     voiceWrapper.appendChild(voiceLabel);
@@ -828,6 +866,7 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     voiceSelect.style.alignSelf = 'stretch';
     const defaultOption = document.createElement('option');
     defaultOption.value = '';
+    defaultOption.dataset.i18n = 'character.voiceNotSet';
     defaultOption.textContent = window.t ? window.t('character.voiceNotSet') : '未指定音色';
     voiceSelect.appendChild(defaultOption);
     voiceRow.appendChild(voiceSelect);
@@ -894,7 +933,8 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     saveButton.id = 'save-button';
     saveButton.className = 'btn sm settings-save-action';
     if (!isNew) saveButton.style.display = 'none';
-    saveButton.innerHTML = '<img src="/static/icons/set_on.png" alt="" class="save-icon"> <span>'
+    const saveButtonI18nKey = isNew ? 'character.confirmNewCatgirl' : 'character.saveChanges';
+    saveButton.innerHTML = '<img src="/static/icons/set_on.png" alt="" class="save-icon"> <span data-i18n="' + saveButtonI18nKey + '">'
         + (isNew
             ? (window.t ? window.t('character.confirmNewCatgirl') : '确认新猫娘')
             : (window.t ? window.t('character.saveChanges') : '保存修改'))
@@ -907,7 +947,7 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     cancelButton.id = 'cancel-button';
     cancelButton.className = 'btn sm settings-cancel-action';
     if (!isNew) cancelButton.style.display = 'none';
-    cancelButton.innerHTML = '<img src="/static/icons/close_button.png" alt="" class="cancel-icon"> <span>'
+    cancelButton.innerHTML = '<img src="/static/icons/close_button.png" alt="" class="cancel-icon"> <span data-i18n="character.cancel">'
         + (window.t ? window.t('character.cancel') : '取消') + '</span>';
     cancelButton.onclick = function () {
         if (saveButton) saveButton.style.display = 'none';
@@ -976,13 +1016,50 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
         });
     }
 
-    // 加载音色列表
-    const voicesLoadPromise = _loadPanelVoices(voiceSelect, String(cat['voice_id'] || '').trim()).then(() => {
-        voiceSelectUi.refresh();
-    }, () => {
-        voiceSelectUi.refresh();
-    });
+    const refreshVoiceCatalog = function (selectedVoiceId) {
+        const refreshSequence = (form._voiceLocaleRefreshSequence || 0) + 1;
+        form._voiceLocaleRefreshSequence = refreshSequence;
+        voiceSelectUi.setDisabled(true);
+        return _loadPanelVoices(voiceSelect, selectedVoiceId).then(() => {
+            if (form._voiceLocaleRefreshSequence !== refreshSequence || !form.isConnected) return;
+            voiceSelectUi.refresh();
+            voiceSelectUi.setDisabled(false);
+        }, () => {
+            if (form._voiceLocaleRefreshSequence !== refreshSequence || !form.isConnected) return;
+            voiceSelectUi.refresh();
+            voiceSelectUi.setDisabled(false);
+        });
+    };
+
+    // Keep unsaved edits in place while rebuilding locale-dependent voice labels.
+    const voicesLoadPromise = refreshVoiceCatalog(String(cat['voice_id'] || '').trim());
     form._voicesLoadPromise = voicesLoadPromise;
+
+    form._lastRenderedLocale = String(window.i18n && window.i18n.language || '');
+    form._localeChangeHandler = function () {
+        const currentLocale = String(window.i18n && window.i18n.language || '');
+        if (currentLocale && currentLocale === form._lastRenderedLocale) return;
+        form._lastRenderedLocale = currentLocale;
+
+        form.querySelectorAll('[data-character-field-name]').forEach(label => {
+            _panelSetFieldLabel(label, label.dataset.characterFieldName || '');
+        });
+        form.querySelectorAll('.setting-field-delete').forEach(_panelConfigureFieldDeleteButton);
+
+        const currentPersonality = readCharacterPersonalitySelection(cat);
+        if (currentPersonality.hasOverride) {
+            delete personalitySummary.dataset.i18n;
+            personalitySummary.textContent = currentPersonality.displayName;
+        } else {
+            personalitySummary.dataset.i18n = 'character.personalityUseDefault';
+            personalitySummary.textContent = window.t
+                ? window.t('character.personalityUseDefault')
+                : '跟随角色卡默认设定';
+        }
+
+        form._voicesLoadPromise = refreshVoiceCatalog(voiceSelect.value);
+    };
+    window.addEventListener('localechange', form._localeChangeHandler);
 
     form._previousVoiceId = String(cat['voice_id'] || '').trim();
     form._live2dModel = live2dPath;
@@ -1040,6 +1117,7 @@ function _panelAttachProfileNameLimiter(input) {
 // label 设置（支持i18n + 超长title提示）
 function _panelSetFieldLabel(labelEl, key) {
     const MAX_LABEL_LEN = 8;
+    labelEl.dataset.characterFieldName = key;
     let displayText = key;
     if (window.t && typeof window.t === 'function') {
         const profileLabelKey = 'characterProfile.labels.' + key;
@@ -1055,6 +1133,7 @@ function _panelSetFieldLabel(labelEl, key) {
         }
     }
     labelEl.textContent = displayText;
+    labelEl.removeAttribute('title');
     if (displayText.length > MAX_LABEL_LEN) {
         labelEl.title = displayText;
     }
@@ -1065,6 +1144,7 @@ function _panelConfigureFieldDeleteButton(button) {
         ? window.t('character.deleteField')
         : '删除设定';
     button.removeAttribute('title');
+    button.dataset.i18nAria = 'character.deleteField';
     button.setAttribute('aria-label', deleteText);
     button.innerHTML = '<img src="/static/icons/delete.png" alt="" class="delete-icon" aria-hidden="true">';
 }
@@ -1373,9 +1453,12 @@ function _panelCreateVoiceSelectUi(selectEl) {
         }
     }
 
+    let onReselect = null;
+
     function selectOptionValue(value) {
         if (selectEl.value === value) {
             closeDropdown(true);
+            if (typeof onReselect === 'function') onReselect(value);
             return;
         }
         selectEl.value = value;
@@ -1486,8 +1569,12 @@ function _panelCreateVoiceSelectUi(selectEl) {
         container,
         refresh,
         setDisabled,
+        setOnReselect(handler) {
+            onReselect = typeof handler === 'function' ? handler : null;
+        },
         destroy() {
             closeDropdown();
+            onReselect = null;
             selectEl.removeEventListener('change', syncSelectionState);
             document.removeEventListener('click', handleDocumentClick);
             document.removeEventListener('keydown', handleDocumentKeydown);
@@ -1510,6 +1597,7 @@ async function _loadPanelVoices(selectEl, currentVoiceId) {
             while (selectEl.firstChild) selectEl.removeChild(selectEl.firstChild);
             const defaultOption = document.createElement('option');
             defaultOption.value = '';
+            defaultOption.dataset.i18n = 'character.voiceNotSet';
             defaultOption.textContent = window.t ? window.t('character.voiceNotSet') : '未指定音色';
             selectEl.appendChild(defaultOption);
 

@@ -1433,22 +1433,29 @@
         return v == null ? '' : String(v);
     }
 
+    function getLiveRendererLanguage() {
+        try {
+            if (window.i18next && window.i18next.language) return window.i18next.language;
+            if (window.i18n && window.i18n.language) return window.i18n.language;
+            return localStorage.getItem('i18nextLng') || navigator.language || 'en';
+        } catch (_) {
+            return 'en';
+        }
+    }
+
     function getConversationLanguageForCurrentCharacter() {
         try {
             // Once the server preference has been hydrated, it is authoritative for
             // this session even when a previous localStorage write failed.
             if (S.conversationLanguageHydrated === true) {
                 if (S.conversationLanguage) return S.conversationLanguage;
-                if (window.i18next && window.i18next.language) return window.i18next.language;
-                if (window.i18n && window.i18n.language) return window.i18n.language;
-                return localStorage.getItem('i18nextLng') || navigator.language || 'en';
+                return getLiveRendererLanguage();
             }
             if (typeof window.getConversationLanguagePreference === 'function') {
                 return window.getConversationLanguagePreference(getWebSocketLanlanName() || '');
             }
             if (S.conversationLanguage) return S.conversationLanguage;
-            if (window.i18next && window.i18next.language) return window.i18next.language;
-            return localStorage.getItem('i18nextLng') || navigator.language || 'en';
+            return getLiveRendererLanguage();
         } catch (_) {
             return S.conversationLanguage || 'en';
         }
@@ -1480,6 +1487,19 @@
             return Promise.resolve(fallback);
         }
 
+        var explicitAtStart = '';
+        var preferenceRevisionAtStart = null;
+        try {
+            if (typeof window.getExplicitConversationLanguagePreference === 'function') {
+                explicitAtStart = window.getExplicitConversationLanguagePreference(characterName) || '';
+            }
+        } catch (_) { /* continue with server hydration */ }
+        try {
+            if (typeof window.getConversationLanguagePreferenceRevision === 'function') {
+                preferenceRevisionAtStart = window.getConversationLanguagePreferenceRevision(characterName);
+            }
+        } catch (_) { /* retain the value-only fence below */ }
+
         var request = fetch('/api/characters/character/' + encodeURIComponent(characterName) + '/language-preference', {
             cache: 'no-store'
         }).then(function (response) {
@@ -1491,7 +1511,7 @@
                 ? payload.language.trim()
                 : '';
             return {
-                language: explicitLanguage || payload.effective_language || fallback,
+                language: explicitLanguage,
                 explicitLanguage: explicitLanguage
             };
         }).catch(function (error) {
@@ -1501,9 +1521,62 @@
 
         function applyHydratedConversationLanguage(hydrated) {
             var resolved = hydrated || {};
-            var language = resolved.language || fallback;
-            if (S._conversationLanguageHydrationId !== hydrationId) return language;
             var degraded = !!(resolved.requestFailed || resolved.timedOut);
+            // A successful empty response proves only that there is no durable
+            // character preference. Its backend effective_language can lag a
+            // URL/localStorage hot switch in this renderer, so resolve the live
+            // renderer locale at application time instead of replaying that
+            // process-level fallback over a newer UI update.
+            var language = resolved.explicitLanguage || (
+                degraded
+                    ? (resolved.language || fallback)
+                    : getLiveRendererLanguage()
+            );
+            if (S._conversationLanguageHydrationId !== hydrationId) return language;
+            var currentExplicit = '';
+            var currentExplicitResolved = false;
+            var preferenceRevisionChanged = false;
+            var localPreferenceOwnsResult = false;
+            try {
+                if (typeof window.getExplicitConversationLanguagePreference === 'function') {
+                    currentExplicit = window.getExplicitConversationLanguagePreference(characterName) || '';
+                    currentExplicitResolved = true;
+                }
+            } catch (_) { /* a newer revision still fences the stale response */ }
+            try {
+                if (
+                    preferenceRevisionAtStart !== null
+                    && typeof window.getConversationLanguagePreferenceRevision === 'function'
+                ) {
+                    preferenceRevisionChanged = (
+                        window.getConversationLanguagePreferenceRevision(characterName)
+                        !== preferenceRevisionAtStart
+                    );
+                }
+            } catch (_) { /* retain the value-only fence below */ }
+            // A revision change covers same-page dispatch:false writes and clears,
+            // including those that win before the timeout. Never let a degraded
+            // result mark that newer state untrusted or let a late response replace it.
+            if (preferenceRevisionChanged) {
+                language = currentExplicitResolved && currentExplicit
+                    ? currentExplicit
+                    : getLiveRendererLanguage();
+                resolved = {
+                    language: language,
+                    explicitLanguage: currentExplicitResolved ? currentExplicit : ''
+                };
+                degraded = false;
+                localPreferenceOwnsResult = true;
+            } else if (!degraded && currentExplicit && currentExplicit !== explicitAtStart) {
+                // Shared storage can expose a newer explicit value before this
+                // document receives its storage event. An unchanged startup cache
+                // must not override a fresh authoritative empty response.
+                resolved = {
+                    language: currentExplicit,
+                    explicitLanguage: currentExplicit
+                };
+                language = currentExplicit;
+            }
             var effectiveConversationLanguage = resolved.explicitLanguage || '';
             if (degraded) {
                 try {
@@ -1527,13 +1600,19 @@
             S.conversationLanguageHydrated = true;
             // Only mirror an explicit character preference into the local cache.
             // effective_language is a UI/global fallback and must remain dynamic.
-            if (resolved.explicitLanguage && typeof window.setConversationLanguagePreference === 'function') {
+            if (
+                !localPreferenceOwnsResult
+                && resolved.explicitLanguage
+                && typeof window.setConversationLanguagePreference === 'function'
+            ) {
                 window.setConversationLanguagePreference(
                     resolved.explicitLanguage,
                     characterName,
                     { dispatch: false, source: 'server' }
                 );
             } else if (
+                !localPreferenceOwnsResult
+                &&
                 !resolved.requestFailed
                 && !resolved.timedOut
                 && typeof window.clearConversationLanguagePreference === 'function'
@@ -1543,9 +1622,13 @@
                     source: 'server'
                 });
             }
-            if (resolved.explicitLanguage) {
+            if (!localPreferenceOwnsResult && resolved.explicitLanguage) {
                 _syncLanguageToBackend(resolved.explicitLanguage);
-            } else if (!resolved.requestFailed && !resolved.timedOut) {
+            } else if (
+                !localPreferenceOwnsResult
+                && !resolved.requestFailed
+                && !resolved.timedOut
+            ) {
                 _syncClearedLanguageToBackend(language, characterName);
             }
             _sendGreetingCheckIfReady();
