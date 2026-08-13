@@ -2997,3 +2997,42 @@ async def test_topic_pool_failure_count_does_not_survive_evidence_aging_out(tmp_
     assert pool._analyzer_retry_not_before["妮可"] == pytest.approx(
         fresh + 61 + _ANALYZER_RETRY_BASE_SECONDS, abs=1e-3
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_async", [False, True])
+async def test_global_purge_reaches_a_character_holding_only_backoff_state(use_async):
+    """Backoff state can outlive both the store entry and the dirty flag.
+
+    The readiness path drops the character from `_dirty` while its evidence is
+    still short of the threshold; that evidence can then age out of the store.
+    Neither set names it any more, so a global purge built from
+    `names() | _dirty` would walk straight past an armed retry window.
+    """
+    async def failing_analyzer(*, lang, **kwargs):
+        return None
+
+    pool = TopicHookPool(
+        analyzer=failing_analyzer,
+        auto_schedule=False,
+        min_user_turns_for_topic=1,
+    )
+    pool.note_user_message("妮可", "我最近一直在纠结要不要换工作")
+    base = pool._signal_store.last_turn_at("妮可")
+    assert base is not None
+    await pool.process_ready_topics(now=base + 61, lang="zh-CN")
+    assert "妮可" in pool._analyzer_retry_not_before
+
+    # 落到"只剩退避状态"：dirty 没了，store 里也没了。
+    pool._dirty.discard("妮可")
+    pool._signal_store.clear("妮可")
+    assert "妮可" not in pool._signal_store.names()
+    assert "妮可" not in pool._dirty
+
+    if use_async:
+        await pool.purge_all_accumulated_signals_async()
+    else:
+        pool.purge_all_accumulated_signals()
+
+    assert "妮可" not in pool._analyzer_retry_not_before
+    assert "妮可" not in pool._analyzer_failures

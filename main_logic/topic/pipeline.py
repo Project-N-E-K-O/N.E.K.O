@@ -454,13 +454,29 @@ class TopicHookPool:
 
     def purge_all_accumulated_signals(self) -> None:
         """Drop accumulated candidate evidence for every known character."""
-        names = set(self._signal_store.names()) | set(self._dirty)
+        # A character can hold backoff state and nothing else: the readiness
+        # path drops it from _dirty, and its evidence can later age out of the
+        # store, leaving it in neither set. A global purge that skipped it
+        # would leave a retry window armed with no way to reach it again.
+        names = (
+            set(self._signal_store.names())
+            | set(self._dirty)
+            | set(self._analyzer_retry_not_before)
+        )
         for name in names:
             self._purge_accumulated_signals(name)
 
     async def purge_all_accumulated_signals_async(self) -> None:
         """Async hook for explicit cleanup across every known character."""
-        names = set(self._signal_store.names()) | set(self._dirty)
+        # A character can hold backoff state and nothing else: the readiness
+        # path drops it from _dirty, and its evidence can later age out of the
+        # store, leaving it in neither set. A global purge that skipped it
+        # would leave a retry window armed with no way to reach it again.
+        names = (
+            set(self._signal_store.names())
+            | set(self._dirty)
+            | set(self._analyzer_retry_not_before)
+        )
         should_flush = False
         for name in names:
             should_flush = self._purge_accumulated_signals(name, flush=False) or should_flush
