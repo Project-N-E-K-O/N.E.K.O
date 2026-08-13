@@ -154,6 +154,11 @@ async function pollQrLogin(generation) {
       setQrStatus(data.message || '二维码已过期，请刷新');
       return;
     }
+    if (data.status === 'no_session' || data.status === 'cancelled') {
+      clearQrLogin();
+      setQrStatus(data.message || '扫码登录已结束，请重新获取二维码');
+      return;
+    }
     setQrStatus(data.message || (data.status === 'scanned' ? '已扫码，请在手机上确认…' : '等待扫码…'));
     qrLogin.pollTimer = setTimeout(() => pollQrLogin(generation), 1500);
   } catch (error) {
