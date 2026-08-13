@@ -46,7 +46,7 @@ _DATA_PROCESS = (
     / "plugins"
     / "neko_warthunder"
     / "data_layer"
-    / "data process"
+    / "data_process"
 )
 sys.path.insert(0, str(_DATA_PROCESS))
 
