@@ -546,6 +546,27 @@ def record_character_prompt_locale(
     order: int | None = None,
 ) -> str | None:
     """Persist the latest explicit session locale, or clear stale state."""
+    _previous, persisted, _applied = record_character_prompt_locale_state(
+        name,
+        language,
+        order=order,
+    )
+    return persisted
+
+
+def record_character_prompt_locale_state(
+    name: str,
+    language: str | None,
+    *,
+    order: int | None = None,
+) -> tuple[str | None, str | None, bool]:
+    """Persist a locale and atomically report its pre-write and final state.
+
+    Returns ``(previous_language, persisted_language, applied)``.  A stale
+    ordered write reports the current durable language with ``applied=False``;
+    callers that expose conflict semantics must use that flag rather than
+    inferring success from matching language values.
+    """
     selected = None
     if is_supported_language_code(language):
         selected = normalize_language_code(str(language), format="full")
@@ -557,7 +578,7 @@ def record_character_prompt_locale(
         if current_order is not None and (
             selected_order is None or selected_order < current_order
         ):
-            return current_language
+            return current_language, current_language, False
 
         next_reserved_order = reserved_order
         if selected_order is not None:
@@ -571,7 +592,7 @@ def record_character_prompt_locale(
             raise PromptLocalePersistenceError(
                 "prompt locale update was not persisted"
             )
-    return selected
+    return current_language, selected, True
 
 
 def get_character_prompt_locale(name: str) -> str | None:

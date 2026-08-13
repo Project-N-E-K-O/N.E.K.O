@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 import wave
 from pathlib import Path
 
@@ -10,6 +11,51 @@ from main_logic.asr_client.endpointing.smart_turn_audio_evidence import (
     SMART_TURN_AUDIO_EVIDENCE_ENABLED_ENV,
     create_smart_turn_audio_evidence_recorder,
 )
+
+
+def _complete_record_count(index_path: Path) -> int:
+    # 只认已经 flush 完整的整行 JSON：写线程是先 open 再 write 再 flush，
+    # 光看文件存在会读到空文件或半行。
+    try:
+        lines = index_path.read_text("utf-8").splitlines()
+    except OSError:
+        return 0
+    complete = 0
+    for line in lines:
+        try:
+            json.loads(line)
+        except ValueError:
+            return complete
+        complete += 1
+    return complete
+
+
+def _wait_for_written_run_dir(
+    target: Path,
+    expected_records: int = 1,
+    timeout_s: float = 10.0,
+) -> list[Path]:
+    # 等落盘：close() 只给写线程一个很短的确认窗口，不是落盘保证。正常路径下写线程
+    # 几毫秒就写完了，但 Windows CI 上磁盘会抖到超过那个窗口，close() 一返回就
+    # iterdir 会撞上还没建出来的目录、或是刚 open 出来的空 index。
+    deadline = time.monotonic() + timeout_s
+    while True:
+        try:
+            run_dirs = list(target.iterdir())
+        except FileNotFoundError:
+            run_dirs = []
+        if run_dirs and all(
+            _complete_record_count(d / "index.jsonl") >= expected_records
+            for d in run_dirs
+        ):
+            return run_dirs
+        if time.monotonic() >= deadline:
+            raise AssertionError(
+                f"等待 {target} 落盘超时（{timeout_s}s）："
+                f"run_dirs={[d.name for d in run_dirs]}，"
+                f"records={[_complete_record_count(d / 'index.jsonl') for d in run_dirs]}"
+            )
+        time.sleep(0.01)
 
 
 async def test_audio_evidence_is_off_without_explicit_opt_in(tmp_path: Path) -> None:
@@ -54,7 +100,7 @@ async def test_audio_evidence_writes_local_wav_and_index_under_data(
     )
     await recorder.close()
 
-    run_dirs = list(target.iterdir())
+    run_dirs = _wait_for_written_run_dir(target)
     assert recorder.enabled is True
     assert len(run_dirs) == 1
     run_dir = run_dirs[0]

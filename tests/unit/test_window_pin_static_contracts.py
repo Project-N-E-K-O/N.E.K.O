@@ -252,8 +252,14 @@ def test_credentials_tabs_are_wired_to_the_single_tab_panel():
     template = read_text("templates/cookies_login.html")
 
     tab_buttons = re.findall(r'<button class="tab-btn[^>]*>', template)
-    assert len(tab_buttons) == 10
+    # 凭证源会持续增删，锁死具体个数只会让每个新增源都红一次；真正要守的是每个按钮的
+    # ARIA 接线。和 switchTab 调用数交叉比对，正则一旦失配就会立刻不等，避免测出 0 个假绿。
+    switch_calls = template.count("switchTab('")
+    assert switch_calls > 0
+    assert len(tab_buttons) == switch_calls
     for button in tab_buttons:
+        # 逐个按钮各带一次调用，才能保证上面那个总数相等不是靠"这里漏一次、别处多一次"凑出来的。
+        assert button.count("switchTab('") == 1, button
         assert 'role="tab"' in button, button
         assert 'aria-controls="main-panel"' in button, button
     assert re.search(

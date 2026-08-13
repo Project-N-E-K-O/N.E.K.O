@@ -44,12 +44,15 @@ from utils.cloudsave_runtime import MaintenanceModeError, is_write_fence_active
 from utils.file_utils import read_json_async
 from utils.config_manager import set_reserved
 from utils.character_name import PROFILE_NAME_MAX_UNITS, validate_character_name
-from utils.character_memory import asave_characters_with_recent_activation
+from utils.character_memory import (
+    asave_characters_with_recent_activation,
+    character_config_mutation_lock,
+)
 from config import CHARACTER_RESERVED_FIELDS
 
 
-# 全局互斥锁，用于序列化角色卡同步的 load_characters -> save_characters 流程
-_ugc_sync_lock = asyncio.Lock()
+# Compatibility alias retained for existing Workshop/import call sites.
+_ugc_sync_lock = character_config_mutation_lock
 
 
 # ─── 创意工坊角色卡同步 ────────────────────────────────────────────────

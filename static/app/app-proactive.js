@@ -342,6 +342,30 @@
         }
     }
 
+    function _applyProactiveLanguagePayload(payload, lanlanName) {
+        // Durable preference and request-only rendering fallback are deliberately
+        // separate. In particular, never promote the latter to i18n_language.
+        var explicitConversationLanguage = '';
+        var renderConversationLanguage = '';
+        try {
+            if (typeof window.getExplicitConversationLanguagePreference === 'function') {
+                explicitConversationLanguage = window.getExplicitConversationLanguagePreference(lanlanName);
+            }
+        } catch (_) { explicitConversationLanguage = ''; }
+        try {
+            if (typeof window.getConversationLanguagePreference === 'function') {
+                renderConversationLanguage = window.getConversationLanguagePreference(lanlanName);
+            }
+        } catch (_) { renderConversationLanguage = ''; }
+        if (explicitConversationLanguage) {
+            payload.i18n_language = explicitConversationLanguage;
+        }
+        if (renderConversationLanguage) {
+            payload.render_language = renderConversationLanguage;
+        }
+        return payload;
+    }
+
     function _isChatInputElement(element) {
         if (!element || element.nodeType !== 1 || typeof element.matches !== 'function') {
             return false;
@@ -1019,14 +1043,16 @@
                 // 之前就早退；语音 scheduler 自己也是固定 baseInterval 不带 backoff。
                 // 既然两边都不读，发了也是冗余字段。
                 var voiceProactiveSec = window.nekoLocalMutationSecurity;
-                var voiceProactiveBody = JSON.stringify({
+                var voiceProactivePayload = {
                     lanlan_name: lanlanName,
                     enabled_modes: voiceModes,
                     voice_mode: true,
                     // mini-game 邀请的用户级 toggle；后端 _maybe_deliver_mini_game_invite
                     // 与 source-driven sources 解耦，不进 enabled_modes 数组。
                     mini_game_invite_enabled: !!S.proactiveMiniGameInviteEnabled
-                });
+                };
+                _applyProactiveLanguagePayload(voiceProactivePayload, lanlanName);
+                var voiceProactiveBody = JSON.stringify(voiceProactivePayload);
 
                 async function _sendVoiceProactive() {
                     var hdrs = { 'Content-Type': 'application/json' };
@@ -1148,23 +1174,6 @@
             console.log('主动搭话：启用模式 [' + availableModes.join(', ') + ']，将并行获取所有信息源');
 
             var lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
-            // 当前 UI locale —— 让后端 mini-game 邀请短路 + Phase 1/2 LLM 与
-            // 前端 i18n 显示完全对齐，不再依赖后端 ``get_global_language()``
-            // 的进程级缓存（Steam SDK 启动期 race 失败时会退化到系统 locale，
-            // Steam=中文 / 系统=英文 的用户会看到邀请文案是英文）。后端
-            // ``_resolve_proactive_locale`` 优先读这个字段，缺时再回落到
-            // ``mgr.user_language`` / 全局缓存。
-            var i18nLanguage = '';
-            try {
-                if (window.i18next && typeof window.i18next.language === 'string') {
-                    i18nLanguage = window.i18next.language;
-                } else if (typeof localStorage !== 'undefined') {
-                    i18nLanguage = localStorage.getItem('i18nextLng') || '';
-                }
-                if (!i18nLanguage && typeof navigator !== 'undefined' && typeof navigator.language === 'string') {
-                    i18nLanguage = navigator.language;
-                }
-            } catch (_) { i18nLanguage = ''; }
             var requestBody = {
                 lanlan_name: lanlanName,
                 enabled_modes: availableModes,
@@ -1175,12 +1184,12 @@
                 // mini-game 邀请的用户级 toggle；后端 _maybe_deliver_mini_game_invite
                 // 与 source-driven sources 解耦，不进 enabled_modes 数组。
                 mini_game_invite_enabled: !!S.proactiveMiniGameInviteEnabled,
-                i18n_language: i18nLanguage,
                 // 屏幕专注态后端会按 [0, 0.5×base] 注入间隔抖动，需要知道
                 // 当前用户配置的 baseInterval。后端 propensity 非屏幕专注态
                 // 时忽略此字段。
                 base_interval_seconds: S.proactiveChatInterval
             };
+            _applyProactiveLanguagePayload(requestBody, lanlanName);
 
             // 独立计时器：确保 vision/window 模式的屏幕感知间隔不低于 proactiveVisionInterval
             if (availableModes.includes('vision') || availableModes.includes('window')) {

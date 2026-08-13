@@ -275,6 +275,79 @@ def bridge_e2e_env(
 # ─── Tests ────────────────────────────────────────────────────────────
 
 
+def test_market_task_cleanup_prunes_overflow_workers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Capacity pruning releases both task states and their worker handles."""
+    from plugin.server.routes import market_bridge as market_bridge_module
+
+    monkeypatch.setattr(market_bridge_module, "_TASK_MAX_ENTRIES", 1)
+    monkeypatch.setattr(
+        market_bridge_module,
+        "_tasks",
+        {
+            "old": {"created_at": 1.0, "completed_at": None},
+            "new": {"created_at": 2.0, "completed_at": None},
+        },
+    )
+    workers = {"old": object(), "new": object()}
+    monkeypatch.setattr(market_bridge_module, "_task_workers", workers)
+
+    market_bridge_module._cleanup_tasks()
+
+    assert "old" not in market_bridge_module._tasks
+    assert "old" not in workers
+    assert "new" in market_bridge_module._tasks
+    assert "new" in workers
+
+
+@pytest.mark.asyncio
+async def test_market_install_task_can_be_cancelled_before_work_starts(
+    bridge_e2e_env: dict[str, Any],
+) -> None:
+    """The cancel endpoint stops a queued task before it can touch the package."""
+    from plugin.server.routes import market_bridge as market_bridge_module
+
+    task_id = "cancel-before-work"
+    market_bridge_module._tasks[task_id] = {
+        "task_id": task_id,
+        "status": "pending",
+        "stage": "pending",
+        "progress": 0.0,
+        "message": "任务已创建",
+        "downloaded_bytes": 0,
+        "total_bytes": None,
+        "result": None,
+        "error": None,
+        "error_code": None,
+        "created_at": time.time(),
+        "completed_at": None,
+        "rollback": None,
+        "cancel_requested": False,
+    }
+    try:
+        client: AsyncClient = bridge_e2e_env["client"]
+        token = bridge_e2e_env["token"]
+        response = await client.post(f"/market/tasks/{task_id}/cancel?token={token}")
+
+        assert response.status_code == 200, response.text
+        assert response.json()["cancel_requested"] is True
+
+        payload = market_bridge_module.MarketInstallRequest(
+            package_url="https://example.invalid/plugin.neko-plugin",
+            package_sha256="a" * 64,
+            plugin_id="cancel_test",
+        )
+        await market_bridge_module._execute_install(task_id, payload)
+
+        task = market_bridge_module._tasks[task_id]
+        assert task["status"] == "canceled"
+        assert task["message"] == "安装已取消"
+    finally:
+        market_bridge_module._tasks.pop(task_id, None)
+        market_bridge_module._task_workers.pop(task_id, None)
+
+
 @pytest.mark.asyncio
 async def test_market_catalog_plugins_use_same_origin_bridge(
     bridge_e2e_env: dict[str, Any],

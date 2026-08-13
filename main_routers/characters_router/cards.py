@@ -60,14 +60,16 @@ from ..shared_state import (
     get_initialize_character_data,
     get_init_one_catgirl,
 )
-from ..workshop_router import _ugc_sync_lock
 from utils.config_manager import (
     get_reserved,
 )
 from utils.file_utils import atomic_write_json_async, read_json_async
 from utils.frontend_utils import find_model_directory, is_user_imported_model
 from utils.cloudsave_runtime import MaintenanceModeError
-from utils.character_memory import asave_characters_with_recent_activation
+from utils.character_memory import (
+    asave_characters_with_recent_activation,
+    character_config_mutation_lock,
+)
 from config import (
     BUILTIN_LIVE2D_MODEL_NAMES,
 )
@@ -194,6 +196,11 @@ async def save_catgirl_to_model_folder(request: Request):
 
 @router.post('/character-card/save')
 async def save_character_card(request: Request):
+    async with character_config_mutation_lock:
+        return await _save_character_card_serialized(request)
+
+
+async def _save_character_card_serialized(request: Request):
     """Save the character card to characters.json."""
     try:
         data = await request.json()
@@ -816,7 +823,7 @@ async def import_character_card(
 
         _config_manager = get_config_manager()
 
-        async with _ugc_sync_lock:
+        async with character_config_mutation_lock:
             characters = await _config_manager.aload_characters()
 
             # 检查是否已存在同名角色，使用 Windows 风格的命名 (x)

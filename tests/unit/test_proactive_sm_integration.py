@@ -299,6 +299,30 @@ async def test_voice_nudge_waits_for_callback_inject_lock():
     sess.prompt_ephemeral.assert_awaited_once_with(language="en")
 
 
+async def test_voice_nudge_request_locale_is_forwarded_without_mutating_manager_state():
+    sess = _make_voice_sess()
+    sess._proactive_inject_awaiting_outcome = False
+    sess.prompt_ephemeral = AsyncMock(return_value=True)
+    mgr = _make_mgr(session=sess)
+    mgr.is_active = True
+    mgr.input_mode = "microphone"
+    mgr.is_hot_swap_imminent = False
+    mgr.user_language = "en"
+    mgr._user_language_explicit = False
+    mgr._conversation_render_language = None
+
+    delivered = await core_module.LLMSessionManager.trigger_voice_proactive_nudge(
+        mgr,
+        language="zh-TW",
+    )
+
+    assert delivered is True
+    sess.prompt_ephemeral.assert_awaited_once_with(language="zh-TW")
+    assert mgr.user_language == "en"
+    assert mgr._user_language_explicit is False
+    assert mgr._conversation_render_language is None
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # trigger_agent_callbacks
 # ─────────────────────────────────────────────────────────────────────────────

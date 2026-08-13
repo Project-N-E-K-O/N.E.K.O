@@ -91,12 +91,19 @@ class ProactiveMixin:
     # Voice-chat proactive text trigger (dedicated path)
     # ------------------------------------------------------------------
 
-    async def trigger_voice_proactive_nudge(self) -> bool:
+    async def trigger_voice_proactive_nudge(
+        self,
+        *,
+        language: str | None = None,
+    ) -> bool:
         """Inject a text prompt to nudge the voice model into speaking.
 
         This is the **only** caller of ``OmniRealtimeClient.prompt_ephemeral``
         for the voice-chat proactive feature.  It is completely independent of
         ``trigger_agent_callbacks`` (which handles agent task results).
+
+        ``language`` is a request-local rendering override. It intentionally
+        does not update the manager's durable or fallback language state.
 
         Returns True if the text turn was sent, False if skipped.
         """
@@ -121,7 +128,10 @@ class ProactiveMixin:
                     self.lanlan_name,
                 )
                 return False
-            _lang = normalize_language_code(self.user_language, format='short') or 'en'
+            _lang = normalize_language_code(
+                language or self.user_language,
+                format='full',
+            ) or 'en'
             delivered = await session.prompt_ephemeral(language=_lang)
         if delivered:
             logger.info("[%s] voice proactive nudge delivered (%s)", self.lanlan_name, _lang)

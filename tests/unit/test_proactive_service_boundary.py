@@ -776,6 +776,81 @@ async def test_service_missing_manager_returns_domain_result() -> None:
     }
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    (
+        "request_language",
+        "render_language",
+        "manager_language",
+        "manager_explicit",
+        "expected_language",
+    ),
+    (
+        (None, "ja", "en", False, "ja"),
+        (None, "ja", "zh-TW", True, "zh-TW"),
+        ("pt", "ja", "zh-TW", True, "pt"),
+    ),
+)
+async def test_voice_fast_path_passes_request_locale_without_mutating_manager(
+    monkeypatch,
+    request_language,
+    render_language,
+    manager_language,
+    manager_explicit,
+    expected_language,
+) -> None:
+    class _VoiceSession:
+        pass
+
+    monkeypatch.setattr(service, "OmniRealtimeClient", _VoiceSession)
+    monkeypatch.setattr(
+        service,
+        "_advance_mini_game_invite_entry",
+        lambda *_args, **_kwargs: None,
+    )
+    trigger = AsyncMock(return_value=False)
+    manager = SimpleNamespace(
+        is_active=True,
+        session=_VoiceSession(),
+        is_goodbye_silent=lambda: False,
+        last_user_message_time=None,
+        state=SimpleNamespace(can_start_proactive=lambda *, session: True),
+        trigger_voice_proactive_nudge=trigger,
+        user_language=manager_language,
+        _user_language_explicit=manager_explicit,
+        _conversation_render_language=None,
+    )
+    original_language_state = (
+        manager.user_language,
+        manager._user_language_explicit,
+        manager._conversation_render_language,
+    )
+
+    await service.handle_proactive_chat(
+        contracts.ProactiveChatCommand(
+            lanlan_name="Yui",
+            voice_mode=True,
+            i18n_language=request_language,
+            render_language=render_language,
+        ),
+        config_manager=SimpleNamespace(),
+        session_manager=SimpleNamespace(get=lambda _lanlan_name: manager),
+        character_data=_CHARACTER_DATA,
+        game_route_active_for=lambda _lanlan_name: False,
+        break_config_manager_provider=lambda: SimpleNamespace(),
+        run_mini_game_invite_short_circuit=AsyncMock(),
+        push_mini_game_invite_options=AsyncMock(),
+        push_mini_game_invite_resolved=AsyncMock(),
+    )
+
+    trigger.assert_awaited_once_with(language=expected_language)
+    assert (
+        manager.user_language,
+        manager._user_language_explicit,
+        manager._conversation_render_language,
+    ) == original_language_state
+
+
 @pytest.mark.parametrize(
     ("name", "canonical"),
     (
@@ -800,6 +875,16 @@ def test_locale_helpers_accept_legacy_data_keyword_from_all_import_paths() -> No
         system_router_facade._resolve_proactive_locale,
     ):
         assert resolver(data={"language": "en"}, mgr=mgr) == "en"
+        assert resolver(
+            data={"render_language": "zh-CN"},
+            mgr=mgr,
+            fmt="prompt",
+        ) == "zh"
+        assert resolver(
+            data={"render_language": "zh-TW"},
+            mgr=mgr,
+            fmt="prompt",
+        ) == "zh-TW"
 
     for resolver in (
         service._resolve_topic_hook_locale,
@@ -807,6 +892,18 @@ def test_locale_helpers_accept_legacy_data_keyword_from_all_import_paths() -> No
         system_router_facade._resolve_topic_hook_locale,
     ):
         assert resolver(data={"language": "zh-TW"}, mgr=mgr, fallback="zh") == "zh-TW"
+
+
+def test_topic_hook_locale_uses_render_language_without_declaring_it(monkeypatch) -> None:
+    mgr = SimpleNamespace(user_language="en", _user_language_explicit=False)
+    data = {"render_language": "zh-TW"}
+    monkeypatch.setattr(service, "get_global_language_full", lambda: "en")
+
+    assert service._resolve_topic_hook_locale(data, mgr, fallback="zh-CN") == "zh-TW"
+    assert service._resolve_declared_topic_hook_locale(data, mgr) is None
+    assert service._new_dialog_locale_params(data, mgr) == {
+        "render_language": "zh-TW",
+    }
 
 
 def test_safe_fire_proactive_done_is_exported_from_legacy_paths() -> None:

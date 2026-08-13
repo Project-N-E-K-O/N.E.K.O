@@ -1185,6 +1185,193 @@ def test_onboarding_confirm_dispatches_character_update_event(mock_page: Page):
 
 
 @pytest.mark.frontend
+@pytest.mark.parametrize(
+    ("explicit_language", "generic_language", "expected_language"),
+    [
+        ("", "ja", "zh-CN"),
+        ("ja", "ko", "ja"),
+    ],
+    ids=["untrusted-cache-is-ignored", "trusted-explicit-wins"],
+)
+def test_personality_selection_persists_only_trusted_explicit_or_live_ui_language(
+    mock_page: Page,
+    explicit_language: str,
+    generic_language: str,
+    expected_language: str,
+):
+    _bootstrap_page(mock_page)
+    mock_page.evaluate(
+        """
+        ([explicitLanguage, genericLanguage]) => {
+            window.universalTutorialManager.isTutorialRunning = false;
+            window.i18next = { language: 'zh-CN' };
+            window.__genericLanguageCalls = 0;
+            window.getExplicitConversationLanguagePreference = (name) => {
+                if (name !== '小天') throw new Error('wrong character scope: ' + name);
+                return explicitLanguage;
+            };
+            window.getConversationLanguagePreference = () => {
+                window.__genericLanguageCalls += 1;
+                return genericLanguage;
+            };
+        }
+        """,
+        [explicit_language, generic_language],
+    )
+    mock_page.add_script_tag(
+        path=str(PROJECT_ROOT / "static" / "js" / "character_personality_onboarding.js")
+    )
+
+    mock_page.evaluate("() => window.CharacterPersonalityOnboarding.bootstrap()")
+    expect(mock_page.locator("[data-testid='character-personality-overlay']")).to_be_visible()
+    mock_page.locator(
+        "[data-testid='character-personality-preset-frail_younger_sister']"
+    ).click()
+    mock_page.locator("[data-testid='character-personality-confirm']").click()
+    expect(mock_page.locator("[data-testid='character-personality-overlay']")).to_be_hidden()
+
+    request_log = mock_page.evaluate("() => window.__requestLog")
+    preset_entries = [
+        entry
+        for entry in request_log
+        if new_url_pathname(entry["url"]) == "/api/characters/persona-presets"
+    ]
+    assert preset_entries
+    preset_language = parse_qs(urlparse(preset_entries[-1]["url"]).query).get(
+        "language", [""]
+    )[0]
+    put_entries = [
+        entry
+        for entry in request_log
+        if entry["url"] == "/api/characters/character/%E5%B0%8F%E5%A4%A9/persona-selection"
+        and entry["method"] == "PUT"
+    ]
+    assert len(put_entries) == 1
+    assert preset_language == expected_language
+    assert put_entries[0]["body"]["i18n_language"] == expected_language
+    assert mock_page.evaluate("() => window.__genericLanguageCalls") == 0
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize(
+    "response_payload,inflight_action,expected_language,expected_cache_events",
+    [
+        ({"success": True, "language": "ja"}, "", "ja", ["set:ja:server:false"]),
+        ({"success": False, "language": "ja"}, "", "zh-CN", []),
+        ({"success": True, "language": ""}, "", "zh-CN", []),
+        ({"success": True, "language": "ja"}, "set", "ko", ["set:ko:sibling:true"]),
+        ({"success": True, "language": "ja"}, "clear", "zh-CN", ["clear:sibling:true"]),
+    ],
+    ids=["durable", "rejected", "confirmed-empty", "inflight-set", "inflight-clear"],
+)
+def test_personality_selection_waits_for_durable_character_language_hydration(
+    mock_page: Page,
+    response_payload: dict,
+    inflight_action: str,
+    expected_language: str,
+    expected_cache_events: list[str],
+):
+    _bootstrap_page(mock_page)
+    mock_page.evaluate(
+        """
+        (responsePayload) => {
+            window.universalTutorialManager.isTutorialRunning = false;
+            window.i18next = { language: 'zh-CN' };
+            window.__hydratedCharacterLanguage = '';
+            window.__characterLanguageRevision = 0;
+            window.__languagePreferenceCacheEvents = [];
+            window.getExplicitConversationLanguagePreference = (name) => {
+                if (name !== '小天') throw new Error('wrong character scope: ' + name);
+                return window.__hydratedCharacterLanguage;
+            };
+            window.getConversationLanguagePreferenceRevision = (name) => {
+                if (name !== '小天') throw new Error('wrong character scope: ' + name);
+                return window.__characterLanguageRevision;
+            };
+            window.setConversationLanguagePreference = (language, name, options) => {
+                if (name !== '小天') throw new Error('wrong character scope: ' + name);
+                window.__hydratedCharacterLanguage = language;
+                window.__characterLanguageRevision += 1;
+                window.__languagePreferenceCacheEvents.push(`set:${language}:${options.source}:${options.dispatch !== false}`);
+                return true;
+            };
+            window.clearConversationLanguagePreference = (name, options) => {
+                if (name !== '小天') throw new Error('wrong character scope: ' + name);
+                window.__hydratedCharacterLanguage = '';
+                window.__characterLanguageRevision += 1;
+                window.__languagePreferenceCacheEvents.push(`clear:${options.source}:${options.dispatch !== false}`);
+                return true;
+            };
+
+            const originalFetch = window.fetch.bind(window);
+            window.__presetRequestedBeforeLanguageHydration = null;
+            window.fetch = function(url, options) {
+                const requestUrl = String(url);
+                const pathname = new URL(requestUrl, window.location.origin).pathname;
+                if (pathname === '/api/characters/character/%E5%B0%8F%E5%A4%A9/language-preference') {
+                    window.__requestLog.push({ url: requestUrl, method: 'GET', body: null });
+                    return new Promise((resolve) => {
+                        window.__releaseLanguageHydration = () => {
+                            window.__presetRequestedBeforeLanguageHydration = window.__requestLog.some(
+                                (entry) => new URL(entry.url, window.location.origin).pathname
+                                    === '/api/characters/persona-presets'
+                            );
+                            resolve(new Response(JSON.stringify(responsePayload), {
+                                status: 200,
+                                headers: { 'Content-Type': 'application/json' },
+                            }));
+                        };
+                    });
+                }
+                return originalFetch(url, options);
+            };
+        }
+        """,
+        response_payload,
+    )
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static" / "js" / "character_personality_onboarding.js"))
+
+    mock_page.evaluate("() => { void window.CharacterPersonalityOnboarding.bootstrap(); }")
+    mock_page.wait_for_function("() => typeof window.__releaseLanguageHydration === 'function'")
+    if inflight_action == "set":
+        mock_page.evaluate(
+            "() => window.setConversationLanguagePreference('ko', '小天', { source: 'sibling' })"
+        )
+    elif inflight_action == "clear":
+        mock_page.evaluate(
+            "() => window.clearConversationLanguagePreference('小天', { source: 'sibling' })"
+        )
+    mock_page.evaluate("() => window.__releaseLanguageHydration()")
+    expect(mock_page.locator("[data-testid='character-personality-overlay']")).to_be_visible()
+    assert mock_page.evaluate("() => window.__presetRequestedBeforeLanguageHydration") is False
+    mock_page.locator(
+        "[data-testid='character-personality-preset-frail_younger_sister']"
+    ).click()
+    mock_page.locator("[data-testid='character-personality-confirm']").click()
+    expect(mock_page.locator("[data-testid='character-personality-overlay']")).to_be_hidden()
+
+    request_log = mock_page.evaluate("() => window.__requestLog")
+    preset_entries = [
+        entry
+        for entry in request_log
+        if new_url_pathname(entry["url"]) == "/api/characters/persona-presets"
+    ]
+    assert len(preset_entries) == 1
+    assert parse_qs(urlparse(preset_entries[0]["url"]).query)["language"] == [
+        expected_language
+    ]
+    put_entries = [
+        entry
+        for entry in request_log
+        if entry["url"] == "/api/characters/character/%E5%B0%8F%E5%A4%A9/persona-selection"
+        and entry["method"] == "PUT"
+    ]
+    assert len(put_entries) == 1
+    assert put_entries[0]["body"]["i18n_language"] == expected_language
+    assert mock_page.evaluate("() => window.__languagePreferenceCacheEvents") == expected_cache_events
+
+
+@pytest.mark.frontend
 def test_onboarding_confirm_preserves_event_detail_during_pending_back_navigation(mock_page: Page):
     _bootstrap_page(mock_page)
     mock_page.evaluate("() => { window.universalTutorialManager.isTutorialRunning = false; }")

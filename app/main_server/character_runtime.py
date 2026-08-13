@@ -275,6 +275,14 @@ def _get_explicit_session_user_language(name):
     return getattr(manager, "user_language", None)
 
 
+def _get_session_render_language(name):
+    """Return the current renderer locale without promoting it to a preference."""
+    manager = _get_session_manager(name)
+    if manager is None:
+        return None
+    return getattr(manager, "_conversation_render_language", None)
+
+
 try:
     from main_logic.topic.delivery import register_topic_session_manager_getter
 
@@ -1227,6 +1235,9 @@ async def _init_character_resources(k: str, is_new_character: bool):
                     _status_cb,
                     user_language_provider=(
                         lambda _name=k: _get_explicit_session_user_language(_name)
+                    ),
+                    render_language_provider=(
+                        lambda _name=k: _get_session_render_language(_name)
                     ),
                 ),
                 name=f"SyncConnector-{k}",

@@ -38,6 +38,7 @@ import asyncio
 import time
 
 from utils.logger_config import get_module_logger
+from utils.language_utils import is_supported_language_code, normalize_language_code
 from utils.new_character_greeting_state import has_pending as has_new_character_greeting_pending
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
@@ -174,6 +175,50 @@ def _stamp_user_input_ingress(message: dict) -> dict:
         **message,
         "_user_input_ingress_time": time.time(),
     }
+
+
+def _apply_session_language_message(manager, message: dict) -> str | None:
+    """Apply explicit, render-only, and explicit-clear language signals.
+
+    ``render_language`` is ordinary per-request evidence and must not clear a
+    durable preference.  Only the literal JSON boolean ``true`` on
+    ``clear_language_preference`` authorizes that state transition.
+    """
+    user_language = message.get("language")
+    has_explicit_language = (
+        "language" in message
+        and is_supported_language_code(user_language)
+    )
+    if "language" in message:
+        manager.set_user_language(user_language)
+        logger.info(f"收到用户语言设置: {user_language}")
+
+    render_language = message.get("render_language")
+    if is_supported_language_code(render_language):
+        render_language = normalize_language_code(
+            render_language,
+            format="full",
+        )
+    else:
+        render_language = None
+
+    if (
+        message.get("clear_language_preference") is True
+        and not has_explicit_language
+    ):
+        clear_preference = getattr(
+            manager,
+            "clear_user_language_preference",
+            None,
+        )
+        if callable(clear_preference):
+            clear_preference(render_language)
+    elif render_language:
+        render_language_setter = getattr(manager, "set_render_language", None)
+        if callable(render_language_setter):
+            render_language_setter(render_language)
+
+    return render_language
 
 
 def _reserve_avatar_interaction_ingress(
@@ -774,10 +819,10 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
             action = message.get("action")
 
             # 处理语言设置（可以在任何消息中携带）
-            if "language" in message:
-                user_language = message.get("language")
-                session_manager[lanlan_name].set_user_language(user_language)
-                logger.info(f"收到用户语言设置: {user_language}")
+            render_language = _apply_session_language_message(
+                session_manager[lanlan_name],
+                message,
+            )
 
             # logger.debug(f"WebSocket received action: {action}") # Optional debug log
 
@@ -1120,14 +1165,30 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                         _schedule_greeting_task(
                             lanlan_name,
                             "new-character",
-                            session_manager[lanlan_name].trigger_new_character_greeting,
+                            (
+                                lambda: session_manager[
+                                    lanlan_name
+                                ].trigger_new_character_greeting(
+                                    render_language=render_language,
+                                )
+                            )
+                            if render_language
+                            else session_manager[
+                                lanlan_name
+                            ].trigger_new_character_greeting,
                         )
                     else:
                         logger.info(f"[{lanlan_name}] greeting_check: is_switch={is_switch} since_disconnect={since_disconnect:.1f}s reason={greeting_reason or '-'} → triggering")
                         _schedule_greeting_task(
                             lanlan_name,
                             "ordinary",
-                            session_manager[lanlan_name].trigger_greeting,
+                            (
+                                lambda: session_manager[lanlan_name].trigger_greeting(
+                                    render_language=render_language,
+                                )
+                            )
+                            if render_language
+                            else session_manager[lanlan_name].trigger_greeting,
                         )
                 else:
                     logger.info(f"[{lanlan_name}] greeting_check: since_disconnect={since_disconnect:.1f}s ≤15s reason={greeting_reason or '-'} → skip (refresh/reconnect)")
@@ -1168,6 +1229,11 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                         cat_tier,
                         cat_was_auto,
                         episode=episode,
+                        **(
+                            {"render_language": render_language}
+                            if render_language
+                            else {}
+                        ),
                     ),
                 )
 

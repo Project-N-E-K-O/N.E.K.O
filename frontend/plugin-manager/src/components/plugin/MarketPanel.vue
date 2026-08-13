@@ -63,6 +63,32 @@
       </div>
     </div>
 
+    <!-- 静默安装后把任务面板拉回来的入口：对话框是唯一的取消入口，
+         关掉它不该让取消能力随之消失。 -->
+    <div
+      v-if="showInstallResumeBar"
+      class="market-panel__install-resume"
+      role="status"
+      aria-live="polite"
+    >
+      <el-icon class="is-loading" aria-hidden="true"><Loading /></el-icon>
+      <span
+        class="market-panel__install-resume-text"
+        :title="activeInstallTask?.message || ''"
+      >
+        {{ installResumeText }}
+      </span>
+      <span class="market-panel__install-resume-percent">{{ installTaskPercent }}%</span>
+      <el-button
+        size="small"
+        text
+        type="primary"
+        @click="installTaskDialogVisible = true"
+      >
+        {{ t('market.viewInstallProgress') }}
+      </el-button>
+    </div>
+
     <WorkbenchFilterBar
       v-model:filter-text="filterText"
       v-model:use-regex="useRegex"
@@ -179,6 +205,9 @@
       v-model="installTaskDialogVisible"
       :title="installTaskTitle"
       width="420px"
+      append-to-body
+      align-center
+      :lock-scroll="true"
       :close-on-click-modal="false"
       :show-close="installTaskDone"
     >
@@ -194,6 +223,13 @@
           <span>{{ installTaskStageLabel }}</span>
           <span v-if="downloadProgressText">{{ downloadProgressText }}</span>
         </div>
+        <el-alert
+          v-if="installTaskOvertime && !installTaskDone"
+          type="info"
+          :closable="false"
+          show-icon
+          :title="t('market.installTakingLonger')"
+        />
         <el-alert
           v-if="activeInstallTask?.rollback?.running"
           type="warning"
@@ -218,6 +254,20 @@
       </div>
       <template #footer>
         <el-button
+          v-if="!installTaskDone"
+          :loading="installTaskCancelling"
+          :disabled="activeInstallTask?.cancel_requested"
+          @click="cancelInstallTask"
+        >
+          {{ t('market.cancelInstall') }}
+        </el-button>
+        <el-button
+          v-if="!installTaskDone"
+          @click="installTaskDialogVisible = false"
+        >
+          {{ t('market.silentInstall') }}
+        </el-button>
+        <el-button
           v-if="installTaskDone"
           type="primary"
           @click="installTaskDialogVisible = false"
@@ -233,7 +283,7 @@
 import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
-import { ShoppingCart, Close, Link, Setting } from '@element-plus/icons-vue'
+import { ShoppingCart, Close, Link, Setting, Loading } from '@element-plus/icons-vue'
 import MarketPluginCard from '@/components/plugin/MarketPluginCard.vue'
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
@@ -304,6 +354,7 @@ interface MarketInstallTask {
   total_bytes?: number | null
   error?: string | null
   error_code?: string | null
+  cancel_requested?: boolean
   rollback?: {
     running?: boolean
     restored?: boolean
@@ -314,14 +365,30 @@ const installTaskDialogVisible = ref(false)
 const activeInstallTask = ref<MarketInstallTask | null>(null)
 const activeInstallPluginName = ref('')
 const activeInstallMode = ref<'install' | 'upgrade' | 'reinstall'>('install')
+const installTaskCancelling = ref(false)
+const marketInstallBusy = ref(false)
+// 超过 INSTALL_OVERTIME_MS 只换文案提示，不再把任务伪造成 failed —— 那会让
+// installTaskDone 转真，把后端仍然接受的取消按钮一起抹掉。
+const installTaskOvertime = ref(false)
+const INSTALL_OVERTIME_MS = 3 * 60 * 1000
+// 800ms 一轮，连续 15 轮（约 12 秒）查不到才判定任务已消失。
+const INSTALL_MISSING_TOLERANCE = 15
 
 const installTaskDone = computed(() => {
   const status = activeInstallTask.value?.status
-  return status === 'completed' || status === 'failed'
+  return status === 'completed' || status === 'failed' || status === 'canceled'
 })
 
 const installTaskPercent = computed(() =>
   Math.round((activeInstallTask.value?.progress ?? 0) * 100),
+)
+
+const showInstallResumeBar = computed(
+  () =>
+    marketInstallBusy.value &&
+    !installTaskDialogVisible.value &&
+    !installTaskDone.value &&
+    !!activeInstallTask.value?.task_id,
 )
 
 const installTaskStatus = computed(() => {
@@ -346,6 +413,14 @@ const installTaskStageLabel = computed(() => {
   return translated === key ? stage : translated
 })
 
+// 常驻面板上的文案必须是本地化的：后端 message 是硬编码简体中文，
+// 只留在 title 里给悬停看。
+const installResumeText = computed(() => {
+  if (installTaskOvertime.value) return t('market.installTakingLonger')
+  const name = activeInstallPluginName.value
+  return name ? `${name} · ${installTaskStageLabel.value}` : installTaskStageLabel.value
+})
+
 function formatByteCount(value: number): string {
   if (value >= 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)} MB`
   if (value >= 1024) return `${(value / 1024).toFixed(1)} KB`
@@ -367,6 +442,8 @@ function beginInstallTaskTracking(
   pluginName: string,
   mode: 'install' | 'upgrade' | 'reinstall' = 'install',
 ) {
+  installTaskCancelling.value = false
+  installTaskOvertime.value = false
   activeInstallPluginName.value = pluginName
   activeInstallMode.value = mode
   activeInstallTask.value = {
@@ -393,6 +470,35 @@ function markInstallTaskFailed(
     status: 'failed',
     stage: 'failed',
     error: options.error ?? message,
+  }
+}
+
+async function cancelInstallTask() {
+  const taskId = activeInstallTask.value?.task_id
+  if (!taskId || installTaskDone.value || installTaskCancelling.value) return
+
+  installTaskCancelling.value = true
+  try {
+    const res = await fetchBridge(`/market/tasks/${taskId}/cancel`, { method: 'POST' })
+    if (!res) {
+      ElMessage.warning(t('market.pairRequired'))
+      return
+    }
+    if (res.ok) {
+      activeInstallTask.value = (await res.json()) as MarketInstallTask
+      return
+    }
+    // 409 的 detail 是后端硬编码简体中文，别直接吐给其他语言的用户。
+    if (res.status === 409) {
+      ElMessage.warning(t('market.cancelInstallUnavailable'))
+      return
+    }
+    const err = await res.json().catch(() => ({}))
+    ElMessage.warning(err.detail || t('market.cancelInstallUnavailable'))
+  } catch {
+    ElMessage.warning(t('market.cancelInstallUnavailable'))
+  } finally {
+    installTaskCancelling.value = false
   }
 }
 
@@ -901,8 +1007,11 @@ async function pollInstallTask(
   const mode = options.mode ?? 'install'
   beginInstallTaskTracking(taskId, pluginName, mode)
 
-  const deadline = Date.now() + 3 * 60 * 1000
-  while (Date.now() < deadline) {
+  const overtimeAt = Date.now() + INSTALL_OVERTIME_MS
+  let consecutiveMissing = 0
+  // 面板卸载后不中止：轮询要活到任务终态，否则切走一次页面就丢掉成功提示和
+  // 注册表同步。任务消失走下面的 404 容忍收口。
+  for (;;) {
     try {
       const res = await fetchBridge(`/market/tasks/${taskId}`)
       if (!res) {
@@ -912,7 +1021,18 @@ async function pollInstallTask(
         ElMessage.warning(t('market.pairRequired'))
         return false
       }
+      if (res.status === 404) {
+        // 任务只活在后端内存里：连续查不到就是它没了（服务重启 / TTL 清理），
+        // 再轮下去也不会回来。
+        consecutiveMissing += 1
+        if (consecutiveMissing >= INSTALL_MISSING_TOLERANCE) {
+          markInstallTaskFailed(taskId, t('market.installTaskLost'))
+          ElMessage.warning(t('market.installTaskLost'))
+          return false
+        }
+      }
       if (res.ok) {
+        consecutiveMissing = 0
         const task = (await res.json()) as MarketInstallTask
         activeInstallTask.value = task
 
@@ -930,46 +1050,45 @@ async function pollInstallTask(
           ElMessage.error(resolveInstallTaskErrorMessage(task))
           return false
         }
+        if (task.status === 'canceled') {
+          ElMessage.info(t('market.installCancelled'))
+          return false
+        }
       }
     } catch {
       // 继续轮询
     }
+    if (!installTaskOvertime.value && Date.now() >= overtimeAt) {
+      installTaskOvertime.value = true
+    }
     await new Promise((r) => setTimeout(r, 800))
   }
-
-  activeInstallTask.value = {
-    ...(activeInstallTask.value || {
-      task_id: taskId,
-      stage: 'failed',
-      progress: 0,
-      message: t('market.installFailed'),
-    }),
-    status: 'failed',
-    stage: 'failed',
-    error: t('market.installFailed'),
-  }
-  ElMessage.warning(t('market.installFailed'))
-  return false
 }
 
 async function handleInstall(plugin: MarketWorkbenchItem) {
+  if (marketInstallBusy.value) {
+    ElMessage.warning(t('market.installAlreadyRunning'))
+    return
+  }
   if (!plugin.has_release) {
     ElMessage.warning(t('market.noVersionAvailable'))
     return
   }
-  const payload = await resolveInstallPayload(plugin)
-  if (!payload) {
-    ElMessage.warning(t('market.noDownloadUrl'))
-    return
-  }
-  if (!payload.package_sha256) {
-    ElMessage.error(t('market.installFailed'))
-    return
-  }
-
-  installingId.value = plugin.id
-
+  marketInstallBusy.value = true
+  let packageUrl = ''
   try {
+    const payload = await resolveInstallPayload(plugin)
+    if (!payload) {
+      ElMessage.warning(t('market.noDownloadUrl'))
+      return
+    }
+    if (!payload.package_sha256) {
+      ElMessage.error(t('market.installFailed'))
+      return
+    }
+
+    packageUrl = payload.package_url
+    installingId.value = plugin.id
     const res = await fetchBridge('/market/install', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1007,9 +1126,11 @@ async function handleInstall(plugin: MarketWorkbenchItem) {
       ElMessage.error(err.detail || t('market.installFailed'))
     }
   } catch {
-    openExternalUrl(payload.package_url)
+    if (packageUrl) openExternalUrl(packageUrl)
+    else ElMessage.error(t('market.installFailed'))
   } finally {
     installingId.value = null
+    marketInstallBusy.value = false
   }
 }
 
@@ -1023,22 +1144,27 @@ async function handleInstall(plugin: MarketWorkbenchItem) {
  *   - 错误码识别在 pollInstallTask 内统一处理。
  */
 async function handleUpgrade(plugin: MarketWorkbenchItem) {
+  if (marketInstallBusy.value) {
+    ElMessage.warning(t('market.installAlreadyRunning'))
+    return
+  }
   if (!plugin.has_release) {
     ElMessage.warning(t('market.noVersionAvailable'))
     return
   }
-  const payload = await resolveInstallPayload(plugin)
-  if (!payload) {
-    ElMessage.warning(t('market.noDownloadUrl'))
-    return
-  }
-  if (!payload.package_sha256) {
-    ElMessage.error(t('market.installFailed'))
-    return
-  }
-
-  upgradingId.value = plugin.id
+  marketInstallBusy.value = true
   try {
+    const payload = await resolveInstallPayload(plugin)
+    if (!payload) {
+      ElMessage.warning(t('market.noDownloadUrl'))
+      return
+    }
+    if (!payload.package_sha256) {
+      ElMessage.error(t('market.installFailed'))
+      return
+    }
+
+    upgradingId.value = plugin.id
     const res = await fetchBridge('/market/install', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1084,6 +1210,7 @@ async function handleUpgrade(plugin: MarketWorkbenchItem) {
     ElMessage.error(t('market.installFailed'))
   } finally {
     upgradingId.value = null
+    marketInstallBusy.value = false
   }
 }
 
@@ -1267,6 +1394,34 @@ watch(
   font-size: 12px;
   line-height: 1.4;
   color: var(--el-text-color-secondary);
+}
+
+.market-panel__install-resume {
+  display: flex;
+  align-items: center;
+  /* 窄面板下让按钮换行而不是被挤出边界——它是静默安装后唯一的取消入口。 */
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 6px 12px;
+  border: 1px solid var(--el-color-primary-light-7);
+  border-radius: 6px;
+  background: var(--el-color-primary-light-9);
+  font-size: 12px;
+  color: var(--el-text-color-regular);
+}
+
+.market-panel__install-resume-text {
+  flex: 1 1 120px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.market-panel__install-resume-percent {
+  flex: none;
+  color: var(--el-text-color-secondary);
+  font-variant-numeric: tabular-nums;
 }
 
 .market-install-progress {

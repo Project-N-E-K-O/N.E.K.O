@@ -112,6 +112,7 @@ def _request(
     extra_candidates: list | None = None,
     *,
     language: str | None = None,
+    render_language: str | None = None,
 ) -> "routes_mod.ExternalMemoryImportRequest":
     return routes_mod.ExternalMemoryImportRequest(
         character_name="Neko",
@@ -122,6 +123,7 @@ def _request(
             _persona_cand("neko", "warm but direct"),
         ] + (extra_candidates or []),
         language=language,
+        render_language=render_language,
     )
 
 
@@ -182,6 +184,7 @@ async def test_daily_extraction_keeps_request_locale(wire):
         _request(
             [_daily_cand("memory/2026-07-31.md", "2026-07-31")],
             language="zh-TW",
+            render_language="ja",
         )
     )
 
@@ -218,12 +221,91 @@ async def test_external_import_persists_explicit_request_locale(
         ),
     )
     result = await routes_mod.import_external_markdown(
-        _request(language="zh-TW")
+        _request(language="zh-TW", render_language="ja")
     )
 
     assert result["status"] == "success"
     assert allocated == ["Neko"]
     assert recorded == [("Neko", "zh-TW", 73)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("durable_locale", "expected_locale"),
+    (("ja", "ja"), (None, "zh-TW")),
+)
+async def test_external_import_prefers_durable_then_render_without_persisting_fallback(
+    wire,
+    monkeypatch,
+    durable_locale,
+    expected_locale,
+):
+    observed_languages = {}
+
+    async def fuse(entity):
+        observed_languages[f"persona:{entity}"] = get_global_language_full()
+        return {"added": 1, "skipped": 0, "fused": True}
+
+    class _LocaleRecordingFactStore(_FakeFactStore):
+        async def aimport_external_daily(
+            self,
+            name,
+            candidates,
+            source_format,
+            imported_at,
+        ):
+            observed_languages["daily"] = get_global_language_full()
+            return await super().aimport_external_daily(
+                name,
+                candidates,
+                source_format,
+                imported_at,
+            )
+
+    wire(
+        _FakePersonaManager({"master": fuse, "neko": fuse}),
+        _LocaleRecordingFactStore(),
+    )
+    durable_reads = []
+    locale_writes = []
+    monkeypatch.setattr(
+        routes_mod.locale_state,
+        "get_character_prompt_locale",
+        lambda name: durable_reads.append(name) or durable_locale,
+    )
+    monkeypatch.setattr(
+        routes_mod.locale_state,
+        "allocate_character_prompt_locale_order",
+        lambda name: locale_writes.append(("allocate", name)),
+    )
+    monkeypatch.setattr(
+        routes_mod.locale_state,
+        "reserve_character_prompt_locale_order",
+        lambda name, *, order: locale_writes.append(("reserve", name, order)),
+    )
+    monkeypatch.setattr(
+        routes_mod.locale_state,
+        "record_character_prompt_locale",
+        lambda name, language, *, order: locale_writes.append(
+            ("record", name, language, order)
+        ),
+    )
+
+    result = await routes_mod.import_external_markdown(
+        _request(
+            [_daily_cand("memory/2026-07-31.md", "2026-07-31")],
+            render_language="zh-TW",
+        )
+    )
+
+    assert result["status"] == "success"
+    assert durable_reads == ["Neko"]
+    assert locale_writes == []
+    assert observed_languages == {
+        "persona:master": expected_locale,
+        "persona:neko": expected_locale,
+        "daily": expected_locale,
+    }
 
 
 @pytest.mark.asyncio

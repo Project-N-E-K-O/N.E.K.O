@@ -61,9 +61,10 @@ class GreetingMixin:
     @staticmethod
     def _greeting_locale_keys(language: str | None) -> tuple[str, str]:
         """Return the short prompt locale and full regional holiday locale."""
+        selected_language = language or get_global_language_full()
         return (
-            normalize_language_code(language, format='short'),
-            normalize_language_code(language, format='full'),
+            normalize_language_code(selected_language, format='short'),
+            normalize_language_code(selected_language, format='full'),
         )
 
     def _remember_avatar_interaction_id(self, interaction_id: str) -> None:
@@ -304,7 +305,7 @@ class GreetingMixin:
         )
         return {"accepted": False, "reason": ack_reason, "interaction_id": interaction_id}
 
-    async def trigger_greeting(self) -> None:
+    async def trigger_greeting(self, *, render_language: str | None = None) -> None:
         """On first connect or character switch, trigger a proactive greeting based on the gap since the last conversation.
 
         Flow: query memory_server for the gap → build the guiding prompt → proactively start a text session → deliver.
@@ -399,7 +400,9 @@ class GreetingMixin:
             logger.info("[%s] trigger_greeting: voice session appeared during gap query, skipping", self.lanlan_name)
             return
 
-        _lang, _holiday_lang = self._greeting_locale_keys(self.user_language)
+        _lang, _holiday_lang = self._greeting_locale_keys(
+            self.user_language or render_language
+        )
         from config.prompts.prompts_proactive import get_greeting_prompt, get_time_of_day_hint
         from config.prompts.prompts_proactive import get_startup_greeting_guidance
         from utils.time_format import format_elapsed as _format_elapsed
@@ -738,6 +741,8 @@ class GreetingMixin:
         tier: str,
         was_auto: bool,
         episode: dict | None = None,
+        *,
+        render_language: str | None = None,
     ) -> None:
         """When transforming back from cat form to catgirl (asking her back), trigger one dedicated greeting based on "behavior (tier) × time spent as a cat".
 
@@ -777,7 +782,7 @@ class GreetingMixin:
         # 猫咪问候的四张表都在 prompts_proactive（有 zh-TW 行）；短码会把 zh-TW
         # 折成 zh，那些行永远取不到（issue #2500）。
         _lang = normalize_proactive_prompt_locale(
-            self.user_language or get_global_language_full()
+            self.user_language or render_language or get_global_language_full()
         )
         from utils.time_format import format_elapsed as _format_elapsed
         episode_scene = get_cat_greeting_episode_scene(episode, _lang)
@@ -903,7 +908,11 @@ class GreetingMixin:
         finally:
             await self.state.fire(SessionEvent.PROACTIVE_DONE)
 
-    async def trigger_new_character_greeting(self) -> None:
+    async def trigger_new_character_greeting(
+        self,
+        *,
+        render_language: str | None = None,
+    ) -> None:
         from config.prompts.prompts_proactive import (
             get_new_character_greeting_prompt,
             normalize_proactive_prompt_locale,
@@ -926,7 +935,9 @@ class GreetingMixin:
         # 同 trigger_cat_greeting：破冰问候模板也在 prompts_proactive，要 prompt
         # key 才留得住 zh-TW。空 user_language 才回落全局语言（issue #2500）。
         _lang = normalize_proactive_prompt_locale(
-            getattr(self, 'user_language', '') or get_global_language_full()
+            getattr(self, 'user_language', '')
+            or render_language
+            or get_global_language_full()
         )
         template = get_new_character_greeting_prompt(_lang)
 

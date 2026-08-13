@@ -1031,6 +1031,12 @@
 
     function pickAcceptLanguage() {
         try {
+            if (typeof window.getConversationLanguagePreference === 'function') {
+                var preferred = window.getConversationLanguagePreference();
+                if (preferred) return String(preferred);
+            }
+        } catch (_) {}
+        try {
             if (typeof window.getCurrentLocale === 'function') {
                 var loc = window.getCurrentLocale();
                 if (loc) return String(loc);

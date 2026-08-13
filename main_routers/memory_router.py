@@ -42,6 +42,7 @@ from utils.character_memory import (
     character_memory_exists,
 )
 from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
+from utils.language_utils import is_supported_language_code, normalize_language_code
 from utils.logger_config import get_module_logger
 # merged 单进程（发行版默认）下，本模块与 memory_server 的写者同处一个进程，
 # 共用 utils.recent_file 的 per-path 锁；裸 atomic_write_json_async 会绕过它。
@@ -1076,16 +1077,25 @@ async def commit_external_memory_import(request: Request):
             target=f"memory/{character_name}/external-markdown",
         )
         client = get_internal_http_client()
+        memory_payload = {
+            "character_name": character_name,
+            "source_format": analysis["source_format"],
+            "imported_files": analysis["files"],
+            "candidates": analysis["candidates"],
+            "warning_count": len(analysis["warnings"]),
+        }
+        render_language = payload.get("render_language")
+        if is_supported_language_code(render_language):
+            memory_payload["render_language"] = normalize_language_code(
+                render_language,
+                format="full",
+            )
         response = await client.post(
             f"http://127.0.0.1:{MEMORY_SERVER_PORT}/internal/memory/import_external_markdown",
-            json={
-                "character_name": character_name,
-                "source_format": analysis["source_format"],
-                "imported_files": analysis["files"],
-                "candidates": analysis["candidates"],
-                "warning_count": len(analysis["warnings"]),
-                "language": payload.get("language"),
-            },
+            # Never forward a browser locale as ``language``: that field declares
+            # a durable preference. ``render_language`` is a validated, render-only
+            # fallback; the memory server still resolves durable state at execution.
+            json=memory_payload,
             # persona 导入现在按 entity 同步跑 LLM 融合（每 entity 可数十秒），
             # 30s 不够；放宽到 240s 覆盖 master+neko 两段融合。前端 commit 超时
             # (memory_browser.js, 270s) 再略大于此，保证后端先返回而非前端先断。

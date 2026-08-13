@@ -4307,6 +4307,7 @@ def test_cat_mind_phase4_return_attaches_once_then_preserves_existing_silent_fal
         vm.runInContext(catMindSource, context);
         vm.runInContext(
           'var S = window.appState;\\n' +
+          'function getConversationLanguageForCurrentCharacter() {{ return "en"; }}\\n' +
           websocketSource.slice(websocketGateStart, websocketGateEnd) +
           websocketSource.slice(websocketStart, websocketEnd),
           context

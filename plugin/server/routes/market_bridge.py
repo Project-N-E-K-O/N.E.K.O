@@ -68,6 +68,7 @@ _BRIDGE_TOKEN: str = secrets.token_urlsafe(32)
 
 # 安装任务存储（内存，重启清空）
 _tasks: dict[str, dict[str, Any]] = {}
+_task_workers: dict[str, asyncio.Task[None]] = {}
 _TASK_TTL_SECONDS = 60 * 60
 _TASK_MAX_ENTRIES = 200
 
@@ -234,6 +235,7 @@ def _cleanup_tasks() -> None:
     ]
     for task_id in expired:
         _tasks.pop(task_id, None)
+        _task_workers.pop(task_id, None)
 
     if len(_tasks) <= _TASK_MAX_ENTRIES:
         return
@@ -244,6 +246,7 @@ def _cleanup_tasks() -> None:
     )
     for task_id, _task in ordered[:overflow]:
         _tasks.pop(task_id, None)
+        _task_workers.pop(task_id, None)
 
 
 def _plugin_config_roots() -> tuple[Path, ...]:
@@ -357,6 +360,7 @@ class MarketTaskStatus(BaseModel):
     completed_at: float | None = None
     install_source_warning: str | None = None
     rollback: dict[str, Any] | None = None
+    cancel_requested: bool = False
 
 
 class MarketInstalledPlugin(BaseModel):
@@ -656,10 +660,11 @@ async def market_install(
         "created_at": time.time(),
         "completed_at": None,
         "rollback": None,
+        "cancel_requested": False,
     }
 
     # 异步执行安装
-    asyncio.create_task(
+    _task_workers[task_id] = asyncio.create_task(
         _execute_install(task_id, payload),
         name=f"market-install-{task_id}",
     )
@@ -684,6 +689,34 @@ async def market_task_status(
     if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
 
+    return MarketTaskStatus(**task)
+
+
+@router.post("/tasks/{task_id}/cancel", response_model=MarketTaskStatus)
+async def cancel_market_install_task(
+    task_id: str,
+    token: str = Query(..., description="Bridge token"),
+):
+    """Request cancellation before the task begins writing plugin files.
+
+    Downloading and verification cooperate with this flag. Once a task has
+    entered a write stage — ``install`` for a fresh install, ``replace`` for the
+    shared replacement transaction that owns stop/backup/deploy/restart —
+    cancelling is rejected so no half-written plugin is left behind.
+    """
+    _verify_token(token)
+    _cleanup_tasks()
+
+    task = _tasks.get(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    if task.get("status") in {"completed", "failed", "canceled"}:
+        raise HTTPException(status_code=409, detail="安装任务已结束")
+    if task.get("stage") in {"install", "replace", "rollback", "completed"}:
+        raise HTTPException(status_code=409, detail="安装已进入写入阶段，无法安全取消")
+
+    task["cancel_requested"] = True
+    task["message"] = "正在取消安装..."
     return MarketTaskStatus(**task)
 
 
@@ -2478,6 +2511,7 @@ async def _execute_install(task_id: str, payload: MarketInstallRequest) -> None:
     }
 
     try:
+        _raise_if_task_cancel_requested(task)
         if payload.mode == "install":
             await _do_install(task, payload, log_ctx)
         elif payload.mode == "upgrade":
@@ -2491,6 +2525,8 @@ async def _execute_install(task_id: str, payload: MarketInstallRequest) -> None:
             )
         await _report_market_install_best_effort(payload, task)
         _finalize_task_success(task, started_at, log_ctx)
+    except _TaskCancelled as exc:
+        _finalize_task_cancelled(task, exc, started_at, log_ctx)
     except _TaskError as exc:
         _finalize_task_failure(task, exc, started_at, log_ctx)
     except Exception as exc:
@@ -2527,6 +2563,10 @@ class _TaskError(Exception):
 
     def __post_init__(self) -> None:
         super().__init__(self.code, self.message)
+
+
+class _TaskCancelled(_TaskError):
+    """Raised at safe checkpoints after a user requests cancellation."""
 
 
 def _finalize_task_success(
@@ -2585,6 +2625,32 @@ def _finalize_task_failure(
     )
 
 
+def _finalize_task_cancelled(
+    task: dict[str, Any],
+    err: _TaskCancelled,
+    started_at: float,
+    log_ctx: dict[str, Any],
+) -> None:
+    """Mark a cooperatively cancelled task as terminal without reporting failure."""
+
+    duration_ms = int((time.monotonic() - started_at) * 1000)
+    task["status"] = "canceled"
+    task["stage"] = "canceled"
+    task["completed_at"] = time.time()
+    task["error"] = None
+    task["error_code"] = err.code
+    task["message"] = err.message
+    logger.info(
+        "market_install_task outcome=cancelled task_id={} mode={} plugin_id={} "
+        "version={} duration_ms={}",
+        log_ctx.get("task_id", ""),
+        log_ctx.get("mode", ""),
+        log_ctx.get("plugin_id", ""),
+        log_ctx.get("version", ""),
+        duration_ms,
+    )
+
+
 _HUMAN_MESSAGES: dict[str, str] = {
     "upgrade_rollback_completed": "升级失败，已回滚到旧版本",
     "upgrade_rollback_incomplete": "升级失败，回滚未完整完成，请检查插件状态",
@@ -2614,6 +2680,11 @@ def _set_task_stage(
     task["stage"] = stage
     task["progress"] = max(0.0, min(1.0, progress))
     task["message"] = message
+
+
+def _raise_if_task_cancel_requested(task: dict[str, Any]) -> None:
+    if task.get("cancel_requested"):
+        raise _TaskCancelled(code="install_cancelled", message="安装已取消")
 
 
 # ─── install / upgrade flows ─────────────────────────────────────────
@@ -2666,19 +2737,32 @@ async def _do_install(
     package_path: Path | None = None
     try:
         package_path = await _download_package(payload.package_url, task)
+    except _TaskCancelled:
+        raise
     except Exception as exc:
+        _raise_if_task_cancel_requested(task)
         raise _TaskError(code="download_failed", message=str(exc)) from exc
 
     try:
+        _raise_if_task_cancel_requested(task)
         try:
-            sha_check = _verify_sha256_file(
+            _set_task_stage(
+                task,
+                status="verifying",
+                stage="verify",
+                progress=0.7,
+                message="正在校验文件完整性...",
+            )
+            sha_check = await asyncio.to_thread(
+                _verify_sha256_file,
                 package_path,
                 payload.package_sha256,
-                task,
             )
         except ValueError as exc:
+            _raise_if_task_cancel_requested(task)
             raise _TaskError(code="package_hash_mismatch", message=str(exc)) from exc
         log_ctx["package_sha256_check"] = sha_check
+        _raise_if_task_cancel_requested(task)
 
         _set_task_stage(
             task,
@@ -2743,6 +2827,8 @@ async def _do_upgrade(
     requested_plugin_id = payload.plugin_id or ""
     expected_plugin_id = payload.expected_plugin_toml_id or requested_plugin_id
 
+    _raise_if_task_cancel_requested(task)
+
     mgr = get_install_source_manager()
     if mgr is None:
         raise _TaskError(
@@ -2772,23 +2858,37 @@ async def _do_upgrade(
         )
         try:
             package_path = await _download_package(payload.package_url, task)
+        except _TaskCancelled:
+            raise
         except Exception as exc:
+            _raise_if_task_cancel_requested(task)
             raise _TaskError(code="download_failed", message=str(exc)) from exc
 
+        _raise_if_task_cancel_requested(task)
         try:
-            sha_check = _verify_sha256_file(
+            _set_task_stage(
+                task,
+                status="verifying",
+                stage="verify",
+                progress=0.7,
+                message="正在校验文件完整性...",
+            )
+            sha_check = await asyncio.to_thread(
+                _verify_sha256_file,
                 package_path,
                 payload.package_sha256,
-                task,
             )
         except ValueError as exc:
+            _raise_if_task_cancel_requested(task)
             raise _TaskError(code="package_hash_mismatch", message=str(exc)) from exc
         log_ctx["package_sha256_check"] = sha_check
+        _raise_if_task_cancel_requested(task)
 
         try:
             inspected = await asyncio.to_thread(inspect_package, package_path)
         except Exception as exc:
             raise _TaskError(code="install_failed", message=str(exc)) from exc
+        _raise_if_task_cancel_requested(task)
         package_id = str(inspected.package_id).strip()
         if (
             not package_id
@@ -2850,6 +2950,11 @@ async def _do_upgrade(
                 "running": True,
             }
 
+        # Last cancellable point: everything below hands the plugin directory
+        # to the shared replacement transaction, which owns stop/backup/deploy/
+        # restart. Cancelling mid-transaction would mean tearing down a partly
+        # written install, so the cancel endpoint rejects the ``replace`` stage.
+        _raise_if_task_cancel_requested(task)
         _set_task_stage(
             task,
             status="installing",
@@ -2973,19 +3078,10 @@ def _build_market_override(
 def _verify_sha256_file(
     path: Path,
     expected_hash: str | None,
-    task: dict[str, Any],
 ) -> Literal["passed", "mismatch"]:
     """Verify sha256 from a downloaded file; raise ValueError on mismatch."""
 
     raw = _normalize_required_sha256(expected_hash)
-
-    _set_task_stage(
-        task,
-        status="verifying",
-        stage="verify",
-        progress=0.7,
-        message="正在校验文件完整性...",
-    )
 
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -3069,6 +3165,7 @@ def _utc_iso_now() -> str:
 async def _download_package(url: str, task: dict[str, Any]) -> Path:
     """Download a plugin package to a temp file with progress updates."""
 
+    _raise_if_task_cancel_requested(task)
     started_at = time.monotonic()
     download_dir = PluginCliPathPolicy.from_settings().package_artifacts_root / ".downloads"
     download_dir.mkdir(parents=True, exist_ok=True)
@@ -3102,6 +3199,7 @@ async def _download_package(url: str, task: dict[str, Any]) -> Path:
 
                 with package_path.open("wb") as handle:
                     async for chunk in response.aiter_bytes(chunk_size=65536):
+                        _raise_if_task_cancel_requested(task)
                         handle.write(chunk)
                         downloaded += len(chunk)
                         task["downloaded_bytes"] = downloaded
