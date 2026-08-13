@@ -1399,6 +1399,8 @@ watch(
 .market-panel__install-resume {
   display: flex;
   align-items: center;
+  /* 窄面板下让按钮换行而不是被挤出边界——它是静默安装后唯一的取消入口。 */
+  flex-wrap: wrap;
   gap: 8px;
   padding: 6px 12px;
   border: 1px solid var(--el-color-primary-light-7);
@@ -1409,7 +1411,7 @@ watch(
 }
 
 .market-panel__install-resume-text {
-  flex: 1;
+  flex: 1 1 120px;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
