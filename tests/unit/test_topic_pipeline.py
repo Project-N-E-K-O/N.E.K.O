@@ -1357,16 +1357,17 @@ async def test_topic_pool_debounce_retries_after_background_analyzer_failure():
     await pool.process_ready_topics(lang="zh-CN", now=last_turn_at + 61)
     assert calls == 1
 
-    # 抛异常和返回 None 是同一件事——analyzer 失败了——所以必须走同一个退避。
+    # 抛异常和返回 None 是同一件事——analyzer 失败了——所以必须走同一个退避记账。
     # 异常若逃到 process_ready_topics 的 except 只打日志，dirty 还在、退避没设，
-    # 下一跳就又打一次 LLM，正是这个退避要挡的热循环。
+    # 每一跳都会再打一次 LLM，正是这个退避要挡的热循环。第一档等于心跳周期，
+    # 所以下一跳放行是预期的；窗口在第二次失败后才真正拉开。
     assert pool._analyzer_failures["妮可"] == 1
     await pool.process_ready_topics(lang="zh-CN", now=last_turn_at + 62)
-    await pool.process_ready_topics(lang="zh-CN", now=last_turn_at + 81)
+    await pool.process_ready_topics(lang="zh-CN", now=last_turn_at + 80)
     assert calls == 1
     assert "妮可" in pool._dirty
 
-    await pool.process_ready_topics(lang="zh-CN", now=last_turn_at + 122)
+    await pool.process_ready_topics(lang="zh-CN", now=last_turn_at + 82)
     await asyncio.wait_for(retried.wait(), timeout=1.0)
     materials = pool.get_ready_materials("妮可")
 
@@ -1415,14 +1416,14 @@ async def test_topic_pool_keeps_dirty_when_analyzer_returns_none():
     await pool.process_ready_topics(lang="zh-CN", now=last_turn_at + 61)
     assert calls == 1
 
-    # 失败后仍然 dirty，但重试要等退避到期：紧接着的那一跳（心跳 20s 一次）
-    # 必须空转，否则就退回到"每 20 秒打一次失败的 LLM"的热循环。
+    # 失败后仍然 dirty，重试要等退避到期。第一档等于心跳周期（20s），所以窗口
+    # 内的跳是 +62/+80，到 +82 才放行；真正拉开距离要到第二次失败之后。
     await pool.process_ready_topics(lang="zh-CN", now=last_turn_at + 62)
-    await pool.process_ready_topics(lang="zh-CN", now=last_turn_at + 81)
+    await pool.process_ready_topics(lang="zh-CN", now=last_turn_at + 80)
     assert calls == 1
     assert "妮可" in pool._dirty
 
-    await pool.process_ready_topics(lang="zh-CN", now=last_turn_at + 122)
+    await pool.process_ready_topics(lang="zh-CN", now=last_turn_at + 82)
     await asyncio.wait_for(retried.wait(), timeout=1.0)
     materials = pool.get_ready_materials("妮可")
 
@@ -2527,21 +2528,23 @@ def test_used_topics_persist_failure_is_visible(tmp_path):
 
 def test_analyzer_retry_delay_doubles_from_the_base_and_saturates_at_the_cap():
     # 常量一并断死。只断 _analyzer_retry_delay(2) == 2 * BASE 这类派生式的话，
-    # 把 BASE 从 60 改成 1 秒（等于取消退避）测试照样绿。
-    assert _ANALYZER_RETRY_BASE_SECONDS == 60.0
+    # 把 BASE 改成 1 秒（等于取消退避）测试照样绿。
+    # BASE 等于心跳周期是有意的：第一档不延后，是给抖动的一次立即重试。
+    assert _ANALYZER_RETRY_BASE_SECONDS == 20.0
     assert _ANALYZER_RETRY_CAP_SECONDS == 1800.0
 
     pool = TopicHookPool(auto_schedule=False)
-    assert pool._analyzer_retry_delay(1) == 60.0
-    assert pool._analyzer_retry_delay(2) == 120.0
-    assert pool._analyzer_retry_delay(3) == 240.0
-    assert pool._analyzer_retry_delay(5) == 960.0
-    # 60 * 2**5 = 1920 > cap.
-    assert pool._analyzer_retry_delay(6) == 1800.0
+    assert pool._analyzer_retry_delay(1) == 20.0
+    assert pool._analyzer_retry_delay(2) == 40.0
+    assert pool._analyzer_retry_delay(3) == 80.0
+    assert pool._analyzer_retry_delay(5) == 320.0
+    assert pool._analyzer_retry_delay(7) == 1280.0
+    # 20 * 2**7 = 2560 > cap.
+    assert pool._analyzer_retry_delay(8) == 1800.0
     # 退避封顶后计数还在涨，指数不能跟着涨到溢出。
     assert pool._analyzer_retry_delay(500) == 1800.0
     # 防御性：第一次失败之前不该有人问，问了也不能算出 0 延迟。
-    assert pool._analyzer_retry_delay(0) == 60.0
+    assert pool._analyzer_retry_delay(0) == 20.0
 
 
 @pytest.mark.asyncio
@@ -2569,26 +2572,30 @@ async def test_topic_pool_backs_off_instead_of_retrying_failed_analyzer_every_he
     base = pool._signal_store.last_turn_at("妮可")
     assert base is not None
 
-    # 成熟窗口一过就跑第一次，失败后退避 60s。
+    # 成熟窗口一过就跑第一次。第一档 = 心跳周期，所以下一跳就放行——这一档是
+    # 给抖动的免费立即重试，真正的退避从第二次失败起。
     await pool.process_ready_topics(now=base + 61, lang="zh-CN")
     assert len(calls) == 1
 
-    # 心跳 20s 一跳，退避期内的每一跳都必须空转。
-    for tick in (81, 101, 111):
-        await pool.process_ready_topics(now=base + tick, lang="zh-CN")
-    assert len(calls) == 1
+    await pool.process_ready_topics(now=base + 82, lang="zh-CN")
+    assert len(calls) == 2
     assert "妮可" in pool._dirty  # 仍然 dirty：是延后重试，不是放弃
 
-    # 61 + 60 之后放行第二次，这次退避翻倍到 120s。
-    await pool.process_ready_topics(now=base + 122, lang="zh-CN")
-    assert len(calls) == 2
-    for tick in (142, 182, 222):
+    # 第二次失败后退避翻倍到 40s，期间的每一跳都必须空转。
+    for tick in (92, 110, 121):
         await pool.process_ready_topics(now=base + tick, lang="zh-CN")
     assert len(calls) == 2
 
-    # 122 + 120 之后第三次。
-    await pool.process_ready_topics(now=base + 243, lang="zh-CN")
+    # 82 + 40 之后放行第三次，退避再翻倍到 80s。
+    await pool.process_ready_topics(now=base + 123, lang="zh-CN")
     assert len(calls) == 3
+    for tick in (143, 183, 202):
+        await pool.process_ready_topics(now=base + tick, lang="zh-CN")
+    assert len(calls) == 3
+
+    # 123 + 80 之后第四次。
+    await pool.process_ready_topics(now=base + 204, lang="zh-CN")
+    assert len(calls) == 4
 
 
 @pytest.mark.asyncio
@@ -2612,9 +2619,9 @@ async def test_topic_pool_clears_analyzer_backoff_once_the_analyzer_answers():
     await pool.process_ready_topics(now=base + 61, lang="zh-CN")
     assert len(calls) == 1
     assert pool._analyzer_failures["妮可"] == 1
-    assert pool._analyzer_retry_not_before["妮可"] == pytest.approx(base + 121)
+    assert pool._analyzer_retry_not_before["妮可"] == pytest.approx(base + 81)
 
-    await pool.process_ready_topics(now=base + 122, lang="zh-CN")
+    await pool.process_ready_topics(now=base + 82, lang="zh-CN")
     assert len(calls) == 2
     # 一旦 analyzer 真的答了话，计数与闸门都必须归零，否则下一次偶发失败会
     # 从上一次的退避档位继续翻倍。
@@ -2672,16 +2679,16 @@ async def test_topic_pool_analyzer_exception_arms_the_same_backoff_as_a_none_res
 
     await pool.process_ready_topics(now=base + 61, lang="zh-CN")
     assert len(calls) == 1
-    assert pool._analyzer_retry_not_before["妮可"] == pytest.approx(base + 121)
+    assert pool._analyzer_retry_not_before["妮可"] == pytest.approx(base + 81)
 
-    for tick in (62, 81, 101):
+    for tick in (62, 71, 80):
         await pool.process_ready_topics(now=base + tick, lang="zh-CN")
     assert len(calls) == 1
 
-    # 退避照样翻倍：第二次失败后要等 120s，而不是回到 60s。
-    await pool.process_ready_topics(now=base + 122, lang="zh-CN")
+    # 退避照样翻倍：第二次失败后要等 40s，而不是回到 20s。
+    await pool.process_ready_topics(now=base + 82, lang="zh-CN")
     assert len(calls) == 2
-    assert pool._analyzer_retry_not_before["妮可"] == pytest.approx(base + 242)
+    assert pool._analyzer_retry_not_before["妮可"] == pytest.approx(base + 122)
 
 
 @pytest.mark.asyncio

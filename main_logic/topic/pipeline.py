@@ -51,7 +51,14 @@ _CANDIDATE_MATURE_SECONDS = 60.0
 # misconfiguration turns into a billable hot loop. Back off exponentially
 # instead, and reset the moment the analyzer answers at all (an empty result is
 # an answer: it takes the discard path, not this one).
-_ANALYZER_RETRY_BASE_SECONDS = 60.0
+#
+# The base matches the heartbeat period on purpose: the first retry is NOT
+# delayed, it is the very next tick. That first step is a free immediate retry
+# for a blip (one timeout, one 5xx), not a backoff — the backoff starts from
+# the second failure. Total cost over a long outage is set by the cap, not by
+# this value: 20s and 60s bases both land within a couple of calls of each
+# other across 12h, so the cheaper-to-recover one wins.
+_ANALYZER_RETRY_BASE_SECONDS = 20.0
 _ANALYZER_RETRY_CAP_SECONDS = 30 * 60.0
 # Clamps the doubling itself, so a long-lived failure can't overflow the shift.
 _ANALYZER_RETRY_MAX_DOUBLINGS = 10
