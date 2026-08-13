@@ -626,11 +626,6 @@ body.neko-game-active [id$="-lock-icon"] {
     --neko-idle-return-facing-transform: scaleX(1);
 }
 
-.neko-idle-return-btn.is-cat1-desktop-window-edge-peek-walking .neko-idle-thought-bubble,
-.neko-idle-return-button-container.is-cat1-desktop-window-edge-peeking .neko-idle-thought-bubble {
-    display: none !important;
-}
-
 .neko-idle-return-button-container.is-cat1-desktop-window-edge-peek-leaving > .neko-idle-return-btn {
     animation: nekoIdleCat1DesktopWindowEdgePeekLeave 360ms cubic-bezier(0.22, 0.72, 0.2, 1) both;
 }
@@ -884,10 +879,6 @@ body.neko-game-active [id$="-lock-icon"] {
     --neko-idle-return-facing-transform: scaleX(-1);
 }
 
-.neko-idle-return-btn.is-cat1-desktop-window-top-edge-walking .neko-idle-thought-bubble {
-    display: none !important;
-}
-
 /*
  * 只校准 GNOME 原生 58px 毛球路径。左侧接近的终点已经在 JS 中前移 34px；
  * 右侧的跨窗口视觉位置少 33px，因此待机和侧身素材都要补上这段距离。
@@ -1068,6 +1059,9 @@ body.neko-game-active [id$="-lock-icon"] {
 .neko-idle-return-btn.is-drag-action-pending .neko-idle-thought-bubble,
 .neko-idle-return-btn.is-drag-action .neko-idle-thought-bubble,
 .neko-idle-return-btn.is-cat1-walking .neko-idle-thought-bubble,
+.neko-idle-return-btn.is-cat1-desktop-window-top-edge-walking .neko-idle-thought-bubble,
+.neko-idle-return-btn.is-cat1-desktop-window-edge-peek-walking .neko-idle-thought-bubble,
+.neko-idle-return-button-container.is-cat1-desktop-window-edge-peeking .neko-idle-thought-bubble,
 .neko-idle-return-btn.is-cat1-stretching .neko-idle-thought-bubble,
 .neko-idle-return-btn.is-cat1-playing .neko-idle-thought-bubble,
 .neko-idle-return-btn.is-cat1-eating:not(.is-thought-bubble-popping) .neko-idle-thought-bubble,
