@@ -3548,15 +3548,21 @@
                                 var captureType = null;
                                 if (hasPairedCaptureType) {
                                     captureType = shotCaptureType;
-                                } else if (typeof window.detectScreenshotCaptureType === 'function') {
+                                } else {
                                     // 旧契约兜底：拿不到带来源的截图函数时只能就地推断。
-                                    captureType = window.detectScreenshotCaptureType(
-                                        S.screenCaptureStream, S.selectedScreenSourceId
-                                    );
-                                } else if (!S.screenCaptureStream && !S.selectedScreenSourceId) {
-                                    // detect 也拿不到时的降级兜底，不能删：后端把「不带坐标」
-                                    // 当明确的否定信号，删了会从「默认整屏叠」变成「永久不叠」。
-                                    captureType = 'screen';
+                                    if (typeof window.detectScreenshotCaptureType === 'function') {
+                                        captureType = window.detectScreenshotCaptureType(
+                                            S.screenCaptureStream, S.selectedScreenSourceId
+                                        );
+                                    }
+                                    // 这一步必须是独立判断而不是 else：detect 存在但判不出
+                                    // （无流无源的后端整屏兜底）时也要提升成 'screen'。写成
+                                    // else if 会让它只在 detect 缺席时生效，后端把「不带坐标」
+                                    // 当明确的否定信号，于是整屏图变成永久不叠。
+                                    if (captureType === null
+                                        && !S.screenCaptureStream && !S.selectedScreenSourceId) {
+                                        captureType = 'screen';
+                                    }
                                 }
                                 var avatarPos = typeof window.getAvatarScreenPosition === 'function'
                                     ? window.getAvatarScreenPosition(captureType) : null;
