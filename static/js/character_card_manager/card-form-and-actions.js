@@ -219,7 +219,15 @@ async function _saveCharacterLanguagePreference(name, select, selectUi) {
         // A cross-window event or a newer local request may have superseded this
         // response while it was in flight. Never roll back or cache stale data.
         if (select.dataset.languageSaveId !== saveId || select.value !== language) return;
-        if (response.status === 409) {
+        // Only this endpoint's causal-order conflict means "re-read the state".
+        // Both servers also answer 409 for storage-limited startup and for the
+        // cloudsave maintenance fence; those persisted nothing, so they must
+        // fall through to the failure path below (roll back + report) instead
+        // of leaving an unsaved selection on screen.
+        if (
+            response.status === 409
+            && payload.error_code === 'language_preference_superseded'
+        ) {
             // Designed race, not a failure: another window persisted a newer
             // preference. Rolling back to this window's previous value would
             // display a locale that is already stale, so re-read durable state.

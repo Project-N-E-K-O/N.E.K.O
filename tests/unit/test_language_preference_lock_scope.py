@@ -368,6 +368,46 @@ async def test_character_card_save_parses_body_outside_the_transaction(monkeypat
     assert observed["payload"]["character_card_name"] == "Mimi"
 
 
+async def test_language_preference_get_revalidates_after_the_unlocked_read(monkeypatch):
+    """Dropping the lock dropped the "still exists when we answer" guarantee.
+
+    Without a second check the endpoint answers 200 for a name deleted while the
+    memory-server read was in flight, and an in-flight card-manager hydration
+    could repopulate that name's local cache after the deletion cleanup.
+    """
+    state = {"exists": True}
+    loads = []
+
+    async def load_character(name):
+        loads.append(name)
+        if not state["exists"]:
+            raise LookupError("角色不存在")
+        return SimpleNamespace(memory_dir="unused"), {"猫娘": {name: {}}}
+
+    async def request_locale(_method, _name, *, language=None):
+        # The character is deleted while this read is awaiting.
+        state["exists"] = False
+        return {"success": True, "language": "ja"}
+
+    monkeypatch.setattr(preference_router, "_load_existing_character", load_character)
+    monkeypatch.setattr(preference_router, "_request_memory_prompt_locale", request_locale)
+    monkeypatch.setattr(
+        preference_router, "aload_ui_language_override", lambda: _async_value("en"),
+    )
+
+    response = await preference_router.get_character_language_preference("Mimi")
+
+    assert getattr(response, "status_code", 200) == 404
+    assert loads == ["Mimi", "Mimi"], "读前读后都要校验角色身份"
+
+
+def _async_value(value):
+    async def _inner():
+        return value
+
+    return _inner()
+
+
 def test_prompt_locale_read_does_not_create_the_character_directory(tmp_path, monkeypatch):
     import utils.config_manager as config_manager_module
 

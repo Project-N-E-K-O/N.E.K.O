@@ -382,6 +382,12 @@ async def get_character_language_preference(name: str):
         # no longer leave an empty old-name directory behind.
         await _load_existing_character(name)
         payload = await _request_memory_prompt_locale("GET", name)
+        # Dropping the lock also dropped the guarantee that the character still
+        # exists once the read returns.  Without a second check this would answer
+        # 200 for a name deleted mid-read, and an in-flight card-manager
+        # hydration could repopulate that name's local language cache after the
+        # deletion cleanup -- which a later reuse of the same name would inherit.
+        await _load_existing_character(name)
         ui_language = await aload_ui_language_override()
         payload["effective_language"] = (
             payload.get("language")
