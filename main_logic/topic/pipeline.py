@@ -44,6 +44,17 @@ _MAX_TEXT_TOKENS = 1000
 _TOKEN_PRECAP_CHARS_PER_TOKEN = 8
 _TRIGGER_RETRY_DELAY_SECONDS = 60.0
 _CANDIDATE_MATURE_SECONDS = 60.0
+# An analyzer failure (tier down, bad key, timeout, unparseable reply) keeps the
+# character dirty so a transient blip still gets retried. Without a backoff that
+# retry rides the 20s activity heartbeat indefinitely — thousands of LLM calls
+# before the 12h signal retention finally starves it, which is how a permanent
+# misconfiguration turns into a billable hot loop. Back off exponentially
+# instead, and reset the moment the analyzer answers at all (an empty result is
+# an answer: it takes the discard path, not this one).
+_ANALYZER_RETRY_BASE_SECONDS = 60.0
+_ANALYZER_RETRY_CAP_SECONDS = 30 * 60.0
+# Clamps the doubling itself, so a long-lived failure can't overflow the shift.
+_ANALYZER_RETRY_MAX_DOUBLINGS = 10
 _MIN_TOPIC_TRIGGER_GAP_SECONDS = 4 * 60 * 60
 _MAX_DAILY_TOPIC_TRIGGERS = 2
 _USED_TOPIC_RECENT_SECONDS = 48 * 60 * 60
@@ -310,6 +321,28 @@ class TopicHookPool:
         self._dirty: set[str] = set(self._signal_store.names())
         self._seq: dict[str, int] = defaultdict(int)
         self._purge_generation: dict[str, int] = defaultdict(int)
+        # Consecutive analyzer failures per character, and the wall-clock
+        # instant before which the next attempt is pointless.
+        self._analyzer_failures: dict[str, int] = defaultdict(int)
+        self._analyzer_retry_not_before: dict[str, float] = {}
+
+    def _analyzer_retry_delay(self, failures: int) -> float:
+        doublings = min(max(0, failures - 1), _ANALYZER_RETRY_MAX_DOUBLINGS)
+        return min(
+            _ANALYZER_RETRY_BASE_SECONDS * (2 ** doublings),
+            _ANALYZER_RETRY_CAP_SECONDS,
+        )
+
+    def _note_analyzer_failure(self, name: str, now: float) -> tuple[int, float]:
+        self._analyzer_failures[name] += 1
+        failures = self._analyzer_failures[name]
+        delay = self._analyzer_retry_delay(failures)
+        self._analyzer_retry_not_before[name] = now + delay
+        return failures, delay
+
+    def _clear_analyzer_failures(self, name: str) -> None:
+        self._analyzer_failures.pop(name, None)
+        self._analyzer_retry_not_before.pop(name, None)
 
     def _purge_character_state(self, name: str) -> None:
         """Drop all topic state for a character."""
@@ -317,6 +350,7 @@ class TopicHookPool:
         self._signal_store.clear(name)
         self._materials.pop(name, None)
         self._dirty.discard(name)
+        self._clear_analyzer_failures(name)
         self._awaiting_response.pop(name, None)
         with self._used_topics_lock:
             self._used_topics.pop(name, None)
@@ -476,6 +510,7 @@ class TopicHookPool:
         lanlan_name: str,
         *,
         lang: str | None = None,
+        now: float | None = None,
     ) -> None:
         name = str(lanlan_name or "default")
         seen_seq = self._seq.get(name, 0)
@@ -504,8 +539,19 @@ class TopicHookPool:
             global_signals=global_signals,
         )
         if raw_materials is None:
-            logger.info("[%s] topic analyzer returned no result; keeping dirty for retry", name)
+            failures, delay = self._note_analyzer_failure(
+                name,
+                time.time() if now is None else float(now),
+            )
+            logger.info(
+                "[%s] topic analyzer returned no result (consecutive failures: %d); "
+                "keeping dirty, next attempt in %ds",
+                name,
+                failures,
+                int(delay),
+            )
             return
+        self._clear_analyzer_failures(name)
         if (
             self._seq.get(name, 0) != seen_seq
             or self._purge_generation.get(name, 0) != seen_purge_generation
@@ -571,8 +617,11 @@ class TopicHookPool:
             current_time = time.time() if now is None else float(now)
             if current_time - float(last_turn_at) < _CANDIDATE_MATURE_SECONDS:
                 continue
+            retry_not_before = self._analyzer_retry_not_before.get(name)
+            if retry_not_before is not None and current_time < retry_not_before:
+                continue
             try:
-                await self.process_now(name, lang=lang)
+                await self.process_now(name, lang=lang, now=current_time)
             except Exception as exc:
                 logger.warning("[%s] topic background processing failed: %s", name, exc)
 

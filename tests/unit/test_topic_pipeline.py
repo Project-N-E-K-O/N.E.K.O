@@ -9,6 +9,8 @@ import pytest
 
 from main_logic.topic.pipeline import (
     TopicHookPool,
+    _ANALYZER_RETRY_BASE_SECONDS,
+    _ANALYZER_RETRY_CAP_SECONDS,
     _clean_material,
     _UNANSWERED_TOPIC_WEIGHT,
     _record_weight,
@@ -1397,7 +1399,16 @@ async def test_topic_pool_keeps_dirty_when_analyzer_returns_none():
     assert last_turn_at is not None
 
     await pool.process_ready_topics(lang="zh-CN", now=last_turn_at + 61)
+    assert calls == 1
+
+    # 失败后仍然 dirty，但重试要等退避到期：紧接着的那一跳（心跳 20s 一次）
+    # 必须空转，否则就退回到"每 20 秒打一次失败的 LLM"的热循环。
     await pool.process_ready_topics(lang="zh-CN", now=last_turn_at + 62)
+    await pool.process_ready_topics(lang="zh-CN", now=last_turn_at + 81)
+    assert calls == 1
+    assert "妮可" in pool._dirty
+
+    await pool.process_ready_topics(lang="zh-CN", now=last_turn_at + 122)
     await asyncio.wait_for(retried.wait(), timeout=1.0)
     materials = pool.get_ready_materials("妮可")
 
@@ -2498,3 +2509,125 @@ def test_used_topics_persist_failure_is_visible(tmp_path):
         r.getMessage() for r in sink.records if r.levelno >= logging.WARNING
     ]
     assert any("used-history" in m for m in warnings), warnings
+
+
+def test_analyzer_retry_delay_doubles_from_the_base_and_saturates_at_the_cap():
+    # 常量一并断死。只断 _analyzer_retry_delay(2) == 2 * BASE 这类派生式的话，
+    # 把 BASE 从 60 改成 1 秒（等于取消退避）测试照样绿。
+    assert _ANALYZER_RETRY_BASE_SECONDS == 60.0
+    assert _ANALYZER_RETRY_CAP_SECONDS == 1800.0
+
+    pool = TopicHookPool(auto_schedule=False)
+    assert pool._analyzer_retry_delay(1) == 60.0
+    assert pool._analyzer_retry_delay(2) == 120.0
+    assert pool._analyzer_retry_delay(3) == 240.0
+    assert pool._analyzer_retry_delay(5) == 960.0
+    # 60 * 2**5 = 1920 > cap.
+    assert pool._analyzer_retry_delay(6) == 1800.0
+    # 退避封顶后计数还在涨，指数不能跟着涨到溢出。
+    assert pool._analyzer_retry_delay(500) == 1800.0
+    # 防御性：第一次失败之前不该有人问，问了也不能算出 0 延迟。
+    assert pool._analyzer_retry_delay(0) == 60.0
+
+
+@pytest.mark.asyncio
+async def test_topic_pool_backs_off_instead_of_retrying_failed_analyzer_every_heartbeat():
+    """A failing analyzer must not ride the 20s heartbeat forever.
+
+    The analyzer returning None means "the call failed", not "no topic here"
+    (that is an empty list, which takes the discard path). The failure keeps the
+    character dirty so a transient blip recovers, and before the backoff that
+    dirty flag meant one LLM call every 20s until the 12h signal retention
+    starved it.
+    """
+    calls = []
+
+    async def failing_analyzer(*, lang, **kwargs):
+        calls.append(lang)
+        return None
+
+    pool = TopicHookPool(
+        analyzer=failing_analyzer,
+        auto_schedule=False,
+        min_user_turns_for_topic=1,
+    )
+    pool.note_user_message("妮可", "我最近一直在纠结要不要换工作")
+    base = pool._signal_store.last_turn_at("妮可")
+    assert base is not None
+
+    # 成熟窗口一过就跑第一次，失败后退避 60s。
+    await pool.process_ready_topics(now=base + 61, lang="zh-CN")
+    assert len(calls) == 1
+
+    # 心跳 20s 一跳，退避期内的每一跳都必须空转。
+    for tick in (81, 101, 111):
+        await pool.process_ready_topics(now=base + tick, lang="zh-CN")
+    assert len(calls) == 1
+    assert "妮可" in pool._dirty  # 仍然 dirty：是延后重试，不是放弃
+
+    # 61 + 60 之后放行第二次，这次退避翻倍到 120s。
+    await pool.process_ready_topics(now=base + 122, lang="zh-CN")
+    assert len(calls) == 2
+    for tick in (142, 182, 222):
+        await pool.process_ready_topics(now=base + tick, lang="zh-CN")
+    assert len(calls) == 2
+
+    # 122 + 120 之后第三次。
+    await pool.process_ready_topics(now=base + 243, lang="zh-CN")
+    assert len(calls) == 3
+
+
+@pytest.mark.asyncio
+async def test_topic_pool_clears_analyzer_backoff_once_the_analyzer_answers():
+    outcomes = [None, [{"interest": "恢复后的换工作话题", "relevance": 90}]]
+    calls = []
+
+    async def flaky_analyzer(*, lang, **kwargs):
+        calls.append(lang)
+        return outcomes[min(len(calls) - 1, len(outcomes) - 1)]
+
+    pool = TopicHookPool(
+        analyzer=flaky_analyzer,
+        auto_schedule=False,
+        min_user_turns_for_topic=1,
+    )
+    pool.note_user_message("妮可", "我最近一直在纠结要不要换工作")
+    base = pool._signal_store.last_turn_at("妮可")
+    assert base is not None
+
+    await pool.process_ready_topics(now=base + 61, lang="zh-CN")
+    assert len(calls) == 1
+    assert pool._analyzer_failures["妮可"] == 1
+    assert pool._analyzer_retry_not_before["妮可"] == pytest.approx(base + 121)
+
+    await pool.process_ready_topics(now=base + 122, lang="zh-CN")
+    assert len(calls) == 2
+    # 一旦 analyzer 真的答了话，计数与闸门都必须归零，否则下一次偶发失败会
+    # 从上一次的退避档位继续翻倍。
+    assert "妮可" not in pool._analyzer_failures
+    assert "妮可" not in pool._analyzer_retry_not_before
+    assert pool.get_ready_materials("妮可")[0]["interest"] == "恢复后的换工作话题"
+
+
+@pytest.mark.asyncio
+async def test_topic_pool_empty_analyzer_result_is_an_answer_not_a_failure():
+    """`[]` means "analysed, nothing worth saying" — it must not arm the backoff."""
+    calls = []
+
+    async def empty_analyzer(*, lang, **kwargs):
+        calls.append(lang)
+        return []
+
+    pool = TopicHookPool(
+        analyzer=empty_analyzer,
+        auto_schedule=False,
+        min_user_turns_for_topic=1,
+    )
+    pool.note_user_message("妮可", "我最近一直在纠结要不要换工作")
+    base = pool._signal_store.last_turn_at("妮可")
+    assert base is not None
+
+    await pool.process_ready_topics(now=base + 61, lang="zh-CN")
+    assert len(calls) == 1
+    assert "妮可" not in pool._analyzer_retry_not_before
+    assert "妮可" not in pool._analyzer_failures
