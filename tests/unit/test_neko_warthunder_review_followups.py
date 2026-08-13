@@ -26,6 +26,7 @@ from plugin.plugins.neko_warthunder.core.contracts import (
     BattleState,
     WtConfig,
 )
+from plugin.plugins.neko_warthunder.data_layer.data_process.wt_events import parse_award
 from plugin.plugins.neko_warthunder.core.scenario import ScenarioResolver
 from plugin.plugins.neko_warthunder.detectors._base import (
     ConditionDetector,
@@ -268,6 +269,51 @@ def test_embedded_data_layer_serves_health_without_system_python(tmp_path: Path)
     finally:
         process.terminate()
         process.wait(timeout=3.0)
+
+
+@pytest.mark.parametrize(
+    ("message", "code", "label"),
+    [
+        ("Ace (P-51D) First Strike!", "first_blood", "First Strike"),
+        ("Ace (P-51D) first blood!", "first_blood", "first blood"),
+        ("Ace (P-51D) FINAL BLOW!", "final_blow", "FINAL BLOW"),
+        (
+            'Ace (P-51D) earned the award "Double Strike!"',
+            "double_kill",
+            "Double Strike",
+        ),
+        (
+            "Ace (P-51D) earned an award 'Triple Kill!'",
+            "triple_kill",
+            "Triple Kill",
+        ),
+        (
+            'Ace (P-51D) EARNED THE AWARD "Multi Strike x4!"',
+            "multi_kill",
+            "Multi Strike x4",
+        ),
+    ],
+)
+def test_english_awards_are_recognized(
+    message: str,
+    code: str,
+    label: str,
+) -> None:
+    award = parse_award(message, event_id=7, time=11)
+
+    assert award is not None
+    assert award.player == "Ace"
+    assert award.vehicle == "P-51D"
+    assert award.code == code
+    assert award.label == label
+    assert award.notable is True
+
+
+def test_final_blow_kill_description_is_not_misclassified_as_award() -> None:
+    assert (
+        parse_award("Ace (P-51D) dealt the final blow Rival (Bf 109)")
+        is None
+    )
 
 
 def test_large_replay_scrub_is_not_mistaken_for_midnight_wrap() -> None:
