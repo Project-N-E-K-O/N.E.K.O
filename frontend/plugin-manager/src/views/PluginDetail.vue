@@ -82,10 +82,6 @@
           </div>
         </el-tab-pane>
 
-        <el-tab-pane v-if="showLegacyStaticUi" :label="$t('plugins.ui.title')" name="ui">
-          <PluginUIFrame ref="staticUiFrameRef" :plugin-id="pluginId" height="560px" @open-surface="openHostedSurfaceFromStaticUi" />
-        </el-tab-pane>
-
         <el-tab-pane :label="$t('plugins.basicInfo')" name="info">
           <div class="info-section" data-yui-guide-id="plugin-detail-info">
             <el-descriptions :column="2" border>
@@ -136,9 +132,6 @@
         </el-tab-pane>
 
       </el-tabs>
-      <div v-if="needsLegacyStaticUiRelay" class="static-ui-relay" aria-hidden="true">
-        <PluginUIFrame ref="staticUiFrameRef" :plugin-id="pluginId" height="560px" @open-surface="openHostedSurfaceFromStaticUi" />
-      </div>
     </el-card>
 
     <EmptyState v-else-if="!loading" :description="$t('plugins.pluginNotFound')" />
@@ -158,9 +151,7 @@ import PluginConfigEditor from '@/components/plugin/PluginConfigEditor.vue'
 import LogViewer from '@/components/logs/LogViewer.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
 import HostedSurfaceFrame from '@/components/plugin/HostedSurfaceFrame.vue'
-import PluginUIFrame from '@/components/plugin/PluginUIFrame.vue'
 import { getPluginUiSurfaceInfo } from '@/api/plugins'
-import { get } from '@/api'
 import { resolvePluginDisplayText, type PluginDisplayText } from '@/utils/pluginDisplay'
 import { useI18n } from 'vue-i18n'
 import type { PluginUiSurface, PluginUiWarning } from '@/types/api'
@@ -177,7 +168,6 @@ const surfaces = ref<PluginUiSurface[]>([])
 const surfaceWarnings = ref<PluginUiWarning[]>([])
 const activePanelSurfaceId = ref('')
 const activeGuideSurfaceId = ref('')
-const staticUiFrameRef = ref<InstanceType<typeof PluginUIFrame> | null>(null)
 type SurfaceMessageReceiver = {
   sendSurfaceMessage: (data: unknown) => void
 }
@@ -185,15 +175,6 @@ const panelSurfaceFrameRefs = new Map<string, SurfaceMessageReceiver>()
 const hostedSurfaceFrameHeight = 'clamp(560px, calc(100vh - 220px), 1200px)'
 const allowedTabs = new Set(['panel', 'guide', 'ui', 'info', 'entries', 'metrics', 'config', 'logs'])
 let currentSurfaceLoadId = 0
-// fetchStaticUI 也需要和 fetchSurfaces 一样的 stale-response guard：用户快速
-// 切换 plugin detail 页时，旧 plugin 的 /ui-info 响应可能在新 plugin 加载后
-// 才到达，覆盖 hasStaticUI 导致 UI tab 显示状态错位。
-let currentStaticUiLoadId = 0
-const hasStaticUI = ref(false)
-// Keep a confirmed legacy UI relay mounted while this same plugin's surfaces
-// are refreshed (for example after a locale change), but never reuse it for a
-// different plugin while its /ui-info probe is still in flight.
-const staticUiPluginId = ref('')
 
 const plugin = computed(() => {
   return pluginStore.pluginsWithStatus.find(p => p.id === pluginId.value)
@@ -228,13 +209,7 @@ const defaultPanelSurface = computed(() => {
     ?? availableDeclaredPanelSurfaces.value[0]
     ?? displayedPanelSurfaces.value[0]
 })
-const hasStaticCompatPanel = computed(() => panelSurfaces.value.some((surface) => surface.legacy_static_compat))
 const hasDisplayablePanelSurface = computed(() => displayedPanelSurfaces.value.length > 0)
-const hasCurrentStaticUI = computed(() => hasStaticUI.value && staticUiPluginId.value === pluginId.value)
-// Preserve the legacy iframe only as a hidden message receiver when it is an
-// automatically injected compatibility surface alongside a newer declared UI.
-const needsLegacyStaticUiRelay = computed(() => hasCurrentStaticUI.value && hasStaticCompatPanel.value && availableDeclaredPanelSurfaces.value.length > 0)
-const showLegacyStaticUi = computed(() => hasCurrentStaticUI.value && !hasDisplayablePanelSurface.value)
 
 const isAdapter = computed(() => plugin.value?.type === 'adapter')
 
@@ -273,7 +248,7 @@ function resolveDefaultTab(value: unknown): string {
   if (requested === 'panel' && !hasDisplayablePanelSurface.value) return 'info'
   if (requested === 'guide' && guideSurfaces.value.length === 0) return 'info'
   if (requested === 'ui' && hasDisplayablePanelSurface.value) return 'panel'
-  if (requested === 'ui' && !showLegacyStaticUi.value) return 'info'
+  if (requested === 'ui') return 'info'
   return requested
 }
 
@@ -385,13 +360,14 @@ function relayHostedSurfaceMessageToStaticUi(data: unknown) {
   }
   // Hosted surface messages have already been source/origin checked by the
   // frame. Keep every mounted static panel current, including a `main` tab
-  // that is temporarily off-screen while a hosted surface is active.
+  // that is temporarily off-screen while a hosted surface is active. Static
+  // panels are the only legacy-UI iframe owners; do not mount a duplicate
+  // hidden relay for the same /ui/ document.
   for (const surface of displayedPanelSurfaces.value) {
     if (surface.mode === 'static') {
       panelSurfaceFrameRefs.get(surface.id)?.sendSurfaceMessage(data)
     }
   }
-  staticUiFrameRef.value?.sendSurfaceMessage(data)
 }
 
 async function fetchSurfaces(): Promise<boolean> {
@@ -402,12 +378,6 @@ async function fetchSurfaces(): Promise<boolean> {
     if (loadId !== currentSurfaceLoadId || currentPluginId !== pluginId.value) return false
     surfaces.value = info.surfaces
     surfaceWarnings.value = info.warnings
-    if (hasDisplayablePanelSurface.value) {
-      // Prefer the declared panel and invalidate a possible in-flight legacy
-      // static-UI probe from the previous request. Keep an already-confirmed
-      // relay mounted for this plugin until the replacement probe completes.
-      currentStaticUiLoadId += 1
-    }
   } catch (caught: any) {
     if (loadId !== currentSurfaceLoadId || currentPluginId !== pluginId.value) return false
     surfaces.value = []
@@ -423,35 +393,8 @@ async function fetchSurfaces(): Promise<boolean> {
   return true
 }
 
-async function fetchStaticUI(): Promise<boolean> {
-  // The legacy /ui-info route serves static/index.html.  A modern panel may
-  // intentionally point at that same file, so probing it would only create a
-  // duplicate "界面" tab.
-  if (hasDisplayablePanelSurface.value && !hasStaticCompatPanel.value) {
-    hasStaticUI.value = false
-    staticUiPluginId.value = pluginId.value
-    return true
-  }
-  const loadId = ++currentStaticUiLoadId
-  const currentPluginId = pluginId.value
-  try {
-    const info = await get<{ has_ui: boolean }>(`/plugin/${encodeURIComponent(currentPluginId)}/ui-info`)
-    if (loadId !== currentStaticUiLoadId || currentPluginId !== pluginId.value) return false
-    hasStaticUI.value = info?.has_ui ?? false
-    staticUiPluginId.value = currentPluginId
-    return true
-  } catch {
-    if (loadId !== currentStaticUiLoadId || currentPluginId !== pluginId.value) return false
-    hasStaticUI.value = false
-    staticUiPluginId.value = currentPluginId
-    return true
-  }
-}
-
 async function refreshPluginUi(): Promise<boolean> {
-  const surfacesApplied = await fetchSurfaces()
-  if (!surfacesApplied) return false
-  return fetchStaticUI()
+  return fetchSurfaces()
 }
 
 onMounted(async () => {
@@ -495,10 +438,6 @@ watch(locale, () => {
 <style scoped>
 .plugin-detail {
   padding: 0;
-}
-
-.static-ui-relay {
-  display: none;
 }
 
 .loading-container {
