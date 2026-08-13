@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextvars import ContextVar
+
 from .tutor_llm_agent_common import (
     Any,
     asyncio,
@@ -25,19 +28,30 @@ from .tutor_llm_agent_common import (
     diagnostic_code_for_exception,
 )
 from .qwen_native_client import (
-    QwenNativeClient,
     QwenNativeResult,
     messages_have_image,
     new_operation_deadline,
 )
+from .study_model_gateway import (
+    StudyModelGateway,
+    StudyModelResult,
+    StudyModelRuntimeSnapshot,
+)
 from .tutor_llm_agent_json_corrector import _JSONCorrector
+
+
+_bound_model_runtime: ContextVar[StudyModelRuntimeSnapshot | None] = ContextVar(
+    "study_companion_model_runtime", default=None
+)
 
 
 class TutorLLMAgent:
     def __init__(self, *, logger: Any, config: StudyConfig) -> None:
         self._logger = logger
         self._config = config
-        self._qwen_client = QwenNativeClient(logger=logger)
+        self._model_gateway = StudyModelGateway(logger=logger)
+        # Compatibility seam for focused legacy tests and private embedders.
+        self._qwen_client = self._model_gateway.native_client
         self._json_corrector = _JSONCorrector(logger=logger)
 
     def update_config(self, config: StudyConfig) -> None:
@@ -45,6 +59,23 @@ class TutorLLMAgent:
 
     async def shutdown(self) -> None:
         return None
+
+    async def resolve_model_runtime(
+        self, model_group: str = "agent"
+    ) -> StudyModelRuntimeSnapshot:
+        return await self._model_gateway.resolve_runtime(model_group)
+
+    async def describe_model_runtimes(self) -> dict[str, dict[str, object]]:
+        return await self._model_gateway.describe_runtimes()
+
+    @contextmanager
+    def bind_model_runtime(self, runtime: StudyModelRuntimeSnapshot):
+        """Keep a long-running operation on one immutable host-model snapshot."""
+        token = _bound_model_runtime.set(runtime)
+        try:
+            yield runtime
+        finally:
+            _bound_model_runtime.reset(token)
 
     def _localize_reply(self, language: str | None, key: str, **values: Any) -> str:
         if key == "empty_input":
@@ -256,61 +287,6 @@ class TutorLLMAgent:
         return first_line[:48]
 
     @staticmethod
-    def _model_supports_vision(model: str) -> bool:
-        normalized = str(model or "").strip().lower()
-        if not normalized:
-            return False
-        if normalized.startswith("glm-") and re.search(
-            r"(?:^|[-_.])\d+(?:\.\d+)?v(?:[-_.]|$)",
-            normalized,
-        ):
-            return True
-        return any(
-            marker in normalized
-            for marker in (
-                "gpt-4o",
-                "gpt-4.1",
-                "gpt-4.5",
-                "gpt-5",
-                "vision",
-                "vl",
-                "qwen2.5-vl",
-                "qwen-vl",
-                "gemini",
-                "claude-3",
-                "claude-4",
-            )
-        )
-
-    @staticmethod
-    def _message_has_image_content(message: dict[str, Any]) -> bool:
-        content = message.get("content")
-        if not isinstance(content, list):
-            return False
-        return any(
-            isinstance(block, dict) and block.get("type") == "image_url"
-            for block in content
-        )
-
-    @staticmethod
-    def _strip_image_content(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        result: list[dict[str, Any]] = []
-        for message in messages:
-            content = message.get("content")
-            if not isinstance(content, list):
-                result.append(dict(message))
-                continue
-            text_parts = [
-                str(block.get("text") or "")
-                for block in content
-                if isinstance(block, dict) and block.get("type") == "text"
-            ]
-            next_message = dict(message)
-            next_message["content"] = "\n".join(part for part in text_parts if part)
-            result.append(next_message)
-        return result
-
-    @staticmethod
     def _attach_vision_image(
         messages: list[dict[str, Any]],
         image_base64: str,
@@ -372,14 +348,25 @@ class TutorLLMAgent:
         *,
         operation: str = LLM_OPERATION_CONCEPT_EXPLAIN,
         deadline: float | None = None,
-    ) -> QwenNativeResult:
+        runtime: StudyModelRuntimeSnapshot | None = None,
+    ) -> StudyModelResult | QwenNativeResult:
         effective_deadline = deadline or self._new_operation_deadline(
             operation, messages
         )
-        return await self._qwen_client.call(
+        # Preserve instance-level replacement used by older integrations without
+        # making the production router depend on a Qwen-specific client.
+        if self._qwen_client is not self._model_gateway.native_client:
+            return await self._qwen_client.call(
+                messages,
+                operation=operation,
+                deadline=effective_deadline,
+            )
+        runtime = runtime or _bound_model_runtime.get()
+        return await self._model_gateway.call(
             messages,
             operation=operation,
             deadline=effective_deadline,
+            runtime=runtime,
         )
 
     def _new_operation_deadline(

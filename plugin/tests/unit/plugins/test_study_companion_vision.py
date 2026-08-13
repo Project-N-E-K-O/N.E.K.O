@@ -121,21 +121,8 @@ def test_image_only_explain_prompts_require_solution_process_sections() -> None:
     assert "输出全部正确选项" in IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN
 
 
-@pytest.mark.parametrize(
-    "model, expected",
-    [
-        ("gpt-4o", True),
-        ("claude-4-sonnet", True),
-        ("gemini-2.5-pro", True),
-        ("glm-4.6v", True),
-        ("glm-5v-turbo", True),
-        ("glm-4-plus", False),
-        ("gpt-4", False),
-        ("", False),
-    ],
-)
-def test_model_supports_vision(model: str, expected: bool) -> None:
-    assert TutorLLMAgent._model_supports_vision(model) is expected
+def test_agent_does_not_guess_vision_support_from_model_name() -> None:
+    assert not hasattr(TutorLLMAgent, "_model_supports_vision")
 
 
 def test_study_explain_text_schema_accepts_vision_image() -> None:
@@ -235,25 +222,8 @@ def test_attach_vision_image_only_allows_jpeg_and_png_data_urls() -> None:
     assert svg is messages
 
 
-def test_strip_image_content_removes_image_blocks() -> None:
-    messages = [
-        {
-            "role": "user",
-            "content": [
-                {"type": "text", "text": "one"},
-                {"type": "image_url", "image_url": {"url": "data:image/png;base64,x"}},
-                {"type": "text", "text": "two"},
-            ],
-        },
-        {"role": "assistant", "content": "unchanged"},
-    ]
-
-    result = TutorLLMAgent._strip_image_content(messages)
-
-    assert result == [
-        {"role": "user", "content": "one\ntwo"},
-        {"role": "assistant", "content": "unchanged"},
-    ]
+def test_agent_cannot_strip_image_content_before_provider_call() -> None:
+    assert not hasattr(TutorLLMAgent, "_strip_image_content")
 
 
 @pytest.mark.asyncio
@@ -446,7 +416,7 @@ async def test_structured_operation_attaches_vision_context(
 
 
 @pytest.mark.asyncio
-async def test_call_model_rejects_missing_qwen_vision_config_without_text_fallback(
+async def test_call_model_rejects_missing_vision_config_without_text_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from utils import config_manager
@@ -467,7 +437,9 @@ async def test_call_model_rejects_missing_qwen_vision_config_without_text_fallba
     monkeypatch.setattr(config_manager, "get_config_manager", lambda: _ConfigManager())
     agent = TutorLLMAgent(logger=_Logger(), config=StudyConfig(language="en"))
 
-    with pytest.raises(QwenNativeError) as exc_info:
+    from plugin.plugins.study_companion.study_model_gateway import StudyModelError
+
+    with pytest.raises(StudyModelError) as exc_info:
         await agent._call_model(
             [
                 {
@@ -480,7 +452,7 @@ async def test_call_model_rejects_missing_qwen_vision_config_without_text_fallba
             ]
         )
 
-    assert exc_info.value.diagnostic == "model_not_supported"
+    assert exc_info.value.diagnostic == "model_unavailable"
     assert config_groups == ["vision"]
 
 
@@ -488,12 +460,11 @@ async def test_call_model_rejects_missing_qwen_vision_config_without_text_fallba
 async def test_call_model_uses_vision_config_for_image_messages(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from plugin.plugins.study_companion import qwen_native_client
+    from plugin.plugins.study_companion import study_model_gateway
     from utils import config_manager
 
     seen_messages: list[dict[str, Any]] = []
     seen_call_kwargs: list[dict[str, Any]] = []
-    recorded_usage: list[dict[str, Any]] = []
     config_groups: list[str] = []
 
     class _ConfigManager:
@@ -507,42 +478,30 @@ async def test_call_model_uses_vision_config_for_image_messages(
                 }
             raise AssertionError("vision request unexpectedly used the agent model")
 
-    class _FakeMultiModalConversation:
-        @classmethod
-        async def call(cls, **kwargs: Any) -> SimpleNamespace:
-            seen_call_kwargs.append(dict(kwargs))
-            seen_messages.extend(kwargs["messages"])
+    class _FakeGenericClient:
+        async def ainvoke(self, messages: list[dict[str, Any]]) -> SimpleNamespace:
+            seen_messages.extend(messages)
             return SimpleNamespace(
-                status_code=200,
-                request_id="request-1",
-                usage=SimpleNamespace(input_tokens=12, output_tokens=4),
-                output=SimpleNamespace(
-                    choices=[
-                        SimpleNamespace(
-                            message=SimpleNamespace(content=[{"text": "vision reply"}])
-                        )
-                    ]
-                ),
+                content="vision reply",
+                response_metadata={
+                    "request_id": "request-1",
+                    "finish_reason": "stop",
+                    "token_usage": {"prompt_tokens": 12, "completion_tokens": 4},
+                },
             )
 
-    class _FakeTracker:
-        @classmethod
-        def get_instance(cls) -> "_FakeTracker":
-            return cls()
+        async def aclose(self) -> None:
+            return None
 
-        def record(self, **kwargs: Any) -> None:
-            recorded_usage.append(dict(kwargs))
+    async def _fake_factory(**kwargs: Any) -> _FakeGenericClient:
+        seen_call_kwargs.append(dict(kwargs))
+        return _FakeGenericClient()
 
     monkeypatch.setattr(config_manager, "get_config_manager", lambda: _ConfigManager())
     monkeypatch.setattr(
-        qwen_native_client,
-        "AioMultiModalConversation",
-        _FakeMultiModalConversation,
-    )
-    monkeypatch.setattr(
-        qwen_native_client,
-        "_token_tracker_module",
-        SimpleNamespace(TokenTracker=_FakeTracker),
+        study_model_gateway,
+        "create_chat_llm_async",
+        _fake_factory,
     )
     agent = TutorLLMAgent(logger=_Logger(), config=StudyConfig(language="en"))
 
@@ -561,29 +520,19 @@ async def test_call_model_uses_vision_config_for_image_messages(
 
     assert result == "vision reply"
     assert config_groups == ["vision"]
-    assert seen_call_kwargs[0]["base_address"] == "https://dashscope.aliyuncs.com/api/v1"
+    assert seen_call_kwargs[0]["base_url"] == "https://dashscope.aliyuncs.com/compatible-mode/v1"
     assert seen_call_kwargs[0]["model"] == "qwen3.7-plus"
     assert seen_call_kwargs[0]["api_key"] == "vision-key"
-    assert seen_call_kwargs[0]["max_tokens"] == 512
-    assert seen_call_kwargs[0]["enable_thinking"] is False
-    assert seen_call_kwargs[0]["headers"] == {
-        "x-dashscope-session-cache": "enable"
-    }
+    assert seen_call_kwargs[0]["provider_type"] == "openai_compatible"
+    assert seen_call_kwargs[0]["max_completion_tokens"] == 512
+    assert seen_call_kwargs[0]["max_retries"] == 0
     content = seen_messages[0]["content"]
     assert isinstance(content, list)
-    assert content[0] == {"text": "what is shown?"}
-    assert content[1] == {"image": "data:image/png;base64,x"}
-    assert recorded_usage == [
-        {
-            "model": "qwen3.7-plus",
-            "prompt_tokens": 12,
-            "completion_tokens": 4,
-            "total_tokens": 16,
-            "call_type": "vision",
-            "source": "study_companion:knowledge_semantic_route",
-            "success": True,
-        }
-    ]
+    assert content[0] == {"type": "text", "text": "what is shown?"}
+    assert content[1] == {
+        "type": "image_url",
+        "image_url": {"url": "data:image/png;base64,x"},
+    }
 
 
 @pytest.mark.parametrize(

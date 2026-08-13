@@ -392,7 +392,26 @@
                 </article>
                 <article class="settings-card">
                   <h3 data-i18n="ui.settings.llm.title">LLM</h3>
-                  <p id="settingsLlmSummary" data-i18n="ui.settings.llm.summary">Uses the configured model and timeout.</p>
+                  <p id="settingsLlmSummary" data-i18n="ui.settings.llm.summary">Uses the Agent and Vision model groups configured by N.E.K.O.</p>
+                  <div class="model-runtime-list" aria-live="polite">
+                    <section class="model-runtime" data-model-runtime="text">
+                      <span class="model-runtime__label" data-i18n="ui.settings.model_runtime.text">Text and document model</span>
+                      <strong class="model-runtime__model">-</strong>
+                      <span class="model-runtime__meta"></span>
+                      <span class="model-runtime__status"></span>
+                    </section>
+                    <section class="model-runtime" data-model-runtime="vision">
+                      <span class="model-runtime__label" data-i18n="ui.settings.model_runtime.vision">Image explanation model</span>
+                      <strong class="model-runtime__model">-</strong>
+                      <span class="model-runtime__meta"></span>
+                      <span class="model-runtime__status"></span>
+                    </section>
+                  </div>
+                  <p class="model-runtime__help" data-i18n="ui.settings.model_runtime.managed_by_neko">Models and credentials are managed in N.E.K.O. Study Companion does not store a separate copy. Long-document analysis may consume multiple free Agent calls.</p>
+                  <div class="model-runtime__actions">
+                    <button id="settingsModelRefreshBtn" class="button button-secondary" type="button" data-i18n="ui.button.refresh_model_status">Refresh model status</button>
+                    <a class="button button-secondary" href="/api_key" target="_blank" rel="noopener noreferrer" data-i18n="ui.button.open_model_settings">Open N.E.K.O model settings</a>
+                  </div>
                   <label class="setting-field">
                     <span data-i18n="ui.settings.llm_timeout.label">LLM timeout (seconds)</span>
                     <input id="settingsLlmTimeout" type="number" min="1" max="3600" step="1" />
@@ -587,6 +606,7 @@
     <script src="./dependency-controller.js?v=study-ocr-dependencies-20260812"></script>
     <script src="./quick-card-controller.js?v=study-quick-card-types-20260812"></script>
     <script src="./outcome-formatters.js?v=study-hotfix-20260812"></script>
+    <script src="./model-runtime.js?v=study-provider-gateway-20260813"></script>
     <script src="./main.js?v=study-knowledge-window-size-20260813"></script>
   </body>
 </html>

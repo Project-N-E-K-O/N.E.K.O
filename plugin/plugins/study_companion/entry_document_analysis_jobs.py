@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from contextlib import nullcontext
 
 from .constants import LLM_OPERATION_DOCUMENT_ANALYZE
 from ._general_narration import prepare_general_narration_content
@@ -13,6 +14,7 @@ from .document_chunking import (
 )
 from .entry_common import asyncio, Ok, SdkError, StudyEvent, plugin_entry, tr, ui
 from .models import TutorReply, utc_now_iso
+from .study_model_gateway import StudyModelError
 from .tutor_llm_agent_document import _DocumentModelResult
 from .tutor_llm_agent_document_chunked import (
     _analyze_document_chunk_result,
@@ -186,6 +188,10 @@ class _DocumentAnalysisJobsEntriesMixin:
                 )
             )
             total_chunks = 1 if analysis_mode == "direct" else len(chunks)
+            resolve_runtime = getattr(self._agent, "resolve_model_runtime", None)
+            model_runtime = (
+                await resolve_runtime("agent") if callable(resolve_runtime) else None
+            )
             runner_state = {"document": document, "chunks": chunks}
 
             async def runner(update, budget):
@@ -406,18 +412,29 @@ class _DocumentAnalysisJobsEntriesMixin:
                 result["document_narration_status"] = "scheduled"
                 result["document_narration_reason"] = ""
 
-            payload = await self._document_job_manager().start(
-                analysis_mode=analysis_mode,
-                document=document.public_metadata(),
-                total_chunks=total_chunks,
-                runner=runner,
-                on_completed=on_completed,
+            bind_runtime = getattr(self._agent, "bind_model_runtime", None)
+            runtime_context = (
+                bind_runtime(model_runtime)
+                if model_runtime is not None and callable(bind_runtime)
+                else nullcontext()
             )
+            # create_task() copies the current context. Bind only while the job task
+            # is created so every chunk and the merge share one immutable model
+            # snapshot, while unrelated tutor calls keep resolving current settings.
+            with runtime_context:
+                payload = await self._document_job_manager().start(
+                    analysis_mode=analysis_mode,
+                    document=document.public_metadata(),
+                    total_chunks=total_chunks,
+                    runner=runner,
+                    on_completed=on_completed,
+                )
             return Ok(payload)
         except (
             DocumentValidationError,
             DocumentChunkingError,
             DocumentAnalysisJobError,
+            StudyModelError,
         ) as exc:
             return Ok(
                 _failed_payload(

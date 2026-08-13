@@ -147,6 +147,8 @@ const settingsOcrEnabled = document.getElementById('settingsOcrEnabled');
 const settingsOcrLanguages = document.getElementById('settingsOcrLanguages');
 const settingsLlmTimeout = document.getElementById('settingsLlmTimeout');
 const settingsLlmVisionEnabled = document.getElementById('settingsLlmVisionEnabled');
+const settingsModelRefreshBtn = document.getElementById('settingsModelRefreshBtn');
+const settingsModelRuntimeCards = Array.from(document.querySelectorAll('[data-model-runtime]'));
 const settingsCommunicationEnabled = document.getElementById('settingsCommunicationEnabled');
 const settingsSolutionNarrationEnabled = document.getElementById('settingsSolutionNarrationEnabled');
 const settingsGeneralNarrationEnabled = document.getElementById('settingsGeneralNarrationEnabled');
@@ -408,9 +410,7 @@ function formatPluginError(error) {
 }
 
 function formatTutorDiagnostic(diagnostic) {
-  const messages={timeout:['ui.error.llm_timeout','Image understanding timed out. Please retry or paste the problem text.'],rate_limited:['ui.error.llm_rate_limited','Qwen is receiving too many requests. Please retry shortly.'],authentication_failed:['ui.error.llm_authentication_failed','The Qwen API credential is invalid. Please check the API key.'],model_not_supported:['ui.error.llm_model_not_supported','The configured Qwen model or native endpoint does not support this request.'],provider_unavailable:['ui.error.llm_provider_unavailable','Qwen is temporarily unavailable. Please retry shortly.'],invalid_image:['ui.error.llm_invalid_image','The image could not be read. Please use a valid JPEG or PNG image.']};
-  const [key,fallback]=messages[String(diagnostic||'').trim()]||['ui.error.llm_call_failed','The Qwen request failed. Please retry.'];
-  return t(key, fallback);
+  return window.StudyModelRuntime.formatDiagnostic(diagnostic, t);
 }
 
 function setPanelBusy(busy) {
@@ -1726,6 +1726,10 @@ function renderCommunicationRuntime(status = settingsCommunicationStatus) {
   settingsCommunicationRuntime.textContent = t(`ui.settings.communication.${key}`);
 }
 
+function renderModelRuntime(runtime = {}) {
+  window.StudyModelRuntime.render(settingsModelRuntimeCards, runtime, t, tf);
+}
+
 function applySettingsConfig(config) {
   const study = config.study || {};
   const ocr = config.ocr_reader || {};
@@ -1756,6 +1760,7 @@ async function loadSettingsConfig(force = false) {
     settingsConfig = cloneConfig(getConfigRoot(payload));
     settingsCommunicationStatus = cloneConfig(payload.communication_status || {});
     applySettingsConfig(settingsConfig);
+    renderModelRuntime(payload.model_runtime || {});
     setSettingsConfigStatus('ui.status.config_loaded', 'Settings loaded');
   } catch (error) {
     setSettingsConfigStatus('ui.status.config_load_failed', 'Could not load settings');
@@ -2344,6 +2349,9 @@ async function bootstrap() {
       event.preventDefault();
       saveSettingsConfig();
     });
+  }
+  if (settingsModelRefreshBtn) {
+    settingsModelRefreshBtn.addEventListener('click', () => loadSettingsConfig(true));
   }
   if (settingsDataSaveBtn) {
     settingsDataSaveBtn.addEventListener('click', () => {

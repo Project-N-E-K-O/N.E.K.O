@@ -115,7 +115,7 @@
         document_parse_timeout: 'parse_timeout',
         document_parse_permission_denied: 'parse_permission_denied',
       };
-      const analysisErrors = 'timeout rate_limited authentication_failed model_not_supported provider_unavailable invalid_endpoint invalid_request unsafe_model_output llm_call_failed';
+      const analysisErrors = 'timeout rate_limited authentication_failed model_not_supported provider_unavailable unsupported_provider context_limit_exceeded vision_not_supported agent_quota_exceeded invalid_endpoint invalid_request unsafe_model_output llm_call_failed';
       return t(`ui.error.document_${analysisErrors.includes(code) ? `analysis_${code}` : validation[code] || code.replace(/^document_/, '') || 'analysis_failed'}`);
     }
 

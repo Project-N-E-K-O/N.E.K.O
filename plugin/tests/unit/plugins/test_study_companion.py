@@ -964,7 +964,7 @@ def test_study_companion_pages_forward_current_locale_to_plugin_entries() -> Non
 
     assert "locale: PluginSurfaceProps['locale']" in hosted_source
     assert "{ ...args, locale: String(locale || '').trim() }" in hosted_source
-    assert hosted_source.count("props.locale,") == 11
+    assert hosted_source.count("props.locale,") == 12
     assert "}, [props.locale]);" in hosted_source
     assert "typeof window.I18n.lang === 'function'" in static_source
     assert "createRun(entryId, { ...args, locale }, deadline, signal)" in static_source
@@ -5090,16 +5090,6 @@ def test_study_knowledge_map_weak_topic_count_matches_visible_nodes() -> None:
 def test_study_companion_i18n_bundles_are_present() -> None:
     plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
     locales = ["zh-CN", "en", "ja", "ko", "ru", "zh-TW", "es", "pt"]
-    expected_model_not_supported = {
-        "zh-CN": "当前配置的 Qwen 模型或原生接口不支持此请求。",
-        "en": "The configured Qwen model or native endpoint does not support this request.",
-        "ja": "設定されている Qwen モデルまたはネイティブエンドポイントは、このリクエストをサポートしていません。",
-        "ko": "구성된 Qwen 모델 또는 네이티브 엔드포인트가 이 요청을 지원하지 않습니다.",
-        "ru": "Настроенная модель Qwen или нативная конечная точка не поддерживает этот запрос.",
-        "zh-TW": "目前設定的 Qwen 模型或原生介面不支援此請求。",
-        "es": "El modelo Qwen configurado o el endpoint nativo no admite esta solicitud.",
-        "pt": "O modelo Qwen configurado ou o endpoint nativo não oferece suporte a esta solicitação.",
-    }
     phase3_keys = [
         "ui.label.screen",
         "ui.label.question",
@@ -5147,10 +5137,7 @@ def test_study_companion_i18n_bundles_are_present() -> None:
         assert "entries.set_knowledge_contribution_opt_in.name" in bundle
         assert "entries.export_notes.name" in bundle
         assert "ui.profile.stage.cross_stage" in bundle
-        assert (
-            bundle["ui.error.llm_model_not_supported"]
-            == expected_model_not_supported[locale]
-        )
+        assert "qwen" not in bundle["ui.error.llm_model_not_supported"].casefold()
 
     en_bundle = json.loads(
         (plugin_dir / "i18n" / "en.json").read_text(encoding="utf-8")
@@ -9201,11 +9188,11 @@ async def test_tutor_agent_structured_operations_degrade_with_generic_diagnostic
 async def test_tutor_agent_llm_cache_distinguishes_rotated_api_keys(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from plugin.plugins.study_companion import qwen_native_client
+    from plugin.plugins.study_companion import study_model_gateway
     from utils import config_manager
 
     config_groups: list[str] = []
-    compatible_calls: list[dict[str, object]] = []
+    generic_calls: list[dict[str, object]] = []
 
     class _ConfigManager:
         def __init__(self) -> None:
@@ -9219,33 +9206,32 @@ async def test_tutor_agent_llm_cache_distinguishes_rotated_api_keys(
                 "api_key": self.api_key,
             }
 
-    class _CompatibleTransport:
-        async def chat_completions(self, **kwargs):
-            from plugin.plugins.study_companion.qwen_compatible_transport import (
-                QwenCompatibleResult,
+        async def aconsume_agent_daily_quota(self, **_kwargs):
+            return True, {}
+
+    class _GenericClient:
+        def __init__(self, key: str) -> None:
+            self.key = key
+
+        async def ainvoke(self, _messages):
+            return SimpleNamespace(
+                content=f"reply from {self.key}",
+                response_metadata={"finish_reason": "stop"},
             )
 
-            compatible_calls.append(dict(kwargs))
-            return QwenCompatibleResult(
-                text=f"reply from {kwargs['api_key']}",
-                model=str(kwargs["model"]),
-                request_id=f"request-{len(compatible_calls)}",
-                input_tokens=3,
-                output_tokens=4,
-            )
+        async def aclose(self) -> None:
+            return None
+
+    async def _generic_factory(**kwargs):
+        generic_calls.append(dict(kwargs))
+        return _GenericClient(str(kwargs["api_key"]))
 
     cfg_mgr = _ConfigManager()
 
-    async def _discard_usage(_client, **_kwargs) -> None:
-        return None
-
     monkeypatch.setattr(config_manager, "get_config_manager", lambda: cfg_mgr)
-    monkeypatch.setattr(
-        qwen_native_client.QwenNativeClient, "_record_usage", _discard_usage
-    )
+    monkeypatch.setattr(study_model_gateway, "create_chat_llm_async", _generic_factory)
 
     agent = TutorLLMAgent(logger=_Logger(), config=StudyConfig(language="en"))
-    agent._qwen_client._compatible_transport = _CompatibleTransport()
     first = await agent._call_model([{"role": "user", "content": "one"}])
     cfg_mgr.api_key = "new-key"
     second = await agent._call_model([{"role": "user", "content": "two"}])
@@ -9253,11 +9239,11 @@ async def test_tutor_agent_llm_cache_distinguishes_rotated_api_keys(
     assert first == "reply from old-key"
     assert second == "reply from new-key"
     assert config_groups == ["agent", "agent"]
-    assert [call["api_key"] for call in compatible_calls] == ["old-key", "new-key"]
-    assert all(call["model"] == "qwen-plus" for call in compatible_calls)
-    assert all(call["max_tokens"] == 3072 for call in compatible_calls)
-    assert all(call["timeout_seconds"] > 0 for call in compatible_calls)
-    assert all("temperature" not in call for call in compatible_calls)
+    assert [call["api_key"] for call in generic_calls] == ["old-key", "new-key"]
+    assert all(call["model"] == "qwen-plus" for call in generic_calls)
+    assert all(call["max_completion_tokens"] == 3072 for call in generic_calls)
+    assert all(call["timeout"] > 0 for call in generic_calls)
+    assert all("temperature" not in call for call in generic_calls)
     assert not hasattr(agent, "_client_cache")
 
 

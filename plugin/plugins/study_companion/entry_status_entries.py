@@ -327,13 +327,22 @@ class _StatusEntriesMixin:
             default="Return the running study companion settings used by the static UI.",
         ),
         input_schema={"type": "object", "properties": {}},
-        llm_result_fields=["config", "communication_status"],
+        llm_result_fields=["config", "communication_status", "model_runtime"],
     )
     async def study_get_settings_config(self, **_):
+        describe_model_runtimes = getattr(
+            self._agent, "describe_model_runtimes", None
+        )
+        model_runtime = (
+            await describe_model_runtimes()
+            if callable(describe_model_runtimes)
+            else {}
+        )
         return Ok(
             {
                 "config": _settings_config_payload(self._cfg),
                 "communication_status": _communication_status_payload(self),
+                "model_runtime": model_runtime,
             }
         )
 

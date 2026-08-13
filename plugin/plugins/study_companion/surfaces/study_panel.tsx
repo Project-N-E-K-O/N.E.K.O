@@ -43,6 +43,16 @@ type StudyStatus = {
   };
 };
 
+type StudyModelRuntime = {
+  group?: string;
+  model?: string;
+  provider_type?: string;
+  configured?: boolean;
+  credential_configured?: boolean;
+  transport_supported?: boolean;
+  vision_capability?: string;
+};
+
 type StudyMode = 'companion' | 'interactive' | 'teaching';
 
 type PracticeScope = {
@@ -357,6 +367,7 @@ function formatKnowledgeGuidanceEvidence(
 
 const ENTRY_TIMEOUT_MS: Record<string, number> = {
   study_status: 15000,
+  study_get_settings_config: 15000,
   study_ocr_snapshot: 60000,
   study_set_mode: 15000,
   study_explain_text: 120000,
@@ -963,6 +974,8 @@ export default function StudyPanel(props: PluginSurfaceProps) {
     )
   );
   const [status, setStatus] = useState<StudyStatus>({});
+  const [modelRuntime, setModelRuntime] = useState<Record<string, StudyModelRuntime>>({});
+  const [modelRuntimeLoading, setModelRuntimeLoading] = useState(false);
   const [text, setText] = useState('');
   const [question, setQuestion] = useState('');
   const [questionContext, setQuestionContext] = useState<QuestionContext | null>(null);
@@ -1054,6 +1067,29 @@ export default function StudyPanel(props: PluginSurfaceProps) {
     return t(`ui.status.screen.${normalized}`, normalized);
   }
 
+  async function refreshModelRuntime(signal?: AbortSignal) {
+    setModelRuntimeLoading(true);
+    try {
+      const data = await callStudyPlugin<{
+        model_runtime?: Record<string, StudyModelRuntime>;
+      }>(props.api, 'study_get_settings_config', props.locale, {}, signal);
+      if (!signal?.aborted) setModelRuntime(data.model_runtime || {});
+    } catch (_error) {
+      if (!signal?.aborted) setModelRuntime({});
+    } finally {
+      if (!signal?.aborted) setModelRuntimeLoading(false);
+    }
+  }
+
+  function modelRuntimeStatus(role: string, item: StudyModelRuntime) {
+    if (item.configured !== true) return t('ui.settings.model_runtime.not_configured', 'Not configured');
+    if (item.transport_supported === false) return t('ui.settings.model_runtime.unsupported', 'This provider protocol is not supported by Study Companion');
+    if (item.credential_configured !== true) return t('ui.settings.model_runtime.credential_missing', 'Credential is not configured');
+    return role === 'vision'
+      ? t('ui.settings.model_runtime.configured_vision_unknown', 'Configured; image capability will be confirmed on the first request')
+      : t('ui.settings.model_runtime.ready', 'Ready');
+  }
+
   function normalizeStudyStatus(value: unknown): StudyStatus {
     if (!value || typeof value !== 'object') {
       return {};
@@ -1110,19 +1146,31 @@ export default function StudyPanel(props: PluginSurfaceProps) {
     const messages: Record<string, [string, string]> = {
       timeout: documentOperation
         ? ['ui.document.error.timeout', 'Document analysis timed out. Please retry shortly.']
-        : ['ui.error.llm_timeout', 'Image understanding timed out. Please retry or paste the problem text.'],
-      rate_limited: ['ui.error.llm_rate_limited', 'Qwen is receiving too many requests. Please retry shortly.'],
-      authentication_failed: ['ui.error.llm_authentication_failed', 'The Qwen API credential is invalid. Please check the API key.'],
+        : ['ui.error.llm_timeout', 'The model request timed out. Please retry shortly.'],
+      rate_limited: ['ui.error.llm_rate_limited', 'The model service is receiving too many requests. Please retry shortly.'],
+      authentication_failed: ['ui.error.llm_authentication_failed', 'The configured model credential is invalid. Check it in N.E.K.O model settings.'],
       model_not_supported: documentOperation
         ? ['ui.error.document_analysis_model_not_supported', 'The configured model does not support document analysis.']
-        : ['ui.error.llm_model_not_supported', 'The configured Qwen model or native endpoint does not support this request.'],
-      provider_unavailable: ['ui.error.llm_provider_unavailable', 'Qwen is temporarily unavailable. Please retry shortly.'],
+        : ['ui.error.llm_model_not_supported', 'The configured model is unavailable or does not support this request.'],
+      provider_unavailable: ['ui.error.llm_provider_unavailable', 'The model service is temporarily unavailable. Please retry shortly.'],
+      unsupported_provider: documentOperation
+        ? ['ui.error.document_analysis_unsupported_provider', 'The configured model provider protocol is not supported by Study Companion.']
+        : ['ui.error.llm_unsupported_provider', 'The configured model provider protocol is not supported by Study Companion.'],
+      context_limit_exceeded: documentOperation
+        ? ['ui.error.document_analysis_context_limit_exceeded', 'The document exceeds the configured model context limit.']
+        : ['ui.error.llm_context_limit_exceeded', 'The content exceeds the configured model context limit. Shorten it and retry.'],
+      vision_not_supported: documentOperation
+        ? ['ui.error.document_analysis_vision_not_supported', 'The configured Vision model does not accept image input.']
+        : ['ui.error.llm_vision_not_supported', 'The configured Vision model does not accept image input.'],
+      agent_quota_exceeded: documentOperation
+        ? ['ui.error.document_analysis_agent_quota_exceeded', 'The free Agent daily quota has been used up.']
+        : ['ui.error.llm_agent_quota_exceeded', 'The free Agent daily quota has been used up. Try again later or configure another Agent model.'],
       invalid_endpoint: documentOperation
-        ? ['ui.error.document_analysis_invalid_endpoint', 'The configured Qwen API endpoint is invalid or unsupported.']
-        : ['ui.error.llm_call_failed', 'The configured Qwen API endpoint is invalid or unsupported.'],
+        ? ['ui.error.document_analysis_invalid_endpoint', 'The configured model endpoint is invalid or unsupported.']
+        : ['ui.error.llm_invalid_endpoint', 'The configured model endpoint is invalid or unsupported.'],
       invalid_request: documentOperation
-        ? ['ui.error.document_analysis_invalid_request', 'Qwen rejected the document analysis request as invalid.']
-        : ['ui.error.llm_call_failed', 'Qwen rejected the request as invalid.'],
+        ? ['ui.error.document_analysis_invalid_request', 'The model service rejected the document analysis request as invalid.']
+        : ['ui.error.llm_invalid_request', 'The model service rejected the request as invalid.'],
       invalid_image: ['ui.error.llm_invalid_image', 'The image could not be read. Please use a valid JPEG or PNG image.'],
       document_too_large: ['ui.document.error.file_too_large', 'The document exceeds the 512 KiB size limit.'],
       document_too_long: ['ui.document.error.too_long', 'The document exceeds the 160,000-token limit. Shorten it and retry.'],
@@ -1138,8 +1186,8 @@ export default function StudyPanel(props: PluginSurfaceProps) {
       document_type_mismatch: ['ui.document.error.unsupported_type', 'The document type does not match its file extension.'],
       unsupported_locale: ['ui.error.plugin_call_failed', 'The current page language is not supported for document analysis.'],
       llm_call_failed: documentOperation
-        ? ['ui.error.document_analysis_llm_call_failed', 'The Qwen document analysis request failed.']
-        : ['ui.error.llm_call_failed', 'The Qwen request failed. Please retry.'],
+        ? ['ui.error.document_analysis_llm_call_failed', 'The document analysis model request failed.']
+        : ['ui.error.llm_call_failed', 'The model service request failed. Please retry.'],
       document_job_busy: ['ui.error.document_job_busy', 'Another document analysis is already running.'],
       document_job_not_found: ['ui.error.document_job_not_found', 'The document analysis job is no longer available.'],
       document_split_failed: ['ui.error.document_split_failed', 'The document could not be split safely for analysis.'],
@@ -1149,7 +1197,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
       document_canceled: ['ui.error.document_canceled', 'Document analysis canceled.'],
     };
     const [key, fallback] = messages[String(diagnostic || '').trim()]
-      || ['ui.error.llm_call_failed', 'The Qwen request failed. Please retry.'];
+      || ['ui.error.llm_call_failed', 'The model service request failed. Please retry.'];
     return t(key, fallback);
   }
 
@@ -1890,6 +1938,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
     mountedRef.current = true;
     const controller = beginStudyRequest();
     refresh(controller.signal)
+      .then(() => refreshModelRuntime(controller.signal))
       .then(() => loadPracticeScope(controller.signal))
       .then(() => resumeDocumentJob(controller.signal))
       .catch((error) => {
@@ -2087,6 +2136,31 @@ export default function StudyPanel(props: PluginSurfaceProps) {
         <div>
           <span>{t('ui.label.answer', 'Answer')}</span>
           <strong>{evaluation?.verdict ? `${evaluation.verdict}${evaluation.score !== undefined ? ` / ${evaluation.score}` : ''}` : '-'}</strong>
+        </div>
+      </section>
+      <section className="study-panel__model-runtime" aria-label={t('ui.settings.llm.title', 'LLM')}>
+        {(['text', 'vision'] as const).map((role) => {
+          const item = modelRuntime[role] || {};
+          return (
+            <div key={role}>
+              <span>{t(`ui.settings.model_runtime.${role}`, role === 'text' ? 'Text and document model' : 'Image explanation model')}</span>
+              <strong>{item.model || t('ui.settings.model_runtime.not_configured', 'Not configured')}</strong>
+              <small>{tf('ui.settings.model_runtime.meta', 'Group: {group} · Protocol: {protocol}', {
+                group: item.group || (role === 'text' ? 'agent' : 'vision'),
+                protocol: item.provider_type || t('ui.settings.model_runtime.protocol_unknown', 'Unknown'),
+              })}</small>
+              <small>{modelRuntimeStatus(role, item)}</small>
+            </div>
+          );
+        })}
+        <small>{t('ui.settings.model_runtime.managed_by_neko', 'Models and credentials are managed in N.E.K.O. Long-document analysis may consume multiple free Agent calls.')}</small>
+        <div className="study-panel__model-runtime-actions">
+          <button type="button" disabled={modelRuntimeLoading} onClick={() => void refreshModelRuntime()}>
+            {t('ui.button.refresh_model_status', 'Refresh model status')}
+          </button>
+          <a href="/api_key" target="_blank" rel="noopener noreferrer">
+            {t('ui.button.open_model_settings', 'Open N.E.K.O model settings')}
+          </a>
         </div>
       </section>
       <section className="study-panel__state">

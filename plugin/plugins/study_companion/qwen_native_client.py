@@ -342,7 +342,28 @@ def _diagnostic_for_response(response: object) -> str:
         return "authentication_failed"
     if status_code == HTTPStatus.TOO_MANY_REQUESTS or "rate" in combined:
         return "rate_limited"
+    if any(
+        marker in combined
+        for marker in (
+            "context length",
+            "context_length",
+            "context window",
+            "maximum context",
+            "prompt is too long",
+            "too many tokens",
+        )
+    ):
+        return "context_limit_exceeded"
     if "image" in combined or "multimodal" in combined:
+        if any(
+            marker in combined
+            for marker in (
+                "not supported",
+                "does not support",
+                "unsupported",
+            )
+        ):
+            return "vision_not_supported"
         return "invalid_image"
     if normalized_code in {
         "invalidmodel",
@@ -408,6 +429,7 @@ class QwenNativeClient:
         *,
         operation: str,
         deadline: float,
+        api_config: dict[str, Any] | None = None,
     ) -> QwenNativeResult:
         get_config_manager = getattr(_config_manager_module, "get_config_manager", None)
         if not callable(get_config_manager):
@@ -422,7 +444,17 @@ class QwenNativeClient:
             )
         has_image = messages_have_image(messages)
         model_group = "vision" if has_image else "agent"
-        api_config = get_config_manager().get_model_api_config(model_group)
+        if api_config is None:
+            config_manager = get_config_manager()
+            async_get_config = getattr(config_manager, "aget_model_api_config", None)
+            if callable(async_get_config):
+                api_config = await async_get_config(model_group)
+            else:
+                api_config = await asyncio.to_thread(
+                    config_manager.get_model_api_config, model_group
+                )
+        else:
+            api_config = dict(api_config)
         base_url = str(api_config.get("base_url") or "").strip()
         model = str(api_config.get("model") or "").strip()
         api_key = str(api_config.get("api_key") or "").strip()

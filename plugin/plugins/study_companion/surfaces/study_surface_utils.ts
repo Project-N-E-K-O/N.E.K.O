@@ -247,6 +247,40 @@ export const BRAND_CSS = `
     overflow-wrap: anywhere;
   }
 
+  .study-panel__model-runtime {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr)) auto;
+    gap: 10px;
+    align-items: stretch;
+    padding: 10px;
+    border: 1px solid rgba(47, 125, 87, 0.14);
+    border-radius: var(--radius-sm);
+    background: rgba(255, 255, 255, 0.68);
+  }
+
+  .study-panel__model-runtime > div:not(.study-panel__model-runtime-actions) {
+    display: grid;
+    gap: 3px;
+  }
+
+  .study-panel__model-runtime span,
+  .study-panel__model-runtime small {
+    color: var(--muted);
+    overflow-wrap: anywhere;
+  }
+
+  .study-panel__model-runtime-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-content: center;
+  }
+
+  .study-panel__model-runtime a {
+    color: var(--brand-strong);
+    font-weight: 700;
+  }
+
   .study-panel textarea,
   .study-panel pre,
   .study-panel__math-reply {
