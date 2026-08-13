@@ -1,6 +1,7 @@
 import asyncio
 import inspect
 import json
+import logging
 import threading
 import time
 from datetime import datetime
@@ -1354,12 +1355,25 @@ async def test_topic_pool_debounce_retries_after_background_analyzer_failure():
     assert last_turn_at is not None
 
     await pool.process_ready_topics(lang="zh-CN", now=last_turn_at + 61)
+    assert calls == 1
+
+    # 抛异常和返回 None 是同一件事——analyzer 失败了——所以必须走同一个退避。
+    # 异常若逃到 process_ready_topics 的 except 只打日志，dirty 还在、退避没设，
+    # 下一跳就又打一次 LLM，正是这个退避要挡的热循环。
+    assert pool._analyzer_failures["妮可"] == 1
     await pool.process_ready_topics(lang="zh-CN", now=last_turn_at + 62)
+    await pool.process_ready_topics(lang="zh-CN", now=last_turn_at + 81)
+    assert calls == 1
+    assert "妮可" in pool._dirty
+
+    await pool.process_ready_topics(lang="zh-CN", now=last_turn_at + 122)
     await asyncio.wait_for(retried.wait(), timeout=1.0)
     materials = pool.get_ready_materials("妮可")
 
     assert calls == 2
     assert materials[0]["interest"] == "稳定转职话题"
+    # 恢复后计数清零，下一次偶发异常从头退避而不是接着翻倍。
+    assert "妮可" not in pool._analyzer_failures
 
 
 @pytest.mark.asyncio
@@ -2631,3 +2645,81 @@ async def test_topic_pool_empty_analyzer_result_is_an_answer_not_a_failure():
     assert len(calls) == 1
     assert "妮可" not in pool._analyzer_retry_not_before
     assert "妮可" not in pool._analyzer_failures
+
+
+@pytest.mark.asyncio
+async def test_topic_pool_analyzer_exception_arms_the_same_backoff_as_a_none_result():
+    """A raising analyzer must back off exactly like one returning None.
+
+    `_analyzer` is a constructor-injected callable whose contract never promised
+    not to raise, and the default one reaches a third-party LLM client. Handling
+    only the None path would leave a second route back into the 20s hot loop.
+    """
+    calls = []
+
+    async def exploding_analyzer(*, lang, **kwargs):
+        calls.append(lang)
+        raise RuntimeError("provider said: 我最近一直在纠结要不要换工作")
+
+    pool = TopicHookPool(
+        analyzer=exploding_analyzer,
+        auto_schedule=False,
+        min_user_turns_for_topic=1,
+    )
+    pool.note_user_message("妮可", "我最近一直在纠结要不要换工作")
+    base = pool._signal_store.last_turn_at("妮可")
+    assert base is not None
+
+    await pool.process_ready_topics(now=base + 61, lang="zh-CN")
+    assert len(calls) == 1
+    assert pool._analyzer_retry_not_before["妮可"] == pytest.approx(base + 121)
+
+    for tick in (62, 81, 101):
+        await pool.process_ready_topics(now=base + tick, lang="zh-CN")
+    assert len(calls) == 1
+
+    # 退避照样翻倍：第二次失败后要等 120s，而不是回到 60s。
+    await pool.process_ready_topics(now=base + 122, lang="zh-CN")
+    assert len(calls) == 2
+    assert pool._analyzer_retry_not_before["妮可"] == pytest.approx(base + 242)
+
+
+@pytest.mark.asyncio
+async def test_topic_pool_analyzer_exception_log_omits_the_exception_message():
+    """Provider error messages routinely echo the request body — the prompt."""
+    class _Sink(logging.Handler):
+        def __init__(self):
+            super().__init__(level=logging.DEBUG)
+            self.records = []
+
+        def emit(self, record):
+            self.records.append(record)
+
+    secret = "我最近一直在纠结要不要换工作"
+
+    async def exploding_analyzer(*, lang, **kwargs):
+        raise RuntimeError(f"invalid request body: {secret}")
+
+    pool = TopicHookPool(
+        analyzer=exploding_analyzer,
+        auto_schedule=False,
+        min_user_turns_for_topic=1,
+    )
+    pool.note_user_message("妮可", secret)
+    base = pool._signal_store.last_turn_at("妮可")
+    assert base is not None
+
+    log = logging.getLogger("N.E.K.O.Main.topic.pipeline")
+    sink = _Sink()
+    prior = log.level
+    log.addHandler(sink)
+    log.setLevel(logging.DEBUG)
+    try:
+        await pool.process_ready_topics(now=base + 61, lang="zh-CN")
+    finally:
+        log.removeHandler(sink)
+        log.setLevel(prior)
+
+    messages = [r.getMessage() for r in sink.records]
+    assert any("RuntimeError" in m for m in messages), messages
+    assert not any(secret in m for m in messages), messages

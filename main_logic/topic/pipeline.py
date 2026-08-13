@@ -333,12 +333,19 @@ class TopicHookPool:
             _ANALYZER_RETRY_CAP_SECONDS,
         )
 
-    def _note_analyzer_failure(self, name: str, now: float) -> tuple[int, float]:
+    def _note_analyzer_failure(self, name: str, now: float, *, reason: str) -> None:
         self._analyzer_failures[name] += 1
         failures = self._analyzer_failures[name]
         delay = self._analyzer_retry_delay(failures)
         self._analyzer_retry_not_before[name] = now + delay
-        return failures, delay
+        logger.info(
+            "[%s] topic analyzer failed (%s, consecutive failures: %d); "
+            "keeping dirty, next attempt in %ds",
+            name,
+            reason,
+            failures,
+            int(delay),
+        )
 
     def _clear_analyzer_failures(self, name: str) -> None:
         self._analyzer_failures.pop(name, None)
@@ -534,22 +541,24 @@ class TopicHookPool:
         )
         signal_cutoff_at = self._signal_store.last_turn_at(name)
         global_signals = self._signal_store.format_global_signals(name, lang=topic_lang)
-        raw_materials = await self._analyzer(
-            lang=topic_lang,
-            global_signals=global_signals,
-        )
+        current_time = time.time() if now is None else float(now)
+        try:
+            raw_materials = await self._analyzer(
+                lang=topic_lang,
+                global_signals=global_signals,
+            )
+        except Exception as exc:
+            # An analyzer that raises is an analyzer that failed, and it has to
+            # arm the same backoff as one that returns None. Letting the
+            # exception reach process_ready_topics instead only logs it: the
+            # character stays dirty with no retry window set, which is exactly
+            # the 20s hot loop this backoff exists to prevent. Report the
+            # exception type only — its message can carry the prompt, i.e. the
+            # conversation itself.
+            self._note_analyzer_failure(name, current_time, reason=type(exc).__name__)
+            return
         if raw_materials is None:
-            failures, delay = self._note_analyzer_failure(
-                name,
-                time.time() if now is None else float(now),
-            )
-            logger.info(
-                "[%s] topic analyzer returned no result (consecutive failures: %d); "
-                "keeping dirty, next attempt in %ds",
-                name,
-                failures,
-                int(delay),
-            )
+            self._note_analyzer_failure(name, current_time, reason="no result")
             return
         self._clear_analyzer_failures(name)
         if (
