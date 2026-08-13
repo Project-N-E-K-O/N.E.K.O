@@ -66,6 +66,7 @@
               {{ t('plugins.active') }}
             </el-tag>
             <el-button
+              v-if="!isVirtualDefaultProfile(name)"
               type="danger"
               text
               size="small"
@@ -176,8 +177,8 @@ const selectedProfileName = ref<string | null>(null)
 const profileDraftConfig = ref<Record<string, any> | null>(null)
 const originalProfileConfig = ref<Record<string, any> | null>(null)
 
-// Every plugin gets an editable starting point the first time its configuration
-// page is opened. Existing profiles are always preserved.
+// Plugins without persisted profiles expose an editable default draft. It is
+// persisted only when the user saves, keeping configuration page loading read-only.
 const DEFAULT_PROFILE_NAME = 'default'
 
 function cloneDeep<T>(input: T, seen = new WeakMap<object, any>()): T {
@@ -235,17 +236,28 @@ function deepClone<T>(v: T): T {
   return cloneDeep(v)
 }
 
-const profileNames = computed<string[]>(() => {
+const persistedProfileNames = computed<string[]>(() => {
   const cfg = profilesState.value?.config_profiles
   if (!cfg || !cfg.files || typeof cfg.files !== 'object') return []
   return Object.keys(cfg.files).sort()
 })
 
+const profileNames = computed<string[]>(() =>
+  persistedProfileNames.value.length > 0
+    ? persistedProfileNames.value
+    : [DEFAULT_PROFILE_NAME]
+)
+
 const activeProfileName = computed<string | null>(() => {
   const cfg = profilesState.value?.config_profiles
   const name = cfg?.active
-  return typeof name === 'string' ? name : null
+  if (typeof name === 'string' && name) return name
+  return persistedProfileNames.value.length === 0 ? DEFAULT_PROFILE_NAME : null
 })
+
+function isVirtualDefaultProfile(name: string) {
+  return name === DEFAULT_PROFILE_NAME && persistedProfileNames.value.length === 0
+}
 
 const hasChanges = computed(() => {
   if (!selectedProfileName.value) return false
@@ -432,6 +444,11 @@ const previewConfigJson = computed(() => {
 
 async function loadProfileDraft(name: string, expectedVersion = loadVersion) {
   if (!props.pluginId) return
+  if (isVirtualDefaultProfile(name)) {
+    originalProfileConfig.value = {}
+    profileDraftConfig.value = {}
+    return
+  }
   try {
     const res = await getPluginProfileConfig(props.pluginId, name)
     if (expectedVersion !== loadVersion) return
@@ -471,24 +488,6 @@ async function loadAll() {
     baseConfig.value = (baseRes.config || {}) as Record<string, any>
     effectiveConfig.value = (effectiveRes.config || {}) as Record<string, any>
     profilesState.value = profilesRes
-
-    // A plugin without profiles used to leave the configuration form empty and
-    // required users to manually create one before they could edit anything.
-    // Persist an empty default profile and make it active so subsequent saves
-    // immediately affect the plugin's effective configuration.
-    if (profileNames.value.length === 0) {
-      await upsertPluginProfileConfig(props.pluginId, DEFAULT_PROFILE_NAME, {}, true)
-      if (currentVersion !== loadVersion) return
-
-      const [defaultEffectiveRes, defaultProfilesRes] = await Promise.all([
-        getPluginConfig(props.pluginId),
-        getPluginProfilesState(props.pluginId)
-      ])
-      if (currentVersion !== loadVersion) return
-
-      effectiveConfig.value = (defaultEffectiveRes.config || {}) as Record<string, any>
-      profilesState.value = defaultProfilesRes
-    }
 
     const names = profileNames.value
     const active = activeProfileName.value
@@ -550,7 +549,7 @@ async function addProfile() {
     if (!props.pluginId) return
 
     // 立即在后端创建一个空的 profile 映射，方便左侧列表立刻出现该 profile
-    await upsertPluginProfileConfig(props.pluginId, name, {}, false)
+    await upsertPluginProfileConfig(props.pluginId, name, {}, true)
 
     // 重新加载所有配置与 profiles 状态，并选中新建的 profile
     await loadAll()
@@ -588,28 +587,36 @@ function resetDraft() {
 async function save() {
   if (!props.pluginId || !selectedProfileName.value) return
 
+  const pluginId = props.pluginId
+  const profileName = selectedProfileName.value
+  const saveLoadVersion = loadVersion
+  const shouldActivate = isVirtualDefaultProfile(profileName)
+
   saving.value = true
   error.value = null
   try {
     await upsertPluginProfileConfig(
-      props.pluginId,
-      selectedProfileName.value,
+      pluginId,
+      profileName,
       (profileDraftConfig.value || {}) as Record<string, any>,
-      false
+      shouldActivate
     )
+
+    if (saveLoadVersion !== loadVersion || pluginId !== props.pluginId || profileName !== selectedProfileName.value) return
 
     ElMessage.success(t('common.success'))
 
     const [effectiveRes, profilesRes] = await Promise.all([
-      getPluginConfig(props.pluginId),
-      getPluginProfilesState(props.pluginId)
+      getPluginConfig(pluginId),
+      getPluginProfilesState(pluginId)
     ])
+    if (saveLoadVersion !== loadVersion || pluginId !== props.pluginId || profileName !== selectedProfileName.value) return
     effectiveConfig.value = (effectiveRes.config || {}) as Record<string, any>
     profilesState.value = profilesRes
     originalProfileConfig.value = deepClone(profileDraftConfig.value || {})
 
     // 仅当当前浏览的 profile 正好是激活中的 profile 时，才提示热更新或重载插件
-    const isActive = activeProfileName.value === selectedProfileName.value
+    const isActive = activeProfileName.value === profileName
     if (isActive) {
       try {
         // 提供热更新选项
