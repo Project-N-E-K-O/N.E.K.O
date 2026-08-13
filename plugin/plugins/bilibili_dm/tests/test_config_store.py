@@ -259,3 +259,17 @@ def test_manifest_registers_panel_without_credential_defaults():
     assert manifest["plugin"]["ui"]["enabled"] is True
     assert manifest["plugin"]["ui"]["panel"][0]["entry"] == "static/index.html"
     assert "bilibili_dm" not in manifest
+
+
+def test_static_ui_assets_are_versioned_and_not_cached():
+    plugin_source = (Path(__file__).parents[1] / "__init__.py").read_text(
+        encoding="utf-8"
+    )
+    page = (Path(__file__).parents[1] / "static" / "index.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'cache_control="no-cache, no-store, must-revalidate"' in plugin_source
+    assert 'style.css?v=1.1.6' in page
+    assert 'i18n.js?v=1.1.6' in page
+    assert 'script.js?v=1.1.6' in page

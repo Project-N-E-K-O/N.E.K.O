@@ -3,6 +3,7 @@ const pluginMatch = location.pathname.match(/\/plugin\/([^/]+)\/ui\//);
 const pluginId = pluginMatch ? decodeURIComponent(pluginMatch[1]) : 'bilibili_dm';
 
 const state = { dashboard: null, busy: false };
+const qrLogin = { key: null, pollTimer: null, countdownTimer: null, expiresAt: 0, generation: 0 };
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -55,6 +56,86 @@ function showToast(message, error = false) {
 function setBusy(busy) {
   state.busy = busy;
   document.querySelectorAll('button').forEach((button) => { button.disabled = busy; });
+}
+
+function clearQrLogin() {
+  qrLogin.generation += 1;
+  qrLogin.key = null;
+  qrLogin.expiresAt = 0;
+  if (qrLogin.pollTimer) clearTimeout(qrLogin.pollTimer);
+  if (qrLogin.countdownTimer) clearInterval(qrLogin.countdownTimer);
+  qrLogin.pollTimer = null;
+  qrLogin.countdownTimer = null;
+}
+
+function updateQrCountdown() {
+  const countdown = document.getElementById('qr-login-countdown');
+  if (!countdown || !qrLogin.expiresAt) return;
+  const seconds = Math.max(0, Math.ceil((qrLogin.expiresAt - Date.now()) / 1000));
+  countdown.textContent = seconds ? `二维码剩余 ${seconds} 秒` : '二维码已过期，请刷新';
+  if (!seconds) clearQrLogin();
+}
+
+function setQrStatus(message) {
+  const status = document.getElementById('qr-login-status');
+  if (status) status.textContent = String(message || '等待扫码…');
+}
+
+async function requestQrLogin() {
+  if (state.dashboard?.status?.listening) {
+    showToast('请先停止监听，再更新登录凭据', true);
+    return;
+  }
+  clearQrLogin();
+  const generation = qrLogin.generation;
+  const panel = document.getElementById('qr-login-panel');
+  const image = document.getElementById('qr-login-image');
+  panel.hidden = false;
+  image.removeAttribute('src');
+  setQrStatus('正在获取二维码…');
+  document.getElementById('qr-login-countdown').textContent = '';
+  try {
+    const result = await callPlugin('start_qr_login');
+    if (!result?.qrcode_image) throw new Error(result?.message || '获取二维码失败，请稍后重试');
+    if (generation !== qrLogin.generation) return;
+    qrLogin.key = 'plugin-session';
+    qrLogin.expiresAt = Date.now() + Number(result.timeout || 180) * 1000;
+    image.src = result.qrcode_image;
+    setQrStatus('等待扫码…');
+    updateQrCountdown();
+    qrLogin.countdownTimer = setInterval(updateQrCountdown, 1000);
+    pollQrLogin(generation);
+  } catch (error) {
+    if (generation !== qrLogin.generation) return;
+    setQrStatus(error.message || '获取二维码失败，请稍后重试');
+    showToast(error.message || '获取二维码失败', true);
+  }
+}
+
+async function pollQrLogin(generation) {
+  if (generation !== qrLogin.generation || !qrLogin.key) return;
+  try {
+    const data = await callPlugin('poll_qr_login');
+    if (generation !== qrLogin.generation) return;
+    if (data.status === 'done') {
+      clearQrLogin();
+      setQrStatus(data.message || '登录成功，配置已自动保存');
+      await refreshDashboard(true);
+      showToast(data.message || '扫码登录成功，配置已自动保存');
+      return;
+    }
+    if (data.status === 'expired') {
+      clearQrLogin();
+      setQrStatus(data.message || '二维码已过期，请刷新');
+      return;
+    }
+    setQrStatus(data.message || (data.status === 'scanned' ? '已扫码，请在手机上确认…' : '等待扫码…'));
+    qrLogin.pollTimer = setTimeout(() => pollQrLogin(generation), 1500);
+  } catch (error) {
+    if (generation !== qrLogin.generation) return;
+    clearQrLogin();
+    setQrStatus(error.message || '检查扫码状态失败，请刷新二维码');
+  }
 }
 
 function fieldStatus(id, configured) {
@@ -146,7 +227,7 @@ function optionalSecret(payload, key, elementId) {
   if (value) payload[key] = value;
 }
 
-async function saveSettings() {
+async function saveSettings(successMessage = '配置已保存到本机插件数据目录') {
   const payload = {
     permission_mode: document.getElementById('cfg-permission-mode').value,
     max_concurrent_messages: Number(document.getElementById('cfg-max-concurrent').value || 3),
@@ -162,7 +243,7 @@ async function saveSettings() {
   try {
     applyDashboard(await callPlugin('save_settings', payload));
     document.querySelectorAll('.credential-grid input').forEach((input) => { input.value = ''; });
-    showToast('配置已保存到本机插件数据目录');
+    showToast(successMessage);
   } catch (error) {
     showToast(error.message || '保存失败', true);
   } finally {
@@ -236,7 +317,9 @@ async function removeTrustedUser(uid) {
 window.addEventListener('DOMContentLoaded', async () => {
   if (window.I18n) window.I18n.scanDOM();
   document.getElementById('btn-refresh').addEventListener('click', () => refreshDashboard(false));
-  document.getElementById('btn-save').addEventListener('click', saveSettings);
+  document.getElementById('btn-save').addEventListener('click', () => saveSettings());
+  document.getElementById('btn-qr-login').addEventListener('click', requestQrLogin);
+  document.getElementById('btn-qr-refresh').addEventListener('click', requestQrLogin);
   document.getElementById('btn-clear').addEventListener('click', clearCredentials);
   document.getElementById('btn-start').addEventListener('click', () => toggleListening(true));
   document.getElementById('btn-stop').addEventListener('click', () => toggleListening(false));
