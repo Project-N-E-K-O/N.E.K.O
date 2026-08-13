@@ -97,6 +97,7 @@ async def test_qr_login_clears_an_old_refresh_token_when_sdk_does_not_provide_on
 
     login = BiliDMQrLogin(credential_saver=save)
     login._session = session
+    login._session_id = "session-id"
     login._require_sdk = lambda: (object, FakeEvents)
 
     assert (await login.poll())["status"] == "done"
@@ -104,10 +105,95 @@ async def test_qr_login_clears_an_old_refresh_token_when_sdk_does_not_provide_on
 
 
 @pytest.mark.asyncio
+async def test_qr_login_maps_scan_confirm_and_done_states():
+    saved: dict[str, str] = {}
+    credential = SimpleNamespace(
+        sessdata="session-secret",
+        bili_jct="csrf-secret",
+        buvid3="",
+        dedeuserid="42",
+    )
+    session = FakeSession([FakeEvents.SCAN, FakeEvents.CONF, FakeEvents.DONE], credential)
+
+    async def save(values: dict[str, str]) -> bool:
+        saved.update(values)
+        return True
+
+    login = BiliDMQrLogin(credential_saver=save)
+    login._session = session
+    login._session_id = "session-id"
+    login._require_sdk = lambda: (object, FakeEvents)
+
+    assert await login.poll_session("session-id") == {"status": "waiting", "message": "等待扫码…"}
+    assert await login.poll_session("session-id") == {"status": "scanned", "message": "已扫码，请在手机上确认…"}
+    assert (await login.poll_session("session-id"))["status"] == "done"
+    assert saved["sesdata"] == "session-secret"
+
+
+@pytest.mark.asyncio
+async def test_qr_login_clears_completed_session_when_credential_save_fails():
+    credential = SimpleNamespace(
+        sessdata="session-secret",
+        bili_jct="csrf-secret",
+        buvid3="",
+        dedeuserid="42",
+    )
+    async def save(_):
+        return False
+
+    login = BiliDMQrLogin(credential_saver=save)
+    login._session = FakeSession([FakeEvents.DONE], credential)
+    login._session_id = "session-id"
+    login._require_sdk = lambda: (object, FakeEvents)
+
+    with pytest.raises(RuntimeError, match="保存插件配置失败"):
+        await login.poll_session("session-id")
+    assert login._session is None
+
+
+@pytest.mark.asyncio
+async def test_qr_login_clears_completed_session_when_credential_save_raises():
+    credential = SimpleNamespace(
+        sessdata="session-secret",
+        bili_jct="csrf-secret",
+        buvid3="",
+        dedeuserid="42",
+    )
+
+    async def save(_):
+        raise OSError("disk full")
+
+    login = BiliDMQrLogin(credential_saver=save)
+    login._session = FakeSession([FakeEvents.DONE], credential)
+    login._session_id = "session-id"
+    login._require_sdk = lambda: (object, FakeEvents)
+
+    with pytest.raises(OSError, match="disk full"):
+        await login.poll_session("session-id")
+    assert login._session is None
+
+
+@pytest.mark.asyncio
+async def test_qr_login_rejects_poll_for_a_replaced_session():
+    async def save(_):
+        return False
+
+    login = BiliDMQrLogin(credential_saver=save)
+    login._session = FakeSession([FakeEvents.DONE])
+    login._session_id = "current-session"
+
+    assert await login.poll_session("old-session") == {
+        "status": "no_session",
+        "message": "没有进行中的登录，请重新获取二维码",
+    }
+
+
+@pytest.mark.asyncio
 async def test_qr_login_reports_expiry_and_clears_the_session():
     login = BiliDMQrLogin(credential_saver=lambda _: None)
     session = FakeSession([FakeEvents.TIMEOUT])
     login._session = session
+    login._session_id = "session-id"
     login._require_sdk = lambda: (object, FakeEvents)
 
     assert await login.poll() == {"status": "expired", "message": "二维码已过期，请刷新二维码"}

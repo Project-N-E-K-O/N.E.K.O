@@ -30,7 +30,7 @@ from .permission import PermissionManager
 from .qr_login import BiliDMQrLogin
 
 
-UI_ASSET_VERSION = "1.1.11"
+UI_ASSET_VERSION = "1.1.12"
 
 
 def build_open_ui_payload(*, plugin_id: str, available: bool) -> dict[str, Any]:
@@ -95,6 +95,7 @@ class BiliDMPlugin(NekoPluginBase):
         self._qr_login = BiliDMQrLogin(
             credential_saver=self._save_qr_credentials,
         )
+        self._qr_start_generations: dict[str, int] = {}
 
     @staticmethod
     def _mask_value(value: str) -> str:
@@ -371,12 +372,24 @@ class BiliDMPlugin(NekoPluginBase):
         id="start_qr_login",
         name=tr("entries.qr_login.name", default="获取 B站登录二维码"),
         description=tr("entries.qr_login.description", default="生成 B站扫码登录二维码，并自动保存登录配置"),
-        input_schema={"type": "object", "properties": {}, "additionalProperties": False},
+        input_schema={
+            "type": "object",
+            "properties": {
+                "client_id": {"type": "string", "minLength": 1, "maxLength": 128},
+                "request_generation": {"type": "integer", "minimum": 1},
+            },
+            "required": ["client_id", "request_generation"],
+            "additionalProperties": False,
+        },
     )
-    async def start_qr_login(self, **_):
+    async def start_qr_login(self, client_id: str, request_generation: int, **_):
         async with self._lifecycle_lock:
             if self._running:
                 return Err(SdkError("LISTENING_ACTIVE: 请先停止监听，再更新登录凭据"))
+            latest = self._qr_start_generations.get(client_id, 0)
+            if request_generation <= latest:
+                return Ok({"status": "stale_request", "message": "扫码请求已被更新请求替代"})
+            self._qr_start_generations[client_id] = request_generation
             try:
                 return Ok(await self._qr_login.start())
             except Exception as exc:
@@ -392,15 +405,20 @@ class BiliDMPlugin(NekoPluginBase):
         id="poll_qr_login",
         name=tr("entries.qr_login_poll.name", default="检查 B站扫码状态"),
         description=tr("entries.qr_login_poll.description", default="检查 B站二维码登录状态并自动保存配置"),
-        input_schema={"type": "object", "properties": {}, "additionalProperties": False},
+        input_schema={
+            "type": "object",
+            "properties": {"session_id": {"type": "string", "minLength": 1}},
+            "required": ["session_id"],
+            "additionalProperties": False,
+        },
     )
-    async def poll_qr_login(self, **_):
+    async def poll_qr_login(self, session_id: str, **_):
         async with self._lifecycle_lock:
             if self._running:
                 self._qr_login.clear()
                 return Err(SdkError("LISTENING_ACTIVE: 请先停止监听，再更新登录凭据"))
             try:
-                return Ok(await self._qr_login.poll())
+                return Ok(await self._qr_login.poll_session(session_id))
             except Exception as exc:
                 self.logger.warning(f"检查 B站扫码状态失败: {type(exc).__name__}")
                 return Err(SdkError(f"QR_LOGIN_POLL_FAILED: 检查扫码状态失败: {exc}"))
@@ -481,6 +499,9 @@ class BiliDMPlugin(NekoPluginBase):
     ):
         if self._running:
             return Err(SdkError("LISTENING_ACTIVE: 请先停止监听，再修改配置"))
+        qr_login = getattr(self, "_qr_login", None)
+        if qr_login is not None:
+            qr_login.clear()
 
         updates = {
             "sesdata": sesdata,

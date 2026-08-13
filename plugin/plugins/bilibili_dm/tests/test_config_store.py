@@ -270,10 +270,10 @@ def test_static_ui_assets_are_versioned_and_not_cached():
     )
 
     assert 'cache_control="no-cache, no-store, must-revalidate"' in plugin_source
-    assert 'UI_ASSET_VERSION = "1.1.11"' in plugin_source
-    assert 'style.css?v=1.1.11' in page
-    assert 'i18n.js?v=1.1.11' in page
-    assert 'script.js?v=1.1.11' in page
+    assert 'UI_ASSET_VERSION = "1.1.12"' in plugin_source
+    assert 'style.css?v=1.1.12' in page
+    assert 'i18n.js?v=1.1.12' in page
+    assert 'script.js?v=1.1.12' in page
 
 
 def test_qr_login_panel_can_be_cancelled_and_auto_closes_after_success():
@@ -290,7 +290,10 @@ def test_qr_login_panel_can_be_cancelled_and_auto_closes_after_success():
     assert 'id="btn-qr-cancel"' in page
     assert "cancel_qr_login" in plugin_source
     assert "sessionId: null" in script
+    assert "qrClientId" in script
+    assert "request_generation: generation" in script
     assert "await callPlugin('cancel_qr_login', { session_id: sessionId })" in script
+    assert "await callPlugin('poll_qr_login', { session_id: qrLogin.sessionId })" in script
     assert "closeTimer: null" in script
     assert "if (qrLogin.closeTimer) clearTimeout(qrLogin.closeTimer);" in script
     assert "qrLogin.closeTimer = setTimeout" in script

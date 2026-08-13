@@ -3,7 +3,8 @@ const pluginMatch = location.pathname.match(/\/plugin\/([^/]+)\/ui\//);
 const pluginId = pluginMatch ? decodeURIComponent(pluginMatch[1]) : 'bilibili_dm';
 
 const state = { dashboard: null, busy: false };
-const qrLogin = { key: null, sessionId: null, pollTimer: null, countdownTimer: null, closeTimer: null, expiresAt: 0, generation: 0 };
+const qrClientId = globalThis.crypto?.randomUUID?.() || `bili-dm-${Date.now()}-${Math.random()}`;
+const qrLogin = { key: null, sessionId: null, starting: false, pollTimer: null, countdownTimer: null, closeTimer: null, expiresAt: 0, generation: 0 };
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -62,6 +63,7 @@ function clearQrLogin() {
   qrLogin.generation += 1;
   qrLogin.key = null;
   qrLogin.sessionId = null;
+  qrLogin.starting = false;
   qrLogin.expiresAt = 0;
   if (qrLogin.pollTimer) clearTimeout(qrLogin.pollTimer);
   if (qrLogin.countdownTimer) clearInterval(qrLogin.countdownTimer);
@@ -106,8 +108,10 @@ async function requestQrLogin() {
     showToast('请先停止监听，再更新登录凭据', true);
     return;
   }
+  if (qrLogin.starting) return;
   clearQrLogin();
   const generation = qrLogin.generation;
+  qrLogin.starting = true;
   const panel = document.getElementById('qr-login-panel');
   const image = document.getElementById('qr-login-image');
   panel.hidden = false;
@@ -115,11 +119,18 @@ async function requestQrLogin() {
   setQrStatus('正在获取二维码…');
   document.getElementById('qr-login-countdown').textContent = '';
   try {
-    const result = await callPlugin('start_qr_login');
+    const result = await callPlugin('start_qr_login', {
+      client_id: qrClientId,
+      request_generation: generation,
+    });
     if (!result?.qrcode_image || !result?.session_id) throw new Error(result?.message || '获取二维码失败，请稍后重试');
-    if (generation !== qrLogin.generation) return;
+    if (generation !== qrLogin.generation) {
+      await callPlugin('cancel_qr_login', { session_id: result.session_id });
+      return;
+    }
     qrLogin.key = 'plugin-session';
     qrLogin.sessionId = result.session_id;
+    qrLogin.starting = false;
     qrLogin.expiresAt = Date.now() + Number(result.timeout || 180) * 1000;
     image.src = result.qrcode_image;
     setQrStatus('等待扫码…');
@@ -128,15 +139,16 @@ async function requestQrLogin() {
     pollQrLogin(generation);
   } catch (error) {
     if (generation !== qrLogin.generation) return;
+    qrLogin.starting = false;
     setQrStatus(error.message || '获取二维码失败，请稍后重试');
     showToast(error.message || '获取二维码失败', true);
   }
 }
 
 async function pollQrLogin(generation) {
-  if (generation !== qrLogin.generation || !qrLogin.key) return;
+  if (generation !== qrLogin.generation || !qrLogin.key || !qrLogin.sessionId) return;
   try {
-    const data = await callPlugin('poll_qr_login');
+    const data = await callPlugin('poll_qr_login', { session_id: qrLogin.sessionId });
     if (generation !== qrLogin.generation) return;
     if (data.status === 'done') {
       clearQrLogin();

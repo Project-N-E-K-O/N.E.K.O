@@ -43,13 +43,15 @@ class BiliDMQrLogin:
 
     async def start(self) -> dict[str, Any]:
         QrCodeLogin, _ = self._require_sdk()
-        self.clear()
-        self._session = QrCodeLogin()
-        await self._session.generate_qrcode()
+        session = QrCodeLogin()
+        await session.generate_qrcode()
+        picture = session.get_qrcode_picture()
+        image = base64.b64encode(picture.content).decode("ascii")
+        # Publish only a fully generated session so failed/stale starts never
+        # expose a half-initialized shared session to poll/cancel requests.
+        self._session = session
         self._session_id = secrets.token_urlsafe(18)
         self._generated_at = time.time()
-        picture = self._session.get_qrcode_picture()
-        image = base64.b64encode(picture.content).decode("ascii")
         return {
             "status": "qrcode_ready",
             "message": "请用B站 App 扫描二维码登录（180秒内有效）",
@@ -59,28 +61,32 @@ class BiliDMQrLogin:
         }
 
     async def poll(self) -> dict[str, Any]:
-        if self._session is None:
+        return await self.poll_session(self._session_id)
+
+    async def poll_session(self, session_id: str) -> dict[str, Any]:
+        """Poll one specific QR session without touching a newer session."""
+        session = self._session
+        if session is None or not session_id or session_id != self._session_id:
             return {"status": "no_session", "message": "没有进行中的登录，请重新获取二维码"}
 
         _, events = self._require_sdk()
-        state = await self._session.check_state()
+        state = await session.check_state()
+        if self._session is not session or self._session_id != session_id:
+            return {"status": "no_session", "message": "扫码会话已更新，请重新获取二维码"}
         none_event = getattr(events, "NONE", None)
         if none_event is not None and state == none_event:
             return {"status": "waiting", "message": "等待扫码…"}
         if state == events.SCAN:
-            # 部分旧版 SDK 把 SCAN（值为 0）同时作为初始状态，避免刚生成即误报。
-            if none_event is None or time.time() - self._generated_at < 1.0:
-                return {"status": "waiting", "message": "等待扫码…"}
-            return {"status": "scanned", "message": "已扫码，请在手机上确认…"}
+            return {"status": "waiting", "message": "等待扫码…"}
         if state == events.CONF:
-            return {"status": "confirming", "message": "已确认，正在获取配置…"}
+            return {"status": "scanned", "message": "已扫码，请在手机上确认…"}
         if state == events.TIMEOUT:
-            self.clear()
+            self.clear(session_id=session_id)
             return {"status": "expired", "message": "二维码已过期，请刷新二维码"}
         if state != events.DONE:
             return {"status": "waiting", "message": "等待扫码…"}
 
-        credential = self._session.get_credential()
+        credential = session.get_credential()
         values = {
             "sesdata": str(getattr(credential, "sessdata", "") or ""),
             "bili_jct": str(getattr(credential, "bili_jct", "") or ""),
@@ -93,11 +99,14 @@ class BiliDMQrLogin:
             ),
         }
         if not values["sesdata"] or not values["bili_jct"]:
-            self.clear()
+            self.clear(session_id=session_id)
             raise RuntimeError("登录成功但未获取到完整的 B站凭据，请重试。")
-        if not await self._credential_saver(values):
+        try:
+            saved = await self._credential_saver(values)
+        finally:
+            self.clear(session_id=session_id)
+        if not saved:
             raise RuntimeError("登录成功，但保存插件配置失败。")
-        self.clear()
         return {
             "status": "done",
             "message": "登录成功，配置已自动保存",
