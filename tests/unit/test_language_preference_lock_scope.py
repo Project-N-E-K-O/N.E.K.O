@@ -444,6 +444,68 @@ async def test_every_character_load_runs_under_the_config_transaction(monkeypatc
     assert character_config_mutation_lock.locked() is False
 
 
+async def test_closing_freshness_and_identity_share_one_transaction(monkeypatch):
+    """Reading the locale outside the final lock reopens the race it closes.
+
+    If the freshness GET runs unlocked and only *then* the lock is taken, a
+    second PUT can commit in between: the GET still reports this request's
+    locale, and the closing check -- seeing only the name -- publishes 200 for a
+    language the server no longer holds.
+    """
+    manager = _IdleManager()
+    lock_during_final_reads = []
+    config_manager = SimpleNamespace(memory_dir="unused")
+    written: dict = {}
+    reconciled = {"done": False}
+
+    async def load_character(name):
+        if reconciled["done"]:
+            lock_during_final_reads.append(
+                ("load", character_config_mutation_lock.locked())
+            )
+        return config_manager, {"猫娘": {name: {}}}
+
+    async def request_locale(method, _name, *, language=None):
+        if method == "GET":
+            if reconciled["done"]:
+                lock_during_final_reads.append(
+                    ("freshness", character_config_mutation_lock.locked())
+                )
+            return {"success": True, "language": written.get("language")}
+        written["language"] = language
+        return {
+            "success": True,
+            "language": language,
+            "previous_language": "en",
+            "changed": True,
+        }
+
+    async def clear_recent(_config_manager, _name, *, expected_generation):
+        assert expected_generation
+        # Everything after the clear belongs to the closing sequence.
+        reconciled["done"] = True
+
+    class SessionManager:
+        def get(self, _name):
+            return manager
+
+    monkeypatch.setattr(preference_router, "_load_existing_character", load_character)
+    monkeypatch.setattr(preference_router, "_request_memory_prompt_locale", request_locale)
+    monkeypatch.setattr(preference_router, "_clear_character_recent_history", clear_recent)
+    monkeypatch.setattr(preference_router, "get_session_manager", SessionManager)
+
+    result = await preference_router.apply_character_language_preference("Mimi", "ja")
+
+    assert result["success"] is True
+    kinds = [kind for kind, _ in lock_during_final_reads]
+    assert kinds == ["freshness", "load"], (
+        f"收尾应是「新鲜度读 → 身份复核」，实际 {kinds}"
+    )
+    assert all(locked for _, locked in lock_during_final_reads), (
+        f"收尾两步必须在同一个事务内，实际 {lock_during_final_reads}"
+    )
+
+
 async def test_late_clear_is_fenced_by_durable_ownership(monkeypatch):
     """A superseded reconciliation must not delete the newer session's history.
 

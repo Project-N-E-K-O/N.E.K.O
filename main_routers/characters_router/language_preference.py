@@ -385,35 +385,36 @@ async def _finalize_freshness(name: str, normalized: str, result: dict) -> None:
     something we did not observe.  Say so explicitly instead, so the client can
     re-read rather than cache.
     """
-    try:
-        matches = await _durable_locale_matches(name, normalized)
-    except LanguagePreferenceConflictError:
-        raise
-    except Exception as exc:
-        logger.warning(
-            "语言偏好写入后校验失败，无法确认是否仍是最新: name=%s err=%s",
-            name,
-            exc,
-        )
-        result.update({
-            "success": False,
-            "partial_success": True,
-            "freshness_unverified": True,
-            "error": "语言偏好已保存，但无法确认是否仍是最新",
-        })
-        return
-    if not matches:
-        raise LanguagePreferenceConflictError(
-            "a newer language preference superseded this request"
-        )
-    # A matching locale is not proof the character is still there: a delete or
-    # rename can commit after the memory server read prompt_locale.json but
-    # before that response reaches us, leaving `current` describing an identity
-    # that no longer exists.  Publishing 200 would let the card manager cache
-    # the obsolete name after its cleanup, and a later reuse of that name would
-    # inherit the preference.  Under the transaction because this load can
-    # itself migrate and write characters.json; must stay the last await.
+    # Both checks belong to ONE transaction.  Reading the locale outside it and
+    # only then taking the lock leaves a window where a second PUT commits a
+    # newer locale in between -- this request would wait, revalidate only the
+    # name, and publish a language the server no longer holds.  Acquiring the
+    # lock first also makes the identity check meaningful: a matching locale is
+    # not proof the character is still there, since a delete or rename can
+    # commit after the memory server read prompt_locale.json.  Nothing may
+    # await between these two and the return.
     async with character_config_mutation_lock:
+        try:
+            matches = await _durable_locale_matches(name, normalized)
+        except LanguagePreferenceConflictError:
+            raise
+        except Exception as exc:
+            logger.warning(
+                "语言偏好写入后校验失败，无法确认是否仍是最新: name=%s err=%s",
+                name,
+                exc,
+            )
+            result.update({
+                "success": False,
+                "partial_success": True,
+                "freshness_unverified": True,
+                "error": "语言偏好已保存，但无法确认是否仍是最新",
+            })
+            return
+        if not matches:
+            raise LanguagePreferenceConflictError(
+                "a newer language preference superseded this request"
+            )
         await _load_existing_character(name)
 
 
