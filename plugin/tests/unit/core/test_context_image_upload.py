@@ -326,3 +326,22 @@ def test_images_upload_fails_fast_in_lifecycle_handlers(
 
     asyncio.run(asyncio.wait_for(_run(), timeout=1.0))
     assert transport.uploaded == []
+
+
+def test_images_upload_fails_fast_while_plugin_is_freezing(tmp_path: Path) -> None:
+    responses: asyncio.Queue[dict[str, object]] = asyncio.Queue()
+    transport = _ImageTransport(responses)
+    ctx = PluginContext(
+        plugin_id="demo",
+        config_path=tmp_path / "plugin.toml",
+        logger=_Logger(),  # type: ignore[arg-type]
+        status_queue=None,
+        _response_queue=responses,
+        _image_transport=transport,
+        _image_uploads_blocked=True,
+    )
+
+    with pytest.raises(RuntimeError, match="while the plugin is freezing"):
+        asyncio.run(ctx.images.upload(_png_bytes(), timeout=10.0))
+
+    assert transport.uploaded == []

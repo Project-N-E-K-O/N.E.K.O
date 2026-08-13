@@ -1379,6 +1379,7 @@ def _plugin_process_runner(
                 if msg_type == "FREEZE":
                     req_id = msg.get("req_id", "unknown")
                     logger.info("[Plugin Process] FREEZE req_id={}", req_id)
+                    ctx._image_uploads_blocked = True
                     ret = {"req_id": req_id, "success": False, "data": None, "error": None}
                     try:
                         freeze_fn = lifecycle_events.get("freeze")
@@ -1395,6 +1396,7 @@ def _plugin_process_runner(
                     res_sender.put(ret, timeout=10.0)
                     if ret["success"]:
                         break
+                    ctx._image_uploads_blocked = False
                     continue
 
                 # ── BUS_CHANGE ──

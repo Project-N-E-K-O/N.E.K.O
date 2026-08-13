@@ -65,6 +65,7 @@ class PluginImages:
         the plugin command loop is not servicing upload responses while those
         handlers run. Reject there before decoding or transport submission.
         """
+        self._host_ctx._ensure_image_upload_available()
         handler_ctx = getattr(self._host_ctx, "handler_ctx", None)
         if isinstance(handler_ctx, str) and handler_ctx.startswith("lifecycle."):
             raise RuntimeError(

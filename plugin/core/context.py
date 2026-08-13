@@ -167,6 +167,7 @@ class PluginContext:
     )
     _image_transport: Optional[Any] = None
     _images: Optional[Any] = None
+    _image_uploads_blocked: bool = False
     _entry_map: Optional[Dict[str, Any]] = None  # 入口映射（用于处理命令）
     _entry_meta_map: Optional[Dict[str, Any]] = None  # entry_id -> EventMeta
     _instance: Optional[Any] = None  # 插件实例（用于处理命令）
@@ -203,6 +204,7 @@ class PluginContext:
         mime: str,
         timeout: float,
     ) -> dict[str, object]:
+        self._ensure_image_upload_available()
         transport = self._image_transport
         if transport is None:
             raise RuntimeError("temporary image transport is not available")
@@ -233,6 +235,10 @@ class PluginContext:
         finally:
             with self._direct_response_lock:
                 waiters.pop(request_id, None)
+
+    def _ensure_image_upload_available(self) -> None:
+        if self._image_uploads_blocked:
+            raise RuntimeError("ctx.images.upload() is not available while the plugin is freezing")
 
     def _dispatch_direct_response(self, response: Any) -> bool:
         """Resolve SDK-owned response futures before the legacy shared inbox."""
