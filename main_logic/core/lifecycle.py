@@ -31,6 +31,7 @@ from main_logic.proactive_delivery import (
     DELIVERY_RETRACTED_KEY,
     SWAP_PRIME_DELIVERY_CLAIM_KEY,
     resolve_callback_delivery_ack,
+    select_callbacks_within_image_budget,
 )
 from utils.gptsovits_config import is_gsv_disabled_voice_id
 from config.prompts.prompts_sys import get_context_summary_ready
@@ -2077,7 +2078,8 @@ class LifecycleMixin:
         ``AGENT_CALLBACK_TOTAL_MAX_TOKENS`` budget with the already-selected
         proactive extras: ``extras_selected`` is prepended to the candidate
         list before the budget walk, so passive only takes what the extras
-        left over. Over-budget passive callbacks stay queued for the next
+        left over. The remaining passive prefix must also fit the aggregate
+        image budget. Over-budget passive callbacks stay queued for the next
         swap (same semantics as the extras ``_deferred``).
 
         The queue is NOT drained here — removal is deferred to promote
@@ -2115,7 +2117,9 @@ class LifecycleMixin:
             selected_all, _ = _select_callbacks_within_token_budget(
                 _extras + candidates, AGENT_CALLBACK_TOTAL_MAX_TOKENS
             )
-            selected = selected_all[len(_extras):]
+            selected = select_callbacks_within_image_budget(
+                selected_all[len(_extras):]
+            )
             if not selected:
                 return [], ""
             # 与 proactive 三条投递路径同口径：字形留到渲染函数再归一化。

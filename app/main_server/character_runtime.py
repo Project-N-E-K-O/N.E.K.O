@@ -112,12 +112,12 @@ def _build_plugin_image_chat_block(
     if isinstance(url, str) and _is_local_plugin_media_url(url):
         return {"type": "image", "url": url}, 0
     encoded = part.get("binary_base64")
-    mime = str(part.get("mime") or "").strip().lower()
+    declared_mime = str(part.get("mime") or "").strip().lower()
     if (
         not isinstance(encoded, str)
         or not encoded
         or len(encoded) > max_base64_chars
-        or not mime.startswith("image/")
+        or not declared_mime.startswith("image/")
     ):
         return None
     try:
@@ -129,15 +129,21 @@ def _build_plugin_image_chat_block(
     try:
         with Image.open(BytesIO(decoded)) as image:
             width, height = image.size
+            detected_mime = str(image.get_format_mimetype() or "").lower()
             image.verify()
     except (OSError, SyntaxError, ValueError, Image.DecompressionBombError):
         return None
-    if width <= 0 or height <= 0 or width * height > MAX_SOURCE_IMAGE_PIXELS:
+    if (
+        width <= 0
+        or height <= 0
+        or width * height > MAX_SOURCE_IMAGE_PIXELS
+        or not detected_mime.startswith("image/")
+    ):
         return None
     return (
         {
             "type": "image",
-            "url": f"data:{mime};base64,{encoded}",
+            "url": f"data:{detected_mime};base64,{encoded}",
         },
         len(decoded),
     )

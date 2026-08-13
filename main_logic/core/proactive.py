@@ -93,6 +93,11 @@ class ProactiveMixin:
                         bypass_rate_limit=True,
                         cache_latest=False,
                     )
+                    if not getattr(session, "_supports_native_image", True):
+                        if not isinstance(description, str) or not description.strip():
+                            raise RuntimeError(
+                                "callback image analysis produced no description"
+                            )
                     if isinstance(description, str) and description.strip():
                         descriptions.append(description.strip())
                 else:

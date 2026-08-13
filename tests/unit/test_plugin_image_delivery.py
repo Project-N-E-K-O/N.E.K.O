@@ -552,6 +552,22 @@ async def test_inline_image_is_exposed_to_chat_as_a_data_url() -> None:
 
 
 @pytest.mark.asyncio
+async def test_inline_image_uses_detected_mime_for_chat_data_url() -> None:
+    from app.main_server.character_runtime import _plugin_image_chat_blocks
+
+    encoded = _inline_png_base64()
+
+    assert await _plugin_image_chat_blocks([{
+        "type": "image",
+        "binary_base64": encoded,
+        "mime": "image/svg+xml,%3csvg%3e",
+    }]) == [{
+        "type": "image",
+        "url": f"data:image/png;base64,{encoded}",
+    }]
+
+
+@pytest.mark.asyncio
 async def test_truncated_inline_image_is_not_exposed_to_chat() -> None:
     from app.main_server.character_runtime import _plugin_image_chat_blocks
 

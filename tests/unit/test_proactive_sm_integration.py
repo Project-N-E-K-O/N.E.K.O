@@ -364,6 +364,35 @@ async def test_text_drain_includes_non_native_image_description(monkeypatch):
     assert mgr.pending_agent_callbacks == []
 
 
+async def test_text_drain_retains_image_when_non_native_description_is_empty(
+    monkeypatch,
+):
+    from main_logic.core import proactive as proactive_module
+
+    class _RealtimeSession:
+        _supports_native_image = False
+
+        def __init__(self):
+            self.stream_image = AsyncMock(return_value="   ")
+
+    monkeypatch.setattr(proactive_module, "OmniRealtimeClient", _RealtimeSession)
+    session = _RealtimeSession()
+    mgr = _make_mgr(session=session)
+    callback = {
+        "delivery_mode": "passive",
+        "summary": "remember this image",
+        "media_images": ["deferred-image"],
+    }
+    mgr.pending_agent_callbacks = [callback]
+
+    rendered = await mgr.drain_agent_callbacks_for_llm_with_media()
+
+    assert rendered == ""
+    assert mgr.pending_agent_callbacks == [callback]
+    assert callback["media_images"] == ["deferred-image"]
+    assert not callback.get(SWAP_PRIME_DELIVERY_CLAIM_KEY)
+
+
 async def test_text_drain_bounds_images_across_callback_snapshot():
     session = MagicMock(spec=OmniOfflineClient)
     session.stream_images = AsyncMock()

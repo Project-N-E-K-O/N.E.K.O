@@ -145,6 +145,39 @@ def test_select_shares_token_budget_with_extras(monkeypatch):
     assert "context cue" in text
 
 
+def test_select_defers_passive_callbacks_beyond_image_count_budget():
+    mgr = _make_session_mgr()
+    callbacks = [
+        _passive_cb(f"context-{index}", media_images=["eA=="])
+        for index in range(9)
+    ]
+    mgr.pending_agent_callbacks = callbacks.copy()
+
+    selected, text = mgr._select_passive_callbacks_for_swap_prime()
+
+    assert selected == callbacks[:8]
+    assert "context-7" in text and "context-8" not in text
+    assert mgr.pending_agent_callbacks == callbacks
+    assert not callbacks[8].get(SWAP_PRIME_DELIVERY_CLAIM_KEY)
+
+
+def test_select_defers_passive_callbacks_beyond_image_byte_budget(monkeypatch):
+    from main_logic import proactive_delivery
+
+    monkeypatch.setattr(proactive_delivery, "CALLBACK_IMAGE_MAX_BYTES", 2)
+    mgr = _make_session_mgr()
+    first = _passive_cb("first", media_images=["eA=="])
+    deferred = _passive_cb("deferred", media_images=["eHg="])
+    mgr.pending_agent_callbacks = [first, deferred]
+
+    selected, text = mgr._select_passive_callbacks_for_swap_prime()
+
+    assert selected == [first]
+    assert "first" in text and "deferred" not in text
+    assert mgr.pending_agent_callbacks == [first, deferred]
+    assert not deferred.get(SWAP_PRIME_DELIVERY_CLAIM_KEY)
+
+
 # ---------------------------------------------------------------------------
 # _remove_swap_delivered_passive_cbs
 # ---------------------------------------------------------------------------
