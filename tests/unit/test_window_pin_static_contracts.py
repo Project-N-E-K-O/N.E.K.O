@@ -258,6 +258,8 @@ def test_credentials_tabs_are_wired_to_the_single_tab_panel():
     assert switch_calls > 0
     assert len(tab_buttons) == switch_calls
     for button in tab_buttons:
+        # 逐个按钮各带一次调用，才能保证上面那个总数相等不是靠"这里漏一次、别处多一次"凑出来的。
+        assert button.count("switchTab('") == 1, button
         assert 'role="tab"' in button, button
         assert 'aria-controls="main-panel"' in button, button
     assert re.search(
