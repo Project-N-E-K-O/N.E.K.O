@@ -805,18 +805,34 @@
      * 构造屏幕/相机分享的 stream_data 消息，并在适用时附带 Avatar 位置元数据。
      * 与主动搭话截图（app-proactive.js）口径保持一致：仅桌面/全屏分享叠加注解，
      * 窗口分享 / 移动相机不含 Avatar（captureType 为 null → 不附带）。
+     *
+     * @param {string} dataUrl 已归一化成 JPEG 的画面数据
+     * @param {string} input_type 'screen' | 'camera'
+     * @param {string|null} [sourceId] 原生帧的显式源 ID
+     * @param {'screen'|'viewport'|null} [explicitCaptureType]
+     *        调用方已经知道这一帧来自哪种画面来源时显式传入；传 null 表示
+     *        「已确认无法判定」→ 不叠加。省略时按 sourceId / 缓存流推断。
      */
-    function buildStreamDataMessage(dataUrl, input_type, sourceId) {
+    function buildStreamDataMessage(dataUrl, input_type, sourceId, explicitCaptureType) {
         var msg = { action: 'stream_data', data: dataUrl, input_type: input_type };
         // 仅屏幕分享可能包含 Avatar；移动相机拍的是现实画面，无 Avatar
         if (input_type === 'screen') {
-            // 原生帧按显式源判定；有前端流时按流/已选源判定。
-            // 两者都没有时按全屏处理；持续屏幕分享不会再进入后端整屏截图轮询。
-            var captureType = sourceId
-                ? detectScreenshotCaptureType(null, sourceId)
-                : (S.screenCaptureStream
+            var captureType;
+            if (typeof explicitCaptureType !== 'undefined') {
+                // 单帧路径的画面可能来自缓存流 / 原生帧 / 后端整屏兜底，三者互相回退。
+                // 发送时的 S.screenCaptureStream / S.selectedScreenSourceId 描述的是
+                // 「本会话配置抓什么」，不是「这一帧抓到了什么」，推不出来。
+                captureType = explicitCaptureType;
+            } else if (sourceId) {
+                // 原生帧按显式源判定。
+                captureType = detectScreenshotCaptureType(null, sourceId);
+            } else {
+                // 有前端流时按流/已选源判定；两者都没有时按全屏处理，
+                // 持续屏幕分享不会再进入后端整屏截图轮询。
+                captureType = S.screenCaptureStream
                     ? detectScreenshotCaptureType(S.screenCaptureStream, S.selectedScreenSourceId)
-                    : 'screen');
+                    : 'screen';
+            }
             var avatarPos = getAvatarScreenPosition(captureType);
             if (avatarPos) {
                 msg.avatar_position = avatarPos;
@@ -2045,6 +2061,43 @@
     }
     mod.detectScreenshotCaptureType = detectScreenshotCaptureType;
 
+    // ======================== 多显示器闸门 ========================
+    // getAvatarScreenPosition 的 'screen' 分支用 window.screenX（虚拟桌面全局坐标）
+    // 当原点、用 window.screen.width（当前所在显示器尺寸）当归一化分母，两个参考系
+    // 差一个「当前显示器 bounds 原点」。单屏下该原点恒为 0 所以结果正确；多屏下
+    // 「捕获副屏 / Pet 窗口在主屏」会算出一个落在 [0,1] 内的错误坐标，把注解叠到
+    // 另一块屏的截图上。
+    //
+    // 要把参考系修对，必须知道「被捕获的是哪块屏」，而整条链路都不携带这个信息：
+    // sourceId 只被 startsWith('screen:') 判一下就丢弃，getSettings() 里没有任何
+    // 显示器标识，运行时又不能重新 getSources（Linux Portal 会再弹系统窗口）。
+    // 所以这里只做闸门：确认是多屏就不叠。宁可不叠，也不叠到错误的屏上。
+    var multiDisplayCache = null;   // true / false / null(未知)
+
+    function refreshMultiDisplayCache() {
+        var bridge = window.electronScreen;
+        if (!bridge || typeof bridge.getAllDisplays !== 'function') return;
+        try {
+            Promise.resolve(bridge.getAllDisplays()).then(function (list) {
+                if (list && typeof list.length === 'number') {
+                    multiDisplayCache = list.length > 1;
+                }
+            }).catch(function () { /* 拿不到就保持未知 */ });
+        } catch (e) { /* 拿不到就保持未知 */ }
+    }
+
+    function isKnownMultiDisplay() {
+        // Chromium 的 Screen.isExtended 不需要权限，是最直接的信号。
+        // 拿不到时退回 electronScreen 缓存；两者都拿不到就返回 false，
+        // 即逐字沿用改动前的行为（单屏用户与纯浏览器场景不受本闸门影响）。
+        if (window.screen && typeof window.screen.isExtended === 'boolean') {
+            return window.screen.isExtended;
+        }
+        if (multiDisplayCache === null) refreshMultiDisplayCache();
+        return multiDisplayCache === true;
+    }
+    mod.isKnownMultiDisplay = isKnownMultiDisplay;
+
     // ======================== getAvatarScreenPosition ========================
     /**
      * 获取 Avatar 模型在截图图片坐标系中的归一化位置（0-1）。
@@ -2144,6 +2197,9 @@
         var refW, refH; // 截图所覆盖区域的 CSS 尺寸（用于归一化分母）
 
         if (captureType === 'screen') {
+            // 多屏下无法判断截的是哪块屏，下面的坐标换算会算错屏，直接不叠。
+            if (isKnownMultiDisplay()) return null;
+
             // 截图覆盖整个屏幕 → 坐标需加上浏览器窗口在屏幕上的偏移
             // viewportOrigin = windowOuter 的左上角 + chrome 偏移
             var chromeLeft = Math.round((window.outerWidth - window.innerWidth) / 2);
@@ -2195,6 +2251,10 @@
     window.detectScreenshotCaptureType = detectScreenshotCaptureType;
     window.clearSelectedScreenSource = clearSelectedScreenSource;
     window.maybeClearSourceOnNotFound = maybeClearSourceOnNotFound;
+
+    // 预热多显示器缓存：electronScreen 桥是异步的，等到第一次截图再问就来不及，
+    // 那一帧会按「未知 → 单屏」处理。screen.isExtended 可用时这一步是多余的。
+    refreshMultiDisplayCache();
 
     // ======================== Export module ========================
     window.appScreen = mod;

@@ -3529,20 +3529,30 @@
                     (async function () {
                         try {
                             var dataUrl = null;
-                            if (typeof window.captureProactiveChatScreenshot === 'function') {
+                            var shotVia = null;
+                            if (window.appProactive
+                                && typeof window.appProactive.captureProactiveChatScreenshotWithSource === 'function') {
+                                var shot = await window.appProactive.captureProactiveChatScreenshotWithSource();
+                                dataUrl = shot && shot.dataUrl ? shot.dataUrl : null;
+                                shotVia = shot ? shot.via : null;
+                            } else if (typeof window.captureProactiveChatScreenshot === 'function') {
                                 dataUrl = await window.captureProactiveChatScreenshot();
                             }
                             if (dataUrl && S.socket && S.socket.readyState === WebSocket.OPEN) {
                                 var respMsg = { action: 'screenshot_response', data: dataUrl };
                                 // Determine capture type for correct coordinate mapping
-                                // null = 窗口截图或无法确定 → 不叠加；仅无流无源时默认 'screen'
+                                // null = 窗口截图或无法确定 → 不叠加
                                 var captureType = null;
-                                if (typeof window.detectScreenshotCaptureType === 'function') {
+                                if (shotVia === 'backend') {
+                                    // 后端 pyautogui 抓的是整屏，与残留的 window:* 源无关。
+                                    captureType = 'screen';
+                                } else if (typeof window.detectScreenshotCaptureType === 'function') {
                                     captureType = window.detectScreenshotCaptureType(
                                         S.screenCaptureStream, S.selectedScreenSourceId
                                     );
-                                }
-                                if (captureType === null && !S.screenCaptureStream && !S.selectedScreenSourceId) {
+                                } else if (!S.screenCaptureStream && !S.selectedScreenSourceId) {
+                                    // detect 拿不到时的降级兜底，不能删：后端现在把「不带坐标」
+                                    // 当明确的否定信号，删了会从「默认整屏叠」变成「永久不叠」。
                                     captureType = 'screen';
                                 }
                                 var avatarPos = typeof window.getAvatarScreenPosition === 'function'

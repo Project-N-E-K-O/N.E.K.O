@@ -493,6 +493,14 @@
         return window.appScreen.scheduleScreenCaptureIdleCheck();
     }
 
+    function normalizeNativeCaptureDataUrlForStream(dataUrl) {
+        return window.appScreen.normalizeNativeCaptureDataUrlForStream(dataUrl);
+    }
+
+    function buildStreamDataMessage(dataUrl, inputType, sourceId, explicitCaptureType) {
+        return window.appScreen.buildStreamDataMessage(dataUrl, inputType, sourceId, explicitCaptureType);
+    }
+
     // ======================== syncProactiveFlags (no-op) ========================
     // app-state.js 使用 Object.defineProperty 进行双向绑定，
     // 因此不再需要手动同步 window.xxx <-> 本地变量。
@@ -1206,7 +1214,9 @@
 
                 if (availableModes.includes('vision')) {
                     screenshotIndex = fetchTasks.length;
-                    fetchTasks.push(captureProactiveChatScreenshot());
+                    // 带来源版：下面要靠 via 区分「后端整屏兜底」与「流/原生源」，
+                    // 光看发送时的 S.selectedScreenSourceId 会把整屏图误判成窗口截图。
+                    fetchTasks.push(captureProactiveChatScreenshotWithSource());
                 }
 
                 if (availableModes.includes('window')) {
@@ -1260,20 +1270,26 @@
                 }
 
                 if (screenshotIndex !== -1 && availableModes.includes('vision')) {
-                    var screenshotDataUrl = results[screenshotIndex];
+                    var screenshotResult = results[screenshotIndex] || {};
+                    var screenshotDataUrl = screenshotResult.dataUrl;
                     if (screenshotDataUrl) {
                         requestBody.screenshot_data = screenshotDataUrl;
                         // Determine capture type: cached stream → check displaySurface;
                         // null 表示窗口截图或无法确定 → 不叠加
-                        // 仅当完全没有流/源（pyautogui 兜底）时才默认 'screen'
                         var captureType = null;
-                        if (typeof window.detectScreenshotCaptureType === 'function') {
+                        if (screenshotResult.via === 'backend') {
+                            // 后端 pyautogui 抓的是整屏，与残留的 window:* 源无关；
+                            // 不显式定成 'screen' 会被 detect 判成不叠加而漏标。
+                            captureType = 'screen';
+                        } else if (typeof window.detectScreenshotCaptureType === 'function') {
                             captureType = window.detectScreenshotCaptureType(
                                 S.screenCaptureStream, S.selectedScreenSourceId
                             );
-                        }
-                        if (captureType === null && !S.screenCaptureStream && !S.selectedScreenSourceId) {
-                            captureType = 'screen'; // 无流无源 → pyautogui 全屏兜底
+                        } else if (!S.screenCaptureStream && !S.selectedScreenSourceId) {
+                            // detect 因加载顺序拿不到时的降级兜底：无流无源即整屏。
+                            // 这条不能删——后端现在把「不带坐标」当成明确的否定信号，
+                            // 拿不到函数会从「默认整屏叠」静默变成「永久不叠」。
+                            captureType = 'screen';
                         }
                         var avatarPos = typeof window.getAvatarScreenPosition === 'function'
                             ? window.getAvatarScreenPosition(captureType) : null;
@@ -1904,6 +1920,11 @@
             if (!S.socket || S.socket.readyState !== WebSocket.OPEN) return;
 
             var dataUrl = null;
+            // 这一帧来自哪种画面来源，决定 Avatar 坐标怎么映射到截图坐标系。
+            // 三条来源判据各不相同且逐级回退，必须在取到画面的那一步就定下来——
+            // 发送时的 S.screenCaptureStream / S.selectedScreenSourceId 描述的是
+            // 「本会话配置抓什么」，不是「这一帧抓到了什么」。
+            var captureType = null;
 
             // 优先前端流（缓存流 → Electron源 → 不弹窗）
             var stream = await acquireOrReuseCachedStream({ allowPrompt: false });
@@ -1911,6 +1932,7 @@
                 var frame = await captureFrameFromStream(stream, 0.8);
                 if (frame && frame.dataUrl) {
                     dataUrl = frame.dataUrl;
+                    captureType = window.detectScreenshotCaptureType(stream, S.selectedScreenSourceId);
                 } else if (S.screenCaptureStream === stream) {
                     // 空帧（黑帧或空壳流），废弃缓存流
                     console.warn('[ProactiveVision] 缓存流提取帧失败，废弃该流');
@@ -1934,7 +1956,16 @@
                             S.selectedScreenSourceId
                         );
                         if (direct && direct.success && direct.dataUrl) {
-                            dataUrl = direct.dataUrl;
+                            // 桌面壳的 NativeImage.toDataURL() 通常出 PNG，而后端屏幕数据
+                            // 校验只接受 data:image/jpeg;base64,（utils/screenshot_utils.py:120），
+                            // 不转码会让整帧被判为「无效的屏幕数据格式」直接丢掉。
+                            var nativeDataUrl = await normalizeNativeCaptureDataUrlForStream(direct.dataUrl);
+                            if (nativeDataUrl) {
+                                dataUrl = nativeDataUrl;
+                                captureType = window.detectScreenshotCaptureType(null, S.selectedScreenSourceId);
+                            } else {
+                                console.warn('[ProactiveVision] 原生帧转 JPEG 失败，尝试后端兜底');
+                            }
                         } else if (typeof window.maybeClearSourceOnNotFound === 'function') {
                             window.maybeClearSourceOnNotFound(direct, '主动视觉原生捕获源已失效');
                         }
@@ -1954,6 +1985,12 @@
             if (!dataUrl) {
                 var backendResult = await fetchBackendScreenshot();
                 dataUrl = backendResult.dataUrl;
+                if (dataUrl) {
+                    // pyautogui 抓的是整屏桌面，与已选窗口源 / 缓存流都无关，必须显式
+                    // 定成 'screen'，否则会被残留的 window:* 源判成不叠加。
+                    // 多屏下由 getAvatarScreenPosition 的闸门兜底返回 null。
+                    captureType = 'screen';
+                }
                 // macOS 403 权限提示
                 if (backendResult.status === 403 && !S.screenRecordingPermissionHintShown) {
                     S.screenRecordingPermissionHintShown = true;
@@ -1969,11 +2006,12 @@
                 return;
             }
             if (dataUrl && S.socket && S.socket.readyState === WebSocket.OPEN) {
-                S.socket.send(JSON.stringify({
-                    action: 'stream_data',
-                    data: dataUrl,
-                    input_type: (window.appUtils && window.appUtils.isMobile) ? (window.appUtils.isMobile() ? 'camera' : 'screen') : 'screen'
-                }));
+                var visionInputType = (window.appUtils && window.appUtils.isMobile) ? (window.appUtils.isMobile() ? 'camera' : 'screen') : 'screen';
+                // 与持续屏幕分享共用同一个构造函数，避免两条链路的 avatar_position 口径分叉。
+                // 第 3 参传 null：来源已由 captureType 显式给出，不需要再按 sourceId 推断。
+                S.socket.send(JSON.stringify(
+                    buildStreamDataMessage(dataUrl, visionInputType, null, captureType)
+                ));
                 console.log('[ProactiveVision] 发送单帧屏幕数据');
             }
         } catch (e) {
@@ -2102,7 +2140,7 @@
      * 返回整屏的问题；同时也改善此函数走 WS_HOOK / CHAT_CHANNELS.REQUEST_SCREENSHOT
      * 路径时的准确性。
      */
-    async function captureProactiveChatScreenshot() {
+    async function captureProactiveChatScreenshotWithSource() {
         // 策略 0a: 复用有效缓存流（避免打扰正在进行的屏幕共享）
         if (S.screenCaptureStream && S.screenCaptureStream.active) {
             try {
@@ -2113,7 +2151,7 @@
                         S.screenCaptureStreamLastUsed = Date.now();
                         if (window.scheduleScreenCaptureIdleCheck) window.scheduleScreenCaptureIdleCheck();
                         console.log('[主动搭话截图] 缓存流截图成功');
-                        return cachedFrame.dataUrl;
+                        return { dataUrl: cachedFrame.dataUrl, via: 'stream' };
                     }
                 }
             } catch (e) { console.warn('[主动搭话截图] 缓存流截图失败，继续:', e); }
@@ -2131,7 +2169,7 @@
                 );
                 if (direct && direct.success && direct.dataUrl) {
                     console.log('[主动搭话截图] 主进程直接捕获成功:', S.selectedScreenSourceId);
-                    return direct.dataUrl;
+                    return { dataUrl: direct.dataUrl, via: 'native' };
                 } else if (direct && direct.error) {
                     console.warn('[主动搭话截图] 主进程直接捕获失败，将回退到流路径:', direct.error);
                     if (typeof window.maybeClearSourceOnNotFound === 'function') {
@@ -2147,7 +2185,7 @@
             var frame = await captureFrameFromStream(stream, 0.85);
             if (frame && frame.dataUrl) {
                 console.log('[主动搭话截图] 前端截图成功');
-                return frame.dataUrl;
+                return { dataUrl: frame.dataUrl, via: 'stream' };
             }
             // 黑帧或抓帧失败 → 废弃流，重试一次
             console.warn('[主动搭话截图] 帧提取失败或纯黑帧，废弃缓存流并重试');
@@ -2160,7 +2198,7 @@
             stream = await acquireOrReuseCachedStream({ allowPrompt: false });
             if (stream) {
                 frame = await captureFrameFromStream(stream, 0.85);
-                if (frame && frame.dataUrl) return frame.dataUrl;
+                if (frame && frame.dataUrl) return { dataUrl: frame.dataUrl, via: 'stream' };
                 // 二次重试仍然失败，废弃这个流
                 console.warn('[主动搭话截图] 二次重试仍失败，废弃流');
                 if (S.screenCaptureStream === stream) {
@@ -2175,11 +2213,18 @@
         var backendResult = await fetchBackendScreenshot();
         if (backendResult.dataUrl) {
             console.log('[主动搭话截图] 后端截图成功');
-            return backendResult.dataUrl;
+            return { dataUrl: backendResult.dataUrl, via: 'backend' };
         }
 
         console.warn('[主动搭话截图] 所有截图方式均失败');
-        return null;
+        return { dataUrl: null, via: null };
+    }
+    mod.captureProactiveChatScreenshotWithSource = captureProactiveChatScreenshotWithSource;
+
+    // 旧契约薄封装：只要 dataUrl 的调用方继续用这个。
+    async function captureProactiveChatScreenshot() {
+        var res = await captureProactiveChatScreenshotWithSource();
+        return res && res.dataUrl ? res.dataUrl : null;
     }
     mod.captureProactiveChatScreenshot = captureProactiveChatScreenshot;
 

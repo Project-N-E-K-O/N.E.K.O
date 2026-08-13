@@ -229,6 +229,7 @@ from ._shared import (  # noqa: F401
     _get_chat_locale_text,
     _START_LLM_CONCURRENT_ABORTED,
     ContextAppendResult,
+    FreshScreenshot,
     _purge_closed_tool_calls,
 )
 from .callback_render import (  # noqa: F401

@@ -232,6 +232,28 @@ class ContextAppendResult:
     reason: str | None = None
 
 
+@dataclass(frozen=True)
+class FreshScreenshot:
+    """One Phase-2 screenshot fetch, tagged with where the image came from.
+
+    ``source`` is the caller's only way to tell apart two situations that a plain
+    base64 return conflated:
+
+    - ``'websocket'``: the frontend answered. ``avatar_position`` is its verdict
+      about THIS image. ``None`` means the frontend deliberately decided the image
+      must not be annotated (window capture, camera, avatar collapsed, multi-monitor);
+      the caller must not substitute a position from anywhere else.
+    - ``'backend_fallback'``: the frontend never answered and the backend grabbed
+      the screen itself. The frontend had no opinion about this image, so the
+      caller MAY fall back to the position that came with the original request.
+    - ``''``: nothing was captured.
+    """
+
+    b64: str = ""
+    source: str = ""
+    avatar_position: dict | None = None
+
+
 def _purge_closed_tool_calls(history: list, *, start: int = 0) -> int:
     """Remove every CLOSED tool-call pair from the conversation history: an
     assistant message (role=assistant, carrying tool_calls) plus the tool-result
