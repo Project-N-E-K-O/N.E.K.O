@@ -1120,16 +1120,24 @@ def test_local_credit_summary_is_retired(client):
 
 
 def test_retired_credit_grant_and_summary_support_cors_preflight(client):
-    headers = {
+    grant_headers = {
         "Origin": "https://community.example",
         "Access-Control-Request-Method": "POST",
     }
-    grant = client.options("/api/card-drop/credits/grant", headers=headers)
-    summary = client.options("/api/card-drop/credits/local-summary", headers=headers)
+    summary_headers = {
+        "Origin": "https://community.example",
+        "Access-Control-Request-Method": "GET",
+    }
+    grant = client.options("/api/card-drop/credits/grant", headers=grant_headers)
+    summary = client.options(
+        "/api/card-drop/credits/local-summary", headers=summary_headers,
+    )
 
     assert grant.status_code == summary.status_code == 200
     assert grant.headers["access-control-allow-origin"] == "https://community.example"
     assert summary.headers["access-control-allow-origin"] == "https://community.example"
+    assert "POST" in grant.headers["access-control-allow-methods"]
+    assert "GET" in summary.headers["access-control-allow-methods"]
 
 
 def test_retired_credit_routes_keep_validated_cors_headers(client, monkeypatch):
