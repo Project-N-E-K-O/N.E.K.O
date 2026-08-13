@@ -675,11 +675,17 @@ class TopicHookPool:
                 seen_purge_generation=seen_purge_generation,
             )
             return
-        self._clear_analyzer_failures(name)
-        if (
-            self._seq.get(name, 0) != seen_seq
-            or self._purge_generation.get(name, 0) != seen_purge_generation
-        ):
+        purged = self._purge_generation.get(name, 0) != seen_purge_generation
+        if not purged:
+            # A success proves the analyzer is healthy, so the streak ends even
+            # when a new turn arrived mid-flight and the result itself is stale.
+            # A purge is different: it reset this state, and a replacement call
+            # may already have failed and armed a fresh window behind us —
+            # clearing it here would hand the next tick a free extra request.
+            # This is the mirror of the seen_purge_generation guard on the
+            # failure path.
+            self._clear_analyzer_failures(name)
+        if purged or self._seq.get(name, 0) != seen_seq:
             return
         cleaned = [
             material
