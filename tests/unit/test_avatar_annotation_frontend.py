@@ -23,6 +23,7 @@ of ``static/app/`` under node rather than asserting on source text:
 """
 
 import json
+import re
 import shutil
 from pathlib import Path
 
@@ -432,15 +433,23 @@ def test_display_topology_change_is_picked_up_after_the_cache_ttl():
     when the Electron bridge fallback is in use.
     """
     src = _screen_src()
+    ttl_line = [line for line in src.splitlines()
+                if "MULTI_DISPLAY_CACHE_TTL_MS =" in line][0].strip()
+    ttl_ms = int(re.search(r"=\s*(\d+)", ttl_line).group(1))
+    # Pin the value itself. The harness below reads the constant out of the
+    # module, so a test driven purely by derived timings would keep passing if
+    # the TTL were changed to a minute -- the assertion has to name the number.
+    assert ttl_ms == 5000, f"multi-display cache TTL changed to {ttl_ms}ms"
+
     multi = (
         "var multiDisplayCache = null;\nvar multiDisplayCacheAt = 0;\n"
-        + [line for line in src.splitlines()
-           if "MULTI_DISPLAY_CACHE_TTL_MS =" in line][0].strip() + "\n"
+        + ttl_line + "\n"
         + _fn(src, "refreshMultiDisplayCache") + "\n"
         + _fn(src, "isKnownMultiDisplay")
     )
     script = """
 const results = {};
+const TTL = __TTL__;
 let displayCount = 1;
 let now = 1000;
 Date.now = () => now;
@@ -457,20 +466,24 @@ const settle = () => new Promise((r) => setImmediate(r));
 
   // A second monitor is attached; without a TTL the cached false sticks forever.
   displayCount = 2;
-  now += 100;
-  isKnownMultiDisplay();
-  await settle();
-  results.withinTtl = isKnownMultiDisplay();
 
-  now += 60000;
+  // Exactly TTL since the last lookup: the check is strictly greater-than, so
+  // this must still serve the cached answer.
+  now += TTL;
   isKnownMultiDisplay();
   await settle();
-  results.afterTtl = isKnownMultiDisplay();
+  results.atTtl = isKnownMultiDisplay();
+
+  // One millisecond past it: the very first instant a refresh is allowed.
+  now += 1;
+  isKnownMultiDisplay();
+  await settle();
+  results.pastTtl = isKnownMultiDisplay();
   console.log(JSON.stringify(results));
 })();
-""".replace("__MULTI__", multi)
+""".replace("__MULTI__", multi).replace("__TTL__", str(ttl_ms))
     out = _run(script)
     assert out["singleDisplay"] is False
-    # Still stale inside the TTL -- documents the bounded self-heal window.
-    assert out["withinTtl"] is False
-    assert out["afterTtl"] is True
+    # Bounded self-heal window: stale right up to the boundary, fresh just past it.
+    assert out["atTtl"] is False
+    assert out["pastTtl"] is True
