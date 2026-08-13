@@ -212,19 +212,10 @@ const availablePanelSurfaces = computed(() => panelSurfaces.value.filter((surfac
 // let its placeholder hide a working legacy static UI.
 const renderablePanelSurfaces = computed(() => availablePanelSurfaces.value.filter((surface) => surface.mode !== 'auto'))
 const availableDeclaredPanelSurfaces = computed(() => renderablePanelSurfaces.value.filter((surface) => !surface.legacy_static_compat))
-const availableHostedPanelSurfaces = computed(() => availableDeclaredPanelSurfaces.value.filter((surface) => surface.mode === 'hosted-tsx'))
-// Prefer usable hosted TSX panels without hiding other declared panels. Only
-// fall back to a host-generated compatibility panel when the plugin did not
-// declare any usable panel of its own.
-const displayedPanelSurfaces = computed(() => {
-  if (availableDeclaredPanelSurfaces.value.length > 0) {
-    return [
-      ...availableHostedPanelSurfaces.value,
-      ...availableDeclaredPanelSurfaces.value.filter((surface) => surface.mode !== 'hosted-tsx'),
-    ]
-  }
-  return renderablePanelSurfaces.value
-})
+// Keep every renderable panel, including the host-generated static `main`
+// compatibility surface. The separate legacy "界面" tab is what gets hidden
+// when panels exist; filtering main here would make that page unreachable.
+const displayedPanelSurfaces = computed(() => renderablePanelSurfaces.value)
 const hasStaticCompatPanel = computed(() => panelSurfaces.value.some((surface) => surface.legacy_static_compat))
 const hasDisplayablePanelSurface = computed(() => displayedPanelSurfaces.value.length > 0)
 const hasCurrentStaticUI = computed(() => hasStaticUI.value && staticUiPluginId.value === pluginId.value)
