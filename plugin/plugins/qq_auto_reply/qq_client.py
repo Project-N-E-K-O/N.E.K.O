@@ -20,7 +20,7 @@ import re
 import secrets
 import time
 from typing import Any, Dict, Optional
-from urllib.parse import parse_qs, urlencode, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 import websockets
 from websockets.exceptions import ConnectionClosed
@@ -386,6 +386,39 @@ class QQClient(QQConnectionBase):
         sep = "&" if parsed.query else "?"
         return f"{url}{sep}{urlencode({'access_token': self.token})}"
 
+    def _redact_url(self, url: str) -> str:
+        """写日志前遮掉 URL query 里的 access_token，避免 token 明文落盘。
+
+        ``_forward_ws_url`` 会把 token 拼进 query；连接成功后若把完整 URL 写进
+        文件日志，token 就永久留在磁盘上了。日志里只保留主机/路径，token 值以
+        ``***`` 替代（与插件 ``_mask_token`` 的脱敏习惯一致）。
+        """
+        if not url:
+            return url
+        try:
+            parsed = urlparse(url)
+            params = parse_qs(parsed.query)
+            if "access_token" not in params:
+                return url
+            cleaned = "&".join(
+                f"{k}={'***' if k == 'access_token' else v}"
+                for k, values in params.items()
+                for v in values
+            )
+            return urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, cleaned, parsed.fragment))
+        except Exception:
+            return url
+
+    def _redact_text(self, text: str) -> str:
+        """把文本里出现的明文 token 遮掉（异常消息可能内嵌带 token 的完整 URL）。"""
+        try:
+            raw = str(text)
+            if self.token and self.token in raw:
+                return raw.replace(self.token, "***")
+            return raw
+        except Exception:
+            return str(text)
+
     async def _dial_forward(self) -> bool:
         """正向拨出到 NapCat 的 WS 服务器（收流循环调用）。
 
@@ -407,13 +440,15 @@ class QQClient(QQConnectionBase):
                 timeout=self._dial_timeout,
             )
         except Exception as e:
-            self._emit_log("WARN", f"NapCat(正向) 拨出失败: {e}")
+            # 异常消息可能内嵌带 token 的完整 URL（InvalidURI/InvalidStatus 等），先遮掉
+            self._emit_log("WARN", f"NapCat(正向) 拨出失败: {self._redact_text(e)}")
             return False
         self._ws = ws
         self._main_client = ws
         self._connected_clients = {ws}
         if self.logger:
-            self.logger.info(f"Forward WS connected to {url}")
+            # 不打印带 access_token 的完整 URL，token 会明文留在日志文件里
+            self.logger.info(f"Forward WS connected to {self._redact_url(url)}")
         self._emit_log("INFO", "NapCat(正向) 已连接")
         # 首次连接时异步获取登录信息（不阻塞收流循环）
         if not self._self_id:

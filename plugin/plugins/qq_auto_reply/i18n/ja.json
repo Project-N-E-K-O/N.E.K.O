@@ -63,6 +63,7 @@
   "errors.user_not_found": "ユーザー {qq_number} は信頼リストにいません",
   "errors.admin_no_nickname": "管理者はいつも主人と呼ぶんだから、ニックネームなんて付けられないわよ。",
   "errors.set_nickname_failed": "ニックネームの設定に失敗しました",
+"errors.nickname_invalid": "ニックネームに許可されない文字が含まれています（制御文字または長すぎ）",
   "errors.start_connect_failed": "OneBot サービス {url} に接続できません。先に外部 NapCat/OneBot を起動してください: {error}",
   "errors.proactive_private_generate_failed": "AI が送信可能なプライベートメッセージを生成しませんでした",
   "errors.proactive_group_generate_failed": "AI が送信可能なグループメッセージを生成しませんでした",
@@ -657,5 +658,11 @@
   "ui.attention.focus_cooldown": "最小フォール時間 (秒)",
   "ui.attention.rise_rate": "基本上昇レート",
   "ui.attention.rise_rate.hint": "rise フェーズの毎秒の自然な注意成長（0.02 = 100秒あたり+2ポイント）。",
+  "ui.attention.focus_threshold": "焦点切り替え閾値",
+  "ui.attention.focus_threshold.hint": "このスコア以上でグループは焦点競争に参加する。",
+  "ui.attention.focus_send_threshold": "焦点送信ゲート",
+  "ui.attention.focus_send_threshold.hint": "焦点グループの送信ゲート（焦点線より低く、最低線より高い）。注意力がこれを下回ったときのみ焦点グループは無視される。",
+  "ui.attention.min_threshold": "最低閾値",
+  "ui.attention.min_threshold.hint": "このスコア未満のグループは焦点競争から外れる。",
   "ui.napcat.config.path_manual": "ブラウザで絶対パスを取得できません。手動で入力してください"
 }

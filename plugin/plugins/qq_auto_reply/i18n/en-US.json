@@ -63,6 +63,7 @@
   "errors.user_not_found": "User {qq_number} isn't in the trusted list",
   "errors.admin_no_nickname": "Admins are always called Master, so a nickname can't be set",
   "errors.set_nickname_failed": "Couldn't save the nickname",
+"errors.nickname_invalid": "Nickname contains disallowed characters (control characters or too long)",
   "errors.start_connect_failed": "Can't connect to the OneBot service at {url}. Please wake up external NapCat/OneBot first: {error}",
   "errors.proactive_private_generate_failed": "AI did not generate a private message that can be sent",
   "errors.proactive_group_generate_failed": "AI did not generate a group message that can be sent",

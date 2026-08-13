@@ -110,6 +110,26 @@ def test_forward_connect_starts_receive_loop_and_dials():
     asyncio.run(run())
 
 
+def test_redact_url_masks_access_token():
+    """The success log must not leak the token that _forward_ws_url appends."""
+    client = _make_forward_client(token="s3cret")
+    redacted = client._redact_url("ws://192.168.1.5:3001?access_token=s3cret")
+    assert "s3cret" not in redacted
+    assert "access_token=***" in redacted
+    # A URL without a token is returned unchanged
+    assert client._redact_url("ws://192.168.1.5:3001/ws") == "ws://192.168.1.5:3001/ws"
+
+
+def test_redact_text_masks_token_in_exception():
+    """Exception messages may embed the full URL (and token); they must be masked."""
+    client = _make_forward_client(token="s3cret")
+    redacted = client._redact_text(
+        "invalid URI: ws://192.168.1.5:3001?access_token=s3cret"
+    )
+    assert "s3cret" not in redacted
+    assert "access_token=***" in redacted
+
+
 def test_forward_connect_nonblocking_when_dial_fails():
     """``connect()`` does not fail when NapCat is not ready: the background loop
     retries and the connection stays down."""
@@ -345,3 +365,4 @@ def test_ensure_napcat_started_launches_for_forward():
         plugin.napcat_service = _NS(ensure_napcat_started=ensure)
         asyncio.run(plugin._ensure_napcat_started())
         assert ensure.called is expect_launch, f"mode={mode}"
+

@@ -57,3 +57,32 @@ def test_add_user_applies_the_same_nickname_validation_before_persisting():
 
     assert manager.add_user("1003", level="admin", nickname="bad|name") is True
     assert manager.get_nickname("1003") is None
+
+
+def test_validate_nickname_rejects_control_chars_and_oversized():
+    manager = _manager()
+    assert manager.validate_nickname("good name") is None
+    assert manager.validate_nickname("bad\x00name") == "control_char"
+    assert manager.validate_nickname("bad\nname") == "control_char"
+    assert manager.validate_nickname("bad[name") == "control_char"
+    assert manager.validate_nickname("x" * (manager.NICKNAME_MAX_CHARS + 1)) == "too_long"
+
+
+def test_add_trusted_user_returns_invalid_argument_for_control_char_nickname():
+    """A control-character nickname must surface as INVALID_ARGUMENT (not the
+    generic SET_FAILED), so the caller can show a clear message."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from plugin.plugins.qq_auto_reply.dashboard_service import QQDashboardService
+
+    plugin = SimpleNamespace(
+        permission_mgr=PermissionManager(),
+        i18n=SimpleNamespace(t=lambda key, default="", **kw: default),
+    )
+    svc = QQDashboardService(plugin)
+    result = asyncio.run(svc.add_trusted_user(
+        qq_number="10001", level="trusted", nickname="bad\x00name",
+    ))
+    assert result.is_err()
+    assert "INVALID_ARGUMENT" in str(result.error)

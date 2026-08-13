@@ -96,6 +96,8 @@ class QQRuntimeOpsService:
                 self.plugin._session_housekeeping_task = asyncio.create_task(
                     self.plugin._session_housekeeping_loop()
                 )
+            # 启动自动回复**不检查 NapCat 链路**：正向拨出由后台 _forward_receive_loop
+            # 退避重试，连接状态由状态指示灯/SSE 体现，start 只管把管线拉起来。
             return Ok({"status": "started"})
         except Exception as e:
             self.plugin._emit_log("ERROR", f"启动失败: {e}")
@@ -104,12 +106,7 @@ class QQRuntimeOpsService:
                 startup_error = str(e)
             self.plugin._startup_error = startup_error
             self.plugin.logger.exception("Failed to start auto reply")
-            if expected == "napcat_forward":
-                # 正向连接失败在 connect() 里就 raise，错误串应是拨出失败而不是
-                # "服务器已启动但没有客户端连接"。
-                return Err(SdkError(
-                    f"START_ERROR: {self.plugin.i18n.t('errors.start_connect_forward_failed', default='正向连接 NapCat 失败 ({url}): {error}', url=self.plugin.qq_client.onebot_url, error=startup_error)}"
-                ))
+            # 反向 serve 失败等真实异常走这里；正向 connect() 不 raise（后台重试）。
             return Err(SdkError(
                 f"START_ERROR: {self.plugin.i18n.t('errors.start_connect_failed', default='反向 WS 服务器已启动 ({url})，但没有 NapCat 客户端连接: {error}', url=self.plugin.qq_client.onebot_url, error=startup_error)}"
             ))

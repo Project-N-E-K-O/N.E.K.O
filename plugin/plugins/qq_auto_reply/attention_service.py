@@ -408,10 +408,15 @@ class QQAttentionService:
         # 焦点保持：曾夺得焦点的群只要分数 >= 发送保持线（2.0）就继续持有，
         # 即使低于焦点线；只有更高分的挑战者（>= 焦点线）才能抢走。
         held = self._held_focus_state(states)
+        if held is not None:
+            if candidate is None or held.attention_score >= candidate.attention_score:
+                return held
+        # 无持有焦点：恢复「最高分群」回退（与 get_snapshot 的 states[0] 一致）。
+        # 否则低于焦点线且无持有群时 _choose_focus_state 返回 None，而 get_snapshot
+        # 却把最高分群报为焦点——分裂导致 _get_top_group_id 等其它调用者拿不到焦点，
+        # 门控把最高分群的后续消息判成 non_focus。
         if candidate is None:
-            return held
-        if held is not None and held.attention_score >= candidate.attention_score:
-            return held
+            return max(states, key=lambda s: float(s.attention_score))
         if stamp_transition:
             candidate.focus_acquired_at = now
             candidate.last_focus_reason = "highest_attention"

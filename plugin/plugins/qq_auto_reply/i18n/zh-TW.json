@@ -63,6 +63,7 @@
   "errors.user_not_found": "使用者 {qq_number} 不在信任清單中",
   "errors.admin_no_nickname": "管理員始終被稱為主人，無法設定暱稱",
   "errors.set_nickname_failed": "設定暱稱失敗",
+"errors.nickname_invalid": "暱稱包含不允許的字元（控制字元或過長）",
   "errors.start_connect_failed": "無法連線到 OneBot 服務 {url}，請先啟動外部 NapCat/OneBot：{error}",
   "errors.proactive_private_generate_failed": "AI 未生成可發送的私聊訊息",
   "errors.proactive_group_generate_failed": "AI 未生成可發送的群聊訊息",

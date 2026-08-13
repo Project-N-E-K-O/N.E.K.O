@@ -92,7 +92,10 @@
   }
 
   function on(type, handler) {
-    if (typeof handler === 'function') typeHandlers[type] = handler;
+    if (typeof handler === 'function') {
+      typeHandlers[type] = handler;
+      ensureEs();  // 注册处理器即建立 EventSource——页面只 on('status', ...) 就能收实时刷新
+    }
   }
 
   window.UISSE = { ensureEs: ensureEs, awaitRun: awaitRun, on: on };

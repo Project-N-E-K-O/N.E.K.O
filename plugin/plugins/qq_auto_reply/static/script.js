@@ -33,6 +33,11 @@ const pluginId = 'qq_auto_reply';
                 while (raw && raw.data && typeof raw.data === 'object' && ('success' in raw.data || 'error' in raw.data)) {
                     raw = raw.data;
                 }
+                // 顶层 { success: true, data: payload } 也要解到业务 payload（与
+                // napcat.html / open_platform.html 的 call() 保持一致）。
+                if (raw && raw.success && raw.data && typeof raw.data === 'object') {
+                    raw = raw.data;
+                }
                 return raw;
             }
             throw new Error(status);
@@ -1040,6 +1045,16 @@ const pluginId = 'qq_auto_reply';
         }
 
         async function saveUser(qqNumber, level, nickname = '') {
+            // 客户端先校验昵称：控制字符 / 超长直接拒绝并给明确提示（与后端
+            // INVALID_ARGUMENT 一致，避免提交后才报笼统的 SET_FAILED）。
+            if (nickname && /[\u0000-\u001f\u007f]/.test(nickname)) {
+                showToast(t('errors.nickname_invalid', '昵称不能包含控制字符或不可见字符'));
+                return;
+            }
+            if (nickname && nickname.trim().length > 64) {
+                showToast(t('errors.nickname_invalid', '昵称不能超过 64 个字符'));
+                return;
+            }
             try {
                 const payload = { qq_number: qqNumber, level, nickname };
                 await callPlugin('add_trusted_user', payload);

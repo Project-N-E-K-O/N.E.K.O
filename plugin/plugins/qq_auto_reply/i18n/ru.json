@@ -63,6 +63,7 @@
   "errors.user_not_found": "Пользователь {qq_number} отсутствует в доверенном списке",
   "errors.admin_no_nickname": "Администратор всегда называется хозяином, для него нельзя задать ник",
   "errors.set_nickname_failed": "Не удалось задать ник",
+"errors.nickname_invalid": "Никнейм содержит недопустимые символы (управляющие или слишком длинный)",
   "errors.start_connect_failed": "Не удалось подключиться к сервису OneBot по адресу {url}. Сначала запустите внешний NapCat/OneBot: {error}",
   "errors.proactive_private_generate_failed": "ИИ не сгенерировал личное сообщение, которое можно отправить",
   "errors.proactive_group_generate_failed": "ИИ не сгенерировал групповое сообщение, которое можно отправить",
@@ -657,5 +658,11 @@
   "ui.attention.focus_cooldown": "Мин. длительность спада (сек)",
   "ui.attention.rise_rate": "Базовая скорость роста",
   "ui.attention.rise_rate.hint": "Естественный рост внимания в секунду в фазе rise (0.02 = +2 очка за 100 с).",
+  "ui.attention.focus_threshold": "Порог смены фокуса",
+  "ui.attention.focus_threshold.hint": "Оценка, при которой группа вступает в конкуренцию за фокус.",
+  "ui.attention.focus_send_threshold": "Порог отправки фокуса",
+  "ui.attention.focus_send_threshold.hint": "Порог отправки для фокус-группы (ниже линии фокуса, выше минимума). Фокус-группа игнорируется только когда её внимание падает ниже этого.",
+  "ui.attention.min_threshold": "Минимальный порог",
+  "ui.attention.min_threshold.hint": "Ниже этой оценки группа выбывает из конкуренции за фокус.",
   "ui.napcat.config.path_manual": "Браузер не может получить абсолютный путь; введите его вручную."
 }

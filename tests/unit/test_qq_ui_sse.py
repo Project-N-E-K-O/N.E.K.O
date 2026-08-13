@@ -144,3 +144,31 @@ def test_maybe_push_log_event_throttles():
     plugin._maybe_push_log_event()
     assert plugin._spawn_push_ui_event.call_count == 1
     assert plugin._spawn_push_ui_event.call_args.args[0] == "logs"
+
+
+# ---- reply buffer: every _pending mutation pushes a status event -------------
+
+def test_buffer_set_pending_pushes_status():
+    """Inserting/updating a pending reply pushes a status event."""
+    from plugin.plugins.qq_auto_reply.reply_buffer_service import QQReplyBufferService
+
+    plugin = SimpleNamespace(_maybe_push_status_event=MagicMock())
+    svc = QQReplyBufferService(plugin)
+    pending = SimpleNamespace(generation=0)
+    svc._set_pending("g1", pending)
+    assert plugin._maybe_push_status_event.call_count == 1
+
+
+def test_buffer_normal_delivery_dequeue_pushes_status():
+    """A normal delivery dequeue (``_detach_pending``) removes the buffer and
+    pushes a status event -- otherwise a status-only frontend keeps showing the
+    old buffer count until the fallback poll."""
+    from plugin.plugins.qq_auto_reply.reply_buffer_service import QQReplyBufferService
+
+    plugin = SimpleNamespace(_maybe_push_status_event=MagicMock())
+    svc = QQReplyBufferService(plugin)
+    pending = SimpleNamespace(generation=0)
+    svc._pending["g1"] = pending
+    assert svc._detach_pending("g1", pending, generation=0) is True
+    assert "g1" not in svc._pending
+    assert plugin._maybe_push_status_event.call_count == 1

@@ -63,6 +63,7 @@
   "errors.user_not_found": "O usuário {qq_number} não está na lista de confiança",
   "errors.admin_no_nickname": "Administradores são sempre chamados de mestre e não podem receber apelido",
   "errors.set_nickname_failed": "Falha ao definir o apelido",
+"errors.nickname_invalid": "Apelido contém caracteres não permitidos (controle ou muito longo)",
   "errors.start_connect_failed": "Não foi possível conectar ao serviço OneBot em {url}. Inicie primeiro o NapCat/OneBot externo: {error}",
   "errors.proactive_private_generate_failed": "A IA não gerou uma mensagem privada que possa ser enviada",
   "errors.proactive_group_generate_failed": "A IA não gerou uma mensagem de grupo que possa ser enviada",
@@ -657,5 +658,11 @@
   "ui.attention.focus_cooldown": "Duração mínima de queda (seg)",
   "ui.attention.rise_rate": "Taxa de subida base",
   "ui.attention.rise_rate.hint": "Crescimento natural de atenção por segundo na fase rise (0.02 = +2 pontos por 100 s).",
+  "ui.attention.focus_threshold": "Limiar de troca de foco",
+  "ui.attention.focus_threshold.hint": "Pontuação a partir da qual um grupo entra na competição de foco.",
+  "ui.attention.focus_send_threshold": "Limiar de envio do foco",
+  "ui.attention.focus_send_threshold.hint": "Limiar de envio para o grupo focal (abaixo da linha de foco, acima do mínimo). O grupo focal só é ignorado quando sua atenção cai abaixo disto.",
+  "ui.attention.min_threshold": "Limiar mínimo",
+  "ui.attention.min_threshold.hint": "Abaixo desta pontuação um grupo fica fora da competição de foco.",
   "ui.napcat.config.path_manual": "O navegador não consegue obter o caminho absoluto; insira-o manualmente."
 }

@@ -79,6 +79,19 @@ def test_focus_lost_below_send_threshold_is_displaced():
     assert svc.get_focus_group() == "B"
 
 
+def test_choose_focus_falls_back_to_top_group_when_no_hold():
+    """With no held focus and no group at/above the focus line, ``_choose_focus_state``
+    must return the highest-scoring group (not None) so the gate can still grant it
+    focus instead of blocking it as non_focus."""
+    svc = _make_service()
+    _set_score(svc, "A", 1.5, focus=True)   # was focus but dropped below send line
+    _set_score(svc, "B", 2.5)               # never acquired focus
+    states = [svc._load_state(g) for g in ("A", "B")]
+    chosen = svc._choose_focus_state(states, 1000)
+    assert chosen is not None
+    assert chosen.group_id == "B"
+
+
 def test_held_focus_not_displaced_by_below_focus_line_group():
     # The core focus-hold regression: held focus A at 2.5 (< 4.0) must NOT be
     # displaced by B at 3.5 (< 4.0 but higher). Without the hold logic, B (the

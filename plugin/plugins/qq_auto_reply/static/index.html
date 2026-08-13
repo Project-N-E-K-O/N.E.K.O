@@ -7,7 +7,7 @@
 <style>
 * { margin:0; padding:0; box-sizing:border-box; }
 body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f0f2f5; display:flex; align-items:center; justify-content:center; min-height:100vh; }
-.card { background:#fff; border-radius:12px; padding:36px 28px; text-align:center; cursor:pointer; transition:.2s; border:2px solid #e2e8f0; flex:1 1 0; min-width:200px; }
+.card { background:#fff; border-radius:12px; padding:36px 28px; text-align:center; cursor:pointer; transition:.2s; border:2px solid #e2e8f0; flex:1 1 0; min-width:200px; text-decoration:none; color:inherit; display:block; }
 .card:hover { border-color:#6366f1; box-shadow:0 4px 16px rgba(99,102,241,.12); }
 .card .icon { font-size:42px; margin-bottom:14px; }
 .card h2 { font-size:18px; margin-bottom:10px; color:#1a1a2e; }
@@ -26,7 +26,7 @@ h1 { font-size:22px; color:#1a1a2e; text-align:center; margin-bottom:6px; width:
     <h1 data-i18n="ui.index.title">QQ 接入方式</h1>
     <p class="sub" data-i18n="ui.index.subtitle">请选择一种连接方式。不同方式的配置流程不同，可随时切换。</p>
     <div class="wrap">
-        <div class="card" onclick="go('napcat')">
+        <a class="card" href="napcat.html?v=3" onclick="go('napcat'); return false;">
             <div class="icon">N</div>
             <h2>NapCat</h2>
             <p>
@@ -36,8 +36,8 @@ h1 { font-size:22px; color:#1a1a2e; text-align:center; margin-bottom:6px; width:
                 <span data-i18n="ui.index.napcat.desc4">支持戳一戳、表情包等完整能力</span>
             </p>
             <span class="tag tag-warn" data-i18n="ui.index.napcat.tag">全功能 · 多群聊</span>
-        </div>
-        <div class="card" onclick="go('open_platform')">
+        </a>
+        <a class="card" href="open_platform.html?v=3" onclick="go('open_platform'); return false;">
             <div class="icon">Q</div>
             <h2>QQ 开放平台</h2>
             <p>
@@ -47,8 +47,8 @@ h1 { font-size:22px; color:#1a1a2e; text-align:center; margin-bottom:6px; width:
                 <span data-i18n="ui.index.openplat.desc4">支持 Markdown、按钮模板</span>
             </p>
             <span class="tag tag-ok" data-i18n="ui.index.openplat.tag">轻量 · 指令式</span>
-        </div>
-        <div class="card" onclick="go('legacy')">
+        </a>
+        <a class="card" href="old.html?v=3" onclick="go('legacy'); return false;">
             <div class="icon">M</div>
             <h2 data-i18n="ui.index.legacy.title">旧版控制中心</h2>
             <p>
@@ -56,7 +56,7 @@ h1 { font-size:22px; color:#1a1a2e; text-align:center; margin-bottom:6px; width:
                 <span data-i18n="ui.index.legacy.desc2">引导、状态、回复管理一站式</span>
             </p>
             <span class="tag tag-legacy" data-i18n="ui.index.legacy.tag">旧版 UI</span>
-        </div>
+        </a>
     </div>
 </div>
 <script src="i18n.js?v=2"></script>

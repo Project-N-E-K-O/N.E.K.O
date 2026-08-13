@@ -15,7 +15,7 @@
 - 时间用可控时钟驱动（覆盖 ``attention._current_time``），让焦点切换确定性发生。
 
 用法：
-    python scripts/debug_focus_shift_retro.py --data-dir <qq_auto_reply 数据目录>
+    python plugin/plugins/qq_auto_reply/debug_focus_shift_retro.py --data-dir <qq_auto_reply 数据目录>
     # 数据目录 = 包含 business_config.json 的目录，通常在
     #   <N.E.K.O 数据根>/data/plugins/qq_auto_reply
 """
@@ -36,8 +36,9 @@ for _stream in (sys.stdout, sys.stderr):
     except Exception:
         pass
 
-# 让脚本在仓库根目录下可导入 plugin.*（仓库根 = 本文件上一级）
-_REPO_ROOT = Path(__file__).resolve().parent.parent
+# 让脚本在仓库根目录下可导入 plugin.*（仓库根 = 本文件的 4 层父目录：
+# qq_auto_reply → plugins → plugin → 仓库根）
+_REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
@@ -211,10 +212,25 @@ async def run(data_dir: Path, messages_b: list[tuple[str, str, str]]) -> int:
         print("\n_build_ignored_summary 直接输出（回溯前快照）：")
         print(summary if summary else "（空——没有未审核消息或全为空内容）")
 
+        # 诊断脚本的核心目标：捕获回溯补回请求并确认摘要非空。任一失败都返回非零，
+        # 避免「回溯没触发 / 摘要为空」时误报成功（退出码 0）。
+        problems: list[str] = []
+        if not facade.captured:
+            problems.append("未捕获到回溯补回请求（backlog 为空 / 焦点未切换 / 回溯被跳过）")
+        else:
+            prompt_text = str(getattr(facade.captured[0], "message_text", "") or "")
+            if "摘要：" not in prompt_text:
+                problems.append("捕获到的请求里没有摘要段落")
+        if not summary:
+            problems.append("回溯前快照的未审核消息为空")
         empty_rows = [l for l in summary.splitlines() if ":  " in l or l.rstrip().endswith(":")]
         if empty_rows:
-            print(f"\n⚠ 仍有空内容行（{len(empty_rows)} 条）——原消息内容仍可能为空，需要进一步排查。")
-        return 0 if not empty_rows else 2
+            problems.append(f"仍有 {len(empty_rows)} 条空内容行——原消息内容可能为空")
+        if problems:
+            print(f"\n⚠ 诊断未完全通过（{len(problems)} 项）：")
+            for p in problems:
+                print("  - " + p)
+        return 2 if problems else 0
     finally:
         import shutil
         shutil.rmtree(tmp_dir, ignore_errors=True)
