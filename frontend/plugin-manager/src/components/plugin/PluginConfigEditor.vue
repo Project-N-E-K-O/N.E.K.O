@@ -19,7 +19,14 @@
         <el-button size="small" @click="resetDraft" :disabled="!hasChanges" :loading="saving">
           {{ t('common.reset') }}
         </el-button>
-        <el-button type="primary" :icon="Check" size="small" @click="save" :loading="saving">
+        <el-button
+          type="primary"
+          :icon="Check"
+          size="small"
+          @click="save"
+          :loading="saving"
+          :disabled="!profilesStateLoaded || !selectedProfileName"
+        >
           {{ t('common.save') }}
         </el-button>
       </div>
@@ -41,7 +48,13 @@
       <div class="profiles-pane">
         <div class="profiles-header">
           <span class="profiles-title">{{ t('plugins.profiles') }}</span>
-          <el-button type="primary" size="small" :icon="Plus" @click="addProfile">
+          <el-button
+            type="primary"
+            size="small"
+            :icon="Plus"
+            @click="addProfile"
+            :disabled="!profilesStateLoaded"
+          >
             {{ t('common.add') }}
           </el-button>
         </div>
@@ -172,6 +185,7 @@ const lastModified = ref<string | undefined>(undefined)
 const baseConfig = ref<Record<string, any> | null>(null)
 const effectiveConfig = ref<Record<string, any> | null>(null)
 const profilesState = ref<any | null>(null)
+const profilesStateLoaded = ref(false)
 
 const selectedProfileName = ref<string | null>(null)
 const profileDraftConfig = ref<Record<string, any> | null>(null)
@@ -237,18 +251,22 @@ function deepClone<T>(v: T): T {
 }
 
 const persistedProfileNames = computed<string[]>(() => {
+  if (!profilesStateLoaded.value) return []
   const cfg = profilesState.value?.config_profiles
   if (!cfg || !cfg.files || typeof cfg.files !== 'object') return []
   return Object.keys(cfg.files).sort()
 })
 
 const profileNames = computed<string[]>(() =>
-  persistedProfileNames.value.length > 0
+  !profilesStateLoaded.value
+    ? []
+    : persistedProfileNames.value.length > 0
     ? persistedProfileNames.value
     : [DEFAULT_PROFILE_NAME]
 )
 
 const activeProfileName = computed<string | null>(() => {
+  if (!profilesStateLoaded.value) return null
   const cfg = profilesState.value?.config_profiles
   const name = cfg?.active
   if (typeof name === 'string' && name) return name
@@ -256,7 +274,7 @@ const activeProfileName = computed<string | null>(() => {
 })
 
 function isVirtualDefaultProfile(name: string) {
-  return name === DEFAULT_PROFILE_NAME && persistedProfileNames.value.length === 0
+  return profilesStateLoaded.value && name === DEFAULT_PROFILE_NAME && persistedProfileNames.value.length === 0
 }
 
 const hasChanges = computed(() => {
@@ -472,6 +490,7 @@ async function loadAll() {
 
   loading.value = true
   error.value = null
+  profilesStateLoaded.value = false
   try {
     const prevSelected = selectedProfileName.value
     const [baseRes, effectiveRes, profilesRes] = await Promise.all([
@@ -488,6 +507,7 @@ async function loadAll() {
     baseConfig.value = (baseRes.config || {}) as Record<string, any>
     effectiveConfig.value = (effectiveRes.config || {}) as Record<string, any>
     profilesState.value = profilesRes
+    profilesStateLoaded.value = !!profilesRes && typeof profilesRes === 'object'
 
     const names = profileNames.value
     const active = activeProfileName.value
@@ -539,6 +559,20 @@ async function selectProfile(name: string) {
 }
 
 async function addProfile() {
+  if (!props.pluginId || !profilesStateLoaded.value) return
+  if (hasChanges.value) {
+    try {
+      await ElMessageBox.confirm(
+        t('plugins.unsavedChangesWarning'),
+        t('common.warning'),
+        { type: 'warning' }
+      )
+    } catch {
+      return
+    }
+  }
+
+  const pluginId = props.pluginId
   try {
     const { value } = await ElMessageBox.prompt(t('plugin.addProfile.prompt'), t('plugin.addProfile.title'), {
       inputPattern: /^(?!\s*$).+/u,
@@ -546,13 +580,21 @@ async function addProfile() {
     })
     const name = String(value || '').trim()
     if (!name) return
-    if (!props.pluginId) return
+    if (pluginId !== props.pluginId || !profilesStateLoaded.value) return
+    if (persistedProfileNames.value.includes(name)) {
+      ElMessage.error(t('plugin.addProfile.inputError'))
+      return
+    }
 
     // 立即在后端创建一个空的 profile 映射，方便左侧列表立刻出现该 profile
-    await upsertPluginProfileConfig(props.pluginId, name, {}, true)
+    // Without an active profile the backend activates this first profile;
+    // otherwise the current active profile remains unchanged until the user saves edits.
+    await upsertPluginProfileConfig(pluginId, name, {}, false)
+    if (pluginId !== props.pluginId) return
 
     // 重新加载所有配置与 profiles 状态，并选中新建的 profile
     await loadAll()
+    if (pluginId !== props.pluginId) return
     await selectProfile(name)
   } catch (e: any) {
     // 用户取消或请求失败时忽略，由上层错误提示负责
@@ -585,12 +627,17 @@ function resetDraft() {
 }
 
 async function save() {
-  if (!props.pluginId || !selectedProfileName.value) return
+  if (!props.pluginId || !selectedProfileName.value || !profilesStateLoaded.value) return
 
   const pluginId = props.pluginId
   const profileName = selectedProfileName.value
   const saveLoadVersion = loadVersion
+  const draftToSave = deepClone(profileDraftConfig.value || {}) as Record<string, any>
   const shouldActivate = isVirtualDefaultProfile(profileName)
+  const isCurrentSave = () =>
+    saveLoadVersion === loadVersion &&
+    pluginId === props.pluginId &&
+    profileName === selectedProfileName.value
 
   saving.value = true
   error.value = null
@@ -598,11 +645,11 @@ async function save() {
     await upsertPluginProfileConfig(
       pluginId,
       profileName,
-      (profileDraftConfig.value || {}) as Record<string, any>,
+      draftToSave,
       shouldActivate
     )
 
-    if (saveLoadVersion !== loadVersion || pluginId !== props.pluginId || profileName !== selectedProfileName.value) return
+    if (!isCurrentSave()) return
 
     ElMessage.success(t('common.success'))
 
@@ -610,10 +657,11 @@ async function save() {
       getPluginConfig(pluginId),
       getPluginProfilesState(pluginId)
     ])
-    if (saveLoadVersion !== loadVersion || pluginId !== props.pluginId || profileName !== selectedProfileName.value) return
+    if (!isCurrentSave()) return
     effectiveConfig.value = (effectiveRes.config || {}) as Record<string, any>
     profilesState.value = profilesRes
-    originalProfileConfig.value = deepClone(profileDraftConfig.value || {})
+    profilesStateLoaded.value = !!profilesRes && typeof profilesRes === 'object'
+    originalProfileConfig.value = deepClone(draftToSave)
 
     // 仅当当前浏览的 profile 正好是激活中的 profile 时，才提示热更新或重载插件
     const isActive = activeProfileName.value === profileName
@@ -631,12 +679,14 @@ async function save() {
           }
         )
         // 用户点击了"热更新"
-        await hotUpdateConfig()
+        if (!isCurrentSave()) return
+        await hotUpdateConfig(pluginId, profileName, draftToSave)
       } catch (e: any) {
         if (e === 'cancel') {
           // 用户点击了"重启插件"
           try {
-            await pluginStore.reload(props.pluginId)
+            if (!isCurrentSave()) return
+            await pluginStore.reload(pluginId)
             ElMessage.success(t('messages.pluginReloaded'))
           } catch (reloadErr: any) {
             ElMessage.error(reloadErr?.message || t('messages.reloadFailed'))
@@ -652,16 +702,18 @@ async function save() {
   }
 }
 
-async function hotUpdateConfig() {
-  if (!props.pluginId || !selectedProfileName.value) return
-  
+async function hotUpdateConfig(
+  pluginId: string,
+  profileName: string,
+  config: Record<string, any>
+) {
   try {
     const { hotUpdatePluginConfig } = await import('@/api/config')
     const result = await hotUpdatePluginConfig(
-      props.pluginId,
-      (profileDraftConfig.value || {}) as Record<string, any>,
+      pluginId,
+      config,
       'permanent',
-      selectedProfileName.value
+      profileName
     )
     
     if (result.success) {
