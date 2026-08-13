@@ -2081,9 +2081,12 @@
     var MULTI_DISPLAY_CACHE_TTL_MS = 5000;
 
     function refreshMultiDisplayCache() {
+        // 无条件先打时间戳，失败/没有桥时也算「这一轮问过了」：否则查询失败会让
+        // multiDisplayCache 一直是 null，下面的节流判据就永远放行，持续分享时
+        // 变成每帧一次 IPC（还会叠出多个在途请求）。
+        multiDisplayCacheAt = Date.now();
         var bridge = window.electronScreen;
         if (!bridge || typeof bridge.getAllDisplays !== 'function') return;
-        multiDisplayCacheAt = Date.now();
         try {
             Promise.resolve(bridge.getAllDisplays()).then(function (list) {
                 if (list && typeof list.length === 'number') {
@@ -2102,7 +2105,9 @@
         }
         // 刷新是 fire-and-forget：本次仍用上一轮的值，拓扑变化最多晚 TTL + 一次 IPC
         // 生效。不 await 是因为这条在截图路径上，持续分享时每秒都会问一次。
-        if (multiDisplayCache === null
+        // 节流只看时间戳，不看缓存是否还是未知——查询失败时 multiDisplayCache 会
+        // 一直是 null，若把它放进判据就等于不节流。
+        if (multiDisplayCacheAt === 0
             || (Date.now() - multiDisplayCacheAt) > MULTI_DISPLAY_CACHE_TTL_MS) {
             refreshMultiDisplayCache();
         }

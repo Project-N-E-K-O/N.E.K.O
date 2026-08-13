@@ -157,14 +157,24 @@ function build(win) {
 """
 
 
-def _gate_script(tail: str) -> str:
-    src = _screen_src()
-    multi = (
-        "var multiDisplayCache = null;\n"
+def _ttl_line(src: str) -> str:
+    return [line for line in src.splitlines()
+            if "MULTI_DISPLAY_CACHE_TTL_MS =" in line][0].strip()
+
+
+def _multi_display_block(src: str) -> str:
+    """The gate's real module state plus its two functions, ready to paste."""
+    return (
+        "var multiDisplayCache = null;\nvar multiDisplayCacheAt = 0;\n"
+        + _ttl_line(src) + "\n"
         + _fn(src, "refreshMultiDisplayCache") + "\n"
         + _fn(src, "isKnownMultiDisplay")
     )
-    body = _GATE_BODY.replace("__MULTI_DISPLAY__", multi).replace(
+
+
+def _gate_script(tail: str) -> str:
+    src = _screen_src()
+    body = _GATE_BODY.replace("__MULTI_DISPLAY__", _multi_display_block(src)).replace(
         "__GET_POS__", _fn(src, "getAvatarScreenPosition")
     )
     return _GATE_PRELUDE + body + tail
@@ -528,20 +538,13 @@ def test_display_topology_change_is_picked_up_after_the_cache_ttl():
     when the Electron bridge fallback is in use.
     """
     src = _screen_src()
-    ttl_line = [line for line in src.splitlines()
-                if "MULTI_DISPLAY_CACHE_TTL_MS =" in line][0].strip()
-    ttl_ms = int(re.search(r"=\s*(\d+)", ttl_line).group(1))
+    ttl_ms = int(re.search(r"=\s*(\d+)", _ttl_line(src)).group(1))
     # Pin the value itself. The harness below reads the constant out of the
     # module, so a test driven purely by derived timings would keep passing if
     # the TTL were changed to a minute -- the assertion has to name the number.
     assert ttl_ms == 5000, f"multi-display cache TTL changed to {ttl_ms}ms"
 
-    multi = (
-        "var multiDisplayCache = null;\nvar multiDisplayCacheAt = 0;\n"
-        + ttl_line + "\n"
-        + _fn(src, "refreshMultiDisplayCache") + "\n"
-        + _fn(src, "isKnownMultiDisplay")
-    )
+    multi = _multi_display_block(src)
     script = """
 const results = {};
 const TTL = __TTL__;
@@ -582,3 +585,52 @@ const settle = () => new Promise((r) => setImmediate(r));
     # Bounded self-heal window: stale right up to the boundary, fresh just past it.
     assert out["atTtl"] is False
     assert out["pastTtl"] is True
+
+
+@pytest.mark.unit
+def test_failing_display_bridge_is_still_throttled():
+    """A rejecting bridge leaves the value unknown; that must not defeat the TTL.
+
+    The gate sits on the screenshot path, which runs about once a second during
+    continuous sharing, so an unthrottled retry means one IPC per frame plus
+    overlapping in-flight requests.
+    """
+    src = _screen_src()
+    ttl_ms = int(re.search(r"=\s*(\d+)", _ttl_line(src)).group(1))
+    multi = _multi_display_block(src)
+    script = """
+const results = {};
+const TTL = __TTL__;
+let calls = 0;
+let now = 1000;
+Date.now = () => now;
+const window = {
+  screen: { width: 1920, height: 1080 },   // no isExtended -> bridge fallback
+  electronScreen: {
+    getAllDisplays: async () => { calls += 1; throw new Error('bridge down'); }
+  }
+};
+__MULTI__
+const settle = () => new Promise((r) => setImmediate(r));
+(async () => {
+  // Twenty frames inside one TTL window: the bridge must be asked exactly once.
+  for (let i = 0; i < 20; i += 1) {
+    isKnownMultiDisplay();
+    await settle();
+    now += 100;
+  }
+  results.callsWithinWindow = calls;
+  results.stillFalse = isKnownMultiDisplay();
+
+  now += TTL;
+  isKnownMultiDisplay();
+  await settle();
+  results.callsAfterTtl = calls;
+  console.log(JSON.stringify(results));
+})();
+""".replace("__MULTI__", multi).replace("__TTL__", str(ttl_ms))
+    out = _run(script)
+    assert out["callsWithinWindow"] == 1
+    # Unknown stays unknown, and unknown means "behave as before the gate".
+    assert out["stillFalse"] is False
+    assert out["callsAfterTtl"] == 2
