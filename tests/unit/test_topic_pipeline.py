@@ -2723,3 +2723,109 @@ async def test_topic_pool_analyzer_exception_log_omits_the_exception_message():
     messages = [r.getMessage() for r in sink.records]
     assert any("RuntimeError" in m for m in messages), messages
     assert not any(secret in m for m in messages), messages
+
+
+@pytest.mark.asyncio
+async def test_topic_pool_retry_window_starts_when_the_call_failed_not_when_the_tick_began():
+    """A slow failure must not eat its own backoff.
+
+    `current_time` is captured before the await — it is often the tracker's
+    heartbeat stamp, taken earlier still. Anchoring the deadline there
+    subtracts the whole call duration (config read + client construction + the
+    8s call timeout) from every delay, and a failure slower than the delay
+    itself would land already expired.
+    """
+    call_seconds = 0.05
+
+    async def slow_failing_analyzer(*, lang, **kwargs):
+        await asyncio.sleep(call_seconds)
+        return None
+
+    pool = TopicHookPool(
+        analyzer=slow_failing_analyzer,
+        auto_schedule=False,
+        min_user_turns_for_topic=1,
+    )
+    pool.note_user_message("妮可", "我最近一直在纠结要不要换工作")
+    base = pool._signal_store.last_turn_at("妮可")
+    assert base is not None
+
+    await pool.process_ready_topics(now=base + 61, lang="zh-CN")
+
+    # 锚在 tick 开始（base + 61 + 60）的话，这次调用的 50ms 就白送掉了。
+    naive_deadline = base + 61 + _ANALYZER_RETRY_BASE_SECONDS
+    assert pool._analyzer_retry_not_before["妮可"] > naive_deadline
+    assert pool._analyzer_retry_not_before["妮可"] >= naive_deadline + call_seconds * 0.8
+
+
+@pytest.mark.asyncio
+async def test_topic_pool_accumulated_purge_clears_the_analyzer_backoff():
+    """An explicit purge is a user action; a stale retry window must not survive it.
+
+    Otherwise a character sitting at the 30min cap goes quiet for the rest of
+    that window after the user purges and starts talking again, with nothing on
+    screen to explain the silence. Mirrors _purge_character_state, which has
+    cleared this state from the start.
+    """
+    calls = []
+
+    async def failing_analyzer(*, lang, **kwargs):
+        calls.append(lang)
+        return None
+
+    pool = TopicHookPool(
+        analyzer=failing_analyzer,
+        auto_schedule=False,
+        min_user_turns_for_topic=1,
+    )
+    pool.note_user_message("妮可", "我最近一直在纠结要不要换工作")
+    base = pool._signal_store.last_turn_at("妮可")
+    assert base is not None
+
+    await pool.process_ready_topics(now=base + 61, lang="zh-CN")
+    assert len(calls) == 1
+    assert "妮可" in pool._analyzer_retry_not_before
+
+    pool.purge_accumulated_signals("妮可")
+    assert "妮可" not in pool._analyzer_retry_not_before
+    assert "妮可" not in pool._analyzer_failures
+
+    # purge 后重新说话，成熟窗口一过就该正常分析，不受旧 deadline 拖累。
+    pool.note_user_message("妮可", "换个话题，我在学做菜")
+    fresh = pool._signal_store.last_turn_at("妮可")
+    assert fresh is not None
+    await pool.process_ready_topics(now=fresh + 61, lang="zh-CN")
+    assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_topic_pool_discards_analyzer_failure_when_purge_lands_midflight():
+    """A purge during the call wins: the failure must not re-arm the old window.
+
+    Same rule the success path already follows when _purge_generation moved.
+    """
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def hanging_failing_analyzer(*, lang, **kwargs):
+        started.set()
+        await release.wait()
+        return None
+
+    pool = TopicHookPool(
+        analyzer=hanging_failing_analyzer,
+        auto_schedule=False,
+        min_user_turns_for_topic=1,
+    )
+    pool.note_user_message("妮可", "我最近一直在纠结要不要换工作")
+    base = pool._signal_store.last_turn_at("妮可")
+    assert base is not None
+
+    task = asyncio.create_task(pool.process_ready_topics(now=base + 61, lang="zh-CN"))
+    await asyncio.wait_for(started.wait(), timeout=1.0)
+    pool.purge_accumulated_signals("妮可")
+    release.set()
+    await asyncio.wait_for(task, timeout=1.0)
+
+    assert "妮可" not in pool._analyzer_retry_not_before
+    assert "妮可" not in pool._analyzer_failures

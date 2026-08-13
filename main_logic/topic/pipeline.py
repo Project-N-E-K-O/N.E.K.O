@@ -333,7 +333,26 @@ class TopicHookPool:
             _ANALYZER_RETRY_CAP_SECONDS,
         )
 
-    def _note_analyzer_failure(self, name: str, now: float, *, reason: str) -> None:
+    def _note_analyzer_failure(
+        self,
+        name: str,
+        now: float,
+        *,
+        reason: str,
+        seen_purge_generation: int | None = None,
+    ) -> None:
+        if (
+            seen_purge_generation is not None
+            and self._purge_generation.get(name, 0) != seen_purge_generation
+        ):
+            # An explicit purge landed while this call was in flight. The state
+            # it failed against is gone, so arming a retry window now would
+            # re-impose the old backoff on evidence the purge just cleared —
+            # the same reason the success path drops a stale result.
+            logger.debug(
+                "[%s] topic analyzer failure discarded: purged mid-flight", name
+            )
+            return
         self._analyzer_failures[name] += 1
         failures = self._analyzer_failures[name]
         delay = self._analyzer_retry_delay(failures)
@@ -369,6 +388,12 @@ class TopicHookPool:
         had_dirty = name in self._dirty
         changed = self._signal_store.clear(name)
         self._dirty.discard(name)
+        # Same reset as _purge_character_state: an explicit purge is a user
+        # action, and leaving a 30min retry window armed behind it would stall
+        # analysis of whatever they say next with nothing on screen to explain
+        # it. The cost of clearing is one more failing call, which re-arms the
+        # backoff immediately.
+        self._clear_analyzer_failures(name)
         if changed or had_dirty:
             self._purge_generation[name] += 1
         if changed and flush:
@@ -542,6 +567,13 @@ class TopicHookPool:
         signal_cutoff_at = self._signal_store.last_turn_at(name)
         global_signals = self._signal_store.format_global_signals(name, lang=topic_lang)
         current_time = time.time() if now is None else float(now)
+        # The retry window has to start when the call FAILED, not when the tick
+        # began: a slow failure (config read + client construction + the 8s
+        # call timeout) would otherwise be subtracted from every delay, and a
+        # failure slower than the delay itself would land already-expired.
+        # `current_time` may also be the tracker's heartbeat stamp, taken
+        # earlier still, so measure the call with a monotonic clock and add it.
+        started_at = time.monotonic()
         try:
             raw_materials = await self._analyzer(
                 lang=topic_lang,
@@ -555,10 +587,20 @@ class TopicHookPool:
             # the 20s hot loop this backoff exists to prevent. Report the
             # exception type only — its message can carry the prompt, i.e. the
             # conversation itself.
-            self._note_analyzer_failure(name, current_time, reason=type(exc).__name__)
+            self._note_analyzer_failure(
+                name,
+                current_time + (time.monotonic() - started_at),
+                reason=type(exc).__name__,
+                seen_purge_generation=seen_purge_generation,
+            )
             return
         if raw_materials is None:
-            self._note_analyzer_failure(name, current_time, reason="no result")
+            self._note_analyzer_failure(
+                name,
+                current_time + (time.monotonic() - started_at),
+                reason="no result",
+                seen_purge_generation=seen_purge_generation,
+            )
             return
         self._clear_analyzer_failures(name)
         if (
