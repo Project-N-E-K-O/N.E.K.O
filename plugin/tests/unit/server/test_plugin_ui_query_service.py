@@ -94,6 +94,12 @@ def test_build_plugin_list_actions_infers_open_ui_and_normalizes_custom_actions(
             "danger": True,
         },
         {
+            "id": "open_ui",
+            "kind": "ui",
+            "target": "/plugin/demo/ui/",
+            "open_in": "new_tab",
+        },
+        {
             "id": "open_panel",
             "kind": "route",
             "target": "/plugins/demo?tab=panel",

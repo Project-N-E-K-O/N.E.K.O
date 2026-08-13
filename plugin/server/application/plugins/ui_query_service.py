@@ -1303,6 +1303,31 @@ def _build_plugin_list_actions_from_meta(
             actions.append(normalized)
             seen_ids.add(action_id)
 
+    if "open_ui" not in seen_ids:
+        surfaces, _warnings = _build_surfaces_sync(plugin_id, plugin_meta)
+        static_surface = next(
+            (
+                surface
+                for surface in surfaces
+                if surface.get("mode") == "static"
+                and surface.get("available") is not False
+                and isinstance(surface.get("ui_path") or surface.get("url"), str)
+                and str(surface.get("ui_path") or surface.get("url")).strip()
+            ),
+            None,
+        )
+        if static_surface is not None:
+            target = str(
+                static_surface.get("ui_path") or static_surface.get("url")
+            ).strip()
+            actions.append({
+                "id": "open_ui",
+                "kind": "ui",
+                "target": target,
+                "open_in": "new_tab",
+            })
+            seen_ids.add("open_ui")
+
     _add_surface_route_actions(actions, seen_ids, plugin_id=plugin_id, plugin_meta=plugin_meta)
 
     return actions
