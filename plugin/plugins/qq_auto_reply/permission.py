@@ -67,7 +67,6 @@ class PermissionManager:
         return normalized
 
     @classmethod
-    @classmethod
     def validate_nickname(cls, nickname: str) -> Optional[str]:
         """校验昵称是否可写。合法返回 None；否则返回原因键（``too_long`` /
         ``control_char``），供上层在提交前区分「昵称非法」与其它失败。
