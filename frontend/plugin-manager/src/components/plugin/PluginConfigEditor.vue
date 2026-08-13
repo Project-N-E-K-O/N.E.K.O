@@ -176,6 +176,10 @@ const selectedProfileName = ref<string | null>(null)
 const profileDraftConfig = ref<Record<string, any> | null>(null)
 const originalProfileConfig = ref<Record<string, any> | null>(null)
 
+// Every plugin gets an editable starting point the first time its configuration
+// page is opened. Existing profiles are always preserved.
+const DEFAULT_PROFILE_NAME = 'default'
+
 function cloneDeep<T>(input: T, seen = new WeakMap<object, any>()): T {
   if (input === null || typeof input !== 'object') return input
 
@@ -467,6 +471,24 @@ async function loadAll() {
     baseConfig.value = (baseRes.config || {}) as Record<string, any>
     effectiveConfig.value = (effectiveRes.config || {}) as Record<string, any>
     profilesState.value = profilesRes
+
+    // A plugin without profiles used to leave the configuration form empty and
+    // required users to manually create one before they could edit anything.
+    // Persist an empty default profile and make it active so subsequent saves
+    // immediately affect the plugin's effective configuration.
+    if (profileNames.value.length === 0) {
+      await upsertPluginProfileConfig(props.pluginId, DEFAULT_PROFILE_NAME, {}, true)
+      if (currentVersion !== loadVersion) return
+
+      const [defaultEffectiveRes, defaultProfilesRes] = await Promise.all([
+        getPluginConfig(props.pluginId),
+        getPluginProfilesState(props.pluginId)
+      ])
+      if (currentVersion !== loadVersion) return
+
+      effectiveConfig.value = (defaultEffectiveRes.config || {}) as Record<string, any>
+      profilesState.value = defaultProfilesRes
+    }
 
     const names = profileNames.value
     const active = activeProfileName.value
