@@ -60,7 +60,14 @@ from config.prompts.prompts_activity import (
 from utils.file_utils import robust_json_loads
 from utils.tokenize import truncate_to_tokens
 
-logger = logging.getLogger(__name__)
+# Named into the Main service tree, not __name__. setup_logging(service_name=
+# "Main") installs handlers on "N.E.K.O.Main" with propagate=False, and nothing
+# is installed on root — so a `main_logic.*` logger reaches no handler at all
+# and its records fall through to logging.lastResort (bare text on stderr,
+# WARNING and above, never the log file). The sibling main_logic/topic modules
+# already name themselves this way; this module did not, which is why its
+# failure reasons were invisible even before they were only at debug level.
+logger = logging.getLogger("N.E.K.O.Main.activity.llm_enrichment")
 
 
 # Input cap: the emotion tier is small and cheap, but we still don't

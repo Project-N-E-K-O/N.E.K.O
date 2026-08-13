@@ -383,7 +383,11 @@ def _capture_enrichment_logs():
     """
     from main_logic.activity import llm_enrichment
 
-    log = logging.getLogger(llm_enrichment.__name__)
+    # The module's own logger object, not getLogger(__name__): the module is
+    # deliberately named into the "N.E.K.O.Main" tree so its records reach the
+    # service handlers, and looking it up by module path would silently attach
+    # to a different, handler-less logger.
+    log = llm_enrichment.logger
     sink = _WarningSink()
     prior_level, prior_propagate = log.level, log.propagate
     llm_enrichment._failure_log_state.clear()
@@ -504,3 +508,38 @@ async def test_enrichment_failure_log_separates_reasons_and_labels(monkeypatch):
     assert "8.0s" in messages[0]
     assert "reply_not_json_object" in messages[1]
     assert "activity_guess" in messages[2]
+
+
+def test_enrichment_failure_reports_reach_the_main_service_handlers():
+    """The whole point of these warnings is that they land in the log file.
+
+    setup_logging(service_name="Main") installs handlers on "N.E.K.O.Main" with
+    propagate=False and installs nothing on root, so a logger named after
+    __name__ reaches no handler: its records fall through to
+    logging.lastResort — bare text on stderr, never the log file. Asserting the
+    logger's *name* would be weaker than the claim; this drives a real record
+    through and checks a handler on the service logger receives it.
+    """
+    from main_logic.activity import llm_enrichment
+
+    records = []
+
+    class _Sink(logging.Handler):
+        def emit(self, record):
+            records.append(record)
+
+    main_logger = logging.getLogger("N.E.K.O.Main")
+    sink = _Sink()
+    prior_level = main_logger.level
+    main_logger.addHandler(sink)
+    main_logger.setLevel(logging.DEBUG)
+    llm_enrichment._failure_log_state.clear()
+    try:
+        llm_enrichment._report_failure("topic_candidates", "emotion_call_timed_out", "8.0s")
+    finally:
+        main_logger.removeHandler(sink)
+        main_logger.setLevel(prior_level)
+        llm_enrichment._failure_log_state.clear()
+
+    messages = [r.getMessage() for r in records]
+    assert any("emotion_call_timed_out" in m for m in messages), messages
