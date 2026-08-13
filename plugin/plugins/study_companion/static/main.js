@@ -136,6 +136,9 @@ const surfaceDrawerCloseBtn = document.getElementById('surfaceDrawerCloseBtn');
 const settingsConfigForm = document.getElementById('settingsConfigForm');
 const settingsSaveBtn = document.getElementById('settingsSaveBtn');
 const settingsConfigStatus = document.getElementById('settingsConfigStatus');
+const settingsDataSaveBtn = document.getElementById('settingsDataSaveBtn');
+const settingsDataConfigStatus = document.getElementById('settingsDataConfigStatus');
+const settingsDocExportEnabled = document.getElementById('settingsDocExportEnabled');
 const settingsDefaultMode = document.getElementById('settingsDefaultMode');
 const settingsLearningProfileSummary = document.getElementById('settingsLearningProfileSummary');
 const settingsLearningStage = document.getElementById('settingsLearningStage');
@@ -1695,8 +1698,8 @@ async function fetchWithTimeout(url, init = {}, timeoutMs = RUN_TIMEOUT_MS, sign
   }
 }
 
-function setSettingsConfigStatus(key, fallback) {
-  if (settingsConfigStatus) settingsConfigStatus.textContent = t(key, fallback);
+function setSettingsConfigStatus(key, fallback, target = settingsConfigStatus) {
+  if (target) target.textContent = t(key, fallback);
 }
 
 function cloneConfig(value) {
@@ -1720,6 +1723,13 @@ function syncCommunicationControls(saving = false) {
   settingsCommunicationRequiresEnabled.hidden = enabled;
 }
 
+function syncSettingsSavingControls(saving = false) {
+  if (settingsSaveBtn) settingsSaveBtn.disabled = saving;
+  if (settingsDataSaveBtn) settingsDataSaveBtn.disabled = saving;
+  if (settingsDocExportEnabled) settingsDocExportEnabled.disabled = saving;
+  syncCommunicationControls(saving);
+}
+
 function renderCommunicationRuntime(status = settingsCommunicationStatus) {
   if (!settingsCommunicationRuntime) return;
   const enabled = status.configured_enabled === true;
@@ -1734,6 +1744,7 @@ function applySettingsConfig(config) {
   const ocr = config.ocr_reader || {};
   const llm = config.llm || {};
   const communication = config.communication || {};
+  const docExport = config.doc_export || {};
   if (settingsDefaultMode) settingsDefaultMode.value = ['companion', 'interactive', 'teaching'].includes(study.default_mode) ? study.default_mode : 'companion';
   syncLearningProfileUi();
   if (settingsOcrEnabled) settingsOcrEnabled.checked = ocr.enabled !== false;
@@ -1743,6 +1754,7 @@ function applySettingsConfig(config) {
   if (settingsCommunicationEnabled) settingsCommunicationEnabled.checked = communication.enabled !== false;
   if (settingsSolutionNarrationEnabled) settingsSolutionNarrationEnabled.checked = communication.solution_narration_enabled !== false;
   if (settingsGeneralNarrationEnabled) settingsGeneralNarrationEnabled.checked = communication.general_narration_enabled !== false;
+  if (settingsDocExportEnabled) settingsDocExportEnabled.checked = docExport.enabled === true;
   syncCommunicationControls();
   renderCommunicationRuntime();
   if (Object.prototype.hasOwnProperty.call(llm, 'llm_vision_max_image_px')) applyVisionMaxImagePx(llm.llm_vision_max_image_px);
@@ -1771,6 +1783,7 @@ function collectSettingsConfig() {
   const ocr = ensureConfigSection(next, 'ocr_reader');
   const llm = ensureConfigSection(next, 'llm');
   const communication = ensureConfigSection(next, 'communication');
+  const docExport = ensureConfigSection(next, 'doc_export');
   study.default_mode = settingsDefaultMode ? settingsDefaultMode.value : 'companion';
   ocr.enabled = settingsOcrEnabled ? settingsOcrEnabled.checked : true;
   ocr.languages = settingsOcrLanguages ? settingsOcrLanguages.value.trim() || 'chi_sim+jpn+eng' : 'chi_sim+jpn+eng';
@@ -1780,34 +1793,36 @@ function collectSettingsConfig() {
   communication.enabled = settingsCommunicationEnabled ? settingsCommunicationEnabled.checked : true;
   communication.solution_narration_enabled = settingsSolutionNarrationEnabled ? settingsSolutionNarrationEnabled.checked : true;
   communication.general_narration_enabled = settingsGeneralNarrationEnabled ? settingsGeneralNarrationEnabled.checked : true;
+  docExport.enabled = settingsDocExportEnabled ? settingsDocExportEnabled.checked : false;
   return next;
 }
 
-async function saveSettingsConfig() {
+async function saveSettingsConfig(statusTarget = settingsConfigStatus) {
   if (!settingsConfig) await loadSettingsConfig(true);
   if (!settingsConfig) {
-    setSettingsConfigStatus('ui.status.config_load_failed', 'Could not load settings');
+    setSettingsConfigStatus('ui.status.config_load_failed', 'Could not load settings', statusTarget);
     return;
   }
   const previous = [cloneConfig(settingsConfig), cloneConfig(settingsCommunicationStatus)];
   const next = collectSettingsConfig();
   if (settingsLearningStage) setLearningProfileStage(settingsLearningStage.value);
-  if (settingsSaveBtn) settingsSaveBtn.disabled = true;
-  syncCommunicationControls(true);
-  setSettingsConfigStatus('ui.status.config_saving', 'Saving settings...');
+  syncSettingsSavingControls(true);
+  setSettingsConfigStatus('ui.status.config_saving', 'Saving settings...', statusTarget);
   try {
     const payload = await callPlugin('study_update_settings_config', { config: next });
     settingsConfig = cloneConfig(getConfigRoot(payload) || next);
     settingsCommunicationStatus = cloneConfig(payload.communication_status || {});
     applySettingsConfig(settingsConfig);
-    setSettingsConfigStatus('ui.status.config_saved', 'Saved');
+    setSettingsConfigStatus('ui.status.config_saved', 'Saved', statusTarget);
+    if (surfaceDrawer?.dataset.open === 'true' && surfaceDrawer.dataset.surfaceId === 'note-exporter') {
+      openSurfaceDrawer('note-exporter');
+    }
   } catch (error) {
     [settingsConfig, settingsCommunicationStatus] = previous;
     applySettingsConfig(settingsConfig);
-    setSettingsConfigStatus('ui.status.config_save_failed', 'Could not save settings');
+    setSettingsConfigStatus('ui.status.config_save_failed', 'Could not save settings', statusTarget);
   } finally {
-    if (settingsSaveBtn) settingsSaveBtn.disabled = false;
-    syncCommunicationControls();
+    syncSettingsSavingControls();
   }
 }
 
@@ -2336,6 +2351,11 @@ async function bootstrap() {
     settingsConfigForm.addEventListener('submit', (event) => {
       event.preventDefault();
       saveSettingsConfig();
+    });
+  }
+  if (settingsDataSaveBtn) {
+    settingsDataSaveBtn.addEventListener('click', () => {
+      saveSettingsConfig(settingsDataConfigStatus);
     });
   }
   if (settingsCommunicationEnabled) {

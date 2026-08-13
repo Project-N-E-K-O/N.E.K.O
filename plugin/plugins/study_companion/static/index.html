@@ -493,6 +493,20 @@
           </div>
 
           <div id="panel-data" class="settings-tab-panel" role="tabpanel" tabindex="0" aria-labelledby="tab-data" data-settings-tab-panel="data" hidden>
+            <div class="settings-grid">
+              <article class="settings-card">
+                <h3 data-i18n="ui.settings.doc_export.title">Note export</h3>
+                <label class="setting-toggle">
+                  <input id="settingsDocExportEnabled" type="checkbox" aria-describedby="settingsDocExportHelp" />
+                  <span data-i18n="ui.settings.doc_export_enabled.label">Enable note export</span>
+                </label>
+                <p id="settingsDocExportHelp" data-i18n="ui.settings.doc_export_enabled.help">Controls whether note export is available in the Export panel. Changes take effect after saving.</p>
+                <div class="settings-actions">
+                  <button id="settingsDataSaveBtn" class="button button-primary" type="button" data-i18n="ui.button.save_settings">Save Settings</button>
+                  <span id="settingsDataConfigStatus" class="settings-status" aria-live="polite"></span>
+                </div>
+              </article>
+            </div>
             <div class="settings-entry-row">
               <p id="settingsDataSummary" data-i18n="ui.settings.data.summary">Session history and exports are available in hosted panels.</p>
               <button class="button button-primary" type="button" data-open-surface="session-summary" data-i18n="ui.button.session_summary">Session Summary</button>

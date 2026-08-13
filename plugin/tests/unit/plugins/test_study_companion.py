@@ -1032,6 +1032,126 @@ async def test_study_settings_entry_persists_and_updates_runtime(
         await plugin.shutdown()
 
 
+@pytest.mark.asyncio
+async def test_study_doc_export_settings_payload_preserves_missing_fields_and_syncs_dynamic_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "runtime"))
+    expected_disabled = {
+        "enabled": False,
+        "pdf_backend": "reportlab",
+        "default_style": "compact",
+        "xmind_enabled": False,
+    }
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "en", "auto_open_ui": False},
+            "doc_export": expected_disabled,
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+    startup = await plugin.startup()
+    assert isinstance(startup, Ok)
+
+    try:
+        loaded = await plugin.study_get_settings_config()
+        assert isinstance(loaded, Ok)
+        assert loaded.value["config"]["doc_export"] == expected_disabled
+        assert "study_export_notes" not in plugin.collect_entries()
+
+        without_doc_export = await plugin.study_update_settings_config(
+            config={"study": {"default_mode": MODE_INTERACTIVE}}
+        )
+        assert isinstance(without_doc_export, Ok)
+        assert without_doc_export.value["config"]["doc_export"] == expected_disabled
+
+        enabled = await plugin.study_update_settings_config(
+            config={"doc_export": {"enabled": True}}
+        )
+        expected_enabled = {**expected_disabled, "enabled": True}
+        assert isinstance(enabled, Ok)
+        assert enabled.value["config"]["doc_export"] == expected_enabled
+        assert plugin._cfg.doc_export.to_dict() == expected_enabled
+        enabled_entries = plugin.collect_entries()
+        assert "study_export_notes" in enabled_entries
+        enabled_schema = enabled_entries["study_export_notes"].meta.input_schema[
+            "properties"
+        ]
+        assert enabled_schema["fmt"]["enum"] == ["markdown", "pdf", "docx"]
+        assert enabled_schema["style"]["default"] == "compact"
+        hot_enabled_export = await enabled_entries["study_export_notes"].handler(
+            fmt="markdown", preview_only=True, title="Hot Enabled Notes"
+        )
+        assert isinstance(hot_enabled_export, Ok)
+        assert hot_enabled_export.value["format"] == "markdown"
+
+        with_xmind = await plugin.study_update_settings_config(
+            config={"doc_export": {"xmind_enabled": True}}
+        )
+        assert isinstance(with_xmind, Ok)
+        assert with_xmind.value["config"]["doc_export"] == expected_enabled
+        xmind_schema = plugin.collect_entries()[
+            "study_export_notes"
+        ].meta.input_schema["properties"]
+        assert xmind_schema["fmt"]["enum"] == ["markdown", "pdf", "docx"]
+
+        disabled = await plugin.study_update_settings_config(
+            config={"doc_export": {"enabled": False}}
+        )
+        expected_final = {**expected_enabled, "enabled": False}
+        assert isinstance(disabled, Ok)
+        assert disabled.value["config"]["doc_export"] == expected_final
+        assert plugin._cfg.doc_export.to_dict() == expected_final
+        assert "study_export_notes" not in plugin.collect_entries()
+        assert (
+            plugin._store.load_config(StudyConfig()).doc_export.to_dict()
+            == expected_final
+        )
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_study_doc_export_settings_update_rolls_back_config_and_dynamic_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "runtime"))
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "en", "auto_open_ui": False},
+            "doc_export": {"enabled": False, "xmind_enabled": False},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+    startup = await plugin.startup()
+    assert isinstance(startup, Ok)
+    original_persist_state = plugin._persist_state
+    persisted_runtime_values: list[bool] = []
+
+    async def _fail_first_persist() -> None:
+        persisted_runtime_values.append(plugin._cfg.doc_export.enabled)
+        if len(persisted_runtime_values) == 1:
+            raise RuntimeError("settings persistence failed")
+        await original_persist_state()
+
+    monkeypatch.setattr(plugin, "_persist_state", _fail_first_persist)
+
+    try:
+        result = await plugin.study_update_settings_config(
+            config={"doc_export": {"enabled": True}}
+        )
+
+        assert isinstance(result, Err)
+        assert persisted_runtime_values == [True, False]
+        assert plugin._cfg.doc_export.enabled is False
+        assert "study_export_notes" not in plugin.collect_entries()
+        assert plugin._store.load_config(StudyConfig()).doc_export.enabled is False
+    finally:
+        await plugin.shutdown()
+
+
 def test_study_store_seed_topic_upsert_preserves_seed_metadata(tmp_path: Path) -> None:
     store = StudyStore(tmp_path / "study.db", tmp_path / "seed.json", _Logger())
     store.open()
@@ -5695,7 +5815,7 @@ let configPayload = {
     study: { default_mode: 'interactive', language: 'en', history_limit: 50, auto_open_ui: false },
     ocr_reader: { enabled: false, backend_selection: 'rapidocr', languages: 'eng' },
     llm: { llm_call_timeout_seconds: 45, llm_vision_enabled: false, llm_vision_max_image_px: 1024 },
-    doc_export: { enabled: true, xmind_enabled: false },
+    doc_export: { enabled: false, pdf_backend: 'reportlab', default_style: 'compact', xmind_enabled: false },
   },
 };
 let statusPayload = {
@@ -5847,11 +5967,19 @@ if (document.getElementById('settingsLlmTimeout').value !== '45') {
 if (document.getElementById('settingsLlmVisionEnabled').checked !== false) {
   throw new Error('LLM vision checkbox did not load from config');
 }
+const settingsDocExportEnabled = document.getElementById('settingsDocExportEnabled');
+if (!settingsDocExportEnabled) {
+  throw new Error('note export settings control is missing');
+}
+if (settingsDocExportEnabled.checked !== false) {
+  throw new Error('note export enabled checkbox did not load from config');
+}
 document.getElementById('settingsDefaultMode').value = 'teaching';
 document.getElementById('settingsOcrEnabled').checked = true;
 document.getElementById('settingsOcrLanguages').value = 'chi_sim+eng';
 document.getElementById('settingsLlmTimeout').value = '90';
 document.getElementById('settingsLlmVisionEnabled').checked = true;
+settingsDocExportEnabled.checked = true;
 document.getElementById('settingsSaveBtn').click();
 await waitFor(
   () => runEntries.some((entry) => entry.entry_id === 'study_update_settings_config'),
@@ -5866,6 +5994,10 @@ if (
   || savedConfig.llm.llm_call_timeout_seconds !== 90
   || savedConfig.llm.llm_vision_enabled !== true
   || savedConfig.llm.llm_vision_max_image_px !== 1024
+  || savedConfig.doc_export.enabled !== true
+  || savedConfig.doc_export.pdf_backend !== 'reportlab'
+  || savedConfig.doc_export.default_style !== 'compact'
+  || savedConfig.doc_export.xmind_enabled !== false
   || savedConfig.plugin.id !== 'study_companion'
 ) {
   throw new Error(`settings save payload mismatch: ${JSON.stringify(savedConfig)}`);
@@ -5964,6 +6096,27 @@ await waitFor(
   () => runEntries.some((entry) => entry.entry_id === 'study_export_notes' && entry.args.fmt),
   'export drawer preview',
 );
+
+const exportCallCountBeforeDisable = runEntries.filter((entry) => entry.entry_id === 'study_export_notes').length;
+settingsDocExportEnabled.checked = false;
+document.getElementById('settingsDataSaveBtn').click();
+await waitFor(
+  () => runEntries.filter((entry) => entry.entry_id === 'study_update_settings_config').length === 2,
+  'note export disabled from data settings',
+);
+const disabledConfig = runEntries.filter((entry) => entry.entry_id === 'study_update_settings_config')[1].args.config;
+if (disabledConfig.doc_export.enabled !== false) {
+  throw new Error(`note export disable payload mismatch: ${JSON.stringify(disabledConfig.doc_export)}`);
+}
+await waitFor(
+  () => document.querySelector('#surfaceDrawerBody [data-surface-action="export-preview"]')?.disabled === true,
+  'open export drawer disabled after settings save',
+);
+document.querySelector('#surfaceDrawerBody [data-surface-action="export-preview"]').click();
+await new Promise((resolve) => window.setTimeout(resolve, 0));
+if (runEntries.filter((entry) => entry.entry_id === 'study_export_notes').length !== exportCallCountBeforeDisable) {
+  throw new Error('disabled export drawer must not call study_export_notes');
+}
 
 const statusRunCountBeforeMessage = runEntries.filter((entry) => entry.entry_id === 'study_status').length;
 window.dispatchEvent(new window.MessageEvent('message', {

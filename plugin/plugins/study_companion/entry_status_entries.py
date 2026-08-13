@@ -30,6 +30,7 @@ def _settings_config_payload(config: StudyConfig) -> dict:
             "llm_vision_max_image_px": config.llm_vision_max_image_px,
         },
         "communication": config.communication.to_dict(),
+        "doc_export": config.doc_export.to_dict(),
     }
 
 
@@ -93,6 +94,9 @@ def _apply_settings_config(current: StudyConfig, raw: dict) -> StudyConfig:
         if isinstance(raw.get("communication"), dict)
         else {}
     )
+    doc_export = (
+        raw.get("doc_export") if isinstance(raw.get("doc_export"), dict) else {}
+    )
 
     if "default_mode" in study:
         next_values["default_mode"] = study.get("default_mode")
@@ -134,6 +138,12 @@ def _apply_settings_config(current: StudyConfig, raw: dict) -> StudyConfig:
             current.communication.general_narration_enabled,
         )
     next_values["communication"] = next_communication
+    if "enabled" in doc_export:
+        next_doc_export = dict(next_values.get("doc_export") or {})
+        next_doc_export["enabled"] = _coerce_bool(
+            doc_export.get("enabled"), current.doc_export.enabled
+        )
+        next_values["doc_export"] = next_doc_export
     return StudyConfig(**next_values)
 
 
@@ -206,10 +216,16 @@ class _StatusEntriesMixin:
             self._checkin_manager.makeup_window_days = (
                 config.checkin.makeup_window_days
             )
+        sync_doc_export_entry = getattr(self, "_sync_doc_export_entry", None)
+        if callable(sync_doc_export_entry):
+            sync_doc_export_entry()
 
     def _restore_runtime_settings_config(self, config: StudyConfig) -> None:
         self._cfg = config
         restore_steps: list[tuple[str, object]] = []
+        sync_doc_export_entry = getattr(self, "_sync_doc_export_entry", None)
+        if callable(sync_doc_export_entry):
+            restore_steps.append(("doc_export", sync_doc_export_entry))
         if self._ocr_pipeline is not None:
             restore_steps.append(
                 ("ocr", lambda: self._ocr_pipeline.update_config(config))
