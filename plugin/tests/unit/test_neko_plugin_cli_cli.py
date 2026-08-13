@@ -1277,6 +1277,13 @@ def test_init_repo_documents_and_exposes_dependency_sync(tmp_path: Path) -> None
     assert sync_command in readme
     assert "`vendor/`" in readme
     assert "not committed" in readme
+    assert "neko-plugin publish ." in readme
+    assert "neko-plugin publish github ." in readme
+    assert (
+        "neko-plugin publish market "
+        "https://github.com/owner/repo/releases/tag/v0.1.0"
+    ) in readme
+    assert "Use that GitHub Release URL when publishing" not in readme
     assert "N.E.K.O: sync dependency_demo" in tasks
     assert sync_command in tasks
 

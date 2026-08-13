@@ -562,17 +562,37 @@ Python runtime dependencies are declared in `pyproject.toml` and synced into
 `vendor/` for packaging. The generated `vendor/` directory is not committed;
 local builds and CI recreate it before release checks.
 
-## Market release
+## Market release / Market 发布 / Market 公開
 
-Push a tag matching `plugin.toml` version to create a GitHub Release asset:
+Publish the version declared in `plugin.toml`. By default this pushes the Git
+tag, waits for the standard GitHub Release, and notifies the plugin market.
+
+发布 `plugin.toml` 中声明的版本。默认会推送 Git tag、等待标准 GitHub
+Release，然后通知插件市场。
+
+`plugin.toml` で宣言されたバージョンを公開します。既定では Git tag を
+push し、標準 GitHub Release を待ってからプラグインマーケットへ通知します。
 
 ```bash
-git tag v{spec.version}
-git push origin v{spec.version}
+neko-plugin publish .
 ```
 
-The generated `.github/workflows/release.yml` uploads `{spec.plugin_id}.neko-plugin`.
-Use that GitHub Release URL when publishing a version in the plugin market.
+To run only one half explicitly / 如需仅执行一部分 / 一方のみを実行する場合:
+
+```bash
+neko-plugin publish github .
+neko-plugin publish market https://github.com/owner/repo/releases/tag/v{spec.version}
+```
+
+The generated `.github/workflows/release.yml` builds and uploads
+`{spec.plugin_id}.neko-plugin`. The market independently verifies that Release
+before publishing it.
+
+生成的 `.github/workflows/release.yml` 会构建并上传插件包；Market 会独立验证
+该 Release 后再发布。
+
+生成された `.github/workflows/release.yml` がプラグインパッケージをビルドして
+アップロードし、Market はその Release を独立検証してから公開します。
 
 ## Entry
 

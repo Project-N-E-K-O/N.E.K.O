@@ -34,6 +34,7 @@ if __package__ in {None, ""}:  # pragma: no cover - exercised by script invocati
         inspect_cmd,
         build_cmd,
         install_cmd,
+        publish_cmd,
         verify_cmd,
     )
     from plugin.neko_plugin_cli.paths import resolve_default_paths  # noqa: E402
@@ -46,6 +47,7 @@ else:
         inspect_cmd,
         build_cmd,
         install_cmd,
+        publish_cmd,
         verify_cmd,
     )
     from .paths import resolve_default_paths
@@ -78,6 +80,7 @@ def build_parser() -> argparse.ArgumentParser:
               neko-plugin check <plugin>           Diagnose local repo readiness
               neko-plugin build <plugin>           Build a plugin package artifact
               neko-plugin check -r <plugin>        Run the pre-release check used by CI
+              neko-plugin publish <plugin>         Publish on GitHub, then notify Market / 发布并通知 Market / 公開後 Market に通知
 
             Package/debug commands:
               build, inspect, verify, install, analyze
@@ -102,6 +105,7 @@ def build_parser() -> argparse.ArgumentParser:
     verify_cmd.register(subparsers, defaults=defaults)
     install_cmd.register(subparsers, defaults=defaults)
     analyze_cmd.register(subparsers, defaults=defaults)
+    publish_cmd.register(subparsers, defaults=defaults)
 
     return parser
 

@@ -1,0 +1,508 @@
+"""Publish a plugin through GitHub Releases and the N.E.K.O Plugin Market."""
+
+from __future__ import annotations
+
+import argparse
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+import time
+from urllib.parse import quote
+
+import httpx
+
+from ..core.plugin_source import load_plugin_source
+from ..paths import CliDefaults
+from ..repo_action_migration import ActionFileStatus, migrate_github_actions
+from ..templates.generator import PluginSpec
+from . import release_cmd
+from ._resolve import resolve_plugin_dir_candidate
+
+_MARKET_PUBLICATION_URL = (
+    "https://market.project-neko.cn/api/v1/release-publications"
+)
+
+
+def _tri(english: str, chinese: str, japanese: str) -> str:
+    return f"{english} / {chinese} / {japanese}"
+
+
+def register(
+    subparsers: argparse._SubParsersAction,
+    *,
+    defaults: CliDefaults,
+) -> None:
+    parser = subparsers.add_parser(
+        "publish",
+        help=_tri(
+            "Publish through GitHub and Market, or select one destination",
+            "通过 GitHub 和 Market 发布，或只选择一个目标",
+            "GitHub と Market に公開、または一方のみを選択",
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=_tri(
+            "Publish a plugin through its standard GitHub Release workflow and "
+            "the N.E.K.O Plugin Market.",
+            "通过标准 GitHub Release 工作流和 N.E.K.O 插件市场发布插件。",
+            "標準 GitHub Release ワークフローと N.E.K.O プラグインマーケットで"
+            "プラグインを公開します。",
+        ),
+        epilog=(
+            "Modes / 模式 / モード:\n"
+            "  neko-plugin publish <plugin>\n"
+            "      Create/wait for the GitHub Release, then notify Market. /\n"
+            "      创建或等待 GitHub Release，然后通知 Market。 /\n"
+            "      GitHub Release を作成または待機して Market に通知します。\n"
+            "  neko-plugin publish github <plugin>\n"
+            "      GitHub Release only / 仅 GitHub Release / GitHub Release のみ\n"
+            "  neko-plugin publish market <github-release-url>\n"
+            "      Market notification only / 仅通知 Market / Market への通知のみ"
+        ),
+    )
+    parser.add_argument(
+        "mode_or_plugin",
+        nargs="?",
+        default=".",
+        help=_tri(
+            "Plugin path, or the explicit 'github' / 'market' destination",
+            "插件路径，或明确指定 'github' / 'market' 目标",
+            "プラグインパス、または 'github' / 'market' の明示的な宛先",
+        ),
+    )
+    parser.add_argument(
+        "target",
+        nargs="?",
+        help=_tri(
+            "Plugin path for 'github', or GitHub Release URL for 'market'",
+            "'github' 使用插件路径，'market' 使用 GitHub Release URL",
+            "'github' はプラグインパス、'market' は GitHub Release URL",
+        ),
+    )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=900.0,
+        help=_tri(
+            "Seconds to wait for the GitHub Release (default: 900)",
+            "等待 GitHub Release 的秒数（默认：900）",
+            "GitHub Release を待つ秒数（既定値：900）",
+        ),
+    )
+    parser.set_defaults(handler=handle, _defaults=defaults)
+
+
+def handle(args: argparse.Namespace) -> int:
+    if args.mode_or_plugin == "market":
+        if not args.target:
+            print(
+                "[FAIL] "
+                + _tri(
+                    "publish market requires a GitHub Release URL",
+                    "publish market 需要 GitHub Release URL",
+                    "publish market には GitHub Release URL が必要です",
+                ),
+                file=sys.stderr,
+            )
+            return 1
+        return _notify_market(args.target)
+
+    if args.mode_or_plugin == "github":
+        plugin = args.target or "."
+        release_url = _run_github_phase(args, plugin)
+        if release_url is None:
+            return 1
+        print(
+            f"[OK] GitHub Release ready: {release_url} / "
+            f"GitHub Release 已就绪 / GitHub Release の準備完了"
+        )
+        return 0
+
+    if args.target:
+        print(
+            "[FAIL] "
+            + _tri(
+                "publish accepts one plugin path; use 'publish github' or "
+                "'publish market' for an explicit destination",
+                "publish 只接受一个插件路径；请用 'publish github' 或 "
+                "'publish market' 明确指定目标",
+                "publish が受け取るプラグインパスは 1 つです。宛先を指定する場合は "
+                "'publish github' または 'publish market' を使用してください",
+            ),
+            file=sys.stderr,
+        )
+        return 1
+    release_url = _run_github_phase(args, args.mode_or_plugin)
+    if release_url is None:
+        return 1
+    print(
+        f"[OK] GitHub Release ready: {release_url} / "
+        f"GitHub Release 已就绪 / GitHub Release の準備完了"
+    )
+    return _notify_market(release_url)
+
+
+def _run_github_phase(args: argparse.Namespace, plugin: str) -> str | None:
+    try:
+        return _publish_github(
+            plugin,
+            defaults=args._defaults,
+            timeout=args.timeout,
+        )
+    except (OSError, RuntimeError, ValueError, httpx.HTTPError) as exc:
+        print(
+            f"[FAIL] {_tri('GitHub publication failed', 'GitHub 发布失败', 'GitHub への公開に失敗')}: {exc}",
+            file=sys.stderr,
+        )
+        return None
+
+
+def _notify_market(release_url: str) -> int:
+    try:
+        with httpx.Client(timeout=30.0) as client:
+            response = client.post(
+                _MARKET_PUBLICATION_URL,
+                json={"release_url": release_url},
+            )
+    except httpx.HTTPError as exc:
+        print(
+            f"[FAIL] {_tri('Market publication request failed', 'Market 发布请求失败', 'Market 公開リクエストに失敗')}: {exc}",
+            file=sys.stderr,
+        )
+        return 1
+
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+
+    if response.status_code not in {200, 201}:
+        code = payload.get("code") or f"http_{response.status_code}"
+        detail = payload.get("detail") or _tri(
+            "Market rejected the release",
+            "Market 拒绝了此 Release",
+            "Market がこの Release を拒否しました",
+        )
+        print(
+            f"[FAIL] {_tri('Market publication failed', 'Market 发布失败', 'Market への公開に失敗')}: "
+            f"{code}: {detail}",
+            file=sys.stderr,
+        )
+        return 1
+
+    status = payload.get("status")
+    version = payload.get("version") or {}
+    version_name = version.get("version") if isinstance(version, dict) else None
+    expected = (response.status_code, status) in {
+        (201, "published"),
+        (200, "already_published"),
+    }
+    if not expected or not isinstance(version_name, str) or not version_name:
+        print(
+            "[FAIL] "
+            + _tri(
+                "Market publication failed: unexpected response",
+                "Market 发布失败：响应格式不符合协议",
+                "Market への公開に失敗：予期しないレスポンス",
+            ),
+            file=sys.stderr,
+        )
+        return 1
+
+    if status == "already_published":
+        print(
+            f"[OK] Market already published v{version_name} / "
+            f"Market 已发布 v{version_name} / Market 公開済み v{version_name}"
+        )
+    else:
+        print(
+            f"[OK] Market published v{version_name} / "
+            f"Market 发布成功 v{version_name} / Market 公開完了 v{version_name}"
+        )
+    return 0
+
+
+def _publish_github(
+    plugin: str,
+    *,
+    defaults: CliDefaults,
+    timeout: float,
+) -> str:
+    plugin_dir = resolve_plugin_dir_candidate(plugin, defaults=defaults)
+    source = load_plugin_source(plugin_dir)
+    _ensure_clean_worktree(plugin_dir)
+    _ensure_standard_release_workflow(plugin_dir, plugin_id=source.plugin_id)
+
+    check_args = argparse.Namespace(
+        _defaults=defaults,
+        _command_label=_tri(
+            "publish github preflight",
+            "publish github 发布前检查",
+            "publish github 公開前チェック",
+        ),
+        plugin=str(plugin_dir),
+        plugins_root=None,
+        strict=True,
+        skip_tests=False,
+        target_dir=str(defaults.target_dir),
+        market_release=True,
+    )
+    if release_cmd.handle_release_check(check_args) != 0:
+        raise RuntimeError(
+            _tri(
+                "release checks did not pass",
+                "发布检查未通过",
+                "リリースチェックに合格しませんでした",
+            )
+        )
+
+    repository = _github_repository(plugin_dir)
+    head = _git(plugin_dir, "rev-parse", "HEAD")
+    _ensure_head_pushed(plugin_dir, head=head)
+    tag = f"v{source.version}"
+    _ensure_remote_tag(plugin_dir, tag=tag, head=head)
+    return _wait_for_release(repository, tag=tag, timeout=timeout)
+
+
+def _ensure_standard_release_workflow(
+    plugin_dir: Path,
+    *,
+    plugin_id: str,
+) -> None:
+    changes = migrate_github_actions(
+        PluginSpec(plugin_id=plugin_id),
+        plugin_dir,
+        dry_run=True,
+    )
+    release_change = next(
+        change
+        for change in changes
+        if change.relative_path == Path(".github/workflows/release.yml")
+    )
+    if release_change.status is not ActionFileStatus.CURRENT:
+        raise RuntimeError(
+            _tri(
+                "standard release workflow is not current; run "
+                f"neko-plugin setup-repo {plugin_dir} --upgrade-github-actions",
+                "标准发布工作流不是当前版本；请运行 "
+                f"neko-plugin setup-repo {plugin_dir} --upgrade-github-actions",
+                "標準リリースワークフローが最新ではありません。次を実行してください："
+                f"neko-plugin setup-repo {plugin_dir} --upgrade-github-actions",
+            )
+        )
+
+
+def _ensure_clean_worktree(plugin_dir: Path) -> None:
+    if not (plugin_dir / ".git").exists():
+        raise RuntimeError(
+            _tri(
+                "plugin directory is not a standalone git repository",
+                "插件目录不是独立 Git 仓库",
+                "プラグインディレクトリは独立した Git リポジトリではありません",
+            )
+        )
+    if _git(plugin_dir, "status", "--porcelain"):
+        raise RuntimeError(
+            _tri(
+                "git working tree has uncommitted changes",
+                "Git 工作区存在未提交的修改",
+                "Git ワークツリーに未コミットの変更があります",
+            )
+        )
+
+
+def _ensure_head_pushed(plugin_dir: Path, *, head: str) -> None:
+    upstream = _git(
+        plugin_dir,
+        "rev-parse",
+        "--abbrev-ref",
+        "--symbolic-full-name",
+        "@{upstream}",
+    )
+    remote, separator, branch = upstream.partition("/")
+    if separator != "/" or remote != "origin" or not branch:
+        raise RuntimeError(
+            _tri(
+                "the current branch must track an origin branch",
+                "当前分支必须跟踪 origin 上的分支",
+                "現在のブランチは origin のブランチを追跡する必要があります",
+            )
+        )
+    output = _git(plugin_dir, "ls-remote", "origin", f"refs/heads/{branch}")
+    remote_head = output.split(maxsplit=1)[0] if output else None
+    if remote_head != head:
+        raise RuntimeError(
+            _tri(
+                "HEAD is not pushed to its origin branch; push the branch first",
+                "HEAD 尚未推送到 origin 分支；请先推送当前分支",
+                "HEAD が origin ブランチに push されていません。先にブランチを push してください",
+            )
+        )
+
+
+def _github_repository(plugin_dir: Path) -> str:
+    origin = _git(plugin_dir, "config", "--get", "remote.origin.url")
+    patterns = (
+        r"https?://github\.com/(?P<repo>[^/]+/[^/]+?)(?:\.git)?/?$",
+        r"git@github\.com:(?P<repo>[^/]+/[^/]+?)(?:\.git)?$",
+        r"ssh://git@github\.com/(?P<repo>[^/]+/[^/]+?)(?:\.git)?/?$",
+    )
+    for pattern in patterns:
+        match = re.fullmatch(pattern, origin, flags=re.IGNORECASE)
+        if match:
+            return match.group("repo")
+    raise RuntimeError(
+        _tri(
+            "git remote 'origin' must point to a GitHub repository",
+            "Git 远程 'origin' 必须指向 GitHub 仓库",
+            "Git リモート 'origin' は GitHub リポジトリを指す必要があります",
+        )
+    )
+
+
+def _ensure_remote_tag(plugin_dir: Path, *, tag: str, head: str) -> None:
+    remote_commit = _remote_tag_commit(plugin_dir, tag)
+    if remote_commit:
+        if remote_commit != head:
+            raise RuntimeError(
+                _tri(
+                    f"remote tag {tag} points to {remote_commit[:12]}, not HEAD {head[:12]}",
+                    f"远程 tag {tag} 指向 {remote_commit[:12]}，不是 HEAD {head[:12]}",
+                    f"リモート tag {tag} は {remote_commit[:12]} を指し、HEAD {head[:12]} ではありません",
+                )
+            )
+        return
+
+    local = _local_tag_commit(plugin_dir, tag)
+    if local and local != head:
+        raise RuntimeError(
+            _tri(
+                f"local tag {tag} points to {local[:12]}, not HEAD {head[:12]}",
+                f"本地 tag {tag} 指向 {local[:12]}，不是 HEAD {head[:12]}",
+                f"ローカル tag {tag} は {local[:12]} を指し、HEAD {head[:12]} ではありません",
+            )
+        )
+    if not local:
+        _git(plugin_dir, "tag", tag, head)
+    _git(plugin_dir, "push", "origin", f"refs/tags/{tag}")
+    if _remote_tag_commit(plugin_dir, tag) != head:
+        raise RuntimeError(
+            _tri(
+                f"remote tag {tag} was not published at HEAD",
+                f"远程 tag {tag} 未发布到 HEAD",
+                f"リモート tag {tag} は HEAD に公開されませんでした",
+            )
+        )
+
+
+def _remote_tag_commit(plugin_dir: Path, tag: str) -> str | None:
+    output = _git(
+        plugin_dir,
+        "ls-remote",
+        "origin",
+        f"refs/tags/{tag}",
+        f"refs/tags/{tag}^{{}}",
+    )
+    lines = [line.split() for line in output.splitlines() if line.strip()]
+    peeled = [sha for sha, ref in lines if ref.endswith("^{}")]
+    direct = [sha for sha, ref in lines if ref == f"refs/tags/{tag}"]
+    values = peeled or direct
+    return values[0] if values else None
+
+
+def _local_tag_commit(plugin_dir: Path, tag: str) -> str | None:
+    completed = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", f"refs/tags/{tag}^{{commit}}"],
+        cwd=plugin_dir,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if completed.returncode == 1:
+        return None
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout.strip()
+        raise RuntimeError(
+            detail
+            or _tri(
+                f"git rev-parse failed for tag {tag}",
+                f"无法解析 Git tag {tag}",
+                f"Git tag {tag} の解析に失敗しました",
+            )
+        )
+    return completed.stdout.strip()
+
+
+def _wait_for_release(repository: str, *, tag: str, timeout: float) -> str:
+    api_url = (
+        f"https://api.github.com/repos/{repository}/releases/tags/"
+        f"{quote(tag, safe='')}"
+    )
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "neko-plugin",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    deadline = time.monotonic() + max(timeout, 0)
+    with httpx.Client(timeout=30.0) as client:
+        while True:
+            response = client.get(api_url, headers=headers)
+            if response.status_code == 200:
+                release_url = str(response.json().get("html_url") or "")
+                if not release_url:
+                    raise RuntimeError(
+                        _tri(
+                            "GitHub Release response has no html_url",
+                            "GitHub Release 响应缺少 html_url",
+                            "GitHub Release レスポンスに html_url がありません",
+                        )
+                    )
+                return release_url
+            if response.status_code != 404:
+                raise RuntimeError(
+                    _tri(
+                        f"GitHub Release lookup returned HTTP {response.status_code}",
+                        f"查询 GitHub Release 返回 HTTP {response.status_code}",
+                        f"GitHub Release の照会が HTTP {response.status_code} を返しました",
+                    )
+                )
+            if time.monotonic() >= deadline:
+                raise RuntimeError(
+                    _tri(
+                        f"timed out waiting for GitHub Release {tag}; check GitHub Actions",
+                        f"等待 GitHub Release {tag} 超时；请检查 GitHub Actions",
+                        f"GitHub Release {tag} の待機がタイムアウトしました。GitHub Actions を確認してください",
+                    )
+                )
+            time.sleep(min(5.0, max(deadline - time.monotonic(), 0)))
+
+
+def _git(plugin_dir: Path, *args: str) -> str:
+    completed = subprocess.run(
+        ["git", *args],
+        cwd=plugin_dir,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout.strip()
+        raise RuntimeError(
+            detail
+            or _tri(
+                f"git {' '.join(args)} failed",
+                f"Git 命令 {' '.join(args)} 失败",
+                f"Git コマンド {' '.join(args)} が失敗しました",
+            )
+        )
+    return completed.stdout.strip()
+
+
+__all__ = ["handle", "register"]
