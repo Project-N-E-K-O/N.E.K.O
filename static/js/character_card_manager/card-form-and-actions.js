@@ -245,6 +245,21 @@ async function _saveCharacterLanguagePreference(name, select, selectUi) {
         const durableSave = response.ok && (
             payload.success === true || payload.partial_success === true
         );
+        if (durableSave && payload.freshness_unverified === true) {
+            // The write landed, but the server could not confirm it is still the
+            // durable value. Publishing it to the cross-window cache could pin a
+            // stale preference that a later session would re-persist, so re-read
+            // instead of caching this response.
+            showMessage(
+                _characterLanguageT(
+                    'character.languagePreferenceUnverified',
+                    '语言偏好已保存，但暂时无法确认是否为最新'
+                ),
+                'warning'
+            );
+            await _hydrateCharacterLanguagePreference(name, select, selectUi);
+            return;
+        }
         if (durableSave && payload.language === language) {
             select.dataset.previousValue = language;
             select.dataset.durableLanguagePreference = language;

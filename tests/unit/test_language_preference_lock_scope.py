@@ -329,10 +329,18 @@ async def test_vanished_durable_locale_is_not_reported_as_a_successful_save(monk
         await preference_router.apply_character_language_preference("Mimi", "ja")
 
 
-async def test_unreadable_freshness_check_still_reports_the_save(monkeypatch):
-    """Fail soft: a write we merely cannot re-read is not a superseded write."""
+async def test_unverifiable_freshness_is_neither_success_nor_conflict(monkeypatch):
+    """A read failure means "unknown", and must be reported as exactly that.
+
+    Claiming plain success would publish an unverified language into the shared
+    cross-window cache; claiming a conflict would assert something we never
+    observed.  The response says the write landed but is unverified, and the
+    clear must fail closed rather than delete a possibly-live conversation.
+    """
     manager = _IdleManager()
-    _install_language_preference_stubs(monkeypatch, manager=manager, changed=True)
+    calls = _install_language_preference_stubs(
+        monkeypatch, manager=manager, changed=True,
+    )
 
     original = preference_router._request_memory_prompt_locale
 
@@ -345,8 +353,35 @@ async def test_unreadable_freshness_check_still_reports_the_save(monkeypatch):
 
     result = await preference_router.apply_character_language_preference("Mimi", "ja")
 
-    assert result["success"] is True
+    assert result["success"] is False
+    assert result["partial_success"] is True
+    assert result["freshness_unverified"] is True
     assert result["language"] == "ja"
+    # Fail closed on the destructive side: an unverifiable owner check must not
+    # delete recent history.
+    assert not any(call[0] == "clear_recent" for call in calls)
+
+
+async def test_late_clear_is_fenced_by_durable_ownership(monkeypatch):
+    """A superseded reconciliation must not delete the newer session's history.
+
+    Two PUTs can interleave so the older one is still settling while the newer
+    one commits and lets a fresh conversation start.  The recent-generation
+    token only moves on identity changes, so ownership has to be re-checked
+    inside the same transaction that performs the clear -- checking afterwards
+    would only convert the response, long after the rows were deleted.
+    """
+    manager = _IdleManager()
+    calls = _install_language_preference_stubs(
+        monkeypatch, manager=manager, changed=True, durable_after="en",
+    )
+
+    with pytest.raises(preference_router.LanguagePreferenceConflictError):
+        await preference_router.apply_character_language_preference("Mimi", "ja")
+
+    assert not any(call[0] == "clear_recent" for call in calls), (
+        "被更新请求取代之后不得再清空 recent.json"
+    )
 
 
 async def test_conflict_is_reported_as_409_not_503(monkeypatch):
@@ -430,6 +465,39 @@ async def test_language_preference_get_revalidates_after_the_unlocked_read(monke
 
     assert getattr(response, "status_code", 200) == 404
     assert loads == ["Mimi", "Mimi"], "读前读后都要校验角色身份"
+
+
+async def test_language_preference_get_revalidates_after_every_suspension(monkeypatch):
+    """The identity check has to be the last await, not merely a later one.
+
+    A check placed before another suspension point leaves exactly the window it
+    was added to close: here the character disappears while the UI-language
+    override is still being read.
+    """
+    state = {"exists": True}
+
+    async def load_character(name):
+        if not state["exists"]:
+            raise LookupError("角色不存在")
+        return SimpleNamespace(memory_dir="unused"), {"猫娘": {name: {}}}
+
+    async def request_locale(_method, _name, *, language=None):
+        return {"success": True, "language": "ja"}
+
+    async def load_ui_language():
+        # The deletion lands while this last read is awaiting.
+        state["exists"] = False
+        return "en"
+
+    monkeypatch.setattr(preference_router, "_load_existing_character", load_character)
+    monkeypatch.setattr(preference_router, "_request_memory_prompt_locale", request_locale)
+    monkeypatch.setattr(
+        preference_router, "aload_ui_language_override", load_ui_language,
+    )
+
+    response = await preference_router.get_character_language_preference("Mimi")
+
+    assert getattr(response, "status_code", 200) == 404
 
 
 def _async_value(value):
@@ -531,30 +599,35 @@ def test_no_suspension_point_between_lock_release_and_the_steam_rpc():
     )
 
 
+class _RenderLanguageManager(core_notify.NotifyMixin):
+    def __init__(self):
+        self.user_language = None
+        self._user_language_explicit = False
+        self._conversation_render_language = None
+        self._conversation_turn_language = None
+        self._render_language_synced = None
+        self.registrations = 0
+        self.syncs = 0
+        self.fail_registration = False
+
+    def _set_conversation_turn_language(self, _language):
+        pass
+
+    def _register_builtin_tools(self):
+        if self.fail_registration:
+            raise RuntimeError("tool registry unavailable")
+        self.registrations += 1
+
+    def _fire_task(self, coro):
+        coro.close()
+        self.syncs += 1
+
+    async def _sync_tools_to_active_session(self):
+        pass
+
+
 def test_repeated_render_language_does_not_resync_tools():
-    class _Manager(core_notify.NotifyMixin):
-        def __init__(self):
-            self.user_language = None
-            self._user_language_explicit = False
-            self._conversation_render_language = None
-            self._conversation_turn_language = None
-            self.registrations = 0
-            self.syncs = 0
-
-        def _set_conversation_turn_language(self, _language):
-            pass
-
-        def _register_builtin_tools(self):
-            self.registrations += 1
-
-        def _fire_task(self, coro):
-            coro.close()
-            self.syncs += 1
-
-        async def _sync_tools_to_active_session(self):
-            pass
-
-    manager = _Manager()
+    manager = _RenderLanguageManager()
     manager.set_render_language("ja")
     assert (manager.registrations, manager.syncs) == (1, 1)
 
@@ -563,3 +636,25 @@ def test_repeated_render_language_does_not_resync_tools():
 
     manager.set_render_language("en")
     assert (manager.registrations, manager.syncs) == (2, 2)
+
+
+def test_render_language_retries_after_a_failed_registration():
+    """Field equality alone must not license the skip.
+
+    The fields are assigned before the registry call, so a first attempt that
+    raises leaves them looking "already applied" while the tools were never
+    re-registered.  A repeat of the same locale has to get another chance.
+    """
+    manager = _RenderLanguageManager()
+    manager.fail_registration = True
+    with pytest.raises(RuntimeError):
+        manager.set_render_language("ja")
+    assert manager.registrations == 0
+
+    manager.fail_registration = False
+    manager.set_render_language("ja")
+    assert (manager.registrations, manager.syncs) == (1, 1)
+
+    # And once it has succeeded the skip applies again.
+    manager.set_render_language("ja")
+    assert (manager.registrations, manager.syncs) == (1, 1)

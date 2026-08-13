@@ -133,6 +133,31 @@ def test_unrelated_409_rolls_back_and_reports_failure(node_path, payload):
     assert any(call[0] == "alert" for call in outcome["calls"]), "必须报告保存失败"
 
 
+def test_unverified_freshness_rehydrates_instead_of_caching(node_path):
+    """An unverified write must not be published to the cross-window cache.
+
+    The value did land durably, but the server could not confirm it is still the
+    current one; caching it could pin a stale preference that a later websocket
+    session re-persists.
+    """
+    outcome = _run(
+        node_path,
+        200,
+        {
+            "success": False,
+            "partial_success": True,
+            "freshness_unverified": True,
+            "language": "ja",
+        },
+    )
+
+    assert outcome["hydrated"] == 1
+    assert not any(call[0] == "cache" for call in outcome["calls"]), (
+        "未确认的写入不得进入跨窗口缓存"
+    )
+    assert not any(call[0] == "alert" for call in outcome["calls"])
+
+
 def test_successful_save_still_caches_and_reports(node_path):
     outcome = _run(node_path, 200, {"success": True, "language": "ja"})
 

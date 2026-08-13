@@ -227,6 +227,22 @@ async def _reconcile_after_language_change(
                 await _load_existing_character(name)
             except LookupError:
                 return
+            # Last gate *before* the destructive write.  Two concurrent PUTs can
+            # interleave so that the older one is still notifying/ending its
+            # captured session while the newer one commits, finishes its own
+            # reset and lets a fresh conversation start.  The recent-generation
+            # token only moves on identity changes, so it would happily accept
+            # this late clear and delete that new conversation.  Checking
+            # ownership inside the same transaction that performs the clear is
+            # what makes the two mutually exclusive.  A read failure fails
+            # closed: skipping isolation is recoverable, deleting a live
+            # conversation is not.
+            if not await _durable_locale_matches(name, normalized):
+                logger.info(
+                    "语言偏好已被更新的请求取代，跳过迟到的近期上下文清理: name=%s",
+                    name,
+                )
+                return
             try:
                 await _clear_character_recent_history(
                     config_manager,
@@ -334,12 +350,29 @@ async def _reconcile_after_language_change(
                 "error": "语言偏好已保存，但近期上下文清理失败",
             })
 
-    await _assert_still_current(name, normalized)
+    await _finalize_freshness(name, normalized, result)
     return result
 
 
-async def _assert_still_current(name: str, normalized: str) -> None:
-    """Refuse to report success for a preference that has since been replaced.
+async def _durable_locale_matches(name: str, normalized: str) -> bool:
+    """Report whether this request's write is still the durable locale.
+
+    A *successful* read that no longer carries what we just wrote means this
+    request no longer describes durable state.  An empty value is not the benign
+    case: a character deleted or renamed during the unlocked settlement takes
+    prompt_locale.json with it.  Read failures propagate; each caller decides
+    which way to fail.
+    """
+    current = await _request_memory_prompt_locale("GET", name)
+    durable = current.get("language")
+    return bool(
+        is_supported_language_code(durable)
+        and normalize_language_code(durable, format="full") == normalized
+    )
+
+
+async def _finalize_freshness(name: str, normalized: str, result: dict) -> None:
+    """Refuse to report plain success for a preference we cannot vouch for.
 
     Reconciliation runs outside the transaction, so a second window can commit a
     newer locale while this request is still settling.  Returning 200 with the
@@ -347,31 +380,29 @@ async def _assert_still_current(name: str, normalized: str) -> None:
     shared local cache with a value the server no longer holds, and a later
     websocket session could then re-publish that obsolete preference.
 
-    Fail soft on a read error: a durable write that we merely cannot re-read
-    must not be reported as superseded.
+    A read failure is neither "current" nor "superseded".  Reporting success
+    would publish an unverified language; reporting a conflict would claim
+    something we did not observe.  Say so explicitly instead, so the client can
+    re-read rather than cache.
     """
     try:
-        current = await _request_memory_prompt_locale("GET", name)
+        matches = await _durable_locale_matches(name, normalized)
     except LanguagePreferenceConflictError:
         raise
     except Exception as exc:
         logger.warning(
-            "语言偏好写入后校验失败，按已保存返回: name=%s err=%s",
+            "语言偏好写入后校验失败，无法确认是否仍是最新: name=%s err=%s",
             name,
             exc,
         )
+        result.update({
+            "success": False,
+            "partial_success": True,
+            "freshness_unverified": True,
+            "error": "语言偏好已保存，但无法确认是否仍是最新",
+        })
         return
-    durable = current.get("language")
-    # A *successful* read that no longer carries what we just wrote means this
-    # request no longer describes durable state.  An empty value is not the
-    # benign case: the character being deleted or renamed during the unlocked
-    # settlement takes prompt_locale.json with it, and returning 200 would let
-    # the card manager cache this language after the cleanup -- which a later
-    # reuse of the same name would inherit.  (A read that *fails* is handled
-    # above and stays fail-soft; this branch only sees a definite answer.)
-    if not is_supported_language_code(durable) or (
-        normalize_language_code(durable, format="full") != normalized
-    ):
+    if not matches:
         raise LanguagePreferenceConflictError(
             "a newer language preference superseded this request"
         )
@@ -389,13 +420,15 @@ async def get_character_language_preference(name: str):
         # no longer leave an empty old-name directory behind.
         await _load_existing_character(name)
         payload = await _request_memory_prompt_locale("GET", name)
-        # Dropping the lock also dropped the guarantee that the character still
-        # exists once the read returns.  Without a second check this would answer
-        # 200 for a name deleted mid-read, and an in-flight card-manager
-        # hydration could repopulate that name's local language cache after the
-        # deletion cleanup -- which a later reuse of the same name would inherit.
-        await _load_existing_character(name)
         ui_language = await aload_ui_language_override()
+        # Dropping the lock also dropped the guarantee that the character still
+        # exists once the reads return.  Without this check the endpoint would
+        # answer 200 for a name deleted mid-request, and an in-flight
+        # card-manager hydration could repopulate that name's local language
+        # cache after the deletion cleanup -- which a later reuse of the same
+        # name would inherit.  It must be the *last* await: any suspension point
+        # after it reopens the very window it closes.
+        await _load_existing_character(name)
         payload["effective_language"] = (
             payload.get("language")
             or ui_language

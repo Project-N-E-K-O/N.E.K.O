@@ -930,11 +930,13 @@ async def test_character_language_change_respects_session_lifecycle_owner(
         if lifecycle_state == "idle":
             expected_calls.append(("settle_idle",))
         # The clear callback runs outside the caller's transaction now, so it
-        # re-validates the character identity itself before clearing; the final
-        # persist is the post-reconciliation freshness GET that refuses to
+        # re-validates the character identity and re-checks that this write
+        # still owns the durable locale *before* the destructive clear; the
+        # final persist is the post-reconciliation freshness GET that refuses to
         # report success for a preference something else has since replaced.
         expected_calls.extend([
             ("load", "Mimi"),
+            ("persist", "GET", "Mimi", None),
             ("clear_recent", config_manager, "Mimi"),
             ("persist", "GET", "Mimi", None),
         ])

@@ -2206,6 +2206,7 @@
         "languagePreferenceSaved": "語言偏好已更新",
         "languagePreferencePartiallySaved": "語言偏好已儲存，但目前對話同步未完全完成",
         "languagePreferenceSuperseded": "已有更新的語言偏好生效，已為你重新整理",
+        "languagePreferenceUnverified": "語言偏好已儲存，但暫時無法確認是否為最新",
         "languagePreferenceSaveFailed": "語言偏好儲存失敗",
         "languagePreferenceLoadFailed": "語言偏好載入失敗",
         "personalityUseDefault": "跟隨角色卡預設設定",
