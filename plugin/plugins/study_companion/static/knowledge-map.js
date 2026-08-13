@@ -1,6 +1,8 @@
 /* Knowledge-map fallback rendering. Loaded before main.js; function bodies run after bootstrap. */
 const UNCATEGORIZED_SUBJECT = '__uncategorized__';
+const KNOWLEDGE_MAP_ZOOM_LEVELS = [60, 75, 90, 100];
 let knowledgeMapSubject = '';
+let knowledgeMapZoomIndex = 3;
 
 function knowledgeMapActiveStage() {
   return knowledgeMapStage || normalizeLearningStage(learningProfile.stage) || 'all';
@@ -33,6 +35,59 @@ function knowledgeMapSubjectLabel(subject = 'all') {
   if (subject === 'all') return t('ui.knowledge.subject_all', 'All subjects');
   if (subject === UNCATEGORIZED_SUBJECT) return t('ui.knowledge.subject_uncategorized', 'Uncategorized');
   return knowledgeSubjectLabel(subject);
+}
+
+function knowledgeMapZoomLevel() {
+  return KNOWLEDGE_MAP_ZOOM_LEVELS[knowledgeMapZoomIndex];
+}
+
+function renderKnowledgeZoomControls() {
+  const root = drawerElement('div', 'knowledge-map-zoom');
+  root.setAttribute('role', 'group');
+  root.setAttribute('aria-label', t('ui.knowledge.zoom_controls', 'Window size controls'));
+  const status = drawerElement('span', 'sr-only', tf('ui.knowledge.zoom_status', 'Current window size: {percent}%', { percent: knowledgeMapZoomLevel() }));
+  status.setAttribute('role', 'status');
+  status.setAttribute('aria-live', 'polite');
+  status.setAttribute('aria-atomic', 'true');
+  root.appendChild(status);
+  const addButton = (action, label, value, disabled, onClick, className = '') => {
+    const button = drawerElement('button', `button button-secondary knowledge-map-zoom__button ${className}`.trim(), value);
+    button.type = 'button';
+    button.dataset.action = action;
+    button.setAttribute('aria-label', label);
+    button.title = label;
+    button.disabled = disabled;
+    button.addEventListener('click', () => {
+      onClick();
+      syncZoomControls();
+    });
+    root.appendChild(button);
+    return button;
+  };
+  addButton('zoom-out', t('ui.knowledge.zoom_out', 'Shrink window'), '−', knowledgeMapZoomIndex === 0, () => {
+    knowledgeMapZoomIndex = Math.max(0, knowledgeMapZoomIndex - 1);
+  });
+  const reset = addButton('zoom-reset', t('ui.knowledge.zoom_reset', 'Reset window size'), `${knowledgeMapZoomLevel()}%`, knowledgeMapZoomIndex === 3, () => {
+    knowledgeMapZoomIndex = 3;
+  }, 'knowledge-map-zoom__level');
+  addButton('zoom-in', t('ui.knowledge.zoom_in', 'Enlarge window'), '+', knowledgeMapZoomIndex === KNOWLEDGE_MAP_ZOOM_LEVELS.length - 1, () => {
+    knowledgeMapZoomIndex = Math.min(KNOWLEDGE_MAP_ZOOM_LEVELS.length - 1, knowledgeMapZoomIndex + 1);
+  });
+  function syncZoomControls() {
+    const level = knowledgeMapZoomLevel();
+    surfaceDrawer.dataset.windowScale = String(level);
+    const zoomOut = root.querySelector('[data-action="zoom-out"]');
+    const zoomReset = root.querySelector('[data-action="zoom-reset"]');
+    const zoomIn = root.querySelector('[data-action="zoom-in"]');
+    if (zoomOut) zoomOut.disabled = knowledgeMapZoomIndex === 0;
+    if (zoomReset) {
+      zoomReset.textContent = `${level}%`;
+      zoomReset.disabled = knowledgeMapZoomIndex === 3;
+    }
+    if (zoomIn) zoomIn.disabled = knowledgeMapZoomIndex === KNOWLEDGE_MAP_ZOOM_LEVELS.length - 1;
+    status.textContent = tf('ui.knowledge.zoom_status', 'Current window size: {percent}%', { percent: level });
+  }
+  return root;
 }
 
 function visibleKnowledgeNodes(nodes = [], stage = knowledgeMapActiveStage(), subject = 'all') {
@@ -221,10 +276,9 @@ function renderKnowledgeNodeDetailDialog(node = {}, edges = [], labelById = new 
   return dialog;
 }
 
-function renderKnowledgeNodes(nodes = [], edges = []) {
+function renderKnowledgeNodes(nodes = [], edges = [], detailMount = drawerElement('div', 'knowledge-node-detail-mount')) {
   const root = drawerElement('div', 'knowledge-stage-groups');
   const labelById = new Map(nodes.map((node) => [String(node.id || node.topic_id || ''), knowledgeNodeLabel(node)]));
-  const detailMount = drawerElement('div', 'knowledge-node-detail-mount');
   const groups = new Map();
   const cappedNodes = nodes.slice(0, 80);
   cappedNodes.forEach((node) => {
@@ -306,7 +360,6 @@ function renderKnowledgeNodes(nodes = [], edges = []) {
   if (nodes.length > cappedNodes.length) {
     root.appendChild(drawerElement('span', 'knowledge-edge-more', tf('ui.knowledge.edge_more', '+ {count} more', { count: nodes.length - cappedNodes.length })));
   }
-  root.appendChild(detailMount);
   return root;
 }
 function knowledgeNodeLabel(node) {
@@ -550,6 +603,9 @@ function renderKnowledgePanel(payload = null) {
   const edgeCount = countFromSummary(summary, ['edge_count', 'edges']) || edges.length;
   const weakTopics = shownNodes.filter((node) => masteryLevelForPanel(node) === 'weak').length;
   const root = surfacePanel('knowledge-map', `${shownNodes.length}/${topicCount}`);
+  surfaceDrawer.dataset.windowScale = String(knowledgeMapZoomLevel());
+  root.querySelector('.study-panel__header')?.appendChild(renderKnowledgeZoomControls());
+  const detailMount = drawerElement('div', 'knowledge-node-detail-mount');
   const state = drawerElement('section', 'study-panel__state');
   appendPanelState(state, t('ui.profile.stage_label', 'Stage'), learningStageLabel());
   appendPanelState(state, t('ui.knowledge.scope_label', 'Graph range'), knowledgeMapRangeLabel(activeStage));
@@ -562,11 +618,12 @@ function renderKnowledgePanel(payload = null) {
   root.appendChild(renderKnowledgeSubjectSelector(nodes, activeStage));
 
   if (shownNodes.length) {
-    root.appendChild(renderKnowledgeNodes(shownNodes, shownEdges));
+    root.appendChild(renderKnowledgeNodes(shownNodes, shownEdges, detailMount));
   } else {
     root.appendChild(drawerElement('pre', '', t('ui.knowledge.scope_empty', 'No topics in this graph range yet. Switch to all stages or keep studying to build it.')));
   }
   root.appendChild(drawerElement('div', 'study-panel__reply-label', t('ui.knowledge.edge_section', 'Relationships')));
   root.appendChild(renderKnowledgeEdges(shownNodes, shownEdges, shownEdges.length, shownNodes.length));
+  root.appendChild(detailMount);
   return root;
 }

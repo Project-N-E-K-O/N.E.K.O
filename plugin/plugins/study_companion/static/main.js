@@ -1553,6 +1553,7 @@ function openSurfaceDrawer(surfaceId) {
   } else {
     surfaceDrawer.removeAttribute('role');
     surfaceDrawer.removeAttribute('aria-modal');
+    delete surfaceDrawer.dataset.windowScale;
   }
   surfaceDrawerBody.replaceChildren(renderSurfaceDrawerBody(surfaceId));
   surfaceDrawer.dataset.open = 'true';

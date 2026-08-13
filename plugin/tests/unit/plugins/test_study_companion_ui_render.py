@@ -118,6 +118,11 @@ REQUIRED_DYNAMIC_UI_KEYS = [
     "ui.status.config_saved",
     "ui.status.config_load_failed",
     "ui.status.config_save_failed",
+    "ui.knowledge.zoom_controls",
+    "ui.knowledge.zoom_status",
+    "ui.knowledge.zoom_out",
+    "ui.knowledge.zoom_reset",
+    "ui.knowledge.zoom_in",
 ]
 
 
@@ -468,11 +473,12 @@ def test_study_companion_static_ui8_visual_accessibility_and_csp_contract() -> N
     assert "learning-profile-modal" in style_css
     assert "knowledge-stage-selector" in style_css
     assert "knowledgeMapActiveStage" in knowledge_map_js
-    assert '<script src="./knowledge-map.js?v=study-hotfix-20260714-review"></script>' in index_html
+    assert '<link rel="stylesheet" href="./style.css?v=study-knowledge-window-size-20260813" />' in index_html
+    assert '<script src="./knowledge-map.js?v=study-knowledge-window-size-20260813"></script>' in index_html
     outcome_formatters_script = (
         '<script src="./outcome-formatters.js?v=study-hotfix-20260812"></script>'
     )
-    main_script = '<script src="./main.js?v=study-ocr-dependencies-knowledge-dialog-20260812"></script>'
+    main_script = '<script src="./main.js?v=study-knowledge-window-size-20260813"></script>'
     assert outcome_formatters_script in index_html
     assert "solution-narration.js" not in index_html
     assert index_html.index(outcome_formatters_script) < index_html.index(main_script)
@@ -713,6 +719,41 @@ def test_study_companion_static_ui_browser_smoke_desktop_reduced_motion() -> Non
         expect(surface_drawer).to_have_attribute("data-presentation", "dialog")
         expect(surface_drawer).to_have_attribute("role", "dialog")
         expect(surface_drawer).to_have_attribute("aria-modal", "true")
+        dialog_panel = page.locator(".surface-drawer__panel")
+        zoom_out = page.locator('[data-action="zoom-out"]')
+        zoom_reset = page.locator('[data-action="zoom-reset"]')
+        zoom_in = page.locator('[data-action="zoom-in"]')
+        expect(surface_drawer).to_have_attribute("data-window-scale", "100")
+        expect(zoom_reset).to_have_text("100%")
+        expect(zoom_reset).to_be_disabled()
+        expect(zoom_in).to_be_disabled()
+        expect(page.locator('.knowledge-map-zoom [role="status"]')).to_have_text("Current window size: 100%")
+        size_100 = dialog_panel.evaluate("node => ({ width: node.getBoundingClientRect().width, height: node.getBoundingClientRect().height })")
+        zoom_out.click()
+        expect(surface_drawer).to_have_attribute("data-window-scale", "90")
+        size_90 = dialog_panel.evaluate("node => ({ width: node.getBoundingClientRect().width, height: node.getBoundingClientRect().height })")
+        assert size_90["width"] < size_100["width"]
+        assert size_90["height"] < size_100["height"]
+        page.locator('[data-action="zoom-out"]').click()
+        expect(surface_drawer).to_have_attribute("data-window-scale", "75")
+        size_75 = dialog_panel.evaluate("node => ({ width: node.getBoundingClientRect().width, height: node.getBoundingClientRect().height })")
+        assert size_75["width"] < size_90["width"]
+        assert size_75["height"] < size_90["height"]
+        page.locator('[data-action="zoom-out"]').click()
+        expect(surface_drawer).to_have_attribute("data-window-scale", "60")
+        expect(page.locator('[data-action="zoom-out"]')).to_be_disabled()
+        page.locator('[data-action="zoom-reset"]').click()
+        expect(surface_drawer).to_have_attribute("data-window-scale", "100")
+        restored_size = dialog_panel.evaluate("node => ({ width: node.getBoundingClientRect().width, height: node.getBoundingClientRect().height })")
+        assert abs(restored_size["width"] - size_100["width"]) <= 1
+        assert abs(restored_size["height"] - size_100["height"]) <= 1
+        page.set_viewport_size({"width": 375, "height": 900})
+        expect(page.locator(".knowledge-map-zoom")).to_be_visible()
+        controls_fit = page.locator(".knowledge-map-zoom").evaluate(
+            "node => { const rect = node.getBoundingClientRect(); return rect.left >= 0 && rect.right <= innerWidth; }"
+        )
+        assert controls_fit is True
+        page.set_viewport_size({"width": 1440, "height": 1100})
         dialog_metrics = page.locator(".surface-drawer__panel").evaluate(
             """panel => {
                 const rect = panel.getBoundingClientRect();
@@ -866,12 +907,14 @@ def test_study_companion_diagnosis_states_are_distinguishable_under_protanopia()
 def test_study_companion_static_ui_copy_is_i18n_backed() -> None:
     index_html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
     main_js = (STATIC_DIR / "main.js").read_text(encoding="utf-8")
+    knowledge_map_js = (STATIC_DIR / "knowledge-map.js").read_text(encoding="utf-8")
+    dynamic_ui_source = main_js + knowledge_map_js
     html_keys = _html_i18n_keys(index_html)
 
     for key in REQUIRED_STATIC_UI_KEYS:
         assert key in html_keys, key
     for key in REQUIRED_DYNAMIC_UI_KEYS:
-        assert key in main_js, key
+        assert key in dynamic_ui_source, key
 
     for locale in LOCALES:
         bundle = json.loads((PLUGIN_DIR / "i18n" / f"{locale}.json").read_text(encoding="utf-8"))
@@ -990,6 +1033,8 @@ def test_study_companion_feature_dock_opens_knowledge_map_in_centered_dialog() -
     assert "dedicatedSurfaceId" not in main_js
     assert "study-panel surface-shell" in main_js
     assert "knowledge-node" in knowledge_map_js
+    assert "renderKnowledgeZoomControls" in knowledge_map_js
+    assert "surfaceDrawer.dataset.windowScale = String(level)" in knowledge_map_js
     for entry_id in (
         "study_memory_due_reviews",
         "study_memory_list_decks",
@@ -1017,6 +1062,10 @@ def test_study_companion_feature_dock_opens_knowledge_map_in_centered_dialog() -
     assert '.surface-drawer[data-presentation="dialog"] .surface-drawer__panel' in style_css
     assert '.surface-drawer[data-presentation="dialog"][data-open="true"] .surface-drawer__panel' in style_css
     assert 'data-dedicated-surface' not in style_css
+    assert ".knowledge-map-zoom" in style_css
+    for scale in (60, 75, 90, 100):
+        assert f'.surface-drawer[data-presentation="dialog"][data-window-scale="{scale}"] .surface-drawer__panel' in style_css
+    assert "knowledge-map-viewport" not in style_css
 
 
 def test_study_companion_advanced_settings_surface_entries_are_complete() -> None:

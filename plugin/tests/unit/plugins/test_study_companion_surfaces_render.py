@@ -543,6 +543,9 @@ def test_study_companion_surfaces_share_ui8_interaction_styles_and_messages() ->
     assert ".flatMap((group) => group.items.slice(0, 6)" in knowledge_map
     assert "knowledge-edge-graph__svg" in knowledge_map
     assert "knowledge-edge-arrow-surface" in knowledge_map
+    assert "KNOWLEDGE_MAP_ZOOM_LEVELS" not in knowledge_map
+    assert "knowledge-map-zoom" not in knowledge_map
+    assert "knowledge-map-viewport" not in knowledge_map
     assert "knowledge-node-detail-dialog" in knowledge_map
     assert "setSelectedNode(null)" in knowledge_map
     assert "ui.button.close" in knowledge_map
@@ -578,6 +581,7 @@ def test_knowledge_map_graph_and_dialog_regressions_are_guarded() -> None:
     assert "closeButtonRef" in hosted
     assert "event.key === 'Tab'" in hosted
     assert ".trim().toLowerCase()" in hosted
+    assert "setZoomIndex" not in hosted
 
     assert "fromId: groupKey" in fallback
     assert "toId," in fallback
@@ -599,3 +603,10 @@ def test_knowledge_map_graph_and_dialog_regressions_are_guarded() -> None:
     assert "(count, group) => count + group.items.length" in fallback
     assert "count + Math.min(group.items.length, 6)" not in fallback
     assert "edgeCount - displayedEdgeCount" in fallback
+    assert "const KNOWLEDGE_MAP_ZOOM_LEVELS = [60, 75, 90, 100];" in fallback
+    assert "let knowledgeMapZoomIndex = 3;" in fallback
+    assert "renderKnowledgeZoomControls" in fallback
+    assert "surfaceDrawer.dataset.windowScale = String(level)" in fallback
+    assert "function syncZoomControls()" in fallback
+    assert "status.textContent = tf('ui.knowledge.zoom_status'" in fallback
+    assert "surfaceDrawerBody.replaceChildren(renderKnowledgePanel" not in fallback.split("function renderKnowledgeZoomControls()", 1)[1].split("function visibleKnowledgeNodes", 1)[0]
