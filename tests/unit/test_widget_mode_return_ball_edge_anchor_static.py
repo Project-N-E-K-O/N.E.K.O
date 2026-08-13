@@ -28,9 +28,19 @@ def test_live2d_peek_restore_anchor_is_consumed_on_return():
     app_ui_source = read_js_parts(APP_UI_PATH)
     return_block = app_ui_source.split("const handleReturnClick", 1)[1]
 
+    restore_call = "window.nekoLive2DPeek.restoreAnchor(live2DPeekRestoreAnchor)"
+    settle_call = "settleReturnedModelBounds(returnModelWasMoved)"
+    complete_dispatch = "new CustomEvent('neko:cat-return-complete'"
+
     assert "let live2DPeekRestoreAnchor = null;" in return_block
     assert "live2DPeekRestoreAnchor = returnContainer.__nekoLive2DPeekEdgeAnchor;" in return_block
-    assert "window.nekoLive2DPeek.restoreAnchor(live2DPeekRestoreAnchor)" in return_block
+    assert restore_call in return_block
+    # fire-and-forget 调用必须保留 Promise rejection handler，不能吞掉异常。
+    assert restore_call + ".catch(() => {});" in return_block
+    assert settle_call in return_block
+    assert complete_dispatch in return_block
+    # 顺序约束：先 settle 模型边界 → 再恢复贴边探身 → 最后派发 return-complete。
+    assert return_block.index(settle_call) < return_block.index(restore_call) < return_block.index(complete_dispatch)
 
 
 def test_live2d_peek_return_ball_supports_exactly_four_corners_and_two_side_edges():
@@ -43,7 +53,7 @@ def test_live2d_peek_return_ball_supports_exactly_four_corners_and_two_side_edge
     assert "'bottom'" not in anchor_block
     assert "container.setAttribute('data-neko-live2d-peek-anchor', edge);" in source
     assert "positionLive2DPeekReturnBallAtEdge(container, container.__nekoLive2DPeekEdgeAnchor);" in source
-    assert "detail.reason === 'return-ball-drag-start'" in source
+    assert "detail.reason === 'return-ball-drag-active'" in source
     assert "clearLive2DPeekReturnBallEdgeAnchor(detail.container);" in source
 
 
