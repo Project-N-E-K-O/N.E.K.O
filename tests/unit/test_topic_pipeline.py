@@ -2886,10 +2886,19 @@ async def test_topic_pool_retry_window_absorbs_a_stale_tick_stamp():
 
 
 def test_elapsed_since_tick_floors_at_zero_for_an_injected_future_stamp():
-    """Injected future `now` (tests, replayed ticks) must not rewind the window."""
+    """Injected future `now` (tests, replayed ticks) must not rewind the window.
+
+    Both terms have to be pinned negative to isolate the floor. Passing a
+    freshly sampled `time.monotonic()` as `started_at` does not: the helper
+    samples the same clock again, later, so the duration term is positive by
+    however much the clock resolves. That is ~0 on Windows (GetTickCount64,
+    ~15.6ms granularity, so both samples usually read identical) but strictly
+    positive on Linux — the assertion would pass here and fail in CI.
+    """
     pool = TopicHookPool(auto_schedule=False)
     future_tick = time.time() + 3600.0
-    assert pool._elapsed_since_tick(future_tick, time.monotonic()) == 0.0
+    started_in_the_future = time.monotonic() + 3600.0
+    assert pool._elapsed_since_tick(future_tick, started_in_the_future) == 0.0
 
 
 @pytest.mark.asyncio
