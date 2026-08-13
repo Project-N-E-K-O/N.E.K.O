@@ -756,7 +756,6 @@ def run_step_protocol_tts_worker(
                                     event = json.loads(message)
                                     if event.get("type") == "tts.connection.done":
                                         candidate_session_id = event.get("data", {}).get("session_id")
-                                        session_ready.set()
                                         break
                             except Exception as e:
                                 # The timeout/session_id checks below own the
@@ -817,6 +816,7 @@ def run_step_protocol_tts_worker(
                         ws = candidate_ws
                         candidate_ws = None
                         session_id = candidate_session_id
+                        session_ready.set()
 
                         # 延迟 tts.create 到首批文本到达后，由 _flush_deferred_create
                         # 发送（带语言提示）。此处仅启动接收任务消费服务端事件。
