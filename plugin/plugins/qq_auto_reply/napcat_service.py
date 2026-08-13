@@ -17,6 +17,18 @@ class QQNapcatService:
     def __init__(self, plugin: Any):
         self.plugin = plugin
 
+    def _transient_timeout_error(self) -> str:
+        """OneBot 连接超时的文案，按连接模式区分。
+
+        反向：NapCat 没有客户端连到我们的反向 WS 服务器；
+        正向：我们的正向拨出还没连上 NapCat（进程可能仍在启动/登录，或
+        NapCat 未开启 WebSocket 服务器）。两者都是瞬态，不算硬失败。
+        """
+        mode = str((self.plugin._qq_settings or {}).get("qq_connection_mode") or "napcat").strip()
+        if mode == "napcat_forward":
+            return "NapCat 已启动，但正向 WebSocket 连接未建立（NapCat 可能仍在登录，或未开启 WebSocket 服务器）"
+        return self.TRANSIENT_TIMEOUT_ERROR
+
     def has_hard_startup_error(self) -> bool:
         """启动失败是否属于「硬失败」——重试无意义（目录缺失/启动器缺失/进程起不来）。
 
@@ -24,7 +36,7 @@ class QQNapcatService:
         不算硬失败：重试时应继续轮询等待迟来的连接，而不是立即短路。
         """
         err = self.get_startup_error()
-        return bool(err) and err != self.TRANSIENT_TIMEOUT_ERROR
+        return bool(err) and err != self._transient_timeout_error()
 
     def get_configured_napcat_path(self) -> str:
         return str((self.plugin._qq_settings or {}).get("napcat_directory") or "").strip()
@@ -140,7 +152,7 @@ class QQNapcatService:
                 return True
             if self.has_hard_startup_error():
                 return False
-        self._set_startup_error(self.TRANSIENT_TIMEOUT_ERROR)
+        self._set_startup_error(self._transient_timeout_error())
         return False
 
     def _napcat_log_dir(self) -> Path:

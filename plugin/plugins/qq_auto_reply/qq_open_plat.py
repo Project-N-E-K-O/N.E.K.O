@@ -169,6 +169,8 @@ class QQOpenPlatformConnection(QQConnectionBase):
         #: QQClient 同惯例。
         self._emit_log = emit_log or (lambda level, msg: None)
         self._identity_probe_emitted = 0
+        #: 连接模式标识，供 runtime 判断是否需要重建连接（= "open_platform"）。
+        self.mode = "open_platform"
         self._app_id = str(app_id or "").strip()
         self._client_secret = str(client_secret or "").strip()
         self.token = ""

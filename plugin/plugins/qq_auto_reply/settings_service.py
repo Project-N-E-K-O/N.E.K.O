@@ -824,12 +824,15 @@ class QQSettingsService:
     #:   行」的原因。
     IDENTITY_SCOPE_BY_MODE: dict[str, tuple[str, str, str]] = {
         "napcat": ("napcat", "global", "global"),
+        # 正向连接仍是 OneBot v11 wire format，speaker 身份语义与反向 napcat 相同
+        "napcat_forward": ("napcat", "global", "global"),
         "open_platform": ("open", "per_conversation", "global"),
     }
     #: 断言来源。写协议名而不是 "code"：读的人要能一眼看出这条记录的依据是
     #: 厂商文档，而不是本机跑出来的观测。
     IDENTITY_SCOPE_ASSERTED_BY: dict[str, str] = {
         "napcat": "protocol:onebot-v11",
+        "napcat_forward": "protocol:onebot-v11",
         "open_platform": "protocol:qq-open-v2",
     }
     #: 与 legacy trust push 同族的退避，理由也相同：memory_server 可能还没起。
@@ -978,6 +981,9 @@ class QQSettingsService:
         group_attention_focus_threshold = kwargs.get("group_attention_focus_threshold")
         if group_attention_focus_threshold is not None:
             self.plugin._qq_settings["group_attention_focus_threshold"] = self._clamp_attention_float(group_attention_focus_threshold, "group_attention_focus_threshold", floor=0.1)
+        group_attention_focus_send_threshold = kwargs.get("group_attention_focus_send_threshold")
+        if group_attention_focus_send_threshold is not None:
+            self.plugin._qq_settings["group_attention_focus_send_threshold"] = self._clamp_attention_float(group_attention_focus_send_threshold, "group_attention_focus_send_threshold", floor=0.0)
         group_attention_min_threshold = kwargs.get("group_attention_min_threshold")
         if group_attention_min_threshold is not None:
             self.plugin._qq_settings["group_attention_min_threshold"] = self._clamp_attention_float(group_attention_min_threshold, "group_attention_min_threshold", floor=0.0)

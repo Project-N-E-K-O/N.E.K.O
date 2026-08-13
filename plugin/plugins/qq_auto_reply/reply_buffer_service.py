@@ -321,6 +321,7 @@ class QQReplyBufferService:
         if not is_group and participant_memory_at_receipt is False:
             pending.has_nonconsent_input = True
         self._pending[session_key] = pending
+        getattr(self.plugin, "_maybe_push_status_event", lambda: None)()  # 缓冲入队 → SSE 通知前端
         return False  # 首次消息，走 pipeline
 
     def get_state(self) -> dict:
@@ -580,6 +581,7 @@ class QQReplyBufferService:
         pending = self._pending.pop(session_key, None)
         if pending is None:
             return None
+        getattr(self.plugin, "_maybe_push_status_event", lambda: None)()  # 缓冲出队/取消 → SSE 通知前端
         task = getattr(pending, "task", None)
         cancelled = None
         if task is not None and not task.done():

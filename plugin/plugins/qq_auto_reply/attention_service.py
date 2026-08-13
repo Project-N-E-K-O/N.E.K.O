@@ -266,6 +266,16 @@ class QQAttentionService:
     def _focus_threshold(self) -> float:
         return float(self._setting("group_attention_focus_threshold", 4.0))
 
+    def _focus_send_threshold(self) -> float:
+        """焦点群的发送门控线（默认 2.0）：低于焦点线、高于最低线。
+
+        焦点线（_focus_threshold，默认 4.0）是「赢得焦点」的资格线。一旦成为
+        焦点群，注意力会随回复消耗（_consume_ratio）和时间衰减；若发送门控
+        也用焦点线，焦点群回一条就跌破线、立刻被门控——焦点形同虚设。这里用
+        更低的「焦点保持线」作为发送门控，让焦点群在合理注意力水平上继续回应。
+        """
+        return float(self._setting("group_attention_focus_send_threshold", 2.0))
+
     def _minimum_threshold(self) -> float:
         return float(self._setting("group_attention_min_threshold", 1.0))
 
@@ -441,6 +451,7 @@ class QQAttentionService:
 
         self._write_state(self._normalize_state(state))
         await self._persist()
+        getattr(self.plugin, "_maybe_push_status_event", lambda: None)()  # 注意力变更 → SSE 通知前端
         return self.get_snapshot()
 
     async def update_on_message_count(self, group_id: str, *, message_count: int = 1) -> dict[str, Any]:
@@ -648,6 +659,7 @@ class QQAttentionService:
             state.phase = "rise"
             state.phase_started_at = now
         self._write_state(state)
+        getattr(self.plugin, "_maybe_push_status_event", lambda: None)()  # 焦点变更 → SSE 通知前端
 
     def wake_boost(self, group_id: str) -> None:
         """叫醒时给一个注意力启动值，确保能突破焦点阈值。"""
@@ -661,6 +673,7 @@ class QQAttentionService:
             state.phase_started_at = self._current_time()
             self._write_state(state)
             self.plugin._emit_log("INFO", f"[Attention] 唤醒 boost: 群{normalized_group_id} score={state.attention_score:.1f}")
+            getattr(self.plugin, "_maybe_push_status_event", lambda: None)()  # 注意力唤醒 → SSE 通知前端
 
     def get_last_focus_at(self, group_id: str) -> int:
         normalized_group_id = str(group_id or "").strip()
@@ -734,6 +747,7 @@ class QQAttentionService:
         self._write_state(state)
         await self._persist()
         self.plugin._emit_log("INFO", f"[Emotion] 群{normalized_group_id} 情绪: {emotion}")
+        getattr(self.plugin, "_maybe_push_status_event", lambda: None)()  # 情绪变更 → SSE 通知前端
 
     def _decay_emotion(self, state: QQGroupAttentionState, now: int) -> None:
         """情绪自然衰减：30秒无新情绪则向 calm 方向降温一级。"""
