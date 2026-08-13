@@ -18,6 +18,7 @@ const methodsReturnPath = path.join(
   projectRoot,
   'static/avatar/avatar-ui-buttons/methods-return.js'
 );
+const cssPath = path.join(projectRoot, 'static/css/index.css');
 class FakeClassList {
   constructor() { this.values = new Set(); }
   add(...names) { names.forEach((name) => this.values.add(name)); }
@@ -42,6 +43,7 @@ function createRuntime(options = {}) {
   let now = 1000;
   let nextRaf = 1;
   let nextTimer = 1;
+  let journeySyncCalls = 0;
 
   const attributes = new Map([['data-neko-idle-tier', 'cat1']]);
   const containerAttributes = new Map();
@@ -164,6 +166,7 @@ function createRuntime(options = {}) {
     _isAnyNekoIdleCat1IndependentActionActive: () => !!gateOverrides.activeIndependentAction,
     _isNekoIdleCat1PositionPresentationBusy: () => !!gateOverrides.cat1PositionPresentationBusy,
     _isNekoIdleCat1PlaygroundEntryOrDropActive: () => false,
+    _scheduleNekoIdleCat1JourneySync: () => { journeySyncCalls += 1; },
     MutationObserver: class MutationObserver {
       constructor(callback) { this.callback = callback; }
       observe(target, observeOptions) {
@@ -234,6 +237,7 @@ function createRuntime(options = {}) {
       this.notifyMutation();
     },
     activeTimers: () => timers.size,
+    journeySyncCalls: () => journeySyncCalls,
   };
 }
 
@@ -254,6 +258,7 @@ test('desktop runner is loaded after the sole sensing owner and stays independen
   const template = fs.readFileSync(templatePath, 'utf8');
   const source = fs.readFileSync(runnerPath, 'utf8');
   const returnSource = fs.readFileSync(methodsReturnPath, 'utf8');
+  const css = fs.readFileSync(cssPath, 'utf8');
   const ownerIndex = template.indexOf('/static/app/app-desktop-window-sensing.js');
   const runnerIndex = template.indexOf('/static/avatar/avatar-ui-buttons/idle-desktop-window-top-edge.js');
 
@@ -265,9 +270,12 @@ test('desktop runner is loaded after the sole sensing owner and stays independen
   assert.doesNotMatch(source, /subscribe\(handleSensingResult\)|desktop-window-top-edge:terminal/);
   assert.match(source, /coordinator\.canStart/);
   assert.doesNotMatch(source, /_getNekoCatMindRuntimeGateSnapshot|NekoCatMind/);
-  assert.doesNotMatch(source, /__nekoIdleReturnSubactionState|__nekoIdleCat1Journey|_scheduleNekoIdleCat1JourneySync/);
+  assert.doesNotMatch(source, /__nekoIdleReturnSubactionState|__nekoIdleCat1Journey/);
+  assert.doesNotMatch(source, /_scheduleNekoIdleCat1JourneySync/);
   assert.doesNotMatch(source, /yarn-gate-released|compact-surface-layout-change|neko:cat-mind:action-result|attributeFilter/);
   assert.match(returnSource, /NekoDesktopWindowInteractions[\s\S]*return-click/);
+  assert.match(css, /is-cat1-desktop-window-top-edge-active[^}]*scaleX\(1\)/);
+  assert.match(css, /is-cat1-desktop-window-top-edge-active\.is-cat1-desktop-window-top-edge-facing-right[^}]*scaleX\(-1\)/);
 });
 
 test('desktop interaction start safety is renderer-owned rather than a Cat Mind gate', () => {
@@ -359,6 +367,23 @@ test('negative desktop origins convert to local coordinates and unusable top edg
   assert.equal(tooNarrow.window.NekoDesktopWindowTopEdgePerch.getState().phase, 'idle');
 });
 
+test('top-edge approach owns both horizontal directions despite a previous generic facing', async () => {
+  const right = createRuntime({ catLeft: 50, catTop: 100 });
+  right.setShared(sensingResult(1, { x: 300, y: 122, width: 400, height: 300 }));
+  await right.flushMicrotasks();
+  assert.equal(right.window.NekoDesktopWindowTopEdgePerch.getState().phase, 'walking');
+  assert.equal(right.button.classList.contains('is-cat1-desktop-window-top-edge-active'), true);
+  assert.equal(right.button.classList.contains('is-cat1-desktop-window-top-edge-facing-right'), true);
+
+  const left = createRuntime({ catLeft: 650, catTop: 100 });
+  left.button.classList.add('is-cat1-facing-right');
+  left.setShared(sensingResult(1, { x: 300, y: 122, width: 400, height: 300 }));
+  await left.flushMicrotasks();
+  assert.equal(left.window.NekoDesktopWindowTopEdgePerch.getState().phase, 'walking');
+  assert.equal(left.button.classList.contains('is-cat1-desktop-window-top-edge-active'), true);
+  assert.equal(left.button.classList.contains('is-cat1-desktop-window-top-edge-facing-right'), false);
+});
+
 test('accepted action walks the real container once and perches without following', async () => {
   const runtime = createRuntime();
   const rect = { x: 200, y: 122, width: 400, height: 300 };
@@ -378,6 +403,7 @@ test('accepted action walks the real container once and perches without followin
 
   runtime.setShared(sensingResult(3, rect, { status: 'current' }));
   assert.equal(runtime.window.NekoDesktopWindowTopEdgePerch.getState().phase, 'perched');
+  assert.equal(runtime.button.classList.contains('is-cat1-desktop-window-top-edge-active'), true);
   assert.equal(runtime.container.style.left, '200px');
   assert.equal(runtime.container.style.top, '0px');
 });
@@ -388,6 +414,7 @@ test('one target episode cancels or drops once without restarting on later geome
   await walking.flushMicrotasks();
   walking.setShared(sensingResult(2, { x: 220, y: 122, width: 400, height: 300 }, { changes: ['position'] }));
   assert.equal(walking.window.NekoDesktopWindowTopEdgePerch.getState().phase, 'idle');
+  assert.equal(walking.journeySyncCalls(), 0);
   assert.equal(walking.activeTimers(), 0);
   assert.equal(walking.container.classList.contains('is-cat1-desktop-window-top-edge-dropping'), false);
   walking.setShared(sensingResult(3, { x: 200, y: 122, width: 400, height: 300 }, { changes: ['position'] }));
@@ -411,6 +438,7 @@ test('one target episode cancels or drops once without restarting on later geome
   assert.equal(perched.activeTimers(), 1);
   perched.flushTimers();
   assert.equal(perched.window.NekoDesktopWindowTopEdgePerch.getState().phase, 'idle');
+  assert.equal(perched.journeySyncCalls(), 0);
   perched.setShared(sensingResult(6, { x: 200, y: 122, width: 460, height: 300 }, { changes: ['size'] }));
   await perched.flushMicrotasks();
   assert.equal(perched.window.NekoDesktopWindowTopEdgePerch.getState().phase, 'idle');
@@ -620,6 +648,7 @@ test('pending drag does not interrupt; real drag, owner clear, return and unload
     reason: 'return-ball-drag-active', container: runtime.container,
   });
   assert.equal(runtime.window.NekoDesktopWindowTopEdgePerch.getState().phase, 'idle');
+  assert.equal(runtime.journeySyncCalls(), 0);
   runtime.setShared(sensingResult(2, { x: 200, y: 122, width: 400, height: 300 }, {
     status: 'current',
   }));
@@ -641,6 +670,7 @@ test('pending drag does not interrupt; real drag, owner clear, return and unload
     reason: 'return-click', restoreArt: false,
   }), true);
   assert.equal(returned.window.NekoDesktopWindowTopEdgePerch.getState().phase, 'idle');
+  assert.equal(returned.journeySyncCalls(), 0);
 
   const tier = createRuntime();
   tier.setShared(sensingResult(1, { x: 200, y: 122, width: 400, height: 300 }));
@@ -648,6 +678,7 @@ test('pending drag does not interrupt; real drag, owner clear, return and unload
   const beforeOwnerClearTop = tier.container.style.top;
   tier.setShared(null);
   assert.equal(tier.window.NekoDesktopWindowTopEdgePerch.getState().phase, 'idle');
+  assert.equal(tier.journeySyncCalls(), 0);
   assert.equal(tier.container.style.top, beforeOwnerClearTop);
   assert.equal(tier.activeTimers(), 0);
 

@@ -152,6 +152,20 @@ test('startup facts wait for both runners and are replayed without partial regis
   assert.equal(edge.calls.started, 1);
 });
 
+test('the sensing selector only owns top-edge and edge-peek candidates', () => {
+  const runtime = createRuntime();
+  const top = createRunner('desktop-window-top-edge', 130, 0);
+  const edge = createRunner('desktop-window-edge-peek', 80, 1);
+  runtime.window.NekoDesktopWindowInteractions.register(top.runner);
+  runtime.window.NekoDesktopWindowInteractions.register(edge.runner);
+  runtime.flushTimers();
+
+  assert.deepEqual(
+    Array.from(runtime.window.NekoDesktopWindowInteractions.getState().registeredKinds),
+    ['desktop-window-top-edge', 'desktop-window-edge-peek']
+  );
+});
+
 test('a fact that ends one action cannot start another until the next sensing fact', () => {
   const runtime = createRuntime();
   const ending = createRunner('desktop-window-top-edge', 90, 0, { active: true, endActiveOnHandle: true });
@@ -234,6 +248,21 @@ test('ordinary manual dragging outside a desktop presentation creates no present
   runtime.window.NekoDesktopWindowInteractions.register(edge.runner);
 
   runtime.emitEvent('neko:return-ball-manual-move', { reason: 'return-ball-drag-start' });
+  runtime.emitEvent('neko:return-ball-manual-move', { reason: 'return-ball-drag-active' });
+
+  assert.equal(runtime.window.NekoDesktopWindowInteractions.getState().cooldownUntil, 0);
+});
+
+test('a new owner clears a pending desktop-presentation drag origin', () => {
+  const runtime = createRuntime();
+  const top = createRunner('desktop-window-top-edge', 80, 0);
+  const edge = createRunner('desktop-window-edge-peek', 120, 1);
+  runtime.window.NekoDesktopWindowInteractions.register(top.runner);
+  runtime.window.NekoDesktopWindowInteractions.register(edge.runner);
+  runtime.emit({ sessionId: 's1', revision: 1 });
+
+  runtime.emitEvent('neko:return-ball-manual-move', { reason: 'return-ball-drag-start' });
+  runtime.window.NekoDesktopWindowInteractions.cancel(null, { reason: 'return-click' });
   runtime.emitEvent('neko:return-ball-manual-move', { reason: 'return-ball-drag-active' });
 
   assert.equal(runtime.window.NekoDesktopWindowInteractions.getState().cooldownUntil, 0);

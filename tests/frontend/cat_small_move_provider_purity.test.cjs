@@ -95,6 +95,7 @@ test('small_move capability check is pure while actual start owns hover preparat
             finishCalls += 1;
         },
         _getNekoIdleReturnContainerFromButton: () => container,
+        _getNekoDesktopVirtualElementRect: (element) => element.getBoundingClientRect(),
         _getNekoIdleCat1PairMoveChatTarget: () => null,
         _canNekoIdleCat1MoveSoloWithExpandedChat: () => true,
         _hasNekoIdleCat1MoveVectorSpace: () => true,

@@ -43,6 +43,7 @@ function createRuntime(options = {}) {
   let now = 1000;
   let nextRaf = 1;
   let nextTimer = 1;
+  let journeySyncCalls = 0;
   const runtimeMath = Object.create(Math);
   runtimeMath.random = typeof options.random === 'function' ? options.random : () => 0.5;
 
@@ -168,6 +169,7 @@ function createRuntime(options = {}) {
     _isAnyNekoIdleCat1IndependentActionActive: () => !!gateOverrides.activeIndependentAction,
     _isNekoIdleCat1PositionPresentationBusy: () => !!gateOverrides.cat1PositionPresentationBusy,
     _isNekoIdleCat1PlaygroundEntryOrDropActive: () => false,
+    _scheduleNekoIdleCat1JourneySync: () => { journeySyncCalls += 1; },
     MutationObserver: class MutationObserver {
       constructor(callback) { this.callback = callback; }
       observe() { mutationObservers.add(this); }
@@ -235,6 +237,7 @@ function createRuntime(options = {}) {
       return next.done ? null : next.value.delay;
     },
     activeTimers: () => timers.size,
+    journeySyncCalls: () => journeySyncCalls,
     advanceTime(durationMs) { now += Math.max(0, Number(durationMs) || 0); },
     emit(type, detail) { window.dispatchEvent({ type, detail }); },
     setGate(value) { Object.assign(gateOverrides, value); },
@@ -271,6 +274,7 @@ test('edge-peek runner loads after the selector and stays independent from scree
   assert.doesNotMatch(source, /subscribe\(handleSensingResult\)|desktop-window-edge-peek:terminal/);
   assert.match(source, /coordinator\.canStart/);
   assert.doesNotMatch(source, /_getNekoCatMindRuntimeGateSnapshot|NekoCatMind/);
+  assert.doesNotMatch(source, /_scheduleNekoIdleCat1JourneySync|compact-surface-layout-change/);
   assert.match(source, /SIDE_VISIBLE_RATIO\s*=\s*0\.5/);
   assert.match(source, /BOTTOM_HIDDEN_RATIO\s*=\s*0\.56/);
   assert.match(source, /PEEK_CYCLE_DELAY_MIN_MS\s*=\s*6000/);
@@ -280,6 +284,14 @@ test('edge-peek runner loads after the selector and stays independent from scree
   assert.match(css, /edge-peek-right[\s\S]*polygon\(50%/);
   assert.match(css, /edge-peek-left[\s\S]*rotate\(-60deg\)/);
   assert.match(css, /edge-peek-right[\s\S]*rotate\(60deg\)/);
+  assert.match(
+    css,
+    /edge-peek-left[^}]*edge-peek-right[^}]*edge-peek-bottom[^}]*scaleX\(1\)/
+  );
+  assert.match(
+    css,
+    /is-cat1-facing-right\.is-cat1-desktop-window-edge-peek-walking:not\(\.is-cat1-desktop-window-edge-peek-facing-right\)[^}]*scaleX\(1\)/
+  );
   assert.match(css, /is-cat1-desktop-window-edge-peek-bottom[\s\S]*rotate\(180deg\)/);
   assert.match(css, /is-cat1-desktop-window-edge-peeking[\s\S]*pointer-events:\s*none/);
   assert.match(css, /edge-peek-left[^}]*58%[^}]*translate3d\(-8%, 0, 0\)/);
@@ -311,6 +323,50 @@ test('the nearest valid left, right, or bottom edge becomes the target', async (
   await bottom.flushMicrotasks();
   assert.equal(bottom.window.NekoDesktopWindowEdgePeek.getState().edge, 'bottom');
   assert.equal(bottom.window.NekoDesktopWindowEdgePeek.getState().targetTop, 344);
+});
+
+test('walking direction is owned by edge-peek even when the previous generic facing remains', async () => {
+  const left = createRuntime({ catLeft: 650, catTop: 300 });
+  left.button.classList.add('is-cat1-facing-right');
+  left.setShared(sensingResult(1, { x: 400, y: 300, width: 300, height: 300 }));
+  await left.flushMicrotasks();
+  assert.equal(left.window.NekoDesktopWindowEdgePeek.getState().phase, 'walking');
+  assert.equal(left.button.classList.contains('is-cat1-desktop-window-edge-peek-facing-right'), false);
+
+  const right = createRuntime({ catLeft: 200, catTop: 300 });
+  right.setShared(sensingResult(1, { x: 480, y: 300, width: 300, height: 300 }));
+  await right.flushMicrotasks();
+  assert.equal(right.window.NekoDesktopWindowEdgePeek.getState().phase, 'walking');
+  assert.equal(right.button.classList.contains('is-cat1-desktop-window-edge-peek-facing-right'), true);
+});
+
+test('settled edge composition ignores a previous generic facing on all three edges', async () => {
+  const css = fs.readFileSync(cssPath, 'utf8');
+  const genericFacingIndex = css.indexOf(
+    '.neko-idle-return-btn.is-cat1-facing-right > .neko-idle-return-art'
+  );
+  const settledOverrideIndex = css.indexOf(
+    '.neko-idle-return-btn.is-cat1-facing-right.is-cat1-desktop-window-edge-peek-left'
+  );
+  assert.ok(genericFacingIndex >= 0 && settledOverrideIndex > genericFacingIndex,
+    'settled edge composition must override the later generic facing cascade');
+  assert.match(css.slice(settledOverrideIndex),
+    /is-cat1-desktop-window-edge-peek-right[\s\S]*is-cat1-desktop-window-edge-peek-bottom[\s\S]*--neko-idle-return-facing-transform:\s*scaleX\(1\)/);
+  const cases = [
+    { catLeft: 200, catTop: 300, rect: { x: 480, y: 300, width: 300, height: 300 }, edge: 'left' },
+    { catLeft: 650, catTop: 300, rect: { x: 400, y: 300, width: 300, height: 300 }, edge: 'right' },
+    { catLeft: 450, catTop: 480, rect: { x: 400, y: 150, width: 400, height: 300 }, edge: 'bottom' },
+  ];
+  for (const entry of cases) {
+    const runtime = createRuntime(entry);
+    runtime.button.classList.add('is-cat1-facing-right');
+    runtime.setShared(sensingResult(1, entry.rect));
+    await runtime.flushMicrotasks();
+    runtime.flushRafs();
+    assert.equal(runtime.window.NekoDesktopWindowEdgePeek.getState().phase, 'peeking');
+    assert.equal(runtime.button.classList.contains(`is-cat1-desktop-window-edge-peek-${entry.edge}`), true);
+    assert.equal(runtime.button.classList.contains('is-cat1-desktop-window-edge-peek-facing-right'), false);
+  }
 });
 
 test('real runners choose the closest presentation and keep equal-time ownership singular', () => {
@@ -514,6 +570,7 @@ test('window changes cancel walking or make a peeking cat leave once with event-
   await walking.flushMicrotasks();
   walking.setShared(sensingResult(2, { x: 490, y: 300, width: 300, height: 300 }, { changes: ['position'] }));
   assert.equal(walking.window.NekoDesktopWindowEdgePeek.getState().phase, 'idle');
+  assert.equal(walking.journeySyncCalls(), 0);
   assert.equal(walking.activeTimers(), 0);
 
   const peeking = createRuntime({ catLeft: 200, catTop: 300 });
@@ -528,6 +585,7 @@ test('window changes cancel walking or make a peeking cat leave once with event-
   assert.equal(peeking.activeTimers(), 1);
   peeking.flushTimers();
   assert.equal(peeking.window.NekoDesktopWindowEdgePeek.getState().phase, 'idle');
+  assert.equal(peeking.journeySyncCalls(), 0);
 
   peeking.setShared(sensingResult(4, { x: 490, y: 300, width: 300, height: 300 }, { status: 'current' }));
   await peeking.flushMicrotasks();
@@ -563,6 +621,7 @@ test('pending gate blocks start while pointer drag-start immediately reveals the
   assert.equal(runtime.container.classList.contains('is-cat1-desktop-window-edge-peeking'), false);
   assert.equal(runtime.container.classList.contains('is-cat1-desktop-window-edge-peek-cycle-active'), false);
   assert.equal(runtime.activeTimers(), 0);
+  assert.equal(runtime.journeySyncCalls(), 0);
 
   runtime.setShared(sensingResult(3, { x: 480, y: 300, width: 300, height: 300 }, {
     status: 'current',
@@ -596,6 +655,28 @@ test('pending gate blocks start while pointer drag-start immediately reveals the
   cleared.setShared(null);
   assert.equal(cleared.window.NekoDesktopWindowEdgePeek.getState().phase, 'idle');
   assert.equal(cleared.activeTimers(), 0);
+  assert.equal(cleared.journeySyncCalls(), 0);
+});
+
+test('a peek drag press without real movement does not start the chat journey', async () => {
+  const runtime = createRuntime({ catLeft: 200, catTop: 300 });
+  runtime.setShared(sensingResult(1, { x: 480, y: 300, width: 300, height: 300 }));
+  await runtime.flushMicrotasks();
+  runtime.flushRafs();
+  assert.equal(runtime.window.NekoDesktopWindowEdgePeek.getState().phase, 'peeking');
+
+  runtime.emit('neko:return-ball-manual-move', {
+    reason: 'return-ball-drag-start',
+    container: runtime.container,
+  });
+  assert.equal(runtime.window.NekoDesktopWindowEdgePeek.getState().phase, 'idle');
+  assert.equal(runtime.journeySyncCalls(), 0);
+
+  runtime.emit('neko:return-ball-manual-move', {
+    reason: 'return-ball-drag-cancel',
+    container: runtime.container,
+  });
+  assert.equal(runtime.journeySyncCalls(), 0);
 });
 
 test('ordinary web pages never expose the desktop edge-peek runner', () => {

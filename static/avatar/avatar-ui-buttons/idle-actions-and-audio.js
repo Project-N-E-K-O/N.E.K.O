@@ -478,15 +478,26 @@ function _isNekoIdleDesktopWindowEdgePeekActionActive(button) {
         && desktopEdgePeek.isActive(button));
 }
 
+function _isNekoIdleDesktopWindowDoorWalkActionActive(button) {
+    const desktopDoorWalk = typeof window !== 'undefined'
+        ? window.NekoDesktopWindowDoorWalk
+        : null;
+    return !!(desktopDoorWalk
+        && typeof desktopDoorWalk.isActive === 'function'
+        && desktopDoorWalk.isActive(button));
+}
+
 function _isNekoIdleDesktopWindowInteractionActionActive(button) {
     const desktopInteractions = typeof window !== 'undefined'
         ? window.NekoDesktopWindowInteractions
         : null;
-    if (desktopInteractions && typeof desktopInteractions.isActive === 'function') {
-        return desktopInteractions.isActive(button);
-    }
-    return _isNekoIdleDesktopWindowTopEdgeActionActive(button)
-        || _isNekoIdleDesktopWindowEdgePeekActionActive(button);
+    const presentationActive = desktopInteractions
+        && typeof desktopInteractions.isActive === 'function'
+        ? desktopInteractions.isActive(button)
+        : (_isNekoIdleDesktopWindowTopEdgeActionActive(button)
+            || _isNekoIdleDesktopWindowEdgePeekActionActive(button));
+    return presentationActive
+        || _isNekoIdleDesktopWindowDoorWalkActionActive(button);
 }
 
 function _isNekoIdleCat1IndependentActionActive(button) {

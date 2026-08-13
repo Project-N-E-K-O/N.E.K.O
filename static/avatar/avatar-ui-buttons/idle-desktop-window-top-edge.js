@@ -26,6 +26,7 @@
     const DROP_COOLDOWN_MS = 30000;
     const MANUAL_MOVE_EVENT = 'neko:return-ball-manual-move';
     const PLAYGROUND_EVENT = 'neko:idle-cat1-playground-state';
+    const ACTIVE_CLASS = 'is-cat1-desktop-window-top-edge-active';
     const WALKING_CLASS = 'is-cat1-desktop-window-top-edge-walking';
     const FACING_RIGHT_CLASS = 'is-cat1-desktop-window-top-edge-facing-right';
     const DROPPING_CLASS = 'is-cat1-desktop-window-top-edge-dropping';
@@ -252,6 +253,7 @@
     function setOwnClasses(state) {
         if (!state || !state.button || !state.container) return;
         const active = state.phase !== 'idle';
+        state.button.classList.toggle(ACTIVE_CLASS, active);
         state.button.classList.toggle(WALKING_CLASS, state.phase === 'walking');
         state.button.classList.toggle(FACING_RIGHT_CLASS, active && state.facingRight);
         state.container.classList.toggle(DROPPING_CLASS, state.phase === 'dropping');
@@ -259,7 +261,7 @@
 
     function clearOwnClasses(state) {
         if (!state || !state.button || !state.container) return;
-        [WALKING_CLASS, FACING_RIGHT_CLASS].forEach((name) => {
+        [ACTIVE_CLASS, WALKING_CLASS, FACING_RIGHT_CLASS].forEach((name) => {
             state.button.classList.remove(name);
         });
         state.container.classList.remove(DROPPING_CLASS);

@@ -659,6 +659,57 @@ function _appendNekoIdleCat1WalkActivityPoint(state, left, top) {
     activity.lastY = nextY;
 }
 
+function _rebaseNekoIdleCat1WalkActivity(state, left, top) {
+    const activity = state && state.walkActivity;
+    const nextX = Number(left);
+    const nextY = Number(top);
+    if (!activity || !Number.isFinite(nextX) || !Number.isFinite(nextY)) return;
+    activity.lastX = nextX;
+    activity.lastY = nextY;
+}
+
+function _tryStartNekoIdleCat1DoorWalk(button, target, continuation) {
+    if (!target || target.kind !== _NEKO_IDLE_CAT1_TARGET_KIND_MINIMIZED_SIDE) return false;
+    const doorWalk = typeof window !== 'undefined' ? window.NekoDesktopWindowDoorWalk : null;
+    return !!(doorWalk
+        && typeof doorWalk.tryStartWalk === 'function'
+        && doorWalk.tryStartWalk(button, target, continuation));
+}
+
+function _getNekoIdleCat1JourneyDoorContinuation(button, state) {
+    const ownedTarget = state && state.target;
+    const ownedSurface = _getNekoIdleChatMinimizedRect();
+    function ownsWalk() {
+        const current = button && (button.__nekoIdleReturnSubactionState || button.__nekoIdleCat1Journey);
+        return !!(current === state && state.target === ownedTarget
+            && state.profile && !state.paused
+            && state.substate === state.profile.walkingSubstate);
+    }
+    function sameSurface(left, right) {
+        return !!(left && right
+            && left.left === right.left && left.top === right.top
+            && left.width === right.width && left.height === right.height);
+    }
+    return {
+        isCurrent() {
+            if (!ownsWalk()) return false;
+            return sameSurface(ownedSurface, _getNekoIdleChatMinimizedRect());
+        },
+        canResume() {
+            return ownsWalk();
+        },
+        recordPosition(left, top) {
+            _appendNekoIdleCat1WalkActivityPoint(state, left, top);
+        },
+        rebasePosition(left, top) {
+            _rebaseNekoIdleCat1WalkActivity(state, left, top);
+        },
+        resume() {
+            if (ownsWalk()) _scheduleNekoIdleCat1JourneySync(button);
+        }
+    };
+}
+
 function _completeNekoIdleCat1WalkActivity(state) {
     const activity = state && state.walkActivity;
     if (state) state.walkActivity = null;
@@ -1279,6 +1330,15 @@ function _stepNekoIdleCat1Walk(button, timestamp) {
     }
     state.facingRight = _resolveNekoIdleCat1TargetFacing(rect, target);
     _setNekoIdleCat1Classes(button, state);
+    if (_tryStartNekoIdleCat1DoorWalk(
+        button,
+        target,
+        _getNekoIdleCat1JourneyDoorContinuation(button, state)
+    )) {
+        if (state.frame) window.cancelAnimationFrame(state.frame);
+        state.frame = 0;
+        return;
+    }
     const speedRate = _updateNekoIdleCat1WalkSpeedRate(button, state, target.distance);
     if (target.distance <= profile.target.exitDistancePx) {
         _appendNekoIdleCat1WalkActivityPoint(state, target.left, target.top);
