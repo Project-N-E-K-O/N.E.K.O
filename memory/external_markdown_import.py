@@ -53,7 +53,14 @@ _INJECTION_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("role_marker", re.compile(r"(?im)^\s*(?:system|developer|assistant|user)\s*[:：]")),
     ("chatml_token", re.compile(r"<\|(?:im_start|im_end|endoftext)\|>", re.IGNORECASE)),
     ("ignore_previous", re.compile(r"\b(?:ignore|disregard)\b.{0,40}\b(?:previous|prior|above)\b.{0,30}\b(?:instructions?|prompts?|rules?)\b", re.IGNORECASE)),
-    ("ignore_previous_zh", re.compile(r"(?:忽略|无视|不要理会)(?:以上|上述|之前).{0,12}(?:指令|提示|规则|设定)")),
+    # Both orthographies on every alternation. Simplified-only meant a Traditional
+    # injection only tripped this when its wording happened to be script-neutral —
+    # "忽略以上指令" fired, "無視上述規則" did not. The middle group (以上/上述/之前)
+    # is spelled the same in both, which is exactly why the misses looked random.
+    ("ignore_previous_zh", re.compile(
+        r"(?:忽略|无视|無視|不要理会|不要理會)(?:以上|上述|之前).{0,12}"
+        r"(?:指令|提示|规则|規則|设定|設定)"
+    )),
 )
 
 

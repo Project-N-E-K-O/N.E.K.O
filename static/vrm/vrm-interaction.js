@@ -10,6 +10,48 @@ if (!THREE) {
     console.error('[VRM Interaction] THREE.js 未加载，交互功能将不可用');
 }
 
+const VRM_MAX_SAFE_FOV = 44;
+
+function calculateFramingRatio(bounds, width, height, padding) {
+    const viewWidth = Number(width);
+    const viewHeight = Number(height);
+    const safePadding = Math.max(0, Number(padding) || 0);
+    if (!bounds || !Number.isFinite(viewWidth) || !Number.isFinite(viewHeight)
+        || viewWidth <= 0 || viewHeight <= 0) return Infinity;
+    const values = [bounds.minX, bounds.maxX, bounds.minY, bounds.maxY].map(Number);
+    if (!values.every(Number.isFinite)) return Infinity;
+    const centerX = viewWidth / 2;
+    const centerY = viewHeight / 2;
+    const usableHalfWidth = Math.max(1, centerX - safePadding);
+    const usableHalfHeight = Math.max(1, centerY - safePadding);
+    const ratioX = Math.max(Math.abs(values[0] - centerX), Math.abs(values[1] - centerX)) / usableHalfWidth;
+    const ratioY = Math.max(Math.abs(values[2] - centerY), Math.abs(values[3] - centerY)) / usableHalfHeight;
+    return Math.max(ratioX, ratioY);
+}
+
+function calculateExpandedFov(currentFov, bounds, width, height, padding, maximumFov) {
+    const fov = Number(currentFov);
+    const viewWidth = Number(width);
+    const viewHeight = Number(height);
+    const safePadding = Math.max(0, Number(padding) || 0);
+    const maxFov = Math.max(fov, Number(maximumFov) || VRM_MAX_SAFE_FOV);
+    if (!Number.isFinite(fov) || !Number.isFinite(viewWidth) || !Number.isFinite(viewHeight)
+        || viewWidth <= 0 || viewHeight <= 0 || !bounds) return fov;
+    const values = [bounds.minX, bounds.maxX, bounds.minY, bounds.maxY].map(Number);
+    if (!values.every(Number.isFinite)) return fov;
+
+    const requiredRatio = calculateFramingRatio(bounds, viewWidth, viewHeight, safePadding);
+    if (!Number.isFinite(requiredRatio) || requiredRatio <= 1.01) return fov;
+
+    const radians = fov * Math.PI / 180;
+    const expanded = 2 * Math.atan(Math.tan(radians / 2) * requiredRatio) * 180 / Math.PI;
+    return Math.min(maxFov, Math.max(fov, expanded));
+}
+
+if (typeof window !== 'undefined') {
+    window.NekoVRMSafeFraming = Object.freeze({ calculateExpandedFov, calculateFramingRatio });
+}
+
 class VRMInteraction {
     constructor(manager) {
         this.manager = manager;
@@ -51,6 +93,8 @@ class VRMInteraction {
         this._cachedScreenBounds = null; // { minX, maxX, minY, maxY }
         this._floatingButtonsPendingFrame = null; // RAF ID，用于取消
         this._lastModelUpdateTime = 0;
+        this._safeFramingBaselineFov = null;
+        this._safeFramingLastExpandedAt = 0;
 
         // 出界回弹配置（与聊天框风格一致）
         this._snapConfig = {
@@ -1307,6 +1351,47 @@ class VRMInteraction {
 
             this._cachedScreenBounds = { minX, maxX, minY, maxY };
             this._lastModelUpdateTime = Date.now();
+
+            // Keep animated extremities inside a modest screen-safe frame by
+            // widening the lens, never by changing the model's bones, authored
+            // root motion, saved position or user scale. FOV grows in small
+            // increments and returns to the user's baseline only after the
+            // animated bounds have stayed comfortably inside the safe frame.
+            const viewWidth = canvasRect.width;
+            const viewHeight = canvasRect.height;
+            const padding = Math.max(24, Math.min(64, Math.min(viewWidth, viewHeight) * 0.04));
+            const localBounds = {
+                minX: minX - canvasRect.left,
+                maxX: maxX - canvasRect.left,
+                minY: minY - canvasRect.top,
+                maxY: maxY - canvasRect.top
+            };
+            if (!Number.isFinite(this._safeFramingBaselineFov)) {
+                this._safeFramingBaselineFov = camera.fov;
+            }
+            const targetFov = calculateExpandedFov(
+                camera.fov,
+                localBounds,
+                viewWidth,
+                viewHeight,
+                padding,
+                VRM_MAX_SAFE_FOV
+            );
+            if (Number.isFinite(targetFov) && targetFov > camera.fov + 0.05) {
+                camera.fov = Math.min(targetFov, camera.fov + 0.75);
+                this._safeFramingLastExpandedAt = Date.now();
+                camera.updateProjectionMatrix();
+            } else {
+                const framingRatio = calculateFramingRatio(localBounds, viewWidth, viewHeight, padding);
+                const baselineFov = Number(this._safeFramingBaselineFov);
+                const canRelax = !this.isDragging && framingRatio < 0.88
+                    && Number.isFinite(baselineFov) && camera.fov > baselineFov + 0.05
+                    && Date.now() - this._safeFramingLastExpandedAt >= 1500;
+                if (canRelax) {
+                    camera.fov = Math.max(baselineFov, camera.fov - 0.35);
+                    camera.updateProjectionMatrix();
+                }
+            }
         } catch (error) {
             console.warn('[VRM Interaction] 更新模型边界缓存失败:', error);
             this._cachedBox = null;

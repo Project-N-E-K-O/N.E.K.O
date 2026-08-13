@@ -40,8 +40,10 @@ def make_idem_key(client_id: str, trigger_type: str) -> str:
 
 
 def _social_base_url() -> str | None:
-    raw = os.environ.get("NEKO_SOCIAL_BASE_URL", "").strip().rstrip("/")
-    return raw or None
+    """Drop hints stay opt-in: no configured URL means no outbound traffic."""
+    from main_logic import client_registration
+
+    return client_registration.configured_social_base_url()
 
 
 def _get_client_id() -> str | None:

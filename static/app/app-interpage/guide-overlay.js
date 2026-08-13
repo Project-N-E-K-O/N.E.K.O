@@ -524,6 +524,13 @@
             metrics
             && metrics.coordinateSpace === 'screen-dip'
             && metrics.renderBounds
+            && (
+                metrics.renderBoundsCoordinateSpace === 'screen-dip'
+                || (
+                    metrics.niriPetPhysicalCrop === true
+                    && metrics.originSource === 'niri-pet-physical-crop-virtual-bounds'
+                )
+            )
         ) {
             return metrics.renderBounds;
         }
@@ -583,7 +590,11 @@
             if (!api || typeof api !== 'object') {
                 return null;
             }
-            if (typeof api.isActive === 'function' && !api.isActive()) {
+            if (
+                typeof api.isActive === 'function'
+                && !api.isActive()
+                && typeof api.getLayoutState !== 'function'
+            ) {
                 return null;
             }
             return api;
@@ -618,8 +629,14 @@
                 metrics.niriPetPhysicalCropBounds || metrics.contentBounds || metrics.bounds
             );
             var metricVirtualBounds = normalizeYuiGuideNiriPetPhysicalCropBounds(metrics.niriPetPhysicalCropVirtualBounds);
-            var metricOffsetX = Number(metrics.niriPetPhysicalCropOffsetX);
-            var metricOffsetY = Number(metrics.niriPetPhysicalCropOffsetY);
+            var metricLayoutOffsetX = Number(metrics.niriPetPhysicalCropLayoutOffsetX);
+            var metricLayoutOffsetY = Number(metrics.niriPetPhysicalCropLayoutOffsetY);
+            var metricOffsetX = Number.isFinite(metricLayoutOffsetX)
+                ? metricLayoutOffsetX
+                : Number(metrics.niriPetPhysicalCropOffsetX);
+            var metricOffsetY = Number.isFinite(metricLayoutOffsetY)
+                ? metricLayoutOffsetY
+                : Number(metrics.niriPetPhysicalCropOffsetY);
             return metricCropBounds ? {
                 cropBounds: metricCropBounds,
                 virtualBounds: metricVirtualBounds,
@@ -634,10 +651,11 @@
             if (!api || typeof api !== 'object') {
                 return null;
             }
-            if (typeof api.isActive === 'function' && !api.isActive()) {
+            var layoutState = typeof api.getLayoutState === 'function' ? api.getLayoutState() : null;
+            var state = layoutState || (typeof api.getState === 'function' ? api.getState() : null);
+            if (!state && typeof api.isActive === 'function' && !api.isActive()) {
                 return null;
             }
-            var state = typeof api.getState === 'function' ? api.getState() : null;
             var cropBounds = normalizeYuiGuideNiriPetPhysicalCropBounds(state && state.cropBounds);
             var virtualBounds = normalizeYuiGuideNiriPetPhysicalCropBounds(state && state.virtualBounds);
             if (!cropBounds) {
@@ -664,11 +682,16 @@
 
     function toYuiGuideNiriPetPhysicalCropVirtualPoint(x, y) {
         var api = getYuiGuideNiriPetPhysicalCropApi();
-        if (!api || typeof api.toVirtualPoint !== 'function') {
+        var converter = api && (
+            typeof api.toLayoutVirtualPoint === 'function'
+                ? api.toLayoutVirtualPoint
+                : api.toVirtualPoint
+        );
+        if (typeof converter !== 'function') {
             return null;
         }
         try {
-            return normalizeYuiGuideNiriPetPhysicalCropPoint(api.toVirtualPoint({
+            return normalizeYuiGuideNiriPetPhysicalCropPoint(converter.call(api, {
                 x: Number(x || 0),
                 y: Number(y || 0)
             }));
@@ -679,11 +702,16 @@
 
     function toYuiGuideNiriPetPhysicalCropVirtualRect(rect) {
         var api = getYuiGuideNiriPetPhysicalCropApi();
-        if (!api || typeof api.toVirtualRect !== 'function') {
+        var converter = api && (
+            typeof api.toLayoutVirtualRect === 'function'
+                ? api.toLayoutVirtualRect
+                : api.toVirtualRect
+        );
+        if (typeof converter !== 'function') {
             return null;
         }
         try {
-            var virtualRect = normalizeYuiGuideNiriPetPhysicalCropRect(api.toVirtualRect({
+            var virtualRect = normalizeYuiGuideNiriPetPhysicalCropRect(converter.call(api, {
                 x: Number(rect.left || 0),
                 y: Number(rect.top || 0),
                 width: Number(rect.width || 0),
@@ -701,30 +729,37 @@
     }
 
     function toYuiGuideNiriPetPhysicalCropVirtualPointWithState(x, y, cropState) {
-        if (cropState && cropState.metricsVirtualized) {
+        // Virtualized window metrics describe the overlay window bounds. DOM
+        // client coordinates still live in the physically cropped layout and
+        // must always cross the crop offset exactly once. Prefer this captured
+        // state over a second live API read so prepare/commit generations
+        // cannot be mixed inside one conversion.
+        if (cropState) {
             return {
-                x: Number(x || 0),
-                y: Number(y || 0)
+                x: Number(x || 0) + Number(cropState.offsetX || 0),
+                y: Number(y || 0) + Number(cropState.offsetY || 0)
             };
         }
         return toYuiGuideNiriPetPhysicalCropVirtualPoint(x, y) || {
-            x: Number(x || 0) + Number(cropState && cropState.offsetX || 0),
-            y: Number(y || 0) + Number(cropState && cropState.offsetY || 0)
+            x: Number(x || 0),
+            y: Number(y || 0)
         };
     }
 
     function toYuiGuideNiriPetPhysicalCropVirtualRectWithState(rect, cropState) {
-        if (cropState && cropState.metricsVirtualized) {
+        // getBoundingClientRect() is crop-local even when renderer metrics
+        // already expose virtual desktop bounds.
+        if (cropState) {
             return {
-                left: Number(rect.left || 0),
-                top: Number(rect.top || 0),
+                left: Number(rect.left || 0) + Number(cropState.offsetX || 0),
+                top: Number(rect.top || 0) + Number(cropState.offsetY || 0),
                 width: rect.width,
                 height: rect.height
             };
         }
         return toYuiGuideNiriPetPhysicalCropVirtualRect(rect) || {
-            left: Number(rect.left || 0) + Number(cropState && cropState.offsetX || 0),
-            top: Number(rect.top || 0) + Number(cropState && cropState.offsetY || 0),
+            left: Number(rect.left || 0),
+            top: Number(rect.top || 0),
             width: rect.width,
             height: rect.height
         };

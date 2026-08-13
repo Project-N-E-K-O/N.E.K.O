@@ -67,6 +67,7 @@ Not extracted
 """  # noqa: DOCSTRING_CJK
 from __future__ import annotations
 
+import asyncio
 import json
 import math
 import os
@@ -292,6 +293,13 @@ class AntiRepeatCorpus:
         self._cache: Dict[str, List[Dict[str, Any]]] = {}
         self._locks: Dict[str, threading.Lock] = {}
         self._locks_guard = threading.Lock()
+        # 落盘用的第二把锁，和数据锁分开 —— 见 _flush_snapshot 的注释。
+        self._write_locks: Dict[str, threading.Lock] = {}
+        self._staged_seq: Dict[str, int] = {}
+        self._written_seq: Dict[str, int] = {}
+        # 已摘下的落盘 task。只被局部变量引用的 task 会被 GC 回收，事件循环不保证
+        # 跑完它 —— 必须由这里持强引用到完成为止。见 flush_staged_detached。
+        self._detached_flushes: set = set()
 
     # ── path / lock ────────────────────────────────────────
 
@@ -309,11 +317,57 @@ class AntiRepeatCorpus:
                     self._locks[name] = threading.Lock()
         return self._locks[name]
 
+    def _get_write_lock(self, name: str) -> threading.Lock:
+        if name not in self._write_locks:
+            with self._locks_guard:
+                if name not in self._write_locks:
+                    self._write_locks[name] = threading.Lock()
+        return self._write_locks[name]
+
+    def _stage_snapshot_unlocked(self, name: str) -> Tuple[Dict[str, Any], int]:
+        """Take a numbered copy of the in-memory window. Caller holds the data lock."""
+        seq = self._staged_seq.get(name, 0) + 1
+        self._staged_seq[name] = seq
+        payload = {
+            "version": _SCHEMA_VERSION,
+            "window": list(self._cache.get(name, [])),
+        }
+        return payload, seq
+
+    def _flush_snapshot(self, name: str, payload: Dict[str, Any], seq: int) -> None:
+        """Write a staged snapshot to disk **without** holding the data lock.
+
+        The data lock must not be held across the write. ``arecord_output``
+        runs the whole record on a worker thread, while the scoring paths
+        (``score_draft`` / ``score_unanswered_proactive_draft`` /
+        ``top_recent_topics``) still take that lock synchronously on the event
+        loop. Holding it across ``atomic_write_json`` — whose tail is an
+        unbounded fsync — would make those readers block the loop waiting on a
+        worker, which is the exact stall this off-loading exists to remove.
+        Same shape as the RLock transitivity fixed in
+        ``main_routers/system_router/prompt_flows.py``.
+
+        Writers instead serialize on a second, writer-only lock. Ordering is
+        settled by the staged sequence number rather than by which worker wins
+        the lock: a snapshot older than what is already on disk is dropped, so
+        a late writer can never resurrect a stale window.
+        """
+        with self._get_write_lock(name):
+            if seq <= self._written_seq.get(name, 0):
+                return
+            try:
+                atomic_write_json(
+                    self._file_path(name), payload, indent=2, ensure_ascii=False,
+                )
+            except Exception as exc:
+                logger.warning("[AntiRepeat] save failed for %s: %s", name, exc)
+                return
+            self._written_seq[name] = seq
+
     # ── load / save (锁由调用方持有) ───────────────────────
 
-    def _load_unlocked(self, name: str) -> List[Dict[str, Any]]:
-        if name in self._cache:
-            return self._cache[name]
+    def _read_window_from_disk(self, name: str) -> List[Dict[str, Any]]:
+        """Read and normalize one corpus window without taking the data lock."""
         window: List[Dict[str, Any]] = []
         path = self._file_path(name)
         if os.path.exists(path):
@@ -339,21 +393,46 @@ class AntiRepeatCorpus:
         if len(window) > ANTI_REPEAT_BG_WINDOW:
             window.sort(key=lambda e: float(e.get("ts", 0)))
             window = window[-ANTI_REPEAT_BG_WINDOW:]
+        return window
+
+    def _load_unlocked(self, name: str) -> List[Dict[str, Any]]:
+        if name in self._cache:
+            return self._cache[name]
+        window = self._read_window_from_disk(name)
         self._cache[name] = window
         return window
 
-    def _save_unlocked(self, name: str) -> None:
-        path = self._file_path(name)
-        payload = {
-            "version": _SCHEMA_VERSION,
-            "window": self._cache.get(name, []),
-        }
-        try:
-            atomic_write_json(path, payload, indent=2, ensure_ascii=False)
-        except Exception as exc:
-            logger.warning("[AntiRepeat] save failed for %s: %s", name, exc)
-
     # ── public API ─────────────────────────────────────────
+
+    async def apreload(self, name: str) -> None:
+        """Populate the first disk-backed window before synchronous loop use.
+
+        Scoring and staging stay synchronous because they sit on commit/order
+        boundaries where adding an await would reopen cancellation races. Their
+        first cache miss must therefore be paid earlier. Disk I/O happens
+        without the data lock; after it completes, installation is a tiny
+        in-memory critical section. ``setdefault`` preserves a window another
+        caller may have populated while this read was in flight.
+        """
+        name = _resolve_name(name)
+        with self._get_lock(name):
+            if name in self._cache:
+                return
+        try:
+            window = await asyncio.to_thread(self._read_window_from_disk, name)
+        except Exception as exc:
+            # Do not let a failed off-loop warmup send the same slow/unavailable
+            # path lookup back through _load_unlocked on the event loop. An
+            # empty cached window is the safe degraded state for this process;
+            # later records still populate and persist it normally.
+            logger.warning(
+                "[AntiRepeat] preload failed for %s, starting empty: %s",
+                name,
+                exc,
+            )
+            window = []
+        with self._get_lock(name):
+            self._cache.setdefault(name, window)
 
     def record_output(
         self,
@@ -375,8 +454,32 @@ class AntiRepeatCorpus:
           user_directives sink / injection path); otherwise BM25 / soft hints would
           break entirely under an empty lanlan_name config (codex P2)
         """  # noqa: DOCSTRING_CJK
-        if not text or not text.strip():
+        staged = self._record_in_memory(name, text, is_proactive=is_proactive, now=now)
+        if staged is None:
             return
+        resolved, payload, seq = staged
+        # 落盘在数据锁**之外**——见 _flush_snapshot。
+        self._flush_snapshot(resolved, payload, seq)
+
+    def _record_in_memory(
+        self,
+        name: str,
+        text: str,
+        *,
+        is_proactive: bool,
+        now: Optional[float],
+    ) -> Optional[Tuple[str, Dict[str, Any], int]]:
+        """Apply one record to the in-memory window and stage it for the disk.
+
+        Returns the resolved name plus the staged snapshot, or None when the
+        text is skipped. Split out of ``record_output`` so the async twin can
+        run this part inline and off-load only the write: the scoring paths
+        read ``_cache``, so deferring the in-memory update to a worker would
+        let the very next turn score against a corpus that is missing the
+        reply just committed.
+        """
+        if not text or not text.strip():
+            return None
         name = _resolve_name(name)
         ngrams = _ngrams(text)
         min_tokens = (
@@ -385,7 +488,7 @@ class AntiRepeatCorpus:
             else ANTI_REPEAT_MIN_DRAFT_TOKENS
         )
         if len(ngrams) < min_tokens:
-            return
+            return None
         ts = float(now if now is not None else _now())
         entry = {
             "ts": ts,
@@ -395,12 +498,126 @@ class AntiRepeatCorpus:
         with self._get_lock(name):
             window = self._load_unlocked(name)
             window.append(entry)
-            # 滚动：超 BG_WINDOW 弹最老（按 ts 排序保险——理论上 append 时序就单调）
+            # 每次都按 ts 排序，不再只在超窗时排。原来「append 时序天然单调」的假设
+            # 靠的是调用方串行；打分侧是拿尾部切片当「最近几条」的（_split_fg_bg），
+            # 错序会让旧回复被当成更新的。窗口只有 ~100 条，每次排一遍可以忽略。
+            window.sort(key=lambda e: float(e.get("ts", 0)))
             if len(window) > ANTI_REPEAT_BG_WINDOW:
-                window.sort(key=lambda e: float(e.get("ts", 0)))
                 del window[: len(window) - ANTI_REPEAT_BG_WINDOW]
             self._cache[name] = window
-            self._save_unlocked(name)
+            payload, seq = self._stage_snapshot_unlocked(name)
+        return name, payload, seq
+
+    def stage_output(
+        self,
+        name: str,
+        text: str,
+        *,
+        is_proactive: bool = False,
+        now: Optional[float] = None,
+    ) -> Optional[Tuple[str, Dict[str, Any], int]]:
+        """Apply one record in memory now; return a handle to flush later.
+
+        For callers that must satisfy two conflicting orderings at once. The
+        in-memory half has to land BEFORE the turn's terminal signals: the
+        client can send its next message the instant it sees turn-end, and
+        scoring that message against a corpus still missing the reply just
+        committed is how the same line gets said twice. The disk half has to
+        land AFTER them: it is an ``await``, and a cancellation there would
+        otherwise skip the terminal signals entirely, leaving a visible turn
+        with no completion.
+
+        Splitting the two satisfies both — this call takes no await, so it
+        cannot be a cancellation point. Returns None when the text is skipped.
+        """
+        return self._record_in_memory(name, text, is_proactive=is_proactive, now=now)
+
+    async def aflush_staged(
+        self, staged: Optional[Tuple[str, Dict[str, Any], int]],
+    ) -> None:
+        """Write a snapshot staged by ``stage_output`` off the event loop."""
+        if staged is None:
+            return
+        name, payload, seq = staged
+        await asyncio.to_thread(self._flush_snapshot, name, payload, seq)
+
+    def flush_staged_detached(
+        self, staged: Optional[Tuple[str, Dict[str, Any], int]],
+    ) -> None:
+        """Schedule the disk half without adding a cancellation point.
+
+        Use this wherever the caller still has to report a commit after the
+        flush. ``aflush_staged`` is an ``await``, and by the time it runs the
+        reply is already visible and the turn's terminal signals are already
+        out — the turn has happened no matter what the caller's task does next.
+        A ``CancelledError`` raised at that await is a ``BaseException``, so it
+        slips past the caller's ``except Exception`` and past the ``return``
+        that records the delivery. The caller's bookkeeping then reports "not
+        delivered" for a turn the user watched, and the same proactive line
+        becomes eligible to be sent a second time.
+
+        Detaching keeps that stretch free of cancellation points. Ordering
+        survives losing the caller: ``_flush_snapshot`` discards any snapshot
+        older than what is already on disk.
+        """
+        if staged is None:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # 没有循环可挂（同步调用方，或循环已经关停）。落盘是 best-effort，放弃它
+            # 比在这里同步 fsync 更安全 —— 后者正是这轮改动要移出事件循环的东西。
+            logger.debug("[AntiRepeat] detached flush skipped: no running loop")
+            return
+
+        task = loop.create_task(self.aflush_staged(staged))
+        self._detached_flushes.add(task)
+
+        def _done(finished: "asyncio.Task") -> None:
+            self._detached_flushes.discard(finished)
+            if finished.cancelled():
+                return
+            exc = finished.exception()
+            if exc is not None:
+                # 摘下来之后没人 await 它了，异常不主动取一次会变成
+                # "Task exception was never retrieved"。
+                logger.debug("[AntiRepeat] detached flush failed: %s", exc)
+
+        task.add_done_callback(_done)
+
+    async def arecord_output(
+        self,
+        name: str,
+        text: str,
+        *,
+        is_proactive: bool = False,
+        now: Optional[float] = None,
+    ) -> None:
+        """Off-loop twin of ``record_output`` for callers inside a coroutine.
+
+        ``record_output`` ends in an ``atomic_write_json``, which runs mkdir,
+        a stale-temp directory scan, mkstemp, write and an unbounded
+        ``os.fsync`` on the calling thread. This corpus is written on EVERY
+        committed assistant reply, so on the realtime session's loop that
+        physical flush lands between audio chunks.
+
+        Callers that run this on an event loop must preload the first disk read
+        with ``apreload``. The in-memory update remains on the caller so the
+        next turn sees it immediately; only persistence is off-loaded.
+        """
+        # 内存更新留在调用线程上，只有落盘去 worker。整次记录都丢进 worker 的话，
+        # 在那个 job 排队 / 算 ngram 的这段时间里，事件循环上的 score_draft /
+        # top_recent_topics 会读到还没加进这条回复的旧 _cache —— 紧接着的下一轮
+        # 就可能把刚说过的话又说一遍。数据锁此刻只覆盖几微秒的内存操作（落盘已经
+        # 挪出去了，见 _flush_snapshot），所以在循环上取它是安全的。
+        stamped = float(now if now is not None else _now())
+        staged = self._record_in_memory(
+            name, text, is_proactive=is_proactive, now=stamped,
+        )
+        if staged is None:
+            return
+        resolved, payload, seq = staged
+        await asyncio.to_thread(self._flush_snapshot, resolved, payload, seq)
 
     @staticmethod
     def _split_fg_bg(
@@ -600,7 +817,10 @@ class AntiRepeatCorpus:
         name = _resolve_name(name)
         with self._get_lock(name):
             self._cache[name] = []
-            self._save_unlocked(name)
+            payload, seq = self._stage_snapshot_unlocked(name)
+        # 与 record_output 同款：落盘不许在数据锁里做，否则事件循环上的打分调用
+        # 会卡在这次 fsync 上。清空也走 seq，免得它被一次在飞的旧快照写盖回去。
+        self._flush_snapshot(name, payload, seq)
 
 
 # ── 进程级单例 ─────────────────────────────────────────────

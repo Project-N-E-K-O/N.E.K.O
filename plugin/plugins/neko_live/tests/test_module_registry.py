@@ -20,7 +20,7 @@ class _BoomSetup(BaseModule):
     title = "炸 setup"
 
     async def setup(self, ctx):
-        raise RuntimeError("boom-setup")
+        raise RuntimeError("{'token': 'must-not-leak-setup'}")
 
 
 class _BoomStatus(BaseModule):
@@ -28,7 +28,7 @@ class _BoomStatus(BaseModule):
     title = "炸 status"
 
     def status(self):
-        raise RuntimeError("boom-status")
+        raise RuntimeError("{'token': 'must-not-leak-status'}")
 
 
 class _Good(BaseModule):
@@ -72,7 +72,9 @@ def test_setup_failure_is_isolated_and_others_still_setup():
     asyncio.run(reg.setup_all(ctx))
 
     assert reg.is_degraded("boom_setup")
+    assert reg.snapshot()[0]["error"] == "RuntimeError"
     assert not reg.is_degraded("good")
+    assert "must-not-leak" not in json.dumps(ctx.audit.records, ensure_ascii=False)
     assert good.ctx is ctx  # 好模块照常 setup（ctx 注入成功）
     assert any(op == "module_setup_failed" for (op, *_rest) in ctx.audit.records)
 
@@ -91,7 +93,9 @@ def test_snapshot_exposes_domain_schema_degraded_and_guards_status():
     assert snap["good"]["degraded"] is False
 
     assert snap["boom_setup"]["degraded"] is True
-    assert snap["boom_setup"]["error"]
+    assert snap["boom_setup"]["error"] == "RuntimeError"
+    assert snap["boom_status"]["status"]["error"] == "RuntimeError"
+    assert "must-not-leak" not in json.dumps(snap, ensure_ascii=False)
 
     # status() 抛错的模块不拖垮整盘 snapshot，退化成带 error 的 status。
     assert "error" in snap["boom_status"]["status"]

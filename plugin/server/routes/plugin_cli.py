@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, model_validator
@@ -57,6 +59,7 @@ class PluginCliInstallRequest(BaseModel):
     plugins_root: str | None = None
     profiles_root: str | None = None
     on_conflict: str = Field(default="fail", pattern="^fail$")
+    install_source: Literal["imported"] | None = None
     confirm_upgrade: bool = False
     confirmation_token: str | None = None
 
@@ -202,6 +205,7 @@ class PluginCliInstallResponse(BaseModel):
     operation: str = "install"
     restarted: bool = False
     rollback_status: str = "not_needed"
+    install_source_warning: str | None = None
 
 
 class PluginCliSharedDependencyResponse(BaseModel):
@@ -315,11 +319,16 @@ async def plugin_cli_install(
             plugins_root=payload.plugins_root,
             profiles_root=payload.profiles_root,
             on_conflict=payload.on_conflict,
+            install_source=payload.install_source,
             confirm_upgrade=payload.confirm_upgrade,
             confirmation_token=payload.confirmation_token,
         )
     except ServerDomainError as error:
-        raise_http_from_domain(error, logger=logger)
+        raise_http_from_domain(
+            error,
+            logger=logger,
+            include_details=error.code == "PLUGIN_UPGRADE_ROLLED_BACK",
+        )
 
 
 @router.post("/plugin-cli/install-plan", response_model=PluginCliInstallPlanResponse)

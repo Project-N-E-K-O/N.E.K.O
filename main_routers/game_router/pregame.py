@@ -394,7 +394,11 @@ def _format_badminton_pregame_context_for_prompt(
     )
 
 
-async def _fetch_recent_history_for_pregame(lanlan_name: str) -> tuple[str, str]:
+async def _fetch_recent_history_for_pregame(
+    lanlan_name: str,
+    *,
+    language: str | None = None,
+) -> tuple[str, str]:
     try:
         from config import MEMORY_SERVER_PORT
         from utils.internal_http_client import get_internal_http_client
@@ -402,6 +406,7 @@ async def _fetch_recent_history_for_pregame(lanlan_name: str) -> tuple[str, str]
         client = get_internal_http_client()
         response = await client.get(
             f"http://127.0.0.1:{MEMORY_SERVER_PORT}/get_recent_history/{lanlan_name}",
+            params={"language": language} if language else None,
             timeout=5.0,
         )
         if not response.is_success:
@@ -475,6 +480,7 @@ async def _run_soccer_pregame_context_ai(
     recent_history: str,
     neko_initiated: bool,
     neko_invite_text: str,
+    prompt_locale: str | None = None,
 ) -> dict:
     char_info = _get_character_info(lanlan_name)
     return await _run_pregame_context_ai(
@@ -484,7 +490,13 @@ async def _run_soccer_pregame_context_ai(
         recent_history=recent_history,
         neko_initiated=neko_initiated,
         neko_invite_text=neko_invite_text,
-        prompt_template=get_soccer_pregame_context_prompt(char_info.get("user_language")),
+        prompt_template=get_soccer_pregame_context_prompt(
+            # 兜底腿也要全码：prompt_locale 为空时才走到这里，短码会把繁体塌成 zh
+            # （issue #2500 第 2 步）。与本文件下面两处 `or user_language_full` 同形。
+            prompt_locale
+            or char_info.get("user_language_full")
+            or char_info.get("user_language")
+        ),
         extra_payload={"gameType": "soccer"},
     )
 
@@ -496,9 +508,18 @@ async def _build_soccer_pregame_context(
     lanlan_name: str,
     neko_initiated: bool,
     neko_invite_text: str,
+    prompt_locale: str | None = None,
 ) -> tuple[dict, str, str]:
     char_info = _get_character_info(lanlan_name)
-    recent_history, history_error = await _fetch_recent_history_for_pregame(lanlan_name)
+    effective_prompt_locale = (
+        prompt_locale
+        or char_info.get("user_language_full")
+        or char_info.get("user_language")
+    )
+    recent_history, history_error = await _fetch_recent_history_for_pregame(
+        lanlan_name,
+        language=effective_prompt_locale,
+    )
     _log_game_debug_material(
         "pregame_recent_history",
         recent_history or "开始聊天前，没有历史记录。",
@@ -516,6 +537,7 @@ async def _build_soccer_pregame_context(
             recent_history=recent_history,
             neko_initiated=neko_initiated,
             neko_invite_text=neko_invite_text,
+            prompt_locale=effective_prompt_locale,
         )
     except ValueError as exc:
         logger.warning("🎮 开局上下文 JSON 非法，使用普通陪玩兜底: lanlan=%s err=%s", lanlan_name, exc)
@@ -554,10 +576,19 @@ async def _build_badminton_pregame_context(
     neko_initiated: bool,
     neko_invite_text: str,
     mode: str = "spectator",
+    prompt_locale: str | None = None,
 ) -> tuple[dict, str, str]:
     normalized_mode = _normalize_badminton_mode(mode)
     char_info = _get_character_info(lanlan_name)
-    recent_history, history_error = await _fetch_recent_history_for_pregame(lanlan_name)
+    effective_prompt_locale = (
+        prompt_locale
+        or char_info.get("user_language_full")
+        or char_info.get("user_language")
+    )
+    recent_history, history_error = await _fetch_recent_history_for_pregame(
+        lanlan_name,
+        language=effective_prompt_locale,
+    )
     _log_game_debug_material(
         "pregame_recent_history",
         recent_history or "开始聊天前，没有历史记录。",
@@ -575,7 +606,9 @@ async def _build_badminton_pregame_context(
             recent_history=recent_history,
             neko_initiated=neko_initiated,
             neko_invite_text=neko_invite_text,
-            prompt_template=get_badminton_pregame_context_prompt(char_info.get("user_language")),
+            prompt_template=get_badminton_pregame_context_prompt(
+                effective_prompt_locale
+            ),
             extra_payload={"gameType": game_type, "mode": normalized_mode},
         )
     except ValueError as exc:

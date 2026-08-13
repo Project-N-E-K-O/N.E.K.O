@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import pytest
 
+import main_logic.voice_turn.contracts as voice_contracts
+from main_logic.asr_client import runtime as asr_runtime
+from main_logic.asr_client import transcript
 from main_logic.asr_client.lifecycle import (
     FinalKey,
     VoiceIngressToken,
@@ -24,6 +27,14 @@ def test_default_config_matches_phase3_contract() -> None:
     assert config.trailing_audio_ms == 400
     assert config.pending_audio_ms == 8_000
     assert config.smart_turn_warm_ms == 60_000
+
+
+def test_transport_and_final_types_have_one_asr_owned_identity() -> None:
+    assert not hasattr(voice_contracts, "VoiceTransportToken")
+    assert not hasattr(voice_contracts, "FinalKey")
+    assert asr_runtime.VoiceTransportToken is VoiceTransportToken
+    assert asr_runtime.FinalKey is FinalKey
+    assert transcript.FinalKey is FinalKey
 
 
 @pytest.mark.parametrize(

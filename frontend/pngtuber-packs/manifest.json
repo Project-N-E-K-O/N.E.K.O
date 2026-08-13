@@ -1,0 +1,74 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "folder": "yui-lolita",
+      "name": "YUI Lolita",
+      "archive": "yui-lolita.zip",
+      "archive_sha256": "4aeca2a2932a5069360bcb29696c883eb646d88e1ce04544679e6bca951fcde9",
+      "archive_size": 7597132,
+      "unpacked_size": 29501546,
+      "file_count": 133,
+      "source_format": "pngtube_remix_pngremix",
+      "source_file": "yuiLolita.pngRemix",
+      "source_sha256": "821E7FBBEE82EAD9E8D88C1CFAAAC84B4017ABC98D6B55477FEA04EAA04C901F",
+      "pngtuber": {
+        "idle_image": "idle.png",
+        "talking_image": "idle.png",
+        "layered_metadata": "metadata.pngtube-remix.json",
+        "adapter": "layered_canvas_v1",
+        "source_type": "pngtube_remix_pngremix",
+        "scale": 1,
+        "offset_x": 0,
+        "offset_y": 0,
+        "mirror": false
+      }
+    },
+    {
+      "folder": "yui-origin",
+      "name": "YUI Origin",
+      "archive": "yui-origin.zip",
+      "archive_sha256": "991d9c6ad6e58abe3725593c6389862230e17190135d6db28e68cd97f2408fd8",
+      "archive_size": 7130165,
+      "unpacked_size": 29162936,
+      "file_count": 134,
+      "source_format": "pngtube_remix_pngremix",
+      "source_file": "yuiOrigin.pngRemix",
+      "source_sha256": "EEDF304CFEBA7D1C949D51B332D04AAD210A396FF1E50087ACE7BEFF598C2AA4",
+      "pngtuber": {
+        "idle_image": "idle.png",
+        "talking_image": "idle.png",
+        "layered_metadata": "metadata.pngtube-remix.json",
+        "adapter": "layered_canvas_v1",
+        "source_type": "pngtube_remix_pngremix",
+        "scale": 1,
+        "offset_x": 0,
+        "offset_y": 0,
+        "mirror": false
+      }
+    },
+    {
+      "folder": "yui-sister",
+      "name": "YUI Sister",
+      "archive": "yui-sister.zip",
+      "archive_sha256": "047adf04efc3bb50460194b691a7c6393ad43c95aef9fb4b0a429fa02a5e25e6",
+      "archive_size": 7182965,
+      "unpacked_size": 28903849,
+      "file_count": 132,
+      "source_format": "pngtube_remix_pngremix",
+      "source_file": "yuiSister.pngRemix",
+      "source_sha256": "1F107C491129E4D6C927C4939AB12CAED76164301F63385D4C780164AE078419",
+      "pngtuber": {
+        "idle_image": "idle.png",
+        "talking_image": "idle.png",
+        "layered_metadata": "metadata.pngtube-remix.json",
+        "adapter": "layered_canvas_v1",
+        "source_type": "pngtube_remix_pngremix",
+        "scale": 1,
+        "offset_x": 0,
+        "offset_y": 0,
+        "mirror": false
+      }
+    }
+  ]
+}

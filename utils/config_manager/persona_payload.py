@@ -30,13 +30,21 @@ from ._shared import logger
 from .reserved_schema import get_reserved, set_reserved
 
 
-DEFAULT_YUI_LIVE2D_MODEL_PATH = "yui-origin/yui-origin.model3.json"
+DEFAULT_YUI_LIVE2D_MODEL_PATH = "yui-lolita/yui-lolita.model3.json"
+
+# 默认皮肤从 yui-origin 换成 yui-lolita 之后，存量用户的 YUI 卡里仍然写着
+# yui-origin。两个内置模型都算"还在用原装 YUI 卡"，否则老用户会在换默认皮肤
+# 那一刻掉出免费 YUI 音色的兜底（见 ensure_default_yui_voice_for_free_api）。
+_BUILTIN_YUI_LIVE2D_MODEL_NAMES = ("yui-lolita", "yui-origin")
+BUILTIN_YUI_LIVE2D_MODEL_PATHS = frozenset(
+    f"{name}/{name}.model3.json" for name in _BUILTIN_YUI_LIVE2D_MODEL_NAMES
+)
 
 
 def _normalize_live2d_model_path(value) -> str:
     model_path = str(value or "").strip().replace("\\", "/").lower()
-    if model_path == "yui-origin":
-        return DEFAULT_YUI_LIVE2D_MODEL_PATH
+    if model_path in _BUILTIN_YUI_LIVE2D_MODEL_NAMES:
+        return f"{model_path}/{model_path}.model3.json"
     return model_path
 
 
@@ -57,7 +65,7 @@ def _is_default_yui_character(character_name: str, character_data: dict) -> bool
         default="",
         legacy_keys=("live2d",),
     )
-    return _normalize_live2d_model_path(model_path) == DEFAULT_YUI_LIVE2D_MODEL_PATH
+    return _normalize_live2d_model_path(model_path) in BUILTIN_YUI_LIVE2D_MODEL_PATHS
 
 
 # 历史上 free_voices["yui_cn"] 用过、现已被替换的免费 YUI 预设音色 ID。

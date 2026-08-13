@@ -131,6 +131,8 @@ class CaptureMixin:
         self._last_rejected_capture_backend = ""
         self._ocr_capture_content_trusted = True
         self._ocr_capture_rejected_reason = ""
+        self._capture_region_occluded = False
+        self._capture_target_foreground = False
         self._runtime.last_capture_error = ""
         self._runtime.last_capture_image_hash = ""
         self._runtime.consecutive_same_capture_frames = 0
@@ -1109,6 +1111,23 @@ class CaptureMixin:
                 or getattr(self._capture_backend, "last_backend_detail", "")
                 or ""
             )
+            extraction.target_foreground = bool(
+                frame_info.get("galgame_target_foreground", getattr(target, "is_foreground", False))
+            )
+            extraction.capture_region_occluded = bool(
+                frame_info.get("galgame_capture_region_occluded", False)
+            )
+            extraction.capture_content_trusted = bool(
+                frame_info.get(
+                    "galgame_capture_content_trusted",
+                    getattr(self._capture_backend, "last_capture_content_trusted", True),
+                )
+            )
+            extraction.capture_untrusted_reason = str(
+                frame_info.get("galgame_capture_untrusted_reason")
+                or getattr(self._capture_backend, "last_capture_untrusted_reason", "")
+                or ""
+            )
             extraction.bounds_coordinate_space = str(
                 frame_info.get("galgame_bounds_coordinate_space") or ""
             )
@@ -1129,6 +1148,16 @@ class CaptureMixin:
             )
             extraction.capture_backend_detail = str(
                 getattr(self._capture_backend, "last_backend_detail", "") or ""
+            )
+            extraction.target_foreground = bool(getattr(target, "is_foreground", False))
+            extraction.capture_region_occluded = bool(
+                getattr(self._capture_backend, "last_capture_region_occluded", False)
+            )
+            extraction.capture_content_trusted = bool(
+                getattr(self._capture_backend, "last_capture_content_trusted", True)
+            )
+            extraction.capture_untrusted_reason = str(
+                getattr(self._capture_backend, "last_capture_untrusted_reason", "") or ""
             )
         capture_quality_detail = self._capture_quality_detail(frame)
         if (

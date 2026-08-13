@@ -85,6 +85,15 @@ class MemorySubject:
         if kind not in SUBJECT_KINDS:
             raise MemoryScopeError(f"unsupported subject_kind: {kind!r}")
         subject_id = _clean_component(self.subject_id, field="subject_id")
+        if kind == SUBJECT_GROUP_PARTICIPANT:
+            components = subject_id.split(':')
+            if (
+                len(components) != 3
+                or any(not component for component in components)
+            ):
+                raise MemoryScopeError(
+                    "group_participant subject_id must be platform:group:speaker"
+                )
         scope = _clean_component(self.scope, field="scope")
         if scope == LEGACY_PRIVATE_SCOPE:
             raise MemoryScopeError("new subjects cannot use legacy_private scope")
@@ -153,6 +162,63 @@ class MemorySubject:
             "subject_id": self.subject_id,
             "scope": self.scope,
         }
+
+
+@dataclass(frozen=True, slots=True)
+class ParticipantGroup:
+    """Several subjects that are the SAME participant (one entity × one conversation).
+
+    A pure value container for a conclusion somebody else computed. This module
+    stays zero-IO and must never import ``memory.trust_store``: ``MemorySubject``
+    is a frozen value type, and letting a value type read ``speaker_trust.json``
+    would destroy its value semantics. The resolution lives one layer up, in
+    ``memory.subject_identity``.
+
+    * ``primary`` is the slot's representative — the canonical subject when one
+      is resolvable, otherwise the first subject the request supplied.
+    * ``members`` holds every subject of this participant, never truncated.
+    * ``markers`` is the ``(key, scope)`` authorization set. Widening it is O(1)
+      for filtering, because ``filter_entries_for_subjects`` is a set membership
+      test.
+    """
+
+    primary: MemorySubject
+    members: tuple[MemorySubject, ...]
+    markers: frozenset[tuple[str, str]]
+
+    @classmethod
+    def of(
+        cls,
+        primary: MemorySubject,
+        members: Iterable[MemorySubject] | None = None,
+    ) -> "ParticipantGroup":
+        ordered: list[MemorySubject] = []
+        seen: set[tuple[str, str]] = set()
+        for subject in (primary, *(members or ())):
+            marker = (subject.key, subject.scope)
+            if marker not in seen:
+                seen.add(marker)
+                ordered.append(subject)
+        return cls(primary, tuple(ordered), frozenset(seen))
+
+
+def flatten_groups(
+    groups: Iterable[ParticipantGroup] | None,
+) -> tuple[MemorySubject, ...]:
+    """Flatten participant groups into the authorization subject list.
+
+    Order is group order first, then member order inside each group, and
+    duplicates are dropped — the same contract ``normalize_subjects`` offers.
+    """
+    flattened: list[MemorySubject] = []
+    seen: set[tuple[str, str]] = set()
+    for group in groups or ():
+        for subject in group.members:
+            marker = (subject.key, subject.scope)
+            if marker not in seen:
+                seen.add(marker)
+                flattened.append(subject)
+    return tuple(flattened)
 
 
 def coerce_subject(value: MemorySubject | Mapping[str, Any] | None) -> MemorySubject | None:

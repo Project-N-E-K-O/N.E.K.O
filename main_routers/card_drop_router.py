@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import hmac
 import html
 import json
 import logging
@@ -30,6 +31,8 @@ from urllib.parse import quote, urlparse
 import httpx
 from fastapi import APIRouter, Body, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+
+from main_logic import client_registration
 
 logger = logging.getLogger("neko.card_drop")
 
@@ -230,9 +233,8 @@ def _discard_native_delegate(value: object) -> None:
 
 
 def _social_base_url() -> str:
-    """Return the cloud base URL, falling back to the local dev default."""
-    raw = (os.environ.get("NEKO_SOCIAL_BASE_URL", "") or "").strip().rstrip("/")
-    return raw or _DEFAULT_SOCIAL_BASE_URL
+    """Return the cloud base URL, falling back to production."""
+    return client_registration.social_base_url()
 
 
 def _get_client_credentials() -> tuple[str, str] | None:
@@ -271,6 +273,147 @@ def _relay(r: httpx.Response):
             detail = r.text[:200]
         raise HTTPException(status_code=r.status_code, detail=detail)
     return r.json()
+
+
+async def _confirm_cloud_forge_debit(
+    *,
+    operation_id: str,
+    credit_id: str,
+    card_id: str,
+    credit: dict,
+) -> dict:
+    """Tell the cloud about a debit only after the local ledger has committed it."""
+    credentials = await asyncio.to_thread(_get_client_credentials)
+    if not credentials:
+        return {"confirmed": False, "detail": "client_not_registered"}
+    client_id, client_proof = credentials
+    base_url = _social_base_url()
+    try:
+        parsed_base_url = urlparse(base_url)
+        base_hostname = parsed_base_url.hostname
+        valid_https = parsed_base_url.scheme == "https" and bool(base_hostname)
+        valid_loopback_http = (
+            parsed_base_url.scheme == "http"
+            and base_hostname
+            and base_hostname.lower() in _LOOPBACK_HOSTS
+        )
+        if not (valid_https or valid_loopback_http):
+            return {"confirmed": False, "detail": "invalid_cloud_base_url"}
+    except ValueError:
+        return {"confirmed": False, "detail": "invalid_cloud_base_url"}
+    url = (
+        f"{base_url}/api/cards/forge-operations/"
+        f"{operation_id}/debit-confirmation"
+    )
+    try:
+        voucher = _forge_voucher_attestation(
+            client_id=client_id,
+            client_proof=client_proof,
+            operation_id=operation_id,
+            credit_id=credit_id,
+            card_id=card_id,
+            credit=credit,
+        )
+    except (TypeError, ValueError, OverflowError):
+        # The local ledger has already committed at this point. A malformed
+        # legacy timestamp must not turn that successful debit into an HTTP 500;
+        # leave cloud confirmation pending so a repaired record can be replayed.
+        return {"confirmed": False, "detail": "invalid_forge_voucher"}
+    request_payload = {
+        "client_id": client_id,
+        "client_proof": client_proof,
+        "credit_id": credit_id,
+        "card_id": card_id,
+        "voucher": voucher,
+    }
+
+    async def _post() -> tuple[httpx.Response | None, dict | None]:
+        try:
+            async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SEC) as client:
+                res = await client.post(url, json=request_payload)
+        except (httpx.HTTPError, OSError):
+            return None, None
+        try:
+            return res, res.json()
+        except (ValueError, TypeError):
+            return res, None
+
+    response, payload = await _post()
+    if response is None:
+        return {"confirmed": False, "detail": "cloud_unreachable"}
+
+    # A rejection naming an unknown client is usually this install's first cloud
+    # call after the cloud lost (or never had) the row. Register, then retry once.
+    # The voucher signature requires the binding proof even on loopback. HTTPS
+    # remains mandatory for every non-loopback cloud endpoint.
+    detail = payload.get("detail") if isinstance(payload, dict) else None
+    if client_registration.looks_unregistered(response.status_code, detail):
+        if await client_registration.ensure_client_registered(base_url, force=True):
+            response, payload = await _post()
+            if response is None:
+                return {"confirmed": False, "detail": "cloud_unreachable"}
+
+    if not 200 <= response.status_code < 300 or not isinstance(payload, dict):
+        detail = payload.get("detail") if isinstance(payload, dict) else None
+        return {
+            "confirmed": False,
+            "detail": str(detail or f"http_{response.status_code}"),
+        }
+    confirmed = (
+        payload.get("confirmed") is True
+        and str(payload.get("operation_id") or "") == operation_id
+        and str(payload.get("credit_id") or "") == credit_id
+        and str(payload.get("card_id") or "") == card_id
+        and bool(payload.get("confirmed_at"))
+    )
+    return {"confirmed": confirmed}
+
+
+_FORGE_VOUCHER_KEY_CONTEXT = b"N.E.K.O forge voucher attestation v1"
+
+
+def _forge_voucher_timestamp(value: object) -> str:
+    from datetime import UTC, datetime
+
+    if not isinstance(value, str):
+        raise ValueError("invalid_forge_voucher_timestamp")
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError("invalid_forge_voucher_timestamp")
+    return parsed.astimezone(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
+
+
+def _forge_voucher_attestation(
+    *,
+    client_id: str,
+    client_proof: str,
+    operation_id: str,
+    credit_id: str,
+    card_id: str,
+    credit: dict,
+) -> dict:
+    voucher = {
+        "version": 1,
+        "operation_id": operation_id,
+        "credit_id": credit_id,
+        "card_id": card_id,
+        "rarity": str(credit.get("rarity") or ""),
+        "created_at": _forge_voucher_timestamp(credit.get("created_at")),
+        "expires_at": _forge_voucher_timestamp(credit.get("expires_at")),
+        "reserved_at": _forge_voucher_timestamp(credit.get("reserved_at")),
+        "consumed_at": _forge_voucher_timestamp(credit.get("consumed_at")),
+    }
+    document = {**voucher, "client_id": client_id}
+    message = json.dumps(
+        document, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    signing_key = hmac.new(
+        client_proof.encode("utf-8"),
+        _FORGE_VOUCHER_KEY_CONTEXT,
+        hashlib.sha256,
+    ).digest()
+    voucher["signature"] = hmac.new(signing_key, message, hashlib.sha256).hexdigest()
+    return voucher
 
 
 def _origin_port(parsed) -> int | None:
@@ -1406,27 +1549,46 @@ async def bind_client_approve_endpoint(request: Request, payload: dict = Body(..
             {"detail": "client_not_registered"}, status_code=409, headers=cors
         )
     client_id, client_proof = credentials
-    try:
-        async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SEC) as client:
-            response = await client.post(
-                f"{_social_base_url()}/api/clients/bind-approval",
-                json={
-                    "client_id": client_id,
-                    "binding_challenge": challenge,
-                    "client_proof": client_proof,
-                },
-            )
-    except (httpx.HTTPError, OSError):
+    base_url = _social_base_url()
+    approval_payload = {
+        "client_id": client_id,
+        "binding_challenge": challenge,
+        "client_proof": client_proof,
+    }
+
+    async def _approve():
+        try:
+            async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SEC) as client:
+                res = await client.post(
+                    f"{base_url}/api/clients/bind-approval", json=approval_payload
+                )
+        except (httpx.HTTPError, OSError):
+            return None, None
+        try:
+            return res, res.json().get("detail")
+        except (ValueError, TypeError, AttributeError):
+            return res, None
+
+    response, detail = await _approve()
+    if response is None:
         return JSONResponse(
             {"detail": "cloud_unreachable"}, status_code=502, headers=cors
         )
+    # Register-then-retry once: the cloud reports an unknown client_id the same
+    # way it reports a bad proof, and this install may never have registered.
+    if client_registration.looks_unregistered(
+        response.status_code, detail
+    ) and await client_registration.ensure_client_registered(base_url, force=True):
+        response, detail = await _approve()
+        if response is None:
+            return JSONResponse(
+                {"detail": "cloud_unreachable"}, status_code=502, headers=cors
+            )
     if response.status_code >= 400:
-        try:
-            detail = response.json().get("detail") or f"http_{response.status_code}"
-        except (ValueError, TypeError, AttributeError):
-            detail = f"http_{response.status_code}"
         return JSONResponse(
-            {"detail": detail}, status_code=response.status_code, headers=cors
+            {"detail": detail or f"http_{response.status_code}"},
+            status_code=response.status_code,
+            headers=cors,
         )
     return JSONResponse({"ok": True}, headers=cors)
 
@@ -2048,7 +2210,19 @@ async def commit_credit_endpoint(
     except (ValueError, LookupError, RuntimeError) as exc:
         error = _credit_error(exc)
         return JSONResponse({"detail": error.detail}, status_code=error.status_code, headers=cors)
-    return JSONResponse(result, headers=cors)
+    confirmation = await _confirm_cloud_forge_debit(
+        operation_id=operation_id,
+        credit_id=credit_id,
+        card_id=str(payload.get("card_id") or ""),
+        credit=result["credit"],
+    )
+    return JSONResponse(
+        {
+            **result,
+            "debit_confirmed": confirmation.get("confirmed") is True,
+        },
+        headers=cors,
+    )
 
 
 @router.delete("/credits/{credit_id}/reservations/{operation_id}", summary="云端明确失败后释放本机券预占")

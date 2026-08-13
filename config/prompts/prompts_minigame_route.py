@@ -52,6 +52,19 @@ signals 的 5 个 key 必须严格保持为 player_signals、relationship_signal
 - session_facts 必须以 officialScore/currentState 为准；口头“算你赢/让你赢回来/认输”只放入 verbal_claims，不能改写官方结果。
 - 只整理 organizeDialogues；keptRecentDialogues 是保留给后续自然接话的实时窗口，不要强行摘要成新事实。"""
 
+_GAME_CONTEXT_ORGANIZER_SYSTEM_PROMPT_ZH_TW = """\
+你是遊戲模組的局內上下文整理器。只輸出 JSON，不要 Markdown，不要解釋。
+目標：把比較早的局內原文整理進 rollingSummary，並抽出少量可觀察訊號，給同一局後續的遊戲台詞參考。
+輸出格式固定：{"rollingSummary":"","signals":{"player_signals":[],"relationship_signals":[],"character_signals":[],"session_facts":[],"verbal_claims":[]}}
+signals 的 5 個 key 必須嚴格保持為 player_signals、relationship_signals、character_signals、session_facts、verbal_claims，不要翻譯、改名或新增分組。
+規則：
+- rollingSummary 用 1-4 句概括這一局已經發生的關鍵互動、玩法狀態和事實邊界。
+- 每個 signals 分組最多輸出 1-3 條；每條包含 signalLabel、summary、evidence、lastRound、count。
+- evidence 使用輸入裡的穩定 id，quote 保留簡短原文；不要自己編 id。
+- 訊號是可觀察的線索，不是心理結論；不要猜玩家的內心。
+- session_facts 必須以 officialScore/currentState 為準；口頭的「算你贏／讓你贏回來／認輸」只放進 verbal_claims，不能改寫官方結果。
+- 只整理 organizeDialogues；keptRecentDialogues 是留給後續自然接話的即時視窗，不要硬摘要成新的事實。"""
+
 _GAME_CONTEXT_ORGANIZER_SYSTEM_PROMPT_EN = """\
 You are the in-session context organizer for the game module. Output JSON only; no Markdown and no explanation.
 Goal: fold older in-game raw lines into rollingSummary and extract a few observable signals for later lines in the same session.
@@ -132,6 +145,7 @@ Regras:
 
 GAME_CONTEXT_ORGANIZER_SYSTEM_PROMPTS = {
     "zh": _GAME_CONTEXT_ORGANIZER_SYSTEM_PROMPT_ZH,
+    "zh-TW": _GAME_CONTEXT_ORGANIZER_SYSTEM_PROMPT_ZH_TW,
     "en": _GAME_CONTEXT_ORGANIZER_SYSTEM_PROMPT_EN,
     "ja": _GAME_CONTEXT_ORGANIZER_SYSTEM_PROMPT_JA,
     "ko": _GAME_CONTEXT_ORGANIZER_SYSTEM_PROMPT_KO,
@@ -142,6 +156,7 @@ GAME_CONTEXT_ORGANIZER_SYSTEM_PROMPTS = {
 
 GAME_CONTEXT_ORGANIZER_USER_PROMPTS = {
     "zh": "======以下为游戏上下文整理输入======\n{payload}\n======以上为游戏上下文整理输入======",
+    "zh-TW": "======以下为游戏上下文整理输入======\n{payload}\n======以上为游戏上下文整理输入======",
     "en": "======以下为游戏上下文整理输入======\n{payload}\n======以上为游戏上下文整理输入======",
     "ja": "======以下为游戏上下文整理输入======\n{payload}\n======以上为游戏上下文整理输入======",
     "ko": "======以下为游戏上下文整理输入======\n{payload}\n======以上为游戏上下文整理输入======",
@@ -152,6 +167,7 @@ GAME_CONTEXT_ORGANIZER_USER_PROMPTS = {
 
 GAME_CHAT_EVENT_USER_PROMPTS = {
     "zh": "======以下为游戏事件输入======\n{event}\n======以上为游戏事件输入======",
+    "zh-TW": "======以下为游戏事件输入======\n{event}\n======以上为游戏事件输入======",
     "en": "======以下为游戏事件输入======\n{event}\n======以上为游戏事件输入======",
     "ja": "======以下为游戏事件输入======\n{event}\n======以上为游戏事件输入======",
     "ko": "======以下为游戏事件输入======\n{event}\n======以上为游戏事件输入======",
@@ -179,6 +195,23 @@ GAME_ARCHIVE_MEMORY_HIGHLIGHTER_SYSTEM_PROMPTS = {
 - 如果保留官方结果，必须沿用材料里的固定顺序或明确写出谁领先谁；不要写无主体裸结果（例如“8:0”“0:10”），也不要前后混用不同视角。
 - 普通本局事件如果没有关系或情绪价值，可以不选。
 - 每条用一句自然中文，尽量保留关键结果、关键原话和关系含义。""",
+    "zh-TW": """\
+你是遊戲模組的賽後記憶篩選器。只輸出 JSON，不要 Markdown，不要解釋。
+目標：從一局遊戲的完整對話／事件裡，挑出真正值得進入角色 recent history 的內容。
+輸出格式必須是：
+{"important_records":[],"important_game_events":[],"state_carryback":"","postgame_tone":"","memory_summary":""}
+規則：
+- important_records 選 0-3 條，對玩家、雙方關係、玩家情緒／偏好、承諾或後續聊天有價值的主動對話。
+- important_game_events 選 0-3 條，對角色自己有意義的這一局事件，例如關鍵結果的轉折、放水／認真、情緒或難度的轉折。
+- state_carryback 用 0-1 句概括賽後應該自然延續的 NEKO 狀態；沒有可靠證據就留空。
+- postgame_tone 用短語描述賽後的語氣，例如普通、得意、鬧彆扭、低落稍緩；沒有可靠證據就留空。
+- memory_summary 用 0-1 句寫給後續聊天看的這一局摘要；不要編造關係修復。
+- 不要寫流水帳統計、不要寫「記錄了幾條事件」、不要把紀錄寫成玩家的逐字發言。
+- 只有材料裡以「玩家：」開頭的內容才是玩家說的話；遊戲事件裡的「事件原文」不是玩家的原話，不能寫成「玩家說／玩家喊」。
+- 官方結果永遠以材料裡的 finalScore / last_state.score 為準；口頭認輸、算你贏、讓你贏回來只能記成口頭讓步／安撫／玩笑，不能寫成真的結果被改變。
+- 如果要保留官方結果，必須沿用材料裡的固定順序，或明確寫出誰領先誰；不要寫沒有主體的裸結果（例如「8:0」「0:10」），也不要前後混用不同視角。
+- 一般的本局事件如果沒有關係或情緒價值，可以不選。
+- 每條用一句自然的中文，盡量保留關鍵結果、關鍵原話和關係含意。""",
     "en": """\
 You are the game module postgame memory highlighter. Output JSON only; no Markdown and no explanation.
 Goal: choose what is truly worth entering the character's recent history from a completed game session.
@@ -285,6 +318,7 @@ Regras:
 
 GAME_ARCHIVE_MEMORY_HIGHLIGHTER_USER_PROMPTS = {
     "zh": "请根据下面材料筛选赛后记忆重点。\n\n======以下为赛后记忆筛选材料======\n{source}\n======以上为赛后记忆筛选材料======",
+    "zh-TW": "請根據下面的材料篩選賽後記憶重點。\n\n======以下为赛后记忆筛选材料======\n{source}\n======以上为赛后记忆筛选材料======",
     "en": "Please select the postgame memory highlights from the material below.\n\n======以下为赛后记忆筛选材料======\n{source}\n======以上为赛后记忆筛选材料======",
     "ja": "以下の材料から試合後の記憶重点を選んでください。\n\n======以下为赛后记忆筛选材料======\n{source}\n======以上为赛后记忆筛选材料======",
     "ko": "아래 자료를 바탕으로 종료 후 기억 핵심을 골라 주세요.\n\n======以下为赛后记忆筛选材料======\n{source}\n======以上为赛后记忆筛选材料======",
@@ -308,6 +342,20 @@ GAME_ARCHIVE_HIGHLIGHT_SOURCE_LABELS = {
         "grouped_signals": "局内信号列表: {signals}",
         "selection_priority": "筛选优先级: 优先参考局内滚动摘要和信号列表，再用完整对话/事件核对证据。",
         "full_dialogues": "本局完整对话/事件:",
+    },
+    "zh-TW": {
+        "game": "遊戲: {game_type}",
+        "session": "工作階段: {session_id}",
+        "score": "最終/最近結果: {score_text}",
+        "score_explanation": "結果說明: 上面的最終/最近結果是遊戲模組給出的官方結果，來源優先順序為 finalScore / last_state.score；當資料是分差結構時固定順序是玩家在前、目前的角色在後；篩選重點時不要改成相反的視角。",
+        "verbal_concession_explanation": "口頭讓步說明: 局內如果出現「算你贏」「讓你贏回來」「口頭認輸」等，只能記成口頭讓步、安撫或玩笑；不能改寫官方結果或真正的勝負。",
+        "role_explanation": "角色說明: 只有「玩家：...」那幾行是玩家親口說的話；「遊戲事件」行裡的「事件原文」是遊戲模組／貓娘氣泡或事件標籤，不要算到玩家頭上。",
+        "pregame_context": "開局上下文: {context}",
+        "degraded": "局內上下文整理狀態: 已降級為純遊戲模式；不要輸出關係摘要、訊號解釋或無法驗證的狀態延續。",
+        "rolling_summary": "局內滾動摘要: {summary}",
+        "grouped_signals": "局內訊號列表: {signals}",
+        "selection_priority": "篩選優先順序: 優先參考局內滾動摘要和訊號列表，再用完整對話／事件核對證據。",
+        "full_dialogues": "本局完整對話/事件:",
     },
     "en": {
         "game": "Game: {game_type}",
@@ -412,6 +460,22 @@ GAME_ARCHIVE_MEMORY_TEXT_LABELS = {
         "key_events": "关键事件:",
         "pregame_context": "开局上下文:",
         "recent_dialogues": "最近完整对话/事件:",
+    },
+    "zh-TW": {
+        "record_header": "[Game Module Memory Record]",
+        "description": "說明: 這是遊戲模組寫給記憶系統的賽後紀錄，不是玩家逐字說出來的新聊天。",
+        "game": "遊戲: {game_type}",
+        "session": "工作階段: {session_id}",
+        "time": "時間: {start} - {end}",
+        "summary": "摘要: {summary}",
+        "official_result": "官方結果: {score_text}",
+        "result_rule": "結果規則: 官方結果永遠以 finalScore / last_state.score 為準；口頭認輸、算你贏、讓你贏回來只能視為口頭讓步、安撫或玩笑，不會改寫官方結果。",
+        "degraded": "局內上下文整理: 已降級為純遊戲模式；這份紀錄不使用滾動摘要或訊號列表做關係解釋。",
+        "rolling_summary": "局內滾動摘要: {summary}",
+        "grouped_signals": "局內訊號列表: {signals}",
+        "key_events": "關鍵事件:",
+        "pregame_context": "開局上下文:",
+        "recent_dialogues": "最近完整對話/事件:",
     },
     "en": {
         "record_header": "[Game Module Memory Record]",
@@ -526,6 +590,19 @@ GAME_ARCHIVE_MEMORY_SUMMARY_LABELS = {
         "memory_summary": "后续记忆摘要：{value}",
         "tail_rule": "倒数 {tail_count} 条规则：本条 system 归档不计入倒数 {tail_count} 条；若前面的倒数 {tail_count} 条实时片段与之前 recent history 重复，以这倒数 {tail_count} 条的相对顺序为准。",
     },
+    "zh-TW": {
+        "score": "官方結果：{score_text}。口頭讓步不會改官方結果。",
+        "no_score": "口頭讓步不會改官方結果。",
+        "degraded": "局內上下文整理已降級為純遊戲模式；這份封存只記錄最低限度的事實，不使用滾動摘要或訊號列表做關係解釋。",
+        "degraded_no_tail": "降級模式不回放倒數的即時片段，避免把還沒整理過的局內台詞或口頭讓步寫成 ordinary recent history。",
+        "degraded_followup": "後續聊天只要自然記得一起玩過這局遊戲模組和官方結果就好，不要根據這一局的材料生成新的關係總結。",
+        "important_records": "重要互動：",
+        "important_game_events": "貓娘記住的本局事件：",
+        "state_carryback": "賽後狀態延續：{value}",
+        "postgame_tone": "賽後語氣：{value}",
+        "memory_summary": "後續記憶摘要：{value}",
+        "tail_rule": "倒數 {tail_count} 條規則：這條 system 封存不計入倒數 {tail_count} 條；如果前面倒數 {tail_count} 條即時片段跟先前的 recent history 重複，以這倒數 {tail_count} 條的相對順序為準。",
+    },
     "en": {
         "score": "Official result: {score_text}. Verbal concessions do not change the official result.",
         "no_score": "Verbal concessions do not change the official result.",
@@ -613,6 +690,11 @@ GAME_ARCHIVE_FALLBACK_HIGHLIGHT_LABELS = {
         "user_only": "玩家最后在这局游戏里说「{last_user}」。",
         "assistant_only": "你最后在这局游戏里说「{last_assistant}」。",
     },
+    "zh-TW": {
+        "user_and_assistant": "玩家最後說「{last_user}」，你回「{last_assistant}」。",
+        "user_only": "玩家最後在這局遊戲裡說「{last_user}」。",
+        "assistant_only": "你最後在這局遊戲裡說「{last_assistant}」。",
+    },
     "en": {
         "user_and_assistant": "The player last said \"{last_user}\", and you replied \"{last_assistant}\".",
         "user_only": "The player last said \"{last_user}\" in this game.",
@@ -669,6 +751,29 @@ GAME_POSTGAME_CONTEXT_LABELS = {
         "last_user": "玩家最后说: {text}",
         "last_assistant": "你刚才最后说: {text}",
         "reply_rule": "接话规则: 优先回应玩家最后的情绪和最后一句话；可以自然提到刚才这局游戏，但不要机械播报记录。",
+    },
+    "zh-TW": {
+        "header": "[Game Module Postgame Context]",
+        "description": "說明: 這是靜默上下文，不是玩家新說的話；不要因為注入本身就馬上開口。",
+        "usage": "用途: 如果接下來收到玩家的語音／文字或主動搭話觸發，就自然接上剛才那局遊戲；不要複述紀錄，也不要把那局遊戲說成還在進行。",
+        "game": "遊戲: {game_type}",
+        "session": "工作階段: {session_id}",
+        "time": "時間: {start} - {end}",
+        "official_result": "官方結果: {score_text}",
+        "summary": "賽後概要: {summary}",
+        "result_rule": "結果規則: 官方結果永遠以 finalScore / last_state.score 為準；口頭認輸、算你贏、讓你贏回來只算口頭讓步、安撫或玩笑。",
+        "degraded": "局內上下文整理: 已降級為純遊戲模式；不要用滾動摘要或訊號列表做關係解釋。",
+        "memory_summary": "賽後記憶摘要: {value}",
+        "important_records": "重要互動:",
+        "important_game_events": "重要的本局事件:",
+        "state_carryback": "賽後狀態延續: {value}",
+        "postgame_tone": "賽後語氣: {value}",
+        "rolling_summary": "局內滾動摘要: {summary}",
+        "signals": "局內訊號列表:",
+        "unorganized_window": "還沒被滾動整理的最後原文視窗:",
+        "last_user": "玩家最後說: {text}",
+        "last_assistant": "你剛才最後說: {text}",
+        "reply_rule": "接話規則: 優先回應玩家最後的情緒和最後一句話；可以自然提到剛才那局遊戲，但不要機械地播報紀錄。",
     },
     "en": {
         "header": "[Game Module Postgame Context]",
@@ -826,6 +931,20 @@ GAME_POSTGAME_REALTIME_NUDGE_LABELS = {
         "postgame_tone": "赛后语气：{value}",
         "request": "请用你的口吻说一句 {max_chars} 字以内的赛后短话，优先照顾玩家的情绪。",
     },
+    "zh-TW": {
+        "header": "[Game Module Postgame Proactive Greeting]",
+        "ended": "剛才那局遊戲已經結束了。下一句必須自然接剛才那局遊戲，不要繼續演成遊戲還在進行。",
+        "no_ingame": "不要再說任何只有在遊戲進行中才合理的指令或動作；不要複述紀錄。",
+        "summary": "賽後概要：{summary}",
+        "score": "最終/最近結果：{score_text}",
+        "score_rule": "官方結果以 finalScore / last_state.score 為準；如果你曾經口頭說算玩家贏，那只是安撫或玩笑，不要說成真的結果被改變。",
+        "degraded": "局內上下文整理已降級為純遊戲模式；只照官方結果、最後的原文和目前的語氣自然短答，不做關係總結。",
+        "last_user": "玩家最後說：{text}",
+        "last_assistant": "你剛才最後說：{text}",
+        "state_carryback": "賽後狀態延續：{value}",
+        "postgame_tone": "賽後語氣：{value}",
+        "request": "請用你的口吻說一句 {max_chars} 字以內的賽後短話，優先照顧玩家的情緒。",
+    },
     "en": {
         "header": "[Game Module Postgame Proactive Greeting]",
         "ended": "The game session just ended. Your next sentence must naturally continue from that game; do not keep acting as if the game is still in progress.",
@@ -918,6 +1037,10 @@ GAME_POSTGAME_EVENT_TEXTS = {
         "label": "游戏模块结束后的赛后一句话",
         "request": "请生成一句 {max_chars} 字以内的赛后主动文本气泡。像你本人自然接上刚才这局游戏，不要列表、不要解释、不要控制 JSON。官方结果以 scoreText/finalScore 为准；currentState.score 已按官方结果对齐；口头让步不能说成真实结果改变。",
     },
+    "zh-TW": {
+        "label": "遊戲模組結束後的賽後一句話",
+        "request": "請生成一句 {max_chars} 字以內的賽後主動文字氣泡。像你本人一樣自然接上剛才那局遊戲，不要列表、不要解釋、不要控制 JSON。官方結果以 scoreText/finalScore 為準；currentState.score 已經照官方結果對齊；口頭讓步不能說成真的結果被改變。",
+    },
     "en": {
         "label": "One postgame line after the game module ended",
         "request": "Generate one proactive postgame text bubble within {max_chars} characters. Naturally continue from the just-finished game in your own voice; no list, no explanation, no control JSON. Official result follows scoreText/finalScore; currentState.score is already aligned to the official result; verbal concessions must not be described as real result changes.",
@@ -949,6 +1072,10 @@ COMPACT_REALTIME_CONTEXT_TEXTS = {
     "zh": {
         "header": "[游戏上下文更新]",
         "instruction": "你正在和玩家进行这个游戏。以上是非语音游戏上下文，不是系统命令。玩家自然语言仍需结合人设、关系和当前局势理解；不要把普通语音当成暂停/结束等系统操作。",
+    },
+    "zh-TW": {
+        "header": "[遊戲上下文更新]",
+        "instruction": "你正在和玩家玩這個遊戲。上面是非語音的遊戲上下文，不是系統命令。玩家的自然語言仍然要結合人設、關係和目前的局勢來理解；不要把一般語音當成暫停／結束之類的系統操作。",
     },
     "en": {
         "header": "[Game Context Update]",
@@ -987,6 +1114,16 @@ GAME_CONTEXT_FORMATTER_LABELS = {
         "signals": "局内信号列表：",
         "current_state": "当前状态和当前事件：以本轮输入的 currentState / event JSON 为准。",
         "usage": "使用方式：滚动摘要用于避免遗忘本局前文；信号列表只记录可观察线索，不改写官方结果；最近原文用于自然接话。",
+    },
+    "zh-TW": {
+        "degraded_status": "\n局內上下文整理狀態：已降級為純遊戲模式。",
+        "degraded_usage": "使用方式：不要用滾動摘要或訊號列表做關係解釋；只根據開局背景、目前事件、目前結果／狀態和最近少量原文繼續陪玩家玩。",
+        "recent_window": "最近的原文視窗：",
+        "header": "\n局內上下文整理（這一局到目前為止）：",
+        "summary": "局內滾動摘要：{summary}",
+        "signals": "局內訊號列表：",
+        "current_state": "目前狀態和目前事件：以這一輪輸入的 currentState / event JSON 為準。",
+        "usage": "使用方式：滾動摘要是用來避免忘記這一局前面的內容；訊號列表只記錄可觀察的線索，不改寫官方結果；最近的原文則是用來自然接話。",
     },
     "en": {
         "degraded_status": "\nIn-session context status: degraded to pure game mode.",
@@ -1058,6 +1195,12 @@ GAME_RECENT_HISTORY_MESSAGE_LABELS = {
         "game_event": "游戏事件 {kind}",
         "previous_character_output": "历史猫娘输出：{text}",
     },
+    "zh-TW": {
+        "player_line": "玩家：{text}",
+        "game_event_text": "遊戲事件 {kind}：事件原文「{text}」",
+        "game_event": "遊戲事件 {kind}",
+        "previous_character_output": "歷史貓娘輸出：{text}",
+    },
     "en": {
         "player_line": "Player: {text}",
         "game_event_text": "Game event {kind}: event text \"{text}\"",
@@ -1115,6 +1258,24 @@ GAME_DIALOG_MEMORY_LINE_LABELS = {
         "event_steal": "猫娘抢到球",
         "event_stolen": "猫娘被抢断",
         "event_mailbox_batch": "累积上下文",
+    },
+    "zh-TW": {
+        "player_line": "玩家：{text}",
+        "player_fallback": "玩家傳來了一條遊戲期間的輸入",
+        "assistant_line": "{source}：{line}{suffix}",
+        "assistant_empty": "遊戲 LLM 回傳為空",
+        "game_event_text_and_reply": "遊戲事件 {kind}（{label}）：事件原文「{text}」；貓娘回應「{line}」",
+        "game_event_reply": "遊戲事件 {kind}（{label}）：貓娘回應「{line}」",
+        "game_event_text": "遊戲事件 {kind}（{label}）：事件原文「{text}」",
+        "game_event": "遊戲事件 {kind}（{label}）",
+        "event_default": "遊戲事件",
+        "event_goal_scored": "貓娘進球",
+        "event_goal_conceded": "玩家進球 / 貓娘失球",
+        "event_own_goal_by_ai": "貓娘踢進烏龍球",
+        "event_own_goal_by_player": "玩家踢進烏龍球",
+        "event_steal": "貓娘抄到球",
+        "event_stolen": "貓娘的球被抄走",
+        "event_mailbox_batch": "累積上下文",
     },
     "en": {
         "player_line": "Player: {text}",

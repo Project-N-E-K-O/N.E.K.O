@@ -2,15 +2,49 @@
     'use strict';
 
     var SubtitleShared = window.nekoSubtitleShared || null;
-    var controller = null;
+    var OPACITY_ACK_TIMEOUT_MS = 1000;
+    var pendingOpacity = null;
+    var pendingOpacityTimer = null;
 
     if (!SubtitleShared) {
         console.error('[SubtitleSettingsWindow] subtitle-shared.js 未加载');
         return;
     }
 
+    function normalizeOpacity(value) {
+        var numeric = Math.round(Number(value));
+        if (!isFinite(numeric)) numeric = 95;
+        return Math.max(0, Math.min(100, numeric));
+    }
+
+    function clearPendingOpacity() {
+        pendingOpacity = null;
+        if (pendingOpacityTimer !== null) {
+            window.clearTimeout(pendingOpacityTimer);
+            pendingOpacityTimer = null;
+        }
+    }
+
+    function rememberPendingOpacity(value) {
+        pendingOpacity = normalizeOpacity(value);
+        if (pendingOpacityTimer !== null) {
+            window.clearTimeout(pendingOpacityTimer);
+        }
+        pendingOpacityTimer = window.setTimeout(clearPendingOpacity, OPACITY_ACK_TIMEOUT_MS);
+    }
+
+    function shouldApplyIncomingOpacity(value) {
+        if (pendingOpacity === null) return true;
+        if (normalizeOpacity(value) !== pendingOpacity) return false;
+        clearPendingOpacity();
+        return true;
+    }
+
     function propagateSubtitleSetting(change) {
         if (!change || !window.nekoSubtitle || typeof window.nekoSubtitle.changeSettings !== 'function') return;
+        if (change.type === 'opacity') {
+            rememberPendingOpacity(change.value);
+        }
         window.nekoSubtitle.changeSettings({
             type: change.type,
             value: change.value
@@ -70,18 +104,19 @@
         if (Object.prototype.hasOwnProperty.call(data, 'subtitleOpacity')) {
             patch.subtitleOpacity = data.subtitleOpacity;
         }
+        if (Object.prototype.hasOwnProperty.call(patch, 'subtitleOpacity') &&
+            !shouldApplyIncomingOpacity(patch.subtitleOpacity)) {
+            delete patch.subtitleOpacity;
+        }
         if (!Object.keys(patch).length) return;
         SubtitleShared.updateSettings(patch, {
             persist: false,
             source: 'subtitle-settings-window-sync'
         });
-        if (controller && typeof controller.applyCurrentState === 'function') {
-            controller.applyCurrentState();
-        }
     }
 
     document.addEventListener('DOMContentLoaded', function() {
-        controller = SubtitleShared.initSubtitleUI({
+        SubtitleShared.initSubtitleUI({
             host: 'settings-window',
             windowInteractions: 'external',
             propagateSetting: propagateSubtitleSetting

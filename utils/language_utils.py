@@ -1630,6 +1630,135 @@ def detect_language(text: str) -> str:
         return 'unknown'
 
 
+def _session_or_default_language(ui_language: Optional[str], default: str) -> str:
+    """The session's language as a prompt code, or `default` if there is none.
+
+    Traditional Chinese keeps its full code because the templates are keyed by
+    it; everything else is reduced to the short code the templates use.
+
+    `default` applies only when there is no session language at all. An
+    unrecognized one is not an error here: ``normalize_language_code`` answers
+    'en' for anything it does not know, and English is a better guess than the
+    caller's Chinese default for a locale string nobody recognizes.
+    """
+    if not ui_language:
+        return default
+    try:
+        configured = normalize_language_code(ui_language, format='full')
+    except Exception:
+        return default
+    if configured == 'zh-TW':
+        return 'zh-TW'
+    try:
+        return normalize_language_code(configured, format='short')
+    except Exception:
+        return default
+
+
+def detect_prompt_language(
+    text: str, default: str = 'zh', ui_language: Optional[str] = None
+) -> str:
+    """
+    Pick the prompt locale for a prompt whose subject is the user's own words.
+
+    detect_language reports script families rather than orthographies: Traditional
+    and Simplified Chinese are both 'zh', because they share every code point the
+    detector counts. A Chinese detection is therefore refined with the caller's UI
+    language, which is the only signal that tells the two apart -- without it a
+    Traditional-Chinese user is analyzed with the Simplified prompt no matter what
+    they typed, and any zh-TW template stays unreachable.
+
+    Detections other than Chinese are returned as short codes unchanged; the UI
+    language is not consulted, because what the user actually wrote is the better
+    signal for these prompts and the short code is what the templates are keyed by.
+
+    Args:
+        text: the user text the prompt will be asked about
+        default: returned when detection is unavailable
+        ui_language: the caller's own language, preferred over the process-wide
+            one. Pass the session's ``user_language`` where there is a session:
+            the frontend sets it per character session, so on a machine whose
+            Steam/system locale disagrees, the global value is the wrong answer
+            in both directions.
+
+    Returns:
+        Prompt language code -- a short code, or 'zh-TW' for Traditional Chinese
+    """
+    try:
+        detected = detect_language(str(text or ''))
+        if detected == 'unknown':
+            # Emoji, digits or punctuation only. Normalizing 'unknown' lands on
+            # 'en', which is a guess dressed up as a detection. The session's own
+            # language is the best evidence there is about someone who just sent
+            # `😀😀`; the caller's default only applies when there is no session.
+            return _session_or_default_language(ui_language, default)
+        detected = normalize_language_code(detected, format='short')
+    except Exception:
+        return default
+    if detected != 'zh':
+        return detected
+    try:
+        if ui_language:
+            configured = normalize_language_code(ui_language, format='full')
+        else:
+            # Reads a context var, then a process-level cache filled on first
+            # call, so this stays cheap on a per-request path.
+            configured = get_global_language_full()
+        if configured == 'zh-TW':
+            return 'zh-TW'
+        if normalize_language_code(configured, format='short') == 'ja':
+            # Han-only Japanese has no kana signal, so the lightweight detector
+            # cannot distinguish it from Chinese. The explicit session locale is
+            # the only orthographic evidence available for this ambiguous case.
+            return 'ja'
+        return detected
+    except Exception:
+        return detected
+
+
+def detect_prompt_language_with_ascii_fallback(
+    text: str,
+    default: str = 'zh',
+    ui_language: Optional[str] = None,
+) -> str:
+    """Keep Spanish or Portuguese when English detection has locale evidence."""
+    active_ui_language = ui_language or get_global_language_full()
+    detected = detect_prompt_language(
+        text,
+        default=default,
+        ui_language=active_ui_language,
+    )
+    ui_short = normalize_language_code(active_ui_language, format='short')
+    if detected == 'en':
+        folded = str(text or '').casefold()
+        if ui_short == 'es':
+            strong = re.search(
+                r'\b(?:hola|gusta|quiero|tengo|estoy|gracias|nombre)\b',
+                folded,
+            )
+            weak = set(re.findall(
+                r'\b(?:yo|me|mi|vivo|soy|es|en|el|la|los|las|de|del|'
+                r'con|para|por|que)\b',
+                folded,
+            ))
+            if strong or len(weak) >= 2:
+                return ui_short
+        if ui_short == 'pt':
+            strong = re.search(
+                r'\b(?:ola|gosto|quero|tenho|estou|obrigado|obrigada|meu|'
+                r'minha|moro|nome)\b',
+                folded,
+            )
+            weak = set(re.findall(
+                r'\b(?:eu|sou|e|em|um|uma|de|do|da|dos|das|com|para|'
+                r'por|que)\b',
+                folded,
+            ))
+            if strong or len(weak) >= 2:
+                return ui_short
+    return detected
+
+
 async def translate_text(text: str, target_lang: str, source_lang: Optional[str] = None, skip_google: bool = False) -> Tuple[str, bool]:
     """
     Translate text into the target language

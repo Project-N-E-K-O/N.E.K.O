@@ -234,6 +234,9 @@ def _migrate_legacy_tutorial_state(config_manager=None) -> dict[str, Any] | None
         "revision": 1,
         "state": migrated_state,
     }
+    # Legacy timestamps describe the old prompt, not the authority of this migration.
+    if existing_user or permanently_suppressed:
+        store["settledByLegacyMigration"] = True
     atomic_write_json(
         get_seven_day_tutorial_state_path(manager),
         store,
@@ -253,12 +256,15 @@ def load_seven_day_tutorial_store(config_manager=None) -> dict[str, Any]:
             revision = max(0, int(raw.get("revision") or 0))
         except (TypeError, ValueError):
             revision = 0
-        return {
+        store = {
             "storeVersion": SEVEN_DAY_TUTORIAL_STORE_VERSION,
             "initialized": True,
             "revision": revision,
             "state": normalize_seven_day_tutorial_state(raw.get("state")),
         }
+        if raw.get("settledByLegacyMigration") is True:
+            store["settledByLegacyMigration"] = True
+        return store
 
 
 def replace_seven_day_tutorial_state(
@@ -284,6 +290,8 @@ def replace_seven_day_tutorial_state(
             "revision": current["revision"] + 1,
             "state": normalize_seven_day_tutorial_state(raw_state),
         }
+        if current.get("settledByLegacyMigration") is True:
+            store["settledByLegacyMigration"] = True
         atomic_write_json(
             get_seven_day_tutorial_state_path(config_manager),
             store,

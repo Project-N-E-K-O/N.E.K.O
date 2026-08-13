@@ -4,6 +4,38 @@ from unittest.mock import AsyncMock, patch
 from plugin.plugins.wechat_integration import WechatIntegrationPlugin
 
 
+async def test_fetch_memory_context_omits_fallback_locale():
+    client = AsyncMock()
+    client.__aenter__.return_value = client
+    client.__aexit__.return_value = False
+    client.get.return_value.is_success = True
+    client.get.return_value.text = "remembered context"
+
+    with patch("httpx.AsyncClient", return_value=client):
+        context = await WechatIntegrationPlugin._fetch_memory_context("neko")
+
+    assert context == "remembered context"
+    assert client.get.await_args.kwargs == {}
+
+
+async def test_cache_memory_delta_omits_fallback_locale():
+    client = AsyncMock()
+    client.__aenter__.return_value = client
+    client.__aexit__.return_value = False
+    client.post.return_value.is_success = True
+
+    with patch("httpx.AsyncClient", return_value=client):
+        await WechatIntegrationPlugin._cache_memory_delta(
+            "neko",
+            [{"role": "user", "content": "hello"}],
+        )
+
+    payload = client.post.await_args.kwargs["json"]
+    assert payload == {
+        "input_history": '[{"role": "user", "content": "hello"}]',
+    }
+
+
 async def test_settle_memory_session_settles_cached_turns_without_reposting_history():
     client = AsyncMock()
     client.__aenter__.return_value = client
@@ -61,7 +93,11 @@ async def test_idle_cleanup_tracks_settlement_task_until_completion():
         await release.wait()
         return True
 
-    with patch.object(WechatIntegrationPlugin, "_settle_memory_session", new=settle):
+    with patch.object(
+        WechatIntegrationPlugin,
+        "_settle_memory_session",
+        new=staticmethod(settle),
+    ):
         plugin._cleanup_wechat_sessions(now=301)
 
     assert len(plugin._settle_memory_tasks) == 1

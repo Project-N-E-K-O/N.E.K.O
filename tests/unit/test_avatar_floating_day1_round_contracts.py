@@ -639,11 +639,15 @@ def test_pc_overlay_screen_coordinates_use_niri_virtual_origin_and_crop_safe_are
     assert "var screenBounds = cropState.virtualBounds || cropState.cropBounds;" in interpage_source
     assert "x: Number(screenBounds.x || 0) + Number(x || 0)" in interpage_source
     assert "y: Number(screenBounds.y || 0) + Number(y || 0)" in interpage_source
-    assert "api.toVirtualPoint({" in interpage_source
-    assert "api.toVirtualRect({" in interpage_source
+    assert "typeof api.toLayoutVirtualPoint === 'function'" in interpage_source
+    assert "? api.toLayoutVirtualPoint" in interpage_source
+    assert ": api.toVirtualPoint" in interpage_source
+    assert "typeof api.toLayoutVirtualRect === 'function'" in interpage_source
+    assert "? api.toLayoutVirtualRect" in interpage_source
+    assert ": api.toVirtualRect" in interpage_source
     assert "toYuiGuideNiriPetPhysicalCropVirtualPointWithState" in interpage_source
-    assert "if (cropState && cropState.metricsVirtualized) {" in interpage_source
-    assert "Number(cropState && cropState.offsetY || 0)" in interpage_source
+    assert "if (cropState) {" in interpage_source
+    assert "Number(cropState.offsetY || 0)" in interpage_source
     assert "var viewport = shouldApplyYuiGuideVisualViewportOffset(metrics) ? (window.visualViewport || null) : null;" in interpage_source
     assert "if (metrics && (metrics.contentBounds || metrics.bounds))" in overlay_source
     assert "const getNiriPetPhysicalCropState = (metrics) => {" in overlay_source
@@ -655,11 +659,15 @@ def test_pc_overlay_screen_coordinates_use_niri_virtual_origin_and_crop_safe_are
     assert "const screenBounds = cropState.virtualBounds || cropState.cropBounds;" in overlay_source
     assert "x: Number(screenBounds.x || 0) + Number(x || 0)" in overlay_source
     assert "y: Number(screenBounds.y || 0) + Number(y || 0)" in overlay_source
-    assert "api.toVirtualPoint({" in overlay_source
-    assert "api.toVirtualRect({" in overlay_source
+    assert "typeof api.toLayoutVirtualPoint === 'function'" in overlay_source
+    assert "? api.toLayoutVirtualPoint" in overlay_source
+    assert ": api.toVirtualPoint" in overlay_source
+    assert "typeof api.toLayoutVirtualRect === 'function'" in overlay_source
+    assert "? api.toLayoutVirtualRect" in overlay_source
+    assert ": api.toVirtualRect" in overlay_source
     assert "toNiriPetPhysicalCropVirtualPointWithState" in overlay_source
-    assert "cropState && cropState.metricsVirtualized ? {" in overlay_source
-    assert "Number(cropState && cropState.offsetY || 0)" in overlay_source
+    assert "cropState ? {" in overlay_source
+    assert "Number(cropState.offsetY || 0)" in overlay_source
     assert "let lastLocalSpotlightEntries = [];" in overlay_source
     assert "window.addEventListener('neko:niri-pet-physical-crop-state-applied', refreshSpotlightsForCropState);" in overlay_source
     assert "const viewport = shouldApplyVisualViewportOffset(metrics) ? (window.visualViewport || null) : null;" in overlay_source
@@ -668,12 +676,16 @@ def test_pc_overlay_screen_coordinates_use_niri_virtual_origin_and_crop_safe_are
     assert "metrics.niriPetPhysicalCropMetricsVirtualized === true" in director_source
     assert "metrics.niriPetPhysicalCropBounds || metrics.contentBounds || metrics.bounds" in director_source
     assert "const api = typeof window !== 'undefined' ? window.__nekoNiriPetPhysicalCrop : null;" in director_source
-    assert "api.toVirtualPoint(point)" in director_source
-    assert "api.toLocalPoint(point)" in director_source
+    assert "typeof api.toLayoutVirtualPoint === 'function'" in director_source
+    assert "? api.toLayoutVirtualPoint" in director_source
+    assert ": api.toVirtualPoint" in director_source
+    assert "typeof api.toLayoutLocalPoint === 'function'" in director_source
+    assert "? api.toLayoutLocalPoint" in director_source
+    assert ": api.toLocalPoint" in director_source
     assert "toNiriPetPhysicalCropVirtualPointWithState(point, cropState)" in director_source
     assert "toNiriPetPhysicalCropLocalPointWithState(virtualPoint, cropState)" in director_source
-    assert "if (cropState && cropState.metricsVirtualized) {" in director_source
-    assert "- Number(cropState && cropState.offsetY || 0)" in director_source
+    assert "if (cropState) {" in director_source
+    assert "- Number(cropState.offsetY || 0)" in director_source
     assert "x: point.x - Number(screenBounds.x || 0)" in director_source
     assert "y: point.y - Number(screenBounds.y || 0)" in director_source
     assert "x: Number(screenBounds.x || 0) + virtualPoint.x" in director_source
@@ -991,13 +1003,15 @@ def test_day1_chat_input_round_rect_highlight_excludes_mid_flow_cursor_scenes():
     assert "cursorTarget: 'chat-history-handle'" in history_block
     assert "spotlight: false" in history_block
     assert "persistent: 'chat-input'" not in history_block
-    assert "cursorAction: 'move'" in screen_entry_block
+    assert "cursorAction: 'click'" in screen_entry_block
     assert "cursorAction: 'wobble'" not in screen_entry_block
-    assert "target: '#${p}-btn-mic'" in screen_entry_block
+    assert "target: '.${p}-trigger-btn'" in screen_entry_block
+    assert "spotlight: false" in screen_entry_block
+    assert "operation: 'day1-screen-share-entry-flow'" in screen_entry_block
     assert "target: '#${p}-btn-screen'" not in screen_entry_block
-    assert "cursorAction: 'move'" in screen_invite_block
+    assert "cursorAction: 'hold'" in screen_invite_block
     assert "cursorAction: 'wobble'" not in screen_invite_block
-    assert "target: '#${p}-btn-mic'" in screen_invite_block
+    assert "target: '#${p}-popup-mic [data-neko-mic-main-action-row=\"screen\"]'" in screen_invite_block
     assert "target: '#${p}-btn-screen'" not in screen_invite_block
 
     return_control_scene = round_block.split("id: 'day1_takeover_return_control'", 1)[1]
@@ -1152,15 +1166,34 @@ def test_daily_intro_avatar_motion_presets_are_fixed_per_day():
         assert "{ at: 0, command: 'operation.run', operation: 'daily-intro-avatar-performance', blocking: false }" in scene_block
 
 
-def test_day3_intro_bottom_rise_uses_slow_half_body_motion_after_day_swap():
+def test_day3_intro_bottom_rise_uses_shared_two_second_opening_motion_after_day_swap():
     source = DAY3_GUIDE_PATH.read_text(encoding="utf-8")
+    avatar_stage_source = (ROOT / "static" / "tutorial/avatar/yui-stage.js").read_text(encoding="utf-8")
+    director_source = read_director_source(ROOT)
     scene_block = source.split("id: 'day3_intro_context'", 1)[1].split(
         "id: 'day3_personalization_space'",
         1,
     )[0]
+    daily_intro_block = director_source.split("async runDailyIntroAvatarPerformance(scene, day, options)", 1)[1].split(
+        "async runIntroGreetingHugPerformance()",
+        1,
+    )[0]
+    probe_motion_block = avatar_stage_source.split(
+        "async function playTutorialAvatarProbeFrameMotion(options, preset)",
+        1,
+    )[1].split("async function playAvatarMotion(options)", 1)[0]
+    play_motion_block = avatar_stage_source.split("async function playAvatarMotion(options)", 1)[1].split(
+        "async function playSettingsPeekPanic(options)",
+        1,
+    )[0]
 
     assert "preset: 'bottom-rise'" in scene_block
-    assert "approachMs: 1500" in scene_block
+    assert "approachMs:" not in scene_block
+    assert "narrationBudgeted: tutorialDay >= 2 && tutorialDay <= 7" in daily_intro_block
+    assert "if (normalizedOptions.narrationBudgeted === true)" in play_motion_block
+    assert "return playTutorialAvatarProbeFrameMotion(normalizedOptions, preset);" in play_motion_block
+    assert "const TUTORIAL_AVATAR_PROBE_APPROACH_MS = 2000;" in avatar_stage_source
+    assert "enterMs: TUTORIAL_AVATAR_PROBE_APPROACH_MS" in probe_motion_block
     assert "restore: 'half-body'" in scene_block
 
 
@@ -1234,23 +1267,22 @@ def test_corner_intro_avatar_motions_rotate_floating_buttons_with_model_when_mod
     assert "rotateFloatingButtons: performance.rotateFloatingButtons === true" in director_source
 
 
-def test_peek_intro_half_body_fade_in_restores_full_opacity_after_fadeout():
+def test_peek_intro_half_body_session_fades_out_and_restores_full_opacity():
     source = (ROOT / "static" / "tutorial/avatar/yui-stage.js").read_text(encoding="utf-8")
     corner_block = source.split("async function playTimedAvatarCornerPeek(options, position)", 1)[1].split(
         "async function playFrameAvatarMotion",
         1,
     )[0]
-    fade_in_block = source.split("async function fadeInAvatarMotionHalfBodyPlacement(options)", 1)[1].split(
-        "async function playTimedAvatarCornerPeek",
+    corner_session_block = source.split("class Live2DAvatarCornerPeekSession", 1)[1].split(
+        "class Live2DSettingsPeekPanicSession",
         1,
     )[0]
 
-    assert "const targetAlpha = 1;" in fade_in_block
-    assert "const targetDisplayAlpha = 1;" in fade_in_block
-    assert "readModelAlpha(context.model)" not in fade_in_block
-    assert "captureAvatarMotionHalfBodyFadeTarget" not in source
-    assert "await fadeOutAvatarMotionVisibleLayer(normalizedOptions);" in corner_block
-    assert "await fadeInAvatarMotionHalfBodyPlacement(normalizedOptions);" in corner_block
+    assert "restoreMode: normalizedOptions.restore || normalizedOptions.restoreMode || 'half-body'" in corner_block
+    assert "await handle.stop('avatar_motion_complete');" in corner_block
+    assert "this.restoreAlpha = this.restoreMode === 'half-body' ? 1 : this.initialAlpha;" in corner_session_block
+    assert "lerp(1, 0, progress)" in corner_session_block
+    assert "lerp(0, this.restoreAlpha, progress)" in corner_session_block
 
 
 def test_avatar_floating_intro_motion_reveals_prepared_tutorial_model():

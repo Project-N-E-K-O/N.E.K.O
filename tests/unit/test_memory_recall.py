@@ -460,6 +460,39 @@ async def test_aretrieve_invokes_llm_when_pool_exceeds_budget():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("ui_language", "query"),
+    [
+        ("es", "Mi nombre es Carlos"),
+        ("pt", "Meu nome e Carlos"),
+    ],
+)
+async def test_aretrieve_rerank_keeps_ascii_ui_language(
+    ui_language,
+    query,
+):
+    from utils.language_utils import language_context
+
+    svc = _FakeService(available=True, vector_factory=lambda text: [1.0, 0.0])
+    reranker = _make_reranker(svc)
+    reranker._fine_rank = AsyncMock(return_value=[])
+    observations = [
+        _obs(f"o{i}", f"t{i}", embedding=[1.0, 0.0])
+        for i in range(8)
+    ]
+
+    with language_context(ui_language):
+        await reranker.aretrieve_candidates(
+            observations,
+            query_texts=[query],
+            budget=2,
+            config_manager=MagicMock(),
+        )
+
+    assert reranker._fine_rank.await_args.kwargs["lang"] == ui_language
+
+
+@pytest.mark.asyncio
 async def test_aretrieve_normalises_blank_query_texts_before_llm_rerank():
     """``query_texts=[""]`` or ``["   "]`` slipped past the entry guard
     (which only checks falsiness of the list itself), reached coarse-

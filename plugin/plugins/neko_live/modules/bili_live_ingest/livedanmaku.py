@@ -12,10 +12,56 @@ MagicalDanmaku LiveDanmaku 数据模型（Python 移植版）
 from __future__ import annotations
 
 import json
+import re
 import time
 from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import Optional
+
+
+_PROVIDER_EVENT_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
+_SENSITIVE_EVENT_ID_MARKERS = (
+    "authorization",
+    "cookie",
+    "odin_tt",
+    "sessionid",
+    "signature",
+    "token",
+    "ttwid",
+    "webcast_sign",
+)
+
+
+def _provider_event_id(packet: object) -> str:
+    """Read only an explicit transport id; never derive one from chat content."""
+
+    if not isinstance(packet, dict):
+        return ""
+    sources = [packet]
+    nested = packet.get("data")
+    if isinstance(nested, dict):
+        sources.append(nested)
+    for source in sources:
+        for key in ("provider_event_id", "msg_id", "message_id"):
+            value = source.get(key)
+            if isinstance(value, bool):
+                continue
+            if isinstance(value, int):
+                text = str(value) if value > 0 else ""
+            elif isinstance(value, str):
+                text = value.strip()
+            else:
+                text = ""
+            lowered = text.casefold()
+            if (
+                text
+                and _PROVIDER_EVENT_ID_RE.fullmatch(text)
+                and not any(
+                    marker in lowered for marker in _SENSITIVE_EVENT_ID_MARKERS
+                )
+            ):
+                return text
+    return ""
 
 
 # ── 消息类型枚举 ─────────────────────────────────────────────────
@@ -217,6 +263,7 @@ class LiveDanmaku:
             nickname=nickname,
             text=text,
             room_id=data.get("room_id", 0),
+            provider_event_id=_provider_event_id(data),
             admin=admin,
             guard_level=guard_level,
             vip=vip,

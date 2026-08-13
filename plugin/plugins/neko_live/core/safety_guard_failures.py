@@ -24,7 +24,11 @@ def record_failure(guard: Any, kind: FailureKind, message: str) -> None:
         level="error",
         detail={"count": len(bucket), "limit": limit},
     )
-    if guard.config.safety_auto_stop_enabled and len(bucket) >= limit:
+    if (
+        guard.config.safety_auto_stop_enabled
+        and len(bucket) >= limit
+        and not guard.auto_paused
+    ):
         guard.auto_paused = True
         guard.audit.record(
             "safety_auto_stop",

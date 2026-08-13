@@ -172,6 +172,7 @@ def test_registry_build_request_handlers_and_messages_module() -> None:
         "PLUGIN_TO_PLUGIN",
         "PLUGIN_QUERY",
         "PLUGIN_CONFIG_GET",
+        "PLUGIN_CONFIG_REPLACE",
         "PLUGIN_SYSTEM_CONFIG_GET",
         "MEMORY_QUERY",
         "USER_CONTEXT_GET",

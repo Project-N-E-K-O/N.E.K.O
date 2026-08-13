@@ -29,6 +29,46 @@ from .lifecycle import (
 from .messages import LLMResponse, LLMStreamChunk, ToolCallAggregate, _normalize_messages
 from .thinking import strip_thinking_segments
 
+
+def _plain_dict(value: Any) -> dict | None:
+    """Best-effort "SDK object → plain JSON-ish dict" for passthrough fields.
+
+    Unknown response fields land on the openai-python model as raw dicts
+    (``extra="allow"``), but a future SDK version may materialize them as
+    models; ``model_dump`` / ``to_dict`` cover that. Anything else (a
+    scalar, ``None``) yields ``None`` so callers can just skip it."""
+    if isinstance(value, dict):
+        return dict(value)
+    for attr in ("model_dump", "to_dict", "dict"):
+        fn = getattr(value, attr, None)
+        if callable(fn):
+            try:
+                dumped = fn()
+            except Exception:
+                continue
+            if isinstance(dumped, dict):
+                return dumped
+    return None
+
+
+def _merge_extra_content(old: dict | None, new: dict) -> dict:
+    """Merge a streamed ``extra_content`` fragment into the accumulated one.
+
+    Providers send it whole today, but a split across chunks must not make
+    one vendor namespace clobber another — so dict values merge recursively
+    and only leaf conflicts take the newer value."""
+    if not old:
+        return dict(new)
+    merged = dict(old)
+    for k, v in new.items():
+        prev = merged.get(k)
+        if isinstance(prev, dict) and isinstance(v, dict):
+            merged[k] = _merge_extra_content(prev, v)
+        else:
+            merged[k] = v
+    return merged
+
+
 class ChatOpenAI:
     """OpenAI-compatible chat client with streaming, invoke, and resource management."""
 
@@ -316,7 +356,7 @@ class ChatOpenAI:
                         # SDK objects → plain dicts. ``index`` ties fragments
                         # of the same call together across chunks.
                         fn = getattr(tc, "function", None)
-                        tool_call_deltas.append({
+                        frag = {
                             "index": getattr(tc, "index", 0),
                             "id": getattr(tc, "id", "") or "",
                             "type": getattr(tc, "type", "function") or "function",
@@ -324,7 +364,16 @@ class ChatOpenAI:
                                 "name": getattr(fn, "name", "") if fn else "",
                                 "arguments": getattr(fn, "arguments", "") if fn else "",
                             },
-                        })
+                        }
+                        # 非标准字段 ``extra_content``：Gemini 的 OpenAI-compat
+                        # 端点（含 lanlan.app 海外免费线路）把 thought_signature
+                        # 挂在这里，且要求下一轮把它原样带回该 tool call；丢了
+                        # 就稳定报 400 INVALID_ARGUMENT。这里只做透传，不解析
+                        # 内容——别的 provider 往里塞什么都照样带回去。
+                        extra_content = _plain_dict(getattr(tc, "extra_content", None))
+                        if extra_content:
+                            frag["extra_content"] = extra_content
+                        tool_call_deltas.append(frag)
             # Thinking 模型把推理链放在非标准的 ``delta.reasoning_content``
             # 字段（openai-python 的 BaseModel extra=allow，未知字段照样可
             # getattr）。普通端点没有这个字段，getattr 返回 None。
@@ -371,7 +420,9 @@ class ChatOpenAI:
                 continue
             for frag in fragments:
                 idx = int(frag.get("index", 0))
-                slot = merged.setdefault(idx, {"id": "", "name": "", "arguments": ""})
+                slot = merged.setdefault(
+                    idx, {"id": "", "name": "", "arguments": "", "extra_content": None}
+                )
                 if frag.get("id"):
                     slot["id"] = frag["id"]
                 fn = frag.get("function") or {}
@@ -379,6 +430,11 @@ class ChatOpenAI:
                     slot["name"] = fn["name"]
                 if fn.get("arguments"):
                     slot["arguments"] += fn["arguments"]
+                extra_content = frag.get("extra_content")
+                if isinstance(extra_content, dict) and extra_content:
+                    slot["extra_content"] = _merge_extra_content(
+                        slot.get("extra_content"), extra_content
+                    )
         out: list[ToolCallAggregate] = []
         for idx in sorted(merged.keys()):
             slot = merged[idx]
@@ -394,6 +450,7 @@ class ChatOpenAI:
                 id=slot["id"],
                 name=slot["name"],
                 arguments=slot["arguments"],
+                extra_content=slot.get("extra_content"),
             ))
         return out
 

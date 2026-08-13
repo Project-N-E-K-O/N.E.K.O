@@ -124,6 +124,7 @@
                 day3SettingsSceneIds.includes(sceneId)
                 || day4SettingsSceneIds.includes(sceneId)
                 || day5SettingsSceneIds.includes(sceneId)
+                || sceneId === 'day1_screen_entry_invite'
             ) {
                 return true;
             }
@@ -162,6 +163,7 @@
                 : '';
             return !!(
                 operation === 'day1-intro-basic-voice-showcase'
+                || operation === 'day1-screen-share-entry-flow'
                 || operation === 'day3-open-settings-personalization'
                 || operation === 'day3-settings-detail'
                 || operation.indexOf('day1-managed-scene:') === 0
@@ -1629,7 +1631,7 @@
                     existingHud && existingHud.style.display !== 'none' && this.isElementVisible(existingHud)
                 );
                 if (window.AgentHUD && typeof window.AgentHUD.showAgentTaskHUD === 'function') {
-                    window.AgentHUD.showAgentTaskHUD();
+                    window.AgentHUD.showAgentTaskHUD({ ignoreVisibilityPreference: true });
                     this.avatarFloatingGuideTemporaryHudShown = true;
                     if (typeof window.AgentHUD.expandAgentTaskHUD === 'function') {
                         window.AgentHUD.expandAgentTaskHUD();
@@ -2409,7 +2411,11 @@
                     continue;
                 }
                 if (action === 'click' && index === 0) {
-                    const clickPromise = this.clickCursorAndWait(DEFAULT_CURSOR_CLICK_VISIBLE_MS);
+                    // 修改原因：允许特定教程场景单独延长点击反馈，避免关键按钮的模拟点击一闪而过。
+                    const clickDurationMs = Number.isFinite(scene.cursorClickDurationMs)
+                        ? Math.max(120, Math.floor(scene.cursorClickDurationMs))
+                        : DEFAULT_CURSOR_CLICK_VISIBLE_MS;
+                    const clickPromise = this.clickCursorAndWait(clickDurationMs);
                     if (typeof normalizedOptions.onClickStart === 'function') {
                         normalizedOptions.onClickStart({
                             scene,

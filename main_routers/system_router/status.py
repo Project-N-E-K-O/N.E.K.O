@@ -23,6 +23,7 @@ from typing import Any
 
 from fastapi import Request
 from fastapi.responses import Response
+from main_logic import client_registration
 from utils.storage_location_bootstrap import build_storage_location_bootstrap_payload
 
 from ._shared import (
@@ -110,15 +111,14 @@ async def get_system_client_id(response: Response):
         )
 
 
-_DEFAULT_NEKO_SOCIAL_BASE_URL = "https://community.project-neko.cn"
+_DEFAULT_NEKO_SOCIAL_BASE_URL = client_registration.DEFAULT_SOCIAL_BASE_URL
 
 
 @router.get("/system/social/config")
 async def get_system_social_config(response: Response):
     """Return the configured N.E.K.O.Servers base URL."""
     _set_no_store_headers(response)
-    raw = os.environ.get("NEKO_SOCIAL_BASE_URL", "")
-    base_url = raw.strip().rstrip("/") or _DEFAULT_NEKO_SOCIAL_BASE_URL
+    base_url = client_registration.social_base_url()
     return {
         "ok": True,
         "social_base_url": base_url,

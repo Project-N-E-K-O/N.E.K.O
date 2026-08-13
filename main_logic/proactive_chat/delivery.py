@@ -396,6 +396,13 @@ async def _record_committed_delivery(
     active_logger = log or logger
     primary_channel = delivery.primary_channel
     source_links = delivery.source_links
+    effective_source_mode = primary_channel.lower()
+    if (
+        effective_source_mode not in {"music", "both"}
+        and delivery.is_music_used
+        and delivery.delivered_music_link
+    ):
+        effective_source_mode = "music"
     state_storage_kwargs = (
         {"memory_dir": memory_dir} if memory_dir is not None else {}
     )
@@ -500,7 +507,7 @@ async def _record_committed_delivery(
             PROACTIVE_REASON_CHAT_DELIVERED,
             message="主动搭话已发送",
             lanlan_name=lanlan_name,
-            source_mode=primary_channel.lower(),
+            source_mode=effective_source_mode,
             source_tag=source_tag or "unknown",
             active_channels=active_channels,
             source_links=source_links,

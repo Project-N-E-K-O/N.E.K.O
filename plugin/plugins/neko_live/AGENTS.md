@@ -17,6 +17,7 @@ This file is for IDE agents and future contributors working inside `plugin/plugi
 - All viewer profile writes must go through `stores/viewer_store.py`.
 - All audit records must go through `stores/audit_store.py`.
 - Login credentials must only be stored via `stores/credential_store.py` (Fernet-encrypted on disk). Never write credentials / cookies / tokens to audit, log, config, or UI — only echo uid / username / logged-in state.
+- Bilibili live listening requires a verified login credential at both the runtime and provider boundary. Do not reintroduce an account-free or anonymous-listening fallback in actions, UI, tools, or internal listener startup.
 - Do not write raw private user data, cookies, tokens, or raw payloads to logger.
 - When adding UI text, update all 8 locale files.
 - Python commands must be run through `uv run`.
@@ -77,6 +78,7 @@ Protected Modules include:
 - Core architecture: `core/contracts.py`, `core/event_bus.py`, `core/module_registry.py`.
 - Event layer: `modules/bili_live_ingest/**`, live protocol parsing, LiveEvent schema, event normalization.
 - Selection: `modules/live_events/**`, score weights, cooldown window, event competition policy.
+- Support events: `modules/live_support_events/**`, verified support evidence, provider-ID dedupe, combo state, bounded priority scheduling, short-thanks request contracts, and session task cleanup.
 - Pipeline / output: `core/pipeline.py`, `core/safety_guard.py`, `adapters/neko_dispatcher.py`.
 - Runtime: `core/runtime.py`, plugin actions, config persistence, hosted-ui context.
 - Stores / privacy: `stores/viewer_store.py`, `stores/audit_store.py`, `stores/credential_store.py`.

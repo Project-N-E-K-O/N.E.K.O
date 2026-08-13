@@ -17,7 +17,10 @@
 from __future__ import annotations
 
 
+import asyncio
+from copy import deepcopy
 import hashlib
+import json
 
 
 import os
@@ -28,6 +31,9 @@ import os
 from datetime import datetime
 
 
+from utils.cloudsave_runtime import assert_cloudsave_writable
+
+from utils.file_utils import atomic_write_json_async, read_json_async
 
 
 from memory.stop_names import (
@@ -202,6 +208,7 @@ class FactsMixin:
 
     def _build_fact_entry(
         self, text: str, source: str, source_id: str | None, *, subject=None,
+        speaker_provenance: dict | None = None,
     ) -> dict:
         entry = self._normalize_entry(text)
         # scoped 条目 ID 掺隔离域：同 section 双 scope 同秒同文本会撞 ID，
@@ -218,11 +225,41 @@ class FactsMixin:
         entry['source_id'] = source_id
         if subject is not None:
             entry.update(subject.as_entry_fields())
+        if speaker_provenance:
+            if source.startswith('reflection'):
+                from memory.temporal import explicit_event_window
+                event_start_at, event_end_at = explicit_event_window(
+                    speaker_provenance,
+                )
+                if event_start_at is not None or event_end_at is not None:
+                    entry['event_when_raw'] = deepcopy(
+                        speaker_provenance.get('event_when_raw')
+                    )
+                    entry['event_start_at'] = event_start_at
+                    entry['event_end_at'] = event_end_at
+            from memory.speaker_trust import (
+                finite_trust_score,
+                normalize_trust,
+                stable_speaker_id,
+            )
+            if speaker_provenance.get('speaker_provenance_mixed') is True:
+                entry['speaker_provenance_mixed'] = True
+                return entry
+            speaker_id = stable_speaker_id(speaker_provenance.get('speaker_id'))
+            if speaker_id is not None:
+                entry['speaker_id'] = speaker_id
+                trust = speaker_provenance.get('speaker_trust')
+                trust_score = finite_trust_score(trust)
+                if trust_score is not None:
+                    entry['speaker_trust'] = normalize_trust(trust_score)
+            label = str(speaker_provenance.get('speaker_label') or '').strip()
+            if label:
+                entry['speaker_label'] = label[:64]
         return entry
 
     def add_fact(self, name: str, text: str, entity: str = 'master',
                  source: str = 'manual', source_id: str | None = None,
-                 subject=None) -> str:
+                 subject=None, speaker_provenance: dict | None = None) -> str:
         """Add a confirmed fact to persona. Checks for contradictions first.
 
         Args:
@@ -280,18 +317,25 @@ class FactsMixin:
                     memory_subject.as_entry_fields()
                     if memory_subject is not None else None
                 ),
+                old_speaker_provenance=next((
+                    e for e in scan_facts
+                    if isinstance(e, dict) and e.get('text') == old_text
+                ), None),
+                new_speaker_provenance=speaker_provenance,
             )
             return self.FACT_QUEUED_CORRECTION
 
         section_facts.append(self._build_fact_entry(
             text, source, source_id, subject=memory_subject,
+            speaker_provenance=speaker_provenance,
         ))
         self.save_persona(name, persona)
         return self.FACT_ADDED
 
     async def aadd_fact(self, name: str, text: str, entity: str = 'master',
                         source: str = 'manual', source_id: str | None = None,
-                        subject=None) -> str:
+                        subject=None,
+                        speaker_provenance: dict | None = None) -> str:
         """P2.a.2: character-level asyncio.Lock serializes add_fact /
         resolve_corrections / record_mentions, preventing persona.json write races.
 
@@ -345,11 +389,17 @@ class FactsMixin:
                         memory_subject.as_entry_fields()
                         if memory_subject is not None else None
                     ),
+                    old_speaker_provenance=next((
+                        e for e in scan_facts
+                        if isinstance(e, dict) and e.get('text') == old_text
+                    ), None),
+                    new_speaker_provenance=speaker_provenance,
                 )
                 return self.FACT_QUEUED_CORRECTION
 
             section_facts.append(self._build_fact_entry(
                 text, source, source_id, subject=memory_subject,
+                speaker_provenance=speaker_provenance,
             ))
             await self.asave_persona(name, persona)
             return self.FACT_ADDED
@@ -488,6 +538,7 @@ class FactsMixin:
         reflection_evidence: dict,
         source_reflection_id: str,
         merged_from_ids: list[str] | None = None,
+        source_provenance: dict | None = None,
     ) -> str:
         """Merge a reflection's content into an existing persona entry.
 
@@ -595,6 +646,51 @@ class FactsMixin:
                 )
                 return 'noop'
 
+            merged_provenance = None
+            if source_provenance is not None:
+                from memory.speaker_trust import provenance_of_entries
+                merged_provenance = provenance_of_entries([
+                    target_entry, source_provenance,
+                ])
+
+            merged_temporal = None
+            if source_provenance is not None:
+                from memory.temporal import explicit_event_window, to_naive_local
+
+                explicit_windows = [
+                    window for window in (
+                        explicit_event_window(target_entry),
+                        explicit_event_window(source_provenance),
+                    )
+                    if any(boundary is not None for boundary in window)
+                ]
+                if explicit_windows:
+                    def _boundary_key(value: str) -> datetime:
+                        parsed = datetime.fromisoformat(
+                            value.replace('Z', '+00:00')
+                        )
+                        return to_naive_local(parsed)
+
+                    starts = [
+                        start for start, _end in explicit_windows if start
+                    ]
+                    ends = [end for _start, end in explicit_windows]
+                    merged_temporal = {
+                        'event_when_raw': deepcopy(
+                            source_provenance.get('event_when_raw')
+                            if any(explicit_event_window(source_provenance))
+                            else target_entry.get('event_when_raw')
+                        ),
+                        'event_start_at': min(
+                            starts, key=_boundary_key,
+                        ) if starts else None,
+                        'event_end_at': (
+                            None
+                            if any(end is None for end in ends)
+                            else max(ends, key=_boundary_key)
+                        ),
+                    }
+
             # Compute new audit list — dedup by id, preserve insertion order.
             # source_reflection_id MUST be in the final list because it is the
             # idempotency sentinel used at line ~911 (`if source_reflection_id
@@ -636,6 +732,13 @@ class FactsMixin:
                 'merged_from_ids': new_merged_from,
                 'source': EVIDENCE_SOURCE_PROMOTE_MERGE,
             }
+            if merged_provenance is not None:
+                # Explicit nested snapshot distinguishes "legacy caller did
+                # not reconcile provenance" from "this merge deliberately
+                # cleared mixed/unknown provenance" during event replay.
+                entry_payload['speaker_provenance'] = merged_provenance
+            if merged_temporal is not None:
+                entry_payload.update(merged_temporal)
 
             evidence_payload = {
                 'entity_key': entity_key,
@@ -680,6 +783,18 @@ class FactsMixin:
                 target_entry['disp_last_signal_at'] = now_iso
                 target_entry['sub_zero_days'] = 0
                 target_entry['merged_from_ids'] = new_merged_from
+                if merged_provenance is not None:
+                    for key in (
+                        'speaker_id', 'speaker_trust', 'speaker_label',
+                    ):
+                        target_entry.pop(key, None)
+                    target_entry.update(merged_provenance)
+                if merged_temporal is not None:
+                    for key in (
+                        'event_when_raw', 'event_start_at', 'event_end_at',
+                    ):
+                        target_entry.pop(key, None)
+                    target_entry.update(deepcopy(merged_temporal))
                 # Token-count cache is derived from `text`; rewriting text
                 # must drop the cache so the next render recomputes. The
                 # fingerprint check would catch the drift anyway, but
@@ -923,10 +1038,301 @@ class FactsMixin:
     def _get_section_facts(self, persona: dict, entity: str, *, subject=None) -> list:
         if subject is not None:
             section = persona.setdefault(subject.persona_section_key, {})
+            from memory.scopes import persona_subject_from_section
+
+            previous_subject = persona_subject_from_section(
+                subject.persona_section_key, section,
+            )
+            if previous_subject != subject:
+                # The section key omits scope. When promotion hands the
+                # section to another scope of the same subject, its old
+                # human-readable name is isolation metadata and must not
+                # follow the ownership change.
+                section.pop('display_name', None)
             section.update(subject.as_entry_fields())
             section.setdefault('entity', subject.kind)
             return section.setdefault('facts', [])
         return persona.setdefault(entity, {}).setdefault('facts', [])
+
+    async def aupdate_subject_display_name(
+        self, name: str, subject, display_name,
+    ) -> bool:
+        """Stamp a human-readable display name onto an EXISTING scoped section.
+
+        写入路径（scoped facts / scoped history）在成功后调它刷新 section
+        元数据；渲染侧读到就把标题从裸 subject_id 换成「名字 + id」。三条
+        刻意的边界：
+
+        1. **绝不建 section**——scoped persona section 由晋升创建，为了存
+           一个名字就建空 section，会让每个说过话的群成员在 persona.json
+           里留一个空壳（渲染/晋升/refine 循环全要空转它们）。section 还
+           没出现时丢弃名字，下一次写入自然补上（自愈）。
+        2. **scope 必须精确匹配**——section key 不含 scope，同 key 可能住
+           着另一个隔离域的数据；给别人的 section 盖自己的名字等于跨域
+           改元数据（对偶 _normalize_entry_for_section 的 fail-closed）。
+        3. **display_name 过 sanitize_speaker_label**——它会进 prompt 标
+           题，群名/群名片是用户可改的原始数据，与 speaker_label 同一个
+           攻击面（#2605），复用同一个中和器；中和后为空视为没有名字，
+           不清除已有值（名字暂时拿不到时保留旧名比退回裸 id 有用）。
+        """  # noqa: DOCSTRING_CJK
+        from memory.facts import FactStore
+        from memory.scopes import coerce_subject, persona_subject_from_section
+        try:
+            memory_subject = coerce_subject(subject)
+        except Exception:
+            return False
+        if memory_subject is None:
+            return False
+        cleaned = FactStore.sanitize_speaker_label(display_name)
+        if not cleaned:
+            return False
+        section_key = memory_subject.persona_section_key
+        async with self._get_alock(name):
+            # Cosmetic metadata must never invoke the recovery loader: a
+            # malformed persona file makes _aensure_persona_locked() create and
+            # save an empty replacement, destroying unrelated memory sections.
+            # Strict-read an existing file and fail closed instead.
+            path = self._persona_path(name)
+            if await asyncio.to_thread(os.path.exists, path):
+                try:
+                    persona = await read_json_async(path)
+                except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
+                    logger.warning(
+                        f"[Persona] {name}: display_name skipped; strict load "
+                        f"failed: {exc}"
+                    )
+                    return False
+                if not isinstance(persona, dict):
+                    logger.warning(
+                        f"[Persona] {name}: display_name skipped; persona is not a dict"
+                    )
+                    return False
+                self._personas[name] = persona
+            else:
+                persona = self._personas.get(name)
+                if not isinstance(persona, dict):
+                    return False
+            section = persona.get(section_key)
+            if not isinstance(section, dict):
+                return False
+            section_subject = persona_subject_from_section(section_key, section)
+            if (
+                section_subject is None
+                or section_subject.key != memory_subject.key
+                or section_subject.scope != memory_subject.scope
+            ):
+                return False
+            if section.get('display_name') == cleaned:
+                return False
+            section['display_name'] = cleaned
+            await self.asave_persona(name, persona)
+            return True
+
+    async def aforget_subject(self, name: str, subject) -> dict:
+        """Delete one exact (subject, scope) domain from the persona view.
+
+        撤回入口（对偶 FactStore / ReflectionEngine 的 aforget_subject）：
+        1. scoped section 里 entry_matches_subject 的条目全删；
+        2. section 因此清空、且 section 元数据就属于这个域时整段删掉
+           （连 display_name）——section key 不含 scope，混居着其它 scope
+           条目时 section 必须保留；
+        3. pending corrections 里带该 subject 戳的条目一并清：残留的
+           correction 在 resolve 时会把已删文本重新写回 persona（回流）。
+        归档分片不清（不进渲染/召回读路径，事件留底）。
+        """  # noqa: DOCSTRING_CJK
+        from memory.scopes import (
+            SCOPED_PERSONA_PREFIX,
+            MemoryScopeError,
+            MemorySubject,
+            coerce_subject,
+            entry_matches_subject,
+            persona_subject_from_section,
+            subject_from_entry,
+        )
+        memory_subject = coerce_subject(subject)
+        if memory_subject is None:
+            raise ValueError("aforget_subject requires an explicit subject")
+        section_key = memory_subject.persona_section_key
+        removed_entries = 0
+        section_dropped = False
+        section_metadata_changed = False
+        corrections_removed = 0
+
+        def _correction_matches(correction: object) -> bool:
+            if not isinstance(correction, dict):
+                return False
+            if entry_matches_subject(correction, memory_subject):
+                return True
+            # Older scoped queue rows can be unstamped and carry their owner
+            # only in entity="@subject/<kind>:<id>". Mirror the resolver's
+            # normalization exactly so forget cannot leave a reflow source.
+            entity_raw = correction.get('entity')
+            entity = entity_raw.strip() if isinstance(entity_raw, str) else ''
+            if not entity.startswith(SCOPED_PERSONA_PREFIX):
+                return False
+            correction_subject = subject_from_entry(correction)
+            if correction_subject is None:
+                section_key_body = entity[len(SCOPED_PERSONA_PREFIX):]
+                kind, _, subject_id = section_key_body.partition(':')
+                try:
+                    correction_subject = MemorySubject.create(
+                        kind,
+                        subject_id,
+                        scope=correction.get('scope') or section_key_body,
+                    )
+                except MemoryScopeError:
+                    return False
+            return (
+                correction_subject.key == memory_subject.key
+                and correction_subject.scope == memory_subject.scope
+            )
+
+        # Same lock order as resolve_corrections (resolve → data): a forget
+        # waits for any already-copied LLM batch to finish applying, then removes
+        # both its result and queue source before reporting success.
+        async with self._get_resolve_alock(name):
+            async with self._get_alock(name):
+                # Erasure must inspect the queue strictly *before* mutating
+                # persona. The normal reader intentionally maps corruption to
+                # [], which would allow a retained correction to recreate the
+                # forgotten entry later.
+                corrections_path = self._corrections_path(name)
+                corrections: list = []
+                if await asyncio.to_thread(os.path.exists, corrections_path):
+                    try:
+                        corrections_data = await read_json_async(corrections_path)
+                    except (json.JSONDecodeError, OSError) as exc:
+                        raise RuntimeError(
+                            f"persona corrections unreadable during forget: {exc}"
+                        ) from exc
+                    if not isinstance(corrections_data, list):
+                        raise RuntimeError(
+                            "persona corrections are not a list during forget"
+                        )
+                    corrections = corrections_data
+
+                # corrections 清理留在同一把角色锁内：
+                # _aqueue_correction_locked 也在这把锁下写同一个文件，锁外
+                # 读改写会与并发入队互相覆盖。先写 queue；若 persona 落盘
+                # 随后失败，重试仍能从 persona 本体识别目标，反向顺序则可能
+                # 留下已经失去来源映射的回流条目。
+                kept_corrections = [
+                    c for c in corrections if not _correction_matches(c)
+                ]
+                corrections_removed = len(corrections) - len(kept_corrections)
+                if corrections_removed:
+                    assert_cloudsave_writable(
+                        self._config_manager,
+                        operation="save",
+                        target=f"memory/{name}/persona_corrections.json",
+                    )
+                    await atomic_write_json_async(
+                        corrections_path, kept_corrections,
+                        indent=2, ensure_ascii=False,
+                    )
+
+                # The normal ensure path is allowed to recover a corrupt read
+                # by constructing and saving an empty persona. During erasure
+                # that would overwrite every unrelated section, so inspect the
+                # on-disk view strictly and never repair it here.
+                persona_path = self._persona_path(name)
+                cached_persona = self._personas.get(name)
+                persona: dict = (
+                    cached_persona if isinstance(cached_persona, dict) else {}
+                )
+                if await asyncio.to_thread(os.path.exists, persona_path):
+                    try:
+                        persona_data = await read_json_async(persona_path)
+                    except (
+                        json.JSONDecodeError,
+                        UnicodeDecodeError,
+                        OSError,
+                    ) as exc:
+                        raise RuntimeError(
+                            f"persona state unreadable during forget: {exc}"
+                        ) from exc
+                    if not isinstance(persona_data, dict):
+                        raise RuntimeError(
+                            "persona state is not an object during forget"
+                        )
+                    persona = persona_data
+                self._personas[name] = persona
+                section = persona.get(section_key)
+                if isinstance(section, dict):
+                    entries = section.get('facts')
+                    if not isinstance(entries, list):
+                        # This section key already identifies the requested
+                        # subject id. A malformed collection cannot be
+                        # inspected for the exact scope, so reporting success
+                        # would leave potentially recoverable target entries.
+                        raise RuntimeError(
+                            "persona section facts are not a list during forget"
+                        )
+                    kept = [
+                        e for e in entries
+                        if not (
+                            isinstance(e, dict)
+                            and entry_matches_subject(e, memory_subject)
+                        )
+                    ]
+                    removed_entries = len(entries) - len(kept)
+                    entries[:] = kept
+                    section_subject = persona_subject_from_section(
+                        section_key, section,
+                    )
+                    if not section.get('facts'):
+                        if (
+                            section_subject is not None
+                            and section_subject.key == memory_subject.key
+                            and section_subject.scope == memory_subject.scope
+                        ):
+                            persona.pop(section_key, None)
+                            section_dropped = True
+                    elif (
+                        section_subject is not None
+                        and section_subject.key == memory_subject.key
+                        and section_subject.scope == memory_subject.scope
+                    ):
+                        # This key deliberately omits scope. If another scope
+                        # survives, retaining the forgotten scope's metadata
+                        # leaks its display_name into the surviving section and
+                        # prevents that scope from refreshing the name.
+                        replacement_subject = None
+                        for entry in section.get('facts') or []:
+                            if not isinstance(entry, dict):
+                                continue
+                            candidate = persona_subject_from_section(
+                                section_key, entry,
+                            )
+                            if candidate is not None:
+                                replacement_subject = candidate
+                                break
+                        if replacement_subject is not None:
+                            section.update(replacement_subject.as_entry_fields())
+                        else:
+                            for field in memory_subject.as_entry_fields():
+                                section.pop(field, None)
+                        section.pop('display_name', None)
+                        section_metadata_changed = True
+                if removed_entries or section_dropped or section_metadata_changed:
+                    await self.asave_persona(name, persona)
+        if (
+            removed_entries
+            or section_dropped
+            or section_metadata_changed
+            or corrections_removed
+        ):
+            logger.info(
+                f"[Persona] {name}: forget "
+                f"{memory_subject.key}/{memory_subject.scope}: "
+                f"entries={removed_entries} section_dropped={section_dropped} "
+                f"corrections={corrections_removed}"
+            )
+        return {
+            "persona_entries": removed_entries,
+            "persona_section_dropped": section_dropped,
+            "corrections": corrections_removed,
+        }
 
     def _normalize_entry_for_section(
         self, persona: dict, section_key: str, value,

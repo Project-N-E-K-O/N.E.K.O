@@ -83,7 +83,10 @@ from config.prompts.prompts_memory import (
 )
 from memory.evidence import initial_reinforcement_from_importance
 from utils.file_utils import robust_json_loads
-from utils.language_utils import get_global_language
+from utils.language_utils import (
+    detect_prompt_language_with_ascii_fallback,
+    get_global_language_full,
+)
 from utils.token_tracker import set_call_type
 from utils.tokenize import count_tokens, truncate_to_tokens
 
@@ -97,6 +100,13 @@ _ENTITY_BUDGET = {
 }
 
 _JSON_FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE)
+
+
+def _detect_fusion_prompt_language(text: str) -> str:
+    return detect_prompt_language_with_ascii_fallback(
+        text,
+        ui_language=get_global_language_full(),
+    )
 
 
 class ExternalMemoryFusionError(RuntimeError):
@@ -295,7 +305,6 @@ class ExternalFusionMixin:
         """
         from utils.llm_client import create_chat_llm_async
 
-        lang = get_global_language()
         # names（避免物化：master 缺名用中性占位，不抄 rendering 的 '主人' 兜底）
         try:
             _, _, _, _, name_mapping, _, _, _, _ = await self._config_manager.aget_character_data()
@@ -303,7 +312,6 @@ class ExternalFusionMixin:
             name_mapping = {}
         ai_name = name
         master_name = (name_mapping or {}).get("human") or "用户"
-        entity_label = get_persona_fusion_entity_label(entity, lang)
 
         lines = []
         for idx, cand in enumerate(candidates, 1):
@@ -317,6 +325,12 @@ class ExternalFusionMixin:
             prefix = f"{section}: " if section and section.casefold() not in text.casefold() else ""
             lines.append(f"{idx}. {prefix}{text}")
         cand_text = "\n".join(lines)
+        locale_text = "\n".join(
+            str(cand.get("text") or "").strip()
+            for cand in candidates
+        )
+        lang = _detect_fusion_prompt_language(locale_text)
+        entity_label = get_persona_fusion_entity_label(entity, lang)
         if count_tokens(cand_text) > EXTERNAL_IMPORT_FUSION_INPUT_MAX_TOKENS:
             # 候选超过单次融合输入池：尾部会被截掉、但整批指纹仍会记 folded，后段记忆
             # 永久漏掉。宁可抛可重试错误（→ external_import_partial，提示用户拆分

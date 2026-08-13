@@ -51,8 +51,12 @@ def _source_history_path():
     return _state._source_history_path(memory_dir=_legacy_memory_dir())
 
 
-async def _ensure_source_history_loaded() -> None:
-    await _state._ensure_source_history_loaded(memory_dir=_legacy_memory_dir())
+async def _ensure_source_history_loaded() -> bool:
+    # 透传返回值而不是吞掉：false 表示这次没读出来、内存不可代表盘上那份，
+    # 这个信号对 legacy 路径同样有意义。
+    return await _state._ensure_source_history_loaded(
+        memory_dir=_legacy_memory_dir()
+    )
 
 
 async def _record_source_used(

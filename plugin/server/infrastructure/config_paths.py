@@ -5,8 +5,11 @@ from pathlib import Path
 
 from fastapi import HTTPException
 
+from plugin.core.plugin_layout import PluginLayout, resolve_plugin_layout
 from plugin.core.state import state
 from plugin.logging_config import get_logger
+from plugin.server.infrastructure.config_locking import get_plugin_update_lock
+from plugin.server.infrastructure.config_storage import atomic_write_bytes
 from plugin.settings import PLUGIN_CONFIG_ROOTS
 
 logger = get_logger("server.infrastructure.config_paths")
@@ -107,3 +110,73 @@ def get_plugin_config_path(plugin_id: str) -> Path:
         status_code=404,
         detail=f"Plugin '{plugin_id}' configuration not found",
     )
+
+
+def get_plugin_manifest_path(plugin_id: str) -> Path:
+    """Return the installed payload manifest.
+
+    ``get_plugin_config_path`` remains the compatibility name while callers are
+    migrated away from treating the manifest as writable runtime config.
+    """
+
+    return get_plugin_config_path(plugin_id)
+
+
+def get_plugin_runtime_config_path(
+    plugin_id: str,
+    *,
+    manifest_path: Path | None = None,
+) -> Path:
+    installed_manifest = manifest_path or get_plugin_manifest_path(plugin_id)
+    return resolve_plugin_layout(plugin_id, installed_manifest.parent).config_path
+
+
+def ensure_plugin_runtime_config(
+    plugin_id: str,
+    *,
+    manifest_path: Path | None = None,
+) -> Path:
+    installed_manifest = manifest_path or get_plugin_manifest_path(plugin_id)
+    layout = resolve_plugin_layout(plugin_id, installed_manifest.parent)
+    return ensure_plugin_layout_runtime_config(layout)
+
+
+def ensure_plugin_layout_runtime_config(layout: PluginLayout) -> Path:
+    target = layout.config_path
+    with get_plugin_update_lock(layout.plugin_id):
+        if target.exists():
+            if target.is_file():
+                return target
+            raise HTTPException(
+                status_code=500,
+                detail=f"Plugin '{layout.plugin_id}' runtime config path is not a file: {target}",
+            )
+
+        source = layout.installed_dir / "config.example.toml"
+        if not source.is_file():
+            source = layout.manifest_path
+        try:
+            payload = source.read_bytes()
+            target.parent.mkdir(parents=True, exist_ok=True)
+            atomic_write_bytes(
+                target=target,
+                payload=payload,
+                prefix=".plugin_config_init_",
+            )
+        except HTTPException:
+            raise
+        except OSError as exc:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to initialize runtime config for plugin '{layout.plugin_id}': {exc}",
+            ) from exc
+        return target
+
+
+__all__ = [
+    "get_plugin_config_path",
+    "get_plugin_manifest_path",
+    "get_plugin_runtime_config_path",
+    "ensure_plugin_layout_runtime_config",
+    "ensure_plugin_runtime_config",
+]

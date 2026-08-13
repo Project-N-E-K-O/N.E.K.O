@@ -8,6 +8,7 @@ from plugin.plugins.neko_live.core.pipeline_routing import support_event_type
 from plugin.plugins.neko_live.core.runtime_douyin_auth import normalize_cookie
 from plugin.plugins.neko_live.core.runtime_live_input_api import RuntimeLiveInputApiMixin
 from plugin.plugins.neko_live.modules.douyin_live_ingest.transport_event import (
+    DouyinTransportEvent,
     DouyinTransportStartRequest,
     DouyinTransportState,
 )
@@ -16,14 +17,17 @@ from plugin.plugins.neko_live.modules.douyin_live_ingest.bridge_adapter import (
     DouyinLiveBridgeAdapter,
 )
 from plugin.plugins.neko_live.modules.douyin_live_ingest.event_model import (
+    DouyinLiveProviderEvent,
     platform_uid,
     safe_avatar_url,
+    to_live_event,
 )
 from plugin.plugins.neko_live.modules.douyin_live_ingest.room_ref import (
     parse_douyin_room_ref,
 )
 from plugin.plugins.neko_live.modules.live_bridge import (
     LiveBridgeStartRequest,
+    LiveBridgeState,
     LiveBridgeTransport,
 )
 from plugin.plugins.neko_live.modules.live_bridge import process_supervisor as supervisor_module
@@ -31,6 +35,7 @@ from plugin.plugins.neko_live.modules.live_bridge.process_supervisor import (
     BridgeProcessSupervisor,
     cleanup_stale_windows_processes,
 )
+from plugin.plugins.neko_live.modules.live_support_events import LiveSupportEventsModule
 
 
 class _Bus:
@@ -267,6 +272,69 @@ def test_douyin_transport_state_syncs_runtime_and_ignores_old_provider_callback(
     assert runtime.safety_guard.connected is True
 
 
+def test_auth_required_survives_bridge_and_provider_state_projection() -> None:
+    assert LiveBridgeState(state="auth_required").safe_state() == "auth_required"
+    assert DouyinTransportState(state="auth_required").safe_state() == "auth_required"
+
+
+@pytest.mark.asyncio
+async def test_terminal_douyin_disconnect_revokes_session_but_reconnecting_does_not(
+    runtime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = DouyinLiveIngestModule()
+    module.ctx = runtime
+    module._room_ref = "123456"
+    module._generation = 4
+    module._stop_requested = False
+    runtime.douyin_live_ingest = module
+    runtime.config.live_platform = "douyin"
+    runtime.config.live_room_ref = "123456"
+    runtime.config.live_enabled = True
+    runtime._accepting_live_events = True
+    runtime._live_session_generation = 7
+    runtime.safety_guard.set_connected(True)
+    restored = asyncio.Event()
+
+    async def restore_instructions(*, force: bool = False) -> str:
+        assert force is True
+        restored.set()
+        return "restored"
+
+    monkeypatch.setattr(runtime, "restore_instructions", restore_instructions)
+    module._apply_transport_state(
+        DouyinTransportState(state="reconnecting"),
+        generation=4,
+    )
+    assert runtime._accepting_live_events is True
+    assert runtime._live_session_generation == 7
+    assert runtime.config.live_enabled is True
+
+    module._apply_transport_state(
+        DouyinTransportState(state="disconnected"),
+        generation=4,
+    )
+    assert runtime._accepting_live_events is False
+    assert runtime._live_session_generation == 8
+    assert runtime.config.live_enabled is False
+    assert runtime.live_connection_state == "disconnected"
+    assert runtime.safety_guard.connected is False
+    assert module._stop_requested is True
+    assert module._generation == 5
+    assert module._publish_transport_event_for_generation(
+        DouyinTransportEvent(
+            payload={
+                "event_type": "danmaku",
+                "room_ref": "123456",
+                "uid": "9",
+                "text": "late",
+            }
+        ),
+        4,
+    ) is None
+    await restored.wait()
+
+
 @pytest.mark.asyncio
 async def test_douyin_start_waits_for_inflight_stop_lifecycle() -> None:
     stop_entered = asyncio.Event()
@@ -347,6 +415,7 @@ def test_routable_event_is_published_without_raw_credentials() -> None:
     event = module.publish_provider_event(
         {
             "event_type": "chat",
+            "provider_event_id": "event-42",
             "uid": "42",
             "text": "hello",
             "room_ref": "123456",
@@ -359,6 +428,7 @@ def test_routable_event_is_published_without_raw_credentials() -> None:
     assert event.type == "danmaku"
     assert event.uid == "douyin:42"
     assert event.payload["text"] == "hello"
+    assert event.payload["provider_event_id"] == "event-42"
     assert "cookie" not in event.payload
     assert bus.events == [("danmaku", event)]
 
@@ -374,6 +444,29 @@ def test_support_event_keeps_live_source_and_routes_by_event_type() -> None:
     assert event.uid == "douyin:viewer-token-42"
     assert event.source == "live_danmaku"
     assert support_event_type(event) == "gift"
+
+
+def test_douyin_support_event_id_survives_scheduled_payload_projection() -> None:
+    event = to_live_event(
+        DouyinLiveProviderEvent(
+            event_type="gift",
+            provider_event_id="gift-event-42",
+            uid="viewer-42",
+            nickname="viewer",
+            gift_name="rose",
+            gift_count=1,
+        )
+    )
+    support = LiveSupportEventsModule()
+
+    payload = support._payload_for_event(
+        event.raw,
+        event_type_hint="gift",
+        fallback_event=event,
+    )
+
+    assert event.payload["provider_event_id"] == "gift-event-42"
+    assert payload["provider_event_id"] == "gift-event-42"
 
 
 @pytest.mark.parametrize("gift_field", ["giftName", "gift_name"])

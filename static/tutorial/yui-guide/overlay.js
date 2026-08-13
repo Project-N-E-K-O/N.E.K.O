@@ -302,7 +302,18 @@
             };
         };
         const getScreenCoordinateBounds = (metrics) => (
-            metrics && (metrics.bounds || metrics.contentBounds) || { x: 0, y: 0 }
+            metrics
+            && metrics.coordinateSpace === 'screen-dip'
+            && metrics.renderBounds
+            && (
+                metrics.renderBoundsCoordinateSpace === 'screen-dip'
+                || (
+                    metrics.niriPetPhysicalCrop === true
+                    && metrics.originSource === 'niri-pet-physical-crop-virtual-bounds'
+                )
+            )
+                ? metrics.renderBounds
+                : metrics && (metrics.bounds || metrics.contentBounds) || { x: 0, y: 0 }
         );
 
         const normalizeNiriPetPhysicalCropBounds = (bounds) => {
@@ -350,7 +361,11 @@
                 if (!api || typeof api !== 'object') {
                     return null;
                 }
-                if (typeof api.isActive === 'function' && !api.isActive()) {
+                if (
+                    typeof api.isActive === 'function'
+                    && !api.isActive()
+                    && typeof api.getLayoutState !== 'function'
+                ) {
                     return null;
                 }
                 return api;
@@ -385,8 +400,14 @@
                     metrics.niriPetPhysicalCropBounds || metrics.contentBounds || metrics.bounds
                 );
                 const metricVirtualBounds = normalizeNiriPetPhysicalCropBounds(metrics.niriPetPhysicalCropVirtualBounds);
-                const metricOffsetX = Number(metrics.niriPetPhysicalCropOffsetX);
-                const metricOffsetY = Number(metrics.niriPetPhysicalCropOffsetY);
+                const metricLayoutOffsetX = Number(metrics.niriPetPhysicalCropLayoutOffsetX);
+                const metricLayoutOffsetY = Number(metrics.niriPetPhysicalCropLayoutOffsetY);
+                const metricOffsetX = Number.isFinite(metricLayoutOffsetX)
+                    ? metricLayoutOffsetX
+                    : Number(metrics.niriPetPhysicalCropOffsetX);
+                const metricOffsetY = Number.isFinite(metricLayoutOffsetY)
+                    ? metricLayoutOffsetY
+                    : Number(metrics.niriPetPhysicalCropOffsetY);
                 return metricCropBounds ? {
                     cropBounds: metricCropBounds,
                     virtualBounds: metricVirtualBounds,
@@ -401,10 +422,11 @@
                 if (!api || typeof api !== 'object') {
                     return null;
                 }
-                if (typeof api.isActive === 'function' && !api.isActive()) {
+                const layoutState = typeof api.getLayoutState === 'function' ? api.getLayoutState() : null;
+                const state = layoutState || (typeof api.getState === 'function' ? api.getState() : null);
+                if (!state && typeof api.isActive === 'function' && !api.isActive()) {
                     return null;
                 }
-                const state = typeof api.getState === 'function' ? api.getState() : null;
                 const cropBounds = normalizeNiriPetPhysicalCropBounds(state && state.cropBounds);
                 const virtualBounds = normalizeNiriPetPhysicalCropBounds(state && state.virtualBounds);
                 if (!cropBounds) {
@@ -430,11 +452,16 @@
         };
         const toNiriPetPhysicalCropVirtualPoint = (x, y) => {
             const api = getNiriPetPhysicalCropApi();
-            if (!api || typeof api.toVirtualPoint !== 'function') {
+            const converter = api && (
+                typeof api.toLayoutVirtualPoint === 'function'
+                    ? api.toLayoutVirtualPoint
+                    : api.toVirtualPoint
+            );
+            if (typeof converter !== 'function') {
                 return null;
             }
             try {
-                return normalizeNiriPetPhysicalCropPoint(api.toVirtualPoint({
+                return normalizeNiriPetPhysicalCropPoint(converter.call(api, {
                     x: Number(x || 0),
                     y: Number(y || 0)
                 }));
@@ -444,11 +471,16 @@
         };
         const toNiriPetPhysicalCropVirtualRect = (rect) => {
             const api = getNiriPetPhysicalCropApi();
-            if (!api || typeof api.toVirtualRect !== 'function') {
+            const converter = api && (
+                typeof api.toLayoutVirtualRect === 'function'
+                    ? api.toLayoutVirtualRect
+                    : api.toVirtualRect
+            );
+            if (typeof converter !== 'function') {
                 return null;
             }
             try {
-                const virtualRect = normalizeNiriPetPhysicalCropRect(api.toVirtualRect({
+                const virtualRect = normalizeNiriPetPhysicalCropRect(converter.call(api, {
                     x: Number(rect.left || 0),
                     y: Number(rect.top || 0),
                     width: Number(rect.width || 0),
@@ -465,25 +497,27 @@
             }
         };
         const toNiriPetPhysicalCropVirtualPointWithState = (x, y, cropState) => (
-            cropState && cropState.metricsVirtualized ? {
+            // Virtualized metrics apply to window bounds, not DOM client points.
+            // Use one captured state throughout a conversion to avoid mixing
+            // physical-crop prepare and commit generations.
+            cropState ? {
+                x: Number(x || 0) + Number(cropState.offsetX || 0),
+                y: Number(y || 0) + Number(cropState.offsetY || 0)
+            } : toNiriPetPhysicalCropVirtualPoint(x, y) || {
                 x: Number(x || 0),
                 y: Number(y || 0)
-            } :
-            toNiriPetPhysicalCropVirtualPoint(x, y) || {
-                x: Number(x || 0) + Number(cropState && cropState.offsetX || 0),
-                y: Number(y || 0) + Number(cropState && cropState.offsetY || 0)
             }
         );
         const toNiriPetPhysicalCropVirtualRectWithState = (rect, cropState) => (
-            cropState && cropState.metricsVirtualized ? {
-                left: Number(rect.left || 0),
-                top: Number(rect.top || 0),
+            // getBoundingClientRect() remains crop-local under physical crop.
+            cropState ? {
+                left: Number(rect.left || 0) + Number(cropState.offsetX || 0),
+                top: Number(rect.top || 0) + Number(cropState.offsetY || 0),
                 width: rect.width,
                 height: rect.height
-            } :
-            toNiriPetPhysicalCropVirtualRect(rect) || {
-                left: Number(rect.left || 0) + Number(cropState && cropState.offsetX || 0),
-                top: Number(rect.top || 0) + Number(cropState && cropState.offsetY || 0),
+            } : toNiriPetPhysicalCropVirtualRect(rect) || {
+                left: Number(rect.left || 0),
+                top: Number(rect.top || 0),
                 width: rect.width,
                 height: rect.height
             }

@@ -23,7 +23,21 @@ class QQRuntimeService:
             "show_napcat_window": bool((self.plugin._qq_settings or {}).get("show_napcat_window", True)),
             "startup_error": str(self.plugin._startup_error or "") or None,
             "attention": attention_snapshot,
+            "fatigue": self._build_fatigue_snapshot(),
             "recent_pipeline_traces": self.get_recent_pipeline_traces(),
+        }
+
+    def _build_fatigue_snapshot(self) -> dict[str, Any]:
+        f = getattr(self.plugin, "fatigue_service", None)
+        if not f:
+            return {"available": False}
+        now = time.time()
+        return {
+            "available": True,
+            "total_fatigue": round(f.calculate_fatigue("global"), 1),
+            "circadian": round(f._circadian_fatigue(), 1),
+            "global_load": round(f._global_load_fatigue(), 1),
+            "time": time.strftime("%H:%M:%S"),
         }
 
     def record_pipeline_outcome(self, *, source: str, request: Any, outcome: Any) -> None:

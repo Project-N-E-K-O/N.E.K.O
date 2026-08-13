@@ -97,6 +97,32 @@ def test_legacy_existing_user_is_migrated_with_all_rounds_settled(
 
 
 @pytest.mark.unit
+def test_legacy_migration_settlement_survives_subsequent_replacement(tmp_path):
+    manager = _ConfigManager(tmp_path)
+    (tmp_path / "tutorial_prompt.json").write_text(json.dumps({
+        "user_cohort": "existing",
+        "home_tutorial_completed": False,
+    }))
+
+    migrated = get_seven_day_tutorial_state_response(config_manager=manager)
+    assert migrated["settledByLegacyMigration"] is True
+
+    saved = replace_seven_day_tutorial_state(
+        migrated["state"],
+        expected_revision=migrated["revision"],
+        config_manager=manager,
+    )
+
+    assert saved["settledByLegacyMigration"] is True
+    raw = json.loads((tmp_path / "seven_day_tutorial_state.json").read_text())
+    assert raw["settledByLegacyMigration"] is True
+    assert get_seven_day_tutorial_state_response(config_manager=manager) == {
+        "ok": True,
+        **saved,
+    }
+
+
+@pytest.mark.unit
 def test_first_browser_state_becomes_authoritative_and_survives_new_origin(tmp_path):
     manager = _ConfigManager(tmp_path)
     saved = replace_seven_day_tutorial_state(

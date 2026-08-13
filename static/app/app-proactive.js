@@ -25,6 +25,13 @@
     const NEW_USER_ICEBREAKER_BLOCKING_WINDOW_MS = 2 * 60 * 60 * 1000;
     const MEME_LOAD_FAILED_STICKER_URL = '/static/icons/meme-image-load-failed-sticker.png';
 
+    function isMusicOccupiedNow() {
+        if (typeof window.isMusicOccupied === 'function') return window.isMusicOccupied();
+        return ((typeof window.isMusicPlaying === 'function') && window.isMusicPlaying())
+            || ((typeof window.isMusicPending === 'function') && window.isMusicPending())
+            || ((typeof window.isRemoteMusicActive === 'function') && window.isRemoteMusicActive());
+    }
+
     function getDesktopProvider() {
         return typeof window.getDesktopCaptureProvider === 'function'
             ? window.getDesktopCaptureProvider()
@@ -333,6 +340,30 @@
         } catch (_) {
             return false;
         }
+    }
+
+    function _applyProactiveLanguagePayload(payload, lanlanName) {
+        // Durable preference and request-only rendering fallback are deliberately
+        // separate. In particular, never promote the latter to i18n_language.
+        var explicitConversationLanguage = '';
+        var renderConversationLanguage = '';
+        try {
+            if (typeof window.getExplicitConversationLanguagePreference === 'function') {
+                explicitConversationLanguage = window.getExplicitConversationLanguagePreference(lanlanName);
+            }
+        } catch (_) { explicitConversationLanguage = ''; }
+        try {
+            if (typeof window.getConversationLanguagePreference === 'function') {
+                renderConversationLanguage = window.getConversationLanguagePreference(lanlanName);
+            }
+        } catch (_) { renderConversationLanguage = ''; }
+        if (explicitConversationLanguage) {
+            payload.i18n_language = explicitConversationLanguage;
+        }
+        if (renderConversationLanguage) {
+            payload.render_language = renderConversationLanguage;
+        }
+        return payload;
     }
 
     function _isChatInputElement(element) {
@@ -1012,14 +1043,16 @@
                 // 之前就早退；语音 scheduler 自己也是固定 baseInterval 不带 backoff。
                 // 既然两边都不读，发了也是冗余字段。
                 var voiceProactiveSec = window.nekoLocalMutationSecurity;
-                var voiceProactiveBody = JSON.stringify({
+                var voiceProactivePayload = {
                     lanlan_name: lanlanName,
                     enabled_modes: voiceModes,
                     voice_mode: true,
                     // mini-game 邀请的用户级 toggle；后端 _maybe_deliver_mini_game_invite
                     // 与 source-driven sources 解耦，不进 enabled_modes 数组。
                     mini_game_invite_enabled: !!S.proactiveMiniGameInviteEnabled
-                });
+                };
+                _applyProactiveLanguagePayload(voiceProactivePayload, lanlanName);
+                var voiceProactiveBody = JSON.stringify(voiceProactivePayload);
 
                 async function _sendVoiceProactive() {
                     var hdrs = { 'Content-Type': 'application/json' };
@@ -1111,13 +1144,11 @@
             // 音乐搭话（正在播放或冷却期内不发送 music 模式，避免后端搜歌浪费 + 污染模型上下文）
             console.log('[ProactiveChat] 检查音乐模式: proactiveMusicEnabled=' + S.proactiveMusicEnabled + ', proactiveChatEnabled=' + S.proactiveChatEnabled);
             if (S.proactiveMusicEnabled && S.proactiveChatEnabled) {
-                var musicPlaying = (typeof window.isMusicPlaying === 'function') && window.isMusicPlaying();
-                var musicPending = (typeof window.isMusicPending === 'function') && window.isMusicPending();
-                var remoteMusicActive = (typeof window.isRemoteMusicActive === 'function') && window.isRemoteMusicActive();
+                var musicOccupied = isMusicOccupiedNow();
                 var musicRateLimited = (typeof window.isMusicRecommendRateLimited === 'function') && window.isMusicRecommendRateLimited();
                 var musicCooldown = (typeof window.isMusicCooldown === 'function') && window.isMusicCooldown();
-                if (musicPlaying || musicPending || remoteMusicActive || musicRateLimited || musicCooldown) {
-                    console.log('[ProactiveChat] 音乐模式跳过: playing=' + musicPlaying + ', pending=' + musicPending + ', remote=' + remoteMusicActive + ', rateLimited=' + musicRateLimited + ', cooldown=' + musicCooldown);
+                if (musicOccupied || musicRateLimited || musicCooldown) {
+                    console.log('[ProactiveChat] 音乐模式跳过: occupied=' + musicOccupied + ', rateLimited=' + musicRateLimited + ', cooldown=' + musicCooldown);
                 } else {
                     console.log('[ProactiveChat] 音乐模式已启用');
                     availableModes.push('music');
@@ -1143,38 +1174,22 @@
             console.log('主动搭话：启用模式 [' + availableModes.join(', ') + ']，将并行获取所有信息源');
 
             var lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
-            // 当前 UI locale —— 让后端 mini-game 邀请短路 + Phase 1/2 LLM 与
-            // 前端 i18n 显示完全对齐，不再依赖后端 ``get_global_language()``
-            // 的进程级缓存（Steam SDK 启动期 race 失败时会退化到系统 locale，
-            // Steam=中文 / 系统=英文 的用户会看到邀请文案是英文）。后端
-            // ``_resolve_proactive_locale`` 优先读这个字段，缺时再回落到
-            // ``mgr.user_language`` / 全局缓存。
-            var i18nLanguage = '';
-            try {
-                if (window.i18next && typeof window.i18next.language === 'string') {
-                    i18nLanguage = window.i18next.language;
-                } else if (typeof localStorage !== 'undefined') {
-                    i18nLanguage = localStorage.getItem('i18nextLng') || '';
-                }
-                if (!i18nLanguage && typeof navigator !== 'undefined' && typeof navigator.language === 'string') {
-                    i18nLanguage = navigator.language;
-                }
-            } catch (_) { i18nLanguage = ''; }
             var requestBody = {
                 lanlan_name: lanlanName,
                 enabled_modes: availableModes,
                 is_playing_music: (typeof window.isMusicPlaying === 'function') ? window.isMusicPlaying() : false,
+                is_music_occupied: isMusicOccupiedNow(),
                 current_track: (typeof window.getMusicCurrentTrack === 'function') ? window.getMusicCurrentTrack() : null,
                 music_cooldown: (typeof window.isMusicCooldown === 'function') ? window.isMusicCooldown() : false,
                 // mini-game 邀请的用户级 toggle；后端 _maybe_deliver_mini_game_invite
                 // 与 source-driven sources 解耦，不进 enabled_modes 数组。
                 mini_game_invite_enabled: !!S.proactiveMiniGameInviteEnabled,
-                i18n_language: i18nLanguage,
                 // 屏幕专注态后端会按 [0, 0.5×base] 注入间隔抖动，需要知道
                 // 当前用户配置的 baseInterval。后端 propensity 非屏幕专注态
                 // 时忽略此字段。
                 base_interval_seconds: S.proactiveChatInterval
             };
+            _applyProactiveLanguagePayload(requestBody, lanlanName);
 
             // 独立计时器：确保 vision/window 模式的屏幕感知间隔不低于 proactiveVisionInterval
             if (availableModes.includes('vision') || availableModes.includes('window')) {
@@ -1235,12 +1250,10 @@
                 }
                 // 音乐搭话（重新检查冷却状态，await 期间可能变化）
                 if (S.proactiveMusicEnabled && S.proactiveChatEnabled) {
-                    var musicPlayingNow = (typeof window.isMusicPlaying === 'function') && window.isMusicPlaying();
-                    var musicPendingNow = (typeof window.isMusicPending === 'function') && window.isMusicPending();
-                    var remoteMusicActiveNow = (typeof window.isRemoteMusicActive === 'function') && window.isRemoteMusicActive();
+                    var musicOccupiedNow = isMusicOccupiedNow();
                     var musicRateLimitedNow = (typeof window.isMusicRecommendRateLimited === 'function') && window.isMusicRecommendRateLimited();
                     var musicCooldownNow = (typeof window.isMusicCooldown === 'function') && window.isMusicCooldown();
-                    if (!musicPlayingNow && !musicPendingNow && !remoteMusicActiveNow && !musicRateLimitedNow && !musicCooldownNow) {
+                    if (!musicOccupiedNow && !musicRateLimitedNow && !musicCooldownNow) {
                         latestModes.push('music');
                     }
                 }
@@ -1324,6 +1337,23 @@
             if (timeSinceLastInput < 20000) {
                 console.log('主动搭话作废：用户在' + Math.round(timeSinceLastInput / 1000) + '秒前有过输入');
                 return;
+            }
+
+            // 前面的截图/窗口标题等待期间，播放器可能刚好开始加载或播放。
+            // 在序列化请求前使用最新状态收口，避免后端为过期的 music 模式再次搜歌。
+            var musicPlayingBeforeRequest = (typeof window.isMusicPlaying === 'function') && window.isMusicPlaying();
+            var musicOccupiedBeforeRequest = isMusicOccupiedNow();
+            var musicRateLimitedBeforeRequest = (typeof window.isMusicRecommendRateLimited === 'function') && window.isMusicRecommendRateLimited();
+            var musicCooldownBeforeRequest = (typeof window.isMusicCooldown === 'function') && window.isMusicCooldown();
+            requestBody.is_playing_music = !!musicPlayingBeforeRequest;
+            requestBody.is_music_occupied = !!musicOccupiedBeforeRequest;
+            requestBody.current_track = (typeof window.getMusicCurrentTrack === 'function') ? window.getMusicCurrentTrack() : null;
+            requestBody.music_cooldown = !!musicCooldownBeforeRequest;
+            if (musicOccupiedBeforeRequest || musicRateLimitedBeforeRequest || musicCooldownBeforeRequest) {
+                requestBody.enabled_modes = requestBody.enabled_modes.filter(function (mode) { return mode !== 'music'; });
+                if (requestBody.enabled_modes.length === 0 && !S.proactiveMiniGameInviteEnabled) {
+                    return;
+                }
             }
 
             var proactiveSec = window.nekoLocalMutationSecurity;
@@ -1421,9 +1451,7 @@
                                 setTimeout(resolve, 50 + Math.floor(Math.random() * 120));
                             });
                             var musicBusyBeforeDispatch =
-                                ((typeof window.isMusicPlaying === 'function') && window.isMusicPlaying()) ||
-                                ((typeof window.isMusicPending === 'function') && window.isMusicPending()) ||
-                                ((typeof window.isRemoteMusicActive === 'function') && window.isRemoteMusicActive()) ||
+                                isMusicOccupiedNow() ||
                                 ((typeof window.isMusicRecommendRateLimited === 'function') && window.isMusicRecommendRateLimited()) ||
                                 ((typeof window.isMusicCooldown === 'function') && window.isMusicCooldown());
                             if (musicBusyBeforeDispatch) {

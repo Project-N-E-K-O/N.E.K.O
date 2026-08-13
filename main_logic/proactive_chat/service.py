@@ -43,6 +43,7 @@ from config.prompts.prompts_proactive import (
     get_screen_img_hint,
     get_screen_section_footer,
     get_screen_section_header,
+    normalize_proactive_prompt_locale,
 )
 from config.prompts.prompts_sys import _loc
 from main_logic.omni_realtime_client import OmniRealtimeClient
@@ -134,6 +135,7 @@ from utils.language_utils import (
 )
 from utils.logger_config import get_module_logger
 from utils.meme_moderation import moderate_meme_image_url
+from utils.music_crawlers import mark_music_as_played
 from .break_reminders import (
     _compose_break_system_prompt,
     _deliver_break_reminder_via_llm,
@@ -269,17 +271,48 @@ def _command_language_candidates(
     )
 
 
+def _command_render_language(command_or_data: ProactiveChatCommand | dict) -> Any:
+    """Read a request-only template locale that must never become durable state."""
+    if isinstance(command_or_data, ProactiveChatCommand):
+        return command_or_data.render_language
+    return command_or_data.get("render_language")
+
+
 def _resolve_proactive_locale(
     data: ProactiveChatCommand | dict,
     mgr,
+    *,
+    fmt: str = "short",
 ) -> str:
     """Resolve the active user locale for proactive chat flows.
 
-    Request data wins first, websocket session language is the second source of
-    truth, and the process-level global language is only a final fallback. This
-    keeps proactive invite copy and Phase 1-2 LLM output aligned with the live
-    session whenever frontend i18n has already reported the user's language.
+    An explicit request preference wins first, followed by an explicit manager
+    preference. A request-only render locale may override only a non-explicit
+    manager fallback; process-level global language remains the final fallback.
+    This aligns render-only responses with the live UI without shadowing a
+    durable per-character preference.
+
+    Three output shapes, one precedence chain — which is the point of the parameter
+    rather than a second resolver (issue #2500):
+
+    - ``fmt="short"`` — a language family (``zh``). No room for a script, so
+      ``zh-TW`` and ``zh-CN`` both come out ``zh``.
+    - ``fmt="full"`` — a BCP-47 locale (``zh-CN`` / ``zh-TW``). This is the key
+      scheme of ``static/locales/*.json``.
+    - ``fmt="prompt"`` — a prompt-dict key (``zh`` / ``zh-TW``). This is the key
+      scheme of every table in ``config/prompts``, and it is NOT the same as
+      ``full``: those tables have no ``zh-CN`` row, so a full locale misses and
+      degrades Simplified users to English on the plain ``dict.get`` lookups
+      (``MUSIC_SEARCH_RESULT_TEXTS``, ``RECENT_PROACTIVE_TIME_LABELS``,
+      ``WORK_BREAK_GENERIC_WORK_LABEL``, ...). Use this wherever the result ends
+      up indexing a prompt dict; it keeps ``zh-TW`` reachable without stranding
+      ``zh-CN``.
     """
+    def _normalize(value: str) -> str:
+        if fmt == "prompt":
+            return normalize_proactive_prompt_locale(value)
+        return normalize_language_code(value, format=fmt)
+
     request_lang = next(
         (value for value in _command_language_candidates(data) if value),
         None,
@@ -289,14 +322,33 @@ def _resolve_proactive_locale(
     # ``normalize_language_code`` 对未识别值默认回退 ``'en'``——必须先用公共白名单
     # 挡掉，否则 proactive 邀请文案会被静默短路成英文，错过本应命中的 session 真值。
     if request_lang and is_supported_language_code(request_lang):
-        normalized = normalize_language_code(request_lang, format="short")
+        normalized = _normalize(request_lang)
         if normalized:
             return normalized
+
     session_lang = getattr(mgr, "user_language", None)
-    if session_lang:
-        normalized = normalize_language_code(session_lang, format="short")
+    session_language_is_explicit = bool(
+        getattr(mgr, "_user_language_explicit", False)
+    )
+    normalized_session_lang = None
+    if session_lang and is_supported_language_code(session_lang):
+        normalized_session_lang = _normalize(session_lang) or None
+
+    if session_language_is_explicit and normalized_session_lang:
+        return normalized_session_lang
+
+    render_lang = _command_render_language(data)
+    if render_lang and is_supported_language_code(render_lang):
+        normalized = _normalize(render_lang)
         if normalized:
             return normalized
+
+    if normalized_session_lang:
+        return normalized_session_lang
+    if fmt == "prompt":
+        return normalize_proactive_prompt_locale(get_global_language_full()) or "en"
+    if fmt == "full":
+        return get_global_language_full() or "en"
     return get_global_language() or "en"
 
 
@@ -307,18 +359,56 @@ def _resolve_topic_hook_locale(
     fallback: str,
 ) -> str:
     """Resolve the locale for topic-hook prompts without collapsing zh-TW."""
-    for raw_lang in (
-        *_command_language_candidates(data),
-        getattr(mgr, "user_language", None),
-    ):
-        if raw_lang and is_supported_language_code(raw_lang):
-            normalized = normalize_language_code(raw_lang, format="full")
-            if normalized:
-                return normalized
+    declared = _resolve_declared_topic_hook_locale(data, mgr)
+    if declared:
+        return declared
+    render_lang = _command_render_language(data)
+    if render_lang and is_supported_language_code(render_lang):
+        normalized = normalize_language_code(render_lang, format="full")
+        if normalized:
+            return normalized
     global_lang = normalize_language_code(get_global_language_full(), format="full")
     if global_lang:
         return global_lang
     return fallback
+
+
+def _resolve_declared_topic_hook_locale(
+    data: ProactiveChatCommand | dict,
+    mgr,
+) -> str | None:
+    """Resolve only a locale explicitly declared by the request or session."""
+    for raw_lang in _command_language_candidates(data):
+        if raw_lang and is_supported_language_code(raw_lang):
+            normalized = normalize_language_code(raw_lang, format="full")
+            if normalized:
+                return normalized
+    if not getattr(mgr, "_user_language_explicit", False):
+        return None
+    raw_lang = getattr(mgr, "user_language", None)
+    if raw_lang and is_supported_language_code(raw_lang):
+        return normalize_language_code(raw_lang, format="full") or None
+    return None
+
+
+def _new_dialog_locale_params(
+    data: ProactiveChatCommand | dict,
+    mgr,
+) -> dict[str, str] | None:
+    """Pass durable and render-only locale evidence through separate fields."""
+    params: dict[str, str] = {}
+    declared = _resolve_declared_topic_hook_locale(data, mgr)
+    if declared:
+        params["language"] = declared
+    render_language = _command_render_language(data)
+    if render_language and is_supported_language_code(render_language):
+        normalized_render_language = normalize_language_code(
+            render_language,
+            format="full",
+        )
+        if normalized_render_language:
+            params["render_language"] = normalized_render_language
+    return params or None
 
 
 async def handle_proactive_chat(
@@ -347,6 +437,7 @@ async def handle_proactive_chat(
         )
         lanlan_name = command.lanlan_name or her_name_current
         is_playing_music = command.is_playing_music
+        is_music_occupied = command.is_music_occupied
         current_track = command.current_track
         music_cooldown = command.music_cooldown
 
@@ -459,7 +550,10 @@ async def handle_proactive_chat(
                     body=entry_result.body,
                     status_code=entry_result.status_code,
                 )
-            delivered = await mgr.trigger_voice_proactive_nudge()
+            voice_language = _resolve_proactive_locale(command, mgr, fmt="full")
+            delivered = await mgr.trigger_voice_proactive_nudge(
+                language=voice_language,
+            )
             if delivered:
                 # 1h+10 chats 冷却的 chat counter：voice nudge 也算一次主动搭话，
                 # 与 text path 在 _record_proactive_chat 之后调 count 对称。
@@ -704,9 +798,18 @@ async def handle_proactive_chat(
             )
         ):
             try:
-                _break_lang = _resolve_proactive_locale(command, mgr)
+                # break reminder 的消费点全是 prompt dict（休息提醒模板、
+                # WORK_BREAK_* 兜底 label、_loc 出来的分隔符），一律要 prompt
+                # key 而不是短码，否则 zh-TW 行取不到（issue #2500）。
+                _break_lang = _resolve_proactive_locale(command, mgr, fmt="prompt")
+                # 邀请按钮 label 经 normalize_mini_game_invite_locale 二次归一，
+                # full locale 在那边同样收敛到 zh-TW，故保持 full 不动。
+                _break_invite_lang = _resolve_proactive_locale(
+                    command, mgr, fmt="full"
+                )
             except Exception:
                 _break_lang = "zh"
+                _break_invite_lang = "zh"
 
             # Resolve character_prompt up front and prepend it to every
             # break-reminder SystemMessage. Without this the model would
@@ -904,7 +1007,7 @@ async def handle_proactive_chat(
                         # 埋点 best-effort，失败不影响邀请投递
                         pass
                     options_payload = _build_mini_game_invite_options_payload(
-                        invite_lang=_break_lang,
+                        invite_lang=_break_invite_lang,
                         game_type=chosen_game_type,
                         session_id=invite_session_id,
                     )
@@ -1101,7 +1204,9 @@ async def handle_proactive_chat(
         # 不再掷骰。activity_snapshot is None（隐私模式 / tracker 不可用）保守
         # 不发——无法判断是否在工作状态。
         try:
-            invite_lang = _resolve_proactive_locale(command, mgr)
+            # fmt="full"：邀请文案与三个按钮 label 都走带 zh-TW 行的 prompt dict，
+            # 短码会把 zh-TW 折成 zh，那些行就永远取不到（issue #2500）。
+            invite_lang = _resolve_proactive_locale(command, mgr, fmt="full")
         except Exception:
             invite_lang = "zh"
         # _user_invite_toggle 已经在上面 _debug_force_invite 计算前算过——把
@@ -1208,11 +1313,23 @@ async def handle_proactive_chat(
 
         raw_memory_context = ""
         try:
+            # fmt="prompt"：proactive_lang 一路喂到 Phase 1/2 模板、屏幕/外部/
+            # 音乐/表情包分节、近期搭话记录、action note——全是 prompt dict。
+            proactive_lang = _resolve_proactive_locale(command, mgr, fmt="prompt")
+        except Exception:
+            proactive_lang = "zh"
+        topic_hook_lang = _resolve_topic_hook_locale(
+            command,
+            mgr,
+            fallback=proactive_lang,
+        )
+        try:
             from utils.internal_http_client import get_internal_http_client
 
             _pt_client = get_internal_http_client()
             resp = await _pt_client.get(
                 f"http://127.0.0.1:{MEMORY_SERVER_PORT}/new_dialog/{lanlan_name}",
+                params=_new_dialog_locale_params(command, mgr),
                 timeout=5.0,
             )
             resp.raise_for_status()  # Check for HTTP errors explicitly
@@ -1260,16 +1377,6 @@ async def handle_proactive_chat(
         # ========== 2. 选择语言 ==========
         # 与 mini-game 邀请短路同源：request body → mgr.user_language → 全局缓存。
         # 见 _resolve_proactive_locale 的 docstring。
-        try:
-            proactive_lang = _resolve_proactive_locale(command, mgr)
-        except Exception:
-            proactive_lang = "zh"
-        topic_hook_lang = _resolve_topic_hook_locale(
-            command,
-            mgr,
-            fallback=proactive_lang,
-        )
-
         # ========== 3. 注入近期搭话记录 ==========
         proactive_chat_history_prompt = _format_recent_proactive_chats(
             lanlan_name, proactive_lang
@@ -1446,10 +1553,14 @@ async def handle_proactive_chat(
         selected_meme_topic_key = None
 
         # 【加固】如果正在放歌或处于冷却期，强制清空 music 通道，彻底跳过搜歌逻辑
-        if is_playing_music or music_cooldown:
+        if is_music_occupied or is_playing_music or music_cooldown:
             if music_content:
                 reason = (
-                    "音乐正在播放" if is_playing_music else "用户连续秒关，音乐冷却中"
+                    "音乐播放器已占用"
+                    if is_music_occupied
+                    else "音乐正在播放"
+                    if is_playing_music
+                    else "用户连续秒关，音乐冷却中"
                 )
                 logger.debug(f"[{lanlan_name}]-{reason}，强制屏蔽 Phase 1 搜歌逻辑")
             music_content = None
@@ -1983,7 +2094,12 @@ async def handle_proactive_chat(
         # 歌可投递，不会"发了 [MUSIC] 却转译不出"。selected_music_link 非空时
         # music_topic 必非空（同生于 Phase 1 选曲）。正在放歌 / 冷却期时
         # music_content / selected_music_link 已在上游清空，此分支自然不命中。
-        if selected_music_link and not is_playing_music and not music_cooldown:
+        if (
+            selected_music_link
+            and not is_music_occupied
+            and not is_playing_music
+            and not music_cooldown
+        ):
             # 【优化】使用独立的标识符，防止模型将音乐素材误认为普通的外部 WEB 话题
             msh = _loc(MUSIC_SECTION_HEADER, proactive_lang)
             msf = _loc(MUSIC_SECTION_FOOTER, proactive_lang)
@@ -2233,6 +2349,18 @@ async def handle_proactive_chat(
         committed_delivery = delivery_commit.delivery
         if committed_delivery is None:  # Defensive: the stage contract is exhaustive.
             raise RuntimeError("delivery commit returned neither result nor delivery")
+        if (
+            committed_delivery.is_music_used
+            and committed_delivery.delivered_music_link
+        ):
+            delivered_music_link = committed_delivery.delivered_music_link
+            mark_music_as_played(
+                {
+                    "name": delivered_music_link.get("title", ""),
+                    "artist": delivered_music_link.get("artist", ""),
+                    "url": delivered_music_link.get("url", ""),
+                }
+            )
         recorded_result = await _record_committed_delivery(
             mgr=mgr,
             delivery=committed_delivery,

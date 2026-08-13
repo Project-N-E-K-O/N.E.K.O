@@ -32,11 +32,13 @@ describe('avatar tool definitions', () => {
     });
   });
 
-  it('projects all definitions into Compact while keeping Full on its fixed three tools', () => {
+  it('projects all definitions into both chat surfaces', () => {
     expect(AVAILABLE_COMPACT_AVATAR_TOOLS.map(tool => tool.id)).toEqual(
       AVATAR_TOOL_DEFINITIONS.map(definition => definition.id),
     );
-    expect(AVAILABLE_FULL_AVATAR_TOOLS.map(tool => tool.id)).toEqual(['lollipop', 'fist', 'hammer']);
+    expect(AVAILABLE_FULL_AVATAR_TOOLS.map(tool => tool.id)).toEqual(
+      AVATAR_TOOL_DEFINITIONS.map(definition => definition.id),
+    );
     AVATAR_TOOL_DEFINITIONS.forEach((definition) => {
       const tool = AVAILABLE_COMPACT_AVATAR_TOOLS.find(candidate => candidate.id === definition.id);
       expect(tool).toMatchObject({
@@ -53,7 +55,7 @@ describe('avatar tool definitions', () => {
     });
   });
 
-  it('keeps the three-slot defaults while allowing Compact to equip rps', () => {
+  it('keeps the three-slot defaults while allowing rps to be equipped', () => {
     expect(MAX_ACTIVE_AVATAR_TOOLS).toBe(3);
     expect(DEFAULT_ACTIVE_AVATAR_TOOL_IDS).toEqual(['lollipop', 'fist', 'hammer']);
     expect(sanitizeAvatarToolIds(['rps', 'fist', 'rps', 'hammer', 'lollipop'])).toEqual([

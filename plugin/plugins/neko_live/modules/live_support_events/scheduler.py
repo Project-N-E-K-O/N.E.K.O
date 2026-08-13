@@ -3,9 +3,21 @@ from __future__ import annotations
 import asyncio
 import heapq
 import time
+import uuid
 from collections import OrderedDict
+from dataclasses import dataclass
 from enum import IntEnum
 from typing import Any, Awaitable, Callable
+
+
+_PIPELINE_RESULT_STATUSES = (
+    "queued",
+    "dry_run",
+    "pushed",
+    "skipped",
+    "failed",
+    "unknown",
+)
 
 
 class SupportPriority(IntEnum):
@@ -19,6 +31,15 @@ class _QueueAdmission(IntEnum):
     REJECTED = 0
     QUEUED = 1
     AGGREGATED = 2
+
+
+@dataclass(slots=True)
+class _DispatchTask:
+    task_id: str
+    payload: dict[str, Any]
+    priority: SupportPriority
+    sequence: int
+    generation: int
 
 
 def classify_support_priority(payload: dict[str, Any]) -> SupportPriority:
@@ -43,19 +64,21 @@ class SupportEventScheduler:
     def __init__(
         self,
         *,
-        dispatch: Callable[[dict[str, Any]], Awaitable[None]],
+        dispatch: Callable[[dict[str, Any]], Awaitable[Any]],
         audit: Any = None,
         queue_limit: int = 64,
         combo_idle_seconds: float = 1.0,
         finalized_combo_seconds: float = 600.0,
         finalized_combo_limit: int = 4096,
+        processed_id_seconds: float = 600.0,
+        processed_id_limit: int = 4096,
     ) -> None:
         self._dispatch = dispatch
         self._audit = audit
         self._queue_limit = max(1, min(100, int(queue_limit)))
         self._combo_limit = self._queue_limit
         self._combo_idle_seconds = max(0.0, float(combo_idle_seconds))
-        self._queue: list[tuple[int, int, dict[str, Any]]] = []
+        self._queue: list[tuple[int, int, _DispatchTask]] = []
         self._combos: dict[tuple[str, ...], dict[str, Any]] = {}
         self._combo_deadlines: dict[tuple[str, ...], float] = {}
         self._combo_tasks: dict[tuple[str, ...], asyncio.Task[None]] = {}
@@ -72,14 +95,46 @@ class SupportEventScheduler:
         self._retired_task_limit = self._combo_limit + 1
         self._sequence = 0
         self._worker: asyncio.Task[None] | None = None
-        self._processed_ids: OrderedDict[str, None] = OrderedDict()
-        self._processed_id_limit = 65_536
+        self._ownership_lock = asyncio.Lock()
+        self._dispatch_generation = 0
+        self._current_dispatch: _DispatchTask | None = None
+        self._dispatched_history: OrderedDict[str, dict[str, Any]] = OrderedDict()
+        self._dispatched_history_limit = 32
+        self._finalization_counts = {
+            "current": 0,
+            "retroactive": 0,
+            "stray": 0,
+        }
+        self._pipeline_result_counts = {
+            status: 0 for status in _PIPELINE_RESULT_STATUSES
+        }
+        self._processed_ids: OrderedDict[str, float] = OrderedDict()
+        self._processed_id_seconds = max(1.0, min(3_600.0, float(processed_id_seconds)))
+        self._processed_id_limit = max(
+            self._queue_limit,
+            min(65_536, int(processed_id_limit)),
+        )
         self._overflow_count = 0
         self._dropped_count = 0
         self._aggregated_count = 0
         self._closed = False
         self._idle = asyncio.Event()
         self._idle.set()
+
+    def update_queue_limit(self, queue_limit: int) -> int:
+        """Apply a new admission limit without evicting already accepted work."""
+
+        bounded = max(1, min(100, int(queue_limit)))
+        self._queue_limit = bounded
+        self._combo_limit = bounded
+        self._retired_task_limit = max(
+            self._retired_task_limit,
+            bounded + 1,
+            len(self._retired_tasks) + 1,
+        )
+        self._finalized_combo_limit = max(self._finalized_combo_limit, bounded)
+        self._processed_id_limit = max(self._processed_id_limit, bounded)
+        return bounded
 
     def submit(self, payload: dict[str, Any]) -> bool:
         if self._closed:
@@ -92,6 +147,7 @@ class SupportEventScheduler:
             return self._submit_combo(item)
         event_id = str(item.get("provider_event_id") or "").strip()
         if event_id:
+            self._prune_processed_ids(time.monotonic())
             if event_id in self._processed_ids:
                 return False
         accepted = self._enqueue(item)
@@ -108,11 +164,26 @@ class SupportEventScheduler:
             if admission is _QueueAdmission.AGGREGATED:
                 return True
         self._sequence += 1
-        heapq.heappush(self._queue, (int(priority), self._sequence, item))
+        task = _DispatchTask(
+            task_id=f"support_{uuid.uuid4().hex}",
+            payload=item,
+            priority=priority,
+            sequence=self._sequence,
+            generation=self._dispatch_generation,
+        )
+        heapq.heappush(self._queue, (int(priority), self._sequence, task))
         self._idle.clear()
+        self._ensure_worker()
+        return True
+
+    def _ensure_worker(self) -> None:
+        if self._closed or not self._queue:
+            return
+        current = self._current_dispatch
+        if current is not None and current.generation == self._dispatch_generation:
+            return
         if self._worker is None or self._worker.done():
             self._worker = asyncio.create_task(self._run())
-        return True
 
     def _make_room(
         self,
@@ -126,10 +197,10 @@ class SupportEventScheduler:
                 for entry in self._queue
                 if entry[0] == int(SupportPriority.LIGHT)
                 and incoming_key is not None
-                and self._light_aggregation_key(entry[2]) == incoming_key
+                and self._light_aggregation_key(entry[2].payload) == incoming_key
             ]
             if light_entries:
-                target = min(light_entries, key=lambda entry: entry[1])[2]
+                target = min(light_entries, key=lambda entry: entry[1])[2].payload
                 count = self._non_negative_int(target.get("aggregated_event_count")) or 1
                 target["aggregated_event_count"] = count + 1
                 target.pop("provider_event_id", None)
@@ -150,7 +221,7 @@ class SupportEventScheduler:
             victim = max(candidates, key=lambda entry: (entry[0], -entry[1]))
             self._queue.remove(victim)
             heapq.heapify(self._queue)
-            self._release_evicted_dedupe(victim[2])
+            self._release_evicted_dedupe(victim[2].payload)
             self._dropped_count += 1
             return _QueueAdmission.QUEUED
         if priority in {SupportPriority.HIGH, SupportPriority.MILESTONE}:
@@ -178,10 +249,18 @@ class SupportEventScheduler:
             str(payload.get("provider_event_type") or "").strip().upper(),
         )
 
-    def _remember_event_id(self, event_id: str) -> None:
-        self._processed_ids[event_id] = None
+    def _remember_event_id(self, event_id: str, now: float | None = None) -> None:
+        observed_at = time.monotonic() if now is None else float(now)
+        self._processed_ids[event_id] = observed_at + self._processed_id_seconds
         self._processed_ids.move_to_end(event_id)
         while len(self._processed_ids) > self._processed_id_limit:
+            self._processed_ids.popitem(last=False)
+
+    def _prune_processed_ids(self, now: float) -> None:
+        while self._processed_ids:
+            first_event_id = next(iter(self._processed_ids))
+            if self._processed_ids[first_event_id] > now:
+                break
             self._processed_ids.popitem(last=False)
 
     def _release_evicted_dedupe(self, payload: dict[str, Any]) -> None:
@@ -353,29 +432,164 @@ class SupportEventScheduler:
     async def _run(self) -> None:
         worker = asyncio.current_task()
         try:
-            while self._queue:
-                _priority, _sequence, payload = heapq.heappop(self._queue)
-                await self._dispatch_once(payload)
+            while self._worker is worker and self._queue:
+                entry = heapq.heappop(self._queue)
+                task = entry[2]
+                claimed = await self._try_claim_dispatch(task)
+                if not claimed:
+                    heapq.heappush(self._queue, entry)
+                    self._record_audit(
+                        "support.dispatch_claim_conflict",
+                        "support dispatch task could not atomically claim ownership",
+                        level="warning",
+                        detail=self._dispatch_audit_detail(task),
+                    )
+                    return
+                outcome = "cancelled"
+                error_type = ""
+                pipeline_result_status = "unknown"
+                try:
+                    outcome, error_type, pipeline_result_status = await self._dispatch_once(
+                        task.payload,
+                        task=task,
+                    )
+                finally:
+                    await self._finish_dispatch(
+                        task,
+                        outcome=outcome,
+                        error_type=error_type,
+                        pipeline_result_status=pipeline_result_status,
+                    )
         finally:
             if self._worker is worker:
                 self._worker = None
+            self._ensure_worker()
             self._refresh_idle()
 
-    async def _dispatch_once(self, payload: dict[str, Any]) -> None:
+    async def _try_claim_dispatch(self, task: _DispatchTask) -> bool:
+        async with self._ownership_lock:
+            if task.generation != self._dispatch_generation:
+                return False
+            current = self._current_dispatch
+            if current is not None and current.generation == self._dispatch_generation:
+                return False
+            self._current_dispatch = task
+            self._dispatched_history[task.task_id] = {
+                "event_type": self._event_type_for_audit(task.payload),
+                "priority": task.priority.name.lower(),
+                "generation": task.generation,
+                "outcome": "pending",
+                "classification": "",
+            }
+            self._dispatched_history.move_to_end(task.task_id)
+            while len(self._dispatched_history) > self._dispatched_history_limit:
+                self._dispatched_history.popitem(last=False)
+            return True
+
+    async def _finish_dispatch(
+        self,
+        task: _DispatchTask,
+        *,
+        outcome: str,
+        error_type: str = "",
+        pipeline_result_status: str = "unknown",
+    ) -> str:
+        pipeline_result_status = self._safe_pipeline_result_status(
+            pipeline_result_status
+        )
+        async with self._ownership_lock:
+            current = self._current_dispatch
+            if current is task and task.generation == self._dispatch_generation:
+                classification = "current"
+                self._current_dispatch = None
+            elif task.task_id in self._dispatched_history:
+                classification = "retroactive"
+                if current is task:
+                    self._current_dispatch = None
+            else:
+                classification = "stray"
+            self._finalization_counts[classification] += 1
+            self._pipeline_result_counts[pipeline_result_status] += 1
+            history = self._dispatched_history.get(task.task_id)
+            if history is not None:
+                history["outcome"] = outcome
+                history["classification"] = classification
+                history["pipeline_result_status"] = pipeline_result_status
+                if error_type:
+                    history["error_type"] = error_type
+                self._dispatched_history.move_to_end(task.task_id)
+
+        detail = self._dispatch_audit_detail(task)
+        detail.update(
+            {
+                "classification": classification,
+                "outcome": outcome,
+                "pipeline_result_status": pipeline_result_status,
+            }
+        )
+        if error_type:
+            detail["error_type"] = error_type
+        self._record_audit(
+            "support.dispatch_submission_finalized",
+            "support dispatch submission ownership finalized",
+            level="warning" if classification == "stray" else "info",
+            detail=detail,
+        )
+        self._ensure_worker()
+        return classification
+
+    async def _dispatch_once(
+        self,
+        payload: dict[str, Any],
+        *,
+        task: _DispatchTask | None = None,
+    ) -> tuple[str, str, str]:
         try:
-            await self._dispatch(payload)
+            result = await self._dispatch(payload)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
+            detail = {
+                "event_type": self._event_type_for_audit(payload),
+                "error_type": type(exc).__name__,
+            }
+            if task is not None:
+                detail.update(self._dispatch_audit_detail(task))
             self._record_audit(
                 "support.dispatch_failed",
                 "support event dispatch failed without retry to avoid duplicate output",
                 level="error",
-                detail={
-                    "event_type": str(payload.get("event_type") or "unknown")[:32],
-                    "error_type": type(exc).__name__,
-                },
+                detail=detail,
             )
+            return "failed", type(exc).__name__, "unknown"
+        return "submitted", "", self._pipeline_result_status(result)
+
+    @classmethod
+    def _pipeline_result_status(cls, result: Any) -> str:
+        if isinstance(result, dict):
+            status = result.get("status")
+        else:
+            status = getattr(result, "status", None)
+        return cls._safe_pipeline_result_status(status)
+
+    @staticmethod
+    def _safe_pipeline_result_status(value: Any) -> str:
+        return value if value in _PIPELINE_RESULT_STATUSES else "unknown"
+
+    @staticmethod
+    def _event_type_for_audit(payload: dict[str, Any]) -> str:
+        event_type = payload.get("event_type")
+        if not isinstance(event_type, str):
+            return "unknown"
+        normalized = event_type.strip().lower()
+        return normalized if normalized in {"gift", "super_chat", "guard"} else "unknown"
+
+    def _dispatch_audit_detail(self, task: _DispatchTask) -> dict[str, Any]:
+        return {
+            "task_id": task.task_id,
+            "event_type": self._event_type_for_audit(task.payload),
+            "priority": task.priority.name.lower(),
+        }
 
     def _record_audit(
         self,
@@ -412,6 +626,7 @@ class SupportEventScheduler:
             not self._queue
             and not self._combos
             and self._worker is None
+            and self._current_dispatch is None
             and not self._combo_tasks
             and not self._retired_tasks
         )
@@ -421,6 +636,7 @@ class SupportEventScheduler:
             self._idle.clear()
 
     def reset(self) -> None:
+        self._dispatch_generation += 1
         self._queue.clear()
         self._combos.clear()
         self._combo_deadlines.clear()
@@ -444,17 +660,35 @@ class SupportEventScheduler:
         self.reset()
         while self._retired_tasks:
             await asyncio.gather(*list(self._retired_tasks), return_exceptions=True)
+        async with self._ownership_lock:
+            self._current_dispatch = None
+            self._dispatched_history.clear()
         self._refresh_idle()
 
     def status(self) -> dict[str, int | float]:
+        self._prune_processed_ids(time.monotonic())
         return {
             "queue_limit": self._queue_limit,
             "pending_count": len(self._queue),
             "active_combo_count": len(self._combos),
             "active_combo_task_count": len(self._combo_tasks),
             "retired_task_count": len(self._retired_tasks),
+            "current_dispatch_count": int(
+                self._current_dispatch is not None
+                and self._current_dispatch.generation == self._dispatch_generation
+            ),
+            "dispatched_history_count": len(self._dispatched_history),
+            "dispatched_history_limit": self._dispatched_history_limit,
+            "current_finalization_count": self._finalization_counts["current"],
+            "retroactive_finalization_count": self._finalization_counts["retroactive"],
+            "stray_finalization_count": self._finalization_counts["stray"],
+            **{
+                f"pipeline_result_{status}_count": count
+                for status, count in self._pipeline_result_counts.items()
+            },
             "processed_id_count": len(self._processed_ids),
             "processed_id_limit": self._processed_id_limit,
+            "processed_id_seconds": self._processed_id_seconds,
             "finalized_combo_count": len(self._finalized_combos),
             "finalized_combo_limit": self._finalized_combo_limit,
             "finalized_combo_seconds": self._finalized_combo_seconds,

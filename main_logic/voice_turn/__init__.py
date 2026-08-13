@@ -1,15 +1,8 @@
-"""Provider-neutral voice turn detection primitives.
+"""Provider-neutral voice input and turn-detection contracts."""
 
-This package deliberately has no ASR provider, Core, or Omni dependencies.
-Smart Turn is an optional semantic endpoint helper for ASR providers that do
-not already expose an authoritative semantic endpoint.
-"""
-
-from .audio_buffer import Pcm16RingBuffer
 from .contracts import (
     AsrTurnCapabilities,
     EvaluationStatus,
-    SmartTurnConfig,
     SpeechActivityEvent,
     TurnDecision,
     TurnDetector,
@@ -21,8 +14,6 @@ from .contracts import (
 __all__ = [
     "AsrTurnCapabilities",
     "EvaluationStatus",
-    "Pcm16RingBuffer",
-    "SmartTurnConfig",
     "SpeechActivityEvent",
     "TurnDecision",
     "TurnDetector",

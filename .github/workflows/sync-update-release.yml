@@ -1,0 +1,60 @@
+name: Validate Published Stable Release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    # A stable release must be deliberately published after local testing.
+    # Drafts and prereleases are never validated by this workflow.
+    if: >-
+      github.repository == 'Project-N-E-K-O/N.E.K.O' &&
+      !github.event.release.draft &&
+      !github.event.release.prerelease &&
+      startsWith(github.event.release.tag_name, 'v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate stable release assets
+        id: validate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Stable release tag must be vMAJOR.MINOR.PATCH; got $TAG"
+            exit 1
+          fi
+
+          gh release view "$TAG" --json assets --jq '.assets[].name' > assets.txt
+          required=(
+            "N.E.K.O_${VERSION}_win.zip"
+            "N.E.K.O_${VERSION}_win_manifest.json"
+            "N.E.K.O_${VERSION}_win_manifest.json.sig"
+            "N.E.K.O_${VERSION}_mac_x64.tar.gz"
+            "N.E.K.O_${VERSION}_mac_x64_manifest.json"
+            "N.E.K.O_${VERSION}_mac_x64_manifest.json.sig"
+            "N.E.K.O_${VERSION}_mac_arm64.tar.gz"
+            "N.E.K.O_${VERSION}_mac_arm64_manifest.json"
+            "N.E.K.O_${VERSION}_mac_arm64_manifest.json.sig"
+            "N.E.K.O_${VERSION}_linux_x64.tar.gz"
+            "N.E.K.O_${VERSION}_linux_x64_manifest.json"
+            "N.E.K.O_${VERSION}_linux_x64_manifest.json.sig"
+            "N.E.K.O_${VERSION}_linux_x64_appimage.AppImage"
+            "N.E.K.O_${VERSION}_linux_x64_appimage_manifest.json"
+            "N.E.K.O_${VERSION}_linux_x64_appimage_manifest.json.sig"
+          )
+          missing=0
+          for asset in "${required[@]}"; do
+            if ! grep --fixed-strings --quiet --line-regexp "$asset" assets.txt; then
+              echo "::error::Published release is missing required update asset: $asset"
+              missing=1
+            fi
+          done
+          (( missing == 0 ))
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"

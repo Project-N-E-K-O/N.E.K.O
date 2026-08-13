@@ -34,7 +34,7 @@ dependencies = [
   "pyrnnoise>=0.4.3",
   "aiotieba>=4.7.1",
   "beautifulsoup4>=4.12.0",
-  "bilibili-api-python>=17.4.0",
+  "bilibili-api-dev==18.0.0a1",
   # Twitch read-only Helix/EventSub integration. OAuth Device Code Flow remains
   # in-tree because TwitchIO 3.2 does not expose the client-secret-free flow.
   "twitchio==3.2.2",
@@ -43,7 +43,7 @@ dependencies = [
   "tomli>=2.3.0",
   "tomli-w>=1.2.0",
   # sts2_autoplay/strategy_parser.py parses YAML strategy frontmatter. Declared
-  # explicitly rather than leaning on bilibili-api-python's transitive pull, so a
+  # explicitly rather than leaning on the Bilibili SDK's transitive pull, so a
   # change upstream can't silently break strategy loading in the packaged build.
   "pyyaml>=6.0",
   # ⚠ 严禁再加 loguru / structlog / logbook。日志统一走 utils.logger_config。
@@ -117,6 +117,10 @@ packages = [
 ]
 exclude = [
   "plugin/plugins",
+  "main_logic/asr_client/endpointing/models/*.onnx",
+  "main_logic/asr_client/endpointing/models/*.part",
+  "main_logic/asr_client/speaker_shadow/models/*.onnx",
+  "main_logic/asr_client/speaker_shadow/models/*.part",
 ]
 
 [tool.hatch.build.targets.sdist]
@@ -140,6 +144,10 @@ include = [
 ]
 exclude = [
   "plugin/plugins",
+  "main_logic/asr_client/endpointing/models/*.onnx",
+  "main_logic/asr_client/endpointing/models/*.part",
+  "main_logic/asr_client/speaker_shadow/models/*.onnx",
+  "main_logic/asr_client/speaker_shadow/models/*.part",
 ]
 
 # pyncm-async 已从 PyPI 下架（连同上游 pyncm 与 GitHub 仓库），改为本地 wheel 安装。
@@ -169,6 +177,10 @@ dev = [
     "pytest-asyncio>=1.3.0",
     "pytest-cov>=7.1.0",
     "pytest-playwright>=0.7.2",
+    # 打乱用例顺序，暴露隐藏的用例间顺序依赖。日常 CI 用 pytest.ini 里钉死的
+    # seed 跑（确定性），另有 .github/workflows/random-order-tests.yml 定时用
+    # 随机 seed 单独跑、单独报，不挡任何人的 PR。
+    "pytest-randomly>=4.1.0",
     "ruff>=0.15.4",
 ]
 # galgame_plugin native deps. NOT installed by default `uv sync` — keeps dev

@@ -14,11 +14,20 @@ from plugin.plugins.neko_live.core.contracts import (
 )
 from plugin.plugins.neko_live.core.runtime import LiveRuntime
 from plugin.plugins.neko_live.core.runtime_live_listener import (
+    refresh_live_room_context,
     start_live_listener,
     stop_live_listener,
 )
 from plugin.plugins.neko_live.core.runtime_live_session import invalidate_live_session
 from plugin.plugins.neko_live.modules.bili_live_ingest import BiliLiveIngestModule
+from plugin.plugins.neko_live.modules.live_events import module as live_events_module
+
+
+@pytest.fixture(autouse=True)
+def _remove_passive_context_debounce(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Session-isolation tests exercise ordering, not wall-clock debounce."""
+
+    monkeypatch.setattr(live_events_module, "AMBIENT_READ_DEBOUNCE_SECONDS", 0.0)
 
 
 @pytest.mark.asyncio
@@ -55,6 +64,97 @@ async def test_start_live_listener_starts_fresh_session_state(runtime: LiveRunti
     assert list(runtime.runtime_timeline) == []
     assert runtime._last_live_danmaku_seen_at == 0.0
     assert runtime._last_live_danmaku_seen_type == ""
+
+
+@pytest.mark.asyncio
+async def test_start_live_listener_schedules_current_session_fact_guard(
+    runtime: LiveRuntime,
+) -> None:
+    calls = 0
+
+    def schedule() -> None:
+        nonlocal calls
+        calls += 1
+
+    runtime.live_events.schedule_session_context_refresh = schedule  # type: ignore[method-assign]
+
+    assert await start_live_listener(runtime, 123) is True
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_start_live_listener_survives_session_context_refresh_failure(
+    runtime: LiveRuntime,
+) -> None:
+    def fail_refresh() -> None:
+        raise RuntimeError("synthetic refresh failure")
+
+    runtime.live_events.schedule_session_context_refresh = fail_refresh  # type: ignore[method-assign]
+
+    assert await start_live_listener(runtime, 123) is True
+    assert runtime.live_connection_state == "connected"
+    record = runtime.audit.recent(1)[0]
+    assert record["op"] == "live_session_context_refresh_failed"
+    assert "RuntimeError" in record["message"]
+
+
+@pytest.mark.asyncio
+async def test_older_start_completion_cannot_overwrite_newer_connected_state(
+    runtime: LiveRuntime,
+) -> None:
+    first_entered = asyncio.Event()
+    release_first = asyncio.Event()
+
+    async def start_listening(room_ref: int) -> bool:
+        if room_ref == 123:
+            first_entered.set()
+            await release_first.wait()
+            return False
+        return True
+
+    runtime.live_provider.start_listening = start_listening  # type: ignore[method-assign]
+    first = asyncio.create_task(start_live_listener(runtime, 123))
+    await first_entered.wait()
+
+    assert await start_live_listener(runtime, 456) is True
+    current_generation = runtime._live_session_generation
+    release_first.set()
+
+    assert await first is True
+    assert runtime.live_connection_state == "connected"
+    assert runtime.config.live_enabled is True
+    assert runtime.safety_guard.connected is True
+    assert runtime._accepting_live_events is True
+    assert runtime._live_session_generation == current_generation
+    assert any(
+        item["op"] == "live_listener_start_superseded"
+        for item in runtime.audit.recent(10)
+    )
+
+
+@pytest.mark.asyncio
+async def test_cancelled_current_start_converges_without_resurrecting_input(
+    runtime: LiveRuntime,
+) -> None:
+    entered = asyncio.Event()
+
+    async def start_listening(_room_ref: int) -> bool:
+        entered.set()
+        await asyncio.Event().wait()
+        return True
+
+    runtime.config.live_enabled = True
+    runtime.live_provider.start_listening = start_listening  # type: ignore[method-assign]
+    pending = asyncio.create_task(start_live_listener(runtime, 123))
+    await entered.wait()
+    pending.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await pending
+    assert runtime.live_connection_state == "disconnected"
+    assert runtime.config.live_enabled is False
+    assert runtime.safety_guard.connected is False
+    assert runtime._accepting_live_events is False
 
 
 @pytest.mark.asyncio
@@ -159,6 +259,47 @@ async def test_room_switch_blocks_old_event_before_dispatch(runtime: LiveRuntime
 
 
 @pytest.mark.asyncio
+async def test_verified_support_route_suppresses_avatar_image_resolution(
+    runtime: LiveRuntime,
+) -> None:
+    fetch_flags: list[bool] = []
+
+    async def resolve_identity(
+        event: ViewerEvent,
+        *,
+        fetch_avatar_image: bool = True,
+    ) -> ViewerIdentity:
+        fetch_flags.append(fetch_avatar_image)
+        return ViewerIdentity(uid=event.uid, nickname=event.nickname)
+
+    class _Dispatcher:
+        async def push_roast(self, _request) -> str:
+            return "pushed"
+
+    runtime.bili_identity.resolve = resolve_identity  # type: ignore[method-assign]
+    runtime.dispatcher = _Dispatcher()
+    runtime.live_room_context = {"live_status": "live"}
+    assert await start_live_listener(runtime, 123) is True
+
+    result = await runtime.pipeline.handle_event(
+        ViewerEvent(
+            uid="42",
+            nickname="supporter",
+            source="live_danmaku",
+            raw={
+                "event_type": "gift",
+                "gift_name": "Small Heart",
+                "gift_count": 1,
+                "support_verified": True,
+            },
+        )
+    )
+
+    assert result.status == "pushed"
+    assert fetch_flags == [False]
+
+
+@pytest.mark.asyncio
 async def test_room_switch_refreshes_context_before_syncing_instructions(
     runtime: LiveRuntime,
     monkeypatch: pytest.MonkeyPatch,
@@ -208,6 +349,81 @@ async def test_room_switch_refreshes_context_before_syncing_instructions(
     assert runtime.live_room_context["title"] == "new room"
     assert runtime.live_room_context["anchor_name"] == "new anchor"
     assert synced_contexts == [(runtime.live_room_context, True)]
+
+
+@pytest.mark.asyncio
+async def test_stale_room_context_lookup_cannot_overwrite_new_target(
+    runtime: LiveRuntime,
+) -> None:
+    old_lookup_started = asyncio.Event()
+    release_old_lookup = asyncio.Event()
+
+    async def lookup_room_status(room_ref: str) -> LiveRoomStatus:
+        if str(room_ref) == "123":
+            old_lookup_started.set()
+            await release_old_lookup.wait()
+            return LiveRoomStatus(
+                room_id=123,
+                ok=True,
+                title="old room",
+                anchor_name="old anchor",
+                live_status="live",
+            )
+        return LiveRoomStatus(
+            room_id=456,
+            ok=True,
+            title="new room",
+            anchor_name="new anchor",
+            live_status="live",
+        )
+
+    runtime.config.live_platform = "bilibili"
+    runtime.config.live_room_ref = "123"
+    runtime.config.live_room_id = 123
+    runtime.live_provider.lookup_room_status = lookup_room_status  # type: ignore[method-assign]
+
+    stale_refresh = asyncio.create_task(refresh_live_room_context(runtime, "123"))
+    await old_lookup_started.wait()
+    runtime.config.live_room_ref = "456"
+    runtime.config.live_room_id = 456
+    current_context = await refresh_live_room_context(runtime, "456")
+
+    release_old_lookup.set()
+    stale_result = await stale_refresh
+
+    assert current_context["room_ref"] == "456"
+    assert current_context["title"] == "new room"
+    assert stale_result == current_context
+    assert runtime.live_room_context == current_context
+
+
+@pytest.mark.asyncio
+async def test_stale_room_context_refresh_does_not_clear_current_context(
+    runtime: LiveRuntime,
+) -> None:
+    lookup_calls: list[str] = []
+
+    async def lookup_room_status(room_ref: str) -> LiveRoomStatus:
+        lookup_calls.append(str(room_ref))
+        return LiveRoomStatus(room_id=int(room_ref), ok=True, title="unexpected")
+
+    runtime.config.live_platform = "bilibili"
+    runtime.config.live_room_ref = "456"
+    runtime.config.live_room_id = 456
+    runtime.live_room_context = {
+        "platform": "bilibili",
+        "room_ref": "456",
+        "room_id": 456,
+        "title": "current room",
+        "live_status": "live",
+    }
+    runtime.live_provider.lookup_room_status = lookup_room_status  # type: ignore[method-assign]
+
+    result = await refresh_live_room_context(runtime, "123")
+
+    assert result == runtime.live_room_context
+    assert result["title"] == "current room"
+    assert lookup_calls == []
 
 
 @pytest.mark.asyncio
@@ -273,6 +489,203 @@ def test_live_event_generation_survives_payload_projection(
         fallback_event=support_event,
     )
     assert support_payload["_live_session_generation"] == 23
+
+
+def test_stale_support_event_cannot_repopulate_current_passive_context(
+    runtime: LiveRuntime,
+) -> None:
+    remembered: list[int] = []
+    runtime.config.live_mode = "co_stream"
+    runtime.config.live_support_events_enabled = True
+    runtime._accepting_live_events = True
+    runtime._live_session_generation = 2
+    runtime.live_events.remember_support_context = (  # type: ignore[method-assign]
+        lambda payload, *, tier: remembered.append(
+            int(payload["_live_session_generation"])
+        )
+        or True
+    )
+
+    runtime.live_support_events._on_bus_event(
+        LiveEvent(
+            type="gift",
+            uid="synthetic-viewer",
+            payload={
+                "nickname": "synthetic",
+                "gift_name": "synthetic-gift",
+                "gift_value": 1,
+                "coin_type": "gold",
+                "support_verified": True,
+                "support_evidence": "manual_live_simulation",
+                "provider_event_id": "old-event",
+                "provider_event_type": "SEND_GIFT",
+            },
+            session_generation=1,
+        )
+    )
+
+    assert remembered == []
+
+
+def test_stale_signal_event_cannot_enter_live_events_active_path(
+    runtime: LiveRuntime,
+) -> None:
+    spawned: list[object] = []
+    runtime._accepting_live_events = True
+    runtime._live_session_generation = 2
+    runtime.live_events.ctx = runtime
+
+    def capture_spawn(coro: object) -> None:
+        spawned.append(coro)
+        coro.close()  # type: ignore[attr-defined]
+
+    runtime.live_events._spawn = capture_spawn  # type: ignore[method-assign]
+    runtime.live_events.submit(
+        LiveEvent(
+            type="gift",
+            uid="synthetic-viewer",
+            payload={"gift_name": "synthetic-gift"},
+            session_generation=1,
+        )
+    )
+
+    assert spawned == []
+
+
+def test_stale_event_cannot_contaminate_current_audience_summary(
+    runtime: LiveRuntime,
+) -> None:
+    runtime._accepting_live_events = True
+    runtime._live_session_generation = 2
+    runtime.live_audience_session.ctx = runtime
+    runtime.live_audience_session.start_session()
+
+    runtime.live_audience_session._on_live_event(
+        LiveEvent(
+            type="danmaku",
+            uid="synthetic-viewer",
+            payload={"nickname": "synthetic", "text": "old-session"},
+            session_generation=1,
+        )
+    )
+
+    snapshot = runtime.live_audience_session.snapshot()
+    assert snapshot["danmaku_count"] == 0
+    assert snapshot["interaction_viewer_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_stale_normalized_payload_has_no_pre_pipeline_live_side_effects(
+    runtime: LiveRuntime,
+) -> None:
+    runtime._accepting_live_events = True
+    runtime._live_session_generation = 2
+    runtime.live_events.ctx = runtime
+    stale = ViewerEvent(
+        uid="synthetic-viewer",
+        nickname="synthetic",
+        danmaku_text="old-session",
+        source="live_danmaku",
+        raw={
+            "event_type": "danmaku",
+            "_live_session_generation": 1,
+        },
+    )
+    original_normalize = runtime.live_provider.normalize
+    runtime.live_provider.normalize = lambda _payload: stale  # type: ignore[method-assign]
+    try:
+        await runtime.handle_live_payload({})
+    finally:
+        runtime.live_provider.normalize = original_normalize  # type: ignore[method-assign]
+
+    assert runtime.live_events.recent_chat_snapshot(limit=3) == []
+    assert runtime._last_live_danmaku_seen_at == 0.0
+    assert runtime._last_live_danmaku_seen_type == ""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider_event_id", ["", "provider-event-1"])
+async def test_selected_provider_event_is_observed_once_across_pipeline_handoff(
+    runtime: LiveRuntime,
+    provider_event_id: str,
+) -> None:
+    runtime._accepting_live_events = True
+    runtime._live_session_generation = 1
+    runtime.live_events.ctx = runtime
+    original_normalize = runtime.live_provider.normalize
+    runtime.live_provider.normalize = (  # type: ignore[method-assign]
+        lambda payload: ViewerEvent(
+            uid=str(payload.get("uid") or ""),
+            nickname=str(payload.get("nickname") or ""),
+            danmaku_text=str(payload.get("danmaku_text") or ""),
+            source="live_danmaku",
+            raw=dict(payload),
+        )
+    )
+    try:
+        payload = {
+            "nickname": "synthetic",
+            "text": "synthetic question?",
+        }
+        if provider_event_id:
+            payload["provider_event_id"] = provider_event_id
+        runtime.live_events.submit(
+            LiveEvent(
+                type="danmaku",
+                uid="synthetic-viewer",
+                payload=payload,
+                session_generation=1,
+            )
+        )
+        for _ in range(5):
+            pending = [task for task in runtime.live_events._tasks if not task.done()]
+            if not pending:
+                break
+            await asyncio.gather(*pending)
+    finally:
+        runtime.live_provider.normalize = original_normalize  # type: ignore[method-assign]
+
+    rows = runtime.live_events.recent_chat_snapshot(limit=3)
+    assert len(rows) == 1
+    assert rows[0]["selected"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("platform", ["douyin", "twitch"])
+@pytest.mark.parametrize("provider_event_id", [None, "", "token=unsafe"])
+async def test_selected_provider_event_is_observed_once_when_normalizer_sanitizes_handoff(
+    runtime: LiveRuntime,
+    platform: str,
+    provider_event_id: str | None,
+) -> None:
+    runtime.config.live_platform = platform
+    runtime._accepting_live_events = True
+    runtime._live_session_generation = 1
+    runtime.live_events.ctx = runtime
+
+    payload = {
+        "nickname": "synthetic",
+        "text": "synthetic question?",
+    }
+    if provider_event_id is not None:
+        payload["provider_event_id"] = provider_event_id
+    runtime.live_events.submit(
+        LiveEvent(
+            type="danmaku",
+            uid="synthetic-viewer",
+            payload=payload,
+            session_generation=1,
+        )
+    )
+    for _ in range(5):
+        pending = [task for task in runtime.live_events._tasks if not task.done()]
+        if not pending:
+            break
+        await asyncio.gather(*pending)
+
+    rows = runtime.live_events.recent_chat_snapshot(limit=3)
+    assert len(rows) == 1
+    assert rows[0]["selected"] is True
 
 
 def test_douyin_normalize_preserves_internal_session_generation(
@@ -375,6 +788,50 @@ async def test_session_is_revalidated_after_waiting_for_uid_lock(
 
     assert result.reason == "live_session.stale"
     assert has_roasted_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_dispatch_completion_from_old_session_cannot_claim_first_roast(
+    runtime: LiveRuntime,
+) -> None:
+    dispatch_started = asyncio.Event()
+    release_dispatch = asyncio.Event()
+
+    class _Dispatcher:
+        async def push_roast(self, _request) -> str:
+            dispatch_started.set()
+            await release_dispatch.wait()
+            return "queued_to_neko(old session)"
+
+    runtime.config.live_room_id = 123
+    runtime.live_room_context = {"live_status": "live"}
+    assert await start_live_listener(runtime, 123) is True
+    runtime.bili_identity.resolve = lambda event: asyncio.sleep(
+        0,
+        result=ViewerIdentity(uid=event.uid, nickname=event.nickname),
+    )
+    runtime.dispatcher = _Dispatcher()
+    event = ViewerEvent(
+        uid="late-viewer",
+        nickname="late viewer",
+        danmaku_text="please roast me",
+        source="live_danmaku",
+        raw={"_live_session_generation": runtime._live_session_generation},
+    )
+
+    pending = asyncio.create_task(runtime.pipeline.handle_event(event))
+    await asyncio.wait_for(dispatch_started.wait(), timeout=1.0)
+    invalidate_live_session(runtime)
+    release_dispatch.set()
+    result = await pending
+
+    assert result.status == "skipped"
+    assert result.reason == "live_session.stale"
+    assert await runtime.viewer_profile.has_roasted("late-viewer") is False
+    assert list(runtime.recent_results) == []
+    assert not any(
+        step.id == "viewer_profile.mark_roasted" for step in result.steps
+    )
 
 
 @pytest.mark.asyncio

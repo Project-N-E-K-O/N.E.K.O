@@ -112,11 +112,17 @@ MANAGED_MEMORY_FILENAMES = (
     "settings.json",
     "facts.json",
     "facts_archive.json",
+    # Persistent privacy cutoffs must travel with event-sourced archive
+    # shards; otherwise a cloud restore could make pre-forget snapshots
+    # eligible for subject restore again.
+    "subject_forget_tombstones.json",
     # 外部导入逐日幂等 sidecar（可选：仅导入过、且有无 fact 载体天的角色才有）。
     # 必须与 facts.json 同处一个 cloudsave 同步/回滚单元：sidecar 记的是空抽取/
     # 全去重天的 processed 指纹，若它随云同步而 facts 回滚（或反之）会与账本失配，
     # 故一起 hash/上传/删除/恢复（缺失文件在各遍历处 is_file/exists 判断跳过）。
     "external_import_state.json",
+    "prompt_locale.json",
+    "scoped_prompt_locales.json",
     "persona.json",
     "persona_corrections.json",
     "reflections.json",

@@ -4,13 +4,19 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from plugin.sdk.plugin import plugin_entry, quick_action, Ok, Err, SdkError
+from plugin.sdk.plugin import Ok, plugin_entry, quick_action, tr
 from plugin.sdk.shared.core.router import PluginRouter
 
-from .._api import fetch_forecast, ForecastError, RAIN_CODES, SNOW_CODES
+from .._api import RAIN_CODES, ForecastError, fetch_forecast
 from .._chat import push_lifekit_content
-from .._coerce import clamp_int
+from .._coerce import clamp_int, timezone_name
 from .._contracts import HourlyForecastParams, HourlyForecastResult
+from .._location import LocationPurpose
+from .._location_entry import (
+    apply_location_assumption,
+    location_unavailable_result,
+    upstream_unavailable_result,
+)
 
 _HOURLY_VARS = (
     "temperature_2m,apparent_temperature,precipitation_probability,"
@@ -26,8 +32,8 @@ class HourlyForecastRouter(PluginRouter):
 
     @plugin_entry(
         id="hourly_forecast",
-        name="逐小时预报",
-        description="查询未来 48 小时的逐小时天气预报，包含温度变化、降水概率、风力等。适合回答「明天下午会不会下雨」这类问题。",
+        name=tr("entries.hourlyForecast.name", default="Hourly forecast"),
+        description=tr("entries.hourlyForecast.description", default="Get hourly temperature, precipitation, and wind forecasts for up to 168 hours."),
         params=HourlyForecastParams,
         llm_result_model=HourlyForecastResult,
     )
@@ -46,13 +52,13 @@ class HourlyForecastRouter(PluginRouter):
         plugin = self.main_plugin
         plugin._resolve_locale()
         i18n = plugin._i18n
-
-        loc, loc_err = await plugin._resolve_location(city)
-        if not loc:
-            return Err(SdkError(i18n.t(loc_err or "error.no_location")))
-
         hours = clamp_int(hours, 48, 1, 168)
-        tz = str(plugin._cfg.get("timezone", "Asia/Shanghai"))
+
+        loc, loc_err = await plugin._resolve_location(city, purpose=LocationPurpose.WEATHER)
+        if not loc:
+            return location_unavailable_result(loc_err, i18n)
+
+        tz = timezone_name(loc.get("timezone"), plugin._cfg.get("timezone"))
 
         try:
             data = await fetch_forecast(
@@ -64,7 +70,9 @@ class HourlyForecastRouter(PluginRouter):
             )
         except ForecastError as e:
             err_key = "error.forecast_timeout" if e.cause == "timeout" else "error.fetch_failed"
-            return Err(SdkError(i18n.t(err_key, city=loc["city"])))
+            return upstream_unavailable_result(
+                i18n.t(err_key, city=loc["city"]), i18n, location=loc,
+            )
 
         hourly = data.get("hourly", {})
         times = hourly.get("time", [])
@@ -118,23 +126,24 @@ class HourlyForecastRouter(PluginRouter):
             hour_lines.append(f"{t_str}  {h['weather']}  {temp_str}  💧{h.get('precip_prob', 0)}%")
 
         blocks = [
-            {"type": "text", "text": f"📊 {loc['city']} — {i18n.t('entry.hourly_forecast', fallback='逐小时预报')}"},
+            {"type": "text", "text": f"📊 {loc['city']} — {i18n.t('runtime.hourly_title')}"},
         ]
         if temps:
             blocks.append({"type": "text", "text": f"🌡️ {min(temps)}~{max(temps)}°C"})
         if hour_lines:
             blocks.append({"type": "text", "text": "\n".join(hour_lines)})
         if len(result_hours) > 8:
-            blocks.append({"type": "text", "text": f"… +{len(result_hours) - 8} {i18n.t('summary.more_hours', fallback='小时')}"})
+            blocks.append({"type": "text", "text": f"… +{len(result_hours) - 8} {i18n.t('runtime.more_hours')}"})
 
         push_lifekit_content(plugin, blocks)
 
-        return Ok({
+        return Ok(apply_location_assumption({
+            "status": "ready",
             "city": loc["city"],
             "summary": summary,
             "hours": result_hours,
             "total_hours": len(result_hours),
-        })
+        }, loc, i18n))
 
 
 def _safe_idx(data: Dict[str, Any], field: str, idx: int) -> Any:

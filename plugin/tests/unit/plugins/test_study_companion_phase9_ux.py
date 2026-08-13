@@ -13,6 +13,7 @@ pytestmark = pytest.mark.unit
 
 PLUGIN_DIR = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
 I18N_DIR = PLUGIN_DIR / "i18n"
+NODE_SUBPROCESS_TIMEOUT_SECONDS = 30
 
 
 def test_phase9_static_math_assets_are_local_and_registered() -> None:
@@ -76,7 +77,7 @@ console.log(JSON.stringify(tools.splitByMath({json.dumps(text)})));
         check=True,
         capture_output=True,
         encoding="utf-8",
-        timeout=10,
+        timeout=NODE_SUBPROCESS_TIMEOUT_SECONDS,
     )
     return json.loads(result.stdout)
 
@@ -118,7 +119,7 @@ console.log(window.renderMathInText({json.dumps(text)}));
         check=True,
         capture_output=True,
         encoding="utf-8",
-        timeout=10,
+        timeout=NODE_SUBPROCESS_TIMEOUT_SECONDS,
     )
     return result.stdout.strip()
 

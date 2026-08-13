@@ -127,6 +127,9 @@
         if (wasCompactSurface && wasMoved) {
             var compactRect = I.getCurrentCompactSurfaceRect();
             if (compactRect) {
+                if (typeof I.noteCompactSurfaceManualDragRelease === 'function') {
+                    I.noteCompactSurfaceManualDragRelease(compactRect);
+                }
                 I.dispatchCompactSurfaceLayoutChange(compactRect);
             }
         }
@@ -544,6 +547,10 @@
     }
 
     function init() {
+        // initAfterStorageBarrier() is the only caller, so the active storage
+        // namespace is settled before the font preference is restored. This is
+        // still before any React chat surface can mount.
+        I.restoreChatFontPresetPreference();
         var trigger = I.$('reactChatWindowButton');
         var closeButton = I.$('reactChatWindowCloseButton');
         var minimizeButton = I.getMinimizeButton();

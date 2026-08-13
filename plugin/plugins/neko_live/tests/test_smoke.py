@@ -139,19 +139,36 @@ def test_developer_tools_default_off_until_explicitly_enabled():
     assert "developer_tools_enabled: false" in (root / "ui" / "panel_compat.tsx").read_text(encoding="utf-8")
 
 
-def test_console_accepts_bilibili_links_and_requires_explicit_login_fallback() -> None:
+def test_console_accepts_bilibili_links_and_requires_login() -> None:
     root = Path(__file__).resolve().parents[1]
 
     for name in ("panel.tsx", "panel_compat.tsx"):
         source = (root / "ui" / name).read_text(encoding="utf-8")
         assert '!/^\\d+$/.test(roomRef)' not in source
         assert 't("panel.console.roomNumeric")' in source
-        assert 'const [allowLimitedConnection, setAllowLimitedConnection] = useState(false)' in source
-        assert 'connectionAuthMode === "limited_accountless"' in source
-        assert 'const loginRequired = livePlatform === "bilibili" && !loginLoggedIn && !limitedConnection' in source
-        assert 'loginLoggedIn || limitedConnection' in source
-        assert 'allow_accountless: livePlatform === "bilibili" && !loginLoggedIn && allowLimitedConnection' in source
-        assert 'onClick={enableLimitedConnection}' in source
+        assert 'const loginRequired = livePlatform === "bilibili" && !loginLoggedIn' in source
+        assert 'const accountStartReady = livePlatform === "bilibili" ? loginLoggedIn' in source
+        assert "allow_accountless" not in source
+        assert "limited_accountless" not in source
+        assert "enableLimitedConnection" not in source
+
+
+def test_accountless_bilibili_connection_is_absent_from_production_surfaces() -> None:
+    root = Path(__file__).resolve().parents[1]
+    paths = (
+        root / "__init__.py",
+        root / "core" / "runtime_control_api.py",
+        root / "core" / "runtime_live_controls.py",
+        root / "tools" / "live_random_danmaku_pressure.py",
+        root / "tools" / "live_silence_pressure.py",
+        root / "ui" / "panel.tsx",
+        root / "ui" / "panel_compat.tsx",
+    )
+
+    for path in paths:
+        source = path.read_text(encoding="utf-8")
+        assert "allow_accountless" not in source
+        assert "limited_accountless" not in source
 
 
 def test_first_use_guide_is_local_resettable_and_mirrored() -> None:
@@ -257,7 +274,7 @@ def test_console_modal_close_callback_stays_stable_while_typing() -> None:
         assert 'onClose={() => { setInteractionDialog("") }}' not in source
 
 
-def test_console_uses_viewport_fixed_live_control_with_priority_readiness_tooltip() -> None:
+def test_console_keeps_live_control_inline_with_priority_readiness_hint() -> None:
     root = Path(__file__).resolve().parents[1]
 
     for name in ("panel.tsx", "panel_compat.tsx"):
@@ -265,10 +282,7 @@ def test_console_uses_viewport_fixed_live_control_with_priority_readiness_toolti
         runtime_source = source.split('<Card title={t("panel.console.runtimeTitle")}>', 1)[1].split(
             '<Card title={t("panel.console.sessionTitle")}>', 1
         )[0]
-        dock_source = source.split('className="neko-live-live-fab"', 1)[1].split(">\n        {", 1)[0]
-        live_control_source = source.split('className="neko-live-live-fab"', 1)[1].split(
-            "const renderConfigField", 1
-        )[0]
+        live_control_source = runtime_source.split('className="neko-live-inline-control"', 1)[1]
         settings_source = source.split("const advancedSection = (", 1)[1].split("const dataSection = (", 1)[0]
         toolbar_source = source.split("<Toolbar>", 1)[1].split("</Toolbar>", 1)[0]
 
@@ -284,23 +298,14 @@ def test_console_uses_viewport_fixed_live_control_with_priority_readiness_toolti
         assert 'overflow: "visible"' in source
         assert 'height: "calc(100vh - 190px)"' not in source
         assert 'className="neko-live-console-dock"' not in source
-        assert 'position: "fixed"' in dock_source
-        assert 'right: "24px"' in dock_source
-        assert 'bottom: "24px"' in dock_source
-        assert 'background: "rgba(103, 194, 58, 0.1)"' in live_control_source
-        assert 'borderColor: "rgba(103, 194, 58, 0.38)"' in live_control_source
-        assert 'color: "var(--success)"' in live_control_source
-        assert 'minWidth: "188px"' in live_control_source
-        assert 'minHeight: "56px"' in live_control_source
-        assert 'borderRadius: "16px"' in live_control_source
-        assert 'fontSize: "22px"' in live_control_source
-        assert "fontWeight: 700" in live_control_source
-        assert "opacity: 1" in live_control_source
-        assert "!simpleActionPending" in live_control_source
+        assert 'className="neko-live-inline-control"' in runtime_source
+        assert 'className="neko-live-live-fab"' not in source
+        assert 'position: "fixed"' not in live_control_source
+        assert 'disabled={connectPending || !!simpleActionPending}' in live_control_source
         assert 't("panel.actions.connect")' in live_control_source
-        assert "<Tooltip" in source
-        assert 'placement="top"' in source
-        assert 'content={readinessReason}' in source
+        assert "title={!started && !canStart && !connectPending ? readinessReason : undefined}" in live_control_source
+        assert 'aria-describedby="neko-live-readiness-reason"' in live_control_source
+        assert 'id="neko-live-readiness-reason"' in live_control_source
         assert "readinessTooltip" not in source
         readiness_source = source.split("const readinessReason =", 1)[1].split(
             "const primaryStatusLabel", 1
@@ -344,8 +349,6 @@ def test_console_uses_viewport_fixed_live_control_with_priority_readiness_toolti
         assert 't("panel.pacing.standard")' in source
         assert 't("panel.pacing.slow")' in source
         assert "void connectRoom()" in source
-        assert 'callSimple("clear_queue")' not in dock_source
-        assert 'callSimple("pause_roast")' not in dock_source
         assert 'const canStart = roomConfigured' in source
         assert "primaryStatusLabel" in toolbar_source
         assert "primaryStatusTone" in toolbar_source
@@ -403,6 +406,7 @@ def test_interaction_panel_uses_stable_cards_and_detail_modals() -> None:
         "panel.interaction.group.hosting",
         "panel.interaction.group.hostingHint",
         "panel.interaction.module.avatarRoast.avatarAnalysisHint",
+        "panel.interaction.module.avatarRoast.repeatRequestHint",
         "panel.interaction.module.avatarRoast.disabledHint",
         "panel.interaction.module.danmakuResponse.disabledHint",
         "panel.interaction.module.liveSupportEvents.disabledHint",
@@ -410,6 +414,14 @@ def test_interaction_panel_uses_stable_cards_and_detail_modals() -> None:
         "panel.interaction.module.idleHosting.disabledHint",
         "panel.interaction.module.activeEngagement.disabledHint",
         "panel.interaction.autoSaveHint",
+        "panel.coStreamEffects.title",
+        "panel.coStreamEffects.hint",
+        "panel.coStreamEffects.ambientContext",
+        "panel.coStreamEffects.channel.respond",
+        "panel.coStreamEffects.channel.read",
+        "panel.coStreamEffects.submitted",
+        "panel.coStreamEffects.deliveryLimit",
+        "panel.coStreamEffects.soloOnly",
     }
 
     for name in ("panel.tsx", "panel_compat.tsx"):
@@ -428,7 +440,16 @@ def test_interaction_panel_uses_stable_cards_and_detail_modals() -> None:
         assert interaction_source.index("{currentDecisionCard}") < interaction_source.index(
             't("panel.interaction.group.audience")'
         )
+        assert 'const coStreamEffectsCard = liveMode === "co_stream" ? (' in interaction_source
+        assert "submittedRouteCount(\"avatar_roast\")" in source
+        assert "submittedRouteCount(\"danmaku_response\")" in source
+        assert "submittedRouteCount(\"live_support_events\")" in source
+        assert "liveEventsStatus.ambient_publish_count" in source
+        assert 't("panel.coStreamEffects.channel.read")' not in interaction_source
+        assert 't(`panel.coStreamEffects.channel.${channelKey}`)' in interaction_source
+        assert "{coStreamEffectsCard}" in interaction_source
         assert 'disabled={!configForm.values.avatar_roast_enabled || settingsSaving}' in interaction_source
+        assert 't("panel.interaction.module.avatarRoast.repeatRequestHint")' in interaction_source
         assert '<Alert tone="info">{t("panel.interaction.autoSaveHint")}</Alert>' in interaction_source
         assert "<details" not in interaction_source
 
@@ -1105,6 +1126,7 @@ def test_all_locales_define_live_status_summary_labels():
         "panel.speechExplanation.summary.temporarily_not_speaking",
         "panel.speechExplanation.summary.cannot_stream",
         "panel.speechExplanation.summary.waiting_for_activity",
+        "panel.speechExplanation.summary.recently_handed_off",
         "panel.speechExplanation.summary.recently_spoke",
         "panel.speechExplanation.summary.recently_skipped",
         "panel.speechExplanation.summary.failed",
@@ -1123,6 +1145,7 @@ def test_all_locales_define_live_status_summary_labels():
         "panel.speechExplanation.reason.quiet_activity_gap",
         "panel.speechExplanation.reason.no_recent_activity",
         "panel.speechExplanation.reason.waiting_for_viewer_or_idle_slot",
+        "panel.speechExplanation.reason.host_handoff",
         "panel.speechExplanation.reason.recent_output",
         "panel.speechExplanation.reason.recently_skipped",
         "panel.speechExplanation.reason.failed",

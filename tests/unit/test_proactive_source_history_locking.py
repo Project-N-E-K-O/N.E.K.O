@@ -20,7 +20,11 @@ def _isolate_source_history():
     saved_loaded = state._source_history_loaded
     saved_path = state._source_history_loaded_path
     state._source_history.clear()
-    state._source_history_loaded = True  # _record_source_used 本身不加载，这里只是别让它看起来是冷的
+    # 从「完全没加载过」起步：_record_source_used 现在自己会先
+    # _ensure_source_history_loaded，用例的 tmp_path 下没有历史文件，那次加载走
+    # FileNotFoundError（正常的空历史），落到临界区的仍然只有本用例写进去的条目。
+    state._source_history_loaded = False
+    state._source_history_loaded_path = None
     yield
     state._source_history.clear()
     state._source_history.update(saved)

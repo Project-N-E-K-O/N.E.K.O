@@ -9,7 +9,11 @@ from twitchio.eventsub import websockets as twitchio_websockets
 from twitchio.authentication import Scopes
 from twitchio.exceptions import WebsocketConnectionException
 
-from plugin.plugins.neko_live.modules.twitch_live_ingest import TwitchLiveIngestModule, _public_scopes
+from plugin.plugins.neko_live.modules.twitch_live_ingest import (
+    TwitchLiveIngestModule,
+    _public_scopes,
+    _safe_error,
+)
 from plugin.plugins.neko_live.core.runtime_live_controls import _resolve_connection_auth_mode
 from plugin.plugins.neko_live.modules.twitch_live_ingest.twitch_client import (
     NekoTwitchClient,
@@ -273,6 +277,42 @@ async def test_listener_starts_without_twitchio_token_files_and_subscribes_targe
 
 
 @pytest.mark.asyncio
+async def test_listener_start_cancellation_closes_client_and_clears_connecting_state() -> None:
+    clients: list[_Client] = []
+
+    class _WaitingClient(_Client):
+        async def start(self, token: str, **kwargs: Any) -> None:
+            self.start_kwargs = {"token": token, **kwargs}
+            await self.closed.wait()
+
+    def factory(**callbacks: Any) -> _WaitingClient:
+        client = _WaitingClient(**callbacks)
+        clients.append(client)
+        return client
+
+    module = TwitchLiveIngestModule(client_factory=factory)
+    module.ctx = _context(module, _Store())
+    starting = asyncio.create_task(module.start_listening("target_channel"))
+
+    while not clients or module._client_task is None:
+        await asyncio.sleep(0)
+    runner = module._client_task
+    starting.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await starting
+
+    assert clients[0].closed.is_set()
+    assert runner.done()
+    assert module._client is None
+    assert module._client_task is None
+    assert module._client_supervisor_task is None
+    assert module.is_listening() is False
+    assert module.listener_state()["state"] == "disconnected"
+    assert module.listener_state()["last_error"] == ""
+
+
+@pytest.mark.asyncio
 async def test_listener_consumes_runner_failure_and_clears_connected_state() -> None:
     class _FailingClient(_Client):
         def __init__(self, **callbacks: Any) -> None:
@@ -284,6 +324,10 @@ async def test_listener_consumes_runner_failure_and_clears_connected_state() -> 
             self.ready.set()
             await self.fail.wait()
             raise RuntimeError("socket token=secret-access disconnected")
+
+        async def close(self, **_kwargs: Any) -> None:
+            self.closed.set()
+            self.fail.set()
 
     clients: list[_FailingClient] = []
 
@@ -555,7 +599,7 @@ async def test_twitch_connection_requires_validated_user_token() -> None:
         audit=SimpleNamespace(record=lambda *_args, **_kwargs: None),
     )
 
-    mode = await _resolve_connection_auth_mode(runtime, platform="twitch", allow_accountless=False)
+    mode = await _resolve_connection_auth_mode(runtime, platform="twitch")
 
     assert mode == "authenticated"
 
@@ -576,7 +620,7 @@ async def test_twitch_connection_rejects_missing_or_expired_authorization() -> N
     )
 
     with pytest.raises(ValueError, match="Twitch authorization is required"):
-        await _resolve_connection_auth_mode(runtime, platform="twitch", allow_accountless=False)
+        await _resolve_connection_auth_mode(runtime, platform="twitch")
 
     assert runtime.config.live_enabled is False
     assert runtime.live_connection_state == "auth_required"
@@ -584,3 +628,10 @@ async def test_twitch_connection_rejects_missing_or_expired_authorization() -> N
 
 def test_scope_projection_accepts_real_twitchio_scopes() -> None:
     assert _public_scopes(Scopes(["user:read:chat"])) == ["user:read:chat"]
+
+
+def test_twitch_listener_error_never_exposes_exception_message() -> None:
+    message = _safe_error(RuntimeError("{'token': 'must-not-leak'}"))
+
+    assert message == "twitch listener failed: RuntimeError"
+    assert "must-not-leak" not in message

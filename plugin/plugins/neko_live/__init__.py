@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from plugin.sdk.plugin import Err, NekoPluginBase, Ok, SdkError, lifecycle, neko_plugin, plugin_entry, tr, ui
+
+if TYPE_CHECKING:
+    from .core.runtime import LiveRuntime
 
 
 @neko_plugin
@@ -70,6 +73,7 @@ class NekoLivePlugin(NekoPluginBase):
     async def shutdown(self, **_):
         if self.runtime:
             await self.runtime.stop()
+        self._set_recent_chat_tool_enabled(False)
         return Ok({"status": "stopped"})
 
     async def _on_command_loop_start(self) -> None:
@@ -101,7 +105,30 @@ class NekoLivePlugin(NekoPluginBase):
             else:
                 self.disable_entry(entry_id)
 
+    def _set_recent_chat_tool_enabled(self, enabled: bool) -> bool:
+        from .modules.live_events.recent_chat_tool import set_recent_chat_tool_enabled
 
+        return set_recent_chat_tool_enabled(self, enabled)
+
+    async def _get_recent_live_chat_tool(
+        self,
+        query: Any = "",
+        **_,
+    ) -> dict[str, Any]:
+        from .modules.live_events.recent_chat_tool import recent_chat_tool_result
+
+        runtime = self._runtime()
+        config = getattr(runtime, "config", None)
+        if not bool(getattr(config, "developer_tools_enabled", False)):
+            return {
+                "available": False,
+                "status": "developer_mode_disabled",
+                "entries": [],
+            }
+        return recent_chat_tool_result(
+            self,
+            query=query,
+        )
     @ui.context(id="dashboard", title=tr("panel.title", default="NEKO Live"))
     async def get_dashboard_ui_context(self) -> dict[str, Any]:
         return await self._runtime().dashboard_state()
@@ -261,20 +288,12 @@ class NekoLivePlugin(NekoPluginBase):
             "type": "object",
             "properties": {
                 "room_id": {"type": "string", "description": "直播间目标或链接（留空用已配置房间）"},
-                "allow_accountless": {
-                    "type": "boolean",
-                    "description": "仅 B 站：为本次连接显式启用受限无账号兜底",
-                    "default": False,
-                },
             },
         },
     )
-    async def connect_live_room(self, room_id="", allow_accountless=False, **_):
+    async def connect_live_room(self, room_id="", **_):
         try:
-            connection = await self._runtime().connect_live_room(
-                room_id,
-                allow_accountless=allow_accountless,
-            )
+            connection = await self._runtime().connect_live_room(room_id)
             return Ok({"connection": connection})
         except (TypeError, ValueError) as exc:
             return Err(SdkError(str(exc)))

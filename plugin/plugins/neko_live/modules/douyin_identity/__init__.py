@@ -14,7 +14,12 @@ class DouyinIdentityModule(BaseModule):
     id = "douyin_identity"
     title = "抖音身份解析"
 
-    async def resolve(self, event: ViewerEvent) -> ViewerIdentity:
+    async def resolve(
+        self,
+        event: ViewerEvent,
+        *,
+        fetch_avatar_image: bool = True,
+    ) -> ViewerIdentity:
         uid = self._platform_uid(event.uid)
         nickname = safe_text(event.nickname) or uid
         avatar_url = safe_avatar_url(event.avatar_url)

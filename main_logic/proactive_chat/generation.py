@@ -1180,6 +1180,7 @@ async def _guard_phase2_output(
         from memory.anti_repeat import get_anti_repeat_corpus
 
         anti_repeat_corpus = get_anti_repeat_corpus()
+        await anti_repeat_corpus.apreload(lanlan_name)
     except Exception as exc:  # pragma: no cover - defensive
         active_logger.debug("[AntiRepeat] corpus unavailable: %s", exc)
         anti_repeat_corpus = None

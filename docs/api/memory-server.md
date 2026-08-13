@@ -38,14 +38,16 @@ The standalone entry point binds to `127.0.0.1`; the launcher can host the same 
 | Method | Path | Parameters | Response |
 |---|---|---|---|
 | `GET` | `/health` | none | `{"app":"N.E.K.O","service":"memory","status":"ok","instance_id":"..."}` |
-| `POST` | `/release_character/{lanlan_name}` | path only | `{"status":"success","character_name":"..."}` after releasing that character's SQLite handles; invalid names preserve their HTTP error status and other failures return `500` |
-| `POST` | `/reload` | none | Rebuilds and atomically swaps memory components; returns `{"status":"success","message":"..."}` or `status: "error"` |
+| `POST` | `/release_character/{lanlan_name}` | path plus required query parameters `derived_task_claim_token` (non-empty string) and `derived_task_claim_generation` (integer); optional `hold_derived_task_admission` boolean defaults to `false` | Success returns `{"status":"success","character_name":"...","cancelled_derived_tasks":N,"derived_task_claim_token":"..."}` after draining derived tasks and releasing SQLite handles. A missing claim parameter returns `400`; a withdrawn or replayed claim returns `409` with `status: "cancelled"`; invalid names preserve their HTTP error status and other failures return `500` |
+| `POST` | `/reload` | optional JSON object with `resume_derived_task_names: string[]`, matching non-negative integer `resume_derived_task_generations`, and/or `release_derived_task_claims: {name: token[]}` | Rebuilds and atomically swaps memory components, releases only the listed claim tokens, and publishes listed identity generations; returns `{"status":"success","message":"..."}` or `status: "error"` |
 | `POST` | `/shutdown` | none | `shutdown_signal_received` when the standalone process enabled shutdown, otherwise `shutdown_disabled` |
 | `POST` | `/internal/storage/startup/continue` | optional `{"reason":"..."}` | Releases limited mode after storage is ready: `{"ok":true,"initialized":true|false}`; still-blocked storage returns `409` |
 | `POST` | `/internal/storage/startup/block` | optional `{"reason":"..."}` | Restores limited mode after an upstream startup failure: `{"ok":true,"limited_mode":true,"reason":"..."}` |
 | `POST` | `/internal/memory/reset_confirmed_at` | none | Powerful-memory `ON` to `OFF` migration: `{"ok":true,"count":N}` or `{"ok":false,"error":"...","count":0}` |
 
 The three `/internal/*` endpoints are control-plane calls between the main and memory processes. They must not be exposed as user-facing administration routes.
+
+`/release_character` and the claim fields on `/reload` are also loopback lifecycle controls. Callers must generate one opaque token per operation, capture the current recent-identity generation, and reuse that exact token for retries and compensation. A successful release keeps its claim active until `/reload` releases that token or explicitly publishes the resulting identity; publishing removes claims from older generations while preserving concurrent claims from the published generation. Repository callers should use the character-router helpers instead of deriving generations themselves.
 
 ## Conversation persistence endpoints
 

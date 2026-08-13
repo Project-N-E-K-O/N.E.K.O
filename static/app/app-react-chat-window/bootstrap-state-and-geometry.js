@@ -21,6 +21,57 @@ I.BUNDLE_SRC = '/static/react/neko-chat/neko-chat-window.iife.js';
     I.STORAGE_HEIGHT_KEY = 'neko.reactChatWindow.height';
     var GALGAME_STORAGE_KEY = 'neko.reactChatWindow.galgameMode';
     var CHAT_SURFACE_MODE_STORAGE_KEY = 'neko.reactChatWindow.chatSurfaceMode';
+    var CHAT_FONT_PRESET_STORAGE_KEY = 'neko.reactChatWindow.fontPreset';
+    var CHAT_FONT_PRESET_ATTRIBUTE = 'data-neko-chat-font-preset';
+
+    function normalizeChatFontPreset(value) {
+        return value === 'system' ? 'system' : 'handwritten';
+    }
+
+    function readChatFontPreset() {
+        try {
+            return normalizeChatFontPreset(window.localStorage.getItem(CHAT_FONT_PRESET_STORAGE_KEY));
+        } catch (_) {
+            return 'handwritten';
+        }
+    }
+
+    function applyChatFontPreset(value) {
+        var preset = normalizeChatFontPreset(value);
+        if (document.documentElement) {
+            document.documentElement.setAttribute(CHAT_FONT_PRESET_ATTRIBUTE, preset);
+        }
+        return preset;
+    }
+
+    I.restoreChatFontPresetPreference = function restoreChatFontPresetPreference() {
+        return applyChatFontPreset(readChatFontPreset());
+    };
+
+    function installChatFontPresetSync() {
+        if (I.chatFontPresetSyncInstalled) return;
+        I.chatFontPresetSyncInstalled = true;
+
+        window.addEventListener('storage', function (event) {
+            if (
+                event.storageArea === window.localStorage
+                && (event.key === CHAT_FONT_PRESET_STORAGE_KEY || event.key === null)
+            ) {
+                applyChatFontPreset(event.newValue);
+            }
+        });
+        window.addEventListener('neko:chat-font-preset-changed', function (event) {
+            var detail = event && event.detail;
+            var preset = detail && detail.preset != null
+                ? detail.preset
+                : readChatFontPreset();
+            applyChatFontPreset(preset);
+        });
+    }
+
+    // Install live synchronization immediately, but defer the initial read until
+    // initAfterStorageBarrier() has resolved the active storage namespace.
+    installChatFontPresetSync();
     I.GALGAME_HISTORY_LIMIT = 6;
     I.EVENT_PREFIX = 'react-chat-window:';
     I.CHAT_MINIMIZED_BALL_ICON_SRC = '/static/assets/neko-idle/chat-minimized-yarn-ball-116.png';
@@ -433,8 +484,16 @@ I.BUNDLE_SRC = '/static/react/neko-chat/neko-chat-window.iife.js';
     I.compactSurfaceTrackingSettleFramesRemaining = 0;
     I.compactSurfaceAnchorSnapshot = '';
     var compactDesktopSurfaceAnchorSnapshot = '';
+    var compactSurfaceManualDragReleaseUntil = 0;
     I.compactInteractionGeometrySnapshot = '';
     I.compactSurfaceAnchorLocked = false;
+    I.noteCompactSurfaceManualDragRelease = function noteCompactSurfaceManualDragRelease() {
+        compactSurfaceManualDragReleaseUntil = Date.now() + 1400;
+        I.compactSurfaceAnchorLocked = true;
+    };
+    I.isCompactSurfaceManualDragReleaseGuardActive = function isCompactSurfaceManualDragReleaseGuardActive() {
+        return Date.now() < compactSurfaceManualDragReleaseUntil;
+    };
     I.compactSurfacePendingModelOpen = false;
     I.compactSurfaceResizeSession = null;
     I.compactSurfaceDesktopResizeActive = false;
@@ -499,8 +558,13 @@ I.BUNDLE_SRC = '/static/react/neko-chat/neko-chat-window.iife.js';
             compactDesktopSurfaceAnchorSnapshot = nextAnchorSnapshot;
         }
         if (baseAnchorChanged && !I.compactSurfaceDesktopResizeActive) {
-            I.compactSurfaceAnchorLocked = false;
-            I.compactSurfaceAnchorSnapshot = '';
+            var localCompactDragActive = !!(I.dragState && I.dragState.compactSurface);
+            var manualDragReleaseGuardActive = typeof I.isCompactSurfaceManualDragReleaseGuardActive === 'function'
+                && I.isCompactSurfaceManualDragReleaseGuardActive();
+            if (!localCompactDragActive && !manualDragReleaseGuardActive) {
+                I.compactSurfaceAnchorLocked = false;
+                I.compactSurfaceAnchorSnapshot = '';
+            }
         }
         // 桌面侧布局变化（窗口移动/跨屏等）：立即唤醒短 settle，避免静止态停帧后漏掉新 anchor。
         I.scheduleCompactMinimizeBallTracking();

@@ -155,6 +155,27 @@ test('Day1 intro basic voice showcase is delegated from timeline operation', () 
   assert.match(operationBody, /adoptPreTakeoverGhostCursorLookAtHandle/);
 });
 
+test('Day1 screen share entry keeps the floating toolbar visible', () => {
+  const sceneBlock = getSceneBlock(day1Source, 'day1_screen_entry');
+  const toolbarPredicateBlock = directorSource.split('shouldShowAvatarFloatingToolbarForScene(scene) {')[1].split(
+    'isAvatarFloatingInputIntroScene(scene) {',
+    1
+  )[0];
+  assert.ok(toolbarPredicateBlock, 'expected to find the floating toolbar scene predicate');
+
+  assert.match(sceneBlock, /operation:\s*'day1-screen-share-entry-flow'/);
+  assert.match(sceneBlock, /spotlight:\s*false/);
+  assert.match(toolbarPredicateBlock, /operation === 'day1-screen-share-entry-flow'/);
+});
+
+test('Day1 screen share invite keeps the row spotlight and ghost cursor in place', () => {
+  const sceneBlock = getSceneBlock(day1Source, 'day1_screen_entry_invite');
+
+  assert.match(sceneBlock, /target:\s*'#\$\{p\}-popup-mic \[data-neko-mic-main-action-row="screen"\]'/);
+  assert.match(sceneBlock, /cursorAction:\s*'hold'/);
+  assert.match(directorSource, /sceneId === 'day1_screen_entry_invite'/);
+});
+
 test('Day1 button handoff scenes keep the shared tutorial interrupt resistance path', () => {
   for (const sceneId of [
     'day1_intro_basic_voice',
@@ -277,9 +298,10 @@ test('Day1 return control cursor moves to the capsule primary target before the 
   const shouldAlignBlock = getBalancedBlockFrom(appInterpageSource, shouldAlignStart);
   const sourceRectBlock = getBalancedBlockFrom(appInterpageSource, sourceRectStart);
   const spotlightUpdateBlock = getBalancedBlockFrom(appInterpageSource, spotlightUpdateStart);
-  // 修改原因：胶囊目标只在桌面宿主明确声明 Wayland work-area carrier 时平移；
-  // 平移后仍保留完整宽度，与 macOS 视觉契约一致。
+  // 修改原因：Niri 的 registry capsuleBody 已处于正确布局坐标，不能再用文字锚点
+  // 二次平移；标准 Wayland 保留 #2533 的原行为，避免平台修复向外扩散。
   assert.match(shouldAlignBlock, /metrics\.waylandWorkAreaCarrier === true/);
+  assert.match(shouldAlignBlock, /metrics\.niriWaylandRuntime !== true/);
   assert.match(sourceRectBlock, /anchorOffsetX \* YUI_GUIDE_CHAT_CAPSULE_TEXT_ALIGNMENT_RATIO/);
   assert.match(sourceRectBlock, /width:\s*rect\.width/);
   assert.doesNotMatch(sourceRectBlock, /sourceRect\.width = Math\.max\(1, rect\.left \+ rect\.width - sourceRect\.left\)/);

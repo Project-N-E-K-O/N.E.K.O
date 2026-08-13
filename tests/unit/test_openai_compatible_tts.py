@@ -979,6 +979,123 @@ async def test_tts_handler_marks_audio_before_runtime_fallback(audio_message):
     assert observed == [True]
 
 
+@pytest.mark.asyncio
+async def test_tts_handler_deduplicates_api_error_notice_per_speech():
+    mgr = LLMSessionManager.__new__(LLMSessionManager)
+    response_queue = queue.Queue()
+    api_key_error = (
+        "OpenAI TTS synthesis failed: Error code: 401 - "
+        "invalid_request_error.invalid_api_key"
+    )
+    for speech_id in ("speech-1", "speech-1", "speech-2", "speech-2"):
+        response_queue.put(("__tts_sentence_failed__", speech_id, "failed sentence"))
+        response_queue.put(("__error__", api_key_error))
+
+    mgr.tts_response_queue = response_queue
+    mgr.tts_cache_lock = asyncio.Lock()
+    mgr.tts_ready = True
+    mgr.current_speech_id = "speech-2"
+    mgr._tts_replay_speech_id = None
+    mgr._tts_replay_sentence_audio_emitted = False
+    mgr._last_tts_error_code = ""
+    mgr._tts_retry_notify_count = 0
+    mgr._activate_configured_tts_fallback = lambda _stage: False
+
+    sent_statuses = []
+    status_tasks = []
+
+    async def send_status(message):
+        sent_statuses.append(json.loads(message))
+
+    def fire_task(coro):
+        task = asyncio.create_task(coro)
+        status_tasks.append(task)
+        return task
+
+    mgr.send_status = send_status
+    mgr._fire_task = fire_task
+
+    handler_task = asyncio.create_task(LLMSessionManager.tts_response_handler(mgr))
+    deadline = asyncio.get_running_loop().time() + 1
+    while not response_queue.empty() and asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(0.01)
+    await asyncio.sleep(0.05)
+    handler_task.cancel()
+    await asyncio.gather(handler_task, return_exceptions=True)
+    if status_tasks:
+        await asyncio.gather(*status_tasks)
+
+    assert [status["code"] for status in sent_statuses] == [
+        "API_KEY_REJECTED",
+        "API_KEY_REJECTED",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_tts_error_notice_dedup_survives_handler_restart_until_audio_done():
+    mgr = LLMSessionManager.__new__(LLMSessionManager)
+    api_key_error = (
+        "OpenAI TTS synthesis failed: Error code: 401 - "
+        "invalid_request_error.invalid_api_key"
+    )
+    mgr.tts_cache_lock = asyncio.Lock()
+    mgr.tts_ready = True
+    mgr.current_speech_id = "speech-1"
+    mgr._tts_replay_speech_id = None
+    mgr._tts_replay_sentence_audio_emitted = False
+    mgr._last_tts_error_code = ""
+    mgr._tts_retry_notify_count = 0
+    mgr._tts_notified_error_keys = set()
+    mgr._activate_configured_tts_fallback = lambda _stage: False
+
+    sent_statuses = []
+    status_tasks = []
+
+    async def send_status(message):
+        sent_statuses.append(json.loads(message))
+
+    async def send_audio_done(_speech_id):
+        return True
+
+    def fire_task(coro):
+        task = asyncio.create_task(coro)
+        status_tasks.append(task)
+        return task
+
+    async def run_handler(*items):
+        response_queue = queue.Queue()
+        for item in items:
+            response_queue.put(item)
+        mgr.tts_response_queue = response_queue
+        handler_task = asyncio.create_task(LLMSessionManager.tts_response_handler(mgr))
+        deadline = asyncio.get_running_loop().time() + 1
+        while not response_queue.empty() and asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(0.01)
+        await asyncio.sleep(0.05)
+        handler_task.cancel()
+        await asyncio.gather(handler_task, return_exceptions=True)
+        if status_tasks:
+            await asyncio.gather(*status_tasks)
+
+    mgr.send_status = send_status
+    mgr.send_audio_done = send_audio_done
+    mgr._fire_task = fire_task
+
+    failed_sentence = ("__tts_sentence_failed__", "speech-1", "failed sentence")
+    await run_handler(failed_sentence, ("__error__", api_key_error))
+    await run_handler(
+        failed_sentence,
+        ("__error__", api_key_error),
+        ("__audio_done__", "speech-1"),
+    )
+    await run_handler(failed_sentence, ("__error__", api_key_error))
+
+    assert [status["code"] for status in sent_statuses] == [
+        "API_KEY_REJECTED",
+        "API_KEY_REJECTED",
+    ]
+
+
 def test_configured_tts_failure_replays_ledger_after_current_speech_id_rotates(
     monkeypatch,
 ):

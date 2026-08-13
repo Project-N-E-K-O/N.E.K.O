@@ -270,7 +270,7 @@ class GameAgentMinecraftPlugin(NekoPluginBase):
             else {}
         )
         # Resolve user language now (it reads Steam / system locale via
-        # ``utils.language_utils.get_global_language``, which lazy-inits
+        # ``utils.language_utils.get_global_language_full``, which lazy-inits
         # on first call) and propagate to the service so its autonomous
         # nudge loop and task_finished cues match the user's locale.
         self._lang = prompts.user_lang()

@@ -11,6 +11,8 @@ Choose a path according to the audience:
 
 The cross-platform desktop workflow builds Windows, macOS, and Linux artifacts. Scheduled output is a **nightly prerelease**, not a stable-release promise.
 
+Maintainers publishing a stable desktop release should follow [Manual stable desktop release](./manual-desktop-release).
+
 ## Requirements
 
 Source development requires Python 3.11 exactly, `uv`, and Node compatible with the lockfiles (the plugin manager requires `^20.19.0 || >=22.12.0`). Docker requires a current Docker Engine with Compose.

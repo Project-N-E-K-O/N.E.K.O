@@ -638,7 +638,7 @@ export default defineConfig({
         sidebarMenuLabel: '菜单',
         darkModeSwitchLabel: '深色模式',
         footer: {
-          message: '基于 Apache License 2.0 发布。',
+          message: '基于 Apache License 2.0 发布。 · <a href="/zh-CN/privacy">隐私政策</a> · <a href="/zh-CN/cookies">Cookie 政策</a>',
           copyright: 'Copyright 2025-present Project N.E.K.O. Contributors',
         },
       },
@@ -668,7 +668,7 @@ export default defineConfig({
         sidebarMenuLabel: 'メニュー',
         darkModeSwitchLabel: 'ダークモード',
         footer: {
-          message: 'Apache License 2.0 の下で公開。',
+          message: 'Apache License 2.0 の下で公開。 · <a href="/ja/privacy">プライバシーポリシー</a> · <a href="/ja/cookies">Cookie ポリシー</a>',
           copyright: 'Copyright 2025-present Project N.E.K.O. Contributors',
         },
       },
@@ -703,7 +703,7 @@ export default defineConfig({
     },
 
     footer: {
-      message: 'Released under the Apache License 2.0.',
+      message: 'Released under the Apache License 2.0. · <a href="/privacy">Privacy policy</a> · <a href="/cookies">Cookie policy</a>',
       copyright: 'Copyright 2025-present Project N.E.K.O. Contributors',
     },
   },

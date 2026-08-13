@@ -1,4 +1,5 @@
 import asyncio
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -13,7 +14,40 @@ from plugin.plugins.neko_live.core.contracts import (
 )
 from plugin.plugins.neko_live.core.permission_gate import PermissionGate
 from plugin.plugins.neko_live.core.pipeline import LivePipeline
+from plugin.plugins.neko_live.core.pipeline_requests import build_request_for_route
+from plugin.plugins.neko_live.core.pipeline_routing import PipelineRoute
 from plugin.plugins.neko_live.core.pipeline_session import PipelineSessionTracker
+from plugin.plugins.neko_live.core.safety_guard import SafetyGuard
+
+
+def test_pipeline_route_stamps_avatar_roast_identity_when_image_is_disabled():
+    event = ViewerEvent(uid="42", nickname="viewer", source="live_danmaku")
+    identity = ViewerIdentity(uid="42", nickname="viewer")
+    profile = ViewerProfile(uid="42", nickname="viewer")
+    request = InteractionRequest(
+        event=event,
+        identity=identity,
+        profile=profile,
+        prompt_text="avatar roast",
+        live_mode="solo_stream",
+        strength="normal",
+        allow_avatar_image=False,
+    )
+    ctx = SimpleNamespace(
+        avatar_roast=SimpleNamespace(
+            build_request=lambda *_args: request,
+        )
+    )
+
+    built = build_request_for_route(
+        ctx,
+        PipelineRoute("avatar_roast", "first_appearance", True),
+        event,
+        identity,
+        profile,
+    )
+
+    assert built.metadata["response_module_hint"] == "avatar_roast"
 
 
 @pytest.mark.asyncio
@@ -74,6 +108,44 @@ def test_live_status_offline_gate_only_allows_verified_support_signals():
     assert blocked is not None
     assert blocked.reason == "live_status.live_room_offline"
     assert pipeline._live_status_gate_decision(gift) is None
+
+
+def test_live_status_cooldown_defers_support_timing_to_dedicated_safety_lane():
+    class Audit:
+        def record(self, *_args, **_kwargs):
+            return None
+
+    config = LiveConfig(rate_limit_seconds=30)
+    guard = SafetyGuard(config, Audit())
+    guard._last_output_at = time.monotonic()
+    ctx = SimpleNamespace(
+        live_connection_snapshot=lambda: {"connected": True},
+        live_status_summary=lambda _snapshot: {
+            "summary": "temporarily_not_speaking",
+            "reason": "cooldown",
+            "can_output": False,
+            "live_status": "live",
+        },
+    )
+    pipeline = LivePipeline(ctx)
+    normal = ViewerEvent(
+        uid="1",
+        nickname="u1",
+        danmaku_text="hello",
+        source="live_danmaku",
+        raw={"event_type": "danmaku"},
+    )
+    gift = ViewerEvent(
+        uid="2",
+        nickname="u2",
+        source="live_danmaku",
+        raw={"event_type": "gift", "gift_name": "Small Heart"},
+    )
+
+    assert pipeline._live_status_gate_decision(normal) is None
+    assert pipeline._live_status_gate_decision(gift) is None
+    assert guard.before_output(normal).allowed is False
+    assert guard.before_output(gift).allowed is True
 
 
 @pytest.mark.asyncio
@@ -978,6 +1050,14 @@ async def test_pipeline_routes_same_session_followup_to_danmaku_response_even_wh
 
     first = await pipeline.handle_event(ViewerEvent(uid="42", nickname="same", danmaku_text="first", source="live_danmaku"))
     second = await pipeline.handle_event(ViewerEvent(uid="42", nickname="same", danmaku_text="second", source="live_danmaku"))
+    explicit_avatar = await pipeline.handle_event(
+        ViewerEvent(
+            uid="42",
+            nickname="same",
+            danmaku_text="rate my avatar",
+            source="live_danmaku",
+        )
+    )
 
     assert first.status == "pushed"
     assert second.status == "pushed"
@@ -985,10 +1065,18 @@ async def test_pipeline_routes_same_session_followup_to_danmaku_response_even_wh
     assert second.request is not None
     assert first.request.prompt_text == "avatar_roast:first"
     assert second.request.prompt_text == "danmaku_response:second"
+    assert explicit_avatar.request is not None
+    assert explicit_avatar.request.prompt_text == "avatar_roast:rate my avatar"
     assert any(step.id == "viewer_gate" and step.status == "ok" and step.message == "repeat_danmaku" for step in second.steps)
+    assert any(
+        step.id == "viewer_gate"
+        and step.status == "ok"
+        and step.message == "explicit_self_avatar_roast"
+        for step in explicit_avatar.steps
+    )
 
 @pytest.mark.asyncio
-async def test_pipeline_avatar_roast_attempt_prevents_repeat_avatar_roast_when_dispatcher_fails():
+async def test_pipeline_failed_avatar_roast_keeps_next_avatar_roast_eligible():
     class Audit:
         def record(self, *_args, **_kwargs):
             return None
@@ -1076,12 +1164,13 @@ async def test_pipeline_avatar_roast_attempt_prevents_repeat_avatar_roast_when_d
     assert first.request is not None
     assert second.request is not None
     assert first.request.prompt_text == "avatar_roast:first"
-    assert second.request.prompt_text == "danmaku_response:second"
-    assert viewer_profile.mark_calls == 0
-    assert any(step.id == "viewer_gate" and step.status == "ok" and step.message == "repeat_danmaku" for step in second.steps)
+    assert second.request.prompt_text == "avatar_roast:second"
+    assert viewer_profile.mark_calls == 1
+    assert any(step.id == "avatar_roast" and step.status == "ok" for step in second.steps)
+    assert not any(step.id == "viewer_gate.session_claim" for step in first.steps + second.steps)
 
 @pytest.mark.asyncio
-async def test_pipeline_avatar_roast_attempt_prevents_repeat_avatar_roast_when_output_gate_blocks():
+async def test_pipeline_blocked_avatar_roast_keeps_next_avatar_roast_eligible():
     class Audit:
         def record(self, *_args, **_kwargs):
             return None
@@ -1164,9 +1253,9 @@ async def test_pipeline_avatar_roast_attempt_prevents_repeat_avatar_roast_when_o
     assert first.request is not None
     assert second.request is not None
     assert first.request.prompt_text == "avatar_roast:first"
-    assert second.request.prompt_text == "danmaku_response:second"
-    assert any(step.id == "viewer_gate.session_claim" and step.status == "ok" for step in first.steps)
-    assert any(step.id == "viewer_gate" and step.status == "ok" and step.message == "repeat_danmaku" for step in second.steps)
+    assert second.request.prompt_text == "avatar_roast:second"
+    assert any(step.id == "avatar_roast" and step.status == "ok" for step in second.steps)
+    assert not any(step.id == "viewer_gate.session_claim" for step in first.steps + second.steps)
 
 @pytest.mark.asyncio
 async def test_pipeline_records_idle_hosting_as_own_route():

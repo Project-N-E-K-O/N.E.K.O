@@ -14,10 +14,24 @@ import websockets
 
 from utils.api_config_loader import get_free_voices
 from utils.config_manager import get_reserved
-from utils.tts.native_voice_registry import get_active_realtime_native_provider_for_ui
-from utils.tts.providers.gemini import normalize_gemini_tts_voice
-from utils.voice_clone import MimoVoiceCloneClient, MimoVoiceCloneError, MinimaxVoiceCloneClient, MinimaxVoiceCloneError
-from utils.voice_config import read_legacy_voice_id
+try:
+    from utils.tts.native_voice_registry import get_active_realtime_native_provider_for_ui
+except (ImportError, ModuleNotFoundError):
+    get_active_realtime_native_provider_for_ui = None
+try:
+    from utils.tts.providers.gemini import normalize_gemini_tts_voice
+except (ImportError, ModuleNotFoundError):
+    normalize_gemini_tts_voice = None
+try:
+    from utils.voice_clone import MimoVoiceCloneClient, MimoVoiceCloneError, MinimaxVoiceCloneClient, MinimaxVoiceCloneError
+except (ImportError, ModuleNotFoundError):
+    MimoVoiceCloneClient = MinimaxVoiceCloneClient = None
+    class _MissingVoiceCloneError(Exception): pass
+    MimoVoiceCloneError = MinimaxVoiceCloneError = _MissingVoiceCloneError
+try:
+    from utils.voice_config import read_legacy_voice_id
+except (ImportError, ModuleNotFoundError):
+    read_legacy_voice_id = None
 
 
 class QQVoiceReplyService:
@@ -54,7 +68,7 @@ class QQVoiceReplyService:
             current_character = catgirls.get(current_name) if isinstance(catgirls, dict) else None
             if not isinstance(current_character, dict):
                 return ""
-            return read_legacy_voice_id(get_reserved(current_character, "voice_id", default="", legacy_keys=("voice_id",)))
+            return read_legacy_voice_id(get_reserved(current_character, "voice_id", default="", legacy_keys=("voice_id",))) if read_legacy_voice_id else ""
         except Exception as exc:
             self.plugin.logger.warning(f"读取当前猫娘 voice_id 失败: {exc}")
             return ""
@@ -145,7 +159,7 @@ class QQVoiceReplyService:
 
             voices = config_manager.get_voices_for_current_api()
             voice_id = await self.get_current_voice_id()
-            if not voice_id:
+            if not voice_id and get_active_realtime_native_provider_for_ui:
                 active_native = get_active_realtime_native_provider_for_ui(config_manager)
                 if active_native:
                     voice_id = active_native
@@ -179,6 +193,8 @@ class QQVoiceReplyService:
                 else:
                     mimo_base_url = str((voice_data or {}).get("mimo_base_url") or "").strip()
                 sample_bytes = base64.b64decode(sample_b64)
+                if not MimoVoiceCloneClient:
+                    raise RuntimeError("MIMO_VOICE_CLONE_UNAVAILABLE")
                 mimo_client = MimoVoiceCloneClient(api_key=mimo_api_key, base_url=mimo_base_url or None)
                 audio_data = await mimo_client.synthesize_preview(
                     sample_bytes,
@@ -193,6 +209,8 @@ class QQVoiceReplyService:
                     raise RuntimeError("MINIMAX_API_KEY_MISSING")
                 from utils.voice_clone import get_minimax_base_url
                 minimax_base_url = (voice_data or {}).get("minimax_base_url") or get_minimax_base_url(provider)
+                if not MinimaxVoiceCloneClient:
+                    raise RuntimeError("MINIMAX_VOICE_CLONE_UNAVAILABLE")
                 minimax_client = MinimaxVoiceCloneClient(api_key=minimax_api_key, base_url=minimax_base_url)
                 audio_data = await minimax_client.synthesize_preview(voice_id=voice_id, text=text)
                 return audio_data, "audio/mpeg"
@@ -200,8 +218,8 @@ class QQVoiceReplyService:
             if not audio_api_key:
                 raise RuntimeError("TTS_AUDIO_API_KEY_MISSING")
 
-            active_native_provider = get_active_realtime_native_provider_for_ui(config_manager)
-            if active_native_provider:
+            active_native_provider = get_active_realtime_native_provider_for_ui(config_manager) if get_active_realtime_native_provider_for_ui else None
+            if active_native_provider and normalize_gemini_tts_voice:
                 native_voice_id, recognized = normalize_gemini_tts_voice(voice_id)
                 if active_native_provider == "gemini" and recognized:
                     from main_routers.characters_router import _synthesize_gemini_native_voice_preview

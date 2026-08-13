@@ -15,6 +15,7 @@ LIVE2D_MODEL_PATH = PROJECT_ROOT / "static" / "live2d" / "live2d-model.js"
 LIVE2D_EMOTION_PATH = PROJECT_ROOT / "static" / "live2d" / "live2d-emotion.js"
 PARAMETER_EDITOR_PATH = PROJECT_ROOT / "static" / "js" / "live2d_parameter_editor.js"
 APP_INTERPAGE_PATH = PROJECT_ROOT / "static" / "app" / "app-interpage"
+AVATAR_PERFORMANCE_PATH = PROJECT_ROOT / "static" / "avatar" / "avatar-performance-stage.js"
 MAO_PRO_MODEL_PATH = PROJECT_ROOT / "static" / "mao_pro" / "mao_pro.model3.json"
 
 
@@ -491,6 +492,7 @@ def test_clear_expression_restores_only_active_ids_to_appearance_baseline():
         manager.initialParameters = { ParamAllColor1: 0, ParamUnrelated: 0 };
         manager.motionBaselineParameters = {};
         manager.appearanceBaselineParameters = { ParamAllColor1: 0.8, ParamUnrelated: 0.4 };
+        manager.persistentExpressionNames = ['resident'];
         manager._activeExpressionParamIds = new Set(['ParamAllColor1']);
         manager._cancelSmoothReset = () => {};
         manager._removeManualExpressionOverride = () => {};
@@ -502,10 +504,112 @@ def test_clear_expression_restores_only_active_ids_to_appearance_baseline():
         assert.strictEqual(values[1], 0.7);
         assert.strictEqual(stopped, 1);
         assert.strictEqual(persistentReplayed, 1);
+        assert.deepStrictEqual(manager.persistentExpressionNames, ['resident']);
         """
     )
     result = _run_node_harness(script)
     assert result.returncode == 0, result.stderr
+
+
+def test_live2d_action_and_expression_slots_are_exclusive():
+    script = _manager_harness(
+        """
+        (async () => {
+          const state = { currentPriority: 0, reservePriority: 0, setReserved() {}, setReservedIdle() {} };
+          let finishAction;
+          const manager = new context.Live2DManager();
+          manager.currentModel = {
+            internalModel: { motionManager: { state, motionGroups: {
+              Tap: [{
+                _loop: true,
+                isLoop() { return this._loop; },
+                setIsLoop(value) { this._loop = value; },
+              }],
+            } } },
+            motion(group, index, priority) {
+              manager.lastPriority = priority;
+              return new Promise(resolve => { finishAction = resolve; });
+            },
+          };
+          const first = manager.playActionMotion('Tap', 0);
+          assert.strictEqual(await manager.playActionMotion('Other', 0), false);
+          assert.strictEqual(manager.lastPriority, 2);
+          const tapMotion = manager.currentModel.internalModel.motionManager.motionGroups.Tap[0];
+          assert.strictEqual(tapMotion._loop, false);
+          finishAction(true);
+          await first;
+          state.currentPriority = 2;
+          assert.strictEqual(manager.hasActiveActionMotion(), true);
+
+          state.currentPriority = 0;
+          state.reservePriority = 0;
+          const reservedCalls = [];
+          state.setReserved = (group, index, priority) => {
+            reservedCalls.push([group, index, priority]);
+            Object.assign(state, { reservedGroup: group, reservedIndex: index, reservePriority: priority });
+          };
+          tapMotion._loop = true;
+          manager.currentModel.motion = async () => {
+            state.setReserved('Tap', 0, 2);
+            return false;
+          };
+          assert.strictEqual(await manager.playActionMotion('Tap', 0), false);
+          assert.strictEqual(tapMotion._loop, true);
+          assert.deepStrictEqual(reservedCalls, [
+            ['Tap', 0, 2],
+            [undefined, undefined, 0],
+          ]);
+
+          const expressions = new context.Live2DManager();
+          expressions.currentModel = {};
+          const events = [];
+          let finishExpression;
+          expressions.clearExpression = async () => { events.push('clear'); expressions._activeTransientExpression = false; };
+          expressions._playExpressionNow = async (name) => {
+            events.push(`start:${name}`);
+            expressions._activeTransientExpression = true;
+            if (name === 'first') await new Promise(resolve => { finishExpression = resolve; });
+            return true;
+          };
+          const expressionA = expressions.playExpression('first');
+          while (!finishExpression) await new Promise(resolve => setTimeout(resolve, 0));
+          const expressionB = expressions.playExpression('second');
+          assert.deepStrictEqual(events, ['start:first']);
+          finishExpression();
+          await expressionA;
+          await expressionB;
+          assert.deepStrictEqual(events, ['start:first', 'clear', 'start:second']);
+        })().catch(error => { console.error(error); process.exitCode = 1; });
+        """
+    )
+    result = _run_node_harness(script)
+    assert result.returncode == 0, result.stderr
+
+
+def test_saved_idle_restore_stops_only_an_existing_idle_motion():
+    source = (APP_INTERPAGE_PATH / "bootstrap-resources-and-model-reload.js").read_text(
+        encoding="utf-8"
+    )
+    start = source.index("async function restoreLive2DIdleAnimationOnMainPage")
+    end = source.index("window.restoreLive2DIdleAnimationOnMainPage", start)
+    restore_source = source[start:end]
+
+    action_guard = restore_source.index("hasActiveActionMotion(live2dModel)")
+    idle_guard = restore_source.index("Number(motionState?.currentPriority || 0) === 1")
+    stop_idle = restore_source.index("motionManager.stopAllMotions()", idle_guard)
+    start_saved_idle = restore_source.index("live2dModel.motion(groupName, motionIndex, 1)")
+    assert action_guard < idle_guard < stop_idle < start_saved_idle
+
+
+def test_live2d_avatar_performance_inline_expression_cleanup_stays_targeted():
+    source = AVATAR_PERFORMANCE_PATH.read_text(encoding="utf-8")
+    start = source.index("        async clearExpression() {")
+    end = source.index("        hasMotion(group, options) {", start)
+    clear_source = source[start:end]
+
+    assert "manager?._activeTransientExpression === true" in clear_source
+    assert "if (shouldClearManagerExpression" in clear_source
+    assert "manager.applyPersistentExpressionsNative(true)" in clear_source
 
 
 def test_parameter_save_treats_preferences_as_authoritative_and_sends_one_refresh():

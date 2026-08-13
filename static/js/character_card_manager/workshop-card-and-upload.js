@@ -933,7 +933,7 @@ async function handleUploadToWorkshop() {
             fullCharaData['voice_id'] = voiceId;
         }
 
-        // 设置默认模型（排除yui-origin）- 仅限 Live2D 模型类型
+        // 设置默认模型（排除内置的 yui-lolita / yui-origin）- 仅限 Live2D 模型类型
         if (currentModelType === 'live2d' && (!selectedModelName || isStaticDefaultLive2DModel(selectedModelName, rawData))) {
             const validModels = availableModels.filter(model =>
                 model

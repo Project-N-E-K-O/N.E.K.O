@@ -24,6 +24,17 @@ from ..core.live_reply_contract import (
 
 
 def response_module_hint(request: InteractionRequest) -> str:
+    explicit = request.metadata.get("response_module_hint")
+    if isinstance(explicit, str) and explicit.strip() in {
+        "avatar_roast",
+        "danmaku_response",
+        "live_support_events",
+        "warmup_hosting",
+        "idle_hosting",
+        "active_engagement",
+        "developer_sandbox",
+    }:
+        return explicit.strip()
     support_event_type = request.metadata.get("support_event_type")
     if isinstance(support_event_type, str) and support_event_type.strip():
         return "live_support_events"
@@ -132,10 +143,22 @@ def metadata_for_request(
         "room_theme",
         "meme_hint_ids",
         "meme_hint_tags",
+        "delivery_intent",
+        # Conservative co-stream delivery declarations. The plugin has no
+        # playback lifecycle, so it may expire or drop a cue but cannot request
+        # compensation, replay, or floor-dependent short-form selection.
+        "interrupt_policy",
     ):
         value = request.metadata.get(key)
         if isinstance(value, str) and value.strip():
             metadata[key] = value.strip()
+    for key in (
+        "candidate_ttl_seconds",
+        "delivery_ttl_seconds",
+    ):
+        value = request.metadata.get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            metadata[key] = value
     if extra:
         metadata.update(extra)
     _sync_plugin_output_policy(metadata)

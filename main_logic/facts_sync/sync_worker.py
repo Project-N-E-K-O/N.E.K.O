@@ -23,6 +23,7 @@ from typing import Any
 
 import httpx
 
+from main_logic import client_registration
 from utils.config_manager import get_config_manager
 
 logger = logging.getLogger("neko.facts_sync")
@@ -39,9 +40,10 @@ HTTP_TIMEOUT_SEC = 15.0
 
 # ---- M2-i fix: bootstrap register with Servers before pushing facts ----
 # Servers 端 X-Client-Id 鉴权要求 client 已 register 过；否则 401。
-# 这里在 sweep 开头幂等地注册一次，缓存成功状态避免每轮重复。
-_client_registered: dict[str, bool] = {}
-_register_lock = asyncio.Lock()
+# 注册实现已移到 main_logic.client_registration（锻造扣券 / OAuth 绑定共用同一份
+# 缓存），这里直接别名同一个 dict：401 失效逻辑必须作用在共享缓存上，否则下一轮
+# sweep 会读到别处写入的 stale "已注册"。
+_client_registered = client_registration._registered
 
 
 def _enabled() -> bool:
@@ -50,8 +52,8 @@ def _enabled() -> bool:
 
 
 def _social_base_url() -> str | None:
-    raw = os.environ.get("NEKO_SOCIAL_BASE_URL", "").strip().rstrip("/")
-    return raw or None
+    """Facts sync stays opt-in: no configured URL means no outbound traffic."""
+    return client_registration.configured_social_base_url()
 
 
 def _read_json(path: Path, default: Any) -> Any:
@@ -160,34 +162,18 @@ async def _ensure_client_registered(
 ) -> bool:
     """Idempotently register the current client_id with Servers.
 
-    The first sweep must call ``POST /api/clients/register`` before facts are
-    pushed; otherwise Servers cannot resolve ``X-Client-Id`` and returns 401.
+    Registration itself now lives in ``main_logic.client_registration`` so the
+    forge debit and OAuth bind paths share one cache and one implementation;
+    this wrapper only keeps the sweep's call site and logging intact.
     """
-    cache_key = f"{base_url}|{client_id}"
-    if _client_registered.get(cache_key):
-        return True
-    async with _register_lock:
-        if _client_registered.get(cache_key):  # double-check inside lock
-            return True
-        url = f"{base_url}/api/clients/register"
-        try:
-            async with httpx.AsyncClient(timeout=HTTP_TIMEOUT_SEC) as client:
-                r = await client.post(
-                    url,
-                    json={"client_id": client_id, "client_proof": client_proof},
-                )
-        except (httpx.HTTPError, OSError) as exc:
-            logger.warning("facts_sync: client register HTTP failed: %s", exc)
-            return False
-        if r.status_code < 300:
-            _client_registered[cache_key] = True
-            logger.info("facts_sync: client %s… registered with Servers", client_id[:8])
-            return True
+    registered = await client_registration.ensure_client_registered(
+        base_url, client_id, client_proof
+    )
+    if not registered:
         logger.warning(
-            "facts_sync: client register %s returned %s: %s",
-            url, r.status_code, r.text[:200],
+            "facts_sync: client %s… not registered with Servers", client_id[:8]
         )
-        return False
+    return registered
 
 
 async def _post_facts_batch(

@@ -18,6 +18,15 @@ const FRONTEND_FORCE_HIDDEN_FIELDS = [
     'mmd_idle_animation',
     'mmd_idle_animations',
 ];
+const PNGTUBER_UI_HIDDEN_FIELDS = [
+    'pngtuber',
+    'pngtuber_idle_image',
+    'pngtuber_talking_image',
+    'pngtuber_happy_image',
+    'pngtuber_sad_image',
+    'pngtuber_angry_image',
+    'pngtuber_surprised_image',
+];
 
 let charaCardParticleCanvas = null;
 let charaCardParticleContext = null;
@@ -63,7 +72,12 @@ function getWorkshopReservedFields() {
 function getWorkshopHiddenFields() {
     const cfg = _getReservedConfigOrFallback();
     // 即使运行中的后端还没重启、返回了旧保留字段列表，也不要把这些兼容字段渲染成普通设定。
-    return _uniqueFields([...cfg.all_reserved_fields, ...FRONTEND_FORCE_HIDDEN_FIELDS]);
+    // PNGTuber 兼容字段只在普通编辑 UI 中隐藏；工坊传输仍须保留它们，供旧格式迁移和模型类型推断使用。
+    return _uniqueFields([
+        ...cfg.all_reserved_fields,
+        ...FRONTEND_FORCE_HIDDEN_FIELDS,
+        ...PNGTUBER_UI_HIDDEN_FIELDS,
+    ]);
 }
 
 function normalizeCharacterFieldName(fieldName) {
@@ -544,7 +558,7 @@ function closeModalOnOutsideClick(event) {
     }
 }
 
-// 检查当前模型是否为默认模型（yui-origin）
+// 检查当前模型是否为内置模型（yui-lolita / yui-origin）
 function isDefaultModel() {
     // 使用保存的角色卡模型名称
     const currentModel = window.currentCharacterCardModel || '';
@@ -575,12 +589,16 @@ function isLegacyDefaultLive2DModel(modelName) {
     return modelName === 'yui_default' || modelName === 'yui-default';
 }
 
+// 随包发的内置 Live2D 模型（对应后端 BUILTIN_LIVE2D_MODEL_NAMES）：收方一定有，
+// 角色卡导出/创意工坊上传都不该把它们当成用户自己导入的模型去打包。
+const BUILTIN_LIVE2D_MODEL_NAMES = ['yui-lolita', 'yui-origin'];
+
 function isStaticDefaultLive2DModel(modelName, rawData = {}) {
     if (isLegacyDefaultLive2DModel(modelName)) {
         return true;
     }
 
-    if (modelName !== 'yui-origin') {
+    if (BUILTIN_LIVE2D_MODEL_NAMES.indexOf(modelName) < 0) {
         return false;
     }
 

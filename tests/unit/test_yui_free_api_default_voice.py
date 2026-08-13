@@ -138,7 +138,7 @@ async def test_overseas_free_binds_yui_sentinel_voice(monkeypatch):
 
     changed = await ensure_default_yui_voice_for_free_api(
         config_manager,
-        {"coreApi": "free", "assistApi": "free", "CORE_URL": "wss://lanlan.app/realtime"},
+        {"coreApi": "free", "assistApi": "free", "CORE_URL": "wss://www.lanlan.app/realtime"},
     )
 
     assert changed is True

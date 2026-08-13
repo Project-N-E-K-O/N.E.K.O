@@ -61,6 +61,16 @@
     const PLUGIN_DASHBOARD_CORNER_APPEAR_MS = 1000;
     const AVATAR_MOTION_HALF_BODY_FADE_OUT_MS = 420;
     const AVATAR_MOTION_HALF_BODY_FADE_IN_MS = 900;
+    const TUTORIAL_AVATAR_PROBE_FADE_OUT_MS = 1500;
+    const TUTORIAL_AVATAR_PROBE_APPROACH_MS = 2000;
+    const TUTORIAL_AVATAR_PROBE_HOLD_MS = 2500;
+    const TUTORIAL_AVATAR_PROBE_RETURN_MS = 2000;
+    const TUTORIAL_AVATAR_PROBE_TIMING = Object.freeze({
+        fadeOutMs: TUTORIAL_AVATAR_PROBE_FADE_OUT_MS,
+        approachMs: TUTORIAL_AVATAR_PROBE_APPROACH_MS,
+        holdMs: TUTORIAL_AVATAR_PROBE_HOLD_MS,
+        returnMs: TUTORIAL_AVATAR_PROBE_RETURN_MS
+    });
     const AVATAR_CORNER_PEEK_EDGE_INSET_RATIO = 0.18;
     const AVATAR_CORNER_PEEK_REGION_HEIGHT_RATIO = 0.36;
     const PLUGIN_DASHBOARD_CORNER_ELEVATED_Z_INDEX = '2147483647';
@@ -840,7 +850,13 @@
         );
     }
 
-    function waitForLive2DContext(timeoutMs) {
+    function waitForLive2DContext(timeoutMs, isCancelled) {
+        const cancelCheck = typeof isCancelled === 'function'
+            ? isCancelled
+            : function () { return false; };
+        if (cancelCheck()) {
+            return Promise.resolve(null);
+        }
         const immediate = getLive2DContext();
         if (immediate) {
             return Promise.resolve(immediate);
@@ -854,6 +870,10 @@
         return new Promise((resolve) => {
             const startedAt = performance.now();
             const check = () => {
+                if (cancelCheck()) {
+                    resolve(null);
+                    return;
+                }
                 const context = getLive2DContext();
                 if (context) {
                     resolve(context);
@@ -892,7 +912,14 @@
         const currentNow = Number.isFinite(Number(now)) ? Number(now) : performance.now();
         if (!isInterruptResistOverrideActive(session) && !isAngryExitOverrideActive(session)) {
             if (Number.isFinite(Number(session.interruptSuspendedAt)) && session.interruptSuspendedAt > 0) {
-                session.startedAt += Math.max(0, currentNow - session.interruptSuspendedAt);
+                const suspendedDuration = Math.max(0, currentNow - session.interruptSuspendedAt);
+                session.startedAt += suspendedDuration;
+                if (
+                    session.phase === 'hold'
+                    && Number.isFinite(Number(session.holdStartedAt))
+                ) {
+                    session.holdStartedAt += suspendedDuration;
+                }
                 session.interruptSuspendedAt = 0;
             }
             return false;
@@ -1681,6 +1708,19 @@
         return true;
     }
 
+    function writeAvatarMotionPrimaryDisplayOpacity(targets, alpha) {
+        const opacity = clamp(Number(alpha), 0, 1);
+        const opacityText = String(Math.round(opacity * 1000) / 1000);
+        (Array.isArray(targets) ? targets : []).forEach((target, index) => {
+            const element = target && target.element ? target.element : target;
+            if (!element || !element.style) {
+                return;
+            }
+            element.style.transition = 'none';
+            element.style.opacity = index > 0 ? '1' : opacityText;
+        });
+    }
+
     function writeLookAtCenter(coreModel) {
         if (!coreModel || typeof coreModel.setParameterValueById !== 'function') {
             return false;
@@ -1856,6 +1896,9 @@
             this.performanceLock = null;
             this.initialModelFrame = null;
             this.initialAlpha = 1;
+            this.useCompositorOpacity = normalizedOptions.useCompositorOpacity === true;
+            this.compositorOpacityTargets = [];
+            this.previousAvatarMotionActiveValue = false;
             this.startedAt = 0;
             this.active = false;
             this.finished = false;
@@ -1930,7 +1973,10 @@
             if (!this.isCurrentModel() || !frame) {
                 return false;
             }
-            if (Number.isFinite(Number(alpha))) {
+            if (this.useCompositorOpacity && Number.isFinite(Number(alpha))) {
+                writeModelAlpha(this.model, 1);
+                writeAvatarMotionPrimaryDisplayOpacity(this.compositorOpacityTargets, alpha);
+            } else if (Number.isFinite(Number(alpha))) {
                 writeModelAlpha(this.model, alpha);
             }
             centerLive2DLookAt(this);
@@ -1957,6 +2003,19 @@
             this.finished = true;
             this.result = reason || this.result || 'stopped';
             this.detachTicker();
+            if (this.useCompositorOpacity) {
+                this.compositorOpacityTargets.forEach((target) => {
+                    if (!target || !target.element || !target.element.style) {
+                        return;
+                    }
+                    if (this.result !== 'played') {
+                        target.element.style.opacity = String(target.opacity);
+                    }
+                    target.element.style.transition = target.transition || '';
+                });
+                this.compositorOpacityTargets = [];
+            }
+            setAvatarCornerPeekActiveFlag(this.previousAvatarMotionActiveValue);
             if (this.performanceLock && typeof this.performanceLock.release === 'function') {
                 this.performanceLock.release(reason || 'stopped');
                 this.performanceLock = null;
@@ -2002,6 +2061,17 @@
             this.frameY = Number.isFinite(Number(normalizedOptions.frameY))
                 ? Number(normalizedOptions.frameY)
                 : resolveIntroGreetingHugFrameShift(this.container);
+            this.initialAlphaOverride = Number.isFinite(Number(normalizedOptions.initialAlphaOverride))
+                ? clamp(Number(normalizedOptions.initialAlphaOverride), 0, 1)
+                : null;
+            this.motionFromAlpha = Number.isFinite(Number(normalizedOptions.motionFromAlpha))
+                ? clamp(Number(normalizedOptions.motionFromAlpha), 0, 1)
+                : null;
+            this.motionToAlpha = Number.isFinite(Number(normalizedOptions.motionToAlpha))
+                ? clamp(Number(normalizedOptions.motionToAlpha), 0, 1)
+                : null;
+            this.fromAlpha = 1;
+            this.toAlpha = 1;
             this.fromFrame = null;
             this.toFrame = null;
         }
@@ -2046,17 +2116,30 @@
             if (!this.isCurrentModel() || !this.captureInitialState()) {
                 return false;
             }
+            if (this.useCompositorOpacity) {
+                this.compositorOpacityTargets = collectAvatarMotionVisibleOpacityTargets(this, {
+                    document: this.document,
+                    container: this.container
+                });
+            }
+            if (this.initialAlphaOverride !== null) {
+                this.initialAlpha = this.initialAlphaOverride;
+            }
+            this.fromAlpha = this.motionFromAlpha === null ? this.initialAlpha : this.motionFromAlpha;
+            this.toAlpha = this.motionToAlpha === null ? this.initialAlpha : this.motionToAlpha;
             this.fromFrame = this.resolveTargetFrame(this.fromKind);
             this.toFrame = this.resolveTargetFrame(this.toKind);
             this.acquirePerformanceLock();
+            this.previousAvatarMotionActiveValue = window.nekoYuiGuideAvatarCornerPeekActive === true;
+            setAvatarCornerPeekActiveFlag(true);
             this.active = true;
             this.startedAt = performance.now();
             if (this.reducedMotion) {
-                this.applyFrame(this.toFrame, this.initialAlpha);
+                this.applyFrame(this.toFrame, this.toAlpha);
                 this.finish('played');
                 return true;
             }
-            this.applyFrame(this.fromFrame, this.initialAlpha);
+            this.applyFrame(this.fromFrame, this.fromAlpha);
             this.attachTicker();
             return true;
         }
@@ -2075,15 +2158,18 @@
             }
             const elapsed = Math.max(0, performance.now() - this.startedAt);
             const enterProgress = this.enterMs > 0 ? clamp(elapsed / this.enterMs, 0, 1) : 1;
-            this.applyFrame(this.blendFrame(this.fromFrame, this.toFrame, enterProgress), this.initialAlpha);
+            this.applyFrame(
+                this.blendFrame(this.fromFrame, this.toFrame, enterProgress),
+                lerp(this.fromAlpha, this.toAlpha, enterProgress)
+            );
             if (elapsed >= this.enterMs + this.holdMs) {
                 if (this.restoreMode === 'commit-final') {
-                    this.applyFrame(this.toFrame, this.initialAlpha);
+                    this.applyFrame(this.toFrame, this.toAlpha);
                     this.finish('played');
                     return;
                 }
                 if (this.restoreMode === 'half-body') {
-                    this.applyFrame(this.toFrame, this.initialAlpha);
+                    this.applyFrame(this.toFrame, this.toAlpha);
                 } else if (this.restoreMode === 'initial') {
                     this.restoreModelFrame();
                 }
@@ -3078,9 +3164,22 @@
             this.ticker = context.ticker || null;
             this.container = normalizedOptions.container || getLive2DContainer(this.document);
             this.reducedMotion = !!normalizedOptions.reducedMotion;
+            this.startFromHidden = normalizedOptions.startFromHidden === true;
             this.hideMs = normalizeDuration(normalizedOptions.hideMs, PLUGIN_DASHBOARD_CORNER_HIDE_MS);
+            this.entryHideMs = this.startFromHidden ? 0 : this.hideMs;
             this.appearMs = normalizeDuration(normalizedOptions.appearMs, PLUGIN_DASHBOARD_CORNER_APPEAR_MS);
-            this.totalDurationMs = this.reducedMotion ? 0 : this.hideMs + this.appearMs;
+            this.holdMs = normalizeDuration(normalizedOptions.holdMs, 0);
+            this.totalDurationMs = this.reducedMotion ? 0 : this.entryHideMs + this.appearMs;
+            this.exitDurationMs = this.reducedMotion ? 0 : this.hideMs + this.appearMs;
+            this.restoreMode = normalizedOptions.restoreMode === 'half-body' ? 'half-body' : 'initial';
+            this.useCompositorOpacity = normalizedOptions.useCompositorOpacity === true
+                || this.restoreMode === 'half-body';
+            this.restoreFrameScale = Number.isFinite(Number(normalizedOptions.frameScale))
+                ? Number(normalizedOptions.frameScale)
+                : INTRO_GREETING_HUG_CLOSE_SCALE;
+            this.restoreFrameY = Number.isFinite(Number(normalizedOptions.frameY))
+                ? Number(normalizedOptions.frameY)
+                : resolveIntroGreetingHugFrameShift(this.container);
             this.targetPosition = normalizeAvatarCornerPeekPosition(
                 normalizedOptions.position
                 || normalizedOptions.targetPosition
@@ -3096,6 +3195,8 @@
             this.result = 'idle';
             this.initialModelFrame = null;
             this.initialAlpha = 1;
+            this.restoreModelTargetFrame = null;
+            this.restoreAlpha = 1;
             this.initialBounds = null;
             this.peekRegionBounds = null;
             this.hiddenFrame = null;
@@ -3117,9 +3218,15 @@
             this.performanceLockCapabilities = Array.isArray(normalizedOptions.performanceLockCapabilities)
                 ? normalizedOptions.performanceLockCapabilities.slice()
                 : YUI_AVATAR_CORNER_PEEK_CAPABILITIES.slice();
+            this.onPeekReady = typeof normalizedOptions.onPeekReady === 'function'
+                ? normalizedOptions.onPeekReady
+                : null;
+            this.peekReadyNotified = false;
             this.phase = 'idle';
             this.tickerAttached = false;
             this.interruptSuspendedAt = 0;
+            this.holdStartedAt = 0;
+            this.holdTimer = 0;
             this.tick = this.tick.bind(this);
         }
 
@@ -3142,6 +3249,8 @@
                 return false;
             }
             this.initialAlpha = readModelAlpha(this.model);
+            this.restoreModelTargetFrame = this.resolveRestoreModelFrame();
+            this.restoreAlpha = this.restoreMode === 'half-body' ? 1 : this.initialAlpha;
             this.captureDisplayOpacityTargets();
             this.initialBounds = this.readBounds();
             this.peekRegionBounds = this.resolvePeekRegionBounds();
@@ -3162,9 +3271,29 @@
             this.active = true;
             this.phase = 'enter';
             this.startedAt = performance.now();
-            this.applyFrame(this.reducedMotion ? this.cornerFrame : this.initialModelFrame, this.reducedMotion ? 1 : this.initialAlpha);
+            this.applyFrame(
+                this.reducedMotion
+                    ? this.cornerFrame
+                    : (this.startFromHidden ? this.cornerHiddenFrame : this.initialModelFrame),
+                this.reducedMotion ? 1 : (this.startFromHidden ? 0 : this.initialAlpha)
+            );
             if (this.reducedMotion) {
+                this.notifyPeekReady();
                 this.elevateContainerZIndex();
+                if (this.holdMs > 0) {
+                    this.phase = 'hold';
+                    this.holdStartedAt = performance.now();
+                    this.holdTimer = window.setTimeout(() => {
+                        this.holdTimer = 0;
+                        if (this.active && !this.finished) {
+                            if (this.isCancelled()) {
+                                this.requestStop('cancelled', false);
+                                return;
+                            }
+                            this.requestStop('hold_complete', true);
+                        }
+                    }, this.holdMs);
+                }
                 return true;
             }
             if (this.ticker && typeof this.ticker.add === 'function') {
@@ -3172,6 +3301,17 @@
             } else {
                 this.frameId = window.requestAnimationFrame(this.tick);
             }
+            return true;
+        }
+
+        notifyPeekReady() {
+            if (this.peekReadyNotified || typeof this.onPeekReady !== 'function') {
+                return false;
+            }
+            this.peekReadyNotified = true;
+            try {
+                this.onPeekReady();
+            } catch (_) {}
             return true;
         }
 
@@ -3185,7 +3325,7 @@
                 return Promise.resolve();
             }
             if (this.reducedMotion || !animateReturn || !this.isCurrentModel()) {
-                this.finish(reason || 'stopped');
+                this.finish(reason || 'stopped', animateReturn);
                 return Promise.resolve();
             }
             if (this.phase === 'exit') {
@@ -3204,10 +3344,14 @@
             return this.waitForFinish();
         }
 
-        finish(reason) {
+        finish(reason, keepVisible) {
             this.active = false;
             this.finished = true;
             this.phase = 'finished';
+            if (this.holdTimer) {
+                window.clearTimeout(this.holdTimer);
+                this.holdTimer = 0;
+            }
             this.result = reason || this.result || 'stopped';
             this.detachTicker();
             if (this.frameId) {
@@ -3218,7 +3362,10 @@
             this.restoreFloatingButtonsRotation();
             this.restoreContainerZIndex();
             this.restoreModelFrame();
-            this.restoreDisplayOpacity();
+            const forceVisible = typeof keepVisible === 'boolean'
+                ? keepVisible
+                : this.restoreMode === 'half-body';
+            this.restoreDisplayOpacity(forceVisible);
             if (this.faceForwardLock && typeof this.faceForwardLock.release === 'function') {
                 this.faceForwardLock.release(reason || 'stopped');
                 this.faceForwardLock = null;
@@ -3300,27 +3447,32 @@
             return targets.length > 0;
         }
 
-        writeDisplayOpacity(alpha) {
+        writeDisplayOpacity(alpha, primaryOnly) {
             const opacity = clamp(Number(alpha), 0, 1);
             const opacityText = String(Math.round(opacity * 1000) / 1000);
             if (!Array.isArray(this.displayOpacityTargets) || this.displayOpacityTargets.length === 0) {
                 this.captureDisplayOpacityTargets();
             }
+            if (primaryOnly) {
+                writeAvatarMotionPrimaryDisplayOpacity(this.displayOpacityTargets, opacity);
+                return;
+            }
             this.displayOpacityTargets.forEach((element) => {
                 if (!element || !element.style) {
                     return;
                 }
+                element.style.transition = 'none';
                 element.style.opacity = opacityText;
             });
         }
 
-        restoreDisplayOpacity() {
+        restoreDisplayOpacity(keepVisible) {
             if (!Array.isArray(this.displayOpacitySnapshots)) {
                 return;
             }
             this.displayOpacitySnapshots.forEach((snapshot) => {
                 if (snapshot && snapshot.element && snapshot.element.style) {
-                    snapshot.element.style.opacity = snapshot.opacity || '';
+                    snapshot.element.style.opacity = keepVisible ? '1' : (snapshot.opacity || '');
                     snapshot.element.style.transition = snapshot.transition || '';
                 }
             });
@@ -3681,20 +3833,45 @@
             };
         }
 
+        resolveRestoreModelFrame() {
+            if (this.restoreMode !== 'half-body' || !this.initialModelFrame) {
+                return this.initialModelFrame;
+            }
+            const frame = resolveIntroGreetingHugModelFrame(
+                this.initialModelFrame,
+                this.manager,
+                this.container,
+                this.restoreFrameScale,
+                this.restoreFrameY
+            );
+            if (frame) {
+                frame.rotation = this.initialModelFrame.rotation;
+            }
+            return frame || this.initialModelFrame;
+        }
+
         restoreModelFrame() {
             if (!this.isCurrentModel() || !this.initialModelFrame) {
                 return false;
             }
-            writeModelAlpha(this.model, this.initialAlpha);
-            return writeIntroGreetingHugModelFrame(this.model, this.initialModelFrame);
+            writeModelAlpha(this.model, this.restoreAlpha);
+            return writeIntroGreetingHugModelFrame(
+                this.model,
+                this.restoreModelTargetFrame || this.initialModelFrame
+            );
         }
 
         applyFrame(frame, alpha) {
             if (!this.isCurrentModel() || !frame) {
                 return false;
             }
-            writeModelAlpha(this.model, alpha);
-            this.writeDisplayOpacity(alpha);
+            if (this.useCompositorOpacity) {
+                writeModelAlpha(this.model, 1);
+                this.writeDisplayOpacity(alpha, true);
+            } else {
+                writeModelAlpha(this.model, alpha);
+                this.writeDisplayOpacity(1);
+            }
             centerLive2DLookAt(this);
             const applied = writeIntroGreetingHugModelFrame(this.model, frame);
             if (applied) {
@@ -3752,23 +3929,36 @@
         }
 
         tickEnter(elapsed) {
-            if (elapsed <= this.hideMs) {
-                const progress = this.hideMs > 0 ? easeInOutCubic(elapsed / this.hideMs) : 1;
+            if (!this.startFromHidden && elapsed <= this.entryHideMs) {
+                const progress = this.entryHideMs > 0 ? easeInOutCubic(elapsed / this.entryHideMs) : 1;
                 this.applyFrame(
                     this.initialModelFrame,
                     lerp(this.initialAlpha, 0, progress)
                 );
             } else if (elapsed <= this.totalDurationMs) {
-                const progress = this.appearMs > 0 ? easeOutCubic((elapsed - this.hideMs) / this.appearMs) : 1;
+                const progress = this.appearMs > 0 ? easeOutCubic((elapsed - this.entryHideMs) / this.appearMs) : 1;
                 this.elevateContainerZIndex();
+                if (!this.peekReadyNotified) {
+                    this.applyFrame(this.cornerHiddenFrame, 0);
+                    this.notifyPeekReady();
+                }
                 this.applyFrame(
                     this.blendFrame(this.cornerHiddenFrame, this.cornerFrame, progress),
                     lerp(0, 1, progress)
                 );
             } else {
-                this.phase = 'hold';
+                if (this.phase !== 'hold') {
+                    this.phase = 'hold';
+                    this.holdStartedAt = performance.now();
+                }
                 this.applyFrame(this.cornerFrame, 1);
                 this.elevateContainerZIndex();
+                if (
+                    this.holdMs > 0
+                    && performance.now() - this.holdStartedAt >= this.holdMs
+                ) {
+                    this.requestStop('hold_complete', true);
+                }
             }
         }
 
@@ -3779,12 +3969,12 @@
                     this.cornerFrame,
                     lerp(1, 0, progress)
                 );
-            } else if (elapsed <= this.totalDurationMs) {
+            } else if (elapsed <= this.exitDurationMs) {
                 const progress = this.appearMs > 0 ? easeOutCubic((elapsed - this.hideMs) / this.appearMs) : 1;
                 this.restoreContainerZIndex();
                 this.applyFrame(
-                    this.initialModelFrame,
-                    lerp(0, this.initialAlpha, progress)
+                    this.restoreModelTargetFrame || this.initialModelFrame,
+                    lerp(0, this.restoreAlpha, progress)
                 );
             } else {
                 this.finish(this.result || 'stopped');
@@ -5900,7 +6090,7 @@
     async function startAvatarCornerPeek(options) {
         const normalizedOptions = options || {};
         const waitMs = normalizeDuration(normalizedOptions.readyWaitMs, PLUGIN_DASHBOARD_CORNER_READY_WAIT_MS);
-        const context = await waitForLive2DContext(waitMs);
+        const context = await waitForLive2DContext(waitMs, normalizedOptions.isCancelled);
         if (!context) {
             return null;
         }
@@ -5914,13 +6104,20 @@
             isCancelled: normalizedOptions.isCancelled,
             hideMs: normalizedOptions.hideMs,
             appearMs: normalizedOptions.appearMs,
+            holdMs: normalizedOptions.holdMs,
             position: normalizedOptions.position,
             targetPosition: normalizedOptions.targetPosition,
             targetPreset: normalizedOptions.targetPreset,
             freezeFloatingButtons: normalizedOptions.freezeFloatingButtons,
             rotateFloatingButtons: normalizedOptions.rotateFloatingButtons,
             performanceLockKey: normalizedOptions.performanceLockKey,
-            performanceLockCapabilities: normalizedOptions.performanceLockCapabilities
+            performanceLockCapabilities: normalizedOptions.performanceLockCapabilities,
+            startFromHidden: normalizedOptions.startFromHidden,
+            restoreMode: normalizedOptions.restoreMode,
+            frameScale: normalizedOptions.frameScale,
+            frameY: normalizedOptions.frameY,
+            onPeekReady: normalizedOptions.onPeekReady,
+            useCompositorOpacity: normalizedOptions.useCompositorOpacity
         });
         if (!session.start()) {
             return null;
@@ -6006,11 +6203,12 @@
         const frameY = Number.isFinite(Number(normalizedOptions.frameY))
             ? Number(normalizedOptions.frameY)
             : resolveIntroGreetingHugFrameShift(container);
+        const baseFrame = normalizedOptions.baseFrame || null;
         return applyIntroGreetingHugFramePlacementToModel(
             context.model,
             context.manager,
             container,
-            null,
+            baseFrame,
             frameScale,
             frameY
         );
@@ -6034,7 +6232,7 @@
             }
             targets.push(element);
         };
-        pushTarget(getLive2DContainer(doc));
+        pushTarget(normalizedOptions.container || getLive2DContainer(doc));
         try {
             pushTarget(doc.getElementById('live2d-canvas'));
         } catch (_) {}
@@ -6111,6 +6309,14 @@
         const toDisplayAlpha = Number.isFinite(Number(normalizedOptions.toDisplayAlpha))
             ? clamp(Number(normalizedOptions.toDisplayAlpha), 0, 1)
             : fromDisplayAlpha;
+        const writeOpacity = normalizedOptions.primaryDisplayOnly === true
+            ? (modelAlpha, displayAlpha) => {
+                writeModelAlpha(context.model, 1);
+                writeAvatarMotionPrimaryDisplayOpacity(targets, displayAlpha);
+            }
+            : (modelAlpha, displayAlpha) => {
+                writeAvatarMotionVisibleOpacity(context, targets, modelAlpha, displayAlpha);
+            };
         const restoreTransitions = () => {
             targets.forEach((target) => {
                 if (target.element && target.element.style) {
@@ -6119,7 +6325,7 @@
             });
         };
         if (normalizedOptions.reducedMotion || durationMs <= 0) {
-            writeAvatarMotionVisibleOpacity(context, targets, toModelAlpha, toDisplayAlpha);
+            writeOpacity(toModelAlpha, toDisplayAlpha);
             restoreTransitions();
             return true;
         }
@@ -6129,14 +6335,14 @@
                 const current = context.manager ? getCurrentLive2DModel(context.manager) : context.model;
                 if (current !== context.model || context.model.destroyed) {
                     if (!context.model.destroyed) {
-                        writeAvatarMotionVisibleOpacity(context, targets, toModelAlpha, toDisplayAlpha);
+                        writeOpacity(toModelAlpha, toDisplayAlpha);
                     }
                     restoreTransitions();
                     resolve(false);
                     return;
                 }
                 if (typeof normalizedOptions.isCancelled === 'function' && normalizedOptions.isCancelled()) {
-                    writeAvatarMotionVisibleOpacity(context, targets, toModelAlpha, toDisplayAlpha);
+                    writeOpacity(toModelAlpha, toDisplayAlpha);
                     restoreTransitions();
                     resolve(false);
                     return;
@@ -6145,9 +6351,9 @@
                 const eased = easeInOutCubic(progress);
                 const modelAlpha = lerp(fromModelAlpha, toModelAlpha, eased);
                 const displayAlpha = lerp(fromDisplayAlpha, toDisplayAlpha, eased);
-                writeAvatarMotionVisibleOpacity(context, targets, modelAlpha, displayAlpha);
+                writeOpacity(modelAlpha, displayAlpha);
                 if (progress >= 1) {
-                    writeAvatarMotionVisibleOpacity(context, targets, toModelAlpha, toDisplayAlpha);
+                    writeOpacity(toModelAlpha, toDisplayAlpha);
                     restoreTransitions();
                     resolve(true);
                     return;
@@ -6164,9 +6370,12 @@
         if (!context || !context.model || context.model.destroyed) {
             return false;
         }
+        const fadeOutMs = Number.isFinite(Number(normalizedOptions.halfBodyFadeOutMs))
+            ? Number(normalizedOptions.halfBodyFadeOutMs)
+            : normalizedOptions.fadeOutMs;
         return animateAvatarMotionVisibleOpacity(Object.assign({}, normalizedOptions, {
             context: context,
-            durationMs: normalizedOptions.halfBodyFadeOutMs || normalizedOptions.fadeOutMs || AVATAR_MOTION_HALF_BODY_FADE_OUT_MS,
+            durationMs: normalizeDuration(fadeOutMs, AVATAR_MOTION_HALF_BODY_FADE_OUT_MS),
             fromModelAlpha: readModelAlpha(context.model),
             toModelAlpha: 0,
             toDisplayAlpha: 0
@@ -6194,8 +6403,11 @@
                 target.element.style.transition = 'none';
             }
         });
+        const fadeInOption = Number.isFinite(Number(normalizedOptions.halfBodyFadeInMs))
+            ? Number(normalizedOptions.halfBodyFadeInMs)
+            : normalizedOptions.fadeInMs;
         const fadeInMs = normalizeDuration(
-            normalizedOptions.halfBodyFadeInMs || normalizedOptions.fadeInMs,
+            fadeInOption,
             AVATAR_MOTION_HALF_BODY_FADE_IN_MS
         );
         if (!normalizedOptions.reducedMotion && fadeInMs > 0) {
@@ -6243,62 +6455,52 @@
 
     async function playTimedAvatarCornerPeek(options, position) {
         const normalizedOptions = options || {};
-        const restoreMode = normalizedOptions.restore || normalizedOptions.restoreMode || 'half-body';
-        const handle = await startAvatarCornerPeek(Object.assign({}, normalizedOptions, {
-            position: position,
-            targetPreset: position,
-            freezeFloatingButtons: normalizedOptions.freezeFloatingButtons,
-            rotateFloatingButtons: normalizedOptions.rotateFloatingButtons,
-            performanceLockKey: normalizedOptions.performanceLockKey || 'home-yui-guide-avatar-motion-corner'
-        }));
-        if (!handle || typeof handle.stop !== 'function') {
-            revealAvatarMotionPrepared(normalizedOptions, 'corner_peek_unavailable');
-            return { result: 'fallback', reason: 'corner_peek_unavailable' };
-        }
-        let revealTimer = 0;
+        const isOpeningProbe = normalizedOptions.isOpeningProbe === true;
         let revealed = false;
         const revealPrepared = (reason) => {
             if (revealed) {
                 return false;
             }
             revealed = true;
-            if (revealTimer) {
-                window.clearTimeout(revealTimer);
-                revealTimer = 0;
-            }
             const revealedNow = revealAvatarMotionPrepared(normalizedOptions, reason);
             if (revealedNow) {
                 showAvatarMotionFloatingButtons(normalizedOptions);
             }
             return revealedNow;
         };
-        if (typeof normalizedOptions.revealPrepared === 'function') {
-            const revealDelayMs = normalizedOptions.reducedMotion
-                ? 0
-                : normalizeDuration(normalizedOptions.revealDelayMs, PLUGIN_DASHBOARD_CORNER_HIDE_MS);
-            if (revealDelayMs <= 0) {
-                revealPrepared('avatar_motion_reduced_ready');
-            } else {
-                revealTimer = window.setTimeout(() => {
-                    revealPrepared('avatar_motion_corner_peek_ready');
-                }, revealDelayMs);
+        const handle = await startAvatarCornerPeek(Object.assign({}, normalizedOptions, {
+            position: position,
+            targetPreset: position,
+            startFromHidden: isOpeningProbe,
+            hideMs: TUTORIAL_AVATAR_PROBE_FADE_OUT_MS,
+            appearMs: TUTORIAL_AVATAR_PROBE_APPROACH_MS,
+            holdMs: TUTORIAL_AVATAR_PROBE_HOLD_MS,
+            restoreMode: normalizedOptions.restore || normalizedOptions.restoreMode || 'half-body',
+            freezeFloatingButtons: normalizedOptions.freezeFloatingButtons,
+            rotateFloatingButtons: normalizedOptions.rotateFloatingButtons,
+            performanceLockKey: normalizedOptions.performanceLockKey || 'home-yui-guide-avatar-motion-corner',
+            onPeekReady: () => revealPrepared('avatar_motion_corner_peek_ready')
+        }));
+        if (!handle || typeof handle.stop !== 'function') {
+            if (typeof normalizedOptions.isCancelled === 'function' && normalizedOptions.isCancelled()) {
+                return { result: 'cancelled', reason: 'cancelled' };
             }
+            revealPrepared('corner_peek_unavailable');
+            return { result: 'fallback', reason: 'corner_peek_unavailable' };
         }
-        await waitForAvatarMotionDelay(normalizedOptions.durationMs, normalizedOptions.isCancelled);
+        const entryMs = normalizedOptions.reducedMotion
+            ? 0
+            : (isOpeningProbe
+                ? TUTORIAL_AVATAR_PROBE_APPROACH_MS
+                : TUTORIAL_AVATAR_PROBE_FADE_OUT_MS + TUTORIAL_AVATAR_PROBE_APPROACH_MS);
+        const handoffDelayMs = entryMs + TUTORIAL_AVATAR_PROBE_HOLD_MS;
+        await waitForAvatarMotionDelay(handoffDelayMs, normalizedOptions.isCancelled);
         if (typeof normalizedOptions.isCancelled === 'function' && normalizedOptions.isCancelled()) {
-            if (revealTimer) {
-                window.clearTimeout(revealTimer);
-                revealTimer = 0;
-            }
             await handle.stop('avatar_motion_cancelled');
             return { result: 'cancelled', reason: 'cancelled' };
         }
         revealPrepared('avatar_motion_complete_before_handoff');
-        await fadeOutAvatarMotionVisibleLayer(normalizedOptions);
-        await handle.stop('avatar_motion_complete', { animateReturn: false });
-        if (restoreMode === 'half-body') {
-            await fadeInAvatarMotionHalfBodyPlacement(normalizedOptions);
-        }
+        await handle.stop('avatar_motion_complete');
         return { result: 'played', reason: '' };
     }
 
@@ -6353,6 +6555,149 @@
         return session.waitForFinish();
     }
 
+    async function playTutorialAvatarProbeFrameMotion(options, preset) {
+        const normalizedOptions = options || {};
+        const waitMs = normalizeDuration(normalizedOptions.readyWaitMs, PLUGIN_DASHBOARD_CORNER_READY_WAIT_MS);
+        const context = await waitForLive2DContext(waitMs, normalizedOptions.isCancelled);
+        if (!context) {
+            const cancelled = typeof normalizedOptions.isCancelled === 'function'
+                && normalizedOptions.isCancelled();
+            return {
+                result: cancelled ? 'cancelled' : 'fallback',
+                reason: cancelled ? 'cancelled' : 'live2d_unavailable'
+            };
+        }
+        if (activeAvatarMotionSession && activeAvatarMotionSession.active) {
+            await activeAvatarMotionSession.stop('replaced');
+        }
+        const isOpeningProbe = normalizedOptions.isOpeningProbe === true;
+        const frameScale = Number.isFinite(Number(normalizedOptions.frameScale))
+            ? Number(normalizedOptions.frameScale)
+            : INTRO_GREETING_HUG_CLOSE_SCALE;
+        const originalAlpha = readModelAlpha(context.model);
+        const originalFrame = readIntroGreetingHugModelFrame(context.model);
+        const originalTargets = collectAvatarMotionVisibleOpacityTargets(context, normalizedOptions);
+        const originalDisplayAlpha = originalTargets.length > 0 ? originalTargets[0].opacity : 1;
+        if (!isOpeningProbe) {
+            const fadedOut = await animateAvatarMotionVisibleOpacity({
+                context: context,
+                document: normalizedOptions.document || document,
+                reducedMotion: !!normalizedOptions.reducedMotion,
+                isCancelled: normalizedOptions.isCancelled,
+                durationMs: TUTORIAL_AVATAR_PROBE_FADE_OUT_MS,
+                fromModelAlpha: originalAlpha,
+                toModelAlpha: 0,
+                fromDisplayAlpha: originalDisplayAlpha,
+                toDisplayAlpha: 0
+            });
+            if (!fadedOut) {
+                writeAvatarMotionVisibleOpacity(context, originalTargets, originalAlpha, originalDisplayAlpha);
+                return {
+                    result: normalizedOptions.isCancelled && normalizedOptions.isCancelled()
+                        ? 'cancelled'
+                        : 'fallback',
+                    reason: normalizedOptions.isCancelled && normalizedOptions.isCancelled()
+                        ? 'cancelled'
+                        : 'avatar_motion_fade_out_failed'
+                };
+            }
+        }
+        const session = new Live2DFrameMotionSession(context, {
+            document: normalizedOptions.document || document,
+            reducedMotion: !!normalizedOptions.reducedMotion,
+            token: normalizedOptions.token || Date.now(),
+            isCancelled: normalizedOptions.isCancelled,
+            preset: preset,
+            from: 'offscreen-bottom',
+            to: 'close-up',
+            frameScale: frameScale,
+            frameY: Number.isFinite(Number(normalizedOptions.frameY))
+                ? Number(normalizedOptions.frameY)
+                : undefined,
+            enterMs: TUTORIAL_AVATAR_PROBE_APPROACH_MS,
+            holdMs: TUTORIAL_AVATAR_PROBE_HOLD_MS,
+            initialAlphaOverride: originalAlpha,
+            motionFromAlpha: 0,
+            motionToAlpha: originalAlpha,
+            useCompositorOpacity: true,
+            restoreMode: normalizedOptions.restore || normalizedOptions.restoreMode || 'half-body',
+            performanceLockKey: normalizedOptions.performanceLockKey || 'home-yui-guide-avatar-motion-frame'
+        });
+        if (!session.start()) {
+            writeAvatarMotionVisibleOpacity(context, originalTargets, originalAlpha, originalDisplayAlpha);
+            revealAvatarMotionPrepared(normalizedOptions, 'avatar_motion_start_failed');
+            return { result: 'fallback', reason: 'avatar_motion_start_failed' };
+        }
+        revealAvatarMotionPrepared(normalizedOptions, 'avatar_motion_frame_started');
+        activeAvatarMotionSession = session;
+        await session.waitForFinish();
+        if (session.result !== 'played') {
+            if (!isOpeningProbe) {
+                writeAvatarMotionVisibleOpacity(context, originalTargets, originalAlpha, originalDisplayAlpha);
+                originalTargets.forEach((target) => {
+                    if (target.element && target.element.style) {
+                        target.element.style.transition = target.transition || '';
+                    }
+                });
+            }
+            return {
+                result: session.result || 'cancelled',
+                reason: session.result || 'cancelled'
+            };
+        }
+        if (isOpeningProbe) {
+            return { result: 'played', reason: '' };
+        }
+        const restoreToHalfBody = normalizedOptions.restore === 'half-body'
+            || normalizedOptions.restoreMode === 'half-body'
+            || (!normalizedOptions.restore && !normalizedOptions.restoreMode);
+        const finalFadedOut = await fadeOutAvatarMotionVisibleLayer(Object.assign({}, normalizedOptions, {
+            halfBodyFadeOutMs: TUTORIAL_AVATAR_PROBE_FADE_OUT_MS
+        }));
+        if (!finalFadedOut) {
+            const currentModel = context.manager ? getCurrentLive2DModel(context.manager) : context.model;
+            if (currentModel === context.model && !context.model.destroyed) {
+                if (restoreToHalfBody) {
+                    await fadeInAvatarMotionHalfBodyPlacement(Object.assign({}, normalizedOptions, {
+                        reducedMotion: true,
+                        halfBodyFadeInMs: 0,
+                        baseFrame: originalFrame || session.initialModelFrame
+                    }));
+                } else {
+                    if (originalFrame) {
+                        writeIntroGreetingHugModelFrame(context.model, originalFrame);
+                    }
+                    writeAvatarMotionVisibleOpacity(context, originalTargets, originalAlpha, originalDisplayAlpha);
+                    originalTargets.forEach((target) => {
+                        if (target.element && target.element.style) {
+                            target.element.style.transition = target.transition || '';
+                        }
+                    });
+                }
+            }
+            return { result: 'cancelled', reason: 'avatar_motion_fade_out_cancelled' };
+        }
+        if (restoreToHalfBody) {
+            await fadeInAvatarMotionHalfBodyPlacement(Object.assign({}, normalizedOptions, {
+                halfBodyFadeInMs: TUTORIAL_AVATAR_PROBE_RETURN_MS,
+                baseFrame: originalFrame || session.initialModelFrame
+            }));
+        } else {
+            await animateAvatarMotionVisibleOpacity({
+                context: context,
+                document: normalizedOptions.document || document,
+                reducedMotion: !!normalizedOptions.reducedMotion,
+                isCancelled: normalizedOptions.isCancelled,
+                durationMs: TUTORIAL_AVATAR_PROBE_RETURN_MS,
+                fromModelAlpha: 0,
+                toModelAlpha: originalAlpha,
+                fromDisplayAlpha: 0,
+                toDisplayAlpha: originalDisplayAlpha
+            });
+        }
+        return { result: 'played', reason: '' };
+    }
+
     async function playAvatarMotion(options) {
         const normalizedOptions = options || {};
         const preset = normalizeAvatarMotionPreset(normalizedOptions.preset);
@@ -6371,6 +6716,9 @@
                 normalizedOptions,
                 normalizedOptions.position || normalizedOptions.targetPosition || 'bottom-right'
             );
+        }
+        if (normalizedOptions.narrationBudgeted === true) {
+            return playTutorialAvatarProbeFrameMotion(normalizedOptions, preset);
         }
         return playFrameAvatarMotion(normalizedOptions, preset);
     }
@@ -6543,6 +6891,7 @@
         computeInterruptResistPose: computeInterruptResistPose,
         computeAngryExitPose: computeAngryExitPose,
         waitForLive2DContext: waitForLive2DContext,
+        TUTORIAL_AVATAR_PROBE_TIMING: TUTORIAL_AVATAR_PROBE_TIMING,
         YUI_WAKEUP_PARAMS: YUI_WAKEUP_PARAMS,
         YUI_INTRO_GREETING_HUG_PARAMS: YUI_INTRO_GREETING_HUG_PARAMS,
         YUI_INTRO_GIFT_HEART_PARAMS: YUI_INTRO_GIFT_HEART_PARAMS,

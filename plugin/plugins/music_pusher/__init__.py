@@ -1531,6 +1531,8 @@ class MusicPusherPlugin(NekoPluginBase):
         event_id = f"music_push_{uuid4().hex[:12]}"
         expire_at = int(time.time()) + int(_PROACTIVE_PROMPT_EXPIRE_SECONDS)
         domains = self._music_allowlist_domains_for_url(url)
+        parsed_url = _parse_http_url(url)
+        http_urls = [url] if parsed_url is not None and parsed_url.scheme == "http" else []
         if _stopped():
             return False
         if not domains:
@@ -1541,7 +1543,7 @@ class MusicPusherPlugin(NekoPluginBase):
             message_type="music_allowlist_add",
             description=f"Allow music host: {domains[0]}",
             priority=7,
-            metadata={"domains": domains, "event_id": event_id},
+            metadata={"domains": domains, "http_urls": http_urls, "event_id": event_id},
             target_lanlan=target_lanlan,
         )
 

@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import os
 import tempfile
@@ -29,6 +30,7 @@ from ..core.viewer_preferences import (
 _STORE_FILE = "viewer_profiles.json"
 _MAX_PROFILE_TEXT = 240
 _PROFILE_RETENTION_DAYS = 90
+_RECENT_PROFILE_CACHE_LIMIT = 200
 
 
 class ViewerStore:
@@ -48,6 +50,13 @@ class ViewerStore:
         self._lock = asyncio.Lock()
         self._fallback_warned = False
         self._active_fallback_file: Path | None = None
+        # Dashboard state is polled every few seconds while live. Cache only
+        # its bounded public projection; the canonical JSON remains the sole
+        # source of truth for mutations and restart recovery.
+        self._recent_cache: list[dict[str, Any]] = []
+        self._recent_cache_file: Path | None = None
+        self._recent_cache_signature: tuple[int, int, int] | None = None
+        self._recent_cache_ready = False
 
     # ── 存储路径解析 ──────────────────────────────────────────────
 
@@ -91,6 +100,42 @@ class ViewerStore:
         if configured:
             return Path(configured) / _STORE_FILE, True
         return self._default_dir() / _STORE_FILE, False
+
+    @staticmethod
+    def _file_signature(file: Path) -> tuple[int, int, int] | None:
+        try:
+            stat = file.stat()
+        except OSError:
+            return None
+        return (int(stat.st_mtime_ns), int(stat.st_size), int(getattr(stat, "st_ino", 0)))
+
+    def _active_store_file(self) -> Path:
+        configured_file, _custom = self._resolve_file()
+        return self._active_fallback_file or configured_file
+
+    def _recent_cache_matches_store(self) -> bool:
+        if not self._recent_cache_ready:
+            return False
+        file = self._active_store_file()
+        return (
+            self._recent_cache_file == file
+            and self._recent_cache_signature == self._file_signature(file)
+        )
+
+    def _update_recent_cache(
+        self,
+        profiles: dict[str, dict[str, Any]],
+        *,
+        file: Path | None = None,
+    ) -> None:
+        target = file or self._active_store_file()
+        self._recent_cache = _recent_profile_projection(
+            profiles,
+            _RECENT_PROFILE_CACHE_LIMIT,
+        )
+        self._recent_cache_file = target
+        self._recent_cache_signature = self._file_signature(target)
+        self._recent_cache_ready = True
 
     def storage_status(self) -> dict[str, Any]:
         """给面板看的存储状态：当前文件路径 + 目录能否写 + 是否自定义。"""
@@ -148,8 +193,7 @@ class ViewerStore:
                 self._audit("viewer_store_load_failed", f"{type(exc).__name__}: {exc}")
                 continue
             if isinstance(data, dict):
-                if candidate != file:
-                    self._active_fallback_file = candidate
+                self._active_fallback_file = candidate if candidate != file else None
                 profiles: dict[str, dict[str, Any]] = {}
                 for key, value in data.items():
                     if not isinstance(value, dict):
@@ -200,12 +244,14 @@ class ViewerStore:
         file, custom = self._resolve_file()
         if await asyncio.to_thread(self._write_json, file, profiles):
             self._active_fallback_file = None
+            self._update_recent_cache(profiles, file=file)
             return True
         # 自定义目录写失败 → 回退默认目录（只告警一次，避免刷屏）。
         if custom and allow_fallback:
             fallback = self._default_dir() / _STORE_FILE
             if await asyncio.to_thread(self._write_json, fallback, profiles):
                 self._active_fallback_file = fallback
+                self._update_recent_cache(profiles, file=fallback)
                 if not self._fallback_warned:
                     self._audit("viewer_store_fallback", f"自定义目录不可写，已回退默认目录：{fallback.parent}")
                     self._fallback_warned = True
@@ -356,14 +402,17 @@ class ViewerStore:
         return bool(item and public_int(item.get("roast_count"), default=0, minimum=0) > 0)
 
     async def recent_profiles(self, limit: int = 30) -> list[dict[str, Any]]:
-        profiles = await self._load_all()
-        ordered = sorted(profiles.values(), key=lambda item: str(item.get("last_seen_at") or ""), reverse=True)
-        result: list[dict[str, Any]] = []
-        for item in ordered[:limit]:
-            safe_item = _safe_profile_item(item, fallback_uid=item.get("uid"))
-            if safe_item:
-                result.append({**safe_item, **viewer_profile_projection(safe_item)})
-        return result
+        requested = max(0, int(limit))
+        if requested <= _RECENT_PROFILE_CACHE_LIMIT and self._recent_cache_matches_store():
+            return copy.deepcopy(self._recent_cache[:requested])
+        async with self._lock:
+            if requested <= _RECENT_PROFILE_CACHE_LIMIT and self._recent_cache_matches_store():
+                return copy.deepcopy(self._recent_cache[:requested])
+            profiles = await self._load_all()
+            self._update_recent_cache(profiles)
+            if requested <= _RECENT_PROFILE_CACHE_LIMIT:
+                return copy.deepcopy(self._recent_cache[:requested])
+            return _recent_profile_projection(profiles, requested)
 
     async def clear_profiles(self) -> dict[str, Any]:
         async with self._lock:
@@ -441,6 +490,23 @@ class ViewerStore:
                     and public_int(item.get("roast_count"), default=0, minimum=0) > 0
                 ),
             }
+
+
+def _recent_profile_projection(
+    profiles: dict[str, dict[str, Any]],
+    limit: int,
+) -> list[dict[str, Any]]:
+    ordered = sorted(
+        profiles.values(),
+        key=lambda item: str(item.get("last_seen_at") or ""),
+        reverse=True,
+    )
+    result: list[dict[str, Any]] = []
+    for item in ordered[: max(0, int(limit))]:
+        safe_item = _safe_profile_item(item, fallback_uid=item.get("uid"))
+        if safe_item:
+            result.append({**safe_item, **viewer_profile_projection(safe_item)})
+    return result
 
 
 def _safe_profile_uid(value: Any) -> str:

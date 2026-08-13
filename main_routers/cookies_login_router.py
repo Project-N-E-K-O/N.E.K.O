@@ -126,6 +126,7 @@ def validate_platform_fields(platform: str, cookies: Dict[str, str]):
 
     platform_validations = {
         "netease": ["MUSIC_U"],
+        "qqmusic": ["uin", "qqmusic_key"],
         "bilibili": ["SESSDATA"],
         "xhh": ["user_heybox_id", "user_pkey"],
         "douyin": ["sessionid", "ttwid"],
@@ -153,6 +154,17 @@ async def render_auth_page(request: Request):
     from config import APP_VERSION
 
     return templates.TemplateResponse("cookies_login.html", {
+        "request": request,
+        "static_asset_version": APP_VERSION,
+    })
+
+
+@router.get("/guide", response_class=HTMLResponse, summary="浏览器凭证获取教程")
+async def render_auth_guide(request: Request):
+    """Standalone browser credential guide (local access only)."""
+    from config import APP_VERSION
+
+    return templates.TemplateResponse("cookies_guide.html", {
         "request": request,
         "static_asset_version": APP_VERSION,
     })

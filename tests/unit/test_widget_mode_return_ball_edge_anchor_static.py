@@ -47,17 +47,14 @@ def test_blocked_model_restore_keeps_the_live2d_peek_return_ball_anchor():
     assert "showReturnBallContainer(container, returnRect);" in restore_block
 
 
-def test_live2d_peek_return_ball_uses_60_degree_sides_and_45_degree_corners():
+def test_live2d_peek_return_ball_keeps_edge_position_without_model_tilt():
     css = INDEX_CSS_PATH.read_text(encoding="utf-8")
 
-    expected_rules = {
-        'data-neko-live2d-peek-anchor="left"': "rotate(60deg)",
-        'data-neko-live2d-peek-anchor="right"': "rotate(-60deg)",
-        'data-neko-live2d-peek-anchor="top-left"': "rotate(45deg)",
-        'data-neko-live2d-peek-anchor="top-right"': "rotate(-45deg)",
-        'data-neko-live2d-peek-anchor="bottom-left"': "rotate(45deg)",
-        'data-neko-live2d-peek-anchor="bottom-right"': "rotate(-45deg)",
-    }
-    for selector, rotation in expected_rules.items():
-        rule = css.split(f"[{selector}]", 1)[1].split("}", 1)[0]
-        assert rotation in rule
+    rule = css.split("[data-neko-live2d-peek-anchor] .neko-idle-return-art", 1)[1].split("}", 1)[0]
+    assert "--neko-idle-return-edge-transform: rotate(0deg);" in rule
+
+    transferred_anchor_styles = css.split(
+        '[data-neko-live2d-peek-anchor$="left"] .neko-idle-return-art', 1
+    )[1].split(".neko-idle-thought-bubble", 1)[0]
+    for rotation in ("rotate(60deg)", "rotate(-60deg)", "rotate(45deg)", "rotate(-45deg)"):
+        assert rotation not in transferred_anchor_styles

@@ -12,7 +12,12 @@ class TwitchIdentityModule(BaseModule):
     id = "twitch_identity"
     title = "Twitch identity"
 
-    async def resolve(self, event: ViewerEvent) -> ViewerIdentity:
+    async def resolve(
+        self,
+        event: ViewerEvent,
+        *,
+        fetch_avatar_image: bool = True,
+    ) -> ViewerIdentity:
         raw_uid = event.uid.strip() if isinstance(event.uid, str) else ""
         uid = raw_uid if raw_uid.startswith("twitch:") else f"twitch:{raw_uid}"
         nickname = event.nickname.strip() if isinstance(event.nickname, str) else ""

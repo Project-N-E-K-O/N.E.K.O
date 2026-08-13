@@ -30,6 +30,7 @@ from pathlib import Path
 
 from config import APP_NAME, CONFIG_FILES
 from utils.file_utils import atomic_write_json
+from utils.root_state_lock import root_state_transaction
 
 from ._shared import LocalStateDirectoryError, logger
 
@@ -172,7 +173,11 @@ class StorageRootsMixin:
         self._user_workshop_folder_persisted = False
         self.chara_dir = self.app_docs_dir / "character_cards"
         self.card_faces_dir = self.app_docs_dir / "card_faces"
-        self._workshop_config_lock = threading.Lock()
+        # RLock 而不是 Lock：workshop 配置的「整段事务」（读→合并→写→建目录，见
+        # main_routers/workshop_router/config_files.py）要持着它再调 load_workshop_config，
+        # 而 load 自己在某些分支也拿这把锁 —— 不可重入就是自死锁。可重入只放宽同线程
+        # 再取，跨线程仍然严格串行，对既有用法没有任何削弱。
+        self._workshop_config_lock = threading.RLock()
 
         self._characters_cache: dict | None = None
         self._characters_cache_mtime: float | None = None
@@ -291,14 +296,22 @@ class StorageRootsMixin:
         return str(self.committed_selected_root) in self.__class__._selected_root_unavailable_recovery_override_roots
 
     def _persist_selected_root_unavailable_recovery_state(self):
-        state: dict = {}
-        try:
-            loaded = self._load_json_file(self.root_state_path, default_value={})
-            if isinstance(loaded, dict):
-                state = loaded
-        except Exception:
-            state = {}
-        self.save_root_state(self._build_selected_root_unavailable_recovery_state(state))
+        # 读—改—写整段进锁，而且读必须在锁内。
+        #
+        # "跑在 __init__ 里所以是单线程"不成立：受限启动期 storage_location_router
+        # 会临时构造一个兜底 ConfigManager（get_runtime_config_manager(APP_NAME,
+        # migrate=False)），而那一刻变更路由的写序列已经在工作线程上跑了。拿锁外读到
+        # 的 pre-image 去存，会把它刚提交的 mode / current_root / 迁移字段整份盖掉。
+        with root_state_transaction():
+            state: dict = {}
+            try:
+                loaded = self._load_json_file(self.root_state_path, default_value={})
+                if isinstance(loaded, dict):
+                    state = loaded
+            except Exception:
+                # 读不出来就按空状态重建恢复态——这条路径本来就是给"root 不可用"兜底的
+                state = {}
+            self.save_root_state(self._build_selected_root_unavailable_recovery_state(state))
     
     def _log(self, msg):
         """Print debug info only in the main process"""
@@ -991,9 +1004,11 @@ class StorageRootsMixin:
 
     def save_root_state(self, data):
         """Save root_state."""
-        if not self.ensure_local_state_directory():
-            self._raise_local_state_directory_error("saving root_state")
-        self._save_local_state_json_file(self.root_state_path, data, "saving root_state")
+        # 注意 load_root_state 故意不拿这把锁，理由见 utils/root_state_lock.py。
+        with root_state_transaction():
+            if not self.ensure_local_state_directory():
+                self._raise_local_state_directory_error("saving root_state")
+            self._save_local_state_json_file(self.root_state_path, data, "saving root_state")
 
     def load_cloudsave_local_state(self, default_value=None):
         """Load cloudsave_local_state; returns a default with a stable field structure when missing."""

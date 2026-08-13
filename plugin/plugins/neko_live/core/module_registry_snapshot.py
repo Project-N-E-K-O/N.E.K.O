@@ -4,22 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import math
-import re
 from typing import Any
 
-from .contracts_public import is_sensitive_public_key
+from .contracts_public import is_sensitive_public_key, public_text
 
 _MAX_TEXT = 240
 _MAX_DEPTH = 4
-_SENSITIVE_AUTH_RE = re.compile(r"(?i)\bauthorization\b\s*[:=]\s*[^,;]+")
-_SENSITIVE_TEXT_RE = re.compile(
-    r"(?i)\b(?:"
-    r"cookie|authorization|x-tt-token|ttwid|odin_tt|sessionid|sessionid_ss|sid_tt|uid_tt|"
-    r"webcast_sign|signature|sign|token|sessdata|bili_jct"
-    r")\b\s*[:=]\s*[^;&\s]+"
-)
-
-
 @dataclass
 class ModuleRecord:
     id: str
@@ -64,7 +54,7 @@ def safe_meta(module: Any) -> tuple[dict[str, Any], str, list[dict[str, Any]]]:
         if not isinstance(status, dict):
             status = {"value": status}
     except Exception as exc:  # noqa: BLE001
-        status = {"error": _safe_text(str(exc).strip() or type(exc).__name__)}
+        status = {"error": type(exc).__name__}
     else:
         status = _safe_public_dict(status)
 
@@ -126,9 +116,4 @@ def _safe_public_value(value: Any, *, depth: int) -> Any:
 
 
 def _safe_text(value: Any) -> str:
-    if not isinstance(value, str):
-        return ""
-    text = " ".join(value.split()).strip()
-    text = _SENSITIVE_AUTH_RE.sub("[redacted]", text)
-    text = _SENSITIVE_TEXT_RE.sub("[redacted]", text)
-    return text[:_MAX_TEXT]
+    return public_text(value, max_len=_MAX_TEXT)

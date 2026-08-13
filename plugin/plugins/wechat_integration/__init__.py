@@ -554,11 +554,14 @@ class WechatIntegrationPlugin(NekoPluginBase):
     async def _generate_wechat_reply(self, user_id: str, message: str) -> str | None:
         """生成微信回复。微信是主人专用通道，对话对象始终是主人。"""
         try:
-            from config.prompts.prompts_sys import SESSION_INIT_PROMPT
+            from config.prompts.prompts_sys import (
+                SESSION_INIT_PROMPT,
+                normalize_sys_prompt_locale,
+            )
             from main_logic.core import apply_role_placeholders
             from utils.config_manager import get_config_manager
             from utils.llm_client import create_chat_llm_async
-            from utils.language_utils import get_global_language
+            from utils.language_utils import get_global_language_full
 
             config_manager = get_config_manager()
             master_name, her_name, _, catgirl_data, _, lanlan_prompt_map, _, _, _ = config_manager.get_character_data()
@@ -585,15 +588,13 @@ class WechatIntegrationPlugin(NekoPluginBase):
                         character_card_fields[key] = value
 
             # 语言
-            user_language = get_global_language()
-            try:
-                from utils.i18n_utils import normalize_language_code
-                short_language = normalize_language_code(user_language, format="short") if normalize_language_code else user_language
-            except Exception:
-                short_language = user_language
+            # #2500 第 2 步：取全码再经 prompts_sys 归一。原先那次 format="short"
+            # 的短码化是顺手做的、不是有意的——它把 zh-TW 塌成 zh，繁中用户拿简体
+            # 模板。⚠️ 也不能拿全码裸查：简中的全码是 'zh-CN'，而这张表的简体键
+            # 是 'zh'。
+            short_language = normalize_sys_prompt_locale(get_global_language_full())
             init_prompt_template = SESSION_INIT_PROMPT.get(
-                short_language,
-                SESSION_INIT_PROMPT.get(user_language, SESSION_INIT_PROMPT["zh"]),
+                short_language, SESSION_INIT_PROMPT["zh"],
             )
 
             # 构建 system prompt
@@ -732,9 +733,11 @@ class WechatIntegrationPlugin(NekoPluginBase):
         try:
             import httpx
             from config import MEMORY_SERVER_PORT
+            # WeChat has no explicit per-conversation locale.  Omitting the
+            # process fallback lets Memory Server restore the durable locale.
             async with httpx.AsyncClient(timeout=5.0, proxy=None, trust_env=False) as client:
                 response = await client.get(
-                    f"http://127.0.0.1:{MEMORY_SERVER_PORT}/new_dialog/{her_name}"
+                    f"http://127.0.0.1:{MEMORY_SERVER_PORT}/new_dialog/{her_name}",
                 )
                 if response.is_success:
                     memory = response.text.strip()
@@ -751,7 +754,10 @@ class WechatIntegrationPlugin(NekoPluginBase):
             import json
             import httpx
             from config import MEMORY_SERVER_PORT
-            payload = {"input_history": json.dumps(messages, ensure_ascii=False)}
+            # Do not persist the process fallback as user-declared evidence.
+            payload = {
+                "input_history": json.dumps(messages, ensure_ascii=False),
+            }
             async with httpx.AsyncClient(timeout=5.0, proxy=None, trust_env=False) as client:
                 response = await client.post(
                     f"http://127.0.0.1:{MEMORY_SERVER_PORT}/cache/{her_name}",
@@ -774,7 +780,10 @@ class WechatIntegrationPlugin(NekoPluginBase):
             # /settle with an empty increment performs compression/review for
             # cached turns.  Passing the in-memory session history to /process
             # would append the same messages to recent history and SQLite again.
-            payload = {"input_history": json.dumps([], ensure_ascii=False)}
+            # Locale is likewise omitted because WeChat did not declare one.
+            payload = {
+                "input_history": json.dumps([], ensure_ascii=False),
+            }
             async with httpx.AsyncClient(timeout=30.0, proxy=None, trust_env=False) as client:
                 response = await client.post(
                     f"http://127.0.0.1:{MEMORY_SERVER_PORT}/settle/{her_name}",

@@ -13,7 +13,7 @@ All routes are declared without a trailing slash. Write operations can return `4
 | `GET` | `/api/memory/recent_files` | List logical recent-memory filenames |
 | `GET` | `/api/memory/recent_file` | Read one recent-memory file |
 | `POST` | `/api/memory/recent_file/save` | Replace one character's recent-memory history |
-| `POST` | `/api/memory/update_catgirl_name` | Rename a character's memory storage |
+| `POST` | `/api/memory/update_catgirl_name` | Compatibility alias for the full character rename transaction |
 | `GET` | `/api/memory/review_config` | Read the automatic recent-memory review toggle |
 | `POST` | `/api/memory/review_config` | Update the automatic recent-memory review toggle |
 | `GET` | `/api/memory/powerful_memory_config` | Read the powerful-memory toggle |
@@ -49,9 +49,15 @@ The `content` field is the file's UTF-8 JSON text, not a parsed message array.
 
 ```json
 {
-  "content": "[{\"type\":\"human\",\"data\":{...}}]"
+  "content": "[{\"type\":\"human\",\"data\":{...}}]",
+  "fingerprint": "b4c1000000000000000000000000000000000000000000000000000000000000",
+  "identity_token": "a7e3111111111111111111111111111111111111111111111111111111111111"
 }
 ```
+
+`fingerprint` and `identity_token` are opaque snapshot tokens. A client that
+edits this content must retain both values and return them unchanged with the
+corresponding save request.
 
 Errors use `{"success": false, "error": "..."}` with `400` for an invalid filename and `404` when the logical file cannot be resolved.
 
@@ -64,6 +70,8 @@ Replaces the selected character's recent history and cancels any in-flight revie
 ```json
 {
   "filename": "recent_小天.json",
+  "fingerprint": "b4c1000000000000000000000000000000000000000000000000000000000000",
+  "identity_token": "a7e3111111111111111111111111111111111111111111111111111111111111",
   "chat": [
     { "role": "human", "text": "Hello!" },
     { "role": "ai", "text": "Hi there!" }
@@ -74,6 +82,8 @@ Replaces the selected character's recent history and cancels any in-flight revie
 | Field | Type | Required | Description |
 |---|---|---:|---|
 | `filename` | string | yes | Must match `recent_<character>.json`; the character name is derived from this field |
+| `fingerprint` | string | yes | Opaque content token returned by the GET used to populate this edit |
+| `identity_token` | string | yes | Opaque file-identity token returned by the same GET |
 | `chat` | array | yes | Replacement history, up to 10,000 entries |
 | `chat[].role` | string | yes | Stored message type, normally `human`, `ai`, or `system` |
 | `chat[].text` | string | no | Message text; defaults to an empty string |
@@ -86,17 +96,30 @@ Success:
 {
   "success": true,
   "need_refresh": true,
-  "catgirl_name": "小天"
+  "catgirl_name": "小天",
+  "fingerprint": "d8f2222222222222222222222222222222222222222222222222222222222222",
+  "identity_token": "a7e3111111111111111111111111111111111111111111111111111111111111"
 }
 ```
 
-Validation failures return `400` with `success: false`. A storage failure returns `success: false` and an `error` field; cloud-storage maintenance is reported as `409`.
+Validation failures return `400` with `success: false`. Missing snapshot tokens
+or a concurrent file/identity change returns `409`; conflicts use
+`code: "RECENT_FILE_CONFLICT"` and include the current tokens. On conflict,
+GET the file again and merge the user's edits before saving. Do not replay the
+old `chat` merely with the returned tokens. A successful response returns the
+tokens for a subsequent edit. A storage failure returns `success: false` and an
+`error` field; cloud-storage maintenance is also reported as `409`.
 
 ## Character memory rename
 
 ### `POST /api/memory/update_catgirl_name`
 
-Renames the character's complete memory storage through the shared character-memory migration helper. It is not limited to the recent-history file.
+Compatibility alias for the canonical
+`POST /api/characters/catgirl/{old_name}/rename` transaction. It drains memory
+review/compression tasks, publishes the character rename, migrates all memory
+and card state, reloads the memory server, and rolls back on failure. A legacy
+follow-up call after that transaction already committed succeeds as an
+idempotent no-op.
 
 ```json
 {
@@ -110,12 +133,18 @@ Both fields are required strings. Historical `old_name` values may contain dots;
 ```json
 {
   "success": true,
-  "changed": true,
-  "exists_after": true
+  "memory_renamed": true,
+  "memory_server_reloaded": true
 }
 ```
 
-Invalid or missing names return `400`. The operation can return `409` when storage is not writable.
+An idempotent follow-up returns `changed: false`, `already_renamed: true`, and
+`exists_after`. This no-op is allowed only when configuration already contains
+the new name and the old storage is gone. If configuration was published but
+old storage remains, the route returns `409` instead of hiding a partial rename;
+repair it through the canonical character-management endpoint. Invalid or
+missing names return `400`. The operation can also return `409` when storage is
+not writable.
 
 ## Memory feature toggles
 

@@ -45,7 +45,10 @@ class MyPlugin(NekoPluginBase):
 |------|------|------|
 | `self.ctx` | `PluginContext` | 运行时上下文（由宿主注入） |
 | `self.plugin_id` | `str` | 本插件的唯一标识符 |
-| `self.config_dir` | `Path` | 包含 `plugin.toml` 的目录 |
+| `self.plugin_dir` | `Path` | 包含代码、Manifest 和静态资源的插件安装目录 |
+| `self.config_dir` | `Path` | `self.plugin_dir` 的兼容别名 |
+| `self.storage_dir` | `Path` | 分配给插件的用户存储根目录 |
+| `self.runtime_config_path` | `Path` | 外部运行配置文件路径 |
 | `self.metadata` | `dict` | 来自 `plugin.toml` 的插件元数据 |
 | `self.bus` | `SdkBusContext` | 宿主状态的 read/watch 门面；没有 publish/emit API |
 | `self.plugins` | `Plugins` | 跨插件调用辅助工具 |
@@ -65,19 +68,29 @@ self.report_status({
 })
 ```
 
-#### `push_message(**kwargs) -> object`
+#### `push_message(**kwargs) -> PushMessageResult`
 
 使用 v2 schema 向宿主系统推送消息。
 
 ```python
-self.push_message(
+result = self.push_message(
     source="my_feature",
     visibility=["chat"],       # []、["chat"]、["hud"] 或二者
     ai_behavior="blind",       # "respond"、"read"、"blind"
     parts=[{"type": "text", "text": "任务已完成"}],
     priority=5,
 )
+
+if not result["submitted"]:
+    # 保留本地状态；重试和去重仍由插件自行决定。
+    self.logger.warning("消息提交失败：%s", result["reason"])
 ```
+
+`submitted=True` 只表示 SDK 的权威本地提交路径已接收 payload，并由 SDK 接管后续
+提交责任；它不表示宿主已经消费、模型已经生成或音频已经播放。
+拒绝结果使用稳定的 `backpressure`、`transport_error` 或
+`transport_unavailable` reason，且不会包含消息正文或原始异常文本。拒绝结果还会携带
+兼容旧调用方的 `ok=False`；新代码应以 `submitted` 为正式判据。
 
 v1 字段（`message_type`、`content`、`delivery`、`reply` 及其他旧别名）已经弃用，但当前源码仍会转换。请立即迁移；本文档不保证确切移除版本。参见[迁移指南](./migration-v0.9#push-message-v2)。
 
@@ -86,7 +99,17 @@ v1 字段（`message_type`、`content`、`delivery`、`reply` 及其他旧别名
 获取插件 `data/` 目录下的路径。
 
 ```python
-db_path = self.data_path("cache.db")  # → <plugin_dir>/data/cache.db
+db_path = self.data_path("records.db")
+# → <storage-root>/plugins/<plugin_id>/data/records.db
+```
+
+#### `cache_path(*parts) -> Path`
+
+获取插件可清理缓存目录下的路径。
+
+```python
+preview_path = self.cache_path("preview.png")
+# → <storage-root>/plugins/<plugin_id>/cache/preview.png
 ```
 
 #### `register_dynamic_entry(entry_id, handler, ...) -> bool`

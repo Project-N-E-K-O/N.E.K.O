@@ -21,6 +21,7 @@ Split out of the former monolithic ``main_routers/system_router.py``.
 from ._shared import _read_json_object, _validate_local_mutation_request, logger, router
 import os
 import asyncio
+import datetime
 import json
 import re
 from fastapi import Request
@@ -115,6 +116,11 @@ def _safe_locale(lang: object) -> str:
     return lang if (isinstance(lang, str) and _LOCALE_RE.match(lang)) else ""
 
 
+def _utc_today() -> datetime.date:
+    """Today's UTC date; a seam so the expiry gate is testable without freezing time."""
+    return datetime.datetime.now(datetime.timezone.utc).date()
+
+
 def _load_survey_for_version(version: str, lang: str) -> dict | None:
     """Load config/surveys/<version>.json with a per-locale fallback chain.
 
@@ -125,6 +131,20 @@ def _load_survey_for_version(version: str, lang: str) -> dict | None:
     base. This loader is independent of ``_load_changelog`` — changing it does not
     touch changelog's language fallback. The whole file is swapped per locale
     (question ids must stay identical across locales — answers are reported by id).
+
+    A survey may narrow its audience with an optional ``locales`` allowlist
+    (e.g. ``"locales": ["zh-CN"]``): the request locale must appear in it verbatim,
+    otherwise this returns None (-> has_survey:false). Without the field every
+    locale is served as before. The field exists because the fallback chain always
+    ends at the Simplified Chinese base file, so a base-only survey would otherwise
+    reach English/Japanese/Traditional-Chinese users in Simplified Chinese. The
+    match is exact and an empty/unknown locale never matches: a survey aimed at one
+    audience must rather miss a few of its own than leak to the wrong one.
+
+    An optional ``expires_at`` (ISO date, inclusive) stops a time-bound notice from
+    being served once it is stale — a bundled announcement about a deadline would
+    otherwise still pop for someone whose first launch is months later. A malformed
+    value withholds the survey for the same reason the locale match is strict.
     """
     # Same three-level climb as _load_changelog above (package is one dir deeper
     # than the former monolithic module).
@@ -152,6 +172,41 @@ def _load_survey_for_version(version: str, lang: str) -> dict | None:
         except Exception:
             continue
         if isinstance(data, dict):
+            # 受众白名单：定向问卷/公告只发给列出的 locale。放在这里而不是端点里，
+            # 因为所有下发都经过本函数；且必须在回退落到 base 之后判断——正是
+            # "非该语言用户回退到简体 base" 这条路径需要被挡住。
+            # 缺字段 = 不限制；字段在但类型不对 = 不下发。作者把 ["zh-CN"] 手滑写成
+            # "zh-CN" 属于常见笔误，若按"不限制"处理，定向公告会静默发给所有语言，
+            # 恰好是这个字段要防的事——所以"写了但写坏"一律 fail closed。
+            if "locales" in data:
+                allowed = data.get("locales")
+                if not isinstance(allowed, list):
+                    logger.warning(
+                        "survey %s has a non-list locales (%r); withholding it",
+                        version, allowed,
+                    )
+                    return None
+                if allowed and (not lang or lang not in allowed):
+                    return None
+            # 时效：公告类内容常带截止日期（"8月20日前投票"），而安装包会被用户在
+            # 任意时间首次启动。过期后一律不再下发，免得给人推一个已经结束的活动。
+            # ISO 日期，含当天；同上——写了但写坏（含写成数字 20260820）一律不下发。
+            if "expires_at" in data:
+                expires_at = data.get("expires_at")
+                deadline = None
+                if isinstance(expires_at, str) and expires_at.strip():
+                    try:
+                        deadline = datetime.date.fromisoformat(expires_at.strip())
+                    except ValueError:
+                        deadline = None
+                if deadline is None:
+                    logger.warning(
+                        "survey %s has a malformed expires_at (%r); withholding it",
+                        version, expires_at,
+                    )
+                    return None
+                if _utc_today() > deadline:
+                    return None
             # 强制归一到文件版本（= APP_VERSION），不用 setdefault：本地化文件若误写了
             # 别的 survey_version，会让前端去重键和上报版本错位、统计分裂。
             data["survey_version"] = version

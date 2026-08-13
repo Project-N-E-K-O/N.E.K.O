@@ -96,14 +96,60 @@ def _signal_check_should_run(name: str, now: datetime) -> bool:
     return False
 
 
-def _signal_check_record_turn(name: str) -> None:
+def _signal_check_record_turn(
+    name: str,
+    *,
+    language: str | None = None,
+    locale_order: int | None = None,
+) -> None:
     state = _signal_check_state.setdefault(name, {'turns_since': 0, 'last_check_ts': None})
     state['turns_since'] = int(state.get('turns_since', 0) or 0) + 1
+    _signal_check_persist_locale(
+        name,
+        language=language,
+        locale_order=locale_order,
+    )
 
 
-def _signal_check_mark_done(name: str, now: datetime) -> None:
+def _signal_check_persist_locale(
+    name: str,
+    *,
+    language: str | None = None,
+    locale_order: int | None = None,
+) -> str | None:
+    from utils.language_utils import is_supported_language_code
+
+    if not is_supported_language_code(language):
+        return None
+
+    from .locale_state import record_character_prompt_locale
+
+    return record_character_prompt_locale(
+        name,
+        language,
+        order=locale_order,
+    )
+
+
+async def _run_signal_check_with_character_locale(name: str, operation):
+    from .locale_state import run_with_character_prompt_locale
+
+    return await run_with_character_prompt_locale(name, operation, name)
+
+
+def _signal_check_mark_done(
+    name: str,
+    now: datetime,
+    *,
+    processed_turns: int | None = None,
+) -> None:
     state = _signal_check_state.setdefault(name, {'turns_since': 0, 'last_check_ts': None})
-    state['turns_since'] = 0
+    current_turns = int(state.get('turns_since', 0) or 0)
+    state['turns_since'] = (
+        0
+        if processed_turns is None
+        else max(0, current_turns - processed_turns)
+    )
     state['last_check_ts'] = now.isoformat()
     # Cursor 推进 → path A 的旧 cursor key 永远不会再被命中，清空 counter
     # 避免内存 dict 随 cursor 历史无限增长。同时把"曾经失败但靠新数据冲过去
@@ -112,7 +158,12 @@ def _signal_check_mark_done(name: str, now: datetime) -> None:
 
 
 def _stage1_path_a_bump_failure(
-    name: str, state: dict, cursor_key: str, now: datetime,
+    name: str,
+    state: dict,
+    cursor_key: str,
+    now: datetime,
+    *,
+    processed_turns: int | None = None,
 ) -> bool:
     """Liveness fallback for Path A Stage-1 LLM terminal failures.
 
@@ -141,7 +192,11 @@ def _stage1_path_a_bump_failure(
         f"强推 cursor 到 {now.isoformat(timespec='seconds')} "
         f"放弃该窗口（dead-letter）。Why: 毒窗口 liveness 兜底。"
     )
-    _signal_check_mark_done(name, now)  # 会顺带把 a_extract_failures 清空
+    _signal_check_mark_done(
+        name,
+        now,
+        processed_turns=processed_turns,
+    )  # 会顺带把 a_extract_failures 清空
     return True
 
 
@@ -582,8 +637,23 @@ async def _periodic_signal_extraction_loop():
             continue
 
         now = datetime.now()
+        # Snapshot counters in the same event-loop turn as the SQL window end.
+        # A user turn recorded after this point falls outside ``now`` and must
+        # remain pending when the awaited extraction pass eventually completes.
+        processed_turns_by_name = {
+            name: int(
+                _signal_check_state.get(name, {}).get('turns_since', 0) or 0
+            )
+            for name in catgirl_names
+        }
 
         async def _signal_check_one(name: str):
+            return await _run_signal_check_with_character_locale(
+                name,
+                _signal_check_one_with_locale,
+            )
+
+        async def _signal_check_one_with_locale(name: str):
             """Stage-1 + Stage-2 + signal dispatch for a single character. Characters are
             mutually independent (per-char event_log lock / files); the outer gather runs
             them in parallel. A failure doesn't block other characters, and the cursor
@@ -591,6 +661,7 @@ async def _periodic_signal_extraction_loop():
             try:
                 if not _signal_check_should_run(name, now):
                     return
+                processed_turns = processed_turns_by_name.get(name, 0)
                 # 窗口起点：优先用上次成功 check 时戳（cursor 语义），避免
                 # 长对话期间 >10 分钟的消息被永远 skip（§3.4.3 游标推进）。
                 # 冷启动 / cursor 缺失时回退到 IDLE_MINUTES*2。
@@ -599,7 +670,9 @@ async def _periodic_signal_extraction_loop():
                     name, start_time, now,
                 )
                 if not rows:
-                    _signal_check_mark_done(name, now)
+                    _signal_check_mark_done(
+                        name, now, processed_turns=processed_turns,
+                    )
                     return
                 user_msgs_text = _extract_user_messages_from_rows(rows)
                 if not user_msgs_text:
@@ -612,7 +685,9 @@ async def _periodic_signal_extraction_loop():
                     # product thesis)，不该被自动当 fact 沉淀污染 memory。
                     # cursor 照常推进、计数清零，让下次有 user msg 的窗口
                     # 直接进入正常 A+B 流程。
-                    _signal_check_mark_done(name, now)
+                    _signal_check_mark_done(
+                        name, now, processed_turns=processed_turns,
+                    )
                     return
 
                 # 组装成 BaseMessage-like 结构给 extract_facts 使用
@@ -652,7 +727,13 @@ async def _periodic_signal_extraction_loop():
                     # 时 start_time 是 `now - IDLE_MINUTES*2`，每轮不同 →
                     # 冷启动阶段不会错误聚合 dead-letter。
                     cursor_key = start_time.isoformat(timespec='microseconds')
-                    if not _stage1_path_a_bump_failure(name, state, cursor_key, now):
+                    if not _stage1_path_a_bump_failure(
+                        name,
+                        state,
+                        cursor_key,
+                        now,
+                        processed_turns=processed_turns,
+                    ):
                         logger.warning(
                             f"[SignalLoop] {name}: Stage-1 失败保留 cursor 重试: {e}"
                         )
@@ -694,7 +775,9 @@ async def _periodic_signal_extraction_loop():
                     logger.debug(f"[SignalLoop] {name}: auto_promote_stale 失败: {e}")
 
                 # Stage-1 + dispatch 都跨过了，cursor 推进。
-                _signal_check_mark_done(name, now)
+                _signal_check_mark_done(
+                    name, now, processed_turns=processed_turns,
+                )
 
                 # 记录 A 实际处理过的最晚 msg ts，给 path B 当下游边界用
                 # （rows 已 ORDER BY ts ASC，最后一行就是 window 内最晚 msg）。
@@ -823,4 +906,3 @@ async def _amaybe_trigger_negative_keyword_hook(
         logger.info(
             f"[NegKW] {lanlan_name}: 关键词触发 {len(signals)} 个 disputation 信号"
         )
-

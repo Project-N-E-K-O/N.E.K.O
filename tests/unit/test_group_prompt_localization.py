@@ -36,7 +36,11 @@ from config.prompts.prompts_sys import (
 )
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_LANGS = ("zh", "en", "ja", "ko", "ru", "es", "pt")
+# 'zh-TW' joined the prompts_sys tables with the issue #2500 backfill, so the two
+# lists coincide again; _MEMORY_LANGS stays as its own name because the memory
+# tables have carried Traditional since long before that.
+_LANGS = ("zh", "zh-TW", "en", "ja", "ko", "ru", "es", "pt")
+_MEMORY_LANGS = _LANGS
 
 
 # ── scoped 渲染不得泄漏私聊对象的名字 ────────────────────────────────
@@ -116,7 +120,7 @@ async def test_scoped_past_memory_block_never_names_the_private_counterpart():
         ("en", "Unless someone brings them up first", "Unless 老张 brings them up first"),
     ):
         with patch(
-            "utils.language_utils.get_global_language", return_value=lang,
+            "utils.language_utils.get_global_language_full", return_value=lang,
         ):
             rendered_sync = harness.render_persona_markdown(
                 "小天", None, [scoped],
@@ -165,8 +169,12 @@ def test_scoped_past_memory_block_is_localized_everywhere():
         render_past_memory_block,
     )
 
-    assert set(PAST_MEMORY_BLOCK_SCOPED) == set(PAST_MEMORY_BLOCK) == set(_LANGS)
-    for lang in _LANGS:
+    assert (
+        set(PAST_MEMORY_BLOCK_SCOPED)
+        == set(PAST_MEMORY_BLOCK)
+        == set(_MEMORY_LANGS)
+    )
+    for lang in _MEMORY_LANGS:
         assert "{MASTER_NAME}" not in PAST_MEMORY_BLOCK_SCOPED[lang]
         assert "{AI_NAME}" in PAST_MEMORY_BLOCK_SCOPED[lang]
         assert "{ITEMS}" in PAST_MEMORY_BLOCK_SCOPED[lang]
@@ -214,9 +222,11 @@ def test_context_summary_ready_group_variant_has_no_counterpart_slot():
         assert "{master}" not in CONTEXT_SUMMARY_READY_GROUP[lang]
         assert "{name}" in CONTEXT_SUMMARY_READY_GROUP[lang]
         assert "{master}" in CONTEXT_SUMMARY_READY_TEXT[lang]
-        # 文字变体不能还说"语音"。
-        assert "语音" not in CONTEXT_SUMMARY_READY_TEXT[lang]
-        assert "语音" not in CONTEXT_SUMMARY_READY_GROUP[lang]
+        # 文字变体不能还说"语音"。简繁两种写法都要挡：只查简体的话，繁中那行
+        # 写成「語音」会从这条断言底下溜过去。
+        for spelling in ("语音", "語音"):
+            assert spelling not in CONTEXT_SUMMARY_READY_TEXT[lang]
+            assert spelling not in CONTEXT_SUMMARY_READY_GROUP[lang]
         assert "voice" not in CONTEXT_SUMMARY_READY_TEXT[lang].lower()
         assert "voice" not in CONTEXT_SUMMARY_READY_GROUP[lang].lower()
 
@@ -416,7 +426,9 @@ def test_recall_entry_tag_is_localized_and_covers_the_scoped_kinds():
 
     for table in (RECALL_ENTRY_TIER_LABEL, RECALL_ENTRY_ENTITY_LABEL):
         for key, entry in table.items():
-            assert set(entry) == set(_LANGS), f"{key} 缺语言：{set(_LANGS) - set(entry)}"
+            assert set(entry) == set(_MEMORY_LANGS), (
+                f"{key} 缺语言：{set(_MEMORY_LANGS) - set(entry)}"
+            )
 
     # scoped 写入把 entity 强制成 subject.kind，这几个必须在表里。
     for kind in ("group_chat", "participant", "group_participant"):
@@ -433,7 +445,7 @@ def test_qq_recall_render_has_no_internal_enum_left():
     from plugin.plugins.qq_auto_reply.memory_bridge import QQMemoryBridge
 
     bridge = QQMemoryBridge(SimpleNamespace(logger=MagicMock()))
-    with patch("utils.language_utils.get_global_language", return_value="zh"):
+    with patch("utils.language_utils.get_global_language_full", return_value="zh"):
         rendered = bridge.render_relevant_memory([
             {
                 "text": "群里在聊露营",
@@ -452,7 +464,10 @@ def test_qq_recall_render_has_no_internal_enum_left():
     assert "[印象/群成员]" in rendered
     assert "fact" not in rendered and "group_chat" not in rendered
     assert "reflection" not in rendered and "group_participant" not in rendered
-    assert "(2026-05-01)" in rendered
+    # 日期后面还跟一个本地化的相对时间标签（"3 月前"）：QQ 侧此前自己用
+    # anchor[:10] 裁日期、没有这个标签，#2588 收口到 memory.recall_render
+    # 之后与本体侧同格式。断言写成前缀，免得跟"今天/几月前"的措辞绑死。
+    assert "(2026-05-01, " in rendered
 
 
 @pytest.mark.asyncio
@@ -542,7 +557,7 @@ def test_english_user_actually_gets_the_english_group_reply_guidelines():
     )
 
     assert "Group Chat Reply Guidelines" in rendered
-    assert "In group chats, you don't need to reply to every message" in rendered
+    assert "This is a multi-person QQ group" in rendered
     assert "群聊回复意愿" not in rendered
     assert SCENE_KIRA_UNIFIED_GROUP not in rendered
     # 而且不再每轮打一条"缺必需占位符"的 warning。

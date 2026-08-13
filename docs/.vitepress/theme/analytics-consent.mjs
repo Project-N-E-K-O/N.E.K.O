@@ -5,11 +5,17 @@ export const ANALYTICS_CONSENT_STORAGE_KEY = 'neko.docs.analytics-consent.v1'
 export const ANALYTICS_CONSENT_EVENT = 'neko:analytics-consent-changed'
 export const STEAM_CTA_EVENT_NAME = 'steam_cta_click'
 export const DOCS_HOME_EVENT_NAME = 'docs_home_click'
+export const ANALYTICS_CAMPAIGN_PARAMETERS = Object.freeze([
+  'utm_source',
+  'utm_medium',
+  'utm_campaign',
+  'utm_content',
+  'utm_term',
+])
 
 const GOOGLE_TAG_SCRIPT_ID = 'neko-google-analytics'
 const STEAM_STORE_HOSTNAME = 'store.steampowered.com'
 const STEAM_APP_PATH = '/app/4099310'
-const DOCS_HOSTNAME = new URL(SITE_ORIGIN).hostname
 const CONSENT_VERSION = 1
 const CONSENT_TTL_MILLISECONDS = 180 * 24 * 60 * 60 * 1000
 const DENIED_CONSENT = Object.freeze({
@@ -119,6 +125,28 @@ function installGtag(windowObject) {
   return windowObject.gtag
 }
 
+export function sanitizeAnalyticsPageUrl(
+  target,
+  baseUrl = globalThis.window?.location?.href || 'https://project-neko.online/',
+) {
+  const sourceUrl = new URL(target || baseUrl, baseUrl)
+  const sanitizedUrl = new URL(sourceUrl.origin)
+  sanitizedUrl.pathname = sourceUrl.pathname
+
+  for (const parameter of ANALYTICS_CAMPAIGN_PARAMETERS) {
+    const value = sourceUrl.searchParams.get(parameter)
+    if (value) sanitizedUrl.searchParams.set(parameter, value.slice(0, 100))
+  }
+  return sanitizedUrl
+}
+
+export function normalizeAnalyticsDestinationUrl(target, baseUrl) {
+  const destinationUrl = new URL(target, baseUrl)
+  const normalizedUrl = new URL(destinationUrl.origin)
+  normalizedUrl.pathname = destinationUrl.pathname
+  return normalizedUrl
+}
+
 export function trackAnalyticsPageView(
   target,
   {
@@ -134,9 +162,9 @@ export function trackAnalyticsPageView(
     return false
   }
 
-  const pageUrl = new URL(
+  const pageUrl = sanitizeAnalyticsPageUrl(
     target || windowObject.location.href,
-    windowObject.location.origin,
+    windowObject.location.href,
   )
   windowObject.gtag('event', 'page_view', {
     page_location: pageUrl.href,
@@ -179,10 +207,8 @@ export function isDocsHomeUrl(
     const currentPath = normalizedDocsPath(current.pathname)
     const destinationPath = normalizedDocsPath(destination.pathname)
     return (
-      current.protocol === 'https:'
-      && current.hostname === DOCS_HOSTNAME
-      && destination.protocol === 'https:'
-      && destination.hostname === DOCS_HOSTNAME
+      current.origin === SITE_ORIGIN
+      && destination.origin === SITE_ORIGIN
       && LOCALE_HOME_PATHS.has(destinationPath)
       && !LOCALE_HOME_PATHS.has(currentPath)
     )
@@ -216,16 +242,21 @@ export function trackSteamCtaClick(
   if (!rawUrl || !isSteamCtaUrl(rawUrl, baseUrl)) return false
 
   const linkUrl = new URL(rawUrl, baseUrl)
-  const linkText = anchor?.textContent?.replace(/\s+/g, ' ').trim()
+  const normalizedLinkUrl = normalizeAnalyticsDestinationUrl(rawUrl, baseUrl)
+  const sanitizedLinkUrl = sanitizeAnalyticsPageUrl(rawUrl, baseUrl)
+  const pageUrl = sanitizeAnalyticsPageUrl(
+    windowObject.location.href,
+    windowObject.location.href,
+  )
   const eventParameters = {
-    link_url: linkUrl.href,
+    link_url: normalizedLinkUrl.href,
     link_domain: linkUrl.hostname,
-    cta_location: linkUrl.searchParams.get('utm_content') || 'unspecified',
-    page_location: windowObject.location.href,
+    cta_location:
+      sanitizedLinkUrl.searchParams.get('utm_content') || 'unspecified',
+    page_location: pageUrl.href,
     page_title: documentObject?.title || '',
     transport_type: 'beacon',
   }
-  if (linkText) eventParameters.link_text = linkText.slice(0, 100)
 
   windowObject.gtag('event', STEAM_CTA_EVENT_NAME, eventParameters)
   return true
@@ -257,17 +288,17 @@ export function trackDocsHomeClick(
   if (!rawUrl || !isDocsHomeUrl(rawUrl, currentUrl)) return false
 
   const linkUrl = new URL(rawUrl, currentUrl)
-  const linkText = anchor?.textContent?.replace(/\s+/g, ' ').trim()
+  const normalizedLinkUrl = normalizeAnalyticsDestinationUrl(rawUrl, currentUrl)
+  const pageUrl = sanitizeAnalyticsPageUrl(currentUrl, currentUrl)
   const eventParameters = {
-    link_url: linkUrl.href,
+    link_url: normalizedLinkUrl.href,
     link_domain: linkUrl.hostname,
-    source_path: new URL(currentUrl).pathname,
+    source_path: pageUrl.pathname,
     destination_path: normalizedDocsPath(linkUrl.pathname),
-    page_location: currentUrl,
+    page_location: pageUrl.href,
     page_title: documentObject?.title || '',
     transport_type: 'beacon',
   }
-  if (linkText) eventParameters.link_text = linkText.slice(0, 100)
 
   windowObject.gtag('event', DOCS_HOME_EVENT_NAME, eventParameters)
   return true

@@ -67,6 +67,17 @@ class QQSessionRuntimeService:
         user_data["session_key"] = session_key
         user_data["sender_id"] = context.sender_id
         user_data["permission_level"] = context.permission_level
+        if not context.is_group:
+            receipt_permission = getattr(
+                context, "private_permission_level_at_receipt", None,
+            )
+            if (
+                receipt_permission is not None
+                and user_data.get("private_permission_level_at_receipt") is None
+            ):
+                user_data["private_permission_level_at_receipt"] = (
+                    receipt_permission
+                )
         user_data["is_group"] = context.is_group
         user_data["group_id"] = context.group_id
         user_data["user_title"] = context.user_title
@@ -81,6 +92,37 @@ class QQSessionRuntimeService:
                     "group_memory_enabled", False,
                 )
             )
+        elif not context.is_group and persist:
+            mode = user_data.get("private_memory_mode")
+            turn_mode = getattr(context, "private_memory_mode", None) or (
+                "legacy" if context.permission_level == "admin"
+                else "participant"
+            )
+            if mode is None:
+                # OFF 时代创建的会话首次拿到 persist=True（开关中途打开）：
+                # 此刻补章。结算目标从此定格，per-turn 权限漂移不再改它。
+                mode = turn_mode
+                user_data["private_memory_mode"] = mode
+            if mode != turn_mode:
+                # One session has exactly one persistence domain. A permission
+                # transition invalidates it; a queued turn from the other era
+                # must not be retargeted into the surviving domain.
+                persist = False
+            elif mode == "participant":
+                # 对偶群分支的实时策略门控：OFF 盖章循环之后才插入的会话
+                # 不得凭陈旧的 True 继续收集。
+                persist = bool(
+                    (getattr(self.plugin, "_qq_settings", {}) or {}).get(
+                        "private_participant_memory_enabled", False,
+                    )
+                )
+            elif mode == "legacy" and turn_mode != "legacy":
+                # 会话以 admin 语料结算、当前发言人却不再是 admin（降权）：
+                # fail-closed 停写。继续写会把非 admin 的发言并进主人的
+                # legacy 私聊语料；改道 participant 也不行——先前的历史
+                # 属于 legacy 时代，混写更糟。与降权前的旧行为一致（旧代
+                # 码里非 admin 私聊 persist 恒 False）。
+                persist = False
         user_data["memory_enabled"] = persist
         user_data["memory_context_used"] = context.memory_context_used
         user_data["ephemeral_session"] = context.ephemeral_session
@@ -96,6 +138,18 @@ class QQSessionRuntimeService:
         )
         if int(user_data.get("last_group_digest_index", 0) or 0) > history_len:
             user_data["last_group_digest_index"] = history_len
+        participant_cursor = int(
+            user_data.get("last_participant_digest_index", 0) or 0
+        )
+        if participant_cursor > history_len:
+            # participant 游标同受重复守卫重置影响（对偶群游标钳制）。
+            user_data["last_participant_digest_index"] = history_len
+            if user_data.get("private_memory_mode") == "participant":
+                previous_epoch = user_data.get("_speaker_trust_activity_epoch")
+                next_epoch = time.time_ns()
+                if str(next_epoch) == str(previous_epoch):
+                    next_epoch += 1
+                user_data["_speaker_trust_activity_epoch"] = next_epoch
         if int(user_data.get("nonconsent_history_end", 0) or 0) > history_len:
             # 历史被重置后旧的未授权边界同样越界：不钳的话 max() 地板会
             # 把重置后新授权轮当成已处理丢弃。
@@ -125,9 +179,9 @@ class QQSessionRuntimeService:
         # discard 入口统一受益；ephemeral（memory_enabled falsy）自然跳过；
         # finalize 成功会自己弹出会话，下面的 pop 变成无害 no-op。
         # pending_disable_settle 也算：OFF 盖章后新轮 prime 会按实时配置把
-        # flag 打成 False，但 cutoff 前的已授权缓冲还在等排队的 OFF 结算——
-        # 此刻 pop+close 会销毁唯一副本。放行后 finalize 因 flag False 返回
-        # False，走下面的保留分支，会话留给转变任务按 cutoff 结算。
+        # flag 打成 False，但 cutoff 前的已授权缓冲还在等排队的 OFF 结算。
+        # discard 必须像关机兜底一样临时恢复 flag，让本次重试真正进入
+        # finalizer；只保留 marker 却仍以 False 调用会永远 early-return。
         # 在途的延迟回复必须先定局：会话被销毁后 buffer 任务仍可能成功
         # 送出回复，而 _clear_undelivered_marks 已无 user_data 可更新——
         # 参与者真收到的回复会永久缺席 scoped 记忆。这里取消它（与
@@ -153,6 +207,12 @@ class QQSessionRuntimeService:
         if peek and (
             peek.get("memory_enabled") or peek.get("pending_disable_settle")
         ):
+            restore_disabled = bool(
+                peek.get("pending_disable_settle")
+                and not peek.get("memory_enabled")
+            )
+            if restore_disabled:
+                peek["memory_enabled"] = True
             try:
                 finalized = await self.plugin.session_memory_service.finalize_user_memory_session(
                     session_key, reason=f"discard:{reason}",
@@ -161,6 +221,10 @@ class QQSessionRuntimeService:
                 self.plugin.logger.error(
                     f"[{reason}] 丢弃前群记忆结算失败 ({session_key}): {exc}"
                 )
+            finally:
+                survivor = self.plugin._user_sessions.get(session_key)
+                if restore_disabled and survivor is not None:
+                    survivor["memory_enabled"] = False
             if not finalized and session_key in self.plugin._user_sessions:
                 # 结算失败（memory server 不可用等）：不弹出——弹出即销毁
                 # 缓冲唯一副本。保留会话让下一轮 sweep/discard 重试结算；
@@ -187,6 +251,11 @@ class QQSessionRuntimeService:
         try:
             while True:
                 await asyncio.sleep(self.plugin.SESSION_SWEEP_INTERVAL_SECONDS)
+                # 群显示名刷新挂在这个既有周期上（TTL 门在服务内部，绝大多
+                # 数轮次是零开销判断），不为它单开定时器。
+                display_names = getattr(self.plugin, "display_name_service", None)
+                if display_names is not None:
+                    display_names.maybe_schedule_refresh()
                 await self.plugin._flush_idle_memory_sessions()
                 if getattr(self.plugin, "attention_service", None):
                     await self.plugin.attention_service.decay_all()

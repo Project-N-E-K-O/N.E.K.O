@@ -22,7 +22,7 @@ From the repository root:
 ./build_frontend.sh
 ```
 
-Both scripts verify/unpack the Yui Origin asset, run `npm ci`, build `frontend/plugin-manager/dist/index.html`, and build `static/react/neko-chat/neko-chat-window.iife.js`.
+Both scripts verify/unpack the built-in Live2D assets (Yui Lolita + Yui Origin), run `npm ci`, build `frontend/plugin-manager/dist/index.html`, and build `static/react/neko-chat/neko-chat-window.iife.js`.
 
 ## Run normally
 

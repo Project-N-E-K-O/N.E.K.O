@@ -8,6 +8,7 @@ turn), min-gap pacing, and drain-on-teardown (cues are handed back, never
 silently dropped).
 """
 import asyncio
+import time
 
 import pytest
 
@@ -15,7 +16,10 @@ import main_logic.core as core_module
 from main_logic.proactive_delivery import (
     DELIVERY_ACK_FUTURE_KEY,
     DELIVERY_RETRACTED_KEY,
+    CALLBACK_EXPIRES_AT_KEY,
     ProactiveDeliveryManager,
+    SWAP_PRIME_DELIVERY_CLAIM_KEY,
+    VOICE_DELIVERY_COMMITTED_KEY,
     effective_priority,
 )
 
@@ -296,6 +300,44 @@ async def test_stale_cue_dropped_by_ttl():
     assert delivered == []          # dropped as stale, never spoken
 
 
+async def test_delivery_manager_defers_callback_expiry_to_session_filter():
+    delivered = []
+    mgr = _make(delivered, ttl_s=0)
+    mgr.on_playback_start()
+    future = asyncio.get_running_loop().create_future()
+    mgr.submit(
+        {
+            "id": "expired",
+            CALLBACK_EXPIRES_AT_KEY: time.monotonic() - 1,
+            DELIVERY_ACK_FUTURE_KEY: future,
+        },
+        priority=1,
+    )
+    mgr.on_playback_end()
+    await _settle()
+
+    assert [callback["id"] for callback in delivered] == ["expired"]
+    assert not future.done()
+
+
+def test_drain_pending_preserves_expired_callback_for_session_filter():
+    delivered = []
+    mgr = _make(delivered, ttl_s=0)
+    mgr.on_playback_start()
+    future = _FakeAckFuture()
+    mgr.submit(
+        {
+            "id": "expired",
+            CALLBACK_EXPIRES_AT_KEY: time.monotonic() - 1,
+            DELIVERY_ACK_FUTURE_KEY: future,
+        },
+        priority=1,
+    )
+
+    assert [callback["id"] for callback in mgr.drain_pending()] == ["expired"]
+    assert not future.done()
+
+
 # ── enqueue_agent_callback path (passive / ai_behavior="read") ────────────────
 # The ProactiveDeliveryManager above only governs proactive ("respond") cues.
 # Passive/read cues bypass it and land directly in pending_agent_callbacks; the
@@ -432,6 +474,160 @@ def test_passive_flood_guard_bounds_callback_queue_without_extras(monkeypatch):
     assert dropped_ack.done() and dropped_ack.result is False
 
 
+def test_flood_guard_rejects_incoming_when_older_send_started(monkeypatch):
+    import config
+
+    monkeypatch.setattr(config, "AGENT_CALLBACK_QUEUE_MAX_ITEMS", 1)
+    mgr = _make_session_mgr()
+    committed_ack = _FakeAckFuture()
+    incoming_ack = _FakeAckFuture()
+    committed = _passive_cb("provider send started")
+    committed[VOICE_DELIVERY_COMMITTED_KEY] = True
+    committed[DELIVERY_ACK_FUTURE_KEY] = committed_ack
+    incoming = _passive_cb("cannot displace committed")
+    incoming[DELIVERY_ACK_FUTURE_KEY] = incoming_ack
+    mgr.pending_agent_callbacks = [committed]
+
+    mgr.enqueue_agent_callback(incoming)
+
+    assert mgr.pending_agent_callbacks == [committed]
+    assert not committed_ack.done()
+    assert incoming_ack.done() and incoming_ack.result is False
+    assert incoming.get(DELIVERY_RETRACTED_KEY) is True
+
+
+@pytest.mark.parametrize(
+    "ownership_key",
+    [VOICE_DELIVERY_COMMITTED_KEY, SWAP_PRIME_DELIVERY_CLAIM_KEY],
+)
+@pytest.mark.parametrize("pre_submitted", [False, True])
+def test_flood_rejected_newer_does_not_stale_provider_owned_old(
+    monkeypatch,
+    ownership_key,
+    pre_submitted,
+):
+    import config
+
+    monkeypatch.setattr(config, "AGENT_CALLBACK_QUEUE_MAX_ITEMS", 1)
+    mgr = _make_session_mgr()
+    old = _passive_cb("provider-owned old", coalesce_key="state")
+    mgr.enqueue_agent_callback(old)
+    old[ownership_key] = True
+    old_seq = old["_coalesce_submit_seq"]
+
+    rejected_ack = _FakeAckFuture()
+    newer = _proactive_cb("flood rejected newer", coalesce_key="state")
+    newer[DELIVERY_ACK_FUTURE_KEY] = rejected_ack
+    if pre_submitted:
+        class _ManagerStub:
+            def submit(self, callback, **_kwargs):
+                self.submitted = callback
+
+        manager = _ManagerStub()
+        mgr.proactive_manager = manager
+        mgr.is_goodbye_silent = lambda: False
+        mgr.submit_proactive_callback(newer, coalesce_key="state")
+        assert manager.submitted is newer
+        assert mgr._coalesce_latest["state"] == newer["_coalesce_submit_seq"]
+    mgr.enqueue_agent_callback(newer)
+
+    assert mgr.pending_agent_callbacks == [old]
+    assert rejected_ack.done() and rejected_ack.result is False
+    assert mgr._coalesce_latest["state"] == old_seq
+    old.pop(ownership_key)
+    assert mgr._retract_stale_coalesced([old]) is False
+
+
+def test_flood_rollback_preserves_newer_manager_held_sequence(monkeypatch):
+    import config
+
+    monkeypatch.setattr(config, "AGENT_CALLBACK_QUEUE_MAX_ITEMS", 1)
+    mgr = _make_session_mgr()
+    old = _passive_cb("claimed old", coalesce_key="state")
+    mgr.enqueue_agent_callback(old)
+    old[SWAP_PRIME_DELIVERY_CLAIM_KEY] = True
+
+    async def _deliver(_batch):
+        return None
+
+    mgr.proactive_manager = ProactiveDeliveryManager(deliver=_deliver)
+    mgr.is_goodbye_silent = lambda: False
+    held = _proactive_cb("manager-held newer", coalesce_key="state")
+    mgr.submit_proactive_callback(held, coalesce_key="state")
+
+    rejected = _passive_cb("flood-rejected newest", coalesce_key="state")
+    mgr.enqueue_agent_callback(rejected)
+
+    assert mgr.pending_agent_callbacks == [old]
+    assert rejected.get(DELIVERY_RETRACTED_KEY) is True
+    assert mgr._coalesce_latest["state"] == held["_coalesce_submit_seq"]
+    old.pop(SWAP_PRIME_DELIVERY_CLAIM_KEY)
+    assert mgr._retract_stale_coalesced([old]) is True
+
+
+def test_newer_same_key_keeps_committed_callback_voice_mirror():
+    mgr = _make_session_mgr()
+    committed = _proactive_cb("provider send started", coalesce_key="state")
+    mgr.enqueue_agent_callback(committed)
+    committed[VOICE_DELIVERY_COMMITTED_KEY] = True
+    committed_id = committed["_callback_delivery_id"]
+
+    newer = _proactive_cb("next snapshot", coalesce_key="state")
+    mgr.enqueue_agent_callback(newer)
+
+    assert mgr.pending_agent_callbacks == [committed, newer]
+    assert [extra["summary"] for extra in mgr.pending_extra_replies] == [
+        "provider send started",
+        "next snapshot",
+    ]
+    assert mgr.pending_extra_replies[0]["_callback_delivery_id"] == committed_id
+
+
+def test_extra_flood_guard_keeps_provider_owned_voice_mirror(monkeypatch):
+    import config
+
+    monkeypatch.setattr(config, "AGENT_CALLBACK_QUEUE_MAX_ITEMS", 1)
+    mgr = _make_session_mgr()
+    committed = _proactive_cb("provider send started")
+    mgr.enqueue_agent_callback(committed)
+    committed[VOICE_DELIVERY_COMMITTED_KEY] = True
+    committed_mirror = mgr.pending_extra_replies[0]
+    mgr.pending_extra_replies.append({
+        "_callback_delivery_id": "orphan-id",
+        "summary": "safe orphan",
+    })
+
+    # A passive incoming callback triggers both flood guards. It is rejected
+    # from the callback queue; the unrelated orphan, not the committed mirror,
+    # is the only safe extra victim.
+    mgr.enqueue_agent_callback(_passive_cb("incoming"))
+
+    assert mgr.pending_agent_callbacks == [committed]
+    assert mgr.pending_extra_replies == [committed_mirror]
+
+
+@pytest.mark.parametrize(
+    "ownership_key",
+    [VOICE_DELIVERY_COMMITTED_KEY, SWAP_PRIME_DELIVERY_CLAIM_KEY],
+)
+def test_expired_mirror_does_not_retract_provider_owned_callback(ownership_key):
+    mgr = _make_session_mgr()
+    future = _FakeAckFuture()
+    callback = _proactive_cb("provider-owned callback")
+    callback[DELIVERY_ACK_FUTURE_KEY] = future
+    mgr.enqueue_agent_callback(callback)
+    callback[ownership_key] = True
+    mirror = mgr.pending_extra_replies[0]
+    mirror[CALLBACK_EXPIRES_AT_KEY] = time.monotonic() - 1
+
+    mgr._purge_undeliverable_callbacks()
+
+    assert mgr.pending_agent_callbacks == [callback]
+    assert mgr.pending_extra_replies == []
+    assert callback.get(ownership_key) is True
+    assert not future.done()
+
+
 def test_enqueue_coalesce_resolves_superseded_ack_false():
     # A superseded cue's delivery-ack future resolves False immediately so a
     # waiter unblocks instead of stalling until timeout (parity with the
@@ -565,6 +761,158 @@ async def test_deliver_batch_releases_inflight_when_all_superseded():
     assert released == [True]   # inflight slot freed immediately
     assert triggered == []      # no pointless trigger for an empty batch
     assert [c["summary"] for c in mgr.pending_agent_callbacks] == ["newer read"]
+
+
+async def test_deliver_batch_drops_receipt_shadowed_by_terminal_task_result():
+    mgr = _make_session_mgr()
+    triggered = []
+
+    class _MgrStub:
+        def release_inflight_noop(self):
+            raise AssertionError("terminal task result should still be delivered")
+
+    mgr.proactive_manager = _MgrStub()
+    mgr._topic_hook_release_allowed = lambda cb: True
+
+    async def _fake_trigger():
+        triggered.append(True)
+        return True
+
+    mgr.trigger_agent_callbacks = _fake_trigger
+    receipt_ack = _FakeAckFuture()
+    receipt = _proactive_cb(
+        "started",
+        task_id="task-1",
+        channel="user_plugin",
+        **{DELIVERY_ACK_FUTURE_KEY: receipt_ack},
+    )
+    terminal = _proactive_cb(
+        "finished",
+        task_id="task-1",
+        channel="user_plugin",
+        origin="task_result",
+    )
+
+    await core_module.LLMSessionManager._deliver_proactive_batch(
+        mgr, [terminal, receipt]
+    )
+
+    assert receipt_ack.done() and receipt_ack.result is False
+    assert [cb["summary"] for cb in mgr.pending_agent_callbacks] == ["finished"]
+    assert triggered == [True]
+
+
+async def test_deliver_batch_drops_pending_receipt_shadowed_by_later_terminal():
+    mgr = _make_session_mgr()
+    triggered = []
+
+    class _MgrStub:
+        def release_inflight_noop(self):
+            raise AssertionError("terminal task result should still be delivered")
+
+    mgr.proactive_manager = _MgrStub()
+    mgr._topic_hook_release_allowed = lambda cb: True
+
+    async def _fake_trigger():
+        triggered.append(True)
+        return True
+
+    mgr.trigger_agent_callbacks = _fake_trigger
+    receipt_ack = _FakeAckFuture()
+    receipt = _proactive_cb(
+        "started",
+        task_id="task-1",
+        channel="user_plugin",
+        **{DELIVERY_ACK_FUTURE_KEY: receipt_ack},
+    )
+    mgr.enqueue_agent_callback(receipt)
+    terminal = _proactive_cb(
+        "finished",
+        task_id="task-1",
+        channel="user_plugin",
+        origin="task_result",
+    )
+
+    await core_module.LLMSessionManager._deliver_proactive_batch(
+        mgr, [terminal]
+    )
+
+    assert receipt_ack.done() and receipt_ack.result is False
+    assert [cb["summary"] for cb in mgr.pending_agent_callbacks] == ["finished"]
+    assert [extra["summary"] for extra in mgr.pending_extra_replies] == ["finished"]
+    assert triggered == [True]
+
+
+def test_terminal_result_preserves_provider_owned_pending_receipt():
+    mgr = _make_session_mgr()
+    receipt_ack = _FakeAckFuture()
+    receipt = _proactive_cb(
+        "provider already owns receipt",
+        task_id="task-1",
+        channel="user_plugin",
+        **{DELIVERY_ACK_FUTURE_KEY: receipt_ack},
+    )
+    mgr.enqueue_agent_callback(receipt)
+    receipt[VOICE_DELIVERY_COMMITTED_KEY] = True
+    terminal = _proactive_cb(
+        "finished",
+        task_id="task-1",
+        channel="user_plugin",
+        origin="task_result",
+    )
+
+    deliverable = core_module.LLMSessionManager._drop_receipts_shadowed_by_terminal_result(
+        mgr, [terminal]
+    )
+
+    assert deliverable == [terminal]
+    assert mgr.pending_agent_callbacks == [receipt]
+    assert not receipt_ack.done()
+    assert receipt.get(VOICE_DELIVERY_COMMITTED_KEY) is True
+
+
+def test_passive_drain_drops_expired_callback_and_voice_mirror():
+    mgr = _make_session_mgr()
+    callback = _proactive_cb(
+        "old status",
+        **{CALLBACK_EXPIRES_AT_KEY: time.monotonic() - 1},
+    )
+    future = _FakeAckFuture()
+    callback[DELIVERY_ACK_FUTURE_KEY] = future
+    mgr.enqueue_agent_callback(callback)
+
+    assert core_module.LLMSessionManager.drain_agent_callbacks_for_llm(mgr) == ""
+    assert future.done() and future.result is False
+    assert mgr.pending_agent_callbacks == []
+    assert mgr.pending_extra_replies == []
+
+
+def test_filter_deliverable_callbacks_drops_expired_and_paired_mirror():
+    mgr = _make_session_mgr()
+    future = _FakeAckFuture()
+    expired = _proactive_cb(
+        "expired",
+        **{
+            CALLBACK_EXPIRES_AT_KEY: time.monotonic() - 1,
+            DELIVERY_ACK_FUTURE_KEY: future,
+        },
+    )
+    active = _proactive_cb(
+        "active",
+        **{CALLBACK_EXPIRES_AT_KEY: time.monotonic() + 60},
+    )
+    mgr.enqueue_agent_callback(expired)
+    mgr.enqueue_agent_callback(active)
+
+    deliverable = core_module.LLMSessionManager.filter_deliverable_callbacks(
+        mgr,
+        list(mgr.pending_agent_callbacks),
+    )
+
+    assert deliverable == [active]
+    assert mgr.pending_agent_callbacks == [active]
+    assert [extra["summary"] for extra in mgr.pending_extra_replies] == ["active"]
+    assert future.done() and future.result is False
 
 
 def test_drain_skips_read_superseded_by_manager_held_respond():

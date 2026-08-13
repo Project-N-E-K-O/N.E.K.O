@@ -757,8 +757,14 @@ def test_tutorial_live2d_preparing_hides_model_side_controls():
     assert "'live2d-floating-buttons'" in restore_controls_block
     assert "'live2d-lock-icon'" in restore_controls_block
     assert "'live2d-return-button-container'" not in restore_controls_block
-    assert "if (!preserveYuiGuidePreparing && floatingButtons) {" in app_ui_source
-    assert "if (!preserveYuiGuidePreparing && lockIcon) {" in app_ui_source
+    assert (
+        "if (!preserveYuiGuidePreparing && !preserveYuiGuideAvatarMotion && floatingButtons) {"
+        in app_ui_source
+    )
+    assert (
+        "if (!preserveYuiGuidePreparing && !preserveYuiGuideAvatarMotion && lockIcon) {"
+        in app_ui_source
+    )
 
     assert "function isYuiGuideLive2DPreparing()" in live2d_buttons_source
     assert "if (isYuiGuideLive2DPreparing() || isYuiGuideFloatingToolbarSuppressed()) {" in live2d_buttons_source

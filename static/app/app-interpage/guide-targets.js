@@ -67,7 +67,8 @@
         }
         return kind === 'capsule-input'
             && !!metrics
-            && metrics.waylandWorkAreaCarrier === true;
+            && metrics.waylandWorkAreaCarrier === true
+            && metrics.niriWaylandRuntime !== true;
     }
 
     var YUI_GUIDE_CHAT_CAPSULE_TEXT_ALIGNMENT_RATIO = 0.6;

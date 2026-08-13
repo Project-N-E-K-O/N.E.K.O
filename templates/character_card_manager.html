@@ -21,97 +21,27 @@
         /* 标题栏按钮容器 */
         .title-bar-buttons {
             display: flex;
-            gap: 8px;
+            gap: 2px;
             align-items: center;
             -webkit-app-region: no-drag;
-        }
-
-        /* 最小化、最大化/恢复按钮 - 样式与关闭按钮统一 */
-        .minimize-btn,
-        .maximize-btn {
-            background: transparent;
-            border: none;
-            color: #fff;
-            cursor: pointer;
-            padding: 0;
-            line-height: 1;
-            border-radius: 4px;
-            transition: background 0.2s, transform 0.1s ease;
-            width: 32px;
-            height: 32px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            -webkit-app-region: no-drag;
-        }
-
-        .minimize-btn:hover,
-        .maximize-btn:hover {
-            background: rgba(255, 255, 255, 0.2);
-            transform: translateY(-1px);
-        }
-
-        .minimize-btn:active,
-        .maximize-btn:active {
-            background: rgba(255, 255, 255, 0.3);
-            transform: translateY(1px) scale(0.95);
-            opacity: 0.9;
-        }
-
-        /* 最小化图标：横线 */
-        .minimize-icon {
-            display: block;
-            width: 16px;
-            height: 2px;
-            background: #fff;
-            border-radius: 2px;
-            transform: translateY(5px);
-        }
-
-        /* 最大化图标：实心方框 */
-        .maximize-icon {
-            display: block;
-            width: 14px;
-            height: 14px;
-            border: 2px solid #fff;
-            border-radius: 2px;
-            box-sizing: border-box;
-            transition: all 0.2s ease;
-        }
-
-        /* 恢复图标：重叠方框（模拟窗口层叠） */
-        .maximize-icon.restored {
-            width: 14px;
-            height: 14px;
-            border: 2px solid #fff;
-            border-radius: 2px;
-            position: relative;
-            background: #4BD4FD;
-            box-sizing: border-box;
-        }
-
-        .maximize-icon.restored::after {
-            content: '';
-            position: absolute;
-            top: -3px;
-            left: 3px;
-            width: 14px;
-            height: 14px;
-            border: 2px solid #fff;
-            border-radius: 2px;
-            background: #4BD4FD;
-            box-sizing: border-box;
         }
 
         /* 我的档案补充样式 */
         .master-profile-section {
             border: 2px solid #b3e5fc;
             border-radius: 16px;
-            background: #f0f8ff;
+            background: linear-gradient(145deg, rgba(249, 253, 255, 0.96), rgba(232, 247, 255, 0.94));
             padding: 10px 12px;
             margin-top: 8px;
             position: relative;
             z-index: 10;
+            box-shadow: 0 5px 16px rgba(64, 197, 241, 0.08);
+            transition: border-color 0.28s ease, box-shadow 0.28s ease, background 0.28s ease;
+        }
+        .master-profile-section:has(.master-profile-header.open) {
+            border-color: rgba(64, 197, 241, 0.72);
+            background: linear-gradient(145deg, rgba(252, 254, 255, 0.98), rgba(225, 246, 255, 0.96));
+            box-shadow: 0 12px 30px rgba(64, 197, 241, 0.18);
         }
         .master-profile-header {
             display: flex;
@@ -129,136 +59,125 @@
             -webkit-appearance: none;
             width: 100%;
             text-align: left;
+            min-height: 26px;
+        }
+        .master-profile-backdrop {
+            position: fixed;
+            inset: 0;
+            z-index: 998;
+            background: rgba(18, 72, 102, 0.2);
+            backdrop-filter: blur(3px);
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.22s ease;
+        }
+        .master-profile-backdrop.open {
+            opacity: 1;
+            pointer-events: auto;
         }
         .master-profile-content {
-            position: absolute;
-            left: 0;
-            right: auto;
-            top: 100%;
-            width: max(100%, 50vw);
-            max-width: calc(100vw - var(--master-profile-viewport-left, 0px) - 20px);
-            margin-top: 4px;
-            padding: 10px 12px;
-            background: #f0f8ff;
-            border: 2px solid #b3e5fc;
-            border-radius: 16px;
-            z-index: 20;
-            box-shadow: 0 8px 24px rgba(64, 197, 241, 0.15);
+            position: fixed;
+            left: 50%;
+            top: 50%;
+            z-index: 999;
+            display: flex;
+            flex-direction: column;
+            width: min(920px, calc(100vw - 48px));
+            height: min(720px, calc(100vh - 80px));
+            min-width: 0;
+            min-height: 0;
+            max-width: 920px;
+            max-height: 720px;
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background: linear-gradient(145deg, rgba(252, 254, 255, 0.99), rgba(230, 247, 255, 0.98));
+            border: 1px solid rgba(128, 213, 245, 0.86);
+            border-radius: 20px;
+            box-shadow: 0 30px 80px rgba(25, 106, 150, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.98);
             opacity: 0;
-            transform: translateY(-8px) scaleX(0.92);
-            transform-origin: top left;
-            clip-path: inset(0 100% 0 0 round 16px);
+            transform: translate(-50%, -48%) scale(0.975);
             pointer-events: none;
-            will-change: opacity, transform, clip-path;
+            will-change: opacity, transform;
             transition:
-                opacity 0.18s ease,
-                transform 0.22s cubic-bezier(0.2, 0.8, 0.2, 1),
-                clip-path 0.24s cubic-bezier(0.2, 0.8, 0.2, 1);
+                opacity 0.2s ease,
+                transform 0.26s cubic-bezier(0.2, 0.8, 0.2, 1);
         }
         .master-profile-content.open {
             opacity: 1;
-            transform: translateY(0) scaleX(1);
-            clip-path: inset(0 0 0 0 round 16px);
+            transform: translate(-50%, -50%) scale(1);
             pointer-events: auto;
         }
-        @media (max-width: 900px) {
-            .master-profile-content {
-                width: 100%;
-                max-width: 100%;
-            }
+        .master-profile-dialog-header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex: 0 0 auto;
+            min-height: 58px;
+            padding: 12px 16px 12px 18px;
+            color: #2ab6e8;
+            background: linear-gradient(135deg, rgba(255, 255, 255, 0.94), rgba(222, 246, 255, 0.9));
+            border-bottom: 1px solid rgba(128, 213, 245, 0.54);
+        }
+        .master-profile-dialog-title {
+            flex: 1;
+            min-width: 0;
+            font-size: 1rem;
+            font-weight: 700;
+            letter-spacing: 0.02em;
+        }
+        .master-profile-dialog-close {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 34px;
+            height: 34px;
+            padding: 0;
+            color: #40C5F1;
+            background: rgba(255, 255, 255, 0.82);
+            border: 1px solid rgba(128, 213, 245, 0.66);
+            border-radius: 11px;
+            cursor: pointer;
+            font-size: 23px;
+            line-height: 1;
+            transition: color 0.18s ease, background 0.18s ease, transform 0.18s ease, box-shadow 0.18s ease;
+        }
+        .master-profile-dialog-close:hover {
+            color: #fff;
+            background: #40C5F1;
+            box-shadow: 0 5px 12px rgba(64, 197, 241, 0.24);
+            transform: translateY(-1px);
+        }
+        .master-profile-dialog-body {
+            flex: 1 1 auto;
+            min-width: 0;
+            min-height: 0;
+            overflow-x: hidden;
+            overflow-y: auto;
+            overscroll-behavior: contain;
+            scrollbar-gutter: stable;
+            scrollbar-width: thin;
+            scrollbar-color: rgba(64, 197, 241, 0.55) transparent;
+        }
+        .master-profile-dialog-footer.settings-form-layout.panel-tab-settings {
+            flex: 0 0 auto;
+            padding: 10px 28px 14px;
+            background: rgba(244, 252, 255, 0.96);
+            border-top: 1px solid rgba(128, 213, 245, 0.46);
+            box-shadow: 0 -8px 22px rgba(64, 197, 241, 0.07);
+        }
+        .master-profile-dialog-footer .settings-toolbar-row {
+            margin: 0 !important;
+        }
+        body.master-profile-dialog-open .layout-container {
+            overflow-y: hidden;
         }
         @media (prefers-reduced-motion: reduce) {
-            .master-profile-content {
+            .master-profile-backdrop,
+            .master-profile-content,
+            .master-profile-section {
                 transition: none;
             }
-        }
-        .master-profile-content .field-row-wrapper {
-            display: flex;
-            align-items: center;
-            margin-bottom: 8px;
-            gap: 6px;
-        }
-        .master-profile-content .field-row-wrapper label {
-            min-width: 60px;
-            max-width: 80px;
-            font-weight: 600;
-            color: #40C5F1;
-            font-size: 0.85rem;
-            flex-shrink: 0;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
-        }
-        .master-profile-content .field-row {
-            display: flex;
-            align-items: center;
-            flex: 1;
-            padding: 2px;
-            border: 2px solid #b3e5fc;
-            border-radius: 50px;
-            background: #fff;
-            min-height: 28px;
-            transition: border-color 0.2s, border-radius 0.3s ease;
-            overflow: hidden;
-        }
-        .master-profile-content .field-row.has-scrollbar {
-            border-radius: 16px;
-        }
-        .master-profile-content .field-row.has-scrollbar textarea {
-            border-radius: 14px;
-        }
-        /* 自定义滚动条样式 */
-        .master-profile-content .field-row textarea::-webkit-scrollbar {
-            width: 6px;
-        }
-        .master-profile-content .field-row textarea::-webkit-scrollbar-track {
-            background: transparent;
-        }
-        .master-profile-content .field-row textarea::-webkit-scrollbar-thumb {
-            background-color: rgba(64, 197, 241, 0.3);
-            border-radius: 3px;
-        }
-        .master-profile-content .field-row textarea::-webkit-scrollbar-thumb:hover {
-            background-color: rgba(64, 197, 241, 0.5);
-        }
-        .master-profile-content .field-row input,
-        .master-profile-content .field-row textarea {
-            flex: 1;
-            padding: 4px 10px;
-            border: none;
-            border-radius: 48px;
-            font-size: 0.85rem;
-            background: #fff;
-            color: #40C5F1;
-            outline: none;
-            resize: none;
-            box-sizing: border-box;
-        }
-        .master-profile-content .field-row input:focus,
-        .master-profile-content .field-row textarea:focus {
-            outline: none !important;
-            box-shadow: none !important;
-        }
-        .master-profile-content .field-row:focus-within {
-            border-color: #40C5F1;
-        }
-        .master-profile-content .field-row textarea {
-            overflow-y: hidden;
-            min-height: 30px;
-            line-height: 1.4;
-            transition: height 0.2s ease;
-            box-sizing: border-box;
-        }
-        .master-profile-content .btn-area {
-            display: flex;
-            justify-content: flex-end;
-            align-items: center;
-            gap: 6px;
-            margin-top: 6px;
-        }
-        .master-profile-content .btn-area .btn#save-master-btn,
-        .master-profile-content .btn-area .btn#cancel-master-btn {
-            display: none;
         }
         /* 页面全局滚动条样式 */
         ::-webkit-scrollbar {
@@ -275,20 +194,17 @@
         ::-webkit-scrollbar-thumb:hover {
             background-color: rgba(64, 197, 241, 0.75);
         }
-        .master-profile-content .btn.sm {
-            padding: 0 10px;
-            border-radius: 999px;
-            min-width: 60px;
-            height: 26px;
-            font-size: 0.75rem;
-            background: #7fd6f4;
-            color: #fff;
-            border: none;
-            transition: background 0.2s, transform 0.15s;
-        }
-        .master-profile-content .btn.sm:hover {
-            background: #40C5F1;
-            transform: translateY(-1px);
+        @media (max-width: 620px) {
+            .master-profile-content {
+                width: calc(100vw - 20px);
+                height: calc(100vh - 20px);
+                max-width: none;
+                max-height: none;
+                border-radius: 16px;
+            }
+            .master-profile-dialog-footer.settings-form-layout.panel-tab-settings {
+                padding: 10px 16px 12px;
+            }
         }
         /* 已隐藏猫娘补充样式 */
         .hidden-catgirl-area {
@@ -425,12 +341,7 @@
             }
             .title-bar-buttons {
                 flex: 0 0 auto;
-                gap: clamp(4px, 1.5vw, 8px);
-            }
-            .minimize-btn,
-            .maximize-btn {
-                width: clamp(28px, 10vw, 32px);
-                height: clamp(28px, 10vw, 32px);
+                gap: 2px;
             }
         }
     </style>
@@ -442,17 +353,17 @@
     <!-- 页面标题栏 - 支持拖动窗口 -->
     <div class="page-title-bar">
         <h2 data-i18n="steam.workshopManager" data-text="Character Card Manager - Project N.E.K.O.">Character Card Manager - Project N.E.K.O.</h2>
-        <div class="title-bar-buttons">
+        <div class="title-bar-buttons neko-window-controls">
             <button type="button" class="neko-window-control-btn" data-neko-window-control="pin" hidden data-i18n-title="common.pinWindow" data-i18n-aria="common.pinWindow" title="置顶窗口" aria-label="置顶窗口" aria-pressed="false">
                 <span class="neko-window-pin-icon" aria-hidden="true"></span>
             </button>
-            <button class="minimize-btn" id="minimizeBtn" onclick="minimizeWindow()" data-i18n-title="common.minimize" data-i18n-aria="common.minimize" title="最小化" aria-label="最小化">
-                <span class="minimize-icon"></span>
+            <button class="neko-window-control-btn minimize-btn" id="minimizeBtn" onclick="minimizeWindow()" data-i18n-title="common.minimize" data-i18n-aria="common.minimize" title="最小化" aria-label="最小化">
+                <span class="neko-window-minimize-icon minimize-icon"></span>
             </button>
-            <button class="maximize-btn" id="maximizeBtn" onclick="toggleMaximize()" data-i18n-title="common.maximize" data-i18n-aria="common.maximize" title="最大化" aria-label="最大化">
-                <span class="maximize-icon"></span>
+            <button class="neko-window-control-btn maximize-btn" id="maximizeBtn" onclick="toggleMaximize()" data-i18n-title="common.maximize" data-i18n-aria="common.maximize" title="最大化" aria-label="最大化">
+                <span class="neko-window-maximize-icon maximize-icon"></span>
             </button>
-            <button class="close-btn" onclick="window.close(); window.history.back();" data-i18n-title="common.close" data-i18n-aria="common.close" title="关闭" aria-label="关闭">
+            <button class="neko-window-control-btn close-btn" onclick="window.close(); window.history.back();" data-i18n-title="common.close" data-i18n-aria="common.close" title="关闭" aria-label="关闭">
                 <img src="/static/icons/close_button.png" data-i18n-alt="common.close" draggable="false">
             </button>
         </div>
@@ -492,17 +403,25 @@
 
 <!-- 我的档案区域 -->
 <div class="menu-section master-profile-section" id="master-profile-section">
-    <button type="button" class="master-profile-header" id="master-profile-header" onclick="toggleMasterSection()" aria-expanded="false">
-        <span class="master-profile-arrow-bubble" aria-hidden="true">
-            <span class="master-profile-arrow-symbol"></span>
-        </span>
+    <button type="button" class="master-profile-header" id="master-profile-header" onclick="toggleMasterSection()" aria-haspopup="dialog" aria-controls="master-profile-content">
         <span data-i18n="character.masterProfileTitle">我的档案</span>
     </button>
-    <div class="master-profile-content" id="master-profile-content" style="display:none;">
+</div>
+
+<div class="master-profile-backdrop" id="master-profile-backdrop" style="display:none;" aria-hidden="true" onclick="toggleMasterSection()"></div>
+<div class="master-profile-content" id="master-profile-content" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="master-profile-dialog-title" aria-hidden="true" inert>
+    <div class="master-profile-dialog-header">
+        <span class="master-profile-dialog-title" id="master-profile-dialog-title" data-i18n="character.masterProfileTitle">我的档案</span>
+        <button type="button" class="master-profile-dialog-close" onclick="toggleMasterSection()" data-i18n-title="common.close" data-i18n-aria="common.close" title="关闭" aria-label="关闭">
+            <span aria-hidden="true">×</span>
+        </button>
+    </div>
+    <div class="master-profile-dialog-body panel-tab-settings settings-form-layout">
         <form id="master-form" onsubmit="event.preventDefault();">
             <!-- 由 JS 动态渲染 -->
         </form>
     </div>
+    <div class="master-profile-dialog-footer panel-tab-settings settings-form-layout" id="master-profile-dialog-footer"></div>
 </div>
 
 <!-- 角色卡封面图展示区域 -->

@@ -51,8 +51,20 @@
                   <component :is="marketPanelVisible ? ArrowLeft : ArrowRight" />
                 </el-icon>
               </button>
+              <el-button
+                v-if="marketUrl && marketAuth.auth_state === 'pending'"
+                class="market-auth-trigger"
+                :loading="marketLogoutBusy"
+                aria-live="polite"
+                :title="$t('market.logout')"
+                plain
+                @click="confirmMarketLogout"
+              >
+                <el-icon><User /></el-icon>
+                {{ $t('market.authVerificationPendingLabel') }} · {{ $t('market.logout') }}
+              </el-button>
               <el-popover
-                v-if="marketUrl && marketAuth.authenticated"
+                v-else-if="marketUrl && marketAuth.authenticated"
                 placement="bottom-start"
                 :width="300"
                 trigger="click"
@@ -83,6 +95,12 @@
                   </div>
                   <p v-if="marketAccountSummaryBusy" class="market-account-card__hint">
                     {{ $t('market.accountSummaryLoading') }}
+                  </p>
+                  <p
+                    v-else-if="marketAuthStateMessageKey"
+                    class="market-account-card__hint"
+                  >
+                    {{ $t(marketAuthStateMessageKey) }}
                   </p>
                   <div v-else-if="marketAccountSummary?.market" class="market-account-card__stats">
                     <span v-if="marketAccountSummary.market.member_days !== null">
@@ -404,7 +422,8 @@ import type {
 } from '@/composables/workbenchDescriptors'
 import { getMarketUrl } from '@/api/market'
 import { reloadAllPlugins, deletePlugin } from '@/api/plugins'
-import { uploadAndInstallPlugin, buildPluginCli, downloadPluginPackage } from '@/api/pluginCli'
+import { uploadPluginPackage, buildPluginCli, downloadPluginPackage } from '@/api/pluginCli'
+import { usePluginPackageInstaller } from '@/composables/usePluginPackageInstaller'
 import { usePluginListContextActions, type ResolvedPluginListAction } from '@/composables/usePluginListContextActions'
 import { usePluginWorkbench } from '@/composables/usePluginWorkbench'
 import { useMarketAuth } from '@/composables/useMarketAuth'
@@ -420,6 +439,7 @@ const pluginStore = usePluginStore()
 const metricsStore = useMetricsStore()
 const { t, locale } = useI18n()
 const { buildActions, executeAction, shouldUseHoldConfirm } = usePluginListContextActions()
+const { installPackagePath: installImportedPackage } = usePluginPackageInstaller()
 const TUTORIAL_ACTION_EVENT = 'neko:plugin-tutorial:action'
 
 const reloadingAll = ref(false)
@@ -442,7 +462,9 @@ const marketUrl = ref('')
 const {
   marketAuth,
   marketAuthBusy,
+  marketLogoutBusy,
   marketAuthDisplayName,
+  marketAuthStateMessageKey,
   marketAccountSummary,
   marketAccountSummaryBusy,
   loadMarketAuthStatus,
@@ -899,8 +921,10 @@ async function handleImportFileChange(event: Event) {
 
   importing.value = true
   try {
-    const result = await uploadAndInstallPlugin(file)
-    const count = result.install.installed_plugin_count ?? 0
+    const upload = await uploadPluginPackage(file)
+    const result = await installImportedPackage(upload.path, { installSource: 'imported' })
+    if (!result) return
+    const count = result.installed_plugin_count ?? 0
     ElMessage.success(t('plugins.importSuccess', { name: file.name, count }))
     await refreshAfterPluginChange()
   } catch (error: any) {

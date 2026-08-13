@@ -61,8 +61,8 @@ access (:func:`prune_expired_previews`). No background tasks.
 
 Limitations (documented on purpose, not TODO)
 ---------------------------------------------
-* ``facts.extract`` preview skips the FTS5 semantic-dedup stage
-  (``TimeIndexedMemory.asearch_facts``) because setting up the SQLite
+* ``facts.extract`` preview skips the FTS5 near-dup stage
+  (``TimeIndexedMemory.asearch_similar_facts``) because setting up the SQLite
   FTS5 index for a transient preview would require rollback-safe
   writes. Only SHA-256 exact-dedup is applied at preview time. Commit
   does NOT re-run FTS5 indexing either — the testbench editor is raw

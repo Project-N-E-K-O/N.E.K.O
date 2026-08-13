@@ -19,7 +19,7 @@ import struct
 import time
 import zlib
 from datetime import datetime
-from typing import Callable, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 from urllib.parse import urlencode
 
 # ── WBI 签名常量 ──────────────────────────────────────────────────
@@ -152,7 +152,7 @@ class DanmakuListener:
     def __init__(
         self,
         room_id: int,
-        credential=None,
+        credential: Any = None,
         logger=None,
         callbacks: Dict[str, Callable] = None,
     ):
@@ -167,7 +167,7 @@ class DanmakuListener:
         self._heartbeat_task: Optional[asyncio.Task] = None
         self._ready_event = asyncio.Event()
         self._authenticated_in_attempt = False
-        self._buvid3_temp: str = ""  # 临时 buvid3，无凭据时从 B站首页获取
+        self._buvid3_temp: str = ""  # 已登录凭据缺少 buvid3 时，从 B站首页临时补齐。
 
         # 连接状态
         self._connection_state = ConnectionState.DISCONNECTED
@@ -370,7 +370,7 @@ class DanmakuListener:
                         self.credential.buvid3 = buvid3
                     except Exception as e:
                         self._log(f"credential buvid3 writeback failed: {e}", "debug")
-                # 即使没有 credential 也记下来
+                # 记住临时补齐的 buvid3，供本次已登录连接的认证包使用。
                 self._buvid3_temp = buvid3
 
             headers = {
@@ -404,7 +404,7 @@ class DanmakuListener:
             url = "https://api.live.bilibili.com/xlive/web-room/v1/index/getDanmuInfo"
             data = await self._request_json(url, params=params, headers=headers, cookies=cookies)
             api_code = data.get("code", -1)
-            self._log(f"getDanmuInfo API: code={api_code}, msg={data.get('message', '')}")
+            self._log(f"getDanmuInfo API: code={api_code}")
             if api_code == 0:
                 token = data["data"].get("token", "")
                 hosts = data["data"].get("host_list", [])
@@ -427,7 +427,7 @@ class DanmakuListener:
                     self._log(f"弹幕服务器列表: {[s[1] + ':' + str(s[2]) for s in servers]}")
                     return servers, token
             else:
-                self._log(f"getDanmuInfo 返回错误: {data}", "warning")
+                self._log(f"getDanmuInfo 请求被拒绝: code={api_code}", "warning")
         except Exception as e:
             self._log(f"获取弹幕服务器信息失败: {e}，使用默认地址", "warning")
 
@@ -990,7 +990,7 @@ class DanmakuListener:
                     self._log(f"✅ 认证成功，开始接收弹幕 [{self._current_server}]")
                 else:
                     self._connection_state = ConnectionState.DISCONNECTED
-                    self._log(f"❌ 认证失败: code={code} msg={result}", "warning")
+                    self._log(f"❌ 认证失败: code={code}", "warning")
                     # 认证失败，停止监听
                     self.running = False
                     self._stop_event.set()
@@ -1015,15 +1015,15 @@ class DanmakuListener:
                     # 有些 cmd 带 : 后缀，取前部分
                     cmd = cmd.split(":")[0]
                     if cmd == "DANMU_MSG":
-                        self._log(f"📨 收到弹幕包 cmd=DANMU_MSG")
+                        self._log("📨 收到弹幕包 cmd=DANMU_MSG")
                     await self._dispatch_message(cmd, msg)
                 except Exception as e:
                     self._log(f"解析消息失败: {e}", "warning")
 
     async def start(self):
         """启动监听（带自动重连，直到 stop() 被调用）"""
-        import websockets
-
+        if self.credential is None:
+            raise ValueError("Bilibili credential is required")
         # 重置停止事件和直播结束标记
         self._stop_event.clear()
         self._ready_event.clear()
@@ -1181,7 +1181,7 @@ class DanmakuListener:
 
                     # 直播结束：收到 PREPARING 后不再重连
                     if self._live_ended:
-                        self._log(f"直播已结束，停止重连", "info")
+                        self._log("直播已结束，停止重连", "info")
                         break
 
                     # 否则是服务器正常断开，继续尝试下一个服务器

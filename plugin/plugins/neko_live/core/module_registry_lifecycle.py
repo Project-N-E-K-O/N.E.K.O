@@ -82,4 +82,4 @@ def record_failure(ctx: Any, op: str, module_id: str, message: str) -> None:
 
 
 def _error_message(exc: Exception) -> str:
-    return str(exc).strip() or type(exc).__name__
+    return type(exc).__name__

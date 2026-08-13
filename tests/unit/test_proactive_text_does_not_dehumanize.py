@@ -293,7 +293,13 @@ def test_cat_greeting_silences_short_returns() -> None:
         assert get_cat_greeting_prompt('awake', 180, lang) is not None
 
 
-_CAT_EPISODE_LOCALES = ('zh', 'en', 'ja', 'ko', 'ru', 'es', 'pt')
+# 'zh-TW' joined the tables with the issue #2500 backfill. The module's
+# normalizer still collapses Traditional to 'zh' (keep_traditional=False), so the
+# new rows are not reachable through get_cat_greeting_* yet — see
+# test_cat_greeting_episode_scene_rejects_invalid_combinations_and_uses_english_fallback,
+# which pins that collapse. This tuple is the table-coverage list, not the
+# resolver's input domain.
+_CAT_EPISODE_LOCALES = ('zh', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt')
 _CAT_EPISODE_CASES = [
     {'kind': 'activity'},
     {'kind': 'activity', 'highlight': 'played_yarn'},
@@ -355,7 +361,13 @@ def test_cat_greeting_episode_scene_rejects_invalid_combinations_and_uses_englis
     assert get_cat_greeting_episode_scene({'kind': 'rested'}, 'fr-FR') == english
     zh = get_cat_greeting_episode_scene({'kind': 'rested'}, 'zh')
     assert get_cat_greeting_episode_scene({'kind': 'rested'}, 'zh-CN') == zh
-    assert get_cat_greeting_episode_scene({'kind': 'rested'}, 'zh-TW') == zh
+    # 自 #2500 C2 起繁中走自己那一行，不再折成简体。
+    traditional = get_cat_greeting_episode_scene({'kind': 'rested'}, 'zh-TW')
+    # 空断言陷阱：查不到 kind 时函数返回 ''，那样 '' != zh 与 '' == '' 两条都成立，
+    # 繁中用户拿到空文案而测试全绿。必须先钉住它非空。
+    assert traditional, 'zh-TW 缺少 rested 场景行，繁中会拿到空文案'
+    assert traditional != zh
+    assert get_cat_greeting_episode_scene({'kind': 'rested'}, 'zh-Hant') == traditional
 
 
 def test_cat_greeting_episode_scene_is_not_labeled_as_optional_background() -> None:

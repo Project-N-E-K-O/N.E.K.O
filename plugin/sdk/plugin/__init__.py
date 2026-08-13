@@ -17,6 +17,7 @@ from . import activity as _activity
 from . import runtime as _runtime
 from . import settings as _settings
 from . import ui as ui
+from plugin.sdk.shared.core.types import PushMessageResult
 from plugin.sdk.shared.i18n import PluginI18n, tr
 
 # --- Base ---
@@ -110,6 +111,7 @@ __all__ = [
     "Ok",
     "Err",
     "Result",
+    "PushMessageResult",
     "unwrap",
     "unwrap_or",
     # Config & Runtime

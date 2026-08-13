@@ -20,6 +20,7 @@
     const TUTORIAL_FLOW_POLL_INTERVAL_MS = 120;
     const TYPEWRITER_BASE_DELAY_MS = 18;
     const TYPEWRITER_PUNCTUATION_DELAY_MS = 110;
+    const CHARACTER_LANGUAGE_HYDRATION_TIMEOUT_MS = 2500;
     const HOME_TUTORIAL_RESET_EVENT = 'neko:home-tutorial-reset';
     const HOME_TUTORIAL_RESET_STORAGE_EVENT_KEY = 'neko_home_tutorial_reset_event';
     const HOME_TUTORIAL_RESET_CHANNEL = 'neko_tutorial_events';
@@ -64,7 +65,19 @@
         return payload;
     }
 
-    function getCurrentLanguage() {
+    function getTrustedCharacterLanguage(characterName) {
+        try {
+            if (typeof window.getExplicitConversationLanguagePreference === 'function') {
+                const preferred = window.getExplicitConversationLanguagePreference(characterName);
+                if (preferred) return preferred;
+            }
+        } catch (_) {
+            return '';
+        }
+        return '';
+    }
+
+    function getLiveUiLanguage() {
         try {
             if (window.i18next && typeof window.i18next.language === 'string' && window.i18next.language) {
                 return window.i18next.language;
@@ -85,6 +98,90 @@
             return '';
         }
         return '';
+    }
+
+    function getCurrentLanguage(characterName) {
+        return getTrustedCharacterLanguage(characterName) || getLiveUiLanguage();
+    }
+
+    function getCharacterLanguageRevision(characterName) {
+        try {
+            if (typeof window.getConversationLanguagePreferenceRevision === 'function') {
+                const revision = Number(
+                    window.getConversationLanguagePreferenceRevision(characterName)
+                );
+                return Number.isFinite(revision) ? revision : 0;
+            }
+        } catch (_) {
+            return 0;
+        }
+        return 0;
+    }
+
+    async function resolveCurrentLanguage(characterName) {
+        const name = String(characterName || '').trim();
+        const trustedLanguage = getTrustedCharacterLanguage(name);
+        if (trustedLanguage || !name) {
+            return trustedLanguage || getLiveUiLanguage();
+        }
+
+        const languageRevision = getCharacterLanguageRevision(name);
+        const controller = typeof AbortController === 'function' ? new AbortController() : null;
+        let timeoutId = null;
+        try {
+            const payload = await Promise.race([
+                requestJson(
+                    `/api/characters/character/${encodeURIComponent(name)}/language-preference`,
+                    {
+                        cache: 'no-store',
+                        signal: controller ? controller.signal : undefined,
+                    }
+                ),
+                new Promise((_, reject) => {
+                    timeoutId = window.setTimeout(() => {
+                        if (controller) controller.abort();
+                        reject(new Error('character language hydration timed out'));
+                    }, CHARACTER_LANGUAGE_HYDRATION_TIMEOUT_MS);
+                }),
+            ]);
+
+            if (!payload || payload.success !== true) {
+                throw new Error('invalid character language preference response');
+            }
+
+            // A websocket or sibling window may have published newer durable
+            // evidence while this request was in flight. Never overwrite it
+            // with the older response.
+            if (getCharacterLanguageRevision(name) !== languageRevision) {
+                return getCurrentLanguage(name);
+            }
+            const currentTrustedLanguage = getTrustedCharacterLanguage(name);
+            if (currentTrustedLanguage) {
+                return currentTrustedLanguage;
+            }
+
+            const durableLanguage = typeof payload.language === 'string'
+                ? payload.language.trim()
+                : '';
+            if (durableLanguage) {
+                if (typeof window.setConversationLanguagePreference === 'function') {
+                    window.setConversationLanguagePreference(
+                        durableLanguage,
+                        name,
+                        { dispatch: false, source: 'server' }
+                    );
+                }
+                return durableLanguage;
+            }
+        } catch (error) {
+            console.warn(
+                '[CharacterPersonalityOnboarding] language hydration failed, using UI fallback:',
+                error
+            );
+        } finally {
+            if (timeoutId !== null) window.clearTimeout(timeoutId);
+        }
+        return getCurrentLanguage(name);
     }
 
     function ensureStyles() {
@@ -130,6 +227,7 @@
             this.originalBodyPointerEvents = '';
             this.openReason = 'onboarding';
             this.currentLanguage = '';
+            this.localeRefreshRunId = 0;
             this.typewriterRunId = 0;
             this.typewriterTimer = null;
             this.homeTutorialCompletedInSession = false;
@@ -211,8 +309,8 @@
             await this.waitForTutorialFlowToSettle();
             this.openReason = 'settings';
             this.currentCharacterName = String(characterName || '').trim() || await this.fetchCurrentCharacterName();
-            this.currentLanguage = getCurrentLanguage();
-            this.presets = await this.fetchPresets(this.currentLanguage);
+            this.currentLanguage = await resolveCurrentLanguage(this.currentCharacterName);
+            this.presets = await this.fetchPresets(this.currentLanguage, true);
             this.ensureOverlay();
             this.renderStageOne();
             this.showOverlay();
@@ -387,7 +485,7 @@
             }
 
             this.openReason = 'manual_reselect';
-            this.currentLanguage = getCurrentLanguage();
+            this.currentLanguage = await resolveCurrentLanguage(this.currentCharacterName);
             this.presets = await this.fetchPresets(this.currentLanguage);
             if (!this.presets.length) {
                 return false;
@@ -407,7 +505,7 @@
 
             this.openReason = 'onboarding';
             this.currentCharacterName = await this.fetchCurrentCharacterName();
-            this.currentLanguage = getCurrentLanguage();
+            this.currentLanguage = await resolveCurrentLanguage(this.currentCharacterName);
             this.presets = await this.fetchPresets(this.currentLanguage);
             if (!this.currentCharacterName || !this.presets.length) {
                 return;
@@ -423,13 +521,53 @@
             return String(payload.current_catgirl || '').trim();
         }
 
-        async fetchPresets(language) {
+        async fetchPresets(language, includeLegacy = false) {
             const requestLanguage = String(language || '').trim();
-            const url = requestLanguage
-                ? `/api/characters/persona-presets?language=${encodeURIComponent(requestLanguage)}`
-                : '/api/characters/persona-presets';
+            const query = new URLSearchParams();
+            if (requestLanguage) {
+                query.set('language', requestLanguage);
+            }
+            if (includeLegacy) {
+                query.set('include_legacy', 'true');
+            }
+            const queryString = query.toString();
+            const url = '/api/characters/persona-presets' + (queryString ? `?${queryString}` : '');
             const payload = await requestJson(url);
             return Array.isArray(payload.presets) ? payload.presets : [];
+        }
+
+        async refreshForLocaleChange() {
+            const nextLanguage = getCurrentLanguage(this.currentCharacterName);
+            const overlay = this.overlay;
+            if (!overlay || overlay.hidden) {
+                return;
+            }
+
+            const runId = ++this.localeRefreshRunId;
+            const presets = await this.fetchPresets(nextLanguage, this.openReason === 'settings');
+            if (
+                runId !== this.localeRefreshRunId
+                || this.overlay !== overlay
+                || !document.body.contains(overlay)
+                || overlay.hidden
+                || !presets.length
+            ) {
+                return;
+            }
+
+            this.currentLanguage = nextLanguage;
+            this.presets = presets;
+            const stageTwo = overlay.querySelector('.character-personality-stage-two');
+            const selectedPresetId = this.selectedPresetId;
+            const stillOnStageTwo = !!(stageTwo && !stageTwo.hidden && selectedPresetId);
+            if (stillOnStageTwo) {
+                const selectedPreset = presets.find((preset) => preset.preset_id === selectedPresetId);
+                if (selectedPreset) {
+                    this.renderStageTwo(selectedPreset, nextLanguage);
+                    return;
+                }
+            }
+            this.renderStageOne();
         }
 
         ensureOverlay() {
@@ -563,8 +701,15 @@
                 }
             };
 
+            const refreshForLocaleChange = () => {
+                void this.refreshForLocaleChange().catch((error) => {
+                    console.warn('[CharacterPersonalityOnboarding] failed to refresh locale:', error);
+                });
+            };
+
             window.addEventListener(HOME_TUTORIAL_RESET_EVENT, resetHomeTutorialCompleted);
             window.addEventListener('storage', resetHomeTutorialCompletedFromStorage);
+            window.addEventListener('localechange', refreshForLocaleChange);
             window.addEventListener(STARTUP_GREETING_RELEASE_EVENT, handleHomeTutorialStartupRelease);
             window.addEventListener('neko:tutorial-started', queueResume);
             window.addEventListener('neko:tutorial-completed', markHomeTutorialCompleted);
@@ -589,13 +734,13 @@
             }
 
             window.addEventListener('beforeunload', () => {
-                if (!this.resetBroadcastChannel) {
-                    return;
+                window.removeEventListener('localechange', refreshForLocaleChange);
+                if (this.resetBroadcastChannel) {
+                    try {
+                        this.resetBroadcastChannel.close();
+                    } catch (_) {}
+                    this.resetBroadcastChannel = null;
                 }
-                try {
-                    this.resetBroadcastChannel.close();
-                } catch (_) {}
-                this.resetBroadcastChannel = null;
             });
         }
 
@@ -731,9 +876,10 @@
 
         getPresetHighlights(preset) {
             const highlightMap = {
-                classic_genki: ['高共情', '贴贴型', '情绪充电'],
-                tsundere_helper: ['嘴硬心软', '高可靠', '吐槽式偏爱'],
-                elegant_butler: ['稳妥周全', '优雅克制', '先你一步'],
+                frail_younger_sister: ['主动留人', '黏人迟疑', '拒绝不纠缠'],
+                empathetic_older_sister: ['温柔接管', '从容坚定', '可靠承诺'],
+                sharp_tongued_junior: ['强势毒舌', '行动偏爱', '嘴硬不认'],
+                chaotic_online_friend: ['正经胡说', '玩梗装傻', '事实可靠'],
             };
             const presetId = preset && preset.preset_id;
             const fallbacks = highlightMap[presetId] || [];
@@ -1111,12 +1257,22 @@
             if (!this.overlay) {
                 return;
             }
+            ++this.localeRefreshRunId;
             this.prepareOverlayPointerEvents();
             this.updateHeaderCopy();
             this.overlay.hidden = false;
+            if (
+                this.currentLanguage
+                && this.currentLanguage !== getCurrentLanguage(this.currentCharacterName)
+            ) {
+                void this.refreshForLocaleChange().catch((error) => {
+                    console.warn('[CharacterPersonalityOnboarding] failed to refresh reopened overlay:', error);
+                });
+            }
         }
 
         hideOverlay() {
+            ++this.localeRefreshRunId;
             if (this.overlay) {
                 this.overlay.hidden = true;
             }

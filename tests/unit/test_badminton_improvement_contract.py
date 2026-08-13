@@ -1,5 +1,7 @@
 import json
 import re
+import shutil
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -9,6 +11,7 @@ from main_routers import game_router, pages_router
 from main_routers.game_router import balance as gr_balance
 from main_routers.game_router import pregame as gr_pregame
 from main_routers.game_router import runtime as gr_runtime
+from tests.node_harness import run_node_script
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -197,7 +200,7 @@ def test_badminton_invite_character_request_uses_invited_lanlan_name():
     assert "var requestedLanlanName = String(window.__nekoBadmintonQueryLanlanName || '').trim();" in html
     assert "characterPath += '?lanlan_name=' + encodeURIComponent(requestedLanlanName);" in html
     assert "var charResp = await fetch(characterPath);" in html
-    assert "var live2dPath = charData.live2d_path || '/static/yui-origin/yui-origin.model3.json';" in html
+    assert "var live2dPath = charData.live2d_path || '/static/yui-lolita/yui-lolita.model3.json';" in html
     assert "window.lanlan_config.model_type = 'live2d';" in html
     assert "window.lanlan_config.live3d_sub_type = '';" in html
     assert "await initLive2DAvatar(live2dPath);" in html
@@ -1451,6 +1454,56 @@ def test_badminton_pregame_context_normalize_and_prompt_injection():
 
 
 @pytest.mark.unit
+def test_badminton_duel_difficulty_addendum_is_localized_per_full_locale():
+    """The addendum used to be an inline ``if lang == "zh"`` fork in
+    ``main_routers/game_router/balance.py``, so Traditional Chinese — and every
+    locale other than Chinese and English — fell through to the English branch.
+
+    Asserted on the getter, which is the layer that has to keep zh-CN and zh-TW
+    apart. ``_normalize_prompt_lang`` (the short-locale scheme the rest of this
+    module's tables use) spells Simplified Chinese ``zh``, so routing this table
+    through it would miss its ``zh-CN`` row. Until issue #2500 step 2 it also
+    collapsed zh-TW, which would have left that entry unreachable while still
+    reading as compliant to the static ``check_prompt_zh_tw`` gate.
+    """
+    get = prompts_badminton.get_badminton_duel_difficulty_control_prompt
+
+    assert get("zh-TW") != get("zh-CN")
+    assert "對戰難度控制補充" in get("zh-TW")
+    assert "对战难度控制补充" in get("zh-CN") == get("zh")
+    for steam_code in ("tchinese", "zh-Hant", "zh-HK"):
+        assert get(steam_code) == get("zh-TW"), steam_code
+
+    # Every locale gets its own text; none silently rides the English branch.
+    rendered = {loc: get(loc) for loc in ("zh-CN", "zh-TW", "en", "ja", "ko", "ru", "es", "pt")}
+    assert len(set(rendered.values())) == len(rendered), "有 locale 拿到了别人的文案"
+
+    # Wire literals the runtime parses back out must survive translation.
+    for loc, text in rendered.items():
+        assert '"difficulty"' in text, loc
+        assert "max|lv2|lv3|lv4" in text, loc
+        assert "spectator" in text, loc
+        assert "balanceHint" in text, loc
+
+
+@pytest.mark.unit
+def test_badminton_duel_prompt_reaches_traditional_users_end_to_end():
+    """Guards the *other* collapse: the table can be perfect and still never be
+    reached, because ``session_pool`` used to pass ``char_info["user_language"]``
+    (already short-normalized to ``zh``) rather than ``user_language_full``.
+    """
+    prompt = gr_runtime._build_game_prompt(
+        "badminton",
+        "Neko",
+        "傲娇猫娘",
+        language="zh-TW",
+        mode="duel",
+    )
+    assert "對戰難度控制補充" in prompt
+    assert "对战难度控制补充" not in prompt
+
+
+@pytest.mark.unit
 def test_badminton_pregame_opening_line_keeps_spec_length_cap():
     context, invalid = gr_pregame._normalize_badminton_pregame_context(
         {
@@ -1630,7 +1683,7 @@ def test_badminton_route_start_pending_close_is_cancelled_by_dispose():
     dispose_section = html[html.index("function disposeBadmintonGame(reason) {"):html.index("function cycleTheme()", html.index("function disposeBadmintonGame(reason) {"))]
 
     assert "var routeStartPromise = null;" in html
-    assert "routeStartPromise = post('/route/start'" in start_route
+    assert "return post('/route/start'" in start_route
     assert "if (badmintonGameDisposed || sessionId !== routeSessionId || endedRoute || game.state === 'game_over')" in start_route
     assert "if (badmintonGameDisposed) return Promise.resolve({ ok: false, reason: 'disposed' });" in start_route
     assert "if (badmintonGameDisposed) return res;" in start_route
@@ -1641,6 +1694,125 @@ def test_badminton_route_start_pending_close_is_cancelled_by_dispose():
     assert "return endRoute(true);" in dispose_section
     assert "Promise.resolve(routeEndAfterStart).catch(function () {});" in dispose_section
     assert "badmintonGameDisposed = true;" in dispose_section
+
+
+@pytest.mark.unit
+def test_badminton_deferred_character_resolution_starts_only_active_requests():
+    node_path = shutil.which("node")
+    if not node_path:
+        pytest.skip("node is required for the badminton character race harness")
+
+    html = BADMINTON_TEMPLATE.read_text(encoding="utf-8")
+    quick_start = html.index("function loadGeneratedQuickLines() {")
+    quick_source = html[quick_start:html.index("var voiceArbiter =", quick_start)]
+    route_start = html.index("function startRoute() {")
+    route_source = html[
+        route_start:html.index("function startRouteAfterCharacterReady()", route_start)
+    ]
+    harness = textwrap.dedent(
+        r"""
+        const assert = require('node:assert/strict');
+        let badmintonGameDisposed = false;
+        let endedRoute = false;
+        let sessionId = 'session-1';
+        let currentMode = 'duel';
+        let currentMood = 'normal';
+        let currentThemeKey = 'default';
+        let routeStartPromise = null;
+        let routeActive = false;
+        let heartbeatTimer = 0;
+        let drainTimer = 0;
+        let generatedQuickLinesRequestSeq = 0;
+        let generatedQuickLines = {};
+        const debugMode = false;
+        const game = { state: 'ready', recordDistance: 0 };
+        const posts = [];
+        let characterPromise;
+
+        const loadLocalLeaderboard = () => ({ personal_best: null, recent_games: [] });
+        const getRouteLanlanName = () => 'Mimi';
+        const getDuelDifficultyName = () => 'normal';
+        const getConversationLanguagePayload = () => ({ render_language: 'en' });
+        const _badmintonGameMemoryPolicyPayload = () => ({});
+        const getRequestLanguage = () => 'en';
+        const normalizeRequestLanguagePrimary = (language) => language;
+        const loadBadmintonCharacter = () => characterPromise;
+        const post = (path, body, timeoutMs) => {
+          posts.push({ path, body, timeoutMs });
+          if (path === '/route/start') return Promise.resolve({ ok: false });
+          return Promise.resolve({ ok: true, lines: {} });
+        };
+
+        __QUICK_SOURCE__
+        __ROUTE_SOURCE__
+
+        function deferredCharacter() {
+          let resolve;
+          const promise = new Promise((done) => { resolve = done; });
+          return { promise, resolve };
+        }
+
+        (async () => {
+          let deferred = deferredCharacter();
+          characterPromise = deferred.promise;
+          const endedStart = startRoute();
+          endedRoute = true;
+          deferred.resolve('ja');
+          await endedStart;
+          assert.equal(posts.filter((call) => call.path === '/route/start').length, 0);
+
+          endedRoute = false;
+          game.state = 'ready';
+          deferred = deferredCharacter();
+          characterPromise = deferred.promise;
+          const gameOverStart = startRoute();
+          game.state = 'game_over';
+          deferred.resolve('ja');
+          await gameOverStart;
+          assert.equal(posts.filter((call) => call.path === '/route/start').length, 0);
+
+          game.state = 'ready';
+          badmintonGameDisposed = false;
+          deferred = deferredCharacter();
+          characterPromise = deferred.promise;
+          const quickLines = loadGeneratedQuickLines();
+          badmintonGameDisposed = true;
+          deferred.resolve('ja');
+          await quickLines;
+          assert.equal(posts.filter((call) => call.path === '/quick-lines').length, 0);
+
+          badmintonGameDisposed = false;
+          endedRoute = false;
+          game.state = 'ready';
+          deferred = deferredCharacter();
+          characterPromise = deferred.promise;
+          const activeStart = startRoute();
+          assert.equal(posts.filter((call) => call.path === '/route/start').length, 0);
+          deferred.resolve('ja');
+          await activeStart;
+          assert.equal(posts.filter((call) => call.path === '/route/start').length, 1);
+          assert.equal(routeStartPromise, null);
+          assert.equal(heartbeatTimer, 0);
+          assert.equal(drainTimer, 0);
+          process.stdout.write('ok');
+        })().catch((error) => {
+          process.stderr.write(error && error.stack ? error.stack : String(error));
+          process.exitCode = 1;
+        });
+        """
+    ).replace("__QUICK_SOURCE__", quick_source).replace("__ROUTE_SOURCE__", route_source)
+
+    result = run_node_script(
+        node_path,
+        harness,
+        cwd=str(ROOT),
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout == "ok"
 
 
 @pytest.mark.unit
@@ -1843,8 +2015,11 @@ def test_badminton_chat_replies_are_ignored_after_session_or_mode_changes():
 @pytest.mark.unit
 def test_badminton_route_start_timeout_covers_backend_pregame_generation():
     html = BADMINTON_TEMPLATE.read_text(encoding="utf-8")
+    start = html.index("function startRoute() {")
+    section = html[start:html.index("function startRouteAfterCharacterReady()", start)]
 
-    assert "_badmintonGameMemoryPolicyPayload()), 22000).then(function (res) {" in html
+    assert "return post('/route/start'" in section
+    assert "}, getConversationLanguagePayload(), _badmintonGameMemoryPolicyPayload()), 22000);" in section
 
 
 @pytest.mark.unit
@@ -2192,8 +2367,9 @@ def test_badminton_starts_route_after_character_resolution_before_avatar_loading
     assert "initNekoAvatar().finally(function () { startRoute(); });" not in html
     assert "var badmintonCharacterPromise = null;" in html
     assert "return badmintonCharacterPromise;" in html
-    assert "function startRouteAfterCharacterReady() {" in html
-    assert "return loadBadmintonCharacter().finally(function () { return startRoute(); });" in html
+    after_ready_start = html.index("function startRouteAfterCharacterReady() {")
+    after_ready = html[after_ready_start:html.index("function endRoute(", after_ready_start)]
+    assert "return startRoute();" in after_ready
     assert "var routeLanlanName = getRouteLanlanName();" in html
     assert "var routeSessionId = sessionId;" in html
     assert "lanlan_name: routeLanlanName" in html
@@ -2278,7 +2454,7 @@ def test_badminton_scene_uses_compact_avatars_and_net():
     assert "if (!senseiProbe.ok) throw new Error('Sensei VRM model missing: ' + SENSEI_VRM_PATH);" in html
     assert "loader.load(SENSEI_VRM_PATH, resolve, null, reject);" in html
     assert "manager.currentModel = { vrm: vrm, gltf: gltf, scene: vrm.scene, url: SENSEI_VRM_PATH };" in html
-    assert "await manager.playVRMAAnimation('/static/vrm/animation/wait03.vrma', {" in html
+    assert html.count("await manager.playVRMAAnimation('/static/vrm/animation/wait03.vrma.gz', {") == 2
     assert "isIdle: true" in html
     assert "playIdleAnimation" not in html
     assert "SENSEI_LIVE2D_PATH" not in html
@@ -2718,7 +2894,7 @@ def test_badminton_scene_uses_compact_avatars_and_net():
     assert "sweetSpot.clone().project(window.badmintonPlayerVrmManager.camera);" in html
     assert "clientX / Math.max(1, window.innerWidth) * BASE_W" in html
     assert "window.__badmintonPlayerRacketDebug = {" in html
-    assert "var live2dPath = charData.live2d_path || '/static/yui-origin/yui-origin.model3.json';" in html
+    assert "var live2dPath = charData.live2d_path || '/static/yui-lolita/yui-lolita.model3.json';" in html
     assert "window.lanlan_config.model_type = 'live2d';" in html
     assert "window.lanlan_config.live3d_sub_type = '';" in html
     assert "await initLive2DAvatar(live2dPath);" in html

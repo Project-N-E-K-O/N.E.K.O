@@ -134,3 +134,258 @@ def test_topic_signal_store_persists_runtime_retention_prune(tmp_path):
         for item in payload["characters"]["妮可"]
     ]
     assert texts == ["仍在窗口内的新证据"]
+
+
+# ── persistence failure handling (issue #2528) ────────────────────────────
+#
+# `_write_payload` returns False on any write error; `flush` used to answer
+# that with a fixed 1s `threading.Timer`, with no attempt cap and no backoff,
+# so a permanently unwritable state dir became one silent write attempt per
+# second forever. And `flush` is the atexit hook: a daemon Timer started there
+# can never fire, so the exit path was pretending to schedule a retry while
+# actually dropping the window silently.
+
+import contextlib
+import logging
+from unittest.mock import patch
+
+from main_logic.topic.signals import (
+    _PERSIST_MAX_RETRIES,
+    TopicSignalStore,
+)
+
+
+_SIGNALS_LOGGER = "N.E.K.O.Main.topic.signals"
+
+
+class _FakeTimer:
+    """Records (delay, fn) and never starts a thread.
+
+    Real timers are unusable here: the retry chain under test is exactly the
+    thing that would leak background threads into later tests, and driving the
+    chain by hand is the only way to observe the delay sequence.
+    """
+
+    def __init__(self, delay, fn, *args, **kwargs):
+        self.delay = float(delay)
+        self.fn = fn
+        self.daemon = False
+        self.started = False
+        self.cancelled = False
+
+    def start(self):
+        self.started = True
+
+    def cancel(self):
+        self.cancelled = True
+
+    def is_alive(self):
+        return self.started and not self.cancelled
+
+
+@contextlib.contextmanager
+def _fake_timers():
+    """Swap threading.Timer as seen by signals.py, collecting every instance."""
+    created: list[_FakeTimer] = []
+
+    def _make(delay, fn, *args, **kwargs):
+        timer = _FakeTimer(delay, fn, *args, **kwargs)
+        created.append(timer)
+        return timer
+
+    with patch("main_logic.topic.signals.threading.Timer", _make):
+        yield created
+
+
+@contextlib.contextmanager
+def _write_gate():
+    """Control whether atomic_write_json succeeds; ``gate['fail']`` toggles it."""
+    gate = {"fail": True, "writes": 0}
+
+    def _write(*_args, **_kwargs):
+        gate["writes"] += 1
+        if gate["fail"]:
+            raise OSError("simulated read-only state dir")
+
+    with patch("main_logic.topic.signals.atomic_write_json", side_effect=_write):
+        yield gate
+
+
+class _RecordSink(logging.Handler):
+    def __init__(self):
+        super().__init__(level=logging.DEBUG)
+        self.records: list[logging.LogRecord] = []
+
+    def emit(self, record):
+        self.records.append(record)
+
+    def at_least(self, level):
+        return [r for r in self.records if r.levelno >= level]
+
+
+@contextlib.contextmanager
+def _capture_logger(name: str):
+    """Attach a handler straight to the logger.
+
+    ``caplog`` relies on propagation to root, which this project's logging
+    setup breaks depending on import order (same note as
+    tests/unit/test_callback_instruction_origin.py).
+    """
+    log = logging.getLogger(name)
+    sink = _RecordSink()
+    prior = log.level
+    log.addHandler(sink)
+    log.setLevel(logging.DEBUG)
+    try:
+        yield sink
+    finally:
+        log.removeHandler(sink)
+        log.setLevel(prior)
+
+
+def _persistent_store(tmp_path, flush_delay=1.0):
+    # atexit.register 在这里会把 store 挂到解释器退出钩子上、污染整个测试进程。
+    with patch("main_logic.topic.signals.atexit.register"):
+        return TopicSignalStore(
+            min_user_turns_for_topic=1,
+            persistence_path=tmp_path / "state" / "topic_signals.json",
+            persistence_flush_delay_seconds=flush_delay,
+        )
+
+
+def _drive(created, *, start=0, limit=20):
+    """Fire recorded timers in order, up to a hard cap.
+
+    The cap is load-bearing: an unbounded retry chain would otherwise keep
+    appending work to this very loop and the test would hang instead of
+    failing.
+    """
+    idx = start
+    for _ in range(limit):
+        if idx >= len(created):
+            break
+        timer = created[idx]
+        idx += 1
+        timer.fn()
+
+
+def test_flush_retry_chain_is_bounded_with_exponential_backoff(tmp_path):
+    with _fake_timers() as created, _write_gate():
+        store = _persistent_store(tmp_path)
+        store.note_turn("neko", actor="user", text="我一直在想要不要换个城市")
+        # 第一个 timer 来自 _request_persist（delay=base），不是重试。
+        assert len(created) == 1 and created[0].delay == 1.0
+
+        _drive(created)
+
+    delays = [t.delay for t in created]
+    assert len(created) <= 1 + _PERSIST_MAX_RETRIES, delays
+    assert delays[1:] == [1.0, 2.0, 4.0, 8.0, 16.0], delays
+
+
+def test_backoff_delay_stops_growing_at_the_cap(tmp_path):
+    """The cap only bites once the configured flush delay is large enough.
+
+    A base of 1.0 cannot reach ``min()`` at all: 1/2/4/8/16 ends exactly on the
+    cap, so dropping the call changes nothing. This case configures the flush
+    delay to 5.0 so 20/40/80 are actually clamped back to 16 — without that the
+    last retry would land more than a minute out, which is no longer self-heal.
+    """
+    with _fake_timers() as created, _write_gate():
+        store = _persistent_store(tmp_path, flush_delay=5.0)
+        store.note_turn("neko", actor="user", text="我一直在想要不要换个城市")
+        assert len(created) == 1 and created[0].delay == 5.0
+
+        _drive(created)
+
+    delays = [t.delay for t in created]
+    assert len(created) == 1 + _PERSIST_MAX_RETRIES, delays
+    assert delays[1:] == [5.0, 10.0, 16.0, 16.0, 16.0], delays
+
+
+def test_zero_flush_delay_still_bounds_the_retry_chain(tmp_path):
+    """A zero debounce collapses the backoff but not the attempt budget.
+
+    ``persistence_flush_delay_seconds`` is only clamped at the bottom by
+    ``max(0.0, …)``, so a caller may configure 0 and turn the backoff into a
+    run of zero-delay timers. That is deliberately not floored — the chain is
+    bounded by ``_PERSIST_MAX_RETRIES`` either way, and a floor would be one
+    more knob that never fires on the production path.
+    """
+    with _fake_timers() as created, _write_gate() as gate:
+        store = _persistent_store(tmp_path, flush_delay=0.0)
+        store.note_turn("neko", actor="user", text="我一直在想要不要换个城市")
+        _drive(created)
+
+    assert [t.delay for t in created] == [0.0] * (1 + _PERSIST_MAX_RETRIES)
+    # 每个 timer 都真的试过写一次，不是空转。
+    assert gate["writes"] == 1 + _PERSIST_MAX_RETRIES
+
+
+def test_successful_write_resets_the_retry_budget(tmp_path):
+    with _fake_timers() as created, _write_gate() as gate:
+        store = _persistent_store(tmp_path)
+        store.note_turn("neko", actor="user", text="我一直在想要不要换个城市")
+        for _ in range(3):
+            created[-1].fn()
+        assert [t.delay for t in created] == [1.0, 1.0, 2.0, 4.0]
+
+        gate["fail"] = False
+        created[-1].fn()          # succeeds -> budget clears, no new timer
+        assert len(created) == 4
+
+        gate["fail"] = True
+        store.note_turn("neko", actor="user", text="另一条证据")
+        assert len(created) == 5  # _request_persist again
+        _drive(created, start=4)
+
+    delays_after_success = [t.delay for t in created[5:]]
+    assert delays_after_success == [1.0, 2.0, 4.0, 8.0, 16.0], delays_after_success
+
+
+def test_atexit_flush_does_not_schedule_a_timer_it_cannot_run(tmp_path):
+    with _fake_timers() as created, _write_gate():
+        store = _persistent_store(tmp_path)
+        store.note_turn("neko", actor="user", text="我一直在想要不要换个城市")
+        assert len(created) == 1
+
+        with _capture_logger(_SIGNALS_LOGGER) as sink:
+            store._atexit_flush()
+            # 退出中到来的 turn 也不该再排一个跑不了的 timer。
+            store.note_turn("neko", actor="user", text="退出途中还在说话")
+
+    assert len(created) == 1, [t.delay for t in created]
+    assert store._persist_timer is None
+    messages = [r.getMessage() for r in sink.at_least(logging.WARNING)]
+    assert any("at exit" in m and "lost" in m for m in messages), messages
+
+
+def test_atexit_registers_the_shutdown_wrapper_not_flush(tmp_path):
+    registered: list = []
+    with patch("main_logic.topic.signals.atexit.register", side_effect=registered.append):
+        TopicSignalStore(
+            min_user_turns_for_topic=1,
+            persistence_path=tmp_path / "state" / "topic_signals.json",
+            persistence_flush_delay_seconds=1.0,
+        )
+
+    assert len(registered) == 1
+    # 盯调用点本身：只测被调函数的行为，把注册改回 flush 的回归照样绿。
+    assert registered[0].__func__ is TopicSignalStore._atexit_flush
+
+
+def test_persistence_failure_is_visible_in_logs(tmp_path):
+    with _fake_timers() as created, _write_gate():
+        store = _persistent_store(tmp_path)
+        with _capture_logger(_SIGNALS_LOGGER) as sink:
+            store.note_turn("neko", actor="user", text="我一直在想要不要换个城市")
+            _drive(created)
+
+    attempts = [
+        r for r in sink.records
+        if r.levelno == logging.DEBUG and "write failed" in r.getMessage()
+    ]
+    assert len(attempts) == 1 + _PERSIST_MAX_RETRIES, len(attempts)
+    assert all(r.exc_info for r in attempts)
+    warnings = [r.getMessage() for r in sink.at_least(logging.WARNING)]
+    assert any("giving up" in m for m in warnings), warnings

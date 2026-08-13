@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import threading
 from pathlib import Path
@@ -112,6 +113,8 @@ def test_default_douyin_bridge_backend_is_the_only_bundled_binary_spec():
 
     assert backend.backend_id == "douyinlive"
     assert backend.executable_path.name == "douyinLive.exe"
+    assert backend.checksum_path is not None
+    assert backend.checksum_path.name == "CHECKSUMS.txt"
     assert backend.args_factory(18088) == ["--port", "18088", "--log-level", "warn"]
 
 
@@ -120,6 +123,7 @@ def test_douyin_embedded_bridge_supervisor_accepts_replaceable_backend(tmp_path:
         backend_id="replacement",
         executable_path=tmp_path / "replacement.exe",
         args_factory=lambda port: ["serve", "--listen", str(port)],
+        checksum_path=tmp_path / "CHECKSUMS.txt",
     )
     supervisor = DouyinEmbeddedBridgeSupervisor(backend=backend)
 
@@ -243,6 +247,11 @@ async def test_live_bridge_transport_resets_retry_budget_after_successful_reconn
 async def test_bridge_process_supervisor_starts_and_stops_bundled_executable(tmp_path: Path):
     executable = tmp_path / "douyinLive.exe"
     executable.write_bytes(b"fake exe")
+    checksum = tmp_path / "CHECKSUMS.txt"
+    checksum.write_text(
+        f"{hashlib.sha256(executable.read_bytes()).hexdigest()}  {executable.name}\n",
+        encoding="ascii",
+    )
     calls: list[dict[str, object]] = []
     cleaned: list[Path] = []
     fake_process = _FakeProcess()
@@ -254,6 +263,7 @@ async def test_bridge_process_supervisor_starts_and_stops_bundled_executable(tmp
     supervisor = BridgeProcessSupervisor(
         executable_path=executable,
         args_factory=lambda port: ["--port", str(port), "--log-level", "warn"],
+        checksum_path=checksum,
         process_factory=process_factory,
         port_factory=lambda: 18088,
         port_waiter=lambda port, timeout: port == 18088,
@@ -271,6 +281,47 @@ async def test_bridge_process_supervisor_starts_and_stops_bundled_executable(tmp
     assert fake_process.terminated is True
     assert fake_process.killed is False
     assert stopped.port == 18088
+
+
+@pytest.mark.parametrize(
+    ("manifest", "expected_error"),
+    [
+        (None, "bundled bridge checksum is missing"),
+        ("not-a-checksum  douyinLive.exe\n", "bundled bridge checksum is invalid"),
+        ("非 ASCII\n", "bundled bridge checksum is invalid"),
+        (f"{'0' * 64}  douyinLive.exe\n", "bundled bridge checksum mismatch"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_bridge_process_supervisor_rejects_unverified_executable(
+    tmp_path: Path,
+    manifest: str | None,
+    expected_error: str,
+):
+    executable = tmp_path / "douyinLive.exe"
+    executable.write_bytes(b"fake exe")
+    checksum = tmp_path / "CHECKSUMS.txt"
+    if manifest is not None:
+        checksum.write_text(manifest, encoding="utf-8")
+    process_calls = 0
+
+    def process_factory(*_args, **_kwargs):
+        nonlocal process_calls
+        process_calls += 1
+        return _FakeProcess()
+
+    supervisor = BridgeProcessSupervisor(
+        executable_path=executable,
+        args_factory=lambda port: ["--port", str(port)],
+        checksum_path=checksum,
+        process_factory=process_factory,
+    )
+
+    state = await supervisor.start()
+
+    assert state.ok is False
+    assert state.last_error == expected_error
+    assert process_calls == 0
 
 
 @pytest.mark.asyncio

@@ -72,12 +72,12 @@ Key fields:
   avatar_repeat_count
                     How many recent avatar_roast results were seen for avatar_repeat_uid.
   recent_*          Recent route counts for avatar_roast, danmaku_response, live_support_events, warmup_hosting, idle_hosting, and active_engagement.
-  recent_actual_*   Recent pushed route counts for avatar_roast, danmaku_response, live_support_events, warmup_hosting, idle_hosting, and active_engagement.
+  recent_actual_*   Compatibility field: recent host-handoff route counts for avatar_roast, danmaku_response, live_support_events, warmup_hosting, idle_hosting, and active_engagement.
   recent_total      Total recent result count in the hosted-ui context snapshot.
   recent_pushed / recent_dry_run / recent_skipped / recent_failed
-                    Recent result status counts, so route attempts are not mistaken for actual output.
+                    Recent result status counts; pushed means host handoff, not audible output.
   recent_signal_*
-                    Recent actual event-signal counts for danmaku_signal, gift_signal, and super_chat_signal.
+                    Recent handed-off event-signal counts for danmaku_signal, gift_signal, and super_chat_signal.
   recent_observed_signal_*
                     Recent observed event-signal counts across all statuses, including skipped signal-only events.
   recent_skipped_signal_*
@@ -126,11 +126,11 @@ Key fields:
   host_beat_family_bias
                     Alert name when recent idle-hosting beats overuse one content family.
   latest_spent_output_family
-                    Latest pushed NEKO output's spent-output family tags; dry_run/skipped results are ignored.
+                    Latest host-handoff text's spent-output family tags; dry_run/skipped results are ignored.
   recent_spent_output_family_*
-                    Recent pushed spent-output family counts, useful for spotting repeated old live bits such as rewards or audience prompts.
+                    Recent host-handoff spent-output family counts, useful for spotting repeated old live bits such as rewards or audience prompts.
   spent_output_family_bias
-                    Alert name when recent pushed NEKO outputs overuse one spent-output family.
+                    Alert name when recent host-handoff texts overuse one spent-output family.
   latest_trace_id   Latest Runtime Timeline trace id from live_explain or recent result.
   timeline_stage_* / timeline_status_* / timeline_route_* / timeline_reason_*
                     Compact privacy-safe Runtime Timeline nodes for the latest trace. Reasons are limited to known machine codes; unknown values are redacted.
@@ -139,11 +139,11 @@ Key fields:
                     Alert name for template-like "please interact / send danmaku / anyone here" output.
   host_beat_repeat  Alert name for repeated idle-hosting host beat material.
   proactive_in_engaged
-                    Alert name when the latest actual proactive output happened while live_state is engaged.
-  warmup_repeat     Alert name when warmup_hosting has more than one recent actual output.
+                    Alert name when the latest proactive host handoff happened while live_state is engaged.
+  warmup_repeat     Alert name when warmup_hosting has more than one recent host handoff.
   warmup_missing / idle_missing / active_missing / active_blocks_idle
                     Alert names for automatic-hosting gaps during solo-stream validation.
-                    *_missing means the director says a line is ready but recent results contain no such output yet.
+                    *_missing means the director says a line is ready but recent results contain no such host handoff yet.
                     active_blocks_idle means active engagement is still selected even though idle hosting is already eligible.
   test_isolation    Alert name for real-output solo-stream tests when readiness says the validation window is not isolated.
 "@

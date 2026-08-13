@@ -38,14 +38,16 @@ Memory Server は、メインサーバー、チャットランタイム、プロ
 | メソッド | パス | パラメーター | 応答 |
 |---|---|---|---|
 | `GET` | `/health` | なし | `{"app":"N.E.K.O","service":"memory","status":"ok","instance_id":"..."}` |
-| `POST` | `/release_character/{lanlan_name}` | パスのみ | キャラクターの SQLite ハンドルを解放後、`{"status":"success","character_name":"..."}`。不正な名前は元の HTTP エラーステータス、それ以外の失敗は `500` |
-| `POST` | `/reload` | なし | メモリコンポーネントを再構築してアトミックに交換。`{"status":"success","message":"..."}` または `status: "error"` |
+| `POST` | `/release_character/{lanlan_name}` | パスに加え、必須クエリ `derived_task_claim_token`（空でない文字列）と `derived_task_claim_generation`（整数）。任意の真偽値 `hold_derived_task_admission` は既定で `false` | 派生タスクを排出して SQLite ハンドルを解放後、`{"status":"success","character_name":"...","cancelled_derived_tasks":N,"derived_task_claim_token":"..."}`。claim パラメーター不足は `400`、撤回済みまたは再送された claim は `status: "cancelled"` と `409`、不正な名前は元の HTTP エラーステータス、それ以外の失敗は `500` |
+| `POST` | `/reload` | 任意の JSON オブジェクト。`resume_derived_task_names: string[]`、対応する非負整数の `resume_derived_task_generations`、または `release_derived_task_claims: {名前: token[]}` | メモリコンポーネントを再構築してアトミックに交換し、列挙された claim token だけを解放して identity generation を公開。`{"status":"success","message":"..."}` または `status: "error"` |
 | `POST` | `/shutdown` | なし | スタンドアロンプロセスで shutdown が有効なら `shutdown_signal_received`、無効なら `shutdown_disabled` |
 | `POST` | `/internal/storage/startup/continue` | 任意の `{"reason":"..."}` | ストレージ準備完了後に limited mode を解除: `{"ok":true,"initialized":true|false}`。まだブロック中なら `409` |
 | `POST` | `/internal/storage/startup/block` | 任意の `{"reason":"..."}` | 上流の起動失敗後に limited mode を復元: `{"ok":true,"limited_mode":true,"reason":"..."}` |
 | `POST` | `/internal/memory/reset_confirmed_at` | なし | Powerful Memory の `ON` → `OFF` 移行: `{"ok":true,"count":N}` または `{"ok":false,"error":"...","count":0}` |
 
 3 つの `/internal/*` エンドポイントは、メインプロセスと Memory Server プロセス間の制御プレーンです。ユーザー向け管理ルートとして公開しないでください。
+
+`/release_character` と `/reload` の claim フィールドも loopback のライフサイクル制御です。呼び出し側は操作ごとに opaque token を生成し、現在の recent identity generation を取得して、再試行と補償で同じ token を再利用する必要があります。release 成功後も claim は、`/reload` がその token を明示的に解放するか結果 identity を公開するまで有効です。公開時は古い generation の claim だけを削除し、公開 generation の並行 claim は保持します。リポジトリ内の呼び出し側は generation を独自に推測せず、character router の helper を使用してください。
 
 ## 会話永続化エンドポイント
 

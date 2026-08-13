@@ -263,13 +263,20 @@ def _prompt_lang_from_data(data: dict[str, Any]) -> str:
 
     ``keep_traditional=True`` because this module's dicts do carry 'zh-TW'
     templates — hence the hand-rolled Traditional branch this used to have on
-    top of ``_normalize_prompt_lang``, which collapses zh-TW to zh.
+    top of ``_normalize_prompt_lang``, which collapsed zh-TW to zh until issue
+    #2500 step 2.
 
     Note this is the one prompt-layer normalizer whose input can be a raw HTTP
     request body value (``i18n_language`` / ``language``), with no upstream
     normalize/whitelist gate, so it must tolerate arbitrary strings.
     """
-    raw = str(data.get("i18n_language") or data.get("language") or "zh-CN")
+    raw = str(
+        data.get("i18n_language")
+        or data.get("language")
+        or data.get("lang")
+        or data.get("render_language")
+        or "zh-CN"
+    )
     return normalize_prompt_locale(
         raw, default="zh", simplified="zh", keep_traditional=True
     )

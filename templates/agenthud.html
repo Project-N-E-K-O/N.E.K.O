@@ -56,7 +56,7 @@
 
         function applyAgentData(data) {
             if (window.AgentHUD && typeof window.AgentHUD.updateAgentTaskHUD === 'function') {
-                window.AgentHUD.showAgentTaskHUD();
+                window.AgentHUD.showAgentTaskHUD({ ignoreVisibilityPreference: true });
                 window.AgentHUD.updateAgentTaskHUD({
                     success: true,
                     tasks: data.tasks || [],

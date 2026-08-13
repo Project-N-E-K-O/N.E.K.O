@@ -19,6 +19,7 @@
 
     // ======================== 模块级变量 ========================
     let _musicDispatchId = 0;
+    let _queuedMusicDispatchCancel = null;
     let _reactMessageSeq = 0;
     let _userDisplayNamePromise = null;
 
@@ -532,7 +533,7 @@
         // 会返回 false，导致并发的第二次 dispatch 被放行，最终两首歌同时响。
         //
         // 注意：这是有意的不对称拦截 —— 仅 source==='proactive'（主动搭话）
-        // 的推荐会被当前播放拦下；用户主动搜索、插件 music_play_url、
+        // 的推荐会被当前播放拦下；插件 music_play_url、
         // [play_music:] 指令等（app-websocket.js 的 dispatchMusicPlay 调用不带
         // source 字段）仍允许直接切歌。用户/插件意图 > 被动推荐。
         if (options.source === 'proactive') {
@@ -574,11 +575,15 @@
                 var attempting = false;
                 var pollTimer = null;
                 var timeoutTimer = null;
+                var cancelQueuedDispatch = null;
 
                 var cleanup = function () {
                     if (pollTimer) clearInterval(pollTimer);
                     if (timeoutTimer) clearTimeout(timeoutTimer);
                     window.removeEventListener('music-ui-ready', retryPlay);
+                    if (_queuedMusicDispatchCancel === cancelQueuedDispatch) {
+                        _queuedMusicDispatchCancel = null;
+                    }
                 };
 
                 var finish = function (result) {
@@ -587,6 +592,12 @@
                     cleanup();
                     resolve(result);
                 };
+
+                cancelQueuedDispatch = function () {
+                    _musicDispatchId++;
+                    finish(musicDispatchResult(false, 'superseded', false));
+                };
+                _queuedMusicDispatchCancel = cancelQueuedDispatch;
 
                 var retryPlay = async function () {
                     if (settled || attempting) return;
@@ -620,6 +631,15 @@
                 window.addEventListener('music-ui-ready', retryPlay, { once: true });
             });
         }
+    };
+
+    window.cancelQueuedMusicDispatch = function () {
+        if (!_queuedMusicDispatchCancel) {
+            _musicDispatchId++;
+            return false;
+        }
+        _queuedMusicDispatchCancel();
+        return true;
     };
 
     window.dispatchMusicPlay = async function (trackInfo, options) {

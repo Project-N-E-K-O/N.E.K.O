@@ -19,7 +19,15 @@ from urllib.parse import quote, urlparse, urlunparse
 from websockets.asyncio.client import connect as websockets_connect
 
 _LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
-_PUBLIC_STATES = {"disconnected", "connecting", "connected", "receiving", "reconnecting", "unsupported"}
+_PUBLIC_STATES = {
+    "disconnected",
+    "auth_required",
+    "connecting",
+    "connected",
+    "receiving",
+    "reconnecting",
+    "unsupported",
+}
 _SENSITIVE_AUTH_RE = re.compile(r"(?i)\bauthorization\b\s*[:=]\s*[^,;]+")
 _SENSITIVE_TEXT_RE = re.compile(
     r"(?i)\b(?:"

@@ -32,6 +32,7 @@ from config.prompts.prompts_sys import (
     CONTEXT_SUMMARY_TASK_HEADER, CONTEXT_SUMMARY_TASK_FOOTER,
     CONTEXT_SUMMARY_EVENT_HEADER, CONTEXT_SUMMARY_EVENT_FOOTER,
     RESULT_PARSER_PHRASES,
+    normalize_sys_prompt_locale,
 )
 
 from ._shared import logger
@@ -145,12 +146,13 @@ def _build_callback_instruction(
     EventBus → callback boundary:
       - ``"task_result"`` — real task completion (agent_server._emit_task_result),
         e.g. Computer Use / Browser Use / plugin entry / MCP tool result.
-      - ``"event"`` — plugin push_message stream (proactive_bridge),
-        e.g. danmaku / gift / external notification.
+      - ``"event"`` — plugin push_message stream (proactive_bridge), or a
+        successful user-plugin entry result explicitly downgraded via the
+        host-validated ``result_kind="event"`` contract.
 
-    Plugin authors cannot set ``origin``; it is derived structurally from
-    which SDK method they called (``finish()`` vs ``push_message()``) by
-    way of the event_type the upstream producer emitted.
+    Plugin authors cannot set ``origin`` directly. The host derives it from
+    event_type and, only for successful user-plugin results, the validated
+    result-kind contract.
 
     Two axes (origin × passive) pick one of four outer templates:
 
@@ -171,10 +173,19 @@ def _build_callback_instruction(
     group can pick the right outer template and (for task_result+active)
     slot in the right status/action phrases. Event templates ignore
     status/action — the concept doesn't apply to passive event streams.
+    ``lang`` is normalized to a prompt-dict key *here* rather than at the call
+    sites. Every template this renders (SYSTEM_NOTIFICATION_*, SOURCE_DESCRIPTORS,
+    TASK_STATUS_PHRASES, ...) carries a ``zh-TW`` row, and ``_loc`` degrades a
+    stray tag (``zh_TW`` / ``zh-Hant`` / ``zh-CN``) *silently* to the Simplified
+    row — a wrong-script notification, not an error, so nothing downstream would
+    ever notice. Four call sites feed this function; normalizing once here is the
+    only shape a fifth one cannot get wrong (issue #2500).
     """
     if not callbacks:
         return ""
     from collections import OrderedDict
+
+    lang = normalize_sys_prompt_locale(lang)
 
     grouped: "OrderedDict[tuple, list]" = OrderedDict()
     for cb in callbacks:

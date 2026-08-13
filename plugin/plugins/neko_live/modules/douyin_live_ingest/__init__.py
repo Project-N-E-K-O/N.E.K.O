@@ -11,6 +11,7 @@ import time
 from typing import Any
 
 from ...core.contracts import LiveEvent, LiveRoomStatus, ViewerEvent
+from ...core.runtime_live_listener import schedule_unexpected_live_listener_stop
 from .._base import BaseModule
 from .bridge_plan import DouyinBridgeConnectionPlan
 from .event_model import (
@@ -34,7 +35,7 @@ from .transport_event import (
     DouyinTransportState,
     safe_transport_event_time,
 )
-from .webcast import DouyinWebcastInfo, fetch_webcast_info
+from .webcast import DouyinWebcastInfo as DouyinWebcastInfo, fetch_webcast_info
 
 
 _PUBLIC_STATES = {
@@ -292,6 +293,19 @@ class DouyinLiveIngestModule(BaseModule):
         sync_runtime_state = getattr(self.ctx, "_sync_douyin_listener_state", None)
         if callable(sync_runtime_state):
             sync_runtime_state(self._state)
+        if (
+            self._state in {"disconnected", "auth_required"}
+            and not self._stop_requested
+            and self.ctx is not None
+            and bool(getattr(self.ctx, "_accepting_live_events", False))
+            and self._owns_active_target()
+        ):
+            self._stop_requested = True
+            self._generation += 1
+            schedule_unexpected_live_listener_stop(
+                self.ctx,
+                connection_state="auth_required" if self._state == "auth_required" else "disconnected",
+            )
         event_type = _internal_event_type(state.last_event_type)
         if event_type != "unknown":
             self._mark_event_seen(event_type, safe_transport_event_time(state.last_event_at))

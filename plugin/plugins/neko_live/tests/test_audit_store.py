@@ -101,6 +101,36 @@ def test_audit_store_redacts_text_and_structured_secrets() -> None:
     assert event["detail"]["nested"]["uid"] == "42"
 
 
+def test_audit_store_redacts_assignment_style_authorization_values() -> None:
+    store = AuditStore()
+
+    store.record(
+        "provider_failure",
+        "authorization=Bearer AUTH-SECRET",
+        detail={"reason": "proxy_authorization=Basic PROXY-SECRET"},
+    )
+
+    event = store.recent(1)[0]
+    assert event["message"] == "[redacted]"
+    assert event["detail"]["reason"] == "[redacted]"
+    assert "AUTH-SECRET" not in repr(event)
+    assert "PROXY-SECRET" not in repr(event)
+
+
+def test_audit_store_redacts_python_mapping_style_secret_text() -> None:
+    store = AuditStore()
+
+    store.record(
+        "provider_failure",
+        "failed: {'token': 'TOKEN-SECRET', \"password\": \"PASSWORD-SECRET\"}",
+    )
+
+    message = store.recent(1)[0]["message"]
+    assert "TOKEN-SECRET" not in message
+    assert "PASSWORD-SECRET" not in message
+    assert "[redacted]" in message
+
+
 def test_audit_store_recursively_redacts_extended_sensitive_keys() -> None:
     store = AuditStore()
 

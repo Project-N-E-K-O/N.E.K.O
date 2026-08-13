@@ -694,6 +694,41 @@ async def test_openclaw_availability_loss_emits_after_disabling_flag(
 
 
 @pytest.mark.asyncio
+async def test_openclaw_availability_pending_failure_emits_terminal_snapshot(
+    agent_state_isolation, monkeypatch: pytest.MonkeyPatch
+):
+    """A first-open PENDING snapshot must be replaced without reopening the popup."""
+    srv = agent_state_isolation
+    emitted: list[str | None] = []
+
+    class _UnavailableOpenClaw:
+        def is_available(self):
+            return {"ready": False, "reasons": ["AGENT_CONNECTIVITY_FAILED"]}
+
+    async def _capture_emit(lanlan_name=None):
+        emitted.append(lanlan_name)
+
+    monkeypatch.setattr(srv.Modules, "openclaw", _UnavailableOpenClaw())
+    monkeypatch.setattr(srv, "_openclaw_pending", lambda: False)
+    monkeypatch.setattr(srv, "_emit_agent_status_update", _capture_emit)
+
+    srv.Modules.agent_flags["openclaw_enabled"] = False
+    srv.Modules.capability_cache["openclaw"] = {
+        "ready": False,
+        "reason": "AGENT_PRECHECK_PENDING",
+    }
+
+    status = await srv.openclaw_availability()
+
+    assert status == {"ready": False, "reasons": ["AGENT_CONNECTIVITY_FAILED"]}
+    assert srv.Modules.capability_cache["openclaw"] == {
+        "ready": False,
+        "reason": "AGENT_CONNECTIVITY_FAILED",
+    }
+    assert emitted == [None]
+
+
+@pytest.mark.asyncio
 async def test_gate_fail_preserves_user_plugin_enabled(
     agent_state_isolation, isolated_intent_store: Path
 ):

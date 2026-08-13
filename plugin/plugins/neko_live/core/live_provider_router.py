@@ -7,6 +7,7 @@ shape up to the documented read-only degraded states.
 
 from __future__ import annotations
 
+import inspect
 from typing import Any
 
 from .contracts import LiveRoomStatus, ViewerIdentity, normalize_live_platform, parse_room_id
@@ -17,7 +18,6 @@ try:
 except ImportError:
     def parse_twitch_room_ref(value: Any) -> Any:
         return type("ParsedTwitchRoomRef", (), {"ok": False, "room_ref": "", "message": "unsupported"})()
-
 
 class LiveProviderRouter:
     """Route live input calls to the selected platform provider."""
@@ -145,11 +145,20 @@ class LiveProviderRouter:
             return await lookup(int(normalized.get("room_id") or 0))
         return await lookup(str(normalized.get("room_ref") or ""))
 
-    async def resolve_identity(self, event: Any) -> ViewerIdentity:
+    async def resolve_identity(
+        self,
+        event: Any,
+        *,
+        fetch_avatar_image: bool = True,
+    ) -> ViewerIdentity:
         identity = self._identity()
         resolver = getattr(identity, "resolve", None)
         if callable(resolver):
-            return await resolver(event)
+            return await _resolve_identity(
+                resolver,
+                event,
+                fetch_avatar_image=fetch_avatar_image,
+            )
         return ViewerIdentity(uid=str(getattr(event, "uid", "") or ""), nickname=str(getattr(event, "nickname", "") or ""))
 
     def identity_step_id(self) -> str:
@@ -185,11 +194,20 @@ class _LegacyBilibiliIdentityProvider:
     def __init__(self, runtime: Any) -> None:
         self.runtime = runtime
 
-    async def resolve_identity(self, event: Any) -> ViewerIdentity:
+    async def resolve_identity(
+        self,
+        event: Any,
+        *,
+        fetch_avatar_image: bool = True,
+    ) -> ViewerIdentity:
         identity = getattr(self.runtime, "bili_identity", None)
         resolver = getattr(identity, "resolve", None)
         if callable(resolver):
-            return await resolver(event)
+            return await _resolve_identity(
+                resolver,
+                event,
+                fetch_avatar_image=fetch_avatar_image,
+            )
         return ViewerIdentity(uid=str(getattr(event, "uid", "") or ""), nickname=str(getattr(event, "nickname", "") or ""))
 
     def identity_step_id(self) -> str:
@@ -201,6 +219,31 @@ def identity_provider_for(runtime: Any) -> Any:
 
     provider = getattr(runtime, "live_provider", None)
     return provider if provider is not None else _LegacyBilibiliIdentityProvider(runtime)
+
+
+async def _resolve_identity(
+    resolver: Any,
+    event: Any,
+    *,
+    fetch_avatar_image: bool,
+) -> ViewerIdentity:
+    if fetch_avatar_image or not _accepts_keyword(resolver, "fetch_avatar_image"):
+        return await resolver(event)
+    return await resolver(event, fetch_avatar_image=False)
+
+
+def _accepts_keyword(callable_value: Any, name: str) -> bool:
+    try:
+        parameters = inspect.signature(callable_value).parameters
+    except (TypeError, ValueError):
+        return False
+    parameter = parameters.get(name)
+    if parameter is not None and parameter.kind is not inspect.Parameter.POSITIONAL_ONLY:
+        return True
+    return any(
+        item.kind is inspect.Parameter.VAR_KEYWORD
+        for item in parameters.values()
+    )
 
 
 def normalize_room_ref_for_platform(platform: Any, value: Any) -> dict[str, Any]:

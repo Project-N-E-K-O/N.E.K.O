@@ -164,6 +164,7 @@ def _group_drain_harness(post_scoped):
         logger=MagicMock(),
         permission_mgr=SimpleNamespace(get_nickname=lambda *a, **k: None),
         memory_bridge=SimpleNamespace(
+            speaker_account_id=lambda sid: f"qq:{str(sid or '').strip()}",
             post_scoped_memory_history=post_scoped,
             post_scoped_memory_history_batch=_batch_via_single,
             group_participant_subject=(
@@ -452,6 +453,10 @@ async def _drive_every_endpoint(bridge) -> None:
             },
             "speaker_label": "2046",
             "speaker_trust": 0.5,
+            "trust_signal_excluded_fact_identities": [[
+                "later-fact", "group_participant", "qq:7788:1001",
+                "group_participant:qq:7788:1001",
+            ]],
         }],
     )
 
@@ -487,6 +492,17 @@ async def test_memory_bridge_keeps_per_endpoint_timeouts_on_shared_client(
         ("internal/memory/Neko/scoped_history", 30.0),   # legacy 单发
         ("internal/memory/Neko/scoped_history", 30.0),   # segments 批
     ])
+    batch_payload = next(
+        kwargs["json"]
+        for _method, _url, kwargs in recorder.calls
+        if kwargs.get("json", {}).get("segments")
+    )
+    assert batch_payload["segments"][0][
+        "trust_signal_excluded_fact_identities"
+    ] == [[
+        "later-fact", "group_participant", "qq:7788:1001",
+        "group_participant:qq:7788:1001",
+    ]]
 
 
 @pytest.mark.asyncio
@@ -518,6 +534,65 @@ async def test_memory_bridge_uses_the_shared_internal_client(monkeypatch):
     # 插件侧没有任何自有 client 生命周期可言。
     assert not hasattr(bridge, "aclose")
     assert not hasattr(bridge_module, "httpx")
+
+
+@pytest.mark.asyncio
+async def test_qq_recall_forwards_process_prompt_locale(monkeypatch):
+    from plugin.plugins.qq_auto_reply.memory_bridge import QQMemoryBridge
+
+    recorder = _RecordingClient()
+    monkeypatch.setattr(QQMemoryBridge, "_client", staticmethod(lambda: recorder))
+    monkeypatch.setattr(
+        "utils.language_utils.get_global_language_full",
+        lambda: "zh-TW",
+    )
+
+    await QQMemoryBridge(
+        SimpleNamespace(logger=MagicMock())
+    ).query_relevant_memory("Neko", "查詢")
+
+    query_call = next(call for call in recorder.calls if "/query_memory/" in call[1])
+    assert query_call[2]["json"]["language"] == "zh-TW"
+
+
+@pytest.mark.asyncio
+async def test_qq_bootstrap_omits_process_fallback_locale(monkeypatch):
+    from plugin.plugins.qq_auto_reply.memory_bridge import QQMemoryBridge
+
+    recorder = _RecordingClient()
+    monkeypatch.setattr(QQMemoryBridge, "_client", staticmethod(lambda: recorder))
+    monkeypatch.setattr(
+        "utils.language_utils.get_global_language_full",
+        lambda: "zh-TW",
+    )
+
+    await QQMemoryBridge(
+        SimpleNamespace(logger=MagicMock())
+    ).fetch_bootstrap_memory("Neko")
+
+    bootstrap_call = next(
+        call for call in recorder.calls if "/new_dialog/" in call[1]
+    )
+    assert "params" not in bootstrap_call[2]
+
+
+@pytest.mark.asyncio
+async def test_qq_memory_writer_omits_process_fallback_locale(monkeypatch):
+    from plugin.plugins.qq_auto_reply.memory_bridge import QQMemoryBridge
+
+    recorder = _RecordingClient()
+    monkeypatch.setattr(QQMemoryBridge, "_client", staticmethod(lambda: recorder))
+    monkeypatch.setattr(
+        "utils.language_utils.get_global_language_full",
+        lambda: "zh-TW",
+    )
+
+    await QQMemoryBridge(
+        SimpleNamespace(logger=MagicMock())
+    ).post_memory_history("cache", "Neko", [{"role": "user"}])
+
+    cache_call = next(call for call in recorder.calls if "/cache/" in call[1])
+    assert "language" not in cache_call[2]["json"]
 
 
 @pytest.mark.asyncio
@@ -1306,22 +1381,17 @@ async def test_per_request_consent_check_is_opt_in():
 
 @pytest.mark.asyncio
 async def test_second_drain_wave_sees_an_opt_out_from_the_first():
-    """A sweep can be two waves; the second must not outrun the switch.
+    """A serial sweep must recheck consent before its next request.
 
-    Batching packs small buckets into one request (no second wave to
-    guard), so this scenario needs buckets near the hard limit: 150+150
-    exceeds the 200-message batch budget, forcing one bucket per batch —
-    eight batches through a four-slot semaphore, so the later wave starts
-    after the earlier requests returned — long enough for an opt-out to
-    land. Those buckets come back as failures and the snapshot return
-    then discards them fail-closed.
+    Large buckets force one sender per request.  The first request turns the
+    switch off; the globally ordered chain must observe that before attempting
+    the next sender.  Remaining snapshot buckets are then discarded fail-closed.
     """
     posted: list[str] = []
     first_wave_done = 0
 
     service, plugin, user_data, _locks = _group_drain_harness(None)
     quota = service.GROUP_MEMBER_MAX_PARTICIPANTS
-    concurrency = service.MEMBER_FLUSH_CONCURRENCY
     user_data["group_member_memory_messages"] = {
         str(7000 + i): [
             {"role": "user", "content": [{"type": "text", "text": "x"}]}
@@ -1334,8 +1404,8 @@ async def test_second_drain_wave_sees_an_opt_out_from_the_first():
         nonlocal first_wave_done
         posted.append((kwargs.get("subject") or {}).get("subject_id", ""))
         first_wave_done += 1
-        if first_wave_done == concurrency:
-            # 第一波刚跑完，用户关掉了成员记忆。
+        if first_wave_done == 1:
+            # 第一个请求刚完成，用户关掉了成员记忆。
             plugin._qq_settings["group_member_memory_enabled"] = False
         return {"status": "ok"}
 
@@ -1345,8 +1415,8 @@ async def test_second_drain_wave_sees_an_opt_out_from_the_first():
         service._drain_member_buckets("group:7788"), timeout=3.0,
     )
 
-    assert len(posted) == concurrency, (
-        "第二波在 opt-out 之后照样发了出去"
+    assert len(posted) == 1, (
+        "后续请求在 opt-out 之后照样发了出去"
     )
     # 撤销之后剩下的按 fail-closed 丢弃，没有回到队列。
     assert not (user_data.get("group_member_memory_messages") or {})

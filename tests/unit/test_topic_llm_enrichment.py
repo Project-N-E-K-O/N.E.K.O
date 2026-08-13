@@ -17,6 +17,57 @@ def test_select_lang_template_falls_back_zh_family_to_zh():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("lang", "marker", "forbidden"),
+    [
+        ("zh-TW", "對話回顧助手", "对话回顾助手"),
+        ("zh-CN", "对话回顾助手", "對話回顧助手"),
+    ],
+)
+async def test_call_open_threads_keeps_the_traditional_template_for_zh_tw(
+    monkeypatch, lang, marker, forbidden,
+):
+    """Traditional open-thread detection must get the Traditional template.
+
+    This is one of the few pipelines under config/prompts/ that already carries
+    the FULL locale today: service.py's _resolve_topic_hook_locale resolves with
+    format="full", _normalize_lang deliberately preserves 'zh-TW', and
+    _select_lang_template returns the row outright when it is present.
+
+    OPEN_THREADS_PROMPTS was the only table on that pipeline still missing a
+    'zh-TW' row before the issue #2500 backfill, so Traditional users kept
+    landing on the zh-* -> zh fallback and reading Simplified. Its sibling
+    TOPIC_CANDIDATE_PROMPTS has carried the equivalent assertion for a while --
+    see test_call_topic_candidates_uses_localized_prompt_for_supported_languages
+    below.
+
+    The reverse direction is pinned too: zh-CN must not start reading the
+    Traditional row. Asserting only "contains the Traditional marker" would let
+    a regression that collapses both rows into one copy pass unnoticed.
+    """
+    from main_logic.activity import llm_enrichment
+
+    captured = {}
+
+    async def fake_invoke(prompt, *, timeout, label):
+        assert label == 'open_threads'
+        captured['prompt'] = prompt
+        return '{"open_threads": []}'
+
+    monkeypatch.setattr(llm_enrichment, "_invoke_emotion_tier", fake_invoke)
+
+    threads = await llm_enrichment.call_open_threads(
+        user_msgs=[(0.0, "那个 bug 啊……")],
+        ai_msgs=[(1.0, "嗯？")],
+        lang=lang,
+    )
+
+    assert threads == []
+    assert marker in captured['prompt']
+    assert forbidden not in captured['prompt']
+
+
+@pytest.mark.asyncio
 async def test_derive_deep_search_query_parses_json_query(monkeypatch):
     from main_logic.activity import llm_enrichment
 

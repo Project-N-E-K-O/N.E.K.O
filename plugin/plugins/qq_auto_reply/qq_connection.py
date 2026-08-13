@@ -68,7 +68,7 @@ class QQConnectionBase(ABC):
 
     @abstractmethod
     async def send_group_image(
-        self, group_id: str, image_data: str, *, reply_message_id: str = "", at_user_id: str = ""
+        self, group_id: str, image_data: str, *, reply_message_id: str = "", at_user_id: str = "", sub_type: str = ""
     ) -> Optional[str]:
         """发送群聊图片"""
         ...
@@ -116,6 +116,14 @@ class QQConnectionBase(ABC):
     def receives_all_messages(self) -> bool:
         """是否接收群聊全部消息（开放平台仅 @bot）"""
         return True
+
+    def is_group_muted(self, group_id: str) -> bool:
+        """检查 bot 是否在该群被禁言（含全体禁言）。
+
+        NapCat 通过 OneBot notice 事件跟踪禁言状态；
+        开放平台不跟踪此状态，默认返回 False。
+        """
+        return False
 
     @property
     @abstractmethod

@@ -94,8 +94,66 @@
             });
         }
 
+        // The floating controls become visible before the return flow has
+        // finished resetting the hidden session buttons. Preserve a mic click
+        // made in that window and replay it after the return is complete.
+        let catReturnInProgress = false;
+        let floatingMicToggleGeneration = 0;
+
+        window.addEventListener('neko:cat-return-commit', () => {
+            catReturnInProgress = true;
+        });
+        window.addEventListener('neko:cat-return-complete', () => {
+            catReturnInProgress = false;
+        });
+        window.addEventListener('neko:cat-return-abort', () => {
+            catReturnInProgress = false;
+        });
+
+        function waitForCatReturnComplete(timeoutMs) {
+            if (!catReturnInProgress) {
+                return Promise.resolve(true);
+            }
+            return new Promise((resolve) => {
+                let settled = false;
+                let timeoutId = null;
+                const finish = (completed) => {
+                    if (settled) return;
+                    settled = true;
+                    if (timeoutId) clearTimeout(timeoutId);
+                    window.removeEventListener('neko:cat-return-complete', handleComplete);
+                    window.removeEventListener('neko:cat-return-abort', handleAbort);
+                    resolve(completed);
+                };
+                const handleComplete = () => finish(true);
+                const handleAbort = () => finish(false);
+                window.addEventListener('neko:cat-return-complete', handleComplete);
+                window.addEventListener('neko:cat-return-abort', handleAbort);
+                timeoutId = setTimeout(() => finish(false), timeoutMs);
+            });
+        }
+
+        function reconcileFloatingMicButtonState() {
+            const active = !!(I.S.isRecording || I.S.voiceStartPending || window.isMicStarting);
+            if (typeof window.syncFloatingMicButtonState === 'function') {
+                window.syncFloatingMicButtonState(active);
+            }
+            return active;
+        }
+
         window.addEventListener('live2d-mic-toggle', async (e) => {
+            const toggleGeneration = ++floatingMicToggleGeneration;
             if (e.detail.active) {
+                if (catReturnInProgress) {
+                    const returnCompleted = await waitForCatReturnComplete(15000);
+                    if (toggleGeneration !== floatingMicToggleGeneration) {
+                        return;
+                    }
+                    if (!returnCompleted) {
+                        reconcileFloatingMicButtonState();
+                        return;
+                    }
+                }
                 if (I.S.isRecording) {
                     // 已在录音：仅按需联动自动共享屏幕
                     if (voiceAutoScreenEnabled()) {
@@ -117,6 +175,13 @@
                     micButton.click();
                     await waitForVoiceRecordingReady(5000);
                 }
+                if (toggleGeneration !== floatingMicToggleGeneration) {
+                    return;
+                }
+                // Disabled native buttons silently reject click(). Reconcile
+                // the optimistic floating state so its screen-share shortcut
+                // cannot remain visible after a rejected or failed start.
+                reconcileFloatingMicButtonState();
                 // 仅当用户显式开启「语音时自动共享屏幕」才联动起屏；默认关 = 开麦只开麦。
                 if (I.S.isRecording && voiceAutoScreenEnabled()) {
                     await startScreenSharingFromVoiceButton();
@@ -205,12 +270,15 @@
             }, SOCIAL_OPEN_RELEASE_DELAY_MS);
         }
 
-        // 猫娘网络（社交平台）按钮：占用原 screen 槽位。
+        // 喵宇宙（社交平台）按钮：占用原 screen 槽位。
         // 从 /api/system/social/config 拿云端 base URL，从 /api/system/client-id 拿 device 身份。
         // Electron：window.open → setWindowOpenHandler 识别 social feed，以带 OS chrome 的内置
         // framed 子窗口打开（见 NEKO-PC pet-window-lifecycle）。浏览器：预开 about:blank 保手势。
         // Desktop OAuth 仍走系统浏览器（loopback 回调 + 文案提示在浏览器完成登录）。
         window.addEventListener('live2d-social-click', async () => {
+            if (window.nekoSocialUnlock && window.nekoSocialUnlock.isLocked()) {
+                return;
+            }
             if (shouldIgnoreSocialOpenRequest()) {
                 return;
             }
@@ -1233,6 +1301,8 @@
                     timestamp: Date.now()
                 }
             }));
+            let returnTerminalPublished = false;
+            try {
             const isReturningToPngtuber = (window.lanlan_config?.model_type || '').toLowerCase() === 'pngtuber';
             if (I.multiWindowReturnBallDragState) {
                 I.multiWindowReturnBallDragState.dragSessionToken += 1;
@@ -1703,8 +1773,20 @@
                     timestamp: Date.now()
                 }
             }));
+            returnTerminalPublished = true;
 
             console.log('[App] 请她回来完成，未自动开始会话，等待用户主动发起对话');
+            } finally {
+                if (!returnTerminalPublished) {
+                    window.dispatchEvent(new CustomEvent('neko:cat-return-abort', {
+                        detail: {
+                            source: event && event.type ? event.type : 'return-click',
+                            reason: 'return-incomplete',
+                            timestamp: Date.now()
+                        }
+                    }));
+                }
+            }
         };
 
         // 统一监听各模型类型的回来事件

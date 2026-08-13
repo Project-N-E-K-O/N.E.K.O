@@ -1,16 +1,48 @@
 import re
+import shutil
 import struct
 from pathlib import Path
 
 import pytest
+from tests.node_harness import run_node_stdin
 from tests.static_app_parts import read_js_parts
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 APP_UI_PATH = PROJECT_ROOT / "static" / "app" / "app-ui"
+APP_SETTINGS_PATH = PROJECT_ROOT / "static" / "app" / "app-settings.js"
+AVATAR_UI_POPUP_PATH = PROJECT_ROOT / "static" / "avatar" / "avatar-ui-popup.js"
 FORGE_DROP_OVERLAY_PATH = PROJECT_ROOT / "static" / "forge-drop-overlay.js"
+FORGE_AVATAR_REACTION_PATH = PROJECT_ROOT / "static" / "forge-avatar-reaction.js"
 FORGE_DROP_TOKENS_PATH = PROJECT_ROOT / "static" / "forge-drop-tokens.js"
 FORGE_SOUND_DIR = PROJECT_ROOT / "static" / "sounds" / "forge"
+
+
+def _extract_js_function(source: str, signature: str) -> str:
+    start = source.index(signature)
+    brace = source.index("{", start)
+    depth = 0
+    quote = None
+    escaped = False
+    for index in range(brace, len(source)):
+        char = source[index]
+        if quote:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+            continue
+        if char in ("'", '"', "`"):
+            quote = char
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return source[start:index + 1]
+    raise AssertionError(f"unterminated JavaScript function: {signature}")
 
 
 @pytest.mark.unit
@@ -184,16 +216,189 @@ def test_credit_drop_event_plays_forge_overlay_animation():
 
 
 @pytest.mark.unit
+def test_forge_drop_effects_can_be_disabled_without_hiding_credit_updates():
+    popup = AVATAR_UI_POPUP_PATH.read_text(encoding="utf-8")
+    settings = APP_SETTINGS_PATH.read_text(encoding="utf-8")
+    overlay = FORGE_DROP_OVERLAY_PATH.read_text(encoding="utf-8")
+    reaction = FORGE_AVATAR_REACTION_PATH.read_text(encoding="utf-8")
+
+    assert "settings.toggles.forgeDropEffects" in popup
+    assert "window.forgeDropEffectsEnabled = enabled;" in popup
+    assert "neko-forge-drop-effects-changed" in popup
+    assert "forgeDropEffectsEnabled: currentForgeDropEffects" in settings
+    assert "window.forgeDropEffectsEnabled = settings.forgeDropEffectsEnabled;" in settings
+    drop_handler = _extract_js_function(overlay, "function onCreditDropEvent(event)")
+    effects_handler = _extract_js_function(overlay, "function onDropEffectsChanged(event)")
+    reaction_handler = _extract_js_function(reaction, "function react(detail)")
+    play_one = _extract_js_function(overlay, "function playOne(payload)")
+    assert "if (window.forgeDropEffectsEnabled === false)" in drop_handler
+    assert "renderForgeBadge(detail.active_count, true);" in drop_handler
+    assert "audio.pause();" in effects_handler
+    assert reaction_handler.index(
+        "if (window.forgeDropEffectsEnabled === false) return;"
+    ) < reaction_handler.index("var now = Date.now();")
+    assert "renderForgeBadge(active, true);" in play_one
+    assert "playGeneration !== dropEffectsGeneration" in play_one
+    # 关闭效果的入口分支同样要按 revision 守卫，否则队尾券会用陈旧
+    # active_count 覆盖权威刷新写过的角标。
+    disabled_entry = play_one[play_one.index("if (window.forgeDropEffectsEnabled === false)"):]
+    disabled_entry = disabled_entry[: disabled_entry.index("resolve();")]
+    assert "payloadRevision === creditStateRevision" in disabled_entry
+    assert "renderForgeBadge(payload.active_count, true);" in disabled_entry
+
+    for locale in ("en", "ja", "ko", "zh-CN", "zh-TW", "ru", "pt", "es"):
+        locale_source = (PROJECT_ROOT / "static" / "locales" / f"{locale}.json").read_text(
+            encoding="utf-8"
+        )
+        assert '"forgeDropEffects"' in locale_source
+
+
+@pytest.mark.unit
+def test_credit_drop_avatar_bounds_and_clamp_execute_for_each_model_type():
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node not found")
+    overlay = FORGE_DROP_OVERLAY_PATH.read_text(encoding="utf-8")
+    functions = "\n".join(
+        _extract_js_function(overlay, signature)
+        for signature in (
+            "function normalizeAvatarBounds(bounds)",
+            "function getActiveAvatarBounds()",
+            "function clampCardCoordinate(value, size, viewportSize, margin)",
+        )
+    )
+    script = f"""
+const assert = require('node:assert/strict');
+global.window = {{}};
+let pngBounds = null;
+global.document = {{
+  querySelector() {{
+    return pngBounds ? {{ getBoundingClientRect: () => pngBounds }} : null;
+  }}
+}};
+{functions}
+const bounds = (left) => ({{ left, top: 20, right: left + 100, bottom: 220 }});
+const manager = (left) => ({{ getModelScreenBounds: () => bounds(left) }});
+window.live2dManager = manager(10);
+window.vrmManager = manager(110);
+window.mmdManager = manager(210);
+
+window.lanlan_config = {{ model_type: 'live2d' }};
+assert.equal(getActiveAvatarBounds().left, 10);
+window.lanlan_config = {{ model_type: 'live3d', live3d_sub_type: 'vrm' }};
+assert.equal(getActiveAvatarBounds().left, 110);
+window.lanlan_config = {{ model_type: 'live3d', live3d_sub_type: 'mmd' }};
+assert.equal(getActiveAvatarBounds().left, 210);
+pngBounds = bounds(310);
+window.lanlan_config = {{ model_type: 'pngtuber' }};
+assert.equal(getActiveAvatarBounds().left, 310);
+
+window.live2dManager = null;
+window.vrmManager = null;
+window.mmdManager = null;
+window.lanlan_config = {{ model_type: 'unknown' }};
+assert.equal(getActiveAvatarBounds().left, 310);
+pngBounds = null;
+assert.equal(getActiveAvatarBounds(), null);
+assert.equal(clampCardCoordinate(-50, 180, 160, 12), 0);
+assert.equal(clampCardCoordinate(999, 80, 160, 12), 80);
+"""
+    result = run_node_stdin(node, script, capture_output=True, check=False)
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.unit
+def test_only_low_rarity_drops_anchor_to_avatar_lower_right():
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node not found")
+    overlay = FORGE_DROP_OVERLAY_PATH.read_text(encoding="utf-8")
+    constants = "\n".join(
+        line.strip()
+        for line in overlay.splitlines()
+        if re.match(
+            r"\s*var (AVATAR_ANCHORED_RARITIES|ANCHOR_CARD_MAX_W|ANCHOR_CARD_MIN_W"
+            r"|CENTER_CARD_MAX_W|CARD_MARGIN|CARD_ASPECT) =",
+            line,
+        )
+    )
+    functions = "\n".join(
+        _extract_js_function(overlay, signature)
+        for signature in (
+            "function clampCardCoordinate(value, size, viewportSize, margin)",
+            "function shouldAnchorToAvatar(rarity)",
+            "function resolveCardWidth(rarity, avatarBounds)",
+            "function getCardPlacement(cardWidth, cardHeight, avatarBounds)",
+        )
+    )
+    script = f"""
+const assert = require('node:assert/strict');
+global.window = {{ innerWidth: 1200, innerHeight: 800 }};
+{constants}
+{functions}
+const avatar = {{ left: 300, top: 100, right: 700, bottom: 620, width: 400, height: 520 }};
+
+// N/R：贴角色右下方，卡宽跟随模型（400 * 0.55 = 220，落在 180–280 之间）。
+for (const rarity of ['N', 'R']) {{
+  assert.equal(shouldAnchorToAvatar(rarity), true, rarity);
+  const width = resolveCardWidth(rarity, avatar);
+  assert.ok(Math.abs(width - 220) < 1e-6, `${{rarity}} width=${{width}}`);
+  const height = Math.round(width / CARD_ASPECT);
+  const placement = getCardPlacement(width, height, avatar);
+  assert.equal(placement.left, Math.round(avatar.right - width * 0.18), rarity);
+  assert.ok(placement.left > avatar.left, rarity);
+  assert.ok(placement.top + height <= avatar.bottom, rarity);
+}}
+
+// SR 及以上：保持屏幕中央的原始大卡演出，且不随模型边界漂移。
+for (const rarity of ['SR', 'SSR', 'UR']) {{
+  assert.equal(shouldAnchorToAvatar(rarity), false, rarity);
+  const width = resolveCardWidth(rarity, avatar);
+  assert.equal(width, 360, rarity);
+  const height = Math.round(width / CARD_ASPECT);
+  const placement = getCardPlacement(width, height, null);
+  assert.equal(placement.left, Math.round(window.innerWidth * 0.5 - width / 2), rarity);
+  assert.equal(placement.top, Math.round(window.innerHeight * 0.42 - height / 2), rarity);
+}}
+
+// 窄窗口下两档都不越界。
+window.innerWidth = 240;
+assert.equal(resolveCardWidth('N', avatar), 216);
+assert.equal(resolveCardWidth('UR', avatar), 216);
+"""
+    result = run_node_stdin(node, script, capture_output=True, check=False)
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.unit
 def test_credit_drop_uses_yui_ticket_art_for_every_drop_rarity():
     overlay = FORGE_DROP_OVERLAY_PATH.read_text(encoding="utf-8")
     tokens = FORGE_DROP_TOKENS_PATH.read_text(encoding="utf-8")
 
     assert "ticketArt.className = 'ticket-art';" in overlay
     assert "t.ticketPath(rarity)" in overlay
-    assert "var CARD_MAX_W = 360;" in overlay
+    assert "var ANCHOR_CARD_MAX_W = 280;" in overlay
+    assert "var ANCHOR_CARD_MIN_W = 180;" in overlay
+    assert "var CENTER_CARD_MAX_W = 360;" in overlay
     assert "var CARD_MARGIN = 12;" in overlay
     assert "var CARD_ASPECT = 1192 / 445;" in overlay
+    assert "var AVATAR_ANCHORED_RARITIES = { N: true, R: true };" in overlay
     assert "window.innerWidth - CARD_MARGIN * 2" in overlay
+    # SR 及以上不读模型边界，直接走屏幕中央兜底路径。
+    assert (
+        "var avatarBounds = shouldAnchorToAvatar(rarity) ? getActiveAvatarBounds() : null;"
+        in overlay
+    )
+    assert "var CARD_W = resolveCardWidth(rarity, avatarBounds);" in overlay
+    assert "function getActiveAvatarBounds()" in overlay
+    assert "live3dSubType === 'mmd' ? managers.mmd : managers.vrm" in overlay
+    assert "live3dSubType === 'mmd' ? managers.vrm : managers.mmd" in overlay
+    assert "manager.getModelScreenBounds()" in overlay
+    assert "var availableWidth = Math.max(1, window.innerWidth - CARD_MARGIN * 2);" in overlay
+    assert "function clampCardCoordinate(value, size, viewportSize, margin)" in overlay
+    assert "function getCardPlacement(cardWidth, cardHeight, avatarBounds)" in overlay
+    assert "avatarBounds.right - overlapX" in overlay
+    assert "avatarBounds.bottom - cardHeight - liftY" in overlay
     assert "ticketAuraArt.className = 'ticket-aura-art';" in overlay
     assert "spark.textContent" not in overlay
     assert "className = 'rk'" not in overlay

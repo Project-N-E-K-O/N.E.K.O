@@ -15,11 +15,10 @@ from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 from urllib.parse import urlsplit
 
-from utils.http.aiohttp_proxy import aiohttp_session_kwargs_for_url
-
 
 CredentialProvider = Callable[[], Awaitable[dict[str, Any] | None]]
 CredentialSaver = Callable[[dict[str, Any]], Awaitable[bool]]
+CredentialDeleter = Callable[[], Awaitable[list[str]]]
 CredentialReloader = Callable[[], Awaitable[None]]
 RequestJson = Callable[..., Awaitable[tuple[int, dict[str, Any]]]]
 
@@ -28,6 +27,17 @@ _TOKEN_URL = "https://id.twitch.tv/oauth2/token"
 _VALIDATE_URL = "https://id.twitch.tv/oauth2/validate"
 _SCOPES = ("user:read:chat",)
 _CLIENT_ID_RE = re.compile(r"^[A-Za-z0-9]{8,80}$")
+_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
+
+def aiohttp_session_kwargs_for_url(url: str) -> dict[str, object]:
+    """Use environment proxies for external OAuth without host-source imports."""
+
+    try:
+        host = (urlsplit(url).hostname or "").strip().lower()
+    except Exception:
+        host = ""
+    return {"trust_env": host not in _LOOPBACK_HOSTS}
 
 
 @dataclass(slots=True)
@@ -50,6 +60,7 @@ class TwitchAuthService:
         logger: Any = None,
         credential_provider: CredentialProvider,
         credential_saver: CredentialSaver,
+        credential_deleter: CredentialDeleter,
         credential_reloader: CredentialReloader,
         request_json: RequestJson | None = None,
         clock: Callable[[], float] = time.time,
@@ -57,11 +68,14 @@ class TwitchAuthService:
         self.logger = logger
         self._credential_provider = credential_provider
         self._credential_saver = credential_saver
+        self._credential_deleter = credential_deleter
         self._credential_reloader = credential_reloader
         self._request_json = request_json or _request_json
         self._clock = clock
         self._device_session: _DeviceSession | None = None
         self._device_authorization_lock = asyncio.Lock()
+        self._credential_mutation_lock = asyncio.Lock()
+        self._credential_generation = 0
 
     async def start_device_authorization(self, client_id: Any) -> dict[str, Any]:
         async with self._device_authorization_lock:
@@ -211,6 +225,7 @@ class TwitchAuthService:
         if self._clock() >= session.expires_at:
             self._device_session = None
             return _error("twitch device authorization expired")
+        credential_generation = await self._credential_generation_snapshot()
         status, data = await self._request(
             "POST",
             _TOKEN_URL,
@@ -240,10 +255,13 @@ class TwitchAuthService:
         if credential is None:
             self._device_session = None
             return _error("twitch access token validation failed")
-        if not await self._credential_saver(credential):
+        commit = await self._commit_credential(credential, credential_generation)
+        if commit == "superseded":
+            self._device_session = None
+            return _error("twitch authorization was superseded")
+        if commit != "saved":
             self._device_session = None
             return _error("twitch credential save failed")
-        await self._credential_reloader()
         self._device_session = None
         return _public_status(credential, refreshed=False)
 
@@ -251,12 +269,14 @@ class TwitchAuthService:
         normalized_client_id = _client_id(client_id)
         if not normalized_client_id:
             return _error("invalid twitch client id")
-        current = await self._credential_provider()
+        credential_generation, current = await self._credential_snapshot()
         access_token = _secret(current, "access_token")
         if not access_token:
             return _error("twitch authorization is required")
         validated = await self._validate_token(access_token, normalized_client_id)
         if validated is not None:
+            if not await self._credential_generation_is_current(credential_generation):
+                return _error("twitch credential validation was superseded")
             merged = _merge_validated(current or {}, validated, clock=self._clock())
             return _public_status(merged, refreshed=False)
         refresh_token = _secret(current, "refresh_token")
@@ -276,10 +296,41 @@ class TwitchAuthService:
         refreshed = await self._validated_credential(normalized_client_id, token_data)
         if refreshed is None:
             return _error("twitch refreshed token validation failed")
-        if not await self._credential_saver(refreshed):
+        commit = await self._commit_credential(refreshed, credential_generation)
+        if commit == "superseded":
+            return _error("twitch credential validation was superseded")
+        if commit != "saved":
             return _error("twitch credential save failed")
-        await self._credential_reloader()
         return _public_status(refreshed, refreshed=True)
+
+    async def delete_credential(self) -> list[str]:
+        """Revoke older credential work, then delete the encrypted credential."""
+
+        async with self._credential_mutation_lock:
+            self._credential_generation += 1
+            return await self._credential_deleter()
+
+    async def _credential_snapshot(self) -> tuple[int, dict[str, Any] | None]:
+        async with self._credential_mutation_lock:
+            return self._credential_generation, await self._credential_provider()
+
+    async def _credential_generation_snapshot(self) -> int:
+        async with self._credential_mutation_lock:
+            return self._credential_generation
+
+    async def _credential_generation_is_current(self, generation: int) -> bool:
+        async with self._credential_mutation_lock:
+            return generation == self._credential_generation
+
+    async def _commit_credential(self, credential: dict[str, Any], generation: int) -> str:
+        async with self._credential_mutation_lock:
+            if generation != self._credential_generation:
+                return "superseded"
+            if not await self._credential_saver(credential):
+                return "failed"
+            self._credential_generation += 1
+            await self._credential_reloader()
+            return "saved"
 
     async def _validated_credential(self, client_id: str, token_data: dict[str, Any]) -> dict[str, Any] | None:
         access_token = _secret(token_data, "access_token")

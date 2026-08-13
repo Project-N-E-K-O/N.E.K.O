@@ -21,6 +21,7 @@ from ._shared import (
     Optional,
     asyncio,
     logger,
+    response_arbiter_fail_open_enabled,
     time,
     uuid,
 )
@@ -28,6 +29,7 @@ from ._shared import (
 from config.prompts.prompts_proactive import (
     REALTIME_PROACTIVE_GENERAL_TRIGGER_PROMPTS,
     REALTIME_PROACTIVE_VISION_TRIGGER_PROMPTS,
+    normalize_proactive_prompt_locale,
 )
 from config.prompts.prompts_sys import _loc
 
@@ -44,7 +46,7 @@ _PROACTIVE_TICKET_CANCEL_OBSERVE_TIMEOUT_SECONDS = 0.5
 
 
 def _proactive_text_instruction(language: str, *, has_vision: bool) -> str:
-    lang = (language or "en").strip().lower().replace("_", "-").split("-", 1)[0]
+    lang = normalize_proactive_prompt_locale(language or "en")
     prompts = (
         REALTIME_PROACTIVE_VISION_TRIGGER_PROMPTS
         if has_vision
@@ -60,6 +62,8 @@ class _ResponseMixin:
             arbiter = RealtimeResponseArbiter(
                 self.send_event,
                 abort_transport=getattr(self, "_abort_failed_transport", None),
+                fail_open=response_arbiter_fail_open_enabled(),
+                on_stuck_release=getattr(self, "_on_arbiter_stuck_release", None),
             )
             self._response_arbiter = arbiter
         return arbiter

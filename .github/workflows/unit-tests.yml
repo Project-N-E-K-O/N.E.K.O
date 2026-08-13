@@ -75,6 +75,12 @@ jobs:
         # fails if this pin and the lock ever drift apart.
         run: uv pip install pyclipper==1.4.0
 
+      - name: Install CAM++ frontend parity oracle
+        # Test-only reference implementation. It is intentionally absent from
+        # product dependencies; the unit gate installs a fixed version so the
+        # CAM++ frontend parity test cannot silently importorskip in CI.
+        run: uv pip install kaldi-native-fbank==1.22.3
+
       - name: Run unit test suite
         # Separate pytest process from plugin/tests, which carries its own
         # pytest.ini.

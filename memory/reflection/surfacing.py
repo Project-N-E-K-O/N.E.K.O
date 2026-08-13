@@ -369,7 +369,10 @@ class SurfacingMixin:
 
     async def _check_feedback_locked(self, lanlan_name: str, user_messages: list[str]) -> list[dict] | None:
         from config.prompts.prompts_memory import get_reflection_feedback_prompt
-        from utils.language_utils import get_global_language
+        from utils.language_utils import (
+            detect_prompt_language_with_ascii_fallback,
+            get_global_language_full,
+        )
         from utils.llm_client import create_chat_llm_async
 
         surfaced = await self.aload_surfaced(lanlan_name)
@@ -382,7 +385,12 @@ class SurfacingMixin:
         )
         messages_text = "\n".join(user_messages)
 
-        prompt = get_reflection_feedback_prompt(get_global_language()).format(
+        prompt = get_reflection_feedback_prompt(
+            detect_prompt_language_with_ascii_fallback(
+                messages_text,
+                ui_language=get_global_language_full(),
+            )
+        ).format(
             reflections=reflections_text,
             messages=messages_text,
         )
@@ -438,7 +446,10 @@ class SurfacingMixin:
         Returns None on LLM/processing failure (same convention as check_feedback).
         """
         from config.prompts.prompts_memory import get_reflection_feedback_prompt
-        from utils.language_utils import get_global_language
+        from utils.language_utils import (
+            detect_prompt_language_with_ascii_fallback,
+            get_global_language_full,
+        )
         from utils.llm_client import create_chat_llm_async
 
         if not confirmed or not user_messages:
@@ -449,7 +460,12 @@ class SurfacingMixin:
         )
         messages_text = "\n".join(user_messages)
 
-        prompt = get_reflection_feedback_prompt(get_global_language()).format(
+        prompt = get_reflection_feedback_prompt(
+            detect_prompt_language_with_ascii_fallback(
+                messages_text,
+                ui_language=get_global_language_full(),
+            )
+        ).format(
             reflections=reflections_text,
             messages=messages_text,
         )

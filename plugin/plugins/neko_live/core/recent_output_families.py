@@ -141,7 +141,12 @@ def _spent_output_family_token_matches(
 
 
 def spent_output_text(result: dict[str, Any]) -> str:
-    """Return real text NEKO said, excluding synthetic dispatcher markers."""
+    """Return non-synthetic text handed to the host.
+
+    ``pushed`` is not audible-completion evidence. Treating this text as spent
+    is deliberately conservative: an interrupted line should not immediately
+    reappear as the next hosting beat.
+    """
     if str(result.get("status") or "") != "pushed":
         return ""
     output = str(result.get("output") or "").strip()

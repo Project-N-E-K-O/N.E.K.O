@@ -1288,16 +1288,29 @@ async def test_activity_tracker_can_start_topic_heartbeat_without_collector():
     assert isinstance(result[0], asyncio.CancelledError)
 
 
-def test_activity_tracker_topic_candidate_heartbeat_uses_full_global_locale():
+def test_activity_tracker_heartbeat_never_reads_the_short_locale():
+    """Neither heartbeat consumer may go back to the short accessor.
+
+    Both the topic pool and (since #2500 step 2) the activity narration take
+    the full locale, so the loop's own non-privacy path must not name
+    ``get_global_language`` at all — a re-introduced short read would
+    silently collapse zh-TW to zh again. The values that actually reach the
+    two consumers are pinned behaviourally in
+    ``tests/unit/test_zh_tw_locale_call_sites.py``.
+    """
     from main_logic.activity.tracker import UserActivityTracker
 
     source = inspect.getsource(UserActivityTracker._activity_guess_loop)
+    # The privacy-mode early-continue above keeps its own short fallback, so
+    # look only at the main body below it.
+    main_body = source.split("if _privacy_mode_active():", 1)[-1]
+    main_body = main_body.split("continue", 1)[-1]
 
-    assert "from utils.language_utils import get_global_language, get_global_language_full" in source
-    assert "activity_lang = get_global_language() or 'en'" in source
-    assert "topic_lang = get_global_language_full() or activity_lang" in source
-    assert "self._process_topic_candidates_if_ready(lang=topic_lang, now=ts)" in source
-    assert "lang=activity_lang" in source
+    assert "get_global_language()" not in main_body
+    assert "activity_lang = get_global_language_full() or 'en'" in main_body
+    assert "topic_lang = activity_lang" in main_body
+    assert "self._process_topic_candidates_if_ready(lang=topic_lang, now=ts)" in main_body
+    assert "lang=activity_lang" in main_body
 
 
 @pytest.mark.asyncio
@@ -2432,3 +2445,56 @@ async def test_deepen_material_idempotent_and_respects_disable(monkeypatch):
     assert derive_calls == [1]
     assert len(enrich_calls) == 2
     assert m2["deep_search_done"] is True
+
+
+# ── used-topic persistence failure visibility (issue #2528) ──────────────
+#
+# `_persist_used_topics` deliberately neither retries nor re-raises: losing
+# one restart's worth of used-topic history only risks re-offering the same
+# topic once, whereas raising would kill topic delivery outright on a
+# read-only disk. But it logged at DEBUG, i.e. invisible at the production
+# default of INFO, so a permanently unwritable state dir could not be
+# diagnosed at all.
+
+
+def test_used_topics_persist_failure_is_visible(tmp_path):
+    import logging
+    from unittest.mock import patch
+
+    class _Sink(logging.Handler):
+        def __init__(self):
+            super().__init__(level=logging.DEBUG)
+            self.records = []
+
+        def emit(self, record):
+            self.records.append(record)
+
+    pool = TopicHookPool(
+        auto_schedule=False,
+        min_user_turns_for_topic=1,
+        signal_store_path=tmp_path / "state" / "topic_signals.json",
+    )
+    assert pool._used_topics_path is not None
+    with pool._used_topics_lock:
+        pool._used_topics["妮可"].append({
+            "used_at": time.time(), "hook_id_hash": "h", "interest_hash": "i",
+        })
+
+    log = logging.getLogger("N.E.K.O.Main.topic.pipeline")
+    sink = _Sink()
+    prior = log.level
+    log.addHandler(sink)
+    log.setLevel(logging.DEBUG)
+    try:
+        with patch("main_logic.topic.pipeline.atomic_write_json",
+                   side_effect=OSError("simulated read-only state dir")):
+            pool._persist_used_topics()  # 必须不抛
+    finally:
+        log.removeHandler(sink)
+        log.setLevel(prior)
+
+    # 断言必须卡在 WARNING 上：收 DEBUG 的话 logger.debug 的回归也会绿。
+    warnings = [
+        r.getMessage() for r in sink.records if r.levelno >= logging.WARNING
+    ]
+    assert any("used-history" in m for m in warnings), warnings

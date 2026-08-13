@@ -4,6 +4,7 @@ from plugin.plugins.neko_live.core import runtime_dashboard
 from plugin.plugins.neko_live.core.live_status_active import active_engagement_status
 from plugin.plugins.neko_live.core.live_status_idle import idle_hosting_status
 from plugin.plugins.neko_live.core.live_status_director import live_director_status
+from plugin.plugins.neko_live.core.live_status_readiness import speech_explanation
 from plugin.plugins.neko_live.core.live_status_timing import (
     recent_hosting_output_age_sec,
     recent_live_danmaku_event_age_sec,
@@ -20,6 +21,23 @@ from plugin.plugins.neko_live.core.runtime_dashboard_api import (
 class _RecentContextRuntime(RuntimeRecentContextApiMixin):
     def __init__(self, recent_results):
         self.recent_results = recent_results
+
+
+def test_speech_explanation_does_not_treat_pushed_as_playback_completion():
+    explanation = speech_explanation(
+        live_status={"summary": "ready_to_stream", "reason": "ready"},
+        live_state={"state": "engaged", "reason": "recent_activity"},
+        latest_result={
+            "status": "pushed",
+            "reason": "dispatcher.pushed",
+            "created_at": "2026-07-27T12:00:00Z",
+            "event": {"source": "live_danmaku"},
+        },
+        iso_age_fn=lambda _value: 1.0,
+    )
+
+    assert explanation["summary"] == "recently_handed_off"
+    assert explanation["reason"] == "host_handoff"
 
 
 def test_live_status_rules_treat_missing_attempt_timestamp_as_never_attempted():

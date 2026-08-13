@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import re
 import urllib.error
@@ -37,7 +36,6 @@ from plugin.plugins.neko_live.modules.douyin_live_ingest.retry_policy import (
 from plugin.plugins.neko_live.modules.douyin_live_ingest.room_ref import DouyinRoomRef, parse_douyin_room_ref
 from plugin.plugins.neko_live.modules.douyin_live_ingest.transport_event import (
     DouyinTransportEvent,
-    DouyinTransportStartRequest,
     DouyinTransportState,
 )
 from plugin.plugins.neko_live.modules.douyin_live_ingest.webcast import (
@@ -91,7 +89,10 @@ class _LiveEventsCtx:
         self.audit = _Audit()
         self.event_bus = EventBus(self.audit)
         self.safety_guard = _Safety()
-        self.config = LiveConfig(rate_limit_seconds=0)
+        self.config = LiveConfig(
+            live_mode="solo_stream",
+            rate_limit_seconds=0,
+        )
         self.payloads: list[dict] = []
 
     async def handle_live_payload(self, payload: dict):
@@ -2069,6 +2070,26 @@ def test_douyin_live_bridge_adapter_maps_batch_chat_and_gift_payloads():
         },
     ]
     assert "must-not-leak" not in json.dumps(payloads, ensure_ascii=False)
+
+
+def test_douyin_live_bridge_adapter_preserves_safe_common_message_id():
+    adapter = DouyinLiveBridgeAdapter()
+
+    payload = adapter.map_message(
+        {
+            "method": "WebcastChatMessage",
+            "common": {"msgId": "chat-42"},
+            "user": {"uid": "123", "nickname": "viewer"},
+            "content": "hello bridge",
+        },
+        room_ref="room-42",
+    )[0]
+
+    assert payload["provider_event_id"] == "chat-42"
+    provider_event = to_provider_event(payload)
+    assert provider_event.provider_event_id == "chat-42"
+    assert to_live_event(provider_event).raw["provider_event_id"] == "chat-42"
+    assert safe_payload({"provider_event_id": "token=must-not-leak"}) == {}
 
 
 def test_douyin_live_bridge_adapter_maps_nested_gift_payload_variants():

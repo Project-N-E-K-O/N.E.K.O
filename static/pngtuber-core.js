@@ -23,6 +23,7 @@
     const REMIX_LAYERED_CANVAS_PADDING_RATIO = 0.12;
     const REMIX_LAYERED_CANVAS_PADDING_MIN = 48;
     const REMIX_LAYERED_CANVAS_PADDING_MAX = 160;
+    const PNGTUBER_LAYERED_CANVAS_MAX_RENDER_EDGE = 1024;
     const REMIX_MESH_DEFORM_STRENGTH = 0.28;
     const PNGTUBER_PLUS_VISIBLE_VALUES = new Set([0, 10, 20, 30, 1, 21, 12, 32, 3, 13, 4, 15, 26, 36, 27, 38]);
     // 空闲低频驱动（对齐 live2d-core.js round-2 模式）：呼吸是 0.32Hz 正弦、
@@ -154,6 +155,10 @@
             this.layeredAnimationFrame = null;
             this.layeredAnimationStart = 0;
             this.layeredCanvasPadding = 0;
+            this.layeredCanvasLogicalWidth = 1;
+            this.layeredCanvasLogicalHeight = 1;
+            this.layeredCanvasScaleX = 1;
+            this.layeredCanvasScaleY = 1;
             this.layeredBreathingFrame = null;
             this.layeredBreathingStart = 0;
             this.layeredPhysicsByLayer = new Map();
@@ -863,6 +868,10 @@
             this.layeredToggleVisibility = new Map();
             this.layeredLayerById = new Map();
             this.layeredCanvasPadding = 0;
+            this.layeredCanvasLogicalWidth = 1;
+            this.layeredCanvasLogicalHeight = 1;
+            this.layeredCanvasScaleX = 1;
+            this.layeredCanvasScaleY = 1;
             this.layeredPhysicsByLayer = new Map();
             this.remixModelMotionState = null;
             this.layeredDragVelocity = { x: 0, y: 0, at: 0 };
@@ -901,9 +910,28 @@
                         Math.ceil(Math.max(baseCanvasWidth, baseCanvasHeight) * REMIX_LAYERED_CANVAS_PADDING_RATIO)
                     )
                 );
-                canvas.width = baseCanvasWidth + this.layeredCanvasPadding * 2;
-                canvas.height = baseCanvasHeight + this.layeredCanvasPadding * 2;
-                canvas.style.aspectRatio = `${canvas.width} / ${canvas.height}`;
+                const logicalWidth = baseCanvasWidth + this.layeredCanvasPadding * 2;
+                const logicalHeight = baseCanvasHeight + this.layeredCanvasPadding * 2;
+                const renderScale = Math.min(
+                    1,
+                    PNGTUBER_LAYERED_CANVAS_MAX_RENDER_EDGE / Math.max(logicalWidth, logicalHeight)
+                );
+                const renderWidth = Math.max(1, Math.round(logicalWidth * renderScale));
+                const renderHeight = Math.max(1, Math.round(logicalHeight * renderScale));
+                this.layeredCanvasLogicalWidth = logicalWidth;
+                this.layeredCanvasLogicalHeight = logicalHeight;
+                this.layeredCanvasScaleX = renderWidth / logicalWidth;
+                this.layeredCanvasScaleY = renderHeight / logicalHeight;
+                canvas.width = renderWidth;
+                canvas.height = renderHeight;
+                const maxHeightVh = isModelManagerPage() ? 92 : 82;
+                const heightLimitedWidthVh = (maxHeightVh * logicalWidth) / logicalHeight;
+                const viewportWidthLimits = isModelManagerPage()
+                    ? `80vw, ${heightLimitedWidthVh}vh`
+                    : `56vw, 560px, ${heightLimitedWidthVh}vh`;
+                canvas.style.width = `min(${logicalWidth}px, ${viewportWidthLimits})`;
+                canvas.style.height = 'auto';
+                canvas.style.aspectRatio = `${logicalWidth} / ${logicalHeight}`;
                 this.startLayeredBlinkLoop();
                 this.restartLayeredAnimationLoop();
                 this.attachLayeredHotkeys();
@@ -915,6 +943,10 @@
                 this.layeredMetadata = null;
                 this.layeredImages = new Map();
                 this.layeredCanvasPadding = 0;
+                this.layeredCanvasLogicalWidth = 1;
+                this.layeredCanvasLogicalHeight = 1;
+                this.layeredCanvasScaleX = 1;
+                this.layeredCanvasScaleY = 1;
                 this.layeredToggleVisibility = new Map();
                 this.layeredLayerById = new Map();
                 this.detachLayeredPointerTracking();
@@ -1627,8 +1659,8 @@
                 ? this.canvasElement.getBoundingClientRect()
                 : null;
             if (!rect || !rect.width || !rect.height) return pointer;
-            const canvasWidth = Math.max(1, Number(this.canvasElement.width) || Number(this.layeredMetadata?.canvas?.width) || 1);
-            const canvasHeight = Math.max(1, Number(this.canvasElement.height) || Number(this.layeredMetadata?.canvas?.height) || 1);
+            const canvasWidth = Math.max(1, Number(this.layeredCanvasLogicalWidth) || Number(this.layeredMetadata?.canvas?.width) || 1);
+            const canvasHeight = Math.max(1, Number(this.layeredCanvasLogicalHeight) || Number(this.layeredMetadata?.canvas?.height) || 1);
             const padding = Number(this.layeredCanvasPadding) || 0;
             const frameWidth = Number(frame?.dw || layerState?.frame_width || layer?.width) || 1;
             const frameHeight = Number(frame?.dh || layerState?.frame_height || layer?.height) || 1;
@@ -2361,12 +2393,35 @@
                 || (Number(a.order || 0) - Number(b.order || 0));
         }
 
-        drawLayeredState(stateName = this.state || 'idle', timestamp = performance.now()) {
+        renderLayeredSnapshotCanvas(stateName = this.state || 'idle', timestamp = performance.now()) {
+            if (!this.isLayeredActive()) return null;
+            const canvas = document.createElement('canvas');
+            canvas.width = Math.max(1, Math.round(Number(this.layeredCanvasLogicalWidth) || 1));
+            canvas.height = Math.max(1, Math.round(Number(this.layeredCanvasLogicalHeight) || 1));
+            const drawn = this.drawLayeredState(stateName, timestamp, {
+                canvas,
+                scaleX: 1,
+                scaleY: 1
+            });
+            return drawn ? canvas : null;
+        }
+
+        drawLayeredState(stateName = this.state || 'idle', timestamp = performance.now(), renderTarget = null) {
             if (!this.isLayeredActive() || !this.canvasElement) return false;
-            const canvas = this.canvasElement;
+            const canvas = renderTarget?.canvas || this.canvasElement;
             const ctx = canvas.getContext('2d');
             if (!ctx) return false;
+            const renderScaleX = Math.max(
+                0.0001,
+                Number(renderTarget?.scaleX ?? this.layeredCanvasScaleX) || 1
+            );
+            const renderScaleY = Math.max(
+                0.0001,
+                Number(renderTarget?.scaleY ?? this.layeredCanvasScaleY) || 1
+            );
+            ctx.setTransform(1, 0, 0, 1, 0, 0);
             ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.setTransform(renderScaleX, 0, 0, renderScaleY, 0, 0);
             const layers = Array.isArray(this.layeredMetadata.layers) ? this.layeredMetadata.layers : [];
             if (this.isLayeredPlusModel()) {
                 return this.drawPlusLayerTree(ctx, layers, stateName, timestamp);
@@ -2477,7 +2532,7 @@
             const modelManagerPage = isModelManagerPage();
             const pointerEvents = this.isLocked ? 'none' : 'auto';
             if (this.container) {
-                this.container.style.pointerEvents = 'none';
+                this.container.style.pointerEvents = modelManagerPage ? 'auto' : 'none';
             }
             const centerAnchored = modelManagerPage || this.config.position_anchor === 'center';
             if (centerAnchored) {
@@ -2535,13 +2590,25 @@
         }
 
         getRenderPlacement(placement) {
-            if (isModelManagerPage() && !this.config.preserve_model_manager_position) {
+            if (isModelManagerPage()
+                && !this.config.preserve_model_manager_position
+                && !this._modelManagerUseCurrentPlacement) {
                 return Object.assign({}, placement, {
                     offsetX: 0,
                     offsetY: 0
                 });
             }
             return placement;
+        }
+
+        beginModelManagerPositionEditing() {
+            if (!isModelManagerPage()) return false;
+            if (!this._modelManagerUseCurrentPlacement) {
+                const renderPlacement = this.getRenderPlacement(this.getActivePlacement());
+                this.setActiveOffsets(renderPlacement.offsetX, renderPlacement.offsetY);
+            }
+            this._modelManagerUseCurrentPlacement = true;
+            return true;
         }
 
         setActiveScale(nextScale) {
@@ -2908,29 +2975,22 @@
             lockIcon.style.visibility = 'visible';
 
             const lockRect = lockIcon.getBoundingClientRect();
-            let isOverlapped = false;
-            document.querySelectorAll('[id^="pngtuber-popup-"]').forEach((popup) => {
-                if (popup.style.display === 'flex' && popup.style.opacity === '1') {
-                    const popupRect = popup.getBoundingClientRect();
-                    if (lockRect.right > popupRect.left && lockRect.left < popupRect.right &&
-                        lockRect.bottom > popupRect.top && lockRect.top < popupRect.bottom) {
-                        isOverlapped = true;
-                    }
-                }
-            });
-            if (!isOverlapped) {
-                document.querySelectorAll('[data-neko-sidepanel]').forEach((panel) => {
-                    if (panel.style.display !== 'none' && parseFloat(panel.style.opacity) > 0) {
-                        const panelRect = panel.getBoundingClientRect();
-                        if (lockRect.right > panelRect.left && lockRect.left < panelRect.right &&
-                            lockRect.bottom > panelRect.top && lockRect.top < panelRect.bottom) {
-                            isOverlapped = true;
-                        }
-                    }
+            const popupUi = window.AvatarPopupUI || null;
+            const isOverlapped = popupUi && typeof popupUi.isRectOverlappedByVisibleOverlay === 'function'
+                ? popupUi.isRectOverlappedByVisibleOverlay(lockRect, 'pngtuber')
+                : Array.from(document.querySelectorAll('[id^="pngtuber-popup-"], [data-neko-sidepanel-owner^="pngtuber-popup-"]')).some(element => {
+                    const style = window.getComputedStyle(element);
+                    const computedOpacity = Number.parseFloat(style.opacity || '1');
+                    const targetOpacity = Number.parseFloat(element.style.opacity || style.opacity || '1');
+                    if (style.display === 'none' || style.visibility === 'hidden' ||
+                        (computedOpacity <= 0 && targetOpacity <= 0)) return false;
+                    const overlayRect = element.getBoundingClientRect();
+                    return lockRect.right > overlayRect.left && lockRect.left < overlayRect.right &&
+                        lockRect.bottom > overlayRect.top && lockRect.top < overlayRect.bottom;
                 });
-            }
             const shouldFade = this.container && this.container.classList.contains('locked-hover-fade');
             lockIcon.style.opacity = shouldFade ? '0.12' : (isOverlapped ? '0.3' : '');
+            lockIcon.style.pointerEvents = isOverlapped ? 'none' : 'auto';
         }
 
         async resolveCurrentLanlanName() {
@@ -2974,7 +3034,8 @@
                 }
                 const payload = {
                     model_type: 'pngtuber',
-                    pngtuber: Object.assign({}, this.config)
+                    pngtuber: Object.assign({}, this.config),
+                    apply_runtime: false
                 };
                 const response = await fetch(`/api/characters/catgirl/l2d/${encodeURIComponent(name)}`, {
                     method: 'PUT',
@@ -3004,6 +3065,7 @@
         async load(config) {
             this.detachDragListeners();
             this.clearEmotion({ render: false });
+            this._modelManagerUseCurrentPlacement = false;
             this.config = normalizeConfig(config || {});
             await this.setupLayeredAdapter();
             this.ensureContainer();
@@ -3583,7 +3645,7 @@
             this.container.classList.remove('hidden');
             this.container.style.display = 'block';
             this.container.style.visibility = 'visible';
-            this.container.style.pointerEvents = 'none';
+            this.container.style.pointerEvents = isModelManagerPage() ? 'auto' : 'none';
             if (this.image) {
                 this.image.style.visibility = 'visible';
                 this.image.style.pointerEvents = this.isLocked ? 'none' : 'auto';
@@ -3962,7 +4024,7 @@
 
                 btnWrapper.appendChild(btn);
                 if (config.id === 'mic' && config.hasPopup && config.separatePopupTrigger && !(window.isMobileWidth && window.isMobileWidth())) {
-                    this.createMicMuteButton(btnWrapper);
+                    this.createVoiceSessionQuickControls(btnWrapper);
                 }
 
                 let triggerBtn = null;
@@ -4045,12 +4107,19 @@
                 applyResponsiveFloatingLayout();
                 this.updateLockIconPosition();
             });
+            const refreshLockForOverlayVisibility = (event) => {
+                const eventPrefix = event && event.detail ? event.detail.prefix : '';
+                if (eventPrefix && eventPrefix !== prefix) return;
+                this.updateLockIconPosition();
+            };
             this._uiWindowHandlers.push({ event: 'resize', handler: scheduleLayout, target: window });
             this._uiWindowHandlers.push({ event: 'orientationchange', handler: scheduleLayout, target: window });
             this._uiWindowHandlers.push({ event: 'neko:yui-guide-floating-toolbar-suppression-change', handler: scheduleLayout, target: window });
+            this._uiWindowHandlers.push({ event: 'neko-avatar-overlay-visibility-changed', handler: refreshLockForOverlayVisibility, target: window });
             window.addEventListener('resize', scheduleLayout);
             window.addEventListener('orientationchange', scheduleLayout);
             window.addEventListener('neko:yui-guide-floating-toolbar-suppression-change', scheduleLayout);
+            window.addEventListener('neko-avatar-overlay-visibility-changed', refreshLockForOverlayVisibility);
             if (this.image) {
                 this.image.addEventListener('load', scheduleLayout);
                 this.image.addEventListener('pointerenter', handleImagePointerEnter);

@@ -162,9 +162,13 @@ async def get_user_language_api():
     Returns a normalized language code ('zh', 'en', 'ja').
     """
     from utils.language_utils import get_global_language
-    
+
     try:
         # 使用 language_utils 的全局语言管理，自动处理 Steam/系统语言优先级
+        # ⚠️ 这里刻意保持短码（#2500 第 2 步复核结论）：本端点的返回值是对前端
+        # 的 API 契约，上面的 docstring 写死了 'zh' / 'en' / 'ja' 这套短码，消费
+        # 方可能按短码分支。改成全码属于改契约，要先普查全部前端调用方，不在
+        # locale 迁移这一批的范围内。
         language = get_global_language()
         
         return {

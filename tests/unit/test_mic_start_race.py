@@ -86,9 +86,25 @@ function loadModule() {
   // and getUserMedia() (device open / permission).
   let addModuleGate = Promise.resolve();
   let getUserMediaGate = Promise.resolve();
+  const getUserMediaCalls = [];
+  const getUserMediaFailures = [];
+  const statusToasts = [];
+  const removedStorageKeys = [];
+  let selectionChangeOnGetUserMediaCall = null;
+  let invalidateOnGetUserMediaCall = null;
   // Blink caps hardware AudioContexts per document (~6), so `new AudioContext()`
   // genuinely throws in the field once starts have leaked.
   let captureContextThrows = false;
+  let runDeferredTimeouts = false;
+
+  class FakeMediaStream {
+    constructor(id, track) {
+      this.id = id;
+      this.track = track;
+    }
+    getTracks() { return [this.track]; }
+    getAudioTracks() { return [this.track]; }
+  }
 
   function makeStream() {
     const track = {
@@ -99,7 +115,7 @@ function loadModule() {
       label: 'mic',
       stop() { this.stopped = true; this.readyState = 'ended'; },
     };
-    const stream = { id: streams.length + 1, getTracks: () => [track], getAudioTracks: () => [track] };
+    const stream = new FakeMediaStream(streams.length + 1, track);
     streams.push(stream);
     return stream;
   }
@@ -182,7 +198,10 @@ function loadModule() {
     // Every module-scope timer here is a deferred UI/permission side effect
     // (mic permission pre-request, floating list render). Suppressing them
     // keeps the harness to the capture pipeline and lets node exit cleanly.
-    setTimeout: () => 0,
+    setTimeout: (callback) => {
+      if (runDeferredTimeouts) Promise.resolve().then(callback);
+      return 0;
+    },
     clearTimeout: () => {},
     setInterval: () => 0,
     clearInterval: () => {},
@@ -205,13 +224,37 @@ function loadModule() {
         if (at >= 0) this.connected.splice(at, 1);
       }
     },
-    MediaStream: class {},
+    MediaStream: FakeMediaStream,
     WebSocket: { OPEN: 1 },
     CustomEvent: class { constructor(type, init) { this.type = type; Object.assign(this, init || {}); } },
-    localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
+    localStorage: {
+      getItem: () => null,
+      setItem() {},
+      removeItem(key) { removedStorageKeys.push(key); },
+    },
+    fetch: async () => ({ ok: true }),
     navigator: {
       mediaDevices: {
-        getUserMedia: async () => { await getUserMediaGate; return makeStream(); },
+        getUserMedia: async (constraints) => {
+          getUserMediaCalls.push(constraints);
+          const callNumber = getUserMediaCalls.length;
+          await getUserMediaGate;
+          if (
+            selectionChangeOnGetUserMediaCall
+            && selectionChangeOnGetUserMediaCall.callNumber === callNumber
+          ) {
+            appState.selectedMicrophoneId = selectionChangeOnGetUserMediaCall.deviceId;
+            selectionChangeOnGetUserMediaCall = null;
+          }
+          if (invalidateOnGetUserMediaCall === callNumber) {
+            sandbox.window.invalidatePendingMicStart();
+            invalidateOnGetUserMediaCall = null;
+          }
+          if (getUserMediaFailures.length > 0) {
+            throw getUserMediaFailures.shift();
+          }
+          return makeStream();
+        },
         enumerateDevices: async () => [],
         addEventListener() {},
       },
@@ -238,7 +281,7 @@ function loadModule() {
     appUtils: { isMobile: () => false, dbToLinear: (db) => db },
     AudioContext: FakeAudioContext,
     addEventListener() {}, dispatchEvent() {},
-    showStatusToast() {}, t: (key) => key,
+    showStatusToast(...args) { statusToasts.push(args); }, t: (key) => key,
     localStorage: sandbox.localStorage,
     syncFloatingMicButtonState(on) { micButtonStates.push(on); },
     syncVoiceChatComposerHidden() {},
@@ -256,6 +299,9 @@ function loadModule() {
     workletNodes,
     nodes,
     micButtonStates,
+    getUserMediaCalls,
+    statusToasts,
+    removedStorageKeys,
     // `addModule: () => addModuleGate` reads the gate at CALL time, so an
     // attempt already parked keeps awaiting the promise it captured even
     // after `unpark()` swaps the gate for the next attempt. That is what lets
@@ -281,6 +327,18 @@ function loadModule() {
     },
     failCaptureContext() {
       captureContextThrows = true;
+    },
+    failNextGetUserMedia(error) {
+      getUserMediaFailures.push(error || new Error('getUserMedia failed'));
+    },
+    changeSelectionOnGetUserMediaCall(callNumber, deviceId) {
+      selectionChangeOnGetUserMediaCall = { callNumber, deviceId };
+    },
+    invalidateStartOnGetUserMediaCall(callNumber) {
+      invalidateOnGetUserMediaCall = callNumber;
+    },
+    enableDeferredTimeouts() {
+      runDeferredTimeouts = true;
     },
     // stopProactiveChatSchedule is the LAST thing on the success path, so this
     // throws only after the pipeline has committed and published.
@@ -320,7 +378,8 @@ async function raceCase() {
   env.unparkAddModule();
   const second = env.mod.startMicCapture();
   await settle();
-  await second;
+  const secondStarted = await second;
+  assert(secondStarted === true, 'the winning attempt must report capture success');
   assert(env.S.stream === env.streams[1], 'attempt #2 should have published its stream');
   assert(env.S.isRecording === true, 'attempt #2 should have committed');
   assert(env.micButtonStates[env.micButtonStates.length - 1] === true,
@@ -341,7 +400,9 @@ async function raceCase() {
 
   // Only now let the superseded attempt resume and unwind.
   releaseFirst();
-  await first;
+  const firstObservedPipeline = await first;
+  assert(firstObservedPipeline === true,
+         'a superseded attempt must observe and preserve the winning pipeline');
 
   assert(env.streams[0].getTracks()[0].stopped === true,
          'the superseded attempt must stop its OWN stream');
@@ -429,7 +490,9 @@ async function streamPublishOrderCase() {
   // Only NOW does the loser's device open finish -- so its stream write, if
   // there were one, would land last.
   releaseGum();
-  await first;
+  const firstObservedPipeline = await first;
+  assert(firstObservedPipeline === true,
+         'the late loser must observe and preserve the winning pipeline');
 
   assert(env.S.stream === winnerStream,
          "a loser whose getUserMedia settles last must not take over S.stream");
@@ -438,6 +501,8 @@ async function streamPublishOrderCase() {
   assert(env.S.audioContext === winnerContext,
          "the winner's context must survive the late loser");
   assert(env.S.isRecording === true, 'the winner must still be recording');
+  assert(env.micButtonStates[env.micButtonStates.length - 1] === true,
+         'a getUserMedia loser must not paint "not recording" over the winner');
   const loserStream = env.streams.find((s) => s !== winnerStream);
   assert(loserStream && loserStream.getTracks()[0].stopped === true,
          'the late loser must still stop its own device');
@@ -649,13 +714,15 @@ async function stopRecordingCancelsAnInFlightStartCase() {
 
   env.mod.stopRecording({ notifyServer: false });
   release();
-  await attempt;
+  const started = await attempt;
 
   assert(env.S.isRecording === false,
          'a stop during the open window must cancel the start, not be overwritten by it');
   assert(env.streams[0].getTracks()[0].stopped === true,
          'the cancelled start must release the device it opened');
   assert(env.S.stream === null, 'a cancelled start must not publish its stream');
+  assert(started === false,
+         'stopRecording cancellation must propagate to the outer voice starter');
 }
 
 async function entryTeardownReconcilesIsRecordingCase() {
@@ -681,6 +748,375 @@ async function entryTeardownReconcilesIsRecordingCase() {
   assert(env.S.isRecording === true, 'a successful restart still ends up recording');
 }
 
+async function staleRecordingFlagDoesNotMasqueradeAsWinnerCase() {
+  // The device-switch path can leave the recording flag true while its old
+  // graph is already gone and the replacement is opening. A second selection
+  // change cancels that replacement; the stale flag alone must not be mistaken
+  // for a concurrently committed winning pipeline.
+  const env = loadModule();
+  env.S.isRecording = true;
+  env.S.selectedMicrophoneId = 'first-device';
+  env.changeSelectionOnGetUserMediaCall(1, 'newer-device');
+
+  const started = await env.mod.startMicCapture();
+
+  assert(started === false,
+         'a stale recording flag without a live pipeline must not report success');
+  assert(env.S.isRecording === false,
+         'cancelled replacement capture must reconcile the stale recording flag');
+  assert(env.S.stream === null && env.S.audioContext === null && env.S.workletNode === null,
+         'cancelled replacement capture must leave no published pipeline');
+  assert(env.micButtonStates[env.micButtonStates.length - 1] === false,
+         'cancelled replacement capture must restore the mic UI');
+}
+
+async function rapidDeviceSwitchRetriesLatestSelectionCase() {
+  const env = loadModule();
+  await env.mod.startMicCapture();
+  assert(env.S.isRecording === true, 'the initial microphone must be live');
+
+  env.enableDeferredTimeouts();
+  const releaseFirstSwitchOpen = env.parkGetUserMedia();
+  const firstSwitch = env.mod.selectMicrophone('first-device');
+  await settle();
+  assert(env.getUserMediaCalls.length === 2,
+         'the first switch must be opening its replacement device');
+
+  // This call updates and persists the latest selection, then observes the
+  // switch lock and leaves the in-flight owner responsible for the retry.
+  const secondSwitch = env.mod.selectMicrophone('latest-device');
+  await settle();
+  assert(env.S.selectedMicrophoneId === 'latest-device',
+         'the second selection must become authoritative immediately');
+
+  releaseFirstSwitchOpen();
+  await firstSwitch;
+  await secondSwitch;
+
+  assert(env.S.isRecording === true,
+         'the switch owner must restore capture after retrying the latest selection');
+  assert(env.S.selectedMicrophoneId === 'latest-device',
+         'the retry must preserve the latest selected device');
+  assert(env.getUserMediaCalls.length === 3,
+         'one cancelled replacement must be followed by exactly one retry');
+  assert(env.getUserMediaCalls[1].audio.deviceId.exact === 'first-device',
+         'the cancelled switch attempt must target the original selection');
+  assert(env.getUserMediaCalls[2].audio.deviceId.exact === 'latest-device',
+         'the retry must open the newest selected microphone');
+  assert(env.streams[0].getTracks()[0].stopped === true,
+         'the switch must stop the previously committed microphone');
+  assert(env.streams[1].getTracks()[0].stopped === true,
+         'the superseded replacement attempt must stop its own microphone');
+  assert(env.S.stream === env.streams[env.streams.length - 1],
+         'the latest retry stream must be the committed pipeline');
+  assert(env.S.stream.getTracks()[0].stopped === false,
+         'the latest selected microphone must remain live');
+}
+
+async function rapidDeviceSwitchBackRetriesFinalSelectionCase() {
+  const env = loadModule();
+  await env.mod.startMicCapture();
+  assert(env.S.isRecording === true, 'the initial microphone must be live');
+
+  env.enableDeferredTimeouts();
+  const releaseFirstSwitchOpen = env.parkGetUserMedia();
+  const firstSwitch = env.mod.selectMicrophone('first-device');
+  await settle();
+  assert(env.getUserMediaCalls.length === 2,
+         'the first switch-back attempt must be opening device A');
+
+  const secondSwitch = env.mod.selectMicrophone('latest-device');
+  const thirdSwitch = env.mod.selectMicrophone('first-device');
+  await settle();
+  assert(env.S.selectedMicrophoneId === 'first-device',
+         'the final switch-back selection must become authoritative');
+
+  releaseFirstSwitchOpen();
+  await firstSwitch;
+  await secondSwitch;
+  await thirdSwitch;
+
+  assert(env.S.isRecording === true,
+         'the switch owner must restore capture after an A -> B -> A sequence');
+  assert(env.S.selectedMicrophoneId === 'first-device',
+         'the retry must preserve the final switch-back selection');
+  assert(env.getUserMediaCalls.length === 3,
+         'an intermediate selection change must cancel and retry even when the final id matches');
+  assert(env.getUserMediaCalls[1].audio.deviceId.exact === 'first-device',
+         'the cancelled switch-back attempt must target the initial device A selection');
+  assert(env.getUserMediaCalls[2].audio.deviceId.exact === 'first-device',
+         'the retry must reopen the final device A selection');
+  assert(env.streams[0].getTracks()[0].stopped === true,
+         'the original microphone must be stopped when the switch-back begins');
+  assert(env.streams[1].getTracks()[0].stopped === true,
+         'the superseded switch-back attempt must stop its own microphone');
+  assert(env.S.stream === env.streams[env.streams.length - 1],
+         'the switch-back retry stream must be the committed pipeline');
+  assert(env.S.stream.getTracks()[0].stopped === false,
+         'the final selected microphone must remain live');
+}
+
+async function selectedMicrophoneFallbackCase() {
+  const env = loadModule();
+  env.S.selectedMicrophoneId = 'missing-device';
+  const selectedError = new Error('selected microphone missing');
+  selectedError.name = 'NotFoundError';
+  env.failNextGetUserMedia(selectedError);
+
+  const started = await env.mod.startMicCapture();
+
+  assert(env.getUserMediaCalls.length === 2,
+         'a failed selected microphone must be followed by exactly one default-device attempt');
+  assert(env.getUserMediaCalls[0].audio.deviceId.exact === 'missing-device',
+         'the first attempt must keep the selected microphone exact constraint');
+  assert(env.getUserMediaCalls[1].audio.deviceId === undefined,
+         'the fallback attempt must omit deviceId so the browser uses the system default');
+  assert(env.S.selectedMicrophoneId === null,
+         'a successful fallback must switch the in-memory setting to system default');
+  assert(env.removedStorageKeys.includes('neko_selected_microphone'),
+         'a successful fallback must clear the persisted selected-device id');
+  assert(env.S.isRecording === true,
+         'a successful default-device fallback must continue the voice start');
+  assert(started === true,
+         'a committed capture must report success to the outer voice starter');
+
+  const fallbackToast = env.statusToasts.find((args) => args[0] === 'app.microphoneFallbackToDefault');
+  assert(fallbackToast, 'a successful fallback must show the main-page status toast');
+  assert(fallbackToast[1] === 6000,
+         'the fallback toast must stay visible long enough to be read');
+  assert(fallbackToast[2] && fallbackToast[2].important === true,
+         'the fallback toast must use the important/primary notification level');
+}
+
+async function selectedAndDefaultMicrophoneFailureCase() {
+  const env = loadModule();
+  env.S.selectedMicrophoneId = 'missing-device';
+  const selectedError = new Error('selected microphone missing');
+  selectedError.name = 'NotFoundError';
+  const defaultError = new Error('default microphone unavailable');
+  defaultError.name = 'NotReadableError';
+  env.failNextGetUserMedia(selectedError);
+  env.failNextGetUserMedia(defaultError);
+
+  let thrown = null;
+  try {
+    await env.mod.startMicCapture();
+  } catch (error) {
+    thrown = error;
+  }
+
+  assert(thrown === defaultError,
+         'when both devices fail, the default microphone error must reach the caller');
+  assert(env.getUserMediaCalls.length === 2,
+         'a selected-device failure must make only one default-device fallback attempt');
+  assert(env.getUserMediaCalls[1].audio.deviceId === undefined,
+         'the second failed attempt must still target the system default');
+  assert(env.S.selectedMicrophoneId === 'missing-device',
+         'an unsuccessful fallback must not silently rewrite the saved selection');
+  assert(!env.removedStorageKeys.includes('neko_selected_microphone'),
+         'an unsuccessful fallback must not clear the persisted device selection');
+  assert(env.S.isRecording === false,
+         'the capture pipeline must remain stopped when the default device also fails');
+  assert(!env.statusToasts.some((args) => args[0] === 'app.microphoneFallbackToDefault'),
+         'the success fallback toast must not appear when the default device also fails');
+  assert(env.statusToasts.some((args) => args[0] === 'app.micAccessDenied'),
+         'the existing microphone error must be shown when the default device also fails');
+}
+
+async function selectedMicrophoneReadFailureFallsBackCase() {
+  const env = loadModule();
+  env.S.selectedMicrophoneId = 'unreadable-device';
+  const selectedError = new Error('selected microphone cannot start');
+  selectedError.name = 'NotReadableError';
+  env.failNextGetUserMedia(selectedError);
+
+  const started = await env.mod.startMicCapture();
+
+  assert(started === true,
+         'a selected-device read failure may recover through the system default');
+  assert(env.getUserMediaCalls.length === 2,
+         'an unreadable selected device must make exactly one default fallback attempt');
+  assert(env.getUserMediaCalls[1].audio.deviceId === undefined,
+         'the read-failure fallback must omit deviceId and use the system default');
+  assert(env.S.selectedMicrophoneId === null,
+         'a successful read-failure fallback must commit the system default selection');
+  assert(env.removedStorageKeys.includes('neko_selected_microphone'),
+         'a successful read-failure fallback must clear the persisted selection');
+  const fallbackToast = env.statusToasts.find((args) => args[0] === 'app.microphoneFallbackToDefault');
+  assert(fallbackToast && fallbackToast[2] && fallbackToast[2].important === true,
+         'a successful read-failure fallback must show the important fallback notice');
+}
+
+async function selectedMicrophoneConstraintFailureFallsBackCase() {
+  const env = loadModule();
+  env.S.selectedMicrophoneId = 'incompatible-device';
+  const selectedError = new Error('selected microphone cannot satisfy constraints');
+  selectedError.name = 'OverconstrainedError';
+  env.failNextGetUserMedia(selectedError);
+
+  const started = await env.mod.startMicCapture();
+
+  assert(started === true,
+         'a selected-device constraint failure may recover through the system default');
+  assert(env.getUserMediaCalls.length === 2,
+         'a constraint failure must make exactly one default fallback attempt');
+  assert(env.getUserMediaCalls[1].audio.deviceId === undefined,
+         'the constraint-failure fallback must omit deviceId and use the system default');
+  assert(env.S.selectedMicrophoneId === null,
+         'a successful constraint fallback must commit the system default selection');
+  assert(env.removedStorageKeys.includes('neko_selected_microphone'),
+         'a successful constraint fallback must clear the persisted selection');
+  const fallbackToast = env.statusToasts.find((args) => args[0] === 'app.microphoneFallbackToDefault');
+  assert(fallbackToast && fallbackToast[2] && fallbackToast[2].important === true,
+         'a successful constraint fallback must show the important fallback notice');
+}
+
+async function nonDeviceMicrophoneErrorDoesNotFallbackCase() {
+  const env = loadModule();
+  env.S.selectedMicrophoneId = 'selected-device';
+  const permissionError = new Error('microphone permission denied');
+  permissionError.name = 'NotAllowedError';
+  env.failNextGetUserMedia(permissionError);
+
+  let thrown = null;
+  try {
+    await env.mod.startMicCapture();
+  } catch (error) {
+    thrown = error;
+  }
+
+  assert(thrown === permissionError,
+         'a permission error must be propagated without changing its identity');
+  assert(env.getUserMediaCalls.length === 1,
+         'a permission error must not trigger a system-default device request');
+  assert(env.S.selectedMicrophoneId === 'selected-device',
+         'a non-device error must preserve the selected microphone');
+  assert(!env.removedStorageKeys.includes('neko_selected_microphone'),
+         'a non-device error must preserve the persisted selection');
+  assert(!env.statusToasts.some((args) => args[0] === 'app.microphoneFallbackToDefault'),
+         'a non-device error must not show the successful fallback notice');
+}
+
+async function fallbackWorkletFailureDoesNotHideSetupErrorCase() {
+  const env = loadModule();
+  env.S.selectedMicrophoneId = 'missing-device';
+  const selectedError = new Error('selected microphone missing');
+  selectedError.name = 'NotFoundError';
+  env.failNextGetUserMedia(selectedError);
+  env.failAddModule(new Error('worklet setup failed'));
+
+  let thrown = null;
+  try {
+    await env.mod.startMicCapture();
+  } catch (error) {
+    thrown = error;
+  }
+
+  assert(thrown && thrown.voiceWorkletSetupFailed === true,
+         'a worklet failure after opening the default device must reach the caller');
+  assert(env.S.selectedMicrophoneId === 'missing-device',
+         'the default selection must not commit before the full pipeline commits');
+  assert(!env.removedStorageKeys.includes('neko_selected_microphone'),
+         'a worklet failure must not clear the persisted device selection');
+  assert(!env.statusToasts.some((args) => args[0] === 'app.microphoneFallbackToDefault'),
+         'an important fallback-success toast must not hide a later setup failure');
+  assert(env.statusToasts.some((args) => args[0] === 'app.audioWorkletFailed'),
+         'the accurate worklet setup error must remain visible');
+}
+
+async function fallbackOwnershipChangeCase() {
+  const env = loadModule();
+  env.S.selectedMicrophoneId = 'missing-device';
+  const selectedError = new Error('selected microphone missing');
+  selectedError.name = 'NotFoundError';
+  env.failNextGetUserMedia(selectedError);
+  env.changeSelectionOnGetUserMediaCall(2, 'new-device');
+
+  const started = await env.mod.startMicCapture();
+
+  assert(started === false,
+         'an ownership change during fallback must cancel the stale start');
+  assert(env.getUserMediaCalls.length === 2,
+         'the ownership race should happen after opening the default fallback');
+  assert(env.streams.length === 1,
+         'only the successful default fallback should have produced a stream');
+  assert(env.streams[0].getTracks()[0].stopped === true,
+         'the stale default fallback stream must be torn down');
+  assert(env.S.selectedMicrophoneId === 'new-device',
+         'the newer microphone selection must remain authoritative');
+  assert(!env.removedStorageKeys.includes('neko_selected_microphone'),
+         'an ownership cancellation must not clear the persisted device selection');
+  assert(env.S.stream === null && env.S.isRecording === false,
+         'the stale fallback must never commit as the live capture pipeline');
+  assert(!env.statusToasts.some((args) => args[0] === 'app.microphoneFallbackToDefault'),
+         'a stale fallback must not announce a successful device switch');
+  assert(!env.statusToasts.some((args) => args[0] === 'app.micAccessDenied'),
+         'an ownership cancellation must not be reported as a device error');
+}
+
+async function fallbackTokenInvalidationCase() {
+  const env = loadModule();
+  env.S.selectedMicrophoneId = 'missing-device';
+  const selectedError = new Error('selected microphone missing');
+  selectedError.name = 'NotFoundError';
+  env.failNextGetUserMedia(selectedError);
+  env.invalidateStartOnGetUserMediaCall(2);
+
+  const started = await env.mod.startMicCapture();
+
+  assert(env.streams.length === 1,
+         'the invalidation race should happen after the default stream opens');
+  assert(env.streams[0].getTracks()[0].stopped === true,
+         'a fallback owned by a stale start token must be torn down');
+  assert(env.S.stream === null && env.S.isRecording === false,
+         'a token-invalidated fallback must not commit');
+  assert(env.S.selectedMicrophoneId === 'missing-device',
+         'a cancelled fallback must leave the saved device selection unchanged');
+  assert(!env.removedStorageKeys.includes('neko_selected_microphone'),
+         'a token-invalidated fallback must not clear the persisted device selection');
+  assert(!env.statusToasts.some((args) => args[0] === 'app.microphoneFallbackToDefault'),
+         'a token-invalidated fallback must not announce a successful device switch');
+  assert(!env.statusToasts.some((args) => args[0] === 'app.micAccessDenied'),
+         'a normal token invalidation must remain a benign cancellation');
+  assert(started === false,
+         'a token-invalidated fallback must propagate cancellation');
+}
+
+async function fallbackOwnershipChangeDuringWorkletCase() {
+  const env = loadModule();
+  env.S.selectedMicrophoneId = 'missing-device';
+  const selectedError = new Error('selected microphone missing');
+  selectedError.name = 'NotFoundError';
+  env.failNextGetUserMedia(selectedError);
+  const release = env.parkAddModule();
+
+  const pending = env.mod.startMicCapture();
+  await settle();
+  assert(env.streams.length === 1,
+         'the default fallback should open before worklet setup is released');
+  assert(env.S.stream === null,
+         'the fallback must stay unpublished while worklet setup is pending');
+
+  env.S.selectedMicrophoneId = 'new-device';
+  release();
+  const started = await pending;
+
+  assert(env.streams[0].getTracks()[0].stopped === true,
+         'a fallback that loses selection ownership during worklet setup must be torn down');
+  assert(env.S.selectedMicrophoneId === 'new-device',
+         'the newer microphone selection must remain authoritative');
+  assert(!env.removedStorageKeys.includes('neko_selected_microphone'),
+         'a worklet-window ownership change must not clear the persisted selection');
+  assert(env.S.stream === null && env.S.isRecording === false,
+         'the stale fallback must not publish after worklet setup');
+  assert(started === false,
+         'a selection-change cancellation must propagate to the outer voice starter');
+  assert(!env.statusToasts.some((args) => args[0] === 'app.microphoneFallbackToDefault'),
+         'a stale fallback must not announce a successful device switch');
+  assert(!env.statusToasts.some((args) => args[0] === 'app.micAccessDenied'),
+         'losing selection ownership during setup must remain a benign cancellation');
+}
+
 (async () => {
   await raceCase();
   await preWorkletSetupFailureCase();
@@ -693,6 +1129,18 @@ async function entryTeardownReconcilesIsRecordingCase() {
   await addModuleFailureCase();
   await stopRecordingCancelsAnInFlightStartCase();
   await entryTeardownReconcilesIsRecordingCase();
+  await staleRecordingFlagDoesNotMasqueradeAsWinnerCase();
+  await rapidDeviceSwitchRetriesLatestSelectionCase();
+  await rapidDeviceSwitchBackRetriesFinalSelectionCase();
+  await selectedMicrophoneFallbackCase();
+  await selectedAndDefaultMicrophoneFailureCase();
+  await selectedMicrophoneReadFailureFallsBackCase();
+  await selectedMicrophoneConstraintFailureFallsBackCase();
+  await nonDeviceMicrophoneErrorDoesNotFallbackCase();
+  await fallbackWorkletFailureDoesNotHideSetupErrorCase();
+  await fallbackOwnershipChangeCase();
+  await fallbackTokenInvalidationCase();
+  await fallbackOwnershipChangeDuringWorkletCase();
   console.log('HARNESS_OK');
 })().catch((error) => {
   console.log('HARNESS_FAILED: ' + (error && error.message ? error.message : error));

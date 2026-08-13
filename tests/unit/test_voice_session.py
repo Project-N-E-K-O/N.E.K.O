@@ -669,8 +669,8 @@ async def test_connect_step_manual_vad_sends_null_turn_detection():
 @pytest.mark.parametrize(
     "proxy_url",
     [
-        "wss://lanlan.tech/realtime",  # StepFun proxy
-        "wss://lanlan.app/realtime",   # Vertex Gemini proxy
+        "wss://www.lanlan.tech/realtime",  # StepFun proxy
+        "wss://www.lanlan.app/realtime",   # Vertex Gemini proxy
     ],
 )
 async def test_connect_free_proxy_routes_manual_vad_per_backend(proxy_url):
@@ -969,11 +969,11 @@ _VAD_PROVIDER_MATRIX = [
     ("glm", "glm-realtime", "wss://example.test/realtime", "glm", True),
     ("step", "step-1o-audio", "wss://example.test/realtime", "step", True),
     # lanlan.tech (China free, StepFun proxy) — has server VAD by default
-    ("free_stepfun", "free-model", "wss://lanlan.tech/realtime", "free", True),
+    ("free_stepfun", "free-model", "wss://www.lanlan.tech/realtime", "free", True),
     # lanlan.app (international free, Vertex Gemini proxy) — __init__ already
     # treats this as client-VAD only (False), so MANUAL has nothing to flip.
     # Included to verify we don't accidentally re-enable server VAD.
-    ("free_vertex", "free-model", "wss://lanlan.app/realtime", "free", False),
+    ("free_vertex", "free-model", "wss://www.lanlan.app/realtime", "free", False),
 ]
 
 

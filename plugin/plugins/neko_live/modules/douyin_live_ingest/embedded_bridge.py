@@ -20,6 +20,7 @@ class DouyinEmbeddedBridgeSupervisor:
         self._supervisor = supervisor or BridgeProcessSupervisor(
             executable_path=backend.executable_path,
             args_factory=backend.args_factory,
+            checksum_path=backend.checksum_path,
             stale_process_cleaner=backend.stale_process_cleaner,
         )
 

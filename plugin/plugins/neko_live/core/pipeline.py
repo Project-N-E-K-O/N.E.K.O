@@ -225,6 +225,13 @@ class LivePipeline:
         if not isinstance(status, dict):
             return None
         reason = str(status.get("reason") or "").strip()
+        # Output cooldown is owned by SafetyGuard.before_output().  Keeping it
+        # out of this coarse live-status gate is important because verified
+        # support events use a separate short cooldown lane (and SC/guard are
+        # intentionally unthrottled there).  Ordinary events still reach the
+        # same guard and remain rate-limited.
+        if reason == "cooldown":
+            return None
         if reason in {"room_not_configured", "live_room_offline"} and self._is_support_signal_event(event):
             return None
         if reason in LIVE_STATUS_BLOCK_REASONS or (

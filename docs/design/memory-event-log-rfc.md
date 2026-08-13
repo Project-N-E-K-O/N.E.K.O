@@ -105,18 +105,27 @@ During memory-server startup, the runtime:
 
 1. creates the managers, `EventLog`, and `Reconciler`;
 2. registers the current evidence/lifecycle handlers;
-3. scans pending outbox work and spawns replay tasks;
-4. begins reconciliation for each configured character without awaiting those
-   spawned tasks;
+3. reconciles every configured character, awaited to completion;
+4. scans pending outbox work and spawns replay tasks;
 5. runs evidence and archive migrations, then starts the staggered background
    loops.
 
-Steps 3 through 5 are not a strict completion order. Outbox handlers may overlap
-reconciliation, migrations, and early loop activity, so code must not depend on
-an outbox side effect being visible first. `_replay_pending_outbox()` returns the
-spawned task list, but the current startup caller does not await it. If serialized
-recovery becomes a requirement, startup must explicitly await that list before
-reconciliation; the current implementation provides no such guarantee.
+Reconciliation before outbox replay is deliberate and load-bearing. Both write the
+same view files, but their read points are asymmetric: a replay handler loads,
+mutates, and saves inside the `EventLog` lock, while the reflection and persona
+live writers load the whole snapshot *outside* that lock and only then hand it to
+`record_and_save`. Any overlap therefore leaves a window where a live writer saves
+a pre-replay snapshot back over a just-completed repair, with the sentinel already
+past the event — silent, permanent loss. Resumed outbox operations are background
+tasks, and reconciliation is fully awaited, so running reconciliation first removes
+the overlap entirely.
+
+The reverse dependency does not exist: a resumed operation emits its own events
+through `record_and_save`, which appends, applies, and saves as one step, so
+reconciliation never has to apply them afterwards. Code still must not depend on an
+outbox side effect being visible to any later startup step: `_replay_pending_outbox()`
+returns the spawned task list, and the startup caller does not await it, so those
+operations may overlap migrations and early loop activity.
 
 The reconciler reads events after `last_applied_event_id` and applies them in file
 order. A handler must load, idempotently apply, and persist its view before it
@@ -161,6 +170,46 @@ policy. Operators should not assume deployed journals are automatically compacte
   lock or multi-writer protocol.
 - View files remain authoritative for normal reads and may still be repaired or
   migrated directly by dedicated code.
+- The sentinel write is an unconditional overwrite. Event ids are UUIDs, so no
+  writer can tell from two ids which is newer; the only order that exists is the
+  position in the journal. `record_and_save` can never rewind it, since it writes
+  the id it just appended. Replay cannot make that assumption, so it compares the
+  on-disk sentinel against the value its round started from — before it runs the
+  handler, not after — and neither applies the event nor writes the sentinel when
+  they differ.
+- A replay round that loses that comparison does not stop, and does not keep
+  applying the list it was holding. Either would lose data. The list is now
+  *behind* another writer's sentinel, so applying it as-is pushes older payloads
+  over that writer's values, and the newer event sits ahead of the frozen sentinel
+  where no later boot replays it. Stopping instead abandons repairs that the same
+  sentinel write has already made unreplayable. So the round re-reads the journal
+  from its own last-applied position through to the end of the file and replays
+  that range in journal order: the queued repairs land, the other writer's events
+  land after them, and the newest payload for any given entry wins. The sentinel
+  stays frozen — rewinding it would return the other writer's events to the tail,
+  and one without a registered handler wedges every later boot — and needs no
+  final write, because that writer already parked it at the journal end. Replaying
+  an already-applied event is harmless for the same reason a missing sentinel
+  triggers a full replay: handlers carry full snapshots and are idempotent.
+- That "end of the file" is a snapshot, and writers keep appending past it. An
+  event landing after the snapshot is absent from the range being replayed, while
+  the stale payloads queued ahead of it are not: replaying those pushes older
+  values over the view that writer just saved, and the sentinel now parked on its
+  id means no later boot replays it back. So the frozen pass re-probes from its
+  own last-applied position each time it drains, and only returns once a probe
+  comes back empty. The probe count is bounded (`_MAX_FROZEN_RESCANS`) so that
+  unbroken write traffic ends the round instead of stalling startup; hitting the
+  bound is logged, because whatever is left unreplayed sits behind the sentinel
+  and no later boot picks it up.
+- **Known limitation, not fixed here.** Advancing the sentinel to the journal end
+  asserts that every earlier event was applied, and `record_and_save` never checks
+  that. Whenever an unapplied tail is on disk — replay paused on an unregistered
+  event type or a raising handler — the next live write silently orphans it. This
+  is unrelated to reconciliation running concurrently, and startup ordering does
+  not help. Closing it requires the sentinel to stop being "an event id": either a
+  full journal scan on every write, or a position/applied-set with an on-disk
+  format migration. Until then, do not read "the sentinel only moves forward" as
+  "no event can be skipped".
 - Outbox recovery and event replay solve different failure windows: the outbox
   retries background operations; the journal repairs covered mutations after the
   operation has chosen a concrete state transition.

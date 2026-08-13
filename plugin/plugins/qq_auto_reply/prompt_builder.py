@@ -54,7 +54,13 @@ class QQPromptBuilder:
                 # 恒等于"配置的群记忆策略"，任何旁路自动对齐，不再逐点补。
                 settings = getattr(self.plugin, "_qq_settings", {}) or {}
                 return bool(settings.get("group_memory_enabled", False))
-            return permission_level == "admin"
+            if permission_level == "admin":
+                return True
+            # 非 admin 私聊：跟 participant 记忆开关走（对偶群路径的
+            # None→配置策略）。开着时该轮以对方的 participant 域读写，
+            # legacy 私聊主人语料仍然只属于 admin。
+            settings = getattr(self.plugin, "_qq_settings", {}) or {}
+            return bool(settings.get("private_participant_memory_enabled", False))
         return bool(requested)
 
     def should_persist_memory(self, *, should_use_memory_context: bool, requested: Optional[bool], is_group: bool = False) -> bool:
@@ -80,6 +86,10 @@ class QQPromptBuilder:
         group_id: str | None,
         message: str,
         current_message_id: str = "",
+        is_reply_to_bot: bool = False,
+        quoted_message_id: str = "",
+        mentions_other_user: bool = False,
+        mentions_all: bool = False,
     ) -> str:
         if is_group and not group_facing:
             return self.plugin._build_group_turn_message(
@@ -89,5 +99,9 @@ class QQPromptBuilder:
                 group_id=group_id,
                 message=message,
                 current_message_id=current_message_id,
+                is_reply_to_bot=is_reply_to_bot,
+                quoted_message_id=quoted_message_id,
+                mentions_other_user=mentions_other_user,
+                mentions_all=mentions_all,
             )
         return message

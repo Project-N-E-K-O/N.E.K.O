@@ -304,7 +304,7 @@ async function loadVrmPreview(modelPath, rawData) {
         if (overlay) overlay.style.display = 'none';
 
         // 获取 idle 动画路径
-        const idleAnimation = rawData?.['idleAnimation'] || '/static/vrm/animation/wait03.vrma';
+        const idleAnimation = rawData?.['idleAnimation'] || '/static/vrm/animation/wait03.vrma.gz';
 
         // 加载模型
         const result = await localVrmManager.loadModel(modelPath, {

@@ -4,9 +4,11 @@ import asyncio
 
 import pytest
 
+from plugin.plugins.neko_live.modules.live_support_events import scheduler as scheduler_module
 from plugin.plugins.neko_live.modules.live_support_events.scheduler import (
     SupportEventScheduler,
     SupportPriority,
+    _DispatchTask,
     classify_support_priority,
 )
 
@@ -65,6 +67,63 @@ async def test_queue_limit_is_clamped_to_safe_maximum():
 
 
 @pytest.mark.asyncio
+async def test_runtime_queue_limit_decrease_keeps_accepted_work_and_limits_new_admission():
+    dispatched: list[str] = []
+    active_started = asyncio.Event()
+    release_active = asyncio.Event()
+
+    async def dispatch(payload: dict) -> None:
+        dispatched.append(payload["provider_event_id"])
+        if payload["provider_event_id"] == "active":
+            active_started.set()
+            await release_active.wait()
+
+    scheduler = SupportEventScheduler(dispatch=dispatch, audit=_Audit(), queue_limit=3)
+    assert scheduler.submit(_payload("active")) is True
+    await active_started.wait()
+    assert scheduler.submit(_payload("accepted-1")) is True
+    assert scheduler.submit(_payload("accepted-2")) is True
+    assert scheduler.submit(_payload("accepted-3")) is True
+
+    assert scheduler.update_queue_limit(1) == 1
+    assert scheduler.status()["queue_limit"] == 1
+    assert scheduler.status()["pending_count"] == 3
+    assert scheduler.submit(_payload("rejected-after-decrease")) is False
+    assert scheduler.status()["pending_count"] == 3
+
+    release_active.set()
+    await scheduler.wait_idle()
+
+    assert dispatched == ["active", "accepted-1", "accepted-2", "accepted-3"]
+    await scheduler.close()
+
+
+@pytest.mark.asyncio
+async def test_queue_limit_decrease_keeps_admission_open_while_retired_tasks_drain():
+    release_retired = asyncio.Event()
+    dispatched: list[str] = []
+
+    async def retire() -> None:
+        await release_retired.wait()
+
+    async def dispatch(payload: dict) -> None:
+        dispatched.append(payload["provider_event_id"])
+
+    scheduler = SupportEventScheduler(dispatch=dispatch, audit=_Audit(), queue_limit=3)
+    retired = [asyncio.create_task(retire()) for _ in range(2)]
+    for task in retired:
+        scheduler._retire_task(task)
+
+    assert scheduler.update_queue_limit(1) == 1
+    assert scheduler.submit(_payload("accepted-while-retiring")) is True
+
+    release_retired.set()
+    await scheduler.wait_idle()
+    assert dispatched == ["accepted-while-retiring"]
+    await scheduler.close()
+
+
+@pytest.mark.asyncio
 async def test_finalized_combo_tombstones_use_bounded_ten_minute_default():
     async def dispatch(_payload: dict) -> None:
         return None
@@ -73,6 +132,8 @@ async def test_finalized_combo_tombstones_use_bounded_ten_minute_default():
 
     assert scheduler.status()["finalized_combo_seconds"] == 600.0
     assert scheduler.status()["finalized_combo_limit"] == 4096
+    assert scheduler.status()["processed_id_seconds"] == 600.0
+    assert scheduler.status()["processed_id_limit"] == 4096
     await scheduler.close()
 
 
@@ -732,6 +793,59 @@ async def test_provider_event_id_deduplicates_only_the_same_delivery():
 
 
 @pytest.mark.asyncio
+async def test_provider_event_id_can_be_accepted_after_bounded_dedupe_window(
+    monkeypatch: pytest.MonkeyPatch,
+    patch_module_clock,
+):
+    clock = [100.0]
+    patch_module_clock(
+        monkeypatch,
+        scheduler_module,
+        monotonic=lambda: clock[0],
+    )
+    dispatched: list[str] = []
+
+    async def dispatch(payload: dict) -> None:
+        dispatched.append(payload["provider_event_id"])
+
+    scheduler = SupportEventScheduler(
+        dispatch=dispatch,
+        audit=_Audit(),
+        queue_limit=5,
+        processed_id_seconds=10.0,
+    )
+    assert scheduler.submit(_payload("evt-1")) is True
+    await scheduler.wait_idle()
+    assert scheduler.submit(_payload("evt-1")) is False
+
+    clock[0] += 11.0
+    assert scheduler.submit(_payload("evt-1")) is True
+    await scheduler.wait_idle()
+
+    assert dispatched == ["evt-1", "evt-1"]
+    await scheduler.close()
+
+
+@pytest.mark.asyncio
+async def test_provider_event_id_history_evicts_oldest_at_configured_limit():
+    async def dispatch(_payload: dict) -> None:
+        return None
+
+    scheduler = SupportEventScheduler(
+        dispatch=dispatch,
+        audit=_Audit(),
+        queue_limit=1,
+        processed_id_limit=3,
+    )
+    for index in range(4):
+        scheduler._remember_event_id(f"evt-{index}")
+
+    assert list(scheduler._processed_ids) == ["evt-1", "evt-2", "evt-3"]
+    assert scheduler.status()["processed_id_count"] == 3
+    await scheduler.close()
+
+
+@pytest.mark.asyncio
 async def test_provider_event_dedupe_retains_more_than_legacy_2048_entries():
     async def dispatch(_payload: dict) -> None:
         return None
@@ -767,7 +881,62 @@ async def test_dispatch_failure_audits_without_duplicate_retry_and_continues():
 
     assert attempts == {"broken": 1, "healthy": 1}
     assert dispatched == ["healthy"]
-    assert [record["op"] for record in audit.records] == ["support.dispatch_failed"]
+    assert [record["op"] for record in audit.records] == [
+        "support.dispatch_failed",
+        "support.dispatch_submission_finalized",
+        "support.dispatch_submission_finalized",
+    ]
+    failed, broken_finished, healthy_finished = audit.records
+    assert failed["detail"]["task_id"] == broken_finished["detail"]["task_id"]
+    assert broken_finished["detail"]["classification"] == "current"
+    assert broken_finished["detail"]["outcome"] == "failed"
+    assert healthy_finished["detail"]["classification"] == "current"
+    assert healthy_finished["detail"]["outcome"] == "submitted"
+    assert scheduler.status()["current_dispatch_count"] == 0
+    await scheduler.close()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_tracks_bounded_pipeline_result_status_without_payload_data():
+    audit = _Audit()
+
+    class _Result:
+        def __init__(self, status: str, private_output: str) -> None:
+            self.status = status
+            self.output = private_output
+
+    results = {
+        "dry": _Result("dry_run", "private dry-run output"),
+        "skip": _Result("skipped", "private skipped output"),
+        "invalid": _Result("invented", "private invalid output"),
+    }
+
+    async def dispatch(payload: dict):
+        return results[payload["provider_event_id"]]
+
+    scheduler = SupportEventScheduler(dispatch=dispatch, audit=audit, queue_limit=5)
+    for event_id in results:
+        assert scheduler.submit(_payload(event_id)) is True
+    await scheduler.wait_idle()
+
+    status = scheduler.status()
+    assert status["pipeline_result_dry_run_count"] == 1
+    assert status["pipeline_result_skipped_count"] == 1
+    assert status["pipeline_result_unknown_count"] == 1
+    assert status["pipeline_result_pushed_count"] == 0
+    history_text = repr(scheduler._dispatched_history)
+    audit_text = repr(audit.records)
+    assert "private dry-run output" not in history_text
+    assert "private skipped output" not in history_text
+    assert "private invalid output" not in history_text
+    assert "private dry-run output" not in audit_text
+    assert "private skipped output" not in audit_text
+    assert "private invalid output" not in audit_text
+    assert all(
+        record["detail"]["pipeline_result_status"] in {"dry_run", "skipped", "unknown"}
+        for record in audit.records
+        if record["op"] == "support.dispatch_submission_finalized"
+    )
     await scheduler.close()
 
 
@@ -789,6 +958,198 @@ async def test_dispatch_failure_does_not_escape_when_audit_write_fails():
     await scheduler._dispatch_once(_payload("broken"))
 
     assert attempts == 1
+    await scheduler.close()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_claims_have_exactly_one_current_owner():
+    async def dispatch(_payload: dict) -> None:
+        return None
+
+    scheduler = SupportEventScheduler(dispatch=dispatch, audit=_Audit(), queue_limit=5)
+    first = _DispatchTask(
+        task_id="support_first",
+        payload=_payload("first"),
+        priority=SupportPriority.LIGHT,
+        sequence=1,
+        generation=scheduler._dispatch_generation,
+    )
+    second = _DispatchTask(
+        task_id="support_second",
+        payload=_payload("second"),
+        priority=SupportPriority.LIGHT,
+        sequence=2,
+        generation=scheduler._dispatch_generation,
+    )
+
+    claimed = await asyncio.gather(
+        scheduler._try_claim_dispatch(first),
+        scheduler._try_claim_dispatch(second),
+    )
+
+    assert claimed.count(True) == 1
+    assert claimed.count(False) == 1
+    owner = first if claimed[0] else second
+    assert scheduler._current_dispatch is owner
+    assert scheduler.status()["current_dispatch_count"] == 1
+    assert await scheduler._finish_dispatch(owner, outcome="cancelled") == "current"
+    assert scheduler.status()["current_dispatch_count"] == 0
+    await scheduler.close()
+
+
+@pytest.mark.asyncio
+async def test_claim_conflict_resumes_queue_after_current_owner_finishes():
+    audit = _Audit()
+    dispatched: list[str] = []
+
+    async def dispatch(payload: dict) -> None:
+        dispatched.append(payload["provider_event_id"])
+
+    scheduler = SupportEventScheduler(dispatch=dispatch, audit=audit, queue_limit=5)
+    owner = _DispatchTask(
+        task_id="support_manual_owner",
+        payload=_payload("owner"),
+        priority=SupportPriority.LIGHT,
+        sequence=1,
+        generation=scheduler._dispatch_generation,
+    )
+    assert await scheduler._try_claim_dispatch(owner) is True
+    assert scheduler.submit(_payload("queued")) is True
+    assert scheduler._worker is None
+
+    conflicting_worker = asyncio.create_task(scheduler._run())
+    scheduler._worker = conflicting_worker
+    await conflicting_worker
+
+    assert scheduler.status()["pending_count"] == 1
+    assert dispatched == []
+    assert any(
+        record["op"] == "support.dispatch_claim_conflict"
+        for record in audit.records
+    )
+
+    assert await scheduler._finish_dispatch(owner, outcome="submitted") == "current"
+    await scheduler.wait_idle()
+    assert dispatched == ["queued"]
+    await scheduler.close()
+
+
+@pytest.mark.asyncio
+async def test_old_dispatch_completion_is_retroactive_and_cannot_release_new_owner():
+    audit = _Audit()
+    old_started = asyncio.Event()
+    old_cancelled = asyncio.Event()
+    release_old = asyncio.Event()
+    new_started = asyncio.Event()
+    release_new = asyncio.Event()
+
+    async def dispatch(payload: dict) -> None:
+        if payload["provider_event_id"] == "old":
+            old_started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                old_cancelled.set()
+                await release_old.wait()
+                return
+        new_started.set()
+        await release_new.wait()
+
+    scheduler = SupportEventScheduler(dispatch=dispatch, audit=audit, queue_limit=5)
+    scheduler.submit(_payload("old"))
+    await old_started.wait()
+    old_task = scheduler._current_dispatch
+    assert old_task is not None
+
+    scheduler.reset()
+    scheduler.submit(_payload("new"))
+    await old_cancelled.wait()
+    await new_started.wait()
+    new_task = scheduler._current_dispatch
+    assert new_task is not None
+    assert new_task is not old_task
+
+    retired = list(scheduler._retired_tasks)
+    release_old.set()
+    await asyncio.gather(*retired, return_exceptions=True)
+
+    assert scheduler._current_dispatch is new_task
+    old_finished = next(
+        record
+        for record in audit.records
+        if record["op"] == "support.dispatch_submission_finalized"
+        and record["detail"]["task_id"] == old_task.task_id
+    )
+    assert old_finished["detail"]["classification"] == "retroactive"
+    assert old_finished["detail"]["outcome"] == "submitted"
+
+    release_new.set()
+    await scheduler.wait_idle()
+    new_finished = next(
+        record
+        for record in audit.records
+        if record["op"] == "support.dispatch_submission_finalized"
+        and record["detail"]["task_id"] == new_task.task_id
+    )
+    assert new_finished["detail"]["classification"] == "current"
+    assert scheduler.status()["retroactive_finalization_count"] == 1
+    await scheduler.close()
+
+
+@pytest.mark.asyncio
+async def test_unknown_completion_is_stray_and_audit_is_payload_free():
+    audit = _Audit()
+
+    async def dispatch(_payload: dict) -> None:
+        return None
+
+    scheduler = SupportEventScheduler(dispatch=dispatch, audit=audit, queue_limit=5)
+    task = _DispatchTask(
+        task_id="support_unknown",
+        payload=_payload("private-provider-id"),
+        priority=SupportPriority.LIGHT,
+        sequence=1,
+        generation=scheduler._dispatch_generation,
+    )
+
+    assert await scheduler._finish_dispatch(task, outcome="submitted") == "stray"
+
+    record = audit.records[-1]
+    assert record["op"] == "support.dispatch_submission_finalized"
+    assert record["level"] == "warning"
+    assert record["detail"] == {
+        "task_id": "support_unknown",
+        "event_type": "gift",
+        "priority": "light",
+        "classification": "stray",
+        "outcome": "submitted",
+        "pipeline_result_status": "unknown",
+    }
+    audit_text = repr(audit.records)
+    assert "viewer-1" not in audit_text
+    assert "Heart" not in audit_text
+    assert "private-provider-id" not in audit_text
+    assert scheduler.status()["stray_finalization_count"] == 1
+    await scheduler.close()
+
+
+@pytest.mark.asyncio
+async def test_dispatched_history_is_bounded_to_32_sanitized_records():
+    async def dispatch(_payload: dict) -> None:
+        return None
+
+    scheduler = SupportEventScheduler(dispatch=dispatch, audit=_Audit(), queue_limit=64)
+    for index in range(40):
+        assert scheduler.submit(_payload(f"provider-{index}")) is True
+
+    await scheduler.wait_idle()
+
+    assert scheduler.status()["dispatched_history_count"] == 32
+    assert scheduler.status()["dispatched_history_limit"] == 32
+    history_text = repr(scheduler._dispatched_history)
+    assert "viewer-1" not in history_text
+    assert "Heart" not in history_text
+    assert "provider-" not in history_text
     await scheduler.close()
 
 
@@ -861,6 +1222,34 @@ async def test_wait_idle_waits_for_cancelled_retired_worker_to_finish():
     release.set()
     await asyncio.wait_for(idle_wait, timeout=1)
     await scheduler.close()
+
+
+@pytest.mark.asyncio
+async def test_close_cancels_owned_dispatch_and_does_not_leave_current_locked():
+    audit = _Audit()
+    started = asyncio.Event()
+
+    async def dispatch(_payload: dict) -> None:
+        started.set()
+        await asyncio.Event().wait()
+
+    scheduler = SupportEventScheduler(dispatch=dispatch, audit=audit, queue_limit=5)
+    scheduler.submit(_payload("cancel-on-close"))
+    await started.wait()
+    task = scheduler._current_dispatch
+    assert task is not None
+
+    await asyncio.wait_for(scheduler.close(), timeout=1)
+
+    finished = next(
+        record
+        for record in audit.records
+        if record["op"] == "support.dispatch_submission_finalized"
+        and record["detail"]["task_id"] == task.task_id
+    )
+    assert finished["detail"]["classification"] == "retroactive"
+    assert finished["detail"]["outcome"] == "cancelled"
+    assert scheduler.status()["current_dispatch_count"] == 0
 
 
 @pytest.mark.asyncio

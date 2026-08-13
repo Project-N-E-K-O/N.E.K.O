@@ -1809,20 +1809,20 @@
                 const file = typeof candidate === 'object' ? this.getMotionFile(candidate) : '';
                 const explicitIndex = candidate && Number.isInteger(Number(candidate.index)) ? Number(candidate.index) : null;
 
-                if (groupName && explicitIndex !== null && model && typeof model.motion === 'function') {
+                if (groupName && explicitIndex !== null && typeof manager.playActionMotion === 'function') {
                     try {
-                        const played = await this.withPerformanceBypass(() => model.motion(groupName, explicitIndex));
+                        const played = await this.withPerformanceBypass(() => manager.playActionMotion(groupName, explicitIndex));
                         if (played !== false) {
                             return true;
                         }
                     } catch (_) {}
                 }
 
-                if (file && model && typeof model.motion === 'function') {
+                if (file && typeof manager.playActionMotion === 'function') {
                     const runtimeRef = this.findMotionRuntimeReference(groupName, file);
                     if (runtimeRef) {
                         try {
-                            const played = await this.withPerformanceBypass(() => model.motion(runtimeRef.group, runtimeRef.index));
+                            const played = await this.withPerformanceBypass(() => manager.playActionMotion(runtimeRef.group, runtimeRef.index));
                             if (played !== false) {
                                 return true;
                             }
@@ -2082,6 +2082,7 @@
             if (!manager) {
                 return false;
             }
+            await this.clearExpression();
             const candidates = this.collectExpressionCandidates(expression, options);
             for (let index = 0; index < candidates.length; index += 1) {
                 const candidate = candidates[index];
@@ -2126,18 +2127,15 @@
         }
 
         async clearExpression() {
+            const manager = this.getManager();
+            const shouldClearManagerExpression = manager?._activeTransientExpression === true;
             if (this.expressionParamSnapshot) {
                 this.restoreParams(this.expressionParamSnapshot);
                 this.expressionParamSnapshot = null;
             }
-            const manager = this.getManager();
-            if (manager && typeof manager.resetTransientMotionAndExpressionState === 'function') {
-                await Promise.resolve(manager.resetTransientMotionAndExpressionState({
-                    preserveExpression: false,
-                    resetAllParameters: false
-                })).catch(() => {});
-            }
-            if (manager && typeof manager.applyPersistentExpressionsNative === 'function') {
+            if (shouldClearManagerExpression && typeof manager.clearExpression === 'function') {
+                await Promise.resolve(manager.clearExpression()).catch(() => {});
+            } else if (manager && typeof manager.applyPersistentExpressionsNative === 'function') {
                 await Promise.resolve(manager.applyPersistentExpressionsNative(true)).catch(() => {});
             }
             return true;

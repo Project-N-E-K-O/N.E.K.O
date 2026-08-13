@@ -133,6 +133,7 @@ function normalizeSurface(raw: any, fallbackKind: PluginUiSurface['kind'] = 'pan
     context: typeof raw.context === 'string' ? raw.context : undefined,
     permissions: Array.isArray(raw.permissions) ? raw.permissions.filter((item: unknown) => typeof item === 'string') : undefined,
     available: typeof raw.available === 'boolean' ? raw.available : undefined,
+    legacy_static_compat: raw.legacy_static_compat === true,
   }
 }
 
@@ -201,6 +202,7 @@ export async function getPluginUiSurfaceInfo(pluginId: string, locale?: string):
         ui_path: info.ui_path || `/plugin/${safeId}/ui/`,
         open_in: 'iframe',
         available: true,
+        legacy_static_compat: true,
       }],
       warnings: [],
     }
@@ -257,6 +259,8 @@ export function callPluginHostedSurfaceAction(pluginId: string, actionId: string
   id: string
   locale?: string
   timeoutMs?: number
+  /** True only when the request originates from a user action in the hosted iframe. */
+  userInitiated?: boolean
 }): Promise<{
   plugin_id: string
   action_id: string
@@ -266,13 +270,20 @@ export function callPluginHostedSurfaceAction(pluginId: string, actionId: string
   const safeActionId = encodeURIComponent(actionId)
   const requestedTimeoutMs = Number(surface?.timeoutMs)
   const timeoutMs = Number.isFinite(requestedTimeoutMs) && requestedTimeoutMs > 0 ? requestedTimeoutMs : undefined
+  // Initial hosted-panel calls may probe actions while a manual-start plugin
+  // is stopped. Suppress only that expected response; all other failures keep
+  // the standard global error handling.
+  const requestConfig = {
+    suppressPluginNotRunningMessage: !surface?.userInitiated,
+    ...(timeoutMs ? { timeout: timeoutMs } : {}),
+  }
   return post(`/plugin/${safeId}/hosted-ui/action/${safeActionId}`, {
     args: args || {},
     kind: surface?.kind,
     surface_id: surface?.id,
     locale: surface?.locale,
     timeout_ms: timeoutMs,
-  }, timeoutMs ? { timeout: timeoutMs } : undefined)
+  }, requestConfig)
 }
 
 /**

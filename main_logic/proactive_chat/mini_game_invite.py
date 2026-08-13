@@ -38,6 +38,7 @@ from config.prompts.prompts_proactive import (
     MINI_GAME_INVITE_KEYWORDS,
     MINI_GAME_INVITE_LINES_BY_GAME,
     MINI_GAME_INVITE_OPTION_LABELS,
+    normalize_mini_game_invite_locale,
 )
 from config.prompts.prompts_sys import _loc
 from utils.logger_config import get_module_logger
@@ -499,12 +500,7 @@ async def _attempt_mini_game_invite_delivery(
             import random as _random
             if _random.random() >= MINI_GAME_INVITE_TRIGGER_PROBABILITY:
                 return None
-    template = _loc(MINI_GAME_INVITE_LINES_BY_GAME[game_type], invite_lang)
-    safe_master = (master_name or '').strip()
-    try:
-        invite_text = template.format(master_name=safe_master).strip()
-    except Exception:
-        invite_text = template.replace('{master_name}', safe_master).strip()
+    invite_text = _render_mini_game_invite_line(game_type, invite_lang, master_name)
     if not invite_text:
         return None
 
@@ -698,6 +694,32 @@ async def _run_mini_game_invite_short_circuit(
     )
 
 
+def _render_mini_game_invite_line(
+    game_type: str, invite_lang: str, master_name: str,
+) -> str:
+    """Render the canned invite line for one game.
+
+    ``invite_lang`` is normalized to a prompt-dict key *here* rather than at the
+    call site. ``MINI_GAME_INVITE_LINES_BY_GAME`` carries a ``zh-TW`` row, and an
+    unnormalized tag (``zh_TW`` / ``zh-Hant`` / ``tchinese``) degrades through
+    ``_loc``'s Chinese fallback to the Simplified line — a wrong-script invite, not
+    an error, so nothing downstream would ever notice.
+
+    Extracted from ``_attempt_mini_game_invite_delivery`` so this is reachable
+    without standing up an activity snapshot and a delivery-capable manager: the
+    locale behaviour is otherwise only testable through the whole invite flow.
+    """
+    template = _loc(
+        MINI_GAME_INVITE_LINES_BY_GAME[game_type],
+        normalize_mini_game_invite_locale(invite_lang),
+    )
+    safe_master = (master_name or '').strip()
+    try:
+        return template.format(master_name=safe_master).strip()
+    except Exception:
+        return template.replace('{master_name}', safe_master).strip()
+
+
 def _build_mini_game_invite_options_payload(
     *,
     invite_lang: str,
@@ -708,9 +730,13 @@ def _build_mini_game_invite_options_payload(
 
     Labels go through i18n (the accept/decline/later options); choice is the
     wire-format identifier (used when the frontend button click posts back to
-    the endpoint) and stays unchanged."""
+    the endpoint) and stays unchanged.
+
+    ``invite_lang`` is normalized to a prompt-dict key first: the lookup is an
+    exact ``.get``, so an unnormalized tag (``zh_TW`` / ``zh-Hant`` / ``tchinese``)
+    would silently fall through to the Simplified labels."""
     labels = MINI_GAME_INVITE_OPTION_LABELS.get(
-        invite_lang,
+        normalize_mini_game_invite_locale(invite_lang),
         MINI_GAME_INVITE_OPTION_LABELS.get('zh', {}),
     )
     options = [

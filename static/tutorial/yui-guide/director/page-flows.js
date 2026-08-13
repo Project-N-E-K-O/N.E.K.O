@@ -190,6 +190,30 @@
             });
         },
 
+        async openMicPanel() {
+            return this.callHomeInteractionApi('openMicPanel', [], async () => {
+                const popup = this.getManagedPanelElement('mic');
+                const trigger = this.resolveElement(this.expandSelector('.${p}-trigger-btn'));
+                if (!popup || !trigger || typeof trigger.click !== 'function') {
+                    return false;
+                }
+                if (!this.isManagedPanelVisible('mic')) {
+                    trigger.click();
+                }
+                const opened = await this.waitForElement(() => (
+                    this.isManagedPanelVisible('mic') ? popup : null
+                ), 1800);
+                if (!opened) {
+                    return false;
+                }
+                const screenShareToggle = popup.querySelector('[data-neko-screen-share-action="toggle"]');
+                if (!screenShareToggle && typeof window.renderFloatingMicList === 'function') {
+                    await window.renderFloatingMicList(popup);
+                }
+                return true;
+            });
+        },
+
         async closeAgentPanel() {
             const closed = await this.callHomeInteractionApi('closeAgentPanel', [], () => {
                 return this.setFallbackFloatingPopupVisible('agent', false);
@@ -1535,6 +1559,26 @@
         async runTakeoverKeyboardControlSequence(step, performance, runId) {
             const scaleSceneMs = this.createSceneScaler(performance && performance.voiceKey);
             const guardFailed = () => this.isGuardFailed(runId);
+            let localTakeoverTopPeekHandle = null;
+            const stopTakeoverTopPeek = async (reason) => {
+                const handle = localTakeoverTopPeekHandle;
+                localTakeoverTopPeekHandle = null;
+                if (!handle || typeof handle.stop !== 'function') {
+                    return;
+                }
+                try {
+                    await handle.stop(reason || 'takeover_scene_failed', { animateReturn: false });
+                } catch (_) {
+                } finally {
+                    if (this.takeoverTopPeekHandle === handle) {
+                        this.takeoverTopPeekHandle = null;
+                    }
+                }
+            };
+            const failAfterTakeoverTopPeek = async (reason) => {
+                await stopTakeoverTopPeek(reason);
+                return false;
+            };
             const createToggleSpotlightTarget = (key, element) => {
                 const rect = this.getElementRect(element);
                 if (!rect) {
@@ -1610,12 +1654,36 @@
                 return false;
             }
 
+            const avatarStageApi = window.YuiGuideAvatarStage;
+            if (avatarStageApi && typeof avatarStageApi.startPluginDashboardCornerPeek === 'function') {
+                try {
+                    localTakeoverTopPeekHandle = await avatarStageApi.startPluginDashboardCornerPeek({
+                        targetPreset: 'top_flipped',
+                        hideMs: 1500,
+                        appearMs: 2000,
+                        holdMs: 2500,
+                        reducedMotion: this.shouldReduceTutorialMotion(),
+                        isCancelled: () => runId !== this.sceneRunId || this.isStopping()
+                    });
+                    if (localTakeoverTopPeekHandle && guardFailed()) {
+                        await stopTakeoverTopPeek('takeover_keyboard_control_aborted');
+                        return false;
+                    }
+                    if (localTakeoverTopPeekHandle) {
+                        this.takeoverTopPeekHandle = localTakeoverTopPeekHandle;
+                    }
+                } catch (error) {
+                    console.warn('[YuiGuide] 插件面板角落动作启动失败:', error);
+                    localTakeoverTopPeekHandle = null;
+                }
+            }
+
             const keyboardToggle = await this.waitForElement(() => {
                 const toggleItem = this.getAgentToggleElement('agent-keyboard');
                 return this.getElementRect(toggleItem) ? toggleItem : null;
             }, 2400);
             if (!keyboardToggle || guardFailed()) {
-                return false;
+                return await failAfterTakeoverTopPeek('takeover_keyboard_control_aborted');
             }
             let keyboardToggleSpotlight = null;
             const isKeyboardToggleSpotlight = (candidate) => {
@@ -1644,7 +1712,7 @@
             await this.waitForStableElementRect(keyboardToggle, scaleSceneMs(320, 160, 760));
             keyboardToggleSpotlight = refreshKeyboardToggleSpotlight({ activate: true });
             if (!keyboardToggleSpotlight || guardFailed()) {
-                return false;
+                return await failAfterTakeoverTopPeek('takeover_keyboard_control_aborted');
             }
             this.removeRetainedExtraSpotlight(agentMasterSpotlight);
 
@@ -1660,12 +1728,12 @@
                 }
             );
             if (!movedToKeyboardToggle || guardFailed()) {
-                return false;
+                return await failAfterTakeoverTopPeek('takeover_keyboard_control_aborted');
             }
 
             keyboardToggleSpotlight = refreshKeyboardToggleSpotlight();
             if (!keyboardToggleSpotlight || guardFailed()) {
-                return false;
+                return await failAfterTakeoverTopPeek('takeover_keyboard_control_aborted');
             }
             if (!this.isCursorAlignedWithElement(keyboardToggle, 5)) {
                 const realignedToKeyboardToggle = await this.moveCursorToTrackedElement(
@@ -1677,11 +1745,11 @@
                     }
                 );
                 if (!realignedToKeyboardToggle || guardFailed()) {
-                    return false;
+                    return await failAfterTakeoverTopPeek('takeover_keyboard_control_aborted');
                 }
                 keyboardToggleSpotlight = refreshKeyboardToggleSpotlight();
                 if (!keyboardToggleSpotlight || guardFailed()) {
-                    return false;
+                    return await failAfterTakeoverTopPeek('takeover_keyboard_control_aborted');
                 }
             }
 
@@ -1696,13 +1764,13 @@
                 }
             );
             if (!enabledKeyboardControl || guardFailed()) {
-                return false;
+                return await failAfterTakeoverTopPeek('takeover_keyboard_control_aborted');
             }
 
             await this.waitForStableElementRect(keyboardToggle, scaleSceneMs(320, 160, 760));
             keyboardToggleSpotlight = refreshKeyboardToggleSpotlight();
             if (!keyboardToggleSpotlight || guardFailed()) {
-                return false;
+                return await failAfterTakeoverTopPeek('takeover_keyboard_control_aborted');
             }
             this.rememberAvatarFloatingSceneCursorAnchor('day1_takeover_capture_cursor', keyboardToggleSpotlight);
 
@@ -1715,23 +1783,10 @@
                 );
             await this.stopPersistentGhostCursorLookAtPerformance('takeover_top_peek');
             if (guardFailed()) {
-                return false;
-            }
-            const avatarStageApi = window.YuiGuideAvatarStage;
-            if (avatarStageApi && typeof avatarStageApi.startPluginDashboardCornerPeek === 'function') {
-                try {
-                    this.takeoverTopPeekHandle = await avatarStageApi.startPluginDashboardCornerPeek({
-                        targetPreset: 'top_flipped',
-                        reducedMotion: this.shouldReduceTutorialMotion(),
-                        isCancelled: () => runId !== this.sceneRunId || this.isStopping()
-                    });
-                } catch (error) {
-                    console.warn('[YuiGuide] 插件面板角落动作启动失败:', error);
-                    this.takeoverTopPeekHandle = null;
-                }
+                return await failAfterTakeoverTopPeek('takeover_keyboard_control_aborted');
             }
             if (guardFailed()) {
-                return false;
+                return await failAfterTakeoverTopPeek('takeover_keyboard_control_aborted');
             }
 
             if (this.emotionBridge && typeof this.emotionBridge.applyExpressionFile === 'function') {
@@ -1739,7 +1794,11 @@
             }
 
             await this.waitForSceneDelay(scaleSceneMs(180, 80, 420));
-            return !guardFailed();
+            const completed = !guardFailed();
+            if (!completed) {
+                await stopTakeoverTopPeek('takeover_keyboard_control_aborted');
+            }
+            return completed;
         },
 
         async runPluginDashboardLaunchSequence(step, performance, runId) {

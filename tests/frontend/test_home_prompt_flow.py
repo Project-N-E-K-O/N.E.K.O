@@ -2324,8 +2324,13 @@ def test_day4_chat_settings_opens_settings_then_tours_sidebar(mock_page: Page):
                     secondary: config.secondary || null,
                 };
             };
-            director.moveCursorToElement = async (element, durationMs) => {
-                calls.push({ type: 'move', id: element && element.id, durationMs });
+            director.moveCursorToElement = async (element, durationMs, options) => {
+                calls.push({
+                    type: 'move',
+                    id: element && element.id,
+                    durationMs,
+                    exactDuration: !!(options && options.exactDuration),
+                });
                 return true;
             };
             director.cursor = {
@@ -2378,6 +2383,12 @@ def test_day4_chat_settings_opens_settings_then_tours_sidebar(mock_page: Page):
         "persistentId": "live2d-btn-settings",
         "primaryId": "chat-settings-button",
     })
+    assert {
+        "type": "move",
+        "id": "live2d-btn-settings",
+        "durationMs": 760,
+        "exactDuration": True,
+    } in result
     assert {"type": "click"} in result
     assert any(call["type"] == "ellipse" and call["radiusX"] > 0 and call["radiusY"] > 0 for call in result)
 
@@ -2402,7 +2413,11 @@ def test_day4_model_behavior_moves_from_chat_sidebar_to_animation_sidebar(mock_p
             };
             document.getElementById('animation-settings-panel')._anchorElement = document.getElementById('animation-settings-button');
         """,
-        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
+        script_names=(
+            "tutorial/yui-guide/overlay.js",
+            *_YUI_DIRECTOR_SCRIPTS,
+            "tutorial/yui-guide/days/day4-companion-guide.js",
+        ),
     )
 
     result = mock_page.evaluate(
@@ -2410,7 +2425,18 @@ def test_day4_model_behavior_moves_from_chat_sidebar_to_animation_sidebar(mock_p
         async () => {
             window.__calls = [];
             const director = window.createYuiGuideDirector({ page: 'home' });
+            const modelBehaviorScene = window.YuiGuideDailyGuides[4].round.scenes.find(
+                (candidate) => candidate.id === 'day4_model_behavior'
+            );
             let releaseNarration;
+            director.currentSceneId = 'day4_chat_settings';
+            director.clearExternalizedChatGuideTarget = (options) => {
+                window.__calls.push({
+                    type: 'clear-external',
+                    clearCursor: !!(options && options.clearCursor),
+                    preservePcOverlayCursor: !!(options && options.preservePcOverlayCursor),
+                });
+            };
             director.appendGuideChatMessage = () => window.__calls.push({ type: 'message' });
             director.applyGuideEmotion = (emotion) => window.__calls.push({ type: 'emotion', emotion });
             director.enableInterrupts = () => window.__calls.push({ type: 'interrupts' });
@@ -2472,14 +2498,7 @@ def test_day4_model_behavior_moves_from_chat_sidebar_to_animation_sidebar(mock_p
                 }, 20);
             });
 
-            await director.playAvatarFloatingScene({
-                id: 'day4_model_behavior',
-                text: '如果你想要看到更精致、细节更满满的我，或者想要更丝滑、更流畅的动作体验，都可以在这里进行调整哦！不管哪一种，我都会展现出最可爱的一面哒~',
-                voiceKey: 'avatar_floating_day4_model_behavior',
-                target: 'settings-sidepanel:animation-settings',
-                cursorAction: 'tour',
-                operation: 'show-settings-sidepanel:animation-settings',
-            }, 4, 2, 8);
+            await director.playAvatarFloatingScene(modelBehaviorScene, 4, 2, 8);
             return window.__calls;
         }
         """
@@ -2500,6 +2519,11 @@ def test_day4_model_behavior_moves_from_chat_sidebar_to_animation_sidebar(mock_p
         ("highlight", "day4_model_behavior-animation-settings-button", "animation-settings-button", "live2d-btn-settings"),
         ("highlight", "day4_model_behavior-animation-settings-panel", "animation-settings-panel", "live2d-btn-settings"),
     ]
+    assert {
+        "type": "clear-external",
+        "clearCursor": True,
+        "preservePcOverlayCursor": True,
+    } in result
     assert result.index({"type": "move", "id": "animation-settings-button", "durationMs": 620}) < result.index({
         "type": "api:ensureSidePanel",
         "panelType": "animation-settings",
@@ -5534,7 +5558,7 @@ def test_externalized_chat_capsule_spotlight_keeps_last_rect_when_target_tempora
 
 
 @pytest.mark.frontend
-def test_externalized_chat_capsule_input_spotlight_aligns_only_for_wayland_workarea_carrier(mock_page: Page):
+def test_externalized_chat_capsule_input_spotlight_scopes_text_alignment_away_from_niri(mock_page: Page):
     _bootstrap_page(
         mock_page,
         setup_js="""
@@ -5542,11 +5566,13 @@ def test_externalized_chat_capsule_input_spotlight_aligns_only_for_wayland_worka
             window.localStorage.setItem('yuiGuidePcOverlayRunId', 'test-run');
             window.__externalChatOverlayUpdates = [];
             window.__waylandWorkAreaCarrier = true;
+            window.__niriWaylandRuntime = true;
             window.nekoTutorialOverlay = {
                 getWindowMetricsSync: () => ({
                     bounds: { x: 100, y: 50, width: 1200, height: 800 },
                     contentBounds: { x: 100, y: 50, width: 1200, height: 800 },
                     waylandWorkAreaCarrier: window.__waylandWorkAreaCarrier,
+                    niriWaylandRuntime: window.__niriWaylandRuntime,
                     zoomFactor: 1,
                 }),
                 update: (payload) => {
@@ -5594,28 +5620,37 @@ def test_externalized_chat_capsule_input_spotlight_aligns_only_for_wayland_worka
             const timestamp = Date.now();
             sendSpotlight(timestamp);
             await new Promise((resolve) => setTimeout(resolve, 160));
+            const niriUpdates = (window.__externalChatOverlayUpdates || [])
+                .filter((entry) => entry.payload && entry.payload.spotlights);
+            const niriSpotlight = niriUpdates[niriUpdates.length - 1].payload.spotlights[0];
+
+            window.__niriWaylandRuntime = false;
+            sendSpotlight(timestamp + 1);
+            await new Promise((resolve) => setTimeout(resolve, 160));
             const waylandUpdates = (window.__externalChatOverlayUpdates || [])
                 .filter((entry) => entry.payload && entry.payload.spotlights);
             const waylandSpotlight = waylandUpdates[waylandUpdates.length - 1].payload.spotlights[0];
 
             window.__waylandWorkAreaCarrier = false;
-            sendSpotlight(timestamp + 1);
+            sendSpotlight(timestamp + 2);
             await new Promise((resolve) => setTimeout(resolve, 160));
             const x11Updates = (window.__externalChatOverlayUpdates || [])
                 .filter((entry) => entry.payload && entry.payload.spotlights);
             const x11Spotlight = x11Updates[x11Updates.length - 1].payload.spotlights[0];
-            return { waylandSpotlight, x11Spotlight };
+            return { niriSpotlight, waylandSpotlight, x11Spotlight };
         }
         """
     )
 
     assert result
-    assert result["waylandSpotlight"]["id"] == "external-chat-capsule-input"
+    assert result["niriSpotlight"]["id"] == "external-chat-capsule-input"
+    assert result["niriSpotlight"]["x"] == 692
+    assert result["niriSpotlight"]["width"] == 446
     assert result["waylandSpotlight"]["x"] == 722
     assert result["waylandSpotlight"]["width"] == 446
     assert result["x11Spotlight"]["x"] == 692
     assert result["x11Spotlight"]["width"] == 446
-    assert result["waylandSpotlight"]["width"] == result["x11Spotlight"]["width"]
+    assert result["niriSpotlight"] == result["x11Spotlight"]
 
 
 @pytest.mark.frontend

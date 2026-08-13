@@ -45,6 +45,94 @@ async def test_background_bridge_poll_continues_for_subsecond_ocr_interval(
     assert poll_calls == 2
 
 
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_fast_loop_waits_for_regular_poll_to_bootstrap_auto_ocr(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    cfg = _make_effective_config(
+        bridge_root,
+        galgame={"reader_mode": "auto"},
+        ocr_reader={
+            "enabled": True,
+            "fast_loop_enabled": True,
+            "trigger_mode": "interval",
+        },
+    )
+    plugin = GalgameBridgePlugin(_Ctx(plugin_dir, cfg))
+    plugin._cfg = build_config(cfg)
+    tick_calls = 0
+    fast_loop_starts: list[bool] = []
+
+    class _BootstrapManager:
+        def update_config(self, _config) -> None:
+            return None
+
+        async def tick(self, **_kwargs):
+            nonlocal tick_calls
+            tick_calls += 1
+            return SimpleNamespace(
+                runtime={"status": "starting"},
+                warnings=[],
+                should_rescan=False,
+                stable_event_emitted=False,
+            )
+
+        def current_window_target(self) -> dict[str, object]:
+            return {}
+
+    async def _keep_runtime(runtime: dict[str, object]) -> dict[str, object]:
+        return runtime
+
+    plugin._ocr_reader_manager = _BootstrapManager()
+    plugin._start_ocr_fast_loop = lambda: fast_loop_starts.append(True) or True  # type: ignore[method-assign]
+    plugin._update_ocr_capture_profile_rollback_state = _keep_runtime  # type: ignore[method-assign]
+    plugin._maybe_auto_apply_recommended_ocr_capture_profile = _keep_runtime  # type: ignore[method-assign]
+    local = {
+        "active_data_source": "",
+        "advance_speed": "medium",
+        "ocr_window_target": {},
+    }
+
+    first = await plugin._tick_ocr_reader_for_poll(
+        local=local,
+        raw_available_game_ids=[],
+        raw_candidates={},
+        memory_reader_runtime={},
+        ocr_reader_runtime={"status": "disabled"},
+        bridge_sdk_candidate_available=False,
+        ocr_tick_allowed=True,
+        pending_manual_foreground_ocr_capture=False,
+        pending_ocr_advance_capture=False,
+        force=False,
+    )
+
+    assert tick_calls == 1
+    assert fast_loop_starts == []
+    assert first[2]["status"] == "starting"
+    assert first[2]["ocr_tick_entered"] is True
+    assert first[2]["ocr_fast_loop_delegated"] is False
+
+    second = await plugin._tick_ocr_reader_for_poll(
+        local=local,
+        raw_available_game_ids=[],
+        raw_candidates={},
+        memory_reader_runtime={},
+        ocr_reader_runtime={"status": "active"},
+        bridge_sdk_candidate_available=False,
+        ocr_tick_allowed=True,
+        pending_manual_foreground_ocr_capture=False,
+        pending_ocr_advance_capture=False,
+        force=False,
+    )
+
+    assert tick_calls == 1
+    assert fast_loop_starts == [True]
+    assert second[2]["ocr_tick_entered"] is False
+    assert second[2]["ocr_fast_loop_delegated"] is True
+
+
 @pytest.mark.plugin_unit
 def test_request_ocr_after_advance_capture_respects_trigger_mode_and_reader_state(
     tmp_path: Path,
@@ -792,7 +880,9 @@ async def test_auto_reader_keeps_rapidocr_enabled_ocr_available_when_backend_aut
     assert isinstance(snapshot, Ok)
     assert ocr_ticks
     assert status.value["active_data_source"] == DATA_SOURCE_OCR_READER
-    assert snapshot.value["snapshot"]["text"] == "rapidocr enabled OCR line"
+    # The source remains available, but internal RapidOCR status-like text is
+    # fail-closed at the public snapshot boundary.
+    assert snapshot.value["snapshot"]["text"] == ""
 
 
 @pytest.mark.asyncio
@@ -5558,8 +5648,7 @@ def test_ocr_line_second_stable_read_enters_history(tmp_path: Path) -> None:
     assert len(history_lines) == 1
     assert history_lines[0]["speaker"] == "王生"
     assert history_lines[0]["text"] == "算了，没事。"
-    assert len(history_observed_lines) == 1
-    assert history_observed_lines[0]["stability"] == "stable"
+    assert history_observed_lines == []
 
 
 @pytest.mark.plugin_unit

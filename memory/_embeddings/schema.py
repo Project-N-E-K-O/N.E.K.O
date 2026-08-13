@@ -105,6 +105,50 @@ def cosine_similarity(a, b, *, decoder=None) -> float:
     return float(np.dot(av, bv))
 
 
+def decode_valid_cached_embedding(
+    entry: dict,
+    current_text: str,
+    current_model_id: str | None,
+    *,
+    hash_text=None,
+    decode_string=None,
+    parse_dim=None,
+):
+    """Validate every cache fingerprint and return the decoded vector, else None.
+
+    The decoding twin of ``is_cached_embedding_valid`` — same checks, same
+    verdict, but the vector it had to decode in order to check the dimension is
+    handed back instead of thrown away. Scoring loops that need the vector right
+    after the check (``hybrid_recall._cosine_rank``) would otherwise base64-decode
+    and finite-scan every candidate twice per recall (#2550): ~26ms of the ~91ms
+    cosine path at 5000 rows, entirely redundant.
+
+    ``is_cached_embedding_valid`` is now a thin ``is not None`` wrapper over this,
+    so the fingerprint rules keep exactly one definition.
+    """
+    if not isinstance(entry, dict):
+        return None
+    embedding = entry.get("embedding")
+    if not isinstance(embedding, str) or not embedding:
+        return None
+    if current_model_id is None:
+        return None
+    if entry.get("embedding_model_id") != current_model_id:
+        return None
+    hasher = embedding_text_sha256 if hash_text is None else hash_text
+    if entry.get("embedding_text_sha256") != hasher(current_text):
+        return None
+    decoder = decode_vector_fp16 if decode_string is None else decode_string
+    vector = decoder(embedding)
+    if vector is None or vector.size == 0:
+        return None
+    dim_parser = parse_dim_from_model_id if parse_dim is None else parse_dim
+    expected_dim = dim_parser(current_model_id)
+    if expected_dim is not None and vector.size != expected_dim:
+        return None
+    return vector
+
+
 def is_cached_embedding_valid(
     entry: dict,
     current_text: str,
@@ -115,25 +159,14 @@ def is_cached_embedding_valid(
     parse_dim=None,
 ) -> bool:
     """Check all embedding cache fingerprints and the decoded dimension."""
-    if not isinstance(entry, dict):
-        return False
-    embedding = entry.get("embedding")
-    if not isinstance(embedding, str) or not embedding:
-        return False
-    if current_model_id is None:
-        return False
-    if entry.get("embedding_model_id") != current_model_id:
-        return False
-    hasher = embedding_text_sha256 if hash_text is None else hash_text
-    if entry.get("embedding_text_sha256") != hasher(current_text):
-        return False
-    decoder = decode_vector_fp16 if decode_string is None else decode_string
-    vector = decoder(embedding)
-    if vector is None or vector.size == 0:
-        return False
-    dim_parser = parse_dim_from_model_id if parse_dim is None else parse_dim
-    expected_dim = dim_parser(current_model_id)
-    return expected_dim is None or vector.size == expected_dim
+    return decode_valid_cached_embedding(
+        entry,
+        current_text,
+        current_model_id,
+        hash_text=hash_text,
+        decode_string=decode_string,
+        parse_dim=parse_dim,
+    ) is not None
 
 
 def clear_embedding_fields(entry: dict) -> None:

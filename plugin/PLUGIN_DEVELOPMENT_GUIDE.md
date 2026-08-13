@@ -255,7 +255,10 @@ from plugin.sdk.plugin import (
 |------|------|------|
 | `self.ctx` | `PluginContext` | 运行时上下文（宿主注入） |
 | `self.plugin_id` | `str` | 插件唯一标识符 |
-| `self.config_dir` | `Path` | `plugin.toml` 所在目录 |
+| `self.plugin_dir` | `Path` | 插件安装目录（代码、Manifest 和静态资源） |
+| `self.config_dir` | `Path` | `self.plugin_dir` 的兼容别名 |
+| `self.storage_dir` | `Path` | 分配给插件的用户存储根目录 |
+| `self.runtime_config_path` | `Path` | 外部运行配置文件路径 |
 | `self.metadata` | `dict` | 来自 `plugin.toml` 的元数据 |
 | `self.bus` | `SdkBusContext` | 宿主状态的 read/watch 门面；没有 publish/emit API |
 | `self.plugins` | `Plugins` | 跨插件调用工具 |
@@ -276,7 +279,7 @@ self.report_status({
 ```
 
 <a id="push-message-v2"></a>
-#### `push_message(**kwargs) -> object`
+#### `push_message(**kwargs) -> PushMessageResult`
 
 `push_message` 是插件 → 主系统的**唯一**消息推送入口。两条独立的轴
 决定下游行为，配合 `parts` 列表承载 OpenAI 风格的多模态内容。完整
@@ -306,6 +309,27 @@ ctx.push_message(
     priority=0,                     # 数字越大优先级越高
 )
 ```
+
+返回值是本地提交结果：
+
+```python
+result = ctx.push_message(
+    visibility=[],
+    ai_behavior="respond",
+    parts=[{"type": "text", "text": "请回应这条事件"}],
+)
+if not result["submitted"]:
+    # 可以保留本地任务，稍后由插件自己的策略决定是否重试。
+    # 不要把消息正文写入日志。
+    logger.warning("message submission failed: %s", result.get("reason"))
+```
+
+`submitted=True` 只表示 SDK 已把 payload 交给权威本地提交路径，并接管后续提交
+责任；它不表示宿主已经消费、AI 已生成回复或音频已经播放。
+`submitted=False` 会携带稳定的 `reason`：`backpressure`、`transport_error`
+或 `transport_unavailable`。结果不会暴露内部 transport 名称，也不会回显消息正文
+或异常内容。拒绝结果还会携带兼容旧调用方的 `ok=False`；新代码应以
+`submitted` 为正式判据。调用方可以保留本地状态，但重试和去重仍由具体插件决定。
 
 ##### 两条轴的语义
 
@@ -438,7 +462,17 @@ ctx.push_message(
 获取插件 `data/` 目录下的路径：
 
 ```python
-db_path = self.data_path("cache.db")  # → <plugin_dir>/data/cache.db
+db_path = self.data_path("records.db")
+# → <storage-root>/plugins/<plugin_id>/data/records.db
+```
+
+#### `cache_path(*parts) -> Path`
+
+获取插件可清理缓存目录下的路径：
+
+```python
+preview_path = self.cache_path("preview.png")
+# → <storage-root>/plugins/<plugin_id>/cache/preview.png
 ```
 
 #### `register_dynamic_entry(entry_id, handler, ...) -> bool`
@@ -512,17 +546,17 @@ return await self.finish(data={"summary": "..."}, delivery="silent")
 ```
 
 > **`push_message()` 不再用 `delivery`**——改成 `visibility` + `ai_behavior`
-> 两条独立轴（见上面 `push_message(**kwargs) -> object` 节）。旧 `delivery=`
+> 两条独立轴（见上面 `push_message(**kwargs) -> PushMessageResult` 节）。旧 `delivery=`
 > / `reply=` 仍能用但会 emit DeprecationWarning，v0.9 移除。
 
-#### "任务汇报"vs"事件回应"：宿主自动分类
+#### "任务汇报"vs"事件回应"：声明结果语义
 
-主 AI 在收到通知时，会被套上一层外层 prompt。**外层 prompt 的措辞分两类**——
-插件作者**不能也无需指定**，宿主根据你调用的 SDK 方法自动判定：
+主 AI 在收到通知时，会被套上一层外层 prompt。**外层 prompt 的措辞分两类**：
 
 | 你调用 | 宿主分类 | AI 收到的外层 prompt 大意 |
 |---|---|---|
-| `await self.finish(...)` | `task_result` | "来自{你的插件}的任务已完成，请向主人**汇报**..." |
+| `await self.finish(...)`（默认） | `task_result` | "来自{你的插件}的任务已完成，请向主人**汇报**..." |
+| 查询/即时回执 entry 声明 `result_kind="event"` | `event` | "来自{你的插件}的**新消息**，请按内容**回应**主人..." |
 | `self.push_message(...)` | `event` | "来自{你的插件}的**新消息**，请按内容**回应**主人..." |
 
 设计原因——"任务汇报"和"事件流"是两种完全不同的语义：
@@ -533,10 +567,29 @@ return await self.finish(data={"summary": "..."}, delivery="silent")
 旧版本曾经把所有 `ai_behavior="respond"` 的 push 也套上"任务已完成"模板，导致
 弹幕插件让兰兰用"我刚才处理了一下弹幕"这种汇报型口吻回观众——这是 bug，已修复。
 
-> **关键**：宿主从 `event_type`（`task_result` 还是 `proactive_message`）派生
-> 这个分类，源头在 `agent_server._emit_task_result()` vs `proactive_bridge` 两条
-> 入站路径。插件作者既不会，也无法把"事件流"伪装成"任务完成"。
->
+查询、状态读取或“已开始”一类即时回执应显式降级为事件语义。可静态声明：
+
+```python
+@plugin_entry(
+    id="service_status",
+    metadata={"result_kind": "event", "expires_in_s": 30},
+)
+```
+
+也可由某次运行结果覆盖静态声明：
+
+```python
+return await self.finish(
+    data={"status": "running"},
+    meta={"agent": {"result_kind": "event", "expires_in_s": 10}},
+)
+```
+
+解析优先级为“运行时 `meta.agent` > entry 静态 `metadata` > 默认
+`task_result`”。`expires_in_s` 只对 `event` 结果生效；过期回执不会再进入主 AI。
+宿主只允许成功的 `user_plugin task_result` 降级为 `event`，不能把
+`proactive_message` 反向伪装成任务完成。
+
 > `delivery` / `ai_behavior` 只控制时机（立即起 turn / 等下次用户开口 / 完全静默），
 > 不再决定外层 prompt 的措辞。两个轴正交，组合 6 种都合理。
 
@@ -1399,7 +1452,7 @@ import json
 class ConfigurablePlugin(NekoPluginBase):
     def __init__(self, ctx):
         super().__init__(ctx)
-        config_file = self.config_dir / "config.json"
+        config_file = self.storage_dir / "config" / "config.json"
         if config_file.exists():
             self.config = json.loads(config_file.read_text())
         else:
@@ -1492,12 +1545,18 @@ async def on_shutdown(self, **_):
 ### 10.5 使用路径工具
 
 ```python
-# 插件目录（plugin.toml 所在位置）
-config_file = self.config_dir / "config.json"
+# 插件安装目录（代码、Manifest 和静态资源）
+template_path = self.plugin_dir / "static" / "template.json"
+
+# 用户存储目录
+config_file = self.storage_dir / "config" / "config.json"
 
 # 数据目录
-db_path = self.data_path("cache.db")       # → <plugin_dir>/data/cache.db
-logs_dir = self.data_path("logs")          # → <plugin_dir>/data/logs/
+db_path = self.data_path("records.db")     # → <storage-dir>/data/records.db
+logs_dir = self.data_path("logs")          # → <storage-dir>/data/logs/
+
+# 缓存目录
+preview_path = self.cache_path("preview.png")  # → <storage-dir>/cache/preview.png
 ```
 
 ### 10.6 插件发布检查清单

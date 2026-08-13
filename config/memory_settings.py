@@ -208,6 +208,21 @@ SCOPED_HISTORY_BATCH_MAX_SEGMENTS = 8
 # 30s 单发超时与由它推导的结算等待上限才能原样沿用）。每个成员桶的硬顶
 # 是 150（GROUP_MEMBER_HARD_LIMIT）< 200，所以一个桶永远不用跨批拆分。
 SCOPED_HISTORY_BATCH_MAX_MESSAGES = 200
+# 每条消息进入批抽取 prompt 前的正文上限。与 recent 压缩的单条口径一致：
+# 500 token，超限时保留头尾、用 locale 对应的可见标记替换中段。
+SCOPED_HISTORY_PER_MESSAGE_MAX_TOKENS = 500
+# 整批只给消息正文 8000 token。仅做单条 500 token 闸时，200 条仍可能达到
+# 100k token，足以超过部分 summary 模型上下文并拖过插件侧 30s 超时。总闸
+# 超限时按“剩余预算 / 剩余消息数”公平分配；短消息按原文计费，省下的额度
+# 继续给后面的消息，避免按请求顺序贪心导致尾段完全拿不到正文。
+SCOPED_HISTORY_BATCH_CONTENT_MAX_TOKENS = 8000
+# 段首标记里那截一次性 token 的字节数（token_hex → 2 倍长度的十六进制）。
+# 它防的是"群成员在自己的消息里伪造 [SEGMENT n | speaker: 别人]"：批模板
+# 恰恰告诉模型段首就是归属依据，伪造成功 = 把自己的内容写进别人的 subject
+# 并借到别人的 speaker_trust。攻击者的消息在 nonce 生成之前就写死了，猜不
+# 到本次请求的 token。4 字节 = 8 个十六进制字符，够挡住盲猜（每次请求重新
+# 生成，没有多次试探的机会），又不至于在 prompt 里占掉可观的 token。
+SCOPED_BATCH_SEGMENT_NONCE_BYTES = 4
 
 # ── 群召回读侧的 subject 形状 ────────────────────────────────────────────
 # 一轮群回复带的 subject：1 个群 + 最多这么多个成员（当前发言人 + 本轮
@@ -238,6 +253,111 @@ SPEAKER_TRUST_BY_PERMISSION_LEVEL = {
     "none": 0.3,
 }
 
+# 信赖度仲裁 / 演化（群记忆系列 7/7）。trust 池由 memory_server 进程按
+# account_id（platform:actor）全局持有，落 <memory_dir>/speaker_trust.json：
+# 同一人在不同群、不同角色、以及非 admin 私聊 participant 中共用一份。
+# 这是产品拍板的跨 scope / 跨角色通道，不得误改成 subject-local 或角色态。
+SPEAKER_TRUST_ARBITRATION_MARGIN = 0.15
+SPEAKER_TRUST_ACTIVITY_WEIGHT = 0.001
+SPEAKER_TRUST_ACTIVITY_MAX_BONUS = 0.02
+SPEAKER_TRUST_CONFIRMATION_DELTA = 0.04
+SPEAKER_TRUST_CORRECTION_DELTA = 0.08
+SPEAKER_TRUST_ADJUSTMENT_LIMIT = 0.30
+SPEAKER_TRUST_EVENT_HISTORY_LIMIT = 128
+"""Deprecated：插件本地 trust 池的活跃度环上限。池上移服务端后唯一使用者
+（`permission.py`）已删除，服务端活跃度环改用
+`SPEAKER_TRUST_ACTIVITY_EVENT_HISTORY_LIMIT`。保留常量与 re-export 是因为
+删掉公开常量是破坏性变更，且它可能被树外插件读。"""
+
+# ── 服务端 trust 池（平台中立化） ────────────────────────────────────────
+# 落点必须是 memory_dir **根级平铺文件**，不能开子目录：
+# `utils/cloudsave_runtime/operations.py` 的 import 清理里 `delete_dir_targets`
+# 会把 memory_dir 下每一个不在导入角色名单里的**子目录** rmtree 掉，而
+# `delete_file_targets` 只认 `memory/<角色>/<白名单叶名>` 三段路径。根级平铺
+# 文件两条都躲开。先例：`app/memory_server/gates.py` 的
+# `idle_maintenance_state.json`、`main_logic/quota/ux_state.py`。
+# 将来若要分片，只能是 `speaker_trust.<n>.json` 这种平铺文件名。
+SPEAKER_TRUST_POOL_FILENAME = "speaker_trust.json"
+
+# 自报 base 通道（无四档权限阶梯的平台，如弹幕 guard_level）的上界。
+# **这个 clamp 施加在本段最终分上，不是只夹 base**：只夹 base 时
+# 0.8 + 0.30(adjustment) + 0.02(activity) = 1.0 = admin 同权，那样「上界
+# 0.8 < admin 的 1.0，封死把 guard_level 映射成 owner 级仲裁权」这句安全
+# 断言在算术上就是假的。上移之后引入一个**有意的不对称**：`tier='trusted'`
+# （base 0.8，有平台权限模型背书）能靠自己挣来的 adjustment/activity 爬到
+# 1.0，而无鉴权自报的 `base=0.8` 永远爬不过 0.8。
+SPEAKER_TRUST_MAX_REPORTED_BASE = 0.8
+
+# wire 上 `speaker_tier` 的合法取值。用 Literal 而不是 `.get(level, DEFAULT)`
+# 的 silent-default：拼错的 "Admin" 必须 422，不能静默落到中间档。
+SPEAKER_TRUST_PERMISSION_TIERS = ("admin", "trusted", "normal", "none")
+
+# 服务端 activity 事件环的截断上限。必须 > 单批最大消息数（200），否则同一
+# 批里靠后的消息会把靠前的 id 挤出环、重投时重复计数。signal 环**永不截断**
+# （append-only 账本，截断会让旧纠错事件重放），两个环必须分开处理。
+SPEAKER_TRUST_ACTIVITY_EVENT_HISTORY_LIMIT = 256
+
+# 单次 legacy 导入请求携带的 profile 条数上限。分块由调用方控制，越界是契约
+# bug ⇒ 422。单条 profile 的 `processed_signal_events` **不设上限**。
+SPEAKER_TRUST_LEGACY_IMPORT_CHUNK_MAX = 500
+
+# 存量迁移闸门。池首次创建时按此表种成 `status="pending"`；pending 期间该
+# platform 的 account 一律：resolve_trust 返回 None（弃权，不盖 speaker_trust
+# 键）、活跃度不计、信号计入 signals_deferred、reconcile 跳过。
+# 这一把闸门是「导入窗口双算」的唯一防线：没有它，pending 期 owner 复述触发
+# 的重放事件会先按空账本扣一次，随后导入再把已含这一次的 legacy adjustment
+# 加上去 —— 单笔 correction 双记 0.16 > 仲裁 margin 0.15，且环里只存 id 不存
+# kind，事后不可反算。
+SPEAKER_TRUST_LEGACY_BARRIERS = {
+    "qq": "qq_auto_reply.business_config.speaker_trust_profiles.v1",
+}
+
+# channel（观测属性）的长度上限。channel **不是键**：它只用于碰撞探测与运维
+# 诊断，绝不参与账本分区、bind/merge 判据或任何权限判定。
+SPEAKER_TRUST_CHANNEL_MAX_LEN = 16
+
+# 一个 entity 在同一 platform 下最多绑几个 account。超限 bind/merge 返回 409。
+# 用「bind 时拒绝」换掉「读时截断」：读时截断会让「从 A₁ 出发」与「从 A₅
+# 出发」得到成员不同的展开集合，两个 ParticipantGroup 结构上不相等、按值去重
+# 救不回来，直接打破「同一 entity 在同一 group 只有一个 participant」。bind
+# 是人工稀有操作，409 是可接受的失败模式；读时截断不是。
+IDENTITY_MAX_ACCOUNTS_PER_ENTITY_PER_PLATFORM = 8
+
+
+def _assert_activity_bonus_reachable() -> None:
+    """Startup assertion: the activity count cap must be able to reach MAX_BONUS.
+
+    The read-side formula is ``min(MAX_BONUS, min(cap, sum_mc) * WEIGHT)`` with
+    ``cap = ceil(MAX_BONUS / WEIGHT)``. The two ceilings are numerically
+    redundant, and THAT REDUNDANCY IS WHAT BLOCKS MULTI-ACCOUNT FARMING:
+    deleting the outer ``min(MAX_BONUS, ...)`` makes the supremum ``0.02 * N``,
+    which at N=8 is 0.16 — past the 0.15 arbitration margin, and reachable in
+    practice. That outer min is exactly the kind of thing a refactor deletes as
+    "implied by the cap".
+
+    This assertion guards the other half: if any constant drifts so that the
+    cap can no longer reach MAX_BONUS, fail loud instead of silently turning
+    the activity ceiling into a number nobody declared.
+    """
+    import math
+
+    if SPEAKER_TRUST_ACTIVITY_MAX_BONUS <= 0 or SPEAKER_TRUST_ACTIVITY_WEIGHT <= 0:
+        return
+    cap = math.ceil(
+        SPEAKER_TRUST_ACTIVITY_MAX_BONUS / SPEAKER_TRUST_ACTIVITY_WEIGHT
+    )
+    if cap * SPEAKER_TRUST_ACTIVITY_WEIGHT < SPEAKER_TRUST_ACTIVITY_MAX_BONUS:
+        raise AssertionError(
+            "SPEAKER_TRUST_ACTIVITY_MAX_BONUS is unreachable: "
+            f"ceil({SPEAKER_TRUST_ACTIVITY_MAX_BONUS}/"
+            f"{SPEAKER_TRUST_ACTIVITY_WEIGHT}) * "
+            f"{SPEAKER_TRUST_ACTIVITY_WEIGHT} < "
+            f"{SPEAKER_TRUST_ACTIVITY_MAX_BONUS}"
+        )
+
+
+_assert_activity_bonus_reachable()
+
 # ── 混合记忆召回（recall_memory 工具后端） ───────────────────────────────
 # 模型决定调 recall_memory(query) 时，memory_server 在内存里并行跑 BM25 +
 # cosine 召回，两路各自阈值过滤 + 限 top-K，RRF 融合后整体再限 N 条返回。
@@ -265,6 +385,20 @@ HYBRID_RECALL_TIME_BUDGET = 8            # 按时间回溯（recall_memory time 
 HYBRID_RECALL_COSINE_THRESHOLD = 0.3     # cosine < 阈值视为不相关
 HYBRID_RECALL_BM25_THRESHOLD = 0.1       # BM25 < 阈值视为不相关（保 small-pool exact match）
 HYBRID_RECALL_RRF_K = 60                 # RRF 常数（k=60 = Elastic / OpenSearch 默认）
+
+# 召回池解析缓存（memory.hybrid_recall._POOL_CACHE）保留的文件数上限。
+# 每个角色占 2 个文件（facts_archive.json + reflections.json），所以 6 ≈ 同时
+# 保持 3 个角色是"热"的。
+#
+# 这个闸管的是**闲置角色**的常驻：缓存没有淘汰时，凡是被召回过的角色都会把
+# 整份归档永久留在内存里，多角色安装等于同时为所有角色付费，而通常只有一个
+# 在用。LRU 一上，闲置的自然掉出去。
+#
+# ⚠️ 它**不**给单个超大归档设上限——把当前活跃角色的池子淘汰掉，只会把每次
+# 召回重新解析一遍的成本还回来，而那正是这个缓存存在的理由。限制单角色语料
+# 总量是另一个问题（归档分片，见 #2716）。
+# 调小到 2 会让"两个角色交替说话"退化成每轮都重新解析，别为了省几十 MB 这么调。
+HYBRID_RECALL_POOL_CACHE_MAX_FILES = 6
 
 # ========================================================================
 # §3.7 LLM Context & Output Budget
@@ -676,6 +810,73 @@ MEMORY_REFINE_CRON_INTERVAL_SECONDS = 1800
 - 30 分钟一次；engine 内 cluster_hash skip 让"刚审过"的 cluster
   零成本跳过，所以高频触发也不会浪费 LLM token。
 - 两条 cron 用同一间隔，靠 _INITIAL_DELAY_* 错峰起始。"""
+
+# ---- Memory: scoped subject 淘汰（群记忆系列 5/7 主线一） ----
+# scoped（群/成员）条目拿不到任何 evidence 信号（fact 写盘即
+# signal_processed=True、reflection 直落 confirmed、surfacing legacy-only），
+# score 驱动的 sub_zero 归档对它们结构性不可达。scoped 的淘汰维度只有
+# 时间：按「subject 最后写入时间」超期归档。判据从数据本身推导
+# （per-subject max(created_at)，facts 为主、reflection/persona 时间戳并入
+# 取 max 的保守口径），刻意不建 sidecar 账本——PR#2394 的教训是账本比数据
+# 活得久就会永久失联，嵌在数据里的判据在结构上不可能失配。
+
+SCOPED_SUBJECT_ARCHIVE_ENABLED = True
+"""scoped subject 时间驱动归档的总开关。关掉后 sweep 只跳过，不影响
+score 驱动的 legacy 归档。"""
+
+SCOPED_SUBJECT_STALE_DAYS = 90
+"""subject 最后写入时间超过此天数（严格大于）→ 该 subject 的
+fact / reflection / persona 条目整体归档。恰好 N 天不归档。90 天
+≈ 一个季度没有任何新写入的群/成员，其记忆继续占据渲染与召回
+候选池的价值已低于串味/矛盾风险。"""
+
+SCOPED_SUBJECT_ARCHIVE_DRY_RUN = False
+"""True 时 sweep 只打「将归档」日志（域标识+条数，不含原文），不动
+任何数据。排查判据用的逃生阀。"""
+
+SCOPED_SUBJECT_ARCHIVE_MIN_INTERVAL_SECONDS = 21600
+"""scoped subject 归档阶段在 archive sweep 循环内的最小间隔（秒）。
+判据粒度是天，6h 一次绰绰有余；挂在 1h 一轮的
+_periodic_archive_sweep_loop 里靠进程内时间戳节流。"""
+
+# ---- Memory: scoped 轻量 refine（群记忆系列 5/7 主线二） ----
+# scoped 条目结构性进不了本体 MemoryRefineEngine 的两条 cron（entity 白名
+# 单只有 master/neko/relationship），语义重复与矛盾条目会无限并存，谁进
+# prompt 由 2000-token 裁剪决定。这里是 scoped 专用的轻量对偶：
+#   本体 = correction tier + thinking + 3 cluster/轮 + 定期全扫；
+#   scoped = summary tier + 无 thinking + 全角色每轮 1 个 cluster +
+#            仅在单 subject 条目数达阈值时触发。
+# 分桶键必须是 (kind, subject_id, scope)——所有群共享 entity='group_chat'，
+# 按 entity 分桶会把 A 群和 B 群塞进同一个 cosine cluster 跨群覆写
+# （成文先例见 memory/fact_dedup.py 的 _bucket_key docstring）。
+
+SCOPED_REFINE_MIN_ENTRIES = 8
+"""单 (subject, 存储) 池触发 refine 的最小条目数。per-subject 渲染预算
+2000 token ≈ 10-15 条典型条目，8 条起审让合并发生在预算裁剪开始
+静默丢条目之前。"""
+
+SCOPED_REFINE_COSINE_THRESHOLD = 0.82
+"""scoped cluster 的 cosine 阈值，沿用本体 refine 的取值（聚类找
+"相关"而非 dedup 找"等价"）。"""
+
+SCOPED_REFINE_TOPK_PER_ENTRY = 5
+"""邻接图上单条目最多保留的近邻数（同本体 refine 的双 cap 第二条）。"""
+
+SCOPED_REFINE_CLUSTER_SIZE_MAX = 5
+"""单 cluster 上限。比本体的 6 略紧：lite prompt 无 thinking，控制单
+次决策面让 summary tier 模型稳定输出。"""
+
+SCOPED_REFINE_REVISIT_AFTER_DAYS = 30
+"""同一 cluster_hash 的重审窗口，同本体取值。"""
+
+SCOPED_REFINE_CRON_INTERVAL_SECONDS = 1800
+"""scoped refine cron 的轮询间隔（秒）。每轮全角色最多 1 次 LLM 调用
+（1 个 cluster），配合 cluster_hash skip 高频空转零成本。"""
+
+SCOPED_REFINE_LLM_TIMEOUT_SECONDS = 60
+"""scoped refine 单次 LLM 调用超时（秒）。无 thinking + 单 cluster 输出
+量小，60s 对齐 fact_dedup 的裁决调用；不用本体 refine 的 110s——lite
+管线的存在前提就是比本体便宜。"""
 
 # ---- Memory: recall ----
 RECALL_COARSE_OVERSAMPLE = 3

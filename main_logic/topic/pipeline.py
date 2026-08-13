@@ -1131,7 +1131,12 @@ class TopicHookPool:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 atomic_write_json(path, payload, ensure_ascii=False, indent=2)
             except Exception:
-                logger.debug("topic used-history persistence failed", exc_info=True)
+                # 不上抛、不重试是有意的：失败后果只是跨重启丢一次 used-topic
+                # 历史（同话题重启后可能再投一次），而把失败上抛会在只读盘上
+                # 直接压掉 topic 投递，明显更糟，也没有现成的重试通道值得为它
+                # 新建。但 debug 在生产默认 INFO 下等于不可见，一个永久不可写的
+                # state 目录现在完全无法诊断。调用频率低（投递 + purge），不刷屏。
+                logger.warning("topic used-history persistence failed", exc_info=True)
 
 
 def _default_topic_trigger():

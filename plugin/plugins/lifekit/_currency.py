@@ -6,32 +6,16 @@ https://frankfurter.dev/v1/
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 import httpx
 
 _BASE = "https://api.frankfurter.dev/v1"
 _TIMEOUT = 8.0
 
-# 常见货币的中文名
-CURRENCY_NAMES: Dict[str, str] = {
-    "CNY": "人民币", "USD": "美元", "EUR": "欧元", "JPY": "日元",
-    "GBP": "英镑", "KRW": "韩元", "HKD": "港币", "TWD": "新台币",
-    "SGD": "新加坡元", "AUD": "澳元", "CAD": "加元", "CHF": "瑞士法郎",
-    "THB": "泰铢", "MYR": "马来西亚林吉特", "INR": "印度卢比",
-    "BRL": "巴西雷亚尔", "SEK": "瑞典克朗",
-    "NOK": "挪威克朗", "DKK": "丹麦克朗", "NZD": "新西兰元",
-    "ZAR": "南非兰特", "MXN": "墨西哥比索", "PHP": "菲律宾比索",
-    "IDR": "印尼盾", "CZK": "捷克克朗", "PLN": "波兰兹罗提",
-    "HUF": "匈牙利福林", "TRY": "土耳其里拉", "ILS": "以色列谢克尔",
-    "BGN": "保加利亚列弗", "RON": "罗马尼亚列伊", "ISK": "冰岛克朗",
-}
-
-
 def currency_label(code: str) -> str:
-    """返回 '美元(USD)' 格式的标签。"""
-    name = CURRENCY_NAMES.get(code.upper(), "")
-    return f"{name}({code.upper()})" if name else code.upper()
+    """Return the locale-neutral ISO currency code."""
+    return code.upper()
 
 
 async def convert(
@@ -67,16 +51,3 @@ async def convert(
         }
     except Exception:
         return None
-
-
-async def list_currencies() -> List[Dict[str, str]]:
-    """获取所有支持的货币列表。"""
-    try:
-        async with httpx.AsyncClient(timeout=_TIMEOUT) as c:
-            r = await c.get(f"{_BASE}/currencies")
-            if r.status_code != 200:
-                return []
-            data = r.json()
-        return [{"code": k, "name": v} for k, v in sorted(data.items())]
-    except Exception:
-        return []

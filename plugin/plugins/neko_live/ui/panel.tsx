@@ -18,7 +18,6 @@ import {
   Tabs,
   Text,
   Textarea,
-  Tooltip,
   Toolbar,
   ToolbarGroup,
   useCallback,
@@ -180,7 +179,6 @@ export default function NekoLivePanel(props: PluginSurfaceProps<DashboardState>)
   const [sessionStartAccepted, setSessionStartAccepted] = useState(false)
   const [startConfirmOpen, setStartConfirmOpen] = useState(false)
   const [stopConfirmOpen, setStopConfirmOpen] = useState(false)
-  const [allowLimitedConnection, setAllowLimitedConnection] = useState(false)
   const [onboardingOpen, setOnboardingOpen] = useState(false)
   const [onboardingStep, setOnboardingStep] = useState(0)
   const [safetyDisableConfirmOpen, setSafetyDisableConfirmOpen] = useState(false)
@@ -496,7 +494,6 @@ export default function NekoLivePanel(props: PluginSurfaceProps<DashboardState>)
       live_room_id: configForm.values.live_room_id,
       live_enabled: configForm.values.live_enabled,
     }
-    setAllowLimitedConnection(false)
     configForm.setField("live_platform", next)
     configForm.setField("live_room_ref", "")
     configForm.setField("live_room_id", "")
@@ -586,7 +583,6 @@ export default function NekoLivePanel(props: PluginSurfaceProps<DashboardState>)
     try {
       const result = unwrapActionResult(await props.api.call("connect_live_room", {
         room_id: roomRef,
-        allow_accountless: livePlatform === "bilibili" && !loginLoggedIn && allowLimitedConnection,
       }))
       const nextConnection = result.connection || result
       const nextState = String(nextConnection.state || "")
@@ -617,7 +613,6 @@ export default function NekoLivePanel(props: PluginSurfaceProps<DashboardState>)
       setLoginState(result)
       if (result.status === "qrcode_ready") toast.info(t("panel.auth.scanHint"))
       else if (result.logged_in || result.status === "already_logged_in" || result.status === "done") {
-        setAllowLimitedConnection(false)
         toast.success(t("panel.auth.loggedIn"))
         await refreshDashboard(true)
       }
@@ -635,7 +630,6 @@ export default function NekoLivePanel(props: PluginSurfaceProps<DashboardState>)
       const result = unwrapActionResult(await props.api.call("bili_login_check"))
       setLoginState(result)
       if (result.status === "done" || result.logged_in) {
-        setAllowLimitedConnection(false)
         toast.success(t("panel.auth.loginDone"))
         await refreshDashboard(true)
       } else if (result.message) {
@@ -654,7 +648,6 @@ export default function NekoLivePanel(props: PluginSurfaceProps<DashboardState>)
     try {
       const result = unwrapActionResult(await props.api.call("bili_logout"))
       setLoginState(result)
-      setAllowLimitedConnection(false)
       toast.success(t("panel.auth.logoutDone"))
       await refreshDashboard(true)
     } catch (err) {
@@ -943,6 +936,14 @@ export default function NekoLivePanel(props: PluginSurfaceProps<DashboardState>)
         }
       }
     })()
+    return () => {
+      if (twitchValidationGenerationRef.current === generation) {
+        twitchValidationGenerationRef.current += 1
+      }
+      if (twitchValidationClientRef.current === clientId) {
+        twitchValidationClientRef.current = ""
+      }
+    }
   }, [consoleDialog, configForm.values.live_platform, configForm.values.twitch_client_id, twitchAuthState?.authorization_state])
 
   async function callSimple(action: string) {
@@ -1074,13 +1075,6 @@ export default function NekoLivePanel(props: PluginSurfaceProps<DashboardState>)
     }
   }
 
-  function enableLimitedConnection() {
-    if (authPending || sessionInProgress) return
-    setAllowLimitedConnection(true)
-    setConsoleDialog("")
-    toast.warning(t("panel.console.limitedEnabled"))
-  }
-
   function completeOnboarding() {
     try {
       window.localStorage.setItem(ONBOARDING_STORAGE_KEY, "done")
@@ -1210,12 +1204,8 @@ export default function NekoLivePanel(props: PluginSurfaceProps<DashboardState>)
   )
   const consoleState = connectPending || connectionTransitioning ? "connecting" : connectionFailed ? "error" : started ? "live" : "ready"
   const accountReady = livePlatform === "douyin" ? douyinLoggedIn : livePlatform === "twitch" ? twitchLoggedIn : loginLoggedIn
-  const connectionAuthMode = String(connection.auth_mode || "unknown")
-  const limitedConnection = livePlatform === "bilibili" && !loginLoggedIn && (
-    allowLimitedConnection || connectionAuthMode === "limited_accountless"
-  )
-  const loginRequired = livePlatform === "bilibili" && !loginLoggedIn && !limitedConnection
-  const accountStartReady = livePlatform === "bilibili" ? (loginLoggedIn || limitedConnection) : livePlatform === "twitch" ? twitchLoggedIn : douyinLoggedIn
+  const loginRequired = livePlatform === "bilibili" && !loginLoggedIn
+  const accountStartReady = livePlatform === "bilibili" ? loginLoggedIn : livePlatform === "twitch" ? twitchLoggedIn : douyinLoggedIn
   const savedCooldownSeconds = Number(config.rate_limit_seconds ?? configForm.values.rate_limit_seconds ?? 20)
   const liveSettingsReady = Boolean(String(config.live_mode || configForm.values.live_mode || "").trim()) && Number.isFinite(savedCooldownSeconds) && savedCooldownSeconds >= 0
   const unsafeSafetyStates = new Set(["paused", "tripped", "degraded"])
@@ -1238,7 +1228,7 @@ export default function NekoLivePanel(props: PluginSurfaceProps<DashboardState>)
         ? t("panel.console.state.error")
         : !roomConfigured
           ? t("panel.console.roomMissing")
-          : (!accountReady && !limitedConnection)
+          : !accountReady
             ? t("panel.console.loginRequired")
             : canStart
               ? t("panel.liveStatusSummary.ready_to_stream")
@@ -1254,7 +1244,7 @@ export default function NekoLivePanel(props: PluginSurfaceProps<DashboardState>)
   const showSafetyStatus = started || (!!safetyStatus && safetyStatus !== "disconnected" && safetyStatus !== "unknown")
   const accountLabel = accountReady
     ? (livePlatform === "douyin" ? (douyinNickname || douyinUid || t("panel.douyinAuth.cookieReady")) : livePlatform === "twitch" ? (twitchLogin || twitchUserId || t("panel.twitchAuth.authorized")) : (loginName || loginUid || t("panel.auth.loggedIn")))
-    : (limitedConnection ? t("panel.console.limitedConnection") : t("panel.auth.loggedOut"))
+    : t("panel.auth.loggedOut")
   const modules = Array.isArray(safeState.modules) ? safeState.modules : []
 
   const streamThemeForm = (
@@ -1386,11 +1376,52 @@ export default function NekoLivePanel(props: PluginSurfaceProps<DashboardState>)
                       : t("panel.console.readyHint")}
           </Text>
           {loginRequired && !started ? <Alert tone="info">{t("panel.console.loginRequiredHint")}</Alert> : null}
-          {limitedConnection && !started ? <Alert tone="warning">{t("panel.console.limitedHint")}</Alert> : null}
           <Grid cols={2}>
             <Button tone="default" onClick={() => { openConsoleDialog("theme") }}>{t("panel.streamTheme.title")}</Button>
             <Button tone="default" onClick={() => { openConsoleDialog("pacing") }}>{t("panel.pacing.title")}</Button>
           </Grid>
+          <div
+            className="neko-live-inline-control"
+            aria-label={t("panel.console.runtimeTitle")}
+            title={!started && !canStart && !connectPending ? readinessReason : undefined}
+          >
+            {!started && !canStart && !connectPending ? (
+              <button
+                type="button"
+                className="neko-button"
+                data-tone="default"
+                aria-describedby="neko-live-readiness-reason"
+                disabled
+                style={{ width: "100%", minHeight: "48px", display: "inline-flex", alignItems: "center", justifyContent: "center", gap: "8px", cursor: "not-allowed" }}
+              >
+                <span aria-hidden="true" style={{ width: "8px", height: "8px", borderRadius: "999px", background: "var(--warning)" }} />
+                {t("panel.console.preparation.notReady")}
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="neko-button"
+                data-tone={started ? "danger" : "success"}
+                disabled={connectPending || !!simpleActionPending}
+                onClick={() => {
+                  if (started) setStopConfirmOpen(true)
+                  else if (canStart) setStartConfirmOpen(true)
+                }}
+                style={{ width: "100%", minHeight: "48px", display: "inline-flex", alignItems: "center", justifyContent: "center", gap: "8px" }}
+              >
+                <span aria-hidden="true" style={{ width: "8px", height: "8px", borderRadius: "999px", background: started ? "var(--danger)" : connectPending ? "var(--primary)" : "var(--success)" }} />
+                {connectPending ? t("panel.console.state.connecting") : started ? t("panel.actions.disconnect") : t("panel.actions.connect")}
+              </button>
+            )}
+            {!started && !canStart && !connectPending ? (
+              <span
+                id="neko-live-readiness-reason"
+                style={{ position: "absolute", width: "1px", height: "1px", padding: 0, margin: "-1px", overflow: "hidden", clip: "rect(0, 0, 0, 0)", whiteSpace: "nowrap", border: 0 }}
+              >
+                {readinessReason}
+              </span>
+            ) : null}
+          </div>
         </Stack>
       </Card>
 
@@ -1471,10 +1502,7 @@ export default function NekoLivePanel(props: PluginSurfaceProps<DashboardState>)
             <Stack>
               <AuthCard t={t} loginState={loginState} loginLoggedIn={loginLoggedIn} loginName={loginName} loginUid={loginUid} disabled={sessionInProgress || !!authPending} onLogin={biliLogin} onLoginCheck={biliLoginCheck} onLogout={biliLogout} />
               {!loginLoggedIn ? (
-                <Stack gap={8}>
-                  <Alert tone="info">{t("panel.console.loginPrimaryHint")}</Alert>
-                  <Button tone="warning" disabled={!!authPending || sessionInProgress} onClick={enableLimitedConnection}>{t("panel.console.useLimitedConnection")}</Button>
-                </Stack>
+                <Alert tone="info">{t("panel.console.loginPrimaryHint")}</Alert>
               ) : null}
             </Stack>
           )}
@@ -1668,65 +1696,6 @@ export default function NekoLivePanel(props: PluginSurfaceProps<DashboardState>)
       />
         </Stack>
       </div>
-      <div
-        className="neko-live-live-fab"
-        aria-label={t("panel.console.runtimeTitle")}
-        style={{ position: "fixed", right: "24px", bottom: "24px", zIndex: 100, display: "inline-flex", alignItems: "center", justifyContent: "center" }}
-      >
-        {!started && !canStart && !connectPending ? (
-          <Tooltip content={readinessReason} placement="top">
-            <span tabIndex={0} style={{ display: "inline-flex" }}>
-              <button
-              type="button"
-              className="neko-button"
-              data-tone="default"
-              disabled
-              style={{ minWidth: "148px", minHeight: "48px", borderRadius: "999px", display: "inline-flex", alignItems: "center", justifyContent: "center", gap: "8px", cursor: "not-allowed", boxShadow: "0 10px 28px rgba(15, 23, 42, 0.16)" }}
-            >
-              <span aria-hidden="true" style={{ width: "8px", height: "8px", borderRadius: "999px", background: "var(--warning)" }} />
-              {t("panel.console.preparation.notReady")}
-              </button>
-            </span>
-          </Tooltip>
-        ) : (
-          <button
-            type="button"
-            className="neko-button"
-            data-tone={started ? "danger" : "success"}
-            disabled={connectPending || !!simpleActionPending}
-            onClick={() => {
-              if (started) setStopConfirmOpen(true)
-              else if (canStart) setStartConfirmOpen(true)
-            }}
-            style={{
-              minWidth: "148px",
-              minHeight: "48px",
-              borderRadius: "999px",
-              display: "inline-flex",
-              alignItems: "center",
-              justifyContent: "center",
-              gap: "8px",
-              boxShadow: "0 10px 28px rgba(15, 23, 42, 0.16)",
-              ...(!started && canStart && !simpleActionPending
-                ? {
-                    minWidth: "188px",
-                    minHeight: "56px",
-                    borderRadius: "16px",
-                    background: "rgba(103, 194, 58, 0.1)",
-                    borderColor: "rgba(103, 194, 58, 0.38)",
-                    color: "var(--success)",
-                    fontSize: "22px",
-                    fontWeight: 700,
-                    opacity: 1,
-                  }
-                : {}),
-            }}
-          >
-            <span aria-hidden="true" style={{ width: "8px", height: "8px", borderRadius: "999px", background: started ? "var(--danger)" : connectPending ? "var(--primary)" : "var(--success)" }} />
-            {connectPending ? t("panel.console.state.connecting") : started ? t("panel.actions.disconnect") : t("panel.actions.connect")}
-          </button>
-        )}
-      </div>
     </div>
   )
 
@@ -1813,6 +1782,15 @@ export default function NekoLivePanel(props: PluginSurfaceProps<DashboardState>)
         latestResult.event.host_beat_title,
       ].filter(Boolean).join(" / ")
     : ""
+  const liveEventsModule = modules.find((item: any) => String(item?.id || "") === "live_events") || {}
+  const liveEventsStatus = liveEventsModule.status || {}
+  const submittedRouteCount = (route: string) => results.filter((row: any) => (
+    String(row?.status || "") === "pushed" && interactionRoute(row) === route
+  )).length
+  const coStreamAvatarRoastCount = submittedRouteCount("avatar_roast")
+  const coStreamDanmakuCount = submittedRouteCount("danmaku_response")
+  const coStreamSupportCount = submittedRouteCount("live_support_events")
+  const coStreamAmbientCount = Number(liveEventsStatus.ambient_publish_count || 0)
 
   // Live roast card header state.
   const roastEnabled = configForm.values.avatar_roast_enabled !== false
@@ -1901,6 +1879,44 @@ export default function NekoLivePanel(props: PluginSurfaceProps<DashboardState>)
       </Stack>
     </Card>
   )
+
+  const coStreamCapabilityValue = (configured: boolean, channelKey: "respond" | "read", count: number) => (
+    <Stack gap={4}>
+      <StatusBadge
+        tone={configured && connection.connected && configForm.values.live_enabled ? "success" : (configured ? "warning" : "default")}
+        label={configured ? (connection.connected && configForm.values.live_enabled ? t("panel.modules.online") : t("panel.modules.standby")) : t("panel.modules.off")}
+      />
+      <Text>{t(`panel.coStreamEffects.channel.${channelKey}`)} · {t("panel.coStreamEffects.submitted")}: {count}</Text>
+    </Stack>
+  )
+
+  const coStreamEffectsCard = liveMode === "co_stream" ? (
+    <Card title={t("panel.coStreamEffects.title")}>
+      <Stack gap={12}>
+        <Text>{t("panel.coStreamEffects.hint")}</Text>
+        <Grid cols={4}>
+          <StatCard
+            label={t("panel.interaction.module.avatarRoast.title")}
+            value={coStreamCapabilityValue(!!configForm.values.avatar_roast_enabled, "respond", coStreamAvatarRoastCount)}
+          />
+          <StatCard
+            label={t("panel.interaction.module.danmakuResponse.title")}
+            value={coStreamCapabilityValue(!!configForm.values.danmaku_response_enabled, "respond", coStreamDanmakuCount)}
+          />
+          <StatCard
+            label={t("panel.interaction.module.liveSupportEvents.title")}
+            value={coStreamCapabilityValue(!!configForm.values.live_support_events_enabled, "respond", coStreamSupportCount)}
+          />
+          <StatCard
+            label={t("panel.coStreamEffects.ambientContext")}
+            value={coStreamCapabilityValue(liveEventsModule.enabled === true, "read", coStreamAmbientCount)}
+          />
+        </Grid>
+        <Alert tone="info">{t("panel.coStreamEffects.deliveryLimit")}</Alert>
+        <Text>{t("panel.coStreamEffects.soloOnly")}</Text>
+      </Stack>
+    </Card>
+  ) : null
 
   // First-appearance roast card.
   const renderAvatarRoastCard = (m: any) => (
@@ -2010,6 +2026,7 @@ export default function NekoLivePanel(props: PluginSurfaceProps<DashboardState>)
   const interactionDialogContent = interactionDialog === "avatar_roast" ? (
     <Stack>
       <Text>{t("panel.interaction.module.avatarRoast.desc")}</Text>
+      <Text>{t("panel.interaction.module.avatarRoast.repeatRequestHint")}</Text>
       <ToggleSwitch checked={!!configForm.values.avatar_analysis_enabled} disabled={!configForm.values.avatar_roast_enabled || settingsSaving} label={t("panel.interaction.module.avatarRoast.avatarAnalysis")} onChange={(v) => { applySettingsPatch({ avatar_analysis_enabled: v }) }} />
       <Text>{t("panel.interaction.module.avatarRoast.avatarAnalysisHint")}</Text>
       <StatusBadgeRow t={t} items={[
@@ -2102,6 +2119,7 @@ export default function NekoLivePanel(props: PluginSurfaceProps<DashboardState>)
   const modulesSection = (
     <Stack>
       {currentDecisionCard}
+      {coStreamEffectsCard}
       {renderInteractionGroupHeader(t("panel.interaction.group.audience"), t("panel.interaction.group.audienceHint"))}
       <div style={interactionCardGridStyle}>
         <ModuleRenderBoundary title={t("panel.interaction.module.avatarRoast.title")} render={() => renderAvatarRoastCard(interactionModuleById.avatar_roast)} t={t} />
@@ -2459,7 +2477,7 @@ export default function NekoLivePanel(props: PluginSurfaceProps<DashboardState>)
                       columns={[
                         { key: "uid", label: "UID", render: (row: any) => row.uid || "-" },
                         { key: "nickname", label: t("panel.columns.nickname"), render: (row: any) => row.nickname || "-" },
-                        { key: "status", label: t("panel.columns.status"), render: (row: any) => <StatusBadge tone={row.status === "pushed" ? "success" : "warning"} label={localizedStatusCode(t, String(row.status || ""))} /> },
+                        { key: "status", label: t("panel.columns.status"), render: (row: any) => <StatusBadge tone={row.status === "pushed" ? "success" : row.status === "queued" ? "default" : "warning"} label={localizedStatusCode(t, String(row.status || ""))} /> },
                         { key: "reason", label: t("panel.columns.reason"), render: (row: any) => row.reason || row.output || "-" },
                       ]}
                     />

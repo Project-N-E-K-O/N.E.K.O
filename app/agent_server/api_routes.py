@@ -328,12 +328,20 @@ async def openclaw_availability():
         return status
     reason = reasons[0] if reasons else ""
     was_openclaw_enabled = bool(Modules.agent_flags.get("openclaw_enabled"))
-    was_ready = bool(((Modules.capability_cache or {}).get("openclaw") or {}).get("ready"))
+    previous_capability = dict((Modules.capability_cache or {}).get("openclaw") or {})
+    was_ready = bool(previous_capability.get("ready"))
     _set_capability("openclaw", False, reason)
     if was_openclaw_enabled:
         Modules.agent_flags["openclaw_enabled"] = False
         Modules.notification = _openclaw_notification("AGENT_OPENCLAW_CAPABILITY_LOST", reasons)
-    if was_openclaw_enabled or was_ready:
+    # The popup requests the state snapshot and this availability probe in
+    # parallel.  When the snapshot wins the race it contains the startup
+    # PENDING value, so every terminal transition must be pushed even if the
+    # disabled capability was never previously ready.
+    capability_changed = previous_capability != (
+        (Modules.capability_cache or {}).get("openclaw") or {}
+    )
+    if was_openclaw_enabled or was_ready or capability_changed:
         await _emit_agent_status_update()
     return status
 

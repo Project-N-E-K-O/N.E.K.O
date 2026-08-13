@@ -17,6 +17,7 @@
 
     var MAX_EXPORT_SELECTION = 100;
     var DEFAULT_USER_EXPORT_AVATAR = '/static/icons/avatar/master-avatar.png';
+    var MUSIC_EXPORT_PLACEHOLDER_COVER = '/static/assets/music/music-cover-placeholder.png';
     var EXPORT_PREVIEW_SHELL_URL = '/static/chat-export-preview-shell.html';
     var exportPreviewWindowSequence = 0;
     var exportPreviewAssetVersion = getCurrentExportAssetVersion();
@@ -446,24 +447,62 @@
         return '';
     }
 
-    function extractBlocksPlainText(blocks) {
+    function isMemeExportMessage(message) {
+        if (!message) return false;
+        if (String(message.id || '').startsWith('meme-')) return true;
+        return Array.isArray(message.blocks) && message.blocks.some(function (block) {
+            return block && block.type === 'image'
+                && String(block.url || '').startsWith('/api/meme/proxy-image');
+        });
+    }
+
+    function isMusicExportBlock(message, block) {
+        if (!block || block.type !== 'link') return false;
+        if (String((message && message.id) || '').startsWith('music-')) return true;
+        return /^\/api\/music\/play\//.test(String(block.url || ''));
+    }
+
+    function isMusicExportMessage(message) {
+        return !!(message && Array.isArray(message.blocks) && message.blocks.some(function (block) {
+            return isMusicExportBlock(message, block);
+        }));
+    }
+
+    function getMusicExportCover(block) {
+        return String((block && block.thumbnailUrl) || MUSIC_EXPORT_PLACEHOLDER_COVER);
+    }
+
+    function extractBlocksPlainText(message) {
+        var blocks = message && message.blocks;
         if (!Array.isArray(blocks)) return '';
+        var memeOnly = isMemeExportMessage(message);
+        var musicOnly = isMusicExportMessage(message);
         var parts = [];
         blocks.forEach(function (block) {
             if (!block || typeof block !== 'object') return;
+            if (memeOnly && block.type !== 'image') return;
+            if (musicOnly && !isMusicExportBlock(message, block)) return;
             if (block.type === 'text') {
                 if (block.text) parts.push(String(block.text));
                 return;
             }
             if (block.type === 'image') {
+                if (memeOnly) return;
                 var alt = block.alt ? String(block.alt) : '';
                 parts.push('[' + translateLabel('chat.exportImageLabel', 'Image')
                     + (alt ? ': ' + alt : '') + ']');
                 return;
             }
             if (block.type === 'link') {
+                if (isMusicExportBlock(message, block)) {
+                    if (block.title) parts.push(String(block.title));
+                    if (block.description) parts.push(String(block.description));
+                    return;
+                }
                 var title = block.title ? String(block.title) : String(block.url || '');
-                parts.push(title + ' (' + String(block.url || '') + ')');
+                var url = String(block.url || '');
+                if (title && url) parts.push(title + ' (' + url + ')');
+                else if (title) parts.push(title);
                 return;
             }
             if (block.type === 'status') {
@@ -480,11 +519,16 @@
         return parts.join('\n').trim();
     }
 
-    function blocksToMarkdown(blocks) {
+    function blocksToMarkdown(message) {
+        var blocks = message && message.blocks;
         if (!Array.isArray(blocks)) return '';
+        var memeOnly = isMemeExportMessage(message);
+        var musicOnly = isMusicExportMessage(message);
         var lines = [];
         blocks.forEach(function (block) {
             if (!block || typeof block !== 'object') return;
+            if (memeOnly && block.type !== 'image') return;
+            if (musicOnly && !isMusicExportBlock(message, block)) return;
             if (block.type === 'text') {
                 if (block.text) lines.push(String(block.text));
                 return;
@@ -496,6 +540,14 @@
                 return;
             }
             if (block.type === 'link') {
+                if (isMusicExportBlock(message, block)) {
+                    var musicTitle = block.title ? String(block.title).replace(/\]/g, ' ') : '';
+                    var musicArtist = block.description ? String(block.description) : '';
+                    lines.push('![' + musicTitle + '](' + getMusicExportCover(block) + ')');
+                    if (musicTitle) lines.push(musicTitle);
+                    if (musicArtist) lines.push(musicArtist);
+                    return;
+                }
                 var title = block.title ? String(block.title).replace(/\]/g, ' ') : String(block.url || '');
                 lines.push('[' + title + '](' + String(block.url || '') + ')');
                 if (block.description) lines.push('> ' + String(block.description));
@@ -515,7 +567,8 @@
         return lines.join('\n\n').trim();
     }
 
-    function collectImageDescriptors(blocks) {
+    function collectImageDescriptors(message) {
+        var blocks = message && message.blocks;
         if (!Array.isArray(blocks)) return [];
         var result = [];
         blocks.forEach(function (block) {
@@ -527,6 +580,20 @@
                 });
             }
         });
+        if (result.length === 0) {
+            blocks.some(function (block) {
+                if (!isMusicExportBlock(message, block)) return false;
+                var title = block.title ? String(block.title) : '';
+                var artist = block.description ? String(block.description) : '';
+                result.push({
+                    type: 'image',
+                    source: getMusicExportCover(block),
+                    fallbackSource: MUSIC_EXPORT_PLACEHOLDER_COVER,
+                    alt: title + (artist ? ' — ' + artist : '')
+                });
+                return true;
+            });
+        }
         return result;
     }
 
@@ -552,9 +619,9 @@
             rawRole: message.role,
             avatarUrl: avatarUrl,
             avatarLabel: avatarLabel,
-            textContent: extractBlocksPlainText(message.blocks),
-            markdownContent: blocksToMarkdown(message.blocks),
-            mediaDescriptors: collectImageDescriptors(message.blocks),
+            textContent: extractBlocksPlainText(message),
+            markdownContent: blocksToMarkdown(message),
+            mediaDescriptors: collectImageDescriptors(message),
             blocks: message.blocks
         };
     }
@@ -866,6 +933,16 @@
         }
     }
 
+    function loadExportImageDescriptor(descriptor) {
+        return inlineImageSourceToDataUrl(descriptor.source)
+            .then(loadImageElement)
+            .catch(function (error) {
+                var fallbackSource = descriptor.fallbackSource;
+                if (!fallbackSource || fallbackSource === descriptor.source) throw error;
+                return inlineImageSourceToDataUrl(fallbackSource).then(loadImageElement);
+            });
+    }
+
     async function resolveImageEntryMedia(entries) {
         var cache = new Map();
         var resolved = [];
@@ -893,8 +970,7 @@
                 var key = descriptor.source || descriptor.alt || ('image-' + i + '-' + j);
                 var promise = cache.get(key);
                 if (!promise) {
-                    promise = inlineImageSourceToDataUrl(descriptor.source)
-                        .then(loadImageElement)
+                    promise = loadExportImageDescriptor(descriptor)
                         .catch(function (error) {
                             logExportError('resolveImageEntryMedia', error);
                             return null;
@@ -2194,25 +2270,31 @@
             measureCtx.font = isAssistant ? lyricAssistantFont : lyricUserFont;
             var lyricLines = entry.textContent ? wrapTextLines(measureCtx, entry.textContent, textMaxWidth) : [];
             var noteLines = [];
+            var images = [];
             if (entry.media && entry.media.length > 0) {
                 measureCtx.font = noteFont;
                 entry.media.forEach(function (m) {
                     if (m.type === 'note' && m.text) {
                         noteLines = noteLines.concat(wrapTextLines(measureCtx, m.text, textMaxWidth));
                     } else if (m.type === 'image') {
-                        noteLines.push('[' + translateLabel('chat.exportImageLabel', 'Image')
-                            + (m.alt ? ': ' + m.alt : '') + ']');
+                        var size = fitImageToWidth(m.image, textMaxWidth, 300);
+                        images.push({ image: m.image, width: size.width, height: size.height });
                     }
                 });
             }
+            var imagesHeight = images.reduce(function (sum, image) {
+                return sum + image.height + 12;
+            }, 0);
             var blockHeight = 24  // role
                 + lyricLines.length * lyricLineHeight
+                + imagesHeight
                 + noteLines.length * noteLineHeight + (noteLines.length > 0 ? 8 : 0)
                 + 12;  // bottom gap
             return {
                 entry: entry,
                 isAssistant: isAssistant,
                 lyricLines: lyricLines,
+                images: images,
                 noteLines: noteLines,
                 blockHeight: blockHeight
             };
@@ -2311,6 +2393,11 @@
             ctx.fillStyle = isAssistant ? theme.lyricAssistant : theme.lyricUser;
             drawWrappedText(ctx, m.lyricLines, textX, y, lyricLineHeight);
             y += m.lyricLines.length * lyricLineHeight;
+
+            m.images.forEach(function (image) {
+                ctx.drawImage(image.image, textX, y, image.width, image.height);
+                y += image.height + 12;
+            });
 
             if (m.noteLines.length > 0) {
                 ctx.font = noteFont;
@@ -3002,7 +3089,7 @@
 
             var preview = doc.createElement('div');
             preview.className = 'chat-export-selection-preview';
-            var previewText = extractBlocksPlainText(message.blocks);
+            var previewText = extractBlocksPlainText(message);
             preview.textContent = previewText.length > 160
                 ? previewText.slice(0, 160) + '…'
                 : previewText;

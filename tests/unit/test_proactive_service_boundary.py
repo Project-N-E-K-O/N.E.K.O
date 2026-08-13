@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from config import APP_NAME
+from main_logic import music_playback, music_requests
 from main_logic.proactive_chat import (
     break_reminders,
     contracts,
@@ -160,6 +161,311 @@ def test_proactive_domain_logs_to_main_service(module) -> None:
     assert module.logger.name == f"{APP_NAME}.Main.{module.__name__}"
 
 
+@pytest.mark.parametrize(
+    ("value", "keyword", "song", "artist", "playlist", "source", "strict"),
+    (
+        ("source:liked", "", "", "", "", "liked", True),
+        ("source：daily", "", "", "", "", "daily", True),
+        ("playlist:夜间循环", "", "", "", "夜间循环", "auto", True),
+        ("song:晴天|周杰伦", "晴天 周杰伦", "晴天", "周杰伦", "", "auto", True),
+        ("personalized", "", "", "", "", "auto", False),
+        ("周杰伦", "周杰伦", "", "", "", "auto", False),
+    ),
+)
+def test_parse_music_request_directives(
+    value,
+    keyword,
+    song,
+    artist,
+    playlist,
+    source,
+    strict,
+) -> None:
+    request = music_recommendation._parse_music_request(value)
+
+    assert request.keyword == keyword
+    assert request.song_name == song
+    assert request.song_artist == artist
+    assert request.playlist_name == playlist
+    assert request.personalization_source == source
+    assert request.strict is strict
+
+
+@pytest.mark.asyncio
+async def test_strict_music_request_does_not_fall_back(monkeypatch) -> None:
+    fetch = AsyncMock(return_value={"success": False, "data": []})
+    monkeypatch.setattr(music_recommendation, "fetch_music_content", fetch)
+
+    result = await music_recommendation._fetch_music_with_fallback("source:liked")
+
+    assert result is None
+    fetch.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_recent_user_query_skips_proactive_search(monkeypatch) -> None:
+    scope = "YUI-query-dedupe"
+    user_request = music_requests.MusicRequest(
+        keyword="童年",
+        song_name="童年",
+    )
+    music_requests.mark_music_request_query(scope, user_request)
+    fetch = AsyncMock()
+    monkeypatch.setattr(music_recommendation, "fetch_music_content", fetch)
+
+    result = await music_recommendation._fetch_music_with_fallback(
+        "童年",
+        lanlan_name=scope,
+    )
+
+    assert result is None
+    fetch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_successful_proactive_query_is_remembered(monkeypatch) -> None:
+    scope = "YUI-proactive-query"
+    fetch = AsyncMock(
+        return_value={
+            "success": True,
+            "data": [{"name": "童年", "url": "/music/childhood"}],
+        }
+    )
+    monkeypatch.setattr(music_recommendation, "fetch_music_content", fetch)
+
+    result = await music_recommendation._fetch_music_with_fallback(
+        "童年",
+        lanlan_name=scope,
+    )
+
+    assert result is not None
+    assert result["_strict_song_request"] is False
+    assert music_requests.was_music_request_recent(
+        scope,
+        music_requests.MusicRequest(keyword="童年"),
+    )
+
+
+@pytest.mark.asyncio
+async def test_music_failsafe_only_applies_to_strict_song_request(
+    monkeypatch,
+) -> None:
+    fuzzy_content = {
+        "raw_data": {
+            "best_match": {"status": "fuzzy"},
+        }
+    }
+
+    normal_context = music_recommendation._build_music_dynamic_context(
+        selected_music_link={"title": "Track"},
+        music_content=fuzzy_content,
+        is_playing_music=False,
+        master_name="User",
+        lang="zh",
+    )
+    fetch = AsyncMock(
+        return_value={
+            "success": True,
+            "data": [{"name": "童年", "url": "/music/childhood"}],
+            "best_match": {"status": "fuzzy"},
+        }
+    )
+    monkeypatch.setattr(music_recommendation, "fetch_music_content", fetch)
+    strict_content, _ = await generation._fetch_phase1_followups(
+        parsed={"music_keyword": "song:童年", "music_pass": False},
+        has_music_task=True,
+        has_meme_task=False,
+        music_content=None,
+        meme_content=None,
+        proactive_lang="zh",
+        lanlan_name="YUI-fuzzy-data-flow",
+    )
+    strict_context = music_recommendation._build_music_dynamic_context(
+        selected_music_link={"title": "Track"},
+        music_content=strict_content,
+        is_playing_music=False,
+        master_name="User",
+        lang="zh",
+    )
+
+    assert strict_content["raw_data"]["_strict_song_request"] is True
+    assert "未找到与关键词精准匹配" not in normal_context
+    assert "未找到与关键词精准匹配" in strict_context
+
+
+@pytest.mark.asyncio
+async def test_controlled_music_request_preserves_failure_reason() -> None:
+    fetch = AsyncMock(
+        return_value={
+            "success": False,
+            "error_code": "cookie_invalid",
+            "data": [],
+        }
+    )
+
+    result = await music_requests.fetch_music_request(
+        music_requests.MusicRequest(personalization_source="liked"),
+        fetcher=fetch,
+        include_failure=True,
+    )
+
+    assert result["error_code"] == "cookie_invalid"
+
+
+def test_music_playback_keeps_core_entrypoints_thin() -> None:
+    core_dir = Path(__file__).parents[2] / "main_logic" / "core"
+    streaming_source = (core_dir / "streaming.py").read_text(encoding="utf-8")
+    turn_source = (core_dir / "turn.py").read_text(encoding="utf-8")
+    tool_source = (core_dir / "tool_calling.py").read_text(encoding="utf-8")
+
+    assert "music_request" not in streaming_source
+    assert "music_request" not in turn_source
+    assert "_execute_music_request" not in tool_source
+    assert "music_playback" not in tool_source
+    assert "play_music" not in tool_source
+
+
+def test_confirmed_music_playback_stays_passive() -> None:
+    manager = SimpleNamespace(
+        lanlan_name="YUI",
+        submit_proactive_callback=MagicMock(),
+        enqueue_agent_callback=MagicMock(),
+    )
+    event = {
+        "state": "playing",
+        "playback_id": "player:1",
+        "playback_window_id": "window:1",
+        "playback_started_at": 100,
+        "source": "proactive",
+        "track": {"name": "大喜", "artist": "泠鸢yousa"},
+    }
+
+    assert music_playback.handle_music_playback_state(manager, event) is True
+    callback = manager.enqueue_agent_callback.call_args.args[0]
+    assert callback["delivery_mode"] == "passive"
+    assert callback["channel"] == "music_playback"
+    assert "播放器已确认开始播放《大喜》（泠鸢yousa）" in callback["detail"]
+    assert "不要再次调用音乐播放工具" not in callback["detail"]
+    manager.submit_proactive_callback.assert_not_called()
+
+    assert music_playback.handle_music_playback_state(manager, event) is False
+    manager.enqueue_agent_callback.assert_called_once()
+
+
+def test_non_user_music_state_is_passive_and_coalesced() -> None:
+    manager = SimpleNamespace(
+        lanlan_name="YUI",
+        submit_proactive_callback=MagicMock(),
+        enqueue_agent_callback=MagicMock(),
+    )
+
+    assert music_playback.handle_music_playback_state(
+        manager,
+        {
+            "state": "playing",
+            "playback_id": "player:2",
+            "playback_window_id": "window:2",
+            "playback_started_at": 200,
+            "source": "proactive",
+            "track": {"name": "勾指起誓", "artist": "洛天依"},
+        },
+    ) is True
+
+    callback = manager.enqueue_agent_callback.call_args.args[0]
+    assert callback["delivery_mode"] == "passive"
+    assert callback["coalesce_key"] == "music-playback-state:YUI"
+    manager.submit_proactive_callback.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("reported_reason", "expected_reason"),
+    (("load_timeout", "load_timeout"), ("secret conversation", "unknown")),
+)
+def test_music_playback_error_logs_only_sanitized_reason(
+    monkeypatch,
+    reported_reason: str,
+    expected_reason: str,
+) -> None:
+    warning = MagicMock()
+    monkeypatch.setattr(music_playback.logger, "warning", warning)
+    manager = SimpleNamespace(
+        lanlan_name="YUI",
+        submit_proactive_callback=MagicMock(),
+        enqueue_agent_callback=MagicMock(),
+    )
+
+    assert music_playback.handle_music_playback_state(
+        manager,
+        {
+            "state": "error",
+            "reason": reported_reason,
+            "playback_id": "player:error",
+            "playback_window_id": "window:error",
+            "playback_started_at": 250,
+            "source": "proactive",
+            "track": {"name": "Track", "artist": "Artist"},
+        },
+    ) is True
+
+    callback = manager.enqueue_agent_callback.call_args.args[0]
+    assert callback["metadata"]["failure_reason"] == expected_reason
+    warning.assert_called_once_with(
+        "[%s] 音乐播放器报告失败: reason=%s",
+        "YUI",
+        expected_reason,
+    )
+    if expected_reason == "unknown":
+        assert reported_reason not in repr(warning.call_args)
+
+
+def test_music_playback_keeps_current_owner_until_track_finishes() -> None:
+    manager = SimpleNamespace(
+        lanlan_name="YUI",
+        submit_proactive_callback=MagicMock(),
+        enqueue_agent_callback=MagicMock(),
+    )
+    event = {
+        "state": "playing",
+        "playback_id": "player:current",
+        "playback_window_id": "window:current",
+        "playback_started_at": 100,
+        "source": "proactive",
+    }
+
+    assert music_playback.handle_music_playback_state(manager, event) is True
+
+    event["state"] = "ended"
+    assert music_playback.handle_music_playback_state(manager, event) is True
+    assert manager.enqueue_agent_callback.call_count == 2
+    manager.submit_proactive_callback.assert_not_called()
+
+
+def test_music_playback_rejects_stale_windows() -> None:
+    manager = SimpleNamespace(
+        lanlan_name="YUI",
+        submit_proactive_callback=MagicMock(),
+        enqueue_agent_callback=MagicMock(),
+    )
+
+    current_event = {
+        "state": "playing",
+        "playback_id": "player:new",
+        "playback_window_id": "window:new",
+        "playback_started_at": 200,
+        "source": "proactive",
+    }
+    stale_window_event = {
+        "state": "ended",
+        "playback_id": "player:old",
+        "playback_window_id": "window:old",
+        "playback_started_at": 100,
+        "source": "music_play_url",
+    }
+    assert music_playback.handle_music_playback_state(manager, current_event) is True
+    assert music_playback.handle_music_playback_state(manager, stale_window_event) is False
+    manager.enqueue_agent_callback.assert_called_once()
+
+
 def test_proactive_router_is_a_thin_ordered_adapter() -> None:
     source = inspect.getsource(proactive_chat_flow.proactive_chat)
 
@@ -190,6 +496,89 @@ def test_proactive_router_is_a_thin_ordered_adapter() -> None:
     assert ".websocket" not in service_source
     assert ".send_json(" not in service_source
     assert service_source.count("push_mini_game_invite_options(") >= 2
+
+
+def test_music_dedupe_is_recorded_only_after_delivery_commit() -> None:
+    source = inspect.getsource(service.handle_proactive_chat)
+
+    commit = source.index("delivery_commit = await _commit_proactive_delivery(")
+    committed = source.index("committed_delivery = delivery_commit.delivery")
+    mark_played = source.index("mark_music_as_played(")
+    record = source.index("recorded_result = await _record_committed_delivery(")
+    assert commit < committed < mark_played < record
+    assert "committed_delivery.is_music_used" in source
+    assert "committed_delivery.delivered_music_link" in source
+    assert "mark_music_as_played(track)" not in inspect.getsource(
+        music_recommendation._select_music_recommendation
+    )
+
+
+def test_music_selection_trims_skipped_tracks_before_delivery_fallback() -> None:
+    tracks = [
+        {
+            "name": "easy hiphop",
+            "artist": "VibeDepot",
+            "url": "https://freemusicarchive.org/track/easy-hiphop/stream/",
+        },
+        {
+            "name": "Nocturne in B flat minor",
+            "artist": "Pianist A",
+            "url": "https://dl.musopen.org/nocturne-flat.mp3",
+        },
+        {
+            "name": "Left Track",
+            "artist": "Singer",
+            "url": "/api/music/play/netease/123",
+        },
+        {
+            "name": "calm hiphop",
+            "artist": "VibeDepot",
+            "url": "https://freemusicarchive.org/track/calm-hiphop/stream/",
+        },
+        {
+            "name": "Nocturne in B minor",
+            "artist": "Pianist B",
+            "url": "https://dl.musopen.org/nocturne-minor.mp3",
+        },
+    ]
+    skipped_urls = {track["url"] for track in tracks[:3]}
+    music_content = {
+        "formatted_content": "music candidates",
+        "raw_data": {"success": True, "data": tracks},
+    }
+
+    selection = music_recommendation._select_music_recommendation(
+        music_content,
+        lang="en",
+        source_hash=lambda url, _title: url,
+        should_skip_source=lambda key: key in skipped_urls,
+        lanlan_name="YUI",
+    )
+
+    assert selection.link["title"] == "calm hiphop"
+    assert [
+        track["name"] for track in selection.content["raw_data"]["data"]
+    ] == ["calm hiphop", "Nocturne in B minor"]
+
+    source_links = [selection.link]
+    appended = music_recommendation._append_music_recommendations(
+        source_links,
+        selection.content,
+    )
+
+    assert appended == 1
+    assert [link["title"] for link in source_links] == [
+        "calm hiphop",
+        "Nocturne in B minor",
+    ]
+
+
+def test_proactive_command_parses_music_occupied() -> None:
+    command = contracts.ProactiveChatCommand.from_payload(
+        {"is_music_occupied": True}
+    )
+
+    assert command.is_music_occupied is True
 
 
 def _wire_router_dependencies(monkeypatch, handle_result) -> tuple[object, object]:
@@ -387,6 +776,81 @@ async def test_service_missing_manager_returns_domain_result() -> None:
     }
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    (
+        "request_language",
+        "render_language",
+        "manager_language",
+        "manager_explicit",
+        "expected_language",
+    ),
+    (
+        (None, "ja", "en", False, "ja"),
+        (None, "ja", "zh-TW", True, "zh-TW"),
+        ("pt", "ja", "zh-TW", True, "pt"),
+    ),
+)
+async def test_voice_fast_path_passes_request_locale_without_mutating_manager(
+    monkeypatch,
+    request_language,
+    render_language,
+    manager_language,
+    manager_explicit,
+    expected_language,
+) -> None:
+    class _VoiceSession:
+        pass
+
+    monkeypatch.setattr(service, "OmniRealtimeClient", _VoiceSession)
+    monkeypatch.setattr(
+        service,
+        "_advance_mini_game_invite_entry",
+        lambda *_args, **_kwargs: None,
+    )
+    trigger = AsyncMock(return_value=False)
+    manager = SimpleNamespace(
+        is_active=True,
+        session=_VoiceSession(),
+        is_goodbye_silent=lambda: False,
+        last_user_message_time=None,
+        state=SimpleNamespace(can_start_proactive=lambda *, session: True),
+        trigger_voice_proactive_nudge=trigger,
+        user_language=manager_language,
+        _user_language_explicit=manager_explicit,
+        _conversation_render_language=None,
+    )
+    original_language_state = (
+        manager.user_language,
+        manager._user_language_explicit,
+        manager._conversation_render_language,
+    )
+
+    await service.handle_proactive_chat(
+        contracts.ProactiveChatCommand(
+            lanlan_name="Yui",
+            voice_mode=True,
+            i18n_language=request_language,
+            render_language=render_language,
+        ),
+        config_manager=SimpleNamespace(),
+        session_manager=SimpleNamespace(get=lambda _lanlan_name: manager),
+        character_data=_CHARACTER_DATA,
+        game_route_active_for=lambda _lanlan_name: False,
+        break_config_manager_provider=lambda: SimpleNamespace(),
+        run_mini_game_invite_short_circuit=AsyncMock(),
+        push_mini_game_invite_options=AsyncMock(),
+        push_mini_game_invite_resolved=AsyncMock(),
+    )
+
+    trigger.assert_awaited_once_with(language=expected_language)
+    assert (
+        manager.user_language,
+        manager._user_language_explicit,
+        manager._conversation_render_language,
+    ) == original_language_state
+
+
 @pytest.mark.parametrize(
     ("name", "canonical"),
     (
@@ -411,6 +875,16 @@ def test_locale_helpers_accept_legacy_data_keyword_from_all_import_paths() -> No
         system_router_facade._resolve_proactive_locale,
     ):
         assert resolver(data={"language": "en"}, mgr=mgr) == "en"
+        assert resolver(
+            data={"render_language": "zh-CN"},
+            mgr=mgr,
+            fmt="prompt",
+        ) == "zh"
+        assert resolver(
+            data={"render_language": "zh-TW"},
+            mgr=mgr,
+            fmt="prompt",
+        ) == "zh-TW"
 
     for resolver in (
         service._resolve_topic_hook_locale,
@@ -418,6 +892,18 @@ def test_locale_helpers_accept_legacy_data_keyword_from_all_import_paths() -> No
         system_router_facade._resolve_topic_hook_locale,
     ):
         assert resolver(data={"language": "zh-TW"}, mgr=mgr, fallback="zh") == "zh-TW"
+
+
+def test_topic_hook_locale_uses_render_language_without_declaring_it(monkeypatch) -> None:
+    mgr = SimpleNamespace(user_language="en", _user_language_explicit=False)
+    data = {"render_language": "zh-TW"}
+    monkeypatch.setattr(service, "get_global_language_full", lambda: "en")
+
+    assert service._resolve_topic_hook_locale(data, mgr, fallback="zh-CN") == "zh-TW"
+    assert service._resolve_declared_topic_hook_locale(data, mgr) is None
+    assert service._new_dialog_locale_params(data, mgr) == {
+        "render_language": "zh-TW",
+    }
 
 
 def test_safe_fire_proactive_done_is_exported_from_legacy_paths() -> None:

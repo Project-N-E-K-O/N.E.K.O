@@ -59,6 +59,18 @@ uv run python -m plugin.neko_plugin_cli.cli install qq_auto_reply.neko-plugin
 uv run python -m plugin.neko_plugin_cli.cli analyze qq_auto_reply mijia
 ```
 
+To add or safely upgrade the standard Market GitHub Actions files in an
+existing plugin repository, run from the N.E.K.O checkout:
+
+```bash
+uv run python -m plugin.neko_plugin_cli.cli setup-repo /path/to/plugin-repo \
+  --upgrade-github-actions
+```
+
+Add `--dry-run` to preview the plan. The migration only manages `ruff.toml`,
+`.github/workflows/verify.yml`, and `.github/workflows/release.yml`. If any of
+those files contains unrecognized custom content, no files are changed.
+
 ## Backend API Response Surface
 
 The plugin manager backend exposes the same package workflow with explicit response models:

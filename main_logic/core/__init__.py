@@ -189,8 +189,8 @@ import httpx
 # (#2148).
 #
 # State-carrying objects (the notice queue/lock, the
-# ``_proactive_expected_sid`` ContextVar, ``_notified_legacy_voices``) are
-# re-exported by reference; their single owner is the defining submodule.
+# proactive ContextVars, ``_notified_legacy_voices``) are re-exported by
+# reference; their single owner is the defining submodule.
 # ``notices._prominent_notice_seq`` is intentionally NOT re-exported: the
 # owner rebinds that int on every enqueue, so a facade snapshot would go
 # stale immediately (no external reader exists).
@@ -221,6 +221,7 @@ from ._shared import (  # noqa: F401
     FRONTEND_START_SESSION_TIMEOUT_SECONDS,
     CROSS_MODE_RESTART_WAIT_SECONDS,
     _proactive_expected_sid,
+    _proactive_published_text_chunks,
     NO_RETRY_TTS_CODES,
     IMMEDIATE_REPORT_TTS_CODES,
     _STATIC_LOCALES_DIR,

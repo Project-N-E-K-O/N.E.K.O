@@ -69,6 +69,9 @@ def _has_recent_active_hook(recent_results: Any) -> bool:
         status = str(result.get("status") or "")
         if status not in {"pushed", "dry_run"}:
             continue
+        # Provisional product inference: pushed is only a host handoff and
+        # dry_run is only a simulation. Neither proves viewers heard the hook.
+        # Keep this proxy explicit until correlated playback results exist.
         event = result.get("event") if isinstance(result.get("event"), dict) else {}
         source = public_text(event.get("source"))
         if source == "active_engagement":

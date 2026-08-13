@@ -36,7 +36,15 @@ class DouyinTransportState:
     def safe_state(self) -> str:
         value = self.state if isinstance(self.state, str) else ""
         text = value.strip().lower()
-        allowed = {"disconnected", "connecting", "connected", "receiving", "reconnecting", "unsupported"}
+        allowed = {
+            "disconnected",
+            "auth_required",
+            "connecting",
+            "connected",
+            "receiving",
+            "reconnecting",
+            "unsupported",
+        }
         return text if text in allowed else "unknown"
 
     def safe_error(self) -> str:

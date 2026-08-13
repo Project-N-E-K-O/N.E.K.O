@@ -43,8 +43,12 @@ DEFAULT_MASTER_TEMPLATE = {
 # DEFAULT_LANLAN_TEMPLATE.live2d.model_path 与 main_routers/characters_router.py
 # 里"未设置 Live2D 模型时的回退"逻辑共享这个常量，避免两处漂移。新增/替换默认
 # 模型只需要改这一处。
-DEFAULT_LIVE2D_MODEL_NAME = "yui-origin"
+DEFAULT_LIVE2D_MODEL_NAME = "yui-lolita"
 DEFAULT_LIVE2D_MODEL_PATH = f"{DEFAULT_LIVE2D_MODEL_NAME}/{DEFAULT_LIVE2D_MODEL_NAME}.model3.json"
+
+# 随包发的内置 Live2D 模型（assets/<name>.tar.gz → static/<name>/）。角色卡导出/
+# 创意工坊上传要靠这个集合识别"这不是用户自己导入的模型，不用打进包里"。
+BUILTIN_LIVE2D_MODEL_NAMES = ("yui-lolita", "yui-origin")
 
 DEFAULT_LANLAN_TEMPLATE = {
     "test": {

@@ -26,6 +26,13 @@ from config.prompts.prompts_proactive import (
     get_proactive_music_strict_constraint,
     get_proactive_music_unknown_track_name,
 )
+from main_logic.music_requests import (
+    MusicRequest as _MusicRequest,
+    fetch_music_request,
+    mark_music_request_query,
+    parse_music_request as _parse_music_request,
+    was_music_request_recent,
+)
 from utils.logger_config import get_module_logger
 from utils.music_crawlers import fetch_music_content
 
@@ -233,7 +240,10 @@ def _build_music_dynamic_context(
             ),
         )
         raw_data = music_content.get("raw_data", {}) if music_content else {}
-        if raw_data.get("best_match", {}).get("status") == "fuzzy":
+        if (
+            raw_data.get("_strict_song_request")
+            and raw_data.get("best_match", {}).get("status") == "fuzzy"
+        ):
             context += get_proactive_music_failsafe_hint(master_name, lang)
 
     if is_playing_music:
@@ -246,20 +256,25 @@ async def _fetch_music_with_fallback(
     *,
     lanlan_name: str = "",
 ) -> dict | None:
-    """Search by keyword, falling back to a random recommendation."""
-    try:
-        result = await fetch_music_content(keyword=keyword, limit=5)
-        if result and result.get("success"):
-            return result
-    except Exception as exc:
-        logger.warning("[%s] 音乐关键词 %r 搜索异常: %s", lanlan_name, keyword, exc)
-
-    logger.warning("[%s] 音乐关键词 %r 搜索失败，尝试随机推荐", lanlan_name, keyword)
-    try:
-        return await fetch_music_content(keyword="", limit=5)
-    except Exception as exc:
-        logger.warning("[%s] 随机音乐推荐异常: %s", lanlan_name, exc)
+    """Resolve a music directive, preserving strict source and song requests."""
+    request = _parse_music_request(keyword)
+    if was_music_request_recent(lanlan_name, request):
+        logger.info("[%s] 跳过近期已搜索的音乐请求: %r", lanlan_name, keyword)
         return None
+
+    result = await fetch_music_request(
+        request,
+        limit=5,
+        fetcher=fetch_music_content,
+        allow_keyword_fallback=True,
+    )
+    if result:
+        result = {**result, "_strict_song_request": bool(request.song_name)}
+    if result and result.get("success") and result.get("data"):
+        mark_music_request_query(lanlan_name, request)
+    if result is None:
+        logger.warning("[%s] 音乐请求 %r 未命中", lanlan_name, keyword)
+    return result
 
 
 def _record_music_played_through(lanlan_name: str) -> int:

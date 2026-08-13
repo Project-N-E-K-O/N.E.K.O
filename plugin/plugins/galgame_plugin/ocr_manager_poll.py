@@ -127,14 +127,15 @@ class PollMixin:
     """tick 循环、poll 调度、生命周期管理"""
 
     def _reset_default_ocr_state(self) -> None:
-        self._default_ocr_state.reset()
+        self._dialogue_pipeline.reset(reason="ocr_runtime_reset")
+        self._last_dialogue_decision = None
         self._consecutive_no_text_polls = 0
         self._last_capture_error = ""
         self._last_raw_ocr_text = ""
         self._ocr_capture_content_trusted = True
         self._ocr_capture_rejected_reason = ""
-        self._last_observed_line = {}
-        self._last_stable_line = {}
+        self._capture_region_occluded = False
+        self._capture_target_foreground = False
         self._last_capture_image_hash = ""
         self._last_capture_source_size = {}
         self._last_capture_rect = {}
@@ -166,7 +167,7 @@ class PollMixin:
             self._aihong_stage == _AIHONG_MENU_STAGE
             or bool(str(self._aihong_menu_ocr_state.last_raw_text or "").strip())
         )
-        self._aihong_menu_ocr_state.reset()
+        self._dialogue_pipeline.reset_menu_text_state()
         self._aihong_stage = _AIHONG_DIALOGUE_STAGE
         self._aihong_dialogue_idle_polls = 0
         self._aihong_menu_missing_polls = 0
@@ -199,12 +200,44 @@ class PollMixin:
             now=now,
             capture_backend_kind=extraction.capture_backend_kind,
         )
-        self._default_ocr_state.reset()
+        self._dialogue_pipeline.reset_default_text_state()
         self._ocr_lang_detector.reset()
         self._reset_aihong_menu_state()
         result.warnings.append(
             f"ocr_reader background capture backend not suitable: {reason}"
         )
+        return True
+
+    def _record_capture_trust_metadata(self, extraction: OcrExtractionResult) -> None:
+        self._capture_target_foreground = bool(extraction.target_foreground)
+        self._capture_region_occluded = bool(extraction.capture_region_occluded)
+        self._ocr_capture_content_trusted = bool(extraction.capture_content_trusted)
+        self._ocr_capture_rejected_reason = str(
+            extraction.capture_untrusted_reason or ""
+        )
+
+    def _handle_untrusted_capture(
+        self,
+        extraction: OcrExtractionResult,
+        *,
+        now: float,
+        result: OcrReaderTickResult,
+    ) -> bool:
+        if extraction.capture_content_trusted:
+            return False
+        self._record_rejected_ocr_text(
+            extraction.text,
+            reason=extraction.capture_untrusted_reason or "untrusted_capture_source",
+            now=now,
+            capture_backend_kind=extraction.capture_backend_kind,
+        )
+        result.warnings.append(
+            "ocr_reader ignored text from an untrusted capture source"
+        )
+        self._dialogue_pipeline.reset_default_text_state()
+        self._dialogue_pipeline.reset_title_narration_candidate()
+        self._ocr_lang_detector.reset()
+        self._reset_aihong_menu_state()
         return True
 
 
@@ -253,14 +286,29 @@ class PollMixin:
             self._release_rapidocr_backend()
         except Exception as exc:
             self._log_warning("ocr_reader rapidocr backend release failed: {}", exc)
-        classifier = self.vision_classifier
-        self.vision_classifier = None
-        close_classifier = getattr(classifier, "close", None)
-        if callable(close_classifier):
+        self._vision_classifier_shutdown_requested = True
+        try:
+            if cancelled is None:
+                await asyncio.to_thread(
+                    self._release_vision_classifier,
+                    detail="shutdown",
+                )
+            else:
+                # Once cancellation has started, do not add another await point:
+                # a repeated cancel must not bypass the remaining cleanup.
+                self._release_vision_classifier(detail="shutdown")
+        except asyncio.CancelledError as exc:
+            cancelled = cancelled or exc
             try:
-                close_classifier()
-            except Exception as exc:
-                self._log_warning("ocr_reader vision classifier close failed: {}", exc)
+                # The to_thread call keeps running after cancellation.  Taking
+                # the same lock here waits for it and makes the retry idempotent.
+                self._release_vision_classifier(detail="shutdown")
+            except Exception as release_exc:
+                self._log_warning(
+                    "ocr_reader vision classifier release failed: {}", release_exc
+                )
+        except Exception as exc:
+            self._log_warning("ocr_reader vision classifier release failed: {}", exc)
         try:
             if self._writer.session_id:
                 self._writer.end_session(ts=utc_now_iso(self._time_fn()))
@@ -582,9 +630,8 @@ class PollMixin:
             and self._pending_visual_scene_at > 0
             and now - self._pending_visual_scene_at > _PENDING_VISUAL_SCENE_MAX_SECONDS
         ):
-            self._commit_pending_visual_scene(
-                now=now,
-                diagnostic="pending_scene_committed_by_timeout",
+            self._clear_pending_visual_scene(
+                diagnostic="pending_scene_discarded_by_timeout",
             )
 
         if bool(getattr(self, "_visual_scene_committed", False)):
@@ -595,6 +642,12 @@ class PollMixin:
         detail = self._runtime.detail
         observed_or_stable_emitted = int(self._writer.last_seq or 0) > text_event_seq_before_capture
         known_screen_classified = self._screen_classification_is_known(screen_classification)
+        pending_repeat_waiting = bool(
+            self._pending_visual_scene_hash
+            and self._default_ocr_state.last_block_reason == "waiting_for_repeat"
+        )
+        if pending_repeat_waiting:
+            result.should_rescan = True
 
         if emitted:
             self._reset_known_screen_stuck_tracking()
@@ -624,6 +677,12 @@ class PollMixin:
             if status == "starting":
                 status = "active"
             detail = "capture_failed"
+        elif pending_repeat_waiting:
+            self._mark_observed_progress(now=now)
+            self._last_heartbeat_at = now
+            if status == "starting":
+                status = "active"
+            detail = "receiving_observed_text"
         elif screen_event_emitted or known_screen_classified:
             self._consecutive_no_text_polls = 0
             if status == "starting":
@@ -850,6 +909,7 @@ class PollMixin:
             self._record_capture_geometry(extraction)
             self._capture_backend_kind = extraction.capture_backend_kind
             self._capture_backend_detail = extraction.capture_backend_detail
+            self._record_capture_trust_metadata(extraction)
             active_backend = extraction.backend if extraction.backend.kind else backend_plan.primary
             backend_detail_override = extraction.backend_detail
             result.warnings.extend(extraction.warnings)
@@ -859,6 +919,8 @@ class PollMixin:
                 result=result,
             ):
                 capture_error = True
+            elif self._handle_untrusted_capture(extraction, now=now, result=result):
+                guard_blocked = True
             elif self._observe_background_hash(
                 extraction.background_hash,
                 now=now,
@@ -866,7 +928,7 @@ class PollMixin:
                 defer_scene_emit=after_advance_trigger_mode,
             ):
                 result.should_rescan = True
-            if capture_error:
+            if capture_error or guard_blocked:
                 pass
             elif extraction.text and _looks_like_self_ui_text(extraction.text):
                 guard_blocked = True
@@ -877,7 +939,7 @@ class PollMixin:
                     capture_backend_kind=extraction.capture_backend_kind,
                 )
                 result.warnings.append("ocr_reader ignored text that looks like the N.E.K.O plugin UI")
-                self._default_ocr_state.reset()
+                self._dialogue_pipeline.reset_default_text_state()
                 self._ocr_lang_detector.reset()
                 self._reset_aihong_menu_state()
                 if (
@@ -897,8 +959,11 @@ class PollMixin:
                 if screen_event_emitted:
                     result.should_rescan = True
                 text_event_seq_before_capture = int(self._writer.last_seq or 0)
-                if self._should_skip_dialogue_for_screen_classification(screen_classification):
-                    self._default_ocr_state.reset()
+                if self._should_skip_dialogue_for_screen_classification(
+                    screen_classification,
+                    raw_text=extraction.text,
+                ):
+                    self._dialogue_pipeline.reset_default_text_state()
                     self._reset_aihong_menu_state()
                 elif aihong_two_stage_enabled:
                     if self._aihong_stage == _AIHONG_MENU_STAGE:
@@ -918,10 +983,10 @@ class PollMixin:
                                 extraction.text
                                 and not _looks_like_noise_ocr_text(extraction.text)
                             ):
-                                self._aihong_menu_ocr_state.reset()
+                                self._dialogue_pipeline.reset_menu_text_state()
                                 self._reset_aihong_menu_state()
                             elif self._aihong_menu_missing_polls >= 2:
-                                self._aihong_menu_ocr_state.reset()
+                                self._dialogue_pipeline.reset_menu_text_state()
                                 self._reset_aihong_menu_state()
                     else:
                         dialogue_menu_choices = _coerce_aihong_menu_choices(
@@ -967,6 +1032,7 @@ class PollMixin:
                             not dialogue_emitted
                             and not dialogue_text_is_menu_status
                             and not dialogue_menu_choices
+                            and not self._has_current_cnn_menu_classification()
                             and self._should_attempt_followup_confirm(
                                 extraction.text,
                                 state=self._default_ocr_state,
@@ -989,6 +1055,7 @@ class PollMixin:
                             self._record_capture_geometry(followup_extraction)
                             self._capture_backend_kind = followup_extraction.capture_backend_kind
                             self._capture_backend_detail = followup_extraction.capture_backend_detail
+                            self._record_capture_trust_metadata(followup_extraction)
                             active_backend = (
                                 followup_extraction.backend
                                 if followup_extraction.backend.kind
@@ -1005,6 +1072,12 @@ class PollMixin:
                                 result=result,
                             ):
                                 capture_error = True
+                            elif self._handle_untrusted_capture(
+                                followup_extraction,
+                                now=followup_now,
+                                result=result,
+                            ):
+                                guard_blocked = True
                             elif followup_extraction.text and _looks_like_self_ui_text(followup_extraction.text):
                                 guard_blocked = True
                                 self._record_rejected_ocr_text(
@@ -1013,7 +1086,7 @@ class PollMixin:
                                     now=followup_now,
                                     capture_backend_kind=followup_extraction.capture_backend_kind,
                                 )
-                                self._default_ocr_state.reset()
+                                self._dialogue_pipeline.reset_default_text_state()
                                 self._ocr_lang_detector.reset()
                                 self._reset_aihong_menu_state()
                                 result.warnings.append(
@@ -1052,11 +1125,11 @@ class PollMixin:
                             if dialogue_menu_choices:
                                 self._aihong_stage = _AIHONG_MENU_STAGE
                             else:
-                                self._aihong_menu_ocr_state.reset()
+                                self._dialogue_pipeline.reset_menu_text_state()
                         elif int(self._writer.last_seq or 0) > event_seq_before_capture:
                             self._aihong_dialogue_idle_polls = 0
                             self._aihong_menu_missing_polls = 0
-                            self._aihong_menu_ocr_state.reset()
+                            self._dialogue_pipeline.reset_menu_text_state()
                         else:
                             if dialogue_text_is_menu_status or dialogue_menu_choices:
                                 self._aihong_dialogue_idle_polls = max(
@@ -1107,6 +1180,7 @@ class PollMixin:
                                 self._record_capture_geometry(menu_extraction)
                                 self._capture_backend_kind = menu_extraction.capture_backend_kind
                                 self._capture_backend_detail = menu_extraction.capture_backend_detail
+                                self._record_capture_trust_metadata(menu_extraction)
                                 active_backend = (
                                     menu_extraction.backend
                                     if menu_extraction.backend.kind
@@ -1123,6 +1197,12 @@ class PollMixin:
                                     result=result,
                                 ):
                                     capture_error = True
+                                elif self._handle_untrusted_capture(
+                                    menu_extraction,
+                                    now=menu_now,
+                                    result=result,
+                                ):
+                                    guard_blocked = True
                                 elif menu_extraction.text and _looks_like_self_ui_text(menu_extraction.text):
                                     guard_blocked = True
                                     self._record_rejected_ocr_text(
@@ -1131,7 +1211,7 @@ class PollMixin:
                                         now=menu_now,
                                         capture_backend_kind=menu_extraction.capture_backend_kind,
                                     )
-                                    self._default_ocr_state.reset()
+                                    self._dialogue_pipeline.reset_default_text_state()
                                     self._ocr_lang_detector.reset()
                                     self._reset_aihong_menu_state()
                                     result.warnings.append(
@@ -1157,7 +1237,7 @@ class PollMixin:
                                             menu_extraction.text
                                             and not _looks_like_noise_ocr_text(menu_extraction.text)
                                         ):
-                                            self._aihong_menu_ocr_state.reset()
+                                            self._dialogue_pipeline.reset_menu_text_state()
                                     if menu_result.emitted_kind == "choices":
                                         emitted = True
                                         self._aihong_stage = _AIHONG_MENU_STAGE
@@ -1180,6 +1260,7 @@ class PollMixin:
                     )
                     if (
                         not emitted
+                        and not self._has_current_cnn_menu_classification()
                         and self._should_attempt_followup_confirm(
                             extraction.text,
                             state=self._default_ocr_state,
@@ -1202,6 +1283,7 @@ class PollMixin:
                         self._record_capture_geometry(followup_extraction)
                         self._capture_backend_kind = followup_extraction.capture_backend_kind
                         self._capture_backend_detail = followup_extraction.capture_backend_detail
+                        self._record_capture_trust_metadata(followup_extraction)
                         active_backend = (
                             followup_extraction.backend
                             if followup_extraction.backend.kind
@@ -1218,6 +1300,12 @@ class PollMixin:
                             result=result,
                         ):
                             capture_error = True
+                        elif self._handle_untrusted_capture(
+                            followup_extraction,
+                            now=followup_now,
+                            result=result,
+                        ):
+                            guard_blocked = True
                         elif followup_extraction.text and _looks_like_self_ui_text(followup_extraction.text):
                             guard_blocked = True
                             self._record_rejected_ocr_text(
@@ -1226,7 +1314,7 @@ class PollMixin:
                                 now=followup_now,
                                 capture_backend_kind=followup_extraction.capture_backend_kind,
                             )
-                            self._default_ocr_state.reset()
+                            self._dialogue_pipeline.reset_default_text_state()
                             self._ocr_lang_detector.reset()
                             self._reset_aihong_menu_state()
                             result.warnings.append(

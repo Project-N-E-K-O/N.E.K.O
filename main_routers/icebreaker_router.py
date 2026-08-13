@@ -76,29 +76,41 @@ def _resolve_lanlan_name(raw: Any = None) -> str:
         return ""
 
 
+def _normalize_request_language(raw: Any) -> str | None:
+    if not is_supported_language_code(raw):
+        return None
+    try:
+        return normalize_language_code(str(raw), format="full")
+    except Exception:
+        return None
+
+
 def _absorb_request_language(data: Any, lanlan_name: str | None) -> str | None:
     if not isinstance(data, dict):
         return None
     raw = data.get("i18n_language") or data.get("language") or data.get("lang")
-    if not raw or not is_supported_language_code(raw):
-        return None
-    try:
-        normalized_short = normalize_language_code(str(raw), format="short")
-    except Exception:
-        return None
-    if not normalized_short:
+    render_raw = data.get("render_language")
+    normalized_full = _normalize_request_language(raw)
+    normalized_render = _normalize_request_language(render_raw)
+    if not normalized_full and not normalized_render:
         return None
     try:
         manager = get_session_manager().get(str(lanlan_name or "").strip())
         if manager is not None:
-            normalized_full = normalize_language_code(str(raw), format="full")
-            if normalized_full and getattr(manager, "user_language", None) != normalized_full:
+            if normalized_full and (
+                getattr(manager, "user_language", None) != normalized_full
+                or not getattr(manager, "_user_language_explicit", False)
+            ):
                 setter = getattr(manager, "set_user_language", None)
                 if callable(setter):
                     setter(str(raw))
+            if normalized_render:
+                render_setter = getattr(manager, "set_render_language", None)
+                if callable(render_setter):
+                    render_setter(str(render_raw))
     except Exception:
         logger.debug("icebreaker absorb request language failed lanlan=%s", lanlan_name, exc_info=True)
-    return normalized_short
+    return normalized_full
 
 
 def _strip_ssml_like_tags(text: str) -> str:
@@ -134,7 +146,14 @@ def _build_icebreaker_memory_message(role: str, text: str) -> dict | None:
     }
 
 
-async def _cache_icebreaker_context_memory(*, lanlan_name: str, role: str, text: str) -> tuple[bool, str]:
+async def _cache_icebreaker_context_memory(
+    *,
+    lanlan_name: str,
+    role: str,
+    text: str,
+    language: str | None = None,
+    render_language: str | None = None,
+) -> tuple[bool, str]:
     message = _build_icebreaker_memory_message(role, text)
     if message is None:
         return False, "invalid_memory_message"
@@ -146,6 +165,8 @@ async def _cache_icebreaker_context_memory(*, lanlan_name: str, role: str, text:
             lanlan_name,
             [message],
             timeout_s=ICEBREAKER_MEMORY_CACHE_TIMEOUT_SECONDS,
+            language=language,
+            render_language=render_language,
         )
         return bool(ok), str(err_detail or "")
     except Exception as exc:
@@ -254,10 +275,10 @@ async def icebreaker_route_start(request: Request):
     lanlan_name = _resolve_lanlan_name(data.get("lanlan_name"))
     if not lanlan_name:
         return {"ok": False, "reason": "missing_lanlan_name"}
-    _absorb_request_language(data, lanlan_name)
     session_id = str(data.get("session_id") or "")
     if not session_id:
         return {"ok": False, "reason": "missing_session_id"}
+    _absorb_request_language(data, lanlan_name)
 
     async with _get_icebreaker_route_lock(lanlan_name):
         state = activate_icebreaker_route(lanlan_name, session_id)
@@ -329,7 +350,6 @@ async def icebreaker_context(request: Request):
         return {"ok": False, "reason": "missing_lanlan_name"}
 
     lanlan_name = _resolve_lanlan_name(data.get("lanlan_name"))
-    _absorb_request_language(data, lanlan_name)
     requested_session_id = str(data.get("session_id") or "")
     event = data.get("event") if isinstance(data.get("event"), dict) else {}
     request_id = str(data.get("request_id") or event.get("request_id") or "").strip()
@@ -350,6 +370,8 @@ async def icebreaker_context(request: Request):
     )
     if stale_response:
         return stale_response
+    request_language = _absorb_request_language(data, lanlan_name)
+    request_render_language = _normalize_request_language(data.get("render_language"))
     session_id = requested_session_id or str(state.get("session_id") or "")
 
     mgr = get_session_manager().get(lanlan_name)
@@ -417,6 +439,15 @@ async def icebreaker_context(request: Request):
         lanlan_name=lanlan_name,
         role=role,
         text=text,
+        language=(
+            request_language
+            or (
+                getattr(mgr, "user_language", None)
+                if getattr(mgr, "_user_language_explicit", False)
+                else None
+            )
+        ),
+        render_language=request_render_language,
     )
     if not memory_cached:
         logger.warning(
@@ -480,11 +511,11 @@ async def icebreaker_free_text_interpret(request: Request):
     if stale_response:
         return stale_response
 
-    _absorb_request_language(data, lanlan_name)
-
     options = normalize_icebreaker_free_text_options(data.get("options"))
     if not options:
         return {"ok": False, "reason": "missing_options", "lanlan_name": lanlan_name}
+
+    _absorb_request_language(data, lanlan_name)
 
     try:
         api_config = await get_config_manager().aget_model_api_config("emotion")
@@ -671,7 +702,6 @@ async def icebreaker_speak(request: Request):
     lanlan_name = _resolve_lanlan_name(data.get("lanlan_name"))
     if not lanlan_name:
         return {"ok": False, "reason": "missing_lanlan_name"}
-    _absorb_request_language(data, lanlan_name)
     requested_session_id = str(data.get("session_id") or "")
     state = _get_active_icebreaker_route_state(lanlan_name)
     if not state:
@@ -691,6 +721,7 @@ async def icebreaker_speak(request: Request):
     )
     if stale_response:
         return stale_response
+    _absorb_request_language(data, lanlan_name)
     session_id = requested_session_id or str(state.get("session_id") or "")
     mgr = get_session_manager().get(lanlan_name)
     if not mgr:

@@ -185,6 +185,52 @@ test('route tracking skips exactly one bootstrap page view', async () => {
   assert.deepEqual(trackedTargets, ['/architecture/', '/plugins/'])
 })
 
+test('analytics URLs keep approved campaign tags and remove sensitive query data', async () => {
+  const analytics = await freshAnalyticsModule()
+  const sanitized = analytics.sanitizeAnalyticsPageUrl(
+    'https://project-neko.online/guide/?token=secret&utm_source=newsletter&utm_campaign=desktop_pet&utm_content=hero#account',
+  )
+
+  assert.equal(
+    sanitized.href,
+    'https://project-neko.online/guide/?utm_source=newsletter&utm_campaign=desktop_pet&utm_content=hero',
+  )
+  assert.equal(sanitized.searchParams.has('token'), false)
+  assert.equal(sanitized.hash, '')
+})
+
+test('analytics URL sanitization preserves the source origin for double-slash paths', async () => {
+  const analytics = await freshAnalyticsModule()
+  const sanitized = analytics.sanitizeAnalyticsPageUrl(
+    'https://project-neko.online//attacker.example/path?utm_source=newsletter#account',
+  )
+
+  assert.equal(sanitized.origin, 'https://project-neko.online')
+  assert.equal(sanitized.pathname, '//attacker.example/path')
+  assert.equal(
+    sanitized.href,
+    'https://project-neko.online//attacker.example/path?utm_source=newsletter',
+  )
+})
+
+test('outbound analytics destinations do not include query strings or fragments', async () => {
+  const analytics = await freshAnalyticsModule()
+  const sanitized = analytics.normalizeAnalyticsDestinationUrl(
+    'https://store.steampowered.com/app/4099310/__NEKO/?utm_source=docs&token=secret#reviews',
+  )
+
+  assert.equal(
+    sanitized.href,
+    'https://store.steampowered.com/app/4099310/__NEKO/',
+  )
+
+  const doubleSlashPath = analytics.normalizeAnalyticsDestinationUrl(
+    'https://store.steampowered.com//attacker.example/path?token=secret',
+  )
+  assert.equal(doubleSlashPath.origin, 'https://store.steampowered.com')
+  assert.equal(doubleSlashPath.pathname, '//attacker.example/path')
+})
+
 test('recognizes only the N.E.K.O. Steam store app URL', async () => {
   const analytics = await freshAnalyticsModule()
 
@@ -239,6 +285,17 @@ test('recognizes locale home navigation only when leaving a concrete docs page',
     analytics.isDocsHomeUrl('https://project-neko.cn/', 'https://project-neko.online/guide/'),
     false,
   )
+  assert.equal(
+    analytics.isDocsHomeUrl('/', 'https://project-neko.online:8443/guide/'),
+    false,
+  )
+  assert.equal(
+    analytics.isDocsHomeUrl(
+      'https://project-neko.online:8443/',
+      'https://project-neko.online/guide/',
+    ),
+    false,
+  )
 })
 
 test('delegated Steam CTA tracking emits one consented GA4 event', async () => {
@@ -267,9 +324,8 @@ test('delegated Steam CTA tracking emits one consented GA4 event', async () => {
   assert.equal(eventCommand[0], 'event')
   assert.equal(eventCommand[1], analytics.STEAM_CTA_EVENT_NAME)
   assert.deepEqual(eventCommand[2], {
-    link_url: anchor.href,
+    link_url: 'https://store.steampowered.com/app/4099310/__NEKO/',
     link_domain: 'store.steampowered.com',
-    link_text: 'Get on Steam',
     cta_location: 'hero_en',
     page_location: 'https://project-neko.online/guide/',
     page_title: 'N.E.K.O. Docs',
@@ -277,11 +333,33 @@ test('delegated Steam CTA tracking emits one consented GA4 event', async () => {
   })
 })
 
+test('Steam CTA placement is sanitized before it is sent to GA4', async () => {
+  const analytics = await freshAnalyticsModule()
+  const fixture = browserFixture()
+  const longPlacement = 'x'.repeat(150)
+  const anchor = {
+    href: `https://store.steampowered.com/app/4099310/__NEKO/?utm_content=${longPlacement}&token=secret`,
+  }
+
+  analytics.acceptGoogleAnalytics(fixture)
+  assert.equal(analytics.trackSteamCtaClick(anchor, fixture), true)
+
+  const eventCommand = Array.from(fixture.windowObject.dataLayer.at(-1))
+  assert.equal(eventCommand[2].cta_location, 'x'.repeat(100))
+  assert.equal(eventCommand[2].cta_location.includes('secret'), false)
+  assert.equal(
+    eventCommand[2].link_url,
+    'https://store.steampowered.com/app/4099310/__NEKO/',
+  )
+})
+
 test('delegated docs-to-home tracking emits one consented GA4 event', async () => {
   const analytics = await freshAnalyticsModule()
   const fixture = browserFixture()
+  fixture.windowObject.location.href =
+    'https://project-neko.online/guide/?utm_source=sidebar&token=secret#account'
   const anchor = {
-    href: 'https://project-neko.online/',
+    href: 'https://project-neko.online/?token=secret#account',
     textContent: '  N.E.K.O. Docs  ',
   }
   const target = {
@@ -302,12 +380,12 @@ test('delegated docs-to-home tracking emits one consented GA4 event', async () =
   assert.equal(eventCommand[0], 'event')
   assert.equal(eventCommand[1], analytics.DOCS_HOME_EVENT_NAME)
   assert.deepEqual(eventCommand[2], {
-    link_url: anchor.href,
+    link_url: 'https://project-neko.online/',
     link_domain: 'project-neko.online',
-    link_text: 'N.E.K.O. Docs',
     source_path: '/guide/',
     destination_path: '/',
-    page_location: 'https://project-neko.online/guide/',
+    page_location:
+      'https://project-neko.online/guide/?utm_source=sidebar',
     page_title: 'N.E.K.O. Docs',
     transport_type: 'beacon',
   })

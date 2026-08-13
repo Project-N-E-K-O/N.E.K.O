@@ -9,6 +9,7 @@ from main_logic.proactive_chat import candidate_selection
 from main_logic.proactive_chat import generation as sr_parsing
 from main_logic.proactive_chat import service as proactive_service
 from main_logic.proactive_chat import state as sr
+from config.prompts import prompts_proactive as proactive_prompts
 from config.prompts.prompts_proactive import get_proactive_format_sections
 
 
@@ -182,6 +183,34 @@ keyword: pass template
     assert parsed["meme_keyword"] == "pass template"
     assert parsed["music_pass"] is False
     assert parsed["meme_pass"] is False
+
+
+def test_parse_unified_phase1_preserves_music_directives():
+    for directive in (
+        "source:liked",
+        "source:daily",
+        "playlist:夜间循环",
+        "song:晴天|周杰伦",
+        "personalized",
+    ):
+        parsed = sr_parsing._parse_unified_phase1_result(f"[MUSIC] {directive}")
+        assert parsed["music_keyword"] == directive
+
+
+def test_unified_music_source_conflict_rules_are_localized():
+    conflict_markers = {
+        "ja": "最後に明示された肯定のソース",
+        "ko": "마지막으로 명시한 긍정 소스",
+        "ru": "последний явно выбранный положительный источник",
+        "es": "última fuente elegida de forma positiva",
+        "pt": "última fonte escolhida de forma positiva",
+    }
+
+    for language, marker in conflict_markers.items():
+        section = proactive_prompts._UNIFIED_P1_MUSIC_SECTION[language]
+        assert "source:liked" in section
+        assert "source:daily" in section
+        assert marker in section
 
 
 def test_parse_unified_phase1_keyword_plus_pass_template_line_is_not_pass():

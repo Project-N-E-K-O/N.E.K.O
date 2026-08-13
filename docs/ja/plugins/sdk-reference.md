@@ -15,7 +15,7 @@ from plugin.sdk.plugin import (
     # plugin-local i18n と settings
     PluginI18n, tr, PluginSettings, SettingsField,
     # Result 型
-    Ok, Err, Result, unwrap, unwrap_or,
+    Ok, Err, Result, PushMessageResult, unwrap, unwrap_or,
     # ランタイムヘルパー
     Plugins, PluginRouter, PluginConfig, PluginStore,
     SystemInfo,
@@ -45,7 +45,10 @@ class MyPlugin(NekoPluginBase):
 |----------|------|------|
 | `self.ctx` | `PluginContext` | ランタイムコンテキスト（ホストにより注入） |
 | `self.plugin_id` | `str` | このプラグインの一意の識別子 |
-| `self.config_dir` | `Path` | `plugin.toml` を含むディレクトリ |
+| `self.plugin_dir` | `Path` | コード、Manifest、静的リソースを含むインストール先ディレクトリ |
+| `self.config_dir` | `Path` | `self.plugin_dir` の互換エイリアス |
+| `self.storage_dir` | `Path` | このプラグインに割り当てられたユーザーストレージルート |
+| `self.runtime_config_path` | `Path` | 外部ランタイム設定ファイルのパス |
 | `self.metadata` | `dict` | `plugin.toml` からのプラグインメタデータ |
 | `self.bus` | `SdkBusContext` | host state の read/watch facade。publish/emit API はありません |
 | `self.plugins` | `Plugins` | プラグイン間呼び出しヘルパー |
@@ -65,19 +68,30 @@ self.report_status({
 })
 ```
 
-#### `push_message(**kwargs) -> object`
+#### `push_message(**kwargs) -> PushMessageResult`
 
 v2 schema でホストシステムにメッセージをプッシュします。
 
 ```python
-self.push_message(
+result = self.push_message(
     source="my_feature",
     visibility=["chat"],       # []、["chat"]、["hud"]、または両方
     ai_behavior="blind",       # "respond"、"read"、"blind"
     parts=[{"type": "text", "text": "タスクが完了しました"}],
     priority=5,
 )
+
+if not result["submitted"]:
+    # ローカル状態を保持します。再試行と重複排除はプラグイン側の方針です。
+    self.logger.warning("message submission failed: %s", result["reason"])
 ```
+
+`submitted=True` は、SDK の正規ローカル送信経路が payload の送信責任を
+引き受けたことだけを示します。ホストでの消費、モデル生成、再生完了の
+確認ではありません。拒否理由は `backpressure`、`transport_error`、
+`transport_unavailable` のいずれかで、メッセージ本文や生の例外テキストは含みません。
+拒否結果には従来の呼び出し元との互換性のため `ok=False` も含まれます。新しいコードでは
+`submitted` を正式な判定基準として使用してください。
 
 v1 field（`message_type`、`content`、`delivery`、`reply` および他の legacy alias）は deprecated ですが current source では変換されます。今すぐ移行し、この文書から正確な removal release を保証しないでください。[移行ガイド](./migration-v0.9#push-message-v2)を参照してください。
 
@@ -86,7 +100,17 @@ v1 field（`message_type`、`content`、`delivery`、`reply` および他の leg
 プラグインの `data/` ディレクトリ配下のパスを取得します。
 
 ```python
-db_path = self.data_path("cache.db")  # → <plugin_dir>/data/cache.db
+db_path = self.data_path("records.db")
+# → <storage-root>/plugins/<plugin_id>/data/records.db
+```
+
+#### `cache_path(*parts) -> Path`
+
+プラグインの削除可能なキャッシュディレクトリ配下のパスを取得します。
+
+```python
+preview_path = self.cache_path("preview.png")
+# → <storage-root>/plugins/<plugin_id>/cache/preview.png
 ```
 
 #### `register_dynamic_entry(entry_id, handler, ...) -> bool`

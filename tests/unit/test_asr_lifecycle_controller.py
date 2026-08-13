@@ -71,6 +71,22 @@ def test_prewarming_uses_eight_second_pending_connect_buffer() -> None:
     assert controller.pending_connect_bytes == 0
 
 
+def test_prewarm_expiry_returns_to_local_listen_and_clears_buffer() -> None:
+    controller = VoiceInputLifecycleController(
+        provider_policy=resolve_provider_policy("openai", "provider"),
+        shadow_mode=False,
+    )
+    controller.open(route_mode=VoiceRouteMode.INDEPENDENT)
+    controller.transition(VoiceLifecycleEvent.SOFT_WAKE)
+    controller.accept_audio(_pcm(10), sample_rate_hz=16_000)
+    assert controller.pending_connect_bytes == len(_pcm(10))
+
+    controller.transition(VoiceLifecycleEvent.PREWARM_EXPIRED)
+
+    assert controller.snapshot.state is VoiceLifecycleState.LOCAL_LISTEN
+    assert controller.pending_connect_bytes == 0
+
+
 def test_blocked_route_consumes_audio_without_buffer_or_forward() -> None:
     controller = VoiceInputLifecycleController(
         provider_policy=resolve_provider_policy("gemini", "manual"),

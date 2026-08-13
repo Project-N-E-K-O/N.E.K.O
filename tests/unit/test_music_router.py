@@ -6,6 +6,26 @@ from starlette.requests import Request
 from main_routers import music_router
 
 
+@pytest.fixture(autouse=True)
+def _reset_music_proxy_cache():
+    """Isolate every test in this module from ``music_router.MUSIC_PROXY_CACHE``.
+
+    The cache is a process-wide ``TTLCache`` living in product code, and
+    ``proxy_music`` serves a hit before it validates anything. Tests here reuse
+    a handful of URLs, so a test that leaves an entry behind makes a later test
+    on the same URL take the cache branch and never reach the code it asserts
+    on. Autouse + module-wide so new tests are covered without opting in.
+    """
+    # 具体触发：test_music_proxy_streams_small_file_then_caches_complete_body 会把
+    # https://freemusicarchive.org/song.mp3 写进缓存，随机顺序下排到
+    # test_music_proxy_rejects_unsafe_redirect 之前，后者拿到 200 HIT 而不是 403。
+    music_router.MUSIC_PROXY_CACHE.clear()
+    try:
+        yield
+    finally:
+        music_router.MUSIC_PROXY_CACHE.clear()
+
+
 async def _read_streaming_body(response):
     body = bytearray()
     async for chunk in response.body_iterator:
@@ -253,7 +273,6 @@ async def test_music_proxy_yields_first_chunk_before_upstream_finishes(monkeypat
             return None
 
     monkeypatch.setattr(music_router.httpx, "AsyncClient", FakeClient)
-    music_router.MUSIC_PROXY_CACHE.clear()
     request = Request({"type": "http", "method": "GET", "path": "/api/music/proxy", "headers": []})
 
     response = await music_router.proxy_music("https://freemusicarchive.org/song.mp3", request)
@@ -301,7 +320,6 @@ async def test_music_proxy_streams_small_file_then_caches_complete_body(monkeypa
             return None
 
     monkeypatch.setattr(music_router.httpx, "AsyncClient", FakeClient)
-    music_router.MUSIC_PROXY_CACHE.clear()
     url = "https://freemusicarchive.org/song.mp3"
     request = Request({"type": "http", "method": "GET", "path": "/api/music/proxy", "headers": []})
 
@@ -354,7 +372,6 @@ async def test_music_proxy_does_not_cache_large_or_interrupted_stream(monkeypatc
 
     monkeypatch.setattr(music_router.httpx, "AsyncClient", FakeClient)
     monkeypatch.setattr(music_router, "STREAMING_SIZE_THRESHOLD", 4)
-    music_router.MUSIC_PROXY_CACHE.clear()
     request = Request({"type": "http", "method": "GET", "path": "/api/music/proxy", "headers": []})
 
     large_url = "https://freemusicarchive.org/large.mp3"
