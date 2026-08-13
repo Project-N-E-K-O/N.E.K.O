@@ -35,11 +35,13 @@ def test_live2d_peek_restore_anchor_is_consumed_on_return():
     assert "let live2DPeekRestoreAnchor = null;" in return_block
     assert "live2DPeekRestoreAnchor = returnContainer.__nekoLive2DPeekEdgeAnchor;" in return_block
     assert restore_call in return_block
-    # fire-and-forget 调用必须保留 Promise rejection handler，不能吞掉异常。
+    # The fire-and-forget call must keep its Promise rejection handler so a
+    # failed restore never surfaces as an unhandled rejection.
     assert restore_call + ".catch(() => {});" in return_block
     assert settle_call in return_block
     assert complete_dispatch in return_block
-    # 顺序约束：先 settle 模型边界 → 再恢复贴边探身 → 最后派发 return-complete。
+    # Order constraint: settle the model bounds first, then restore the edge
+    # peek, and only then dispatch return-complete.
     assert return_block.index(settle_call) < return_block.index(restore_call) < return_block.index(complete_dispatch)
 
 
