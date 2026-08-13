@@ -89,7 +89,9 @@ input:focus, select:focus { outline: 3px solid rgba(251, 114, 153, 0.16); border
 .qr-login-image { width: 132px; height: 132px; flex: 0 0 auto; border-radius: 10px; background: white; }
 .qr-login-details { display: grid; gap: 7px; color: var(--muted); font-size: 13px; line-height: 1.45; }
 .qr-login-details strong { color: var(--ink); }
+.qr-login-buttons { display: flex; gap: 14px; }
 .link-button { width: fit-content; padding: 0; border: 0; background: transparent; color: var(--pink-dark); font: inherit; font-weight: 800; cursor: pointer; }
+.link-button.cancel { color: var(--muted); }
 
 .user-form { align-items: stretch; gap: 10px; margin-top: 20px; }
 .user-form input { flex: 1; }

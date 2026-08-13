@@ -270,6 +270,23 @@ def test_static_ui_assets_are_versioned_and_not_cached():
     )
 
     assert 'cache_control="no-cache, no-store, must-revalidate"' in plugin_source
-    assert 'style.css?v=1.1.6' in page
-    assert 'i18n.js?v=1.1.6' in page
-    assert 'script.js?v=1.1.6' in page
+    assert 'style.css?v=1.1.7' in page
+    assert 'i18n.js?v=1.1.7' in page
+    assert 'script.js?v=1.1.7' in page
+
+
+def test_qr_login_panel_can_be_cancelled_and_auto_closes_after_success():
+    plugin_source = (Path(__file__).parents[1] / "__init__.py").read_text(
+        encoding="utf-8"
+    )
+    page = (Path(__file__).parents[1] / "static" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    script = (Path(__file__).parents[1] / "static" / "script.js").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'id="btn-qr-cancel"' in page
+    assert "cancel_qr_login" in plugin_source
+    assert "await callPlugin('cancel_qr_login')" in script
+    assert "}, 2000);" in script

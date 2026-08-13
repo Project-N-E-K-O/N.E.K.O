@@ -68,6 +68,21 @@ function clearQrLogin() {
   qrLogin.countdownTimer = null;
 }
 
+function hideQrLogin() {
+  clearQrLogin();
+  document.getElementById('qr-login-panel').hidden = true;
+}
+
+async function cancelQrLogin() {
+  hideQrLogin();
+  try {
+    await callPlugin('cancel_qr_login');
+  } catch (error) {
+    // The UI is already closed; the server-side QR session will expire shortly.
+    console.warn('Cancel QR login failed:', error);
+  }
+}
+
 function updateQrCountdown() {
   const countdown = document.getElementById('qr-login-countdown');
   if (!countdown || !qrLogin.expiresAt) return;
@@ -122,6 +137,9 @@ async function pollQrLogin(generation) {
       setQrStatus(data.message || '登录成功，配置已自动保存');
       await refreshDashboard(true);
       showToast(data.message || '扫码登录成功，配置已自动保存');
+      setTimeout(() => {
+        document.getElementById('qr-login-panel').hidden = true;
+      }, 2000);
       return;
     }
     if (data.status === 'expired') {
@@ -320,6 +338,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('btn-save').addEventListener('click', () => saveSettings());
   document.getElementById('btn-qr-login').addEventListener('click', requestQrLogin);
   document.getElementById('btn-qr-refresh').addEventListener('click', requestQrLogin);
+  document.getElementById('btn-qr-cancel').addEventListener('click', cancelQrLogin);
   document.getElementById('btn-clear').addEventListener('click', clearCredentials);
   document.getElementById('btn-start').addEventListener('click', () => toggleListening(true));
   document.getElementById('btn-stop').addEventListener('click', () => toggleListening(false));

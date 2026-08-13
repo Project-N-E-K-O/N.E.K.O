@@ -337,6 +337,7 @@ class BiliDMPlugin(NekoPluginBase):
                 {"id": "save_settings", "entry_id": "save_settings"},
                 {"id": "start_qr_login", "entry_id": "start_qr_login"},
                 {"id": "poll_qr_login", "entry_id": "poll_qr_login"},
+                {"id": "cancel_qr_login", "entry_id": "cancel_qr_login"},
                 {"id": "clear_credentials", "entry_id": "clear_credentials"},
                 {"id": "start_listening", "entry_id": "start_listening"},
                 {"id": "stop_listening", "entry_id": "stop_listening"},
@@ -403,6 +404,22 @@ class BiliDMPlugin(NekoPluginBase):
             except Exception as exc:
                 self.logger.warning(f"检查 B站扫码状态失败: {type(exc).__name__}")
                 return Err(SdkError(f"QR_LOGIN_POLL_FAILED: 检查扫码状态失败: {exc}"))
+
+    @ui.action(
+        id="cancel_qr_login",
+        label=tr("actions.qr_login_cancel.label", default="取消扫码登录"),
+        refresh_context=True,
+    )
+    @plugin_entry(
+        id="cancel_qr_login",
+        name=tr("entries.qr_login_cancel.name", default="取消 B站扫码登录"),
+        description=tr("entries.qr_login_cancel.description", default="清理当前 B站二维码登录会话"),
+        input_schema={"type": "object", "properties": {}, "additionalProperties": False},
+    )
+    async def cancel_qr_login(self, **_):
+        async with self._lifecycle_lock:
+            self._qr_login.clear()
+            return Ok({"status": "cancelled", "message": "已取消扫码登录"})
 
     @ui.action(
         id="save_settings",
