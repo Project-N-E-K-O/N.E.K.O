@@ -411,31 +411,31 @@ async def _finalize_freshness(name: str, normalized: str, result: dict) -> None:
     # before that response reaches us, leaving `current` describing an identity
     # that no longer exists.  Publishing 200 would let the card manager cache
     # the obsolete name after its cleanup, and a later reuse of that name would
-    # inherit the preference.  This must stay the last await on the path.
-    await _load_existing_character(name)
+    # inherit the preference.  Under the transaction because this load can
+    # itself migrate and write characters.json; must stay the last await.
+    async with character_config_mutation_lock:
+        await _load_existing_character(name)
 
 
 @router.get("/character/{name}/language-preference")
 async def get_character_language_preference(name: str):
     try:
-        # Deliberately unlocked.  This is the endpoint the frontend hydrates
-        # from under a 2.5s timeout, and queueing it behind a long write
-        # transaction (workshop unsubscribe, card import) degrades the whole
-        # page to the untrusted-cache fallback.  It is safe now that locale
-        # sidecar resolution no longer creates the character directory
-        # (see locale_state._locale_path), so a concurrent delete/rename can
-        # no longer leave an empty old-name directory behind.
-        await _load_existing_character(name)
-        payload = await _request_memory_prompt_locale("GET", name)
+        # Deliberately inside the transaction.  ``ConfigManager.load_characters``
+        # is not a read: on a legacy reserved-field schema it runs
+        # ``migrate_catgirl_reserved`` and saves the migrated snapshot back
+        # (utils/config_manager/characters.py).  An unlocked existence check can
+        # therefore overwrite a concurrent save/delete/rename with its own stale
+        # snapshot.  Holding the lock also closes the delete-and-recreate window
+        # that a name-only check cannot see, without needing an identity token
+        # that ordinary saves would keep invalidating.
+        #
+        # The queueing this costs is far smaller than before this PR: the PUT no
+        # longer holds the lock across its session settlement, and unsubscribe
+        # releases it before the Steam RPC.
+        async with character_config_mutation_lock:
+            await _load_existing_character(name)
+            payload = await _request_memory_prompt_locale("GET", name)
         ui_language = await aload_ui_language_override()
-        # Dropping the lock also dropped the guarantee that the character still
-        # exists once the reads return.  Without this check the endpoint would
-        # answer 200 for a name deleted mid-request, and an in-flight
-        # card-manager hydration could repopulate that name's local language
-        # cache after the deletion cleanup -- which a later reuse of the same
-        # name would inherit.  It must be the *last* await: any suspension point
-        # after it reopens the very window it closes.
-        await _load_existing_character(name)
         payload["effective_language"] = (
             payload.get("language")
             or ui_language

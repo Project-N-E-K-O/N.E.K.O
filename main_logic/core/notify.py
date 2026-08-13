@@ -357,30 +357,22 @@ class NotifyMixin:
         if not language or not is_supported_language_code(language):
             return
         normalized_lang = normalize_language_code(language, format='full')
-        already_applied = (
-            self._conversation_render_language == normalized_lang
-            and self.user_language == normalized_lang
-            and self._conversation_turn_language == normalized_lang
-            # Field equality alone does not prove the tools were re-registered:
-            # a previous attempt may have set the fields and then raised. Only a
-            # completed registration licenses the skip, so a repeat after a
-            # failure still gets a chance to repair the registry.
-            and getattr(self, '_render_language_synced', None) == normalized_lang
-        )
         self._conversation_render_language = normalized_lang
         if getattr(self, '_user_language_explicit', False):
             return
-        if already_applied:
-            # Re-registering the builtin tools and pushing a session.update on
-            # every repeat of the same render locale is pure wire churn.
-            return
-        self._render_language_synced = None
+        # Deliberately unconditional, mirroring set_user_language.  A "skip the
+        # repeat" optimisation was tried and removed: the fields are assigned
+        # before the registry call and the wire push is fire-and-forget with
+        # suppressed errors, so no cheap local check can prove the tools were
+        # actually applied -- and a wrong skip strands stale tool definitions
+        # with no way back.  The call sites (ws language_update, request
+        # absorption) are low frequency, so the redundant work is not worth that
+        # class of bug.
         self.user_language = normalized_lang
         self._conversation_turn_language = normalized_lang
         self._set_conversation_turn_language(normalized_lang)
         self._register_builtin_tools()
         self._fire_task(self._sync_tools_to_active_session())
-        self._render_language_synced = normalized_lang
 
     def clear_user_language_preference(
         self,
@@ -406,7 +398,6 @@ class NotifyMixin:
         self.user_language = None
         self._conversation_render_language = None
         self._conversation_turn_language = None
-        self._render_language_synced = None
         self._set_conversation_turn_language(None)
         self._register_builtin_tools()
         self._fire_task(self._sync_tools_to_active_session())

@@ -395,6 +395,55 @@ async def test_freshness_check_revalidates_identity_after_the_read(monkeypatch):
         await preference_router.apply_character_language_preference("Mimi", "ja")
 
 
+async def test_every_character_load_runs_under_the_config_transaction(monkeypatch):
+    """No character load may run unlocked, including the closing revalidation.
+
+    ``ConfigManager.load_characters`` migrates a legacy reserved-field schema
+    and writes it back, so an unlocked load can overwrite a concurrent
+    save/delete/rename with its own stale snapshot.  That makes "is this load
+    inside the transaction" a correctness property, not a style one.
+    """
+    manager = _IdleManager()
+    lock_states = []
+    config_manager = SimpleNamespace(memory_dir="unused")
+
+    async def load_character(name):
+        lock_states.append(character_config_mutation_lock.locked())
+        return config_manager, {"猫娘": {name: {}}}
+
+    written: dict = {}
+
+    async def request_locale(method, _name, *, language=None):
+        if method == "GET":
+            return {"success": True, "language": written.get("language")}
+        written["language"] = language
+        return {
+            "success": True,
+            "language": language,
+            "previous_language": "en",
+            "changed": True,
+        }
+
+    async def clear_recent(_config_manager, _name, *, expected_generation):
+        assert expected_generation
+
+    class SessionManager:
+        def get(self, _name):
+            return manager
+
+    monkeypatch.setattr(preference_router, "_load_existing_character", load_character)
+    monkeypatch.setattr(preference_router, "_request_memory_prompt_locale", request_locale)
+    monkeypatch.setattr(preference_router, "_clear_character_recent_history", clear_recent)
+    monkeypatch.setattr(preference_router, "get_session_manager", SessionManager)
+
+    result = await preference_router.apply_character_language_preference("Mimi", "ja")
+
+    assert result["success"] is True
+    assert len(lock_states) >= 3, "至少覆盖写前校验、清理内校验、收尾复核"
+    assert all(lock_states), f"存在未持锁的角色配置读取: {lock_states}"
+    assert character_config_mutation_lock.locked() is False
+
+
 async def test_late_clear_is_fenced_by_durable_ownership(monkeypatch):
     """A superseded reconciliation must not delete the newer session's history.
 
@@ -467,25 +516,22 @@ async def test_character_card_save_parses_body_outside_the_transaction(monkeypat
     assert observed["payload"]["character_card_name"] == "Mimi"
 
 
-async def test_language_preference_get_revalidates_after_the_unlocked_read(monkeypatch):
-    """Dropping the lock dropped the "still exists when we answer" guarantee.
+async def test_language_preference_get_runs_under_the_config_transaction(monkeypatch):
+    """The existence check is not read-only, so it must stay transactional.
 
-    Without a second check the endpoint answers 200 for a name deleted while the
-    memory-server read was in flight, and an in-flight card-manager hydration
-    could repopulate that name's local cache after the deletion cleanup.
+    ``ConfigManager.load_characters`` migrates a legacy reserved-field schema
+    and saves it back, so an unlocked check can overwrite a concurrent
+    save/delete/rename with its own stale snapshot.  Holding the lock also
+    removes the delete-and-recreate window a name-only check cannot detect.
     """
-    state = {"exists": True}
-    loads = []
+    observed = {}
 
     async def load_character(name):
-        loads.append(name)
-        if not state["exists"]:
-            raise LookupError("角色不存在")
+        observed.setdefault("locked_during_load", character_config_mutation_lock.locked())
         return SimpleNamespace(memory_dir="unused"), {"猫娘": {name: {}}}
 
     async def request_locale(_method, _name, *, language=None):
-        # The character is deleted while this read is awaiting.
-        state["exists"] = False
+        observed["locked_during_read"] = character_config_mutation_lock.locked()
         return {"success": True, "language": "ja"}
 
     monkeypatch.setattr(preference_router, "_load_existing_character", load_character)
@@ -494,41 +540,21 @@ async def test_language_preference_get_revalidates_after_the_unlocked_read(monke
         preference_router, "aload_ui_language_override", lambda: _async_value("en"),
     )
 
-    response = await preference_router.get_character_language_preference("Mimi")
+    payload = await preference_router.get_character_language_preference("Mimi")
 
-    assert getattr(response, "status_code", 200) == 404
-    assert loads == ["Mimi", "Mimi"], "读前读后都要校验角色身份"
+    assert payload["language"] == "ja"
+    assert observed["locked_during_load"] is True
+    assert observed["locked_during_read"] is True
+    assert character_config_mutation_lock.locked() is False
 
 
-async def test_language_preference_get_revalidates_after_every_suspension(monkeypatch):
-    """The identity check has to be the last await, not merely a later one.
-
-    A check placed before another suspension point leaves exactly the window it
-    was added to close: here the character disappears while the UI-language
-    override is still being read.
-    """
-    state = {"exists": True}
-
-    async def load_character(name):
-        if not state["exists"]:
-            raise LookupError("角色不存在")
-        return SimpleNamespace(memory_dir="unused"), {"猫娘": {name: {}}}
-
-    async def request_locale(_method, _name, *, language=None):
-        return {"success": True, "language": "ja"}
-
-    async def load_ui_language():
-        # The deletion lands while this last read is awaiting.
-        state["exists"] = False
-        return "en"
+async def test_missing_character_is_reported_as_404(monkeypatch):
+    async def load_character(_name):
+        raise LookupError("角色不存在")
 
     monkeypatch.setattr(preference_router, "_load_existing_character", load_character)
-    monkeypatch.setattr(preference_router, "_request_memory_prompt_locale", request_locale)
-    monkeypatch.setattr(
-        preference_router, "aload_ui_language_override", load_ui_language,
-    )
 
-    response = await preference_router.get_character_language_preference("Mimi")
+    response = await preference_router.get_character_language_preference("Gone")
 
     assert getattr(response, "status_code", 200) == 404
 
@@ -638,7 +664,6 @@ class _RenderLanguageManager(core_notify.NotifyMixin):
         self._user_language_explicit = False
         self._conversation_render_language = None
         self._conversation_turn_language = None
-        self._render_language_synced = None
         self.registrations = 0
         self.syncs = 0
         self.fail_registration = False
@@ -659,35 +684,19 @@ class _RenderLanguageManager(core_notify.NotifyMixin):
         pass
 
 
-def test_repeated_render_language_does_not_resync_tools():
-    manager = _RenderLanguageManager()
-    manager.set_render_language("ja")
-    assert (manager.registrations, manager.syncs) == (1, 1)
+def test_render_language_always_reapplies_the_tool_definitions():
+    """No local "already applied" shortcut is allowed here.
 
-    manager.set_render_language("ja")
-    assert (manager.registrations, manager.syncs) == (1, 1)
-
-    manager.set_render_language("en")
-    assert (manager.registrations, manager.syncs) == (2, 2)
-
-
-def test_render_language_retries_after_a_failed_registration():
-    """Field equality alone must not license the skip.
-
-    The fields are assigned before the registry call, so a first attempt that
-    raises leaves them looking "already applied" while the tools were never
-    re-registered.  A repeat of the same locale has to get another chance.
+    The fields are assigned before the registry call and the wire push is
+    fire-and-forget with suppressed errors, so nothing cheap can prove the tools
+    were applied; a wrong skip would strand stale definitions permanently.
     """
     manager = _RenderLanguageManager()
-    manager.fail_registration = True
-    with pytest.raises(RuntimeError):
-        manager.set_render_language("ja")
-    assert manager.registrations == 0
-
-    manager.fail_registration = False
     manager.set_render_language("ja")
     assert (manager.registrations, manager.syncs) == (1, 1)
 
-    # And once it has succeeded the skip applies again.
     manager.set_render_language("ja")
-    assert (manager.registrations, manager.syncs) == (1, 1)
+    assert (manager.registrations, manager.syncs) == (2, 2)
+
+    manager.set_render_language("en")
+    assert (manager.registrations, manager.syncs) == (3, 3)
