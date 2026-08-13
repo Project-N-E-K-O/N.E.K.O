@@ -339,9 +339,9 @@ async def get_character_language_preference(name: str):
         # from under a 2.5s timeout, and queueing it behind a long write
         # transaction (workshop unsubscribe, card import) degrades the whole
         # page to the untrusted-cache fallback.  It is safe now that locale
-        # *reads* resolve their sidecar without creating the character
-        # directory (see locale_state._locale_read_path), so a concurrent
-        # delete/rename can no longer leave an empty old-name directory behind.
+        # sidecar resolution no longer creates the character directory
+        # (see locale_state._locale_path), so a concurrent delete/rename can
+        # no longer leave an empty old-name directory behind.
         await _load_existing_character(name)
         payload = await _request_memory_prompt_locale("GET", name)
         ui_language = await aload_ui_language_override()

@@ -5,6 +5,7 @@ transaction scope, the unset-live-locale judgement, conflict reporting, and
 request-body parsing outside the shared characters.json lock.
 """
 
+import ast
 import asyncio
 import json
 from pathlib import Path
@@ -292,16 +293,77 @@ def test_prompt_locale_read_does_not_create_the_character_directory(tmp_path, mo
     assert not (memory_dir / "GhostName").exists()
 
 
-def test_unsubscribe_releases_the_transaction_before_the_steam_rpc():
+def _unsubscribe_function_node():
     source = (
         PROJECT_ROOT / "main_routers" / "workshop_router" / "unsubscribe.py"
     ).read_text(encoding="utf-8")
-    release_marker = "character_config_mutation_lock.release()"
-    rpc_marker = "steamworks.Workshop.UnsubscribeItem"
+    for node in ast.walk(ast.parse(source)):
+        if (
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == "_unsubscribe_workshop_item"
+        ):
+            return node
+    raise AssertionError("_unsubscribe_workshop_item 已改名，请同步更新测试")
 
-    assert source.count(release_marker) >= 2, "finally 兜底释放不能被删掉"
-    assert source.index(release_marker) < source.index(rpc_marker), (
+
+def test_unsubscribe_releases_the_transaction_before_the_steam_rpc():
+    # Scoped to the function itself rather than the first textual match, so a
+    # release() added elsewhere in the module cannot make this pass by accident.
+    target = _unsubscribe_function_node()
+    release_lines = [
+        node.lineno
+        for node in ast.walk(target)
+        if isinstance(node, ast.Attribute)
+        and node.attr == "release"
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "character_config_mutation_lock"
+    ]
+    rpc_lines = [
+        node.lineno
+        for node in ast.walk(target)
+        if isinstance(node, ast.Attribute) and node.attr == "UnsubscribeItem"
+    ]
+
+    assert len(rpc_lines) == 1, "Steam 退订 RPC 调用点不唯一，请同步更新测试"
+    assert len(release_lines) >= 2, "finally 兜底释放不能被删掉"
+    assert min(release_lines) < rpc_lines[0], (
         "characters.json 事务必须在 Steam 退订 RPC 之前释放"
+    )
+
+
+def test_no_suspension_point_between_lock_release_and_the_steam_rpc():
+    """Releasing early must not widen the unsubscribe/re-import race window.
+
+    ``perform_cleanup`` (the rmtree) runs on the Steam callback thread or on the
+    5s fallback daemon thread, so it never held this asyncio lock in the first
+    place.  What keeps the early release equivalent to the old ``finally``
+    release is that no coroutine suspends in between: without an ``await`` the
+    workshop-sync task cannot be scheduled before the unsubscribe request goes
+    out.  Adding one here would genuinely open the window, so pin it.
+    """
+    target = _unsubscribe_function_node()
+    release_lines = [
+        node.lineno
+        for node in ast.walk(target)
+        if isinstance(node, ast.Attribute)
+        and node.attr == "release"
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "character_config_mutation_lock"
+    ]
+    rpc_line = next(
+        node.lineno
+        for node in ast.walk(target)
+        if isinstance(node, ast.Attribute) and node.attr == "UnsubscribeItem"
+    )
+    early_release = min(release_lines)
+
+    suspensions = [
+        node.lineno
+        for node in ast.walk(target)
+        if isinstance(node, ast.Await) and early_release < node.lineno <= rpc_line
+    ]
+    assert suspensions == [], (
+        f"提前释放锁与 Steam 退订 RPC 之间不得有挂起点，实际出现在 {suspensions}"
     )
 
 
