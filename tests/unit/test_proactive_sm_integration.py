@@ -2661,3 +2661,50 @@ async def test_voice_mode_bounds_images_across_one_proactive_turn():
     # Voice prunes pending only after a successful inject, so the deferred cue
     # is re-queued by construction — it was simply never taken.
     assert mgr.pending_agent_callbacks == [cbs[2]]
+
+
+async def test_image_overflow_keeps_fifo_order_when_delivery_fails():
+    """The deferred tail must not overtake the prefix it was split from.
+
+    The exception path re-queues the delivered prefix, so re-queuing the
+    overflow at split time would leave [C, A, B] and the next turn would speak
+    the cues out of order.
+    """
+    sess = _FakeOmniOffline(raise_exc=RuntimeError("provider rejected the request"))
+    mgr = _make_mgr(session=sess)
+    cbs = [_budget_cb("a", 4), _budget_cb("b", 4), _budget_cb("c", 4)]
+    mgr.pending_agent_callbacks = list(cbs)
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+
+    assert delivered is False
+    assert [cb["summary"] for cb in mgr.pending_agent_callbacks] == [
+        "cue a", "cue b", "cue c",
+    ]
+
+
+async def test_topic_hint_is_retracted_when_its_hook_lands_in_image_overflow():
+    """A teaser must never outlive the opener it promised.
+
+    The hint fires from the pre-split batch, so a topic hook pushed into the
+    overflow would leave "she has something to bring up" on screen while the
+    turn prompts only unrelated cues and the topic slips to a later turn.
+    """
+    sess = _CapturingImageOmniOffline()
+    mgr = _make_mgr(session=sess)
+    mgr.topic_hook_delivery_allowed = lambda: True
+    mgr.send_topic_hint = AsyncMock(return_value=True)
+    mgr.send_cancel_topic_hint = AsyncMock()
+    heavy = _budget_cb("heavy", 8)
+    topic = _budget_cb("topic", 1)
+    topic["channel"] = "topic_hook"
+    topic["source_kind"] = "topic"
+    mgr.pending_agent_callbacks = [heavy, topic]
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+
+    assert delivered is True
+    mgr.send_topic_hint.assert_awaited_once()
+    mgr.send_cancel_topic_hint.assert_awaited_once()
+    assert [cb["summary"] for cb in mgr.pending_agent_callbacks] == ["cue topic"]
+    assert sess.image_batches == [["heavy-img%d" % i for i in range(8)]]

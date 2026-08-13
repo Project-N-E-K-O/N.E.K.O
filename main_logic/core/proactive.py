@@ -1220,6 +1220,11 @@ class ProactiveMixin:
         ]
 
         delivered = False
+        # Image-budget overflow parked by _deliver_agent_callbacks_text. It is
+        # re-queued in the finally below rather than at the split, so it lands
+        # AFTER the exception path restores callbacks_snapshot and the queue
+        # keeps the order the cues arrived in.
+        self._proactive_image_overflow = []
         try:
             if isinstance(self.session, OmniOfflineClient):
                 delivered = await self._deliver_agent_callbacks_text(callbacks_snapshot)
@@ -1241,6 +1246,12 @@ class ProactiveMixin:
             logger.warning("[%s] trigger_agent_callbacks error: %s", self.lanlan_name, e)
             self.pending_agent_callbacks.extend(callbacks_snapshot)
         finally:
+            # Runs after the except-path restore above, so the deferred tail
+            # lands behind the prefix it was split from either way.
+            _overflow = getattr(self, "_proactive_image_overflow", None)
+            if _overflow:
+                self.pending_agent_callbacks.extend(_overflow)
+            self._proactive_image_overflow = []
             await self.state.fire(SessionEvent.PROACTIVE_DONE)
         if delivered:
             for cb in callbacks_snapshot:
@@ -1395,6 +1406,34 @@ class ProactiveMixin:
             active_callbacks = self.filter_deliverable_callbacks(
                 active_callbacks
             )
+            # One turn's image budget. Every pending proactive callback drains
+            # into this single prompt_ephemeral, so without the split a batch
+            # that accumulated while the user was talking can exceed the
+            # provider's request limit — and the caller's exception path
+            # re-queues the WHOLE snapshot, so an over-limit batch would retry
+            # forever and wedge every later cue behind it.
+            #
+            # Placed ABOVE the topic-hint re-check on purpose: the split can
+            # push a topic hook into the overflow, and that check is what
+            # retracts a teaser whose hook is no longer part of this turn.
+            # Running the split after it would leave the teaser on screen while
+            # the opener it promised got deferred (Codex P2).
+            active_callbacks, _image_overflow = split_callbacks_by_image_budget(
+                active_callbacks
+            )
+            if _image_overflow:
+                # Handed to trigger_agent_callbacks' finally rather than
+                # re-queued here. Its exception path restores the delivered
+                # prefix, so an eager put-back would order the queue
+                # [overflow, prefix] — the reverse of how the cues arrived
+                # (CodeRabbit).
+                self._proactive_image_overflow = list(_image_overflow)
+                logger.info(
+                    "[%s] proactive image budget: delivering %d cb(s), deferring %d to the next turn",
+                    self.lanlan_name,
+                    len(active_callbacks),
+                    len(_image_overflow),
+                )
             callbacks_snapshot[:] = active_callbacks
             if topic_hint_sent and not any(
                 isinstance(cb, dict) and cb.get("channel") == "topic_hook"
@@ -1411,29 +1450,6 @@ class ProactiveMixin:
             if not active_callbacks:
                 if topic_hint_sent:
                     await self.send_cancel_topic_hint(turn_id=proactive_sid)
-                self.proactive_manager.release_inflight_noop()
-                return False
-            # One turn's image budget. Every pending proactive callback drains
-            # into this single prompt_ephemeral, so without the split a batch
-            # that accumulated while the user was talking can exceed the
-            # provider's request limit — and the caller's exception path
-            # re-queues the WHOLE snapshot, so an over-limit batch would retry
-            # forever and wedge every later cue behind it.
-            active_callbacks, _image_overflow = split_callbacks_by_image_budget(
-                active_callbacks
-            )
-            if _image_overflow:
-                # Still pruned from pending above; put them back so the next
-                # turn picks them up instead of dropping them on the floor.
-                self.pending_agent_callbacks.extend(_image_overflow)
-                logger.info(
-                    "[%s] proactive image budget: delivering %d cb(s), deferring %d to the next turn",
-                    self.lanlan_name,
-                    len(active_callbacks),
-                    len(_image_overflow),
-                )
-            callbacks_snapshot[:] = active_callbacks
-            if not active_callbacks:
                 self.proactive_manager.release_inflight_noop()
                 return False
             _proactive_images: list = []
