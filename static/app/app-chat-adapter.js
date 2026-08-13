@@ -412,6 +412,24 @@
         });
     }
 
+    // 队列里的消息还没进 host，host.updateMessage 够不到它们。turn end 会在
+    // host 挂载前就到（结构化 passthrough 的 blocks 一次性写完，后端紧接着
+    // 发 turn end），此时若不就地改写，flush 出来的就是一个永远转圈的气泡。
+    function _patchPendingHostMessage(messageId, patch) {
+        if (!messageId || _pendingHostMessages.length === 0) return false;
+        for (var i = 0; i < _pendingHostMessages.length; i++) {
+            var pending = _pendingHostMessages[i];
+            if (!pending || pending.id !== messageId) continue;
+            for (var key in patch) {
+                if (Object.prototype.hasOwnProperty.call(patch, key)) {
+                    pending[key] = patch[key];
+                }
+            }
+            return true;
+        }
+        return false;
+    }
+
     function _resetReactChatSwitchState() {
         _pendingHostMessages = [];
         if (_pendingFlushTimer) {
@@ -909,7 +927,12 @@
         var host = getHost();
         var messageId = element && element.dataset && element.dataset.reactChatMessageId;
         if (!messageId) return;
-        if (!host || typeof host.updateMessage !== 'function') return;
+        if (!host || typeof host.updateMessage !== 'function') {
+            // host 未挂载时消息还在待发队列里，就地改写；否则 turn end 的
+            // 状态更新会静默丢失（Codex P2）。
+            _patchPendingHostMessage(messageId, { status: status });
+            return;
+        }
         host.updateMessage(messageId, { status: status });
     }
 

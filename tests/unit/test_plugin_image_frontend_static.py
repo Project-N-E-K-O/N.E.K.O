@@ -31,3 +31,33 @@ def test_chat_adapter_loads_before_the_chat_page_opens_its_websocket() -> None:
     assert template.index("/static/app/app-chat-adapter.js") < template.index(
         "/static/app/app.js"
     )
+
+
+def test_pending_host_message_status_contract() -> None:
+    """Run the real adapter functions, not assertions about their text.
+
+    A structured passthrough queued before the React host mounts receives its
+    turn end while it is still in the pending queue. That is an ordering bug,
+    and a static check would keep passing against a version that drops the
+    update again — so this drives the actual code in a node vm.
+    """
+    import shutil
+
+    import pytest
+
+    from tests.node_harness import run_node_script
+
+    node_path = shutil.which("node")
+    if not node_path:
+        pytest.skip("node not found")
+
+    test_path = ROOT / "tests" / "frontend" / "plugin_chat_pending_status.test.cjs"
+    result = run_node_script(
+        node_path,
+        test_path.read_text(encoding="utf-8"),
+        cwd=ROOT,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
