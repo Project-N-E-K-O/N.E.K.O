@@ -1,4 +1,7 @@
 {
+    "ui.status.preparing_ocr_selection": "請切換到學習材料頁面，2 秒後開始螢幕選區...",
+    "ui.status.ocr_canceled": "已取消螢幕選區",
+    "ui.error.interactive_ocr_unavailable": "螢幕選區需要連線至 N.E.K.O 桌面端。",
     "ui.status.solution_narration_scheduled":  "已安排朗讀。",
     "ui.status.solution_narration_disabled":  "解答朗讀已關閉。",
     "ui.error.solution_narration_missing_answer":  "講解生成不完整：缺少「答案」部分，因此未安排朗讀。請重新解析。",

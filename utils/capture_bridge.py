@@ -69,6 +69,7 @@ class _CaptureCapabilities:
     get_sources: bool
     capture_source_as_data_url: bool
     capture_source_without_neko: bool
+    capture_desktop_region_as_data_url: bool
 
 
 @dataclass
@@ -86,6 +87,8 @@ class _CaptureClient:
 _clients: dict[str, _CaptureClient] = {}
 _pending_by_client: dict[str, dict[str, asyncio.Future]] = {}
 _capture_semaphore = asyncio.Semaphore(1)
+_interactive_state_lock = asyncio.Lock()
+_interactive_capture_active = False
 
 
 def _coerce_bool(value: Any) -> bool:
@@ -100,6 +103,9 @@ def _build_capabilities(payload: dict[str, Any]) -> _CaptureCapabilities:
         get_sources=_coerce_bool(caps.get("getSources")),
         capture_source_as_data_url=_coerce_bool(caps.get("captureSourceAsDataUrl")),
         capture_source_without_neko=_coerce_bool(caps.get("captureSourceWithoutNeko")),
+        capture_desktop_region_as_data_url=_coerce_bool(
+            caps.get("captureDesktopRegionAsDataUrl")
+        ),
     )
 
 
@@ -185,6 +191,15 @@ def has_capture_client() -> bool:
     return bool(_clients)
 
 
+def has_region_capture_client() -> bool:
+    """True iff the newest renderer advertises interactive region capture."""
+    client = _pick_client()
+    return bool(
+        client is not None
+        and client.capabilities.capture_desktop_region_as_data_url
+    )
+
+
 def _pick_client() -> _CaptureClient | None:
     if not _clients:
         return None
@@ -235,9 +250,18 @@ async def request_capture_screenshot(
     pid = _validate_pid(payload.get("pid"))
     title = _validate_title(payload.get("title"))
 
+    if _interactive_capture_active:
+        raise CaptureBridgeError("interactive_capture_busy")
+
     async with _capture_semaphore:
+        if _interactive_capture_active:
+            raise CaptureBridgeError("interactive_capture_busy")
         client = _pick_client()
-        if client is None:
+        if (
+            client is None
+            or not client.capabilities.get_sources
+            or not client.capabilities.capture_source_as_data_url
+        ):
             raise CaptureBridgeError("no renderer available")
 
         request_id = uuid.uuid4().hex
@@ -267,6 +291,87 @@ async def request_capture_screenshot(
             _pending_by_client.get(client.lanlan_name, {}).pop(request_id, None)
 
         return _validate_response_payload(response)
+
+
+async def request_capture_region(
+    payload: dict[str, Any],
+    *,
+    timeout: float = 70.0,
+) -> dict[str, Any]:
+    """Request one interactive desktop-region selection from the renderer.
+
+    Region capture is a distinct protocol operation. Only one interactive
+    selection may be active, and ordinary background captures fail fast while
+    its overlay is visible so they cannot accidentally capture that overlay.
+    """
+    global _interactive_capture_active
+
+    if not isinstance(payload, dict):
+        raise CaptureBridgeError("region payload must be object")
+    selection_only = payload.get("selection_only", False)
+    copy_to_clipboard = payload.get("copy_to_clipboard", True)
+    session_timeout_ms = payload.get("session_timeout_ms", 300000)
+    if not isinstance(selection_only, bool):
+        raise CaptureBridgeError("selection_only must be boolean")
+    if not isinstance(copy_to_clipboard, bool):
+        raise CaptureBridgeError("copy_to_clipboard must be boolean")
+    if (
+        isinstance(session_timeout_ms, bool)
+        or not isinstance(session_timeout_ms, int)
+        or not 10000 <= session_timeout_ms <= 300000
+    ):
+        raise CaptureBridgeError("session_timeout_ms out of range")
+
+    preflight_client = _pick_client()
+    if (
+        preflight_client is None
+        or not preflight_client.capabilities.capture_desktop_region_as_data_url
+    ):
+        raise CaptureBridgeError("no renderer available")
+
+    async with _interactive_state_lock:
+        if _interactive_capture_active:
+            raise CaptureBridgeError("capture_busy")
+        _interactive_capture_active = True
+
+    try:
+        async with _capture_semaphore:
+            client = _pick_client()
+            if (
+                client is None
+                or not client.capabilities.capture_desktop_region_as_data_url
+            ):
+                raise CaptureBridgeError("no renderer available")
+            request_id = uuid.uuid4().hex
+            loop = asyncio.get_running_loop()
+            future: asyncio.Future = loop.create_future()
+            _pending_by_client.setdefault(client.lanlan_name, {})[request_id] = future
+            request_payload: dict[str, Any] = {
+                "type": "capture_bridge_region_request",
+                "request_id": request_id,
+                "selection_only": selection_only,
+                "copy_to_clipboard": copy_to_clipboard,
+                "session_timeout_ms": session_timeout_ms,
+            }
+            try:
+                await client.websocket.send_text(_dumps(request_payload))
+            except Exception as exc:
+                _pending_by_client.get(client.lanlan_name, {}).pop(request_id, None)
+                raise CaptureBridgeError(f"failed to send request: {exc}") from exc
+
+            try:
+                response = await asyncio.wait_for(future, timeout=timeout)
+            except asyncio.TimeoutError as exc:
+                raise CaptureBridgeError("renderer response timeout") from exc
+            finally:
+                _pending_by_client.get(client.lanlan_name, {}).pop(request_id, None)
+
+            if isinstance(response, dict) and response.get("canceled") is True:
+                return response
+            return _validate_response_payload(response)
+    finally:
+        async with _interactive_state_lock:
+            _interactive_capture_active = False
 
 
 def resolve_capture_response(lanlan_name: str, payload: dict[str, Any]) -> None:
@@ -317,7 +422,7 @@ def _validate_response_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 def _reset_for_tests() -> None:
     """Wipe registry state. Tests only."""
-    global _capture_semaphore
+    global _capture_semaphore, _interactive_state_lock, _interactive_capture_active
     _clients.clear()
     for pendings in list(_pending_by_client.values()):
         for fut in pendings.values():
@@ -325,10 +430,13 @@ def _reset_for_tests() -> None:
                 fut.cancel()
     _pending_by_client.clear()
     _capture_semaphore = asyncio.Semaphore(1)
+    _interactive_state_lock = asyncio.Lock()
+    _interactive_capture_active = False
 
 
 def _snapshot_for_tests() -> dict[str, Any]:
     return {
         "clients": list(_clients.keys()),
         "pending_counts": {k: len(v) for k, v in _pending_by_client.items()},
+        "interactive_capture_active": _interactive_capture_active,
     }

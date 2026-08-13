@@ -46,8 +46,100 @@ def _payload(available: bool = True) -> dict[str, Any]:
             "getSources": True,
             "captureSourceAsDataUrl": True,
             "captureSourceWithoutNeko": True,
+            "captureDesktopRegionAsDataUrl": True,
         },
     }
+
+
+@pytest.mark.unit
+def test_region_capability_is_required_separately_from_window_capture():
+    sock = _Sock()
+    payload = _payload(True)
+    payload["capabilities"]["captureDesktopRegionAsDataUrl"] = False
+    capture_bridge.mark_capture_client("neko", sock, payload)
+
+    assert capture_bridge.has_capture_client() is True
+    assert capture_bridge.has_region_capture_client() is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_region_only_renderer_does_not_accept_window_capture_requests():
+    sock = _Sock()
+    payload = _payload(True)
+    payload["capabilities"]["getSources"] = False
+    payload["capabilities"]["captureSourceAsDataUrl"] = False
+    capture_bridge.mark_capture_client("neko", sock, payload)
+
+    assert capture_bridge.has_region_capture_client() is True
+    with pytest.raises(capture_bridge.CaptureBridgeError, match="no renderer available"):
+        await capture_bridge.request_capture_screenshot(
+            {"target_id": "1", "pid": 100, "title": "t"}, timeout=0.1
+        )
+    assert sock.sent == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_region_request_uses_distinct_message_and_preserves_cancel():
+    sock = _Sock()
+    capture_bridge.mark_capture_client("neko", sock, _payload(True))
+
+    async def _replier():
+        await sock.send_event.wait()
+        import json
+        request = json.loads(sock.sent[-1])
+        assert request["type"] == "capture_bridge_region_request"
+        assert request["selection_only"] is True
+        assert request["copy_to_clipboard"] is False
+        assert request["session_timeout_ms"] == 45000
+        capture_bridge.resolve_capture_response(
+            "neko",
+            {"request_id": request["request_id"], "success": False, "canceled": True},
+        )
+
+    reply_task = asyncio.create_task(_replier())
+    result = await capture_bridge.request_capture_region(
+        {
+            "selection_only": True,
+            "copy_to_clipboard": False,
+            "session_timeout_ms": 45000,
+        },
+        timeout=1.0,
+    )
+    await reply_task
+
+    assert result["success"] is False
+    assert result["canceled"] is True
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_second_region_and_window_capture_fail_fast_while_region_active():
+    sock = _Sock()
+    capture_bridge.mark_capture_client("neko", sock, _payload(True))
+    region_task = asyncio.create_task(
+        capture_bridge.request_capture_region(
+            {
+                "selection_only": True,
+                "copy_to_clipboard": False,
+                "session_timeout_ms": 45000,
+            },
+            timeout=0.2,
+        )
+    )
+    await sock.send_event.wait()
+
+    with pytest.raises(capture_bridge.CaptureBridgeError, match="capture_busy"):
+        await capture_bridge.request_capture_region({}, timeout=0.1)
+    with pytest.raises(capture_bridge.CaptureBridgeError, match="interactive_capture_busy"):
+        await capture_bridge.request_capture_screenshot(
+            {"target_id": "1", "pid": 100, "title": "t"}, timeout=0.1
+        )
+
+    with pytest.raises(capture_bridge.CaptureBridgeError, match="timeout"):
+        await region_task
+    assert capture_bridge._snapshot_for_tests()["interactive_capture_active"] is False
 
 
 @pytest.mark.unit

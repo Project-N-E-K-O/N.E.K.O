@@ -1,4 +1,7 @@
 {
+    "ui.status.preparing_ocr_selection": "学習教材の画面に切り替えてください。2秒後に範囲選択を開始します...",
+    "ui.status.ocr_canceled": "画面範囲の選択をキャンセルしました",
+    "ui.error.interactive_ocr_unavailable": "画面範囲を選択するには、N.E.K.O デスクトップアプリへの接続が必要です。",
     "ui.status.solution_narration_scheduled":  "朗読を予定しました。",
     "ui.status.solution_narration_disabled":  "解答の朗読はオフになっています。",
     "ui.error.solution_narration_missing_answer":  "解説が不完全です。「答え」セクションがないため、朗読を予定しませんでした。もう一度解析してください。",

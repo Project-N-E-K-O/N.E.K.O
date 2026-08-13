@@ -1,4 +1,7 @@
 {
+    "ui.status.preparing_ocr_selection": "학습 자료 화면으로 전환하세요. 2초 후 화면 영역 선택이 시작됩니다...",
+    "ui.status.ocr_canceled": "화면 영역 선택을 취소했습니다",
+    "ui.error.interactive_ocr_unavailable": "화면 영역을 선택하려면 N.E.K.O 데스크톱 앱이 연결되어 있어야 합니다.",
     "ui.status.solution_narration_scheduled":  "낭독이 예약되었습니다.",
     "ui.status.solution_narration_disabled":  "해설 낭독이 꺼져 있습니다.",
     "ui.error.solution_narration_missing_answer":  "해설이 불완전합니다. '답' 부분이 없어 낭독을 예약하지 않았습니다. 다시 분석해 주세요.",

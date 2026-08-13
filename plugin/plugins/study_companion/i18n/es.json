@@ -1,4 +1,7 @@
 {
+    "ui.status.preparing_ocr_selection": "Cambia al material de estudio. La selección de pantalla se abrirá en 2 segundos...",
+    "ui.status.ocr_canceled": "Selección de pantalla cancelada",
+    "ui.error.interactive_ocr_unavailable": "La selección de pantalla requiere que la aplicación de escritorio N.E.K.O esté conectada.",
     "ui.status.solution_narration_scheduled":  "La narración se ha programado.",
     "ui.status.solution_narration_disabled":  "La narración de la solución está desactivada.",
     "ui.error.solution_narration_missing_answer":  "La explicación está incompleta: falta la sección «Respuesta», por lo que no se programó la narración. Vuelve a analizarla.",

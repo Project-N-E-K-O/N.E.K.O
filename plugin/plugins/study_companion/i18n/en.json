@@ -1,4 +1,7 @@
 {
+    "ui.status.preparing_ocr_selection": "Switch to the learning material. Screen selection opens in 2 seconds...",
+    "ui.status.ocr_canceled": "Screen selection canceled",
+    "ui.error.interactive_ocr_unavailable": "Screen selection requires the N.E.K.O desktop app to be connected.",
     "ui.status.solution_narration_scheduled":  "Narration has been scheduled.",
     "ui.status.solution_narration_disabled":  "Solution narration is turned off.",
     "ui.error.solution_narration_missing_answer":  "The explanation is incomplete: the Answer section is missing, so narration was not scheduled. Please analyze it again.",

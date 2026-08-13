@@ -14,7 +14,7 @@ const LEARNING_STAGE_OPTIONS = ['primary', 'junior_high', 'senior_high', 'colleg
 const KNOWLEDGE_SUBJECT_OPTIONS = ['math', 'english', 'chinese', 'physics', 'chemistry', 'biology', 'history', 'geography', 'politics', 'computer_science', 'economics'];
 const ENTRY_TIMEOUT_MS = {
   study_status: 15000,
-  study_ocr_snapshot: 60000,
+  study_ocr_snapshot: 100000,
   study_set_mode: 15000,
   study_explain_text: 120000,
   study_analyze_document: 105000,
@@ -1916,8 +1916,26 @@ async function loadQuestionContext(options = {}) {
 }
 
 async function runOcr(options = {}) {
-  setStatus(t('ui.status.capturing_ocr', 'Capturing OCR...'));
-  const data = await callPlugin('study_ocr_snapshot');
+  setStatus(t(
+    'ui.status.preparing_ocr_selection',
+    'Switch to the learning material. Screen selection opens in 2 seconds...',
+  ));
+  let data;
+  try {
+    data = await callPlugin('study_ocr_snapshot', { capture_mode: 'interactive' });
+  } catch (error) {
+    if (String(error?.message || error).includes('no_renderer')) {
+      throw new Error(t(
+        'ui.error.interactive_ocr_unavailable',
+        'Screen selection requires the N.E.K.O desktop app to be connected.',
+      ));
+    }
+    throw error;
+  }
+  if (data.status === 'canceled') {
+    setStatus(t('ui.status.ocr_canceled', 'Screen selection canceled'));
+    return data;
+  }
   setStatus(tf('ui.status.ocr_result', 'OCR {status}', { status: data.status || 'unknown' }));
   if (data.text) {
     studyInput.value = data.text;

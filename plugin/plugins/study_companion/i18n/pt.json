@@ -1,4 +1,7 @@
 {
+    "ui.status.preparing_ocr_selection": "Mude para o material de estudo. A seleção da tela abrirá em 2 segundos...",
+    "ui.status.ocr_canceled": "Seleção da tela cancelada",
+    "ui.error.interactive_ocr_unavailable": "A seleção da tela requer que o aplicativo N.E.K.O para desktop esteja conectado.",
     "ui.status.solution_narration_scheduled":  "A narração foi agendada.",
     "ui.status.solution_narration_disabled":  "A narração da solução está desativada.",
     "ui.error.solution_narration_missing_answer":  "A explicação está incompleta: falta a seção «Resposta», portanto a narração não foi agendada. Analise novamente.",
