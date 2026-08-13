@@ -20,6 +20,7 @@ from .entry_common import (
     _normalize_submitted_image_payload,
     _validate_optional_vision_image_payload,
     _plugin_lock,
+    build_tutor_payload,
     plugin_entry,
     tr,
     ui,
@@ -84,9 +85,17 @@ IMAGE_ONLY_EXPLAIN_PROMPT_ZH_TW = (
     "必須逐項驗證，不要找到一個正確選項就停止；若有多個正確選項，在「答案」中輸出全部正確選項。"
 )
 
-_EXPLAIN_WORK_BUDGET_SECONDS = 95.0
-_SOLUTION_REPAIR_RESERVED_SECONDS = 25.0
+_PRIMARY_EXPLAIN_TIMEOUT_SECONDS = 70.0
+_SOLUTION_REPAIR_TIMEOUT_SECONDS = 15.0
 _SOLUTION_REPAIR_MIN_REMAINING_SECONDS = 10.0
+_FINALIZE_TIMEOUT_SECONDS = 5.0
+
+
+def _build_finalize_failure_payload(reply: Any, *, diagnostic: str) -> dict[str, Any]:
+    payload = build_tutor_payload(reply)
+    payload["history_persisted"] = False
+    payload["diagnostic"] = diagnostic
+    return payload
 
 
 def _image_only_explain_prompt(language: str) -> str:
@@ -160,11 +169,8 @@ class _TutorExplainEntriesMixin:
         if self._agent is None:
             return Err(SdkError("study tutor agent is not initialized"))
         started_monotonic = monotonic()
-        work_deadline_monotonic = (
-            started_monotonic + _EXPLAIN_WORK_BUDGET_SECONDS
-        )
         primary_deadline_monotonic = (
-            work_deadline_monotonic - _SOLUTION_REPAIR_RESERVED_SECONDS
+            started_monotonic + _PRIMARY_EXPLAIN_TIMEOUT_SECONDS
         )
         raw_text = str(text or "").strip()
         # Phase 1: detect an explicit mode intent and switch first when present.
@@ -265,23 +271,29 @@ class _TutorExplainEntriesMixin:
                 input_text=source_text,
                 extra=extra_context,
             )
-            reply = await self._agent.concept_explain(
-                source_text,
-                mode=active_mode,
-                context=tutor_context,
+            primary_remaining = primary_deadline_monotonic - monotonic()
+            if primary_remaining <= 0:
+                raise asyncio.TimeoutError
+            reply = await asyncio.wait_for(
+                self._agent.concept_explain(
+                    source_text,
+                    mode=active_mode,
+                    context=tutor_context,
+                ),
+                timeout=primary_remaining,
             )
             communication = getattr(self._cfg, "communication", None)
             narration_requested = bool(
                 getattr(communication, "enabled", False)
-            ) and bool(
-                getattr(communication, "solution_narration_enabled", True)
+            ) and bool(getattr(communication, "solution_narration_enabled", True))
+            response_mode = (
+                str(tutor_context.get("study_response_mode") or "unknown")
+                .strip()
+                .lower()
             )
-            response_mode = str(
-                tutor_context.get("study_response_mode") or "unknown"
-            ).strip().lower()
-            semantic_status = str(
-                tutor_context.get("study_semantic_status") or ""
-            ).strip().lower()
+            semantic_status = (
+                str(tutor_context.get("study_semantic_status") or "").strip().lower()
+            )
             current_question = tutor_context.get("current_question")
             trusted_internal_question_context = bool(
                 isinstance(current_question, dict)
@@ -323,14 +335,21 @@ class _TutorExplainEntriesMixin:
                             language=self._cfg.language,
                         )
                 elif repair_eligible:
-                    remaining = work_deadline_monotonic - monotonic()
+                    repair_started_monotonic = monotonic()
+                    repair_deadline_monotonic = min(
+                        started_monotonic
+                        + _PRIMARY_EXPLAIN_TIMEOUT_SECONDS
+                        + _SOLUTION_REPAIR_TIMEOUT_SECONDS,
+                        repair_started_monotonic + _SOLUTION_REPAIR_TIMEOUT_SECONDS,
+                    )
+                    remaining = repair_deadline_monotonic - repair_started_monotonic
                     if remaining < _SOLUTION_REPAIR_MIN_REMAINING_SECONDS:
                         repair_time_budget_insufficient = True
                     else:
                         repair_attempted = True
                         repair_context = dict(tutor_context)
                         repair_context["deadline_monotonic"] = (
-                            work_deadline_monotonic
+                            repair_deadline_monotonic
                         )
                         try:
                             repaired_structure = await asyncio.wait_for(
@@ -342,14 +361,28 @@ class _TutorExplainEntriesMixin:
                                     mode=active_mode,
                                     context=repair_context,
                                 ),
-                                timeout=remaining,
+                                timeout=min(
+                                    remaining, _SOLUTION_REPAIR_TIMEOUT_SECONDS
+                                ),
                             )
                         except asyncio.TimeoutError:
                             repaired_structure = None
                             repair_time_budget_insufficient = True
+                        except Exception:
+                            self.logger.warning(
+                                "study explanation structure repair failed"
+                            )
+                            repaired_structure = None
+                        if repaired_structure is not None and not isinstance(
+                            repaired_structure, type(solution_structure)
+                        ):
+                            self.logger.warning(
+                                "study explanation structure repair returned invalid data"
+                            )
+                            repaired_structure = None
                         if repaired_structure is None:
                             repair_finished_after_deadline = (
-                                monotonic() >= work_deadline_monotonic
+                                monotonic() >= repair_deadline_monotonic
                             )
                             repair_invalid_response = (
                                 not repair_time_budget_insufficient
@@ -369,21 +402,35 @@ class _TutorExplainEntriesMixin:
                                     repaired_structure,
                                     language=self._cfg.language,
                                 )
-            payload = await self._finalize_tutor_call(
-                LLM_OPERATION_CONCEPT_EXPLAIN,
-                reply,
-                history_kind=MODE_CONCEPT_EXPLAIN,
-                metadata={
-                    "degraded": reply.degraded,
-                    "diagnostic": reply.diagnostic,
-                    "mode": active_mode,
-                    "mode_switch": mode_switch,
-                    "intent": intent,
-                    "screen_classification": tutor_context.get("screen_classification")
-                    or {},
-                },
-                extra_context=tutor_context,
-            )
+            try:
+                payload = await asyncio.wait_for(
+                    self._finalize_tutor_call(
+                        LLM_OPERATION_CONCEPT_EXPLAIN,
+                        reply,
+                        history_kind=MODE_CONCEPT_EXPLAIN,
+                        metadata={
+                            "degraded": reply.degraded,
+                            "diagnostic": reply.diagnostic,
+                            "mode": active_mode,
+                            "mode_switch": mode_switch,
+                            "intent": intent,
+                            "screen_classification": tutor_context.get("screen_classification")
+                            or {},
+                        },
+                        extra_context=tutor_context,
+                    ),
+                    timeout=_FINALIZE_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                self.logger.warning("study explanation history persistence timed out")
+                payload = _build_finalize_failure_payload(
+                    reply, diagnostic="history_persist_timeout"
+                )
+            except Exception:
+                self.logger.warning("study explanation history persistence failed")
+                payload = _build_finalize_failure_payload(
+                    reply, diagnostic="history_persist_failed"
+                )
             narration_scheduled = False
             narration_status = "disabled"
             narration_reason = ""
@@ -400,9 +447,7 @@ class _TutorExplainEntriesMixin:
                     narration_status = "incomplete"
                     narration_reason = "insufficient_time_budget"
                 else:
-                    narration_status = (
-                        "repair_failed" if repair_attempted else "incomplete"
-                    )
+                    narration_status = "incomplete"
                     narration_reason = (
                         "invalid_repair_response"
                         if repair_invalid_response

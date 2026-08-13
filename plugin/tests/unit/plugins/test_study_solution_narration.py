@@ -553,8 +553,9 @@ async def test_study_explain_text_reserves_work_deadline_for_repair(
     primary_deadline = plugin._agent.calls[0][2]["deadline_monotonic"]
     repair_deadline = captured["context"]["deadline_monotonic"]
     assert primary_deadline == pytest.approx(170.0)
-    assert repair_deadline == pytest.approx(195.0)
-    assert repair_deadline - primary_deadline == pytest.approx(25.0)
+    assert repair_deadline == pytest.approx(115.0)
+    assert repair_deadline - clock.now == pytest.approx(15.0)
+    assert repair_deadline <= primary_deadline + 15.0
     assert result.value["reply"] != incomplete_reply
     assert result.value["degraded"] is False
     assert result.value["diagnostic"] == "output_truncated"
@@ -610,8 +611,8 @@ async def test_study_explain_text_repair_timeout_keeps_first_reply_ok(
         await asyncio.Event().wait()
 
     monkeypatch.setattr(explain_entries, "repair_solution_structure", never_returns)
-    monkeypatch.setattr(explain_entries, "_EXPLAIN_WORK_BUDGET_SECONDS", 0.2)
-    monkeypatch.setattr(explain_entries, "_SOLUTION_REPAIR_RESERVED_SECONDS", 0.15)
+    monkeypatch.setattr(explain_entries, "_PRIMARY_EXPLAIN_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(explain_entries, "_SOLUTION_REPAIR_TIMEOUT_SECONDS", 0.15)
     monkeypatch.setattr(explain_entries, "_SOLUTION_REPAIR_MIN_REMAINING_SECONDS", 0.01)
     started = time.monotonic()
 
@@ -912,7 +913,7 @@ async def test_study_explain_text_reports_single_failed_repair_without_narration
     assert len(repair_calls) == 1
     assert result.value["reply"] == incomplete_reply
     assert result.value["solution_repair_attempted"] is True
-    assert result.value["solution_narration_status"] == "repair_failed"
+    assert result.value["solution_narration_status"] == "incomplete"
     assert result.value["solution_narration_reason"] == "invalid_repair_response"
     assert result.value["solution_narration_missing_sections"] == ["answer"]
     assert result.value["solution_narration_scheduled"] is False

@@ -10,8 +10,9 @@ from plugin.plugins.study_companion.entry_tutor_context_support import (
     _TutorContextSupportMixin,
 )
 from plugin.plugins.study_companion.entry_tutor_explain_entries import (
-    _EXPLAIN_WORK_BUDGET_SECONDS,
-    _SOLUTION_REPAIR_RESERVED_SECONDS,
+    _FINALIZE_TIMEOUT_SECONDS,
+    _PRIMARY_EXPLAIN_TIMEOUT_SECONDS,
+    _SOLUTION_REPAIR_TIMEOUT_SECONDS,
     _TutorExplainEntriesMixin,
 )
 from plugin.plugins.study_companion.models import StudyConfig
@@ -34,13 +35,18 @@ def test_explain_entry_budget_reserves_a_repair_window_inside_entry_timeout() ->
     explain_meta = _TutorExplainEntriesMixin.study_explain_text.__neko_event_meta__
     image_meta = _TutorExplainEntriesMixin.study_submit_image.__neko_event_meta__
 
-    assert _EXPLAIN_WORK_BUDGET_SECONDS == 95.0
-    assert _SOLUTION_REPAIR_RESERVED_SECONDS == 25.0
-    assert _EXPLAIN_WORK_BUDGET_SECONDS - _SOLUTION_REPAIR_RESERVED_SECONDS == 70.0
+    assert _PRIMARY_EXPLAIN_TIMEOUT_SECONDS == 70.0
+    assert _SOLUTION_REPAIR_TIMEOUT_SECONDS == 15.0
+    assert _FINALIZE_TIMEOUT_SECONDS == 5.0
     assert explain_meta.timeout == 105.0
     assert image_meta.timeout == 105.0
-    assert explain_meta.timeout > _EXPLAIN_WORK_BUDGET_SECONDS
-    assert image_meta.timeout > _EXPLAIN_WORK_BUDGET_SECONDS
+    bounded_work = (
+        _PRIMARY_EXPLAIN_TIMEOUT_SECONDS
+        + _SOLUTION_REPAIR_TIMEOUT_SECONDS
+        + _FINALIZE_TIMEOUT_SECONDS
+    )
+    assert explain_meta.timeout - bounded_work == 15.0
+    assert image_meta.timeout - bounded_work == 15.0
 
 
 @pytest.mark.asyncio

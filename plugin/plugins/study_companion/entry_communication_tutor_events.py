@@ -30,16 +30,22 @@ class _CommunicationTutorEventsMixin:
         bus = self._event_bus
         if bus is None:
             return False
+        event = StudyEvent(
+            name="general_response_completed",
+            payload={
+                "response_mode": normalized_mode,
+                "content": prepared_content,
+            },
+        )
+        schedule_emit = getattr(bus, "schedule_emit", None)
+        if callable(schedule_emit):
+            try:
+                return schedule_emit(event) is not None
+            except Exception:
+                self.logger.warning("general narration event delivery failed")
+                return False
         try:
-            await bus.emit(
-                StudyEvent(
-                    name="general_response_completed",
-                    payload={
-                        "response_mode": normalized_mode,
-                        "content": prepared_content,
-                    },
-                )
-            )
+            await bus.emit(event)
         except Exception:
             self.logger.warning("general narration event delivery failed")
             return False
