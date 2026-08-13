@@ -1325,9 +1325,10 @@ def _plugin_process_runner(
             on_command_loop_start = getattr(instance, "_on_command_loop_start", None)
             if callable(on_command_loop_start):
                 try:
-                    result = on_command_loop_start()
-                    if inspect.isawaitable(result):
-                        await result
+                    with ctx._handler_scope("lifecycle.command_loop_start"):
+                        result = on_command_loop_start()
+                        if inspect.isawaitable(result):
+                            await result
                 except Exception:
                     logger.exception("[Plugin Process] _on_command_loop_start failed")
 

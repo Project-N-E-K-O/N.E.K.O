@@ -292,7 +292,14 @@ def test_images_upload_times_out_when_the_service_does_not_respond(tmp_path: Pat
 
 @pytest.mark.parametrize(
     "lifecycle_name",
-    ["startup", "freeze", "unfreeze", "shutdown", "config_change"],
+    [
+        "startup",
+        "command_loop_start",
+        "freeze",
+        "unfreeze",
+        "shutdown",
+        "config_change",
+    ],
 )
 def test_images_upload_fails_fast_in_lifecycle_handlers(
     tmp_path: Path,

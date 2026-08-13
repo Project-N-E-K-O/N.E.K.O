@@ -174,6 +174,9 @@ def test_plugin_process_runner_sends_startup_ready_before_auto_custom_events(
                 "boot": EventHandler(meta=auto_meta, handler=_auto_custom),
             }
 
+        async def _on_command_loop_start(self) -> None:
+            order.append(self.ctx.handler_ctx)
+
     class _Sender:
         def __init__(self, channel: str) -> None:
             self.channel = channel
@@ -231,7 +234,12 @@ def test_plugin_process_runner_sends_startup_ready_before_auto_custom_events(
         uplink_endpoint="ipc://up",
     )
 
-    assert order == ["startup", "ready", "auto_custom"]
+    assert order == [
+        "startup",
+        "ready",
+        "auto_custom",
+        "lifecycle.command_loop_start",
+    ]
     startup_payload = next(payload for payload in payloads if payload.get("req_id") == host_module.STARTUP_RESULT_REQ_ID)
     assert startup_payload["success"] is True
 

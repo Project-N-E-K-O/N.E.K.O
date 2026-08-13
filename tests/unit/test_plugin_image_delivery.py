@@ -305,6 +305,7 @@ async def test_native_realtime_read_uses_current_session_image_path(
         encoded,
         bypass_rate_limit=True,
     )
+    manager.enqueue_agent_callback.assert_called_once()
     callback = manager.enqueue_agent_callback.call_args.args[0]
     assert callback["delivery_mode"] == "passive"
     assert callback["media_images"] == []

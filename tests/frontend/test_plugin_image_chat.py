@@ -120,10 +120,13 @@ def test_display_only_plugin_image_uses_existing_host_retry(
         """(imageUrl) => {
             const host = window.reactChatWindowHost;
             window.reactChatWindowHost = null;
-            const accepted = window.appendReactChatBlocks({
-                request_id: 'host-startup-race',
-                blocks: [{ type: 'image', url: imageUrl }]
-            });
+            let accepted = true;
+            for (let index = 0; index < 55; index += 1) {
+                accepted = window.appendReactChatBlocks({
+                    request_id: `host-startup-race-${index}`,
+                    blocks: [{ type: 'image', url: imageUrl }]
+                }) && accepted;
+            }
             const beforeRestore = host.getState().messages.length;
             window.reactChatWindowHost = host;
             return { accepted, beforeRestore };
@@ -134,11 +137,13 @@ def test_display_only_plugin_image_uses_existing_host_retry(
     assert result["accepted"] is True
     assert result["beforeRestore"] == 0
     mock_page.wait_for_function(
-        "window.reactChatWindowHost.getState().messages.length === 1"
+        "window.reactChatWindowHost.getState().messages.length === 50"
     )
     messages = mock_page.evaluate(
         "window.reactChatWindowHost.getState().messages"
     )
+    assert "host-startup-race-5" in messages[0]["id"]
+    assert "host-startup-race-54" in messages[-1]["id"]
     assert messages[0]["blocks"] == [
         {"type": "image", "url": _ONE_PIXEL_PNG}
     ]

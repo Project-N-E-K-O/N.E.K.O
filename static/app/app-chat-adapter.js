@@ -359,8 +359,16 @@
     // ======================== createGeminiBubble（覆盖） ========================
 
     // ---- host 未就绪时的待重发队列 ----
+    var _PENDING_HOST_MESSAGES_MAX = 50;
     var _pendingHostMessages = [];
     var _pendingFlushTimer = null;
+
+    function _queuePendingHostMessage(message) {
+        if (_pendingHostMessages.length >= _PENDING_HOST_MESSAGES_MAX) {
+            _pendingHostMessages.shift();
+        }
+        _pendingHostMessages.push(message);
+    }
 
     function _tryFlushPendingHostMessages() {
         var host = getHost();
@@ -460,7 +468,7 @@
         } else if (msg) {
             // host 尚未初始化，放入待重发队列而非静默丢弃
             console.warn('[ChatAdapter] host not ready, queuing message', msgId);
-            _pendingHostMessages.push(msg);
+            _queuePendingHostMessage(msg);
         }
 
         var ref = createVirtualBubbleRef(msgId);
@@ -736,7 +744,7 @@
                 markAssistantVisibleResponseForAchievement();
             } else {
                 console.warn('[ChatAdapter] host not ready, queuing structured passthrough', structuredMessageId);
-                _pendingHostMessages.push(structuredMessage);
+                _queuePendingHostMessage(structuredMessage);
                 _tryFlushPendingHostMessages();
             }
             var structuredRef = createVirtualBubbleRef(structuredMessageId);
@@ -977,7 +985,7 @@
             markAssistantVisibleResponseForAchievement();
         } else {
             console.warn('[ChatAdapter] host not ready, queuing plugin chat blocks', message.id);
-            _pendingHostMessages.push(message);
+            _queuePendingHostMessage(message);
             _tryFlushPendingHostMessages();
         }
         return true;
