@@ -1929,10 +1929,13 @@
             // 优先前端流（缓存流 → Electron源 → 不弹窗）
             var stream = await acquireOrReuseCachedStream({ allowPrompt: false });
             if (stream) {
+                // 同上：抓帧是异步的，源 ID 要跟这条流一起钉住，事后再读可能已经换人。
+                // 必须在 acquireOrReuseCachedStream 之后取——它自己就会改写这个字段。
+                var streamSourceId = S.selectedScreenSourceId;
                 var frame = await captureFrameFromStream(stream, 0.8);
                 if (frame && frame.dataUrl) {
                     dataUrl = frame.dataUrl;
-                    captureType = window.detectScreenshotCaptureType(stream, S.selectedScreenSourceId);
+                    captureType = window.detectScreenshotCaptureType(stream, streamSourceId);
                 } else if (S.screenCaptureStream === stream) {
                     // 空帧（黑帧或空壳流），废弃缓存流
                     console.warn('[ProactiveVision] 缓存流提取帧失败，废弃该流');
@@ -1949,11 +1952,15 @@
                 if (desktopProvider
                     && desktopProvider.nativeFrameCapture
                     && typeof desktopProvider.captureSourceAsDataUrl === 'function') {
+                    // 捕获前先钉住源 ID：下面隔着两个 await，期间用户换源会让
+                    // S.selectedScreenSourceId 变掉，事后再读就会拿新源去解释旧帧
+                    // （窗口换成屏幕 → 给一张没有 Avatar 的窗口图叠字）。
+                    var nativeSourceId = S.selectedScreenSourceId;
                     try {
                         var direct = await window.captureDesktopSourceWithTimeout(
                             desktopProvider,
                             'captureSourceAsDataUrl',
-                            S.selectedScreenSourceId
+                            nativeSourceId
                         );
                         if (direct && direct.success && direct.dataUrl) {
                             // 桌面壳的 NativeImage.toDataURL() 通常出 PNG，而后端屏幕数据
@@ -1962,7 +1969,7 @@
                             var nativeDataUrl = await normalizeNativeCaptureDataUrlForStream(direct.dataUrl);
                             if (nativeDataUrl) {
                                 dataUrl = nativeDataUrl;
-                                captureType = window.detectScreenshotCaptureType(null, S.selectedScreenSourceId);
+                                captureType = window.detectScreenshotCaptureType(null, nativeSourceId);
                             } else {
                                 console.warn('[ProactiveVision] 原生帧转 JPEG 失败，尝试后端兜底');
                             }

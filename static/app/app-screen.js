@@ -2073,27 +2073,39 @@
     // 显示器标识，运行时又不能重新 getSources（Linux Portal 会再弹系统窗口）。
     // 所以这里只做闸门：确认是多屏就不叠。宁可不叠，也不叠到错误的屏上。
     var multiDisplayCache = null;   // true / false / null(未知)
+    var multiDisplayCacheAt = 0;
+    // 桥上没有显示器拓扑变更事件（electronScreen 只有 getAllDisplays /
+    // getCurrentDisplay / getCursorPoint / getDesktopCoordinateSnapshot /
+    // getPrimaryDisplayInfo / moveWindowToDisplay），只能按 TTL 重查：一次查完就
+    // 永久缓存的话，笔记本插上外接屏之后闸门会一直按单屏放行。
+    var MULTI_DISPLAY_CACHE_TTL_MS = 5000;
 
     function refreshMultiDisplayCache() {
         var bridge = window.electronScreen;
         if (!bridge || typeof bridge.getAllDisplays !== 'function') return;
+        multiDisplayCacheAt = Date.now();
         try {
             Promise.resolve(bridge.getAllDisplays()).then(function (list) {
                 if (list && typeof list.length === 'number') {
                     multiDisplayCache = list.length > 1;
                 }
-            }).catch(function () { /* 拿不到就保持未知 */ });
-        } catch (e) { /* 拿不到就保持未知 */ }
+            }).catch(function () { /* 拿不到就保持上一次的判断 */ });
+        } catch (e) { /* 拿不到就保持上一次的判断 */ }
     }
 
     function isKnownMultiDisplay() {
-        // Chromium 的 Screen.isExtended 不需要权限，是最直接的信号。
+        // Chromium 的 Screen.isExtended 不需要权限，且随拓扑实时变化，是最直接的信号。
         // 拿不到时退回 electronScreen 缓存；两者都拿不到就返回 false，
         // 即逐字沿用改动前的行为（单屏用户与纯浏览器场景不受本闸门影响）。
         if (window.screen && typeof window.screen.isExtended === 'boolean') {
             return window.screen.isExtended;
         }
-        if (multiDisplayCache === null) refreshMultiDisplayCache();
+        // 刷新是 fire-and-forget：本次仍用上一轮的值，拓扑变化最多晚 TTL + 一次 IPC
+        // 生效。不 await 是因为这条在截图路径上，持续分享时每秒都会问一次。
+        if (multiDisplayCache === null
+            || (Date.now() - multiDisplayCacheAt) > MULTI_DISPLAY_CACHE_TTL_MS) {
+            refreshMultiDisplayCache();
+        }
         return multiDisplayCache === true;
     }
     mod.isKnownMultiDisplay = isKnownMultiDisplay;

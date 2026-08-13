@@ -395,3 +395,82 @@ def test_window_source_frame_is_not_annotated():
     msg = json.loads(out["sent"][0])
     assert msg["data"].endswith("NATIVE")
     assert "avatar_position" not in msg
+
+
+# Capture succeeds, but the user switches from the window source to a full
+# screen while the grab is still in flight.
+_NATIVE_OK_THEN_SWITCH = (
+    "(function () {"
+    " S.selectedScreenSourceId = 'screen:0:0';"
+    " return { success: true, dataUrl: 'data:image/png;base64,PNG' };"
+    " })()"
+)
+
+
+@pytest.mark.unit
+def test_native_frame_keeps_the_source_it_was_captured_from():
+    """Switching source mid-capture must not re-label the frame already in hand.
+
+    The frame was grabbed from a window; re-reading the (now changed) selected
+    source would call it a full-screen grab and annotate an image that contains
+    no avatar at all.
+    """
+    out = _run(_frame_script(
+        source_id="'window:9'", stream="null", native=_NATIVE_OK_THEN_SWITCH,
+    ))
+    msg = json.loads(out["sent"][0])
+    assert msg["data"].endswith("NATIVE")
+    # Captured from window:9, so it must stay unannotated despite the switch.
+    assert "avatar_position" not in msg
+
+
+@pytest.mark.unit
+def test_display_topology_change_is_picked_up_after_the_cache_ttl():
+    """A monitor attached after startup must re-arm the gate, not stay cached forever.
+
+    Only reachable when ``screen.isExtended`` is unavailable, which is exactly
+    when the Electron bridge fallback is in use.
+    """
+    src = _screen_src()
+    multi = (
+        "var multiDisplayCache = null;\nvar multiDisplayCacheAt = 0;\n"
+        + [line for line in src.splitlines()
+           if "MULTI_DISPLAY_CACHE_TTL_MS =" in line][0].strip() + "\n"
+        + _fn(src, "refreshMultiDisplayCache") + "\n"
+        + _fn(src, "isKnownMultiDisplay")
+    )
+    script = """
+const results = {};
+let displayCount = 1;
+let now = 1000;
+Date.now = () => now;
+const window = {
+  screen: { width: 1920, height: 1080 },   // no isExtended -> bridge fallback
+  electronScreen: { getAllDisplays: async () => new Array(displayCount).fill({}) }
+};
+__MULTI__
+const settle = () => new Promise((r) => setImmediate(r));
+(async () => {
+  isKnownMultiDisplay();
+  await settle();
+  results.singleDisplay = isKnownMultiDisplay();
+
+  // A second monitor is attached; without a TTL the cached false sticks forever.
+  displayCount = 2;
+  now += 100;
+  isKnownMultiDisplay();
+  await settle();
+  results.withinTtl = isKnownMultiDisplay();
+
+  now += 60000;
+  isKnownMultiDisplay();
+  await settle();
+  results.afterTtl = isKnownMultiDisplay();
+  console.log(JSON.stringify(results));
+})();
+""".replace("__MULTI__", multi)
+    out = _run(script)
+    assert out["singleDisplay"] is False
+    # Still stale inside the TTL -- documents the bounded self-heal window.
+    assert out["withinTtl"] is False
+    assert out["afterTtl"] is True
