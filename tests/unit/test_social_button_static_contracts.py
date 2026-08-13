@@ -232,7 +232,8 @@ def test_forge_drop_effects_can_be_disabled_without_hiding_credit_updates():
     effects_handler = _extract_js_function(overlay, "function onDropEffectsChanged(event)")
     reaction_handler = _extract_js_function(reaction, "function react(detail)")
     play_one = _extract_js_function(overlay, "function playOne(payload)")
-    assert "if (window.forgeDropEffectsEnabled === false)" in drop_handler
+    assert "if (window.forgeDropEffectsEnabled === false)" not in drop_handler
+    assert "play(queuedDetail);" in drop_handler
     assert "renderForgeBadge(" in state_handler
     assert "detail.active_count" in state_handler
     assert "audio.pause();" in effects_handler
@@ -467,6 +468,8 @@ def test_credit_badge_uses_only_pc_pushed_cloud_state():
     assert "/api/card-drop/credits" not in source
     assert "window.addEventListener('neko-forge-credit-state'" in source
     assert "scheduleExpiryClear(detail.next_expires_at);" in source
+    assert "neko-forge-credit-state-refresh" in source
+    assert "renderForgeBadge(0, false);" not in source
     assert "neko-forge-credit-animation-complete" in source
     assert "earliest - now + 1000" in source
 

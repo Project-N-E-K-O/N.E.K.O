@@ -882,6 +882,7 @@ def test_retired_credit_routes_ignore_delegate_principal_and_local_ledger(
         rarity="SR",
     )
     credit_id = forge_credit_ledger.list_credits()["credits"][0]["id"]
+    ledger_before = forge_credit_ledger.list_credits()
     operation_id = "33333333-3333-4333-8333-333333333333"
     card_id = "44444444-4444-4444-8444-444444444444"
 
@@ -932,6 +933,7 @@ def test_retired_credit_routes_ignore_delegate_principal_and_local_ledger(
         response.json() == {"detail": "cloud_forge_credits_required"}
         for response in responses
     )
+    assert forge_credit_ledger.list_credits() == ledger_before
 
 
 def test_retired_credit_routes_ignore_refreshed_desktop_bearer(
@@ -963,6 +965,7 @@ def test_retired_credit_routes_ignore_refreshed_desktop_bearer(
         rarity="R",
     )
     credit_id = forge_credit_ledger.list_credits()["credits"][0]["id"]
+    ledger_before = forge_credit_ledger.list_credits()
     operation_id = "55555555-5555-4555-8555-555555555555"
     card_id = "66666666-6666-4666-8666-666666666666"
 
@@ -1015,6 +1018,7 @@ def test_retired_credit_routes_ignore_refreshed_desktop_bearer(
         response.json() == {"detail": "cloud_forge_credits_required"}
         for response in responses
     )
+    assert forge_credit_ledger.list_credits() == ledger_before
 
 
 def test_card_drop_capabilities_are_exact_origin_and_no_store(client):
@@ -1108,10 +1112,24 @@ def test_facts_post_query_is_bounded_and_passes_validated_lists(
 def test_local_credit_summary_is_retired(client):
     response = client.get(
         "/api/card-drop/credits/local-summary",
-        headers={"Origin": "http://localhost:48911"},
+        headers={"Origin": "https://community.example"},
     )
     assert response.status_code == 410
     assert response.json() == {"detail": "cloud_forge_credits_required"}
+    assert response.headers["access-control-allow-origin"] == "https://community.example"
+
+
+def test_retired_credit_grant_and_summary_support_cors_preflight(client):
+    headers = {
+        "Origin": "https://community.example",
+        "Access-Control-Request-Method": "POST",
+    }
+    grant = client.options("/api/card-drop/credits/grant", headers=headers)
+    summary = client.options("/api/card-drop/credits/local-summary", headers=headers)
+
+    assert grant.status_code == summary.status_code == 200
+    assert grant.headers["access-control-allow-origin"] == "https://community.example"
+    assert summary.headers["access-control-allow-origin"] == "https://community.example"
 
 
 def test_retired_credit_routes_keep_validated_cors_headers(client, monkeypatch):

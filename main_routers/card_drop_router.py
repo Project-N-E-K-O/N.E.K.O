@@ -1905,6 +1905,8 @@ async def steam_callback_endpoint(
 
 
 @router.options("/credits")
+@router.options("/credits/grant")
+@router.options("/credits/local-summary")
 @router.options("/credits/{credit_id}/reservations")
 @router.options("/credits/{credit_id}/reservations/{operation_id}/commit")
 @router.options("/credits/{credit_id}/reservations/{operation_id}")
@@ -1917,7 +1919,11 @@ async def credit_options(request: Request, credit_id: str = "", operation_id: st
 
 @router.post("/credits/grant", summary="本地发券已退役")
 async def grant_credit_endpoint(request: Request):
-    raise HTTPException(status_code=410, detail="cloud_forge_credits_required")
+    return JSONResponse(
+        {"detail": "cloud_forge_credits_required"},
+        status_code=410,
+        headers=_credit_cors_headers(request) or {},
+    )
 
 
 @router.get("/credits", summary="本地券账本已退役")
@@ -1930,21 +1936,37 @@ async def credits_endpoint(request: Request):
 
 @router.get("/credits/local-summary", summary="已退役：券状态改由云端推送")
 async def local_credit_summary_endpoint(request: Request):
-    raise HTTPException(status_code=410, detail="cloud_forge_credits_required")
+    return JSONResponse(
+        {"detail": "cloud_forge_credits_required"},
+        status_code=410,
+        headers=_credit_cors_headers(request) or {},
+    )
 
 
 @router.post("/credits/{credit_id}/reservations", summary="已退役：云端事务直接锁券")
 async def reserve_credit_endpoint(request: Request, credit_id: str):
-    raise HTTPException(status_code=410, detail="cloud_forge_credits_required")
+    return JSONResponse(
+        {"detail": "cloud_forge_credits_required"},
+        status_code=410,
+        headers=_credit_cors_headers(request) or {},
+    )
 
 
 @router.post("/credits/{credit_id}/reservations/{operation_id}/commit", summary="已退役：云端事务原子消费券")
 async def commit_credit_endpoint(
     request: Request, credit_id: str, operation_id: str,
 ):
-    raise HTTPException(status_code=410, detail="cloud_forge_credits_required")
+    return JSONResponse(
+        {"detail": "cloud_forge_credits_required"},
+        status_code=410,
+        headers=_credit_cors_headers(request) or {},
+    )
 
 
 @router.delete("/credits/{credit_id}/reservations/{operation_id}", summary="已退役：失败事务自动回滚券")
 async def release_credit_endpoint(request: Request, credit_id: str, operation_id: str):
-    raise HTTPException(status_code=410, detail="cloud_forge_credits_required")
+    return JSONResponse(
+        {"detail": "cloud_forge_credits_required"},
+        status_code=410,
+        headers=_credit_cors_headers(request) or {},
+    )

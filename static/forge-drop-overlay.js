@@ -655,7 +655,11 @@
     expiryRefreshTimer = setTimeout(function () {
       expiryRefreshTimer = null;
       creditStateRevision += 1;
-      renderForgeBadge(0, false);
+      // 到期只说明最早的一张券失效，不能据此推断全部券都已清空。
+      // 请求 Electron 主进程重新读取云端权威状态；本体不访问本地券账本。
+      try {
+        window.dispatchEvent(new window.CustomEvent('neko-forge-credit-state-refresh'));
+      } catch (_) {}
     }, delay);
   }
 
@@ -669,11 +673,7 @@
       // 动画飞入结束后再 bump；这里先缓存，避免角标抢先跳
       cachedCredits = Math.max(0, detail.active_count - 1);
     }
-    if (window.forgeDropEffectsEnabled === false) {
-      // 仍经 playOne 的 disabled 分支，以便立即派发动画完成 ACK。
-      play(queuedDetail);
-      return;
-    }
+    // 关闭效果时仍经 playOne 的 disabled 分支，以便立即派发动画完成 ACK。
     play(queuedDetail);
   }
 
