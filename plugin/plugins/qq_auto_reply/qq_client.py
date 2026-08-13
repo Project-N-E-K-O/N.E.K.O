@@ -20,7 +20,7 @@ import re
 import secrets
 import time
 from typing import Any, Dict, Optional
-from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
+from urllib.parse import parse_qs, quote, urlencode, urlparse, urlunparse
 
 import websockets
 from websockets.exceptions import ConnectionClosed
@@ -410,11 +410,17 @@ class QQClient(QQConnectionBase):
             return url
 
     def _redact_text(self, text: str) -> str:
-        """把文本里出现的明文 token 遮掉（异常消息可能内嵌带 token 的完整 URL）。"""
+        """把文本里出现的明文 token 遮掉（异常消息可能内嵌带 token 的完整 URL）。
+
+        同时替换原始值与 URL 编码值：token 若含 ``+``/``/``/``=`` 等字符，URL 里
+        是编码形式（%2B / %2F / %3D），只替换原始值会漏。
+        """
         try:
             raw = str(text)
-            if self.token and self.token in raw:
-                return raw.replace(self.token, "***")
+            if self.token:
+                for variant in (self.token, quote(self.token, safe="")):
+                    if variant and variant in raw:
+                        raw = raw.replace(variant, "***")
             return raw
         except Exception:
             return str(text)

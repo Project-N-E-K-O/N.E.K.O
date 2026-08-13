@@ -63,7 +63,7 @@
   "errors.user_not_found": "ユーザー {qq_number} は信頼リストにいません",
   "errors.admin_no_nickname": "管理者はいつも主人と呼ぶんだから、ニックネームなんて付けられないわよ。",
   "errors.set_nickname_failed": "ニックネームの設定に失敗しました",
-"errors.nickname_invalid": "ニックネームに許可されない文字が含まれています（制御文字または長すぎ）",
+"errors.nickname_invalid": "ニックネームに許可されない文字が含まれているか、長すぎます",
   "errors.start_connect_failed": "OneBot サービス {url} に接続できません。先に外部 NapCat/OneBot を起動してください: {error}",
   "errors.proactive_private_generate_failed": "AI が送信可能なプライベートメッセージを生成しませんでした",
   "errors.proactive_group_generate_failed": "AI が送信可能なグループメッセージを生成しませんでした",

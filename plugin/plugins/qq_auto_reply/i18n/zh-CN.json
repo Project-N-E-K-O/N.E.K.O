@@ -83,7 +83,7 @@
   "errors.user_not_found": "用户 {qq_number} 不在信任列表中",
   "errors.admin_no_nickname": "管理员始终被称为主人，无法设置昵称",
   "errors.set_nickname_failed": "设置昵称失败",
-"errors.nickname_invalid": "昵称包含不允许的字符（控制字符或过长）",
+"errors.nickname_invalid": "昵称包含不允许的字符或过长",
   "errors.start_connect_failed": "无法连接到 OneBot 服务 {url}，请先启动外部 NapCat/OneBot: {error}",
   "errors.proactive_private_generate_failed": "AI 未生成可发送的私聊内容",
   "errors.proactive_group_generate_failed": "AI 未生成可发送的群聊内容",

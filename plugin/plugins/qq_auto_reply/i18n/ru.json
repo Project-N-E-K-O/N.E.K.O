@@ -63,7 +63,7 @@
   "errors.user_not_found": "Пользователь {qq_number} отсутствует в доверенном списке",
   "errors.admin_no_nickname": "Администратор всегда называется хозяином, для него нельзя задать ник",
   "errors.set_nickname_failed": "Не удалось задать ник",
-"errors.nickname_invalid": "Никнейм содержит недопустимые символы (управляющие или слишком длинный)",
+"errors.nickname_invalid": "Никнейм содержит недопустимые символы или слишком длинный",
   "errors.start_connect_failed": "Не удалось подключиться к сервису OneBot по адресу {url}. Сначала запустите внешний NapCat/OneBot: {error}",
   "errors.proactive_private_generate_failed": "ИИ не сгенерировал личное сообщение, которое можно отправить",
   "errors.proactive_group_generate_failed": "ИИ не сгенерировал групповое сообщение, которое можно отправить",

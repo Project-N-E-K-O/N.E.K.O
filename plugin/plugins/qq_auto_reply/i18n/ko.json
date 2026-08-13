@@ -63,7 +63,7 @@
   "errors.user_not_found": "사용자 {qq_number} 가 신뢰 목록에 없습니다",
   "errors.admin_no_nickname": "관리자는 항상 주인으로 불리므로 별명을 설정할 수 없습니다",
   "errors.set_nickname_failed": "별명 설정에 실패했습니다",
-"errors.nickname_invalid": "닉네임에 허용되지 않는 문자가 포함되어 있습니다 (제어 문자 또는 너무 긴)",
+"errors.nickname_invalid": "닉네임에 허용되지 않는 문자가 포함되어 있거나 너무 깁니다",
   "errors.start_connect_failed": "OneBot 서비스 {url} 에 연결할 수 없습니다. 먼저 외부 NapCat/OneBot을 시작하세요: {error}",
   "errors.proactive_private_generate_failed": "AI가 전송 가능한 개인 메시지를 생성하지 못했습니다",
   "errors.proactive_group_generate_failed": "AI가 전송 가능한 그룹 메시지를 생성하지 못했습니다",

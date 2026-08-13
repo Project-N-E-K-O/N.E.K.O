@@ -63,7 +63,7 @@
   "errors.user_not_found": "El usuario {qq_number} no está en la lista de confianza",
   "errors.admin_no_nickname": "Los administradores siempre se llaman maestro y no pueden tener un apodo",
   "errors.set_nickname_failed": "No se pudo establecer el apodo",
-"errors.nickname_invalid": "El apodo contiene caracteres no permitidos (caracteres de control o demasiado largo)",
+"errors.nickname_invalid": "El apodo contiene caracteres no permitidos o es demasiado largo",
   "errors.start_connect_failed": "No se pudo conectar al servicio OneBot en {url}. Inicia primero el NapCat/OneBot externo: {error}",
   "errors.proactive_private_generate_failed": "La IA no generó un mensaje privado que se pueda enviar",
   "errors.proactive_group_generate_failed": "La IA no generó un mensaje grupal que se pueda enviar",

@@ -130,6 +130,18 @@ def test_redact_text_masks_token_in_exception():
     assert "access_token=***" in redacted
 
 
+def test_redact_text_masks_url_encoded_token():
+    """The URL-encoded token form (e.g. a+b/c= -> a%2Bb%2Fc%3D) must also be masked,
+    otherwise a token with special chars leaks into logs via encoded exception URLs."""
+    client = _make_forward_client(token="a+b/c=")
+    redacted = client._redact_text(
+        "invalid URI: ws://192.168.1.5:3001?access_token=a%2Bb%2Fc%3D"
+    )
+    assert "a%2Bb%2Fc%3D" not in redacted
+    assert "a+b/c=" not in redacted
+    assert "***" in redacted
+
+
 def test_forward_connect_nonblocking_when_dial_fails():
     """``connect()`` does not fail when NapCat is not ready: the background loop
     retries and the connection stays down."""

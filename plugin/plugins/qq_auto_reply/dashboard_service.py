@@ -271,7 +271,9 @@ class QQDashboardService:
         if reason == "too_long":
             default = f"昵称不能超过 {getattr(self.plugin.permission_mgr, 'NICKNAME_MAX_CHARS', 64)} 个字符"
         else:
-            default = "昵称不能包含控制字符或不可见字符"
+            # validate_nickname 的 control_char 同时覆盖结构字符（如 []|）和真正的
+            # 控制字符，文案用通用表达避免误导（不是说成"控制/不可见字符"）。
+            default = "昵称不能包含不允许的字符"
         msg = self.plugin.i18n.t("errors.nickname_invalid", default=default)
         return Err(SdkError(f"INVALID_ARGUMENT: {msg}"))
 
