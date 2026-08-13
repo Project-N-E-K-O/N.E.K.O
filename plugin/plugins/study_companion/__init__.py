@@ -7,10 +7,7 @@ from dataclasses import replace
 from datetime import datetime
 import json
 import math
-import os
 from pathlib import Path
-import subprocess
-import sys
 import threading
 from types import SimpleNamespace
 import time
@@ -142,58 +139,6 @@ def _register_install_routes() -> None:
     )
 
 
-_USER_PLUGIN_SERVER_DEFAULT_PORT = 48916
-_LOCALHOST = "127.0.0.1"
-
-
-def _static_plugin_ui_url(*, plugin_id: str, port: str) -> str:
-    safe_plugin_id = quote(plugin_id, safe="")
-    return f"http://127.0.0.1:{port}/plugin/{safe_plugin_id}/ui/"
-
-
-def _coerce_local_port(value: object, *, default: int) -> str:
-    raw = str(value or default).strip()
-    try:
-        port_num = int(raw)
-    except ValueError:
-        port_num = default
-    if not (1 <= port_num <= 65535):
-        port_num = default
-    return str(port_num)
-
-
-def _plugin_manager_base_url() -> str:
-    configured_url = str(
-        os.getenv("NEKO_STUDY_COMPANION_PANEL_URL")
-        or os.getenv("NEKO_PLUGIN_MANAGER_URL")
-        or os.getenv("NEKO_PLUGIN_MANAGER_BASE_URL")
-        or ""
-    ).strip()
-    if configured_url:
-        return configured_url.rstrip("/")
-
-    backend_port = _coerce_local_port(
-        os.getenv("NEKO_USER_PLUGIN_SERVER_PORT", str(_USER_PLUGIN_SERVER_DEFAULT_PORT)),
-        default=_USER_PLUGIN_SERVER_DEFAULT_PORT,
-    )
-    return f"http://{_LOCALHOST}:{backend_port}"
-
-
-def _plugin_manager_study_panel_url(*, plugin_id: str) -> str:
-    safe_plugin_id = quote(plugin_id, safe="")
-    base_url = _plugin_manager_base_url()
-    if base_url.endswith("/ui/plugins"):
-        base_url = base_url[: -len("/ui/plugins")]
-    elif base_url.endswith("/ui"):
-        base_url = base_url[: -len("/ui")]
-    return f"{base_url}/plugin/{safe_plugin_id}/ui/"
-
-
-def _auto_open_ui_disabled_by_env() -> bool:
-    value = str(os.getenv("NEKO_STUDY_COMPANION_DISABLE_AUTO_OPEN_UI") or "").strip().lower()
-    return value in {"1", "true", "yes", "on"}
-
-
 try:
     _register_install_routes()
 except Exception:  # noqa: BLE001 - route registration should not block package import.
@@ -206,17 +151,6 @@ except Exception:  # noqa: BLE001 - route registration should not block package 
 
 
 _REVIEW_DUE_INTERVAL_SECONDS = 1800.0
-_AUTO_OPEN_UI_BROWSER_TIMEOUT_SECONDS = 3.0
-_AUTO_OPEN_UI_TASK_TIMEOUT_SECONDS = 3.5
-
-
-def _open_url_in_browser(url: str) -> None:
-    if sys.platform == "win32":
-        os.startfile(url)
-    elif sys.platform == "darwin":
-        subprocess.run(["open", url], check=True, timeout=_AUTO_OPEN_UI_BROWSER_TIMEOUT_SECONDS)
-    else:
-        subprocess.run(["xdg-open", url], check=True, timeout=_AUTO_OPEN_UI_BROWSER_TIMEOUT_SECONDS)
 
 
 from .entry_tutor_context_support import _TutorContextSupportMixin
@@ -430,7 +364,6 @@ class StudyCompanionPlugin(
                     }
                 ]
             )
-            await self._auto_open_ui_if_enabled()
             self._sync_doc_export_entry()
             await self._persist_state()
             self._start_pomodoro_watcher()
@@ -451,20 +384,6 @@ class StudyCompanionPlugin(
                 self._state.status = STATUS_ERROR
                 self._state.last_error = "startup_failed"
             return Err(SdkError("failed to start study_companion"))
-
-    async def _auto_open_ui_if_enabled(self) -> None:
-        if not bool(self._cfg.auto_open_ui):
-            return
-        if _auto_open_ui_disabled_by_env():
-            return
-        url = _plugin_manager_study_panel_url(plugin_id=self.plugin_id)
-        try:
-            await asyncio.wait_for(
-                asyncio.to_thread(_open_url_in_browser, url),
-                timeout=_AUTO_OPEN_UI_TASK_TIMEOUT_SECONDS,
-            )
-        except Exception as exc:
-            self.logger.warning("study auto-open UI failed: {}", exc)
 
     async def _cleanup_after_failed_startup(self) -> None:
         document_jobs = getattr(self, "_document_jobs", None)

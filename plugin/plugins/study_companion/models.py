@@ -341,7 +341,8 @@ class StudyConfig:
     default_mode: StudyMode = MODE_COMPANION
     language: str = "zh-CN"
     history_limit: int = 50
-    auto_open_ui: bool = True
+    # Deprecated compatibility field. Plugin lifecycle never opens external UI.
+    auto_open_ui: bool = False
     ocr_enabled: bool = True
     ocr_backend_selection: str = "rapidocr"
     ocr_capture_backend: str = "auto"
@@ -662,7 +663,7 @@ def build_config(raw: dict[str, Any]) -> StudyConfig:
         default_mode=default_mode,
         language=_str(study, "language", "zh-CN", "language"),
         history_limit=max(1, _int(study, "history_limit", 50, "history_limit")),
-        auto_open_ui=_bool(study, "auto_open_ui", True, "auto_open_ui"),
+        auto_open_ui=_bool(study, "auto_open_ui", False, "auto_open_ui"),
         ocr_enabled=_bool(ocr, "enabled", True, "ocr_enabled"),
         ocr_backend_selection=_str(
             ocr, "backend_selection", "rapidocr", "ocr_backend_selection"

@@ -314,17 +314,17 @@ async def test_awareness_disabled_does_not_start_loop_on_startup(
 
 
 @pytest.mark.asyncio
-async def test_study_plugin_startup_auto_opens_panel_page(
+async def test_study_plugin_startup_ignores_legacy_auto_open_ui(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     opened: list[str] = []
     monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "runtime"))
-    monkeypatch.setenv("NEKO_USER_PLUGIN_SERVER_PORT", "49888")
-    monkeypatch.delenv("NEKO_STUDY_COMPANION_PANEL_URL", raising=False)
-    monkeypatch.delenv("NEKO_PLUGIN_MANAGER_URL", raising=False)
-    monkeypatch.delenv("NEKO_PLUGIN_MANAGER_BASE_URL", raising=False)
-    monkeypatch.delenv("NEKO_PLUGIN_MANAGER_PORT", raising=False)
-    monkeypatch.setattr(study_companion_module, "_open_url_in_browser", opened.append)
+    monkeypatch.setattr(
+        study_companion_module,
+        "_open_url_in_browser",
+        opened.append,
+        raising=False,
+    )
     ctx = _Ctx(
         tmp_path,
         {
@@ -338,9 +338,7 @@ async def test_study_plugin_startup_auto_opens_panel_page(
 
     try:
         assert isinstance(result, Ok)
-        assert opened == [
-            "http://127.0.0.1:49888/plugin/study_companion/ui/"
-        ]
+        assert opened == []
         assert plugin.get_list_actions()[0]["target"] == (
             "/plugin/study_companion/ui/"
         )
@@ -349,40 +347,10 @@ async def test_study_plugin_startup_auto_opens_panel_page(
 
 
 @pytest.mark.asyncio
-async def test_study_plugin_startup_auto_open_can_be_disabled_by_config(
+async def test_study_open_ui_entry_and_list_action_remain_available(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    opened: list[str] = []
     monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "runtime"))
-    monkeypatch.setenv("NEKO_USER_PLUGIN_SERVER_PORT", "49888")
-    monkeypatch.delenv("NEKO_STUDY_COMPANION_DISABLE_AUTO_OPEN_UI", raising=False)
-    monkeypatch.setattr(study_companion_module, "_open_url_in_browser", opened.append)
-    ctx = _Ctx(
-        tmp_path,
-        {
-            "study": {"language": "en", "auto_open_ui": False},
-            "study_companion": {"communication": {"enabled": False}},
-        },
-    )
-    plugin = StudyCompanionPlugin(ctx)
-
-    result = await plugin.startup()
-
-    try:
-        assert isinstance(result, Ok)
-        assert opened == []
-    finally:
-        await plugin.shutdown()
-
-
-@pytest.mark.asyncio
-async def test_study_plugin_startup_auto_open_uses_configured_panel_url(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    opened: list[str] = []
-    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "runtime"))
-    monkeypatch.setenv("NEKO_STUDY_COMPANION_PANEL_URL", "http://127.0.0.1:48916/ui")
-    monkeypatch.setattr(study_companion_module, "_open_url_in_browser", opened.append)
     ctx = _Ctx(
         tmp_path,
         {
@@ -396,140 +364,23 @@ async def test_study_plugin_startup_auto_open_uses_configured_panel_url(
 
     try:
         assert isinstance(result, Ok)
-        assert opened == [
-            "http://127.0.0.1:48916/plugin/study_companion/ui/"
+        monkeypatch.setattr(plugin, "get_static_ui_config", lambda: {"enabled": True})
+        open_result = await plugin.study_open_ui()
+        assert isinstance(open_result, Ok)
+        assert open_result.value == {
+            "available": True,
+            "path": "/plugin/study_companion/ui/",
+            "message_key": "ui.open.available",
+        }
+        assert plugin.get_list_actions() == [
+            {
+                "id": "open_ui",
+                "kind": "ui",
+                "target": "/plugin/study_companion/ui/",
+                "open_in": "new_tab",
+            }
         ]
     finally:
-        await plugin.shutdown()
-
-
-@pytest.mark.asyncio
-async def test_study_plugin_startup_auto_open_can_be_disabled_by_env(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    opened: list[str] = []
-    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "runtime"))
-    monkeypatch.setenv("NEKO_STUDY_COMPANION_DISABLE_AUTO_OPEN_UI", "true")
-    monkeypatch.setattr(study_companion_module, "_open_url_in_browser", opened.append)
-    ctx = _Ctx(
-        tmp_path,
-        {
-            "study": {"language": "en", "auto_open_ui": True},
-            "study_companion": {"communication": {"enabled": False}},
-        },
-    )
-    plugin = StudyCompanionPlugin(ctx)
-
-    result = await plugin.startup()
-
-    try:
-        assert isinstance(result, Ok)
-        assert opened == []
-    finally:
-        await plugin.shutdown()
-
-
-@pytest.mark.asyncio
-async def test_study_plugin_startup_auto_open_falls_back_for_invalid_manager_port(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    opened: list[str] = []
-    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "runtime"))
-    monkeypatch.delenv("NEKO_STUDY_COMPANION_PANEL_URL", raising=False)
-    monkeypatch.delenv("NEKO_PLUGIN_MANAGER_URL", raising=False)
-    monkeypatch.delenv("NEKO_PLUGIN_MANAGER_BASE_URL", raising=False)
-    monkeypatch.setenv("NEKO_USER_PLUGIN_SERVER_PORT", "70000")
-    monkeypatch.setenv("NEKO_PLUGIN_MANAGER_PORT", "5173")
-    monkeypatch.setattr(study_companion_module, "_open_url_in_browser", opened.append)
-    ctx = _Ctx(
-        tmp_path,
-        {
-            "study": {"language": "en", "auto_open_ui": True},
-            "study_companion": {"communication": {"enabled": False}},
-        },
-    )
-    plugin = StudyCompanionPlugin(ctx)
-
-    result = await plugin.startup()
-
-    try:
-        assert isinstance(result, Ok)
-        assert opened == [
-            "http://127.0.0.1:48916/plugin/study_companion/ui/"
-        ]
-    finally:
-        await plugin.shutdown()
-
-
-@pytest.mark.asyncio
-async def test_study_plugin_auto_open_failure_does_not_block_startup(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    def _fail_open(_url: str) -> None:
-        raise RuntimeError("browser unavailable")
-
-    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "runtime"))
-    monkeypatch.setattr(study_companion_module, "_open_url_in_browser", _fail_open)
-    ctx = _Ctx(
-        tmp_path,
-        {
-            "study": {"language": "en", "auto_open_ui": True},
-            "study_companion": {"communication": {"enabled": False}},
-        },
-    )
-    plugin = StudyCompanionPlugin(ctx)
-    plugin.logger = ctx.logger
-
-    result = await plugin.startup()
-
-    try:
-        assert isinstance(result, Ok)
-        assert any(
-            warning[0][0] == "study auto-open UI failed: {}"
-            for warning in ctx.logger.warnings
-        )
-    finally:
-        await plugin.shutdown()
-
-
-@pytest.mark.asyncio
-async def test_study_plugin_auto_open_timeout_does_not_block_startup(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    unblock = threading.Event()
-    opened: list[str] = []
-
-    def _hang_open(url: str) -> None:
-        opened.append(url)
-        unblock.wait(timeout=1.0)
-
-    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "runtime"))
-    monkeypatch.setattr(study_companion_module, "_open_url_in_browser", _hang_open)
-    monkeypatch.setattr(
-        study_companion_module,
-        "_AUTO_OPEN_UI_TASK_TIMEOUT_SECONDS",
-        0.01,
-    )
-    ctx = _Ctx(
-        tmp_path,
-        {
-            "study": {"language": "en", "auto_open_ui": True},
-            "study_companion": {"communication": {"enabled": False}},
-        },
-    )
-    plugin = StudyCompanionPlugin(ctx)
-    plugin.logger = ctx.logger
-
-    try:
-        result = await plugin.startup()
-
-        assert isinstance(result, Ok)
-        assert any(
-            warning[0][0] == "study auto-open UI failed: {}"
-            for warning in ctx.logger.warnings
-        )
-    finally:
-        unblock.set()
         await plugin.shutdown()
 
 
@@ -2917,6 +2768,8 @@ def test_study_config_and_state_legacy_mode_migration(tmp_path: Path) -> None:
     assert legacy.mode == MODE_COMPANION
     assert legacy.default_mode == MODE_COMPANION
 
+    assert StudyConfig().auto_open_ui is False
+    assert build_config({}).auto_open_ui is False
     auto_open = build_config({"study": {"auto_open_ui": True}})
     assert auto_open.auto_open_ui is True
     assert build_config({"auto_open_ui": True}).auto_open_ui is True
