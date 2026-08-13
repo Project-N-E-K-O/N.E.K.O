@@ -270,12 +270,36 @@ def test_ocr_entry_and_static_ui_expose_interactive_timeout_contract() -> None:
     assert "callPlugin('study_ocr_snapshot', { capture_mode: 'interactive' })" in main_js
     assert "if (data.status === 'canceled')" in main_js
     assert "await refreshStatus({ updateReply: false });" in main_js
+    assert "function interactiveOcrErrorMessage(error)" in main_js
+    assert "errorText.includes('capture_busy')" in main_js
+    assert "errorText.includes('renderer_timeout')" in main_js
+    assert "errorText.includes('SCREENSHOT_OVERLAY_SESSION_TIMEOUT')" in main_js
+    assert "errorText.includes('no_renderer')" in main_js
+    assert "if (!localizedMessage)" in main_js
+    assert "throw error;" in main_js
+    run_ocr = main_js[
+        main_js.index("async function runOcr(options = {})") : main_js.index(
+            "async function explainText()"
+        )
+    ]
+    canceled = run_ocr[
+        run_ocr.index("if (data.status === 'canceled')") : run_ocr.index(
+            "setStatus(tf('ui.status.ocr_result'"
+        )
+    ]
+    assert "return data;" in canceled
+    assert "studyInput.value" not in canceled
+    assert "setReply(" not in canceled
+    assert "studyInput.value = data.text;" in run_ocr
+    assert "generateQuestion()" not in run_ocr
 
 
 def test_interactive_ocr_status_strings_exist_in_all_eight_locales() -> None:
     required = {
         "ui.status.preparing_ocr_selection",
         "ui.status.ocr_canceled",
+        "ui.error.interactive_ocr_busy",
+        "ui.error.interactive_ocr_timeout",
         "ui.error.interactive_ocr_unavailable",
     }
     for locale in LOCALES:

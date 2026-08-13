@@ -1916,6 +1916,32 @@ async function loadQuestionContext(options = {}) {
   }
 }
 
+function interactiveOcrErrorMessage(error) {
+  const errorText = String(error?.message || error);
+  if (errorText.includes('capture_busy')) {
+    return t(
+      'ui.error.interactive_ocr_busy',
+      'Another screen selection is already active. Finish or cancel it, then try again.',
+    );
+  }
+  if (
+    errorText.includes('renderer_timeout')
+    || errorText.includes('SCREENSHOT_OVERLAY_SESSION_TIMEOUT')
+  ) {
+    return t(
+      'ui.error.interactive_ocr_timeout',
+      'Screen selection timed out. Click OCR to try again.',
+    );
+  }
+  if (errorText.includes('no_renderer')) {
+    return t(
+      'ui.error.interactive_ocr_unavailable',
+      'Screen selection requires the N.E.K.O desktop app to be connected.',
+    );
+  }
+  return '';
+}
+
 async function runOcr(options = {}) {
   setStatus(t(
     'ui.status.preparing_ocr_selection',
@@ -1925,13 +1951,11 @@ async function runOcr(options = {}) {
   try {
     data = await callPlugin('study_ocr_snapshot', { capture_mode: 'interactive' });
   } catch (error) {
-    if (String(error?.message || error).includes('no_renderer')) {
-      throw new Error(t(
-        'ui.error.interactive_ocr_unavailable',
-        'Screen selection requires the N.E.K.O desktop app to be connected.',
-      ));
+    const localizedMessage = interactiveOcrErrorMessage(error);
+    if (!localizedMessage) {
+      throw error;
     }
-    throw error;
+    throw new Error(localizedMessage);
   }
   if (data.status === 'canceled') {
     setStatus(t('ui.status.ocr_canceled', 'Screen selection canceled'));
