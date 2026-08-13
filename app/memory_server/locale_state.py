@@ -78,23 +78,35 @@ def invalidate_prompt_locale_caches() -> None:
 
 
 def _locale_path(name: str) -> str:
-    from memory import ensure_character_dir
+    """Resolve the sidecar path without creating the character directory.
+
+    Reads and writes deliberately share one resolver: a second, "read-only"
+    variant would be one more place to keep in sync, and any drift between the
+    two would silently read a different file than the one just written.
+
+    Creating the directory here is unnecessary -- ``atomic_write_json`` makes
+    the parent itself -- and actively harmful on the read path, where it lets a
+    plain lookup resurrect an empty directory for a name that was just deleted
+    or renamed.  ``FileNotFoundError`` simply means "no saved locale".
+    """
     from utils.config_manager import get_config_manager
 
     config_manager = get_config_manager()
     return os.path.join(
-        ensure_character_dir(config_manager.memory_dir, name),
+        str(config_manager.memory_dir),
+        name,
         "prompt_locale.json",
     )
 
 
 def _subject_locale_path(name: str) -> str:
-    from memory import ensure_character_dir
+    """Resolve the scoped-locale sidecar path; see ``_locale_path``."""
     from utils.config_manager import get_config_manager
 
     config_manager = get_config_manager()
     return os.path.join(
-        ensure_character_dir(config_manager.memory_dir, name),
+        str(config_manager.memory_dir),
+        name,
         "scoped_prompt_locales.json",
     )
 

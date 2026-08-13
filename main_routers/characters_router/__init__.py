@@ -127,6 +127,7 @@ from .persona import (  # noqa: F401
     clear_character_persona_selection,
 )
 from .language_preference import (  # noqa: F401
+    LanguagePreferenceConflictError,
     _request_memory_prompt_locale,
     apply_character_language_preference,
     get_character_language_preference,

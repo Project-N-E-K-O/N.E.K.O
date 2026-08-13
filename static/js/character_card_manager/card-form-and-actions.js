@@ -219,6 +219,20 @@ async function _saveCharacterLanguagePreference(name, select, selectUi) {
         // A cross-window event or a newer local request may have superseded this
         // response while it was in flight. Never roll back or cache stale data.
         if (select.dataset.languageSaveId !== saveId || select.value !== language) return;
+        if (response.status === 409) {
+            // Designed race, not a failure: another window persisted a newer
+            // preference. Rolling back to this window's previous value would
+            // display a locale that is already stale, so re-read durable state.
+            showMessage(
+                _characterLanguageT(
+                    'character.languagePreferenceSuperseded',
+                    '已有更新的语言偏好生效，已为你刷新'
+                ),
+                'warning'
+            );
+            await _hydrateCharacterLanguagePreference(name, select, selectUi);
+            return;
+        }
         const partialSave = response.ok && payload.partial_success === true;
         const durableSave = response.ok && (
             payload.success === true || payload.partial_success === true

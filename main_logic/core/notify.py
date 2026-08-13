@@ -357,8 +357,17 @@ class NotifyMixin:
         if not language or not is_supported_language_code(language):
             return
         normalized_lang = normalize_language_code(language, format='full')
+        already_applied = (
+            self._conversation_render_language == normalized_lang
+            and self.user_language == normalized_lang
+            and self._conversation_turn_language == normalized_lang
+        )
         self._conversation_render_language = normalized_lang
         if getattr(self, '_user_language_explicit', False):
+            return
+        if already_applied:
+            # Re-registering the builtin tools and pushing a session.update on
+            # every repeat of the same render locale is pure wire churn.
             return
         self.user_language = normalized_lang
         self._conversation_turn_language = normalized_lang
