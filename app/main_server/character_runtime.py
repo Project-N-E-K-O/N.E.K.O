@@ -48,8 +48,12 @@ _PLUGIN_IMAGE_FETCH_BATCH_SIZE = 4
 # until the pacing manager releases it. The count cap also bounds how long the
 # event handler blocks on fetches (ceil(count / batch) x the 2s per-fetch
 # timeout). Budgets are in DECODED bytes, matching _PLUGIN_IMAGE_MAX_BYTES.
+#
+# The 8 images / 8 MiB figures are the contract PLUGIN_DEVELOPMENT_GUIDE.md
+# already advertises to plugin authors ("单条消息最多向模型注入 8 张、合计
+# 8 MiB 图片"); keep them in step with that doc.
 _PLUGIN_IMAGE_MAX_COUNT = 8
-_PLUGIN_IMAGE_TOTAL_MAX_BYTES = 16 * 1024 * 1024
+_PLUGIN_IMAGE_TOTAL_MAX_BYTES = 8 * 1024 * 1024
 # The chat path is separate: URL-backed blocks cost the frontend a fetch (count
 # only), while inline data: URLs ride the WebSocket frame itself (count+bytes).
 _PLUGIN_CHAT_IMAGE_MAX_COUNT = 8

@@ -1003,9 +1003,27 @@ def test_plugin_image_budget_constants_are_pinned() -> None:
     from app.main_server import character_runtime
 
     assert character_runtime._PLUGIN_IMAGE_MAX_COUNT == 8
-    assert character_runtime._PLUGIN_IMAGE_TOTAL_MAX_BYTES == 16 * 1024 * 1024
+    assert character_runtime._PLUGIN_IMAGE_TOTAL_MAX_BYTES == 8 * 1024 * 1024
     assert character_runtime._PLUGIN_CHAT_IMAGE_MAX_COUNT == 8
     assert character_runtime._PLUGIN_CHAT_INLINE_TOTAL_MAX_BYTES == 8 * 1024 * 1024
+
+
+def test_model_image_budget_matches_the_documented_plugin_contract() -> None:
+    """PLUGIN_DEVELOPMENT_GUIDE.md advertises 8 images / 8 MiB to authors.
+
+    The guide is the contract plugin authors code against, so a silent drift
+    between it and the enforced budget is the actual defect this guards.
+    """
+    from pathlib import Path
+
+    from app.main_server import character_runtime
+
+    guide = Path(__file__).resolve().parents[2] / "plugin" / "PLUGIN_DEVELOPMENT_GUIDE.md"
+    text = guide.read_text(encoding="utf-8")
+    assert "单条消息最多向模型注入 8 张、合计" in text
+    assert "8 MiB 图片" in text
+    assert character_runtime._PLUGIN_IMAGE_MAX_COUNT == 8
+    assert character_runtime._PLUGIN_IMAGE_TOTAL_MAX_BYTES == 8 * 1024 * 1024
 
 
 @pytest.mark.asyncio
