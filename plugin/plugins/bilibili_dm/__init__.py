@@ -30,7 +30,7 @@ from .permission import PermissionManager
 from .qr_login import BiliDMQrLogin
 
 
-UI_ASSET_VERSION = "1.1.10"
+UI_ASSET_VERSION = "1.1.11"
 
 
 def build_open_ui_payload(*, plugin_id: str, available: bool) -> dict[str, Any]:
@@ -414,11 +414,17 @@ class BiliDMPlugin(NekoPluginBase):
         id="cancel_qr_login",
         name=tr("entries.qr_login_cancel.name", default="取消 B站扫码登录"),
         description=tr("entries.qr_login_cancel.description", default="清理当前 B站二维码登录会话"),
-        input_schema={"type": "object", "properties": {}, "additionalProperties": False},
+        input_schema={
+            "type": "object",
+            "properties": {"session_id": {"type": "string", "minLength": 1}},
+            "required": ["session_id"],
+            "additionalProperties": False,
+        },
     )
-    async def cancel_qr_login(self, **_):
+    async def cancel_qr_login(self, session_id: str, **_):
         async with self._lifecycle_lock:
-            self._qr_login.clear()
+            if not self._qr_login.clear(session_id=session_id):
+                return Ok({"status": "stale_session", "message": "扫码会话已更新"})
             return Ok({"status": "cancelled", "message": "已取消扫码登录"})
 
     @ui.action(

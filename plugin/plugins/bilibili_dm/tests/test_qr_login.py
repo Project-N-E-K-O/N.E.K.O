@@ -56,6 +56,7 @@ async def test_qr_login_returns_image_and_saves_credentials_without_returning_th
     start = await login.start()
     assert start["status"] == "qrcode_ready"
     assert start["qrcode_image"] == "data:image/png;base64,cG5nLWJ5dGVz"
+    assert start["session_id"]
     assert await login.poll() == {"status": "waiting", "message": "等待扫码…"}
 
     done = await login.poll()
@@ -64,6 +65,18 @@ async def test_qr_login_returns_image_and_saves_credentials_without_returning_th
     assert saved["ac_time_value"] == "new-refresh-token"
     assert "session-secret" not in str(done)
     assert "new-refresh-token" not in str(done)
+    assert login._session is None
+
+
+def test_qr_login_only_clears_the_session_matched_by_cancel_request():
+    login = BiliDMQrLogin(credential_saver=lambda _: None)
+    current_session = object()
+    login._session = current_session
+    login._session_id = "current-session"
+
+    assert login.clear(session_id="old-session") is False
+    assert login._session is current_session
+    assert login.clear(session_id="current-session") is True
     assert login._session is None
 
 

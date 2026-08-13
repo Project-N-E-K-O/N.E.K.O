@@ -3,7 +3,7 @@ const pluginMatch = location.pathname.match(/\/plugin\/([^/]+)\/ui\//);
 const pluginId = pluginMatch ? decodeURIComponent(pluginMatch[1]) : 'bilibili_dm';
 
 const state = { dashboard: null, busy: false };
-const qrLogin = { key: null, pollTimer: null, countdownTimer: null, closeTimer: null, expiresAt: 0, generation: 0 };
+const qrLogin = { key: null, sessionId: null, pollTimer: null, countdownTimer: null, closeTimer: null, expiresAt: 0, generation: 0 };
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -61,6 +61,7 @@ function setBusy(busy) {
 function clearQrLogin() {
   qrLogin.generation += 1;
   qrLogin.key = null;
+  qrLogin.sessionId = null;
   qrLogin.expiresAt = 0;
   if (qrLogin.pollTimer) clearTimeout(qrLogin.pollTimer);
   if (qrLogin.countdownTimer) clearInterval(qrLogin.countdownTimer);
@@ -76,9 +77,11 @@ function hideQrLogin() {
 }
 
 async function cancelQrLogin() {
+  const sessionId = qrLogin.sessionId;
   hideQrLogin();
+  if (!sessionId) return;
   try {
-    await callPlugin('cancel_qr_login');
+    await callPlugin('cancel_qr_login', { session_id: sessionId });
   } catch (error) {
     // The UI is already closed; the server-side QR session will expire shortly.
     console.warn('Cancel QR login failed:', error);
@@ -113,9 +116,10 @@ async function requestQrLogin() {
   document.getElementById('qr-login-countdown').textContent = '';
   try {
     const result = await callPlugin('start_qr_login');
-    if (!result?.qrcode_image) throw new Error(result?.message || '获取二维码失败，请稍后重试');
+    if (!result?.qrcode_image || !result?.session_id) throw new Error(result?.message || '获取二维码失败，请稍后重试');
     if (generation !== qrLogin.generation) return;
     qrLogin.key = 'plugin-session';
+    qrLogin.sessionId = result.session_id;
     qrLogin.expiresAt = Date.now() + Number(result.timeout || 180) * 1000;
     image.src = result.qrcode_image;
     setQrStatus('等待扫码…');
@@ -139,14 +143,14 @@ async function pollQrLogin(generation) {
       const completionGeneration = qrLogin.generation;
       const closeAt = Date.now() + 2000;
       setQrStatus(data.message || '登录成功，配置已自动保存');
-      await refreshDashboard(true);
-      if (completionGeneration !== qrLogin.generation) return;
-      showToast(data.message || '扫码登录成功，配置已自动保存');
       qrLogin.closeTimer = setTimeout(() => {
         if (qrLogin.generation !== completionGeneration) return;
         qrLogin.closeTimer = null;
         document.getElementById('qr-login-panel').hidden = true;
       }, Math.max(0, closeAt - Date.now()));
+      await refreshDashboard(true);
+      if (completionGeneration !== qrLogin.generation) return;
+      showToast(data.message || '扫码登录成功，配置已自动保存');
       return;
     }
     if (data.status === 'expired') {

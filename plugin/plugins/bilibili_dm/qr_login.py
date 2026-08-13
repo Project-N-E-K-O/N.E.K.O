@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import base64
+import secrets
 import time
 from typing import Any, Awaitable, Callable
 
@@ -20,6 +21,7 @@ class BiliDMQrLogin:
     def __init__(self, *, credential_saver: CredentialSaver) -> None:
         self._credential_saver = credential_saver
         self._session: Any | None = None
+        self._session_id = ""
         self._generated_at = 0.0
 
     @staticmethod
@@ -30,14 +32,21 @@ class BiliDMQrLogin:
             raise RuntimeError("缺少 bilibili_api 依赖，无法使用扫码登录。") from exc
         return QrCodeLogin, QrCodeLoginEvents
 
-    def clear(self) -> None:
+    def clear(self, *, session_id: str | None = None) -> bool:
+        """Clear only the active QR session, optionally matched by its ID."""
+        if session_id is not None and session_id != self._session_id:
+            return False
         self._session = None
+        self._session_id = ""
         self._generated_at = 0.0
+        return True
 
     async def start(self) -> dict[str, Any]:
         QrCodeLogin, _ = self._require_sdk()
+        self.clear()
         self._session = QrCodeLogin()
         await self._session.generate_qrcode()
+        self._session_id = secrets.token_urlsafe(18)
         self._generated_at = time.time()
         picture = self._session.get_qrcode_picture()
         image = base64.b64encode(picture.content).decode("ascii")
@@ -45,6 +54,7 @@ class BiliDMQrLogin:
             "status": "qrcode_ready",
             "message": "请用B站 App 扫描二维码登录（180秒内有效）",
             "qrcode_image": f"data:image/png;base64,{image}",
+            "session_id": self._session_id,
             "timeout": 180,
         }
 
