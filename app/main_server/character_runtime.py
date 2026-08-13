@@ -885,12 +885,16 @@ async def _handle_agent_event(event: dict):
                         # the image shares the proactive response's context.
                         deferred_callback_images.append(resolved_b64)
                         continue
-                    if isinstance(sess, core.OmniOfflineClient):
-                        # Offline stream_image stores frames until the next
-                        # text prompt. Repeated read events would therefore
-                        # merge their individually-bounded image sets into one
-                        # unbounded session pool. Keep each event on the bounded
-                        # callback queue and drain it with its own text instead.
+                    if isinstance(
+                        sess,
+                        (core.OmniOfflineClient, core.OmniRealtimeClient),
+                    ):
+                        # Plugin-owned read media stays on its passive callback
+                        # until a real text drain or natural voice swap consumes
+                        # it. Offline immediate staging would merge separately
+                        # bounded events; realtime immediate staging has no
+                        # positive provider acknowledgement and would also
+                        # pollute the ambient latest-frame cache.
                         deferred_callback_images.append(resolved_b64)
                         continue
                     if getattr(sess, "_supports_native_image", None) is False:
@@ -1115,6 +1119,15 @@ async def _handle_agent_event(event: dict):
                         # enqueue_agent_callback still honors coalesce_key so a
                         # passive stream can dedup queued snapshots by key.
                         mgr.enqueue_agent_callback(callback)
+                        if (
+                            deferred_callback_images
+                            and isinstance(sess, core.OmniRealtimeClient)
+                            and getattr(sess, "_supports_native_image", False)
+                        ):
+                            await mgr.try_stream_passive_callback_media_now(
+                                callback,
+                                sess,
+                            )
                         logger.info(
                             "[EventBus] %s enqueued callback (passive); next user turn will carry it",
                             event_type,

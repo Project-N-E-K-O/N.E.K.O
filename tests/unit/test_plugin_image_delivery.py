@@ -214,6 +214,7 @@ def _manager() -> MagicMock:
     manager.session.stream_image = AsyncMock()
     manager.enqueue_agent_callback = MagicMock()
     manager.submit_proactive_callback = MagicMock()
+    manager.try_stream_passive_callback_media_now = AsyncMock()
     manager.passthrough_to_chat_bubble = AsyncMock(return_value=True)
     manager.render_chat_blocks = AsyncMock(return_value=True)
     manager.handle_proactive_complete = AsyncMock()
@@ -265,6 +266,49 @@ async def test_plugin_image_url_is_fetched_asynchronously_for_model_context(monk
     manager.session.stream_image.assert_awaited_once_with(
         base64.b64encode(image_bytes).decode("ascii"),
         bypass_rate_limit=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_native_realtime_read_keeps_plugin_image_on_passive_callback(
+    monkeypatch,
+) -> None:
+    from app import main_server
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+
+    manager = _manager()
+    session = OmniRealtimeClient.__new__(OmniRealtimeClient)
+    session._supports_native_image = True
+    session.stream_image = AsyncMock()
+    manager.session = session
+    encoded = base64.b64encode(b"native-read-image").decode("ascii")
+    monkeypatch.setattr(
+        "app.main_server.character_runtime._get_session_manager",
+        lambda _name: manager,
+    )
+    monkeypatch.setattr(
+        "app.main_server.character_runtime._fetch_plugin_image_base64",
+        AsyncMock(return_value=encoded),
+    )
+
+    await main_server._handle_agent_event({
+        "event_type": "proactive_message",
+        "lanlan_name": "Test",
+        "text": "remember this image",
+        "channel": "plugin:demo",
+        "delivery_mode": "passive",
+        "ai_behavior": "read",
+        "visibility": [],
+        "media_parts": [{"type": "image", "url": _IMAGE_URL, "mime": "image/jpeg"}],
+    })
+
+    manager.enqueue_agent_callback.assert_called_once()
+    callback = manager.enqueue_agent_callback.call_args.args[0]
+    assert callback["delivery_mode"] == "passive"
+    assert callback["media_images"] == [encoded]
+    manager.try_stream_passive_callback_media_now.assert_awaited_once_with(
+        callback,
+        session,
     )
 
 

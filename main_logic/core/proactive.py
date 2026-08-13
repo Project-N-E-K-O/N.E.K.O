@@ -48,6 +48,107 @@ from .callback_render import _build_callback_instruction, _select_callbacks_with
 class ProactiveMixin:
     """Proactive delivery methods (see module docstring)."""
 
+    async def try_stream_passive_callback_media_now(
+        self,
+        callback: dict,
+        session,
+    ) -> bool:
+        """Optimistically stream one native realtime read callback.
+
+        The queued callback remains the stable owner until every synchronous
+        send succeeds. A later provider rejection restores the media to that
+        owner, or enqueues a media-only recovery if its text was already
+        consumed by another turn.
+        """
+        if not (
+            isinstance(session, OmniRealtimeClient)
+            and getattr(session, "_supports_native_image", False)
+            and any(
+                queued is callback
+                for queued in self.pending_agent_callbacks
+            )
+            and not callback.get(DELIVERY_RETRACTED_KEY)
+        ):
+            return False
+        images = [
+            image
+            for image in list(callback.get("media_images") or [])
+            if isinstance(image, str) and image
+        ]
+        if not images:
+            return False
+
+        delivery_key = "_passive_media_delivery"
+        previous_delivery = callback.get(delivery_key)
+        if (
+            isinstance(previous_delivery, tuple)
+            and previous_delivery[0] is session
+        ):
+            return True
+        delivery_token = (session, uuid4().hex)
+        claimed_here = not callback.get(SWAP_PRIME_DELIVERY_CLAIM_KEY)
+        callback[SWAP_PRIME_DELIVERY_CLAIM_KEY] = True
+        callback[delivery_key] = delivery_token
+        rejected = False
+
+        def _restore_rejected_media(error_msg: str) -> None:
+            nonlocal rejected
+            if rejected:
+                return
+            rejected = True
+            if callback.get(delivery_key) != delivery_token:
+                return
+            callback.pop(delivery_key, None)
+            if callback.get(DELIVERY_RETRACTED_KEY):
+                return
+            if any(
+                queued is callback
+                for queued in self.pending_agent_callbacks
+            ):
+                callback["media_images"] = list(images)
+                return
+            recovery = dict(callback)
+            recovery.pop("_callback_delivery_id", None)
+            recovery.pop(DELIVERY_RETRACTED_KEY, None)
+            recovery.pop(SWAP_PRIME_DELIVERY_CLAIM_KEY, None)
+            recovery.pop(delivery_key, None)
+            recovery["summary"] = ""
+            recovery["detail"] = ""
+            recovery["error_message"] = ""
+            recovery["coalesce_key"] = ""
+            recovery["media_images"] = list(images)
+            self.enqueue_agent_callback(recovery)
+            logger.warning(
+                "[%s] native passive image rejected after send; queued media-only retry: %s",
+                self.lanlan_name,
+                error_msg,
+            )
+
+        try:
+            for image in images:
+                await session.stream_image(
+                    image,
+                    bypass_rate_limit=True,
+                    cache_latest=False,
+                    on_rejected=_restore_rejected_media,
+                )
+                if rejected:
+                    return False
+            return True
+        except asyncio.CancelledError:
+            if callback.get(delivery_key) == delivery_token:
+                callback.pop(delivery_key, None)
+            callback["media_images"] = list(images)
+            raise
+        except Exception:
+            if callback.get(delivery_key) == delivery_token:
+                callback.pop(delivery_key, None)
+            callback["media_images"] = list(images)
+            return False
+        finally:
+            if claimed_here:
+                callback.pop(SWAP_PRIME_DELIVERY_CLAIM_KEY, None)
+
     async def _stream_passive_callback_media(
         self,
         callbacks: list,
@@ -88,6 +189,16 @@ class ProactiveMixin:
                 continue
             for image_b64 in images:
                 if isinstance(session, OmniRealtimeClient):
+                    if getattr(session, "_supports_native_image", False):
+                        streamed = await self.try_stream_passive_callback_media_now(
+                            callback,
+                            session,
+                        )
+                        if not streamed:
+                            raise RuntimeError(
+                                "native passive callback image was not accepted"
+                            )
+                        break
                     description = await stream_image(
                         image_b64,
                         bypass_rate_limit=True,
@@ -2488,7 +2599,14 @@ class ProactiveMixin:
             #
             # Apply this before either queue is touched so text mode cannot
             # inject a garbage header-only block that voice mode discarded.
-            if not summary and not detail and not error_message and not source_name and status == "completed":
+            if (
+                not summary
+                and not detail
+                and not error_message
+                and not source_name
+                and status == "completed"
+                and not callback.get("media_images")
+            ):
                 return
             # Stable delivery id so the voice inject success path can
             # precisely drop the matching extras entry from

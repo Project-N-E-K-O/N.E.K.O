@@ -18,9 +18,41 @@ from ._shared import (
     logger,
     time,
 )
+from main_logic.proactive_delivery import (
+    CALLBACK_IMAGE_MAX_BYTES,
+    CALLBACK_IMAGE_MAX_COUNT,
+    callback_image_decoded_size,
+)
+
+_CURRENT_PROACTIVE_IMAGE = object()
 
 
 class _MediaMixin:
+    def _ensure_pending_image_budget(
+        self,
+        additional_images=(),
+        *,
+        proactive_image=_CURRENT_PROACTIVE_IMAGE,
+    ) -> None:
+        """Keep every offline image staging entry on one turn budget."""
+        images = [
+            image
+            for image in getattr(self, "_pending_images", ())
+            if image
+        ]
+        images.extend(image for image in additional_images if image)
+        if proactive_image is _CURRENT_PROACTIVE_IMAGE:
+            proactive_image = getattr(self, "_proactive_image_to_inject", None)
+        if proactive_image:
+            images.insert(0, proactive_image)
+        if len(images) > CALLBACK_IMAGE_MAX_COUNT:
+            raise ValueError("pending images exceed the per-turn image count budget")
+        if (
+            sum(callback_image_decoded_size(image) for image in images)
+            > CALLBACK_IMAGE_MAX_BYTES
+        ):
+            raise ValueError("pending images exceed the per-turn image byte budget")
+
     async def stream_audio(self, audio_chunk: bytes) -> None:
         """Compatibility method - not used in text mode"""
 
@@ -36,7 +68,10 @@ class _MediaMixin:
         if not image_b64:
             return
 
-        # Store base64 image
+        # This function has no await between validation and append, so the
+        # event-loop mutation is atomic with stream_images and stream_text's
+        # final snapshot construction.
+        self._ensure_pending_image_budget([image_b64])
         self._pending_images.append(image_b64)
         logger.info(f"Added image to pending queue (total: {len(self._pending_images)})")
 
@@ -45,6 +80,7 @@ class _MediaMixin:
         images = [image for image in images_b64 if image]
         if not images:
             return
+        self._ensure_pending_image_budget(images)
         self._pending_images.extend(images)
         logger.info(
             "Added image batch to pending queue (batch=%d, total=%d)",
@@ -75,6 +111,18 @@ class _MediaMixin:
         on, so a later proactive talk delivered through another path (greeting /
         agent callback via ``prompt_ephemeral``) supersedes it.
         """
+        if image_b64:
+            try:
+                self._ensure_pending_image_budget(
+                    proactive_image=image_b64,
+                )
+            except ValueError as exc:
+                # The screenshot is optional context. A newer proactive round
+                # still supersedes the old slot, but must not displace already
+                # staged user/callback images or break the committed response.
+                logger.warning("Proactive screenshot not staged: %s", exc)
+                image_b64 = None
+
         if image_b64:
             self._proactive_image_to_inject = image_b64
             self._proactive_image_staged_at = time.monotonic()
