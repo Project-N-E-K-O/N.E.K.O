@@ -117,21 +117,16 @@ def split_callbacks_by_image_budget(callbacks: list) -> tuple[list, list]:
             count + len(images) <= CALLBACK_IMAGE_MAX_COUNT
             and total_bytes + cb_bytes <= CALLBACK_IMAGE_MAX_TOTAL_BYTES
         )
-        if not fits and taken_carries_images(taken):
+        # ``count`` only advances for callbacks that contributed real images,
+        # so a non-zero count IS "the prefix already claimed budget" — which is
+        # the condition the head-progress rule turns on.
+        if not fits and count > 0:
             overflow.append(callback)
             continue
         count += len(images)
         total_bytes += cb_bytes
         taken.append(callback)
     return taken, overflow
-
-
-def taken_carries_images(taken: list) -> bool:
-    """Whether an in-progress prefix already claimed part of the image budget."""
-    return any(
-        isinstance(cb, dict) and cb.get("media_images")
-        for cb in taken
-    )
 
 
 def resolve_callback_delivery_ack(callback: dict, delivered: bool) -> None:
