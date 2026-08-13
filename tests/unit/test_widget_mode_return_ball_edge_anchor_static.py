@@ -21,6 +21,18 @@ def test_live2d_peek_goodbye_transfers_the_edge_anchor_to_return_ball():
     assert "positionReturnBallContainer(container, anchorRect, options.edgeAnchor);" in app_ui_source
 
 
+def test_live2d_peek_restore_anchor_is_consumed_on_return():
+    # The return handler must keep the peek anchor captured from the return-ball
+    # container and restore it after the model is shown again, so the model
+    # re-enters the edge-peek state instead of coming back flat at the edge.
+    app_ui_source = read_js_parts(APP_UI_PATH)
+    return_block = app_ui_source.split("const handleReturnClick", 1)[1]
+
+    assert "let live2DPeekRestoreAnchor = null;" in return_block
+    assert "live2DPeekRestoreAnchor = returnContainer.__nekoLive2DPeekEdgeAnchor;" in return_block
+    assert "window.nekoLive2DPeek.restoreAnchor(live2DPeekRestoreAnchor)" in return_block
+
+
 def test_live2d_peek_return_ball_supports_exactly_four_corners_and_two_side_edges():
     source = read_js_parts(APP_UI_PATH)
     anchor_block = source.split("const NEKO_LIVE2D_PEEK_RETURN_EDGE_ANCHORS = [", 1)[1].split("];", 1)[0]
