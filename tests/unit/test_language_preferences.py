@@ -910,21 +910,35 @@ async def test_character_language_change_respects_session_lifecycle_owner(
     assert result["language"] == "ja"
     assert result["recent_history_cleared"] is True
     assert calls.count(("clear_recent", config_manager, "Mimi")) == 1
+    # Full tuples, not just the call kind: PUT and GET are both "persist", so a
+    # kind-only comparison would accept a stray extra PUT or a missing freshness
+    # GET -- exactly the two things this sequence is meant to pin down.
+    assert calls[-1] == ("persist", "GET", "Mimi", None), (
+        "收尾必须是新鲜度 GET，且不带语言参数"
+    )
+    assert [call for call in calls if call[0] == "persist" and call[1] == "PUT"] == [
+        ("persist", "PUT", "Mimi", "ja")
+    ], "durable 写入必须恰好一次且带归一化后的目标语言"
+
     if lifecycle_state != "active":
         assert result["session_reset"] is False
         expected_calls = [
-            "load",
-            "persist",
-            "set_live_language",
+            ("load", "Mimi"),
+            ("persist", "PUT", "Mimi", "ja"),
+            ("set_live_language", "ja"),
         ]
         if lifecycle_state == "idle":
-            expected_calls.append("settle_idle")
+            expected_calls.append(("settle_idle",))
         # The clear callback runs outside the caller's transaction now, so it
         # re-validates the character identity itself before clearing; the final
-        # "persist" is the post-reconciliation freshness GET that refuses to
+        # persist is the post-reconciliation freshness GET that refuses to
         # report success for a preference something else has since replaced.
-        expected_calls.extend(["load", "clear_recent", "persist"])
-        assert [call[0] for call in calls] == expected_calls
+        expected_calls.extend([
+            ("load", "Mimi"),
+            ("clear_recent", config_manager, "Mimi"),
+            ("persist", "GET", "Mimi", None),
+        ])
+        assert calls == expected_calls
         return
 
     assert result["session_reset"] is True
