@@ -406,6 +406,13 @@ async def _finalize_freshness(name: str, normalized: str, result: dict) -> None:
         raise LanguagePreferenceConflictError(
             "a newer language preference superseded this request"
         )
+    # A matching locale is not proof the character is still there: a delete or
+    # rename can commit after the memory server read prompt_locale.json but
+    # before that response reaches us, leaving `current` describing an identity
+    # that no longer exists.  Publishing 200 would let the card manager cache
+    # the obsolete name after its cleanup, and a later reuse of that name would
+    # inherit the preference.  This must stay the last await on the path.
+    await _load_existing_character(name)
 
 
 @router.get("/character/{name}/language-preference")

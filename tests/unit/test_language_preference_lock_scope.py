@@ -362,6 +362,39 @@ async def test_unverifiable_freshness_is_neither_success_nor_conflict(monkeypatc
     assert not any(call[0] == "clear_recent" for call in calls)
 
 
+async def test_freshness_check_revalidates_identity_after_the_read(monkeypatch):
+    """A matching locale does not prove the character still exists.
+
+    A delete or rename can commit after the memory server read the sidecar but
+    before its response arrives, so the freshness value still matches an
+    identity that is already gone.
+    """
+    state = {"exists": True}
+    manager = _IdleManager()
+    _install_language_preference_stubs(monkeypatch, manager=manager, changed=True)
+
+    original_load = preference_router._load_existing_character
+    original_request = preference_router._request_memory_prompt_locale
+
+    async def load_character(name):
+        if not state["exists"]:
+            raise LookupError("角色不存在")
+        return await original_load(name)
+
+    async def request_locale(method, name, *, language=None):
+        payload = await original_request(method, name, language=language)
+        if method == "GET":
+            # The delete lands while this response is on the wire.
+            state["exists"] = False
+        return payload
+
+    monkeypatch.setattr(preference_router, "_load_existing_character", load_character)
+    monkeypatch.setattr(preference_router, "_request_memory_prompt_locale", request_locale)
+
+    with pytest.raises(LookupError):
+        await preference_router.apply_character_language_preference("Mimi", "ja")
+
+
 async def test_late_clear_is_fenced_by_durable_ownership(monkeypatch):
     """A superseded reconciliation must not delete the newer session's history.
 

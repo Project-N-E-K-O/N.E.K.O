@@ -913,8 +913,8 @@ async def test_character_language_change_respects_session_lifecycle_owner(
     # Full tuples, not just the call kind: PUT and GET are both "persist", so a
     # kind-only comparison would accept a stray extra PUT or a missing freshness
     # GET -- exactly the two things this sequence is meant to pin down.
-    assert calls[-1] == ("persist", "GET", "Mimi", None), (
-        "收尾必须是新鲜度 GET，且不带语言参数"
+    assert calls[-2:] == [("persist", "GET", "Mimi", None), ("load", "Mimi")], (
+        "收尾必须是不带语言参数的新鲜度 GET，随后是最终身份复核"
     )
     assert [call for call in calls if call[0] == "persist" and call[1] == "PUT"] == [
         ("persist", "PUT", "Mimi", "ja")
@@ -939,6 +939,7 @@ async def test_character_language_change_respects_session_lifecycle_owner(
             ("persist", "GET", "Mimi", None),
             ("clear_recent", config_manager, "Mimi"),
             ("persist", "GET", "Mimi", None),
+            ("load", "Mimi"),
         ])
         assert calls == expected_calls
         return
