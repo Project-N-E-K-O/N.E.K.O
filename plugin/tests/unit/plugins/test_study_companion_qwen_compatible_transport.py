@@ -51,7 +51,7 @@ def test_url_rejects_ssrf_and_non_contract_variants(base: str) -> None:
 
 
 @pytest.mark.asyncio
-async def test_request_contract_omits_temperature_and_parses_tokens() -> None:
+async def test_request_contract_disables_thinking_omits_temperature_and_parses_tokens() -> None:
     seen: dict[str, object] = {}
 
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -85,6 +85,7 @@ async def test_request_contract_omits_temperature_and_parses_tokens() -> None:
         "model": "qwen-plus",
         "messages": [{"role": "user", "content": "Question"}],
         "max_tokens": 1200,
+        "enable_thinking": False,
         "stream": False,
     }
     assert "temperature" not in seen["body"]

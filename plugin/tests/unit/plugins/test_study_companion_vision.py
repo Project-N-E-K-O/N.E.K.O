@@ -855,16 +855,9 @@ async def test_qwen_solution_structure_repair_has_bounded_observable_output_budg
     assert result.input_tokens == 11
     assert result.output_tokens == 1536
     assert result.max_output_tokens == 1536
-    assert result.output_limit_reached is True
+    assert result.output_limit_reached is False
     assert calls[0]["max_tokens"] == 1536
-    assert len(logger.warnings) == 1
-    assert logger.warnings[0][0][1:] == (
-        "solution_structure_repair",
-        "agent",
-        "stop",
-        1536,
-        1536,
-    )
+    assert logger.warnings == []
 
 
 @pytest.mark.asyncio

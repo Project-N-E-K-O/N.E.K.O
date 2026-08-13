@@ -44,6 +44,9 @@ class QwenCompatibleResult:
     input_tokens: int
     output_tokens: int
     finish_reason: str = ""
+    reasoning_tokens: int = 0
+    text_tokens: int = 0
+    termination_unknown: bool = False
 
 
 def compatible_chat_completions_url(base_url: object) -> str:
@@ -194,6 +197,7 @@ class QwenCompatibleTransport:
                             "model": model_name,
                             "messages": messages,
                             "max_tokens": output_budget,
+                            "enable_thinking": False,
                             "stream": False,
                         },
                     )
@@ -252,13 +256,19 @@ class QwenCompatibleTransport:
             )
         usage = payload.get("usage") if isinstance(payload, dict) else {}
         usage = usage if isinstance(usage, dict) else {}
+        token_details = usage.get("completion_tokens_details")
+        token_details = token_details if isinstance(token_details, dict) else {}
+        finish_reason = _response_finish_reason(payload)
         return QwenCompatibleResult(
             text=text,
             model=str(payload.get("model") or model_name),
             request_id=request_id or str(payload.get("request_id") or ""),
             input_tokens=_nonnegative_int(usage.get("prompt_tokens")),
             output_tokens=_nonnegative_int(usage.get("completion_tokens")),
-            finish_reason=_response_finish_reason(payload),
+            finish_reason=finish_reason,
+            reasoning_tokens=_nonnegative_int(token_details.get("reasoning_tokens")),
+            text_tokens=_nonnegative_int(token_details.get("text_tokens")),
+            termination_unknown=finish_reason not in {"length", "stop"},
         )
 
 

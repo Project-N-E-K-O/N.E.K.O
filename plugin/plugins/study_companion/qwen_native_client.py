@@ -118,6 +118,9 @@ class QwenNativeResult:
     finish_reason: str = ""
     max_output_tokens: int = 0
     output_limit_reached: bool = False
+    reasoning_tokens: int = 0
+    text_tokens: int = 0
+    termination_unknown: bool = False
 
 
 def _get(value: object, key: str, default: Any = None) -> Any:
@@ -275,6 +278,60 @@ def _extract_finish_reason(response: object) -> str:
     return ""
 
 
+def _extract_output_token_details(usage: object) -> tuple[int, int]:
+    details = _get(usage, "output_tokens_details")
+    if details is None:
+        details = _get(usage, "completion_tokens_details")
+    reasoning_tokens = _as_nonnegative_int(
+        _get(details, "reasoning_tokens", _get(usage, "reasoning_tokens"))
+    )
+    text_tokens = _as_nonnegative_int(
+        _get(details, "text_tokens", _get(usage, "text_tokens"))
+    )
+    return reasoning_tokens, text_tokens
+
+
+def _log_request_diagnostic(
+    logger: Any,
+    *,
+    operation: str,
+    transport: str,
+    thinking_enabled: bool,
+    elapsed_ms: int,
+    timeout_seconds: float,
+    request_id: str,
+    input_tokens: int,
+    output_tokens: int,
+    reasoning_tokens: int,
+    text_tokens: int,
+    finish_reason: str,
+    termination_unknown: bool,
+    success: bool,
+) -> None:
+    log_info = getattr(logger, "info", None)
+    if not callable(log_info):
+        return
+    log_info(
+        "study Qwen request diagnostic: operation={} transport={} thinking={} "
+        "elapsed_ms={} timeout_seconds={} request_id={} prompt_tokens={} "
+        "completion_tokens={} reasoning_tokens={} text_tokens={} "
+        "finish_reason={} termination_unknown={} success={}",
+        operation,
+        transport,
+        thinking_enabled,
+        elapsed_ms,
+        round(timeout_seconds, 3),
+        request_id,
+        input_tokens,
+        output_tokens,
+        reasoning_tokens,
+        text_tokens,
+        finish_reason,
+        termination_unknown,
+        success,
+    )
+
+
 def _diagnostic_for_response(response: object) -> str:
     status_code = _as_nonnegative_int(_get(response, "status_code"))
     code = str(_get(response, "code", "") or "").lower()
@@ -428,8 +485,22 @@ class QwenNativeClient:
 
         input_tokens = 0
         output_tokens = 0
+        reasoning_tokens = 0
+        text_tokens = 0
         request_id = ""
+        finish_reason = ""
+        termination_unknown = True
         success = False
+        request_started = time.monotonic()
+        request_timeout_seconds = remaining
+        transport = (
+            "native_vision"
+            if has_image
+            else "compatible"
+            if text_transport == "compatible"
+            else "native_text"
+        )
+        thinking_enabled = False
         try:
             max_output_tokens = _OUTPUT_TOKEN_BUDGETS.get(operation, 3072)
             if has_image:
@@ -462,9 +533,13 @@ class QwenNativeClient:
                 input_tokens = compatible_result.input_tokens
                 output_tokens = compatible_result.output_tokens
                 finish_reason = compatible_result.finish_reason
-                output_limit_reached = finish_reason == "length" or (
-                    max_output_tokens > 0 and output_tokens >= max_output_tokens
+                reasoning_tokens = compatible_result.reasoning_tokens
+                text_tokens = compatible_result.text_tokens
+                termination_unknown = (
+                    compatible_result.termination_unknown
+                    or finish_reason not in {"length", "stop"}
                 )
+                output_limit_reached = finish_reason == "length"
                 if output_limit_reached:
                     self._logger.warning(
                         "study Qwen output limit reached: diagnostic=output_truncated "
@@ -487,6 +562,9 @@ class QwenNativeClient:
                     finish_reason=finish_reason,
                     max_output_tokens=max_output_tokens,
                     output_limit_reached=output_limit_reached,
+                    reasoning_tokens=reasoning_tokens,
+                    text_tokens=text_tokens,
+                    termination_unknown=termination_unknown,
                 )
             else:
                 if AioGeneration is None:
@@ -510,10 +588,10 @@ class QwenNativeClient:
             usage = _get(response, "usage")
             input_tokens = _as_nonnegative_int(_get(usage, "input_tokens"))
             output_tokens = _as_nonnegative_int(_get(usage, "output_tokens"))
+            reasoning_tokens, text_tokens = _extract_output_token_details(usage)
             finish_reason = _extract_finish_reason(response)
-            output_limit_reached = finish_reason == "length" or (
-                max_output_tokens > 0 and output_tokens >= max_output_tokens
-            )
+            termination_unknown = finish_reason not in {"length", "stop"}
+            output_limit_reached = finish_reason == "length"
             status_code = _as_nonnegative_int(_get(response, "status_code"))
             if status_code != HTTPStatus.OK:
                 raise QwenNativeError(
@@ -553,8 +631,12 @@ class QwenNativeClient:
                 finish_reason=finish_reason,
                 max_output_tokens=max_output_tokens,
                 output_limit_reached=output_limit_reached,
+                reasoning_tokens=reasoning_tokens,
+                text_tokens=text_tokens,
+                termination_unknown=termination_unknown,
             )
         except QwenCompatibleTransportError as exc:
+            request_id = exc.request_id
             error = QwenNativeError(
                 "DashScope compatible request failed",
                 diagnostic=exc.diagnostic,
@@ -591,6 +673,22 @@ class QwenNativeClient:
                 operation=operation,
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
+                success=success,
+            )
+            _log_request_diagnostic(
+                self._logger,
+                operation=operation,
+                transport=transport,
+                thinking_enabled=thinking_enabled,
+                elapsed_ms=max(0, round((time.monotonic() - request_started) * 1000)),
+                timeout_seconds=request_timeout_seconds,
+                request_id=request_id,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                reasoning_tokens=reasoning_tokens,
+                text_tokens=text_tokens,
+                finish_reason=finish_reason,
+                termination_unknown=termination_unknown,
                 success=success,
             )
 
