@@ -284,8 +284,13 @@ def test_public_audio_docs_match_the_120_ms_frame_limit(relative_path: str) -> N
         re.IGNORECASE,
     )
     assert re.search(r"\b10\s*[-–]\s*32 ms\b", normalized)
+    # Negative guard against the retired 1 s cap coming back. It has to cover
+    # every spelling of the same bound, not just the one the old docs used
+    # ("one second"): a reintroduction is just as likely to be written "1
+    # second" or "1s", and a guard that only knows the historical wording
+    # stops being a guard the moment someone rephrases it.
     assert not re.search(
-        r"\b(?:at most|no longer than) one second\b",
+        r"\b(?:at most|no longer than)\s+(?:one|1)\s*(?:s|secs?|seconds?)\b",
         normalized,
         re.IGNORECASE,
     )
