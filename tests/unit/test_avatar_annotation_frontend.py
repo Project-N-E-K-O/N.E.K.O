@@ -294,6 +294,115 @@ console.log(JSON.stringify(results));
 
 
 # --------------------------------------------------------------------------
+# Shared screenshot helper: capture type is decided at capture time
+# --------------------------------------------------------------------------
+
+_NATIVE_OK = "({ success: true, dataUrl: 'data:image/png;base64,PNG' })"
+_NATIVE_FAIL = "({ success: false, error: 'capture timed out' })"
+# Capture succeeds, but the user switches from the window source to a full
+# screen while the grab is still in flight.
+_NATIVE_OK_THEN_SWITCH = (
+    "(function () {"
+    " S.selectedScreenSourceId = 'screen:0:0';"
+    " return { success: true, dataUrl: 'data:image/png;base64,PNG' };"
+    " })()"
+)
+
+_HELPER_TMPL = """
+const results = {};
+let selected = __SOURCE_ID__;
+const S = {
+  screenCaptureStream: null,
+  screenCaptureStreamLastUsed: null,
+  get selectedScreenSourceId() { return selected; },
+  set selectedScreenSourceId(v) { selected = v; }
+};
+const window = {
+  detectScreenshotCaptureType: (stream, sourceId) => {
+    if (sourceId) return sourceId.indexOf('screen:') === 0 ? 'screen' : null;
+    return stream ? 'screen' : null;
+  },
+  captureDesktopSourceWithTimeout: async () => __NATIVE__,
+  maybeClearSourceOnNotFound: () => {},
+  scheduleScreenCaptureIdleCheck: () => {}
+};
+const getDesktopProvider = () => ({ captureSourceAsDataUrl: () => {} });
+const acquireOrReuseCachedStream = async () => __STREAM__;
+const captureFrameFromStream = async () => ({ dataUrl: 'data:image/jpeg;base64,STREAM' });
+const fetchBackendScreenshot = async () => ({ dataUrl: 'data:image/jpeg;base64,BACKEND' });
+__RESOLVE__
+__HELPER__
+captureProactiveChatScreenshotWithSource().then((shot) => {
+  results.via = shot.via;
+  results.captureType = shot.captureType === undefined ? '<missing>' : shot.captureType;
+  results.data = shot.dataUrl;
+  console.log(JSON.stringify(results));
+});
+"""
+
+
+def _helper_script(*, source_id: str, stream: str, native: str = _NATIVE_OK) -> str:
+    proactive_src = APP_PROACTIVE_PATH.read_text(encoding="utf-8")
+    return (
+        _HELPER_TMPL
+        .replace("__SOURCE_ID__", source_id)
+        .replace("__STREAM__", stream)
+        .replace("__NATIVE__", native)
+        .replace("__RESOLVE__", _fn(proactive_src, "resolveCaptureTypeFor"))
+        .replace("__HELPER__", _fn(proactive_src, "captureProactiveChatScreenshotWithSource"))
+    )
+
+
+@pytest.mark.unit
+def test_helper_pairs_capture_type_with_the_native_frame_it_grabbed():
+    """Switching source while the native grab is in flight must not re-label it."""
+    out = _run(_helper_script(
+        source_id="'window:9'", stream="null", native=_NATIVE_OK_THEN_SWITCH,
+    ))
+    assert out["via"] == "native"
+    # Grabbed from window:9 -> must stay unannotatable even though S now says screen:0:0.
+    assert out["captureType"] is None
+
+
+@pytest.mark.unit
+def test_helper_marks_backend_fallback_as_full_screen():
+    """pyautogui grabs the whole desktop, whatever stale source id is lying around."""
+    out = _run(_helper_script(
+        source_id="'window:9'", stream="null", native=_NATIVE_FAIL,
+    ))
+    assert out["via"] == "backend"
+    assert out["captureType"] == "screen"
+    assert out["data"].endswith("BACKEND")
+
+
+# The source is cleared mid-capture (what maybeClearSourceOnNotFound does) while
+# a cached stream is left behind -- the one combination where handing the stream
+# to the classifier flips the answer.
+_NATIVE_OK_THEN_CLEAR_SOURCE = (
+    "(function () {"
+    " S.selectedScreenSourceId = null;"
+    " S.screenCaptureStream = {};"
+    " return { success: true, dataUrl: 'data:image/png;base64,PNG' };"
+    " })()"
+)
+
+
+@pytest.mark.unit
+def test_helper_never_classifies_a_native_frame_by_a_leftover_stream():
+    """A native grab must be judged by the source id it was captured from.
+
+    With the source cleared and a stale stream around, classifying from live
+    state answers "full screen" for a frame that actually holds one window --
+    i.e. annotates an image with no avatar in it.
+    """
+    out = _run(_helper_script(
+        source_id="'window:9'", stream="null", native=_NATIVE_OK_THEN_CLEAR_SOURCE,
+    ))
+    assert out["via"] == "native"
+    assert out["captureType"] is None
+
+
+# --------------------------------------------------------------------------
 # Proactive single frame
 # --------------------------------------------------------------------------
 
@@ -334,10 +443,6 @@ sendOneProactiveVisionFrame().then(() => {
   console.log(JSON.stringify(results));
 });
 """
-
-
-_NATIVE_OK = "({ success: true, dataUrl: 'data:image/png;base64,PNG' })"
-_NATIVE_FAIL = "({ success: false, error: 'capture timed out' })"
 
 
 def _frame_script(*, source_id: str, stream: str, native: str = _NATIVE_OK) -> str:
@@ -396,16 +501,6 @@ def test_window_source_frame_is_not_annotated():
     msg = json.loads(out["sent"][0])
     assert msg["data"].endswith("NATIVE")
     assert "avatar_position" not in msg
-
-
-# Capture succeeds, but the user switches from the window source to a full
-# screen while the grab is still in flight.
-_NATIVE_OK_THEN_SWITCH = (
-    "(function () {"
-    " S.selectedScreenSourceId = 'screen:0:0';"
-    " return { success: true, dataUrl: 'data:image/png;base64,PNG' };"
-    " })()"
-)
 
 
 @pytest.mark.unit

@@ -3529,29 +3529,32 @@
                     (async function () {
                         try {
                             var dataUrl = null;
-                            var shotVia = null;
+                            // captureType 由截图函数在抓帧那一刻定好，这里不再二次推断：
+                            // 抓帧是异步的，等到这一步 S 里的流 / 源可能已经换人。
+                            var shotCaptureType = null;
+                            var hasPairedCaptureType = false;
                             if (window.appProactive
                                 && typeof window.appProactive.captureProactiveChatScreenshotWithSource === 'function') {
                                 var shot = await window.appProactive.captureProactiveChatScreenshotWithSource();
                                 dataUrl = shot && shot.dataUrl ? shot.dataUrl : null;
-                                shotVia = shot ? shot.via : null;
+                                shotCaptureType = shot ? (shot.captureType || null) : null;
+                                hasPairedCaptureType = true;
                             } else if (typeof window.captureProactiveChatScreenshot === 'function') {
                                 dataUrl = await window.captureProactiveChatScreenshot();
                             }
                             if (dataUrl && S.socket && S.socket.readyState === WebSocket.OPEN) {
                                 var respMsg = { action: 'screenshot_response', data: dataUrl };
-                                // Determine capture type for correct coordinate mapping
                                 // null = 窗口截图或无法确定 → 不叠加
                                 var captureType = null;
-                                if (shotVia === 'backend') {
-                                    // 后端 pyautogui 抓的是整屏，与残留的 window:* 源无关。
-                                    captureType = 'screen';
+                                if (hasPairedCaptureType) {
+                                    captureType = shotCaptureType;
                                 } else if (typeof window.detectScreenshotCaptureType === 'function') {
+                                    // 旧契约兜底：拿不到带来源的截图函数时只能就地推断。
                                     captureType = window.detectScreenshotCaptureType(
                                         S.screenCaptureStream, S.selectedScreenSourceId
                                     );
                                 } else if (!S.screenCaptureStream && !S.selectedScreenSourceId) {
-                                    // detect 拿不到时的降级兜底，不能删：后端现在把「不带坐标」
+                                    // detect 也拿不到时的降级兜底，不能删：后端把「不带坐标」
                                     // 当明确的否定信号，删了会从「默认整屏叠」变成「永久不叠」。
                                     captureType = 'screen';
                                 }
