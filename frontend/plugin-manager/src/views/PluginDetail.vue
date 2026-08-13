@@ -44,10 +44,10 @@
                 :label="surface.title || surface.id"
                 :name="surface.id"
               >
-                <HostedSurfaceFrame :plugin-id="pluginId" :surface="surface" :height="hostedSurfaceFrameHeight" @open-logs="openLogsTab" @message="relayHostedSurfaceMessageToStaticUi" />
+                <HostedSurfaceFrame :ref="(instance) => setPanelSurfaceFrameRef(surface.id, instance)" :plugin-id="pluginId" :surface="surface" :height="hostedSurfaceFrameHeight" @open-logs="openLogsTab" @message="relayHostedSurfaceMessageToStaticUi" />
               </el-tab-pane>
             </el-tabs>
-            <HostedSurfaceFrame v-else :plugin-id="pluginId" :surface="displayedPanelSurfaces[0]!" :height="hostedSurfaceFrameHeight" @open-logs="openLogsTab" @message="relayHostedSurfaceMessageToStaticUi" />
+            <HostedSurfaceFrame v-else :ref="(instance) => setPanelSurfaceFrameRef(displayedPanelSurfaces[0]?.id || '', instance)" :plugin-id="pluginId" :surface="displayedPanelSurfaces[0]!" :height="hostedSurfaceFrameHeight" @open-logs="openLogsTab" @message="relayHostedSurfaceMessageToStaticUi" />
           </div>
         </el-tab-pane>
 
@@ -178,6 +178,10 @@ const surfaceWarnings = ref<PluginUiWarning[]>([])
 const activePanelSurfaceId = ref('')
 const activeGuideSurfaceId = ref('')
 const staticUiFrameRef = ref<InstanceType<typeof PluginUIFrame> | null>(null)
+type SurfaceMessageReceiver = {
+  sendSurfaceMessage: (data: unknown) => void
+}
+const panelSurfaceFrameRefs = new Map<string, SurfaceMessageReceiver>()
 const hostedSurfaceFrameHeight = 'clamp(560px, calc(100vh - 220px), 1200px)'
 const allowedTabs = new Set(['panel', 'guide', 'ui', 'info', 'entries', 'metrics', 'config', 'logs'])
 let currentSurfaceLoadId = 0
@@ -216,6 +220,14 @@ const availableDeclaredPanelSurfaces = computed(() => renderablePanelSurfaces.va
 // compatibility surface. The separate legacy "界面" tab is what gets hidden
 // when panels exist; filtering main here would make that page unreachable.
 const displayedPanelSurfaces = computed(() => renderablePanelSurfaces.value)
+// A generated static `main` is inserted before declared panels by the backend.
+// Keep it accessible in the list, but let generic `?tab=panel` entry points
+// select the first declared hosted panel when one exists.
+const defaultPanelSurface = computed(() => {
+  return availableDeclaredPanelSurfaces.value.find((surface) => surface.mode === 'hosted-tsx')
+    ?? availableDeclaredPanelSurfaces.value[0]
+    ?? displayedPanelSurfaces.value[0]
+})
 const hasStaticCompatPanel = computed(() => panelSurfaces.value.some((surface) => surface.legacy_static_compat))
 const hasDisplayablePanelSurface = computed(() => displayedPanelSurfaces.value.length > 0)
 const hasCurrentStaticUI = computed(() => hasStaticUI.value && staticUiPluginId.value === pluginId.value)
@@ -295,8 +307,8 @@ function syncSurfaceTabs() {
       activeGuideSurfaceId.value = guide.id
     }
   }
-  if (!activePanelSurfaceId.value && displayedPanelSurfaces.value[0]) {
-    activePanelSurfaceId.value = displayedPanelSurfaces.value[0].id
+  if (!activePanelSurfaceId.value && defaultPanelSurface.value) {
+    activePanelSurfaceId.value = defaultPanelSurface.value.id
   }
   if (!activeGuideSurfaceId.value && guideSurfaces.value[0]) {
     activeGuideSurfaceId.value = guideSurfaces.value[0].id
@@ -356,14 +368,29 @@ function isLegacyOpenSurfaceMessage(data: unknown): data is {
     && (!payload.kind || typeof payload.kind === 'string')
 }
 
+function setPanelSurfaceFrameRef(surfaceId: string, instance: unknown) {
+  if (!surfaceId) return
+  const receiver = instance as SurfaceMessageReceiver | null
+  if (receiver && typeof receiver.sendSurfaceMessage === 'function') {
+    panelSurfaceFrameRefs.set(surfaceId, receiver)
+  } else {
+    panelSurfaceFrameRefs.delete(surfaceId)
+  }
+}
+
 function relayHostedSurfaceMessageToStaticUi(data: unknown) {
   if (isLegacyOpenSurfaceMessage(data)) {
     openHostedSurfaceFromStaticUi(data.payload)
     return
   }
   // Hosted surface messages have already been source/origin checked by the
-  // frame. Forward them unchanged so legacy static UIs from any plugin can
-  // opt into their own message contract without host-side plugin allowlists.
+  // frame. Send them to the visible static panel as well as the hidden relay:
+  // otherwise a plugin with both kinds of surface updates an off-screen copy
+  // while the legacy page the user is looking at remains stale.
+  const activeSurface = displayedPanelSurfaces.value.find((surface) => surface.id === activePanelSurfaceId.value)
+  if (activeSurface?.mode === 'static') {
+    panelSurfaceFrameRefs.get(activeSurface.id)?.sendSurfaceMessage(data)
+  }
   staticUiFrameRef.value?.sendSurfaceMessage(data)
 }
 
