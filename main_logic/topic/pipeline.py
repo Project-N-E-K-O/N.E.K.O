@@ -713,6 +713,14 @@ class TopicHookPool:
             last_turn_at = self._signal_store.last_turn_at(name)
             if last_turn_at is None:
                 self._dirty.discard(name)
+                # Every signal aged out of the 12h retention window, so this
+                # character is back to its initial state. The failure count has
+                # to go with it: a corpus accumulated later starts a new
+                # sequence, and carrying a count across that gap would spend
+                # its first blip at whatever cap the old outage had reached
+                # instead of on the free immediate retry. A failure streak that
+                # matters is one where evidence is still arriving.
+                self._clear_analyzer_failures(name)
                 continue
             current_time = time.time() if now is None else float(now)
             if current_time - float(last_turn_at) < _CANDIDATE_MATURE_SECONDS:

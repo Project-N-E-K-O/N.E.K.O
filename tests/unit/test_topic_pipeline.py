@@ -2945,3 +2945,55 @@ async def test_topic_pool_lazy_analyzer_iterable_that_raises_still_backs_off():
     for tick in (92, 110, 121):
         await pool.process_ready_topics(now=base + tick, lang="zh-CN")
     assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_topic_pool_failure_count_does_not_survive_evidence_aging_out(tmp_path):
+    """A count carried across a 12h gap would spend the next blip at the cap.
+
+    When every signal ages out, `last_turn_at` goes None and the character is
+    back to its initial state — that branch sits ahead of the backoff gate, so
+    it is reachable while a deadline is armed. Keeping the count there means a
+    corpus accumulated later starts its first transient failure at whatever
+    step the old outage had climbed to, instead of at the free immediate retry.
+    """
+    calls = []
+
+    async def failing_analyzer(*, lang, **kwargs):
+        calls.append(lang)
+        return None
+
+    path = tmp_path / "topic_signals.json"
+    pool = TopicHookPool(
+        analyzer=failing_analyzer,
+        auto_schedule=False,
+        min_user_turns_for_topic=1,
+        signal_store_path=path,
+    )
+    pool.note_user_message("妮可", "我最近一直在纠结要不要换工作")
+    base = pool._signal_store.last_turn_at("妮可")
+    assert base is not None
+
+    # 攒出一段失败史，档位爬到第 3 档。
+    for tick, expected in ((61, 1), (82, 2), (123, 3)):
+        await pool.process_ready_topics(now=base + tick, lang="zh-CN")
+        assert len(calls) == expected
+    assert pool._analyzer_failures["妮可"] == 3
+
+    # 证据整段老化掉（12h retention）：这一跳只会走到 last_turn_at is None。
+    pool._signal_store.clear("妮可")
+    await pool.process_ready_topics(now=base + 3000, lang="zh-CN")
+    assert len(calls) == 3
+    assert "妮可" not in pool._analyzer_failures
+    assert "妮可" not in pool._analyzer_retry_not_before
+
+    # 新语料的第一次失败要拿回那次免费立即重试，而不是从旧档位续。
+    pool.note_user_message("妮可", "换个话题，我最近在学做菜")
+    fresh = pool._signal_store.last_turn_at("妮可")
+    assert fresh is not None
+    await pool.process_ready_topics(now=fresh + 61, lang="zh-CN")
+    assert len(calls) == 4
+    assert pool._analyzer_failures["妮可"] == 1
+    assert pool._analyzer_retry_not_before["妮可"] == pytest.approx(
+        fresh + 61 + _ANALYZER_RETRY_BASE_SECONDS, abs=1e-3
+    )
