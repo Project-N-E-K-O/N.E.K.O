@@ -747,8 +747,15 @@ class ProactiveMixin:
         # Without this filter, a passive callback enqueued earlier would get
         # piggy-backed onto any later proactive trigger — silently breaking
         # ``delivery="passive"``'s "don't interrupt" promise.
-        proactive_cbs = _active_proactive_callbacks(self.pending_agent_callbacks)
-        proactive_cbs = select_callbacks_within_image_budget(proactive_cbs)
+        proactive_candidates = _active_proactive_callbacks(
+            self.pending_agent_callbacks
+        )
+        proactive_cbs = select_callbacks_within_image_budget(
+            proactive_candidates
+        )
+        budget_deferred_ids = {
+            id(cb) for cb in proactive_candidates[len(proactive_cbs):]
+        }
         if not proactive_cbs:
             logger.debug(
                 "[%s] trigger_agent_callbacks: queue has only passive callbacks (n=%d); deferring to next user turn",
@@ -836,6 +843,13 @@ class ProactiveMixin:
                     extra for extra in self.pending_extra_replies
                     if extra.get("_callback_delivery_id") in delivered_ids
                 ]
+                # Media callbacks deliberately have no text-only hot-swap
+                # mirror. Remember that ownership before streaming can remove
+                # permanently invalid images from the callback payload.
+                callback_only_voice_obj_ids = {
+                    id(cb) for cb in voice_snapshot
+                    if cb.get("media_images")
+                }
                 voice_commit_snapshot: tuple[dict, ...] = ()
 
                 # Server-side rejection of ``response.create`` (e.g.
@@ -1131,13 +1145,14 @@ class ProactiveMixin:
                     # supports manual inject, so this branch is unreachable in
                     # practice — kept so a hypothetical future provider that
                     # raises NotImplementedError degrades to hot-swap instead of
-                    # losing the cb. Drop the proactive cbs so they don't loop
-                    # forever, but keep ``pending_extra_replies`` populated for
-                    # the next user-turn prime_context() drain.
+                    # losing the cb. Drop only callbacks that have a text-only
+                    # hot-swap owner; media callbacks have no such mirror and
+                    # must remain on their sole queue.
                     voice_ids = {id(cb) for cb in voice_snapshot}
                     self.pending_agent_callbacks = [
                         cb for cb in self.pending_agent_callbacks
                         if id(cb) not in voice_ids
+                        or id(cb) in callback_only_voice_obj_ids
                     ]
                     logger.info(
                         "[%s] trigger_agent_callbacks: voice provider does not support manual inject; falling back to hot-swap (n=%d)",
@@ -1290,6 +1305,20 @@ class ProactiveMixin:
         if delivered:
             for cb in callbacks_snapshot:
                 resolve_callback_delivery_ack(cb, True)
+            # A single callback batch is capped by the model image budget. Any
+            # suffix remains in pending_agent_callbacks, outside the delivery
+            # manager that originally released it, so no manager completion
+            # hook will pump it again. Re-drive only after the proactive claim
+            # has been released, preserving the normal inter-turn gap.
+            if any(
+                id(cb) in budget_deferred_ids
+                and cb.get("delivery_mode") != "passive"
+                and not cb.get(DELIVERY_RETRACTED_KEY)
+                for cb in self.pending_agent_callbacks
+            ):
+                self._schedule_proactive_retry(
+                    self.proactive_manager.min_gap_s
+                )
         return delivered
 
     async def _deliver_agent_callbacks_text(self, callbacks_snapshot: list) -> bool:
@@ -2387,15 +2416,19 @@ class ProactiveMixin:
 
         Text mode: drained before the next stream_text call and injected via
         prompt_ephemeral(), OR proactively via trigger_agent_callbacks().
-        Non-passive callbacks are also appended to pending_extra_replies for
-        voice-mode hot-swap fallback injection via prime_context(). Passive
-        callbacks deliberately stay only in pending_agent_callbacks: mirroring
-        them into pending_extra_replies would let a context-only ``read`` cue
-        trigger session preparation and an unsolicited response. Their
-        voice-mode delivery point is instead the next NATURALLY-occurring hot
-        swap, which folds them into the new session's prime text as background
-        context (``_select_passive_callbacks_for_swap_prime``) without ever
-        triggering a response.
+        Text-only non-passive callbacks are also appended to
+        pending_extra_replies for voice-mode hot-swap fallback injection via
+        prime_context(). Media callbacks stay solely in
+        pending_agent_callbacks because the hot-swap mirror is text-only; a
+        second owner would let the text surface before its image and then be
+        repeated by direct voice delivery. Passive callbacks also stay only in
+        pending_agent_callbacks: mirroring them would let a context-only
+        ``read`` cue trigger session preparation and an unsolicited response.
+        Their voice-mode delivery point is instead the next
+        NATURALLY-occurring hot swap, which folds them into the new session's
+        prime text as background context
+        (``_select_passive_callbacks_for_swap_prime``) without ever triggering
+        a response.
 
         Voice queue element shape is structured (not flat text) so the
         hot-swap renderer can:
@@ -2410,8 +2443,9 @@ class ProactiveMixin:
         ``summary`` doesn't shadow a real ``detail`` via the legacy
         ``summary or detail`` chain.
 
-        For non-passive callbacks the two queues stay independent (text-mode
-        drain and voice-mode hot-swap fire at different lifecycle points).
+        For text-only non-passive callbacks the two queues stay independent
+        (text-mode drain and voice-mode hot-swap fire at different lifecycle
+        points).
         """
         try:
             from config import (
@@ -2584,7 +2618,7 @@ class ProactiveMixin:
                     callback[DELIVERY_RETRACTED_KEY] = True
                     return
             self.pending_agent_callbacks.append(callback)
-            if not is_passive:
+            if not is_passive and not callback.get("media_images"):
                 self.pending_extra_replies.append({
                     "_callback_delivery_id": delivery_id,
                     # Stamp the coalesce_key + submission seq so a later same-key cue

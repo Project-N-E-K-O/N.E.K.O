@@ -765,6 +765,29 @@ async def test_voice_passive_enqueue_never_injects_or_creates_hot_swap_extra():
     assert mgr.pending_extra_replies == []
 
 
+async def test_voice_media_callback_has_no_text_only_hot_swap_mirror():
+    """A media callback stays atomic while direct voice delivery is busy."""
+    sess = _make_voice_sess(is_responding=True)
+    mgr = _make_mgr(session=sess)
+    callback = {
+        "origin": "event",
+        "status": "completed",
+        "summary": "describe this image",
+        "detail": "describe this image",
+        "delivery_mode": "proactive",
+        "coalesce_key": "",
+        "media_images": ["eA=="],
+    }
+
+    core_module.LLMSessionManager.enqueue_agent_callback(mgr, callback)
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+
+    assert delivered is False
+    assert sess.injected == []
+    assert mgr.pending_agent_callbacks == [callback]
+    assert mgr.pending_extra_replies == []
+
+
 async def test_voice_mode_busy_defers_cbs_for_retry():
     """Voice 模式（session 正在回复）：cb 留在队列等下次 response.done 后重试。"""
     sess = _make_voice_sess(is_responding=True)
@@ -1071,9 +1094,18 @@ async def test_text_mode_resolves_delivery_ack_after_committed_output_before_com
     assert future.result() is True
 
 
-async def test_respond_batch_defers_callbacks_beyond_image_count_budget():
+async def test_respond_batch_continues_callbacks_beyond_image_count_budget():
     sess = _CapturingImageOmniOffline()
     mgr = _make_mgr(session=sess)
+    retry_complete = asyncio.Event()
+    retry_tasks: list[asyncio.Task] = []
+
+    def _run_retry(coro):
+        task = asyncio.create_task(coro)
+        retry_tasks.append(task)
+        task.add_done_callback(lambda _task: retry_complete.set())
+
+    mgr._fire_task = _run_retry
     callbacks = [
         {
             "delivery_mode": "proactive",
@@ -1088,12 +1120,8 @@ async def test_respond_batch_defers_callbacks_beyond_image_count_budget():
     delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
 
     assert delivered is True
-    assert sess.image_batches == [["eA=="] * 8]
-    assert mgr.pending_agent_callbacks == [callbacks[8]]
-
-    delivered_again = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
-
-    assert delivered_again is True
+    await asyncio.wait_for(retry_complete.wait(), timeout=1.0)
+    await asyncio.gather(*retry_tasks)
     assert sess.image_batches == [["eA=="] * 8, ["eA=="]]
     assert mgr.pending_agent_callbacks == []
 
@@ -1230,10 +1258,12 @@ async def test_text_mode_success_keeps_late_extra_replies():
     mgr.pending_extra_replies = [initial_extra]
 
     delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+    await asyncio.sleep(0)
 
     assert delivered is True
     assert mgr.pending_agent_callbacks == [late_cb]
     assert mgr.pending_extra_replies == [late_extra]
+    assert mgr._fired_tasks == []
 
 
 def test_drain_agent_callbacks_purges_retracted_callbacks_and_extras():
@@ -1427,6 +1457,42 @@ async def test_voice_mode_not_implemented_falls_back_to_hot_swap():
     assert mgr.pending_agent_callbacks == []  # proactive cb dropped
     # 精确相等而非 truthy：锁死 fallback 不会误改/重复 pending_extra_replies
     assert mgr.pending_extra_replies == original_extras  # hot-swap channel preserved
+
+
+async def test_voice_media_callback_survives_unsupported_manual_inject():
+    """Without a text mirror, the defensive fallback must keep its owner."""
+    sess = _make_voice_sess()
+
+    async def _inject(text, *, on_rejected=None, events_before_text=()):
+        raise NotImplementedError("test provider: no manual inject")
+
+    sess.inject_text_and_request_response = _inject
+
+    async def _stream_image(
+        _image_b64,
+        *,
+        bypass_rate_limit=False,
+        cache_latest=True,
+        on_rejected=None,
+    ):
+        return None
+
+    sess.stream_image = _stream_image
+    mgr = _make_mgr(session=sess)
+    callback = {
+        "origin": "event",
+        "status": "completed",
+        "summary": "image stays queued",
+        "delivery_mode": "proactive",
+        "media_images": ["eA=="],
+    }
+    core_module.LLMSessionManager.enqueue_agent_callback(mgr, callback)
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+
+    assert delivered is False
+    assert mgr.pending_agent_callbacks == [callback]
+    assert mgr.pending_extra_replies == []
 
 
 async def test_inject_gemini_routes_through_send_client_content():

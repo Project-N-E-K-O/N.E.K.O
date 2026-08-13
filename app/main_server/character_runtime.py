@@ -885,6 +885,14 @@ async def _handle_agent_event(event: dict):
                         # the image shares the proactive response's context.
                         deferred_callback_images.append(resolved_b64)
                         continue
+                    if isinstance(sess, core.OmniOfflineClient):
+                        # Offline stream_image stores frames until the next
+                        # text prompt. Repeated read events would therefore
+                        # merge their individually-bounded image sets into one
+                        # unbounded session pool. Keep each event on the bounded
+                        # callback queue and drain it with its own text instead.
+                        deferred_callback_images.append(resolved_b64)
+                        continue
                     if getattr(sess, "_supports_native_image", None) is False:
                         # Non-native realtime providers turn callback-owned
                         # images into a description at the callback drain

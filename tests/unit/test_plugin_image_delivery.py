@@ -269,6 +269,50 @@ async def test_plugin_image_url_is_fetched_asynchronously_for_model_context(monk
 
 
 @pytest.mark.asyncio
+async def test_offline_read_images_are_bounded_per_callback_event(monkeypatch) -> None:
+    """Separate read events must not accumulate in the offline session image pool."""
+    from app import main_server
+    from main_logic.omni_offline_client import OmniOfflineClient
+
+    manager = _manager()
+    offline_session = OmniOfflineClient.__new__(OmniOfflineClient)
+    offline_session.stream_image = AsyncMock()
+    manager.session = offline_session
+    encoded = base64.b64encode(b"offline-read-image").decode("ascii")
+    monkeypatch.setattr(
+        "app.main_server.character_runtime._get_session_manager",
+        lambda _name: manager,
+    )
+    monkeypatch.setattr(
+        "app.main_server.character_runtime._fetch_plugin_image_base64",
+        AsyncMock(return_value=encoded),
+    )
+
+    for index in range(2):
+        await main_server._handle_agent_event({
+            "event_type": "proactive_message",
+            "lanlan_name": "Test",
+            "text": f"remember image {index}",
+            "channel": "plugin:demo",
+            "delivery_mode": "passive",
+            "ai_behavior": "read",
+            "visibility": [],
+            "media_parts": [{
+                "type": "image",
+                "url": f"http://127.0.0.1:48916/media/offline-{index}",
+                "mime": "image/jpeg",
+            }],
+        })
+
+    offline_session.stream_image.assert_not_awaited()
+    assert manager.enqueue_agent_callback.call_count == 2
+    assert [
+        call.args[0]["media_images"]
+        for call in manager.enqueue_agent_callback.call_args_list
+    ] == [[encoded], [encoded]]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("text", ["", "remember this image"], ids=["image-only", "text-and-image"])
 async def test_read_image_waits_in_callback_when_no_model_session(
     monkeypatch,
