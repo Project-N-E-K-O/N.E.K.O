@@ -889,6 +889,8 @@ def run_step_protocol_tts_worker(
                         ws = None
                         session_id = None
                         logger.error(f"重新建立连接失败: {e}")
+                        if _defer_queued_work_until_control():
+                            continue
                         if 'HTTP 503' in str(e):
                             _enqueue_error(response_queue, json.dumps({"code": "UPSTREAM_SERVER_BUSY"}))
                         response_queue.put(("__reconnecting__", "TTS_RECONNECTING"))

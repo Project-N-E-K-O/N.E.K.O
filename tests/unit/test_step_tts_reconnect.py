@@ -648,7 +648,11 @@ def test_control_preempts_recovery_after_new_speech_connect_exception(monkeypatc
 
     real_sleep = _step_protocol.asyncio.sleep
 
-    async def no_delay(_seconds):
+    retry_backoffs = []
+
+    async def no_delay(seconds):
+        if seconds == 1.0:
+            retry_backoffs.append(seconds)
         await real_sleep(0)
 
     monkeypatch.setattr(_step_protocol.websockets, "connect", connect)
@@ -671,6 +675,11 @@ def test_control_preempts_recovery_after_new_speech_connect_exception(monkeypatc
 
     assert connect_attempt == 3
     assert unexpected_recovery.sent == []
+    assert retry_backoffs == []
+    assert not any(
+        item == ("__reconnecting__", "TTS_RECONNECTING")
+        for item in list(responses.queue)
+    )
 
 
 def test_control_preempts_recovery_when_handshake_has_no_session_id(monkeypatch):
