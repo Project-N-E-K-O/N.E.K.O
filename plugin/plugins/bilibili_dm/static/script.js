@@ -3,7 +3,7 @@ const pluginMatch = location.pathname.match(/\/plugin\/([^/]+)\/ui\//);
 const pluginId = pluginMatch ? decodeURIComponent(pluginMatch[1]) : 'bilibili_dm';
 
 const state = { dashboard: null, busy: false };
-const qrLogin = { key: null, pollTimer: null, countdownTimer: null, expiresAt: 0, generation: 0 };
+const qrLogin = { key: null, pollTimer: null, countdownTimer: null, closeTimer: null, expiresAt: 0, generation: 0 };
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -64,8 +64,10 @@ function clearQrLogin() {
   qrLogin.expiresAt = 0;
   if (qrLogin.pollTimer) clearTimeout(qrLogin.pollTimer);
   if (qrLogin.countdownTimer) clearInterval(qrLogin.countdownTimer);
+  if (qrLogin.closeTimer) clearTimeout(qrLogin.closeTimer);
   qrLogin.pollTimer = null;
   qrLogin.countdownTimer = null;
+  qrLogin.closeTimer = null;
 }
 
 function hideQrLogin() {
@@ -137,7 +139,8 @@ async function pollQrLogin(generation) {
       setQrStatus(data.message || '登录成功，配置已自动保存');
       await refreshDashboard(true);
       showToast(data.message || '扫码登录成功，配置已自动保存');
-      setTimeout(() => {
+      qrLogin.closeTimer = setTimeout(() => {
+        qrLogin.closeTimer = null;
         document.getElementById('qr-login-panel').hidden = true;
       }, 2000);
       return;

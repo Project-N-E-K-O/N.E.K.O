@@ -42,6 +42,7 @@ async def test_qr_login_returns_image_and_saves_credentials_without_returning_th
         bili_jct="csrf-secret",
         buvid3="buvid-secret",
         dedeuserid="42",
+        ac_time_value="new-refresh-token",
     )
     session = FakeSession([FakeEvents.NONE, FakeEvents.DONE], credential)
 
@@ -60,8 +61,32 @@ async def test_qr_login_returns_image_and_saves_credentials_without_returning_th
     done = await login.poll()
     assert done == {"status": "done", "message": "登录成功，配置已自动保存", "has_buvid3": True}
     assert saved["sesdata"] == "session-secret"
+    assert saved["ac_time_value"] == "new-refresh-token"
     assert "session-secret" not in str(done)
     assert login._session is None
+
+
+@pytest.mark.asyncio
+async def test_qr_login_clears_an_old_refresh_token_when_sdk_does_not_provide_one():
+    saved = {"ac_time_value": "old-refresh-token"}
+    credential = SimpleNamespace(
+        sessdata="session-secret",
+        bili_jct="csrf-secret",
+        buvid3="",
+        dedeuserid="42",
+    )
+    session = FakeSession([FakeEvents.DONE], credential)
+
+    async def save(values: dict[str, str]) -> bool:
+        saved.update(values)
+        return True
+
+    login = BiliDMQrLogin(credential_saver=save)
+    login._session = session
+    login._require_sdk = lambda: (object, FakeEvents)
+
+    assert (await login.poll())["status"] == "done"
+    assert saved["ac_time_value"] == ""
 
 
 @pytest.mark.asyncio

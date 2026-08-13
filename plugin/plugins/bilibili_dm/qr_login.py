@@ -76,6 +76,11 @@ class BiliDMQrLogin:
             "bili_jct": str(getattr(credential, "bili_jct", "") or ""),
             "buvid3": str(getattr(credential, "buvid3", "") or ""),
             "dedeuserid": str(getattr(credential, "dedeuserid", "") or ""),
+            # Always include the refresh token: an account switch must replace
+            # an older value, and an SDK result without one must clear it.
+            "ac_time_value": str(
+                getattr(credential, "ac_time_value", "") or ""
+            ),
         }
         if not values["sesdata"] or not values["bili_jct"]:
             self.clear()

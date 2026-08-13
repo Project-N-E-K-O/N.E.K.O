@@ -30,7 +30,7 @@ from .permission import PermissionManager
 from .qr_login import BiliDMQrLogin
 
 
-UI_ASSET_VERSION = "1.1.6"
+UI_ASSET_VERSION = "1.1.8"
 
 
 def build_open_ui_payload(*, plugin_id: str, available: bool) -> dict[str, Any]:
