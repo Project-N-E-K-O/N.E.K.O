@@ -575,10 +575,72 @@ async def test_same_language_rewrite_revokes_the_stale_callbacks_ownership(monke
     monkeypatch.setattr(preference_router, "_clear_character_recent_history", clear_recent)
     monkeypatch.setattr(preference_router, "get_session_manager", SessionManager)
 
-    with pytest.raises(preference_router.LanguagePreferenceConflictError):
-        await preference_router.apply_character_language_preference("Mimi", "ja")
+    result = await preference_router.apply_character_language_preference("Mimi", "ja")
 
     assert cleared == [], "同语言的更新写入之后，陈旧回调不得清空 recent.json"
+    # The response still says success: the server really does hold this
+    # language, so reporting a conflict would describe something that did not
+    # happen. Only the destructive step is fenced by the write order.
+    assert result["success"] is True
+    assert result["language"] == "ja"
+    assert result["recent_history_cleared"] is False
+
+
+async def test_ordinary_new_dialog_write_is_not_reported_as_a_conflict(monkeypatch):
+    """Session activity advances the write order without changing the language.
+
+    ``/new_dialog`` re-persists the same explicit locale on every session start,
+    hot swap and proactive turn, and it does so outside this server's lock.  The
+    closing check therefore must not compare write orders: doing so reports "a
+    newer language preference superseded this request" for a preference nobody
+    touched, and pushes the card manager into a distrust-and-rehydrate cycle.
+    """
+    manager = _IdleManager()
+    config_manager = SimpleNamespace(memory_dir="unused")
+    durable = {"language": None, "order": 0}
+    cleared = []
+
+    async def load_character(name):
+        return config_manager, {"猫娘": {name: {}}}
+
+    async def request_locale(method, _name, *, language=None):
+        if method == "GET":
+            return {
+                "success": True,
+                "language": durable["language"],
+                "order": durable["order"],
+            }
+        durable["order"] += 1
+        durable["language"] = language
+        return {
+            "success": True,
+            "language": language,
+            "order": durable["order"],
+            "previous_language": "en",
+            "changed": True,
+        }
+
+    async def clear_recent(_config_manager, name, *, expected_generation):
+        cleared.append(name)
+        # A proactive turn / session start hits /new_dialog with the same
+        # explicit language right after the clear, advancing the order only.
+        durable["order"] += 1
+
+    monkeypatch.setattr(preference_router, "_load_existing_character", load_character)
+    monkeypatch.setattr(preference_router, "_request_memory_prompt_locale", request_locale)
+    monkeypatch.setattr(preference_router, "_clear_character_recent_history", clear_recent)
+    monkeypatch.setattr(
+        preference_router,
+        "get_session_manager",
+        lambda: type("S", (), {"get": lambda _s, _n: manager})(),
+    )
+
+    result = await preference_router.apply_character_language_preference("Mimi", "ja")
+
+    assert result["success"] is True, "普通会话活动不得被报成偏好冲突"
+    assert result["language"] == "ja"
+    assert result.get("freshness_unverified") is not True
+    assert cleared == ["Mimi"]
 
 
 async def test_missing_write_order_fails_closed(monkeypatch):
@@ -613,10 +675,13 @@ async def test_missing_write_order_fails_closed(monkeypatch):
     monkeypatch.setattr(preference_router, "_clear_character_recent_history", clear_recent)
     monkeypatch.setattr(preference_router, "get_session_manager", SessionManager)
 
-    with pytest.raises(preference_router.LanguagePreferenceConflictError):
-        await preference_router.apply_character_language_preference("Mimi", "ja")
+    result = await preference_router.apply_character_language_preference("Mimi", "ja")
 
     assert cleared == [], "写序缺失时不得执行破坏性清理"
+    # Unprovable ownership blocks the clear, but the language itself is still
+    # ours, so the response must not claim a conflict.
+    assert result["success"] is True
+    assert result["recent_history_cleared"] is False
 
 
 async def test_late_clear_is_fenced_by_durable_ownership(monkeypatch):
