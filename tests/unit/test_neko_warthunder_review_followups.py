@@ -316,6 +316,15 @@ def test_final_blow_kill_description_is_not_misclassified_as_award() -> None:
     )
 
 
+def test_english_award_offsets_are_taken_from_original_unicode_text() -> None:
+    award = parse_award("Straße first blood!", event_id=8, time=12)
+
+    assert award is not None
+    assert award.player == "Straße"
+    assert award.code == "first_blood"
+    assert award.label == "first blood"
+
+
 def test_large_replay_scrub_is_not_mistaken_for_midnight_wrap() -> None:
     module = _load_wt_server()
     service = object.__new__(module.TelemetryService)

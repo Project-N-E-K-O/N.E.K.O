@@ -630,15 +630,15 @@ def parse_award(text: str, event_id: int = 0, time: int | None = None) -> Award 
         else:
             # 独立句式必须位于消息末尾；否则 "dealt the final blow <victim>"
             # 这类双方击杀描述会被错误吞成嘉奖。
-            low_raw = raw.casefold()
             for kw in _STANDALONE_AWARDS:
                 match = re.search(
-                    rf"{re.escape(kw.casefold())}[!！.。]*$",
-                    low_raw,
+                    rf"{re.escape(kw)}[!！.。]*$",
+                    raw,
+                    flags=re.IGNORECASE,
                 )
                 if match is not None:
                     actor_part = raw[: match.start()].rstrip()
-                    name = raw[match.start() : match.end()].rstrip("!！.。")
+                    name = match.group(0).rstrip("!！.。")
                     break
         if not name:
             return None
