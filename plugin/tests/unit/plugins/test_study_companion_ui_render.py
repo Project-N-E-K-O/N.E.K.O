@@ -501,6 +501,18 @@ def test_study_companion_static_ui8_visual_accessibility_and_csp_contract() -> N
     assert len(gzip.compress(main_js.encode("utf-8"))) <= 22000
 
 
+def test_static_scope_read_failure_clears_the_stale_question_context() -> None:
+    source = (STATIC_DIR / "knowledge-map.js").read_text(encoding="utf-8")
+    load_start = source.index("async function loadPracticeScope")
+    load_end = source.index("async function activateKnowledgePracticeScope", load_start)
+    load_scope = source[load_start:load_end]
+
+    catch_start = load_scope.index("catch (error)")
+    catch_body = load_scope[catch_start:]
+    assert "setPracticeScopeState({ active: false" in catch_body
+    assert "setQuestionContext({ selection_reason: 'no_data', no_data: true })" in catch_body
+
+
 def test_study_companion_static_ui_browser_smoke_desktop_reduced_motion() -> None:
     playwright_sync_api = pytest.importorskip("playwright.sync_api")
     if not _has_playwright_chromium():
@@ -542,6 +554,32 @@ def test_study_companion_static_ui_browser_smoke_desktop_reduced_motion() -> Non
         },
         "memory_deck": {"card_count": 12, "due_count": 3, "due_cards": []},
     }
+    knowledge_payload = {
+        "summary": {"topic_count": 2, "edge_count": 0},
+        "nodes": [
+            {
+                "id": "college_cs_arrays",
+                "name": "Arrays",
+                "stage": "college",
+                "subject": "computer_science",
+                "course_family": "c_programming",
+                "chapter": "C Language",
+                "unit": "Arrays and pointers",
+                "depth": 2,
+            },
+            {
+                "id": "college_cs_pointers",
+                "name": "Pointers",
+                "stage": "college",
+                "subject": "computer_science",
+                "course_family": "c_programming",
+                "chapter": "C Language",
+                "unit": "Arrays and pointers",
+                "depth": 3,
+            },
+        ],
+        "edges": [],
+    }
 
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=True)
@@ -553,6 +591,9 @@ def test_study_companion_static_ui_browser_smoke_desktop_reduced_motion() -> Non
         console_errors: list[str] = []
         page_errors: list[str] = []
         run_ids: list[str] = []
+        run_entries: dict[str, tuple[str, dict]] = {}
+        entry_calls: list[str] = []
+        active_scope: dict = {}
 
         page.on(
             "console",
@@ -590,6 +631,28 @@ def test_study_companion_static_ui_browser_smoke_desktop_reduced_motion() -> Non
             if path == "runs" and request.method == "POST":
                 run_id = f"run-{len(run_ids) + 1}"
                 run_ids.append(run_id)
+                request_payload = request.post_data_json
+                entry_id = str(request_payload.get("entry_id") or "")
+                args = request_payload.get("args") or {}
+                run_entries[run_id] = (entry_id, args)
+                entry_calls.append(entry_id)
+                if entry_id == "study_set_practice_scope":
+                    requested = dict(args.get("scope") or {})
+                    active_scope.clear()
+                    active_scope.update(
+                        {
+                            **requested,
+                            "scope_key": "ps1_browser_scope",
+                            "scope_revision": 1,
+                            "display_path": [
+                                "college",
+                                "computer_science",
+                                "c_programming",
+                                "C Language",
+                                "Arrays and pointers",
+                            ],
+                        }
+                    )
                 route.fulfill(
                     status=200,
                     content_type="application/json",
@@ -605,6 +668,47 @@ def test_study_companion_static_ui_browser_smoke_desktop_reduced_motion() -> Non
                 )
                 return
             if run_match and run_match.group(2):
+                entry_id, _args = run_entries[run_match.group(1)]
+                if entry_id == "study_knowledge_map":
+                    response_data = knowledge_payload
+                elif entry_id == "study_get_practice_scope":
+                    response_data = {
+                        "active": bool(active_scope),
+                        "scope": dict(active_scope),
+                        "scope_revision": 1 if active_scope else 0,
+                    }
+                elif entry_id == "study_set_practice_scope":
+                    response_data = {
+                        "active": True,
+                        "scope": dict(active_scope),
+                        "scope_revision": 1,
+                    }
+                elif entry_id == "study_clear_practice_scope":
+                    active_scope.clear()
+                    response_data = {"active": False, "scope": {}, "scope_revision": 2}
+                elif entry_id == "study_question_context" and active_scope:
+                    response_data = {
+                        "selection_context_id": "selection-browser-scope",
+                        "selected_topic_id": "college_cs_arrays",
+                        "selected_topic_name": "Arrays",
+                        "selection_reason": "scope_seed",
+                        "scope_key": "ps1_browser_scope",
+                        "scope_revision": 1,
+                        "practice_scope": dict(active_scope),
+                    }
+                elif entry_id == "study_generate_targeted_question":
+                    response_data = {
+                        "question_id": "question-browser-scope",
+                        "attempt_id": "attempt-browser-scope",
+                        "question": "Explain how an array relates to a pointer.",
+                        "selected_topic_id": "college_cs_arrays",
+                        "selected_topic_name": "Arrays",
+                        "difficulty": 0.5,
+                    }
+                elif entry_id == "study_question_context":
+                    response_data = {"no_data": True, "selection_reason": "no_data"}
+                else:
+                    response_data = status_payload
                 route.fulfill(
                     status=200,
                     content_type="application/json",
@@ -613,7 +717,7 @@ def test_study_companion_static_ui_browser_smoke_desktop_reduced_motion() -> Non
                             "items": [
                                 {
                                     "type": "json",
-                                    "json": {"success": True, "data": status_payload},
+                                    "json": {"success": True, "data": response_data},
                                 }
                             ]
                         }
@@ -747,6 +851,71 @@ def test_study_companion_static_ui_browser_smoke_desktop_reduced_motion() -> Non
         restored_size = dialog_panel.evaluate("node => ({ width: node.getBoundingClientRect().width, height: node.getBoundingClientRect().height })")
         assert abs(restored_size["width"] - size_100["width"]) <= 1
         assert abs(restored_size["height"] - size_100["height"]) <= 1
+
+        # Real Static flow: stage -> module -> chapter -> unit -> scope CTA. Setting
+        # scope must only focus the explicit Generate button; it must never call LLM.
+        page.locator('.knowledge-stage-selector button[data-stage="college"]').click()
+        page.locator('.knowledge-subject-selector button[data-subject="computer_science"]').click()
+        arrays_topic = page.get_by_role("button", name="Arrays", exact=True)
+        arrays_topic.click()
+        expect(page.locator(".knowledge-node-detail-dialog")).to_be_visible()
+        page.locator(".knowledge-node-detail-dialog__close").click()
+        expect(arrays_topic).to_be_focused()
+        module_field = page.locator(".knowledge-hierarchy-picker__field").filter(
+            has_text=en_bundle["ui.knowledge.course_family_label"]
+        )
+        module_field.locator("select").select_option("c_programming")
+        chapter_field = page.locator(".knowledge-hierarchy-picker__field").filter(
+            has_text=en_bundle["ui.knowledge.chapter_label"]
+        )
+        chapter_field.locator("select").select_option("C Language")
+        unit_field = page.locator(".knowledge-hierarchy-picker__field").filter(
+            has_text=en_bundle["ui.knowledge.unit_label"]
+        )
+        unit_field.locator("select").select_option("Arrays and pointers")
+        calls_before_scope = len(entry_calls)
+        page.get_by_role(
+            "button", name=en_bundle["ui.knowledge.practice_current_scope"]
+        ).first.click()
+        expect(surface_drawer).to_have_attribute("aria-hidden", "true")
+        expect(practice_panel).to_have_attribute("open", "")
+        expect(page.locator("#generateQuestionBtn")).to_be_focused()
+        scope_calls = entry_calls[calls_before_scope:]
+        assert scope_calls == ["study_set_practice_scope"]
+        assert "study_generate_targeted_question" not in scope_calls
+        set_run = next(
+            run_id
+            for run_id in reversed(run_ids)
+            if run_entries[run_id][0] == "study_set_practice_scope"
+        )
+        submitted_scope = run_entries[set_run][1]["scope"]
+        assert submitted_scope == {
+            "schema_version": 1,
+            "mode": "explicit_scope",
+            "stage": "college",
+            "subject": "computer_science",
+            "course_family": "c_programming",
+            "chapter": "C Language",
+            "unit": "Arrays and pointers",
+        }
+        expect(page.locator("#practiceScopePath")).to_contain_text("Arrays and pointers")
+
+        calls_before_generate = len(entry_calls)
+        page.locator("#generateQuestionBtn").click()
+        expect(page.locator("#questionText")).to_have_text(
+            "Explain how an array relates to a pointer."
+        )
+        generated_calls = entry_calls[calls_before_generate:]
+        assert generated_calls[:3] == [
+            "study_get_practice_scope",
+            "study_question_context",
+            "study_generate_targeted_question",
+        ]
+        assert generated_calls[3:] == ["study_status"]
+
+        page.evaluate("openHostedSurface('knowledge-map', 'knowledge')")
+        expect(surface_drawer).to_have_attribute("aria-hidden", "false")
+        page.evaluate("closeLearningProfileModal()")
         page.set_viewport_size({"width": 375, "height": 900})
         expect(page.locator(".knowledge-map-zoom")).to_be_visible()
         controls_fit = page.locator(".knowledge-map-zoom").evaluate(
@@ -754,6 +923,8 @@ def test_study_companion_static_ui_browser_smoke_desktop_reduced_motion() -> Non
         )
         assert controls_fit is True
         page.set_viewport_size({"width": 1440, "height": 1100})
+        page.wait_for_timeout(700)
+        page.evaluate("closeLearningProfileModal()")
         dialog_metrics = page.locator(".surface-drawer__panel").evaluate(
             """panel => {
                 const rect = panel.getBoundingClientRect();

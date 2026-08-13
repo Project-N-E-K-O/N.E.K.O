@@ -472,6 +472,32 @@ class StudyConfig:
 
 
 @dataclass(slots=True)
+class PracticeScopeV1:
+    schema_version: int = 1
+    mode: str = "explicit_scope"
+    stage: str = ""
+    subject: str = ""
+    course_family: str = ""
+    chapter: str = ""
+    unit: str = ""
+    topic_id: str = ""
+    scope_key: str = ""
+    scope_revision: int = 0
+    display_path: list[str] = field(default_factory=list)
+    source: str = "knowledge_map"
+    set_at: str = ""
+    eligible_topic_ids: list[str] = field(default_factory=list, repr=False)
+
+    def to_public_dict(self) -> dict[str, Any]:
+        payload = asdict(self)
+        payload.pop("eligible_topic_ids", None)
+        return payload
+
+    def to_state_dict(self) -> dict[str, Any]:
+        return self.to_public_dict()
+
+
+@dataclass(slots=True)
 class StudyState:
     status: str = STATUS_STOPPED
     active_mode: str = MODE_COMPANION
@@ -497,6 +523,8 @@ class StudyState:
     last_session_summary_at: str = ""
     checkpoint: dict[str, Any] = field(default_factory=dict)
     dependency_status: dict[str, Any] = field(default_factory=dict)
+    active_practice_scope: dict[str, Any] = field(default_factory=dict)
+    practice_scope_revision: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)

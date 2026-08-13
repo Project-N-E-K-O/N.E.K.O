@@ -1195,21 +1195,37 @@ export const STUDY_SURFACE_MESSAGE_TYPES = {
 type HostedRuntimeWindow = Window & {
   __NEKO_PAYLOAD?: {
     hostOrigin?: unknown;
+    host?: {
+      origin?: unknown;
+    };
   };
 };
 
-function studySurfaceTargetOrigin() {
+function studySurfaceTargetOrigin(hostOrigin?: unknown) {
+  const explicitHostOrigin = typeof hostOrigin === 'string' ? hostOrigin.trim() : '';
+  if (explicitHostOrigin) {
+    return explicitHostOrigin;
+  }
   const payload = (window as HostedRuntimeWindow).__NEKO_PAYLOAD;
-  const hostOrigin = payload && typeof payload.hostOrigin === 'string' ? payload.hostOrigin : '';
-  if (hostOrigin) {
-    return hostOrigin;
+  const runtimeHostOrigin = payload && typeof payload.hostOrigin === 'string' ? payload.hostOrigin : '';
+  if (runtimeHostOrigin) {
+    return runtimeHostOrigin;
+  }
+  const nestedHostOrigin = payload?.host && typeof payload.host.origin === 'string'
+    ? payload.host.origin.trim()
+    : '';
+  if (nestedHostOrigin) {
+    return nestedHostOrigin;
   }
   const origin = window.location.origin;
   return origin && origin !== 'null' ? origin : '*';
 }
 
-export function postStudySurfaceMessage(message: { type: string; payload?: unknown }) {
-  window.parent?.postMessage?.(message, studySurfaceTargetOrigin());
+export function postStudySurfaceMessage(
+  message: { type: string; payload?: unknown },
+  hostOrigin?: unknown,
+) {
+  window.parent?.postMessage?.(message, studySurfaceTargetOrigin(hostOrigin));
 }
 
 let brandCSSInjected = false;

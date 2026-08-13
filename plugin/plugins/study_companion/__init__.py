@@ -168,6 +168,7 @@ from .entry_goal_entries import _GoalEntriesMixin
 from .entry_checkin_entries import _CheckinEntriesMixin
 from .entry_supervision_entries import _SupervisionEntriesMixin
 from .entry_knowledge_entries import _KnowledgeEntriesMixin
+from .entry_practice_scope_entries import _PracticeScopeEntriesMixin
 from .entry_mode_entries import _ModeEntriesMixin
 from .entry_tutor_explain_entries import _TutorExplainEntriesMixin
 from .entry_tutor_question_entries import _TutorQuestionEntriesMixin
@@ -206,6 +207,7 @@ class StudyCompanionPlugin(
     _CheckinEntriesMixin,
     _SupervisionEntriesMixin,
     _KnowledgeEntriesMixin,
+    _PracticeScopeEntriesMixin,
     _ModeEntriesMixin,
     _TutorExplainEntriesMixin,
     _TutorQuestionEntriesMixin,

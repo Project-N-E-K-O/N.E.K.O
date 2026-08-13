@@ -571,6 +571,13 @@ class StudyStore:
             merged.get("session_suggestions")
         )
         merged["mode_lock_until"] = safe_float(merged.get("mode_lock_until"), 0.0)
+        active_scope = merged.get("active_practice_scope")
+        merged["active_practice_scope"] = (
+            dict(active_scope) if isinstance(active_scope, dict) else {}
+        )
+        merged["practice_scope_revision"] = max(
+            0, safe_int(merged.get("practice_scope_revision"), 0)
+        )
         return StudyState(**{key: merged[key] for key in fallback.to_dict().keys()})
 
     def save_state(self, state: StudyState) -> None:

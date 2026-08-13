@@ -30,6 +30,9 @@ vi.mock('@element-plus/icons-vue', () => ({
 type MountedFrame = {
   dispatchRequest: (data: Record<string, unknown>) => void
   postMessage: ReturnType<typeof vi.fn>
+  iframe: () => HTMLIFrameElement | null
+  setActive: (active: boolean) => Promise<void>
+  setActivationRevision: (revision: number) => Promise<void>
   setSurface: (surface: PluginUiSurface) => Promise<void>
   setSurfaceUrl: (url: string) => Promise<void>
   unmount: () => void
@@ -92,6 +95,8 @@ async function mountFrame(): Promise<MountedFrame> {
   const state = reactive({
     pluginId: 'study_companion',
     surface: makeSurface(),
+    active: false,
+    activationRevision: 0,
   })
   const container = document.createElement('div')
   document.body.appendChild(container)
@@ -100,6 +105,8 @@ async function mountFrame(): Promise<MountedFrame> {
       return () => h(HostedSurfaceFrame, {
         pluginId: state.pluginId,
         surface: state.surface,
+        active: state.active,
+        activationRevision: state.activationRevision,
       })
     },
   }))
@@ -126,6 +133,15 @@ async function mountFrame(): Promise<MountedFrame> {
       }))
     },
     postMessage,
+    iframe: () => container.querySelector('iframe') as HTMLIFrameElement | null,
+    async setActive(active) {
+      state.active = active
+      await nextTick()
+    },
+    async setActivationRevision(revision) {
+      state.activationRevision = revision
+      await nextTick()
+    },
     async setSurface(surface) {
       state.surface = surface
       await nextTick()
@@ -204,6 +220,40 @@ describe('HostedSurfaceFrame automatic startup retry', () => {
       expect.objectContaining({ requestId: 'request-1', ok: true, result: { running: true } }),
       '*',
     )
+  })
+
+  it('notifies an active iframe on load and revision changes without remounting it', async () => {
+    const frame = await mountFrame()
+    const iframe = frame.iframe()
+    await frame.setActive(true)
+    frame.postMessage.mockClear()
+
+    iframe?.dispatchEvent(new Event('load'))
+    expect(frame.postMessage).toHaveBeenLastCalledWith({
+      type: 'neko-hosted-surface-activated',
+      payload: { surfaceId: 'main', revision: 0 },
+    }, '*')
+
+    frame.postMessage.mockClear()
+    await frame.setActivationRevision(4)
+    expect(frame.iframe()).toBe(iframe)
+    expect(frame.postMessage).toHaveBeenCalledTimes(1)
+    expect(frame.postMessage).toHaveBeenCalledWith({
+      type: 'neko-hosted-surface-activated',
+      payload: { surfaceId: 'main', revision: 4 },
+    }, '*')
+  })
+
+  it('waits until a surface is active before sending its latest revision', async () => {
+    const frame = await mountFrame()
+    await frame.setActivationRevision(9)
+    expect(frame.postMessage).not.toHaveBeenCalled()
+
+    await frame.setActive(true)
+    expect(frame.postMessage).toHaveBeenCalledWith({
+      type: 'neko-hosted-surface-activated',
+      payload: { surfaceId: 'main', revision: 9 },
+    }, '*')
   })
 
   it('returns the real error once after the five startup retries are exhausted', async () => {

@@ -45,11 +45,28 @@ type StudyStatus = {
 
 type StudyMode = 'companion' | 'interactive' | 'teaching';
 
+type PracticeScope = {
+  schema_version?: number;
+  mode?: 'explicit_scope' | 'explicit_topic';
+  stage?: string;
+  subject?: string;
+  course_family?: string;
+  chapter?: string;
+  unit?: string;
+  topic_id?: string;
+  scope_key?: string;
+  scope_revision?: number;
+  display_path?: string[];
+};
+
 type QuestionContext = {
   selection_context_id?: string;
   selected_topic_id?: string;
   selected_topic_name?: string;
   selection_reason?: string;
+  scope_key?: string;
+  scope_revision?: number;
+  practice_scope?: PracticeScope;
   no_data?: boolean;
 };
 
@@ -319,7 +336,7 @@ function formatKnowledgeGuidanceEvidence(
   const localizedValue = (group: 'subject' | 'content_type' | 'source', rawValue?: string) => {
     const value = String(rawValue || '').trim().toLowerCase();
     if (!value) return '';
-    return translate(`ui.knowledge_guidance.${group}.${value}`, value.replaceAll('_', ' '));
+    return translate(`ui.knowledge_guidance.${group}.${value}`, value.replace(/_/g, ' '));
   };
   const subject = localizedValue('subject', outcome.knowledge_guidance_subject);
   const contentType = localizedValue('content_type', outcome.knowledge_guidance_content_type);
@@ -949,6 +966,8 @@ export default function StudyPanel(props: PluginSurfaceProps) {
   const [text, setText] = useState('');
   const [question, setQuestion] = useState('');
   const [questionContext, setQuestionContext] = useState<QuestionContext | null>(null);
+  const [activePracticeScope, setActivePracticeScope] = useState<PracticeScope | null>(null);
+  const [practiceScopeCompleted, setPracticeScopeCompleted] = useState(false);
   const [currentQuestion, setCurrentQuestion] = useState<GeneratedQuestion | null>(null);
   const [answer, setAnswer] = useState('');
   const [reply, setReply] = useState('');
@@ -971,9 +990,12 @@ export default function StudyPanel(props: PluginSurfaceProps) {
   const pasteControllerRef = useRef<AbortController | null>(null);
   const documentControllerRef = useRef<AbortController | null>(null);
   const documentJobControllerRef = useRef<AbortController | null>(null);
+  const contextRefreshControllerRef = useRef<AbortController | null>(null);
   const documentJobIdRef = useRef('');
   const documentCancelRequestedRef = useRef(false);
   const documentInputRef = useRef<HTMLInputElement | null>(null);
+  const generateButtonRef = useRef<HTMLButtonElement | null>(null);
+  const lastActivationRevisionRef = useRef(-1);
   const mountedRef = useRef(false);
   const textImageRef = useRef('');
   const pastePendingRef = useRef(false);
@@ -1553,8 +1575,31 @@ export default function StudyPanel(props: PluginSurfaceProps) {
     const data = await callStudyPlugin<QuestionContext>(props.api, 'study_question_context', props.locale, {}, signal);
     if (!signal?.aborted) {
       setQuestionContext(data);
+      if (data.practice_scope?.display_path) {
+        setActivePracticeScope(data.practice_scope);
+      }
     }
     return data;
+  }
+
+  async function loadPracticeScope(signal?: AbortSignal) {
+    try {
+      const data = await callStudyPlugin<{
+        active?: boolean;
+        scope?: PracticeScope;
+        scope_revision?: number;
+      }>(props.api, 'study_get_practice_scope', props.locale, {}, signal);
+      const scope = data.active && data.scope && typeof data.scope === 'object'
+        ? data.scope
+        : null;
+      if (!signal?.aborted) {
+        setActivePracticeScope(scope);
+      }
+      return scope;
+    } catch (error) {
+      if (!signal?.aborted) setActivePracticeScope(null);
+      throw error;
+    }
   }
 
   async function setMode(mode: StudyMode) {
@@ -1675,12 +1720,17 @@ export default function StudyPanel(props: PluginSurfaceProps) {
     if (isInteractionBusy()) {
       return;
     }
+    contextRefreshControllerRef.current?.abort();
+    contextRefreshControllerRef.current = null;
     const controller = beginStudyRequest();
     setBusy(true);
     try {
-      const context = questionContext?.selection_context_id
-        ? questionContext
-        : await loadQuestionContext(controller.signal);
+      setQuestionContext(null);
+      const freshScope = await loadPracticeScope(controller.signal);
+      if (controller.signal.aborted) {
+        return;
+      }
+      const context = await loadQuestionContext(controller.signal);
       if (controller.signal.aborted) {
         return;
       }
@@ -1710,6 +1760,12 @@ export default function StudyPanel(props: PluginSurfaceProps) {
       }
       setQuestion(data.question || '');
       setCurrentQuestion(data);
+      setPracticeScopeCompleted(false);
+      if (context.practice_scope?.display_path) {
+        setActivePracticeScope(context.practice_scope);
+      } else {
+        setActivePracticeScope(freshScope);
+      }
       setQuestionContext({ ...context, ...data, no_data: false, selection_context_id: '' });
       setAnswer('');
       setAnswerImage('');
@@ -1757,6 +1813,8 @@ export default function StudyPanel(props: PluginSurfaceProps) {
         reply?: string;
         degraded?: boolean;
         diagnostic?: string;
+        practice_scope_status?: string;
+        can_continue_review?: boolean;
       };
       if (controller.signal.aborted) {
         return;
@@ -1767,7 +1825,15 @@ export default function StudyPanel(props: PluginSurfaceProps) {
         return;
       }
       shouldClearAnswerImage = true;
-      const replyParts = [data.feedback || data.reply || '', data.next_action ? `Next: ${data.next_action}` : ''].filter(Boolean);
+      const scopeCompleted = data.practice_scope_status === 'completed';
+      setPracticeScopeCompleted(scopeCompleted);
+      const replyParts = [
+        scopeCompleted
+          ? t('ui.practice.scope_completed', 'Scope complete. You can continue reviewing this topic.')
+          : '',
+        data.feedback || data.reply || '',
+        data.next_action ? `${t('ui.practice.next_action', 'Next')}: ${data.next_action}` : '',
+      ].filter(Boolean);
       setReply(replyParts.join('\n\n') || data.summary || '');
       await refresh(controller.signal, { updateReply: false });
     } catch (error) {
@@ -1824,7 +1890,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
     mountedRef.current = true;
     const controller = beginStudyRequest();
     refresh(controller.signal)
-      .then(() => loadQuestionContext(controller.signal))
+      .then(() => loadPracticeScope(controller.signal))
       .then(() => resumeDocumentJob(controller.signal))
       .catch((error) => {
         if (controller.signal.aborted) {
@@ -1844,8 +1910,54 @@ export default function StudyPanel(props: PluginSurfaceProps) {
       pasteControllerRef.current = null;
       documentControllerRef.current?.abort();
       documentControllerRef.current = null;
+      contextRefreshControllerRef.current?.abort();
+      contextRefreshControllerRef.current = null;
     };
   }, [props.locale]);
+
+  useEffect(() => {
+    const expectedHostOrigin = String(props.host?.origin || '').trim();
+    function handleHostedSurfaceActivated(event: MessageEvent) {
+      if (event.source !== window.parent) return;
+      if (!expectedHostOrigin || event.origin !== expectedHostOrigin) return;
+      const data = event.data && typeof event.data === 'object'
+        ? event.data as { type?: unknown; payload?: unknown }
+        : null;
+      if (data?.type !== 'neko-hosted-surface-activated') return;
+      const payload = data.payload && typeof data.payload === 'object'
+        ? data.payload as { surfaceId?: unknown; revision?: unknown; activationRevision?: unknown }
+        : null;
+      const surfaceId = String(payload?.surfaceId || '').trim();
+      const activationRevision = payload?.revision ?? payload?.activationRevision;
+      if (surfaceId !== 'study-panel') return;
+      if (typeof activationRevision !== 'number'
+        || !Number.isSafeInteger(activationRevision)
+        || activationRevision < 0) return;
+      if (activationRevision < lastActivationRevisionRef.current) return;
+      lastActivationRevisionRef.current = activationRevision;
+      setQuestionContext(null);
+      contextRefreshControllerRef.current?.abort();
+      const controller = new AbortController();
+      contextRefreshControllerRef.current = controller;
+      void loadPracticeScope(controller.signal)
+        .then(() => loadQuestionContext(controller.signal))
+        .catch((error) => {
+          if (!controller.signal.aborted) setReply(formatPluginError(error));
+        })
+        .finally(() => {
+          if (!controller.signal.aborted) generateButtonRef.current?.focus();
+          if (contextRefreshControllerRef.current === controller) {
+            contextRefreshControllerRef.current = null;
+          }
+        });
+    }
+    window.addEventListener('message', handleHostedSurfaceActivated);
+    return () => {
+      window.removeEventListener('message', handleHostedSurfaceActivated);
+      contextRefreshControllerRef.current?.abort();
+      contextRefreshControllerRef.current = null;
+    };
+  }, [props.host?.origin, props.locale]);
 
   useEffect(() => {
     const panel = panelRef.current;
@@ -1978,6 +2090,12 @@ export default function StudyPanel(props: PluginSurfaceProps) {
         </div>
       </section>
       <section className="study-panel__state">
+        <div>
+          <span>{t('ui.practice.scope_label', 'Practice scope')}</span>
+          <strong>{activePracticeScope?.display_path?.length
+            ? activePracticeScope.display_path.join(' / ')
+            : t('ui.practice.scope_automatic', 'Automatic selection')}</strong>
+        </div>
         <div>
           <span>{t('ui.practice.context_label', 'Selection')}</span>
           <strong>{questionContext?.selected_topic_name || questionContext?.selected_topic_id || t('ui.practice.no_data_title', 'Not enough data')}</strong>
@@ -2210,11 +2328,16 @@ export default function StudyPanel(props: PluginSurfaceProps) {
       ) : null}
       <div className="study-panel__actions">
         <button
+          ref={generateButtonRef}
           type="button"
           disabled={interactionBusy}
           onClick={interactionBusy ? undefined : generateQuestion}
         >
-          {interactionBusy ? t('ui.button.loading', 'Loading...') : t('ui.button.generate_question', 'Generate Question')}
+          {interactionBusy
+            ? t('ui.button.loading', 'Loading...')
+            : practiceScopeCompleted
+              ? t('ui.button.continue_practice_review', 'Continue review')
+              : t('ui.button.generate_question', 'Generate Question')}
         </button>
       </div>
       <button

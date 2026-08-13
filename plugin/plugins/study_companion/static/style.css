@@ -1163,7 +1163,7 @@ button.loading {
 .question-context-card:not([data-selection-reason="no_data"]) .no-data-actions {
   display: none;
 }
-
+.practice-scope-path { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 9px 10px; border-radius: 8px; background: rgba(47, 125, 87, 0.07); } .practice-scope-path > span { color: var(--muted); font-size: 12px; font-weight: 800; } .practice-scope-path > strong { min-width: 180px; flex: 1 1 auto; }
 .no-data-actions,
 .question-card__meta {
   display: flex;
@@ -1974,7 +1974,7 @@ pre,
 .knowledge-node-detail__section { display: grid; gap: 6px; }
 .knowledge-node-detail__section h4 { font-size: 12px; color: var(--ink); }
 .knowledge-node-detail__list { margin: 0; padding-left: 18px; color: var(--muted); font-size: 12px; font-weight: 700; }
-
+.knowledge-node-detail__actions { display: flex; flex-wrap: wrap; gap: 8px; padding-top: 4px; } .knowledge-hierarchy-picker { display: grid; grid-template-columns: repeat(3, minmax(160px, 1fr)) auto; gap: 10px; align-items: end; padding: 12px; border: 1px solid rgba(47, 125, 87, 0.14); border-radius: var(--radius-sm); background: rgba(255, 255, 255, 0.76); } .knowledge-hierarchy-picker__field { display: grid; gap: 6px; } .knowledge-hierarchy-picker__field > span, .knowledge-hierarchy-picker__hint { color: var(--muted); font-size: 12px; font-weight: 800; } .knowledge-hierarchy-picker__field select { width: 100%; min-height: 38px; } .knowledge-hierarchy-picker__hint { grid-column: 1 / -1; margin: 0; }
 .knowledge-stage-groups {
   display: grid;
   gap: 12px;
@@ -2001,6 +2001,7 @@ pre,
   gap: 8px;
 }
 
+@media (max-width: 760px) { .knowledge-hierarchy-picker { grid-template-columns: 1fr; } }
 .knowledge-stage-option {
   min-height: 34px;
   padding: 7px 11px;

@@ -44,10 +44,29 @@
                 :label="surface.title || surface.id"
                 :name="surface.id"
               >
-                <HostedSurfaceFrame :ref="(instance) => setPanelSurfaceFrameRef(surface.id, instance)" :plugin-id="pluginId" :surface="surface" :height="hostedSurfaceFrameHeight" @open-logs="openLogsTab" @message="relayHostedSurfaceMessageToStaticUi" />
+                <HostedSurfaceFrame
+                  :ref="(instance) => setPanelSurfaceFrameRef(surface.id, instance)"
+                  :plugin-id="pluginId"
+                  :surface="surface"
+                  :height="hostedSurfaceFrameHeight"
+                  :active="isSurfaceActive(surface)"
+                  :activation-revision="activationRevisionFor(surface)"
+                  @open-logs="openLogsTab"
+                  @message="relayHostedSurfaceMessageToStaticUi"
+                />
               </el-tab-pane>
             </el-tabs>
-            <HostedSurfaceFrame v-else :ref="(instance) => setPanelSurfaceFrameRef(displayedPanelSurfaces[0]?.id || '', instance)" :plugin-id="pluginId" :surface="displayedPanelSurfaces[0]!" :height="hostedSurfaceFrameHeight" @open-logs="openLogsTab" @message="relayHostedSurfaceMessageToStaticUi" />
+            <HostedSurfaceFrame
+              v-else
+              :ref="(instance) => setPanelSurfaceFrameRef(displayedPanelSurfaces[0]?.id || '', instance)"
+              :plugin-id="pluginId"
+              :surface="displayedPanelSurfaces[0]!"
+              :height="hostedSurfaceFrameHeight"
+              :active="isSurfaceActive(displayedPanelSurfaces[0]!)"
+              :activation-revision="activationRevisionFor(displayedPanelSurfaces[0]!)"
+              @open-logs="openLogsTab"
+              @message="relayHostedSurfaceMessageToStaticUi"
+            />
           </div>
         </el-tab-pane>
 
@@ -75,10 +94,27 @@
                 :label="surface.title || surface.id"
                 :name="surface.id"
               >
-                <HostedSurfaceFrame :plugin-id="pluginId" :surface="surface" :height="hostedSurfaceFrameHeight" @open-logs="openLogsTab" @message="relayHostedSurfaceMessageToStaticUi" />
+                <HostedSurfaceFrame
+                  :plugin-id="pluginId"
+                  :surface="surface"
+                  :height="hostedSurfaceFrameHeight"
+                  :active="isSurfaceActive(surface)"
+                  :activation-revision="activationRevisionFor(surface)"
+                  @open-logs="openLogsTab"
+                  @message="relayHostedSurfaceMessageToStaticUi"
+                />
               </el-tab-pane>
             </el-tabs>
-            <HostedSurfaceFrame v-else :plugin-id="pluginId" :surface="guideSurfaces[0]!" :height="hostedSurfaceFrameHeight" @open-logs="openLogsTab" @message="relayHostedSurfaceMessageToStaticUi" />
+            <HostedSurfaceFrame
+              v-else
+              :plugin-id="pluginId"
+              :surface="guideSurfaces[0]!"
+              :height="hostedSurfaceFrameHeight"
+              :active="isSurfaceActive(guideSurfaces[0]!)"
+              :activation-revision="activationRevisionFor(guideSurfaces[0]!)"
+              @open-logs="openLogsTab"
+              @message="relayHostedSurfaceMessageToStaticUi"
+            />
           </div>
         </el-tab-pane>
 
@@ -172,6 +208,7 @@ type SurfaceMessageReceiver = {
   sendSurfaceMessage: (data: unknown) => void
 }
 const panelSurfaceFrameRefs = new Map<string, SurfaceMessageReceiver>()
+const surfaceActivationRevisions = ref<Record<string, number>>({})
 const hostedSurfaceFrameHeight = 'clamp(560px, calc(100vh - 220px), 1200px)'
 const allowedTabs = new Set(['panel', 'guide', 'ui', 'info', 'entries', 'metrics', 'config', 'logs'])
 let currentSurfaceLoadId = 0
@@ -300,8 +337,28 @@ function openLogsTab() {
   })
 }
 
-function openHostedSurfaceFromStaticUi(payload: { pluginId?: string; surfaceId: string; kind?: string }) {
+function surfaceActivationKey(surface: Pick<PluginUiSurface, 'kind' | 'id'>): string {
+  return `${pluginId.value}:${surface.kind}:${surface.id}`
+}
+
+function activationRevisionFor(surface: Pick<PluginUiSurface, 'kind' | 'id'>): number {
+  return surfaceActivationRevisions.value[surfaceActivationKey(surface)] ?? 0
+}
+
+function isSurfaceActive(surface: Pick<PluginUiSurface, 'kind' | 'id'>): boolean {
+  if (surface.kind === 'panel') {
+    return activeTab.value === 'panel' && activePanelSurfaceId.value === surface.id
+  }
+  return activeTab.value === 'guide' && activeGuideSurfaceId.value === surface.id
+}
+
+function isActivationRevision(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+}
+
+function openHostedSurfaceFromStaticUi(payload: { pluginId?: string; surfaceId: string; kind?: string; activationRevision?: unknown }) {
   if (payload.pluginId && payload.pluginId !== pluginId.value) return
+  let activeSurface: PluginUiSurface | undefined
   let activeSurfaceId = ''
   const preferPanel = payload.kind === 'panel'
   const preferGuide = payload.kind === 'guide' || payload.kind === 'docs'
@@ -310,6 +367,7 @@ function openHostedSurfaceFromStaticUi(payload: { pluginId?: string; surfaceId: 
     : undefined
   if (panel) {
     activePanelSurfaceId.value = panel.id
+    activeSurface = panel
     activeSurfaceId = panel.id
     activeTab.value = 'panel'
   } else {
@@ -318,8 +376,12 @@ function openHostedSurfaceFromStaticUi(payload: { pluginId?: string; surfaceId: 
       : undefined
     if (!guide) return
     activeGuideSurfaceId.value = guide.id
+    activeSurface = guide
     activeSurfaceId = guide.id
     activeTab.value = 'guide'
+  }
+  if (isActivationRevision(payload.activationRevision)) {
+    surfaceActivationRevisions.value[surfaceActivationKey(activeSurface)] = payload.activationRevision
   }
   router.replace({
     query: {
@@ -332,12 +394,12 @@ function openHostedSurfaceFromStaticUi(payload: { pluginId?: string; surfaceId: 
 
 function isLegacyOpenSurfaceMessage(data: unknown): data is {
   type: 'neko-study-open-surface'
-  payload: { pluginId?: string; surfaceId: string; kind?: string }
+  payload: { pluginId?: string; surfaceId: string; kind?: string; activationRevision?: unknown }
 } {
   if (!data || typeof data !== 'object') return false
   const message = data as { type?: unknown; payload?: unknown }
   if (message.type !== 'neko-study-open-surface' || !message.payload || typeof message.payload !== 'object') return false
-  const payload = message.payload as { pluginId?: unknown; surfaceId?: unknown; kind?: unknown }
+  const payload = message.payload as { pluginId?: unknown; surfaceId?: unknown; kind?: unknown; activationRevision?: unknown }
   return typeof payload.surfaceId === 'string'
     && (!payload.pluginId || typeof payload.pluginId === 'string')
     && (!payload.kind || typeof payload.kind === 'string')

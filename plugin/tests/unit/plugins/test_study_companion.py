@@ -964,7 +964,7 @@ def test_study_companion_pages_forward_current_locale_to_plugin_entries() -> Non
 
     assert "locale: PluginSurfaceProps['locale']" in hosted_source
     assert "{ ...args, locale: String(locale || '').trim() }" in hosted_source
-    assert hosted_source.count("props.locale,") == 10
+    assert hosted_source.count("props.locale,") == 11
     assert "}, [props.locale]);" in hosted_source
     assert "typeof window.I18n.lang === 'function'" in static_source
     assert "createRun(entryId, { ...args, locale }, deadline, signal)" in static_source
@@ -6504,7 +6504,7 @@ def test_study_companion_static_knowledge_map_groups_by_base_library_hierarchy()
     assert "knowledgeMapSubject = ''" in source
     assert "ui.knowledge.subject_label" in source
     assert "ui.knowledge.subject_all" in source
-    assert "visibleKnowledgeNodes(nodes, activeStage, activeSubject)" in source
+    assert "visibleKnowledgeScopeNodes(nodes, activeStage, activeSubject)" in source
     assert "visibleKnowledgeEdges(edges, shownNodes, activeStage)" in source
     assert "knowledge-chapter-group" in source
     assert "knowledge-unit-group" in source
@@ -11034,3 +11034,281 @@ async def test_study_plugin_startup_failure_cleans_partial_resources(
     assert plugin._store._conn is None
     assert plugin.get_static_ui_config() is None
     assert plugin.get_list_actions() == []
+
+
+@pytest.mark.asyncio
+async def test_evaluate_current_question_rejects_forged_client_topic_before_llm(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {
+                "language": "en",
+                "default_mode": MODE_COMPANION,
+                "auto_open_ui": False,
+            },
+            "ocr_reader": {"enabled": True},
+            "rapidocr": {"lang_type": "ch"},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+    started = await plugin.startup()
+    assert isinstance(started, Ok)
+    fake_agent = _FakeTutorAgent()
+    plugin._agent = fake_agent
+
+    try:
+        async with plugin._lock:
+            plugin._state.current_question = {
+                "question": "What is the absolute value of -4?",
+                "answer": "4",
+                "question_id": "question-trusted-topic",
+                "attempt_id": "attempt-trusted-topic",
+                "topic": "absolute_value",
+                "selected_topic_id": "absolute_value",
+                "scope_key": "scope-old",
+                "scope_revision": 1,
+            }
+
+        evaluated = await plugin.study_evaluate_answer(
+            answer="4",
+            question_id="question-trusted-topic",
+            attempt_id="attempt-trusted-topic",
+            selected_topic_id="number_axis",
+        )
+
+        assert isinstance(evaluated, Err)
+        assert evaluated.error.code == "QUESTION_MISMATCH"
+        assert fake_agent.evaluations == []
+        async with plugin._lock:
+            current_question = dict(plugin._state.current_question)
+        assert not current_question.get("attempt_evaluation_pending")
+        assert not current_question.get("attempt_evaluated")
+        assert current_question["selected_topic_id"] == "absolute_value"
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_evaluate_current_question_rejects_forged_text_and_expected_answer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "en", "auto_open_ui": False},
+            "study_companion": {"communication": {"enabled": False}},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+    started = await plugin.startup()
+    assert isinstance(started, Ok)
+    fake_agent = _FakeTutorAgent()
+    plugin._agent = fake_agent
+    try:
+        async with plugin._lock:
+            plugin._state.current_question = {
+                "question": "Trusted question",
+                "answer": "trusted answer",
+                "question_id": "trusted-q",
+                "attempt_id": "trusted-a",
+                "selected_topic_id": "absolute_value",
+            }
+
+        forged_text = await plugin.study_evaluate_answer(
+            answer="attacker",
+            question="Different question",
+            question_id="trusted-q",
+            attempt_id="trusted-a",
+            selected_topic_id="number_axis",
+        )
+        legacy_supplied = await plugin.study_evaluate_answer(
+            answer="attacker",
+            question="Different question",
+            selected_topic_id="number_axis",
+        )
+        forged_expected = await plugin.study_evaluate_answer(
+            answer="attacker answer",
+            expected_answer="attacker answer",
+            question_id="trusted-q",
+            attempt_id="trusted-a",
+            selected_topic_id="absolute_value",
+        )
+
+        assert isinstance(forged_text, Err)
+        assert forged_text.error.code == "QUESTION_MISMATCH"
+        assert isinstance(forged_expected, Err)
+        assert forged_expected.error.code == "QUESTION_MISMATCH"
+        assert isinstance(legacy_supplied, Ok)
+        assert len(fake_agent.evaluations) == 1
+        assert fake_agent.evaluations[0][3]["question_payload"].get("scope_key") is None
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_evaluate_old_question_uses_its_private_topic_and_scope_after_scope_switch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {
+                "language": "en",
+                "default_mode": MODE_COMPANION,
+                "auto_open_ui": False,
+            },
+            "ocr_reader": {"enabled": True},
+            "rapidocr": {"lang_type": "ch"},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+    started = await plugin.startup()
+    assert isinstance(started, Ok)
+    fake_agent = _FakeTutorAgent()
+    plugin._agent = fake_agent
+
+    try:
+        async with plugin._lock:
+            plugin._state.current_question = {
+                "question": "What is the absolute value of -4?",
+                "answer": "4",
+                "question_id": "question-old-scope",
+                "attempt_id": "attempt-old-scope",
+                "topic": "absolute_value",
+                "selected_topic_id": "absolute_value",
+                "scope_key": "scope-old",
+                "scope_revision": 1,
+            }
+            plugin._state.active_practice_scope = {
+                "schema_version": 1,
+                "mode": "explicit_topic",
+                "stage": "junior_high",
+                "subject": "math",
+                "chapter": "Real numbers",
+                "unit": "Foundations",
+                "topic_id": "number_axis",
+                "scope_key": "scope-new",
+                "scope_revision": 2,
+                "display_path": [
+                    "junior_high",
+                    "math",
+                    "Real numbers",
+                    "Foundations",
+                    "number_axis",
+                ],
+            }
+            plugin._state.practice_scope_revision = 2
+
+        evaluated = await plugin.study_evaluate_answer(
+            answer="4",
+            question_id="question-old-scope",
+            attempt_id="attempt-old-scope",
+            selected_topic_id="absolute_value",
+        )
+
+        assert isinstance(evaluated, Ok)
+        assert evaluated.value["selected_topic_id"] == "absolute_value"
+        assert len(fake_agent.evaluations) == 1
+        evaluation_context = fake_agent.evaluations[0][3]
+        assert evaluation_context["selected_topic_id"] == "absolute_value"
+        assert evaluation_context["question_payload"]["selected_topic_id"] == (
+            "absolute_value"
+        )
+        assert evaluation_context["question_payload"]["scope_key"] == "scope-old"
+        assert evaluation_context["question_payload"]["scope_revision"] == 1
+        assert evaluation_context["current_question"]["scope_key"] == "scope-old"
+        assert evaluation_context["current_question"]["scope_revision"] == 1
+        assert plugin._state.active_practice_scope["scope_key"] == "scope-new"
+        assert plugin._state.practice_scope_revision == 2
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_single_topic_correct_answer_returns_completion_without_leaving_scope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _CorrectAgent(_FakeTutorAgent):
+        async def answer_evaluate(self, **kwargs) -> TutorReply:
+            context = dict(kwargs.get("context") or {})
+            self.evaluations.append(
+                (
+                    str(kwargs.get("question") or ""),
+                    str(kwargs.get("answer") or ""),
+                    str(kwargs.get("expected_answer") or ""),
+                    context,
+                    str(kwargs.get("mode") or ""),
+                )
+            )
+            return TutorReply(
+                operation="answer_evaluate",
+                input_text=str(kwargs.get("answer") or ""),
+                reply="correct",
+                payload={
+                    "verdict": "correct",
+                    "score": 100,
+                    "topic": "number_axis",
+                    "feedback": "Correct",
+                },
+                created_at="2026-08-13T00:00:00Z",
+            )
+
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "runtime"))
+    plugin = StudyCompanionPlugin(
+        _Ctx(tmp_path, {"study": {"language": "en", "auto_open_ui": False}})
+    )
+    assert isinstance(await plugin.startup(), Ok)
+    plugin._agent = _CorrectAgent()
+    try:
+        async with plugin._lock:
+            plugin._state.current_question = {
+                "question": "What is |-4|?",
+                "answer": "4",
+                "question_id": "single-topic-q",
+                "attempt_id": "single-topic-a",
+                "selected_topic_id": "absolute_value",
+                "topic": "absolute_value",
+                "scope_key": "single-topic-scope",
+                "scope_revision": 1,
+                "scope_topic_count": 1,
+            }
+
+        result = await plugin.study_evaluate_answer(
+            answer="4",
+            question_id="single-topic-q",
+            attempt_id="single-topic-a",
+            selected_topic_id="absolute_value",
+        )
+
+        assert isinstance(result, Ok)
+        assert result.value["topic"] == "absolute_value"
+        assert result.value["selected_topic_id"] == "absolute_value"
+        assert result.value["scope_key"] == "single-topic-scope"
+        assert result.value["practice_scope_status"] == "completed"
+        assert result.value["can_continue_review"] is True
+    finally:
+        await plugin.shutdown()
+
+
+def test_practice_scope_completion_is_rendered_without_automatic_generation() -> None:
+    plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
+    static_source = "\n".join(
+        (plugin_dir / "static" / name).read_text(encoding="utf-8")
+        for name in ("main.js", "knowledge-map.js")
+    )
+    hosted_source = (plugin_dir / "surfaces" / "study_panel.tsx").read_text(
+        encoding="utf-8"
+    )
+
+    for source in (static_source, hosted_source):
+        assert "practice_scope_status === 'completed'" in source
+        assert "ui.practice.scope_completed" in source
+        assert "ui.button.continue_practice_review" in source

@@ -50,41 +50,42 @@ let currentMemoryCard = null;
 let memoryDecks = [];
 let memoryDeckDialogResolve = null;
 let mapRequestId=0;
+const $id = (id) => document.getElementById(id);
 
-const statusLine = document.getElementById('statusLine');
-const replyText = document.getElementById('replyText');
-const studyInput = document.getElementById('studyInput');
-const refreshBtn = document.getElementById('refreshBtn');
-const ocrBtn = document.getElementById('ocrBtn');
-const generateQuestionBtn = document.getElementById('generateQuestionBtn');
-const explainBtn = document.getElementById('explainBtn');
-const evaluateAnswerBtn = document.getElementById('evaluateAnswerBtn');
-const summarizeBtn = document.getElementById('summarizeBtn');
-const answerInput = document.getElementById('answerInput');
-const studyInputImagePreview = document.getElementById('studyInputImagePreview');
-const studyInputImage = document.getElementById('studyInputImage');
-const studyInputImageRemove = document.getElementById('studyInputImageRemove');
-const studyInputPasteError = document.getElementById('studyInputPasteError');
-const answerInputImagePreview = document.getElementById('answerInputImagePreview');
-const answerInputImage = document.getElementById('answerInputImage');
-const answerInputImageRemove = document.getElementById('answerInputImageRemove');
-const answerInputPasteError = document.getElementById('answerInputPasteError');
-const questionText = document.getElementById('questionText');
-const questionContextCard = document.getElementById('questionContextCard');
-const selectedTopicName = document.getElementById('selectedTopicName');
-const selectionReason = document.getElementById('selectionReason');
-const questionTopicMeta = document.getElementById('questionTopicMeta');
-const questionDifficultyMeta = document.getElementById('questionDifficultyMeta');
-const questionAttemptMeta = document.getElementById('questionAttemptMeta');
-const hintToggleBtn = document.getElementById('hintToggleBtn');
-const hintText = document.getElementById('hintText');
-const feedbackPanel = document.getElementById('feedbackPanel');
-const feedbackText = document.getElementById('feedbackText');
-const masteryDeltaText = document.getElementById('masteryDeltaText');
-const screenType = document.getElementById('screenType');
-const questionStatus = document.getElementById('questionStatus');
-const evaluationStatus = document.getElementById('evaluationStatus');
-const memoryDeckStatus = document.getElementById('memoryDeckStatus');
+const statusLine = $id('statusLine');
+const replyText = $id('replyText');
+const studyInput = $id('studyInput');
+const refreshBtn = $id('refreshBtn');
+const ocrBtn = $id('ocrBtn');
+const generateQuestionBtn = $id('generateQuestionBtn');
+const explainBtn = $id('explainBtn');
+const evaluateAnswerBtn = $id('evaluateAnswerBtn');
+const summarizeBtn = $id('summarizeBtn');
+const answerInput = $id('answerInput');
+const studyInputImagePreview = $id('studyInputImagePreview');
+const studyInputImage = $id('studyInputImage');
+const studyInputImageRemove = $id('studyInputImageRemove');
+const studyInputPasteError = $id('studyInputPasteError');
+const answerInputImagePreview = $id('answerInputImagePreview');
+const answerInputImage = $id('answerInputImage');
+const answerInputImageRemove = $id('answerInputImageRemove');
+const answerInputPasteError = $id('answerInputPasteError');
+const questionText = $id('questionText');
+const questionContextCard = $id('questionContextCard');
+const selectedTopicName = $id('selectedTopicName');
+const selectionReason = $id('selectionReason');
+const questionTopicMeta = $id('questionTopicMeta');
+const questionDifficultyMeta = $id('questionDifficultyMeta');
+const questionAttemptMeta = $id('questionAttemptMeta');
+const hintToggleBtn = $id('hintToggleBtn');
+const hintText = $id('hintText');
+const feedbackPanel = $id('feedbackPanel');
+const feedbackText = $id('feedbackText');
+const masteryDeltaText = $id('masteryDeltaText');
+const screenType = $id('screenType');
+const questionStatus = $id('questionStatus');
+const evaluationStatus = $id('evaluationStatus');
+const memoryDeckStatus = $id('memoryDeckStatus');
 const memoryFrontInput = document.getElementById('memoryFrontInput');
 const memoryBackInput = document.getElementById('memoryBackInput');
 const memoryDeckSelect = document.getElementById('memoryDeckSelect');
@@ -153,27 +154,9 @@ const settingsCommunicationRequiresEnabled = document.getElementById('settingsCo
 const settingsCommunicationRuntime = document.getElementById('settingsCommunicationRuntime');
 const modeButtons = Array.from(document.querySelectorAll('[data-mode]'));
 const memoryReviewButtons = Array.from(document.querySelectorAll('[data-memory-rating]'));
-const MODE_SHORTCUTS = Object.freeze({
-  1: 'companion',
-  2: 'interactive',
-  3: 'teaching',
-});
-const NEKO_COACH_ACTION_LABELS = Object.freeze({
-  'explain-current': 'ui.coach.action.explain_current',
-  'quiz-me': 'ui.coach.action.quiz_me',
-  'start-review': 'ui.coach.action.start_review',
-  'session-summary': 'ui.coach.action.session_summary',
-});
-const NEKO_COACH_SCENE_ACTIONS = Object.freeze({
-  idle: 'explain-current/quiz-me',
-  focus: 'explain-current/quiz-me',
-  thinking: 'explain-current/quiz-me',
-  happy: 'quiz-me/session-summary',
-  review: 'start-review/quiz-me',
-  break: 'session-summary/start-review',
-  error: 'explain-current/session-summary',
-  teaching: 'explain-current/quiz-me',
-});
+const MODE_SHORTCUTS=Object.freeze({1:'companion',2:'interactive',3:'teaching'});
+const NEKO_COACH_ACTION_LABELS=Object.freeze({'explain-current':'ui.coach.action.explain_current','quiz-me':'ui.coach.action.quiz_me','start-review':'ui.coach.action.start_review','session-summary':'ui.coach.action.session_summary'});
+const NEKO_COACH_SCENE_ACTIONS=Object.freeze({idle:'explain-current/quiz-me',focus:'explain-current/quiz-me',thinking:'explain-current/quiz-me',happy:'quiz-me/session-summary',review:'start-review/quiz-me',break:'session-summary/start-review',error:'explain-current/session-summary',teaching:'explain-current/quiz-me'});
 let lastStatusPayload = {};
 let settingsConfig = null;
 let settingsCommunicationStatus = {};
@@ -190,6 +173,7 @@ let pastePendingCount = 0;
 let llmVisionMaxImagePx = DEFAULT_VISION_MAX_IMAGE_PX;
 let currentQuestion = null;
 let currentSelectionContext = null;
+let currentPracticeScope=null;
 let learningProfile = readLearningProfile();
 let knowledgeMapStage = '';
 let lastKnowledgeMapPayload = null;
@@ -329,10 +313,14 @@ function setQuestionContext(data = {}) {
   if (selectedTopicName) {
     selectedTopicName.textContent = currentSelectionContext?.selected_topic_name
       || currentSelectionContext?.selected_topic_id
+      || practiceScopeDisplayPath(currentSelectionContext?.practice_scope)
+      || practiceScopeDisplayPath()
       || t('ui.practice.no_data_title', 'Not enough study records yet');
   }
   if (selectionReason) {
-    selectionReason.textContent = currentSelectionContext?.no_data
+    selectionReason.textContent = currentPracticeScope && !currentSelectionContext?.selection_context_id
+      ? t('ui.practice.scope_ready_body', 'The selected scope is ready. Questions are generated only after you click Generate Question.')
+      : currentSelectionContext?.no_data
       ? t('ui.practice.no_data_body', 'Review cards, open the knowledge map, or save notes first; this view does not use manual or OCR text to make practice questions.')
       : tf('ui.practice.selection_reason_fmt', 'Reason: {reason}', { reason: selectionReasonLabel(reason) });
   }
@@ -394,8 +382,7 @@ function renderFeedback(data = {}) {
       })
       : '';
   }
-  const lines = [
-    data.feedback || data.reply || '',
+  const lines = [data.feedback || data.reply || '',
     Array.isArray(data.covered_points) && data.covered_points.length
       ? `${t('ui.practice.covered_points', 'Covered')}: ${data.covered_points.join(', ')}`
       : '',
@@ -2018,10 +2005,9 @@ async function explainText() {
 
 async function generateQuestion() {
   openPracticePanel();
-  let context = currentSelectionContext;
-  if (!context || !context.selection_context_id) {
-    context = await loadQuestionContext({ silent: true });
-  }
+  currentSelectionContext = null;
+  await loadPracticeScope();
+  const context = await loadQuestionContext({ silent: true });
   if (!context || context.no_data || !context.selection_context_id) {
     throw new Error(t('ui.error.no_targeted_question_data', 'Not enough study records to generate a practice question yet.'));
   }
@@ -2074,7 +2060,12 @@ async function evaluateAnswer() {
     return;
   }
   renderFeedback(data);
-  const replyLines = [data.feedback || data.reply || '', data.next_action ? `Next: ${data.next_action}` : ''].filter(Boolean);
+  updatePracticeCompletionAction(data);
+  const replyLines = [
+    practiceCompletionMessage(data),
+    data.feedback || data.reply || '',
+    data.next_action ? `${t('ui.practice.next_action', 'Next')}: ${data.next_action}` : '',
+  ].filter(Boolean);
   setReply(replyLines.join('\n\n') || data.summary || '');
   await refreshStatus({ updateReply: false });
 }
@@ -2257,6 +2248,7 @@ async function bootstrap() {
   bindButton(refreshBtn, refreshStatus);
   bindButton(ocrBtn, runOcr);
   bindButton(generateQuestionBtn, generateQuestion);
+  bindButton(clearPracticeScopeBtn, clearPracticeScope);
   bindButton(explainBtn, explainText);
   documentController.bind();
   bindButton(evaluateAnswerBtn, evaluateAnswer);
@@ -2440,6 +2432,7 @@ async function bootstrap() {
     });
   });
   await refreshStatus();
+  await loadPracticeScope({ silent: true });
   await loadQuestionContext({ silent: true });
 }
 

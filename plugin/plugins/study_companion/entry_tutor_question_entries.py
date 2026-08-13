@@ -18,6 +18,7 @@ from .entry_common import (
     LLM_OPERATION_QUESTION_GENERATE,
 )
 from .models import public_current_question_payload
+from .practice_scope import filter_question_params_to_scope, ordered_scope_topics
 
 
 IMAGE_ONLY_QUESTION_PROMPT_EN = "Generate a study question from the pasted image."
@@ -138,6 +139,15 @@ class _TutorQuestionEntriesMixin:
             cache.pop(context_id, None)
 
     def _store_targeted_context(self, context: dict[str, Any]) -> dict[str, Any]:
+        context_lock = getattr(self, "_targeted_context_lock", None)
+        if context_lock is not None:
+            with context_lock:
+                return self._store_targeted_context_locked(context)
+        return self._store_targeted_context_locked(context)
+
+    def _store_targeted_context_locked(
+        self, context: dict[str, Any]
+    ) -> dict[str, Any]:
         self._prune_targeted_context_cache()
         cache = self._targeted_context_cache()
         context_id = f"scq_{uuid.uuid4().hex}"
@@ -173,11 +183,33 @@ class _TutorQuestionEntriesMixin:
             raise SdkError(
                 "selection context expired", code="SELECTION_CONTEXT_EXPIRED"
             )
+        cached_revision = int(cached.get("scope_revision") or 0)
+        active_revision = int(
+            getattr(self._state, "practice_scope_revision", 0) or 0
+        )
+        cached_scope_key = str(cached.get("scope_key") or "").strip()
+        active_scope = self._resolve_active_practice_scope()
+        active_scope_key = active_scope.scope_key if active_scope else ""
+        if (
+            cached_revision != active_revision
+            or cached_scope_key != active_scope_key
+        ):
+            cache.pop(context_id, None)
+            raise SdkError(
+                "practice scope changed after question selection",
+                code="SELECTION_SCOPE_CHANGED",
+            )
         topic_id = str(cached.get("selected_topic_id") or "").strip()
         if topic_id and not self._knowledge_tracker.store.get_topic(topic_id):
             cache.pop(context_id, None)
             raise SdkError(
                 "selection context expired", code="SELECTION_CONTEXT_EXPIRED"
+            )
+        if active_scope and topic_id not in set(active_scope.eligible_topic_ids):
+            cache.pop(context_id, None)
+            raise SdkError(
+                "selected topic is outside the active practice scope",
+                code="SELECTION_SCOPE_CHANGED",
             )
         cached["consumed"] = True
         return dict(cached)
@@ -199,6 +231,9 @@ class _TutorQuestionEntriesMixin:
         reason_payload: dict[str, Any] = {}
 
         if retry:
+            selected_topic_id = str(retry.get("topic_id") or selected_topic_id).strip()
+            retry_topic = self._knowledge_tracker.store.get_topic(selected_topic_id)
+            selected_topic_name = _topic_name(retry_topic, selected_topic_id)
             reason = "retry"
             reason_payload = {"wrong_question": _safe_wrong_question_summary(retry)}
         elif due_reviews:
@@ -223,13 +258,16 @@ class _TutorQuestionEntriesMixin:
         elif candidate_evidence:
             first_candidate = dict(candidate_evidence[0] or {})
             candidate_payload = dict(first_candidate.get("payload") or {})
+            candidate_summary = dict(first_candidate.get("payload_summary") or {})
             selected_topic_id = str(
                 candidate_payload.get("topic_id")
+                or candidate_summary.get("topic_id")
                 or first_candidate.get("topic_id")
                 or selected_topic_id
             ).strip()
             selected_topic_name = str(
                 candidate_payload.get("name")
+                or candidate_summary.get("name")
                 or first_candidate.get("name")
                 or selected_topic_id
             ).strip()
@@ -253,9 +291,113 @@ class _TutorQuestionEntriesMixin:
             "question_params": params,
         }
 
+    def _scoped_question_params(self, scope) -> dict[str, Any]:
+        eligible = set(scope.eligible_topic_ids)
+        topics = [
+            topic
+            for topic_id in scope.eligible_topic_ids
+            if (topic := self._knowledge_tracker.store.get_topic(topic_id))
+        ]
+        mastery_overview = self._knowledge_tracker.store.list_mastery_overview(
+            limit=5000
+        )
+        mastery_by_topic = {
+            str(item.get("topic_id") or ""): dict(item)
+            for item in mastery_overview
+            if str(item.get("topic_id") or "") in eligible
+        }
+        ordered_topics = ordered_scope_topics(
+            topics, attempted_topic_ids=set(mastery_by_topic)
+        )
+        unattempted = [
+            topic
+            for topic in ordered_topics
+            if str(topic.get("id") or "") not in mastery_by_topic
+        ]
+        if unattempted:
+            fallback_topic = unattempted[0]
+        else:
+            fallback_topic = min(
+                ordered_topics,
+                key=lambda topic: (
+                    float(
+                        mastery_by_topic.get(str(topic.get("id") or ""), {}).get(
+                            "mastery"
+                        )
+                        or 0.0
+                    ),
+                    str(topic.get("id") or ""),
+                ),
+            )
+        target_topic_id = scope.topic_id or str(fallback_topic.get("id") or "")
+        params = self._knowledge_tracker.preview_next_question_params(target_topic_id)
+        params["retry_wrong_questions"] = self._knowledge_tracker.store.list_wrong_questions(
+            limit=5000, statuses=("active", "retrying")
+        )
+        params["due_reviews"] = self._knowledge_tracker.get_review_queue(limit=5000)
+        params["weak_topics"] = self._knowledge_tracker.get_weak_topics(limit=5000)
+        params = filter_question_params_to_scope(params, eligible)
+        if scope.mode == "explicit_topic":
+            params["weak_topics"] = []
+            params["candidate_evidence"] = []
+        if not params.get("target_topic_id"):
+            params["target_topic_id"] = target_topic_id
+            params["target_topic"] = self._knowledge_tracker.store.get_topic(
+                target_topic_id
+            ) or {}
+        params["mastery_overview"] = list(mastery_by_topic.values())
+        return params
+
     def _build_targeted_question_context(self) -> dict[str, Any]:
-        params = self._knowledge_tracker.preview_next_question_params("")
+        scope = self._resolve_active_practice_scope()
+        params = (
+            self._scoped_question_params(scope)
+            if scope is not None
+            else self._knowledge_tracker.preview_next_question_params("")
+        )
         selection = self._selection_from_question_params(params)
+        if scope is not None:
+            selected_topic_id = str(selection.get("selected_topic_id") or "").strip()
+            if selected_topic_id:
+                focused_params = filter_question_params_to_scope(
+                    self._knowledge_tracker.preview_next_question_params(
+                        selected_topic_id
+                    ),
+                    set(scope.eligible_topic_ids),
+                )
+                focused_params["target_topic_id"] = selected_topic_id
+                focused_params["target_topic"] = (
+                    self._knowledge_tracker.store.get_topic(selected_topic_id) or {}
+                )
+                focused_params["scope_candidates"] = {
+                    "retry_wrong_questions": params.get("retry_wrong_questions") or [],
+                    "due_reviews": params.get("due_reviews") or [],
+                    "weak_topics": params.get("weak_topics") or [],
+                }
+                selection["question_params"] = focused_params
+                selection["difficulty"] = (
+                    focused_params.get("suggested_difficulty") or selection["difficulty"]
+                )
+            selection.update(
+                {
+                    "scope_key": scope.scope_key,
+                    "scope_revision": scope.scope_revision,
+                    "practice_scope": scope.to_public_dict(),
+                    "scope_topic_count": len(scope.eligible_topic_ids),
+                    "mastery_overview": params.get("mastery_overview") or [],
+                }
+            )
+        else:
+            selection.update(
+                {
+                    "scope_key": "",
+                    "scope_revision": int(
+                        getattr(self._state, "practice_scope_revision", 0) or 0
+                    ),
+                    "practice_scope": {},
+                    "scope_topic_count": 0,
+                }
+            )
         if selection["selection_reason"] == "no_data":
             return {
                 **selection,
@@ -304,6 +446,10 @@ class _TutorQuestionEntriesMixin:
                         "question_params"
                     )
                     or {},
+                    "scope_key": targeted_context.get("scope_key") or "",
+                    "scope_revision": targeted_context.get("scope_revision") or 0,
+                    "practice_scope": targeted_context.get("practice_scope") or {},
+                    "scope_topic_count": targeted_context.get("scope_topic_count") or 0,
                 }
             )
         if vision_image_payload:
@@ -338,6 +484,10 @@ class _TutorQuestionEntriesMixin:
                         "selection_reason_payload"
                     )
                     or {},
+                    "scope_key": targeted_context.get("scope_key") or "",
+                    "scope_revision": targeted_context.get("scope_revision") or 0,
+                    "practice_scope": targeted_context.get("practice_scope") or {},
+                    "scope_topic_count": targeted_context.get("scope_topic_count") or 0,
                 },
             )
             reply = TutorReply(
@@ -405,8 +555,14 @@ class _TutorQuestionEntriesMixin:
                     "due_reviews": context.get("due_reviews") or [],
                     "mastery_overview": context.get("mastery_overview") or [],
                     "no_data": bool(context.get("no_data")),
+                    "scope_key": context.get("scope_key") or "",
+                    "scope_revision": context.get("scope_revision") or 0,
+                    "practice_scope": context.get("practice_scope") or {},
+                    "scope_topic_count": context.get("scope_topic_count") or 0,
                 }
             )
+        except SdkError as exc:
+            return Err(exc)
         except Exception as exc:
             return _entry_exception_error(
                 self, exc, operation="study_question_context"
@@ -455,8 +611,18 @@ class _TutorQuestionEntriesMixin:
                     self._load_targeted_context, context_id
                 )
             else:
-                targeted_context = await asyncio.to_thread(
+                pending_context = await asyncio.to_thread(
                     self._build_targeted_question_context
+                )
+                pending_context_id = str(
+                    pending_context.get("selection_context_id") or ""
+                ).strip()
+                targeted_context = (
+                    await asyncio.to_thread(
+                        self._load_targeted_context, pending_context_id
+                    )
+                    if pending_context_id
+                    else pending_context
                 )
             if targeted_context.get("selection_reason") == "no_data":
                 return Err(

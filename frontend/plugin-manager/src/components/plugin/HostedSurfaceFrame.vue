@@ -67,8 +67,12 @@ const props = withDefaults(defineProps<{
   pluginId: string
   surface: PluginUiSurface
   height?: string
+  active?: boolean
+  activationRevision?: number
 }>(), {
   height: 'clamp(520px, calc(100vh - 220px), 1200px)',
+  active: false,
+  activationRevision: 0,
 })
 
 const emit = defineEmits<{
@@ -383,7 +387,20 @@ function handleLoad() {
     staticSurfaceReady.value = true
     flushStaticSurfaceMessages()
   }
+  postActivation()
   emit('load')
+}
+
+function postActivation() {
+  if (!props.active || !Number.isSafeInteger(props.activationRevision) || props.activationRevision < 0) return
+  const targetOrigin = trustedIframeOrigin.value === 'null' ? '*' : trustedIframeOrigin.value
+  iframeRef.value?.contentWindow?.postMessage({
+    type: 'neko-hosted-surface-activated',
+    payload: {
+      surfaceId: props.surface.id,
+      revision: props.activationRevision,
+    },
+  }, targetOrigin)
 }
 
 function handleError() {
@@ -706,6 +723,11 @@ watch(
     if (props.surface.mode === 'static') return
     loadHostedTsx()
   },
+)
+
+watch(
+  () => [props.active, props.activationRevision] as const,
+  () => postActivation(),
 )
 
 defineExpose({

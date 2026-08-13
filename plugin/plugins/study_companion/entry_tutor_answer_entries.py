@@ -63,8 +63,17 @@ class _TutorAnswerEntriesMixin:
         state_question_id = str(current_question.get("question_id") or "").strip()
         state_attempt_id = str(current_question.get("attempt_id") or "").strip()
         current_question_requires_identity = bool(state_question_id or state_attempt_id)
+        supplied_current_identity = bool(
+            current_question_requires_identity
+            and (
+                supplied_question_id == state_question_id
+                or supplied_attempt_id == state_attempt_id
+            )
+        )
         using_current_question = (
-            not supplied_question or supplied_question == state_question
+            not supplied_question
+            or supplied_question == state_question
+            or supplied_current_identity
         )
         if current_question_requires_identity and using_current_question:
             if (
@@ -86,7 +95,7 @@ class _TutorAnswerEntriesMixin:
                         code="ATTEMPT_ALREADY_EVALUATED",
                     )
                 )
-        resolved_question = supplied_question or state_question
+        resolved_question = state_question if using_current_question else supplied_question
         if not resolved_question:
             return Err(SdkError("study tutor requires a question to evaluate against"))
         vision_image_payload = str(kwargs.get("vision_image_base64") or "").strip()
@@ -96,11 +105,17 @@ class _TutorAnswerEntriesMixin:
         if isinstance(validated_vision_image, Err):
             return validated_vision_image
         vision_image_payload = validated_vision_image
-        resolved_expected = supplied_expected
-        if not resolved_expected and (
-            not supplied_question or supplied_question == state_question
-        ):
+        if using_current_question:
+            if supplied_expected and supplied_expected != state_expected:
+                return Err(
+                    SdkError(
+                        "expected answer does not match the current question",
+                        code="QUESTION_MISMATCH",
+                    )
+                )
             resolved_expected = state_expected
+        else:
+            resolved_expected = supplied_expected
         answer_text = str(answer or "").strip()
         question_payload = dict(current_question) if using_current_question else {}
         question_payload.update(
@@ -109,12 +124,28 @@ class _TutorAnswerEntriesMixin:
                 "answer": resolved_expected,
             }
         )
-        selected_topic_id = str(
-            kwargs.get("selected_topic_id")
-            or question_payload.get("selected_topic_id")
+        client_topic_id = str(kwargs.get("selected_topic_id") or "").strip()
+        question_topic_id = str(
+            question_payload.get("selected_topic_id")
             or question_payload.get("topic_id")
+            or question_payload.get("topic")
             or ""
         ).strip()
+        if (
+            using_current_question
+            and client_topic_id
+            and question_topic_id
+            and client_topic_id != question_topic_id
+        ):
+            return Err(
+                SdkError(
+                    "selected topic does not match the current question",
+                    code="QUESTION_MISMATCH",
+                )
+            )
+        selected_topic_id = (
+            question_topic_id if using_current_question else client_topic_id or question_topic_id
+        )
         if selected_topic_id:
             question_payload["selected_topic_id"] = selected_topic_id
         reserved_attempt = False
@@ -221,14 +252,29 @@ class _TutorAnswerEntriesMixin:
                 payload["attempt_id"] = supplied_attempt_id or state_attempt_id
             if selected_topic_id:
                 payload["selected_topic_id"] = selected_topic_id
+                if using_current_question:
+                    payload["topic"] = selected_topic_id
+            scope_key = str(question_payload.get("scope_key") or "").strip()
+            if scope_key:
+                payload["scope_key"] = scope_key
+                payload["scope_revision"] = int(
+                    question_payload.get("scope_revision") or 0
+                )
+                if (
+                    str(payload.get("verdict") or "").strip().lower() == "correct"
+                    and int(question_payload.get("scope_topic_count") or 0) == 1
+                ):
+                    payload["practice_scope_status"] = "completed"
+                    payload["can_continue_review"] = True
             payload["screen_classification"] = (
                 tutor_context.get("screen_classification") or {}
             )
             topic = str(
-                payload.get("topic")
-                or payload.get("selected_topic_id")
-                or question_payload.get("topic")
+                selected_topic_id
                 or question_payload.get("selected_topic_id")
+                or question_payload.get("topic")
+                or payload.get("selected_topic_id")
+                or payload.get("topic")
                 or tutor_context.get("topic")
                 or ""
             ).strip()
