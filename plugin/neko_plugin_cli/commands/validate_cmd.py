@@ -28,7 +28,6 @@ from plugin.sdk.shared.core.push_message_schema import (
 from ..core.plugin_source import load_plugin_source
 from ..core.toml_utils import load_toml
 
-_MARKET_REPO_PREFIX = "n.e.k.o_plugin_"
 _PLUGIN_RUNTIME_TIMEOUT_MAX = 300.0
 
 
@@ -78,9 +77,6 @@ def validate_plugin_dir(plugin_dir: Path, *, strict: bool = False) -> list[tuple
             )
         )
 
-    if source.plugin_id != plugin_dir.name and plugin_dir.name != _market_repo_name(source.plugin_id):
-        issues.append(("warning", f"plugin.id '{source.plugin_id}' does not match directory name '{plugin_dir.name}'"))
-
     entry = source.entry_point
     if not entry:
         issues.append(("error", "plugin.entry is missing"))
@@ -123,10 +119,6 @@ def _check_config_example_schema(
             )
         )
     _check_runtime_table(config.get("plugin_runtime"), issues)
-
-
-def _market_repo_name(plugin_id: str) -> str:
-    return f"{_MARKET_REPO_PREFIX}{plugin_id}"
 
 
 def _check_plugin_toml_schema(

@@ -49,6 +49,7 @@ class PluginSpec:
     neko_repository: str = _DEFAULT_NEKO_REPOSITORY
     neko_ref: str = "main"
     quick_start: bool = False
+    standalone_repository: bool = False
 
     @property
     def class_name(self) -> str:
@@ -124,7 +125,9 @@ def generate_plugin(spec: PluginSpec, target_dir: Path) -> list[Path]:
         vscode_dir = target_dir / ".vscode"
         vscode_dir.mkdir(parents=True, exist_ok=True)
         settings_path = vscode_dir / "settings.json"
-        settings_path.write_text(_render_vscode_settings(), encoding="utf-8", newline="\n")
+        settings_path.write_text(
+            _render_vscode_settings(spec), encoding="utf-8", newline="\n"
+        )
         created.append(settings_path)
 
         tasks_path = vscode_dir / "tasks.json"
@@ -191,7 +194,7 @@ def generate_repo_support_files(
         vscode_dir.mkdir(parents=True, exist_ok=True)
         _write_support_file(
             vscode_dir / "settings.json",
-            _render_vscode_settings(),
+            _render_vscode_settings(spec),
             created=created,
             overwrite=overwrite,
         )
@@ -512,17 +515,65 @@ dependencies = []
 # Repository support files
 # ---------------------------------------------------------------------------
 
-def _dependency_sync_command(plugin: str) -> str:
+def _dependency_sync_command(spec: PluginSpec) -> str:
+    if spec.standalone_repository:
+        return "neko-plugin sync . --clean"
     return (
         "uv run --with pip python -m plugin.neko_plugin_cli.cli "
-        f"sync {plugin} --clean"
+        f"sync {spec.plugin_id} --clean"
     )
 
 
 def _render_readme_md(spec: PluginSpec) -> str:
     name = spec.name or spec.plugin_id
     description = spec.description or "Describe what this plugin does and how to configure it."
-    sync_command = _dependency_sync_command(spec.plugin_id)
+    sync_command = _dependency_sync_command(spec)
+    if spec.standalone_repository:
+        location_instructions = ""
+        repository_identity_instructions = '''When publishing to the plugin market, use this GitHub repository name:
+
+发布到插件市场时，请使用以下 GitHub 仓库名：
+
+プラグインマーケットへ公開する際は、次の GitHub リポジトリ名を使用してください：'''
+        command_context = (
+            "From this plugin repository root / "
+            "在此插件仓库根目录中 / "
+            "このプラグインリポジトリのルートで："
+        )
+        check_commands = "neko-plugin check .\nneko-plugin check -r ."
+        publish_target = "."
+        dependency_instructions = '''Python runtime dependencies are declared in `pyproject.toml` and synced into
+`vendor/` for packaging. The generated `vendor/` directory is not committed;
+local builds and CI recreate it before release checks.
+
+Python 运行时依赖声明在 `pyproject.toml` 中，并在打包时同步到 `vendor/`。
+生成的 `vendor/` 不提交；本地构建和 CI 会在发布检查前重新生成它。
+
+Python ランタイム依存関係は `pyproject.toml` に宣言し、パッケージ化時に
+`vendor/` へ同期します。生成された `vendor/` はコミットせず、ローカルビルドと
+CI が公開前チェックで再生成します。'''
+    else:
+        location_instructions = f'''This repository is meant to live at:
+
+```text
+N.E.K.O/plugin/plugins/{spec.plugin_id}
+```
+
+'''
+        repository_identity_instructions = (
+            "When publishing to the plugin market, use this GitHub repository name:"
+        )
+        command_context = "From the N.E.K.O repository root:"
+        check_commands = (
+            "uv run python -m plugin.neko_plugin_cli.cli "
+            f"check {spec.plugin_id}\n"
+            "uv run python -m plugin.neko_plugin_cli.cli "
+            f"check -r {spec.plugin_id}"
+        )
+        publish_target = spec.plugin_id
+        dependency_instructions = '''Python runtime dependencies are declared in `pyproject.toml` and synced into
+`vendor/` for packaging. The generated `vendor/` directory is not committed;
+local builds and CI recreate it before release checks.'''
     ruff_instructions = ""
     if spec.create_github_actions:
         ruff_instructions = f'''From this plugin repository root:
@@ -538,29 +589,20 @@ uvx ruff=={_PLUGIN_RUFF_VERSION} check --ignore-noqa --config ruff.toml .
 
 ## Development
 
-This repository is meant to live at:
-
-```text
-N.E.K.O/plugin/plugins/{spec.plugin_id}
-```
-
-When publishing to the plugin market, use this GitHub repository name:
+{location_instructions}{repository_identity_instructions}
 
 ```text
 {_market_repo_name(spec.plugin_id)}
 ```
 
-{ruff_instructions}From the N.E.K.O repository root:
+{ruff_instructions}{command_context}
 
 ```bash
 {sync_command}
-uv run python -m plugin.neko_plugin_cli.cli check {spec.plugin_id}
-uv run python -m plugin.neko_plugin_cli.cli check -r {spec.plugin_id}
+{check_commands}
 ```
 
-Python runtime dependencies are declared in `pyproject.toml` and synced into
-`vendor/` for packaging. The generated `vendor/` directory is not committed;
-local builds and CI recreate it before release checks.
+{dependency_instructions}
 
 ## Market release / Market 发布 / Market 公開
 
@@ -574,13 +616,13 @@ Release，然后通知插件市场。
 push し、標準 GitHub Release を待ってからプラグインマーケットへ通知します。
 
 ```bash
-neko-plugin publish .
+neko-plugin publish {publish_target}
 ```
 
 To run only one half explicitly / 如需仅执行一部分 / 一方のみを実行する場合:
 
 ```bash
-neko-plugin publish github .
+neko-plugin publish github {publish_target}
 neko-plugin publish market https://github.com/owner/repo/releases/tag/v{spec.version}
 ```
 
@@ -634,7 +676,9 @@ store.db
 '''
 
 
-def _render_vscode_settings() -> str:
+def _render_vscode_settings(spec: PluginSpec) -> str:
+    if spec.standalone_repository:
+        return "{}\n"
     return '''{
   "nekoPlugin.repoRoot": "../../..",
   "python.analysis.extraPaths": [
@@ -645,16 +689,35 @@ def _render_vscode_settings() -> str:
 
 
 def _render_vscode_tasks(spec: PluginSpec) -> str:
-    sync_command = _dependency_sync_command(spec.plugin_id)
+    sync_command = _dependency_sync_command(spec)
+    if spec.standalone_repository:
+        check_command = "neko-plugin check ."
+        release_check_command = "neko-plugin check -r ."
+        build_command = "neko-plugin build ."
+        cwd = "${workspaceFolder}"
+    else:
+        check_command = (
+            "uv run python -m plugin.neko_plugin_cli.cli "
+            f"check {spec.plugin_id}"
+        )
+        release_check_command = (
+            "uv run python -m plugin.neko_plugin_cli.cli "
+            f"check -r {spec.plugin_id}"
+        )
+        build_command = (
+            "uv run python -m plugin.neko_plugin_cli.cli "
+            f"build {spec.plugin_id}"
+        )
+        cwd = "${config:nekoPlugin.repoRoot}"
     return f'''{{
   "version": "2.0.0",
   "tasks": [
     {{
       "label": "N.E.K.O: check {spec.plugin_id}",
       "type": "shell",
-      "command": "uv run python -m plugin.neko_plugin_cli.cli check {spec.plugin_id}",
+      "command": "{check_command}",
       "options": {{
-        "cwd": "${{config:nekoPlugin.repoRoot}}"
+        "cwd": "{cwd}"
       }},
       "problemMatcher": []
     }},
@@ -663,25 +726,25 @@ def _render_vscode_tasks(spec: PluginSpec) -> str:
       "type": "shell",
       "command": "{sync_command}",
       "options": {{
-        "cwd": "${{config:nekoPlugin.repoRoot}}"
+        "cwd": "{cwd}"
       }},
       "problemMatcher": []
     }},
     {{
       "label": "N.E.K.O: check -r {spec.plugin_id}",
       "type": "shell",
-      "command": "uv run python -m plugin.neko_plugin_cli.cli check -r {spec.plugin_id}",
+      "command": "{release_check_command}",
       "options": {{
-        "cwd": "${{config:nekoPlugin.repoRoot}}"
+        "cwd": "{cwd}"
       }},
       "problemMatcher": []
     }},
     {{
       "label": "N.E.K.O: build {spec.plugin_id}",
       "type": "shell",
-      "command": "uv run python -m plugin.neko_plugin_cli.cli build {spec.plugin_id}",
+      "command": "{build_command}",
       "options": {{
-        "cwd": "${{config:nekoPlugin.repoRoot}}"
+        "cwd": "{cwd}"
       }},
       "problemMatcher": []
     }}

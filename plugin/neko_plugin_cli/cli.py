@@ -73,7 +73,7 @@ def build_parser() -> argparse.ArgumentParser:
         epilog=textwrap.dedent(
             """\
             Recommended workflow:
-              neko-plugin init-repo <plugin>       Create a standalone plugin repo
+              neko-plugin init <plugin>            Create a Market-ready plugin repo / 创建 Market 插件仓库 / Market プラグインリポジトリを作成
               neko-plugin setup-repo <plugin>      Adopt an existing plugin directory
               neko-plugin add <plugin> <pkg>...    Add Python dependencies to vendor/
               neko-plugin sync <plugin>            Sync vendor/ from pyproject.toml

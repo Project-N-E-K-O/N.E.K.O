@@ -33,7 +33,6 @@ uv run python -m plugin.neko_plugin_cli.cli <command> ...
 Current commands:
 
 - `init`
-- `init-repo`
 - `setup-repo`
 - `check` (use `check -r` / `check --release` for the pre-release readiness check, `check --release --market-release` for the Market-publication variant)
 - `add` (deps): install Python dependencies into a plugin's `vendor/` and update its `pyproject.toml`
@@ -43,6 +42,7 @@ Current commands:
 - `verify`
 - `install`
 - `analyze`
+- `publish`
 
 Examples:
 

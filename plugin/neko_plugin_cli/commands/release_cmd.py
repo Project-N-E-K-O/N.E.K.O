@@ -13,12 +13,16 @@ from pathlib import Path
 from ..core import inspect_package, build_plugin
 from ..core.plugin_source import load_plugin_source
 from ..paths import CliDefaults
-from ._resolve import resolve_plugin_dir_candidate
+from ._resolve import parse_github_repository_remote, resolve_plugin_dir_candidate
 from .validate_cmd import validate_plugin_dir
 
 
 Issue = tuple[str, str]
 _MARKET_REPO_PREFIX = "n.e.k.o_plugin_"
+
+
+def _tri(english: str, chinese: str, japanese: str) -> str:
+    return f"{english} / {chinese} / {japanese}"
 
 
 def handle_check(args: argparse.Namespace) -> int:
@@ -125,9 +129,55 @@ def _diagnose_market_release(plugin_dir: Path, *, plugin_id: str, version: str) 
     issues: list[Issue] = []
     expected_repo = f"{_MARKET_REPO_PREFIX}{plugin_id}"
     github_repository = os.environ.get("GITHUB_REPOSITORY", "").strip()
-    repo_name = github_repository.rsplit("/", 1)[-1] if github_repository else plugin_dir.name
+    remote_url = ""
+    if (plugin_dir / ".git").exists():
+        remote = _run_git(["remote", "get-url", "origin"], cwd=plugin_dir)
+        if remote.returncode == 0:
+            remote_url = remote.stdout.strip()
+    repo_name: str | None = None
+    if github_repository:
+        parts = github_repository.split("/")
+        if len(parts) == 2 and all(parts):
+            repo_name = parts[1]
+        else:
+            issues.append(
+                (
+                    "error",
+                    _tri(
+                        "GITHUB_REPOSITORY must look like owner/repo",
+                        "GITHUB_REPOSITORY 必须采用 owner/repo 格式",
+                        "GITHUB_REPOSITORY は owner/repo 形式である必要があります",
+                    ),
+                )
+            )
+    elif remote_url:
+        repository = parse_github_repository_remote(remote_url)
+        if repository is None:
+            issues.append(
+                (
+                    "error",
+                    _tri(
+                        "git remote 'origin' must point to GitHub for market release",
+                        "Market 发布要求 Git remote 'origin' 指向 GitHub",
+                        "Market 公開では Git remote 'origin' が GitHub を指す必要があります",
+                    ),
+                )
+            )
+        else:
+            repo_name = repository.rsplit("/", 1)[-1]
+    else:
+        issues.append(
+            (
+                "error",
+                _tri(
+                    "git remote 'origin' is not configured for market release",
+                    "尚未为 Market 发布配置 Git remote 'origin'",
+                    "Market 公開用の Git remote 'origin' が設定されていません",
+                ),
+            )
+        )
 
-    if repo_name != expected_repo:
+    if repo_name is not None and repo_name.casefold() != expected_repo.casefold():
         issues.append(("error", f"market repository name must be {expected_repo}, got {repo_name}"))
 
     ref_name = os.environ.get("GITHUB_REF_NAME", "").strip()
@@ -138,20 +188,9 @@ def _diagnose_market_release(plugin_dir: Path, *, plugin_id: str, version: str) 
     else:
         issues.append(("warning", "GITHUB_REF_NAME is missing; tag/version alignment was not checked"))
 
-    if github_repository and "/" not in github_repository:
-        issues.append(("error", "GITHUB_REPOSITORY must look like owner/repo"))
-
     release_workflow = plugin_dir / ".github" / "workflows" / "release.yml"
     if not release_workflow.is_file():
         issues.append(("error", ".github/workflows/release.yml is missing"))
-
-    if (plugin_dir / ".git").exists():
-        remote = _run_git(["remote", "get-url", "origin"], cwd=plugin_dir)
-        remote_url = remote.stdout.strip()
-        if remote.returncode != 0 or not remote_url:
-            issues.append(("warning", "git remote 'origin' is not configured"))
-        elif "github.com" not in remote_url:
-            issues.append(("error", "git remote 'origin' must point to GitHub for market release"))
 
     return issues
 
@@ -228,7 +267,7 @@ def _suggest_fix(message: str, *, plugin_id: str, plugin_dir: Path | None) -> st
         }:
             return f"neko-plugin setup-repo {label} --github-actions"
     if message.startswith("market repository name must be "):
-        return "use neko-plugin init-repo <plugin_id> and create the GitHub repo with the generated n.e.k.o_plugin_<plugin_id> name"
+        return "set origin to a GitHub repository named n.e.k.o_plugin_<plugin_id>"
     if message.startswith("release tag ") and "does not match plugin.toml version" in message:
         return "update plugin.toml [plugin].version or push a matching tag such as v0.1.0"
     if message == "[plugin.sdk] is missing":

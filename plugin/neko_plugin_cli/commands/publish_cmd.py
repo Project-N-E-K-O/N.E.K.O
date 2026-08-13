@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import os
 from pathlib import Path
-import re
 import subprocess
 import sys
 import time
@@ -18,7 +17,7 @@ from ..paths import CliDefaults
 from ..repo_action_migration import ActionFileStatus, migrate_github_actions
 from ..templates.generator import PluginSpec
 from . import release_cmd
-from ._resolve import resolve_plugin_dir_candidate
+from ._resolve import parse_github_repository_remote, resolve_plugin_dir_candidate
 
 _MARKET_PUBLICATION_URL = (
     "https://market.project-neko.cn/api/v1/release-publications"
@@ -345,15 +344,9 @@ def _ensure_head_pushed(plugin_dir: Path, *, head: str) -> None:
 
 def _github_repository(plugin_dir: Path) -> str:
     origin = _git(plugin_dir, "config", "--get", "remote.origin.url")
-    patterns = (
-        r"https?://github\.com/(?P<repo>[^/]+/[^/]+?)(?:\.git)?/?$",
-        r"git@github\.com:(?P<repo>[^/]+/[^/]+?)(?:\.git)?$",
-        r"ssh://git@github\.com/(?P<repo>[^/]+/[^/]+?)(?:\.git)?/?$",
-    )
-    for pattern in patterns:
-        match = re.fullmatch(pattern, origin, flags=re.IGNORECASE)
-        if match:
-            return match.group("repo")
+    repository = parse_github_repository_remote(origin)
+    if repository is not None:
+        return repository
     raise RuntimeError(
         _tri(
             "git remote 'origin' must point to a GitHub repository",

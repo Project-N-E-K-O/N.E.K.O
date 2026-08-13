@@ -21,17 +21,17 @@ Some CLI help output may include app initialization logs before the argparse out
 Create standard plugins through the CLI. Do not hand-create the initial directory, `plugin.toml`, or entry class.
 
 ```bash
-uv run neko-plugin init <plugin_id> --type plugin --name "<Plugin Name>" --no-interactive
+uv run neko-plugin init <plugin_id> --type plugin --name "<Plugin Name>"
 ```
 
 Useful variants:
 
 ```bash
-uv run neko-plugin init <plugin_id> --type adapter --name "<Plugin Name>" --no-interactive
-uv run neko-plugin init <plugin_id> --type extension --name "<Plugin Name>"
+uv run neko-plugin init <plugin_id> --type adapter --name "<Plugin Name>"
+uv run neko-plugin init <plugin_id> --output /path/to/final/repository
 ```
 
-`--no-interactive` is suitable for normal plugins and adapters. Extension setup needs host details, so use the interactive path or ask the host questions first.
+`init` always creates the complete standalone repository, including the standard Market workflows.
 
 ## CLI Source Map
 
@@ -51,10 +51,11 @@ Public command modules include:
 - `deps_cmd.py`
 - `build_cmd.py`
 - `install_cmd.py`
+- `publish_cmd.py`
 
-Registered command families include `init`, `init-repo`, `setup-repo`, `check`, `add`, `sync`, `build`, `inspect`, `verify`, `install`, and `analyze`.
+Registered command families include `init`, `setup-repo`, `check`, `add`, `sync`, `build`, `inspect`, `verify`, `install`, `analyze`, and `publish`.
 
-Internal implementation helpers include `release_cmd.py` and `validate_cmd.py`. They are imported by public commands such as `check`, but they are not registered as direct CLI command families.
+Internal implementation helpers include `release_cmd.py` and `validate_cmd.py`. They are imported by public commands such as `check` and `publish`, but they are not registered as direct CLI command families.
 
 Before using a command, run CLI help or read the command module enough to confirm arguments.
 
