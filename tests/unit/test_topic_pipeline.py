@@ -3036,3 +3036,73 @@ async def test_global_purge_reaches_a_character_holding_only_backoff_state(use_a
 
     assert "妮可" not in pool._analyzer_retry_not_before
     assert "妮可" not in pool._analyzer_failures
+
+
+@pytest.mark.asyncio
+async def test_topic_pool_failure_count_ends_when_the_character_drops_below_ready():
+    """The readiness exit is the other way out of the walk, and it must clear too.
+
+    Sequence the aged-out branch alone does not cover: fail → signals fall
+    below the readiness threshold → the rest expire → fresh corpus. The
+    readiness exit discards the character from `_dirty`, which is exactly the
+    set process_ready_topics walks, so the aged-out branch never revisits it —
+    the count would survive to the fresh corpus and spend its first blip at
+    the old step instead of on the free immediate retry.
+    """
+    calls = []
+
+    async def failing_analyzer(*, lang, **kwargs):
+        calls.append(lang)
+        return None
+
+    pool = TopicHookPool(
+        analyzer=failing_analyzer,
+        auto_schedule=False,
+        min_user_turns_for_topic=2,
+    )
+    pool.note_user_message("妮可", "我最近一直在纠结要不要换工作")
+    pool.note_user_message("妮可", "换工作这件事我反复想了好几周了")
+
+    # 两条 turn 要能分开剪，所以显式给时间戳：note_user_message 走 time.time()，
+    # 相邻两次调用在本机会落在同一个刻度上，cutoff 就无处可放。
+    store = pool._signal_store
+    store.clear("妮可")
+    first_at = time.time()
+    store.note_turn("妮可", actor="user", text="我最近一直在纠结要不要换工作", now=first_at)
+    store.note_turn("妮可", actor="user", text="换工作这件事我反复想了好几周了", now=first_at + 1.0)
+    pool._dirty.add("妮可")
+    base = store.last_turn_at("妮可")
+    assert base == pytest.approx(first_at + 1.0, abs=1e-6)
+
+    for tick, expected in ((61, 1), (82, 2), (123, 3)):
+        await pool.process_ready_topics(now=base + tick, lang="zh-CN")
+        assert len(calls) == expected
+    assert pool._analyzer_failures["妮可"] == 3
+
+    # 老信号先掉一部分：有效轮数跌到阈值以下，但证据还在。
+    # clear_until 保留 timestamp > cutoff 的条目，拿第一条的时间戳当 cutoff
+    # 正好剪掉它、留下第二条。
+    store.clear_until("妮可", timestamp=first_at)
+    assert not store.is_ready("妮可")
+    assert store.last_turn_at("妮可") is not None
+
+    await pool.process_ready_topics(now=base + 204, lang="zh-CN")
+    assert len(calls) == 3
+    assert "妮可" not in pool._dirty
+    # 这一步是关键：此刻不清，之后角色已不在 _dirty 里，过期清理分支再也够不到。
+    assert "妮可" not in pool._analyzer_failures
+    assert "妮可" not in pool._analyzer_retry_not_before
+
+    # 剩下的信号也过期，然后来了新语料。
+    store.clear("妮可")
+    pool.note_user_message("妮可", "换个话题，我最近在学做菜")
+    pool.note_user_message("妮可", "做菜比想象中费时间")
+    fresh = pool._signal_store.last_turn_at("妮可")
+    assert fresh is not None
+
+    await pool.process_ready_topics(now=fresh + 61, lang="zh-CN")
+    assert len(calls) == 4
+    assert pool._analyzer_failures["妮可"] == 1
+    assert pool._analyzer_retry_not_before["妮可"] == pytest.approx(
+        fresh + 61 + _ANALYZER_RETRY_BASE_SECONDS, abs=1e-3
+    )

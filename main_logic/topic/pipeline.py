@@ -613,6 +613,14 @@ class TopicHookPool:
                 self._signal_store.readiness_percent(name),
             )
             self._dirty.discard(name)
+            # Dropping out of _dirty here also drops the character out of the
+            # process_ready_topics walk, which is where the aged-out branch
+            # clears this state. Without clearing it now, a character that
+            # falls below the threshold and only later loses its remaining
+            # signals is never revisited, and a corpus accumulated afterwards
+            # inherits the old count. Analysis has stopped for this character
+            # either way, so the streak ends with it.
+            self._clear_analyzer_failures(name)
             return
         stored_lang = self._langs.get(name)
         topic_lang = (
