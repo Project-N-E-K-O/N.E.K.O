@@ -345,6 +345,7 @@ class TopicHookPool:
         name: str,
         now: float,
         *,
+        elapsed: float,
         reason: str,
         seen_purge_generation: int | None = None,
     ) -> None:
@@ -363,7 +364,15 @@ class TopicHookPool:
         self._analyzer_failures[name] += 1
         failures = self._analyzer_failures[name]
         delay = self._analyzer_retry_delay(failures)
-        self._analyzer_retry_not_before[name] = now + delay
+        # The first step is not a backoff — it is the free immediate retry the
+        # base is sized for, so it anchors at the tick stamp and lands on the
+        # very next heartbeat. Adding the call's runtime here would push a
+        # normal 8s timeout past that tick and delay recovery to the one after.
+        # From the second consecutive failure on it IS a backoff, so it anchors
+        # at completion instead: otherwise the runtime and a stale tick stamp
+        # get subtracted out of every window.
+        anchor = now if failures == 1 else now + elapsed
+        self._analyzer_retry_not_before[name] = anchor + delay
         logger.info(
             "[%s] topic analyzer failed (%s, consecutive failures: %d); "
             "keeping dirty, next attempt in %ds",
@@ -609,6 +618,14 @@ class TopicHookPool:
                 lang=topic_lang,
                 global_signals=global_signals,
             )
+            if raw_materials is not None:
+                # The Analyzer contract allows any Iterable, and a lazy one
+                # raises when it is consumed, not when it is awaited. Drain it
+                # here so an iteration failure lands in the same handler as a
+                # call failure — left to the comprehension below it would
+                # escape to process_ready_topics, which merely logs, and by
+                # then the failure state has already been cleared.
+                raw_materials = list(raw_materials)
         except Exception as exc:
             # An analyzer that raises is an analyzer that failed, and it has to
             # arm the same backoff as one that returns None. Letting the
@@ -619,7 +636,8 @@ class TopicHookPool:
             # conversation itself.
             self._note_analyzer_failure(
                 name,
-                current_time + self._elapsed_since_tick(current_time, started_at),
+                current_time,
+                elapsed=self._elapsed_since_tick(current_time, started_at),
                 reason=type(exc).__name__,
                 seen_purge_generation=seen_purge_generation,
             )
@@ -627,7 +645,8 @@ class TopicHookPool:
         if raw_materials is None:
             self._note_analyzer_failure(
                 name,
-                current_time + self._elapsed_since_tick(current_time, started_at),
+                current_time,
+                elapsed=self._elapsed_since_tick(current_time, started_at),
                 reason="no result",
                 seen_purge_generation=seen_purge_generation,
             )

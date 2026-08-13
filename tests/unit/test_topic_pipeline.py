@@ -2619,7 +2619,7 @@ async def test_topic_pool_clears_analyzer_backoff_once_the_analyzer_answers():
     await pool.process_ready_topics(now=base + 61, lang="zh-CN")
     assert len(calls) == 1
     assert pool._analyzer_failures["妮可"] == 1
-    assert pool._analyzer_retry_not_before["妮可"] == pytest.approx(base + 81)
+    assert pool._analyzer_retry_not_before["妮可"] == pytest.approx(base + 81, abs=0.05)
 
     await pool.process_ready_topics(now=base + 82, lang="zh-CN")
     assert len(calls) == 2
@@ -2679,7 +2679,7 @@ async def test_topic_pool_analyzer_exception_arms_the_same_backoff_as_a_none_res
 
     await pool.process_ready_topics(now=base + 61, lang="zh-CN")
     assert len(calls) == 1
-    assert pool._analyzer_retry_not_before["妮可"] == pytest.approx(base + 81)
+    assert pool._analyzer_retry_not_before["妮可"] == pytest.approx(base + 81, abs=0.05)
 
     for tick in (62, 71, 80):
         await pool.process_ready_topics(now=base + tick, lang="zh-CN")
@@ -2688,7 +2688,7 @@ async def test_topic_pool_analyzer_exception_arms_the_same_backoff_as_a_none_res
     # 退避照样翻倍：第二次失败后要等 40s，而不是回到 20s。
     await pool.process_ready_topics(now=base + 82, lang="zh-CN")
     assert len(calls) == 2
-    assert pool._analyzer_retry_not_before["妮可"] == pytest.approx(base + 122)
+    assert pool._analyzer_retry_not_before["妮可"] == pytest.approx(base + 122, abs=0.05)
 
 
 @pytest.mark.asyncio
@@ -2733,14 +2733,16 @@ async def test_topic_pool_analyzer_exception_log_omits_the_exception_message():
 
 
 @pytest.mark.asyncio
-async def test_topic_pool_retry_window_starts_when_the_call_failed_not_when_the_tick_began():
-    """A slow failure must not eat its own backoff.
+async def test_topic_pool_retry_window_anchors_at_the_tick_first_then_at_completion():
+    """The two steps anchor differently, and both matter.
 
-    `current_time` is captured before the await — it is often the tracker's
-    heartbeat stamp, taken earlier still. Anchoring the deadline there
-    subtracts the whole call duration (config read + client construction + the
-    8s call timeout) from every delay, and a failure slower than the delay
-    itself would land already expired.
+    Step 1 is the free immediate retry, so it anchors at the tick stamp and
+    lands on the very next heartbeat — adding the call's runtime there would
+    push a normal 8s timeout past that tick and delay recovery by a whole
+    period. Step 2 onward is a real backoff, so it anchors at completion:
+    otherwise the runtime (config read + client construction + the 8s timeout)
+    is subtracted out of every window, and a failure slower than the delay
+    would land already expired.
     """
     call_seconds = 0.05
 
@@ -2758,9 +2760,18 @@ async def test_topic_pool_retry_window_starts_when_the_call_failed_not_when_the_
     assert base is not None
 
     await pool.process_ready_topics(now=base + 61, lang="zh-CN")
+    # 第一档：正好一个心跳周期后，调用耗时不算进去。
+    #
+    # abs= 是必须的：approx 默认走相对容差 1e-6，而这些是 1.7e9 量级的 unix
+    # 时间戳，等于 ±1700 秒——足以把整个 call_seconds 的差异吞掉，让"第一档
+    # 改回锚在完成时刻"的回归照样绿。
+    assert pool._analyzer_retry_not_before["妮可"] == pytest.approx(
+        base + 61 + _ANALYZER_RETRY_BASE_SECONDS, abs=1e-3
+    )
 
-    # 锚在 tick 开始（base + 61 + 60）的话，这次调用的 50ms 就白送掉了。
-    naive_deadline = base + 61 + _ANALYZER_RETRY_BASE_SECONDS
+    await pool.process_ready_topics(now=base + 82, lang="zh-CN")
+    # 第二档起：锚在失败完成时刻，这 50ms 必须体现出来。
+    naive_deadline = base + 82 + _ANALYZER_RETRY_BASE_SECONDS * 2
     assert pool._analyzer_retry_not_before["妮可"] > naive_deadline
     assert pool._analyzer_retry_not_before["妮可"] >= naive_deadline + call_seconds * 0.8
 
@@ -2858,14 +2869,20 @@ async def test_topic_pool_retry_window_absorbs_a_stale_tick_stamp():
     )
     pool.note_user_message("妮可", "我最近一直在纠结要不要换工作")
 
+    # 第一次失败是免费重试档，锚在 tick 戳上不做补偿；陈旧补偿要从第二次
+    # 失败（真正的退避）起才生效，所以先把第一档用掉。
+    await pool.process_now("妮可", lang="zh-CN", now=time.time())
+    assert pool._analyzer_failures["妮可"] == 1
+
     staleness = 30.0
     stale_tick = time.time() - staleness
     await pool.process_now("妮可", lang="zh-CN", now=stale_tick)
 
     deadline = pool._analyzer_retry_not_before["妮可"]
-    # 锚在陈旧戳上的话 deadline = stale_tick + 60，也就是从现在算只剩 30 秒。
-    assert deadline > stale_tick + _ANALYZER_RETRY_BASE_SECONDS + staleness * 0.8
-    assert deadline >= time.time() + _ANALYZER_RETRY_BASE_SECONDS - 1.0
+    delay = _ANALYZER_RETRY_BASE_SECONDS * 2
+    # 锚在陈旧戳上的话 deadline = stale_tick + 40，也就是从现在算只剩 10 秒。
+    assert deadline > stale_tick + delay + staleness * 0.8
+    assert deadline >= time.time() + delay - 1.0
 
 
 def test_elapsed_since_tick_floors_at_zero_for_an_injected_future_stamp():
@@ -2873,3 +2890,49 @@ def test_elapsed_since_tick_floors_at_zero_for_an_injected_future_stamp():
     pool = TopicHookPool(auto_schedule=False)
     future_tick = time.time() + 3600.0
     assert pool._elapsed_since_tick(future_tick, time.monotonic()) == 0.0
+
+
+@pytest.mark.asyncio
+async def test_topic_pool_lazy_analyzer_iterable_that_raises_still_backs_off():
+    """`Analyzer` returns an Iterable; a lazy one fails when consumed, not awaited.
+
+    Draining it outside the failure handler puts the exception past the point
+    where the previous failure state was already cleared, so the character
+    would sit dirty with no retry deadline — the hot loop again, reached
+    through the result-consumption path instead of the call path.
+    """
+    calls = []
+
+    async def lazy_exploding_analyzer(*, lang, **kwargs):
+        calls.append(lang)
+
+        def _gen():
+            yield {"interest": "第一条还正常", "relevance": 90}
+            raise RuntimeError("provider stream broke mid-iteration")
+
+        return _gen()
+
+    pool = TopicHookPool(
+        analyzer=lazy_exploding_analyzer,
+        auto_schedule=False,
+        min_user_turns_for_topic=1,
+    )
+    pool.note_user_message("妮可", "我最近一直在纠结要不要换工作")
+    base = pool._signal_store.last_turn_at("妮可")
+    assert base is not None
+
+    await pool.process_ready_topics(now=base + 61, lang="zh-CN")
+    assert len(calls) == 1
+    assert pool._analyzer_failures["妮可"] == 1
+    assert pool._analyzer_retry_not_before["妮可"] == pytest.approx(
+        base + 61 + _ANALYZER_RETRY_BASE_SECONDS, abs=1e-3
+    )
+    # 半路抛的迭代不该留下半成品素材。
+    assert pool.get_ready_materials("妮可") == []
+
+    # 第二次失败进入真退避，窗口内的跳空转。
+    await pool.process_ready_topics(now=base + 82, lang="zh-CN")
+    assert len(calls) == 2
+    for tick in (92, 110, 121):
+        await pool.process_ready_topics(now=base + tick, lang="zh-CN")
+    assert len(calls) == 2
