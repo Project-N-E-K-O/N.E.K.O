@@ -1158,6 +1158,7 @@ async def test_respond_callback_media_images_obey_the_byte_budget(monkeypatch) -
         ],
     })
 
+    manager.submit_proactive_callback.assert_called_once()
     callback = manager.submit_proactive_callback.call_args.args[0]
     assert callback["summary"] == "heavy respond"
     assert callback["media_images"] == [two_mib_b64]
