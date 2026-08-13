@@ -5,7 +5,7 @@ import importlib.util
 import json
 import sys
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
 
 import pytest
@@ -105,6 +105,14 @@ def test_windows_store_python_alias_is_not_a_runtime() -> None:
     alias = r"C:\Users\tester\AppData\Local\Microsoft\WindowsApps\python.exe"
 
     assert data_layer_process._looks_like_python(alias) is False
+    assert data_layer_process._looks_like_python(r"C:\Python311\python.exe") is True
+
+
+def test_windows_python_path_is_recognized_on_posix_hosts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(data_layer_process, "Path", PurePosixPath)
+
     assert data_layer_process._looks_like_python(r"C:\Python311\python.exe") is True
 
 

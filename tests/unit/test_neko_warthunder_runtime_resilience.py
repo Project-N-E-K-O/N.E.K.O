@@ -691,6 +691,19 @@ def test_transient_probe_state_and_map_failures_preserve_previous_snapshot() -> 
     assert service._situation is previous_situation
 
 
+def test_map_image_save_stops_when_map_info_transport_is_invalid(tmp_path: Path) -> None:
+    for response in ((False, None), (True, None)):
+        client = WarThunderClient()
+        client._last_map_gen = 17
+        client._fetch = lambda _path, value=response: value
+        client.fetch_map_image = lambda: (_ for _ in ()).throw(
+            AssertionError("map image must not be fetched without valid map info")
+        )
+
+        assert client.save_map_image(directory=str(tmp_path)) is None
+        assert client._last_map_gen == 17
+
+
 def test_battle_identity_survives_respawn_and_changes_after_confirmed_exit() -> None:
     class BoundaryClient:
         in_battle = True
