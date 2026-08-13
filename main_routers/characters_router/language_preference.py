@@ -140,6 +140,7 @@ async def apply_character_language_preference(name: str, language: str) -> dict:
         config_manager,
         memory_result=memory_result,
         admission_generation=admission_generation,
+        write_order=_write_order(memory_result),
     )
 
 
@@ -150,6 +151,7 @@ async def _reconcile_after_language_change(
     *,
     memory_result: dict,
     admission_generation: tuple[str, int],
+    write_order: int | None,
 ) -> dict:
     result = {
         "success": True,
@@ -237,7 +239,7 @@ async def _reconcile_after_language_change(
             # what makes the two mutually exclusive.  A read failure fails
             # closed: skipping isolation is recoverable, deleting a live
             # conversation is not.
-            if not await _durable_locale_matches(name, normalized):
+            if not await _durable_write_still_owned(name, normalized, write_order):
                 logger.info(
                     "语言偏好已被更新的请求取代，跳过迟到的近期上下文清理: name=%s",
                     name,
@@ -350,28 +352,63 @@ async def _reconcile_after_language_change(
                 "error": "语言偏好已保存，但近期上下文清理失败",
             })
 
-    await _finalize_freshness(name, normalized, result)
+    await _finalize_freshness(name, normalized, result, write_order)
     return result
 
 
-async def _durable_locale_matches(name: str, normalized: str) -> bool:
-    """Report whether this request's write is still the durable locale.
+def _write_order(payload: dict) -> int | None:
+    order = payload.get("order")
+    if isinstance(order, int) and not isinstance(order, bool):
+        return order
+    return None
 
-    A *successful* read that no longer carries what we just wrote means this
-    request no longer describes durable state.  An empty value is not the benign
-    case: a character deleted or renamed during the unlocked settlement takes
-    prompt_locale.json with it.  Read failures propagate; each caller decides
-    which way to fail.
+
+async def _durable_write_still_owned(
+    name: str,
+    normalized: str,
+    expected_order: int | None,
+) -> bool:
+    """Report whether *this specific write* is still the durable locale.
+
+    Equal locale strings are NOT ownership: a second window saving the same
+    language gets ``changed: false`` on a fast path, so a stale callback would
+    still see its own value and happily act on it -- clearing a conversation the
+    newer request already allowed to start.  The memory server's causal write
+    order identifies the individual write, so that is what we compare.
+
+    An empty value is not the benign case either: a character deleted or renamed
+    during the unlocked settlement takes prompt_locale.json with it.  Read
+    failures propagate; each caller decides which way to fail.
     """
     current = await _request_memory_prompt_locale("GET", name)
     durable = current.get("language")
-    return bool(
-        is_supported_language_code(durable)
-        and normalize_language_code(durable, format="full") == normalized
-    )
+    if not is_supported_language_code(durable):
+        return False
+    if normalize_language_code(durable, format="full") != normalized:
+        return False
+    current_order = _write_order(current)
+    if expected_order is None or current_order is None:
+        # Both ends ship together, so a missing order means the durable state
+        # predates this field or the response was truncated.  Ownership cannot
+        # be established, and every caller here guards a destructive or
+        # success-publishing step, so fail closed rather than fall back to the
+        # value comparison this function exists to replace.
+        logger.warning(
+            "语言偏好写序缺失，无法确认归属: name=%s expected=%s current=%s",
+            name,
+            expected_order,
+            current_order,
+        )
+        return False
+    return current_order == expected_order
 
 
-async def _finalize_freshness(name: str, normalized: str, result: dict) -> None:
+async def _finalize_freshness(
+    name: str,
+    normalized: str,
+    result: dict,
+    write_order: int | None,
+) -> None:
     """Refuse to report plain success for a preference we cannot vouch for.
 
     Reconciliation runs outside the transaction, so a second window can commit a
@@ -395,7 +432,7 @@ async def _finalize_freshness(name: str, normalized: str, result: dict) -> None:
     # await between these two and the return.
     async with character_config_mutation_lock:
         try:
-            matches = await _durable_locale_matches(name, normalized)
+            matches = await _durable_write_still_owned(name, normalized, write_order)
         except LanguagePreferenceConflictError:
             raise
         except Exception as exc:

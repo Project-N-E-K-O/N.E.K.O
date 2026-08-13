@@ -859,11 +859,17 @@ async def test_character_language_change_respects_session_lifecycle_owner(
     async def persist_locale(method, name, *, language=None):
         calls.append(("persist", method, name, language))
         if method == "GET":
-            return {"success": True, "language": _durable.get("language")}
+            return {
+                "success": True,
+                "language": _durable.get("language"),
+                "order": _durable.get("order"),
+            }
+        _durable["order"] = (_durable.get("order") or 0) + 1
         _durable["language"] = language
         return {
             "success": True,
             "language": language,
+            "order": _durable["order"],
             "previous_language": "en",
             "changed": True,
         }
@@ -971,11 +977,17 @@ async def test_unchanged_language_reconciliation_isolates_the_live_session(monke
     async def persist_locale(method, name, *, language=None):
         calls.append(("persist", method, name, language))
         if method == "GET":
-            return {"success": True, "language": _durable.get("language")}
+            return {
+                "success": True,
+                "language": _durable.get("language"),
+                "order": _durable.get("order"),
+            }
+        _durable["order"] = (_durable.get("order") or 0) + 1
         _durable["language"] = language
         return {
             "success": True,
             "language": language,
+            "order": _durable["order"],
             "previous_language": language,
             "changed": False,
         }
@@ -1102,7 +1114,7 @@ async def test_character_language_changes_are_serialized_through_side_effects(mo
 
     async def persist_locale(_method, name, *, language=None):
         if _method == "GET":
-            return {"success": True, "language": language or "ja"}
+            return {"success": True, "language": language or "ja", "order": 1}
         entered.append((name, language))
         if language == "ja":
             first_entered.set()
@@ -1110,6 +1122,7 @@ async def test_character_language_changes_are_serialized_through_side_effects(mo
         return {
             "success": True,
             "language": language,
+            "order": 1,
             "previous_language": language,
             "changed": False,
         }
@@ -1180,7 +1193,7 @@ async def test_language_save_and_identity_mutation_share_global_lock(
 
     async def persist_locale(_method, name, *, language=None):
         if _method == "GET":
-            return {"success": True, "language": language or "ja"}
+            return {"success": True, "language": language or "ja", "order": 1}
         calls.append(("save", name, language))
         save_entered.set()
         if save_first:
@@ -1188,6 +1201,7 @@ async def test_language_save_and_identity_mutation_share_global_lock(
         return {
             "success": True,
             "language": language,
+            "order": 1,
             "previous_language": language,
             "changed": False,
         }
@@ -1291,11 +1305,17 @@ async def test_late_language_clear_is_fenced_by_recent_identity(
 
     async def persist_locale(method, _name, *, language=None):
         if method == "GET":
-            return {"success": True, "language": _durable.get("language")}
+            return {
+                "success": True,
+                "language": _durable.get("language"),
+                "order": _durable.get("order"),
+            }
+        _durable["order"] = (_durable.get("order") or 0) + 1
         _durable["language"] = language
         return {
             "success": True,
             "language": language,
+            "order": _durable["order"],
             "previous_language": "en",
             "changed": True,
         }

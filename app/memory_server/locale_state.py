@@ -614,6 +614,19 @@ def get_character_prompt_locale(name: str) -> str | None:
         return selected
 
 
+def get_character_prompt_locale_state(name: str) -> tuple[str | None, int | None]:
+    """Load the durable locale together with the write order that produced it.
+
+    Callers that need to prove "this exact write is still the current one"
+    cannot compare locale strings: two writes of the same language are
+    indistinguishable by value.  The persisted causal order identifies the
+    individual write, so ownership checks must use it.
+    """
+    with _get_locale_lock(name):
+        selected, order, _reserved_order = _load_locale_state_unlocked(name)
+        return selected, order
+
+
 def allocate_subject_prompt_locale_order(name: str, subject) -> int:
     """Allocate a request-admission order for one scoped memory owner."""
     return allocate_subject_prompt_locale_orders(name, [subject])[0]

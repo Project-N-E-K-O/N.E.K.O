@@ -43,7 +43,10 @@ def _install_language_preference_stubs(
     """
     calls: list = []
     config_manager = SimpleNamespace(memory_dir="unused")
+    # Mirrors the memory server: every write gets a monotonically increasing
+    # causal order, and a read reports the order of whatever is durable.
     written: dict = {}
+    orders = {"next": 0}
 
     async def load_character(name):
         calls.append(("load", name))
@@ -52,18 +55,27 @@ def _install_language_preference_stubs(
     async def request_locale(method, name, *, language=None):
         calls.append(("persist", method, name, language))
         if method == "GET":
+            if durable_after is _UNCHANGED:
+                return {
+                    "success": True,
+                    "language": written.get("language"),
+                    "order": written.get("order"),
+                }
+            # A competing window committed after this request's write, so it
+            # carries a strictly newer order.
+            orders["next"] += 1
             return {
                 "success": True,
-                "language": (
-                    written.get("language")
-                    if durable_after is _UNCHANGED
-                    else durable_after
-                ),
+                "language": durable_after,
+                "order": orders["next"],
             }
+        orders["next"] += 1
         written["language"] = language
+        written["order"] = orders["next"]
         return {
             "success": True,
             "language": language,
+            "order": orders["next"],
             "previous_language": "en" if changed else language,
             "changed": changed,
         }
@@ -412,14 +424,22 @@ async def test_every_character_load_runs_under_the_config_transaction(monkeypatc
         return config_manager, {"猫娘": {name: {}}}
 
     written: dict = {}
+    orders = {"next": 0}
 
     async def request_locale(method, _name, *, language=None):
         if method == "GET":
-            return {"success": True, "language": written.get("language")}
+            return {
+                "success": True,
+                "language": written.get("language"),
+                "order": written.get("order"),
+            }
+        orders["next"] += 1
         written["language"] = language
+        written["order"] = orders["next"]
         return {
             "success": True,
             "language": language,
+            "order": orders["next"],
             "previous_language": "en",
             "changed": True,
         }
@@ -456,6 +476,7 @@ async def test_closing_freshness_and_identity_share_one_transaction(monkeypatch)
     lock_during_final_reads = []
     config_manager = SimpleNamespace(memory_dir="unused")
     written: dict = {}
+    orders = {"next": 0}
     reconciled = {"done": False}
 
     async def load_character(name):
@@ -471,11 +492,18 @@ async def test_closing_freshness_and_identity_share_one_transaction(monkeypatch)
                 lock_during_final_reads.append(
                     ("freshness", character_config_mutation_lock.locked())
                 )
-            return {"success": True, "language": written.get("language")}
+            return {
+                "success": True,
+                "language": written.get("language"),
+                "order": written.get("order"),
+            }
+        orders["next"] += 1
         written["language"] = language
+        written["order"] = orders["next"]
         return {
             "success": True,
             "language": language,
+            "order": orders["next"],
             "previous_language": "en",
             "changed": True,
         }
@@ -504,6 +532,91 @@ async def test_closing_freshness_and_identity_share_one_transaction(monkeypatch)
     assert all(locked for _, locked in lock_during_final_reads), (
         f"收尾两步必须在同一个事务内，实际 {lock_during_final_reads}"
     )
+
+
+async def test_same_language_rewrite_revokes_the_stale_callbacks_ownership(monkeypatch):
+    """Equal locale strings are not ownership.
+
+    A second window saving the *same* language gets the fast ``changed: false``
+    path and may start a new conversation.  A value-only fence sees its own
+    locale and clears that conversation; only the causal write order can tell
+    the two writes apart.
+    """
+    manager = _IdleManager()
+    cleared = []
+    config_manager = SimpleNamespace(memory_dir="unused")
+
+    async def load_character(name):
+        return config_manager, {"猫娘": {name: {}}}
+
+    async def request_locale(method, _name, *, language=None):
+        if method == "GET":
+            # Same language, newer write: a second window re-saved 'ja' while
+            # this request was settling.
+            return {"success": True, "language": "ja", "order": 2}
+        return {
+            "success": True,
+            "language": language,
+            "order": 1,
+            "previous_language": "en",
+            "changed": True,
+        }
+
+    async def clear_recent(_config_manager, name, *, expected_generation):
+        assert expected_generation
+        cleared.append(name)
+
+    class SessionManager:
+        def get(self, _name):
+            return manager
+
+    monkeypatch.setattr(preference_router, "_load_existing_character", load_character)
+    monkeypatch.setattr(preference_router, "_request_memory_prompt_locale", request_locale)
+    monkeypatch.setattr(preference_router, "_clear_character_recent_history", clear_recent)
+    monkeypatch.setattr(preference_router, "get_session_manager", SessionManager)
+
+    with pytest.raises(preference_router.LanguagePreferenceConflictError):
+        await preference_router.apply_character_language_preference("Mimi", "ja")
+
+    assert cleared == [], "同语言的更新写入之后，陈旧回调不得清空 recent.json"
+
+
+async def test_missing_write_order_fails_closed(monkeypatch):
+    """Ownership that cannot be established must not license a destructive step."""
+    manager = _IdleManager()
+    cleared = []
+    config_manager = SimpleNamespace(memory_dir="unused")
+
+    async def load_character(name):
+        return config_manager, {"猫娘": {name: {}}}
+
+    async def request_locale(method, _name, *, language=None):
+        # An order-less response (truncated payload / pre-field durable state).
+        if method == "GET":
+            return {"success": True, "language": "ja"}
+        return {
+            "success": True,
+            "language": language,
+            "previous_language": "en",
+            "changed": True,
+        }
+
+    async def clear_recent(_config_manager, name, *, expected_generation):
+        cleared.append(name)
+
+    class SessionManager:
+        def get(self, _name):
+            return manager
+
+    monkeypatch.setattr(preference_router, "_load_existing_character", load_character)
+    monkeypatch.setattr(preference_router, "_request_memory_prompt_locale", request_locale)
+    monkeypatch.setattr(preference_router, "_clear_character_recent_history", clear_recent)
+    monkeypatch.setattr(preference_router, "get_session_manager", SessionManager)
+
+    with pytest.raises(preference_router.LanguagePreferenceConflictError):
+        await preference_router.apply_character_language_preference("Mimi", "ja")
+
+    assert cleared == [], "写序缺失时不得执行破坏性清理"
 
 
 async def test_late_clear_is_fenced_by_durable_ownership(monkeypatch):
@@ -594,7 +707,7 @@ async def test_language_preference_get_runs_under_the_config_transaction(monkeyp
 
     async def request_locale(_method, _name, *, language=None):
         observed["locked_during_read"] = character_config_mutation_lock.locked()
-        return {"success": True, "language": "ja"}
+        return {"success": True, "language": "ja", "order": 1}
 
     monkeypatch.setattr(preference_router, "_load_existing_character", load_character)
     monkeypatch.setattr(preference_router, "_request_memory_prompt_locale", request_locale)

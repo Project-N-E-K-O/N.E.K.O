@@ -62,7 +62,11 @@ def _harness(status: int, payload: dict) -> str:
         function _characterLanguageT(_key, fallback) { return fallback; }
         function showMessage(text, level) { calls.push(['message', level]); }
         async function showAlert(text) { calls.push(['alert', String(text)]); }
-        async function _hydrateCharacterLanguagePreference() { hydrated += 1; }
+        function _distrustCachedLanguageBeforeRehydration() { calls.push(['distrust']); }
+        async function _hydrateCharacterLanguagePreference() {
+          calls.push(['hydrate']);
+          hydrated += 1;
+        }
         async function _characterLanguageMutationFetch() {
           return {
             status: __STATUS__,
@@ -94,6 +98,10 @@ def _harness(status: int, payload: dict) -> str:
      .replace("__PAYLOAD__", json.dumps(payload))
 
 
+def _kinds(outcome: dict) -> list:
+    return [call[0] for call in outcome["calls"]]
+
+
 def _run(node_path: str, status: int, payload: dict) -> dict:
     result = run_node_script(
         node_path, _harness(status, payload), capture_output=True, timeout=30,
@@ -112,6 +120,10 @@ def test_superseded_conflict_rehydrates_without_rolling_back(node_path):
     assert outcome["hydrated"] == 1
     # The stale local value must not be restored; hydration owns the control.
     assert outcome["value"] == "ja"
+    assert _kinds(outcome).count("distrust") == 1
+    assert _kinds(outcome).index("distrust") < _kinds(outcome).index("hydrate"), (
+        "必须先把缓存标为不可信，再去做可能失败的权威读取"
+    )
     assert not any(call[0] == "alert" for call in outcome["calls"]), (
         "被取代不是保存失败，不该弹错误"
     )
@@ -154,6 +166,9 @@ def test_unverified_freshness_rehydrates_instead_of_caching(node_path):
     assert outcome["hydrated"] == 1
     assert not any(call[0] == "cache" for call in outcome["calls"]), (
         "未确认的写入不得进入跨窗口缓存"
+    )
+    assert _kinds(outcome).index("distrust") < _kinds(outcome).index("hydrate"), (
+        "必须先把缓存标为不可信，再去做可能失败的权威读取"
     )
     assert not any(call[0] == "alert" for call in outcome["calls"])
 

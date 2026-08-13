@@ -1779,6 +1779,8 @@ async def test_prompt_locale_update_reports_intervening_language_atomically(
 
     original_reserve = locale_state.reserve_character_prompt_locale_order
 
+    reserved: dict = {}
+
     def reserve_after_intervening_write(character_name):
         request_order = original_reserve(character_name)
         assert locale_state.record_character_prompt_locale(
@@ -1786,6 +1788,7 @@ async def test_prompt_locale_update_reports_intervening_language_atomically(
             "ja",
             order=request_order - 1,
         ) == "ja"
+        reserved["order"] = request_order
         return request_order
 
     monkeypatch.setattr(
@@ -1802,6 +1805,9 @@ async def test_prompt_locale_update_reports_intervening_language_atomically(
     assert result == {
         "success": True,
         "language": "en",
+        # The causal write order identifies this individual write; ownership
+        # fences on the main server compare it instead of the locale string.
+        "order": reserved["order"],
         "previous_language": "ja",
         "changed": True,
     }

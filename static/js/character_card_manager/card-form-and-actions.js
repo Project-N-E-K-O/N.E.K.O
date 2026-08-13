@@ -198,6 +198,20 @@ async function _hydrateCharacterLanguagePreference(name, select, selectUi) {
     }
 }
 
+function _distrustCachedLanguageBeforeRehydration(name) {
+    // The cached value is about to be superseded or is already unverified, and
+    // the authoritative re-read may itself fail (same outage). Leaving the old
+    // localStorage entry trusted lets a later websocket read it via
+    // getExplicitConversationLanguagePreference and persist it back, undoing the
+    // write we deliberately refused to cache. Successful hydration re-publishes
+    // the value and clears this marker.
+    try {
+        if (typeof window.markConversationLanguagePreferenceUntrusted === 'function') {
+            window.markConversationLanguagePreferenceUntrusted(name);
+        }
+    } catch (_) { /* hydration still runs */ }
+}
+
 async function _saveCharacterLanguagePreference(name, select, selectUi) {
     const previous = select.dataset.previousValue || select.value;
     const language = select.value;
@@ -238,6 +252,7 @@ async function _saveCharacterLanguagePreference(name, select, selectUi) {
                 ),
                 'warning'
             );
+            _distrustCachedLanguageBeforeRehydration(name);
             await _hydrateCharacterLanguagePreference(name, select, selectUi);
             return;
         }
@@ -257,6 +272,7 @@ async function _saveCharacterLanguagePreference(name, select, selectUi) {
                 ),
                 'warning'
             );
+            _distrustCachedLanguageBeforeRehydration(name);
             await _hydrateCharacterLanguagePreference(name, select, selectUi);
             return;
         }
