@@ -366,6 +366,30 @@ class TopicHookPool:
             int(delay),
         )
 
+    @staticmethod
+    def _elapsed_since_tick(current_time: float, started_at: float) -> float:
+        """How long ago the failure's tick stamp was taken, in seconds.
+
+        Two independent sources, and the deadline has to clear both:
+
+        * the analyzer's own runtime — config read, client construction, the
+          8s call timeout — measured on a monotonic clock;
+        * however long the caller's tick had already been running before it
+          handed over ``now``. The activity heartbeat stamps ``ts`` and then
+          awaits a WebSocket drain before reaching the topic pool, so a
+          backpressured send makes that stamp arrive seconds stale. That gap
+          is measurable precisely because ``now`` lives in the same wall-clock
+          domain as ``time.time()``.
+
+        An injected future ``now`` (tests, replayed ticks) makes the wall-clock
+        term negative; the floor keeps the window deterministic there.
+        """
+        return max(
+            time.monotonic() - started_at,
+            time.time() - current_time,
+            0.0,
+        )
+
     def _clear_analyzer_failures(self, name: str) -> None:
         self._analyzer_failures.pop(name, None)
         self._analyzer_retry_not_before.pop(name, None)
@@ -568,11 +592,10 @@ class TopicHookPool:
         global_signals = self._signal_store.format_global_signals(name, lang=topic_lang)
         current_time = time.time() if now is None else float(now)
         # The retry window has to start when the call FAILED, not when the tick
-        # began: a slow failure (config read + client construction + the 8s
-        # call timeout) would otherwise be subtracted from every delay, and a
-        # failure slower than the delay itself would land already-expired.
-        # `current_time` may also be the tracker's heartbeat stamp, taken
-        # earlier still, so measure the call with a monotonic clock and add it.
+        # began — otherwise every delay silently loses that gap, and a gap
+        # wider than the delay itself lands the deadline already expired,
+        # which puts the heartbeat straight back into the hot loop this
+        # backoff exists to stop. See _elapsed_since_tick for the two sources.
         started_at = time.monotonic()
         try:
             raw_materials = await self._analyzer(
@@ -589,7 +612,7 @@ class TopicHookPool:
             # conversation itself.
             self._note_analyzer_failure(
                 name,
-                current_time + (time.monotonic() - started_at),
+                current_time + self._elapsed_since_tick(current_time, started_at),
                 reason=type(exc).__name__,
                 seen_purge_generation=seen_purge_generation,
             )
@@ -597,7 +620,7 @@ class TopicHookPool:
         if raw_materials is None:
             self._note_analyzer_failure(
                 name,
-                current_time + (time.monotonic() - started_at),
+                current_time + self._elapsed_since_tick(current_time, started_at),
                 reason="no result",
                 seen_purge_generation=seen_purge_generation,
             )

@@ -2829,3 +2829,40 @@ async def test_topic_pool_discards_analyzer_failure_when_purge_lands_midflight()
 
     assert "妮可" not in pool._analyzer_retry_not_before
     assert "妮可" not in pool._analyzer_failures
+
+
+@pytest.mark.asyncio
+async def test_topic_pool_retry_window_absorbs_a_stale_tick_stamp():
+    """A `now` that arrived stale must not eat the backoff either.
+
+    The activity heartbeat stamps `ts` (tracker.py) and only reaches the topic
+    pool after `await self._drain_context_prompt()`, a WebSocket push. Under
+    backpressure that stamp lands seconds — potentially more than a whole
+    backoff delay — in the past, which would write an already-expired deadline
+    and hand the next heartbeat straight back into the hot loop.
+    """
+    async def failing_analyzer(*, lang, **kwargs):
+        return None
+
+    pool = TopicHookPool(
+        analyzer=failing_analyzer,
+        auto_schedule=False,
+        min_user_turns_for_topic=1,
+    )
+    pool.note_user_message("妮可", "我最近一直在纠结要不要换工作")
+
+    staleness = 30.0
+    stale_tick = time.time() - staleness
+    await pool.process_now("妮可", lang="zh-CN", now=stale_tick)
+
+    deadline = pool._analyzer_retry_not_before["妮可"]
+    # 锚在陈旧戳上的话 deadline = stale_tick + 60，也就是从现在算只剩 30 秒。
+    assert deadline > stale_tick + _ANALYZER_RETRY_BASE_SECONDS + staleness * 0.8
+    assert deadline >= time.time() + _ANALYZER_RETRY_BASE_SECONDS - 1.0
+
+
+def test_elapsed_since_tick_floors_at_zero_for_an_injected_future_stamp():
+    """Injected future `now` (tests, replayed ticks) must not rewind the window."""
+    pool = TopicHookPool(auto_schedule=False)
+    future_tick = time.time() + 3600.0
+    assert pool._elapsed_since_tick(future_tick, time.monotonic()) == 0.0
