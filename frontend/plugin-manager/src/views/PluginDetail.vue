@@ -384,12 +384,12 @@ function relayHostedSurfaceMessageToStaticUi(data: unknown) {
     return
   }
   // Hosted surface messages have already been source/origin checked by the
-  // frame. Send them to the visible static panel as well as the hidden relay:
-  // otherwise a plugin with both kinds of surface updates an off-screen copy
-  // while the legacy page the user is looking at remains stale.
-  const activeSurface = displayedPanelSurfaces.value.find((surface) => surface.id === activePanelSurfaceId.value)
-  if (activeSurface?.mode === 'static') {
-    panelSurfaceFrameRefs.get(activeSurface.id)?.sendSurfaceMessage(data)
+  // frame. Keep every mounted static panel current, including a `main` tab
+  // that is temporarily off-screen while a hosted surface is active.
+  for (const surface of displayedPanelSurfaces.value) {
+    if (surface.mode === 'static') {
+      panelSurfaceFrameRefs.get(surface.id)?.sendSurfaceMessage(data)
+    }
   }
   staticUiFrameRef.value?.sendSurfaceMessage(data)
 }

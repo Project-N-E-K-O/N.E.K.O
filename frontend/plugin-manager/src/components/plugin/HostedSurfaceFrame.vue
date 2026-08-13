@@ -590,10 +590,19 @@ onUnmounted(() => {
 })
 
 watch(
-  () => [props.pluginId, props.surface.kind, props.surface.id, props.surface.mode, props.surface.entry, props.surface.available, locale.value],
+  // Static iframe messages must be queued again only when its document is
+  // actually replaced. Locale changes leave a static iframe in place.
+  () => [props.pluginId, props.surface.mode, surfaceUrl.value],
   () => {
     staticSurfaceReady.value = false
     pendingStaticSurfaceMessages.length = 0
+  },
+)
+
+watch(
+  () => [props.pluginId, props.surface.kind, props.surface.id, props.surface.mode, props.surface.entry, props.surface.available, surfaceUrl.value, locale.value],
+  () => {
+    if (props.surface.mode === 'static') return
     loadHostedTsx()
   },
 )
