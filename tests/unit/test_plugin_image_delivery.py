@@ -981,3 +981,225 @@ async def test_failed_plugin_image_does_not_block_text_delivery(monkeypatch) -> 
     callback = manager.submit_proactive_callback.call_args.args[0]
     assert callback["summary"] == "the text must survive"
     assert callback["media_images"] == []
+
+
+# ---------------------------------------------------------------------------
+# Per-push image budgets
+#
+# A push carries an unbounded ``parts`` list. Without these caps one plugin can
+# pin (count x 8 MiB) of decoded image bytes in the event handler — and, for
+# ``respond``, keep it pinned on the queued callback until the pacing manager
+# releases it — while blocking the handler on ceil(count / 4) fetch rounds.
+# ---------------------------------------------------------------------------
+
+
+def test_plugin_image_budget_constants_are_pinned() -> None:
+    """Guard the literals the budget tests below assert against.
+
+    The behavioral tests monkeypatch the byte budgets down so they don't have
+    to allocate tens of MiB. That makes them blind to a constant change, so
+    pin the shipped values here.
+    """
+    from app.main_server import character_runtime
+
+    assert character_runtime._PLUGIN_IMAGE_MAX_COUNT == 8
+    assert character_runtime._PLUGIN_IMAGE_TOTAL_MAX_BYTES == 16 * 1024 * 1024
+    assert character_runtime._PLUGIN_CHAT_IMAGE_MAX_COUNT == 8
+    assert character_runtime._PLUGIN_CHAT_INLINE_TOTAL_MAX_BYTES == 8 * 1024 * 1024
+
+
+@pytest.mark.asyncio
+async def test_model_path_caps_image_count_per_push(monkeypatch) -> None:
+    """Images past the count cap never reach the model or the fetcher."""
+    from app import main_server
+    from app.main_server import character_runtime
+
+    manager = _manager()
+
+    async def _fake_fetch(url: str) -> str:
+        return "b64-" + url.rsplit("/", 1)[-1]
+
+    fetch = AsyncMock(side_effect=_fake_fetch)
+    monkeypatch.setattr(
+        "app.main_server.character_runtime._get_session_manager",
+        lambda _name: manager,
+    )
+    monkeypatch.setattr(
+        "app.main_server.character_runtime._fetch_plugin_image_base64",
+        fetch,
+    )
+
+    over_cap = character_runtime._PLUGIN_IMAGE_MAX_COUNT + 4
+    await main_server._handle_agent_event({
+        "event_type": "proactive_message",
+        "lanlan_name": "Test",
+        "text": "many images",
+        "channel": "plugin:flood",
+        "delivery_mode": "passive",
+        "ai_behavior": "read",
+        "visibility": [],
+        "media_parts": [
+            {
+                "type": "image",
+                "url": "http://127.0.0.1:48916/media/img%d" % i,
+                "mime": "image/jpeg",
+            }
+            for i in range(over_cap)
+        ],
+    })
+
+    assert manager.session.stream_image.await_count == 8
+    # The cap short-circuits BEFORE the fetch, so the dropped tail costs no
+    # HTTP round trips (this is what bounds handler latency, not just memory).
+    assert fetch.await_count == 8
+    streamed = [call.args[0] for call in manager.session.stream_image.await_args_list]
+    assert streamed == ["b64-img%d" % i for i in range(8)]
+
+
+@pytest.mark.asyncio
+async def test_model_path_caps_total_image_bytes_per_push(monkeypatch) -> None:
+    """Once the per-push byte budget is spent, later images are dropped."""
+    from app import main_server
+
+    manager = _manager()
+    # 3 MiB decoded budget; each image decodes to 2 MiB, so #1 fits and #2/#3
+    # are dropped. Patched down so the test doesn't allocate the real 16 MiB.
+    monkeypatch.setattr(
+        "app.main_server.character_runtime._PLUGIN_IMAGE_TOTAL_MAX_BYTES",
+        3 * 1024 * 1024,
+    )
+    two_mib_b64 = "A" * (2 * 1024 * 1024 * 4 // 3)
+    monkeypatch.setattr(
+        "app.main_server.character_runtime._get_session_manager",
+        lambda _name: manager,
+    )
+    monkeypatch.setattr(
+        "app.main_server.character_runtime._fetch_plugin_image_base64",
+        AsyncMock(return_value=two_mib_b64),
+    )
+
+    await main_server._handle_agent_event({
+        "event_type": "proactive_message",
+        "lanlan_name": "Test",
+        "text": "heavy images",
+        "channel": "plugin:heavy",
+        "delivery_mode": "passive",
+        "ai_behavior": "read",
+        "visibility": [],
+        "media_parts": [
+            {
+                "type": "image",
+                "url": "http://127.0.0.1:48916/media/heavy%d" % i,
+                "mime": "image/jpeg",
+            }
+            for i in range(3)
+        ],
+    })
+
+    assert manager.session.stream_image.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_respond_callback_media_images_obey_the_byte_budget(monkeypatch) -> None:
+    """The budget also bounds what rides the queued proactive callback."""
+    from app import main_server
+
+    manager = _manager()
+    monkeypatch.setattr(
+        "app.main_server.character_runtime._PLUGIN_IMAGE_TOTAL_MAX_BYTES",
+        3 * 1024 * 1024,
+    )
+    two_mib_b64 = "A" * (2 * 1024 * 1024 * 4 // 3)
+    monkeypatch.setattr(
+        "app.main_server.character_runtime._get_session_manager",
+        lambda _name: manager,
+    )
+    monkeypatch.setattr(
+        "app.main_server.character_runtime._fetch_plugin_image_base64",
+        AsyncMock(return_value=two_mib_b64),
+    )
+
+    await main_server._handle_agent_event({
+        "event_type": "proactive_message",
+        "lanlan_name": "Test",
+        "text": "heavy respond",
+        "channel": "plugin:heavy",
+        "delivery_mode": "proactive",
+        "ai_behavior": "respond",
+        "visibility": [],
+        "media_parts": [
+            {
+                "type": "image",
+                "url": "http://127.0.0.1:48916/media/heavy%d" % i,
+                "mime": "image/jpeg",
+            }
+            for i in range(3)
+        ],
+    })
+
+    callback = manager.submit_proactive_callback.call_args.args[0]
+    assert callback["summary"] == "heavy respond"
+    assert callback["media_images"] == [two_mib_b64]
+
+
+def test_chat_blocks_cap_image_count_and_keep_text_in_order() -> None:
+    """Over-cap images drop out; the text mix keeps its canonical order."""
+    from app.main_server.character_runtime import (
+        _PLUGIN_CHAT_IMAGE_MAX_COUNT,
+        _build_ordered_plugin_chat_blocks,
+    )
+
+    over_cap = _PLUGIN_CHAT_IMAGE_MAX_COUNT + 4
+    parts: list[dict[str, str]] = []
+    for i in range(over_cap):
+        parts.append(
+            {"type": "image", "url": "http://127.0.0.1:48916/media/img%d" % i}
+        )
+        parts.append({"type": "text", "text": "caption %d" % i})
+
+    blocks = _build_ordered_plugin_chat_blocks(parts)
+
+    images = [b for b in blocks if b["type"] == "image"]
+    texts = [b["text"] for b in blocks if b["type"] == "text"]
+    assert len(images) == 8
+    assert images[0]["url"].endswith("/media/img0")
+    assert images[-1]["url"].endswith("/media/img7")
+    # Text is never truncated by the image cap, and the surviving mix stays in
+    # canonical order rather than losing its tail.
+    assert texts == ["caption %d" % i for i in range(over_cap)]
+    assert blocks[0]["type"] == "image"
+    assert blocks[1] == {"type": "text", "text": "caption 0"}
+
+
+def test_chat_blocks_cap_inline_data_url_bytes(monkeypatch) -> None:
+    """Inline base64 rides the WebSocket frame, so it gets a byte budget too."""
+    from app.main_server import character_runtime
+
+    monkeypatch.setattr(
+        character_runtime,
+        "_PLUGIN_CHAT_INLINE_TOTAL_MAX_BYTES",
+        3 * 1024 * 1024,
+    )
+    two_mib_b64 = "A" * (2 * 1024 * 1024 * 4 // 3)
+    parts = [
+        {"type": "image", "binary_base64": two_mib_b64, "mime": "image/png"}
+        for _ in range(3)
+    ]
+
+    blocks = character_runtime._build_ordered_plugin_chat_blocks(parts)
+
+    assert len([b for b in blocks if b["type"] == "image"]) == 1
+
+
+def test_chat_blocks_url_images_cost_no_inline_budget() -> None:
+    """URL-backed blocks are a frontend fetch, not WebSocket payload."""
+    from app.main_server.character_runtime import _build_ordered_plugin_chat_blocks
+
+    parts = [
+        {"type": "image", "url": "http://127.0.0.1:48916/media/img%d" % i}
+        for i in range(8)
+    ]
+
+    blocks = _build_ordered_plugin_chat_blocks(parts)
+
+    assert len(blocks) == 8

@@ -42,6 +42,23 @@ logger = runtime.logger
 
 _PLUGIN_IMAGE_MAX_BYTES = 8 * 1024 * 1024
 _PLUGIN_IMAGE_FETCH_BATCH_SIZE = 4
+# Per-push budgets. A single push carries an unbounded ``parts`` list, so
+# without these one plugin can pin (count x 8 MiB) of decoded image bytes in
+# this handler — and, for ``respond``, keep it pinned on the queued callback
+# until the pacing manager releases it. The count cap also bounds how long the
+# event handler blocks on fetches (ceil(count / batch) x the 2s per-fetch
+# timeout). Budgets are in DECODED bytes, matching _PLUGIN_IMAGE_MAX_BYTES.
+_PLUGIN_IMAGE_MAX_COUNT = 8
+_PLUGIN_IMAGE_TOTAL_MAX_BYTES = 16 * 1024 * 1024
+# The chat path is separate: URL-backed blocks cost the frontend a fetch (count
+# only), while inline data: URLs ride the WebSocket frame itself (count+bytes).
+_PLUGIN_CHAT_IMAGE_MAX_COUNT = 8
+_PLUGIN_CHAT_INLINE_TOTAL_MAX_BYTES = 8 * 1024 * 1024
+
+
+def _approx_decoded_bytes(encoded: str) -> int:
+    """Decoded size of a base64 payload, without materializing the bytes."""
+    return len(encoded) * 3 // 4
 
 
 def _is_local_plugin_media_url(url: str) -> bool:
@@ -84,8 +101,15 @@ def _build_plugin_chat_blocks(
     *,
     include_text: bool,
 ) -> list[dict[str, str]]:
-    """Project canonical plugin parts to the frontend's supported blocks."""
+    """Project canonical plugin parts to the frontend's supported blocks.
+
+    Images past the per-push budget are dropped; text blocks keep flowing so
+    the surviving mix stays in canonical order rather than truncating the tail.
+    """
     blocks: list[dict[str, str]] = []
+    image_count = 0
+    inline_bytes = 0
+    dropped_images = 0
     for part in parts:
         if not isinstance(part, dict):
             continue
@@ -98,14 +122,32 @@ def _build_plugin_chat_blocks(
             continue
         if part.get("type") != "image":
             continue
+        if image_count >= _PLUGIN_CHAT_IMAGE_MAX_COUNT:
+            dropped_images += 1
+            continue
         url = part.get("url")
         if isinstance(url, str) and _is_local_plugin_media_url(url):
             blocks.append({"type": "image", "url": url})
+            image_count += 1
             continue
         encoded = part.get("binary_base64")
         mime = str(part.get("mime") or "").strip().lower()
         if isinstance(encoded, str) and encoded and mime.startswith("image/"):
+            decoded_bytes = _approx_decoded_bytes(encoded)
+            if inline_bytes + decoded_bytes > _PLUGIN_CHAT_INLINE_TOTAL_MAX_BYTES:
+                dropped_images += 1
+                continue
+            inline_bytes += decoded_bytes
             blocks.append({"type": "image", "url": f"data:{mime};base64,{encoded}"})
+            image_count += 1
+    if dropped_images:
+        logger.warning(
+            "[EventBus] %d chat image part(s) dropped: over the per-push budget "
+            "(max %d images, %d inline bytes)",
+            dropped_images,
+            _PLUGIN_CHAT_IMAGE_MAX_COUNT,
+            _PLUGIN_CHAT_INLINE_TOTAL_MAX_BYTES,
+        )
     return blocks
 
 
@@ -723,14 +765,43 @@ async def _handle_agent_event(event: dict):
                     for index, part in enumerate(media_parts)
                     if isinstance(part, dict) and part.get("type") == "image"
                 ]
+                if len(image_indexes) > _PLUGIN_IMAGE_MAX_COUNT:
+                    logger.warning(
+                        "[EventBus] plugin push carried %d images; only the first %d reach the model path",
+                        len(image_indexes),
+                        _PLUGIN_IMAGE_MAX_COUNT,
+                    )
+                    image_indexes = image_indexes[:_PLUGIN_IMAGE_MAX_COUNT]
                 resolved_model_images: dict[int, str | BaseException] = {}
+                remaining_image_bytes = _PLUGIN_IMAGE_TOTAL_MAX_BYTES
                 for offset in range(0, len(image_indexes), _PLUGIN_IMAGE_FETCH_BATCH_SIZE):
+                    if remaining_image_bytes <= 0:
+                        # Short-circuit the remaining batches: the budget is
+                        # spent, so fetching them would only add latency.
+                        logger.warning(
+                            "[EventBus] plugin image byte budget (%d) exhausted; %d image(s) not fetched",
+                            _PLUGIN_IMAGE_TOTAL_MAX_BYTES,
+                            len(image_indexes) - offset,
+                        )
+                        break
                     batch = image_indexes[offset : offset + _PLUGIN_IMAGE_FETCH_BATCH_SIZE]
                     results = await asyncio.gather(
                         *(_resolve_plugin_model_image(media_parts[index]) for index in batch),
                         return_exceptions=True,
                     )
-                    resolved_model_images.update(zip(batch, results))
+                    for index, result in zip(batch, results):
+                        if isinstance(result, str):
+                            decoded_bytes = _approx_decoded_bytes(result)
+                            if decoded_bytes > remaining_image_bytes:
+                                logger.warning(
+                                    "[EventBus] plugin image dropped: over the %d byte per-push model budget",
+                                    _PLUGIN_IMAGE_TOTAL_MAX_BYTES,
+                                )
+                                continue
+                            remaining_image_bytes -= decoded_bytes
+                        # Exceptions are retained so the drop below still logs
+                        # the underlying resolve failure.
+                        resolved_model_images[index] = result
 
                 for index, mp in enumerate(media_parts):
                     if not isinstance(mp, dict):
