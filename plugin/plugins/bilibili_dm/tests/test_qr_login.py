@@ -63,6 +63,7 @@ async def test_qr_login_returns_image_and_saves_credentials_without_returning_th
     assert saved["sesdata"] == "session-secret"
     assert saved["ac_time_value"] == "new-refresh-token"
     assert "session-secret" not in str(done)
+    assert "new-refresh-token" not in str(done)
     assert login._session is None
 
 

@@ -136,13 +136,17 @@ async function pollQrLogin(generation) {
     if (generation !== qrLogin.generation) return;
     if (data.status === 'done') {
       clearQrLogin();
+      const completionGeneration = qrLogin.generation;
+      const closeAt = Date.now() + 2000;
       setQrStatus(data.message || '登录成功，配置已自动保存');
       await refreshDashboard(true);
+      if (completionGeneration !== qrLogin.generation) return;
       showToast(data.message || '扫码登录成功，配置已自动保存');
       qrLogin.closeTimer = setTimeout(() => {
+        if (qrLogin.generation !== completionGeneration) return;
         qrLogin.closeTimer = null;
         document.getElementById('qr-login-panel').hidden = true;
-      }, 2000);
+      }, Math.max(0, closeAt - Date.now()));
       return;
     }
     if (data.status === 'expired') {
