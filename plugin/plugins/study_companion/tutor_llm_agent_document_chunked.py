@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any
 
 from utils.tokenize import count_tokens
@@ -27,6 +28,7 @@ DOCUMENT_CHUNK_OUTPUT_MAX_TOKENS = 1_200
 DOCUMENT_MERGE_INPUT_MAX_TOKENS = 24_000
 DOCUMENT_MERGE_OUTPUT_MAX_TOKENS = 4_096
 _TRANSIENT_DIAGNOSTICS = frozenset({"timeout", "rate_limited", "provider_unavailable"})
+DOCUMENT_CHUNK_RETRY_MIN_SECONDS = 10.0
 
 
 class DocumentChunkAnalysisError(SdkError):
@@ -118,12 +120,24 @@ def build_document_merge_messages(
 
 
 async def _call_chunk_once_result(
-    self: Any, document: ValidatedDocument, chunk: DocumentChunk, total_chunks: int
+    self: Any,
+    document: ValidatedDocument,
+    chunk: DocumentChunk,
+    total_chunks: int,
+    *,
+    deadline_monotonic: float | None = None,
 ) -> _DocumentModelResult:
     messages = build_document_chunk_messages(document, chunk, total_chunks)
     deadline = self._new_operation_deadline(
         LLM_OPERATION_DOCUMENT_CHUNK_ANALYZE, messages
     )
+    if deadline_monotonic is not None:
+        deadline = min(deadline, deadline_monotonic)
+    if deadline <= time.monotonic():
+        raise DocumentChunkAnalysisError(
+            "document chunk window is exhausted",
+            diagnostic="document_chunk_window_exhausted",
+        )
     model_result = await _call_document_model_result(
         self,
         messages,
@@ -152,16 +166,36 @@ async def _call_chunk_once(
 
 
 async def _analyze_document_chunk_result(
-    self: Any, document: ValidatedDocument, chunk: DocumentChunk, total_chunks: int
+    self: Any,
+    document: ValidatedDocument,
+    chunk: DocumentChunk,
+    total_chunks: int,
+    *,
+    deadline_monotonic: float | None = None,
 ) -> _DocumentModelResult:
     for attempt in range(2):
         try:
-            return await _call_chunk_once_result(self, document, chunk, total_chunks)
+            return await _call_chunk_once_result(
+                self,
+                document,
+                chunk,
+                total_chunks,
+                deadline_monotonic=deadline_monotonic,
+            )
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             diagnostic = diagnostic_code_for_exception(exc)
             if attempt == 0 and diagnostic in _TRANSIENT_DIAGNOSTICS:
+                if (
+                    deadline_monotonic is not None
+                    and deadline_monotonic - time.monotonic()
+                    < DOCUMENT_CHUNK_RETRY_MIN_SECONDS
+                ):
+                    raise DocumentChunkAnalysisError(
+                        "document chunk retry would cross the analysis window",
+                        diagnostic="document_chunk_window_exhausted",
+                    ) from exc
                 continue
             if isinstance(exc, DocumentChunkAnalysisError):
                 raise
@@ -201,10 +235,18 @@ async def _merge_document_chunks_result(
     memos: tuple[str, ...],
     *,
     messages: list[dict[str, str]] | None = None,
+    deadline_monotonic: float | None = None,
 ) -> _DocumentModelResult:
     messages = messages or build_document_merge_messages(document, chunks, memos)
     try:
         deadline = self._new_operation_deadline(LLM_OPERATION_DOCUMENT_MERGE, messages)
+        if deadline_monotonic is not None:
+            deadline = min(deadline, deadline_monotonic)
+        if deadline <= time.monotonic():
+            raise DocumentChunkAnalysisError(
+                "document merge window is exhausted",
+                diagnostic="document_merge_window_exhausted",
+            )
         model_result = await _call_document_model_result(
             self,
             messages,
@@ -277,6 +319,7 @@ async def merge_document_chunks(
 
 __all__ = [
     "DOCUMENT_CHUNK_OUTPUT_MAX_TOKENS",
+    "DOCUMENT_CHUNK_RETRY_MIN_SECONDS",
     "DOCUMENT_MERGE_INPUT_MAX_TOKENS",
     "DOCUMENT_MERGE_OUTPUT_MAX_TOKENS",
     "DocumentChunkAnalysisError",

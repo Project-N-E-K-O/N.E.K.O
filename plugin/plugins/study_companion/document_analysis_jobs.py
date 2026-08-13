@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+import inspect
 import logging
 import secrets
 import time
@@ -10,10 +11,12 @@ from typing import Any
 
 
 DOCUMENT_JOB_TIMEOUT_SECONDS = 20 * 60.0
+DOCUMENT_JOB_MERGE_RESERVED_SECONDS = 2 * 60.0
+DOCUMENT_JOB_FINALIZE_RESERVED_SECONDS = 30.0
 DOCUMENT_JOB_RESULT_TTL_SECONDS = 30 * 60.0
 
 ProgressCallback = Callable[[str, int, int], Awaitable[None]]
-JobRunner = Callable[[ProgressCallback], Awaitable[dict[str, Any]]]
+JobRunner = Callable[..., Awaitable[dict[str, Any]]]
 CompletionCallback = Callable[[dict[str, Any]], None]
 
 
@@ -26,6 +29,14 @@ class DocumentAnalysisJobError(RuntimeError):
         self.diagnostic = diagnostic
 
 
+@dataclass(frozen=True, slots=True)
+class DocumentJobBudget:
+    started_monotonic: float
+    chunk_deadline_monotonic: float
+    merge_deadline_monotonic: float
+    deadline_monotonic: float
+
+
 @dataclass(slots=True)
 class _Job:
     job_id: str
@@ -36,6 +47,7 @@ class _Job:
     stage: str = "validating"
     completed_chunks: int = 0
     diagnostic: str = ""
+    cancellation_source: str = ""
     result: dict[str, Any] = field(default_factory=dict)
     finished_at: float = 0.0
     task: asyncio.Task[None] | None = None
@@ -60,6 +72,7 @@ class _Job:
             "summary": "",
             "degraded": self.status in {"failed", "canceled"},
             "diagnostic": self.diagnostic,
+            "cancellation_source": self.cancellation_source,
         }
         if self.status == "completed":
             payload.update(self.result)
@@ -117,7 +130,22 @@ class DocumentAnalysisJobManager:
                 )
             return job.public_payload()
 
-    async def cancel(self, job_id: str) -> dict[str, Any]:
+    async def active(self) -> dict[str, Any]:
+        async with self._lock:
+            self._reap_locked()
+            job = self._jobs.get(self._active_job_id)
+            if job is None or job.status != "running":
+                return {
+                    "job_id": "",
+                    "status": "idle",
+                    "stage": "idle",
+                    "degraded": False,
+                    "diagnostic": "",
+                    "cancellation_source": "",
+                }
+            return job.public_payload()
+
+    async def cancel(self, job_id: str, *, source: str = "user") -> dict[str, Any]:
         task: asyncio.Task[None] | None = None
         async with self._lock:
             self._reap_locked()
@@ -131,6 +159,11 @@ class DocumentAnalysisJobManager:
                 job.status = "canceled"
                 job.stage = "canceled"
                 job.diagnostic = "document_canceled"
+                job.cancellation_source = str(source or "user")
+                _logger.info(
+                    "document analysis job canceled source=%s",
+                    job.cancellation_source,
+                )
                 job.finished_at = time.monotonic()
                 if self._active_job_id == job.job_id:
                     self._active_job_id = ""
@@ -144,13 +177,18 @@ class DocumentAnalysisJobManager:
 
     async def shutdown(self) -> None:
         async with self._lock:
-            tasks = [
-                job.task
-                for job in self._jobs.values()
-                if job.task is not None and not job.task.done()
-            ]
-            for task in tasks:
-                task.cancel()
+            tasks: list[asyncio.Task[None]] = []
+            for job in self._jobs.values():
+                if job.task is None or job.task.done():
+                    continue
+                job.status = "canceled"
+                job.stage = "canceled"
+                job.diagnostic = "document_canceled"
+                job.cancellation_source = "plugin_shutdown"
+                job.finished_at = time.monotonic()
+                _logger.info("document analysis job canceled source=plugin_shutdown")
+                tasks.append(job.task)
+                job.task.cancel()
             expiry_tasks = list(self._expiry_tasks)
             for task in expiry_tasks:
                 task.cancel()
@@ -159,8 +197,13 @@ class DocumentAnalysisJobManager:
         if pending:
             await asyncio.gather(*pending, return_exceptions=True)
         async with self._lock:
+            late_expiry_tasks = list(self._expiry_tasks)
+            for task in late_expiry_tasks:
+                task.cancel()
             self._jobs.clear()
             self._expiry_tasks.clear()
+        if late_expiry_tasks:
+            await asyncio.gather(*late_expiry_tasks, return_exceptions=True)
 
     async def _run(
         self,
@@ -168,6 +211,20 @@ class DocumentAnalysisJobManager:
         runner: JobRunner,
         on_completed: CompletionCallback | None,
     ) -> None:
+        started_monotonic = time.monotonic()
+        deadline_monotonic = started_monotonic + DOCUMENT_JOB_TIMEOUT_SECONDS
+        merge_deadline_monotonic = (
+            deadline_monotonic - DOCUMENT_JOB_FINALIZE_RESERVED_SECONDS
+        )
+        budget = DocumentJobBudget(
+            started_monotonic=started_monotonic,
+            chunk_deadline_monotonic=(
+                merge_deadline_monotonic - DOCUMENT_JOB_MERGE_RESERVED_SECONDS
+            ),
+            merge_deadline_monotonic=merge_deadline_monotonic,
+            deadline_monotonic=deadline_monotonic,
+        )
+
         async def update(stage: str, completed: int, total: int) -> None:
             async with self._lock:
                 if job.status != "running":
@@ -178,8 +235,14 @@ class DocumentAnalysisJobManager:
                     job.total_chunks = int(total)
 
         try:
+            runner_signature = inspect.signature(runner)
+            if len(runner_signature.parameters) >= 2:
+                runner_awaitable = runner(update, budget)
+            else:
+                runner_awaitable = runner(update)
             result = await asyncio.wait_for(
-                runner(update), timeout=DOCUMENT_JOB_TIMEOUT_SECONDS
+                runner_awaitable,
+                timeout=max(0.0, deadline_monotonic - time.monotonic()),
             )
             async with self._lock:
                 if job.status == "running":
@@ -203,7 +266,8 @@ class DocumentAnalysisJobManager:
                     job.diagnostic = "document_canceled"
                     job.finished_at = time.monotonic()
         except asyncio.TimeoutError:
-            await self._fail(job, "timeout")
+            _logger.warning("document analysis job canceled source=job_timeout")
+            await self._fail(job, "timeout", cancellation_source="job_timeout")
         except Exception as exc:
             await self._fail(
                 job, str(getattr(exc, "diagnostic", "") or "document_chunk_failed")
@@ -221,12 +285,19 @@ class DocumentAnalysisJobManager:
                 self._expiry_tasks.add(expiry_task)
                 expiry_task.add_done_callback(self._expiry_tasks.discard)
 
-    async def _fail(self, job: _Job, diagnostic: str) -> None:
+    async def _fail(
+        self,
+        job: _Job,
+        diagnostic: str,
+        *,
+        cancellation_source: str = "",
+    ) -> None:
         async with self._lock:
             if job.status == "running":
                 job.status = "failed"
                 job.stage = "failed"
                 job.diagnostic = diagnostic
+                job.cancellation_source = cancellation_source
                 job.finished_at = time.monotonic()
 
     async def _expire_after_ttl(self, job_id: str) -> None:
@@ -252,7 +323,10 @@ class DocumentAnalysisJobManager:
 
 __all__ = [
     "DOCUMENT_JOB_RESULT_TTL_SECONDS",
+    "DOCUMENT_JOB_FINALIZE_RESERVED_SECONDS",
+    "DOCUMENT_JOB_MERGE_RESERVED_SECONDS",
     "DOCUMENT_JOB_TIMEOUT_SECONDS",
     "DocumentAnalysisJobError",
     "DocumentAnalysisJobManager",
+    "DocumentJobBudget",
 ]

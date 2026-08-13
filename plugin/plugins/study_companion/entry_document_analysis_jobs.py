@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 from .constants import LLM_OPERATION_DOCUMENT_ANALYZE
 from ._general_narration import prepare_general_narration_content
 from .document_analysis import DocumentValidationError, validate_document
@@ -36,10 +38,21 @@ def _failed_payload(diagnostic: str) -> dict[str, object]:
     }
 
 
-async def _analyze_chunk_with_result(agent, document, chunk, total_chunks):
+async def _analyze_chunk_with_result(
+    agent,
+    document,
+    chunk,
+    total_chunks,
+    *,
+    deadline_monotonic: float | None = None,
+):
     if callable(getattr(agent, "_call_model_result", None)):
         return await _analyze_document_chunk_result(
-            agent, document, chunk, total_chunks
+            agent,
+            document,
+            chunk,
+            total_chunks,
+            deadline_monotonic=deadline_monotonic,
         )
     return _DocumentModelResult(
         text=await agent.analyze_document_chunk(document, chunk, total_chunks)
@@ -47,11 +60,22 @@ async def _analyze_chunk_with_result(agent, document, chunk, total_chunks):
 
 
 async def _merge_chunks_with_result(
-    agent, document, chunks, memos, *, messages
+    agent,
+    document,
+    chunks,
+    memos,
+    *,
+    messages,
+    deadline_monotonic: float | None = None,
 ):
     if callable(getattr(agent, "_call_model_result", None)):
         return await _merge_document_chunks_result(
-            agent, document, chunks, memos, messages=messages
+            agent,
+            document,
+            chunks,
+            memos,
+            messages=messages,
+            deadline_monotonic=deadline_monotonic,
         )
     return _DocumentModelResult(
         text=await agent.merge_document_chunks(
@@ -164,7 +188,7 @@ class _DocumentAnalysisJobsEntriesMixin:
             total_chunks = 1 if analysis_mode == "direct" else len(chunks)
             runner_state = {"document": document, "chunks": chunks}
 
-            async def runner(update):
+            async def runner(update, budget):
                 job_document = runner_state["document"]
                 job_chunks = runner_state["chunks"]
                 memos: list[_DocumentModelResult | None] = []
@@ -172,7 +196,20 @@ class _DocumentAnalysisJobsEntriesMixin:
                 try:
                     if analysis_mode == "direct":
                         await update("analyzing", 0, 1)
-                        reply = await self._agent.document_analyze(job_document)
+                        remaining = budget.merge_deadline_monotonic - time.monotonic()
+                        if remaining <= 0:
+                            error = SdkError("document analysis window exhausted")
+                            error.diagnostic = "document_analysis_window_exhausted"
+                            raise error
+                        try:
+                            reply = await asyncio.wait_for(
+                                self._agent.document_analyze(job_document),
+                                timeout=remaining,
+                            )
+                        except asyncio.TimeoutError as exc:
+                            error = SdkError("document analysis window exhausted")
+                            error.diagnostic = "document_analysis_window_exhausted"
+                            raise error from exc
                         if reply.degraded:
                             error = SdkError("direct document analysis failed")
                             error.diagnostic = reply.diagnostic or "llm_call_failed"
@@ -192,6 +229,7 @@ class _DocumentAnalysisJobsEntriesMixin:
                                     job_document,
                                     chunk,
                                     len(job_chunks),
+                                    deadline_monotonic=budget.chunk_deadline_monotonic,
                                 )
                             memos[chunk.index] = memo
                             async with progress_lock:
@@ -205,7 +243,22 @@ class _DocumentAnalysisJobsEntriesMixin:
                             for chunk in job_chunks
                         )
                         try:
-                            await asyncio.gather(*tasks)
+                            remaining = (
+                                budget.chunk_deadline_monotonic - time.monotonic()
+                            )
+                            if remaining <= 0:
+                                raise asyncio.TimeoutError
+                            await asyncio.wait_for(
+                                asyncio.gather(*tasks), timeout=remaining
+                            )
+                        except asyncio.TimeoutError as exc:
+                            for task in tasks:
+                                if not task.done():
+                                    task.cancel()
+                            await asyncio.gather(*tasks, return_exceptions=True)
+                            error = SdkError("document chunk window exhausted")
+                            error.diagnostic = "document_chunk_window_exhausted"
+                            raise error from exc
                         except BaseException:
                             for task in tasks:
                                 if not task.done():
@@ -228,6 +281,7 @@ class _DocumentAnalysisJobsEntriesMixin:
                             job_chunks,
                             ordered_memos,
                             messages=merge_messages,
+                            deadline_monotonic=budget.merge_deadline_monotonic,
                         )
                         truncated_chunk_count = sum(
                             1
@@ -260,22 +314,38 @@ class _DocumentAnalysisJobsEntriesMixin:
                     metadata = job_document.public_metadata()
                     metadata["chunks"] = total_chunks
                     metadata["analysis_mode"] = analysis_mode
-                    payload = await self._finalize_tutor_call(
-                        LLM_OPERATION_DOCUMENT_ANALYZE,
-                        reply,
-                        history_kind=LLM_OPERATION_DOCUMENT_ANALYZE,
-                        metadata={
-                            "degraded": reply.degraded,
-                            "diagnostic": reply.diagnostic,
-                            "document": metadata,
-                            "locale": job_document.locale,
-                            "source_retained": False,
-                            "truncated_chunk_count": truncated_chunk_count,
-                            "total_chunks": total_chunks,
-                            "merge_output_truncated": merge_output_truncated,
-                        },
-                        public_payload={"summary": reply.reply, "document": metadata},
-                    )
+                    finalize_remaining = budget.deadline_monotonic - time.monotonic()
+                    if finalize_remaining <= 0:
+                        error = SdkError("document finalization window exhausted")
+                        error.diagnostic = "document_finalize_timeout"
+                        raise error
+                    try:
+                        payload = await asyncio.wait_for(
+                            self._finalize_tutor_call(
+                                LLM_OPERATION_DOCUMENT_ANALYZE,
+                                reply,
+                                history_kind=LLM_OPERATION_DOCUMENT_ANALYZE,
+                                metadata={
+                                    "degraded": reply.degraded,
+                                    "diagnostic": reply.diagnostic,
+                                    "document": metadata,
+                                    "locale": job_document.locale,
+                                    "source_retained": False,
+                                    "truncated_chunk_count": truncated_chunk_count,
+                                    "total_chunks": total_chunks,
+                                    "merge_output_truncated": merge_output_truncated,
+                                },
+                                public_payload={
+                                    "summary": reply.reply,
+                                    "document": metadata,
+                                },
+                            ),
+                            timeout=finalize_remaining,
+                        )
+                    except asyncio.TimeoutError as exc:
+                        error = SdkError("document finalization window exhausted")
+                        error.diagnostic = "document_finalize_timeout"
+                        raise error from exc
                     payload.pop("input_text", None)
                     payload.pop("created_at", None)
                     payload["degraded"] = reply.degraded
@@ -292,14 +362,14 @@ class _DocumentAnalysisJobsEntriesMixin:
 
             def on_completed(result):
                 result["document_narration_scheduled"] = False
-                communication = getattr(getattr(self, "_cfg", None), "communication", None)
+                communication = getattr(
+                    getattr(self, "_cfg", None), "communication", None
+                )
                 if not bool(getattr(communication, "enabled", False)):
                     result["document_narration_status"] = "disabled"
                     result["document_narration_reason"] = "communication_disabled"
                     return
-                if not bool(
-                    getattr(communication, "general_narration_enabled", True)
-                ):
+                if not bool(getattr(communication, "general_narration_enabled", True)):
                     result["document_narration_status"] = "disabled"
                     result["document_narration_reason"] = "general_narration_disabled"
                     return
@@ -381,6 +451,20 @@ class _DocumentAnalysisJobsEntriesMixin:
 
     @ui.action()
     @plugin_entry(
+        id="study_active_document_analysis",
+        name=tr("entries.analyze_document.name", default="Active Document Analysis"),
+        description=tr(
+            "entries.analyze_document.description",
+            default="Read the active document analysis job.",
+        ),
+        input_schema={"type": "object", "properties": {}},
+        timeout=_STATUS_ENTRY_TIMEOUT_SECONDS,
+    )
+    async def study_active_document_analysis(self, **_):
+        return Ok(await self._document_job_manager().active())
+
+    @ui.action()
+    @plugin_entry(
         id="study_cancel_document_analysis",
         name=tr("entries.analyze_document.name", default="Cancel Document Analysis"),
         description=tr(
@@ -388,14 +472,28 @@ class _DocumentAnalysisJobsEntriesMixin:
         ),
         input_schema={
             "type": "object",
-            "properties": {"job_id": {"type": "string", "maxLength": 128}},
+            "properties": {
+                "job_id": {"type": "string", "maxLength": 128},
+                "cancellation_source": {
+                    "type": "string",
+                    "enum": ["user"],
+                    "default": "user",
+                },
+            },
             "required": ["job_id"],
         },
         timeout=_STATUS_ENTRY_TIMEOUT_SECONDS,
     )
-    async def study_cancel_document_analysis(self, job_id: str, **_):
+    async def study_cancel_document_analysis(
+        self, job_id: str, cancellation_source: str = "user", **_
+    ):
         try:
-            return Ok(await self._document_job_manager().cancel(job_id))
+            return Ok(
+                await self._document_job_manager().cancel(
+                    job_id,
+                    source="user",
+                )
+            )
         except DocumentAnalysisJobError as exc:
             return Ok(_failed_payload(exc.diagnostic))
 

@@ -28,7 +28,7 @@ def test_static_document_analysis_uses_cancellable_long_job_contract() -> None:
     assert "delay = 2000" in controller
     assert "cancelRequested" in controller
     assert "if (!jobId) return" in controller
-    assert "navigator.sendBeacon('/runs'" in controller
+    assert "navigator.sendBeacon('/runs'" not in controller
     assert "window.StudyDocumentJobs" not in controller
     assert "StudyDocumentJobs" not in surface_panels
     assert "study_start_document_analysis" not in surface_panels
@@ -169,7 +169,7 @@ controller.dispose();
 if (removed !== removedAfterFirstDispose) throw new Error('dispose removed listeners twice');
 if (aborts !== abortsAfterFirstDispose) throw new Error('dispose aborted work twice');
 if (removedAfterFirstDispose === 0) throw new Error('dispose did not remove listeners');
-if (abortsAfterFirstDispose !== 1) throw new Error(`dispose abort count: ${abortsAfterFirstDispose}`);
+if (abortsAfterFirstDispose !== 2) throw new Error(`dispose abort count: ${abortsAfterFirstDispose}`);
 """
     completed = subprocess.run(
         ["node", "--input-type=module", "-e", script],
@@ -465,18 +465,14 @@ const pagehideStart = pagehideCalls.find(
   (call) => call.entryId === 'study_start_document_analysis',
 );
 pagehide.window.dispatchEvent(new pagehide.window.Event('pagehide'));
-await waitFor(() => beacons.length === 1, 'pagehide did not send a cancel beacon');
 assert(pagehideStart.signal.aborted, 'pagehide did not abort the active analysis request');
-assert(beacons[0].url === '/runs', `pagehide beacon URL was ${beacons[0].url}`);
-const beaconPayload = JSON.parse(await beacons[0].body.text());
-assert(beaconPayload.plugin_id === 'study_companion', 'pagehide beacon used the wrong plugin');
+assert(beacons.length === 0, 'pagehide canceled a recoverable background job');
 assert(
-  beaconPayload.entry_id === 'study_cancel_document_analysis',
-  'pagehide beacon used the wrong entry',
+  !pagehideCalls.some((call) => call.entryId === 'study_cancel_document_analysis'),
+  'pagehide sent an explicit cancel request',
 );
-assert(beaconPayload.args.job_id === 'job-pagehide', 'pagehide beacon used the wrong job id');
 pagehide.controller.dispose();
-assert(beacons.length === 1, 'dispose sent a duplicate beacon after pagehide cleanup');
+assert(beacons.length === 0, 'dispose canceled a recoverable background job');
 process.exit(0);
 """
     completed = subprocess.run(

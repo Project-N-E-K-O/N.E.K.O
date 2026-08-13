@@ -46,6 +46,8 @@
     let documentKind = 'auto';
     let documentRequestController = null;
     const listeners = [];
+    const documentJobStorageKey = 'study_companion.document_analysis_job_id';
+    const pendingDocumentJobId = '__pending__';
 
     function listen(target, type, listener, options) {
       if (!target) return;
@@ -120,6 +122,29 @@
     const documentJobs = {
       currentId: '',
       cancelRequested: false,
+      remember(jobId) {
+        this.currentId = String(jobId || '');
+        try {
+          if (this.currentId) window.sessionStorage.setItem(documentJobStorageKey, this.currentId);
+          else window.sessionStorage.removeItem(documentJobStorageKey);
+        } catch (_error) {
+          // Storage may be unavailable in a restricted webview.
+        }
+      },
+      savedId() {
+        try {
+          return String(window.sessionStorage.getItem(documentJobStorageKey) || '');
+        } catch (_error) {
+          return '';
+        }
+      },
+      markPending() {
+        try {
+          window.sessionStorage.setItem(documentJobStorageKey, pendingDocumentJobId);
+        } catch (_error) {
+          // Storage may be unavailable in a restricted webview.
+        }
+      },
       render(data = {}) {
         this.currentId = data.job_id || this.currentId;
         const completed = Number(data.completed_chunks) || 0;
@@ -134,12 +159,22 @@
       },
       async run(args, signal, update) {
         this.cancelRequested = false;
-        let data = await callPlugin('study_start_document_analysis', args, signal);
-        this.currentId = data.job_id || '';
+        this.markPending();
+        let data;
+        try {
+          data = await callPlugin('study_start_document_analysis', args, signal);
+        } catch (error) {
+          if (!signal.aborted) this.remember('');
+          throw error;
+        }
+        this.remember(data.job_id || '');
         if (this.cancelRequested && this.currentId) {
           try {
-            data = await callPlugin('study_cancel_document_analysis', { job_id: this.currentId }, signal);
-            this.currentId = '';
+            data = await callPlugin('study_cancel_document_analysis', {
+              job_id: this.currentId,
+              cancellation_source: 'user',
+            }, signal);
+            this.remember('');
             return data;
           } catch (error) {
             this.cancelRequested = false;
@@ -150,7 +185,10 @@
         this.render(data);
         update(data);
         const jobId = data.job_id;
-        if (!jobId || ['completed', 'failed', 'canceled'].includes(data.status)) return data;
+        if (!jobId || ['completed', 'failed', 'canceled'].includes(data.status)) {
+          this.remember('');
+          return data;
+        }
         let delay = 1000;
         while (!signal.aborted) {
           await new Promise((resolve) => setTimeout(resolve, delay));
@@ -158,7 +196,10 @@
           data = await callPlugin('study_document_analysis_status', { job_id: jobId }, signal);
           this.render(data);
           update(data);
-          if (['completed', 'failed', 'canceled'].includes(data.status)) return data;
+          if (['completed', 'failed', 'canceled'].includes(data.status)) {
+            this.remember('');
+            return data;
+          }
           delay = 2000;
         }
         throw new DOMException('Aborted', 'AbortError');
@@ -170,9 +211,12 @@
         const jobId = this.currentId;
         if (!jobId) return;
         try {
-          const data = await callPlugin('study_cancel_document_analysis', { job_id: jobId });
+          const data = await callPlugin('study_cancel_document_analysis', {
+            job_id: jobId,
+            cancellation_source: 'user',
+          });
           documentRequestController?.abort();
-          this.currentId = '';
+          this.remember('');
           studyDocumentState.textContent = formatDocumentDiagnostic(data.diagnostic || 'document_canceled');
         } catch (error) {
           this.cancelRequested = false;
@@ -180,16 +224,55 @@
           studyDocumentState.textContent = formatPluginError(error);
         }
       },
-      leave() {
-        if (!this.currentId || !navigator.sendBeacon) return;
-        navigator.sendBeacon('/runs', new Blob([JSON.stringify({
-          plugin_id: pluginId,
-          entry_id: 'study_cancel_document_analysis',
-          args: {
-            job_id: this.currentId,
-            locale: window.I18n?.lang?.() || document.documentElement.lang || '',
-          },
-        })], { type: 'application/json' }));
+      async resume(signal, update) {
+        const savedId = this.savedId();
+        if (!savedId) return null;
+        let data = null;
+        if (savedId !== pendingDocumentJobId) {
+          try {
+            data = await callPlugin(
+              'study_document_analysis_status',
+              { job_id: savedId },
+              signal,
+            );
+          } catch (_error) {
+            data = null;
+          }
+        }
+        if (data?.diagnostic === 'document_job_not_found') data = null;
+        if (!data) {
+          data = await callPlugin('study_active_document_analysis', {}, signal);
+        }
+        const jobId = String(data?.job_id || '');
+        if (!jobId || data.status === 'idle') {
+          this.remember('');
+          return null;
+        }
+        this.remember(jobId);
+        this.render(data);
+        update(data);
+        if (['completed', 'failed', 'canceled'].includes(data.status)) {
+          this.remember('');
+          return data;
+        }
+        let delay = 1000;
+        while (!signal.aborted) {
+          await new Promise((resolve) => setTimeout(resolve, delay));
+          if (signal.aborted) break;
+          data = await callPlugin(
+            'study_document_analysis_status',
+            { job_id: jobId },
+            signal,
+          );
+          this.render(data);
+          update(data);
+          if (['completed', 'failed', 'canceled'].includes(data.status)) {
+            this.remember('');
+            return data;
+          }
+          delay = 2000;
+        }
+        throw new DOMException('Aborted', 'AbortError');
       },
     };
 
@@ -427,7 +510,30 @@
         setReply(/timed out|timeout/i.test(error.message) ? t('ui.error.document_analysis_timeout') : formatPluginError(error));
       } finally {
         if (documentRequestController === controller) documentRequestController = null;
-        documentJobs.currentId = '';
+        setDocumentBusy(false);
+      }
+    }
+
+    async function resumeDocumentAnalysis() {
+      if (documentBusy || !studyDocumentAnalyzeBtn) return;
+      const controller = new AbortController();
+      documentRequestController?.abort();
+      documentRequestController = controller;
+      try {
+        const data = await documentJobs.resume(
+          controller.signal,
+          () => setDocumentBusy(true),
+        );
+        if (!data || controller.signal.aborted) return;
+        const failed = data.status !== 'completed' || data.degraded;
+        setStatus(failed ? t('ui.status.error', 'Error') : t('ui.status.document_complete'));
+        setReply(failed ? formatDocumentDiagnostic(data.diagnostic) : (data.reply || data.summary || ''));
+        studyDocumentState.textContent = failed ? formatDocumentDiagnostic(data.diagnostic) : t('ui.status.document_complete');
+        if (!failed) await onAnalysisComplete({ updateReply: false });
+      } catch (error) {
+        if (!controller.signal.aborted) setReply(formatPluginError(error));
+      } finally {
+        if (documentRequestController === controller) documentRequestController = null;
         setDocumentBusy(false);
       }
     }
@@ -471,12 +577,12 @@
         if (!studyDocumentDropZone.contains(event.relatedTarget)) studyDocumentDropZone.dataset.dragging = 'false';
       });
       listen(studyDocumentDropZone, 'drop', handleDocumentDrop);
+      void resumeDocumentAnalysis();
     }
 
     function dispose() {
       if (disposed) return;
       disposed = true;
-      documentJobs.leave();
       documentRequestController?.abort();
       documentRequestController = null;
       for (const { target, type, listener, options } of listeners.splice(0)) {
