@@ -901,11 +901,6 @@
         var host = getHost();
         var messageId = element && element.dataset && element.dataset.reactChatMessageId;
         if (!messageId) return;
-        for (var i = 0; i < _pendingHostMessages.length; i++) {
-            if (_pendingHostMessages[i] && _pendingHostMessages[i].id === messageId) {
-                _pendingHostMessages[i] = Object.assign({}, _pendingHostMessages[i], { status: status });
-            }
-        }
         if (!host || typeof host.updateMessage !== 'function') return;
         host.updateMessage(messageId, { status: status });
     }

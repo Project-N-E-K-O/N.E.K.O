@@ -68,44 +68,31 @@ class ProactiveMixin:
             images = list(callback.get("media_images") or [])
             if not images:
                 continue
-            offline_pending = (
-                getattr(session, "_pending_images", None)
-                if isinstance(session, OmniOfflineClient)
-                else None
-            )
-            offline_start = (
-                len(offline_pending) if isinstance(offline_pending, list) else None
-            )
-            try:
-                for image_b64 in images:
-                    if isinstance(session, OmniRealtimeClient):
-                        if getattr(session, "_supports_native_image", False):
-                            await stream_image(
-                                image_b64,
-                                bypass_rate_limit=True,
-                                cache_latest=False,
-                            )
-                            continue
-                        description = await stream_image(
+            for image_b64 in images:
+                if isinstance(session, OmniRealtimeClient):
+                    if getattr(session, "_supports_native_image", False):
+                        await stream_image(
                             image_b64,
                             bypass_rate_limit=True,
                             cache_latest=False,
                         )
-                        if not getattr(session, "_supports_native_image", True):
-                            if not isinstance(description, str) or not description.strip():
-                                raise RuntimeError(
-                                    "callback image analysis produced no description"
-                                )
-                        if isinstance(description, str) and description.strip():
-                            descriptions.append(description.strip())
-                    elif isinstance(session, OmniOfflineClient):
-                        await stream_image(image_b64)
-                    else:
-                        await stream_image(image_b64, bypass_rate_limit=True)
-            except BaseException:
-                if offline_start is not None:
-                    del offline_pending[offline_start:]
-                raise
+                        continue
+                    description = await stream_image(
+                        image_b64,
+                        bypass_rate_limit=True,
+                        cache_latest=False,
+                    )
+                    if not getattr(session, "_supports_native_image", True):
+                        if not isinstance(description, str) or not description.strip():
+                            raise RuntimeError(
+                                "callback image analysis produced no description"
+                            )
+                    if isinstance(description, str) and description.strip():
+                        descriptions.append(description.strip())
+                elif isinstance(session, OmniOfflineClient):
+                    await stream_image(image_b64)
+                else:
+                    await stream_image(image_b64, bypass_rate_limit=True)
         return "".join(
             f"\n[实时屏幕截图或相机画面]: {description}"
             for description in descriptions
@@ -838,13 +825,6 @@ class ProactiveMixin:
                     extra for extra in self.pending_extra_replies
                     if extra.get("_callback_delivery_id") in delivered_ids
                 ]
-                # Media callbacks deliberately have no text-only hot-swap
-                # mirror. Remember that ownership before streaming can remove
-                # permanently invalid images from the callback payload.
-                callback_only_voice_obj_ids = {
-                    id(cb) for cb in voice_snapshot
-                    if cb.get("media_images")
-                }
                 voice_commit_snapshot: tuple[dict, ...] = ()
 
                 # Server-side rejection of ``response.create`` (e.g.
@@ -1140,14 +1120,13 @@ class ProactiveMixin:
                     # supports manual inject, so this branch is unreachable in
                     # practice — kept so a hypothetical future provider that
                     # raises NotImplementedError degrades to hot-swap instead of
-                    # losing the cb. Drop only callbacks that have a text-only
-                    # hot-swap owner; media callbacks have no such mirror and
-                    # must remain on their sole queue.
+                    # losing the cb. Drop the proactive cbs so they don't loop
+                    # forever, but keep ``pending_extra_replies`` populated for
+                    # the next user-turn prime_context() drain.
                     voice_ids = {id(cb) for cb in voice_snapshot}
                     self.pending_agent_callbacks = [
                         cb for cb in self.pending_agent_callbacks
                         if id(cb) not in voice_ids
-                        or id(cb) in callback_only_voice_obj_ids
                     ]
                     logger.info(
                         "[%s] trigger_agent_callbacks: voice provider does not support manual inject; falling back to hot-swap (n=%d)",
@@ -2677,6 +2656,13 @@ class ProactiveMixin:
         Clears pending_agent_callbacks (NOT pending_extra_replies, which is
         consumed separately by the voice-mode hot-swap path).
         Returns an empty string if there are no callbacks.
+
+        Renders with the same grouped/source-aware logic as
+        :meth:`trigger_agent_callbacks` but in passive mode — so the resulting
+        string already includes its own outer header (PASSIVE for delivery
+        ``"passive"`` callbacks, PROACTIVE for any "proactive" ones that
+        ended up here because the SM denied the claim earlier). The caller
+        therefore should NOT prepend an additional notification template.
         """
         self._purge_undeliverable_callbacks()
         if not self.pending_agent_callbacks:
@@ -2700,11 +2686,15 @@ class ProactiveMixin:
         if not active_callbacks:
             return ""
         from config import AGENT_CALLBACK_TOTAL_MAX_TOKENS
+        # Budget-aware selection: render (and ack) only the callbacks that fit
+        # the total budget this turn; defer the rest to the next drain instead
+        # of acking them as delivered while their text falls off the cap.
         callbacks_snapshot, _deferred = _select_callbacks_within_token_budget(
             active_callbacks, AGENT_CALLBACK_TOTAL_MAX_TOKENS
         )
         delivered_to_prompt = False
         try:
+            # 同上；user_language 为空时才回落全局语言（此前回落的是短码）。
             _lang = normalize_language_code(
                 getattr(self, 'user_language', '') or get_global_language_full(), format='full'
             )
@@ -2721,6 +2711,8 @@ class ProactiveMixin:
             if delivered_to_prompt:
                 for cb in callbacks_snapshot:
                     resolve_callback_delivery_ack(cb, True)
+            # Keep claimed and over-budget callbacks in their original order;
+            # only the entries actually rendered by this drain leave the queue.
             delivered_obj_ids = {id(cb) for cb in callbacks_snapshot}
             self.pending_agent_callbacks = [
                 cb for cb in self.pending_agent_callbacks

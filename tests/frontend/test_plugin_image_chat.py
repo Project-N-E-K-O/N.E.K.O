@@ -189,7 +189,7 @@ def test_structured_passthrough_image_uses_the_existing_assistant_lifecycle(
 
 
 @pytest.mark.frontend
-def test_structured_passthrough_waits_for_the_react_host(
+def test_structured_passthrough_keeps_existing_pending_status_behavior(
     mock_page: Page,
     running_server: str,
 ) -> None:
@@ -221,7 +221,7 @@ def test_structured_passthrough_waits_for_the_react_host(
     assert result["accepted"] is True
     assert result["beforeRestore"] == 0
     assert len(result["messages"]) == 1
-    assert result["messages"][0]["status"] == "sent"
+    assert result["messages"][0]["status"] == "streaming"
     assert result["messages"][0]["blocks"] == [
         {"type": "text", "text": "caption"},
         {"type": "image", "url": _ONE_PIXEL_PNG},

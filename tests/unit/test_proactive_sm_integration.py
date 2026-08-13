@@ -185,29 +185,6 @@ async def test_failed_passive_callback_media_stays_queued_for_later_turn():
     assert not callback.get(SWAP_PRIME_DELIVERY_CLAIM_KEY)
 
 
-async def test_offline_multi_image_failure_rolls_back_partial_staging():
-    session = MagicMock(spec=OmniOfflineClient)
-    session._pending_images = ["existing-user-image"]
-
-    async def _stream(image):
-        if image == "bad-image":
-            raise RuntimeError("decode failed")
-        session._pending_images.append(image)
-
-    session.stream_image = AsyncMock(side_effect=_stream)
-    mgr = _make_mgr(session=session)
-    callback = {
-        "delivery_mode": "passive",
-        "summary": "retry the whole callback",
-        "media_images": ["first-image", "bad-image"],
-    }
-    mgr.pending_agent_callbacks = [callback]
-
-    assert await mgr.drain_agent_callbacks_for_llm_with_media() == ""
-    assert session._pending_images == ["existing-user-image"]
-    assert mgr.pending_agent_callbacks == [callback]
-
-
 async def test_failed_media_callback_does_not_block_text_only_callback():
     session = MagicMock(spec=OmniOfflineClient)
     session._pending_images = []
@@ -1368,42 +1345,6 @@ async def test_voice_mode_not_implemented_falls_back_to_hot_swap():
     assert mgr.pending_agent_callbacks == []  # proactive cb dropped
     # 精确相等而非 truthy：锁死 fallback 不会误改/重复 pending_extra_replies
     assert mgr.pending_extra_replies == original_extras  # hot-swap channel preserved
-
-
-async def test_voice_media_callback_survives_unsupported_manual_inject():
-    """Without a text mirror, the defensive fallback must keep its owner."""
-    sess = _make_voice_sess()
-
-    async def _inject(text, *, on_rejected=None, events_before_text=()):
-        raise NotImplementedError("test provider: no manual inject")
-
-    sess.inject_text_and_request_response = _inject
-
-    async def _stream_image(
-        _image_b64,
-        *,
-        bypass_rate_limit=False,
-        cache_latest=True,
-        on_rejected=None,
-    ):
-        return None
-
-    sess.stream_image = _stream_image
-    mgr = _make_mgr(session=sess)
-    callback = {
-        "origin": "event",
-        "status": "completed",
-        "summary": "image stays queued",
-        "delivery_mode": "proactive",
-        "media_images": ["eA=="],
-    }
-    core_module.LLMSessionManager.enqueue_agent_callback(mgr, callback)
-
-    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
-
-    assert delivered is False
-    assert mgr.pending_agent_callbacks == [callback]
-    assert mgr.pending_extra_replies == []
 
 
 async def test_inject_gemini_routes_through_send_client_content():
