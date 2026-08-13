@@ -15,6 +15,7 @@ import pytest
 
 from app.memory_server import locale_state
 from main_logic.core import notify as core_notify
+from utils import language_utils as core_language_utils
 from main_routers.characters_router import cards as characters_cards
 from main_routers.characters_router import language_preference as preference_router
 from utils.character_memory import character_config_mutation_lock
@@ -28,10 +29,13 @@ def _install_language_preference_stubs(
     *,
     manager,
     changed: bool,
-    global_language: str = "ja",
-    global_language_error: bool = False,
+    durable_after: str | None = None,
 ):
-    """Wire the minimal seams apply_character_language_preference depends on."""
+    """Wire the minimal seams apply_character_language_preference depends on.
+
+    ``durable_after`` is what the post-reconciliation freshness GET reports;
+    ``None`` means "still whatever this request just wrote".
+    """
     calls: list = []
     config_manager = SimpleNamespace(memory_dir="unused")
 
@@ -39,8 +43,10 @@ def _install_language_preference_stubs(
         calls.append(("load", name))
         return config_manager, {"猫娘": {name: {}}}
 
-    async def persist_locale(method, name, *, language=None):
+    async def request_locale(method, name, *, language=None):
         calls.append(("persist", method, name, language))
+        if method == "GET":
+            return {"success": True, "language": durable_after}
         return {
             "success": True,
             "language": language,
@@ -52,20 +58,14 @@ def _install_language_preference_stubs(
         assert expected_generation
         calls.append(("clear_recent", name))
 
-    def read_global_language():
-        if global_language_error:
-            raise RuntimeError("global language cache unavailable")
-        return global_language
-
     class SessionManager:
         def get(self, _name):
             return manager
 
     monkeypatch.setattr(preference_router, "_load_existing_character", load_character)
-    monkeypatch.setattr(preference_router, "_request_memory_prompt_locale", persist_locale)
+    monkeypatch.setattr(preference_router, "_request_memory_prompt_locale", request_locale)
     monkeypatch.setattr(preference_router, "_clear_character_recent_history", clear_recent)
     monkeypatch.setattr(preference_router, "get_session_manager", SessionManager)
-    monkeypatch.setattr(preference_router, "get_global_language_full", read_global_language)
     return calls
 
 
@@ -94,16 +94,25 @@ class _IdleManager:
         pass
 
 
-async def test_unset_live_locale_matching_global_language_skips_isolation(monkeypatch):
+async def test_unset_live_locale_never_forces_isolation(monkeypatch):
+    """An unset manager locale carries no evidence about the rendered history.
+
+    Startup builds a manager per character with ``user_language=None``; such a
+    manager sends no locale to /new_dialog, so existing context was rendered in
+    the character's own durable preference regardless of the process locale.
+    Re-selecting the already-durable language must therefore stay side-effect
+    free even when the global locale differs from it.
+    """
     manager = _IdleManager()
     calls = _install_language_preference_stubs(
-        monkeypatch, manager=manager, changed=False, global_language="ja",
+        monkeypatch, manager=manager, changed=False,
+    )
+    monkeypatch.setattr(
+        core_language_utils, "get_global_language_full", lambda: "en",
     )
 
     result = await preference_router.apply_character_language_preference("Mimi", "ja")
 
-    # Nothing changed durably and the session was already rendering in 'ja' via
-    # the process locale, so recent conversation context must survive untouched.
     assert result["changed"] is False
     assert result["recent_history_cleared"] is False
     assert result["session_reset"] is False
@@ -114,10 +123,10 @@ async def test_unset_live_locale_matching_global_language_skips_isolation(monkey
     assert manager._user_language_explicit is True
 
 
-async def test_unset_live_locale_differing_from_global_language_isolates(monkeypatch):
+async def test_unset_live_locale_still_isolates_when_the_durable_value_changed(monkeypatch):
     manager = _IdleManager()
     calls = _install_language_preference_stubs(
-        monkeypatch, manager=manager, changed=False, global_language="en",
+        monkeypatch, manager=manager, changed=True,
     )
 
     result = await preference_router.apply_character_language_preference("Mimi", "ja")
@@ -127,13 +136,13 @@ async def test_unset_live_locale_differing_from_global_language_isolates(monkeyp
     assert len(manager.settled) == 1
 
 
-async def test_unreadable_global_language_fails_closed_and_isolates(monkeypatch):
+async def test_differing_live_locale_isolates_even_without_a_durable_change(monkeypatch):
+    """A live session speaking another language is real evidence, and still counts."""
     manager = _IdleManager()
+    manager.user_language = "en"
+    manager._user_language_explicit = True
     calls = _install_language_preference_stubs(
-        monkeypatch,
-        manager=manager,
-        changed=False,
-        global_language_error=True,
+        monkeypatch, manager=manager, changed=False,
     )
 
     result = await preference_router.apply_character_language_preference("Mimi", "ja")
@@ -163,7 +172,7 @@ async def test_session_reconciliation_runs_without_the_config_transaction(monkey
 
     manager = ConnectorManager()
     calls = _install_language_preference_stubs(
-        monkeypatch, manager=manager, changed=True, global_language="en",
+        monkeypatch, manager=manager, changed=True,
     )
 
     result = await asyncio.wait_for(
@@ -184,7 +193,7 @@ async def test_durable_write_still_runs_inside_the_config_transaction(monkeypatc
     observed = {}
 
     _install_language_preference_stubs(
-        monkeypatch, manager=manager, changed=False, global_language="ja",
+        monkeypatch, manager=manager, changed=False,
     )
 
     async def persist_locale(method, name, *, language=None):
@@ -203,26 +212,110 @@ async def test_durable_write_still_runs_inside_the_config_transaction(monkeypatc
     assert observed["locked_during_persist"] is True
 
 
-async def test_memory_server_conflict_becomes_a_typed_error(monkeypatch):
-    class _Response:
-        status_code = 409
+class _StubResponse:
+    def __init__(self, status_code, payload):
+        self.status_code = status_code
+        self._payload = payload
+        self.raised = False
 
-        def raise_for_status(self):
-            raise AssertionError("409 must be classified before raise_for_status")
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            self.raised = True
+            raise RuntimeError(f"HTTP {self.status_code}")
 
-        def json(self):
-            raise AssertionError("409 body must not be parsed as a success payload")
+    def json(self):
+        return self._payload
 
+
+def _install_stub_client(monkeypatch, response):
     class _Client:
         async def put(self, *_args, **_kwargs):
-            return _Response()
+            return response
+
+        async def get(self, *_args, **_kwargs):
+            return response
 
     monkeypatch.setattr(preference_router, "get_internal_http_client", lambda: _Client())
+
+
+async def test_memory_server_conflict_becomes_a_typed_error(monkeypatch):
+    response = _StubResponse(
+        409,
+        {"detail": {"error_code": "language_preference_superseded"}},
+    )
+    _install_stub_client(monkeypatch, response)
 
     with pytest.raises(preference_router.LanguagePreferenceConflictError):
         await preference_router._request_memory_prompt_locale(
             "PUT", "Mimi", language="ja",
         )
+    assert response.raised is False, "冲突必须在 raise_for_status 之前分类"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        # Cloudsave maintenance fence.
+        {"success": False, "code": "cloudsave_maintenance", "retryable": True},
+        # Storage-limited startup.
+        {"ok": False, "error_code": "storage_startup_blocked", "limited_mode": True},
+        # A 409 whose body we cannot parse into a known shape.
+        {"detail": "something else entirely"},
+    ],
+)
+async def test_unrelated_409s_are_not_reported_as_superseded(monkeypatch, payload):
+    """Only this endpoint's causal-order conflict means "re-read the state".
+
+    A maintenance fence or blocked startup persisted nothing, so reporting it as
+    superseded would send the client off to re-read a value that never changed
+    instead of surfacing a retryable failure.
+    """
+    _install_stub_client(monkeypatch, _StubResponse(409, payload))
+
+    with pytest.raises(Exception) as excinfo:
+        await preference_router._request_memory_prompt_locale(
+            "PUT", "Mimi", language="ja",
+        )
+    assert not isinstance(
+        excinfo.value, preference_router.LanguagePreferenceConflictError
+    )
+
+
+async def test_late_response_is_not_reported_as_a_successful_save(monkeypatch):
+    """A preference replaced during reconciliation must not return 200.
+
+    Reconciliation runs outside the transaction, so a second window can commit a
+    newer locale meanwhile.  Returning 200 with the older language would let a
+    late response overwrite the frontend's shared cache with a value the server
+    no longer holds.
+    """
+    manager = _IdleManager()
+    _install_language_preference_stubs(
+        monkeypatch, manager=manager, changed=True, durable_after="en",
+    )
+
+    with pytest.raises(preference_router.LanguagePreferenceConflictError):
+        await preference_router.apply_character_language_preference("Mimi", "ja")
+
+
+async def test_unreadable_freshness_check_still_reports_the_save(monkeypatch):
+    """Fail soft: a write we merely cannot re-read is not a superseded write."""
+    manager = _IdleManager()
+    _install_language_preference_stubs(monkeypatch, manager=manager, changed=True)
+
+    original = preference_router._request_memory_prompt_locale
+
+    async def flaky(method, name, *, language=None):
+        if method == "GET":
+            raise RuntimeError("memory server unreachable")
+        return await original(method, name, language=language)
+
+    monkeypatch.setattr(preference_router, "_request_memory_prompt_locale", flaky)
+
+    result = await preference_router.apply_character_language_preference("Mimi", "ja")
+
+    assert result["success"] is True
+    assert result["language"] == "ja"
 
 
 async def test_conflict_is_reported_as_409_not_503(monkeypatch):

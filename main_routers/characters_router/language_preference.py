@@ -25,11 +25,7 @@ from fastapi.responses import JSONResponse
 from config import MEMORY_SERVER_PORT
 from utils.internal_http_client import get_internal_http_client
 from utils.character_memory import character_config_mutation_lock
-from utils.language_utils import (
-    get_global_language_full,
-    is_supported_language_code,
-    normalize_language_code,
-)
+from utils.language_utils import is_supported_language_code, normalize_language_code
 from utils.preferences import aload_ui_language_override
 from utils.recent_file import RecentFileDeletedError, capture_recent_generation
 
@@ -53,6 +49,18 @@ class LanguagePreferenceConflictError(Exception):
     """
 
 
+def _is_superseded_conflict(response) -> bool:
+    """Tell this endpoint's causal-order conflict from the server's other 409s."""
+    try:
+        payload = response.json()
+    except Exception:
+        return False
+    detail = payload.get("detail") if isinstance(payload, dict) else None
+    if not isinstance(detail, dict):
+        return False
+    return detail.get("error_code") == "language_preference_superseded"
+
+
 async def _request_memory_prompt_locale(
     method: str,
     name: str,
@@ -72,9 +80,14 @@ async def _request_memory_prompt_locale(
             json={"language": language},
             timeout=5.0,
         )
-    if response.status_code == 409:
+    if response.status_code == 409 and _is_superseded_conflict(response):
         # Raised before raise_for_status so the conflict keeps its own identity:
         # the loser of a concurrent write must not be reported as a failure.
+        # Every other 409 the memory server can answer with (cloudsave
+        # maintenance fence, storage-limited startup) is a retryable failure and
+        # must keep falling through to the generic error path below -- reporting
+        # those as "superseded" would tell the client to re-read state that was
+        # never written.
         raise LanguagePreferenceConflictError(
             "a newer language preference superseded this request"
         )
@@ -94,17 +107,6 @@ async def _load_existing_character(name: str) -> tuple[object, dict]:
     if name not in (characters.get("猫娘") or {}):
         raise LookupError("角色不存在")
     return config_manager, characters
-
-
-def _normalized_global_language() -> str | None:
-    """Return the process locale a session without its own locale renders in."""
-    try:
-        global_language = get_global_language_full()
-    except Exception:
-        return None
-    if not is_supported_language_code(global_language):
-        return None
-    return normalize_language_code(global_language, format="full")
 
 
 async def apply_character_language_preference(name: str, language: str) -> dict:
@@ -166,16 +168,19 @@ async def _reconcile_after_language_change(
         if isinstance(live_language, str) and is_supported_language_code(live_language)
         else None
     )
-    # A manager that never received a locale is not "unknown": it has been
-    # rendering in the process locale all along, so that is what the recent
-    # context was actually written in.  Comparing against the global language
-    # keeps genuine mismatches isolating while making a re-select of the
-    # already-active language side-effect free (a manager can legitimately have
-    # no locale of its own, e.g. when only the standalone card-manager page is
-    # open and no chat websocket has ever pushed one).  When the global locale
-    # is unreadable we fail closed and treat the live locale as different.
-    effective_live_language = normalized_live_language or _normalized_global_language()
-    live_locale_changed = manager is not None and effective_live_language != normalized
+    # An unset manager locale is *absence of evidence*, not evidence that the
+    # history was rendered in the process locale.  Startup creates a manager for
+    # every character with ``user_language=None``, and such a manager sends
+    # neither ``language`` nor ``render_language`` to /new_dialog, which then
+    # falls back to the character's own durable preference -- so the existing
+    # context was rendered in the durable locale, whatever the global locale is.
+    # Whether that durable locale actually changed is exactly what ``changed``
+    # already reports, so a manager with no locale of its own must not
+    # contribute an isolation signal here.
+    live_locale_changed = (
+        normalized_live_language is not None
+        and normalized_live_language != normalized
+    )
     needs_explicit_promotion = manager is not None and not getattr(
         manager,
         "_user_language_explicit",
@@ -329,7 +334,40 @@ async def _reconcile_after_language_change(
                 "error": "语言偏好已保存，但近期上下文清理失败",
             })
 
+    await _assert_still_current(name, normalized)
     return result
+
+
+async def _assert_still_current(name: str, normalized: str) -> None:
+    """Refuse to report success for a preference that has since been replaced.
+
+    Reconciliation runs outside the transaction, so a second window can commit a
+    newer locale while this request is still settling.  Returning 200 with the
+    older language would let a late-arriving response overwrite the frontend's
+    shared local cache with a value the server no longer holds, and a later
+    websocket session could then re-publish that obsolete preference.
+
+    Fail soft on a read error: a durable write that we merely cannot re-read
+    must not be reported as superseded.
+    """
+    try:
+        current = await _request_memory_prompt_locale("GET", name)
+    except LanguagePreferenceConflictError:
+        raise
+    except Exception as exc:
+        logger.warning(
+            "语言偏好写入后校验失败，按已保存返回: name=%s err=%s",
+            name,
+            exc,
+        )
+        return
+    durable = current.get("language")
+    if is_supported_language_code(durable) and (
+        normalize_language_code(durable, format="full") != normalized
+    ):
+        raise LanguagePreferenceConflictError(
+            "a newer language preference superseded this request"
+        )
 
 
 @router.get("/character/{name}/language-preference")

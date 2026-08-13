@@ -3389,9 +3389,16 @@ async def set_prompt_locale_preference(
         order=order,
     )
     if not applied or persisted != normalized:
+        # Structured detail on purpose: this server answers 409 for several
+        # unrelated reasons (cloudsave maintenance fence, storage-limited
+        # startup).  Callers must be able to tell a superseded write -- which
+        # means "a newer preference already won" -- from a retryable failure.
         raise HTTPException(
             status_code=409,
-            detail="A newer language preference superseded this request",
+            detail={
+                "error_code": "language_preference_superseded",
+                "message": "A newer language preference superseded this request",
+            },
         )
     return {
         "success": True,

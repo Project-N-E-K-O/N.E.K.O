@@ -915,8 +915,10 @@ async def test_character_language_change_respects_session_lifecycle_owner(
         if lifecycle_state == "idle":
             expected_calls.append("settle_idle")
         # The clear callback runs outside the caller's transaction now, so it
-        # re-validates the character identity itself before clearing.
-        expected_calls.extend(["load", "clear_recent"])
+        # re-validates the character identity itself before clearing; the final
+        # "persist" is the post-reconciliation freshness GET that refuses to
+        # report success for a preference something else has since replaced.
+        expected_calls.extend(["load", "clear_recent", "persist"])
         assert [call[0] for call in calls] == expected_calls
         return
 
