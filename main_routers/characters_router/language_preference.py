@@ -362,7 +362,14 @@ async def _assert_still_current(name: str, normalized: str) -> None:
         )
         return
     durable = current.get("language")
-    if is_supported_language_code(durable) and (
+    # A *successful* read that no longer carries what we just wrote means this
+    # request no longer describes durable state.  An empty value is not the
+    # benign case: the character being deleted or renamed during the unlocked
+    # settlement takes prompt_locale.json with it, and returning 200 would let
+    # the card manager cache this language after the cleanup -- which a later
+    # reuse of the same name would inherit.  (A read that *fails* is handled
+    # above and stays fail-soft; this branch only sees a definite answer.)
+    if not is_supported_language_code(durable) or (
         normalize_language_code(durable, format="full") != normalized
     ):
         raise LanguagePreferenceConflictError(

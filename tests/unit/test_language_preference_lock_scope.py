@@ -24,20 +24,26 @@ from utils.character_memory import character_config_mutation_lock
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
+_UNCHANGED = object()
+
+
 def _install_language_preference_stubs(
     monkeypatch,
     *,
     manager,
     changed: bool,
-    durable_after: str | None = None,
+    durable_after=_UNCHANGED,
 ):
     """Wire the minimal seams apply_character_language_preference depends on.
 
-    ``durable_after`` is what the post-reconciliation freshness GET reports;
-    ``None`` means "still whatever this request just wrote".
+    ``durable_after`` is what the post-reconciliation freshness GET reports.
+    The default keeps whatever this request wrote; pass a different locale to
+    simulate a competing window, or ``None`` to simulate the sidecar vanishing
+    with a deleted/renamed character.
     """
     calls: list = []
     config_manager = SimpleNamespace(memory_dir="unused")
+    written: dict = {}
 
     async def load_character(name):
         calls.append(("load", name))
@@ -46,7 +52,15 @@ def _install_language_preference_stubs(
     async def request_locale(method, name, *, language=None):
         calls.append(("persist", method, name, language))
         if method == "GET":
-            return {"success": True, "language": durable_after}
+            return {
+                "success": True,
+                "language": (
+                    written.get("language")
+                    if durable_after is _UNCHANGED
+                    else durable_after
+                ),
+            }
+        written["language"] = language
         return {
             "success": True,
             "language": language,
@@ -292,6 +306,23 @@ async def test_late_response_is_not_reported_as_a_successful_save(monkeypatch):
     manager = _IdleManager()
     _install_language_preference_stubs(
         monkeypatch, manager=manager, changed=True, durable_after="en",
+    )
+
+    with pytest.raises(preference_router.LanguagePreferenceConflictError):
+        await preference_router.apply_character_language_preference("Mimi", "ja")
+
+
+async def test_vanished_durable_locale_is_not_reported_as_a_successful_save(monkeypatch):
+    """A deleted/renamed character takes prompt_locale.json with it.
+
+    The freshness read then answers successfully with an empty locale.  That is
+    not the benign case: returning 200 would let the card manager cache this
+    language after the deletion cleanup, and a later reuse of the same name
+    would inherit it.
+    """
+    manager = _IdleManager()
+    _install_language_preference_stubs(
+        monkeypatch, manager=manager, changed=True, durable_after=None,
     )
 
     with pytest.raises(preference_router.LanguagePreferenceConflictError):

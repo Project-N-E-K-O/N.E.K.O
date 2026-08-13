@@ -854,8 +854,13 @@ async def test_character_language_change_respects_session_lifecycle_owner(
         calls.append(("load", name))
         return config_manager, {"当前猫娘": name, "猫娘": {name: {}}}
 
+    _durable = {}
+
     async def persist_locale(method, name, *, language=None):
         calls.append(("persist", method, name, language))
+        if method == "GET":
+            return {"success": True, "language": _durable.get("language")}
+        _durable["language"] = language
         return {
             "success": True,
             "language": language,
@@ -944,8 +949,13 @@ async def test_unchanged_language_reconciliation_isolates_the_live_session(monke
         calls.append(("load", name))
         return config_manager, {"当前猫娘": name, "猫娘": {name: {}}}
 
+    _durable = {}
+
     async def persist_locale(method, name, *, language=None):
         calls.append(("persist", method, name, language))
+        if method == "GET":
+            return {"success": True, "language": _durable.get("language")}
+        _durable["language"] = language
         return {
             "success": True,
             "language": language,
@@ -1074,6 +1084,8 @@ async def test_character_language_changes_are_serialized_through_side_effects(mo
     release_first = asyncio.Event()
 
     async def persist_locale(_method, name, *, language=None):
+        if _method == "GET":
+            return {"success": True, "language": language or "ja"}
         entered.append((name, language))
         if language == "ja":
             first_entered.set()
@@ -1150,6 +1162,8 @@ async def test_language_save_and_identity_mutation_share_global_lock(
         return config_manager, {"猫娘": {name: {}}}
 
     async def persist_locale(_method, name, *, language=None):
+        if _method == "GET":
+            return {"success": True, "language": language or "ja"}
         calls.append(("save", name, language))
         save_entered.set()
         if save_first:
@@ -1256,7 +1270,12 @@ async def test_late_language_clear_is_fenced_by_recent_identity(
             raise LookupError("角色不存在")
         return config_manager, {"猫娘": {name: {}}}
 
+    _durable = {}
+
     async def persist_locale(method, _name, *, language=None):
+        if method == "GET":
+            return {"success": True, "language": _durable.get("language")}
+        _durable["language"] = language
         return {
             "success": True,
             "language": language,
