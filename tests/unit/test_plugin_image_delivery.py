@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import warnings
 from io import BytesIO
 from unittest.mock import AsyncMock, MagicMock
 
@@ -1210,13 +1211,21 @@ def _noise_png_base64(target_bytes: int) -> str:
 
 
 def _bomb_png_base64(width: int = 12000, height: int = 12000) -> str:
-    """A decompression bomb: ~440 KiB on the wire, ~0.58 GB decoded.
+    """A decompression bomb: ~40 KiB on the wire, ~0.58 GB decoded as RGBA.
 
-    12000x12000 = 144 MP sits UNDER Pillow's own 178 MP ceiling on purpose, so
+    12000x12000 = 144 MP sits UNDER Pillow's 178 MP hard error on purpose, so
     this exercises the host's pixel check rather than Pillow's built-in guard.
+
+    Built in 1-bit mode: the fixture only needs the DIMENSIONS to be huge, and
+    "1" holds the pixel buffer to 18 MB where "RGB" would allocate 432 MB and
+    risk an OOM kill on a memory-capped CI runner.
     """
     source = BytesIO()
-    Image.new("RGB", (width, height), "white").save(source, format="PNG")
+    with warnings.catch_warnings():
+        # Pillow warns (not errors) above 89 MP; tripping its warning is the
+        # point of the fixture, not a problem to surface in test output.
+        warnings.simplefilter("ignore", Image.DecompressionBombWarning)
+        Image.new("1", (width, height), 1).save(source, format="PNG")
     return base64.b64encode(source.getvalue()).decode("ascii")
 
 
@@ -1244,8 +1253,8 @@ def test_chat_blocks_cap_inline_data_url_bytes(monkeypatch) -> None:
 # Decompression bombs
 #
 # Bytes and pixels are independent axes. A single-colour 12000x12000 PNG is
-# ~440 KiB on the wire — it sails through any byte budget — while the renderer
-# pays ~0.58 GB to decode it. Only a pixel check catches this class.
+# ~40 KiB on the wire — it sails through any byte budget — while the renderer
+# pays ~0.58 GB to decode it as RGBA. Only a pixel check catches this class.
 # ---------------------------------------------------------------------------
 
 
