@@ -762,35 +762,18 @@ async def _handle_agent_event(event: dict):
                         # the image shares the proactive response's context.
                         deferred_callback_images.append(resolved_b64)
                         continue
-                    if isinstance(sess, core.OmniOfflineClient):
-                        # Offline stream_image stores frames until the next
-                        # text prompt. Keep the image on its callback so its
-                        # text and image share the same drain snapshot.
-                        deferred_callback_images.append(resolved_b64)
-                        continue
-                    if getattr(sess, "_supports_native_image", None) is False:
-                        # Non-native realtime providers turn callback-owned
-                        # images into a description at the callback drain
-                        # boundary. The ambient-frame path below does not
-                        # inject that description into a natural text turn.
-                        deferred_callback_images.append(resolved_b64)
-                        continue
-                    # ``read`` is passive: inject immediately when a session
-                    # exists, otherwise retain it on the bounded callback queue
-                    # for the next session.  Dropping here would make an image
-                    # pushed between sessions disappear from model context.
+                    # ``read`` is best-effort input to the current session.
+                    # It does not create a cross-session media inbox.
                     if stream_image is None:
                         logger.debug(
-                            "[EventBus] image media_part deferred: session=%s has no stream_image",
+                            "[EventBus] read image dropped: session=%s has no stream_image",
                             type(sess).__name__ if sess else "None",
                         )
-                        deferred_callback_images.append(resolved_b64)
                         continue
                     try:
                         await stream_image(
                             resolved_b64,
                             bypass_rate_limit=True,
-                            cache_latest=False,
                         )
                         logger.debug(
                             "[EventBus] image media_part injected (base64 len=%d, mime=%s)",
@@ -799,10 +782,9 @@ async def _handle_agent_event(event: dict):
                         )
                     except Exception as e:
                         logger.warning(
-                            "[EventBus] image media_part stream_image failed; deferred: %s",
+                            "[EventBus] read image stream_image failed; dropped: %s",
                             e,
                         )
-                        deferred_callback_images.append(resolved_b64)
 
             # ``visibility`` and ``ai_behavior`` are orthogonal. For read/respond,
             # render URL-backed images through a display-only frame while model
@@ -969,8 +951,7 @@ async def _handle_agent_event(event: dict):
                     "priority": cb_priority,
                     "coalesce_key": cb_coalesce_key,
                     # Respond images stream at manager release. Read images are
-                    # retained when immediate model injection is unavailable or
-                    # fails; the next text drain or natural voice swap consumes them.
+                    # best-effort input to the current session and are not queued.
                     "media_images": deferred_callback_images,
                     "timestamp": event.get("timestamp") or "",
                     "metadata": event_metadata,

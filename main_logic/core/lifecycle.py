@@ -2387,22 +2387,7 @@ class LifecycleMixin:
                         self._select_passive_callbacks_for_swap_prime()
                     )
                     if _passive_swap_text:
-                        try:
-                            _media_context = await self._stream_passive_callback_media(
-                                _passive_sel,
-                                self.pending_session,
-                            )
-                        except Exception as e:
-                            logger.warning(
-                                "Final Swap Sequence: passive media stream failed; "
-                                "abandoning pending session: %s",
-                                e,
-                            )
-                            await self._cleanup_pending_session_resources()
-                            await self._reset_preparation_state(clear_main_cache=True)
-                            self.is_hot_swap_imminent = False
-                            return
-                        final_prime_text += "\n" + _passive_swap_text + _media_context
+                        final_prime_text += "\n" + _passive_swap_text
                 try:
                     await self.pending_session.prime_context(final_prime_text, skipped=True)
                 except (
@@ -2444,14 +2429,7 @@ class LifecycleMixin:
                 )
                 if _passive_swap_text:
                     try:
-                        _media_context = await self._stream_passive_callback_media(
-                            _passive_sel,
-                            self.pending_session,
-                        )
-                        await self.pending_session.prime_context(
-                            _passive_swap_text + _media_context,
-                            skipped=True,
-                        )
+                        await self.pending_session.prime_context(_passive_swap_text, skipped=True)
                         _prime_selected_passive_cbs = _passive_sel
                     except Exception as e:
                         logger.warning(

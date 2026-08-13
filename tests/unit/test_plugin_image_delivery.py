@@ -265,12 +265,11 @@ async def test_plugin_image_url_is_fetched_asynchronously_for_model_context(monk
     manager.session.stream_image.assert_awaited_once_with(
         base64.b64encode(image_bytes).decode("ascii"),
         bypass_rate_limit=True,
-        cache_latest=False,
     )
 
 
 @pytest.mark.asyncio
-async def test_native_realtime_read_does_not_cache_plugin_image(
+async def test_native_realtime_read_uses_current_session_image_path(
     monkeypatch,
 ) -> None:
     from app import main_server
@@ -305,7 +304,6 @@ async def test_native_realtime_read_does_not_cache_plugin_image(
     session.stream_image.assert_awaited_once_with(
         encoded,
         bypass_rate_limit=True,
-        cache_latest=False,
     )
     callback = manager.enqueue_agent_callback.call_args.args[0]
     assert callback["delivery_mode"] == "passive"
@@ -313,8 +311,7 @@ async def test_native_realtime_read_does_not_cache_plugin_image(
 
 
 @pytest.mark.asyncio
-async def test_offline_read_images_are_bounded_per_callback_event(monkeypatch) -> None:
-    """Separate read events must not accumulate in the offline session image pool."""
+async def test_offline_read_uses_the_current_session_queue(monkeypatch) -> None:
     from app import main_server
     from main_logic.omni_offline_client import OmniOfflineClient
 
@@ -348,21 +345,21 @@ async def test_offline_read_images_are_bounded_per_callback_event(monkeypatch) -
             }],
         })
 
-    offline_session.stream_image.assert_not_awaited()
+    assert offline_session.stream_image.await_count == 2
     assert manager.enqueue_agent_callback.call_count == 2
-    assert [
-        call.args[0]["media_images"]
+    assert all(
+        call.args[0]["media_images"] == []
         for call in manager.enqueue_agent_callback.call_args_list
-    ] == [[encoded], [encoded]]
+    )
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("text", ["", "remember this image"], ids=["image-only", "text-and-image"])
-async def test_read_image_waits_in_callback_when_no_model_session(
+async def test_read_image_is_not_queued_when_no_model_session(
     monkeypatch,
     text: str,
 ) -> None:
-    """A passive image survives until the next model session is available."""
+    """Read is best-effort input to the current model session only."""
     from app import main_server
 
     manager = _manager()
@@ -388,14 +385,13 @@ async def test_read_image_waits_in_callback_when_no_model_session(
         "media_parts": [{"type": "image", "url": _IMAGE_URL, "mime": "image/jpeg"}],
     })
 
-    manager.enqueue_agent_callback.assert_called_once()
-    callback = manager.enqueue_agent_callback.call_args.args[0]
-    assert callback["delivery_mode"] == "passive"
-    assert callback["media_images"] == [encoded]
+    assert manager.enqueue_agent_callback.call_count == int(bool(text))
+    if text:
+        assert manager.enqueue_agent_callback.call_args.args[0]["media_images"] == []
 
 
 @pytest.mark.asyncio
-async def test_read_image_waits_for_callback_drain_on_non_native_realtime(
+async def test_non_native_realtime_read_uses_current_session_image_path(
     monkeypatch,
 ) -> None:
     from app import main_server
@@ -423,15 +419,18 @@ async def test_read_image_waits_for_callback_drain_on_non_native_realtime(
         "media_parts": [{"type": "image", "url": _IMAGE_URL, "mime": "image/jpeg"}],
     })
 
-    manager.session.stream_image.assert_not_awaited()
+    manager.session.stream_image.assert_awaited_once_with(
+        encoded,
+        bypass_rate_limit=True,
+    )
     manager.enqueue_agent_callback.assert_called_once()
     callback = manager.enqueue_agent_callback.call_args.args[0]
-    assert callback["media_images"] == [encoded]
+    assert callback["media_images"] == []
     manager.submit_proactive_callback.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_read_image_stream_failure_keeps_image_for_next_turn(monkeypatch) -> None:
+async def test_read_image_stream_failure_is_not_queued(monkeypatch) -> None:
     from app import main_server
 
     manager = _manager()
@@ -460,11 +459,8 @@ async def test_read_image_stream_failure_keeps_image_for_next_turn(monkeypatch) 
     manager.session.stream_image.assert_awaited_once_with(
         encoded,
         bypass_rate_limit=True,
-        cache_latest=False,
     )
-    manager.enqueue_agent_callback.assert_called_once()
-    callback = manager.enqueue_agent_callback.call_args.args[0]
-    assert callback["media_images"] == [encoded]
+    manager.enqueue_agent_callback.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -885,7 +881,6 @@ async def test_image_delivery_obeys_visibility_and_ai_behavior(
         manager.session.stream_image.assert_awaited_once_with(
             encoded,
             bypass_rate_limit=True,
-            cache_latest=False,
         )
     else:
         manager.session.stream_image.assert_not_awaited()

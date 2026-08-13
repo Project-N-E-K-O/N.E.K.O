@@ -47,57 +47,6 @@ from .callback_render import _build_callback_instruction, _select_callbacks_with
 class ProactiveMixin:
     """Proactive delivery methods (see module docstring)."""
 
-    async def _stream_passive_callback_media(
-        self,
-        callbacks: list,
-        session,
-    ) -> str:
-        """Stream callback-owned passive images at their actual text/voice
-        delivery boundary and return any non-native vision descriptions."""
-        stream_image = getattr(session, "stream_image", None) if session else None
-        if stream_image is None and any(
-            isinstance(callback, dict) and callback.get("media_images")
-            for callback in callbacks
-        ):
-            raise RuntimeError("model session cannot accept passive callback images")
-
-        descriptions: list[str] = []
-        for callback in callbacks:
-            if not isinstance(callback, dict):
-                continue
-            images = list(callback.get("media_images") or [])
-            if not images:
-                continue
-            for image_b64 in images:
-                if isinstance(session, OmniRealtimeClient):
-                    if getattr(session, "_supports_native_image", False):
-                        await stream_image(
-                            image_b64,
-                            bypass_rate_limit=True,
-                            cache_latest=False,
-                        )
-                        continue
-                    description = await stream_image(
-                        image_b64,
-                        bypass_rate_limit=True,
-                        cache_latest=False,
-                    )
-                    if not getattr(session, "_supports_native_image", True):
-                        if not isinstance(description, str) or not description.strip():
-                            raise RuntimeError(
-                                "callback image analysis produced no description"
-                            )
-                    if isinstance(description, str) and description.strip():
-                        descriptions.append(description.strip())
-                elif isinstance(session, OmniOfflineClient):
-                    await stream_image(image_b64)
-                else:
-                    await stream_image(image_b64, bypass_rate_limit=True)
-        return "".join(
-            f"\n[实时屏幕截图或相机画面]: {description}"
-            for description in descriptions
-        )
-
     def note_user_engagement(self, *, at: float | None = None) -> None:
         """Record a genuine user interaction for silence-aware proactive guards."""
         engagement_at = float(time.time() if at is None else at)
@@ -2376,19 +2325,15 @@ class ProactiveMixin:
 
         Text mode: drained before the next stream_text call and injected via
         prompt_ephemeral(), OR proactively via trigger_agent_callbacks().
-        Text-only non-passive callbacks are also appended to
-        pending_extra_replies for voice-mode hot-swap fallback injection via
-        prime_context(). Media callbacks stay solely in
-        pending_agent_callbacks because the hot-swap mirror is text-only; a
-        second owner would let the text surface before its image and then be
-        repeated by direct voice delivery. Passive callbacks also stay only in
-        pending_agent_callbacks: mirroring them would let a context-only
-        ``read`` cue trigger session preparation and an unsolicited response.
-        Their voice-mode delivery point is instead the next
-        NATURALLY-occurring hot swap, which folds them into the new session's
-        prime text as background context
-        (``_select_passive_callbacks_for_swap_prime``) without ever triggering
-        a response.
+        Non-passive callbacks are also appended to pending_extra_replies for
+        voice-mode hot-swap fallback injection via prime_context(). Passive
+        callbacks deliberately stay only in pending_agent_callbacks: mirroring
+        them into pending_extra_replies would let a context-only ``read`` cue
+        trigger session preparation and an unsolicited response. Their
+        voice-mode delivery point is instead the next NATURALLY-occurring hot
+        swap, which folds them into the new session's prime text as background
+        context (``_select_passive_callbacks_for_swap_prime``) without ever
+        triggering a response.
 
         Voice queue element shape is structured (not flat text) so the
         hot-swap renderer can:
@@ -2403,9 +2348,8 @@ class ProactiveMixin:
         ``summary`` doesn't shadow a real ``detail`` via the legacy
         ``summary or detail`` chain.
 
-        For text-only non-passive callbacks the two queues stay independent
-        (text-mode drain and voice-mode hot-swap fire at different lifecycle
-        points).
+        For non-passive callbacks the two queues stay independent (text-mode
+        drain and voice-mode hot-swap fire at different lifecycle points).
         """
         try:
             from config import (
@@ -2454,7 +2398,7 @@ class ProactiveMixin:
                 and not error_message
                 and not source_name
                 and status == "completed"
-                and not callback.get("media_images")
+                and (is_passive or not callback.get("media_images"))
             ):
                 return
             # Stable delivery id so the voice inject success path can
@@ -2585,7 +2529,7 @@ class ProactiveMixin:
                     callback[DELIVERY_RETRACTED_KEY] = True
                     return
             self.pending_agent_callbacks.append(callback)
-            if not is_passive and not callback.get("media_images"):
+            if not is_passive:
                 self.pending_extra_replies.append({
                     "_callback_delivery_id": delivery_id,
                     # Stamp the coalesce_key + submission seq so a later same-key cue
@@ -2718,76 +2662,3 @@ class ProactiveMixin:
                 cb for cb in self.pending_agent_callbacks
                 if id(cb) not in delivered_obj_ids
             ]
-
-    async def drain_agent_callbacks_for_llm_with_media(self) -> str:
-        """Drain the next callback snapshot after staging its owned images."""
-        self._purge_undeliverable_callbacks()
-        candidates = list(self.pending_agent_callbacks)
-        self._retract_unavailable_topic_hook_snapshots(candidates)
-        self._retract_stale_coalesced(candidates)
-        active = [
-            callback
-            for callback in self.filter_deliverable_callbacks(candidates)
-            if not callback.get(SWAP_PRIME_DELIVERY_CLAIM_KEY)
-        ]
-        if not active:
-            return ""
-        from config import AGENT_CALLBACK_TOTAL_MAX_TOKENS
-        callbacks_snapshot, _ = _select_callbacks_within_token_budget(
-            active, AGENT_CALLBACK_TOTAL_MAX_TOKENS
-        )
-        if not any(callback.get("media_images") for callback in callbacks_snapshot):
-            return self.drain_agent_callbacks_for_llm()
-        for callback in callbacks_snapshot:
-            callback[SWAP_PRIME_DELIVERY_CLAIM_KEY] = True
-        try:
-            _lang = normalize_language_code(
-                getattr(self, 'user_language', '') or get_global_language_full(),
-                format='full',
-            )
-            rendered = _build_callback_instruction(
-                callbacks_snapshot,
-                lang=_lang,
-                lanlan_name=getattr(self, "lanlan_name", "") or "",
-                master_name=getattr(self, "master_name", "") or "",
-                passive=False,
-            )
-            delivered_callbacks: list[dict] = []
-            media_context = ""
-            for callback in callbacks_snapshot:
-                if not callback.get("media_images"):
-                    delivered_callbacks.append(callback)
-                    continue
-                try:
-                    media_context += await self._stream_passive_callback_media(
-                        [callback], self.session
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "[%s] passive callback media failed; retaining callback: %s",
-                        self.lanlan_name,
-                        exc,
-                    )
-                    continue
-                callback.pop("media_images", None)
-                delivered_callbacks.append(callback)
-            if not delivered_callbacks:
-                return ""
-            if len(delivered_callbacks) != len(callbacks_snapshot):
-                rendered = _build_callback_instruction(
-                    delivered_callbacks,
-                    lang=_lang,
-                    lanlan_name=getattr(self, "lanlan_name", "") or "",
-                    master_name=getattr(self, "master_name", "") or "",
-                    passive=False,
-                )
-            for callback in delivered_callbacks:
-                resolve_callback_delivery_ack(callback, True)
-            delivered_ids = {id(callback) for callback in delivered_callbacks}
-            self.pending_agent_callbacks = [
-                callback for callback in self.pending_agent_callbacks
-                if id(callback) not in delivered_ids
-            ]
-            return rendered + media_context
-        finally:
-            self._release_swap_prime_passive_claims(callbacks_snapshot)
