@@ -13,6 +13,7 @@ from typing import Any, Sequence
 from ..domain.catalog import (
     AMMO_RECHECK_HINT,
     DEVASTATING_STRIKE,
+    ENEMY_SUNK,
     EventSpec,
     HIGH_DAMAGE,
     MULTI_DIRECTION_THREAT,
@@ -42,6 +43,10 @@ _CLAIM_LIMITS: dict[str, tuple[str, ...]] = {
     ),
     DEVASTATING_STRIKE: (
         "只能说达到毁灭打击级别；不能说成一发或单轮齐射，不能声称游戏已授予毁灭打击成就、勋带或奖章，也不能虚构武器来源。",
+    ),
+    ENEMY_SUNK: (
+        "这是夸奖事件：用一两句高兴或佩服的话祝贺击沉，不要改成战术警告或复盘。",
+        "可以说这艘敌舰已经沉了；遥测没有击杀归属，不要说拿到击杀数、抢人头，也不要声称游戏发了击杀勋带或成就。",
     ),
     RAPID_DAMAGE: (
         "只能说“掉血很快 / 正在快速受伤”，不能说“被集火”或推断攻击者数量。",

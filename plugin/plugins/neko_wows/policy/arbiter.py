@@ -325,8 +325,17 @@ class Arbiter:
                         continue
                     if sibling.rank < candidate.rank:
                         continue
-                    if sibling.priority < candidate.priority - ATTACH_PRIORITY_WINDOW:
-                        break
+                    in_window = (
+                        sibling.priority
+                        >= candidate.priority - ATTACH_PRIORITY_WINDOW
+                    )
+                    same_group = bool(
+                        candidate.spec.attach_group
+                        and sibling.spec.attach_group
+                        == candidate.spec.attach_group
+                    )
+                    if not in_window and not same_group:
+                        continue
                     if len(attached) >= MAX_DECISION_EVENTS - 1:
                         break
                     sibling_blocked = self._blocked_reason(sibling, now)

@@ -84,6 +84,7 @@
   "format.category.wows_geometry": "Geometry (boundary/broadside)",
   "format.category.wows_targeting": "Targets and ammunition",
   "format.category.wows_progress": "Damage milestones",
+  "format.category.wows_praise": "Praise (enemy sunk)",
   "overview.reconnectRequired": "The data-source configuration changed. Select Reconnect data source to apply it.",
   "overview.stats.service": "Telemetry service",
   "overview.stats.transport": "Transport",

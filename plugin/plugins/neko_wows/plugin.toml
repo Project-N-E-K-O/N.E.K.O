@@ -96,6 +96,7 @@ broadside_angle_deg = 25.0
 low_hp_target_ratio = 0.2
 damage_milestone_step = 50000.0
 # 单目标短时伤害事件；绝对值与百分比为“或”，毁灭打击还要求明确沉没。
+# 击沉敌舰是独立的夸夸事件，可与高伤害/毁灭打击合并进同一轮播报。
 damage_burst_window_seconds = 5.0
 high_damage_absolute_threshold = 20000.0
 high_damage_ratio_threshold = 0.25

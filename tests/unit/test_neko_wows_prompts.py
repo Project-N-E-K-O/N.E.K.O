@@ -8,6 +8,7 @@ from plugin.plugins.neko_wows.detectors._base import GameEvent
 from plugin.plugins.neko_wows.domain.catalog import (
     DAMAGE_MILESTONE,
     DEVASTATING_STRIKE,
+    ENEMY_SUNK,
     HIGH_DAMAGE,
     LOW_HEALTH,
 )
@@ -266,6 +267,14 @@ def test_damage_event_claim_limits_do_not_invent_awards_or_salvos():
     assert devastating.lane == LANE_NORMAL
 
 
+def test_enemy_sunk_claim_limits_ask_for_praise_without_kill_credit():
+    sink = candidate(ENEMY_SUNK)
+    assert sink.lane == LANE_NORMAL
+    assert any("夸奖" in line for line in sink.claim_limits)
+    assert any("击杀" in line for line in sink.claim_limits)
+    assert any("勋带" in line or "成就" in line for line in sink.claim_limits)
+
+
 _FORBIDDEN_CONSUMABLE_STATE = (
     "消耗品实时状态（雷达、水听、烟幕、损伤控制等是否开启或持续）当前不可用，不要提及；"
     "不要把小地图上敌舰被点亮说成对方开了雷达。"
@@ -273,7 +282,7 @@ _FORBIDDEN_CONSUMABLE_STATE = (
 
 
 def test_every_callout_forbids_inventing_consumable_state():
-    for event_id in (LOW_HEALTH, HIGH_DAMAGE, DEVASTATING_STRIKE):
+    for event_id in (LOW_HEALTH, HIGH_DAMAGE, DEVASTATING_STRIKE, ENEMY_SUNK):
         built = candidate(event_id)
         assert _FORBIDDEN_CONSUMABLE_STATE in built.claim_limits
 

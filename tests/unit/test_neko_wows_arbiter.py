@@ -11,6 +11,7 @@ from plugin.plugins.neko_wows.domain.catalog import (
     DAMAGE_MILESTONE,
     DEVASTATING_STRIKE,
     ENEMY_CLOSING,
+    ENEMY_SUNK,
     HIGH_DAMAGE,
     LOCALLY_ISOLATED,
     LOW_HP_TARGET,
@@ -163,9 +164,54 @@ def test_ranking_is_reproducible_regardless_of_input_order():
 
 
 def test_devastating_is_below_urgent_but_above_normal_events():
+    assert spec_for(BOUNDARY_RISK).priority > spec_for(ENEMY_SUNK).priority
+    assert spec_for(ENEMY_SUNK).priority > spec_for(DEVASTATING_STRIKE).priority
     assert spec_for(BOUNDARY_RISK).priority > spec_for(DEVASTATING_STRIKE).priority
     assert spec_for(DEVASTATING_STRIKE).priority > spec_for(BATTLE_ENDED).priority
     assert spec_for(HIGH_DAMAGE).priority > spec_for(DAMAGE_MILESTONE).priority
+
+
+def test_enemy_sunk_is_a_high_priority_normal_praise_event():
+    spec = spec_for(ENEMY_SUNK)
+    assert spec.lane == LANE_NORMAL
+    assert spec.coalesce_key == "wows_praise"
+    assert spec.attach_group == spec_for(HIGH_DAMAGE).attach_group
+    assert spec.attach_group == spec_for(DEVASTATING_STRIKE).attach_group
+    assert spec.attach_group
+    assert spec.priority >= 65
+    assert spec.preempt is False
+
+
+def test_enemy_sunk_attaches_high_damage_outside_the_default_window():
+    decision = Arbiter(CFG).decide([
+        candidate(ENEMY_SUNK),
+        candidate(HIGH_DAMAGE),
+    ], 100.0)
+
+    assert decision.chosen.event_id == ENEMY_SUNK
+    assert tuple(item.event_id for item in decision.attached) == (HIGH_DAMAGE,)
+    assert REASON_ATTACHED in outcomes(decision, HIGH_DAMAGE)
+
+
+def test_enemy_sunk_attaches_devastating_strike():
+    decision = Arbiter(CFG).decide([
+        candidate(ENEMY_SUNK),
+        candidate(DEVASTATING_STRIKE),
+    ], 100.0)
+
+    assert tuple(item.event_id for item in decision.candidates) == (
+        ENEMY_SUNK,
+        DEVASTATING_STRIKE,
+    )
+
+
+def test_enemy_sunk_does_not_coalesce_away_a_damage_burst():
+    arbiter = Arbiter(CFG)
+    steps = arbiter.submit(
+        [candidate(ENEMY_SUNK), candidate(HIGH_DAMAGE)], 100.0)
+    coalesced = [step for step in steps if step.outcome == REASON_COALESCED]
+    assert coalesced == []
+    assert arbiter.stats()["queued"] == 2
 
 
 def test_situation_advice_and_outnumbered_priorities_are_swapped():
