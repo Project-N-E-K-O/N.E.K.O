@@ -99,13 +99,20 @@ class AgentSummaryMixin:
                 )
         choices: list[dict[str, str]] = []
         raw_choices = [
-            *list(context.get("recent_choices") or []),
-            *list((snapshot or {}).get("choices") or []),
+            *(
+                ("selected", item)
+                for item in list(context.get("recent_choices") or [])
+            ),
+            *(
+                ("visible", item)
+                for item in list((snapshot or {}).get("choices") or [])
+            ),
         ]
-        for item in raw_choices:
+        for choice_state, item in raw_choices:
             if isinstance(item, dict):
                 choices.append(
                     {
+                        "choice_state": choice_state,
                         "choice_id": self._normalize_scene_summary_fingerprint_text(
                             item.get("choice_id") or item.get("option_id")
                         ),
@@ -117,6 +124,7 @@ class AgentSummaryMixin:
             else:
                 choices.append(
                     {
+                        "choice_state": choice_state,
                         "choice_id": "",
                         "text": self._normalize_scene_summary_fingerprint_text(item),
                     }
@@ -148,6 +156,415 @@ class AgentSummaryMixin:
             stable_line_keys,
             choice_keys,
         )
+
+    def _scene_summary_delta_content(
+        self,
+        *,
+        context: dict[str, Any],
+        snapshot: dict[str, Any] | None = None,
+    ) -> tuple[
+        list[dict[str, Any]],
+        list[dict[str, Any]],
+        tuple[str, ...],
+        tuple[str, ...],
+    ]:
+        stable_lines: list[dict[str, Any]] = []
+        stable_line_keys: list[str] = []
+        seen_line_keys: set[str] = set()
+        for item in list(context.get("stable_lines") or []):
+            record = dict(item) if isinstance(item, dict) else {"text": str(item or "")}
+            normalized_text = self._normalize_scene_summary_fingerprint_text(
+                record.get("text")
+            )
+            if not normalized_text:
+                continue
+            # Reader-specific line ids and speaker recognition may change during a
+            # source handoff. The normalized dialogue text is the stable semantic
+            # identity used only for delivered-content delta tracking.
+            semantic_key = normalized_text
+            if semantic_key in seen_line_keys:
+                continue
+            seen_line_keys.add(semantic_key)
+            stable_line_keys.append(semantic_key)
+            stable_lines.append(record)
+
+        choices: list[dict[str, Any]] = []
+        choice_keys: list[str] = []
+        seen_choice_keys: set[str] = set()
+        raw_choices = [
+            *(
+                ("selected", item)
+                for item in list(context.get("recent_choices") or [])
+            ),
+            *(
+                ("visible", item)
+                for item in list((snapshot or {}).get("choices") or [])
+            ),
+        ]
+        for choice_state, item in raw_choices:
+            record = dict(item) if isinstance(item, dict) else {"text": str(item or "")}
+            record.setdefault("choice_state", choice_state)
+            normalized_text = self._normalize_scene_summary_fingerprint_text(
+                record.get("text") or record.get("label")
+            )
+            identity = normalized_text or self._normalize_scene_summary_fingerprint_text(
+                record.get("choice_id") or record.get("option_id")
+            )
+            semantic_key = f"{choice_state}:{identity}" if identity else ""
+            if not semantic_key or semantic_key in seen_choice_keys:
+                continue
+            seen_choice_keys.add(semantic_key)
+            choice_keys.append(semantic_key)
+            choices.append(record)
+        return stable_lines, choices, tuple(stable_line_keys), tuple(choice_keys)
+
+    @staticmethod
+    def _scene_summary_coalesce_key(
+        *,
+        trusted_history_token: str,
+        session_id: str,
+    ) -> str:
+        boundary = str(trusted_history_token or session_id or "").strip()
+        if not boundary:
+            return ""
+        digest = hashlib.sha256(boundary.encode("utf-8")).hexdigest()[:16]
+        return f"galgame:scene_summary:{digest}"
+
+    def _scene_capsule_boundary_key(
+        self,
+        shared: dict[str, Any],
+        *,
+        session_id: str,
+    ) -> str:
+        fingerprint = self._session_fingerprint(shared)
+        game_id = self._normalize_scene_summary_fingerprint_text(
+            fingerprint.get("active_game_id")
+        )
+        if game_id:
+            identity = f"game:{game_id}"
+        else:
+            process_name = self._normalize_scene_summary_fingerprint_text(
+                fingerprint.get("process_name")
+            )
+            window_title = self._normalize_scene_summary_fingerprint_text(
+                fingerprint.get("window_title")
+            )
+            pid = int(fingerprint.get("pid") or 0)
+            hwnd = int(fingerprint.get("target_hwnd") or 0)
+            if process_name:
+                identity = f"process:{process_name}"
+            elif window_title:
+                identity = f"window:{window_title}"
+            elif pid:
+                identity = f"pid:{pid}"
+            elif hwnd:
+                identity = f"hwnd:{hwnd}"
+            else:
+                identity = (
+                    self._trusted_history_token(shared)
+                    or str(session_id or "").strip()
+                )
+        if not identity:
+            return ""
+        return hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
+
+    @staticmethod
+    def _scene_capsule_coalesce_key(boundary_key: str) -> str:
+        return f"galgame:scene_delta:{boundary_key}" if boundary_key else ""
+
+    @staticmethod
+    def _scene_capsule_event_key(*parts: Any) -> str:
+        raw = "|".join(str(part or "") for part in parts)
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+    def _scene_capsule_fallback_occurrence_ids(
+        self,
+        *,
+        source_key: str,
+        signatures: list[str],
+    ) -> list[int]:
+        state = self._scene_capsule_fallback_occurrences.setdefault(
+            source_key,
+            {"signatures": [], "occurrence_ids": [], "next_id": 1},
+        )
+        previous_signatures = [
+            str(item) for item in list(state.get("signatures") or [])
+        ]
+        previous_ids = [int(item) for item in list(state.get("occurrence_ids") or [])]
+        overlap_count = 0
+        for candidate in range(
+            min(len(previous_signatures), len(signatures)),
+            0,
+            -1,
+        ):
+            if previous_signatures[-candidate:] == signatures[:candidate]:
+                overlap_count = candidate
+                break
+        occurrence_ids = (
+            previous_ids[-overlap_count:] if overlap_count else []
+        )
+        next_id = max(1, int(state.get("next_id") or 1))
+        for _ in signatures[overlap_count:]:
+            occurrence_ids.append(next_id)
+            next_id += 1
+        state["signatures"] = list(signatures)
+        state["occurrence_ids"] = list(occurrence_ids)
+        state["next_id"] = next_id
+        return occurrence_ids
+
+    def _scene_capsule_line_occurrences(
+        self,
+        shared: dict[str, Any],
+        *,
+        snapshot: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        data_source = self._current_input_source(shared)
+        session_id = str(shared.get("active_session_id") or "")
+        event_occurrences: list[dict[str, Any]] = []
+        event_signature_counts: dict[str, int] = {}
+        for event in list(shared.get("history_events") or []):
+            if not isinstance(event, dict) or str(event.get("type") or "") != "line_changed":
+                continue
+            payload = event.get("payload")
+            if not isinstance(payload, dict):
+                continue
+            stability = str(payload.get("stability") or "").strip().lower()
+            if stability and stability != "stable":
+                continue
+            text = str(payload.get("text") or "").strip()
+            if not text:
+                continue
+            line = {
+                "line_id": str(payload.get("line_id") or event.get("line_id") or ""),
+                "speaker": str(payload.get("speaker") or ""),
+                "text": text,
+                "scene_id": str(
+                    payload.get("scene_id")
+                    or event.get("scene_id")
+                    or snapshot.get("scene_id")
+                    or ""
+                ),
+                "route_id": str(payload.get("route_id") or event.get("route_id") or ""),
+                "ts": str(event.get("ts") or payload.get("ts") or ""),
+                "stability": "stable",
+            }
+            signature = json.dumps(
+                {
+                    "line_id": line["line_id"],
+                    "speaker": line["speaker"],
+                    "text": line["text"],
+                    "scene_id": line["scene_id"],
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+            event_signature_counts[signature] = event_signature_counts.get(signature, 0) + 1
+            try:
+                seq = int(event.get("seq") or 0)
+            except (TypeError, ValueError):
+                seq = 0
+            event_session = str(event.get("session_id") or session_id)
+            fallback_event_identity = hashlib.sha256(
+                (
+                    signature
+                    + "|"
+                    + str(event.get("ts") or payload.get("ts") or "")
+                ).encode("utf-8")
+            ).hexdigest()[:16]
+            event_key = self._scene_capsule_event_key(
+                data_source,
+                event_session,
+                "line_changed",
+                seq if seq > 0 else f"event:{fallback_event_identity}",
+            )
+            event_occurrences.append(
+                {"event_key": event_key, "seq": seq, "line": line, "signature": signature}
+            )
+
+        fallback_occurrences: list[dict[str, Any]] = []
+        fallback_pending: list[tuple[dict[str, Any], str]] = []
+        consumed_event_signatures: dict[str, int] = {}
+        for item in list(shared.get("history_lines") or []):
+            if not isinstance(item, dict):
+                continue
+            stability = str(item.get("stability") or "").strip().lower()
+            if stability and stability != "stable":
+                continue
+            text = str(item.get("text") or "").strip()
+            if not text:
+                continue
+            line = dict(item)
+            line["text"] = text
+            line.setdefault("scene_id", str(snapshot.get("scene_id") or ""))
+            line.setdefault("stability", "stable")
+            signature = json.dumps(
+                {
+                    "line_id": str(line.get("line_id") or ""),
+                    "speaker": str(line.get("speaker") or ""),
+                    "text": text,
+                    "scene_id": str(line.get("scene_id") or ""),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+            consumed = consumed_event_signatures.get(signature, 0)
+            if consumed < event_signature_counts.get(signature, 0):
+                consumed_event_signatures[signature] = consumed + 1
+                continue
+            fallback_pending.append((line, signature))
+        fallback_ids = self._scene_capsule_fallback_occurrence_ids(
+            source_key=f"{data_source}|{session_id}|history_line",
+            signatures=[signature for _line, signature in fallback_pending],
+        )
+        for (line, signature), occurrence_id in zip(
+            fallback_pending,
+            fallback_ids,
+            strict=False,
+        ):
+            fallback_occurrences.append(
+                {
+                    "event_key": self._scene_capsule_event_key(
+                        data_source,
+                        session_id,
+                        "history_line",
+                        str(line.get("scene_id") or ""),
+                        occurrence_id,
+                    ),
+                    "seq": 0,
+                    "line": line,
+                    "signature": signature,
+                }
+            )
+        return [*event_occurrences, *fallback_occurrences]
+
+    def _scene_capsule_choice_occurrences(
+        self,
+        shared: dict[str, Any],
+        *,
+        snapshot: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        data_source = self._current_input_source(shared)
+        session_id = str(shared.get("active_session_id") or "")
+        scene_id = str(snapshot.get("scene_id") or "")
+        occurrences: list[dict[str, Any]] = []
+        for event in list(shared.get("history_events") or []):
+            if not isinstance(event, dict):
+                continue
+            event_type = str(event.get("type") or "")
+            if event_type not in {"choices_shown", "choice_selected"}:
+                continue
+            payload = event.get("payload")
+            if not isinstance(payload, dict):
+                continue
+            raw_choices = payload.get("choices") if event_type == "choices_shown" else None
+            if not isinstance(raw_choices, list):
+                selected = payload.get("choice")
+                raw_choices = [selected if isinstance(selected, dict) else payload]
+            try:
+                seq = int(event.get("seq") or 0)
+            except (TypeError, ValueError):
+                seq = 0
+            for choice_index, item in enumerate(raw_choices):
+                if not isinstance(item, dict):
+                    continue
+                text = str(item.get("text") or item.get("label") or "").strip()
+                if not text:
+                    continue
+                choice = dict(item)
+                choice["text"] = text
+                choice["choice_state"] = (
+                    "visible" if event_type == "choices_shown" else "selected"
+                )
+                choice.setdefault("scene_id", str(payload.get("scene_id") or scene_id))
+                fallback_event_identity = hashlib.sha256(
+                    json.dumps(
+                        {
+                            "type": event_type,
+                            "ts": str(event.get("ts") or payload.get("ts") or ""),
+                            "choice_id": str(
+                                choice.get("choice_id")
+                                or choice.get("option_id")
+                                or ""
+                            ),
+                            "text": text,
+                            "index": choice_index,
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ).encode("utf-8")
+                ).hexdigest()[:16]
+                occurrences.append(
+                    {
+                        "event_key": self._scene_capsule_event_key(
+                            data_source,
+                            str(event.get("session_id") or session_id),
+                            event_type,
+                            seq if seq > 0 else f"event:{fallback_event_identity}",
+                            choice_index,
+                        ),
+                        "seq": seq,
+                        "ts": str(event.get("ts") or payload.get("ts") or ""),
+                        "choice": choice,
+                    }
+                )
+
+        if occurrences:
+            return occurrences
+        for choice_state, items in (
+            ("selected", list(shared.get("history_choices") or [])),
+            ("visible", list(snapshot.get("choices") or [])),
+        ):
+            fallback_choices: list[tuple[dict[str, Any], str, str]] = []
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                text = str(item.get("text") or item.get("label") or "").strip()
+                if not text:
+                    continue
+                choice = dict(item)
+                choice["text"] = text
+                choice["choice_state"] = choice_state
+                choice_scene_id = str(choice.get("scene_id") or scene_id)
+                semantic = json.dumps(
+                    {
+                        "choice_id": str(choice.get("choice_id") or choice.get("option_id") or ""),
+                        "text": text,
+                        "state": choice_state,
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+                fallback_choices.append((choice, choice_scene_id, semantic))
+            fallback_ids = self._scene_capsule_fallback_occurrence_ids(
+                source_key=(
+                    f"{data_source}|{session_id}|history_choice:{choice_state}"
+                ),
+                signatures=[semantic for _choice, _scene, semantic in fallback_choices],
+            )
+            for (choice, choice_scene_id, _semantic), occurrence_id in zip(
+                fallback_choices,
+                fallback_ids,
+                strict=False,
+            ):
+                occurrences.append(
+                    {
+                        "event_key": self._scene_capsule_event_key(
+                            data_source,
+                            session_id,
+                            f"history_choice:{choice_state}",
+                            choice_scene_id,
+                            occurrence_id,
+                        ),
+                        "seq": 0,
+                        "ts": str(
+                            choice.get("ts")
+                            or (snapshot.get("ts") if choice_state == "visible" else "")
+                            or ""
+                        ),
+                        "choice": choice,
+                    }
+                )
+        return occurrences
 
     def _prune_scene_summary_repeat_deliveries(self, now: float) -> None:
         window = self._scene_summary_duplicate_window_seconds
@@ -210,6 +627,7 @@ class AgentSummaryMixin:
         reservation_key: str,
         scene_id: str,
         trigger: str,
+        schedule_order: int,
         stable_line_keys: tuple[str, ...],
         choice_keys: tuple[str, ...],
     ) -> None:
@@ -219,9 +637,30 @@ class AgentSummaryMixin:
             "scene_id": scene_id,
             "trigger": trigger,
         }
+        previous_content = self._scene_summary_latest_scene_content.get(scene_id) or {}
+        delivered_line_keys = tuple(
+            dict.fromkeys(
+                [
+                    *list(previous_content.get("stable_line_keys") or ()),
+                    *stable_line_keys,
+                ]
+            )
+        )
+        delivered_choice_keys = tuple(
+            dict.fromkeys(
+                [
+                    *list(previous_content.get("choice_keys") or ()),
+                    *choice_keys,
+                ]
+            )
+        )
         self._scene_summary_latest_scene_content[scene_id] = {
-            "stable_line_keys": stable_line_keys,
-            "choice_keys": choice_keys,
+            "stable_line_keys": delivered_line_keys,
+            "choice_keys": delivered_choice_keys,
+            "delivered_schedule_order": max(
+                int(previous_content.get("delivered_schedule_order") or 0),
+                int(schedule_order or 0),
+            ),
         }
         self._scene_summary_last_success_at = delivered_at
         self._summary_debug["last_repeat_guard_delivery"] = {
@@ -229,6 +668,7 @@ class AgentSummaryMixin:
             "trigger": trigger,
             "stable_line_count": len(stable_line_keys),
             "choice_count": len(choice_keys),
+            "schedule_order": int(schedule_order or 0),
             "ts": self._utc_now_iso(),
         }
 
@@ -378,6 +818,347 @@ class AgentSummaryMixin:
 
         task.add_done_callback(_finish)
 
+    def _track_scene_capsule_task(
+        self,
+        task: asyncio.Task[bool],
+        *,
+        order: int,
+        event_keys: tuple[str, ...],
+        meta: dict[str, Any],
+    ) -> None:
+        self._scene_capsule_tasks.add(task)
+        self._scene_capsule_task_meta[task] = dict(meta)
+
+        def _finish(done: asyncio.Task[bool]) -> None:
+            self._scene_capsule_tasks.discard(done)
+            self._scene_capsule_task_meta.pop(done, None)
+            for event_key in event_keys:
+                still_owned = any(
+                    event_key in set(
+                        str(item)
+                        for item in list(
+                            (self._scene_capsule_task_meta.get(other) or {}).get(
+                                "event_keys"
+                            )
+                            or []
+                        )
+                    )
+                    for other in self._scene_capsule_tasks
+                    if not other.done()
+                )
+                if not still_owned:
+                    self._scene_capsule_reservations.discard(event_key)
+            if done.cancelled():
+                return
+            try:
+                done.result()
+            except Exception:
+                self._logger.warning(
+                    "galgame scene capsule task failed: order=%d error_type=%s",
+                    order,
+                    type(done.exception()).__name__ if done.exception() else "unknown",
+                )
+
+        task.add_done_callback(_finish)
+
+    def _scene_capsule_is_fresh(
+        self,
+        *,
+        generation: int,
+        order: int,
+        scene_id: str,
+        route_id: str,
+    ) -> bool:
+        if generation != self._summary_generation:
+            return False
+        if order != self._scene_summary_latest_observed_order:
+            return False
+        if scene_id != self._observed_scene_id:
+            return False
+        if route_id and self._observed_route_id and route_id != self._observed_route_id:
+            return False
+        return True
+
+    async def _run_scene_capsule_task(
+        self,
+        *,
+        generation: int,
+        order: int,
+        shared: dict[str, Any],
+        session_id: str,
+        scene_id: str,
+        route_id: str,
+        boundary_key: str,
+        data_source: str,
+        source_identity: str,
+        content: str,
+        event_keys: tuple[str, ...],
+        stable_tail: tuple[str, ...],
+        target_line_count: int,
+        target_choice_count: int,
+    ) -> bool:
+        freshness_check = lambda: self._scene_capsule_is_fresh(
+            generation=generation,
+            order=order,
+            scene_id=scene_id,
+            route_id=route_id,
+        )
+        if not freshness_check():
+            return False
+        submitted = await self._push_agent_message(
+            shared,
+            kind="scene_delta",
+            content=content,
+            scene_id=scene_id,
+            route_id=route_id,
+            metadata={
+                "context_type": "galgame_scene_delta",
+                "trigger": "stable_content_delta",
+                "capsule_order": order,
+                "new_stable_line_count": target_line_count,
+                "new_choice_count": target_choice_count,
+            },
+            coalesce_key=self._scene_capsule_coalesce_key(boundary_key),
+            freshness_check=freshness_check,
+        )
+        if not submitted or not freshness_check():
+            return False
+        ledger = self._scene_capsule_delivery_ledger.setdefault(
+            boundary_key,
+            {
+                "committed_event_keys": [],
+                "stable_tail": [],
+                "source_identity": "",
+                "data_source": "",
+                "scene_id": "",
+            },
+        )
+        committed = list(ledger.get("committed_event_keys") or [])
+        committed.extend(event_keys)
+        ledger["committed_event_keys"] = list(dict.fromkeys(committed))[-512:]
+        if stable_tail:
+            ledger["stable_tail"] = list(stable_tail[-4:])
+        ledger["source_identity"] = source_identity
+        ledger["data_source"] = data_source
+        ledger["scene_id"] = scene_id
+        ledger["last_submitted_order"] = order
+        self._scene_summary_latest_submitted_order = order
+        self._summary_debug["last_capsule_submitted"] = {
+            "scene_id": scene_id,
+            "order": order,
+            "new_stable_line_count": target_line_count,
+            "new_choice_count": target_choice_count,
+            "ts": self._utc_now_iso(),
+        }
+        return True
+
+    def _maybe_schedule_scene_capsule(
+        self,
+        shared: dict[str, Any],
+        *,
+        snapshot: dict[str, Any],
+        line_occurrences: list[dict[str, Any]],
+    ) -> None:
+        session_id = str(shared.get("active_session_id") or "")
+        scene_id = str(snapshot.get("scene_id") or "")
+        if not session_id or not scene_id:
+            return
+        route_id = str(snapshot.get("route_id") or "")
+        boundary_key = self._scene_capsule_boundary_key(
+            shared,
+            session_id=session_id,
+        )
+        if not boundary_key:
+            return
+        data_source = self._current_input_source(shared)
+        source_identity = f"{data_source}|{session_id}"
+        self._scene_capsule_source_aliases[source_identity] = boundary_key
+        ledger = self._scene_capsule_delivery_ledger.setdefault(
+            boundary_key,
+            {
+                "committed_event_keys": [],
+                "stable_tail": [],
+                "source_identity": "",
+                "data_source": "",
+                "scene_id": "",
+            },
+        )
+        committed = set(ledger.get("committed_event_keys") or [])
+        current_lines = [
+            item
+            for item in line_occurrences
+            if str((item.get("line") or {}).get("scene_id") or "") == scene_id
+        ]
+
+        previous_source_identity = str(ledger.get("source_identity") or "")
+        if (
+            self._scene_summary_repeat_guard_enabled
+            and previous_source_identity
+            and previous_source_identity != source_identity
+        ):
+            previous_tail = [str(item) for item in list(ledger.get("stable_tail") or [])]
+            current_texts = [
+                self._normalize_scene_summary_fingerprint_text(
+                    (item.get("line") or {}).get("text")
+                )
+                for item in current_lines
+            ]
+            overlap_count = 0
+            for candidate in range(min(len(previous_tail), len(current_texts)), 0, -1):
+                if previous_tail[-candidate:] == current_texts[:candidate]:
+                    overlap_count = candidate
+                    break
+            if overlap_count:
+                committed.update(
+                    str(item.get("event_key") or "")
+                    for item in current_lines[:overlap_count]
+                    if str(item.get("event_key") or "")
+                )
+                ledger["committed_event_keys"] = list(committed)[-512:]
+            ledger["source_identity"] = source_identity
+            ledger["data_source"] = data_source
+
+        choice_occurrences = [
+            item
+            for item in self._scene_capsule_choice_occurrences(shared, snapshot=snapshot)
+            if str((item.get("choice") or {}).get("scene_id") or scene_id) == scene_id
+        ]
+        candidates: list[tuple[int, int, str, int, str, dict[str, Any]]] = []
+        for index, item in enumerate(current_lines):
+            event_key = str(item.get("event_key") or "")
+            if not event_key or event_key in self._scene_capsule_reservations:
+                continue
+            if self._scene_summary_repeat_guard_enabled and event_key in committed:
+                continue
+            seq = int(item.get("seq") or 0)
+            candidates.append(
+                (
+                    int(seq > 0),
+                    seq,
+                    str((item.get("line") or {}).get("ts") or ""),
+                    index,
+                    "line",
+                    item,
+                )
+            )
+        line_offset = len(current_lines)
+        for index, item in enumerate(choice_occurrences):
+            event_key = str(item.get("event_key") or "")
+            if not event_key or event_key in self._scene_capsule_reservations:
+                continue
+            if self._scene_summary_repeat_guard_enabled and event_key in committed:
+                continue
+            seq = int(item.get("seq") or 0)
+            candidates.append(
+                (
+                    int(seq > 0),
+                    seq,
+                    str(item.get("ts") or ""),
+                    line_offset + index,
+                    "choice",
+                    item,
+                )
+            )
+        if not candidates:
+            return
+
+        candidates.sort(key=lambda item: (item[0], item[1], item[2], item[3]))
+        _has_seq, _seq, _ts, _index, target_kind, target = candidates[-1]
+        candidate_event_keys = tuple(
+            dict.fromkeys(
+                str(item[5].get("event_key") or "")
+                for item in candidates
+                if str(item[5].get("event_key") or "")
+            )
+        )
+        if target_kind == "line":
+            target_line = dict(target.get("line") or {})
+            target_position = next(
+                (
+                    index
+                    for index, item in enumerate(current_lines)
+                    if item.get("event_key") == target.get("event_key")
+                ),
+                len(current_lines) - 1,
+            )
+            continuity_lines = [
+                dict(item.get("line") or {})
+                for item in current_lines[max(0, target_position - 2):target_position]
+            ]
+            new_stable_lines = [target_line]
+            new_choices: list[dict[str, Any]] = []
+        else:
+            continuity_lines = [
+                dict(item.get("line") or {}) for item in current_lines[-2:]
+            ]
+            new_stable_lines = []
+            new_choices = [dict(target.get("choice") or {})]
+        content = self._format_scene_delta_for_cat(
+            new_stable_lines=new_stable_lines,
+            new_choices=new_choices,
+            continuity_lines=continuity_lines,
+        )
+        if not content:
+            return
+
+        self._scene_summary_schedule_order_counter += 1
+        order = self._scene_summary_schedule_order_counter
+        self._scene_summary_latest_observed_order = order
+        superseded_event_keys: list[str] = []
+        for pending in list(self._scene_capsule_tasks):
+            pending_meta = self._scene_capsule_task_meta.get(pending) or {}
+            if int(pending_meta.get("order") or 0) < order and not pending.done():
+                superseded_event_keys.extend(
+                    str(item)
+                    for item in list(pending_meta.get("event_keys") or [])
+                    if str(item)
+                )
+                pending.cancel()
+        consumed_event_keys = tuple(
+            dict.fromkeys([*superseded_event_keys, *candidate_event_keys])
+        )
+        for event_key in consumed_event_keys:
+            self._scene_capsule_reservations.add(event_key)
+        normalized_tail = tuple(
+            self._normalize_scene_summary_fingerprint_text(
+                (item.get("line") or {}).get("text")
+            )
+            for item in current_lines[-4:]
+            if self._normalize_scene_summary_fingerprint_text(
+                (item.get("line") or {}).get("text")
+            )
+        )
+        task = asyncio.create_task(
+            self._run_scene_capsule_task(
+                generation=self._summary_generation,
+                order=order,
+                shared=json_copy(shared),
+                session_id=session_id,
+                scene_id=scene_id,
+                route_id=route_id,
+                boundary_key=boundary_key,
+                data_source=data_source,
+                source_identity=source_identity,
+                content=content,
+                event_keys=consumed_event_keys,
+                stable_tail=normalized_tail,
+                target_line_count=len(new_stable_lines),
+                target_choice_count=len(new_choices),
+            )
+        )
+        self._track_scene_capsule_task(
+            task,
+            order=order,
+            event_keys=consumed_event_keys,
+            meta={
+                "order": order,
+                "scene_id": scene_id,
+                "route_id": route_id,
+                "event_count": len(consumed_event_keys),
+                "event_keys": list(consumed_event_keys),
+            },
+        )
+
     def _build_local_scene_summary_from_context(
         self,
         context: dict[str, Any],
@@ -406,6 +1187,24 @@ class AgentSummaryMixin:
             route_id=route_id,
             summary=summary,
         )
+        if not scene_id or not summary:
+            return
+        if any(
+            str(item.get("scene_id") or "") == scene_id
+            for item in self._scene_memory
+            if isinstance(item, dict)
+        ):
+            return
+        self._append_bounded(
+            self._scene_memory,
+            {
+                "scene_id": scene_id,
+                "route_id": route_id,
+                "summary": summary,
+                "ts": self._utc_now_iso(),
+            },
+            limit=32,
+        )
 
     def _schedule_scene_summary_task(
         self,
@@ -422,6 +1221,14 @@ class AgentSummaryMixin:
         scheduled_line_count: int = 0,
         merged_schedule_restore: list[dict[str, Any]] | None = None,
     ) -> None:
+        if trigger != "line_count":
+            self._summary_debug["last_memory_skip"] = {
+                "reason": "non_line_count_trigger",
+                "trigger": trigger,
+                "scene_id": scene_id,
+                "ts": self._utc_now_iso(),
+            }
+            return
         if not session_id or not scene_id:
             return
         try:
@@ -439,106 +1246,12 @@ class AgentSummaryMixin:
             context_payload = dict(context)
             metadata_payload = dict(metadata)
         current_data_source = self._current_input_source(shared_payload)
-        if (
-            self._scene_summary_repeat_guard_enabled
-            and self._scene_summary_repeat_data_source
-            and current_data_source != self._scene_summary_repeat_data_source
-        ):
-            self._cancel_summary_tasks()
-            self._reset_scene_summary_repeat_guard()
-            self._last_delivered_summary_key = ""
-            self._last_delivered_summary_seq = 0
-            self._last_delivered_summary_scene_id = ""
-        if self._scene_summary_repeat_guard_enabled:
-            self._scene_summary_repeat_data_source = current_data_source
         scheduled_seq = int(metadata_payload.get("scheduled_from_event_seq") or 0)
         stable_line_count = _context_line_count(context_payload.get("stable_lines"))
-        repeat_fingerprint = ""
-        repeat_reservation_key = ""
-        repeat_stable_line_keys: tuple[str, ...] = ()
-        repeat_choice_keys: tuple[str, ...] = ()
-        choice_count = len(list(context_payload.get("recent_choices") or []))
-        if self._scene_summary_repeat_guard_enabled:
-            (
-                repeat_fingerprint,
-                repeat_stable_line_keys,
-                repeat_choice_keys,
-            ) = self._scene_summary_content_fingerprint(
-                shared=shared_payload,
-                snapshot=snapshot_payload,
-                context=context_payload,
-                route_id=route_id,
-            )
-            fingerprint_line_count = len(repeat_stable_line_keys)
-            choice_count = len(repeat_choice_keys)
-            history_boundary = self._trusted_history_token(shared_payload) or session_id
-            repeat_reservation_key = (
-                f"{history_boundary}:{scene_id}:{repeat_fingerprint}"
-            )
-            now = time.monotonic()
-            self._prune_scene_summary_repeat_deliveries(now)
-            previous_content = self._scene_summary_latest_scene_content.get(scene_id)
-            if previous_content:
-                previous_line_keys = set(
-                    previous_content.get("stable_line_keys") or ()
-                )
-                previous_choice_keys = set(previous_content.get("choice_keys") or ())
-                stable_line_delta_count = len(
-                    set(repeat_stable_line_keys) - previous_line_keys
-                )
-                choice_delta_count = len(set(repeat_choice_keys) - previous_choice_keys)
-            else:
-                stable_line_delta_count = fingerprint_line_count
-                choice_delta_count = choice_count
-            if repeat_reservation_key in self._scene_summary_repeat_reservations:
-                self._note_scene_summary_suppressed(
-                    reason="fingerprint_reserved",
-                    trigger=trigger,
-                    fingerprint=repeat_fingerprint,
-                    stable_line_delta_count=stable_line_delta_count,
-                    choice_count=choice_delta_count,
-                )
-                return
-            prior_delivery = self._scene_summary_repeat_deliveries.get(
-                repeat_reservation_key
-            )
-            duplicate_in_window = bool(
-                prior_delivery
-                and now - float(prior_delivery.get("delivered_at") or 0.0)
-                <= self._scene_summary_duplicate_window_seconds
-            )
-            if trigger != "line_count" and duplicate_in_window:
-                self._note_scene_summary_suppressed(
-                    reason="duplicate_content_fingerprint",
-                    trigger=trigger,
-                    fingerprint=repeat_fingerprint,
-                    stable_line_delta_count=stable_line_delta_count,
-                    choice_count=choice_delta_count,
-                )
-                return
-            if (
-                trigger == "screen_stage_changed"
-                and stable_line_delta_count <= 0
-                and choice_delta_count <= 0
-            ):
-                self._note_scene_summary_suppressed(
-                    reason="screen_stage_without_new_content",
-                    trigger=trigger,
-                    fingerprint=repeat_fingerprint,
-                    stable_line_delta_count=stable_line_delta_count,
-                    choice_count=choice_delta_count,
-                )
-                return
-            self._scene_summary_repeat_reservations.add(repeat_reservation_key)
-            metadata_payload["_repeat_guard_fingerprint"] = repeat_fingerprint
-            metadata_payload["_repeat_guard_reservation_key"] = (
-                repeat_reservation_key
-            )
-            metadata_payload["_repeat_guard_stable_line_keys"] = list(
-                repeat_stable_line_keys
-            )
-            metadata_payload["_repeat_guard_choice_keys"] = list(repeat_choice_keys)
-            metadata_payload["summary_content_fingerprint"] = repeat_fingerprint[:8]
+        self._scene_summary_schedule_order_counter += 1
+        memory_order = self._scene_summary_schedule_order_counter
+        self._scene_summary_latest_memory_order_by_scene[scene_id] = memory_order
+        metadata_payload["_memory_schedule_order"] = memory_order
         last_line_seq = int(metadata_payload.get("last_line_seq") or scheduled_seq or 0)
         delivery_key = str(metadata_payload.get("summary_delivery_key") or "")
         if not delivery_key:
@@ -550,37 +1263,29 @@ class AgentSummaryMixin:
             )
             metadata_payload["summary_delivery_key"] = delivery_key
         metadata_payload.setdefault("stable_line_count", stable_line_count)
-        try:
-            task = asyncio.create_task(
-                self._run_scene_summary_task(
-                    summary_lock=self._op_lock,
-                    generation=self._summary_generation,
-                    session_id=session_id,
-                    data_source_at_schedule=current_data_source,
-                    trusted_history_token=self._trusted_history_token(shared),
-                    scene_id=scene_id,
-                    route_id=route_id,
-                    shared=shared_payload,
-                    snapshot=snapshot_payload,
-                    context=context_payload,
-                    trigger=trigger,
-                    metadata=metadata_payload,
-                    update_scene_memory=update_scene_memory,
-                )
+        task = asyncio.create_task(
+            self._run_scene_summary_task(
+                summary_lock=self._op_lock,
+                generation=self._summary_generation,
+                session_id=session_id,
+                data_source_at_schedule=current_data_source,
+                trusted_history_token=self._trusted_history_token(shared),
+                scene_id=scene_id,
+                route_id=route_id,
+                shared=shared_payload,
+                snapshot=snapshot_payload,
+                context=context_payload,
+                trigger=trigger,
+                metadata=metadata_payload,
+                update_scene_memory=True,
             )
-        except Exception:
-            if repeat_reservation_key:
-                self._scene_summary_repeat_reservations.discard(
-                    repeat_reservation_key
-                )
-            raise
+        )
         self._track_summary_task(
             task,
             scene_id=scene_id,
             scheduled_seq=scheduled_seq,
             scheduled_line_count=scheduled_line_count,
             merged_schedule_restore=merged_schedule_restore,
-            repeat_reservation_key=repeat_reservation_key,
             meta={
                 "scene_id": scene_id,
                 "scheduled_seq": scheduled_seq,
@@ -591,8 +1296,120 @@ class AgentSummaryMixin:
                 "session_id_at_schedule": session_id,
                 "data_source_at_schedule": current_data_source,
                 "trusted_history_token": self._trusted_history_token(shared),
+                "memory_order": memory_order,
             },
         )
+
+    async def _run_scene_memory_task(
+        self,
+        *,
+        summary_lock: asyncio.Lock | None,
+        generation: int,
+        session_id: str,
+        data_source_at_schedule: str,
+        trusted_history_token: str,
+        scene_id: str,
+        route_id: str,
+        snapshot: dict[str, Any],
+        context: dict[str, Any],
+        trigger: str,
+        metadata: dict[str, Any],
+        update_scene_memory: bool,
+    ) -> bool:
+        del data_source_at_schedule, trusted_history_token
+        scheduled_seq = int(metadata.get("scheduled_from_event_seq") or 0)
+        delivery_key = str(metadata.get("summary_delivery_key") or "")
+        memory_order = int(metadata.get("_memory_schedule_order") or 0)
+        self._record_summary_task_event(
+            "started",
+            {
+                "scene_id": scene_id,
+                "trigger": trigger,
+                "scheduled_seq": scheduled_seq,
+                "summary_delivery_key": delivery_key,
+                "generation": generation,
+                "memory_order": memory_order,
+            },
+        )
+        _formatted_summary, summary_meta = await self._summarize_scene_context_for_cat(
+            context,
+            scene_id=scene_id,
+            route_id=route_id,
+            snapshot=snapshot,
+        )
+        summary_text = str(summary_meta.get("scene_summary") or "").strip()
+        if not summary_text or summary_lock is None:
+            return False
+        async with summary_lock:
+            if generation != self._summary_generation:
+                return False
+            if session_id != self._observed_session_id:
+                return False
+            latest_memory_order = int(
+                self._scene_summary_latest_memory_order_by_scene.get(scene_id) or 0
+            )
+            if memory_order < latest_memory_order:
+                self._summary_debug["last_drop"] = {
+                    "reason": "stale_memory_order",
+                    "scene_id": scene_id,
+                    "memory_order": memory_order,
+                    "latest_memory_order": latest_memory_order,
+                    "summary_delivery_key": delivery_key,
+                }
+                return True
+            if delivery_key and delivery_key == self._last_delivered_summary_key:
+                self._scene_tracker.mark_scene_summary_delivered(
+                    scene_id,
+                    seq=scheduled_seq,
+                )
+                return True
+
+            # Claim the order before either memory sink is called.  A partial
+            # sink failure must not permit an older result to overwrite it.
+            self._scene_summary_latest_memory_order_by_scene[scene_id] = memory_order
+            if update_scene_memory:
+                self._replace_scene_memory_summary(
+                    scene_id=scene_id,
+                    route_id=route_id,
+                    summary=summary_text,
+                )
+            story_recorded = True
+            story_recorder = getattr(
+                self._plugin,
+                "_record_story_progress_from_scene_summary",
+                None,
+            )
+            if callable(story_recorder):
+                try:
+                    story_recorder(
+                        scene_id=scene_id,
+                        route_id=route_id,
+                        summary=summary_text,
+                        push_seq=scheduled_seq,
+                    )
+                except Exception:
+                    self._logger.warning(
+                        "galgame story_so_far update failed",
+                        exc_info=True,
+                    )
+                    story_recorded = False
+            self._last_delivered_summary_key = delivery_key
+            self._last_delivered_summary_seq = scheduled_seq
+            self._last_delivered_summary_scene_id = scene_id
+            self._scene_tracker.mark_scene_summary_delivered(scene_id, seq=scheduled_seq)
+            self._last_push_ts = time.monotonic()
+            self._record_summary_task_event(
+                "memory_finished",
+                {
+                    "scene_id": scene_id,
+                    "trigger": trigger,
+                    "scheduled_seq": scheduled_seq,
+                    "summary_delivery_key": delivery_key,
+                    "memory_order": memory_order,
+                    "story_recorded": story_recorded,
+                },
+            )
+            return True
 
     async def _run_scene_summary_task(
         self,
@@ -611,252 +1428,20 @@ class AgentSummaryMixin:
         metadata: dict[str, Any],
         update_scene_memory: bool,
     ) -> bool:
-        scheduled_seq = int(metadata.get("scheduled_from_event_seq") or 0)
-        delivery_key = str(metadata.get("summary_delivery_key") or "")
-        repeat_fingerprint = str(metadata.get("_repeat_guard_fingerprint") or "")
-        repeat_reservation_key = str(
-            metadata.get("_repeat_guard_reservation_key") or ""
+        return await self._run_scene_memory_task(
+            summary_lock=summary_lock,
+            generation=generation,
+            session_id=session_id,
+            data_source_at_schedule=data_source_at_schedule,
+            trusted_history_token=trusted_history_token,
+            scene_id=scene_id,
+            route_id=route_id,
+            snapshot=snapshot,
+            context=context,
+            trigger=trigger,
+            metadata=metadata,
+            update_scene_memory=update_scene_memory,
         )
-        repeat_stable_line_keys = tuple(
-            str(item)
-            for item in list(metadata.get("_repeat_guard_stable_line_keys") or [])
-        )
-        repeat_choice_keys = tuple(
-            str(item)
-            for item in list(metadata.get("_repeat_guard_choice_keys") or [])
-        )
-        self._record_summary_task_event(
-            "started",
-            {
-                "scene_id": scene_id,
-                "trigger": trigger,
-                "scheduled_seq": scheduled_seq,
-                "summary_delivery_key": delivery_key,
-                "generation": generation,
-            },
-        )
-        try:
-            summary, summary_meta = await self._summarize_scene_context_for_cat(
-                context,
-                scene_id=scene_id,
-                route_id=route_id,
-                snapshot=snapshot,
-            )
-        except Exception as exc:
-            plain_summary = self._build_scene_context_fallback(
-                scene_id=scene_id,
-                route_id=route_id,
-                lines=list(context.get("stable_lines") or []),
-                selected_choices=list(context.get("recent_choices") or []),
-                snapshot=snapshot,
-            )
-            summary = self._format_scene_context_for_cat(
-                summary=plain_summary,
-                key_points=[],
-                context=context,
-                snapshot=snapshot,
-            )
-            summary_meta = {
-                "scene_summary": plain_summary,
-                "key_points": [],
-                "summary_source": "local_context",
-                "summary_degraded": True,
-                "summary_diagnostic": str(exc),
-            }
-
-        lock = summary_lock
-        if lock is None:
-            self._summary_debug["last_drop"] = {
-                "reason": "missing_summary_lock",
-                "scene_id": scene_id,
-                "trigger": trigger,
-                "summary_delivery_key": delivery_key,
-            }
-            self._logger.warning("galgame scene_summary drop: missing_summary_lock scene=%s", scene_id)
-            return False
-        async with lock:
-            if generation != self._summary_generation:
-                self._summary_debug["last_drop"] = {
-                    "reason": "generation_mismatch",
-                    "scene_id": scene_id,
-                    "trigger": trigger,
-                    "generation": generation,
-                    "current_generation": self._summary_generation,
-                    "summary_delivery_key": delivery_key,
-                }
-                self._logger.info(
-                    "galgame scene_summary drop: generation_mismatch scene=%s gen=%d current=%d",
-                    scene_id, generation, self._summary_generation,
-                )
-                return False
-            if session_id != self._observed_session_id:
-                current_token = self._trusted_history_token_from_fingerprint(
-                    self._observed_session_fingerprint
-                )
-                allow_transient_delivery = (
-                    self._last_session_transition_type == "ocr_transient_session_reset"
-                    and data_source_at_schedule == DATA_SOURCE_OCR_READER
-                    and trusted_history_token
-                    and trusted_history_token == current_token
-                    and scene_id in self._scene_tracker.summary_scene_states
-                )
-                if not allow_transient_delivery:
-                    self._summary_debug["last_drop"] = {
-                        "reason": "session_mismatch",
-                        "scene_id": scene_id,
-                        "trigger": trigger,
-                        "session_id": session_id,
-                        "current_session_id": self._observed_session_id,
-                        "transition_type": self._last_session_transition_type,
-                        "data_source_at_schedule": data_source_at_schedule,
-                        "summary_delivery_key": delivery_key,
-                    }
-                    self._logger.info(
-                        "galgame scene_summary drop: session_mismatch scene=%s session=%s current=%s",
-                        scene_id, session_id, self._observed_session_id,
-                    )
-                    return False
-            current_scene_id = self._observed_scene_id
-            scene_no_longer_current = scene_id != current_scene_id
-            if scene_no_longer_current and trigger != "line_count":
-                self._summary_debug["last_drop"] = {
-                    "reason": "scene_mismatch",
-                    "scene_id": scene_id,
-                    "trigger": trigger,
-                    "current_scene_id": current_scene_id,
-                    "summary_delivery_key": delivery_key,
-                }
-                self._logger.info(
-                    "galgame scene_summary drop: scene_mismatch scene=%s current=%s trigger=%s",
-                    scene_id, current_scene_id, trigger,
-                )
-                return False
-            if delivery_key and delivery_key == self._last_delivered_summary_key:
-                self._summary_debug["last_skip"] = {
-                    "reason": "already_delivered_summary_key",
-                    "scene_id": scene_id,
-                    "trigger": trigger,
-                    "summary_delivery_key": delivery_key,
-                }
-                self._scene_tracker.mark_scene_summary_delivered(
-                    scene_id,
-                    seq=scheduled_seq,
-                )
-                return True
-            if update_scene_memory:
-                self._replace_scene_memory_summary(
-                    scene_id=scene_id,
-                    route_id=route_id,
-                    summary=str(summary_meta.get("scene_summary") or summary),
-                )
-            push_metadata = dict(metadata)
-            push_metadata.pop("_repeat_guard_fingerprint", None)
-            push_metadata.pop("_repeat_guard_reservation_key", None)
-            push_metadata.pop("_repeat_guard_stable_line_keys", None)
-            push_metadata.pop("_repeat_guard_choice_keys", None)
-            push_metadata.update(summary_meta)
-            if trigger:
-                push_metadata.setdefault("trigger", trigger)
-            if scene_no_longer_current:
-                push_metadata.setdefault("delivered_after_scene_change", True)
-                push_metadata.setdefault("current_scene_id", current_scene_id)
-                if trigger == "line_count":
-                    push_metadata.setdefault("scene_changed_while_summarizing", True)
-            self._record_summary_task_event(
-                "before_push",
-                {
-                    "scene_id": scene_id,
-                    "trigger": trigger,
-                    "scheduled_seq": scheduled_seq,
-                    "summary_delivery_key": delivery_key,
-                },
-            )
-            delivered = await self._push_agent_message(
-                shared,
-                kind="scene_summary",
-                content=(
-                    "======[游戏上下文提示]\n"
-                    "以下内容来自 galgame 插件对当前游戏画面和近期台词的理解。"
-                    "这不是后台任务，也不是任务完成通知。回复时不要说“后台任务完成”、"
-                    "“任务跑完了”、“插件完成了”。请直接以当前角色人格自然评论剧情、"
-                    "回应角色处境，或给出简短陪伴式反应。只评论本次新增剧情点；"
-                    "不得复用最近两次自己回复中的完整句子，不得使用相同问句式收尾。"
-                    "优先引用一个新的具体剧情细节，回复限制为 1～3 句。\n"
-                    + str(summary or "")
-                    + "\n======"
-                ),
-                scene_id=scene_id,
-                route_id=route_id,
-                metadata=push_metadata,
-                coalesce_key=(
-                    "galgame:scene_summary:"
-                    f"{self._observed_session_id or session_id}"
-                ),
-            )
-            if not delivered:
-                self._summary_debug["last_drop"] = {
-                    "reason": "push_not_delivered",
-                    "scene_id": scene_id,
-                    "trigger": trigger,
-                    "summary_delivery_key": delivery_key,
-                    "last_outbound_status": "not_delivered",
-                }
-                self._logger.warning(
-                    "galgame scene_summary drop: push_not_delivered scene=%s status=%s",
-                    scene_id,
-                    "not_delivered",
-                )
-                return False
-            self._logger.info(
-                "galgame scene_summary delivered: scene=%s key=%s trigger=%s",
-                scene_id, delivery_key, trigger,
-            )
-            self._last_delivered_summary_key = delivery_key
-            self._last_delivered_summary_seq = scheduled_seq
-            self._last_delivered_summary_scene_id = scene_id
-            if repeat_fingerprint:
-                self._commit_scene_summary_repeat_delivery(
-                    fingerprint=repeat_fingerprint,
-                    reservation_key=repeat_reservation_key,
-                    scene_id=scene_id,
-                    trigger=trigger,
-                    stable_line_keys=repeat_stable_line_keys,
-                    choice_keys=repeat_choice_keys,
-                )
-            self._scene_tracker.mark_scene_summary_delivered(scene_id, seq=scheduled_seq)
-            story_recorder = getattr(
-                self._plugin,
-                "_record_story_progress_from_scene_summary",
-                None,
-            )
-            story_recorded = True
-            if callable(story_recorder):
-                try:
-                    story_recorder(
-                        scene_id=scene_id,
-                        route_id=route_id,
-                        summary=str(summary_meta.get("scene_summary") or summary),
-                        push_seq=scheduled_seq,
-                    )
-                except Exception:
-                    self._logger.warning(
-                        "galgame story_so_far update failed",
-                        exc_info=True,
-                    )
-                    story_recorded = False
-            if story_recorded:
-                self._last_push_ts = time.monotonic()
-            self._record_summary_task_event(
-                "after_push",
-                {
-                    "scene_id": scene_id,
-                    "trigger": trigger,
-                    "scheduled_seq": scheduled_seq,
-                    "summary_delivery_key": delivery_key,
-                    "delivered": True,
-                },
-            )
-            return True
 
     def _line_summary_key(self, line: dict[str, Any]) -> str:
         text = str(line.get("text") or "").strip()
@@ -890,60 +1475,46 @@ class AgentSummaryMixin:
         if current_scene_id != self._summary_scene_id:
             self._scene_tracker.sync_current_scene_summary_mirror(current_scene_id)
 
-        event_seq_by_key: dict[str, int] = {}
-        event_ts_by_key: dict[str, str] = {}
-        max_processed_seq = self._scene_tracker.summary_last_processed_event_seq
-        history_events = shared.get("history_events")
-        if isinstance(history_events, list):
-            for event in history_events:
-                if not isinstance(event, dict):
-                    continue
-                try:
-                    seq = int(event.get("seq") or 0)
-                except (TypeError, ValueError):
-                    seq = 0
-                if seq > max_processed_seq:
-                    max_processed_seq = seq
-                if str(event.get("type") or "") != "line_changed":
-                    continue
-                payload = event.get("payload")
-                if not isinstance(payload, dict):
-                    continue
-                line = {
-                    "line_id": str(payload.get("line_id") or ""),
-                    "speaker": str(payload.get("speaker") or ""),
-                    "text": str(payload.get("text") or "").strip(),
-                    "scene_id": str(payload.get("scene_id") or "").strip(),
-                    "route_id": str(payload.get("route_id") or ""),
-                    "ts": str(event.get("ts") or ""),
-                }
-                key = self._line_summary_key(line)
-                if not key:
-                    continue
-                event_seq_by_key[key] = max(seq, int(event_seq_by_key.get(key) or 0))
-                event_ts_by_key[key] = str(event.get("ts") or "")
-        self._scene_tracker.summary_last_processed_event_seq = max_processed_seq
+        current_data_source = self._current_input_source(shared)
+        if (
+            self._scene_summary_repeat_data_source
+            and current_data_source != self._scene_summary_repeat_data_source
+        ):
+            self._cancel_summary_tasks()
+        self._scene_summary_repeat_data_source = current_data_source
 
+        line_occurrences = self._scene_capsule_line_occurrences(
+            shared,
+            snapshot=snapshot,
+        )
+        self._maybe_schedule_scene_capsule(
+            shared,
+            snapshot=snapshot,
+            line_occurrences=line_occurrences,
+        )
+
+        max_processed_seq = self._scene_tracker.summary_last_processed_event_seq
         changed_scene_ids: set[str] = set()
-        history_lines = shared.get("history_lines")
-        if not isinstance(history_lines, list):
-            history_lines = []
-        for line in history_lines:
-            if not isinstance(line, dict) or not str(line.get("text") or "").strip():
+        for occurrence in line_occurrences:
+            line = occurrence.get("line")
+            if not isinstance(line, dict):
                 continue
             scene_id = str(line.get("scene_id") or "").strip()
             if not scene_id:
                 continue
-            key = self._line_summary_key(line)
+            key = str(occurrence.get("event_key") or "")
             if not key:
                 continue
+            seq = int(occurrence.get("seq") or 0)
+            max_processed_seq = max(max_processed_seq, seq)
             if self._scene_tracker.remember_scene_line(
                 scene_id,
                 key,
-                seq=int(event_seq_by_key.get(key) or 0),
-                ts=str(event_ts_by_key.get(key) or line.get("ts") or ""),
+                seq=seq,
+                ts=str(line.get("ts") or ""),
             ):
                 changed_scene_ids.add(scene_id)
+        self._scene_tracker.summary_last_processed_event_seq = max_processed_seq
 
         ready_scene_ids = set(changed_scene_ids)
         for scene_id, state in self._scene_tracker.summary_scene_states.items():

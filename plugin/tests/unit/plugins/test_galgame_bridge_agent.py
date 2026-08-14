@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+
 from _galgame_test_support import *
 from plugin.plugins.galgame_plugin.agent_ocr_actuation import (
     OcrActionContext,
@@ -8,6 +10,13 @@ from plugin.plugins.galgame_plugin.agent_ocr_actuation import (
 
 from tests.fake_clock import patch_module_clock
 from utils.result_parser import parse_push_message_content
+
+
+async def _drain_agent_summary_tasks(agent: GameLLMAgent) -> None:
+    """Drain both the realtime capsule and background memory pipelines."""
+    await agent.drain_summary_tasks(timeout=1.0)
+    await asyncio.sleep(0)
+
 
 @pytest.mark.plugin_unit
 def test_game_llm_agent_menu_stage_without_choices_is_choice_menu(tmp_path: Path) -> None:
@@ -4035,8 +4044,8 @@ async def test_game_llm_agent_set_standby_interrupts_awaiting_bridge_without_hos
     ("mode", "expected_kinds"),
     [
         ("silent", []),
-        ("companion", ["choice_reason"]),
-        ("choice_advisor", ["choice_reason"]),
+        ("companion", ["choice_reason", "scene_delta"]),
+        ("choice_advisor", ["choice_reason", "scene_delta"]),
     ],
 )
 async def test_game_llm_agent_mode_controls_push_types(
@@ -4170,11 +4179,12 @@ async def test_game_llm_agent_pushes_scene_summary_after_eight_lines(
     await agent.tick(shared)
     await _drain_agent_summary_tasks(agent)
 
-    assert ctx.pushed_messages[-1]["metadata"]["kind"] == "scene_summary"
-    assert ctx.pushed_messages[-1]["metadata"]["trigger"] == "line_count"
-    assert ctx.pushed_messages[-1]["metadata"]["summary_delivery_key"] == "scene-a:0:8"
-    assert "游戏上下文" in ctx.pushed_messages[-1]["content"]
-    assert ctx.pushed_messages[-1]["metadata"]["context_type"] == "galgame_scene_context"
+    assert len(ctx.pushed_messages) == 1
+    assert ctx.pushed_messages[0]["metadata"]["kind"] == "scene_delta"
+    assert ctx.pushed_messages[0]["metadata"]["trigger"] == "stable_content_delta"
+    assert ctx.pushed_messages[0]["metadata"]["context_type"] == "galgame_scene_delta"
+    assert "第 8 句台词。" in ctx.pushed_messages[0]["content"]
+    assert len(agent._llm_gateway.summarize_calls) == 1
     assert "scene-a" in plugin._story_so_far
     assert plugin._story_last_updated_seq >= 0
     status = await agent.query_status(shared)
@@ -4245,7 +4255,8 @@ async def test_game_llm_agent_delivers_line_count_summary_after_scene_change(
     await agent.tick(shared_scene_a)
     await asyncio.wait_for(agent.tick(shared_scene_a), timeout=0.5)
     await asyncio.wait_for(gateway.summary_started.wait(), timeout=0.5)
-    assert ctx.pushed_messages == []
+    assert len(ctx.pushed_messages) == 1
+    assert ctx.pushed_messages[0]["metadata"]["kind"] == "scene_delta"
 
     await asyncio.wait_for(agent.tick(shared_scene_b), timeout=0.5)
     assert agent._observed_scene_id == "scene-b"
@@ -4254,13 +4265,10 @@ async def test_game_llm_agent_delivers_line_count_summary_after_scene_change(
     await _drain_agent_summary_tasks(agent)
 
     assert len(ctx.pushed_messages) == 1
-    pushed = ctx.pushed_messages[0]
-    assert pushed["metadata"]["kind"] == "scene_summary"
-    assert pushed["metadata"]["trigger"] == "line_count"
-    assert pushed["metadata"]["scene_id"] == "scene-a"
-    assert pushed["metadata"]["delivered_after_scene_change"] is True
-    assert pushed["metadata"]["current_scene_id"] == "scene-b"
-    assert "llm summary for scene-a" in pushed["content"]
+    assert ctx.pushed_messages[0]["metadata"]["kind"] == "scene_delta"
+    assert ctx.pushed_messages[0]["metadata"]["scene_id"] == "scene-a"
+    assert "llm summary for scene-a" in plugin._story_so_far
+    assert agent._last_delivered_summary_scene_id == "scene-a"
 
 
 @pytest.mark.asyncio
@@ -4309,13 +4317,11 @@ async def test_game_llm_agent_counts_batched_old_scene_lines_after_snapshot_adva
     await agent.tick(shared)
     await _drain_agent_summary_tasks(agent)
 
-    assert len(ctx.pushed_messages) == 1
-    pushed = ctx.pushed_messages[0]
-    assert pushed["metadata"]["kind"] == "scene_summary"
-    assert pushed["metadata"]["trigger"] == "line_count"
-    assert pushed["metadata"]["scene_id"] == "scene-a"
-    assert pushed["metadata"]["current_scene_id_at_schedule"] == "scene-b"
-    assert pushed["metadata"]["scheduled_from_event_seq"] == 8
+    assert ctx.pushed_messages == []
+    assert len(agent._llm_gateway.summarize_calls) == 1
+    assert agent._last_delivered_summary_scene_id == "scene-a"
+    assert agent._last_delivered_summary_seq == 8
+    assert "scene-a" in plugin._story_so_far
 
 
 @pytest.mark.asyncio
@@ -4364,9 +4370,8 @@ async def test_game_llm_agent_does_not_duplicate_batched_old_scene_summary(
     await agent.tick(shared)
     await _drain_agent_summary_tasks(agent)
 
-    assert len(ctx.pushed_messages) == 1
-    assert ctx.pushed_messages[0]["metadata"]["scene_id"] == "scene-a"
-    assert ctx.pushed_messages[0]["metadata"]["summary_delivery_key"] == "scene-a:8"
+    assert ctx.pushed_messages == []
+    assert len(agent._llm_gateway.summarize_calls) == 1
     status = await agent.query_status(shared)
     assert status["debug"]["summary"]["last_delivered_summary_key"] == "scene-a:8"
 
@@ -4399,7 +4404,8 @@ async def test_game_llm_agent_retries_line_count_summary_after_task_cancel(
         task.cancel()
     await asyncio.gather(*list(agent._summary_tasks), return_exceptions=True)
 
-    assert ctx.pushed_messages == []
+    assert len(ctx.pushed_messages) == 1
+    assert ctx.pushed_messages[0]["metadata"]["kind"] == "scene_delta"
     assert agent._scene_tracker.current_scene_lines_since_push("scene-a") >= 8
     status_after_cancel = await agent.peek_status(shared)
     summary_debug_after_cancel = status_after_cancel["debug"]["summary"]
@@ -4417,18 +4423,13 @@ async def test_game_llm_agent_retries_line_count_summary_after_task_cancel(
     await _drain_agent_summary_tasks(agent)
 
     assert len(ctx.pushed_messages) == 1
-    assert ctx.pushed_messages[0]["metadata"]["kind"] == "scene_summary"
-    assert ctx.pushed_messages[0]["metadata"]["trigger"] == "line_count"
-    assert ctx.pushed_messages[0]["metadata"]["retry_reason"] == (
-        "threshold_reached_without_delivery"
-    )
+    assert ctx.pushed_messages[0]["metadata"]["kind"] == "scene_delta"
     status_after_retry = await agent.query_status(shared)
     assert status_after_retry["debug"]["summary"]["last_retry_reason"] == (
         "threshold_reached_without_delivery"
     )
-    assert status_after_retry["debug"]["summary"]["last_delivered_summary_key"] == (
-        ctx.pushed_messages[0]["metadata"]["summary_delivery_key"]
-    )
+    assert status_after_retry["debug"]["summary"]["last_delivered_summary_key"]
+    assert "scene-a" in plugin._story_so_far
 
 
 @pytest.mark.plugin_unit
@@ -4496,7 +4497,7 @@ async def test_game_llm_agent_drain_summary_tasks_completes_timer_scheduled_summ
     await agent.drain_summary_tasks(timeout=1.0)
 
     assert len(ctx.pushed_messages) == 1
-    assert ctx.pushed_messages[0]["metadata"]["kind"] == "scene_summary"
+    assert ctx.pushed_messages[0]["metadata"]["kind"] == "scene_delta"
     assert agent._summary_tasks == set()
     status = await agent.peek_status(shared)
     assert status["debug"]["summary"]["last_task_finished"]["delivered"] is True
@@ -4542,7 +4543,7 @@ async def test_game_llm_agent_drain_summary_timeout_does_not_cancel_task(
     await asyncio.wait_for(drain_task, timeout=0.5)
 
     assert len(ctx.pushed_messages) == 1
-    assert ctx.pushed_messages[0]["metadata"]["kind"] == "scene_summary"
+    assert ctx.pushed_messages[0]["metadata"]["kind"] == "scene_delta"
     assert agent._summary_tasks == set()
     status = await agent.peek_status(shared)
     assert status["debug"]["summary"]["last_task_finished"]["delivered"] is True
@@ -4580,7 +4581,8 @@ async def test_game_llm_agent_counts_scene_summary_lines_independently(
         )
     )
     await _drain_agent_summary_tasks(agent)
-    assert ctx.pushed_messages == []
+    assert len(ctx.pushed_messages) == 1
+    assert ctx.pushed_messages[0]["metadata"]["scene_id"] == "scene-b"
 
     second_lines = [
         *first_lines,
@@ -4596,7 +4598,9 @@ async def test_game_llm_agent_counts_scene_summary_lines_independently(
     await _drain_agent_summary_tasks(agent)
 
     assert len(ctx.pushed_messages) == 1
-    assert ctx.pushed_messages[0]["metadata"]["scene_id"] == "scene-a"
+    assert ctx.pushed_messages[0]["metadata"]["scene_id"] == "scene-b"
+    assert len(agent._llm_gateway.summarize_calls) == 1
+    assert agent._last_delivered_summary_scene_id == "scene-a"
 
 
 @pytest.mark.asyncio
@@ -4663,7 +4667,8 @@ async def test_game_llm_agent_scene_summary_counters_reset_on_session_change(
         )
     )
     await _drain_agent_summary_tasks(agent)
-    assert ctx.pushed_messages == []
+    assert len(ctx.pushed_messages) == 1
+    assert ctx.pushed_messages[0]["metadata"]["kind"] == "scene_delta"
 
     await agent.tick(
         _shared_state(
@@ -4683,7 +4688,11 @@ async def test_game_llm_agent_scene_summary_counters_reset_on_session_change(
     )
     await _drain_agent_summary_tasks(agent)
 
-    assert ctx.pushed_messages == []
+    assert len(ctx.pushed_messages) == 2
+    assert all(
+        message["metadata"]["kind"] == "scene_delta"
+        for message in ctx.pushed_messages
+    )
 
 
 @pytest.mark.asyncio
@@ -4865,23 +4874,9 @@ async def test_scene_summary_guard_uses_trusted_boundary_across_ocr_session_id_j
     lines = [_summary_test_line("scene-a", 1)]
 
     async def _schedule_for(shared: dict[str, object], scheduled_seq: int) -> None:
+        del scheduled_seq
         await agent.tick(shared)
-        context = build_summarize_context(
-            shared,
-            scene_id="scene-a",
-            config=agent._context_config,
-        )
-        agent._schedule_scene_summary_task(
-            shared=shared,
-            session_id=str(shared["active_session_id"]),
-            scene_id="scene-a",
-            route_id="",
-            snapshot=shared["latest_snapshot"],
-            context=context,
-            trigger="choice_selected",
-            metadata={"scheduled_from_event_seq": scheduled_seq},
-            update_scene_memory=False,
-        )
+        await agent.tick(shared)
         await _drain_agent_summary_tasks(agent)
 
     shared_a = _shared_state(
@@ -4906,9 +4901,81 @@ async def test_scene_summary_guard_uses_trusted_boundary_across_ocr_session_id_j
 
     assert agent._last_session_transition_type == "ocr_transient_session_reset"
     assert len(ctx.pushed_messages) == 1
-    assert agent._summary_debug["last_suppress_reason"] == (
-        "duplicate_content_fingerprint"
+    assert ctx.pushed_messages[0]["metadata"]["kind"] == "scene_delta"
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_scene_summary_coalesce_key_stays_stable_across_ocr_session_id_jitter(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(ctx),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
     )
+    runtime = {
+        "effective_process_name": "game.exe",
+        "effective_window_title": "Demo Game",
+        "target_hwnd": 100,
+        "target_window_visible": True,
+    }
+
+    async def _schedule_for(
+        *,
+        session_id: str,
+        lines: list[dict[str, object]],
+        scheduled_seq: int,
+    ) -> dict[str, object]:
+        del scheduled_seq
+        shared = _shared_state(
+            mode="companion",
+            session_id=session_id,
+            active_data_source=DATA_SOURCE_OCR_READER,
+            ocr_reader_runtime=runtime,
+            snapshot=_session_state(
+                text=str(lines[-1]["text"]),
+                scene_id="scene-a",
+                line_id=str(lines[-1]["line_id"]),
+            ),
+            history_lines=lines,
+        )
+        await agent.tick(shared)
+        await agent.tick(shared)
+        await _drain_agent_summary_tasks(agent)
+        return shared
+
+    first_lines = [_summary_test_line("scene-a", 1)]
+    shared_a = await _schedule_for(
+        session_id="ocr-session-a",
+        lines=first_lines,
+        scheduled_seq=10,
+    )
+    shared_b = await _schedule_for(
+        session_id="ocr-session-b",
+        lines=[*first_lines, _summary_test_line("scene-a", 2)],
+        scheduled_seq=11,
+    )
+
+    assert agent._last_session_transition_type == "ocr_transient_session_reset"
+    assert len(ctx.pushed_messages) == 2
+    first_key, second_key = [
+        str(message["coalesce_key"]) for message in ctx.pushed_messages
+    ]
+    assert first_key == second_key
+    boundary_a = agent._scene_capsule_boundary_key(
+        shared_a, session_id="ocr-session-a"
+    )
+    boundary_b = agent._scene_capsule_boundary_key(
+        shared_b, session_id="ocr-session-b"
+    )
+    assert boundary_a == boundary_b
+    assert first_key == f"galgame:scene_delta:{boundary_a}"
+    assert "ocr-session-a" not in first_key
+    assert "ocr-session-b" not in second_key
 
 
 @pytest.mark.asyncio
@@ -4958,7 +5025,8 @@ async def test_game_llm_agent_summary_task_survives_ocr_transient_session_reset(
     await _drain_agent_summary_tasks(agent)
 
     assert agent._last_session_transition_type == "ocr_transient_session_reset"
-    assert ctx.pushed_messages[-1]["metadata"]["kind"] == "scene_summary"
+    assert len(ctx.pushed_messages) == 1
+    assert ctx.pushed_messages[-1]["metadata"]["kind"] == "scene_delta"
     assert ctx.pushed_messages[-1]["metadata"]["scene_id"] == "scene-a"
 
 
@@ -5066,10 +5134,11 @@ async def test_game_llm_agent_pushes_context_summary_when_stage_changes_without_
     )
     await _drain_agent_summary_tasks(agent)
 
-    assert ctx.pushed_messages[-1]["metadata"]["kind"] == "scene_summary"
-    assert ctx.pushed_messages[-1]["metadata"]["trigger"] == "screen_stage_changed"
-    assert ctx.pushed_messages[-1]["metadata"]["context_boundary"]["scene_id"] == "scene-a"
-    assert ctx.pushed_messages[-1]["metadata"]["context_boundary"]["stage"] == "choice_menu"
+    assert agent._llm_gateway.summarize_calls == []
+    assert all(
+        message["metadata"]["kind"] != "scene_summary"
+        for message in ctx.pushed_messages
+    )
     assert agent._observed_scene_id == "scene-a"
 
 
@@ -5118,9 +5187,7 @@ async def test_scene_summary_guard_suppresses_zero_delta_stage_change_but_allows
         update_scene_memory=False,
     )
     await _drain_agent_summary_tasks(agent)
-    assert [message["metadata"]["trigger"] for message in ctx.pushed_messages] == [
-        "choice_selected"
-    ]
+    assert ctx.pushed_messages == []
 
     # A later visual boundary reports the same stable content and no new option.
     # Its event sequence and route differ, so neither delivery-key nor exact
@@ -5155,10 +5222,248 @@ async def test_scene_summary_guard_suppresses_zero_delta_stage_change_but_allows
     await _drain_agent_summary_tasks(agent)
 
     assert [message["metadata"]["trigger"] for message in ctx.pushed_messages] == [
-        "choice_selected",
-        "line_count",
+        "stable_content_delta",
     ]
     assert ctx.pushed_messages[-1]["metadata"]["scene_id"] == "scene-b"
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+@pytest.mark.parametrize(
+    "trigger",
+    [
+        "screen_stage_changed",
+        "screen_type_changed",
+        "choice_selected",
+        "save_context_changed",
+        "context_boundary_changed",
+        "line_count",
+    ],
+)
+async def test_scene_summary_guard_suppresses_every_zero_delta_trigger_after_window(
+    tmp_path: Path,
+    trigger: str,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    gateway = _FakeLLMGateway()
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(ctx),
+        logger=_Logger(),
+        llm_gateway=gateway,
+        host_adapter=_FakeHostAdapter(),
+    )
+    lines = [_summary_test_line("scene-a", 1)]
+    shared = _shared_state(
+        mode="companion",
+        session_id="session-a",
+        snapshot=_session_state(
+            text="scene-a dialogue line 1.",
+            scene_id="scene-a",
+            line_id="scene-a-line-1",
+        ),
+        history_lines=lines,
+    )
+    await agent.tick(shared)
+    context = build_summarize_context(
+        shared,
+        scene_id="scene-a",
+        config=agent._context_config,
+    )
+
+    def _schedule(*, scheduled_seq: int, scheduled_trigger: str) -> None:
+        agent._schedule_scene_summary_task(
+            shared=shared,
+            session_id="session-a",
+            scene_id="scene-a",
+            route_id="",
+            snapshot=shared["latest_snapshot"],
+            context=context,
+            trigger=scheduled_trigger,
+            metadata={"scheduled_from_event_seq": scheduled_seq},
+            update_scene_memory=False,
+        )
+
+    _schedule(scheduled_seq=11, scheduled_trigger=trigger)
+    await _drain_agent_summary_tasks(agent)
+
+    expected_memory_calls = 1 if trigger == "line_count" else 0
+    assert len(gateway.summarize_calls) == expected_memory_calls
+    assert ctx.pushed_messages == []
+    if trigger == "line_count":
+        assert agent._last_delivered_summary_seq == 11
+    else:
+        assert agent._summary_debug["last_memory_skip"]["trigger"] == trigger
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_scene_summary_new_line_is_the_only_response_target(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    gateway = _FakeLLMGateway()
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(ctx),
+        logger=_Logger(),
+        llm_gateway=gateway,
+        host_adapter=_FakeHostAdapter(),
+    )
+
+    async def _schedule(lines: list[dict[str, object]], scheduled_seq: int) -> None:
+        shared = _shared_state(
+            mode="companion",
+            session_id="session-a",
+            snapshot=_session_state(
+                text=str(lines[-1]["text"]),
+                scene_id="scene-a",
+                line_id=str(lines[-1]["line_id"]),
+            ),
+            history_lines=lines,
+        )
+        await agent.tick(shared)
+        context = build_summarize_context(
+            shared,
+            scene_id="scene-a",
+            config=agent._context_config,
+        )
+        agent._schedule_scene_summary_task(
+            shared=shared,
+            session_id="session-a",
+            scene_id="scene-a",
+            route_id="",
+            snapshot=shared["latest_snapshot"],
+            context=context,
+            trigger="line_count",
+            metadata={"scheduled_from_event_seq": scheduled_seq},
+            update_scene_memory=False,
+        )
+        await _drain_agent_summary_tasks(agent)
+
+    first_lines = [_summary_test_line("scene-a", index) for index in range(1, 6)]
+    await _schedule(first_lines, 10)
+    all_lines = [*first_lines, _summary_test_line("scene-a", 6)]
+    await _schedule(all_lines, 11)
+
+    assert len(gateway.summarize_calls) == 2
+    second_context = gateway.summarize_calls[-1]
+    assert [line["line_id"] for line in second_context["stable_lines"]] == [
+        f"scene-a-line-{index}" for index in range(1, 7)
+    ]
+    pushed = ctx.pushed_messages[-1]
+    assert pushed["metadata"]["kind"] == "scene_delta"
+    assert pushed["metadata"]["new_stable_line_count"] == 1
+    assert pushed["metadata"]["new_choice_count"] == 0
+    content = str(pushed["content"])
+    response_target = content.split("本次回应对象：", 1)[1]
+    assert "scene-a dialogue line 6." in response_target
+    assert "scene-a dialogue line 1." not in response_target
+    assert "scene-a dialogue line 5." not in response_target
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_scene_summary_selected_choice_is_new_after_same_visible_choice(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    gateway = _FakeLLMGateway()
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(ctx),
+        logger=_Logger(),
+        llm_gateway=gateway,
+        host_adapter=_FakeHostAdapter(),
+    )
+    lines = [_summary_test_line("scene-a", 1)]
+    visible_choice = {"choice_id": "choice-a", "text": "陪她回家", "index": 0}
+    shared_visible = _shared_state(
+        mode="companion",
+        session_id="session-a",
+        snapshot=_session_state(
+            text="scene-a dialogue line 1.",
+            scene_id="scene-a",
+            line_id="scene-a-line-1",
+            choices=[visible_choice],
+            is_menu_open=True,
+        ),
+        history_lines=lines,
+    )
+    await agent.tick(shared_visible)
+    await agent.tick(shared_visible)
+    visible_context = build_summarize_context(
+        shared_visible,
+        scene_id="scene-a",
+        config=agent._context_config,
+    )
+    agent._schedule_scene_summary_task(
+        shared=shared_visible,
+        session_id="session-a",
+        scene_id="scene-a",
+        route_id="",
+        snapshot=shared_visible["latest_snapshot"],
+        context=visible_context,
+        trigger="screen_stage_changed",
+        metadata={"scheduled_from_event_seq": 10},
+        update_scene_memory=False,
+    )
+    await _drain_agent_summary_tasks(agent)
+    visible_target = str(ctx.pushed_messages[-1]["content"]).split(
+        "本次回应对象：",
+        1,
+    )[1]
+    assert "当前可见选项：" not in visible_target
+    assert "玩家已选择：" not in visible_target
+
+    selected_choice = {
+        **visible_choice,
+        "action": "selected",
+        "scene_id": "scene-a",
+        "route_id": "",
+    }
+    shared_selected = _shared_state(
+        mode="companion",
+        session_id="session-a",
+        snapshot=_session_state(
+            text="scene-a dialogue line 1.",
+            scene_id="scene-a",
+            line_id="scene-a-line-1",
+            choices=[],
+            is_menu_open=False,
+        ),
+        history_lines=lines,
+        history_choices=[selected_choice],
+    )
+    await agent.tick(shared_selected)
+    selected_context = build_summarize_context(
+        shared_selected,
+        scene_id="scene-a",
+        config=agent._context_config,
+    )
+    agent._schedule_scene_summary_task(
+        shared=shared_selected,
+        session_id="session-a",
+        scene_id="scene-a",
+        route_id="",
+        snapshot=shared_selected["latest_snapshot"],
+        context=selected_context,
+        trigger="choice_selected",
+        metadata={"scheduled_from_event_seq": 11},
+        update_scene_memory=False,
+    )
+    await _drain_agent_summary_tasks(agent)
+
+    assert gateway.summarize_calls == []
+    assert len(ctx.pushed_messages) == 2
+    assert ctx.pushed_messages[-1]["metadata"]["kind"] == "scene_delta"
+    assert ctx.pushed_messages[-1]["metadata"]["new_choice_count"] == 1
+    response_target = str(ctx.pushed_messages[-1]["content"]).split(
+        "本次回应对象：",
+        1,
+    )[1]
+    assert "玩家刚刚选择：" in response_target
+    assert "陪她回家" in response_target
 
 
 @pytest.mark.asyncio
@@ -5205,8 +5510,118 @@ async def test_scene_summary_guard_reserves_content_fingerprint_before_concurren
         )
     await _drain_agent_summary_tasks(agent)
 
-    assert len(gateway.summarize_calls) == 1
-    assert len(ctx.pushed_messages) == 1
+    assert gateway.summarize_calls == []
+    assert ctx.pushed_messages == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_newer_same_scene_summary_wins_when_older_llm_finishes_last(
+    tmp_path: Path,
+) -> None:
+    class _OutOfOrderSummaryGateway(_FakeLLMGateway):
+        def __init__(self) -> None:
+            super().__init__()
+            self.older_started = asyncio.Event()
+            self.release_older = asyncio.Event()
+
+        async def summarize_scene(
+            self,
+            context: dict[str, object],
+        ) -> dict[str, object]:
+            self.summarize_calls.append(dict(context))
+            stable_lines = list(context.get("stable_lines") or [])
+            if len(stable_lines) == 1:
+                self.older_started.set()
+                await self.release_older.wait()
+                return {
+                    "degraded": False,
+                    "summary": "older summary",
+                    "diagnostic": "",
+                }
+            return {
+                "degraded": False,
+                "summary": "newer summary",
+                "diagnostic": "",
+            }
+
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    gateway = _OutOfOrderSummaryGateway()
+    agent = GameLLMAgent(
+        plugin=plugin,
+        logger=_Logger(),
+        llm_gateway=gateway,
+        host_adapter=_FakeHostAdapter(),
+    )
+    agent._scene_memory.append(
+        {"scene_id": "scene-a", "route_id": "", "summary": "seed summary"}
+    )
+    first_lines = [_summary_test_line("scene-a", 1)]
+    shared = _shared_state(
+        mode="companion",
+        session_id="session-a",
+        snapshot=_session_state(
+            text="scene-a dialogue line 1.",
+            scene_id="scene-a",
+            line_id="scene-a-line-1",
+        ),
+        history_lines=first_lines,
+    )
+    await agent.tick(shared)
+
+    def _schedule(lines: list[dict[str, object]], scheduled_seq: int) -> asyncio.Task[bool]:
+        scheduled_shared = {
+            **shared,
+            "latest_snapshot": _session_state(
+                text=str(lines[-1]["text"]),
+                scene_id="scene-a",
+                line_id=str(lines[-1]["line_id"]),
+            ),
+            "history_lines": lines,
+        }
+        context = build_summarize_context(
+            scheduled_shared,
+            scene_id="scene-a",
+            config=agent._context_config,
+        )
+        before = set(agent._summary_tasks)
+        agent._schedule_scene_summary_task(
+            shared=scheduled_shared,
+            session_id="session-a",
+            scene_id="scene-a",
+            route_id="",
+            snapshot=scheduled_shared["latest_snapshot"],
+            context=context,
+            trigger="line_count",
+            metadata={"scheduled_from_event_seq": scheduled_seq},
+            update_scene_memory=True,
+        )
+        return next(iter(agent._summary_tasks - before))
+
+    older_task = _schedule(first_lines, 10)
+    await asyncio.wait_for(gateway.older_started.wait(), timeout=0.5)
+    newer_task = _schedule(
+        [*first_lines, _summary_test_line("scene-a", 2)],
+        11,
+    )
+    await asyncio.wait_for(asyncio.shield(newer_task), timeout=0.5)
+
+    assert ctx.pushed_messages == []
+    assert agent._last_delivered_summary_seq == 11
+    assert agent._scene_memory[-1]["summary"] == "newer summary"
+    assert "newer summary" in plugin._story_so_far
+    latest_memory_order = agent._scene_summary_latest_memory_order_by_scene["scene-a"]
+
+    gateway.release_older.set()
+    await asyncio.wait_for(asyncio.shield(older_task), timeout=0.5)
+
+    assert ctx.pushed_messages == []
+    assert agent._last_delivered_summary_seq == 11
+    assert agent._scene_memory[-1]["summary"] == "newer summary"
+    assert "older summary" not in plugin._story_so_far
+    assert agent._scene_summary_latest_memory_order_by_scene["scene-a"] == latest_memory_order
 
 
 @pytest.mark.asyncio
@@ -5235,7 +5650,6 @@ async def test_scene_summary_guard_releases_reservation_after_delivery_failure(
         history_lines=lines,
     )
     await agent.tick(shared)
-    context = build_summarize_context(shared, scene_id="scene-a", config=agent._context_config)
     delivery_results = iter((False, True))
     attempted_deliveries: list[str] = []
 
@@ -5245,26 +5659,53 @@ async def test_scene_summary_guard_releases_reservation_after_delivery_failure(
 
     monkeypatch.setattr(agent, "_push_agent_message", _deliver)
 
-    def _schedule() -> None:
-        agent._schedule_scene_summary_task(
-            shared=shared,
-            session_id="sess-a",
-            scene_id="scene-a",
-            route_id="",
-            snapshot=shared["latest_snapshot"],
-            context=context,
-            trigger="screen_stage_changed",
-            metadata={"context_type": "galgame_scene_context"},
-            update_scene_memory=False,
-        )
-
-    _schedule()
+    await agent.tick(shared)
     await _drain_agent_summary_tasks(agent)
-    _schedule()
+    assert agent._scene_capsule_reservations == set()
+
+    await agent.tick(shared)
     await _drain_agent_summary_tasks(agent)
 
-    assert attempted_deliveries == ["scene_summary", "scene_summary"]
-    assert len(gateway.summarize_calls) == 2
+    assert attempted_deliveries == ["scene_delta", "scene_delta"]
+    assert gateway.summarize_calls == []
+    assert agent._scene_summary_latest_submitted_order > 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_cancel_summary_tasks_preserves_delivered_content_but_clears_pending_state(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(ctx),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    agent._scene_summary_repeat_deliveries["delivered"] = {
+        "fingerprint": "digest",
+        "delivered_at": 1.0,
+    }
+    agent._scene_summary_latest_scene_content["scene-a"] = {
+        "stable_line_keys": ("line",),
+        "choice_keys": (),
+    }
+    agent._scene_summary_repeat_reservations.add("pending")
+    pending_task = asyncio.create_task(asyncio.Event().wait())
+    agent._summary_tasks.add(pending_task)
+    agent._summary_task_meta[pending_task] = {"scene_id": "scene-a"}
+
+    agent._cancel_summary_tasks()
+    await asyncio.gather(pending_task, return_exceptions=True)
+
+    assert pending_task.cancelled()
+    assert agent._summary_tasks == set()
+    assert agent._summary_task_meta == {}
+    assert agent._scene_summary_repeat_reservations == set()
+    assert "delivered" in agent._scene_summary_repeat_deliveries
+    assert "scene-a" in agent._scene_summary_latest_scene_content
 
 
 @pytest.mark.asyncio
@@ -5284,18 +5725,7 @@ async def test_scene_summary_guard_state_is_cleared_for_real_session_change(
 
     async def _schedule_for(shared: dict[str, object]) -> None:
         await agent.tick(shared)
-        context = build_summarize_context(shared, scene_id="scene-a", config=agent._context_config)
-        agent._schedule_scene_summary_task(
-            shared=shared,
-            session_id=str(shared["active_session_id"]),
-            scene_id="scene-a",
-            route_id="",
-            snapshot=shared["latest_snapshot"],
-            context=context,
-            trigger="screen_stage_changed",
-            metadata={"context_type": "galgame_scene_context"},
-            update_scene_memory=False,
-        )
+        await agent.tick(shared)
         await _drain_agent_summary_tasks(agent)
 
     shared_a = _shared_state(
@@ -5321,66 +5751,89 @@ async def test_scene_summary_guard_state_is_cleared_for_real_session_change(
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
-async def test_scene_summary_guard_state_is_cleared_for_data_source_change(
+async def test_scene_summary_guard_state_is_preserved_for_data_source_change(
     tmp_path: Path,
 ) -> None:
     plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
     ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    gateway = _FakeLLMGateway()
     agent = GameLLMAgent(
         plugin=GalgameBridgePlugin(ctx),
         logger=_Logger(),
-        llm_gateway=_FakeLLMGateway(),
+        llm_gateway=gateway,
         host_adapter=_FakeHostAdapter(),
     )
-    lines = [_summary_test_line("scene-a", 1)]
-
-    async def _schedule_for(shared: dict[str, object]) -> None:
+    async def _observe_twice(shared: dict[str, object]) -> None:
         await agent.tick(shared)
-        context = build_summarize_context(
-            shared,
-            scene_id="scene-a",
-            config=agent._context_config,
-        )
-        agent._schedule_scene_summary_task(
-            shared=shared,
-            session_id="session-a",
-            scene_id="scene-a",
-            route_id="",
-            snapshot=shared["latest_snapshot"],
-            context=context,
-            trigger="screen_stage_changed",
-            metadata={"context_type": "galgame_scene_context"},
-            update_scene_memory=False,
-        )
+        await agent.tick(shared)
         await _drain_agent_summary_tasks(agent)
 
+    memory_line = {
+        **_summary_test_line("scene-memory", 1),
+        "line_id": "memory-line-1",
+        "text": "same content",
+    }
     shared_memory = _shared_state(
         mode="companion",
-        session_id="session-a",
+        session_id="memory-session",
         active_data_source=DATA_SOURCE_MEMORY_READER,
         snapshot=_session_state(
             text="same content",
-            scene_id="scene-a",
-            line_id="line-1",
+            scene_id="scene-memory",
+            line_id="memory-line-1",
         ),
-        history_lines=lines,
+        history_lines=[memory_line],
     )
+    ocr_overlap = {
+        **_summary_test_line("scene-ocr", 1),
+        "line_id": "ocr-line-99",
+        "text": "same content",
+    }
     shared_ocr = _shared_state(
         mode="companion",
-        session_id="session-a",
+        session_id="ocr-session",
         active_data_source=DATA_SOURCE_OCR_READER,
         snapshot=_session_state(
             text="same content",
-            scene_id="scene-a",
-            line_id="line-1",
+            scene_id="scene-ocr",
+            line_id="ocr-line-99",
         ),
-        history_lines=lines,
+        history_lines=[ocr_overlap],
     )
 
-    await _schedule_for(shared_memory)
-    await _schedule_for(shared_ocr)
+    await _observe_twice(shared_memory)
+    await _observe_twice(shared_ocr)
 
+    assert len(ctx.pushed_messages) == 1
+
+    ocr_new = {
+        **_summary_test_line("scene-ocr", 2),
+        "line_id": "ocr-line-100",
+        "text": "new suffix",
+    }
+    shared_ocr_new = {
+        **shared_ocr,
+        "latest_snapshot": _session_state(
+            text="new suffix",
+            scene_id="scene-ocr",
+            line_id="ocr-line-100",
+        ),
+        "history_lines": [ocr_overlap, ocr_new],
+    }
+    await agent.tick(shared_ocr_new)
+    await _drain_agent_summary_tasks(agent)
+
+    assert gateway.summarize_calls == []
     assert len(ctx.pushed_messages) == 2
+    assert all(
+        message["metadata"]["kind"] == "scene_delta"
+        for message in ctx.pushed_messages
+    )
+    response_target = str(ctx.pushed_messages[-1]["content"]).split(
+        "本次回应对象：", 1
+    )[1]
+    assert "new suffix" in response_target
+    assert "same content" not in response_target
 
 
 @pytest.mark.asyncio
@@ -5412,25 +5865,17 @@ async def test_scene_summary_repeat_guard_can_be_disabled_without_fingerprint_su
         history_lines=lines,
     )
     await agent.tick(shared)
-    context = build_summarize_context(shared, scene_id="scene-a", config=agent._context_config)
-
-    for scheduled_seq in (10, 11):
-        agent._schedule_scene_summary_task(
-            shared=shared,
-            session_id="sess-a",
-            scene_id="scene-a",
-            route_id="",
-            snapshot=shared["latest_snapshot"],
-            context=context,
-            trigger="screen_stage_changed",
-            metadata={"scheduled_from_event_seq": scheduled_seq},
-            update_scene_memory=False,
-        )
+    for _ in range(2):
+        await agent.tick(shared)
         await _drain_agent_summary_tasks(agent)
 
     assert agent._scene_summary_repeat_guard_enabled is False
-    assert len(gateway.summarize_calls) == 2
+    assert gateway.summarize_calls == []
     assert len(ctx.pushed_messages) == 2
+    assert all(
+        message["metadata"]["kind"] == "scene_delta"
+        for message in ctx.pushed_messages
+    )
     assert agent._scene_summary_suppressed_count == 0
 
 
@@ -5502,34 +5947,19 @@ async def test_scene_summary_suppression_observability_never_exposes_full_finger
         route_id="",
     )
 
-    for scheduled_seq in (10, 11):
-        agent._schedule_scene_summary_task(
-            shared=shared,
-            session_id="sess-a",
-            scene_id="scene-private",
-            route_id="",
-            snapshot=shared["latest_snapshot"],
-            context=context,
-            trigger="screen_stage_changed",
-            metadata={"scheduled_from_event_seq": scheduled_seq},
-            update_scene_memory=False,
-        )
+    for _ in range(2):
+        await agent.tick(shared)
         await _drain_agent_summary_tasks(agent)
 
     status = await agent.query_status(shared)
     summary_debug = status["debug"]["summary"]
-    last_suppressed = summary_debug["last_suppressed"]
-    assert summary_debug["scene_summary_suppressed_count"] == 1
-    assert summary_debug["last_suppress_reason"] == "duplicate_content_fingerprint"
-    assert last_suppressed["reason"] == "duplicate_content_fingerprint"
-    assert last_suppressed["trigger"] == "screen_stage_changed"
-    assert last_suppressed["fingerprint"] == full_fingerprint[:8]
-    assert len(last_suppressed["fingerprint"]) == 8
+    assert len(ctx.pushed_messages) == 1
+    assert ctx.pushed_messages[0]["metadata"]["kind"] == "scene_delta"
 
     suppression_logs = [
         message for message in logger.info_messages if "scene_summary suppressed" in message
     ]
-    assert len(suppression_logs) == 1
+    assert suppression_logs == []
     observability = json.dumps(summary_debug, ensure_ascii=False) + "\n" + "\n".join(
         suppression_logs
     )
@@ -5540,7 +5970,7 @@ async def test_scene_summary_suppression_observability_never_exposes_full_finger
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
-async def test_scene_summary_push_coalesces_per_session_and_leaves_other_kinds_unkeyed(
+async def test_scene_summary_push_uses_hashed_history_boundary_and_leaves_other_kinds_unkeyed(
     tmp_path: Path,
 ) -> None:
     plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
@@ -5568,7 +5998,12 @@ async def test_scene_summary_push_coalesces_per_session_and_leaves_other_kinds_u
     await _drain_agent_summary_tasks(agent)
 
     pushed = ctx.pushed_messages[-1]
-    assert pushed["coalesce_key"] == "galgame:scene_summary:session-a"
+    boundary_key = agent._scene_capsule_boundary_key(
+        shared, session_id="session-a"
+    )
+    assert pushed["metadata"]["kind"] == "scene_delta"
+    assert pushed["coalesce_key"] == f"galgame:scene_delta:{boundary_key}"
+    assert "session-a" not in pushed["coalesce_key"]
 
     await agent._push_agent_message(
         shared,
@@ -5609,10 +6044,9 @@ async def test_scene_summary_prompt_forbids_recent_sentence_and_question_ending_
     await _drain_agent_summary_tasks(agent)
 
     content = str(ctx.pushed_messages[-1]["content"])
-    assert "只评论本次新增剧情点" in content
-    assert "不得复用最近两次自己回复中的完整句子" in content
-    assert "不得使用相同问句式收尾" in content
-    assert "回复限制为 1～3 句" in content
+    assert "只回应“本次回应对象”" in content
+    assert "连续性背景仅供理解，不要复述或回应" in content
+    assert "累计剧情背景" not in content
 
 
 @pytest.mark.asyncio
@@ -5681,9 +6115,9 @@ async def test_game_llm_agent_pushes_context_summary_when_choice_selected_withou
     await _drain_agent_summary_tasks(agent)
 
     content = ctx.pushed_messages[-1]["content"]
-    assert ctx.pushed_messages[-1]["metadata"]["kind"] == "scene_summary"
-    assert ctx.pushed_messages[-1]["metadata"]["trigger"] == "choice_selected"
-    assert ctx.pushed_messages[-1]["metadata"]["context_boundary"]["choice_marker"]
+    assert ctx.pushed_messages[-1]["metadata"]["kind"] == "scene_delta"
+    assert ctx.pushed_messages[-1]["metadata"]["trigger"] == "stable_content_delta"
+    assert agent._llm_gateway.summarize_calls == []
     assert "- 陪雪乃回家" in content
     assert agent._observed_scene_id == "scene-a"
 
@@ -5748,9 +6182,9 @@ async def test_game_llm_agent_pushes_context_summary_when_save_context_changes_w
     )
     await _drain_agent_summary_tasks(agent)
 
-    assert ctx.pushed_messages[-1]["metadata"]["kind"] == "scene_summary"
-    assert ctx.pushed_messages[-1]["metadata"]["trigger"] == "save_context_changed"
-    assert ctx.pushed_messages[-1]["metadata"]["context_boundary"]["save_kind"] == "load"
+    assert ctx.pushed_messages[-1]["metadata"]["kind"] == "scene_delta"
+    assert ctx.pushed_messages[-1]["metadata"]["trigger"] == "stable_content_delta"
+    assert agent._llm_gateway.summarize_calls == []
     assert agent._observed_scene_id == "scene-a"
 
 
@@ -5874,23 +6308,21 @@ async def test_game_llm_agent_scene_summary_push_formats_key_points_and_stable_l
     await _drain_agent_summary_tasks(agent)
 
     content = ctx.pushed_messages[-1]["content"]
-    assert "当前场景：" in content
-    assert "最近关键台词：" in content
-    assert "最近选项：" in content
-    assert "- 陪雪乃回家" in content
-    assert "关键变化：" in content
-    assert "人物情绪：雪乃嘴上冷淡" in content
-    assert "玩家选择：玩家刚选择继续陪在雪乃身边" in content
-    assert "当前目标：当前目标是确认雪乃是否愿意接受帮助" in content
-    assert "当前可关注点：" in content
-    assert "待确认候选：" in content
-    assert "雪乃：「也许我还想再确认一下。」（OCR 候选，尚未稳定确认）" in content
-    assert "也许我还想再确认一下。" not in content.split("待确认候选：", 1)[0]
-    assert ctx.pushed_messages[-1]["metadata"]["summary_source"] == "llm"
-    assert ctx.pushed_messages[-1]["metadata"]["scene_summary"] == (
-        "雪乃和主角在放学后对话，雪乃表面冷淡但没有拒绝关心。"
-    )
-    assert ctx.pushed_messages[-1]["metadata"]["key_points"][0]["type"] == "emotion"
+    assert ctx.pushed_messages[-1]["metadata"]["kind"] == "scene_delta"
+    assert "连续性背景（最多 2 条，不是回应对象）：" in content
+    assert "本次回应对象：" in content
+    assert "最新稳定台词：" in content
+    assert "稳定台词 8" in content
+    assert "稳定台词 6" in content
+    assert "稳定台词 7" in content
+    assert "陪雪乃回家" not in content
+    assert "雪乃嘴上冷淡" not in content
+    assert "也许我还想再确认一下。" not in content
+    response_target = content.split("本次回应对象：", 1)[1]
+    assert "稳定台词 8" in response_target
+    assert "稳定台词 7" not in response_target
+    assert len(fake_gateway.summarize_calls) == 1
+    assert "雪乃和主角在放学后对话" in plugin._story_so_far
 
 
 @pytest.mark.asyncio
@@ -5939,13 +6371,15 @@ async def test_game_llm_agent_scene_summary_fallback_marks_observed_as_tentative
     )
 
     assert meta["summary_source"] == "local_context"
-    assert "当前场景：" in content
+    assert "累计剧情背景（仅供理解，不要复述）：" in content
     assert "暂时没有足够台词上下文" in content
-    assert "最近关键台词：" in content
-    assert "台词仍在确认中，暂不作为确定剧情事实" in content
-    assert "待确认候选：" in content
+    assert "本次回应对象：" in content
+    assert "暂无新增稳定台词" in content
+    candidate_title = "待确认候选（仅供观察，不要作为确定事实回应）："
+    assert candidate_title in content
     assert "雪乃：「也许我并不讨厌这样。」（OCR 候选，尚未稳定确认）" in content
-    assert "也许我并不讨厌这样。" not in content.split("待确认候选：", 1)[0]
+    assert "也许我并不讨厌这样。" not in content.split(candidate_title, 1)[0]
+    assert "也许我并不讨厌这样。" not in content.split("本次回应对象：", 1)[1]
 
 
 @pytest.mark.asyncio
@@ -6117,7 +6551,10 @@ async def test_redacted_seq_384_392_replay_stays_clean_through_401_outbound(
     assert "单位圆" not in outbound
     assert "最大值为16" not in outbound
     assert "Cross-scene memory" not in outbound
-    candidate_section = outbound.split("待确认候选：", 1)[-1]
+    candidate_section = outbound.split(
+        "待确认候选（仅供观察，不要作为确定事实回应）：",
+        1,
+    )[-1].split("\n关键变化：", 1)[0]
     assert "出家门后，算上换乘我一共坐了2个小时的电车。" not in candidate_section
 
 
@@ -6160,7 +6597,8 @@ async def test_game_llm_agent_scene_change_does_not_schedule_summary(
     await agent.tick(shared_before)
     await asyncio.wait_for(agent.tick(shared_after), timeout=0.5)
 
-    assert ctx.pushed_messages == []
+    assert len(ctx.pushed_messages) == 1
+    assert ctx.pushed_messages[0]["metadata"]["kind"] == "scene_delta"
     assert gateway.summary_started.is_set() is False
     assert agent._summary_tasks == set()
 
@@ -6737,6 +7175,38 @@ async def test_game_llm_agent_drops_stale_actuation_start_after_reset(
 
     assert agent._actuation is None
     assert agent._starting_actuation is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_game_llm_agent_shutdown_clears_scene_summary_repeat_guard_state(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(ctx),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    agent._scene_summary_repeat_deliveries["delivered"] = {
+        "fingerprint": "digest",
+        "delivered_at": 1.0,
+    }
+    agent._scene_summary_latest_scene_content["scene-a"] = {
+        "stable_line_keys": ("line",),
+        "choice_keys": (),
+    }
+    agent._scene_summary_repeat_reservations.add("pending")
+    agent._scene_summary_repeat_data_source = DATA_SOURCE_MEMORY_READER
+
+    await agent.shutdown()
+
+    assert agent._scene_summary_repeat_deliveries == {}
+    assert agent._scene_summary_latest_scene_content == {}
+    assert agent._scene_summary_repeat_reservations == set()
+    assert agent._scene_summary_repeat_data_source == ""
 
 
 @pytest.mark.asyncio

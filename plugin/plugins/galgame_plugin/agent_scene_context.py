@@ -136,6 +136,87 @@ class AgentSceneContextMixin:
         return text[:120]
 
     @classmethod
+    def _format_scene_delta_for_cat(
+        cls,
+        *,
+        new_stable_lines: list[dict[str, Any]],
+        new_choices: list[dict[str, Any]],
+        continuity_lines: list[dict[str, Any]] | None = None,
+    ) -> str:
+        """Build a bounded, deterministic capsule for the cat-facing queue.
+
+        The signature deliberately cannot accept a cumulative summary, key points,
+        focus points, or observed OCR.  Explicitly non-stable lines are rejected as
+        a final defensive boundary; lines without a stability field remain valid
+        for trusted readers whose history records predate that field.
+        """
+
+        def _confirmed_lines(value: Any) -> list[dict[str, Any]]:
+            confirmed: list[dict[str, Any]] = []
+            for item in list(value or []):
+                if not isinstance(item, dict):
+                    continue
+                if not str(item.get("text") or "").strip():
+                    continue
+                stability = str(item.get("stability") or "").strip().lower()
+                if stability and stability != "stable":
+                    continue
+                confirmed.append(item)
+            return confirmed
+
+        stable_delta = _confirmed_lines(new_stable_lines)
+        choices_delta = [
+            item
+            for item in list(new_choices or [])
+            if isinstance(item, dict)
+            and str(item.get("text") or item.get("label") or "").strip()
+        ]
+        if not stable_delta and not choices_delta:
+            return ""
+
+        continuity = _confirmed_lines(continuity_lines)[-2:]
+        parts: list[str] = [
+            "Galgame 实时剧情增量：",
+            "回应约束：只回应“本次回应对象”；连续性背景仅供理解，不要复述或回应。",
+        ]
+        if continuity:
+            parts.extend(("", "连续性背景（最多 2 条，不是回应对象）："))
+            preview = [
+                cls._format_scene_line(line, index=index)
+                for index, line in enumerate(continuity, 1)
+            ]
+            parts.extend(f"- {line}" for line in preview if line)
+
+        parts.extend(("", "本次回应对象："))
+        if stable_delta:
+            parts.append("最新稳定台词：")
+            latest_line = cls._format_scene_line(stable_delta[-1])
+            if latest_line:
+                parts.append(f"- {latest_line}")
+
+        selected_choices: list[str] = []
+        visible_choices: list[str] = []
+        for choice in choices_delta[-3:]:
+            rendered = cls._format_choice_text(
+                {**choice, "text": choice.get("text") or choice.get("label")}
+            )
+            if not rendered:
+                continue
+            state = str(choice.get("choice_state") or "selected").strip().lower()
+            if state == "visible":
+                visible_choices.append(rendered)
+            else:
+                selected_choices.append(rendered)
+        if selected_choices:
+            parts.append("玩家刚刚选择：")
+            parts.extend(f"- {choice}" for choice in selected_choices)
+        if visible_choices:
+            parts.append("刚刚出现的可见选项：")
+            parts.extend(f"- {choice}" for choice in visible_choices)
+
+        return "\n".join(parts).strip()
+
+    @classmethod
     def _format_scene_context_for_cat(
         cls,
         *,
@@ -157,41 +238,45 @@ class AgentSceneContextMixin:
             item for item in list(context.get("recent_choices") or [])
             if isinstance(item, dict) and str(item.get("text") or "").strip()
         ]
+        # ``new_*`` is populated by the incremental scene-summary scheduler.  Keep
+        # missing-key compatibility for direct/legacy callers: their first summary
+        # still treats the available stable context as the initial response target.
+        # An explicitly empty list is different -- it means there is no new content
+        # and cumulative context must not be presented as something to respond to.
+        new_stable_lines_source = (
+            context.get("new_stable_lines")
+            if "new_stable_lines" in context
+            else stable_lines
+        )
+        new_choices_source = (
+            context.get("new_choices")
+            if "new_choices" in context
+            else choices
+        )
+        new_stable_lines = [
+            item for item in list(new_stable_lines_source or [])
+            if isinstance(item, dict) and str(item.get("text") or "").strip()
+        ]
+        new_choices = [
+            item for item in list(new_choices_source or [])
+            if isinstance(item, dict) and str(item.get("text") or "").strip()
+        ]
 
-        parts: list[str] = ["当前场景：", str(summary or "").strip() or "暂时没有足够剧情上下文。"]
-
-        parts.append("")
-        parts.append("最近关键台词：")
-        stable_preview = [cls._format_scene_line(line, index=i) for i, line in enumerate(stable_lines[-5:], 1)]
-        stable_preview = [line for line in stable_preview if line]
-        if stable_preview:
-            parts.extend(f"- {line}" for line in stable_preview)
-        else:
-            current_text = str(snapshot.get("text") or "").strip()
-            if current_text and not observed_lines:
-                speaker = str(snapshot.get("speaker") or "旁白").strip() or "旁白"
-                parts.append(f"- {speaker}：「{current_text[:120]}」")
-            else:
-                parts.append("- 台词仍在确认中，暂不作为确定剧情事实。")
+        parts: list[str] = [
+            "累计剧情背景（仅供理解，不要复述）：",
+            str(summary or "").strip() or "暂时没有足够剧情上下文。",
+        ]
 
         observed_preview = [cls._format_scene_line(line, index=i) for i, line in enumerate(observed_lines[-3:], 1)]
         observed_preview = [line for line in observed_preview if line]
         if observed_preview:
             parts.append("")
-            parts.append("待确认候选：")
+            parts.append("待确认候选（仅供观察，不要作为确定事实回应）：")
             parts.extend(f"- {line}（OCR 候选，尚未稳定确认）" for line in observed_preview)
 
         parts.append("")
-        parts.append("最近选项：")
-        choice_preview = [cls._format_choice_text(choice) for choice in choices[-3:]]
-        choice_preview = [choice for choice in choice_preview if choice]
-        if choice_preview:
-            parts.extend(f"- {choice}" for choice in choice_preview)
-        else:
-            parts.append("- 暂无已确认选项。")
-
-        parts.append("")
         parts.append("关键变化：")
+        parts.append("- 以下结构化要点用于理解累计脉络；不要把旧要点当作本次新增内容复述。")
         if key_points:
             for point in key_points[:6]:
                 label = cls._KEY_POINT_LABELS.get(str(point.get("type") or ""), "剧情线索")
@@ -199,7 +284,7 @@ class AgentSceneContextMixin:
                 if text:
                     parts.append(f"- {label}：{text[:160]}")
         else:
-            parts.append("- 暂无额外结构化关键点；请基于当前场景和稳定台词自然回应。")
+            parts.append("- 暂无额外结构化关键点；请只基于“本次回应对象”自然回应。")
 
         focus_points = [
             str(point.get("text") or "").strip()
@@ -209,12 +294,53 @@ class AgentSceneContextMixin:
         ][:3]
         parts.append("")
         parts.append("当前可关注点：")
+        parts.append("- 仅用于理解剧情；实际回应必须以“本次回应对象”为准。")
         if focus_points:
             parts.extend(f"- {text[:160]}" for text in focus_points)
-        elif stable_preview:
-            parts.append("- 可以自然评论角色当前的情绪、选择或处境。")
+        elif new_stable_lines or new_choices:
+            parts.append("- 可以自然评论本次新增内容中的情绪、选择或处境。")
         else:
-            parts.append("- 可以说明台词仍在确认中，先轻描淡写地陪伴观察。")
+            parts.append("- 当前没有新的已确认回应对象。")
+
+        parts.append("")
+        parts.append("本次回应对象：")
+        parts.append("新增稳定台词：")
+        stable_preview = [
+            cls._format_scene_line(line, index=i)
+            for i, line in enumerate(new_stable_lines[-5:], 1)
+        ]
+        stable_preview = [line for line in stable_preview if line]
+        if stable_preview:
+            parts.extend(f"- {line}" for line in stable_preview)
+        else:
+            parts.append("- 暂无新增稳定台词。")
+
+        selected_choice_preview = [
+            cls._format_choice_text(choice)
+            for choice in new_choices
+            if str(choice.get("choice_state") or "selected").strip().lower()
+            != "visible"
+        ][-3:]
+        selected_choice_preview = [
+            choice for choice in selected_choice_preview if choice
+        ]
+        visible_choice_preview = [
+            cls._format_choice_text(choice)
+            for choice in new_choices
+            if str(choice.get("choice_state") or "").strip().lower() == "visible"
+        ][-3:]
+        visible_choice_preview = [
+            choice for choice in visible_choice_preview if choice
+        ]
+        parts.append("新增选项：")
+        if selected_choice_preview:
+            parts.append("玩家已选择：")
+            parts.extend(f"- {choice}" for choice in selected_choice_preview)
+        if visible_choice_preview:
+            parts.append("当前可见选项：")
+            parts.extend(f"- {choice}" for choice in visible_choice_preview)
+        if not selected_choice_preview and not visible_choice_preview:
+            parts.append("- 暂无新增选项。")
 
         return "\n".join(parts).strip()
 

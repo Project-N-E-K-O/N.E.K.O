@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from .agent_shared import *  # noqa: F401,F403
 
 
@@ -355,8 +357,11 @@ class AgentSyncMixin:
         metadata: dict[str, Any] | None = None,
         priority: int = 6,
         coalesce_key: str | None = None,
+        freshness_check: Any = None,
     ) -> bool:
         if not content:
+            return False
+        if callable(freshness_check) and not freshness_check():
             return False
         # host-play-mode plan, step 12: when fixed character mode is on, prepend
         # the catgirl-facing character anchor so every push is self-contained
@@ -392,30 +397,72 @@ class AgentSyncMixin:
         if coalesce_key:
             push_kwargs["coalesce_key"] = coalesce_key
         delivered = False
+
+        def _require_submitted(receipt: object) -> None:
+            if isinstance(receipt, Mapping) and receipt.get("submitted") is True:
+                return
+            reason = "transport_error"
+            if isinstance(receipt, Mapping) and receipt.get("submitted") is False:
+                raw_reason = receipt.get("reason")
+                if isinstance(raw_reason, str) and raw_reason in {
+                    "backpressure",
+                    "transport_error",
+                    "transport_unavailable",
+                }:
+                    reason = str(raw_reason)
+            raise RuntimeError(f"local message submission rejected: {reason}")
+
         try:
             # push_message is synchronous in the plugin SDK; keep this call inline
             # so delivery failures can be caught and retried below.
-            self._plugin.push_message(**push_kwargs)
+            receipt = self._plugin.push_message(**push_kwargs)
+            _require_submitted(receipt)
             self._mark_message(outbound, status="delivered", delivered=True)
             delivered = True
         except Exception as exc:
-            self._logger.warning("galgame outbound message delivery failed (will retry): {}", exc)
+            initial_error_type = type(exc).__name__
+            self._logger.warning(
+                "galgame outbound message delivery failed (will retry): %s",
+                initial_error_type,
+            )
             try:
                 await asyncio.sleep(1.0)
+                if callable(freshness_check) and not freshness_check():
+                    self._mark_message(
+                        outbound,
+                        status="superseded",
+                        delivered=False,
+                        metadata={
+                            "retried": False,
+                            "initial_error_type": initial_error_type,
+                            "superseded_before_retry": True,
+                        },
+                    )
+                    self._recent_pushes = self._recent_push_records()
+                    return False
                 # push_message is synchronous in the plugin SDK; retry inline.
-                self._plugin.push_message(**push_kwargs)
+                receipt = self._plugin.push_message(**push_kwargs)
+                _require_submitted(receipt)
                 self._mark_message(
                     outbound,
                     status="delivered",
                     delivered=True,
-                    metadata={"retried": True, "initial_error": str(exc)},
+                    metadata={
+                        "retried": True,
+                        "initial_error_type": initial_error_type,
+                    },
                 )
                 delivered = True
             except Exception as retry_exc:
                 self._mark_message(outbound, status="failed", metadata={
-                    "error": str(retry_exc), "initial_error": str(exc), "retried": True,
+                    "error_type": type(retry_exc).__name__,
+                    "initial_error_type": initial_error_type,
+                    "retried": True,
                 })
-                self._logger.warning("galgame outbound message retry also failed: {}", retry_exc)
+                self._logger.warning(
+                    "galgame outbound message retry also failed: %s",
+                    type(retry_exc).__name__,
+                )
         self._recent_pushes = self._recent_push_records()
         # host-play-mode plan, step 19 / G4: record minimal push metadata for the
         # `galgame_get_push_history` query entry. Never store original line text

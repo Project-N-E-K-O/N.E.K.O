@@ -103,6 +103,10 @@ class AgentLifecycleMixin:
         self._pending_choice_advice: dict[str, Any] | None = None
         self._summary_tasks: set[asyncio.Task[bool]] = set()
         self._summary_task_meta: dict[asyncio.Task[bool], dict[str, Any]] = {}
+        self._scene_capsule_tasks: set[asyncio.Task[bool]] = set()
+        self._scene_capsule_task_meta: dict[
+            asyncio.Task[bool], dict[str, Any]
+        ] = {}
         self._consultation_tasks: set[asyncio.Task[bool]] = set()
         self._pending_consults: set[str] = set()
         self._summary_generation = 0
@@ -121,6 +125,18 @@ class AgentLifecycleMixin:
         self._scene_summary_repeat_deliveries: dict[str, dict[str, Any]] = {}
         self._scene_summary_latest_scene_content: dict[str, dict[str, Any]] = {}
         self._scene_summary_repeat_data_source = ""
+        # Freshness ordering is a correctness boundary and remains active even
+        # when the optional content repeat guard is disabled.
+        self._scene_summary_schedule_order_counter = 0
+        self._scene_summary_latest_observed_order = 0
+        self._scene_summary_latest_submitted_order = 0
+        self._scene_summary_latest_memory_order_by_scene: dict[str, int] = {}
+        self._scene_capsule_reservations: set[str] = set()
+        # Per logical scene, this stores only committed event/cursor state and
+        # the short stable tail needed to reconcile a trusted source handoff.
+        self._scene_capsule_delivery_ledger: dict[str, dict[str, Any]] = {}
+        self._scene_capsule_source_aliases: dict[str, str] = {}
+        self._scene_capsule_fallback_occurrences: dict[str, dict[str, Any]] = {}
         self._scene_summary_suppressed_count = 0
         self._scene_summary_last_success_at = 0.0
         self._failure_memory: list[dict[str, Any]] = []
@@ -173,11 +189,82 @@ class AgentLifecycleMixin:
         self._last_consult_seen_line_count = 0
         self._pending_consults.clear()
 
-    def _reset_scene_summary_repeat_guard(self) -> None:
+    def _reset_scene_summary_repeat_guard(self, *, force: bool = False) -> None:
+        fields = dict(getattr(self, "_last_session_transition_fields", {}) or {})
+        previous_source = str(fields.get("previous_data_source") or "")
+        current_source = str(fields.get("current_data_source") or "")
+        source_handoff = (
+            DATA_SOURCE_OCR_READER in {previous_source, current_source}
+            and bool(
+                {previous_source, current_source}
+                & {DATA_SOURCE_MEMORY_READER, DATA_SOURCE_BRIDGE_SDK}
+            )
+        )
+        same_game = bool(fields.get("previous_game_id")) and (
+            str(fields.get("previous_game_id") or "")
+            == str(fields.get("current_game_id") or "")
+        )
+
+        def _conflicts(previous_key: str, current_key: str) -> bool:
+            previous = fields.get(previous_key)
+            current = fields.get(current_key)
+            return bool(previous and current and previous != current)
+
+        def _identity_conflicts(previous_key: str, current_key: str) -> bool:
+            previous = self._normalized_identity_text(fields.get(previous_key))
+            current = self._normalized_identity_text(fields.get(current_key))
+            return bool(previous and current and previous != current)
+
+        def _identity_matches(previous_key: str, current_key: str) -> bool:
+            previous = self._normalized_identity_text(fields.get(previous_key))
+            current = self._normalized_identity_text(fields.get(current_key))
+            return bool(previous and current and previous == current)
+
+        stable_runtime_identity = any(
+            (
+                _identity_matches("previous_process_name", "current_process_name"),
+                bool(fields.get("previous_pid"))
+                and fields.get("previous_pid") == fields.get("current_pid"),
+                _identity_matches("previous_window_title", "current_window_title"),
+                bool(fields.get("previous_target_hwnd"))
+                and fields.get("previous_target_hwnd")
+                == fields.get("current_target_hwnd"),
+            )
+        )
+
+        trusted_handoff = (
+            not force
+            and source_handoff
+            and (same_game or stable_runtime_identity)
+            and not _conflicts("previous_game_id", "current_game_id")
+            and not _identity_conflicts(
+                "previous_process_name", "current_process_name"
+            )
+            and not _conflicts("previous_pid", "current_pid")
+            and not _identity_conflicts(
+                "previous_window_title", "current_window_title"
+            )
+            and not _conflicts("previous_target_hwnd", "current_target_hwnd")
+        )
         self._scene_summary_repeat_reservations.clear()
+        self._scene_capsule_reservations.clear()
+        if trusted_handoff:
+            # Observation currently classifies OCR -> trusted-reader as a real
+            # session reset.  Preserve only successfully submitted capsule
+            # cursors across that trusted source handoff; all pending work was
+            # already cancelled by the caller.
+            self._scene_summary_repeat_data_source = current_source
+            return
         self._scene_summary_repeat_deliveries.clear()
         self._scene_summary_latest_scene_content.clear()
         self._scene_summary_repeat_data_source = ""
+        self._scene_summary_schedule_order_counter = 0
+        self._scene_summary_latest_observed_order = 0
+        self._scene_summary_latest_submitted_order = 0
+        self._scene_summary_latest_memory_order_by_scene.clear()
+        self._scene_capsule_delivery_ledger.clear()
+        self._scene_capsule_source_aliases.clear()
+        self._scene_capsule_fallback_occurrences.clear()
         self._scene_summary_suppressed_count = 0
         self._scene_summary_last_success_at = 0.0
 
@@ -230,20 +317,30 @@ class AgentLifecycleMixin:
             return
 
     def _cancel_summary_tasks(self) -> None:
-        if not self._summary_tasks:
+        summary_pending_count = len(self._summary_tasks)
+        capsule_pending_count = len(self._scene_capsule_tasks)
+        pending_count = summary_pending_count + capsule_pending_count
+        self._scene_summary_repeat_reservations.clear()
+        self._scene_capsule_reservations.clear()
+        if not pending_count:
+            self._summary_task_meta.clear()
+            self._scene_capsule_task_meta.clear()
             return
         self._summary_generation += 1
-        self._reset_scene_summary_repeat_guard()
         self._summary_debug["last_task_cancelled"] = {
             "reason": "cancel_summary_tasks",
-            "pending_count": len(self._summary_tasks),
+            "pending_count": pending_count,
+            "summary_pending_count": summary_pending_count,
+            "capsule_pending_count": capsule_pending_count,
             "ts": self._utc_now_iso(),
         }
-        for task in list(self._summary_tasks):
+        for task in [*self._summary_tasks, *self._scene_capsule_tasks]:
             if not task.done():
                 task.cancel()
         self._summary_tasks.clear()
         self._summary_task_meta.clear()
+        self._scene_capsule_tasks.clear()
+        self._scene_capsule_task_meta.clear()
 
     async def _cancel_consultation_tasks(self) -> None:
         if not self._consultation_tasks:
@@ -264,7 +361,7 @@ class AgentLifecycleMixin:
         self._pending_consults.clear()
 
     async def drain_summary_tasks(self, *, timeout: float = 30.0) -> None:
-        tasks = list(self._summary_tasks)
+        tasks = [*self._summary_tasks, *self._scene_capsule_tasks]
         if not tasks:
             return
         bounded_timeout = max(0.1, float(timeout or 30.0))
@@ -294,12 +391,12 @@ class AgentLifecycleMixin:
         self._last_delivered_summary_key = ""
         self._last_delivered_summary_seq = 0
         self._last_delivered_summary_scene_id = ""
-        self._reset_scene_summary_repeat_guard()
         self._inbound_messages.clear()
         self._outbound_messages.clear()
         self._last_interruption = {}
         self._pending_choice_advice = None
         self._cancel_summary_tasks()
+        self._reset_scene_summary_repeat_guard(force=True)
         await self._cancel_consultation_tasks()
         self._failure_memory.clear()
         self._recent_local_inputs.clear()
