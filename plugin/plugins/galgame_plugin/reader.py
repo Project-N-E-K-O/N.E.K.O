@@ -26,6 +26,13 @@ class TailReadResult:
     errors: list[str] = field(default_factory=list)
 
 
+@dataclass(slots=True)
+class EventStreamBoundary:
+    offset: int = 0
+    file_size: int = 0
+    error: str = ""
+
+
 def expand_bridge_root(raw_path: str) -> Path:
     candidate = (raw_path or "").strip()
     if not candidate:
@@ -82,6 +89,34 @@ def read_session_json(session_path: Path) -> SessionReadResult:
     if not isinstance(payload, dict):
         return SessionReadResult(session=None, error="session.json must be an object")
     return SessionReadResult(session=sanitize_session_snapshot(payload))
+
+
+def snapshot_events_boundary(events_path: Path) -> EventStreamBoundary:
+    if not events_path.exists():
+        return EventStreamBoundary()
+
+    try:
+        with events_path.open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            file_size = handle.tell()
+            if file_size <= 0:
+                return EventStreamBoundary()
+
+            cursor = file_size
+            while cursor > 0:
+                chunk_size = min(cursor, 64 * 1024)
+                cursor -= chunk_size
+                handle.seek(cursor)
+                chunk = handle.read(chunk_size)
+                newline_index = chunk.rfind(b"\n")
+                if newline_index >= 0:
+                    return EventStreamBoundary(
+                        offset=cursor + newline_index + 1,
+                        file_size=file_size,
+                    )
+            return EventStreamBoundary(offset=0, file_size=file_size)
+    except OSError as exc:
+        return EventStreamBoundary(error=f"read events.jsonl boundary failed: {exc}")
 
 
 def _parse_jsonl_line(raw_line: bytes) -> tuple[dict[str, Any] | None, str]:

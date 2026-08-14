@@ -1,0 +1,177 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from plugin.plugins.galgame_plugin.reader import snapshot_events_boundary
+from plugin.plugins.galgame_plugin.session_lifecycle import (
+    SESSION_ORIGIN_CURRENT_RUN,
+    SESSION_ORIGIN_PREEXISTING,
+    classify_session_origin,
+    event_releases_empty_snapshot_gate,
+)
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.parametrize(
+    ("data_source", "runtime_field"),
+    [
+        ("memory_reader", "memory_reader_session_id"),
+        ("ocr_reader", "ocr_reader_session_id"),
+    ],
+)
+def test_runtime_owned_session_wins_over_preexisting_evidence(
+    data_source: str,
+    runtime_field: str,
+) -> None:
+    kwargs = {
+        "data_source": data_source,
+        "session_id": "owned-session",
+        "started_at": "2026-08-14T00:00:00Z",
+        "plugin_run_started_at": 1_800_000_000.0,
+        "startup_existing_session_ids": {"owned-session"},
+        runtime_field: "owned-session",
+    }
+
+    assert classify_session_origin(**kwargs) == SESSION_ORIGIN_CURRENT_RUN
+
+
+@pytest.mark.plugin_unit
+def test_startup_scan_set_does_not_make_invalid_outside_session_current() -> None:
+    common = {
+        "data_source": "bridge_sdk",
+        "started_at": "not-a-timestamp",
+        "plugin_run_started_at": 1_800_000_000.0,
+        "startup_existing_session_ids": {"old-session"},
+    }
+
+    assert (
+        classify_session_origin(session_id="old-session", **common)
+        == SESSION_ORIGIN_PREEXISTING
+    )
+    assert (
+        classify_session_origin(session_id="outside-session", **common)
+        == SESSION_ORIGIN_PREEXISTING
+    )
+
+
+@pytest.mark.plugin_unit
+def test_startup_scan_set_allows_outside_session_started_after_run() -> None:
+    assert (
+        classify_session_origin(
+            data_source="bridge_sdk",
+            session_id="new-session",
+            started_at="2099-01-01T00:00:00Z",
+            plugin_run_started_at=1_800_000_000.0,
+            startup_existing_session_ids={"old-session"},
+        )
+        == SESSION_ORIGIN_CURRENT_RUN
+    )
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.parametrize(
+    ("started_at", "expected"),
+    [
+        ("2026-08-14T00:00:01Z", SESSION_ORIGIN_CURRENT_RUN),
+        ("2026-08-14T00:00:00Z", SESSION_ORIGIN_PREEXISTING),
+        ("2026-08-13T23:59:59Z", SESSION_ORIGIN_PREEXISTING),
+        ("invalid", SESSION_ORIGIN_PREEXISTING),
+        ("", SESSION_ORIGIN_PREEXISTING),
+    ],
+)
+def test_started_at_fallback_is_strict_and_conservative(
+    started_at: str,
+    expected: str,
+) -> None:
+    assert (
+        classify_session_origin(
+            data_source="bridge_sdk",
+            session_id="session-a",
+            started_at=started_at,
+            plugin_run_started_at=1_786_665_600.0,
+            startup_existing_session_ids=None,
+        )
+        == expected
+    )
+
+
+@pytest.mark.plugin_unit
+def test_missing_session_id_is_always_preexisting() -> None:
+    assert (
+        classify_session_origin(
+            data_source="bridge_sdk",
+            session_id="",
+            started_at="2099-01-01T00:00:00Z",
+            plugin_run_started_at=1.0,
+            startup_existing_session_ids=set(),
+        )
+        == SESSION_ORIGIN_PREEXISTING
+    )
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.parametrize(
+    "event_type",
+    [
+        "session_started",
+        "screen_classified",
+        "line_observed",
+        "line_changed",
+        "choices_shown",
+        "choice_selected",
+        "scene_changed",
+        "save_loaded",
+    ],
+)
+def test_state_mutating_events_release_empty_snapshot_gate(event_type: str) -> None:
+    assert event_releases_empty_snapshot_gate({"type": event_type}) is True
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.parametrize("event", [{"type": "heartbeat"}, {"type": "error"}, {}, None])
+def test_non_state_events_keep_empty_snapshot_gate(event: object) -> None:
+    assert event_releases_empty_snapshot_gate(event) is False
+
+
+@pytest.mark.plugin_unit
+def test_snapshot_events_boundary_uses_eof_for_complete_jsonl(tmp_path: Path) -> None:
+    events_path = tmp_path / "events.jsonl"
+    events_path.write_bytes(b'{"seq":1}\n{"seq":2}\n')
+
+    boundary = snapshot_events_boundary(events_path)
+
+    assert boundary.offset == events_path.stat().st_size
+    assert boundary.file_size == events_path.stat().st_size
+    assert boundary.error == ""
+
+
+@pytest.mark.plugin_unit
+def test_snapshot_events_boundary_keeps_incomplete_line_for_tail_reader(
+    tmp_path: Path,
+) -> None:
+    events_path = tmp_path / "events.jsonl"
+    complete_prefix = b'{"seq":1}\n'
+    events_path.write_bytes(complete_prefix + b'{"seq":2')
+
+    boundary = snapshot_events_boundary(events_path)
+
+    assert boundary.offset == len(complete_prefix)
+    assert boundary.file_size == events_path.stat().st_size
+    assert boundary.error == ""
+
+
+@pytest.mark.plugin_unit
+def test_snapshot_events_boundary_handles_missing_and_unreadable_paths(
+    tmp_path: Path,
+) -> None:
+    missing = snapshot_events_boundary(tmp_path / "missing.jsonl")
+    unreadable_path = tmp_path / "events.jsonl"
+    unreadable_path.mkdir()
+    unreadable = snapshot_events_boundary(unreadable_path)
+
+    assert (missing.offset, missing.file_size, missing.error) == (0, 0, "")
+    assert unreadable.offset == 0
+    assert unreadable.file_size == 0
+    assert unreadable.error

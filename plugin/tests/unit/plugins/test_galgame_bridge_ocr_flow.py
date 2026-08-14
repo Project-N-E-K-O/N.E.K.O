@@ -4951,6 +4951,10 @@ async def test_bridge_sdk_session_preempts_ocr_reader_candidate(tmp_path: Path) 
     clock["now"] += 1.0
     await plugin._poll_bridge(force=True)
 
+    session_started_at = time.strftime(
+        "%Y-%m-%dT%H:%M:%SZ",
+        time.gmtime(plugin._plugin_run_started_at + 1.0),
+    )
     _create_game_dir(
         bridge_root,
         game_id="demo.sdk",
@@ -4958,6 +4962,7 @@ async def test_bridge_sdk_session_preempts_ocr_reader_candidate(tmp_path: Path) 
             game_id="demo.sdk",
             session_id="sdk-session-1",
             last_seq=3,
+            started_at=session_started_at,
             state=_session_state(
                 speaker="桥接",
                 text="来自 Bridge SDK 的台词。",

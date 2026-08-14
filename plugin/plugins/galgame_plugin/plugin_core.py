@@ -75,7 +75,6 @@ from .models import (
     STORE_CHARACTER_MODE,
     STORE_CHARACTER_PROFILE_VERSION,
     STORE_CHARACTER_PROFILES,
-    STORE_DEDUPE_WINDOW,
     STORE_EVENTS_BYTE_OFFSET,
     STORE_EVENTS_FILE_SIZE,
     STORE_LAST_ERROR,
@@ -109,7 +108,12 @@ from .dependency_status import (
 )
 from plugin.plugins._shared.rapidocr.rapidocr_support import inspect_rapidocr_installation
 from .dxcam_support import inspect_dxcam_installation
-from .reader import tail_events_jsonl, warmup_replay_events
+from .reader import snapshot_events_boundary, tail_events_jsonl, warmup_replay_events
+from .session_lifecycle import (
+    SESSION_ORIGIN_PREEXISTING,
+    classify_session_origin,
+    event_releases_empty_snapshot_gate,
+)
 from .service import (
     apply_event_to_histories,
     apply_event_to_snapshot,
@@ -312,6 +316,8 @@ class GalgamePlugin(
         self.file_logger = self.enable_file_logging(log_level="INFO")
         self.logger = self.file_logger
         self._state_lock = threading.Lock()
+        self._plugin_run_started_at = 0.0
+        self._startup_existing_session_ids: set[str] | None = None
         self._poll_bridge_locks: dict[int, asyncio.Lock] = {}
         self._poll_bridge_thread_lock = threading.Lock()
         self._bridge_poll_task_lock = threading.RLock()
@@ -2389,7 +2395,7 @@ class GalgamePlugin(
             self._state.events_byte_offset = int(restored.get(STORE_EVENTS_BYTE_OFFSET, 0))
             self._state.events_file_size = int(restored.get(STORE_EVENTS_FILE_SIZE, 0))
             self._state.last_seq = int(restored.get(STORE_LAST_SEQ, 0))
-            self._state.dedupe_window = json_copy(restored.get(STORE_DEDUPE_WINDOW, []))
+            self._state.dedupe_window = []
             self._state.last_error = json_copy(restored.get(STORE_LAST_ERROR, {}))
             self._state.active_data_source = DATA_SOURCE_NONE
             self._state.memory_reader_runtime = {}
@@ -3155,6 +3161,8 @@ class GalgamePlugin(
 
     @lifecycle(id="startup")
     async def startup(self, **_):
+        self._plugin_run_started_at = time.time()
+        self._startup_existing_session_ids = None
         try:
             await self._load_config()
         except Exception as exc:
@@ -4010,12 +4018,29 @@ class GalgamePlugin(
             and local["active_session_id"] == session_id
         )
         warmup_needed = session_id != local["warmup_session_id"] or session_changed
+        session_origin = classify_session_origin(
+            data_source=candidate.data_source,
+            session_id=session_id,
+            started_at=str(session.get("started_at") or ""),
+            plugin_run_started_at=self._plugin_run_started_at,
+            memory_reader_session_id=str(
+                (local.get("memory_reader_runtime") or {}).get("session_id") or ""
+            ),
+            ocr_reader_session_id=str(
+                (local.get("ocr_reader_runtime") or {}).get("session_id") or ""
+            ),
+            startup_existing_session_ids=self._startup_existing_session_ids,
+        )
+        preexisting_session = session_origin == SESSION_ORIGIN_PREEXISTING
 
         local["active_game_id"] = candidate.game_id
         local["active_session_id"] = session_id
         local["active_session_meta"] = build_active_session_meta(candidate)
         local["active_data_source"] = candidate.data_source
-        local["latest_snapshot"] = json_copy(session.get("state", {}))
+        if not preexisting_session:
+            local["latest_snapshot"] = json_copy(session.get("state", {}))
+        elif warmup_needed:
+            local["latest_snapshot"] = {}
         if self._context_snapshot_needs_reload(
             local.get("context_snapshot"),
             current_game_id=candidate.game_id,
@@ -4025,7 +4050,27 @@ class GalgamePlugin(
                 candidate.game_id,
             )
 
-        if warmup_needed:
+        if warmup_needed and preexisting_session:
+            local["history_events"] = []
+            local["history_lines"] = []
+            local["history_observed_lines"] = []
+            local["history_choices"] = []
+            local["dedupe_window"] = []
+            local["line_buffer"] = b""
+            boundary = await asyncio.to_thread(
+                snapshot_events_boundary,
+                candidate.events_path,
+            )
+            if boundary.error:
+                warnings.append(boundary.error)
+                return
+            local["events_byte_offset"] = boundary.offset
+            local["events_file_size"] = boundary.file_size
+            local["last_seq"] = int(session.get("last_seq") or 0)
+            local["stream_reset_pending"] = False
+            local["warmup_session_id"] = session_id
+
+        elif warmup_needed:
             end_offset = int(local["events_byte_offset"]) if restore_cursor else None
             warmup_events = await asyncio.to_thread(
                 warmup_replay_events,
@@ -4034,6 +4079,11 @@ class GalgamePlugin(
                 events_limit=self._cfg.warmup_replay_events_limit,
                 end_offset=end_offset,
             )
+            warmup_events = [
+                event
+                for event in warmup_events
+                if str(event.get("session_id") or "") == session_id
+            ]
             base_dedupe = list(local["dedupe_window"]) if restore_cursor else []
             (
                 local["history_events"],
@@ -4082,6 +4132,12 @@ class GalgamePlugin(
         warnings.extend(tail.errors)
 
         if tail.reset_detected:
+            if tail.file_size == 0 and read_offset == 0 and int(local["last_seq"]) == 0:
+                local["stream_reset_pending"] = False
+                local["line_buffer"] = b""
+                local["events_byte_offset"] = 0
+                local["events_file_size"] = 0
+                return
             local["stream_reset_pending"] = True
             local["line_buffer"] = b""
             local["events_file_size"] = tail.file_size
@@ -4127,9 +4183,10 @@ class GalgamePlugin(
                 config=self._cfg,
                 game_id=candidate.game_id,
             )
-            local["latest_snapshot"] = apply_event_to_snapshot(
-                local["latest_snapshot"], event
-            )
+            if local["latest_snapshot"] or event_releases_empty_snapshot_gate(event):
+                local["latest_snapshot"] = apply_event_to_snapshot(
+                    local["latest_snapshot"], event
+                )
             local["last_seq"] = seq
             local["last_seen_data_monotonic"] = now_monotonic
 
@@ -4218,6 +4275,21 @@ class GalgamePlugin(
                 exc=exc,
             )
             return
+
+        if self._startup_existing_session_ids is None:
+            self._startup_existing_session_ids = {
+                candidate.session_id
+                for candidate in raw_candidates.values()
+                if candidate.session_id
+                and classify_session_origin(
+                    data_source=candidate.data_source,
+                    session_id=candidate.session_id,
+                    started_at=str(candidate.session.get("started_at") or ""),
+                    plugin_run_started_at=self._plugin_run_started_at,
+                    startup_existing_session_ids=None,
+                )
+                == SESSION_ORIGIN_PREEXISTING
+            }
 
         memory_reader_candidate_available = any(
             candidate.data_source == DATA_SOURCE_MEMORY_READER
