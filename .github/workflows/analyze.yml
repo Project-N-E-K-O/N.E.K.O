@@ -228,6 +228,11 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
+        with:
+          # The baseline-growth step below diffs scripts/nonascii_asset_baseline.txt
+          # against the merge-base, which a shallow clone cannot reach. Same
+          # trade the prompts-i18n job already makes: negligible on this repo.
+          fetch-depth: 0
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
@@ -295,6 +300,20 @@ jobs:
         # and that list may only shrink. Companion unit test:
         # tests/unit/test_check_no_nonascii_asset_names.py.
         run: python scripts/check_no_nonascii_asset_names.py
+
+      - name: Forbid growing the non-ASCII baseline (PR-only)
+        # The step above compares the tree against the baseline, so a PR that
+        # adds a non-ASCII asset AND its baseline line has an empty diff and
+        # passes — the ratchet would only be a convention. This step diffs the
+        # baseline itself against the merge-base and fails on any added entry,
+        # which is what makes "may only shrink" enforceable. `--update-baseline`
+        # already refuses to add; this catches the hand-written line too.
+        # Skipped on direct push to main — nothing to diff against.
+        if: github.event_name == 'pull_request'
+        env:
+          # Same zizmor template-injection indirection as the i18n-sync step.
+          BASE_REF: ${{ github.base_ref }}
+        run: python scripts/check_no_nonascii_asset_names.py --base "origin/${BASE_REF}"
 
   core-contracts:
     name: Core package contracts

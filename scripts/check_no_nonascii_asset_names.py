@@ -65,10 +65,12 @@ Only what actually ships:
   ``git add`` rather than only after commit;
 - member names inside the archives that get unpacked into those roots at
   build time (``assets/*.tar.gz`` -> ``static/<model>/`` via
-  ``build_frontend.sh``; ``frontend/pngtuber-packs/*.zip`` ->
-  ``static/pngtuber/<model>/`` via ``scripts/unpack_builtin_pngtuber.py``).
-  Reading member names needs no build and no extraction, so the check gives
-  the same answer in a fresh checkout as on a build machine.
+  ``build_frontend.sh``; the PNGTuber packs named by
+  ``frontend/pngtuber-packs/manifest.json`` -> ``static/pngtuber/<folder>/``
+  via ``scripts/unpack_builtin_pngtuber.py``). Reading member names needs no
+  build and no extraction, so the check gives the same answer in a fresh
+  checkout as on a build machine. Hard-link and symlink members count too:
+  ``tar -xzm`` materializes them as entries under ``static/`` like any file.
 
 Asking git (rather than walking the working tree) keeps the result
 deterministic: gitignored build outputs, downloaded model weights, and local
@@ -120,10 +122,18 @@ Usage
     python scripts/check_no_nonascii_asset_names.py --list
     python scripts/check_no_nonascii_asset_names.py --include-untracked
     python scripts/check_no_nonascii_asset_names.py --update-baseline
+    python scripts/check_no_nonascii_asset_names.py --base origin/main
+
+The baseline is a ratchet in both directions of attack: ``--update-baseline``
+only ever drops entries that no longer exist, and ``--base`` fails when the
+committed list gained a line relative to that ref. Without the second one the
+first is only a convention — adding the asset and its baseline entry in the
+same PR leaves nothing for the in-tree comparison to see.
 """
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -146,9 +156,19 @@ BUNDLED_ROOTS: tuple[str, ...] = (
     "templates",
     "assets",
     "data",
-    "docs",
+    # Not all of docs/ — the build packs exactly one subtree
+    # (--include-data-dir=docs/zh-CN/guide). Scanning the whole root would fail
+    # documentation PRs over files that never enter the payload.
+    "docs/zh-CN/guide",
     "frontend",
     "plugin/plugins",
+    # Voice-turn + speaker models, both --include-data-dir'd. The .onnx weights
+    # are downloaded at build time and gitignored, so the git listing cannot see
+    # them; these roots cover whatever *is* tracked here, and make
+    # --include-untracked reach the downloaded payload after a build. A manifest
+    # that names a non-ASCII .onnx is only caught by that post-build sweep.
+    "main_logic/asr_client/endpointing/models",
+    "main_logic/asr_client/speaker_shadow/models",
 )
 
 # Archives that are expanded into a bundled root at build time. Value is the
@@ -158,10 +178,14 @@ TAR_ARCHIVE_DESTS: tuple[tuple[str, str], ...] = (
     # build_frontend.sh: unpack_live2d_model <name>  ->  static/<name>/
     ("assets", "static"),
 )
-ZIP_ARCHIVE_DESTS: tuple[tuple[str, str], ...] = (
-    # scripts/unpack_builtin_pngtuber.py  ->  static/pngtuber/<name>/
-    ("frontend/pngtuber-packs", "static/pngtuber"),
-)
+# PNGTuber packs are not globbed: scripts/unpack_builtin_pngtuber.py unpacks
+# exactly the archives listed in this manifest, and each one lands under its
+# own `folder`. Both halves matter — globbing would flag a zip the build never
+# opens, and a shared prefix would report `static/pngtuber/layers/x.png` for a
+# member that really lands at `static/pngtuber/yui-origin/layers/x.png`, while
+# collapsing same-named members from different packs into one entry.
+ZIP_MANIFEST_REL = "frontend/pngtuber-packs/manifest.json"
+ZIP_MANIFEST_DEST_ROOT = "static/pngtuber"
 
 # Never walked under --include-untracked. Vendored/derived trees whose names
 # we do not author; a hit in here is a bug in the upstream package, not in
@@ -244,19 +268,59 @@ def _archive_offenders(repo_root: Path) -> dict[str, str]:
             continue
         for archive in sorted(directory.glob("*.tar.gz")):
             with tarfile.open(archive) as handle:
-                names = [m.name for m in handle.getmembers() if m.isfile()]
+                # islnk/issym as well as isfile: `tar -xzm` materializes hard
+                # links and symlinks as entries in static/ too, so a non-ASCII
+                # link name reaches the payload exactly like a regular file.
+                names = [
+                    m.name
+                    for m in handle.getmembers()
+                    if m.isfile() or m.islnk() or m.issym()
+                ]
             _record(names, dest_prefix, archive.relative_to(repo_root).as_posix())
 
-    for source_dir, dest_prefix in ZIP_ARCHIVE_DESTS:
-        directory = repo_root / source_dir
-        if not directory.is_dir():
+    for archive_rel, dest_prefix in _pngtuber_archive_dests(repo_root):
+        archive = repo_root / archive_rel
+        if not archive.is_file():
             continue
-        for archive in sorted(directory.glob("*.zip")):
-            with zipfile.ZipFile(archive) as handle:
-                names = [i.filename for i in handle.infolist() if not i.is_dir()]
-            _record(names, dest_prefix, archive.relative_to(repo_root).as_posix())
+        with zipfile.ZipFile(archive) as handle:
+            names = [i.filename for i in handle.infolist() if not i.is_dir()]
+        _record(names, dest_prefix, archive_rel)
 
     return offenders
+
+
+def _pngtuber_archive_dests(repo_root: Path) -> list[tuple[str, str]]:
+    """(archive path, destination prefix) for each manifest-listed PNGTuber pack.
+
+    Mirrors ``unpack_model``: the archive named by ``archive`` is expanded into
+    ``static/pngtuber/<folder>/``. Entries missing either field are skipped —
+    the unpacker rejects them too, so they never reach the payload.
+    """
+    manifest_path = repo_root / ZIP_MANIFEST_REL
+    if not manifest_path.is_file():
+        return []
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        print(f"error: cannot read {ZIP_MANIFEST_REL}: {exc}", file=sys.stderr)
+        raise SystemExit(2) from exc
+
+    packs_dir = PurePosixPath(ZIP_MANIFEST_REL).parent
+    dests: list[tuple[str, str]] = []
+    for model in manifest.get("models", []):
+        if not isinstance(model, dict):
+            continue
+        folder = model.get("folder")
+        archive = model.get("archive")
+        if not isinstance(folder, str) or not isinstance(archive, str):
+            continue
+        dests.append(
+            (
+                (packs_dir / archive).as_posix(),
+                f"{ZIP_MANIFEST_DEST_ROOT}/{folder}",
+            )
+        )
+    return sorted(dests)
 
 
 def _untracked_offenders(repo_root: Path) -> set[str]:
@@ -326,6 +390,33 @@ def write_baseline(path: Path, offenders: set[str]) -> None:
     path.write_text(header + body, encoding="utf-8")
 
 
+def _baseline_growth(repo_root: Path, base_ref: str) -> list[str]:
+    """Baseline entries present now but absent at ``base_ref``.
+
+    The in-tree comparison alone cannot enforce "only shrinks": a PR that adds
+    a non-ASCII asset *and* the matching baseline line has an empty
+    ``offenders - baseline`` and sails through. Only a diff against the merge
+    base sees that the list grew.
+    """
+    rel = BASELINE_PATH.relative_to(repo_root).as_posix()
+    completed = subprocess.run(
+        ["git", "show", f"{base_ref}:{rel}"],
+        cwd=repo_root,
+        capture_output=True,
+    )
+    if completed.returncode != 0:
+        # No baseline at the base ref — first landing of this check, or the
+        # ref is unreachable. Nothing to compare; the in-tree check still runs.
+        return []
+
+    before = {
+        line.strip()
+        for line in completed.stdout.decode("utf-8", errors="surrogateescape").splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    }
+    return sorted(load_baseline(BASELINE_PATH) - before)
+
+
 def _explain(count: int) -> str:
     return (
         f"\n{count} new non-ASCII bundled filename(s) found.\n"
@@ -373,7 +464,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--update-baseline",
         action="store_true",
-        help="rewrite scripts/nonascii_asset_baseline.txt from the current tree",
+        help=(
+            "drop baseline entries that no longer exist; never adds (the list "
+            "is a ratchet)"
+        ),
+    )
+    parser.add_argument(
+        "--base",
+        metavar="REF",
+        help=(
+            "also fail if the baseline gained entries relative to REF "
+            "(e.g. origin/main); PR-only, there is nothing to diff on a push"
+        ),
     )
     args = parser.parse_args(argv)
 
@@ -398,10 +500,41 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 2
-        write_baseline(BASELINE_PATH, offenders)
+        # Shrink-only. Writing `offenders` wholesale would let the documented
+        # workflow grandfather a brand-new violation: add the file, run this,
+        # and `offenders - baseline` comes back empty. Intersecting instead
+        # means the command can only ever drop entries that no longer exist.
+        existing = load_baseline(BASELINE_PATH)
+        kept = offenders & existing
+        rejected = sorted(offenders - existing)
+        write_baseline(BASELINE_PATH, kept)
         rel = BASELINE_PATH.relative_to(REPO_ROOT).as_posix()
-        print(f"wrote {len(offenders)} entr(ies) to {rel}")
+        print(f"wrote {len(kept)} entr(ies) to {rel} ({len(existing) - len(kept)} dropped)")
+        if rejected:
+            print(
+                f"\nerror: refusing to add {len(rejected)} new entr(ies) — the "
+                "baseline may only shrink:",
+                file=sys.stderr,
+            )
+            for entry in rejected:
+                print(f"  - {entry}", file=sys.stderr)
+            print(_explain(len(rejected)), file=sys.stderr)
+            return 1
         return 0
+
+    if args.base:
+        grown = _baseline_growth(REPO_ROOT, args.base)
+        if grown:
+            rel = BASELINE_PATH.relative_to(REPO_ROOT).as_posix()
+            print(
+                f"{rel}  {CODE}  {len(grown)} entr(ies) added to the baseline "
+                f"since {args.base}:",
+                file=sys.stderr,
+            )
+            for entry in grown:
+                print(f"  + {entry}", file=sys.stderr)
+            print(_explain(len(grown)), file=sys.stderr)
+            return 1
 
     baseline = load_baseline(BASELINE_PATH)
     new = sorted(offenders - baseline)

@@ -18,6 +18,7 @@ Three-pronged coverage:
 from __future__ import annotations
 
 import importlib.util
+import json
 import subprocess
 import sys
 import tarfile
@@ -186,7 +187,13 @@ def test_collects_offender_inside_unpacked_archives(tmp_path: Path) -> None:
     packs = tmp_path / "frontend" / "pngtuber-packs"
     packs.mkdir(parents=True)
     with zipfile.ZipFile(packs / "tuber.zip", "w") as archive:
-        archive.writestr(f"tuber/layers/{CJK_NAME}", "x")
+        archive.writestr(f"layers/{CJK_NAME}", "x")
+    # unpack_builtin_pngtuber.py drives off this manifest: each listed archive
+    # is expanded under its own `folder`, which is where members really land.
+    (packs / "manifest.json").write_text(
+        json.dumps({"models": [{"folder": "tuber", "archive": "tuber.zip"}]}),
+        encoding="utf-8",
+    )
 
     offenders, from_archives = module.collect_offenders(tmp_path)
 
@@ -205,6 +212,16 @@ def test_collects_offender_inside_unpacked_archives(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 # 3. Ratchet semantics
 # ---------------------------------------------------------------------------
+
+
+def _write_baseline(root: Path, entries: list[str]) -> None:
+    """Seed a grandfathered baseline directly, the way a human would."""
+    path = root / "scripts" / "nonascii_asset_baseline.txt"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "# grandfathered\n" + "".join(f"{e}\n" for e in sorted(entries)),
+        encoding="utf-8",
+    )
 
 
 def _run_in(root: Path, module, *argv: str) -> int:
@@ -233,8 +250,9 @@ def test_new_offender_fails_but_baselined_one_passes(
     assert "NONASCII_ASSET_NAME" in captured.out
     assert "sealed resource directory is invalid" in captured.err
 
-    # Grandfather it, and the same tree is clean.
-    assert _run_in(tmp_path, module, "--update-baseline") == 0
+    # Grandfathering is a deliberate, hand-written act — --update-baseline
+    # refuses to do it (see test_update_baseline_only_ever_shrinks).
+    _write_baseline(tmp_path, [f"static/audio/{CJK_NAME}"])
     assert _run_in(tmp_path, module) == 0
 
     # A second offender still fails even though the first is baselined.
@@ -255,7 +273,7 @@ def test_stale_baseline_entry_is_a_note_not_a_failure(
     offender = assets / CJK_NAME
     offender.write_bytes(b"x")
 
-    assert _run_in(tmp_path, module, "--update-baseline") == 0
+    _write_baseline(tmp_path, [f"static/audio/{CJK_NAME}"])
     offender.unlink()
 
     assert _run_in(tmp_path, module) == 0
@@ -272,3 +290,145 @@ def test_update_baseline_refuses_build_dependent_input(tmp_path: Path) -> None:
     (tmp_path / "scripts").mkdir()
 
     assert _run_in(tmp_path, module, "--update-baseline", "--include-untracked") == 2
+
+
+@pytest.mark.unit
+def test_update_baseline_only_ever_shrinks(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The documented command must not be a way to grandfather a new asset.
+
+    Rewriting the baseline from the current tree would make `offenders -
+    baseline` empty for a file added in the same PR, turning the ratchet into
+    a rubber stamp.
+    """
+    module = _load_script_module()
+    _init_repo(tmp_path)
+    assets = tmp_path / "static" / "audio"
+    assets.mkdir(parents=True)
+    (assets / CJK_NAME).write_bytes(b"x")
+    gone = f"static/audio/deleted-{CJK_NAME}"
+    _write_baseline(tmp_path, [gone])
+
+    assert _run_in(tmp_path, module, "--update-baseline") == 1
+    captured = capsys.readouterr()
+    assert "may only shrink" in captured.err
+    assert f"static/audio/{CJK_NAME}" in captured.err
+
+    # The vanished entry is still dropped — shrinking is the whole point —
+    # but the new offender was not written, so the tree stays red.
+    baseline = module.load_baseline(tmp_path / "scripts" / "nonascii_asset_baseline.txt")
+    assert baseline == set()
+    assert _run_in(tmp_path, module) == 1
+
+
+@pytest.mark.unit
+def test_baseline_growth_against_base_ref_fails(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Hand-editing the baseline is caught by the diff against the merge base.
+
+    --update-baseline refusing to add is only half the ratchet; a contributor
+    can still type the line by hand. Comparing with the base ref is what makes
+    "only shrinks" actually true.
+    """
+    module = _load_script_module()
+    _init_repo(tmp_path)
+    assets = tmp_path / "static" / "audio"
+    assets.mkdir(parents=True)
+    _write_baseline(tmp_path, [])
+    subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True)
+    subprocess.run(
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "base"],
+        cwd=tmp_path,
+        check=True,
+    )
+
+    # Add the asset AND the matching baseline line — the in-tree comparison
+    # alone sees nothing wrong.
+    (assets / CJK_NAME).write_bytes(b"x")
+    _write_baseline(tmp_path, [f"static/audio/{CJK_NAME}"])
+    assert _run_in(tmp_path, module) == 0
+
+    assert _run_in(tmp_path, module, "--base", "HEAD") == 1
+    captured = capsys.readouterr()
+    assert f"+ static/audio/{CJK_NAME}" in captured.err
+
+    # Shrinking against the same base ref stays green.
+    _write_baseline(tmp_path, [])
+    assert _run_in(tmp_path, module, "--base", "HEAD") == 1  # asset now unbaselined
+    (assets / CJK_NAME).unlink()
+    assert _run_in(tmp_path, module, "--base", "HEAD") == 0
+
+
+@pytest.mark.unit
+def test_missing_baseline_at_base_ref_is_not_growth(tmp_path: Path) -> None:
+    """First landing of this check: the base ref has no baseline to diff."""
+    module = _load_script_module()
+    _init_repo(tmp_path)
+    (tmp_path / "static").mkdir()
+    (tmp_path / "static" / "ok.txt").write_bytes(b"x")
+    subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True)
+    subprocess.run(
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "base"],
+        cwd=tmp_path,
+        check=True,
+    )
+    _write_baseline(tmp_path, ["static/audio/whatever.mp3"])
+
+    assert _run_in(tmp_path, module, "--base", "HEAD") == 0
+
+
+@pytest.mark.unit
+def test_tar_hard_link_member_counts_as_extracted(tmp_path: Path) -> None:
+    """`tar -xzm` materializes hard links, so their names reach the payload.
+
+    TarInfo.isfile() is False for a hard-link entry, which used to hide a
+    non-ASCII name that the build nevertheless writes into static/.
+    """
+    module = _load_script_module()
+    _init_repo(tmp_path)
+    payload = tmp_path / "payload.bin"
+    payload.write_bytes(b"x")
+
+    (tmp_path / "assets").mkdir()
+    with tarfile.open(tmp_path / "assets" / "model.tar.gz", "w:gz") as tar:
+        tar.add(payload, arcname="model/real.png")
+        link = tarfile.TarInfo(f"model/{CJK_NAME}")
+        link.type = tarfile.LNKTYPE
+        link.linkname = "model/real.png"
+        tar.addfile(link)
+
+    offenders, _ = module.collect_offenders(tmp_path)
+    assert offenders == {f"static/model/{CJK_NAME}"}
+
+
+@pytest.mark.unit
+def test_zip_outside_the_pngtuber_manifest_is_ignored(tmp_path: Path) -> None:
+    """Only manifest-listed packs are unpacked; the rest ship opaque."""
+    module = _load_script_module()
+    _init_repo(tmp_path)
+    packs = tmp_path / "frontend" / "pngtuber-packs"
+    packs.mkdir(parents=True)
+    with zipfile.ZipFile(packs / "unused.zip", "w") as archive:
+        archive.writestr(f"layers/{CJK_NAME}", "x")
+    (packs / "manifest.json").write_text(json.dumps({"models": []}), encoding="utf-8")
+
+    offenders, _ = module.collect_offenders(tmp_path)
+    assert offenders == set()
+
+
+@pytest.mark.unit
+def test_only_the_packaged_docs_subtree_is_scanned(tmp_path: Path) -> None:
+    """The build packs docs/zh-CN/guide, not docs/ — no false positives."""
+    module = _load_script_module()
+    _init_repo(tmp_path)
+    packaged = tmp_path / "docs" / "zh-CN" / "guide"
+    packaged.mkdir(parents=True)
+    (packaged / f"{CJK_NAME}.md").write_bytes(b"x")
+    elsewhere = tmp_path / "docs" / "design"
+    elsewhere.mkdir(parents=True)
+    (elsewhere / f"{CJK_NAME}.md").write_bytes(b"x")
+
+    offenders, _ = module.collect_offenders(tmp_path)
+    assert offenders == {f"docs/zh-CN/guide/{CJK_NAME}.md"}
