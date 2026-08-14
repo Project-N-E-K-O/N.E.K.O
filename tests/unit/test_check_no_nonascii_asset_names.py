@@ -432,3 +432,88 @@ def test_only_the_packaged_docs_subtree_is_scanned(tmp_path: Path) -> None:
 
     offenders, _ = module.collect_offenders(tmp_path)
     assert offenders == {f"docs/zh-CN/guide/{CJK_NAME}.md"}
+
+
+@pytest.mark.unit
+def test_model_manifest_filename_is_checked_without_a_build(tmp_path: Path) -> None:
+    """The .onnx weights are gitignored; the name that will be written is not.
+
+    Both manifest shapes are covered: `filename` at the top level and inside an
+    `assets` list. Without this, the two model roots would only pay off under
+    --include-untracked, which CI never runs.
+    """
+    module = _load_script_module()
+    _init_repo(tmp_path)
+    for rel in module.MODEL_MANIFESTS:
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+    top_level, nested = module.MODEL_MANIFESTS[1], module.MODEL_MANIFESTS[0]
+    (tmp_path / top_level).write_text(
+        json.dumps({"filename": f"{CJK_NAME}.onnx"}), encoding="utf-8"
+    )
+    (tmp_path / nested).write_text(
+        json.dumps({"assets": [{"filename": "ascii.onnx"}, {"filename": f"x{CJK_NAME}.onnx"}]}),
+        encoding="utf-8",
+    )
+
+    offenders, from_archives = module.collect_offenders(tmp_path)
+
+    top_dir = str(Path(top_level).parent).replace("\\", "/")
+    nested_dir = str(Path(nested).parent).replace("\\", "/")
+    assert offenders == {
+        f"{top_dir}/{CJK_NAME}.onnx",
+        f"{nested_dir}/x{CJK_NAME}.onnx",
+    }
+    assert from_archives[f"{top_dir}/{CJK_NAME}.onnx"] == top_level
+
+
+@pytest.mark.unit
+def test_malformed_manifest_is_a_loud_error(tmp_path: Path) -> None:
+    """"No packs found" and "the manifest is a list" must not look the same."""
+    module = _load_script_module()
+    _init_repo(tmp_path)
+    packs = tmp_path / "frontend" / "pngtuber-packs"
+    packs.mkdir(parents=True)
+    (packs / "manifest.json").write_text(json.dumps([{"folder": "x"}]), encoding="utf-8")
+
+    with pytest.raises(SystemExit) as excinfo:
+        module.collect_offenders(tmp_path)
+    assert excinfo.value.code == 2
+
+    (packs / "manifest.json").write_text(json.dumps({"models": "nope"}), encoding="utf-8")
+    with pytest.raises(SystemExit) as excinfo:
+        module.collect_offenders(tmp_path)
+    assert excinfo.value.code == 2
+
+
+@pytest.mark.unit
+def test_unresolvable_base_ref_fails_instead_of_passing(tmp_path: Path) -> None:
+    """A ref that cannot be resolved must not read as "the baseline didn't grow".
+
+    Otherwise a shallow clone that never fetched origin/main turns the ratchet
+    green exactly when it is supposed to bite.
+    """
+    module = _load_script_module()
+    _init_repo(tmp_path)
+    _write_baseline(tmp_path, ["static/audio/whatever.mp3"])
+
+    # SystemExit(2), like the other environment failures in this script
+    # (unreadable git listing, malformed manifest) — not a lint verdict.
+    with pytest.raises(SystemExit) as excinfo:
+        _run_in(tmp_path, module, "--base", "origin/nope")
+    assert excinfo.value.code == 2
+
+
+@pytest.mark.unit
+def test_only_the_packaged_frontend_output_is_scanned(tmp_path: Path) -> None:
+    """All three build scripts pack frontend/plugin-manager/dist and nothing else."""
+    module = _load_script_module()
+    _init_repo(tmp_path)
+    source = tmp_path / "frontend" / "plugin-manager" / "src"
+    source.mkdir(parents=True)
+    (source / f"{CJK_NAME}.vue").write_bytes(b"x")
+    packaged = tmp_path / "frontend" / "plugin-manager" / "dist" / "assets"
+    packaged.mkdir(parents=True)
+    (packaged / f"{CJK_NAME}.js").write_bytes(b"x")
+
+    offenders, _ = module.collect_offenders(tmp_path)
+    assert offenders == {f"frontend/plugin-manager/dist/assets/{CJK_NAME}.js"}

@@ -63,6 +63,10 @@ Only what actually ships:
 - files git knows about under the bundled roots (``BUNDLED_ROOTS``) —
   tracked plus untracked-but-not-ignored, so the check fires before
   ``git add`` rather than only after commit;
+- ``filename`` values in the manifests that drive build-time downloads
+  (``main_logic/asr_client/*/models/manifest.json``): the ``.onnx`` itself is
+  gitignored and only exists after a build, but the name it will be written
+  under is committed, so a plain CI run can still catch it;
 - member names inside the archives that get unpacked into those roots at
   build time (``assets/*.tar.gz`` -> ``static/<model>/`` via
   ``build_frontend.sh``; the PNGTuber packs named by
@@ -160,15 +164,30 @@ BUNDLED_ROOTS: tuple[str, ...] = (
     # (--include-data-dir=docs/zh-CN/guide). Scanning the whole root would fail
     # documentation PRs over files that never enter the payload.
     "docs/zh-CN/guide",
-    "frontend",
+    # Only the vite output ships (--include-data-dir=frontend/plugin-manager/dist,
+    # identically in build_nuitka.bat, build_mac.sh and build-desktop.yml).
+    # Frontend *sources* never enter the payload — React's output goes to
+    # static/ — so scanning all of frontend/ would fail a PR over a file that
+    # cannot possibly break signing.
+    "frontend/plugin-manager/dist",
     "plugin/plugins",
     # Voice-turn + speaker models, both --include-data-dir'd. The .onnx weights
     # are downloaded at build time and gitignored, so the git listing cannot see
     # them; these roots cover whatever *is* tracked here, and make
-    # --include-untracked reach the downloaded payload after a build. A manifest
-    # that names a non-ASCII .onnx is only caught by that post-build sweep.
+    # --include-untracked reach the downloaded payload after a build. The names
+    # the downloader will write are checked from the manifests below, so a plain
+    # CI run catches them without building.
     "main_logic/asr_client/endpointing/models",
     "main_logic/asr_client/speaker_shadow/models",
+)
+
+# Manifests naming files the build downloads into a bundled root. The weights are
+# gitignored, so no git listing can see them before a build — but the name is
+# committed right here, so it can be checked in a plain run. ``filename`` sits
+# either at the top level or inside an ``assets`` list, depending on the schema.
+MODEL_MANIFESTS: tuple[str, ...] = (
+    "main_logic/asr_client/endpointing/models/manifest.json",
+    "main_logic/asr_client/speaker_shadow/models/manifest.json",
 )
 
 # Archives that are expanded into a bundled root at build time. Value is the
@@ -289,6 +308,47 @@ def _archive_offenders(repo_root: Path) -> dict[str, str]:
     return offenders
 
 
+def _load_json(path: Path, rel: str) -> object:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        print(f"error: cannot read {rel}: {exc}", file=sys.stderr)
+        raise SystemExit(2) from exc
+
+
+def _model_manifest_offenders(repo_root: Path) -> dict[str, str]:
+    """Non-ASCII ``filename`` values in the downloaded-model manifests.
+
+    Keyed by where the download lands, valued by the manifest to edit. This is
+    what makes the two model roots useful in CI: the payload itself only exists
+    after a build, but the name that will be written is committed.
+    """
+    offenders: dict[str, str] = {}
+    for rel in MODEL_MANIFESTS:
+        path = repo_root / rel
+        if not path.is_file():
+            continue
+        manifest = _load_json(path, rel)
+        if not isinstance(manifest, dict):
+            print(f"error: invalid {rel}: top level must be an object", file=sys.stderr)
+            raise SystemExit(2)
+
+        entries: list[dict] = [manifest]
+        assets = manifest.get("assets")
+        if assets is not None:
+            if not isinstance(assets, list):
+                print(f"error: invalid {rel}: 'assets' must be a list", file=sys.stderr)
+                raise SystemExit(2)
+            entries.extend(item for item in assets if isinstance(item, dict))
+
+        dest_dir = PurePosixPath(rel).parent.as_posix()
+        for entry in entries:
+            name = entry.get("filename")
+            if isinstance(name, str) and name and not _is_ascii(PurePosixPath(name).name):
+                offenders[f"{dest_dir}/{name}"] = rel
+    return offenders
+
+
 def _pngtuber_archive_dests(repo_root: Path) -> list[tuple[str, str]]:
     """(archive path, destination prefix) for each manifest-listed PNGTuber pack.
 
@@ -299,15 +359,26 @@ def _pngtuber_archive_dests(repo_root: Path) -> list[tuple[str, str]]:
     manifest_path = repo_root / ZIP_MANIFEST_REL
     if not manifest_path.is_file():
         return []
-    try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        print(f"error: cannot read {ZIP_MANIFEST_REL}: {exc}", file=sys.stderr)
-        raise SystemExit(2) from exc
+    manifest = _load_json(manifest_path, ZIP_MANIFEST_REL)
+    # A malformed manifest must be a loud error, not a silently empty scan —
+    # "no packs found" and "the file is a list" would otherwise look identical.
+    if not isinstance(manifest, dict):
+        print(
+            f"error: invalid {ZIP_MANIFEST_REL}: top level must be an object",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+    models = manifest.get("models", [])
+    if not isinstance(models, list):
+        print(
+            f"error: invalid {ZIP_MANIFEST_REL}: 'models' must be a list",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
 
     packs_dir = PurePosixPath(ZIP_MANIFEST_REL).parent
     dests: list[tuple[str, str]] = []
-    for model in manifest.get("models", []):
+    for model in models:
         if not isinstance(model, dict):
             continue
         folder = model.get("folder")
@@ -350,8 +421,9 @@ def _untracked_offenders(repo_root: Path) -> set[str]:
 def collect_offenders(
     repo_root: Path, include_untracked: bool = False
 ) -> tuple[set[str], dict[str, str]]:
-    """Return (bundled paths with non-ASCII names, path -> owning archive)."""
+    """Return (bundled paths with non-ASCII names, path -> owning archive/manifest)."""
     from_archives = _archive_offenders(repo_root)
+    from_archives.update(_model_manifest_offenders(repo_root))
     offenders = _git_listed_offenders(repo_root) | set(from_archives)
     if include_untracked:
         offenders |= _untracked_offenders(repo_root)
@@ -398,6 +470,22 @@ def _baseline_growth(repo_root: Path, base_ref: str) -> list[str]:
     ``offenders - baseline`` and sails through. Only a diff against the merge
     base sees that the list grew.
     """
+    # Resolve the ref first. Without this, an unreachable ref (shallow clone
+    # that never fetched origin/main, a typo, a renamed default branch) is
+    # indistinguishable from "the baseline did not exist yet" — and the ratchet
+    # would silently pass exactly when it is needed. Fail loudly instead.
+    if subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", f"{base_ref}^{{commit}}"],
+        cwd=repo_root,
+        capture_output=True,
+    ).returncode != 0:
+        print(
+            f"error: --base {base_ref} does not resolve to a commit "
+            "(shallow clone, or the ref was never fetched)",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+
     rel = BASELINE_PATH.relative_to(repo_root).as_posix()
     completed = subprocess.run(
         ["git", "show", f"{base_ref}:{rel}"],
@@ -405,8 +493,8 @@ def _baseline_growth(repo_root: Path, base_ref: str) -> list[str]:
         capture_output=True,
     )
     if completed.returncode != 0:
-        # No baseline at the base ref — first landing of this check, or the
-        # ref is unreachable. Nothing to compare; the in-tree check still runs.
+        # The ref is good but carries no baseline: first landing of this check.
+        # Nothing to compare; the in-tree check still runs.
         return []
 
     before = {
