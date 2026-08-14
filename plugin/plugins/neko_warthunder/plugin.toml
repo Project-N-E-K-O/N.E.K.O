@@ -3,7 +3,7 @@ name = "战雷猫娘副驾驶"
 description = "War Thunder 猫娘副驾驶：只读 8111 遥测（经数据层 :8112），把连续数据转成分立战斗事件，按战场场景仲裁后让猫娘提醒/陪伴。不做外挂、不做自动操作。"
 short_description = "War Thunder catgirl copilot: reads telemetry only, turns it into battle events and proactive call-outs."
 keywords = ["war thunder", "战雷", "战争雷霆", "copilot", "副驾驶", "telemetry", "8111"]
-version = "0.1.0"
+version = "0.1.1"
 id = "neko_warthunder"
 entry = "plugin.plugins.neko_warthunder:NekoWarthunderPlugin"
 

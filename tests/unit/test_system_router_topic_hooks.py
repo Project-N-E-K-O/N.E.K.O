@@ -135,6 +135,22 @@ def test_new_dialog_locale_params_require_explicit_user_language(monkeypatch):
         {"language": "zh-TW"},
         mgr,
     ) == {"language": "zh-TW"}
+    assert proactive_service._new_dialog_locale_params(
+        {"render_language": "pt"},
+        mgr,
+    ) == {"render_language": "pt"}
+    assert proactive_service._new_dialog_locale_params(
+        {"language": "zh-TW", "render_language": "pt"},
+        mgr,
+    ) == {"language": "zh-TW", "render_language": "pt"}
+    assert proactive_service._new_dialog_locale_params(
+        {"render_language": "estonian"},
+        mgr,
+    ) is None
+    assert proactive_service._new_dialog_locale_params(
+        {"render_language": "undefined"},
+        mgr,
+    ) is None
 
     mgr.user_language = "ja"
     assert proactive_service._new_dialog_locale_params({}, mgr) is None

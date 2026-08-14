@@ -278,6 +278,14 @@ _SELF_UI_GUARD_SUBSTRINGS = (
     "powershell",
     "ps c:",
 )
+_SELF_UI_COMPOUND_MARKERS = (
+    "动画设置",
+    "主动搭话",
+    "隐私模式",
+    "角色设置",
+    "api密钥",
+    "声纹身份",
+)
 _GAME_OVERLAY_TEXT_GUARD_SUBSTRINGS = (
     "backlog",
     "history",
@@ -348,7 +356,10 @@ def _looks_like_self_ui_text(text: str) -> bool:
     normalized = normalize_text(text).strip().lower()
     if not normalized:
         return False
-    return any(token in normalized for token in _SELF_UI_GUARD_SUBSTRINGS)
+    if any(token in normalized for token in _SELF_UI_GUARD_SUBSTRINGS):
+        return True
+    compound_hits = sum(1 for token in _SELF_UI_COMPOUND_MARKERS if token in normalized)
+    return compound_hits >= 2
 
 
 def _looks_like_english_overlay_label(line: str) -> bool:

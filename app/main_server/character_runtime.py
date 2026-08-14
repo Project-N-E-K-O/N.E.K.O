@@ -19,6 +19,7 @@ import asyncio
 import atexit
 import logging
 import sys
+import time
 import traceback
 from dataclasses import dataclass
 from typing import Any, Optional
@@ -26,6 +27,7 @@ from typing import Any, Optional
 from config import MONITOR_SERVER_PORT, USER_NOTIFICATION_ERROR_MAX_CHARS
 from main_logic import core, cross_server
 from main_logic.agent_event_bus import notify_analyze_ack
+from main_logic.proactive_delivery import CALLBACK_EXPIRES_AT_KEY
 from utils.config_manager import get_reserved
 
 from ._shared import runtime
@@ -33,6 +35,34 @@ from ._shared import runtime
 _IS_MAIN_PROCESS = runtime.is_main_process
 _config_manager = runtime.config_manager
 logger = runtime.logger
+
+
+def _resolve_callback_origin(event_type: str, event: dict, channel: str) -> str:
+    """Resolve task-report vs neutral-event wording at the host boundary."""
+    if event_type != "task_result":
+        return "event"
+    if (
+        channel == "user_plugin"
+        and bool(event.get("success", True))
+        and event.get("result_kind") == "event"
+    ):
+        return "event"
+    return "task_result"
+
+
+def _resolve_callback_expiry(event: dict, origin: str) -> Optional[float]:
+    if origin != "event":
+        return None
+    raw_expiry = event.get("expires_in_s")
+    if isinstance(raw_expiry, bool):
+        return None
+    try:
+        expiry_seconds = float(raw_expiry)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not 0.0 < expiry_seconds < float("inf"):
+        return None
+    return time.monotonic() + expiry_seconds
 
 
 class _SyncMessageQueue(asyncio.Queue):
@@ -245,20 +275,20 @@ def _get_explicit_session_user_language(name):
     return getattr(manager, "user_language", None)
 
 
+def _get_session_render_language(name):
+    """Return the current renderer locale without promoting it to a preference."""
+    manager = _get_session_manager(name)
+    if manager is None:
+        return None
+    return getattr(manager, "_conversation_render_language", None)
+
+
 try:
     from main_logic.topic.delivery import register_topic_session_manager_getter
 
     register_topic_session_manager_getter(_get_session_manager)
 except Exception:
     logger.warning("Failed to register topic session manager getter", exc_info=True)
-
-try:
-    from main_logic.music_playback import register_music_session_manager_getter
-
-    register_music_session_manager_getter(_get_session_manager)
-except Exception:
-    logger.warning("Failed to register music session manager getter", exc_info=True)
-
 
 def _select_fallback_session_manager():
     """Return a single connected session manager as a safe fallback, if unambiguous."""
@@ -429,6 +459,8 @@ async def _handle_agent_event(event: dict):
                 "type": "music_allowlist_add",
                 "domains": event.get("domains")
                 or event.get("metadata", {}).get("domains", []),
+                "http_urls": event.get("http_urls")
+                or event.get("metadata", {}).get("http_urls", []),
             }
 
             async def _send_allowlist(target_mgr):
@@ -689,22 +721,21 @@ async def _handle_agent_event(event: dict):
                     if isinstance(event.get("metadata"), dict)
                     else {}
                 )
-                # origin is a STRUCTURAL fact derived from event_type:
+                # origin is host-derived from event_type plus the validated
+                # user-plugin result contract:
                 #   "task_result"      → real task completion (agent_server._emit_task_result):
                 #                        Computer Use / Browser Use / plugin entry / MCP tool result
                 #   "proactive_message" → plugin push_message stream (proactive_bridge):
                 #                        danmaku / gift / external notification
-                # Plugin authors cannot influence this — it's determined by which
-                # SDK method they call (finish() vs push_message()) and which host
-                # path it flows through. _build_callback_instruction uses this to
-                # pick the right wrapper template (task "汇报" vs event "回应").
-                if event_type == "task_result":
-                    origin = "task_result"
-                else:
-                    # event_type == "proactive_message" (or any future event-stream
-                    # producer that lands on this branch); see the (event_type in
-                    # {"task_result", "proactive_message"}) gate above.
-                    origin = "event"
+                # A successful user_plugin task_result may explicitly downgrade
+                # to result_kind="event" for receipts/read-only query results.
+                # No other channel or event type can use that field to forge a
+                # task result. _build_callback_instruction uses the resolved
+                # origin to pick task "汇报" vs neutral event "回应" wording.
+                origin = _resolve_callback_origin(event_type, event, _channel)
+                # Absolute wall-clock values cross processes badly. Stamp an
+                # internal deadline on the receiving host instead.
+                expires_at_monotonic = _resolve_callback_expiry(event, origin)
                 # Proactive-delivery hints from push_message (priority +
                 # coalesce_key). Lower priority = more urgent; unspecified
                 # (0) is normalised to a neutral band by the manager.
@@ -738,6 +769,7 @@ async def _handle_agent_event(event: dict):
                     "timestamp": event.get("timestamp") or "",
                     "metadata": event_metadata,
                     "context_type": event_metadata.get("context_type") or "",
+                    CALLBACK_EXPIRES_AT_KEY: expires_at_monotonic,
                 }
                 if delivery_mode != "silent":
                     if delivery_mode == "passive":
@@ -1203,6 +1235,9 @@ async def _init_character_resources(k: str, is_new_character: bool):
                     _status_cb,
                     user_language_provider=(
                         lambda _name=k: _get_explicit_session_user_language(_name)
+                    ),
+                    render_language_provider=(
+                        lambda _name=k: _get_session_render_language(_name)
                     ),
                 ),
                 name=f"SyncConnector-{k}",

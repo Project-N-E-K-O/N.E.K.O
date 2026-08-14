@@ -135,6 +135,10 @@ class PluginContextProtocol(Protocol):
 
     async def get_own_effective_config(self, profile_name: str | None = None, timeout: float = 5.0) -> object: ...
 
+    async def update_own_config(self, updates: JsonObject, timeout: float = 10.0) -> object: ...
+
+    async def replace_own_config(self, config: JsonObject, timeout: float = 10.0) -> object: ...
+
     async def upsert_own_profile_config(
         self,
         profile_name: str,

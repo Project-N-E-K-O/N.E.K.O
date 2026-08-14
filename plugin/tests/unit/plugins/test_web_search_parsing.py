@@ -184,6 +184,16 @@ def test_baidu_blocked_page_detected_not_silently_empty() -> None:
     assert not p.is_baidu_blocked(_BAIDU_HTML)
 
 
+def test_baidu_explicit_no_results_page_is_detected() -> None:
+    html = (
+        '<div id="content_left"><div class="nors">'
+        "抱歉，没有找到与查询相关的结果"
+        "</div></div>"
+    )
+    assert p.is_baidu_no_results(html)
+    assert not p.is_baidu_no_results("<html><body></body></html>")
+
+
 # ---------------------------------------------------------------------------
 # parse_ddg_html / parse_ddg_lite_html
 # ---------------------------------------------------------------------------
@@ -229,6 +239,47 @@ def test_ddg_ad_filter_only_matches_yjs_wrapper() -> None:
     # 目标 URL 带同名参数、或路径里碰巧含 y.js 字样的，都不是广告
     assert not p.is_ddg_ad_url("https://shop.example.com/p?ad_provider=bing")
     assert not p.is_ddg_ad_url("https://example.com/duckduckgo.com/y.js")
+
+
+@pytest.mark.parametrize(
+    "html",
+    [
+        '<html><form id="anomaly-modal">Please complete the following challenge.</form></html>',
+        "<html><form id=anomaly-modal>Unfortunately, bots use DuckDuckGo too.</form></html>",
+        "<html><form action='//duckduckgo.com/anomaly.js?sv=html'></form></html>",
+        "<html><script src='https://duckduckgo.com/anomaly.js'></script></html>",
+    ],
+)
+def test_ddg_challenge_pages_are_detected(html: str) -> None:
+    assert p.is_ddg_blocked(html)
+
+
+def test_normal_ddg_results_are_not_marked_as_blocked() -> None:
+    assert not p.is_ddg_blocked(_DDG_HTML)
+
+
+def test_ddg_explicit_no_results_container_is_detected() -> None:
+    assert p.is_ddg_no_results('<div class="no-results">No results.</div>')
+    assert not p.is_ddg_no_results("<html><body></body></html>")
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Unfortunately, bots use DuckDuckGo too.",
+        "Please complete the following challenge to continue.",
+        "duckduckgo.com/anomaly.js",
+    ],
+)
+def test_ddg_block_text_in_normal_results_does_not_trigger_cooldown(text: str) -> None:
+    html = f"""
+    <html><body><div class="result">
+      <a class="result__a" href="https://example.com">{text}</a>
+      <a class="result__snippet">Debugging {text}</a>
+    </div></body></html>
+    """
+    assert not p.is_ddg_blocked(html)
+    assert p.parse_ddg_html(html, max_results=1)[0]["title"] == text
 
 
 _DDG_LITE_HTML = f"""

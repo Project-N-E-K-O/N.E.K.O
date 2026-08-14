@@ -293,512 +293,8 @@ async def test_music_failsafe_only_applies_to_strict_song_request(
     assert "未找到与关键词精准匹配" in strict_context
 
 
-@pytest.mark.parametrize(
-    ("text", "keyword", "song", "artist", "playlist", "source"),
-    (
-        ("我想听邓紫棋的歌", "邓紫棋", "", "邓紫棋", "", "auto"),
-        ("我想听轻松的音乐", "轻松", "", "", "", "auto"),
-        ("来点舒缓的音乐", "舒缓", "", "", "", "auto"),
-        ("播放《晴天》", "晴天", "晴天", "", "", "auto"),
-        ("播放周杰伦的晴天", "晴天 周杰伦", "晴天", "周杰伦", "", "auto"),
-        ("播放一首周杰伦的晴天", "晴天 周杰伦", "晴天", "周杰伦", "", "auto"),
-        ("听一首周杰伦的晴天", "晴天 周杰伦", "晴天", "周杰伦", "", "auto"),
-        ("放首周杰伦的晴天", "晴天 周杰伦", "晴天", "周杰伦", "", "auto"),
-        ("播放周杰伦的晴天这首歌", "晴天 周杰伦", "晴天", "周杰伦", "", "auto"),
-        ("听周杰伦的晴天歌曲", "晴天 周杰伦", "晴天", "周杰伦", "", "auto"),
-        ("播放张学友的情歌", "情歌 张学友", "情歌", "张学友", "", "auto"),
-        ("播放邓紫棋", "邓紫棋", "", "", "", "auto"),
-        ("播放轻音乐", "轻音乐", "", "", "", "auto"),
-        ("换成歌曲：大喜", "大喜", "大喜", "", "", "auto"),
-        ("播放一首丑马", "丑马", "丑马", "", "", "auto"),
-        ("听一首晴天", "晴天", "晴天", "", "", "auto"),
-        ("请听一首晴天", "晴天", "晴天", "", "", "auto"),
-        ("听首晴天", "晴天", "晴天", "", "", "auto"),
-        ("放一下晴天", "晴天", "", "", "", "auto"),
-        ("来一首丑马", "丑马", "丑马", "", "", "auto"),
-        ("来一首邓紫棋的歌曲，下午好", "邓紫棋", "", "邓紫棋", "", "auto"),
-        ("来一首歌曲：21", "21", "21", "", "", "auto"),
-        ("来一首周杰伦的歌", "周杰伦", "", "周杰伦", "", "auto"),
-        ("听一首周杰伦的歌", "周杰伦", "", "周杰伦", "", "auto"),
-        ("听首周杰伦的歌", "周杰伦", "", "周杰伦", "", "auto"),
-        ("放首周杰伦的歌", "周杰伦", "", "周杰伦", "", "auto"),
-        ("从夜间循环里放一首", "", "", "", "夜间循环", "auto"),
-        ("我想从夜间循环里放一首", "", "", "", "夜间循环", "auto"),
-        ("我要从夜间循环歌单里听一首", "", "", "", "夜间循环", "auto"),
-        ("播放夜间循环歌单", "", "", "", "夜间循环", "auto"),
-        ("播放我的夜间循环歌单", "", "", "", "夜间循环", "auto"),
-        ("来点我喜欢的", "", "", "", "", "liked"),
-        ("来首歌", "", "", "", "", "auto"),
-        ("放我的歌", "", "", "", "", "auto"),
-        ("别放日推，只听红心", "", "", "", "", "liked"),
-        ("我想听红心", "", "", "", "", "liked"),
-        ("我要听日推", "", "", "", "", "daily"),
-        ("听我的日推", "", "", "", "", "daily"),
-        ("我想听我的日推", "", "", "", "", "daily"),
-        ("我想听红心，别放日推", "", "", "", "", "liked"),
-        ("播放晴天，别放日推", "晴天", "", "", "", "auto"),
-        ("播放《别听慢歌》", "别听慢歌", "别听慢歌", "", "", "auto"),
-        ("play Don't Stop the Music", "Don't Stop the Music", "", "", "", "auto"),
-        ("play Yellow, don't play daily recommendations", "Yellow", "", "", "", "auto"),
-        ("play Yellow and don't play daily recommendations", "Yellow", "", "", "", "auto"),
-        ("play Yellow, don't play games", "Yellow", "", "", "", "auto"),
-        ("播放晴天，别播放视频", "晴天", "", "", "", "auto"),
-        ("play a song by Coldplay", "Coldplay", "", "Coldplay", "", "auto"),
-        ("play music by Coldplay", "Coldplay", "", "Coldplay", "", "auto"),
-        ("play a track by Coldplay", "Coldplay", "", "Coldplay", "", "auto"),
-        ("play tunes by Coldplay", "Coldplay", "", "Coldplay", "", "auto"),
-        ("play something by Coldplay", "Coldplay", "", "Coldplay", "", "auto"),
-        ("play anything by Coldplay", "Coldplay", "", "Coldplay", "", "auto"),
-        ("play any song by Coldplay", "Coldplay", "", "Coldplay", "", "auto"),
-        ("play the song Yellow by Coldplay", "Yellow Coldplay", "Yellow", "Coldplay", "", "auto"),
-        ("play a song Yellow by Coldplay", "Yellow Coldplay", "Yellow", "Coldplay", "", "auto"),
-        ("play song Yellow by Coldplay", "Yellow Coldplay", "Yellow", "Coldplay", "", "auto"),
-        ("play Song 2 by Blur", "Song 2 Blur", "Song 2", "Blur", "", "auto"),
-        ("play my favorites", "", "", "", "", "liked"),
-        ("play favorites", "", "", "", "", "liked"),
-        ("play my favourites", "", "", "", "", "liked"),
-        ("play a song from my liked songs", "", "", "", "", "liked"),
-        ("play a track from daily recommendations", "", "", "", "", "daily"),
-        ("play music from my liked songs", "", "", "", "", "liked"),
-        ("play tunes from daily recommendations", "", "", "", "", "daily"),
-        ("play me a song", "", "", "", "", "auto"),
-        ("please play me a song", "", "", "", "", "auto"),
-        ("play some music for me", "", "", "", "", "auto"),
-        ("play Mr. Brightside", "Mr. Brightside", "", "", "", "auto"),
-        ('play "Me, Myself and I"', "Me, Myself and I", "", "", "", "auto"),
-        ("play Me and You", "Me and You", "", "", "", "auto"),
-        ("play Waiting for Me", "Waiting for Me", "", "", "", "auto"),
-        ("播放一下晴天", "晴天", "", "", "", "auto"),
-        ("播放下晴天", "晴天", "", "", "", "auto"),
-        ("Can you play Yellow?", "Yellow", "", "", "", "auto"),
-        ("Could you play Yellow?", "Yellow", "", "", "", "auto"),
-        ("Would you play Yellow?", "Yellow", "", "", "", "auto"),
-        ("play my Night Loop playlist", "", "", "", "Night Loop", "auto"),
-        (
-            "play a song from my Night Loop playlist",
-            "",
-            "",
-            "",
-            "Night Loop",
-            "auto",
-        ),
-        ("play a track from my Night Loop playlist", "", "", "", "Night Loop", "auto"),
-        ("play a tune from my Night Loop playlist", "", "", "", "Night Loop", "auto"),
-        ("play anything from my Night Loop playlist", "", "", "", "Night Loop", "auto"),
-        (
-            "Could you please play Yellow by Coldplay?",
-            "Yellow Coldplay",
-            "Yellow",
-            "Coldplay",
-            "",
-            "auto",
-        ),
-    ),
-)
-def test_parse_explicit_user_music_request(
-    text,
-    keyword,
-    song,
-    artist,
-    playlist,
-    source,
-) -> None:
-    request = music_requests.parse_explicit_user_music_request(text)
-
-    assert request is not None
-    assert request.keyword == keyword
-    assert request.song_name == song
-    assert request.song_artist == artist
-    assert request.playlist_name == playlist
-    assert request.personalization_source == source
-
-
-@pytest.mark.parametrize(
-    "text",
-    (
-        "不要放歌",
-        "放首歌，算了别放了",
-        "刚才听了晴天",
-        "你喜欢邓紫棋吗？",
-        "我想换成红色",
-        "Could you play a game?",
-        "Can you listen to me?",
-        "play Yellow. don't play music",
-        "play Yellow but don't play music",
-        "播放一下视频",
-        "播放一下游戏",
-    ),
-)
-def test_non_music_commands_do_not_trigger_immediate_playback(text) -> None:
-    assert music_requests.parse_explicit_user_music_request(text) is None
-
-
-@pytest.mark.parametrize(
-    "text",
-    (
-        "don't play games with me",
-        "stop playing games",
-        "pause playing video",
-        "cancel video playback",
-        "别播放视频",
-    ),
-)
-def test_non_music_commands_do_not_cancel_pending_music(text) -> None:
-    assert music_requests.is_explicit_music_cancellation(text) is False
-
-
-@pytest.mark.parametrize(
-    "text",
-    (
-        "don't play this music",
-        "don't play that song",
-        "stop that music",
-        "pause playback",
-        "play Yellow, pause playback",
-    ),
-)
-def test_explicit_music_targets_override_non_music_pronouns(text) -> None:
-    assert music_requests.is_explicit_music_cancellation(text) is True
-
-
-def test_new_user_music_request_cancels_previous_search(monkeypatch) -> None:
-    previous_task = MagicMock()
-    previous_task.done.return_value = False
-    next_task = MagicMock()
-    pending_coroutines = []
-
-    def fire_task(coro):
-        pending_coroutines.append(coro)
-        return next_task
-
-    manager = SimpleNamespace(
-        lanlan_name="YUI",
-        user_language="zh",
-        _music_request_task=previous_task,
-        _fire_task=fire_task,
-        enqueue_agent_callback=MagicMock(),
-    )
-    monkeypatch.setattr(
-        music_playback,
-        "_session_manager_getter",
-        lambda _: manager,
-    )
-
-    try:
-        music_playback._on_user_utterance(
-            "YUI",
-            {"lanlan": "YUI", "content": "播放《大喜》"},
-        )
-    finally:
-        for coro in pending_coroutines:
-            coro.close()
-
-    previous_task.cancel.assert_called_once_with()
-    assert manager._music_request_task is next_task
-    assert manager._music_request_epoch == 1
-    pending_context = manager.enqueue_agent_callback.call_args.args[0]
-    assert pending_context["delivery_mode"] == "passive"
-    assert pending_context["context_type"] == "music_request_pending"
-    assert "不要询问版本" in pending_context["detail"]
-    assert "不要声称已经开始播放" in pending_context["detail"]
-
-    playback_source = Path(music_playback.__file__).read_text(encoding="utf-8")
-    assert "不要询问版本" not in playback_source
-    assert "do not ask which version" in (
-        music_playback.get_music_request_pending_prompt("en-US")
-    )
-    traditional_prompt = music_playback.get_music_request_pending_prompt("zh-TW")
-    assert "音樂模組已接管" in traditional_prompt
-    assert "音乐模块已接管" not in traditional_prompt
-
-
 @pytest.mark.asyncio
-async def test_explicit_music_cancellation_invalidates_pending_search(
-    monkeypatch,
-) -> None:
-    previous_task = MagicMock()
-    previous_task.done.return_value = False
-    pushed = []
-
-    async def send_json(payload):
-        pushed.append(payload)
-
-    scheduled = []
-
-    def fire_task(coro):
-        task = asyncio.create_task(coro)
-        scheduled.append(task)
-        return task
-
-    manager = SimpleNamespace(
-        lanlan_name="YUI",
-        _music_request_epoch=4,
-        _music_request_task=previous_task,
-        _fire_task=fire_task,
-        enqueue_agent_callback=MagicMock(),
-        websocket=SimpleNamespace(client_state=None, send_json=send_json),
-        sync_message_queue=MagicMock(),
-    )
-    monkeypatch.setattr(
-        music_playback,
-        "_session_manager_getter",
-        lambda _: manager,
-    )
-
-    music_playback._on_user_utterance(
-        "YUI",
-        {"lanlan": "YUI", "content": "不要放歌"},
-    )
-    await asyncio.gather(*scheduled)
-
-    previous_task.cancel.assert_called_once_with()
-    assert manager._music_request_epoch == 5
-    assert pushed == [{"type": "music_request_cancelled", "request_id": 5}]
-    manager.enqueue_agent_callback.assert_not_called()
-
-
-def test_source_exclusion_does_not_cancel_unrelated_pending_search(
-    monkeypatch,
-) -> None:
-    previous_task = MagicMock()
-    previous_task.done.return_value = False
-    manager = SimpleNamespace(
-        lanlan_name="YUI",
-        _music_request_epoch=4,
-        _music_request_task=previous_task,
-        _fire_task=MagicMock(),
-        enqueue_agent_callback=MagicMock(),
-    )
-    monkeypatch.setattr(
-        music_playback,
-        "_session_manager_getter",
-        lambda _: manager,
-    )
-
-    music_playback._on_user_utterance(
-        "YUI",
-        {"lanlan": "YUI", "content": "不要日推"},
-    )
-
-    previous_task.cancel.assert_not_called()
-    assert manager._music_request_epoch == 4
-    manager._fire_task.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_music_invalidations_reach_all_registered_windows() -> None:
-    current_payloads = []
-    owner_payloads = []
-
-    async def send_current(payload):
-        current_payloads.append(payload)
-
-    async def send_owner(payload):
-        owner_payloads.append(payload)
-
-    current = SimpleNamespace(send_json=send_current)
-    owner = SimpleNamespace(send_json=send_owner)
-    manager = SimpleNamespace(
-        lanlan_name="YUI",
-        websocket=current,
-        _music_playback_websockets=(current, owner),
-        sync_message_queue=MagicMock(),
-    )
-    started = {"type": "music_request_started", "request_id": 2}
-    candidates = {"type": "music_play_candidates", "request_id": 2}
-
-    assert await music_playback._push_music_payload(manager, started) is True
-    assert current_payloads == [started]
-    assert owner_payloads == [started]
-
-    assert await music_playback._push_music_payload(manager, candidates) is True
-    assert current_payloads == [started, candidates]
-    assert owner_payloads == [started]
-    assert manager.sync_message_queue.put.call_count == 2
-
-
-@pytest.mark.asyncio
-async def test_fast_music_search_waits_for_current_reply_before_player(
-    monkeypatch,
-) -> None:
-    order = []
-
-    async def fetch(*args, **kwargs):
-        order.append("search")
-        return {
-            "success": True,
-            "data": [{
-                "name": "21",
-                "artist": "Polo G",
-                "url": "/api/music/play/netease/21",
-            }],
-        }
-
-    async def wait_for_reply(manager, epoch, elapsed):
-        order.append("reply_end")
-
-    async def push(manager, payload):
-        order.append(payload["type"])
-        return True
-
-    monkeypatch.setattr(music_playback, "fetch_music_request", fetch)
-    mark_query = MagicMock()
-    monkeypatch.setattr(music_playback, "mark_music_request_query", mark_query)
-    monkeypatch.setattr(
-        music_playback,
-        "_wait_for_current_reply",
-        wait_for_reply,
-    )
-    monkeypatch.setattr(music_playback, "_push_music_payload", push)
-    websocket = object()
-    manager = SimpleNamespace(
-        lanlan_name="YUI",
-        _music_request_epoch=1,
-        user_language="zh",
-        websocket=websocket,
-    )
-
-    result = await music_playback._execute_music_request(
-        manager,
-        music_requests.MusicRequest(keyword="21", song_name="21"),
-        1,
-    )
-
-    assert result == {"status": "queued", "candidates": 1}
-    assert order == [
-        "music_request_started",
-        "search",
-        "reply_end",
-        "music_play_candidates",
-    ]
-    mark_query.assert_called_once()
-
-
-@pytest.mark.asyncio
-async def test_music_search_continues_across_websocket_reconnect(
-    monkeypatch,
-) -> None:
-    origin_websocket = object()
-    replacement_websocket = object()
-    manager = SimpleNamespace(
-        lanlan_name="YUI",
-        _music_request_epoch=1,
-        user_language="zh",
-        websocket=origin_websocket,
-    )
-
-    async def fetch(*args, **kwargs):
-        manager.websocket = replacement_websocket
-        return {
-            "success": True,
-            "data": [{
-                "name": "Yellow",
-                "artist": "Coldplay",
-                "url": "/api/music/play/netease/yellow",
-            }],
-        }
-
-    deliveries = []
-
-    async def push(manager, payload):
-        deliveries.append((payload["type"], manager.websocket))
-        return True
-
-    mark_query = MagicMock()
-    monkeypatch.setattr(music_playback, "fetch_music_request", fetch)
-    monkeypatch.setattr(music_playback, "_push_music_payload", push)
-    monkeypatch.setattr(music_playback, "mark_music_request_query", mark_query)
-    monkeypatch.setattr(
-        music_playback,
-        "_wait_for_current_reply",
-        AsyncMock(),
-    )
-
-    result = await music_playback._execute_music_request(
-        manager,
-        music_requests.MusicRequest(keyword="Yellow", song_name="Yellow"),
-        1,
-    )
-
-    assert result == {"status": "queued", "candidates": 1}
-    assert deliveries == [
-        ("music_request_started", origin_websocket),
-        ("music_play_candidates", replacement_websocket),
-    ]
-    mark_query.assert_called_once()
-
-
-@pytest.mark.asyncio
-async def test_music_request_failure_carries_request_id(
-    monkeypatch,
-) -> None:
-    websocket = object()
-    manager = SimpleNamespace(
-        lanlan_name="YUI",
-        _music_request_epoch=7,
-        user_language="zh",
-        websocket=websocket,
-    )
-    monkeypatch.setattr(
-        music_playback,
-        "fetch_music_request",
-        AsyncMock(
-            return_value={
-                "success": False,
-                "error_code": "track_not_found",
-                "data": [],
-            }
-        ),
-    )
-    send_failure = AsyncMock()
-    monkeypatch.setattr(
-        music_playback,
-        "_send_music_request_failure",
-        send_failure,
-    )
-
-    result = await music_playback._execute_music_request(
-        manager,
-        music_requests.MusicRequest(keyword="missing"),
-        7,
-    )
-
-    assert result["status"] == "failed"
-    send_failure.assert_awaited_once_with(
-        manager,
-        "missing",
-        "track_not_found",
-        7,
-    )
-
-
-@pytest.mark.asyncio
-async def test_music_dispatch_waits_until_current_reply_finishes(
-    monkeypatch,
-) -> None:
-    websocket = object()
-    manager = SimpleNamespace(
-        _music_request_epoch=1,
-        _active_text_request_id="turn-1",
-        _voice_playback_active=False,
-        session=None,
-        websocket=websocket,
-    )
-    sleep_calls = []
-
-    async def finish_reply_on_sleep(delay):
-        sleep_calls.append(delay)
-        manager._active_text_request_id = None
-
-    monkeypatch.setattr(music_playback.asyncio, "sleep", finish_reply_on_sleep)
-
-    await music_playback._wait_for_current_reply(manager, 1, 1.25)
-
-    assert sleep_calls == [music_playback._REPLY_WAIT_POLL_SECONDS]
-
-
-@pytest.mark.asyncio
-async def test_direct_music_request_preserves_failure_reason() -> None:
+async def test_controlled_music_request_preserves_failure_reason() -> None:
     fetch = AsyncMock(
         return_value={
             "success": False,
@@ -829,10 +325,9 @@ def test_music_playback_keeps_core_entrypoints_thin() -> None:
     assert "play_music" not in tool_source
 
 
-def test_confirmed_user_music_playback_uses_existing_callback_delivery() -> None:
+def test_confirmed_music_playback_stays_passive() -> None:
     manager = SimpleNamespace(
         lanlan_name="YUI",
-        _music_request_epoch=7,
         submit_proactive_callback=MagicMock(),
         enqueue_agent_callback=MagicMock(),
     )
@@ -841,21 +336,20 @@ def test_confirmed_user_music_playback_uses_existing_callback_delivery() -> None
         "playback_id": "player:1",
         "playback_window_id": "window:1",
         "playback_started_at": 100,
-        "request_id": 7,
-        "source": "user",
+        "source": "proactive",
         "track": {"name": "大喜", "artist": "泠鸢yousa"},
     }
 
     assert music_playback.handle_music_playback_state(manager, event) is True
-    callback = manager.submit_proactive_callback.call_args.args[0]
-    assert callback["delivery_mode"] == "proactive"
+    callback = manager.enqueue_agent_callback.call_args.args[0]
+    assert callback["delivery_mode"] == "passive"
     assert callback["channel"] == "music_playback"
     assert "播放器已确认开始播放《大喜》（泠鸢yousa）" in callback["detail"]
-    assert "不要再次调用音乐播放工具" in callback["detail"]
-    manager.enqueue_agent_callback.assert_not_called()
+    assert "不要再次调用音乐播放工具" not in callback["detail"]
+    manager.submit_proactive_callback.assert_not_called()
 
     assert music_playback.handle_music_playback_state(manager, event) is False
-    manager.submit_proactive_callback.assert_called_once()
+    manager.enqueue_agent_callback.assert_called_once()
 
 
 def test_non_user_music_state_is_passive_and_coalesced() -> None:
@@ -924,10 +418,9 @@ def test_music_playback_error_logs_only_sanitized_reason(
         assert reported_reason not in repr(warning.call_args)
 
 
-def test_music_playback_keeps_current_owner_during_replacement_search() -> None:
+def test_music_playback_keeps_current_owner_until_track_finishes() -> None:
     manager = SimpleNamespace(
         lanlan_name="YUI",
-        _music_request_epoch=7,
         submit_proactive_callback=MagicMock(),
         enqueue_agent_callback=MagicMock(),
     )
@@ -936,22 +429,20 @@ def test_music_playback_keeps_current_owner_during_replacement_search() -> None:
         "playback_id": "player:current",
         "playback_window_id": "window:current",
         "playback_started_at": 100,
-        "request_id": 7,
-        "source": "user",
+        "source": "proactive",
     }
 
     assert music_playback.handle_music_playback_state(manager, event) is True
 
-    manager._music_request_epoch = 8
     event["state"] = "ended"
     assert music_playback.handle_music_playback_state(manager, event) is True
-    manager.enqueue_agent_callback.assert_called_once()
+    assert manager.enqueue_agent_callback.call_count == 2
+    manager.submit_proactive_callback.assert_not_called()
 
 
-def test_music_playback_rejects_stale_windows_and_request_epochs() -> None:
+def test_music_playback_rejects_stale_windows() -> None:
     manager = SimpleNamespace(
         lanlan_name="YUI",
-        _music_request_epoch=8,
         submit_proactive_callback=MagicMock(),
         enqueue_agent_callback=MagicMock(),
     )
@@ -970,18 +461,8 @@ def test_music_playback_rejects_stale_windows_and_request_epochs() -> None:
         "playback_started_at": 100,
         "source": "music_play_url",
     }
-    stale_request_event = {
-        "state": "error",
-        "playback_id": "player:request",
-        "playback_window_id": "window:new",
-        "playback_started_at": 300,
-        "request_id": 7,
-        "source": "music_play_url",
-    }
-
     assert music_playback.handle_music_playback_state(manager, current_event) is True
     assert music_playback.handle_music_playback_state(manager, stale_window_event) is False
-    assert music_playback.handle_music_playback_state(manager, stale_request_event) is False
     manager.enqueue_agent_callback.assert_called_once()
 
 
@@ -1295,6 +776,81 @@ async def test_service_missing_manager_returns_domain_result() -> None:
     }
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    (
+        "request_language",
+        "render_language",
+        "manager_language",
+        "manager_explicit",
+        "expected_language",
+    ),
+    (
+        (None, "ja", "en", False, "ja"),
+        (None, "ja", "zh-TW", True, "zh-TW"),
+        ("pt", "ja", "zh-TW", True, "pt"),
+    ),
+)
+async def test_voice_fast_path_passes_request_locale_without_mutating_manager(
+    monkeypatch,
+    request_language,
+    render_language,
+    manager_language,
+    manager_explicit,
+    expected_language,
+) -> None:
+    class _VoiceSession:
+        pass
+
+    monkeypatch.setattr(service, "OmniRealtimeClient", _VoiceSession)
+    monkeypatch.setattr(
+        service,
+        "_advance_mini_game_invite_entry",
+        lambda *_args, **_kwargs: None,
+    )
+    trigger = AsyncMock(return_value=False)
+    manager = SimpleNamespace(
+        is_active=True,
+        session=_VoiceSession(),
+        is_goodbye_silent=lambda: False,
+        last_user_message_time=None,
+        state=SimpleNamespace(can_start_proactive=lambda *, session: True),
+        trigger_voice_proactive_nudge=trigger,
+        user_language=manager_language,
+        _user_language_explicit=manager_explicit,
+        _conversation_render_language=None,
+    )
+    original_language_state = (
+        manager.user_language,
+        manager._user_language_explicit,
+        manager._conversation_render_language,
+    )
+
+    await service.handle_proactive_chat(
+        contracts.ProactiveChatCommand(
+            lanlan_name="Yui",
+            voice_mode=True,
+            i18n_language=request_language,
+            render_language=render_language,
+        ),
+        config_manager=SimpleNamespace(),
+        session_manager=SimpleNamespace(get=lambda _lanlan_name: manager),
+        character_data=_CHARACTER_DATA,
+        game_route_active_for=lambda _lanlan_name: False,
+        break_config_manager_provider=lambda: SimpleNamespace(),
+        run_mini_game_invite_short_circuit=AsyncMock(),
+        push_mini_game_invite_options=AsyncMock(),
+        push_mini_game_invite_resolved=AsyncMock(),
+    )
+
+    trigger.assert_awaited_once_with(language=expected_language)
+    assert (
+        manager.user_language,
+        manager._user_language_explicit,
+        manager._conversation_render_language,
+    ) == original_language_state
+
+
 @pytest.mark.parametrize(
     ("name", "canonical"),
     (
@@ -1319,6 +875,16 @@ def test_locale_helpers_accept_legacy_data_keyword_from_all_import_paths() -> No
         system_router_facade._resolve_proactive_locale,
     ):
         assert resolver(data={"language": "en"}, mgr=mgr) == "en"
+        assert resolver(
+            data={"render_language": "zh-CN"},
+            mgr=mgr,
+            fmt="prompt",
+        ) == "zh"
+        assert resolver(
+            data={"render_language": "zh-TW"},
+            mgr=mgr,
+            fmt="prompt",
+        ) == "zh-TW"
 
     for resolver in (
         service._resolve_topic_hook_locale,
@@ -1326,6 +892,18 @@ def test_locale_helpers_accept_legacy_data_keyword_from_all_import_paths() -> No
         system_router_facade._resolve_topic_hook_locale,
     ):
         assert resolver(data={"language": "zh-TW"}, mgr=mgr, fallback="zh") == "zh-TW"
+
+
+def test_topic_hook_locale_uses_render_language_without_declaring_it(monkeypatch) -> None:
+    mgr = SimpleNamespace(user_language="en", _user_language_explicit=False)
+    data = {"render_language": "zh-TW"}
+    monkeypatch.setattr(service, "get_global_language_full", lambda: "en")
+
+    assert service._resolve_topic_hook_locale(data, mgr, fallback="zh-CN") == "zh-TW"
+    assert service._resolve_declared_topic_hook_locale(data, mgr) is None
+    assert service._new_dialog_locale_params(data, mgr) == {
+        "render_language": "zh-TW",
+    }
 
 
 def test_safe_fire_proactive_done_is_exported_from_legacy_paths() -> None:

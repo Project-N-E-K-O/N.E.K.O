@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib.util
 import ipaddress
 import os
 import shutil
@@ -59,8 +58,17 @@ def _bind_host_from_url(base_url: str) -> str:
 def _looks_like_python(executable: str | None) -> bool:
     if not executable:
         return False
-    name = Path(executable).name.lower()
-    return name.startswith("python") or name in {"py.exe", "py"}
+    name = Path(str(executable).replace("\\", "/")).name.lower()
+    if not (name.startswith("python") or name in {"py.exe", "py"}):
+        return False
+    normalized = str(executable).replace("/", "\\").lower()
+    return "\\microsoft\\windowsapps\\" not in normalized
+
+
+def _is_packaged_runtime() -> bool:
+    """Return whether this module is running from a frozen desktop build."""
+
+    return bool(getattr(sys, "frozen", False) or "__compiled__" in globals())
 
 
 def _python_command_prefixes() -> list[list[str]]:
@@ -75,13 +83,16 @@ def _python_command_prefixes() -> list[list[str]]:
             candidates.append(prefix)
             seen.add(key)
 
-    executable = sys.executable
-    if _looks_like_python(executable):
-        add([executable])
-
+    # uv's Windows venv launcher spawns ``sys._base_executable`` as a child.
+    # Starting that base interpreter directly keeps the managed data layer as
+    # one process, so ``stop()`` cannot leave an orphan listening on :8112.
     base_executable = getattr(sys, "_base_executable", None)
     if _looks_like_python(base_executable):
         add([str(base_executable)])
+
+    executable = sys.executable
+    if _looks_like_python(executable):
+        add([executable])
 
     env_python = os.environ.get("PYTHON")
     if _looks_like_python(env_python):
@@ -93,7 +104,7 @@ def _python_command_prefixes() -> list[list[str]]:
             add([path])
 
     py_launcher = shutil.which("py")
-    if py_launcher:
+    if _looks_like_python(py_launcher):
         add([py_launcher, "-3"])
 
     return candidates
@@ -137,25 +148,17 @@ class EmbeddedDataLayerProcess:
         return 0
 
 
-def _load_wt_server_module(data_process_dir: Path):
-    module_name = "_neko_warthunder_embedded_wt_server"
-    script = data_process_dir / "wt_server.py"
-    spec = importlib.util.spec_from_file_location(module_name, script)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"cannot_load_data_layer_module: {script}")
+def _load_wt_server_module():
+    # Import through a real package path so Nuitka compiles the data layer into
+    # projectneko_server. Loading copied source with spec_from_file_location is
+    # not reliable in a frozen runtime that intentionally ships no python.exe.
+    from ..data_layer.data_process import wt_server
 
-    old_path = list(sys.path)
-    sys.path.insert(0, str(data_process_dir))
-    try:
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        return module
-    finally:
-        sys.path[:] = old_path
+    return wt_server
 
 
 def _spawn_embedded_data_layer(data_process_dir: Path, *, host: str, port: int) -> EmbeddedDataLayerProcess:
-    wt_server = _load_wt_server_module(data_process_dir)
+    wt_server = _load_wt_server_module()
     recorder = wt_server.SessionRecorder(
         root_dir=str(data_process_dir / "records"),
         interval=1.0,
@@ -359,6 +362,13 @@ class DataLayerProcessManager:
 
     def snapshot(self) -> dict[str, Any]:
         pid = getattr(self._process, "pid", None) if self._process is not None else None
+        runner_kind = (
+            "embedded"
+            if self._python_cmd == ["embedded"]
+            else "system_python"
+            if self._python_cmd
+            else "none"
+        )
         return {
             "mode": self._mode,
             "url": self.config.data_layer_url,
@@ -367,6 +377,7 @@ class DataLayerProcessManager:
             "auto_start": self.config.data_layer_auto_start,
             "health": self._last_health,
             "last_error": self._last_error,
+            "runner_kind": runner_kind,
             "python_cmd": " ".join(self._python_cmd),
             "stdout_log": str(self._stdout_log_path) if self._stdout_log_path else "",
             "stderr_log": str(self._stderr_log_path) if self._stderr_log_path else "",
@@ -377,14 +388,14 @@ class DataLayerProcessManager:
         # Clear the previous attempt before any validation can raise; otherwise
         # an invalid URL can repeatedly blacklist a stale runner forever.
         self._python_cmd = []
-        data_process_dir = self.plugin_root / "data_layer" / "data process"
+        data_process_dir = self.plugin_root / "data_layer" / "data_process"
         script = data_process_dir / "wt_server.py"
         if not script.exists():
             raise FileNotFoundError(str(script))
 
         bind_host = _bind_host_from_url(self.config.data_layer_url)
         bind_port = _port_from_url(self.config.data_layer_url)
-        python_prefixes = [
+        python_prefixes = [] if _is_packaged_runtime() else [
             prefix
             for prefix in _python_command_prefixes()
             if tuple(prefix) not in self._failed_python_prefixes

@@ -25,7 +25,6 @@ from .builder import (
     _condense_run_key,
     _context_snapshot_summary_seed,
     _context_window_bounds,
-    _cross_scene_memory_context,
     _cumulative_scene_summary,
     _current_line_entry,
     _dialogue_context_lines,

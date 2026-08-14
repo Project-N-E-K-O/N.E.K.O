@@ -337,6 +337,37 @@ def run_step_protocol_tts_worker(
             pending_finish_retry_speech_id = speech_id
             await asyncio.sleep(1.0)
 
+        def _defer_queued_work_until_control() -> bool:
+            """Move an already-queued control request ahead of recovery work."""
+            control_request = None
+            while True:
+                try:
+                    queued_request = request_queue.get_nowait()
+                except queue_module.Empty:
+                    break
+                except (AttributeError, NotImplementedError):
+                    break
+                if queued_request[0] in {
+                    TTS_SHUTDOWN_SENTINEL,
+                    "__interrupt__",
+                }:
+                    control_request = queued_request
+                    break
+                deferred_requests.append(queued_request)
+            if control_request is None:
+                return False
+            deferred_requests.appendleft(control_request)
+            return True
+
+        async def _close_candidate_best_effort(candidate, context: str) -> None:
+            """Retire an unpublished socket without changing recovery policy."""
+            if candidate is None:
+                return
+            try:
+                await candidate.close()
+            except Exception as close_exc:
+                logger.debug("%s: %s", context, close_exc)
+
         async def _flush_deferred_create(
             force: bool = False,
             *,
@@ -583,6 +614,7 @@ def run_step_protocol_tts_worker(
                     except Exception:
                         break
                 finish_requested = False
+                text_staged_for_reconnect = False
 
                 if sid == TTS_SHUTDOWN_SENTINEL:
                     break
@@ -664,10 +696,28 @@ def run_step_protocol_tts_worker(
                     session_created = False
                     if is_new_speech:
                         pending_text_buffer = ""
+                    # Retain this request before any network await.  A connect
+                    # exception otherwise continues the loop before the normal
+                    # buffering path below and silently drops the opening text.
+                    if (
+                        not finish_requested
+                        and tts_text
+                        and tts_text.strip()
+                    ):
+                        pending_text_buffer += tts_text
+                        text_staged_for_reconnect = True
                     response_done.clear()
-                    if ws:
+                    # Revoke the old socket/session ownership synchronously.
+                    # ``ws = await connect(...)`` doesn't assign on exception,
+                    # so leaving these globals intact would make the closed old
+                    # socket look reusable to the next chunk of the same SID.
+                    old_ws = ws
+                    ws = None
+                    session_id = None
+                    session_ready.clear()
+                    if old_ws:
                         try:
-                            await ws.close()
+                            await old_ws.close()
                         except Exception as e:
                             # Reconnect below replaces this socket, so close
                             # failures are non-fatal; cancellation still
@@ -689,21 +739,23 @@ def run_step_protocol_tts_worker(
                         audio_done.reset()  # 新轮次重置 audio_done 去重标记
 
                     # 建立新连接
+                    candidate_ws = None
                     try:
-                        ws = await websockets.connect(tts_url, additional_headers=headers)
+                        candidate_ws = await websockets.connect(
+                            tts_url,
+                            additional_headers=headers,
+                        )
 
                         # 等待连接成功
-                        session_id = None
-                        session_ready.clear()
+                        candidate_session_id = None
 
                         async def wait_conn():
-                            nonlocal session_id
+                            nonlocal candidate_session_id
                             try:
-                                async for message in ws:
+                                async for message in candidate_ws:
                                     event = json.loads(message)
                                     if event.get("type") == "tts.connection.done":
-                                        session_id = event.get("data", {}).get("session_id")
-                                        session_ready.set()
+                                        candidate_session_id = event.get("data", {}).get("session_id")
                                         break
                             except Exception as e:
                                 # The timeout/session_id checks below own the
@@ -715,24 +767,66 @@ def run_step_protocol_tts_worker(
                             await asyncio.wait_for(wait_conn(), timeout=1.0)
                         except asyncio.TimeoutError:
                             logger.warning("新连接超时")
+                            control_preempted = _defer_queued_work_until_control()
+                            retired_candidate_ws = candidate_ws
+                            candidate_ws = None
+                            await _close_candidate_best_effort(
+                                retired_candidate_ws,
+                                "关闭握手超时的 TTS socket 失败",
+                            )
+                            if not control_preempted:
+                                control_preempted = _defer_queued_work_until_control()
+                            if control_preempted:
+                                continue
                             if finish_requested:
                                 await _queue_finish_retry(current_speech_id)
                             continue
 
-                        if not session_id:
+                        if not candidate_session_id:
+                            control_preempted = _defer_queued_work_until_control()
+                            retired_candidate_ws = candidate_ws
+                            candidate_ws = None
+                            await _close_candidate_best_effort(
+                                retired_candidate_ws,
+                                "关闭缺少 session_id 的 TTS socket 失败",
+                            )
+                            if not control_preempted:
+                                control_preempted = _defer_queued_work_until_control()
+                            if control_preempted:
+                                continue
                             if finish_requested:
                                 await _queue_finish_retry(current_speech_id)
                             continue
+
+                        # An interrupt/shutdown queued while connect or its
+                        # handshake was in flight owns the boundary.  Do not
+                        # publish the recovered socket or replay stale text.
+                        if _defer_queued_work_until_control():
+                            control_candidate_ws = candidate_ws
+                            candidate_ws = None
+                            # Control already owns this boundary.  A cleanup
+                            # failure must not re-enter reconnect/backoff before
+                            # the queued interrupt or shutdown is processed.
+                            await _close_candidate_best_effort(
+                                control_candidate_ws,
+                                "关闭被控制消息抢占的 TTS socket 失败",
+                            )
+                            continue
+
+                        ws = candidate_ws
+                        candidate_ws = None
+                        session_id = candidate_session_id
+                        session_ready.set()
 
                         # 延迟 tts.create 到首批文本到达后，由 _flush_deferred_create
                         # 发送（带语言提示）。此处仅启动接收任务消费服务端事件。
                         _text_done_error_suppressed = False  # 重连后重置错误抑制标记
 
-                        async def receive_messages(bound_speech_id):
+                        async def receive_messages(bound_ws, bound_speech_id):
                             nonlocal _text_done_error_suppressed
                             cancelled = False
                             try:
-                                async for message in ws:
+                                async for message in bound_ws:
                                     event = json.loads(message)
                                     event_type = event.get("type")
 
@@ -781,10 +875,22 @@ def run_step_protocol_tts_worker(
                                 if not cancelled:
                                     audio_jitter.flush()
 
-                        receive_task = asyncio.create_task(receive_messages(current_speech_id))
+                        receive_task = asyncio.create_task(
+                            receive_messages(ws, current_speech_id)
+                        )
 
                     except Exception as e:
+                        failed_candidate_ws = candidate_ws
+                        candidate_ws = None
+                        await _close_candidate_best_effort(
+                            failed_candidate_ws,
+                            "关闭失败的新 TTS socket 失败",
+                        )
+                        ws = None
+                        session_id = None
                         logger.error(f"重新建立连接失败: {e}")
+                        if _defer_queued_work_until_control():
+                            continue
                         if 'HTTP 503' in str(e):
                             _enqueue_error(response_queue, json.dumps({"code": "UPSTREAM_SERVER_BUSY"}))
                         response_queue.put(("__reconnecting__", "TTS_RECONNECTING"))
@@ -792,6 +898,7 @@ def run_step_protocol_tts_worker(
                             await _queue_finish_retry(current_speech_id)
                         else:
                             await asyncio.sleep(1.0)
+                            _defer_queued_work_until_control()
                         continue
 
                 if finish_requested:
@@ -813,7 +920,8 @@ def run_step_protocol_tts_worker(
 
                 # 尚未发送 tts.create 时，先缓冲 MIN_CHARS 个字符用于语言检测
                 if not session_created:
-                    pending_text_buffer += tts_text
+                    if not text_staged_for_reconnect:
+                        pending_text_buffer += tts_text
                     ready = await _flush_deferred_create(force=False)
                     if not ready:
                         continue

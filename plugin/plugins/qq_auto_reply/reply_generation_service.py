@@ -4,7 +4,6 @@ import asyncio
 from types import SimpleNamespace
 from typing import Any, Awaitable, Callable, Optional
 
-from main_logic.omni_offline_client import route_supports_tool_calls
 from main_logic.tool_calling import ToolResult
 from utils.llm_client import AIMessage, SystemMessage, create_chat_llm_async
 from utils.token_tracker import set_call_type
@@ -451,14 +450,12 @@ class QQReplyGenerationService:
     ) -> bool:
         """Install this turn's recall_memory tool + handler on the client.
 
-        Returns whether the tool is actually armed. The capability check
-        runs against the SESSION CLIENT's frozen route, not the current
-        config: a cached session can outlive a provider switch, and a
-        route that silently drops ``tools`` must not count as armed (the
-        turn would think it has a recall channel it does not have).
+        Returns whether the tool is actually armed. This is the ONLY
+        recall channel: when arming fails the turn simply has no recall.
+        There is deliberately no build-time fallback recall to catch it —
+        that path fired a retrieval round-trip on every single turn, even
+        the ones whose reply never needed memory.
         """
-        if not getattr(context, "recall_via_tool", False):
-            return False
         if not getattr(context, "use_memory_context", False):
             return False
         set_tools = getattr(user_session, "set_tools", None)
@@ -467,14 +464,6 @@ class QQReplyGenerationService:
             user_session, "set_tool_round_start_callback", None,
         )
         if not callable(set_tools) or not callable(set_handler):
-            return False
-        if not route_supports_tool_calls(
-            str(getattr(user_session, "model", "") or ""),
-            str(getattr(user_session, "base_url", "") or ""),
-        ):
-            self.plugin.logger.warning(
-                "缓存会话的线路不支持 tool call，本轮无召回（会话重建后恢复）"
-            )
             return False
         try:
             set_tools([

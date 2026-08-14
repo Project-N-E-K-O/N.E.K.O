@@ -1,6 +1,6 @@
 """数据层 HTTP 客户端：拉 :8112/api/telemetry → BattleState。
 
-边界：与数据层唯一接口 = HTTP（见 data_layer/data process/后端接口文档.md）。
+边界：与数据层唯一接口 = HTTP（见 data_layer/data_process/后端接口文档.md）。
 本模块**只读、只消费**，不重算阈值。轮询在插件的 timer 线程里跑（同步 urllib + 超时），
 连不上/非战斗态时安全降级，绝不抛到 timer 循环外。
 """

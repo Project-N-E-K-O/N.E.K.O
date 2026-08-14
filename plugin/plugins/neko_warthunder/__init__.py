@@ -30,7 +30,12 @@ from plugin.sdk.plugin import (
 
 from .adapters.data_layer_process import DataLayerProcessManager
 from .adapters.identity_client import identity_summary_from_combat, set_identity as request_set_identity
-from .adapters.neko_dispatcher import COMMITTED_RESULT_PREFIXES, NekoDispatcher
+from .adapters.neko_dispatcher import (
+    COMMITTED_RESULT_PREFIXES,
+    NekoDispatcher,
+    PushMessageSubmissionRejected,
+    ensure_push_message_submitted,
+)
 from .adapters.runtime_timeline import RuntimeTimeline, arbiter_chain_to_observe_records
 from .adapters.telemetry_client import TelemetryClient
 from .core.arbiter import Arbiter
@@ -88,7 +93,8 @@ class NekoWarthunderPlugin(NekoPluginBase):
 
         self.cfg = WtConfig()
         self._plugin_root = Path(__file__).resolve().parent
-        self._runtime_state_path = self._plugin_root / _RUNTIME_STATE_FILENAME
+        self._legacy_runtime_state_path = self._plugin_root / _RUNTIME_STATE_FILENAME
+        self._runtime_state_path = self._resolve_runtime_state_path()
         self.data_layer_manager = DataLayerProcessManager(self.cfg, plugin_root=self._plugin_root)
         self.client = TelemetryClient(self.cfg.data_layer_url, self.cfg.http_timeout_seconds)
         self.safety = SafetyGuard(self.cfg)
@@ -252,10 +258,16 @@ class NekoWarthunderPlugin(NekoPluginBase):
             target=self._loop, args=(self._stop,), daemon=True, name="wt-poll"
         )
         self._thread.start()
-        self.logger.info(
+        runner = str(data_layer_status.get("runner_kind") or "none")
+        error = self._diagnostic_error_code(data_layer_status.get("last_error"))
+        message = (
             f"neko_warthunder started (dry_run={self.cfg.dry_run}, url={self.cfg.data_layer_url}, "
-            f"data_layer={data_layer_status.get('mode')})"
+            f"data_layer={data_layer_status.get('mode')}, runner={runner}, error={error})"
         )
+        if data_layer_status.get("health") is False:
+            self.logger.warning(message)
+        else:
+            self.logger.info(message)
         self._startup_completed = True
         return Ok(
             {
@@ -387,16 +399,44 @@ class NekoWarthunderPlugin(NekoPluginBase):
             self.logger.warning(f"identity local persist failed: {type(exc).__name__}")
             return {"ok": False, "error": f"local persist failed: {type(exc).__name__}"}
 
+    def _resolve_runtime_state_path(self) -> Path:
+        legacy = getattr(
+            self,
+            "_legacy_runtime_state_path",
+            Path(__file__).resolve().parent / _RUNTIME_STATE_FILENAME,
+        )
+        data_path = getattr(self, "data_path", None)
+        if callable(data_path):
+            try:
+                return Path(data_path(_RUNTIME_STATE_FILENAME))
+            except Exception as exc:  # noqa: BLE001 - older/partial hosts fall back safely
+                self.logger.warning(f"external runtime state unavailable: {type(exc).__name__}")
+        return Path(legacy)
+
+    @staticmethod
+    def _diagnostic_error_code(value: Any) -> str:
+        """Return a stable log-safe error class without filesystem details."""
+
+        text = str(value or "none").strip()
+        if not text:
+            return "none"
+        return text.partition(":")[0][:120]
+
     def _load_runtime_state(self) -> dict[str, Any]:
-        path = getattr(self, "_runtime_state_path", Path(__file__).resolve().parent / _RUNTIME_STATE_FILENAME)
-        try:
-            if not path.exists():
+        primary = Path(
+            getattr(self, "_runtime_state_path", Path(__file__).resolve().parent / _RUNTIME_STATE_FILENAME)
+        )
+        legacy = Path(getattr(self, "_legacy_runtime_state_path", primary))
+        for path in dict.fromkeys((primary, legacy)):
+            try:
+                if not path.exists():
+                    continue
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except Exception as exc:  # noqa: BLE001
+                self.logger.warning(f"runtime state load failed: {type(exc).__name__}")
                 return {}
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except Exception as exc:  # noqa: BLE001
-            self.logger.warning(f"runtime state load failed: {type(exc).__name__}")
-            return {}
-        return data if isinstance(data, dict) else {}
+            return data if isinstance(data, dict) else {}
+        return {}
 
     def _save_runtime_state(self, patch: dict[str, Any]) -> None:
         path = getattr(self, "_runtime_state_path", Path(__file__).resolve().parent / _RUNTIME_STATE_FILENAME)
@@ -404,6 +444,7 @@ class NekoWarthunderPlugin(NekoPluginBase):
         with _RUNTIME_STATE_LOCK:
             current = self._load_runtime_state()
             current.update(patch)
+            path.parent.mkdir(parents=True, exist_ok=True)
             tmp = path.with_suffix(path.suffix + ".tmp")
             tmp.write_text(json.dumps(current, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
             tmp.replace(path)
@@ -1218,7 +1259,7 @@ class NekoWarthunderPlugin(NekoPluginBase):
                 )
             return Ok({"pushed": False, "blocked": self.safety.status(), "text": str(text)})
         try:
-            self.push_message(
+            receipt = self.push_message(
                 source="neko_warthunder",
                 visibility=[],
                 ai_behavior="respond",
@@ -1226,6 +1267,7 @@ class NekoWarthunderPlugin(NekoPluginBase):
                 priority=5,
                 metadata={"plugin": "neko_warthunder", "kind": "test"},
             )
+            ensure_push_message_submitted(receipt)
             if getattr(self, "timeline", None):
                 self.timeline.record_stage(
                     stage="test_say_pushed",
@@ -1239,11 +1281,12 @@ class NekoWarthunderPlugin(NekoPluginBase):
                 )
             return Ok({"pushed": True, "text": str(text)})
         except Exception as exc:  # noqa: BLE001
+            reason = exc.reason if isinstance(exc, PushMessageSubmissionRejected) else type(exc).__name__
             if getattr(self, "timeline", None):
                 self.timeline.record_stage(
                     stage="test_say_failed",
                     outcome="failed",
-                    reason=type(exc).__name__,
+                    reason=reason,
                     kind="test_say",
                     ai_behavior="respond",
                     pushed=False,

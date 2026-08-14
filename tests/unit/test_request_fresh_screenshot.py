@@ -44,7 +44,7 @@ def test_ws_screenshot_is_downscaled_to_720p():
             fake._screenshot_future.set_result(big_b64)
 
         fake.websocket = SimpleNamespace(send_json=_send_json)
-        return await LLMSessionManager.request_fresh_screenshot(fake, timeout=3.0)
+        return (await LLMSessionManager.request_fresh_screenshot(fake, timeout=3.0)).b64
 
     out_b64 = asyncio.run(_run())
 
@@ -69,7 +69,7 @@ def test_ws_screenshot_already_small_stays_under_limit():
             fake._screenshot_future.set_result(small_b64)
 
         fake.websocket = SimpleNamespace(send_json=_send_json)
-        return await LLMSessionManager.request_fresh_screenshot(fake, timeout=3.0)
+        return (await LLMSessionManager.request_fresh_screenshot(fake, timeout=3.0)).b64
 
     out_b64 = asyncio.run(_run())
 

@@ -44,6 +44,7 @@ if not logger.handlers:
 CONFIG_DIR = Path("config")
 COOKIE_FILES = {
     'netease': CONFIG_DIR / 'netease_cookies.json',
+    'qqmusic': CONFIG_DIR / 'qqmusic_cookies.json',
     'bilibili': CONFIG_DIR / 'bilibili_cookies.json',
     'xhh': CONFIG_DIR / 'xhh_cookies.json',
     "douyin": CONFIG_DIR / 'douyin_cookies.json',
@@ -90,6 +91,7 @@ def validate_cookies(platform: str, cookies: Dict[str, str]) -> bool:
 
     required_keys = {
         'netease': ['MUSIC_U'],
+        'qqmusic': ['uin', 'qqmusic_key'],
         'bilibili': ['SESSDATA'],
         'xhh': ['user_heybox_id', 'user_pkey'],
         "douyin": ['sessionid', 'ttwid'],
@@ -406,6 +408,17 @@ def get_netease_cookies(_method: str = "manual") -> Optional[Dict[str, str]]:
         save_cookies_to_file('netease', cookies)  # noqa: ASYNC_BLOCK — CLI-only path; outer fn already blocks on input()
     return cookies
 
+
+def get_qqmusic_cookies(_method: str = "manual") -> Optional[Dict[str, str]]:
+    print("\n" + "-" * 40)
+    print("【QQ音乐手动导入】(需包含 uin 和 qqmusic_key 字段)")
+    cookie_string = input("👉 请粘贴 Cookie: ").strip()
+    print("\033[F\033[K" + "👉 请粘贴 Cookie: [已接收，已脱敏掩码]")
+    cookies = parse_cookie_string(cookie_string)
+    if cookies:
+        save_cookies_to_file('qqmusic', cookies)  # noqa: ASYNC_BLOCK — CLI-only path; outer fn already blocks on input()
+    return cookies
+
 # ==========================================
 # 交互式终端 UI 引擎
 # ==========================================
@@ -413,6 +426,7 @@ class PlatformLoginManager:
     def __init__(self):
         self.platforms = {
             'netease': {'name': '网易云音乐', 'methods': ['manual'], 'func': get_netease_cookies},
+            'qqmusic': {'name': 'QQ音乐', 'methods': ['manual'], 'func': get_qqmusic_cookies},
             'bilibili': {'name': 'Bilibili', 'methods': ['manual'], 'func': get_bilibili_cookies},
             'xhh': {'name': '小黑盒', 'methods': ['manual'], 'func': get_xhh_cookies},
             "douyin": {'name': '抖音', 'methods': ['manual'], 'func': get_douyin_cookies},

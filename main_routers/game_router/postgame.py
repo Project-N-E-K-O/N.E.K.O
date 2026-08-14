@@ -715,6 +715,7 @@ async def _deliver_postgame_text_bubble(
             game_type, session_id, event, allow_postgame=True,
             postgame_snapshot=postgame_snapshot,
             postgame_meta_out=postgame_meta,
+            prompt_locale=_archive_prompt_language(archive),
         )
         if isinstance(llm_result, dict):
             postgame_entry = llm_result.get("_postgame_entry")

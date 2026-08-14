@@ -157,6 +157,42 @@ class _BlockingResultCoordinator(_BlockingSemanticCoordinator):
         return SimpleNamespace(status=self._status, decision=self._decision)
 
 
+class _SequencedSemanticCoordinator(_SemanticCoordinator):
+    def __init__(
+        self,
+        results: list[tuple[TurnDecision, float]],
+    ) -> None:
+        super().__init__()
+        self.results = list(results)
+        self.evaluation_count = 0
+        self.activity_seq = 0
+        self.evaluation_threshold = 0.5
+
+    async def on_activity_event(self, event: SpeechActivityEvent) -> None:
+        if event in (
+            SpeechActivityEvent.SPEECH_STARTED,
+            SpeechActivityEvent.SPEECH_RESUMED,
+        ):
+            self.activity_seq += 1
+            self.state = CoordinatorState.SPEECH_ACTIVE
+        elif event is SpeechActivityEvent.CANDIDATE_PAUSE:
+            self.state = CoordinatorState.PAUSE_CANDIDATE
+
+    async def evaluate_buffered(self):
+        self.evaluation_count += 1
+        decision, probability = self.results.pop(0)
+        self.state = (
+            CoordinatorState.WAIT_CONTINUATION
+            if decision is TurnDecision.INCOMPLETE
+            else CoordinatorState.PAUSE_CANDIDATE
+        )
+        return SimpleNamespace(
+            status=EvaluationStatus.OK,
+            decision=decision,
+            probability=probability,
+        )
+
+
 class _ResetClearsSemanticCoordinator(_SemanticCoordinator):
     def __init__(self) -> None:
         super().__init__()
@@ -657,6 +693,273 @@ async def test_speaker_shadow_keeps_stale_or_incomplete_tail_on_predecessor(
     await detector.close()
 
 
+async def test_strict_retry_complete_commits_after_confirmation_delay() -> None:
+    coordinator = _SequencedSemanticCoordinator(
+        [
+            (TurnDecision.INCOMPLETE, 0.2),
+            (TurnDecision.COMPLETE, 0.8),
+        ]
+    )
+    gate = _Gate((SpeechActivityEvent.CANDIDATE_PAUSE,))
+    committed = asyncio.Event()
+    commits: list[tuple[int, int, int]] = []
+
+    async def on_commit(
+        generation: int,
+        buffer_epoch: int,
+        utterance_id: int,
+    ) -> None:
+        commits.append((generation, buffer_epoch, utterance_id))
+        committed.set()
+
+    adapter = _VoiceTurnAdapter(
+        vad=_Vad(),
+        gate=gate,
+        coordinator=coordinator,
+        on_commit=on_commit,
+        continuation_timeout_seconds=0.01,
+        strict_complete_confirmation_seconds=0.2,
+        smart_turn_required=True,
+    )
+
+    await adapter.start()
+    await adapter.push_audio(
+        generation=1,
+        buffer_epoch=0,
+        utterance_id=1,
+        pcm16=b"\x01\x00" * 160,
+    )
+    await adapter.wait_idle()
+    assert commits == []
+
+    await asyncio.sleep(0.02)
+    await adapter.wait_idle()
+    assert commits == []
+
+    await asyncio.wait_for(committed.wait(), 1)
+    assert commits == [(1, 0, 1)]
+    await adapter.close()
+
+
+async def test_strict_retry_complete_is_cancelled_by_continuation() -> None:
+    coordinator = _SequencedSemanticCoordinator(
+        [
+            (TurnDecision.INCOMPLETE, 0.2),
+            (TurnDecision.COMPLETE, 0.8),
+            (TurnDecision.COMPLETE, 0.9),
+        ]
+    )
+    gate = _Gate((SpeechActivityEvent.CANDIDATE_PAUSE,))
+    committed = asyncio.Event()
+    commits: list[tuple[int, int, int]] = []
+
+    async def on_commit(
+        generation: int,
+        buffer_epoch: int,
+        utterance_id: int,
+    ) -> None:
+        commits.append((generation, buffer_epoch, utterance_id))
+        committed.set()
+
+    adapter = _VoiceTurnAdapter(
+        vad=_Vad(),
+        gate=gate,
+        coordinator=coordinator,
+        on_commit=on_commit,
+        continuation_timeout_seconds=0.01,
+        strict_complete_confirmation_seconds=0.1,
+        smart_turn_required=True,
+    )
+
+    await adapter.start()
+    await adapter.push_audio(
+        generation=1,
+        buffer_epoch=0,
+        utterance_id=1,
+        pcm16=b"\x01\x00" * 160,
+    )
+    await adapter.wait_idle()
+    await asyncio.sleep(0.02)
+    await adapter.wait_idle()
+    assert coordinator.evaluation_count == 2
+    assert commits == []
+
+    gate.events = (SpeechActivityEvent.SPEECH_RESUMED,)
+    await adapter.push_audio(
+        generation=1,
+        buffer_epoch=0,
+        utterance_id=1,
+        pcm16=b"\x02\x00" * 160,
+    )
+    await adapter.wait_idle()
+    await asyncio.sleep(0.12)
+    assert commits == []
+
+    gate.events = (SpeechActivityEvent.CANDIDATE_PAUSE,)
+    await adapter.push_audio(
+        generation=1,
+        buffer_epoch=0,
+        utterance_id=1,
+        pcm16=b"\x03\x00" * 160,
+    )
+    await adapter.wait_idle()
+
+    await asyncio.wait_for(committed.wait(), 1)
+    assert commits == [(1, 0, 1)]
+    await adapter.close()
+
+
+async def test_candidate_pause_complete_commits_after_confirmation_delay() -> None:
+    coordinator = _SequencedSemanticCoordinator(
+        [
+            (TurnDecision.COMPLETE, 0.97),
+        ]
+    )
+    gate = _Gate((SpeechActivityEvent.CANDIDATE_PAUSE,))
+    committed = asyncio.Event()
+    commits: list[tuple[int, int, int]] = []
+
+    async def on_commit(
+        generation: int,
+        buffer_epoch: int,
+        utterance_id: int,
+    ) -> None:
+        commits.append((generation, buffer_epoch, utterance_id))
+        committed.set()
+
+    adapter = _VoiceTurnAdapter(
+        vad=_Vad(),
+        gate=gate,
+        coordinator=coordinator,
+        on_commit=on_commit,
+        candidate_complete_confirmation_seconds=0.2,
+        smart_turn_required=True,
+    )
+
+    await adapter.start()
+    await adapter.push_audio(
+        generation=1,
+        buffer_epoch=0,
+        utterance_id=1,
+        pcm16=b"\x01\x00" * 160,
+    )
+    await adapter.wait_idle()
+    assert commits == []
+
+    await asyncio.sleep(0.02)
+    await adapter.wait_idle()
+    assert commits == []
+
+    await asyncio.wait_for(committed.wait(), 1)
+    assert commits == [(1, 0, 1)]
+    await adapter.close()
+
+
+async def test_candidate_pause_complete_is_cancelled_by_continuation() -> None:
+    coordinator = _SequencedSemanticCoordinator(
+        [
+            (TurnDecision.COMPLETE, 0.97),
+            (TurnDecision.COMPLETE, 0.96),
+        ]
+    )
+    gate = _Gate((SpeechActivityEvent.CANDIDATE_PAUSE,))
+    committed = asyncio.Event()
+    commits: list[tuple[int, int, int]] = []
+
+    async def on_commit(
+        generation: int,
+        buffer_epoch: int,
+        utterance_id: int,
+    ) -> None:
+        commits.append((generation, buffer_epoch, utterance_id))
+        committed.set()
+
+    adapter = _VoiceTurnAdapter(
+        vad=_Vad(),
+        gate=gate,
+        coordinator=coordinator,
+        on_commit=on_commit,
+        candidate_complete_confirmation_seconds=0.1,
+        smart_turn_required=True,
+    )
+
+    await adapter.start()
+    await adapter.push_audio(
+        generation=1,
+        buffer_epoch=0,
+        utterance_id=1,
+        pcm16=b"\x01\x00" * 160,
+    )
+    await adapter.wait_idle()
+    assert coordinator.evaluation_count == 1
+    assert commits == []
+
+    gate.events = (SpeechActivityEvent.SPEECH_RESUMED,)
+    await adapter.push_audio(
+        generation=1,
+        buffer_epoch=0,
+        utterance_id=1,
+        pcm16=b"\x02\x00" * 160,
+    )
+    await adapter.wait_idle()
+    await asyncio.sleep(0.12)
+    assert commits == []
+
+    gate.events = (SpeechActivityEvent.CANDIDATE_PAUSE,)
+    await adapter.push_audio(
+        generation=1,
+        buffer_epoch=0,
+        utterance_id=1,
+        pcm16=b"\x03\x00" * 160,
+    )
+    await adapter.wait_idle()
+
+    await asyncio.wait_for(committed.wait(), 1)
+    assert commits == [(1, 0, 1)]
+    await adapter.close()
+
+
+async def test_candidate_pause_pending_complete_publishes_on_close() -> None:
+    coordinator = _SequencedSemanticCoordinator(
+        [
+            (TurnDecision.COMPLETE, 0.97),
+        ]
+    )
+    gate = _Gate((SpeechActivityEvent.CANDIDATE_PAUSE,))
+    commits: list[tuple[int, int, int]] = []
+
+    async def on_commit(
+        generation: int,
+        buffer_epoch: int,
+        utterance_id: int,
+    ) -> None:
+        commits.append((generation, buffer_epoch, utterance_id))
+
+    adapter = _VoiceTurnAdapter(
+        vad=_Vad(),
+        gate=gate,
+        coordinator=coordinator,
+        on_commit=on_commit,
+        candidate_complete_confirmation_seconds=10.0,
+        smart_turn_required=True,
+    )
+
+    await adapter.start()
+    await adapter.push_audio(
+        generation=1,
+        buffer_epoch=0,
+        utterance_id=1,
+        pcm16=b"\x01\x00" * 160,
+    )
+    await adapter.wait_idle()
+    assert commits == []
+
+    coordinator.state = CoordinatorState.IDLE
+    await adapter.close()
+
+    assert commits == [(1, 0, 1)]
+
+
 async def test_successor_fence_uses_active_identity_for_queued_pause() -> None:
     coordinator = _BlockingSemanticCoordinator()
     detector = DetectorRuntime(
@@ -1046,7 +1349,9 @@ async def test_rnnoise_unavailable_does_not_look_like_zero_probability() -> None
     assert result.events == (SpeechActivityEvent.SPEECH_STARTED,)
 
 
-async def test_active_speech_still_feeds_silero_when_rnnoise_probability_drops() -> None:
+async def test_active_speech_still_feeds_silero_when_rnnoise_probability_drops() -> (
+    None
+):
     gate = _Gate((SpeechActivityEvent.SPEECH_STARTED,))
     detector = DetectorRuntime(vad=_Vad(), gate=gate)
 
@@ -1204,7 +1509,9 @@ async def test_smart_turn_activity_updates_throttle_shadow_metrics() -> None:
     await detector.close()
 
 
-async def test_disabled_resource_optimization_never_skips_quiet_smart_turn_pcm() -> None:
+async def test_disabled_resource_optimization_never_skips_quiet_smart_turn_pcm() -> (
+    None
+):
     detector = DetectorRuntime(
         vad=_Vad(),
         gate=_Gate(),
@@ -1375,8 +1682,7 @@ async def test_deferred_completion_retires_candidate_before_third_turn() -> None
     candidates = []
     detector: DetectorRuntime
     turn_tokens = [
-        VoiceTurnToken(_ingress_token(), turn_id=turn_id)
-        for turn_id in range(1, 4)
+        VoiceTurnToken(_ingress_token(), turn_id=turn_id) for turn_id in range(1, 4)
     ]
 
     async def on_event(event) -> None:
@@ -1478,7 +1784,9 @@ async def test_smart_turn_readiness_is_pinned_to_one_logical_turn() -> None:
     await detector.close()
 
 
-async def test_provider_authority_streaming_never_builds_or_prepares_smart_turn() -> None:
+async def test_provider_authority_streaming_never_builds_or_prepares_smart_turn() -> (
+    None
+):
     coordinator = _SemanticCoordinator()
     detector = DetectorRuntime(
         vad=_Vad(),

@@ -31,6 +31,7 @@ from contextlib import suppress
 from fastapi import Request
 from fastapi.responses import JSONResponse
 from ..shared_state import ensure_steamworks as get_steamworks, get_config_manager
+from utils.character_memory import character_config_mutation_lock
 from utils.config_manager import get_reserved
 
 
@@ -134,7 +135,7 @@ async def _resume_released_derived_tasks(
     *,
     schedule_retry: bool = True,
 ) -> bool:
-    """Resume only released identities that still exist after unsubscribe cleanup."""
+    """Release this transaction's claims without reopening a replaced identity."""
     try:
         characters_after = await config_mgr.aload_characters()
         catgirls_after = (
@@ -143,18 +144,20 @@ async def _resume_released_derived_tasks(
             else None
         )
         active_names = set(catgirls_after) if isinstance(catgirls_after, dict) else set()
-        active_claims = {
+        claim_releases = {
             name: (token,)
             for name, token in released_claims.items()
-            if name in active_names
         }
-        if not active_claims:
+        if not claim_releases:
             return True
         from ..characters_router import notify_memory_server_reload
 
         resumed = await notify_memory_server_reload(
-            reason=f"取消订阅流程结束，恢复仍存在角色: {item_id}",
-            release_derived_task_claims=active_claims,
+            reason=(
+                f"取消订阅流程结束，释放派生任务声明: {item_id}; "
+                f"仍存在={sorted(active_names & set(released_claims))}"
+            ),
+            release_derived_task_claims=claim_releases,
         )
         if not resumed:
             raise RuntimeError("notify_memory_server_reload returned False")
@@ -411,6 +414,7 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
     """
     steamworks = get_steamworks()
     released_derived_task_claims: dict[str, str] = {}
+    mutation_lock_acquired = False
 
     # 检查Steamworks是否初始化成功
     if steamworks is None:
@@ -457,22 +461,20 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
         disk_names = await asyncio.to_thread(
             _scan_workshop_folder_character_names, pre_item_path
         )
-        # 跟踪每个候选角色的来源：
-        #   "origin" = 从 characters.json 的 character_origin.source_id 反查命中，
-        #              配置明确标记来自该 item_id，可放心删除。
-        #   "disk"   = 仅来自磁盘 .chara.json 的名字扫描，只是"名字碰撞"，
-        #              不能证明这角色就是该 item_id 的；删除前必须对每个
-        #              候选在 characters.json 里二次确认 source_id / asset_source_id。
-        candidate_sources: dict[str, str] = {name: "origin" for name in candidate_names}
         seen_names: set[str] = set(candidate_names)
         for disk_name in disk_names:
             if disk_name not in seen_names:
                 candidate_names.append(disk_name)
-                candidate_sources[disk_name] = "disk"
                 seen_names.add(disk_name)
         logger.info(
             f"取消订阅 {item_id_int}: 反向索引候选角色 {candidate_names}（磁盘扫描追加 {disk_names}）"
         )
+
+        # Candidate discovery is intentionally outside the lock because it may
+        # scan Steam/disk state.  Reload and revalidate every candidate only
+        # after entering the shared characters.json transaction.
+        await character_config_mutation_lock.acquire()
+        mutation_lock_acquired = True
 
         target_item_id_str = str(item_id_int)
 
@@ -746,39 +748,18 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
                     )
                     continue
 
-                # 磁盘兜底候选必须二次确认来源：名字一致 ≠ 同一 item_id。
-                # 如果用户本地已有同名非 Workshop 角色（或同名但来自别的
-                # item_id 的 Workshop 角色），按磁盘名字盲删会误删。
-                # 反向索引候选（"origin"）已经是在 characters.json 里按
-                # source_id 匹配到的，不需要二次校验。
-                if candidate_sources.get(name) == "disk":
-                    payload = catgirl_map.get(name) if isinstance(catgirl_map, dict) else None
-                    origin_source = str(
-                        get_reserved(payload, 'character_origin', 'source', default='') or ''
-                    ).strip() if isinstance(payload, dict) else ''
-                    origin_source_id = str(
-                        get_reserved(payload, 'character_origin', 'source_id', default='') or ''
-                    ).strip() if isinstance(payload, dict) else ''
-                    asset_source = str(
-                        get_reserved(payload, 'avatar', 'asset_source', default='') or ''
-                    ).strip() if isinstance(payload, dict) else ''
-                    asset_source_id = str(
-                        get_reserved(payload, 'avatar', 'asset_source_id', default='') or ''
-                    ).strip() if isinstance(payload, dict) else ''
-                    confirmed_workshop_match = (
-                        origin_source == 'steam_workshop' and origin_source_id == target_item_id_str
-                    ) or (
-                        asset_source == 'steam_workshop' and asset_source_id == target_item_id_str
+                # Candidate discovery ran before the lifecycle guard and is only
+                # advisory.  Revalidate every candidate against the authoritative
+                # snapshot loaded under the guard: an origin-index hit can have
+                # been deleted/replaced while this request waited, just like a
+                # disk-only same-name candidate can be unrelated from the start.
+                if not _is_confirmed_workshop_character(characters_mut, name):
+                    logger.warning(
+                        f"取消订阅同步清理: 跳过锁内未确认来源的候选角色 '{name}' "
+                        f"(item_id={item_id_int})"
                     )
-                    if not confirmed_workshop_match:
-                        logger.warning(
-                            f"取消订阅同步清理: 跳过未确认来源的磁盘候选角色 '{name}' "
-                            f"(item_id={item_id_int}, origin_source={origin_source!r}, "
-                            f"origin_source_id={origin_source_id!r}, "
-                            f"asset_source={asset_source!r}, asset_source_id={asset_source_id!r})"
-                        )
-                        cleanup_summary.setdefault("skipped_unverified_characters", []).append(name)
-                        continue
+                    cleanup_summary.setdefault("skipped_unverified_characters", []).append(name)
+                    continue
 
                 # characters.json 条目仅做内存删除，循环结束一次性批量写盘。
                 # 复用前面捕获的 catgirl_map 引用（上面 isinstance 已守卫），
@@ -899,13 +880,30 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
 
             # 通知 memory_server 重新加载（一次即可）
             try:
-                await notify_memory_server_reload(
-                    reason=f"取消订阅 item_id={item_id_int}"
+                reload_succeeded = await notify_memory_server_reload(
+                    reason=f"取消订阅 item_id={item_id_int}",
+                    release_derived_task_claims={
+                        name: (token,)
+                        for name, token in released_derived_task_claims.items()
+                    },
                 )
+                if reload_succeeded:
+                    released_derived_task_claims.clear()
             except Exception as exc:
                 logger.warning(
                     f"取消订阅同步清理: notify_memory_server_reload 失败: {exc}"
                 )
+
+        # Everything that touches characters.json is done.  Release the shared
+        # transaction here instead of in the ``finally``: the remaining work is
+        # Steam-side (UnsubscribeItem plus its callback/delayed folder cleanup)
+        # and can take arbitrarily long, and holding the lock across it would
+        # block unrelated character mutations -- including the character-card
+        # save and language-preference endpoints -- for that entire window.
+        # The ``finally`` still releases on every early-return/exception path.
+        if mutation_lock_acquired:
+            mutation_lock_acquired = False
+            character_config_mutation_lock.release()
 
         logger.info(
             f"取消订阅同步清理汇总 item_id={item_id_int}: "
@@ -1140,11 +1138,15 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
             "message": f"取消订阅过程中发生错误: {str(e)}"
         }, status_code=500)
     finally:
-        if released_derived_task_claims:
-            await _finish_resume_preserving_cancellation(
-                _resume_released_derived_tasks(
-                    config_mgr,
-                    released_derived_task_claims,
-                    item_id_int,
+        try:
+            if mutation_lock_acquired:
+                character_config_mutation_lock.release()
+        finally:
+            if released_derived_task_claims:
+                await _finish_resume_preserving_cancellation(
+                    _resume_released_derived_tasks(
+                        config_mgr,
+                        released_derived_task_claims,
+                        item_id_int,
+                    )
                 )
-            )

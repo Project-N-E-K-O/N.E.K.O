@@ -34,7 +34,8 @@ Parts are an ordered list of dicts.  Each part has a ``type`` discriminator:
 * ``{"type": "ui_action", "action": str, ...}``       – frontend-only side
   effects (media playback, allowlist updates, …).  ``action`` values today:
   ``"media_play_url"`` (with ``url`` / ``media_type`` / ``name`` /
-  ``artist``) and ``"media_allowlist_add"`` (with ``domains``).
+  ``artist``) and ``"media_allowlist_add"`` (with ``domains`` and optional
+  exact ``http_urls``).
 
 The wire format encodes inline ``data: bytes`` as base64 in
 ``binary_base64`` so the message_plane PUB JSON serialiser can carry it.
@@ -245,7 +246,7 @@ def translate_push_message(
             _warn(
                 "message_type='music_allowlist_add'",
                 "parts=[{'type': 'ui_action', 'action': 'media_allowlist_add', "
-                "'domains': [...]}]",
+                "'domains': [...], 'http_urls': [...]}]",
             )
         else:
             _warn(
@@ -355,13 +356,14 @@ def translate_push_message(
         elif message_type == "music_allowlist_add":
             if parts is None:
                 md_local = md or {}
-                final_parts.append(
-                    {
-                        "type": "ui_action",
-                        "action": "media_allowlist_add",
-                        "domains": list(md_local.get("domains") or []),
-                    }
-                )
+                ui_part = {
+                    "type": "ui_action",
+                    "action": "media_allowlist_add",
+                    "domains": list(md_local.get("domains") or []),
+                }
+                if md_local.get("http_urls"):
+                    ui_part["http_urls"] = list(md_local["http_urls"])
+                final_parts.append(ui_part)
             if visibility is None:
                 final_visibility = []
             if ai_behavior is None:

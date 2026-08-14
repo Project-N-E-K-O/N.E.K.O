@@ -186,8 +186,15 @@ class QQAttentionGateService:
         quoted_message_id: str = "",
         sender_nickname: str = "",
         timestamp: int = 0,
+        is_reply_to_bot: bool = False,
     ) -> GateDecision:
-        """评估群聊消息：更新注意力 → 判定是否回复"""
+        """评估群聊消息：先更新注意力，再做焦点门控，输出跳过原因。
+
+        门控规则（焦点前置）：
+        - @bot 直接点名 → 唯一旁路，任何群都强制回复
+        - 其余消息（含关键词、回复猫娘的消息）→ 非焦点群一律 block，
+          不生成回复，但注意力照常累计，并输出跳过原因
+        """
         # 无需注意力的连接（如 QQ 开放平台）：直接回复
         if self.plugin.qq_client and not self.plugin.qq_client.needs_attention:
             return GateDecision("reply", reason="no_attention_needed", force_reply=is_at_bot)
@@ -206,7 +213,13 @@ class QQAttentionGateService:
         # 0. 记录消息时间（用于主动发言检测）
         self._touch_group(normalized_group_id)
 
-        # 1. 消息更新注意力
+        # 0.5 焦点门控前置：先捕获「接收时焦点」再更新注意力。
+        #    若在 update_on_message() 之后再取焦点，当前群刚被 boost 过，
+        #    一个接收前非焦点的群可能因此在步骤 1 变成焦点，同一条非 @ 消息
+        #    会被放行进 LLM 而非返回 non_focus——破坏焦点优先规则。
+        focus_group = attention.get_focus_group()
+
+        # 1. 消息更新注意力（非焦点群也要累计，等待成为焦点）
         await attention.update_on_message({
             "group_id": normalized_group_id,
             "user_id": sender_id,
@@ -216,8 +229,15 @@ class QQAttentionGateService:
             "is_at_bot": is_at_bot,
         })
 
-        # 2. @bot → 必定回复（抢焦点 + 注意力 boost）
-        if is_at_bot:
+        # 连接层 is_reply_to_bot 优先（含 API 兜底），弱链缓存重算仅作兜底
+        is_reply_to_bot = is_reply_to_bot or bool(
+            quoted_message_id and self.plugin.qq_client
+            and quoted_message_id in getattr(self.plugin.qq_client, "_sent_message_ids", {})
+        )
+
+        # 2. @bot 且非回复猫娘 → 必定回复（抢焦点 + 注意力 boost）——唯一焦点旁路。
+        #    消息同时带「@」和「回复」时按回复处理，走焦点门控（用户确认）。
+        if is_at_bot and not is_reply_to_bot:
             attention.mark_focus(normalized_group_id)
             attention.wake_boost(normalized_group_id)
             return GateDecision("reply", reason="at_bot", force_reply=True)
@@ -227,7 +247,25 @@ class QQAttentionGateService:
         if QQFeedbackClassifier.is_blacklisted(message_text, label_defs):
             return GateDecision("ignore", reason="blacklist")
 
-        # 4. 关键词 → 必定回复（抢焦点 + 注意力 boost）
+        # 4. 焦点门控前置：非焦点群 → block（注意力已在步骤 1 累计），
+        #    输出跳过原因。关键词/回复猫娘的消息同样在此被拦下。
+        current_score = float(attention.get_state(normalized_group_id).attention_score)
+        if focus_group != normalized_group_id:
+            self.plugin._emit_log(
+                "INFO",
+                f"[Gate] 群{normalized_group_id} block: 非焦点群 (focus={focus_group or '无'}, score={current_score:.1f})",
+            )
+            return GateDecision("ignore", reason=f"non_focus(focus={focus_group or '无'},score={current_score:.1f})")
+
+        # 5. 焦点群：检查注意力是否足够——用「焦点保持线」（低于焦点线）而非
+        #    焦点线本身。焦点线是赢得焦点的资格线；发送门控若也用焦点线，焦点
+        #    群回一条就跌破线、立刻被门控。低于焦点保持线（默认 2.0）才算过低。
+        min_threshold = attention._focus_send_threshold()
+        if current_score < min_threshold:
+            self.plugin._emit_log("INFO", f"[Gate] 焦点群{normalized_group_id} 注意力过低({current_score:.1f}<{min_threshold}), 忽略")
+            return GateDecision("ignore", reason=f"focus_low_attention({current_score:.1f})")
+
+        # 6. 焦点群：关键词 → 必定回复（抢焦点 + 注意力 boost）
         category = QQFeedbackClassifier.classify(message_text, label_defs)
         if category == "mention" and not is_at_bot:
             category = "chat"
@@ -236,38 +274,22 @@ class QQAttentionGateService:
             attention.wake_boost(normalized_group_id)
             return GateDecision("reply", reason=f"keyword:{category}", force_reply=True)
 
-        # 5. 回复 bot 的消息 → 等同于被点名，强制回复
-        is_reply_to_bot = bool(
-            quoted_message_id and self.plugin.qq_client
-            and quoted_message_id in getattr(self.plugin.qq_client, "_sent_message_ids", {})
-        )
+        # 7. 焦点群：回复 bot 的消息 → 等同于被点名，强制回复
         if is_reply_to_bot:
             attention.mark_focus(normalized_group_id)
             attention.wake_boost(normalized_group_id)
             return GateDecision("reply", reason="reply_to_bot", force_reply=True)
 
-        # 6. 回复频率门控：60秒内超过3条回复 → 强制静默
+        # 8. 焦点群：回复频率门控：60秒内超过3条回复 → 强制静默
         now_ts = attention._current_time()
         if not is_at_bot and self._check_reply_burst(normalized_group_id, now_ts):
             self.plugin._emit_log("INFO", f"[Gate] 群{normalized_group_id} 回复过于频繁，强制静默")
             return GateDecision("ignore", reason="reply_burst_limit")
 
-        # 7. 当前焦点群 → 检查注意力是否足够
-        focus_group = attention.get_focus_group()
-        if focus_group == normalized_group_id:
-            current_score = float(attention.get_state(normalized_group_id).attention_score)
-            min_threshold = attention._minimum_threshold()
-            if current_score < min_threshold:
-                self.plugin._emit_log("INFO", f"[Gate] 焦点群{normalized_group_id} 注意力过低({current_score:.1f}<{min_threshold}), 忽略")
-                return GateDecision("ignore", reason=f"focus_low_attention({current_score:.1f})")
-            self._mark_active(normalized_group_id)
-            self.plugin._emit_log("INFO", f"[Attention] 焦点群 {normalized_group_id} 消息, LLM自行判断是否回复")
-            return GateDecision("reply", reason="focus_group")
-
-        # 8. 非焦点群 → 忽略，消息记入 backlog_store 未审阅，
-        #    等该群成为焦点时由回溯补回统一处理。
-        self.plugin._emit_log("INFO", f"[Gate] 群{normalized_group_id} 忽略: 非焦点群 (score={attention.get_state(normalized_group_id).attention_score:.1f})")
-        return GateDecision("ignore", reason="non_focus")
+        # 9. 焦点群普通消息 → LLM 自行判断是否回复
+        self._mark_active(normalized_group_id)
+        self.plugin._emit_log("INFO", f"[Attention] 焦点群 {normalized_group_id} 消息, LLM自行判断是否回复")
+        return GateDecision("reply", reason="focus_group")
 
     # ==========================================
     # 回复后消耗 + 焦点切换检测
@@ -358,15 +380,14 @@ class QQAttentionGateService:
         self._logger.info(f"[RetroReview] 群 {group_id} 有 {len(unreviewed)} 条未审核消息，开始回溯")
 
         # 2. 复用缓冲链路：构造总结 prompt，针对 1-2 条消息用 <reply> 回应
-        summary, id_map = self._build_ignored_summary(unreviewed)
-        id_hints = "\n".join(f"  · 编号[{n}]的 message_id = {mid}" for n, mid in sorted(id_map.items()))
+        summary = self._build_ignored_summary(unreviewed)
         try:
             from .pipeline_models import QQReplyRequest
             request = QQReplyRequest(
                 message_text=(
                     f"[系统] 你刚才没有太关注这个群，以下是这段时间群友们聊天的消息摘要。\n"
-                    f"请针对其中 1-2 条你最感兴趣的，用 `<reply>消息ID</reply>` 引用后自然回应。不要逐条点评，不要超过两条。\n\n"
-                    f"消息ID映射：\n{id_hints}\n\n"
+                    f"每条消息末尾都标了它的消息ID（形如 id=xxx）。请针对其中 1-2 条你最感兴趣的，"
+                    f"用 `<reply>消息ID</reply>` 引用后自然回应。不要逐条点评，不要超过两条。\n\n"
                     f"摘要：\n{summary}"
                 ),
                 sender_id=self.plugin._admin_qq or "0",
@@ -413,20 +434,19 @@ class QQAttentionGateService:
     # ==========================================
 
     @staticmethod
-    def _build_ignored_summary(messages: list[dict[str, Any]]) -> tuple[str, dict[int, str]]:
-        """把被忽略的消息列表生成 LLM 可读的摘要，返回 (摘要文本, {编号: message_id})"""
+    def _build_ignored_summary(messages: list[dict[str, Any]]) -> str:
+        """把被忽略的消息列表生成 LLM 可读的摘要，每条消息后携带 (id=消息ID) 供 <reply> 引用。"""
         lines: list[str] = []
-        id_map: dict[int, str] = {}
         for i, msg in enumerate(messages, 1):
             nickname = str(msg.get("sender_nickname") or msg.get("sender_id") or "未知")
-            text = str(msg.get("message_text") or "").strip()
+            # backlog 存储项来自 QQBacklogMessage.to_dict()，内容键是 text；
+            # message_text 是旧键名（无历史数据），保留作兜底。
+            text = str(msg.get("text") or msg.get("message_text") or "").strip()
             if len(text) > 100:
                 text = text[:97] + "..."
-            msg_id = str(msg.get("message_id") or "")
-            lines.append(f"[{i}] {nickname}: {text}")
-            if msg_id:
-                id_map[i] = msg_id
-        return "\n".join(lines), id_map
+            msg_id = str(msg.get("message_id") or "").strip()
+            lines.append(f"[{i}] {nickname}: {text} (id={msg_id})" if msg_id else f"[{i}] {nickname}: {text}")
+        return "\n".join(lines)
 
     async def _push_group_digest(self, group_id: str) -> None:
         """焦点切换时将旧焦点群的完整会话摘要推送到 Memory Server"""

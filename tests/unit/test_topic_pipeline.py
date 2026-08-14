@@ -1,6 +1,7 @@
 import asyncio
 import inspect
 import json
+import logging
 import threading
 import time
 from datetime import datetime
@@ -9,6 +10,8 @@ import pytest
 
 from main_logic.topic.pipeline import (
     TopicHookPool,
+    _ANALYZER_RETRY_BASE_SECONDS,
+    _ANALYZER_RETRY_CAP_SECONDS,
     _clean_material,
     _UNANSWERED_TOPIC_WEIGHT,
     _record_weight,
@@ -1352,12 +1355,26 @@ async def test_topic_pool_debounce_retries_after_background_analyzer_failure():
     assert last_turn_at is not None
 
     await pool.process_ready_topics(lang="zh-CN", now=last_turn_at + 61)
+    assert calls == 1
+
+    # 抛异常和返回 None 是同一件事——analyzer 失败了——所以必须走同一个退避记账。
+    # 异常若逃到 process_ready_topics 的 except 只打日志，dirty 还在、退避没设，
+    # 每一跳都会再打一次 LLM，正是这个退避要挡的热循环。第一档等于心跳周期，
+    # 所以下一跳放行是预期的；窗口在第二次失败后才真正拉开。
+    assert pool._analyzer_failures["妮可"] == 1
     await pool.process_ready_topics(lang="zh-CN", now=last_turn_at + 62)
+    await pool.process_ready_topics(lang="zh-CN", now=last_turn_at + 80)
+    assert calls == 1
+    assert "妮可" in pool._dirty
+
+    await pool.process_ready_topics(lang="zh-CN", now=last_turn_at + 82)
     await asyncio.wait_for(retried.wait(), timeout=1.0)
     materials = pool.get_ready_materials("妮可")
 
     assert calls == 2
     assert materials[0]["interest"] == "稳定转职话题"
+    # 恢复后计数清零，下一次偶发异常从头退避而不是接着翻倍。
+    assert "妮可" not in pool._analyzer_failures
 
 
 @pytest.mark.asyncio
@@ -1397,7 +1414,16 @@ async def test_topic_pool_keeps_dirty_when_analyzer_returns_none():
     assert last_turn_at is not None
 
     await pool.process_ready_topics(lang="zh-CN", now=last_turn_at + 61)
+    assert calls == 1
+
+    # 失败后仍然 dirty，重试要等退避到期。第一档等于心跳周期（20s），所以窗口
+    # 内的跳是 +62/+80，到 +82 才放行；真正拉开距离要到第二次失败之后。
     await pool.process_ready_topics(lang="zh-CN", now=last_turn_at + 62)
+    await pool.process_ready_topics(lang="zh-CN", now=last_turn_at + 80)
+    assert calls == 1
+    assert "妮可" in pool._dirty
+
+    await pool.process_ready_topics(lang="zh-CN", now=last_turn_at + 82)
     await asyncio.wait_for(retried.wait(), timeout=1.0)
     materials = pool.get_ready_materials("妮可")
 
@@ -2498,3 +2524,683 @@ def test_used_topics_persist_failure_is_visible(tmp_path):
         r.getMessage() for r in sink.records if r.levelno >= logging.WARNING
     ]
     assert any("used-history" in m for m in warnings), warnings
+
+
+def test_analyzer_retry_delay_doubles_from_the_base_and_saturates_at_the_cap():
+    # 常量一并断死。只断 _analyzer_retry_delay(2) == 2 * BASE 这类派生式的话，
+    # 把 BASE 改成 1 秒（等于取消退避）测试照样绿。
+    # BASE 等于心跳周期是有意的：第一档不延后，是给抖动的一次立即重试。
+    assert _ANALYZER_RETRY_BASE_SECONDS == 20.0
+    assert _ANALYZER_RETRY_CAP_SECONDS == 1800.0
+
+    pool = TopicHookPool(auto_schedule=False)
+    assert pool._analyzer_retry_delay(1) == 20.0
+    assert pool._analyzer_retry_delay(2) == 40.0
+    assert pool._analyzer_retry_delay(3) == 80.0
+    assert pool._analyzer_retry_delay(5) == 320.0
+    assert pool._analyzer_retry_delay(7) == 1280.0
+    # 20 * 2**7 = 2560 > cap.
+    assert pool._analyzer_retry_delay(8) == 1800.0
+    # 退避封顶后计数还在涨，指数不能跟着涨到溢出。
+    assert pool._analyzer_retry_delay(500) == 1800.0
+    # 防御性：第一次失败之前不该有人问，问了也不能算出 0 延迟。
+    assert pool._analyzer_retry_delay(0) == 20.0
+
+
+@pytest.mark.asyncio
+async def test_topic_pool_backs_off_instead_of_retrying_failed_analyzer_every_heartbeat():
+    """A failing analyzer must not ride the 20s heartbeat forever.
+
+    The analyzer returning None means "the call failed", not "no topic here"
+    (that is an empty list, which takes the discard path). The failure keeps the
+    character dirty so a transient blip recovers, and before the backoff that
+    dirty flag meant one LLM call every 20s until the 12h signal retention
+    starved it.
+    """
+    calls = []
+
+    async def failing_analyzer(*, lang, **kwargs):
+        calls.append(lang)
+        return None
+
+    pool = TopicHookPool(
+        analyzer=failing_analyzer,
+        auto_schedule=False,
+        min_user_turns_for_topic=1,
+    )
+    pool.note_user_message("妮可", "我最近一直在纠结要不要换工作")
+    base = pool._signal_store.last_turn_at("妮可")
+    assert base is not None
+
+    # 成熟窗口一过就跑第一次。第一档 = 心跳周期，所以下一跳就放行——这一档是
+    # 给抖动的免费立即重试，真正的退避从第二次失败起。
+    await pool.process_ready_topics(now=base + 61, lang="zh-CN")
+    assert len(calls) == 1
+
+    await pool.process_ready_topics(now=base + 82, lang="zh-CN")
+    assert len(calls) == 2
+    assert "妮可" in pool._dirty  # 仍然 dirty：是延后重试，不是放弃
+
+    # 第二次失败后退避翻倍到 40s，期间的每一跳都必须空转。
+    for tick in (92, 110, 121):
+        await pool.process_ready_topics(now=base + tick, lang="zh-CN")
+    assert len(calls) == 2
+
+    # 82 + 40 之后放行第三次，退避再翻倍到 80s。
+    await pool.process_ready_topics(now=base + 123, lang="zh-CN")
+    assert len(calls) == 3
+    for tick in (143, 183, 202):
+        await pool.process_ready_topics(now=base + tick, lang="zh-CN")
+    assert len(calls) == 3
+
+    # 123 + 80 之后第四次。
+    await pool.process_ready_topics(now=base + 204, lang="zh-CN")
+    assert len(calls) == 4
+
+
+@pytest.mark.asyncio
+async def test_topic_pool_clears_analyzer_backoff_once_the_analyzer_answers():
+    outcomes = [None, [{"interest": "恢复后的换工作话题", "relevance": 90}]]
+    calls = []
+
+    async def flaky_analyzer(*, lang, **kwargs):
+        calls.append(lang)
+        return outcomes[min(len(calls) - 1, len(outcomes) - 1)]
+
+    pool = TopicHookPool(
+        analyzer=flaky_analyzer,
+        auto_schedule=False,
+        min_user_turns_for_topic=1,
+    )
+    pool.note_user_message("妮可", "我最近一直在纠结要不要换工作")
+    base = pool._signal_store.last_turn_at("妮可")
+    assert base is not None
+
+    await pool.process_ready_topics(now=base + 61, lang="zh-CN")
+    assert len(calls) == 1
+    assert pool._analyzer_failures["妮可"] == 1
+    assert pool._analyzer_retry_not_before["妮可"] == pytest.approx(base + 81, abs=0.05)
+
+    await pool.process_ready_topics(now=base + 82, lang="zh-CN")
+    assert len(calls) == 2
+    # 一旦 analyzer 真的答了话，计数与闸门都必须归零，否则下一次偶发失败会
+    # 从上一次的退避档位继续翻倍。
+    assert "妮可" not in pool._analyzer_failures
+    assert "妮可" not in pool._analyzer_retry_not_before
+    assert pool.get_ready_materials("妮可")[0]["interest"] == "恢复后的换工作话题"
+
+
+@pytest.mark.asyncio
+async def test_topic_pool_empty_analyzer_result_is_an_answer_not_a_failure():
+    """`[]` means "analysed, nothing worth saying" — it must not arm the backoff."""
+    calls = []
+
+    async def empty_analyzer(*, lang, **kwargs):
+        calls.append(lang)
+        return []
+
+    pool = TopicHookPool(
+        analyzer=empty_analyzer,
+        auto_schedule=False,
+        min_user_turns_for_topic=1,
+    )
+    pool.note_user_message("妮可", "我最近一直在纠结要不要换工作")
+    base = pool._signal_store.last_turn_at("妮可")
+    assert base is not None
+
+    await pool.process_ready_topics(now=base + 61, lang="zh-CN")
+    assert len(calls) == 1
+    assert "妮可" not in pool._analyzer_retry_not_before
+    assert "妮可" not in pool._analyzer_failures
+
+
+@pytest.mark.asyncio
+async def test_topic_pool_analyzer_exception_arms_the_same_backoff_as_a_none_result():
+    """A raising analyzer must back off exactly like one returning None.
+
+    `_analyzer` is a constructor-injected callable whose contract never promised
+    not to raise, and the default one reaches a third-party LLM client. Handling
+    only the None path would leave a second route back into the 20s hot loop.
+    """
+    calls = []
+
+    async def exploding_analyzer(*, lang, **kwargs):
+        calls.append(lang)
+        raise RuntimeError("provider said: 我最近一直在纠结要不要换工作")
+
+    pool = TopicHookPool(
+        analyzer=exploding_analyzer,
+        auto_schedule=False,
+        min_user_turns_for_topic=1,
+    )
+    pool.note_user_message("妮可", "我最近一直在纠结要不要换工作")
+    base = pool._signal_store.last_turn_at("妮可")
+    assert base is not None
+
+    await pool.process_ready_topics(now=base + 61, lang="zh-CN")
+    assert len(calls) == 1
+    assert pool._analyzer_retry_not_before["妮可"] == pytest.approx(base + 81, abs=0.05)
+
+    for tick in (62, 71, 80):
+        await pool.process_ready_topics(now=base + tick, lang="zh-CN")
+    assert len(calls) == 1
+
+    # 退避照样翻倍：第二次失败后要等 40s，而不是回到 20s。
+    await pool.process_ready_topics(now=base + 82, lang="zh-CN")
+    assert len(calls) == 2
+    assert pool._analyzer_retry_not_before["妮可"] == pytest.approx(base + 122, abs=0.05)
+
+
+@pytest.mark.asyncio
+async def test_topic_pool_analyzer_exception_log_omits_the_exception_message():
+    """Provider error messages routinely echo the request body — the prompt."""
+    class _Sink(logging.Handler):
+        def __init__(self):
+            super().__init__(level=logging.DEBUG)
+            self.records = []
+
+        def emit(self, record):
+            self.records.append(record)
+
+    secret = "我最近一直在纠结要不要换工作"
+
+    async def exploding_analyzer(*, lang, **kwargs):
+        raise RuntimeError(f"invalid request body: {secret}")
+
+    pool = TopicHookPool(
+        analyzer=exploding_analyzer,
+        auto_schedule=False,
+        min_user_turns_for_topic=1,
+    )
+    pool.note_user_message("妮可", secret)
+    base = pool._signal_store.last_turn_at("妮可")
+    assert base is not None
+
+    log = logging.getLogger("N.E.K.O.Main.topic.pipeline")
+    sink = _Sink()
+    prior = log.level
+    log.addHandler(sink)
+    log.setLevel(logging.DEBUG)
+    try:
+        await pool.process_ready_topics(now=base + 61, lang="zh-CN")
+    finally:
+        log.removeHandler(sink)
+        log.setLevel(prior)
+
+    messages = [r.getMessage() for r in sink.records]
+    assert any("RuntimeError" in m for m in messages), messages
+    assert not any(secret in m for m in messages), messages
+
+
+@pytest.mark.asyncio
+async def test_topic_pool_retry_window_anchors_at_the_tick_first_then_at_completion():
+    """The two steps anchor differently, and both matter.
+
+    Step 1 is the free immediate retry, so it anchors at the tick stamp and
+    lands on the very next heartbeat — adding the call's runtime there would
+    push a normal 8s timeout past that tick and delay recovery by a whole
+    period. Step 2 onward is a real backoff, so it anchors at completion:
+    otherwise the runtime (config read + client construction + the 8s timeout)
+    is subtracted out of every window, and a failure slower than the delay
+    would land already expired.
+    """
+    call_seconds = 0.05
+
+    async def slow_failing_analyzer(*, lang, **kwargs):
+        await asyncio.sleep(call_seconds)
+        return None
+
+    pool = TopicHookPool(
+        analyzer=slow_failing_analyzer,
+        auto_schedule=False,
+        min_user_turns_for_topic=1,
+    )
+    pool.note_user_message("妮可", "我最近一直在纠结要不要换工作")
+    base = pool._signal_store.last_turn_at("妮可")
+    assert base is not None
+
+    await pool.process_ready_topics(now=base + 61, lang="zh-CN")
+    # 第一档：正好一个心跳周期后，调用耗时不算进去。
+    #
+    # abs= 是必须的：approx 默认走相对容差 1e-6，而这些是 1.7e9 量级的 unix
+    # 时间戳，等于 ±1700 秒——足以把整个 call_seconds 的差异吞掉，让"第一档
+    # 改回锚在完成时刻"的回归照样绿。
+    assert pool._analyzer_retry_not_before["妮可"] == pytest.approx(
+        base + 61 + _ANALYZER_RETRY_BASE_SECONDS, abs=1e-3
+    )
+
+    await pool.process_ready_topics(now=base + 82, lang="zh-CN")
+    # 第二档起：锚在失败完成时刻，这 50ms 必须体现出来。
+    naive_deadline = base + 82 + _ANALYZER_RETRY_BASE_SECONDS * 2
+    assert pool._analyzer_retry_not_before["妮可"] > naive_deadline
+    assert pool._analyzer_retry_not_before["妮可"] >= naive_deadline + call_seconds * 0.8
+
+
+@pytest.mark.asyncio
+async def test_topic_pool_accumulated_purge_clears_the_analyzer_backoff():
+    """An explicit purge is a user action; a stale retry window must not survive it.
+
+    Otherwise a character sitting at the 30min cap goes quiet for the rest of
+    that window after the user purges and starts talking again, with nothing on
+    screen to explain the silence. Mirrors _purge_character_state, which has
+    cleared this state from the start.
+    """
+    calls = []
+
+    async def failing_analyzer(*, lang, **kwargs):
+        calls.append(lang)
+        return None
+
+    pool = TopicHookPool(
+        analyzer=failing_analyzer,
+        auto_schedule=False,
+        min_user_turns_for_topic=1,
+    )
+    pool.note_user_message("妮可", "我最近一直在纠结要不要换工作")
+    base = pool._signal_store.last_turn_at("妮可")
+    assert base is not None
+
+    await pool.process_ready_topics(now=base + 61, lang="zh-CN")
+    assert len(calls) == 1
+    assert "妮可" in pool._analyzer_retry_not_before
+
+    pool.purge_accumulated_signals("妮可")
+    assert "妮可" not in pool._analyzer_retry_not_before
+    assert "妮可" not in pool._analyzer_failures
+
+    # purge 后重新说话，成熟窗口一过就该正常分析，不受旧 deadline 拖累。
+    pool.note_user_message("妮可", "换个话题，我在学做菜")
+    fresh = pool._signal_store.last_turn_at("妮可")
+    assert fresh is not None
+    await pool.process_ready_topics(now=fresh + 61, lang="zh-CN")
+    assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_topic_pool_discards_analyzer_failure_when_purge_lands_midflight():
+    """A purge during the call wins: the failure must not re-arm the old window.
+
+    Same rule the success path already follows when _purge_generation moved.
+    """
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def hanging_failing_analyzer(*, lang, **kwargs):
+        started.set()
+        await release.wait()
+        return None
+
+    pool = TopicHookPool(
+        analyzer=hanging_failing_analyzer,
+        auto_schedule=False,
+        min_user_turns_for_topic=1,
+    )
+    pool.note_user_message("妮可", "我最近一直在纠结要不要换工作")
+    base = pool._signal_store.last_turn_at("妮可")
+    assert base is not None
+
+    task = asyncio.create_task(pool.process_ready_topics(now=base + 61, lang="zh-CN"))
+    await asyncio.wait_for(started.wait(), timeout=1.0)
+    pool.purge_accumulated_signals("妮可")
+    release.set()
+    await asyncio.wait_for(task, timeout=1.0)
+
+    assert "妮可" not in pool._analyzer_retry_not_before
+    assert "妮可" not in pool._analyzer_failures
+
+
+@pytest.mark.asyncio
+async def test_topic_pool_retry_window_absorbs_a_stale_tick_stamp():
+    """A `now` that arrived stale must not eat the backoff either.
+
+    The activity heartbeat stamps `ts` (tracker.py) and only reaches the topic
+    pool after `await self._drain_context_prompt()`, a WebSocket push. Under
+    backpressure that stamp lands seconds — potentially more than a whole
+    backoff delay — in the past, which would write an already-expired deadline
+    and hand the next heartbeat straight back into the hot loop.
+    """
+    async def failing_analyzer(*, lang, **kwargs):
+        return None
+
+    pool = TopicHookPool(
+        analyzer=failing_analyzer,
+        auto_schedule=False,
+        min_user_turns_for_topic=1,
+    )
+    pool.note_user_message("妮可", "我最近一直在纠结要不要换工作")
+
+    # 第一次失败是免费重试档，锚在 tick 戳上不做补偿；陈旧补偿要从第二次
+    # 失败（真正的退避）起才生效，所以先把第一档用掉。
+    await pool.process_now("妮可", lang="zh-CN", now=time.time())
+    assert pool._analyzer_failures["妮可"] == 1
+
+    staleness = 30.0
+    stale_tick = time.time() - staleness
+    await pool.process_now("妮可", lang="zh-CN", now=stale_tick)
+
+    deadline = pool._analyzer_retry_not_before["妮可"]
+    delay = _ANALYZER_RETRY_BASE_SECONDS * 2
+    # 锚在陈旧戳上的话 deadline = stale_tick + 40，也就是从现在算只剩 10 秒。
+    assert deadline > stale_tick + delay + staleness * 0.8
+    assert deadline >= time.time() + delay - 1.0
+
+
+def test_elapsed_since_tick_floors_at_zero_for_an_injected_future_stamp():
+    """Injected future `now` (tests, replayed ticks) must not rewind the window.
+
+    Both terms have to be pinned negative to isolate the floor. Passing a
+    freshly sampled `time.monotonic()` as `started_at` does not: the helper
+    samples the same clock again, later, so the duration term is positive by
+    however much the clock resolves. That is ~0 on Windows (GetTickCount64,
+    ~15.6ms granularity, so both samples usually read identical) but strictly
+    positive on Linux — the assertion would pass here and fail in CI.
+    """
+    pool = TopicHookPool(auto_schedule=False)
+    future_tick = time.time() + 3600.0
+    started_in_the_future = time.monotonic() + 3600.0
+    assert pool._elapsed_since_tick(future_tick, started_in_the_future) == 0.0
+
+
+@pytest.mark.asyncio
+async def test_topic_pool_lazy_analyzer_iterable_that_raises_still_backs_off():
+    """`Analyzer` returns an Iterable; a lazy one fails when consumed, not awaited.
+
+    Draining it outside the failure handler puts the exception past the point
+    where the previous failure state was already cleared, so the character
+    would sit dirty with no retry deadline — the hot loop again, reached
+    through the result-consumption path instead of the call path.
+    """
+    calls = []
+
+    async def lazy_exploding_analyzer(*, lang, **kwargs):
+        calls.append(lang)
+
+        def _gen():
+            yield {"interest": "第一条还正常", "relevance": 90}
+            raise RuntimeError("provider stream broke mid-iteration")
+
+        return _gen()
+
+    pool = TopicHookPool(
+        analyzer=lazy_exploding_analyzer,
+        auto_schedule=False,
+        min_user_turns_for_topic=1,
+    )
+    pool.note_user_message("妮可", "我最近一直在纠结要不要换工作")
+    base = pool._signal_store.last_turn_at("妮可")
+    assert base is not None
+
+    await pool.process_ready_topics(now=base + 61, lang="zh-CN")
+    assert len(calls) == 1
+    assert pool._analyzer_failures["妮可"] == 1
+    assert pool._analyzer_retry_not_before["妮可"] == pytest.approx(
+        base + 61 + _ANALYZER_RETRY_BASE_SECONDS, abs=1e-3
+    )
+    # 半路抛的迭代不该留下半成品素材。
+    assert pool.get_ready_materials("妮可") == []
+
+    # 第二次失败进入真退避，窗口内的跳空转。
+    await pool.process_ready_topics(now=base + 82, lang="zh-CN")
+    assert len(calls) == 2
+    for tick in (92, 110, 121):
+        await pool.process_ready_topics(now=base + tick, lang="zh-CN")
+    assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_topic_pool_failure_count_does_not_survive_evidence_aging_out(tmp_path):
+    """A count carried across a 12h gap would spend the next blip at the cap.
+
+    When every signal ages out, `last_turn_at` goes None and the character is
+    back to its initial state — that branch sits ahead of the backoff gate, so
+    it is reachable while a deadline is armed. Keeping the count there means a
+    corpus accumulated later starts its first transient failure at whatever
+    step the old outage had climbed to, instead of at the free immediate retry.
+    """
+    calls = []
+
+    async def failing_analyzer(*, lang, **kwargs):
+        calls.append(lang)
+        return None
+
+    path = tmp_path / "topic_signals.json"
+    pool = TopicHookPool(
+        analyzer=failing_analyzer,
+        auto_schedule=False,
+        min_user_turns_for_topic=1,
+        signal_store_path=path,
+    )
+    pool.note_user_message("妮可", "我最近一直在纠结要不要换工作")
+    base = pool._signal_store.last_turn_at("妮可")
+    assert base is not None
+
+    # 攒出一段失败史，档位爬到第 3 档。
+    for tick, expected in ((61, 1), (82, 2), (123, 3)):
+        await pool.process_ready_topics(now=base + tick, lang="zh-CN")
+        assert len(calls) == expected
+    assert pool._analyzer_failures["妮可"] == 3
+
+    # 证据整段老化掉（12h retention）：这一跳只会走到 last_turn_at is None。
+    pool._signal_store.clear("妮可")
+    await pool.process_ready_topics(now=base + 3000, lang="zh-CN")
+    assert len(calls) == 3
+    assert "妮可" not in pool._analyzer_failures
+    assert "妮可" not in pool._analyzer_retry_not_before
+
+    # 新语料的第一次失败要拿回那次免费立即重试，而不是从旧档位续。
+    pool.note_user_message("妮可", "换个话题，我最近在学做菜")
+    fresh = pool._signal_store.last_turn_at("妮可")
+    assert fresh is not None
+    await pool.process_ready_topics(now=fresh + 61, lang="zh-CN")
+    assert len(calls) == 4
+    assert pool._analyzer_failures["妮可"] == 1
+    assert pool._analyzer_retry_not_before["妮可"] == pytest.approx(
+        fresh + 61 + _ANALYZER_RETRY_BASE_SECONDS, abs=1e-3
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_async", [False, True])
+async def test_global_purge_reaches_a_character_holding_only_backoff_state(use_async):
+    """Backoff state can outlive both the store entry and the dirty flag.
+
+    The readiness path drops the character from `_dirty` while its evidence is
+    still short of the threshold; that evidence can then age out of the store.
+    Neither set names it any more, so a global purge built from
+    `names() | _dirty` would walk straight past an armed retry window.
+    """
+    async def failing_analyzer(*, lang, **kwargs):
+        return None
+
+    pool = TopicHookPool(
+        analyzer=failing_analyzer,
+        auto_schedule=False,
+        min_user_turns_for_topic=1,
+    )
+    pool.note_user_message("妮可", "我最近一直在纠结要不要换工作")
+    base = pool._signal_store.last_turn_at("妮可")
+    assert base is not None
+    await pool.process_ready_topics(now=base + 61, lang="zh-CN")
+    assert "妮可" in pool._analyzer_retry_not_before
+
+    # 落到"只剩退避状态"：dirty 没了，store 里也没了。
+    pool._dirty.discard("妮可")
+    pool._signal_store.clear("妮可")
+    assert "妮可" not in pool._signal_store.names()
+    assert "妮可" not in pool._dirty
+
+    if use_async:
+        await pool.purge_all_accumulated_signals_async()
+    else:
+        pool.purge_all_accumulated_signals()
+
+    assert "妮可" not in pool._analyzer_retry_not_before
+    assert "妮可" not in pool._analyzer_failures
+
+
+@pytest.mark.asyncio
+async def test_topic_pool_failure_count_ends_when_the_character_drops_below_ready():
+    """The readiness exit is the other way out of the walk, and it must clear too.
+
+    Sequence the aged-out branch alone does not cover: fail → signals fall
+    below the readiness threshold → the rest expire → fresh corpus. The
+    readiness exit discards the character from `_dirty`, which is exactly the
+    set process_ready_topics walks, so the aged-out branch never revisits it —
+    the count would survive to the fresh corpus and spend its first blip at
+    the old step instead of on the free immediate retry.
+    """
+    calls = []
+
+    async def failing_analyzer(*, lang, **kwargs):
+        calls.append(lang)
+        return None
+
+    pool = TopicHookPool(
+        analyzer=failing_analyzer,
+        auto_schedule=False,
+        min_user_turns_for_topic=2,
+    )
+    pool.note_user_message("妮可", "我最近一直在纠结要不要换工作")
+    pool.note_user_message("妮可", "换工作这件事我反复想了好几周了")
+
+    # 两条 turn 要能分开剪，所以显式给时间戳：note_user_message 走 time.time()，
+    # 相邻两次调用在本机会落在同一个刻度上，cutoff 就无处可放。
+    store = pool._signal_store
+    store.clear("妮可")
+    first_at = time.time()
+    store.note_turn("妮可", actor="user", text="我最近一直在纠结要不要换工作", now=first_at)
+    store.note_turn("妮可", actor="user", text="换工作这件事我反复想了好几周了", now=first_at + 1.0)
+    pool._dirty.add("妮可")
+    base = store.last_turn_at("妮可")
+    assert base == pytest.approx(first_at + 1.0, abs=1e-6)
+
+    for tick, expected in ((61, 1), (82, 2), (123, 3)):
+        await pool.process_ready_topics(now=base + tick, lang="zh-CN")
+        assert len(calls) == expected
+    assert pool._analyzer_failures["妮可"] == 3
+
+    # 老信号先掉一部分：有效轮数跌到阈值以下，但证据还在。
+    # clear_until 保留 timestamp > cutoff 的条目，拿第一条的时间戳当 cutoff
+    # 正好剪掉它、留下第二条。
+    store.clear_until("妮可", timestamp=first_at)
+    assert not store.is_ready("妮可")
+    assert store.last_turn_at("妮可") is not None
+
+    await pool.process_ready_topics(now=base + 204, lang="zh-CN")
+    assert len(calls) == 3
+    assert "妮可" not in pool._dirty
+    # 这一步是关键：此刻不清，之后角色已不在 _dirty 里，过期清理分支再也够不到。
+    assert "妮可" not in pool._analyzer_failures
+    assert "妮可" not in pool._analyzer_retry_not_before
+
+    # 剩下的信号也过期，然后来了新语料。
+    store.clear("妮可")
+    pool.note_user_message("妮可", "换个话题，我最近在学做菜")
+    pool.note_user_message("妮可", "做菜比想象中费时间")
+    fresh = pool._signal_store.last_turn_at("妮可")
+    assert fresh is not None
+
+    await pool.process_ready_topics(now=fresh + 61, lang="zh-CN")
+    assert len(calls) == 4
+    assert pool._analyzer_failures["妮可"] == 1
+    assert pool._analyzer_retry_not_before["妮可"] == pytest.approx(
+        fresh + 61 + _ANALYZER_RETRY_BASE_SECONDS, abs=1e-3
+    )
+
+
+@pytest.mark.asyncio
+async def test_topic_pool_pre_purge_success_does_not_clear_post_purge_backoff():
+    """A stale success must not wipe a window a replacement call already armed.
+
+    Mirror of the seen_purge_generation guard on the failure path: a purge
+    lands while an analysis is in flight, a post-purge call fails and arms a
+    window, and only then does the pre-purge call return successfully. Clearing
+    unconditionally there would hand the next tick a free extra request against
+    the very evidence the purge replaced.
+    """
+    release_first = asyncio.Event()
+    first_started = asyncio.Event()
+    calls = []
+
+    async def analyzer(*, lang, **kwargs):
+        calls.append(lang)
+        if len(calls) == 1:
+            first_started.set()
+            await release_first.wait()
+            return [{"interest": "purge 之前那次分析的结果", "relevance": 90}]
+        return None
+
+    pool = TopicHookPool(
+        analyzer=analyzer,
+        auto_schedule=False,
+        min_user_turns_for_topic=1,
+    )
+    pool.note_user_message("妮可", "我最近一直在纠结要不要换工作")
+    base = pool._signal_store.last_turn_at("妮可")
+    assert base is not None
+
+    # 第一次分析卡在飞行中。
+    slow = asyncio.create_task(pool.process_ready_topics(now=base + 61, lang="zh-CN"))
+    await asyncio.wait_for(first_started.wait(), timeout=1.0)
+
+    # purge 落地，然后新证据上的第二次分析失败并武装退避。
+    pool.purge_accumulated_signals("妮可")
+    pool.note_user_message("妮可", "换个话题，我最近在学做菜")
+    fresh = pool._signal_store.last_turn_at("妮可")
+    assert fresh is not None
+    await pool.process_ready_topics(now=fresh + 61, lang="zh-CN")
+    assert len(calls) == 2
+    armed = pool._analyzer_retry_not_before["妮可"]
+
+    # 现在放行那次陈旧的成功返回。
+    release_first.set()
+    await asyncio.wait_for(slow, timeout=1.0)
+
+    assert pool._analyzer_retry_not_before.get("妮可") == armed
+    assert pool._analyzer_failures.get("妮可") == 1
+    # 陈旧结果本身照旧被丢弃。
+    assert pool.get_ready_materials("妮可") == []
+
+
+@pytest.mark.asyncio
+async def test_topic_pool_success_still_clears_when_only_a_new_turn_arrived():
+    """A new turn mid-flight discards the result but not the health signal.
+
+    Only a purge blocks the clear. A success is proof the analyzer works, so a
+    stale-by-sequence result must still end the streak — otherwise a chatty
+    user could keep a recovered analyzer stuck behind an old window.
+    """
+    release = asyncio.Event()
+    started = asyncio.Event()
+    calls = []
+
+    async def analyzer(*, lang, **kwargs):
+        calls.append(lang)
+        if len(calls) == 1:
+            return None
+        started.set()
+        await release.wait()
+        return [{"interest": "迟到但成功的结果", "relevance": 90}]
+
+    pool = TopicHookPool(
+        analyzer=analyzer,
+        auto_schedule=False,
+        min_user_turns_for_topic=1,
+    )
+    pool.note_user_message("妮可", "我最近一直在纠结要不要换工作")
+    base = pool._signal_store.last_turn_at("妮可")
+    assert base is not None
+
+    await pool.process_ready_topics(now=base + 61, lang="zh-CN")
+    assert pool._analyzer_failures["妮可"] == 1
+
+    slow = asyncio.create_task(pool.process_ready_topics(now=base + 82, lang="zh-CN"))
+    await asyncio.wait_for(started.wait(), timeout=1.0)
+    pool.note_user_message("妮可", "顺便说，我今天还去跑步了")  # seq++
+    release.set()
+    await asyncio.wait_for(slow, timeout=1.0)
+
+    assert len(calls) == 2
+    assert "妮可" not in pool._analyzer_failures
+    assert "妮可" not in pool._analyzer_retry_not_before
+    assert pool.get_ready_materials("妮可") == []

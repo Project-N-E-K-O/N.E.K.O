@@ -732,7 +732,8 @@ def test_every_screen_share_toggle_treats_a_pending_start_as_on():
     activation_guard = start_once.rfind(
         "discardCancelledScreenSharingStart(attempt)", 0, activate
     )
-    assert activation_guard > start_once.index("fetchBackendScreenshot()")
+    fail_closed = start_once.index("streamError.name = 'NotReadableError'")
+    assert activation_guard > fail_closed
     commit_stream = start_once.index("S.screenCaptureStream = captureStream;")
     first_post_capture_guard = start_once.index(
         "if (discardCancelledScreenSharingStart(attempt)) return;",
@@ -805,6 +806,9 @@ def test_mic_main_action_matches_settings_chevron_and_hover_expands():
     assert "button.dataset.nekoMicMainAction = actionKey;" in action_button
     assert "openMicActionPanel(actionKey, onClick)" in action_button
     assert "button.addEventListener('mouseenter'" in action_button
+    assert "interactionOptions.openOnHover !== false" in action_button
+    assert "xdg-desktop-portal" in action_button
+    assert "button.addEventListener('click'" in action_button
     assert "scheduleMicActionHoverCollapse()" in action_button
     assert "createMainActionButton(" in source
     assert "'screen'" in source
@@ -815,6 +819,11 @@ def test_mic_main_action_matches_settings_chevron_and_hover_expands():
     assert "if (iconText) {" in action_button
     assert "screenActionButton.querySelector('.neko-mic-action-text')" in source
     assert "var screenActionButton = createMainActionButton(\n                null," in source
+    screen_action = source.split(
+        "var screenActionButton = createMainActionButton(", 1
+    )[1].split(");", 1)[0]
+    assert "openScreenSourceSubwindow" in screen_action
+    assert "{ openOnHover: false }" in screen_action
     assert "var micActionButton = createMainActionButton(\n                null," in source
     assert "asrActionButton = createMainActionButton(\n                null," in source
     assert "'voice-recognition'" in source

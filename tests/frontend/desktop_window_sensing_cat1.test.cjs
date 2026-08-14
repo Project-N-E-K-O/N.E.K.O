@@ -461,7 +461,6 @@ test('ordinary web pages without the desktop bridge remain unaffected', async ()
   const runtime = createRuntime({ bridge: false });
 
   assert.equal(runtime.window.nekoDesktopWindowSensingContext, undefined);
-
   runtime.publishCatState({
     active: true,
     appearance: 'cat',

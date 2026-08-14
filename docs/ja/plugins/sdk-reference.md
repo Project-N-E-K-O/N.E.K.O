@@ -45,7 +45,10 @@ class MyPlugin(NekoPluginBase):
 |----------|------|------|
 | `self.ctx` | `PluginContext` | ランタイムコンテキスト（ホストにより注入） |
 | `self.plugin_id` | `str` | このプラグインの一意の識別子 |
-| `self.config_dir` | `Path` | `plugin.toml` を含むディレクトリ |
+| `self.plugin_dir` | `Path` | コード、Manifest、静的リソースを含むインストール先ディレクトリ |
+| `self.config_dir` | `Path` | `self.plugin_dir` の互換エイリアス |
+| `self.storage_dir` | `Path` | このプラグインに割り当てられたユーザーストレージルート |
+| `self.runtime_config_path` | `Path` | 外部ランタイム設定ファイルのパス |
 | `self.metadata` | `dict` | `plugin.toml` からのプラグインメタデータ |
 | `self.bus` | `SdkBusContext` | host state の read/watch facade。publish/emit API はありません |
 | `self.plugins` | `Plugins` | プラグイン間呼び出しヘルパー |
@@ -97,7 +100,17 @@ v1 field（`message_type`、`content`、`delivery`、`reply` および他の leg
 プラグインの `data/` ディレクトリ配下のパスを取得します。
 
 ```python
-db_path = self.data_path("cache.db")  # → <plugin_dir>/data/cache.db
+db_path = self.data_path("records.db")
+# → <storage-root>/plugins/<plugin_id>/data/records.db
+```
+
+#### `cache_path(*parts) -> Path`
+
+プラグインの削除可能なキャッシュディレクトリ配下のパスを取得します。
+
+```python
+preview_path = self.cache_path("preview.png")
+# → <storage-root>/plugins/<plugin_id>/cache/preview.png
 ```
 
 #### `register_dynamic_entry(entry_id, handler, ...) -> bool`

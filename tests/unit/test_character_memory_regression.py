@@ -789,8 +789,8 @@ async def test_memory_rename_rejects_published_name_with_old_storage(monkeypatch
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_workshop_abort_resumes_only_released_names_still_active():
-    """Workshop cleanup must reopen admission for identities it did not delete."""
+async def test_workshop_abort_releases_owned_claims_for_active_and_deleted_names():
+    """Exact old tokens must be retired before a deleted name can be reused."""
     unsubscribe = reload_module("main_routers.workshop_router.unsubscribe")
 
     class _Config:
@@ -807,10 +807,134 @@ async def test_workshop_abort_resumes_only_released_names_still_active():
         )
 
     assert resumed is True
-    reload_memory.assert_awaited_once_with(
-        reason="取消订阅流程结束，恢复仍存在角色: 42",
-        release_derived_task_claims={"StillHere": ("claim-a",)},
+    reload_memory.assert_awaited_once()
+    assert reload_memory.await_args.kwargs["release_derived_task_claims"] == {
+        "StillHere": ("claim-a",),
+        "Deleted": ("claim-b",),
+    }
+    assert "仍存在=['StillHere']" in reload_memory.await_args.kwargs["reason"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_workshop_unsubscribe_revalidates_origin_after_config_lock_wait(
+    monkeypatch,
+):
+    """A stale origin-index hit must not delete a same-name replacement."""
+    unsubscribe = reload_module("main_routers.workshop_router.unsubscribe")
+    from main_routers import characters_router as characters_router_package
+
+    item_id = 42
+    character_name = "ReusedName"
+    target_character = {
+        "_reserved": {
+            "character_origin": {"source": "steam_workshop", "source_id": str(item_id)},
+        },
+    }
+    local_replacement = {
+        "_reserved": {
+            "character_origin": {"source": "local", "source_id": ""},
+        },
+    }
+
+    class _Config:
+        def __init__(self):
+            self.characters = {"当前猫娘": "Other", "猫娘": {
+                character_name: target_character,
+            }}
+            self.saved = []
+
+        async def aload_characters(self):
+            return self.characters
+
+        async def asave_characters(self, characters):
+            self.saved.append(characters)
+            self.characters = characters
+
+    config = _Config()
+    discovery_finished = threading.Event()
+    mutation_lock = asyncio.Lock()
+    monkeypatch.setattr(
+        unsubscribe, "character_config_mutation_lock", mutation_lock,
     )
+
+    def _discover(_config, discovered_item_id):
+        assert discovered_item_id == item_id
+        assert _config.characters["猫娘"][character_name] is target_character
+        discovery_finished.set()
+        return [character_name]
+
+    unsubscribe_calls = []
+
+    class _Workshop:
+        def UnsubscribeItem(self, requested_item_id, *, callback, override_callback):
+            assert override_callback is True
+            unsubscribe_calls.append(requested_item_id)
+            callback(SimpleNamespace(publishedFileId=requested_item_id, result=1))
+
+        def GetItemState(self, _requested_item_id):
+            return 0
+
+    workshop = _Workshop()
+    steamworks = SimpleNamespace(Workshop=workshop)
+    release_character = AsyncMock(return_value=True)
+    reload_memory = AsyncMock(return_value=True)
+
+    class _NoopThread:
+        def __init__(self, **_kwargs):
+            pass
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(unsubscribe, "get_config_manager", lambda: config)
+    monkeypatch.setattr(unsubscribe, "get_steamworks", lambda: steamworks)
+    monkeypatch.setattr(
+        unsubscribe, "_collect_character_names_by_workshop_item_id", _discover,
+    )
+    monkeypatch.setattr(
+        unsubscribe, "_resolve_workshop_item_install_path", lambda *_args: None,
+    )
+    monkeypatch.setattr(
+        unsubscribe, "_scan_workshop_folder_character_names", lambda _path: [],
+    )
+    monkeypatch.setattr(
+        unsubscribe,
+        "threading",
+        SimpleNamespace(Event=threading.Event, Lock=threading.Lock, Thread=_NoopThread),
+    )
+    monkeypatch.setattr(
+        characters_router_package, "create_derived_task_claim_token",
+        lambda: "unsubscribe-claim",
+    )
+    monkeypatch.setattr(
+        characters_router_package, "release_memory_server_character", release_character,
+    )
+    monkeypatch.setattr(
+        characters_router_package, "notify_memory_server_reload", reload_memory,
+    )
+
+    await mutation_lock.acquire()
+    operation = asyncio.create_task(
+        unsubscribe._unsubscribe_workshop_item(
+            _DummyRequest({"item_id": str(item_id)}), asyncio.Event(),
+        )
+    )
+    assert await asyncio.to_thread(discovery_finished.wait, 3)
+    # Replace the discovered identity while unsubscribe waits for the config lock.
+    config.characters = {
+        "当前猫娘": "Other",
+        "猫娘": {character_name: local_replacement},
+    }
+    mutation_lock.release()
+    result = await operation
+
+    assert result["success"] is True
+    assert result["cleanup_summary"]["cleaned_characters"] == []
+    assert result["cleanup_summary"]["skipped_unverified_characters"] == [character_name]
+    assert config.characters["猫娘"] == {character_name: local_replacement}
+    assert config.saved == []
+    assert unsubscribe_calls == [item_id]
 
 
 @pytest.mark.unit

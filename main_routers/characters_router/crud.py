@@ -60,6 +60,7 @@ from ..agent_router import force_disable_agent_for_character_switch
 from utils.character_memory import (
     asave_characters_with_recent_activation,
     begin_character_recent_transaction,
+    character_config_mutation_lock,
     delete_character_memory_storage,
     finalize_character_recent_delete,
     finalize_character_recent_rename,
@@ -153,22 +154,28 @@ def _append_profile_rename_event(character_payload: dict, old_name: str, new_nam
     set_reserved(character_payload, "ai_context", "rename_events", events[-20:])
 
 
-async def _clear_character_recent_history(config_manager, character_name: str) -> None:
+async def _clear_character_recent_history(
+    config_manager,
+    character_name: str,
+    *,
+    expected_generation: tuple[str, int] | None = None,
+) -> None:
     recent_path = Path(config_manager.memory_dir) / character_name / "recent.json"
-    admission_generation = capture_recent_generation(recent_path)
+    if expected_generation is None:
+        expected_generation = capture_recent_generation(recent_path)
     assert_cloudsave_writable(
         config_manager,
         operation="save",
         target=f"memory/{character_name}/recent.json",
     )
-    await asyncio.to_thread(recent_path.parent.mkdir, parents=True, exist_ok=True)
     # 走 utils.recent_file 的 per-path 锁：merged 单进程下 memory_server 的写者
-    # 就在同一个进程里，裸 atomic_write_json_async 会绕过互斥。
+    # 就在同一个进程里，裸 atomic_write_json_async 会绕过互斥。底层原子写
+    # 会在 generation 校验成功后创建父目录，stale callback 不得提前重建它。
     await asyncio.to_thread(
         write_recent_payload,
         recent_path,
         [],
-        expected_generation=admission_generation,
+        expected_generation=expected_generation,
     )
 
 
@@ -615,8 +622,6 @@ async def get_characters(request: Request):
 
 @router.post('/catgirl/{old_name}/rename')
 async def rename_catgirl(old_name: str, request: Request):
-    _config_manager = get_config_manager()
-    session_manager = get_session_manager()
     try:
         data = await request.json()
     except Exception as e:
@@ -630,6 +635,14 @@ async def rename_catgirl(old_name: str, request: Request):
     err = _validate_profile_name(new_name)
     if err:
         return JSONResponse({'success': False, 'error': err.replace('档案名', '新档案名')}, status_code=400)
+
+    async with character_config_mutation_lock:
+        return await _rename_catgirl_serialized(old_name, new_name)
+
+
+async def _rename_catgirl_serialized(old_name: str, new_name: str):
+    _config_manager = get_config_manager()
+    session_manager = get_session_manager()
     characters = await _config_manager.aload_characters()
     if old_name not in characters.get('猫娘', {}):
         return JSONResponse({'success': False, 'error': '原猫娘不存在'}, status_code=404)
@@ -1183,63 +1196,70 @@ async def add_catgirl(request: Request):
     requested_field_order = _extract_catgirl_field_order_payload(raw_data)
     data['档案名'] = str(profile_name).strip()
 
+    requested_name = data['档案名']
     _config_manager = get_config_manager()
-    characters = await _config_manager.aload_characters()
-    key = data['档案名']
+    async with character_config_mutation_lock:
+        characters = await _config_manager.aload_characters()
+        key = _available_character_name(characters, requested_name)
 
-    # 检查是否已存在同名角色，使用 Windows 风格的命名 (x)
-    if key in characters.get('猫娘', {}):
-        base_name = key
-        counter = 1
-        while f"{base_name}({counter})" in characters.get('猫娘', {}):
-            counter += 1
-        key = f"{base_name}({counter})"
-        data['档案名'] = key
-        logger.info(f'猫娘名称冲突，已重命名为: {key}')
+        created_data = dict(data)
+        created_data['档案名'] = key
+        if key != requested_name:
+            logger.info(f'猫娘名称冲突，已重命名为: {key}')
+        if '猫娘' not in characters:
+            characters['猫娘'] = {}
 
-    if '猫娘' not in characters:
-        characters['猫娘'] = {}
-
-    # 创建猫娘数据，只保存非空字段
-    catgirl_data = {}
-    for k, v in data.items():
-        if k != '档案名':
-            if v:  # 只保存非空字段
+        # 创建猫娘数据，只保存非空字段
+        catgirl_data = {}
+        for k, v in created_data.items():
+            if k != '档案名' and v:
                 catgirl_data[k] = v
 
-    characters['猫娘'][key] = catgirl_data
-    _sync_catgirl_field_order(catgirl_data, requested_field_order)
-    # 默认走 free preset：非 free / 非 lanlan.tech 通道由 LLMSessionManager 现有 gate 清空 self.voice_id，不会泄漏给其他 TTS provider。
-    # 从 free_voices['cuteGirl'] 读以避免硬编码漂移；缺失时回退到首个非空预设，再回退到旧版默认值。
-    default_free_voice_id = _get_new_catgirl_default_voice_id()
-    set_reserved(catgirl_data, 'voice_id', default_free_voice_id)
-    publish_cancelled = await asave_characters_with_recent_activation(
-        _config_manager, characters, key,
-    )
-    pending_mark_ok, pending_mark_error = await _mark_new_character_greeting_pending_safe(_config_manager, key, "create")
+        characters['猫娘'][key] = catgirl_data
+        _sync_catgirl_field_order(catgirl_data, requested_field_order)
+        # 默认走 free preset：非 free / 非 lanlan.tech 通道由 LLMSessionManager 现有 gate 清空 self.voice_id，不会泄漏给其他 TTS provider。
+        # 从 free_voices['cuteGirl'] 读以避免硬编码漂移；缺失时回退到首个非空预设，再回退到旧版默认值。
+        default_free_voice_id = _get_new_catgirl_default_voice_id()
+        set_reserved(catgirl_data, 'voice_id', default_free_voice_id)
+        publish_cancelled = await asave_characters_with_recent_activation(
+            _config_manager, characters, key,
+        )
+        pending_mark_ok, pending_mark_error = await _mark_new_character_greeting_pending_safe(_config_manager, key, "create")
 
-    # Fast path：新增只需为 `key` 这一个 catgirl 分配资源 + 启动线程，不影响其它角色。
-    init_one_catgirl = get_init_one_catgirl()
-    await init_one_catgirl(key, is_new=True)
+        # Fast path：新增只需为 `key` 这一个 catgirl 分配资源 + 启动线程，不影响其它角色。
+        init_one_catgirl = get_init_one_catgirl()
+        await init_one_catgirl(key, is_new=True)
 
-    memory_server_reloaded = await notify_memory_server_reload(
-        reason=f"新角色: {key}",
-        resume_derived_task_names=(key,),
-    )
+        memory_server_reloaded = await notify_memory_server_reload(
+            reason=f"新角色: {key}",
+            resume_derived_task_names=(key,),
+        )
 
-    response: dict = {
-        "success": True,
-        "character_name": key,
-        "memory_server_reloaded": memory_server_reloaded,
-    }
-    if not pending_mark_ok:
-        response["partial_success"] = True
-        response["pending_mark_ok"] = False
-        response["pending_mark_failed"] = True
-        response["pending_mark_error"] = pending_mark_error
-    if publish_cancelled:
-        raise asyncio.CancelledError
-    return response
+        response: dict = {
+            "success": True,
+            "character_name": key,
+            "memory_server_reloaded": memory_server_reloaded,
+        }
+        if not pending_mark_ok:
+            response["partial_success"] = True
+            response["pending_mark_ok"] = False
+            response["pending_mark_failed"] = True
+            response["pending_mark_error"] = pending_mark_error
+        if publish_cancelled:
+            raise asyncio.CancelledError
+        return response
+
+
+def _available_character_name(characters: dict, requested_name: str) -> str:
+    """Select the existing Windows-style collision suffix for a new profile."""
+    catgirls = characters.get('猫娘', {}) if isinstance(characters, dict) else {}
+    catgirls = catgirls if isinstance(catgirls, dict) else {}
+    if requested_name not in catgirls:
+        return requested_name
+    counter = 1
+    while f"{requested_name}({counter})" in catgirls:
+        counter += 1
+    return f"{requested_name}({counter})"
 
 
 @router.put('/catgirl/{name}')
@@ -1426,6 +1446,11 @@ async def delete_catgirl(name: str):
 
 
 async def _delete_catgirl_by_name(name: str):
+    async with character_config_mutation_lock:
+        return await _delete_catgirl_by_name_serialized(name)
+
+
+async def _delete_catgirl_by_name_serialized(name: str):
     _config_manager = get_config_manager()
     characters = await _config_manager.aload_characters()
     if name not in characters.get('猫娘', {}):

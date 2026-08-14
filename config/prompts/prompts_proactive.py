@@ -2439,46 +2439,6 @@ Resposta:
 }
 
 
-MUSIC_REQUEST_PENDING_PROMPTS = {
-    "zh": (
-        "音乐模块已接管本轮明确的播放请求，正在自动搜索，并会在确认结果可播放后启动播放器。"
-        "本轮只需简短表示正在处理；不要询问版本，不要声称已经开始播放，也不要再次调用音乐播放工具。"
-    ),
-    "zh-TW": (
-        "音樂模組已接管本輪明確的播放請求，正在自動搜尋，並會在確認結果可播放後啟動播放器。"
-        "本輪只需簡短表示正在處理；不要詢問版本，不要聲稱已經開始播放，也不要再次呼叫音樂播放工具。"
-    ),
-    "en": (
-        "The music module has taken over this explicit playback request and is searching automatically. "
-        "It will start the player only after confirming a playable result. Briefly acknowledge that the request "
-        "is being handled; do not ask which version, claim playback has started, or call the music playback tool again."
-    ),
-    "ja": (
-        "音楽モジュールが今回の明確な再生リクエストを引き受け、自動検索しています。再生可能な結果を確認してからプレーヤーを起動します。"
-        "このターンでは処理中であることだけを短く伝えてください。バージョンを尋ねたり、再生開始済みだと言ったり、音楽再生ツールを再度呼び出したりしないでください。"
-    ),
-    "ko": (
-        "음악 모듈이 이번 명시적 재생 요청을 맡아 자동으로 검색 중이며, 재생 가능한 결과를 확인한 뒤 플레이어를 시작합니다. "
-        "이번 응답에서는 처리 중이라고만 짧게 말하세요. 버전을 묻거나 이미 재생이 시작됐다고 말하거나 음악 재생 도구를 다시 호출하지 마세요."
-    ),
-    "ru": (
-        "Музыкальный модуль принял этот явный запрос на воспроизведение и выполняет автоматический поиск. "
-        "Плеер запустится только после подтверждения доступного результата. Кратко сообщите, что запрос обрабатывается; "
-        "не уточняйте версию, не утверждайте, что воспроизведение уже началось, и не вызывайте музыкальный инструмент повторно."
-    ),
-    "es": (
-        "El módulo de música se ha hecho cargo de esta solicitud explícita y está buscando automáticamente. "
-        "El reproductor se iniciará solo tras confirmar un resultado reproducible. Indica brevemente que se está procesando; "
-        "no preguntes qué versión quiere, no afirmes que ya empezó la reproducción ni vuelvas a llamar a la herramienta de música."
-    ),
-    "pt": (
-        "O módulo de música assumiu este pedido explícito e está fazendo a busca automaticamente. "
-        "O player só será iniciado após confirmar um resultado reproduzível. Diga brevemente que o pedido está sendo processado; "
-        "não pergunte qual versão, não afirme que a reprodução já começou e não chame a ferramenta de música novamente."
-    ),
-}
-
-
 def get_proactive_music_keyword_prompt(lang: str = "zh") -> str:
     """
     Get the prompt for music keyword generation
@@ -2489,19 +2449,6 @@ def get_proactive_music_keyword_prompt(lang: str = "zh") -> str:
         PROACTIVE_MUSIC_KEYWORD_PROMPTS.get(
             "en", PROACTIVE_MUSIC_KEYWORD_PROMPTS["zh"]
         ),
-    )
-
-
-def get_music_request_pending_prompt(lang: str = "zh") -> str:
-    lang_lower = str(lang or "").lower()
-    lang_key = (
-        "zh-TW"
-        if lang_lower.startswith(("zh-tw", "zh_tw"))
-        else _normalize_prompt_language(lang)
-    )
-    return MUSIC_REQUEST_PENDING_PROMPTS.get(
-        lang_key,
-        MUSIC_REQUEST_PENDING_PROMPTS["en"],
     )
 
 

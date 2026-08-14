@@ -351,6 +351,56 @@ class NotifyMixin:
         # 自动用最新 _tool_definitions）。
         self._register_builtin_tools()
         self._fire_task(self._sync_tools_to_active_session())
+
+    def set_render_language(self, language: str):
+        """Apply a request/UI fallback without marking it as durable preference."""
+        if not language or not is_supported_language_code(language):
+            return
+        normalized_lang = normalize_language_code(language, format='full')
+        self._conversation_render_language = normalized_lang
+        if getattr(self, '_user_language_explicit', False):
+            return
+        # Deliberately unconditional, mirroring set_user_language.  A "skip the
+        # repeat" optimisation was tried and removed: the fields are assigned
+        # before the registry call and the wire push is fire-and-forget with
+        # suppressed errors, so no cheap local check can prove the tools were
+        # actually applied -- and a wrong skip strands stale tool definitions
+        # with no way back.  The call sites (ws language_update, request
+        # absorption) are low frequency, so the redundant work is not worth that
+        # class of bug.
+        self.user_language = normalized_lang
+        self._conversation_turn_language = normalized_lang
+        self._set_conversation_turn_language(normalized_lang)
+        self._register_builtin_tools()
+        self._fire_task(self._sync_tools_to_active_session())
+
+    def clear_user_language_preference(
+        self,
+        render_language: Optional[str] = None,
+    ) -> None:
+        """Clear durable language evidence and optionally apply a UI fallback.
+
+        A render locale by itself must never revoke an explicit preference.  The
+        caller therefore has to use this separate operation when it has positive
+        evidence that the preference was cleared.  Once the explicit marker is
+        gone, ``set_render_language`` updates the user/turn/tool state together.
+        """
+        self._user_language_explicit = False
+        fallback_language = render_language
+        if not is_supported_language_code(fallback_language):
+            fallback_language = getattr(self, "_conversation_render_language", None)
+        if is_supported_language_code(fallback_language):
+            self.set_render_language(fallback_language)
+            return
+
+        # Do not leave the former explicit value behind as a non-explicit
+        # fallback when no render locale is available.
+        self.user_language = None
+        self._conversation_render_language = None
+        self._conversation_turn_language = None
+        self._set_conversation_turn_language(None)
+        self._register_builtin_tools()
+        self._fire_task(self._sync_tools_to_active_session())
     
     def _voice_owner_socket(self):
         """Return the socket holding the voice lease, when it is not the current one.

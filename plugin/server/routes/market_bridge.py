@@ -21,7 +21,7 @@ import time
 import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Iterable, Literal, get_args
+from typing import Any, Iterable, Literal, get_args
 from urllib.parse import quote, urlparse, urlencode
 
 import httpx
@@ -30,10 +30,10 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel, Field, field_validator
 
 from plugin.logging_config import get_logger
+from plugin.core.plugin_layout import resolve_plugin_layout
 from plugin.neko_plugin_cli.public import inspect_package
 from plugin.server.application.install_source import (
     InstallSourceError,
-    InstallSourceManager,
     LockEntry,
     SourceDetailMarket,
     classify_plugin_path,
@@ -42,11 +42,10 @@ from plugin.server.application.install_source import (
 from plugin.server.application.plugin_cli import PluginCliService
 from plugin.server.application.plugin_cli.paths import PluginCliPathPolicy
 from plugin.server.application.plugins.upgrade_support import (
-    backup_path_for,
-    merge_directory_contents,
+    ReplacePluginError,
     plugin_is_running,
     remove_directory,
-    restore_directory,
+    replace_plugin,
     start_plugin_after_upgrade,
     stop_plugin_for_upgrade,
 )
@@ -69,6 +68,7 @@ _BRIDGE_TOKEN: str = secrets.token_urlsafe(32)
 
 # 安装任务存储（内存，重启清空）
 _tasks: dict[str, dict[str, Any]] = {}
+_task_workers: dict[str, asyncio.Task[None]] = {}
 _TASK_TTL_SECONDS = 60 * 60
 _TASK_MAX_ENTRIES = 200
 
@@ -235,6 +235,7 @@ def _cleanup_tasks() -> None:
     ]
     for task_id in expired:
         _tasks.pop(task_id, None)
+        _task_workers.pop(task_id, None)
 
     if len(_tasks) <= _TASK_MAX_ENTRIES:
         return
@@ -245,6 +246,7 @@ def _cleanup_tasks() -> None:
     )
     for task_id, _task in ordered[:overflow]:
         _tasks.pop(task_id, None)
+        _task_workers.pop(task_id, None)
 
 
 def _plugin_config_roots() -> tuple[Path, ...]:
@@ -351,13 +353,14 @@ class MarketTaskStatus(BaseModel):
     total_bytes: int | None = None
     result: dict[str, Any] | None = None
     # v2 (R10.1 / R10.2): error 字段保留 message 以便旧前端展示；新增 error_code
-    # 让前端识别稳定错误码（upgrade_rollback_completed / version_already_at_target / ...）。
+    # 让前端识别稳定错误码（upgrade_rollback_completed / package_id_change / ...）。
     error: str | None = None
     error_code: str | None = None
     created_at: float = 0.0
     completed_at: float | None = None
     install_source_warning: str | None = None
     rollback: dict[str, Any] | None = None
+    cancel_requested: bool = False
 
 
 class MarketInstalledPlugin(BaseModel):
@@ -657,10 +660,11 @@ async def market_install(
         "created_at": time.time(),
         "completed_at": None,
         "rollback": None,
+        "cancel_requested": False,
     }
 
     # 异步执行安装
-    asyncio.create_task(
+    _task_workers[task_id] = asyncio.create_task(
         _execute_install(task_id, payload),
         name=f"market-install-{task_id}",
     )
@@ -685,6 +689,34 @@ async def market_task_status(
     if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
 
+    return MarketTaskStatus(**task)
+
+
+@router.post("/tasks/{task_id}/cancel", response_model=MarketTaskStatus)
+async def cancel_market_install_task(
+    task_id: str,
+    token: str = Query(..., description="Bridge token"),
+):
+    """Request cancellation before the task begins writing plugin files.
+
+    Downloading and verification cooperate with this flag. Once a task has
+    entered a write stage — ``install`` for a fresh install, ``replace`` for the
+    shared replacement transaction that owns stop/backup/deploy/restart —
+    cancelling is rejected so no half-written plugin is left behind.
+    """
+    _verify_token(token)
+    _cleanup_tasks()
+
+    task = _tasks.get(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    if task.get("status") in {"completed", "failed", "canceled"}:
+        raise HTTPException(status_code=409, detail="安装任务已结束")
+    if task.get("stage") in {"install", "replace", "rollback", "completed"}:
+        raise HTTPException(status_code=409, detail="安装已进入写入阶段，无法安全取消")
+
+    task["cancel_requested"] = True
+    task["message"] = "正在取消安装..."
     return MarketTaskStatus(**task)
 
 
@@ -1870,56 +1902,6 @@ async def _ensure_valid_oauth_token(
         return refreshed
 
 
-def _split_version(value: str) -> tuple[list[int], list[str]]:
-    cleaned = (value or "").lstrip("vV").split("+", 1)[0]
-    core_part, _, pre_part = cleaned.partition("-")
-    core = [int(seg) if seg.isdigit() else 0 for seg in core_part.split(".") if seg != ""]
-    pre = pre_part.split(".") if pre_part else []
-    return core, pre
-
-
-def _compare_version(a: str, b: str) -> int:
-    """Return -1/0/1 if ``a`` < / == / > ``b`` (mirrors frontend ``compareVersion``).
-
-    Implements semver §11.4 rules: numeric core compared segment-wise,
-    no-prerelease > with-prerelease, shorter prerelease prefix wins on
-    equal prefixes, numeric prerelease segments sort before alphabetic.
-    """
-
-    core_a, pre_a = _split_version(a)
-    core_b, pre_b = _split_version(b)
-    for index in range(max(len(core_a), len(core_b))):
-        left = core_a[index] if index < len(core_a) else 0
-        right = core_b[index] if index < len(core_b) else 0
-        if left != right:
-            return -1 if left < right else 1
-    if not pre_a and not pre_b:
-        return 0
-    if not pre_a:
-        return 1
-    if not pre_b:
-        return -1
-    for index in range(max(len(pre_a), len(pre_b))):
-        if index >= len(pre_a):
-            return -1
-        if index >= len(pre_b):
-            return 1
-        seg_a, seg_b = pre_a[index], pre_b[index]
-        a_num = seg_a.isdigit()
-        b_num = seg_b.isdigit()
-        if a_num and b_num:
-            na, nb = int(seg_a), int(seg_b)
-            if na != nb:
-                return -1 if na < nb else 1
-        elif a_num:
-            return -1
-        elif b_num:
-            return 1
-        elif seg_a != seg_b:
-            return -1 if seg_a < seg_b else 1
-    return 0
-
-
 def _unlink_if_exists(path: Path) -> None:
     try:
         path.unlink()
@@ -2529,12 +2511,13 @@ async def _execute_install(task_id: str, payload: MarketInstallRequest) -> None:
     }
 
     try:
+        _raise_if_task_cancel_requested(task)
         if payload.mode == "install":
             await _do_install(task, payload, log_ctx)
         elif payload.mode == "upgrade":
             await _do_upgrade(task, payload, log_ctx)
         elif payload.mode == "reinstall":
-            await _do_upgrade(task, payload, log_ctx, allow_same_version=True)
+            await _do_upgrade(task, payload, log_ctx, record_as_reinstall=True)
         else:  # pragma: no cover — Pydantic Literal already enforces this
             raise _TaskError(
                 code="invalid_mode",
@@ -2542,6 +2525,8 @@ async def _execute_install(task_id: str, payload: MarketInstallRequest) -> None:
             )
         await _report_market_install_best_effort(payload, task)
         _finalize_task_success(task, started_at, log_ctx)
+    except _TaskCancelled as exc:
+        _finalize_task_cancelled(task, exc, started_at, log_ctx)
     except _TaskError as exc:
         _finalize_task_failure(task, exc, started_at, log_ctx)
     except Exception as exc:
@@ -2578,6 +2563,10 @@ class _TaskError(Exception):
 
     def __post_init__(self) -> None:
         super().__init__(self.code, self.message)
+
+
+class _TaskCancelled(_TaskError):
+    """Raised at safe checkpoints after a user requests cancellation."""
 
 
 def _finalize_task_success(
@@ -2636,6 +2625,32 @@ def _finalize_task_failure(
     )
 
 
+def _finalize_task_cancelled(
+    task: dict[str, Any],
+    err: _TaskCancelled,
+    started_at: float,
+    log_ctx: dict[str, Any],
+) -> None:
+    """Mark a cooperatively cancelled task as terminal without reporting failure."""
+
+    duration_ms = int((time.monotonic() - started_at) * 1000)
+    task["status"] = "canceled"
+    task["stage"] = "canceled"
+    task["completed_at"] = time.time()
+    task["error"] = None
+    task["error_code"] = err.code
+    task["message"] = err.message
+    logger.info(
+        "market_install_task outcome=cancelled task_id={} mode={} plugin_id={} "
+        "version={} duration_ms={}",
+        log_ctx.get("task_id", ""),
+        log_ctx.get("mode", ""),
+        log_ctx.get("plugin_id", ""),
+        log_ctx.get("version", ""),
+        duration_ms,
+    )
+
+
 _HUMAN_MESSAGES: dict[str, str] = {
     "upgrade_rollback_completed": "升级失败，已回滚到旧版本",
     "upgrade_rollback_incomplete": "升级失败，回滚未完整完成，请检查插件状态",
@@ -2667,7 +2682,36 @@ def _set_task_stage(
     task["message"] = message
 
 
+def _raise_if_task_cancel_requested(task: dict[str, Any]) -> None:
+    if task.get("cancel_requested"):
+        raise _TaskCancelled(code="install_cancelled", message="安装已取消")
+
+
 # ─── install / upgrade flows ─────────────────────────────────────────
+
+
+def _with_market_operation_status(
+    result: dict[str, object],
+    *,
+    operation: Literal["install", "upgrade"],
+    restarted: bool,
+    rollback_status: str,
+) -> dict[str, object]:
+    normalized = {
+        **result,
+        "operation": operation,
+        "restarted": restarted,
+        "rollback_status": rollback_status,
+    }
+    install_result = normalized.get("install")
+    if isinstance(install_result, dict):
+        normalized["install"] = {
+            **install_result,
+            "operation": operation,
+            "restarted": restarted,
+            "rollback_status": rollback_status,
+        }
+    return normalized
 
 
 async def _do_install(
@@ -2693,19 +2737,32 @@ async def _do_install(
     package_path: Path | None = None
     try:
         package_path = await _download_package(payload.package_url, task)
+    except _TaskCancelled:
+        raise
     except Exception as exc:
+        _raise_if_task_cancel_requested(task)
         raise _TaskError(code="download_failed", message=str(exc)) from exc
 
     try:
+        _raise_if_task_cancel_requested(task)
         try:
-            sha_check = _verify_sha256_file(
+            _set_task_stage(
+                task,
+                status="verifying",
+                stage="verify",
+                progress=0.7,
+                message="正在校验文件完整性...",
+            )
+            sha_check = await asyncio.to_thread(
+                _verify_sha256_file,
                 package_path,
                 payload.package_sha256,
-                task,
             )
         except ValueError as exc:
+            _raise_if_task_cancel_requested(task)
             raise _TaskError(code="package_hash_mismatch", message=str(exc)) from exc
         log_ctx["package_sha256_check"] = sha_check
+        _raise_if_task_cancel_requested(task)
 
         _set_task_stage(
             task,
@@ -2738,6 +2795,12 @@ async def _do_install(
         _cleanup_download_file(package_path)
 
     _post_install_payload_check(payload, result)
+    result = _with_market_operation_status(
+        result,
+        operation="install",
+        restarted=False,
+        rollback_status="not_needed",
+    )
 
     task["progress"] = 1.0
     task["message"] = "安装成功"
@@ -2752,29 +2815,20 @@ async def _do_upgrade(
     payload: MarketInstallRequest,
     log_ctx: dict[str, Any],
     *,
-    allow_same_version: bool = False,
+    record_as_reinstall: bool = False,
 ) -> None:
-    """Upgrade an installed market plugin (design §3.4.3).
+    """Replace an installed Market plugin through the shared file transaction.
 
-    Steps (numbered to match design):
-      1. find active market entry; reject if missing
-      2. compare versions; reject if equal (unless reinstall)
-      3. lifecycle stop (if running) — currently a no-op stub since the
-         plugin loader does not expose a stable stop/start API at this
-         layer. We keep the hook so downstream wiring can implement it
-         without touching this control flow.
-      4. rename existing dir → ``<dir>.bak.<utc_micro_ts>``
-      5. download + verify sha256
-      6. unpack to original directory + record_market_upgrade
-      7. lifecycle start (if was running)
-      8. async cleanup of backup dir
+    Market owns artifact download, hash verification and source provenance.
+    The shared replacement module owns stop, backup, deployment, restart and
+    directory rollback, exactly as it does for locally imported packages.
     """
 
     requested_plugin_id = payload.plugin_id or ""
-    target_version = payload.version or ""
     expected_plugin_id = payload.expected_plugin_toml_id or requested_plugin_id
 
-    # Step 1: probe active lock entry.
+    _raise_if_task_cancel_requested(task)
+
     mgr = get_install_source_manager()
     if mgr is None:
         raise _TaskError(
@@ -2791,83 +2845,10 @@ async def _do_upgrade(
         )
     installed_plugin_id = entry.plugin_id
 
-    # Step 2: version-ordering guard (skipped for reinstall).
-    #
-    # Upgrade requests must advance the version. Without comparing values the
-    # old equality check let a stable target downgrade an installed beta
-    # (e.g. installed=2.0.0-beta, target=1.9.0) through the backup/unpack
-    # path and recorded it as an upgrade. ``_compare_version`` follows the
-    # same semver §11.4 rules as the frontend ``compareVersion`` helper so
-    # the gate is consistent across both sides.
-    current_version = ""
-    if isinstance(entry.source_detail, SourceDetailMarket):
-        current_version = entry.source_detail.version
-    if not allow_same_version and current_version:
-        order = _compare_version(target_version, current_version)
-        if order == 0:
-            raise _TaskError(
-                code="version_already_at_target",
-                message=(
-                    f"plugin {installed_plugin_id!r} is already at version {target_version!r}"
-                ),
-            )
-        if order < 0:
-            raise _TaskError(
-                code="upgrade_target_not_greater",
-                message=(
-                    f"upgrade target {target_version!r} is not greater than "
-                    f"installed {current_version!r}"
-                ),
-            )
-
     path_policy = PluginCliPathPolicy.from_settings()
     plugin_dir = (path_policy.user_plugins_root / entry.directory_name).resolve()
-    backup_dir = backup_path_for(plugin_dir)
-    rollback_steps: list[Callable[[], Awaitable[None]]] = []
-    was_running = await plugin_is_running(installed_plugin_id)
-
-    # Step 3: lifecycle stop.
-    if was_running:
-        _set_task_stage(
-            task,
-            status="installing",
-            stage="stop_old",
-            progress=0.05,
-            message="正在停止旧版本插件...",
-        )
-        await stop_plugin_for_upgrade(installed_plugin_id)
-
-    # Step 4: rename old dir → backup.
+    package_path: Path | None = None
     try:
-        _set_task_stage(
-            task,
-            status="installing",
-            stage="backup_old",
-            progress=0.08,
-            message="正在备份旧版本...",
-        )
-        await asyncio.to_thread(backup_dir.parent.mkdir, parents=True, exist_ok=True)
-        await asyncio.to_thread(os.rename, plugin_dir, backup_dir)
-        rollback_steps.append(_make_restore_dir_step(backup_dir, plugin_dir))
-        task["rollback"] = {
-            "prepared": True,
-            "backup_dir": str(backup_dir),
-            "restored": False,
-        }
-    except OSError as exc:
-        rollback_ok = await _run_rollback(
-            task if rollback_steps else None,
-            rollback_steps,
-            was_running,
-            installed_plugin_id,
-        )
-        raise _TaskError(
-            code=("upgrade_rollback_completed" if rollback_ok else "upgrade_rollback_incomplete"),
-            message=f"无法备份旧目录: {exc}",
-        ) from exc
-
-    try:
-        # Step 5: download + verify sha256.
         _set_task_stage(
             task,
             status="downloading",
@@ -2875,125 +2856,178 @@ async def _do_upgrade(
             progress=0.1,
             message="正在下载新版本...",
         )
-        package_path: Path | None = None
         try:
             package_path = await _download_package(payload.package_url, task)
+        except _TaskCancelled:
+            raise
         except Exception as exc:
+            _raise_if_task_cancel_requested(task)
             raise _TaskError(code="download_failed", message=str(exc)) from exc
+
+        _raise_if_task_cancel_requested(task)
         try:
-            try:
-                sha_check = _verify_sha256_file(
-                    package_path,
-                    payload.package_sha256,
-                    task,
-                )
-            except ValueError as exc:
-                raise _TaskError(
-                    code="package_hash_mismatch",
-                    message=str(exc),
-                ) from exc
-            log_ctx["package_sha256_check"] = sha_check
+            _set_task_stage(
+                task,
+                status="verifying",
+                stage="verify",
+                progress=0.7,
+                message="正在校验文件完整性...",
+            )
+            sha_check = await asyncio.to_thread(
+                _verify_sha256_file,
+                package_path,
+                payload.package_sha256,
+            )
+        except ValueError as exc:
+            _raise_if_task_cancel_requested(task)
+            raise _TaskError(code="package_hash_mismatch", message=str(exc)) from exc
+        log_ctx["package_sha256_check"] = sha_check
+        _raise_if_task_cancel_requested(task)
 
+        try:
             inspected = await asyncio.to_thread(inspect_package, package_path)
-            package_id = str(inspected.package_id).strip()
-            if (
-                not package_id
-                or package_id in {".", ".."}
-                or "/" in package_id
-                or "\\" in package_id
-            ):
-                raise _TaskError(
-                    code="install_failed",
-                    message=f"invalid package id: {package_id!r}",
-                )
-            # Legacy rows have no trustworthy package/profile key. Do not use
-            # an incoming-named directory as proof of ownership: it may be
-            # stale or belong to another package. Historical single-plugin
-            # packages used plugin_id as package_id, so ambiguous renames are
-            # rejected against that conservative baseline.
-            installed_package_id = getattr(entry, "package_id", "") or installed_plugin_id
-            if package_id != installed_package_id:
-                raise _TaskError(
-                    code="package_id_change",
-                    message=(
-                        "plugin identity mismatch: package id changes are not supported during upgrade: "
-                        f"installed={installed_package_id!r} incoming={package_id!r}"
-                    ),
-                )
-            profile_dir = (path_policy.package_profiles_root / package_id).resolve()
-            profile_backup_dir = backup_path_for(profile_dir)
-            if profile_dir.exists():
-                await asyncio.to_thread(profile_backup_dir.parent.mkdir, parents=True, exist_ok=True)
-                await asyncio.to_thread(os.rename, profile_dir, profile_backup_dir)
-                rollback_steps.append(_make_restore_dir_step(profile_backup_dir, profile_dir))
-                task["rollback"]["profile_backup_dir"] = str(profile_backup_dir)
-
-            # Step 6: unpack + record_market_upgrade (single atomic call).
-            _set_task_stage(
-                task,
-                status="installing",
-                stage="install",
-                progress=0.8,
-                message="正在写入新版本...",
-            )
-
-            market_override = _build_market_override(
-                payload,
-                mode="reinstall" if allow_same_version else "upgrade",
-                directory_name=entry.directory_name,
-            )
-
-            try:
-                result = await _cli_service.upload_and_install(
-                    filename=_extract_filename(payload.package_url),
-                    package_path=str(package_path),
-                    on_conflict="fail",  # backup already moved aside
-                    install_source_override=market_override,
-                )
-            except InstallSourceError as exc:
-                if exc.code == "lock_write_failed":
-                    raise _TaskError(
-                        code="lock_write_failed",
-                        message=str(exc.message),
-                    ) from exc
-                raise _TaskError(
-                    code="upgrade_rollback_completed",
-                    message=str(exc.message),
-                ) from exc
-        finally:
-            _cleanup_download_file(package_path)
-
-        # ``upload_and_install`` has persisted the replacement Market entry.
-        # Rollback steps run in reverse order, so placing this first restores
-        # metadata only after the old plugin/profile directories are back.
-        rollback_steps.insert(0, _make_restore_install_source_step(mgr, entry))
-        rollback_steps.append(_make_remove_dir_step(plugin_dir))
-        rollback_steps.append(_make_remove_dir_step(profile_dir))
-
-        if profile_backup_dir.exists():
-            await merge_directory_contents(profile_backup_dir, profile_dir)
-
-        # Step 7: lifecycle start.
-        if was_running:
-            _set_task_stage(
-                task,
-                status="installing",
-                stage="restart",
-                progress=0.92,
-                message="正在启动新版本...",
-            )
-            await start_plugin_after_upgrade(installed_plugin_id, strict=True)
-
-        # Step 8: async cleanup of backup.
-        for cleanup_label, cleanup_dir in (
-            ("plugin", backup_dir),
-            ("profile", profile_backup_dir),
+        except Exception as exc:
+            raise _TaskError(code="install_failed", message=str(exc)) from exc
+        _raise_if_task_cancel_requested(task)
+        package_id = str(inspected.package_id).strip()
+        if (
+            not package_id
+            or package_id in {".", ".."}
+            or "/" in package_id
+            or "\\" in package_id
         ):
-            if cleanup_dir.exists():
-                asyncio.create_task(
-                    _async_remove_dir(cleanup_dir),
-                    name=f"market-upgrade-cleanup-{cleanup_label}-{installed_plugin_id}",
+            raise _TaskError(code="install_failed", message=f"invalid package id: {package_id!r}")
+
+        installed_package_id = getattr(entry, "package_id", "") or installed_plugin_id
+        if package_id != installed_package_id:
+            raise _TaskError(
+                code="package_id_change",
+                message=(
+                    "plugin identity mismatch: package id changes are not supported during replacement: "
+                    f"installed={installed_package_id!r} incoming={package_id!r}"
+                ),
+            )
+        profile_dir = (path_policy.package_profiles_root / package_id).resolve()
+        market_override = _build_market_override(
+            payload,
+            mode="reinstall" if record_as_reinstall else "upgrade",
+            directory_name=entry.directory_name,
+        )
+
+        source_write_attempted = False
+
+        async def install_new() -> dict[str, object]:
+            nonlocal source_write_attempted
+            source_write_attempted = True
+            return await _cli_service.upload_and_install(
+                filename=_extract_filename(payload.package_url),
+                package_path=str(package_path),
+                on_conflict="fail",
+                install_source_override=market_override,
+            )
+
+        async def validate_new() -> None:
+            actual_plugin_id = _read_plugin_toml_id(plugin_dir / "plugin.toml")
+            if actual_plugin_id and actual_plugin_id != installed_plugin_id:
+                raise ValueError(
+                    "installed plugin identity does not match the Market replacement target"
                 )
+
+        async def start(plugin_id: str) -> None:
+            await start_plugin_after_upgrade(plugin_id, strict=True)
+
+        def mark_rollback_running() -> None:
+            _set_task_stage(
+                task,
+                status="installing",
+                stage="rollback",
+                progress=0.9,
+                message="安装失败，正在回滚...",
+            )
+            task["rollback"] = {
+                "prepared": True,
+                "restored": False,
+                "running": True,
+            }
+
+        # Last cancellable point: everything below hands the plugin directory
+        # to the shared replacement transaction, which owns stop/backup/deploy/
+        # restart. Cancelling mid-transaction would mean tearing down a partly
+        # written install, so the cancel endpoint rejects the ``replace`` stage.
+        _raise_if_task_cancel_requested(task)
+        _set_task_stage(
+            task,
+            status="installing",
+            stage="replace",
+            progress=0.8,
+            message="正在写入新版本...",
+        )
+        task["rollback"] = {"prepared": True, "restored": False}
+        try:
+            replacement = await replace_plugin(
+                layout=resolve_plugin_layout(installed_plugin_id, plugin_dir),
+                install_new=install_new,
+                validate_new=validate_new,
+                is_running=plugin_is_running,
+                stop=stop_plugin_for_upgrade,
+                start=start,
+                cleanup_backup=_async_remove_dir,
+                additional_targets=(profile_dir,),
+                preserve_targets=(profile_dir,),
+                on_rollback_start=mark_rollback_running,
+            )
+        except ReplacePluginError as exc:
+            source_restored = True
+            restore_source = getattr(mgr, "restore_entry_for_rollback", None)
+            if source_write_attempted and callable(restore_source):
+                try:
+                    await asyncio.to_thread(restore_source, entry)
+                except Exception as restore_exc:
+                    source_restored = False
+                    logger.error(
+                        "market install source rollback failed plugin_id={} err={}",
+                        installed_plugin_id,
+                        restore_exc,
+                    )
+            rollback_ok = exc.rollback_status == "completed" and source_restored
+            cause_code = exc.cause.code if isinstance(exc.cause, InstallSourceError) else None
+            cause_message = (
+                str(exc.cause.message)
+                if isinstance(exc.cause, InstallSourceError)
+                else str(exc.cause)
+            )
+            task["rollback"] = {
+                "prepared": True,
+                "restored": rollback_ok,
+                "running": False,
+                "cause_code": cause_code,
+            }
+            raise _TaskError(
+                code=(
+                    cause_code
+                    if rollback_ok and cause_code is not None
+                    else "upgrade_rollback_completed"
+                    if rollback_ok
+                    else "upgrade_rollback_incomplete"
+                ),
+                message=(
+                    f"升级失败已回滚: {cause_message}"
+                    if rollback_ok
+                    else f"升级失败且回滚未完整完成: {cause_message}"
+                ),
+            ) from exc
+
+        result = _with_market_operation_status(
+            replacement.install_result,
+            operation="upgrade",
+            restarted=replacement.restarted,
+            rollback_status=replacement.rollback_status,
+        )
+        task["rollback"] = {
+            "prepared": True,
+            "backup_dir": str(replacement.backup_dir),
+            "restored": False,
+        }
 
         task["progress"] = 1.0
         task["stage"] = "completed"
@@ -3002,33 +3036,8 @@ async def _do_upgrade(
 
         if isinstance(result, dict) and "install_source_warning" in result:
             task["install_source_warning"] = result["install_source_warning"]
-
-    except _TaskError as exc:
-        rollback_ok = await _run_rollback(task, rollback_steps, was_running, installed_plugin_id)
-        if rollback_steps and exc.code not in (
-            "version_already_at_target",
-            "plugin_not_installed_for_upgrade",
-        ):
-            raise _TaskError(
-                code=("upgrade_rollback_completed" if rollback_ok else "upgrade_rollback_incomplete"),
-                message=(
-                    f"升级失败已回滚: {exc.message}"
-                    if rollback_ok
-                    else f"升级失败且回滚未完整完成: {exc.message}"
-                ),
-            ) from exc
-        raise
-    except Exception as exc:
-        # Other (network / sha256 / unpack) failures collapse into one code.
-        rollback_ok = await _run_rollback(task, rollback_steps, was_running, installed_plugin_id)
-        raise _TaskError(
-            code=("upgrade_rollback_completed" if rollback_ok else "upgrade_rollback_incomplete"),
-            message=(
-                f"升级失败已回滚: {exc}"
-                if rollback_ok
-                else f"升级失败且回滚未完整完成: {exc}"
-            ),
-        ) from exc
+    finally:
+        _cleanup_download_file(package_path)
 
 
 def _build_market_override(
@@ -3069,19 +3078,10 @@ def _build_market_override(
 def _verify_sha256_file(
     path: Path,
     expected_hash: str | None,
-    task: dict[str, Any],
 ) -> Literal["passed", "mismatch"]:
     """Verify sha256 from a downloaded file; raise ValueError on mismatch."""
 
     raw = _normalize_required_sha256(expected_hash)
-
-    _set_task_stage(
-        task,
-        status="verifying",
-        stage="verify",
-        progress=0.7,
-        message="正在校验文件完整性...",
-    )
 
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -3149,47 +3149,6 @@ def _post_install_payload_check(
         )
 
 
-# ─── lifecycle / rollback helpers ─────────────────────────────────────
-
-
-def _make_restore_dir_step(
-    backup_dir: Path,
-    target_dir: Path,
-) -> Callable[[], Awaitable[None]]:
-    """Build a rollback step that renames ``backup_dir`` back to ``target_dir``."""
-
-    async def _step() -> None:
-        await restore_directory(backup_dir, target_dir)
-
-    return _step
-
-
-def _make_remove_dir_step(target_dir: Path) -> Callable[[], Awaitable[None]]:
-    """Build a rollback step that removes a directory, ignoring missing.
-
-    Used for the *new* directory after upload_and_install succeeds; if a
-    later step (lifecycle start) fails we rmtree the new dir to make room
-    for the backup-restore step to rename the old one back.
-    """
-
-    async def _step() -> None:
-        await remove_directory(target_dir)
-
-    return _step
-
-
-def _make_restore_install_source_step(
-    manager: InstallSourceManager,
-    entry: LockEntry,
-) -> Callable[[], Awaitable[None]]:
-    """Build a rollback step that restores the exact pre-upgrade lock row."""
-
-    async def _step() -> None:
-        await asyncio.to_thread(manager.restore_entry_for_rollback, entry)
-
-    return _step
-
-
 async def _async_remove_dir(target_dir: Path) -> None:
     """Async best-effort rmtree for backup cleanup."""
 
@@ -3197,57 +3156,6 @@ async def _async_remove_dir(target_dir: Path) -> None:
         await remove_directory(target_dir)
     except Exception as exc:  # pragma: no cover - platform-specific cleanup failure
         logger.warning("backup cleanup failed for {}: {}", target_dir, exc)
-
-
-async def _run_rollback(
-    task: dict[str, Any] | None,
-    rollback_steps: list[Callable[[], Awaitable[None]]],
-    was_running: bool,
-    plugin_id: str,
-) -> bool:
-    """Execute rollback steps in reverse order, then re-start old plugin.
-
-    Each step is wrapped in try/except so one failure does not stop the
-    rest from running. The returned value includes the non-strict restart
-    result so callers never report a complete rollback when the old plugin
-    did not resume running.
-    """
-
-    if task is not None:
-        _set_task_stage(
-            task,
-            status="installing",
-            stage="rollback",
-            progress=0.9,
-            message="安装失败，正在回滚...",
-        )
-        rollback_info = dict(task.get("rollback") or {})
-        rollback_info["running"] = True
-        rollback_info["restored"] = False
-        task["rollback"] = rollback_info
-
-    rollback_ok = True
-    for step in reversed(rollback_steps):
-        try:
-            await step()
-        except Exception as exc:
-            rollback_ok = False
-            logger.error(
-                "rollback step failed plugin_id={} err={}",
-                plugin_id,
-                exc,
-            )
-    if was_running:
-        restarted = await start_plugin_after_upgrade(plugin_id, strict=False)
-        rollback_ok = rollback_ok and restarted
-    if task is not None:
-        rollback_info = dict(task.get("rollback") or {})
-        rollback_info["running"] = False
-        rollback_info["restored"] = rollback_ok
-        task["rollback"] = rollback_info
-    return rollback_ok
-
-
 def _utc_iso_now() -> str:
     """Current UTC time in ISO 8601 with microsecond precision and ``Z`` suffix."""
 
@@ -3257,6 +3165,7 @@ def _utc_iso_now() -> str:
 async def _download_package(url: str, task: dict[str, Any]) -> Path:
     """Download a plugin package to a temp file with progress updates."""
 
+    _raise_if_task_cancel_requested(task)
     started_at = time.monotonic()
     download_dir = PluginCliPathPolicy.from_settings().package_artifacts_root / ".downloads"
     download_dir.mkdir(parents=True, exist_ok=True)
@@ -3290,6 +3199,7 @@ async def _download_package(url: str, task: dict[str, Any]) -> Path:
 
                 with package_path.open("wb") as handle:
                     async for chunk in response.aiter_bytes(chunk_size=65536):
+                        _raise_if_task_cancel_requested(task)
                         handle.write(chunk)
                         downloaded += len(chunk)
                         task["downloaded_bytes"] = downloaded

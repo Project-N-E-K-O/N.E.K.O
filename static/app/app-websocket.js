@@ -641,267 +641,6 @@
         dispatchMusicPlayUrlResponse(response, 'websocket');
     }
 
-    function showMusicRequestFailure(response) {
-        if (typeof window.showStatusToast !== 'function') return;
-        var errorCode = (response && response.error_code) || 'track_not_found';
-        var query = (response && response.query) || '';
-        var message;
-        if (errorCode === 'cookie_invalid') {
-            message = (window.t && window.t('music.cookieExpired')) || '音乐Cookie已失效';
-        } else if (errorCode === 'login_required') {
-            message = (window.t && window.t('music.loginRequired')) || '请先配置网易云音乐 Cookie';
-        } else if (errorCode === 'playlist_ambiguous') {
-            message = (window.t && window.t('music.playlistAmbiguous')) || '存在重名歌单，请提供更明确的歌单名';
-        } else if (errorCode === 'source_empty') {
-            message = (window.t && window.t('music.sourceEmpty')) || '该音乐来源暂无可播放歌曲';
-        } else if (errorCode === 'upstream_error' || errorCode === 'playback_failed') {
-            message = (window.t && window.t('music.searchFailed')) || '音乐搜索失败';
-        } else {
-            message = (window.t && window.t('music.notFound', {
-                    query: query,
-                    defaultValue: '找不到歌曲: ' + query
-                })) || ('找不到歌曲: ' + query);
-        }
-        window.showStatusToast(message, 3000);
-    }
-
-    function reportMusicRequestPlaybackFailure(response) {
-        var requestId = Number(response && response.request_id);
-        if (!Number.isFinite(requestId) || requestId <= 0) return;
-        var socket = S.socket;
-        if (!socket || socket.readyState !== WebSocket.OPEN) return;
-        try {
-            socket.send(JSON.stringify({
-                action: 'music_request_playback_failed',
-                request_id: requestId
-            }));
-        } catch (error) {
-            console.warn('[Music] 上报候选播放失败异常:', error);
-        }
-    }
-
-    async function dispatchMusicPlayCandidatesResponse(response, reason) {
-        var tracks = response && Array.isArray(response.tracks) ? response.tracks : [];
-        for (var index = 0; index < tracks.length; index++) {
-            if (response._clientDispatchEpoch !== window._musicCandidateDispatchEpoch) {
-                return false;
-            }
-            var track = tracks[index];
-            if (!track || !track.url) continue;
-            var candidateKey = getMusicPlayUrlClaimKey(track);
-            var existingClaim = getValidMusicPlayUrlClaim(candidateKey);
-            if (existingClaim && existingClaim.sender !== MUSIC_PLAY_URL_SENDER_ID) {
-                console.log('[Music] 跳过用户点歌候选：其他窗口已接管播放', track.url);
-                return false;
-            }
-            var candidateClaimToken = claimMusicPlayUrl(candidateKey);
-            var dispatchResult;
-            try {
-                if (typeof window.dispatchMusicPlayDetailed === 'function') {
-                    dispatchResult = await window.dispatchMusicPlayDetailed(track, {
-                        source: 'user',
-                        requestId: response.request_id
-                    });
-                } else if (typeof window.dispatchMusicPlay === 'function') {
-                    var accepted = await window.dispatchMusicPlay(track, {
-                        source: 'user',
-                        requestId: response.request_id
-                    });
-                    if (accepted === 'queued') {
-                        if (response._clientDispatchEpoch !== window._musicCandidateDispatchEpoch) {
-                            if (typeof window.cancelQueuedMusicDispatch === 'function') {
-                                window.cancelQueuedMusicDispatch(response.request_id);
-                            }
-                            releaseMusicPlayUrlClaim(candidateKey, candidateClaimToken);
-                            return false;
-                        }
-                        console.log('[Music] 用户点歌仍在等待播放器接口就绪');
-                        return 'queued';
-                    }
-                    dispatchResult = {
-                        ok: accepted === true,
-                        canTryNextCandidate: false
-                    };
-                } else {
-                    console.warn('[Music] 没有可用的音乐派发接口');
-                    releaseMusicPlayUrlClaim(candidateKey, candidateClaimToken);
-                    break;
-                }
-            } catch (error) {
-                console.warn('[Music] 用户点歌派发异常，尝试下一条候选:', error);
-                dispatchResult = { ok: false, canTryNextCandidate: true };
-            }
-            if (response._clientDispatchEpoch !== window._musicCandidateDispatchEpoch) {
-                releaseMusicPlayUrlClaim(candidateKey, candidateClaimToken);
-                return false;
-            }
-            if (dispatchResult && dispatchResult.ok === true) {
-                return true;
-            }
-            releaseMusicPlayUrlClaim(candidateKey, candidateClaimToken);
-            if (!dispatchResult || dispatchResult.canTryNextCandidate !== true) {
-                break;
-            }
-            console.warn('[Music] 用户点歌候选不可用，尝试下一条:', track.url, reason);
-        }
-        if (response._clientDispatchEpoch === window._musicCandidateDispatchEpoch) {
-            reportMusicRequestPlaybackFailure(response);
-            showMusicRequestFailure({ error_code: 'playback_failed' });
-        }
-        return false;
-    }
-
-    function queueMusicPlayCandidatesResponse(response, reason) {
-        var previous = window._musicCandidateDispatchQueue || Promise.resolve();
-        var queued = previous.catch(function () {}).then(function () {
-            if (response._clientDispatchEpoch !== window._musicCandidateDispatchEpoch) {
-                return false;
-            }
-            return dispatchMusicPlayCandidatesResponse(response, reason);
-        }).catch(function (error) {
-            console.warn('[Music] 候选派发队列异常:', error);
-            if (response._clientDispatchEpoch === window._musicCandidateDispatchEpoch) {
-                try {
-                    reportMusicRequestPlaybackFailure(response);
-                    showMusicRequestFailure({ error_code: 'playback_failed' });
-                } catch (failureError) {
-                    console.warn('[Music] 候选派发失败提示异常:', failureError);
-                }
-            }
-            return false;
-        });
-        window._musicCandidateDispatchQueue = queued;
-    }
-
-    function resetMusicCandidateRequestScope(scope, force) {
-        var nextScope = String(scope || '');
-        if (!force && window._musicCandidateRequestScope === nextScope) return;
-        if (typeof window.cancelPendingMusicMediaReady === 'function') {
-            window.cancelPendingMusicMediaReady(Number.MAX_SAFE_INTEGER);
-        }
-        if (typeof window.cancelQueuedMusicDispatch === 'function') {
-            window.cancelQueuedMusicDispatch(Number.MAX_SAFE_INTEGER);
-        }
-        window._musicCandidateRequestScope = nextScope;
-        window._latestMusicCandidateRequestId = 0;
-        window._pendingMusicCandidateRequestId = 0;
-        window._musicCandidateDispatchEpoch = (window._musicCandidateDispatchEpoch || 0) + 1;
-    }
-
-    function handleMusicRequestStartedResponse(response) {
-        var requestId = Number(response && response.request_id);
-        if (!Number.isFinite(requestId) || requestId <= 0) {
-            console.warn('[Music] 忽略缺少有效 request_id 的开始响应');
-            return;
-        }
-        var latestRequestId = Number(window._latestMusicCandidateRequestId || 0);
-        if (latestRequestId > 0 && requestId <= latestRequestId) return;
-        if (typeof window.cancelPendingMusicMediaReady === 'function') {
-            var mediaCancelStatus = window.cancelPendingMusicMediaReady(requestId);
-            if (mediaCancelStatus === 'stale') return;
-        }
-        if (typeof window.cancelQueuedMusicDispatch === 'function') {
-            var queuedCancelStatus = window.cancelQueuedMusicDispatch(requestId);
-            if (queuedCancelStatus === 'stale') return;
-        }
-        window._latestMusicCandidateRequestId = requestId;
-        window._pendingMusicCandidateRequestId = requestId;
-        window._musicCandidateDispatchEpoch = (window._musicCandidateDispatchEpoch || 0) + 1;
-    }
-
-    function handleMusicPlayCandidatesResponse(response) {
-        var tracks = response && Array.isArray(response.tracks) ? response.tracks : [];
-        if (tracks.length === 0) return;
-        var requestId = Number(response.request_id);
-        if (!Number.isFinite(requestId) || requestId <= 0) {
-            console.warn('[Music] 忽略缺少有效 request_id 的候选响应');
-            return;
-        }
-        var latestRequestId = Number(window._latestMusicCandidateRequestId || 0);
-        var pendingRequestId = Number(window._pendingMusicCandidateRequestId || 0);
-        if (
-            latestRequestId > 0
-            && (
-                requestId < latestRequestId
-                || (requestId === latestRequestId && requestId !== pendingRequestId)
-            )
-        ) return;
-        if (typeof window.cancelPendingMusicMediaReady === 'function') {
-            var mediaCancelStatus = window.cancelPendingMusicMediaReady(requestId);
-            if (mediaCancelStatus === 'stale') return;
-        }
-        if (typeof window.cancelQueuedMusicDispatch === 'function') {
-            var queuedCancelStatus = window.cancelQueuedMusicDispatch(requestId);
-            if (queuedCancelStatus === 'stale') return;
-        }
-        window._latestMusicCandidateRequestId = requestId;
-        window._pendingMusicCandidateRequestId = 0;
-        window._musicCandidateDispatchEpoch = (window._musicCandidateDispatchEpoch || 0) + 1;
-        response._clientDispatchEpoch = window._musicCandidateDispatchEpoch;
-        var firstTrack = tracks[0];
-        var key = getMusicPlayUrlClaimKey(firstTrack);
-        getMusicPlayUrlCoordChannel();
-
-        if (isStandaloneChatPageForMusic() && !hasLocalMusicOwnerOrPending()) {
-            setTimeout(function () {
-                if (shouldSkipMusicPlayUrlForOtherWindow(key)) return;
-                setTimeout(function () {
-                    if (shouldSkipMusicPlayUrlForOtherWindow(key)) return;
-                    queueMusicPlayCandidatesResponse(response, 'chat-fallback');
-                }, MUSIC_PLAY_URL_SECONDARY_CONFIRM_MS);
-            }, getMusicPlayUrlFollowerGraceMs());
-            return;
-        }
-        if (shouldSkipMusicPlayUrlForOtherWindow(key)) return;
-        queueMusicPlayCandidatesResponse(response, 'websocket');
-    }
-
-    function handleMusicRequestFailureResponse(response) {
-        var requestId = Number(response && response.request_id);
-        if (!Number.isFinite(requestId) || requestId <= 0) {
-            console.warn('[Music] 忽略缺少有效 request_id 的失败响应');
-            return;
-        }
-        var latestRequestId = Number(window._latestMusicCandidateRequestId || 0);
-        if (latestRequestId > 0 && requestId < latestRequestId) return;
-        if (typeof window.cancelPendingMusicMediaReady === 'function') {
-            var mediaCancelStatus = window.cancelPendingMusicMediaReady(requestId);
-            if (mediaCancelStatus === 'stale') return;
-        }
-        if (typeof window.cancelQueuedMusicDispatch === 'function') {
-            var queuedCancelStatus = window.cancelQueuedMusicDispatch(requestId);
-            if (queuedCancelStatus === 'stale') return;
-        }
-        window._latestMusicCandidateRequestId = requestId;
-        window._pendingMusicCandidateRequestId = 0;
-        window._musicCandidateDispatchEpoch = (window._musicCandidateDispatchEpoch || 0) + 1;
-        showMusicRequestFailure(response);
-    }
-
-    function handleMusicRequestCancelledResponse(response) {
-        var requestId = Number(response && response.request_id);
-        if (!Number.isFinite(requestId) || requestId <= 0) {
-            console.warn('[Music] 忽略缺少有效 request_id 的取消响应');
-            return;
-        }
-        var latestRequestId = Number(window._latestMusicCandidateRequestId || 0);
-        if (latestRequestId > 0 && requestId < latestRequestId) return;
-        if (typeof window.cancelPendingMusicMediaReady === 'function') {
-            var mediaCancelStatus = window.cancelPendingMusicMediaReady(requestId);
-            if (mediaCancelStatus === 'stale') return;
-        }
-        if (typeof window.cancelQueuedMusicDispatch === 'function') {
-            var queuedCancelStatus = window.cancelQueuedMusicDispatch(requestId);
-            if (queuedCancelStatus === 'stale') return;
-        }
-        window._latestMusicCandidateRequestId = requestId;
-        window._pendingMusicCandidateRequestId = 0;
-        window._musicCandidateDispatchEpoch = (window._musicCandidateDispatchEpoch || 0) + 1;
-        if (typeof window.cancelActiveMusicPlayback === 'function') {
-            window.cancelActiveMusicPlayback();
-        }
-    }
-
     function readNewUserIcebreakerStore() {
         try {
             if (typeof localStorage === 'undefined') return null;
@@ -1694,9 +1433,239 @@
         return v == null ? '' : String(v);
     }
 
+    function getLiveRendererLanguage() {
+        try {
+            if (window.i18next && window.i18next.language) return window.i18next.language;
+            if (window.i18n && window.i18n.language) return window.i18n.language;
+            return localStorage.getItem('i18nextLng') || navigator.language || 'en';
+        } catch (_) {
+            return 'en';
+        }
+    }
+
+    function getConversationLanguageForCurrentCharacter() {
+        try {
+            // Once the server preference has been hydrated, it is authoritative for
+            // this session even when a previous localStorage write failed.
+            if (S.conversationLanguageHydrated === true) {
+                if (S.conversationLanguage) return S.conversationLanguage;
+                return getLiveRendererLanguage();
+            }
+            if (typeof window.getConversationLanguagePreference === 'function') {
+                return window.getConversationLanguagePreference(getWebSocketLanlanName() || '');
+            }
+            if (S.conversationLanguage) return S.conversationLanguage;
+            return getLiveRendererLanguage();
+        } catch (_) {
+            return S.conversationLanguage || 'en';
+        }
+    }
+
+    function getExplicitConversationLanguageForCurrentCharacter() {
+        try {
+            if (S.conversationLanguageHydrated === true) {
+                return S.conversationLanguageExplicit || '';
+            }
+            if (typeof window.getExplicitConversationLanguagePreference === 'function') {
+                return window.getExplicitConversationLanguagePreference(
+                    getWebSocketLanlanName() || ''
+                ) || '';
+            }
+        } catch (_) { /* omit unavailable explicit preference */ }
+        return '';
+    }
+
+    function hydrateConversationLanguage(characterName) {
+        var hydrationId = (Number(S._conversationLanguageHydrationId) || 0) + 1;
+        S._conversationLanguageHydrationId = hydrationId;
+        S.conversationLanguageHydrated = false;
+        var fallback = getConversationLanguageForCurrentCharacter();
+        if (!characterName) {
+            S.conversationLanguage = '';
+            S.conversationLanguageExplicit = '';
+            S.conversationLanguageHydrated = true;
+            return Promise.resolve(fallback);
+        }
+
+        var explicitAtStart = '';
+        var preferenceRevisionAtStart = null;
+        try {
+            if (typeof window.getExplicitConversationLanguagePreference === 'function') {
+                explicitAtStart = window.getExplicitConversationLanguagePreference(characterName) || '';
+            }
+        } catch (_) { /* continue with server hydration */ }
+        try {
+            if (typeof window.getConversationLanguagePreferenceRevision === 'function') {
+                preferenceRevisionAtStart = window.getConversationLanguagePreferenceRevision(characterName);
+            }
+        } catch (_) { /* retain the value-only fence below */ }
+
+        var request = fetch('/api/characters/character/' + encodeURIComponent(characterName) + '/language-preference', {
+            cache: 'no-store'
+        }).then(function (response) {
+            if (!response.ok) throw new Error('HTTP ' + response.status);
+            return response.json();
+        }).then(function (payload) {
+            if (!payload || payload.success !== true) throw new Error('invalid language preference response');
+            var explicitLanguage = typeof payload.language === 'string'
+                ? payload.language.trim()
+                : '';
+            return {
+                language: explicitLanguage,
+                explicitLanguage: explicitLanguage
+            };
+        }).catch(function (error) {
+            console.warn('[ConversationLanguage] preference hydration failed, using UI fallback:', error);
+            return { language: fallback, explicitLanguage: '', requestFailed: true };
+        });
+
+        function applyHydratedConversationLanguage(hydrated) {
+            var resolved = hydrated || {};
+            var degraded = !!(resolved.requestFailed || resolved.timedOut);
+            // A successful empty response proves only that there is no durable
+            // character preference. Its backend effective_language can lag a
+            // URL/localStorage hot switch in this renderer, so resolve the live
+            // renderer locale at application time instead of replaying that
+            // process-level fallback over a newer UI update.
+            var language = resolved.explicitLanguage || (
+                degraded
+                    ? (resolved.language || fallback)
+                    : getLiveRendererLanguage()
+            );
+            if (S._conversationLanguageHydrationId !== hydrationId) return language;
+            var currentExplicit = '';
+            var currentExplicitResolved = false;
+            var preferenceRevisionChanged = false;
+            var localPreferenceOwnsResult = false;
+            try {
+                if (typeof window.getExplicitConversationLanguagePreference === 'function') {
+                    currentExplicit = window.getExplicitConversationLanguagePreference(characterName) || '';
+                    currentExplicitResolved = true;
+                }
+            } catch (_) { /* a newer revision still fences the stale response */ }
+            try {
+                if (
+                    preferenceRevisionAtStart !== null
+                    && typeof window.getConversationLanguagePreferenceRevision === 'function'
+                ) {
+                    preferenceRevisionChanged = (
+                        window.getConversationLanguagePreferenceRevision(characterName)
+                        !== preferenceRevisionAtStart
+                    );
+                }
+            } catch (_) { /* retain the value-only fence below */ }
+            // A revision change covers same-page dispatch:false writes and clears,
+            // including those that win before the timeout. Never let a degraded
+            // result mark that newer state untrusted or let a late response replace it.
+            if (preferenceRevisionChanged) {
+                language = currentExplicitResolved && currentExplicit
+                    ? currentExplicit
+                    : getLiveRendererLanguage();
+                resolved = {
+                    language: language,
+                    explicitLanguage: currentExplicitResolved ? currentExplicit : ''
+                };
+                degraded = false;
+                localPreferenceOwnsResult = true;
+            } else if (!degraded && currentExplicit && currentExplicit !== explicitAtStart) {
+                // Shared storage can expose a newer explicit value before this
+                // document receives its storage event. An unchanged startup cache
+                // must not override a fresh authoritative empty response.
+                resolved = {
+                    language: currentExplicit,
+                    explicitLanguage: currentExplicit
+                };
+                language = currentExplicit;
+            }
+            var effectiveConversationLanguage = resolved.explicitLanguage || '';
+            if (degraded) {
+                try {
+                    if (typeof window.getCachedConversationLanguagePreference === 'function') {
+                        effectiveConversationLanguage = window.getCachedConversationLanguagePreference(
+                            characterName
+                        ) || '';
+                    }
+                } catch (_) { effectiveConversationLanguage = ''; }
+                try {
+                    if (typeof window.markConversationLanguagePreferenceUntrusted === 'function') {
+                        window.markConversationLanguagePreferenceUntrusted(characterName);
+                    }
+                } catch (_) { /* keep hydration fail-soft */ }
+            }
+            // Fresh hydration stores the durable character preference. A degraded
+            // local-cache value may keep this page's templates stable, but it is
+            // not server evidence and must remain render-only.
+            S.conversationLanguage = effectiveConversationLanguage;
+            S.conversationLanguageExplicit = resolved.explicitLanguage || '';
+            S.conversationLanguageHydrated = true;
+            // Only mirror an explicit character preference into the local cache.
+            // effective_language is a UI/global fallback and must remain dynamic.
+            if (
+                !localPreferenceOwnsResult
+                && resolved.explicitLanguage
+                && typeof window.setConversationLanguagePreference === 'function'
+            ) {
+                window.setConversationLanguagePreference(
+                    resolved.explicitLanguage,
+                    characterName,
+                    { dispatch: false, source: 'server' }
+                );
+            } else if (
+                !localPreferenceOwnsResult
+                &&
+                !resolved.requestFailed
+                && !resolved.timedOut
+                && typeof window.clearConversationLanguagePreference === 'function'
+            ) {
+                window.clearConversationLanguagePreference(characterName, {
+                    dispatch: false,
+                    source: 'server'
+                });
+            }
+            if (!localPreferenceOwnsResult && resolved.explicitLanguage) {
+                _syncLanguageToBackend(resolved.explicitLanguage);
+            } else if (
+                !localPreferenceOwnsResult
+                && !resolved.requestFailed
+                && !resolved.timedOut
+            ) {
+                _syncClearedLanguageToBackend(language, characterName);
+            }
+            _sendGreetingCheckIfReady();
+            return language;
+        }
+
+        return Promise.race([
+            request,
+            new Promise(function (resolve) {
+                setTimeout(function () {
+                    resolve({ language: fallback, explicitLanguage: '', timedOut: true });
+                }, 2500);
+            })
+        ]).then(function (hydrated) {
+            var language = applyHydratedConversationLanguage(hydrated);
+            if (hydrated && hydrated.timedOut) {
+                // The timeout keeps startup responsive, but it must not discard a
+                // valid server preference that arrives later for the same character.
+                void request.then(function (lateHydrated) {
+                    if (lateHydrated && !lateHydrated.requestFailed) {
+                        applyHydratedConversationLanguage(lateHydrated);
+                    }
+                });
+            }
+            return language;
+        });
+    }
+
     // Upper bound for the settings-sync gate below: a hung POST must never
     // block session starts or socket-dependent flows for longer than this.
     var SETTINGS_SYNC_GATE_TIMEOUT_MS = 3000;
+
+    function waitForConversationLanguageHydration() {
+        var pending = S._conversationLanguageHydration;
+        if (!pending || typeof pending.then !== 'function') return Promise.resolve();
+        return pending.catch(function () { /* hydration is fail-soft */ });
+    }
 
     /**
      * Refresh the current Core's independent-ASR capability from the same
@@ -1834,9 +1803,9 @@
                 new Promise(function (resolve) { setTimeout(resolve, SETTINGS_SYNC_GATE_TIMEOUT_MS); })
             ]).then(function () {
                 return ensureWebSocketOpenNow(timeoutMs);
-            });
+            }).then(waitForConversationLanguageHydration);
         }
-        return ensureWebSocketOpenNow(timeoutMs);
+        return ensureWebSocketOpenNow(timeoutMs).then(waitForConversationLanguageHydration);
     }
 
     function ensureWebSocketOpenNow(timeoutMs) {
@@ -1998,6 +1967,22 @@
                         msg.voice_input_resource_optimization_enabled = S.voiceInputResourceOptimizationEnabled !== false;
                         handshakeStamped = true;
                     }
+                    if (msg && msg.action === 'start_session') {
+                        var explicitLanguage = typeof getExplicitConversationLanguageForCurrentCharacter === 'function'
+                            ? getExplicitConversationLanguageForCurrentCharacter()
+                            : '';
+                        var renderLanguage = typeof getConversationLanguageForCurrentCharacter === 'function'
+                            ? getConversationLanguageForCurrentCharacter()
+                            : '';
+                        if (explicitLanguage) {
+                            msg.language = explicitLanguage;
+                            handshakeStamped = true;
+                        }
+                        if (renderLanguage) {
+                            msg.render_language = renderLanguage;
+                            handshakeStamped = true;
+                        }
+                    }
                     if (handshakeStamped) {
                         data = JSON.stringify(msg);
                     }
@@ -2049,8 +2034,17 @@
         if (S.socket && S.socket.readyState === WebSocket.OPEN && S.socket.url === wsUrl) {
             return;
         }
-        resetMusicCandidateRequestScope(currentLanlanName, true);
+        // A queued proactive/plugin dispatch belongs to the connection and
+        // character that created it. Invalidate both asynchronous playback
+        // stages before replacing that scope.
+        if (typeof window.cancelPendingMusicMediaReady === 'function') {
+            window.cancelPendingMusicMediaReady();
+        }
+        if (typeof window.cancelQueuedMusicDispatch === 'function') {
+            window.cancelQueuedMusicDispatch();
+        }
 
+        S._conversationLanguageHydration = hydrateConversationLanguage(currentLanlanName);
         // 新连接重置模型就绪标志，等待模型重新加载
         S._modelReady = false;
 
@@ -2063,6 +2057,18 @@
         S.socket.onopen = function () {
             if (S.socket !== _thisSocket) return;
             console.log(window.t('console.websocketConnected'));
+
+            if (S._conversationLanguageClearPending) {
+                var pendingLanguageClear = S._conversationLanguageClearPending;
+                if (pendingLanguageClear.characterName === getWebSocketLanlanName()) {
+                    _syncClearedLanguageToBackend(
+                        getConversationLanguageForCurrentCharacter(),
+                        pendingLanguageClear.characterName
+                    );
+                } else {
+                    S._conversationLanguageClearPending = null;
+                }
+            }
 
             window.dispatchEvent(new CustomEvent('voice-input-socket-open', {
                 detail: { socket: _thisSocket }
@@ -2593,6 +2599,7 @@
                         window.dispatchEvent(new CustomEvent('neko:user-voice-content-received', {
                             detail: {
                                 requestId: resolveAssistantRequestId(response.request_id, response.meta),
+                                text: normalizedVoiceTranscript,
                                 source: 'voice'
                             }
                         }));
@@ -3782,21 +3789,40 @@
                     (async function () {
                         try {
                             var dataUrl = null;
-                            if (typeof window.captureProactiveChatScreenshot === 'function') {
+                            // captureType 由截图函数在抓帧那一刻定好，这里不再二次推断：
+                            // 抓帧是异步的，等到这一步 S 里的流 / 源可能已经换人。
+                            var shotCaptureType = null;
+                            var hasPairedCaptureType = false;
+                            if (window.appProactive
+                                && typeof window.appProactive.captureProactiveChatScreenshotWithSource === 'function') {
+                                var shot = await window.appProactive.captureProactiveChatScreenshotWithSource();
+                                dataUrl = shot && shot.dataUrl ? shot.dataUrl : null;
+                                shotCaptureType = shot ? (shot.captureType || null) : null;
+                                hasPairedCaptureType = true;
+                            } else if (typeof window.captureProactiveChatScreenshot === 'function') {
                                 dataUrl = await window.captureProactiveChatScreenshot();
                             }
                             if (dataUrl && S.socket && S.socket.readyState === WebSocket.OPEN) {
                                 var respMsg = { action: 'screenshot_response', data: dataUrl };
-                                // Determine capture type for correct coordinate mapping
-                                // null = 窗口截图或无法确定 → 不叠加；仅无流无源时默认 'screen'
+                                // null = 窗口截图或无法确定 → 不叠加
                                 var captureType = null;
-                                if (typeof window.detectScreenshotCaptureType === 'function') {
-                                    captureType = window.detectScreenshotCaptureType(
-                                        S.screenCaptureStream, S.selectedScreenSourceId
-                                    );
-                                }
-                                if (captureType === null && !S.screenCaptureStream && !S.selectedScreenSourceId) {
-                                    captureType = 'screen';
+                                if (hasPairedCaptureType) {
+                                    captureType = shotCaptureType;
+                                } else {
+                                    // 旧契约兜底：拿不到带来源的截图函数时只能就地推断。
+                                    if (typeof window.detectScreenshotCaptureType === 'function') {
+                                        captureType = window.detectScreenshotCaptureType(
+                                            S.screenCaptureStream, S.selectedScreenSourceId
+                                        );
+                                    }
+                                    // 这一步必须是独立判断而不是 else：detect 存在但判不出
+                                    // （无流无源的后端整屏兜底）时也要提升成 'screen'。写成
+                                    // else if 会让它只在 detect 缺席时生效，后端把「不带坐标」
+                                    // 当明确的否定信号，于是整屏图变成永久不叠。
+                                    if (captureType === null
+                                        && !S.screenCaptureStream && !S.selectedScreenSourceId) {
+                                        captureType = 'screen';
+                                    }
                                 }
                                 var avatarPos = typeof window.getAvatarScreenPosition === 'function'
                                     ? window.getAvatarScreenPosition(captureType) : null;
@@ -4423,27 +4449,14 @@
                     }
                 // -------- music allowlist add --------
                 } else if (response.type === 'music_allowlist_add') {
-                    if (window.MusicPluginAPI && response.domains) {
-                        console.log('[Music] Received allowlist update from backend:', response.domains);
-                        window.MusicPluginAPI.addAllowlist(response.domains);
+                    if (window.MusicPluginAPI && (response.domains || response.http_urls)) {
+                        console.log('[Music] Received allowlist update from backend:', response.domains, response.http_urls);
+                        window.MusicPluginAPI.addAllowlist(response.domains || [], response.http_urls || []);
                     }
 
                 // -------- music play url --------
                 } else if (response.type === 'music_play_url') {
                     handleMusicPlayUrlResponse(response);
-
-                } else if (response.type === 'music_request_started') {
-                    handleMusicRequestStartedResponse(response);
-
-                } else if (response.type === 'music_play_candidates') {
-                    handleMusicPlayCandidatesResponse(response);
-
-                // -------- user music request failed --------
-                } else if (response.type === 'music_request_failed') {
-                    handleMusicRequestFailureResponse(response);
-
-                } else if (response.type === 'music_request_cancelled') {
-                    handleMusicRequestCancelledResponse(response);
 
                 // -------- repetition_warning --------
                 } else if (response.type === 'repetition_warning') {
@@ -4867,6 +4880,9 @@
             if (!S._greetingCheckPending) _resetGreetingCheckRetry(true);
             return;
         }
+        if (S.conversationLanguageHydrated !== true) {
+            return;
+        }
         if (S._startupGreetingReleasePending) {
             return;
         }
@@ -4879,31 +4895,23 @@
         }
         try {
             if (S.socket && S.socket.readyState === WebSocket.OPEN) {
-                // greeting_check 是 ws 链路上唯一会推 mgr.user_language 的消息。
-                // 后端 set_user_language 见空串就 no-op（保留旧值，旧值是
-                // start_session seed 的全局缓存），所以这里宁可送 navigator
-                // 的 BCP47 也别送空串——至少能纠正 Steam SDK race 失败后留下
-                // 的错误英文（例如 Steam=zh / 系统=en，i18next 还在异步拉
-                // Steam API 时，navigator.language 通常已经是 zh-CN）。
-                var greetingLang = '';
-                try {
-                    if (window.i18next && typeof window.i18next.language === 'string' && window.i18next.language) {
-                        greetingLang = window.i18next.language;
-                    } else if (typeof localStorage !== 'undefined') {
-                        greetingLang = localStorage.getItem('i18nextLng') || '';
-                    }
-                    if (!greetingLang && typeof navigator !== 'undefined' && navigator.language) {
-                        greetingLang = navigator.language;
-                    }
-                } catch (_) { greetingLang = ''; }
+                // UI locale and conversation locale are independent.  Hydration
+                // above resolves the durable per-character preference; only a
+                // character with no explicit choice falls back to the UI locale.
+                var greetingLang = getConversationLanguageForCurrentCharacter();
+                var explicitGreetingLang = typeof getExplicitConversationLanguageForCurrentCharacter === 'function'
+                    ? getExplicitConversationLanguageForCurrentCharacter()
+                    : '';
                 var greetingIsSwitch = !!S._greetingCheckIsSwitch;
                 var greetingReason = S._greetingCheckReason || (greetingIsSwitch ? 'character-switch' : 'ws-open');
-                S.socket.send(JSON.stringify({
+                var greetingMessage = {
                     action: 'greeting_check',
                     is_switch: greetingIsSwitch,
-                    language: greetingLang,
+                    render_language: greetingLang,
                     reason: greetingReason
-                }));
+                };
+                if (explicitGreetingLang) greetingMessage.language = explicitGreetingLang;
+                S.socket.send(JSON.stringify(greetingMessage));
                 S._greetingCheckPending = false;
                 S._greetingCheckIsSwitch = false;
                 S._greetingCheckReason = '';
@@ -4941,17 +4949,12 @@
     window.addEventListener('vrm-model-loaded', _onModelReady);
     window.addEventListener('mmd-model-loaded', _onModelReady);
 
-    // i18next 'languageChanged' → 重新把 i18n 真值同步到后端 mgr.user_language。
-    // 关键场景：socket open 早于 i18next bootstrap 完成时，首次 greeting_check
-    // 用 navigator/localStorage 兜底（可能跟 Steam 真值不同），i18next 异步从
-    // /api/config/steam_language 拉到对的值后 fire 'languageChanged'，这里重发
-    // 一条只携带 language 的 ws 消息，让后端 line 136-139 通用 language handler
-    // 把 mgr.user_language 纠正回真值。不复用 greeting_check action，避免再次
-    // 触发 greeting fire 逻辑——后端任何消息带 language 字段都会先调
-    // set_user_language（main_routers/websocket_router.py:136-139），用任意 action
-    // 即可。
+    // Only the dedicated conversation-language event updates the explicit
+    // template-language preference. UI locale changes still refresh the
+    // render-only fallback used by sessions without an explicit preference.
     function _syncLanguageToBackend(lng) {
         if (!lng || typeof lng !== 'string') return;
+        S._conversationLanguageClearPending = null;
         if (!S.socket || S.socket.readyState !== WebSocket.OPEN) return;
         try {
             S.socket.send(JSON.stringify({
@@ -4962,18 +4965,161 @@
             console.warn('[language_update] send failed:', e);
         }
     }
+    function _syncRenderLanguageToBackend(lng) {
+        if (!lng || typeof lng !== 'string') return;
+        if (!S.socket || S.socket.readyState !== WebSocket.OPEN) return;
+        try {
+            S.socket.send(JSON.stringify({
+                action: 'language_update',
+                render_language: lng,
+            }));
+        } catch (e) {
+            console.warn('[language_update] render language send failed:', e);
+        }
+    }
+    function _syncClearedLanguageToBackend(lng, characterName) {
+        if (!lng || typeof lng !== 'string') return;
+        var currentName = getWebSocketLanlanName() || '';
+        var targetName = characterName || currentName;
+        if (!targetName || targetName !== currentName) return;
+        S._conversationLanguageClearPending = {
+            characterName: targetName
+        };
+        if (!S.socket || S.socket.readyState !== WebSocket.OPEN) return;
+        try {
+            S.socket.send(JSON.stringify({
+                action: 'language_update',
+                clear_language_preference: true,
+                render_language: lng,
+            }));
+            S._conversationLanguageClearPending = null;
+        } catch (e) {
+            console.warn('[language_update] clear language send failed:', e);
+        }
+    }
+    function _applyClearedConversationLanguage(characterName) {
+        var currentName = getWebSocketLanlanName() || '';
+        if (!characterName || characterName !== currentName) return;
+        S._conversationLanguageHydrationId =
+            (Number(S._conversationLanguageHydrationId) || 0) + 1;
+        S.conversationLanguage = '';
+        S.conversationLanguageExplicit = '';
+        S.conversationLanguageHydrated = true;
+        _syncClearedLanguageToBackend(
+            getConversationLanguageForCurrentCharacter(),
+            characterName
+        );
+        _sendGreetingCheckIfReady();
+    }
     if (window.i18next && typeof window.i18next.on === 'function') {
-        window.i18next.on('languageChanged', _syncLanguageToBackend);
+        window.i18next.on('languageChanged', _syncRenderLanguageToBackend);
     } else {
-        // i18next 还没就绪：监听 i18n-i18next.js 完成时 dispatch 的 localechange。
         window.addEventListener('localechange', function () {
             try {
                 var lng = (window.i18next && typeof window.i18next.language === 'string')
                     ? window.i18next.language : '';
-                _syncLanguageToBackend(lng);
+                _syncRenderLanguageToBackend(lng);
             } catch (_) { /* noop */ }
         });
     }
+    window.addEventListener('neko:conversation-language-changed', function (event) {
+        var detail = event && event.detail ? event.detail : {};
+        var currentName = getWebSocketLanlanName() || '';
+        if (!detail.character_name || detail.character_name !== currentName) return;
+        if (!detail.language || typeof detail.language !== 'string') return;
+        S._conversationLanguageHydrationId =
+            (Number(S._conversationLanguageHydrationId) || 0) + 1;
+        S.conversationLanguage = detail.language;
+        S.conversationLanguageExplicit = detail.language;
+        S.conversationLanguageHydrated = true;
+        _syncLanguageToBackend(detail.language);
+        _sendGreetingCheckIfReady();
+    });
+    window.addEventListener('neko:conversation-language-cleared', function (event) {
+        var detail = event && event.detail ? event.detail : {};
+        _applyClearedConversationLanguage(detail.character_name || '');
+    });
+    window.addEventListener('storage', function (event) {
+        var currentName = getWebSocketLanlanName() || '';
+        var expectedKey = currentName
+            ? 'nekoConversationLanguage:' + encodeURIComponent(currentName)
+            : '';
+        var expectedUntrustedKey = currentName
+            ? 'nekoConversationLanguageUntrusted:' + encodeURIComponent(currentName)
+            : '';
+        if (expectedUntrustedKey && event.key === expectedUntrustedKey) {
+            if (event.newValue === '1') {
+                // A failed hydration in another window is weaker evidence than
+                // this window's in-flight or already confirmed server result.
+                // Let an active GET settle, and re-publish a confirmed explicit
+                // value so the sibling marker converges back to trusted state.
+                if (S.conversationLanguageHydrated !== true) return;
+                if (S.conversationLanguageExplicit) {
+                    if (typeof window.setConversationLanguagePreference === 'function') {
+                        window.setConversationLanguagePreference(
+                            S.conversationLanguageExplicit,
+                            currentName,
+                            { dispatch: false, source: 'server' }
+                        );
+                    }
+                    return;
+                }
+                try {
+                    if (typeof window.getCachedConversationLanguagePreference === 'function') {
+                        S.conversationLanguage = window.getCachedConversationLanguagePreference(
+                            currentName
+                        ) || '';
+                    }
+                } catch (_) { S.conversationLanguage = ''; }
+                S.conversationLanguageExplicit = '';
+                S.conversationLanguageHydrated = true;
+                _syncRenderLanguageToBackend(getConversationLanguageForCurrentCharacter());
+                _sendGreetingCheckIfReady();
+                return;
+            }
+            // Marker removal must not cancel stronger in-flight/server evidence.
+            // A successful sibling write leaves a trusted explicit cache that can
+            // be applied directly; only a true clear/no-evidence state needs GET.
+            if (S.conversationLanguageHydrated !== true) return;
+            if (S.conversationLanguageExplicit) return;
+            var trustedExplicitLanguage = '';
+            try {
+                if (typeof window.getExplicitConversationLanguagePreference === 'function') {
+                    trustedExplicitLanguage = window.getExplicitConversationLanguagePreference(
+                        currentName
+                    ) || '';
+                }
+            } catch (_) { trustedExplicitLanguage = ''; }
+            if (trustedExplicitLanguage) {
+                S.conversationLanguage = trustedExplicitLanguage;
+                S.conversationLanguageExplicit = trustedExplicitLanguage;
+                S.conversationLanguageHydrated = true;
+                _syncLanguageToBackend(trustedExplicitLanguage);
+                _sendGreetingCheckIfReady();
+                return;
+            }
+            S._conversationLanguageHydration = hydrateConversationLanguage(currentName);
+            return;
+        }
+        if (!expectedKey || event.key !== expectedKey) return;
+        if (!event.newValue) {
+            if (typeof window.clearConversationLanguagePreference === 'function') {
+                window.clearConversationLanguagePreference(currentName, {
+                    dispatch: false,
+                    source: 'storage'
+                });
+            }
+            _applyClearedConversationLanguage(currentName);
+            return;
+        }
+        S._conversationLanguageHydrationId =
+            (Number(S._conversationLanguageHydrationId) || 0) + 1;
+        S.conversationLanguage = event.newValue;
+        S.conversationLanguageExplicit = event.newValue;
+        S.conversationLanguageHydrated = true;
+        _syncLanguageToBackend(event.newValue);
+        _sendGreetingCheckIfReady();
+    });
 
     window.addEventListener('neko:new-user-icebreaker-ended', function () {
         _sendGreetingCheckIfReady();
@@ -5004,20 +5150,19 @@
         if (durationSeconds < CAT_GREETING_SILENT_BELOW_SECONDS) {
             return;
         }
-        var catLang = '';
-        try {
-            if (window.i18next && window.i18next.language) catLang = window.i18next.language;
-            else catLang = localStorage.getItem('i18nextLng') || '';
-            if (!catLang && typeof navigator !== 'undefined' && navigator.language) catLang = navigator.language;
-        } catch (_) { catLang = ''; }
+        var catLang = getConversationLanguageForCurrentCharacter();
+        var explicitCatLang = typeof getExplicitConversationLanguageForCurrentCharacter === 'function'
+            ? getExplicitConversationLanguageForCurrentCharacter()
+            : '';
         try {
             var catGreetingMessage = {
                 action: 'cat_greeting_check',
                 cat_duration_seconds: durationSeconds,
                 tier: detail.tier || '',
                 was_auto: !!detail.wasAuto,
-                language: catLang
+                render_language: catLang
             };
+            if (explicitCatLang) catGreetingMessage.language = explicitCatLang;
             if (catMemorySummary) {
                 catGreetingMessage.cat_memory_summary = catMemorySummary;
             }

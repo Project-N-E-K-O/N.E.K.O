@@ -19,6 +19,10 @@ def clean_text(value: Any, default: str = "") -> str:
     return as_text(value, default).strip()
 
 
+def timezone_name(location_value: Any, configured_value: Any) -> str:
+    return clean_text(location_value) or clean_text(configured_value) or "Asia/Shanghai"
+
+
 def finite_float(value: Any, default: float | None = None) -> float | None:
     try:
         result = float(value)

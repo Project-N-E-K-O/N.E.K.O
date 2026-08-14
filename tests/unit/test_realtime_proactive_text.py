@@ -9,9 +9,12 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
+from config.prompts.prompts_proactive import (
+    REALTIME_PROACTIVE_GENERAL_TRIGGER_PROMPTS,
+    REALTIME_PROACTIVE_VISION_TRIGGER_PROMPTS,
+)
 from main_logic.omni_realtime_client import OmniRealtimeClient, TurnDetectionMode
 from main_logic.omni_realtime_client import _responses as responses_module
 from main_logic.omni_realtime_client import _transport as transport_module
@@ -62,6 +65,24 @@ def _ack_pending_input_item(client, events):
             "type": "conversation.item.created",
             "item": event["item"],
         })
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("has_vision", "prompts"),
+    [
+        (False, REALTIME_PROACTIVE_GENERAL_TRIGGER_PROMPTS),
+        (True, REALTIME_PROACTIVE_VISION_TRIGGER_PROMPTS),
+    ],
+)
+def test_proactive_text_instruction_preserves_zh_tw_template(has_vision, prompts):
+    instruction = responses_module._proactive_text_instruction(
+        "zh-TW",
+        has_vision=has_vision,
+    )
+
+    assert instruction == prompts["zh-TW"]
+    assert instruction != prompts["zh"]
 
 
 async def _prompt_and_complete(client, *args, **kwargs):

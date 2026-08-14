@@ -1225,6 +1225,10 @@ function captureLive2DPeekRestoreAnchor() {
 
 async function restoreLive2DPeekAnchor(anchor) {
     if (!anchor || anchor.kind !== 'live2d-edge-peek') return false;
+    // 贴边探身已关闭（如猫形态期间用户关掉 Widget 模式）时不得再把模型挪回旧边缘位置：
+    // _tryApplyLive2DPeek 会在对齐边缘后才检查 isLive2DPeekEnabled 并返回 false，
+    // 若在这里不拦，模型会被留在陈旧边缘坐标上。
+    if (!isLive2DPeekEnabled()) return false;
     const manager = window.live2dManager;
     const model = manager && manager.currentModel && !manager.currentModel.destroyed
         ? manager.currentModel
@@ -3529,7 +3533,21 @@ Live2DManager.prototype.playTutorialMotion = async function() {
         return false;
     }
 
-    const group = this.getRandomElement(motionGroups);
+    // 教程随机动作偏向更轻松的 happy，降低 surprised 的出现频率。
+    const weightedGroups = motionGroups.map(group => ({
+        group,
+        weight: group === 'happy' ? 3 : (group === 'surprised' ? 0.5 : 1)
+    }));
+    const totalWeight = weightedGroups.reduce((sum, item) => sum + item.weight, 0);
+    let randomWeight = Math.random() * totalWeight;
+    let group = weightedGroups[weightedGroups.length - 1].group;
+    for (const item of weightedGroups) {
+        randomWeight -= item.weight;
+        if (randomWeight <= 0) {
+            group = item.group;
+            break;
+        }
+    }
     if (!group) return false;
 
     const groupList =
@@ -3593,7 +3611,10 @@ Live2DManager.prototype.triggerRandomEmotion = async function() {
                 const playedMotion = await this.playTutorialMotion();
 
                 if (!playedMotion && !this.hasActiveActionMotion(this.currentModel)) {
-                    const fallbackEmotion = this.getRandomElement(['happy', 'sad', 'angry', 'surprised']);
+                    const fallbackEmotion = this.getRandomElement([
+                        'happy', 'happy', 'happy',
+                        'sad', 'angry', 'surprised'
+                    ]);
                     this.playSimpleMotion(fallbackEmotion);
                 }
             }

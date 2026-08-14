@@ -22,6 +22,7 @@ Note that the cross server is a one-way forwarder and never sends anything back 
 
 import ssl
 import uuid
+import inspect
 from urllib.parse import quote
 
 import asyncio
@@ -645,6 +646,7 @@ async def _post_memory_server(
     *,
     timeout_s: float,
     language: str | None = None,
+    render_language: str | None = None,
 ) -> tuple[bool, str, dict]:
     """Post history payload to memory_server and treat only 2xx+valid JSON as success."""
     encoded_name = quote(lanlan_name, safe="")
@@ -654,11 +656,14 @@ async def _post_memory_server(
     request_payload = {
         "input_history": json.dumps(payload, indent=2, ensure_ascii=False),
     }
-    # Only a live frontend/session locale is durable provenance. Omitting this
-    # field lets the memory server choose a render-only fallback without
-    # overwriting a character's last explicit locale.
+    # Only a live explicit frontend/session locale is durable provenance.
+    # A renderer locale is a request-local fallback, never a substitute for the
+    # durable ``language`` field.  Keep the two wire fields mutually exclusive
+    # so downstream persistence cannot mistake UI evidence for a preference.
     if is_supported_language_code(language):
         request_payload["language"] = language
+    elif is_supported_language_code(render_language):
+        request_payload["render_language"] = render_language
     response = await client.post(
         url,
         json=request_payload,
@@ -726,6 +731,40 @@ def _mark_memory_cache_exception(
         logger.warning(msg)
 
 
+async def _complete_session_end_memory_barrier(message: dict, lanlan_name: str) -> None:
+    """Run an optional post-settlement callback and resolve its in-process ack.
+
+    Language-preference changes attach this private control data to the ordinary
+    ``session end`` queue item.  Running the callback here keeps it ordered after
+    every older chat message and after the terminal memory-server write, while the
+    future lets the caller avoid returning before the isolation step completes.
+    """
+    callback = message.get("_after_memory_settlement")
+    completion = message.get("_memory_settlement_done")
+    if not callable(callback):
+        if isinstance(completion, asyncio.Future) and not completion.done():
+            completion.set_result(None)
+        return
+
+    try:
+        callback_result = callback()
+        if inspect.isawaitable(callback_result):
+            await callback_result
+    except Exception as exc:
+        logger.warning(
+            "[%s] session-end post-settlement callback failed: %s: %s",
+            lanlan_name,
+            type(exc).__name__,
+            exc,
+            exc_info=True,
+        )
+        if isinstance(completion, asyncio.Future) and not completion.done():
+            completion.set_exception(exc)
+    else:
+        if isinstance(completion, asyncio.Future) and not completion.done():
+            completion.set_result(None)
+
+
 async def run_sync_connector(
     message_queue: asyncio.Queue,
     lanlan_name,
@@ -733,6 +772,7 @@ async def run_sync_connector(
     config=None,
     status_callback=None,
     user_language_provider=None,
+    render_language_provider=None,
 ):
     """Async-native sync connector, running on the caller's main event loop.
 
@@ -755,6 +795,8 @@ async def run_sync_connector(
             may call ``asyncio.create_task(...)`` directly without
             ``run_coroutine_threadsafe``.
         user_language_provider: optional callable returning the live session locale.
+        render_language_provider: optional callable returning the current renderer
+            locale when the session has no explicit language preference.
     """
     chat_history: list = []
     default_config = {'bullet': True, 'monitor': True}
@@ -771,6 +813,28 @@ async def run_sync_connector(
             logger.debug("[%s] session language provider failed: %s", lanlan_name, exc)
             return None
         return selected if is_supported_language_code(selected) else None
+
+    def _current_render_language() -> str | None:
+        if not callable(render_language_provider):
+            return None
+        try:
+            selected = render_language_provider()
+        except Exception as exc:
+            logger.debug("[%s] render language provider failed: %s", lanlan_name, exc)
+            return None
+        return selected if is_supported_language_code(selected) else None
+
+    def _current_memory_languages() -> tuple[str | None, str | None]:
+        """Snapshot mutually exclusive durable and render-only memory hints."""
+        language = _current_user_language()
+        if language is not None:
+            return language, None
+        return None, _current_render_language()
+
+    def _current_analyze_language() -> str | None:
+        """Use the visible locale for one analyzer request without persisting it."""
+        language, render_language = _current_memory_languages()
+        return language or render_language
 
     # 历史保留：旧 thread 版本里多处 ``if shutdown_event.is_set(): break`` 用于
     # 子进程时代跳过对正在关闭的 memory_server 的 HTTP 调用。改 async 后取消
@@ -982,13 +1046,17 @@ async def run_sync_connector(
                                 # 确定调用端点：有增量走 /renew，无增量走 /settle（补全摘要+时间戳）
                                 _renew_endpoint = "renew" if remaining else "settle"
                                 _renew_payload = remaining if remaining else []
+                                _memory_language, _memory_render_language = (
+                                    _current_memory_languages()
+                                )
                                 try:
                                     ok, err_detail, _ = await _post_memory_server(
                                         _renew_endpoint,
                                         lanlan_name,
                                         _renew_payload,
                                         timeout_s=30.0,
-                                        language=_current_user_language(),
+                                        language=_memory_language,
+                                        render_language=_memory_render_language,
                                     )
                                     if not ok:
                                         logger.error(f"[{lanlan_name}] 热重置记忆处理失败 ({_renew_endpoint}): {err_detail}")
@@ -1104,13 +1172,17 @@ async def run_sync_connector(
                                             {'role': 'assistant', 'content': [{'type': 'text', 'text': avatar_turn_assistant_text}]},
                                         ]
                                         cache_persist_failed = False
+                                        _memory_language, _memory_render_language = (
+                                            _current_memory_languages()
+                                        )
                                         try:
                                             ok, err_detail, _ = await _post_memory_server(
                                                 "cache",
                                                 lanlan_name,
                                                 avatar_memory_messages,
                                                 timeout_s=10.0,
-                                                language=_current_user_language(),
+                                                language=_memory_language,
+                                                render_language=_memory_render_language,
                                             )
                                             if ok:
                                                 _mark_memory_cache_success(
@@ -1195,7 +1267,7 @@ async def run_sync_connector(
                                                 messages=recent,
                                                 conversation_id=uuid.uuid4().hex,
                                                 had_user_input=_turn_had_user_input,
-                                                language=_current_user_language(),
+                                                language=_current_analyze_language(),
                                             )
                                             if sent:
                                                 logger.debug(f"[{lanlan_name}] analyze_request dispatch success (turn_end), messages={len(recent)}")
@@ -1217,13 +1289,17 @@ async def run_sync_connector(
                                 # 主动搭话不写缓存——等用户回应后随下一轮正常 turn 一起入库
                                 if had_user_input_this_turn and not shutdown_event.is_set() and last_synced_index < len(chat_history):
                                     new_messages = chat_history[last_synced_index:]
+                                    _memory_language, _memory_render_language = (
+                                        _current_memory_languages()
+                                    )
                                     try:
                                         ok, err_detail, _ = await _post_memory_server(
                                             "cache",
                                             lanlan_name,
                                             new_messages,
                                             timeout_s=10.0,
-                                            language=_current_user_language(),
+                                            language=_memory_language,
+                                            render_language=_memory_render_language,
                                         )
                                         if ok:
                                             _mark_memory_cache_success(
@@ -1248,6 +1324,9 @@ async def run_sync_connector(
                                         )
 
                             elif message["data"] == 'session end': # 当前session结束了
+                                is_context_reset_barrier = callable(
+                                    message.get("_after_memory_settlement")
+                                )
                                 # 检查是否正在关闭，如果是则跳过网络操作
                                 if shutdown_event.is_set():
                                     logger.info(f"[{lanlan_name}] 进程正在关闭，跳过session end处理")
@@ -1296,7 +1375,7 @@ async def run_sync_connector(
                                                 trigger="session_end",
                                                 messages=recent,
                                                 conversation_id=uuid.uuid4().hex,
-                                                language=_current_user_language(),
+                                                language=_current_analyze_language(),
                                                 # session_end is terminal — never treated as proactive
                                                 # (had_user_input defaults True), so it always takes the
                                                 # ordinary user-turn path.
@@ -1324,21 +1403,33 @@ async def run_sync_connector(
                                     last_synced_index = 0
                                     break
                                 
-                                # 会话结算：
-                                # - 有增量（未被 /cache 覆盖）→ /process
-                                # - 无增量但有历史（已全部 /cache）→ /settle，补全摘要/时间索引/事实提取
+                                # 普通会话结算：有增量走 /process，否则走 /settle。
+                                # 语言切换屏障随后会权威清空 recent.json，因此不再做
+                                # 注定被丢弃的摘要：仅把未同步尾部经轻量 /cache 写入
+                                # 时间索引/outbox；没有尾部时可以直接进入清理回调。
                                 remaining = chat_history[last_synced_index:]
                                 logger.info(f"[{lanlan_name}] 会话结束：聊天历史 {len(chat_history)} 条，增量 {len(remaining)} 条")
-                                _settle_endpoint = "process" if remaining else "settle"
+                                if is_context_reset_barrier:
+                                    _settle_endpoint = "cache" if remaining else None
+                                else:
+                                    _settle_endpoint = "process" if remaining else "settle"
                                 _settle_payload = remaining if remaining else []
-                                if not shutdown_event.is_set():
+                                if _settle_endpoint is not None and not shutdown_event.is_set():
+                                    _memory_language, _memory_render_language = (
+                                        _current_memory_languages()
+                                    )
                                     try:
                                         ok, err_detail, _ = await _post_memory_server(
                                             _settle_endpoint,
                                             lanlan_name,
                                             _settle_payload,
-                                            timeout_s=30.0,
-                                            language=_current_user_language(),
+                                            timeout_s=(
+                                                10.0
+                                                if is_context_reset_barrier
+                                                else 30.0
+                                            ),
+                                            language=_memory_language,
+                                            render_language=_memory_render_language,
                                         )
                                         if not ok:
                                             logger.warning(f"[{lanlan_name}] session end 记忆结算失败 ({_settle_endpoint}): {err_detail}")
@@ -1362,6 +1453,39 @@ async def run_sync_connector(
                             logger.error(f"[{lanlan_name}] System message error: {e}", exc_info=True)
                 except Exception as e:
                     logger.error(f"[{lanlan_name}] Message processing error: {e}", exc_info=True)
+                finally:
+                    is_memory_barrier = (
+                        isinstance(message, dict)
+                        and message.get("type") == "system"
+                        and message.get("data") == "session end"
+                        and (
+                            callable(message.get("_after_memory_settlement"))
+                            or isinstance(
+                                message.get("_memory_settlement_done"),
+                                asyncio.Future,
+                            )
+                        )
+                    )
+                    if is_memory_barrier:
+                        # Even when terminal persistence failed unexpectedly, the
+                        # old connector-local tail must not survive the isolation
+                        # callback and leak into a later session.  Normal session
+                        # ends already clear these fields in their success path;
+                        # repeating the reset here makes the barrier fail closed.
+                        chat_history.clear()
+                        last_synced_index = 0
+                        user_input_cache = ''
+                        user_input_sources.clear()
+                        text_output_cache = ''
+                        text_output_request_id = None
+                        current_turn = 'user'
+                        had_user_input_this_turn = False
+                        current_turn_start_index = 0
+                        pending_user_images = []
+                        await _complete_session_end_memory_barrier(
+                            message,
+                            lanlan_name,
+                        )
 
             # ws 维护已下沉到独立 _slot_maintainer task，主 loop 不再做巡检。
 

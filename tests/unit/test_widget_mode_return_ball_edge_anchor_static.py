@@ -21,6 +21,30 @@ def test_live2d_peek_goodbye_transfers_the_edge_anchor_to_return_ball():
     assert "positionReturnBallContainer(container, anchorRect, options.edgeAnchor);" in app_ui_source
 
 
+def test_live2d_peek_restore_anchor_is_consumed_on_return():
+    # The return handler must keep the peek anchor captured from the return-ball
+    # container and restore it after the model is shown again, so the model
+    # re-enters the edge-peek state instead of coming back flat at the edge.
+    app_ui_source = read_js_parts(APP_UI_PATH)
+    return_block = app_ui_source.split("const handleReturnClick", 1)[1]
+
+    restore_call = "window.nekoLive2DPeek.restoreAnchor(live2DPeekRestoreAnchor)"
+    settle_call = "settleReturnedModelBounds(returnModelWasMoved)"
+    complete_dispatch = "new CustomEvent('neko:cat-return-complete'"
+
+    assert "let live2DPeekRestoreAnchor = null;" in return_block
+    assert "live2DPeekRestoreAnchor = returnContainer.__nekoLive2DPeekEdgeAnchor;" in return_block
+    assert restore_call in return_block
+    # The fire-and-forget call must keep its Promise rejection handler so a
+    # failed restore never surfaces as an unhandled rejection.
+    assert restore_call + ".catch(() => {});" in return_block
+    assert settle_call in return_block
+    assert complete_dispatch in return_block
+    # Order constraint: settle the model bounds first, then restore the edge
+    # peek, and only then dispatch return-complete.
+    assert return_block.index(settle_call) < return_block.index(restore_call) < return_block.index(complete_dispatch)
+
+
 def test_live2d_peek_return_ball_supports_exactly_four_corners_and_two_side_edges():
     source = read_js_parts(APP_UI_PATH)
     anchor_block = source.split("const NEKO_LIVE2D_PEEK_RETURN_EDGE_ANCHORS = [", 1)[1].split("];", 1)[0]
@@ -31,7 +55,7 @@ def test_live2d_peek_return_ball_supports_exactly_four_corners_and_two_side_edge
     assert "'bottom'" not in anchor_block
     assert "container.setAttribute('data-neko-live2d-peek-anchor', edge);" in source
     assert "positionLive2DPeekReturnBallAtEdge(container, container.__nekoLive2DPeekEdgeAnchor);" in source
-    assert "detail.reason === 'return-ball-drag-start'" in source
+    assert "detail.reason === 'return-ball-drag-active'" in source
     assert "clearLive2DPeekReturnBallEdgeAnchor(detail.container);" in source
 
 
@@ -47,17 +71,14 @@ def test_blocked_model_restore_keeps_the_live2d_peek_return_ball_anchor():
     assert "showReturnBallContainer(container, returnRect);" in restore_block
 
 
-def test_live2d_peek_return_ball_uses_60_degree_sides_and_45_degree_corners():
+def test_live2d_peek_return_ball_keeps_edge_position_without_model_tilt():
     css = INDEX_CSS_PATH.read_text(encoding="utf-8")
 
-    expected_rules = {
-        'data-neko-live2d-peek-anchor="left"': "rotate(60deg)",
-        'data-neko-live2d-peek-anchor="right"': "rotate(-60deg)",
-        'data-neko-live2d-peek-anchor="top-left"': "rotate(45deg)",
-        'data-neko-live2d-peek-anchor="top-right"': "rotate(-45deg)",
-        'data-neko-live2d-peek-anchor="bottom-left"': "rotate(45deg)",
-        'data-neko-live2d-peek-anchor="bottom-right"': "rotate(-45deg)",
-    }
-    for selector, rotation in expected_rules.items():
-        rule = css.split(f"[{selector}]", 1)[1].split("}", 1)[0]
-        assert rotation in rule
+    rule = css.split("[data-neko-live2d-peek-anchor] .neko-idle-return-art", 1)[1].split("}", 1)[0]
+    assert "--neko-idle-return-edge-transform: rotate(0deg);" in rule
+
+    transferred_anchor_styles = css.split(
+        '[data-neko-live2d-peek-anchor$="left"] .neko-idle-return-art', 1
+    )[1].split(".neko-idle-thought-bubble", 1)[0]
+    for rotation in ("rotate(60deg)", "rotate(-60deg)", "rotate(45deg)", "rotate(-45deg)"):
+        assert rotation not in transferred_anchor_styles

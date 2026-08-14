@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import os
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from ..core.contracts import (
@@ -85,6 +85,29 @@ PLUGIN_ACTIVITY_STATE_FIELDS = (
     PLUGIN_LAST_USER_CHAT_MODE,
     PLUGIN_LAST_BATTLE_RESPOND_AT,
 )
+
+_PUSH_MESSAGE_REJECTION_REASONS = frozenset(
+    {"backpressure", "transport_error", "transport_unavailable"}
+)
+
+
+class PushMessageSubmissionRejected(RuntimeError):
+    """The SDK synchronously rejected a message before host submission."""
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+        super().__init__(f"push_message_rejected:{reason}")
+
+
+def ensure_push_message_submitted(receipt: Any) -> None:
+    """Accept legacy ``None`` receipts and raise for an explicit SDK rejection."""
+
+    if not isinstance(receipt, Mapping) or receipt.get("submitted") is not False:
+        return
+    reason = str(receipt.get("reason") or "submission_rejected")
+    if reason not in _PUSH_MESSAGE_REJECTION_REASONS:
+        reason = "submission_rejected"
+    raise PushMessageSubmissionRejected(reason)
 
 BACKPRESSURE_BYPASS_EVENTS = frozenset({"you_died", "you_killed"})
 URGENT_REPLACE_EVENTS = frozenset({"you_died", "stall_risk", "high_aoa", "over_g", "low_alt_danger", "overspeed"})
@@ -1108,18 +1131,20 @@ class NekoDispatcher:
             freshness=freshness,
         )
         try:
-            self.plugin.push_message(
+            receipt = self.plugin.push_message(
                 **delivery.push_kwargs(
                     priority=event.priority,
                     coalesce_key=BATTLE_EVENT_COALESCE_KEY,
                 )
             )
+            ensure_push_message_submitted(receipt)
         except Exception as exc:
+            reason = exc.reason if isinstance(exc, PushMessageSubmissionRejected) else type(exc).__name__
             self._observer.record_event(
                 event,
                 stage="dispatcher_failed",
                 outcome="failed",
-                reason=type(exc).__name__,
+                reason=reason,
                 dry_run=False,
                 ai_behavior=delivery.ai_behavior,
                 pushed=False,
@@ -1229,7 +1254,7 @@ class NekoDispatcher:
         if target_lanlan:
             metadata["target_lanlan"] = target_lanlan
         try:
-            self.plugin.push_message(
+            receipt = self.plugin.push_message(
                 source="neko_warthunder",
                 visibility=[],
                 ai_behavior="read",
@@ -1238,6 +1263,7 @@ class NekoDispatcher:
                 metadata=metadata,
                 target_lanlan=target_lanlan or None,
             )
+            ensure_push_message_submitted(receipt)
             if self.timeline:
                 self.timeline.record_stage(
                     stage="context_pushed",
@@ -1252,11 +1278,12 @@ class NekoDispatcher:
                 )
             return True
         except Exception as exc:  # noqa: BLE001 — 上下文注入失败不致命
+            reason = exc.reason if isinstance(exc, PushMessageSubmissionRejected) else type(exc).__name__
             if self.timeline:
                 self.timeline.record_stage(
                     stage="context_failed",
                     outcome="failed",
-                    reason=type(exc).__name__,
+                    reason=reason,
                     kind="context",
                     ai_behavior="read",
                     pushed=False,

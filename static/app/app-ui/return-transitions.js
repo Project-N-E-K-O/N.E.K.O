@@ -1456,7 +1456,11 @@
 
     window.addEventListener('neko:return-ball-manual-move', (event) => {
         const detail = event && event.detail;
-        if (detail && detail.reason === 'return-ball-drag-start' && detail.container) {
+        // 只有真正发生位移（超过点击阈值）才清除贴边探身锚点：无移动的普通点击
+        // 也会先经过 mousedown 的 drag-start，若在这里清掉，return 时锚点已为空，
+        // 贴边探身态将无法恢复。drag-active 表示用户确实在拖 return-ball，
+        // 此时尊重新位置，不再自动恢复探身。
+        if (detail && detail.reason === 'return-ball-drag-active' && detail.container) {
             clearLive2DPeekReturnBallEdgeAnchor(detail.container);
         }
         syncIdleReturnBallDesktopStateFromManualMove(event && event.detail);

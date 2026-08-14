@@ -2570,6 +2570,66 @@
     }
     return 'zh';
   }
+  function normalizeBadmintonExplicitLanguage(value) {
+    var language = String(value || '').trim();
+    return ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'].indexOf(language) >= 0
+      ? language
+      : '';
+  }
+  var badmintonCharacterExplicitLanguage = '';
+  var badmintonCharacterLanguagePreferenceResolved = false;
+  var badmintonCharacterLanguageRevision = 0;
+  function getConversationLanguagePayload(renderLanguage) {
+    var payload = {};
+    if (!badmintonCharacterLanguagePreferenceResolved) {
+      try {
+        if (typeof window.getExplicitConversationLanguagePreference === 'function') {
+          var explicitLanguage = normalizeBadmintonExplicitLanguage(
+            window.getExplicitConversationLanguagePreference(getRouteLanlanName())
+          );
+          if (explicitLanguage) badmintonCharacterExplicitLanguage = explicitLanguage;
+        }
+      } catch (_) {}
+    }
+    if (badmintonCharacterExplicitLanguage) payload.i18n_language = badmintonCharacterExplicitLanguage;
+    var resolvedRenderLanguage = renderLanguage || getRequestLanguage();
+    if (resolvedRenderLanguage) payload.render_language = resolvedRenderLanguage;
+    return payload;
+  }
+  function updateBadmintonCharacterExplicitLanguage(event, cleared) {
+    var detail = event && event.detail || {};
+    var eventCharacterName = String(detail.character_name || '').trim();
+    var currentCharacterName = getRouteLanlanName();
+    if (!currentCharacterName) {
+      if (eventCharacterName) badmintonCharacterLanguageRevision += 1;
+      return;
+    }
+    if (eventCharacterName !== currentCharacterName) return;
+    badmintonCharacterLanguageRevision += 1;
+    badmintonCharacterExplicitLanguage = cleared
+      ? ''
+      : normalizeBadmintonExplicitLanguage(detail.language);
+    badmintonCharacterLanguagePreferenceResolved = true;
+  }
+  window.addEventListener('neko:conversation-language-changed', function (event) {
+    updateBadmintonCharacterExplicitLanguage(event, false);
+  });
+  window.addEventListener('neko:conversation-language-cleared', function (event) {
+    updateBadmintonCharacterExplicitLanguage(event, true);
+  });
+  window.addEventListener('storage', function (event) {
+    var characterName = getRouteLanlanName();
+    var storageKey = String(event && event.key || '');
+    if (storageKey.indexOf('nekoConversationLanguage:') !== 0) return;
+    if (!characterName) {
+      badmintonCharacterLanguageRevision += 1;
+      return;
+    }
+    if (storageKey !== 'nekoConversationLanguage:' + encodeURIComponent(characterName)) return;
+    badmintonCharacterLanguageRevision += 1;
+    badmintonCharacterExplicitLanguage = normalizeBadmintonExplicitLanguage(event.newValue);
+    badmintonCharacterLanguagePreferenceResolved = true;
+  });
   function api(path) { return '/api/game/badminton' + path; }
   function post(path, body, timeoutMs) {
     var controller = window.AbortController ? new AbortController() : null;
@@ -2839,24 +2899,32 @@
     };
   }
   function loadGeneratedQuickLines() {
-    if (debugMode) return;
+    if (debugMode) return Promise.resolve();
     var quickLinesRequestSeq = ++generatedQuickLinesRequestSeq;
-    var quickLinesRequestLanguage = getRequestLanguage();
-    var quickLinesRequestPrimary = normalizeRequestLanguagePrimary(quickLinesRequestLanguage);
     var QUICK_LINE_KEYS = [
       'line_in', 'net_touch', 'zone_in', 'out', 'net',
       'shot_missed', 'game_over', 'long_aim', 'close_to_record',
       'new_record', 'streak_5', 'streak_10', 'streak_15', 'streak_20',
     ];
-    post('/quick-lines', { lanlan_name: lanlanName, session_id: sessionId, mode: currentMode, i18n_language: quickLinesRequestLanguage }, 5000).then(function (res) {
-      if (quickLinesRequestSeq !== generatedQuickLinesRequestSeq) return;
-      if (quickLinesRequestPrimary !== normalizeRequestLanguagePrimary(getRequestLanguage())) return;
-      if (!res || !res.lines) return;
-      QUICK_LINE_KEYS.forEach(function (key) {
-        var pool = (res.lines[key] || []).map(function (v) { return String(v).trim(); }).filter(Boolean).slice(0, 4);
-        if (pool.length) {
-          generatedQuickLines[key] = pool;
-        }
+    return loadBadmintonCharacter().then(function () {
+      if (badmintonGameDisposed || endedRoute || game.state === 'game_over'
+          || quickLinesRequestSeq !== generatedQuickLinesRequestSeq) return null;
+      var quickLinesRequestLanguage = getRequestLanguage();
+      var quickLinesRequestPrimary = normalizeRequestLanguagePrimary(quickLinesRequestLanguage);
+      return post('/quick-lines', Object.assign({
+        lanlan_name: lanlanName,
+        session_id: sessionId,
+        mode: currentMode
+      }, getConversationLanguagePayload(quickLinesRequestLanguage)), 5000).then(function (res) {
+        if (quickLinesRequestSeq !== generatedQuickLinesRequestSeq) return;
+        if (quickLinesRequestPrimary !== normalizeRequestLanguagePrimary(getRequestLanguage())) return;
+        if (!res || !res.lines) return;
+        QUICK_LINE_KEYS.forEach(function (key) {
+          var pool = (res.lines[key] || []).map(function (v) { return String(v).trim(); }).filter(Boolean).slice(0, 4);
+          if (pool.length) {
+            generatedQuickLines[key] = pool;
+          }
+        });
       });
     }).catch(function () {});
   }
@@ -2954,9 +3022,8 @@
     var payloadEvent = Object.assign({}, entry.event || {}, {
       session_id: entrySessionId,
       lanlan_name: entryLanlanName,
-      mode: entryMode,
-      i18n_language: getRequestLanguage(),
-    });
+      mode: entryMode
+    }, getConversationLanguagePayload());
     var mirrorPayload = {
       source: 'game-llm-result',
       session_id: entrySessionId,
@@ -2965,9 +3032,9 @@
       turn_id: 'bd-turn-' + entry.id,
       finalize_turn: false,
       line: entry.line,
-      i18n_language: getRequestLanguage(),
       event: payloadEvent
     };
+    Object.assign(mirrorPayload, getConversationLanguagePayload());
     var speakPayload = {
       source: 'game-llm-result',
       session_id: entrySessionId,
@@ -2977,9 +3044,9 @@
       emit_turn_end: false,
       interrupt_audio: shouldInterruptVoiceAudio(entry.event),
       line: entry.line,
-      i18n_language: getRequestLanguage(),
       event: payloadEvent
     };
+    Object.assign(speakPayload, getConversationLanguagePayload());
     lastVoiceRequest = speakPayload;
     lastVoiceResult = null;
     lastVoiceFallbackReason = '';
@@ -4041,8 +4108,15 @@
     window.lanlan_config = window.lanlan_config || {};
     window.lanlan_config.lanlan_name = resolvedName;
   }
-  function applyCharacterIdentity(charData) {
+  function applyCharacterIdentity(charData, languageRevision) {
     applyResolvedLanlanName(charData && charData.lanlan_name);
+    if (badmintonCharacterLanguageRevision === languageRevision
+        && charData && charData.language_preference_resolved === true) {
+      badmintonCharacterExplicitLanguage = normalizeBadmintonExplicitLanguage(
+        charData && charData.language
+      );
+      badmintonCharacterLanguagePreferenceResolved = true;
+    }
   }
   function applyRouteIdentity(state) {
     applyResolvedLanlanName(state && (state.lanlan_name || state.lanlanName));
@@ -4051,6 +4125,7 @@
   async function loadBadmintonCharacter() {
     if (!badmintonCharacterPromise) {
       badmintonCharacterPromise = (async function () {
+        var languageRevision = badmintonCharacterLanguageRevision;
         var charData = {};
         try {
           var characterPath = api('/character');
@@ -4063,7 +4138,7 @@
         } catch (err) {
           console.warn('[badminton_demo] 获取角色信息失败:', err);
         }
-        applyCharacterIdentity(charData);
+        applyCharacterIdentity(charData, languageRevision);
         return charData;
       })();
     }
@@ -4150,7 +4225,7 @@
     autoAdjustMood(event);
     emitCardEvent(event);
     notifyBadmintonEventListeners(event);
-    event.i18n_language = getRequestLanguage();
+    Object.assign(event, getConversationLanguagePayload());
     var shouldCall = shouldCallLLMDuel(event);
     if (event.local_voice_already_spoken) return;
     if (debugMode) {
@@ -4168,9 +4243,8 @@
     var chatClientTimeoutMs = 6500;
     post('/chat', Object.assign({
       session_id: sessionId,
-      lanlan_name: lanlanName,
-      i18n_language: getRequestLanguage()
-    }, _badmintonGameMemoryPolicyPayload(), {
+      lanlan_name: lanlanName
+    }, getConversationLanguagePayload(), _badmintonGameMemoryPolicyPayload(), {
       event: Object.assign({}, event, _badmintonGameMemoryPolicyPayload(), {
         client_timeout_ms: chatClientTimeoutMs
       })
@@ -6476,9 +6550,8 @@
     game.duel.pendingVoiceControl = null;
     post('/chat', Object.assign({
       session_id: sessionId,
-      lanlan_name: lanlanName,
-      i18n_language: getRequestLanguage()
-    }, _badmintonGameMemoryPolicyPayload(), {
+      lanlan_name: lanlanName
+    }, getConversationLanguagePayload(), _badmintonGameMemoryPolicyPayload(), {
       event: Object.assign({}, buildNekoDuelTurnEvent(), _badmintonGameMemoryPolicyPayload())
     }), 2200).then(function (res) {
       if (token !== game.duel.voiceSeq) return;
@@ -9563,18 +9636,25 @@
     var localLeaderboard = loadLocalLeaderboard();
     var routeLanlanName = getRouteLanlanName();
     var routeSessionId = sessionId;
-    routeStartPromise = post('/route/start', Object.assign({
-      session_id: sessionId, lanlan_name: routeLanlanName, source: 'badminton_demo',
-      game_type: 'badminton', game_theme: 'badminton', mode: currentMode, i18n_language: getRequestLanguage(),
-      gameStarted: true, game_started: true,
-      character_name: routeLanlanName,
-      best_record_distance: game.recordDistance,
-      personal_best: localLeaderboard.personal_best || null,
-      difficulty: getDuelDifficultyName(),
-      mood: currentMood,
-      theme: currentThemeKey,
-      last_played_date: (localLeaderboard.recent_games && localLeaderboard.recent_games[0] && localLeaderboard.recent_games[0].date) || ''
-    }, _badmintonGameMemoryPolicyPayload()), 22000).then(function (res) {
+    routeStartPromise = loadBadmintonCharacter().then(function () {
+      if (badmintonGameDisposed || sessionId !== routeSessionId
+          || endedRoute || game.state === 'game_over') {
+        return { ok: false, reason: 'inactive' };
+      }
+      routeLanlanName = getRouteLanlanName();
+      return post('/route/start', Object.assign({
+        session_id: sessionId, lanlan_name: routeLanlanName, source: 'badminton_demo',
+        game_type: 'badminton', game_theme: 'badminton', mode: currentMode,
+        gameStarted: true, game_started: true,
+        character_name: routeLanlanName,
+        best_record_distance: game.recordDistance,
+        personal_best: localLeaderboard.personal_best || null,
+        difficulty: getDuelDifficultyName(),
+        mood: currentMood,
+        theme: currentThemeKey,
+        last_played_date: (localLeaderboard.recent_games && localLeaderboard.recent_games[0] && localLeaderboard.recent_games[0].date) || ''
+      }, getConversationLanguagePayload(), _badmintonGameMemoryPolicyPayload()), 22000);
+    }).then(function (res) {
       if (badmintonGameDisposed || sessionId !== routeSessionId || endedRoute || game.state === 'game_over') {
         return res;
       }
@@ -9599,15 +9679,18 @@
           mode: currentMode,
           gameStarted: true,
           game_started: true,
-          i18n_language: getRequestLanguage(),
           currentState: buildBadmintonCurrentStatePayload()
-        }, _badmintonGameMemoryPolicyPayload()), 2500).catch(function () {});
+        }, getConversationLanguagePayload(), _badmintonGameMemoryPolicyPayload()), 2500).catch(function () {});
       }, 2500);
       drainTimer = setInterval(function () {
         var drainSessionId = sessionId;
         var drainMode = currentMode;
         var drainLanlanName = getRouteLanlanName();
-        post('/route/drain', Object.assign({ session_id: drainSessionId, lanlan_name: drainLanlanName, mode: drainMode, i18n_language: getRequestLanguage() }, _badmintonGameMemoryPolicyPayload()), 2500).then(function (res) {
+        post('/route/drain', Object.assign({
+          session_id: drainSessionId,
+          lanlan_name: drainLanlanName,
+          mode: drainMode
+        }, getConversationLanguagePayload(), _badmintonGameMemoryPolicyPayload()), 2500).then(function (res) {
           if (sessionId !== drainSessionId || currentMode !== drainMode) return;
           var items = (res && (res.outputs || res.items || res.lines)) || [];
           if (Array.isArray(items)) {
@@ -9642,7 +9725,7 @@
     return routeStartPromise;
   }
   function startRouteAfterCharacterReady() {
-    return loadBadmintonCharacter().finally(function () { return startRoute(); });
+    return startRoute();
   }
   function endRoute(useBeacon, options) {
     var force = options && options.force;
@@ -9667,7 +9750,6 @@
       roundCompleted: roundCompleted,
       round_completed: roundCompleted,
       postgameProactive: roundCompleted,
-      i18n_language: getRequestLanguage(),
       final_streak: game.bestStreak, final_distance: game.lastShotDistance || game.distance, record_distance: game.recordDistance,
       attempts_remaining: game.attemptsRemaining,
       attempts_total: game.attemptsTotal,
@@ -9712,7 +9794,7 @@
       payloadObj.duel = buildDuelStatePayload();
       payloadObj.currentState.duel = payloadObj.duel;
     }
-    Object.assign(payloadObj, _badmintonGameMemoryPolicyPayload());
+    Object.assign(payloadObj, getConversationLanguagePayload(), _badmintonGameMemoryPolicyPayload());
     var payload = JSON.stringify(payloadObj);
     var url = api('/route/end');
     if (useBeacon && navigator.sendBeacon) {

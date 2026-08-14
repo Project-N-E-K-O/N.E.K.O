@@ -133,6 +133,7 @@ function normalizeSurface(raw: any, fallbackKind: PluginUiSurface['kind'] = 'pan
     context: typeof raw.context === 'string' ? raw.context : undefined,
     permissions: Array.isArray(raw.permissions) ? raw.permissions.filter((item: unknown) => typeof item === 'string') : undefined,
     available: typeof raw.available === 'boolean' ? raw.available : undefined,
+    legacy_static_compat: raw.legacy_static_compat === true,
   }
 }
 
@@ -201,6 +202,7 @@ export async function getPluginUiSurfaceInfo(pluginId: string, locale?: string):
         ui_path: info.ui_path || `/plugin/${safeId}/ui/`,
         open_in: 'iframe',
         available: true,
+        legacy_static_compat: true,
       }],
       warnings: [],
     }

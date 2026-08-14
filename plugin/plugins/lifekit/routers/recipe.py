@@ -5,14 +5,16 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Dict, List
 
-from plugin.sdk.plugin import plugin_entry, quick_action, Ok, Err, SdkError
+from plugin.sdk.plugin import Err, Ok, SdkError, plugin_entry, quick_action, tr
 from plugin.sdk.shared.core.router import PluginRouter
 
 from .. import _recipe as recipe_api
 from .._chat import push_lifekit_content
 from .._contracts import RandomRecipeResult, SearchRecipeParams, SearchRecipeResult
+from .._entry_errors import unavailable_error
 
 
 def _format_recipe_summary(r: recipe_api.Recipe) -> str:
@@ -68,11 +70,10 @@ class RecipeRouter(PluginRouter):
 
     @plugin_entry(
         id="search_recipe",
-        name="搜索菜谱",
-        description=(
-            "按菜名或食材搜索菜谱，返回做法、食材清单。"
-            "支持中英文菜名。搜不到时 LLM 可自行补充。"
-            "如果用户不想自己做，可用 food_recommend 推荐附近餐厅。"
+        name=tr("recipe.entry_search_name", default="Search recipes"),
+        description=tr(
+            "recipe.entry_search_description",
+            default="Search recipes by the requested dish name or ingredient without replacing a dish with a generic ingredient.",
         ),
         params=SearchRecipeParams,
         llm_result_model=SearchRecipeResult,
@@ -89,26 +90,42 @@ class RecipeRouter(PluginRouter):
             query = params.query
             by_ingredient = params.by_ingredient
 
+        plugin = self.main_plugin
+        plugin._resolve_locale()
+        i18n = plugin._i18n
+
         if not query.strip():
-            return Err(SdkError("请输入菜名或食材"))
+            return Err(SdkError(i18n.t("recipe.no_query")))
 
         q = query.strip()
-
-        if by_ingredient:
-            results = await recipe_api.search_by_ingredient(q)
-            # 食材搜索只返回简要列表，取前3个获取详情
-            detailed: List[recipe_api.Recipe] = []
-            for brief in results[:3]:
-                full = await recipe_api.get_by_id(brief.id)
-                if full:
-                    detailed.append(full)
-            results = detailed if detailed else results
-        else:
-            results = await recipe_api.search_by_name(q)
+        try:
+            if by_ingredient:
+                brief_results = await recipe_api.search_by_ingredient(q)
+                details = await asyncio.gather(
+                    *(recipe_api.get_by_id(brief.id) for brief in brief_results[:3]),
+                    return_exceptions=True,
+                )
+                detailed = [
+                    recipe
+                    for recipe in details
+                    if isinstance(recipe, recipe_api.Recipe)
+                ]
+                results = detailed if detailed else brief_results
+                result_count = len(brief_results)
+            else:
+                results = await recipe_api.search_by_name(q)
+                result_count = len(results)
+        except recipe_api.RecipeAPIError:
+            return unavailable_error(
+                i18n.t("recipe.provider_unavailable"),
+                code="UPSTREAM_UNAVAILABLE",
+                details={"recipes": [], "query": q},
+            )
 
         if not results:
             return Ok({
-                "summary": f"没有找到「{q}」相关的菜谱，你可以直接问我怎么做",
+                "status": "ready",
+                "summary": i18n.t("recipe.not_found", query=q),
                 "recipes": [],
                 "query": q,
             })
@@ -119,7 +136,7 @@ class RecipeRouter(PluginRouter):
 
         # 摘要
         names = "、".join(_format_recipe_summary(r) for r in top)
-        summary = f"找到 {len(results)} 个菜谱: {names}"
+        summary = i18n.t("recipe.found", count=result_count, names=names)
 
         # 推送卡片 — 只展示第一个的详情
         first = top[0]
@@ -127,62 +144,84 @@ class RecipeRouter(PluginRouter):
             {"type": "text", "text": f"📖 {_format_recipe_summary(first)}"},
         ]
         if first.ingredients:
-            blocks.append({"type": "text", "text": f"🥘 食材:\n{_format_ingredients(first.ingredients)}"})
+            blocks.append({"type": "text", "text": f"🥘 {i18n.t('recipe.ingredients')}:\n{_format_ingredients(first.ingredients)}"})
         if first.instructions:
             # 截取前 200 字符
             steps = first.instructions[:200]
             if len(first.instructions) > 200:
                 steps += "…"
-            blocks.append({"type": "text", "text": f"👨‍🍳 做法:\n{steps}"})
+            blocks.append({"type": "text", "text": f"👨‍🍳 {i18n.t('recipe.instructions')}:\n{steps}"})
         if first.thumbnail:
             blocks.append({"type": "image", "url": first.thumbnail, "alt": first.name})
 
         push_lifekit_content(self.main_plugin, blocks)
 
         return Ok({
+            "status": "ready",
             "summary": summary,
             "recipes": recipes_data,
             "query": q,
-            "count": len(results),
-            "next_actions": [f"food_recommend cuisine={q} — 附近{q}餐厅", "search_nearby query=超市 — 附近超市买食材"],
+            "count": result_count,
+            "next_actions": [
+                i18n.t("recipe.action_food", query=q),
+                i18n.t("recipe.action_market"),
+            ],
         })
 
     @plugin_entry(
         id="random_recipe",
-        name="随机菜谱",
-        description="随机推荐一道菜，适合回答「今天吃什么」「不知道做什么菜」。不想自己做可以用 food_recommend 找附近餐厅。",
+        name=tr("recipe.entry_random_name", default="Random recipe"),
+        description=tr(
+            "recipe.entry_random_description",
+            default="Recommend a random recipe and suggest nearby restaurants as an alternative.",
+        ),
         llm_result_model=RandomRecipeResult,
     )
     @quick_action(icon="🎲", priority=4)
     async def random_recipe(self, **_):
-        meal = await recipe_api.random_meal()
+        plugin = self.main_plugin
+        plugin._resolve_locale()
+        i18n = plugin._i18n
+        try:
+            meal = await recipe_api.random_meal()
+        except recipe_api.RecipeAPIError:
+            return unavailable_error(
+                i18n.t("recipe.random_fail"),
+                code="UPSTREAM_UNAVAILABLE",
+                details={"recipe": None},
+            )
         if not meal:
-            return Ok({
-                "summary": "随机菜谱获取失败，请稍后重试",
-                "recipe": None,
-            })
+            return unavailable_error(
+                i18n.t("recipe.random_fail"),
+                code="UPSTREAM_UNAVAILABLE",
+                details={"recipe": None},
+            )
 
         recipe_data = _recipe_to_dict(meal)
-        summary = f"🎲 随机推荐: {_format_recipe_summary(meal)}"
+        summary = i18n.t("recipe.random_summary", recipe=_format_recipe_summary(meal))
 
         # 推送卡片
         blocks = [
-            {"type": "text", "text": f"🎲 今天试试: {_format_recipe_summary(meal)}"},
+            {"type": "text", "text": i18n.t("recipe.today_try", recipe=_format_recipe_summary(meal))},
         ]
         if meal.ingredients:
-            blocks.append({"type": "text", "text": f"🥘 食材:\n{_format_ingredients(meal.ingredients)}"})
+            blocks.append({"type": "text", "text": f"🥘 {i18n.t('recipe.ingredients')}:\n{_format_ingredients(meal.ingredients)}"})
         if meal.instructions:
             steps = meal.instructions[:200]
             if len(meal.instructions) > 200:
                 steps += "…"
-            blocks.append({"type": "text", "text": f"👨‍🍳 做法:\n{steps}"})
+            blocks.append({"type": "text", "text": f"👨‍🍳 {i18n.t('recipe.instructions')}:\n{steps}"})
         if meal.thumbnail:
             blocks.append({"type": "image", "url": meal.thumbnail, "alt": meal.name})
 
         push_lifekit_content(self.main_plugin, blocks)
 
         return Ok({
+            "status": "ready",
             "summary": summary,
             "recipe": recipe_data,
-            "next_actions": [f"food_recommend cuisine={meal.name} — 附近类似餐厅", "search_nearby query=超市 — 附近超市买食材"],
+            "next_actions": [
+                i18n.t("recipe.action_food", query=meal.name),
+                i18n.t("recipe.action_market"),
+            ],
         })

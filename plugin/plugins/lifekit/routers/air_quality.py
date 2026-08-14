@@ -4,41 +4,49 @@ from __future__ import annotations
 
 from typing import Any
 
-from plugin.sdk.plugin import Err, Ok, SdkError, plugin_entry, quick_action
+from plugin.sdk.plugin import Ok, plugin_entry, quick_action, tr
 from plugin.sdk.shared.core.router import PluginRouter
 
+from .._advice_policy import DEFAULT_ADVICE_POLICY
 from .._api import AirQualityError, fetch_air_quality
 from .._chat import push_lifekit_content
-from .._coerce import finite_float
+from .._coerce import finite_float, timezone_name
 from .._contracts import AirQualityResult, CityParams
+from .._location import LocationPurpose
+from .._location_entry import (
+    apply_location_assumption,
+    location_unavailable_result,
+    upstream_unavailable_result,
+)
 
 
-def _aqi_level(aqi: int) -> tuple[str, str]:
+def _aqi_level(aqi: int, i18n: Any) -> tuple[str, str]:
     if aqi <= 20:
-        return "Good", "green"
+        return i18n.t("air_quality.level.good"), "green"
     if aqi <= 40:
-        return "Fair", "yellow"
+        return i18n.t("air_quality.level.fair"), "yellow"
     if aqi <= 60:
-        return "Moderate", "orange"
+        return i18n.t("air_quality.level.moderate"), "orange"
     if aqi <= 80:
-        return "Poor", "red"
+        return i18n.t("air_quality.level.poor"), "red"
     if aqi <= 100:
-        return "Very poor", "purple"
-    return "Extremely poor", "brown"
+        return i18n.t("air_quality.level.very_poor"), "purple"
+    return i18n.t("air_quality.level.extremely_poor"), "brown"
 
 
-def _build_advice(aqi: int, pm25: float | None, uv: float | None) -> list[str]:
+def _build_advice(aqi: int, pm25: float | None, uv: float | None, i18n: Any) -> list[str]:
     tips: list[str] = []
-    if aqi > 60:
-        tips.append("Consider wearing a mask")
-    if aqi > 80:
-        tips.append("Reduce outdoor activity")
-    if aqi <= 40:
-        tips.append("Outdoor activity is generally suitable")
-    if isinstance(pm25, (int, float)) and pm25 > 75:
-        tips.append(f"PM2.5 is high ({pm25} ug/m3)")
-    if isinstance(uv, (int, float)) and uv >= 6:
-        tips.append("UV is strong; use sun protection")
+    policy = DEFAULT_ADVICE_POLICY
+    if aqi > policy.aqi_mask_above:
+        tips.append(i18n.t("air_quality.advice.mask"))
+    if aqi > policy.aqi_reduce_outdoors_above:
+        tips.append(i18n.t("air_quality.advice.reduce_outdoors"))
+    if aqi <= policy.aqi_outdoors_ok_at_most:
+        tips.append(i18n.t("air_quality.advice.outdoors_ok"))
+    if isinstance(pm25, (int, float)) and pm25 > policy.pm25_high_above:
+        tips.append(i18n.t("air_quality.advice.pm25_high", value=pm25))
+    if isinstance(uv, (int, float)) and policy.needs_sun_protection(uv):
+        tips.append(i18n.t("air_quality.advice.uv"))
     return tips
 
 
@@ -50,8 +58,8 @@ class AirQualityRouter(PluginRouter):
 
     @plugin_entry(
         id="air_quality",
-        name="Air quality",
-        description="Query current air quality, PM2.5, PM10, UV, and related advice for a city or saved/default location.",
+        name=tr("entries.airQuality.name", default="Air quality"),
+        description=tr("entries.airQuality.description", default="Query current air quality, PM2.5, PM10, UV, and related advice for a city or saved location."),
         params=CityParams,
         llm_result_model=AirQualityResult,
     )
@@ -64,22 +72,31 @@ class AirQualityRouter(PluginRouter):
         plugin._resolve_locale()
         i18n = plugin._i18n
 
-        loc, loc_err = await plugin._resolve_location(city or None)
+        loc, loc_err = await plugin._resolve_location(
+            city or None,
+            purpose=LocationPurpose.AIR_QUALITY,
+        )
         if not loc:
-            return Err(SdkError(i18n.t(loc_err or "error.no_location")))
+            return location_unavailable_result(loc_err, i18n)
 
-        tz = str(plugin._cfg.get("timezone", "Asia/Shanghai"))
+        tz = timezone_name(loc.get("timezone"), plugin._cfg.get("timezone"))
 
         try:
             data = await fetch_air_quality(loc["lat"], loc["lon"], tz=tz)
         except AirQualityError as exc:
             err_key = "error.forecast_timeout" if exc.cause == "timeout" else "error.fetch_failed"
-            return Err(SdkError(i18n.t(err_key, city=loc["city"])))
+            return upstream_unavailable_result(
+                i18n.t(err_key, city=loc["city"]), i18n, location=loc,
+            )
 
         current: dict[str, Any] = data.get("current", {}) if isinstance(data, dict) else {}
         aqi_value = finite_float(current.get("european_aqi"))
         if aqi_value is None:
-            return Err(SdkError(f"Unable to get air quality data for {loc['city']}"))
+            return upstream_unavailable_result(
+                i18n.t("error.fetch_failed", city=loc["city"]),
+                i18n,
+                location=loc,
+            )
 
         aqi = int(aqi_value)
         pm25 = current.get("pm2_5")
@@ -88,12 +105,12 @@ class AirQualityRouter(PluginRouter):
         no2 = current.get("nitrogen_dioxide")
         uv = current.get("uv_index")
 
-        level, tone = _aqi_level(aqi)
-        advice = _build_advice(aqi, pm25, uv)
+        level, tone = _aqi_level(aqi, i18n)
+        advice = _build_advice(aqi, pm25, uv, i18n)
 
-        summary = f"{loc['city']} air quality: {level} (AQI {aqi})"
+        summary = i18n.t("air_quality.summary", city=loc["city"], level=level, aqi=aqi)
         if pm25 is not None:
-            summary += f", PM2.5 {pm25} ug/m3"
+            summary += i18n.t("air_quality.pm25_suffix", value=pm25)
 
         detail_parts = []
         if pm25 is not None:
@@ -115,7 +132,8 @@ class AirQualityRouter(PluginRouter):
 
         push_lifekit_content(plugin, blocks)
 
-        return Ok({
+        return Ok(apply_location_assumption({
+            "status": "ready",
             "city": loc["city"],
             "summary": summary,
             "aqi": {
@@ -130,4 +148,4 @@ class AirQualityRouter(PluginRouter):
             },
             "advice": advice,
             "next_actions": ["get_weather", "travel_advice", "food_recommend"],
-        })
+        }, loc, i18n))

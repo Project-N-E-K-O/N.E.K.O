@@ -117,7 +117,11 @@ async def get_window_title_api():
 @router.post('/screenshot')
 async def backend_screenshot(request: Request):
     """
-    Backend screenshot fallback: when all frontend screen-capture APIs fail, the backend captures the local screen with pyautogui.
+    One-shot backend screenshot fallback for explicit screenshot/proactive-vision
+    requests. Continuous screen sharing must keep using the user-selected
+    client-side capture path and must not poll this endpoint because system
+    screenshot helpers can produce visible/audible feedback and cannot preserve a
+    selected-window boundary.
     Security restriction: only requests from loopback addresses are allowed. Returns a JPEG base64 DataURL.
     """
     validation_error = _validate_local_mutation_request(

@@ -279,6 +279,11 @@ class OcrReaderBridgeWriter:
         ts: str,
         ocr_confidence: float | None = None,
         text_source: str = "",
+        capture_backend_kind: str = "",
+        target_foreground: bool = False,
+        capture_region_occluded: bool = False,
+        capture_content_trusted: bool = True,
+        capture_untrusted_reason: str = "",
     ) -> bool:
         cleaned = raw_text.strip()
         if not cleaned or not self._session_id:
@@ -314,6 +319,11 @@ class OcrReaderBridgeWriter:
                 "ocr_confidence": _bounded_confidence_or_zero(ocr_confidence),
                 "speaker_confidence": speaker_confidence,
                 "text_source": text_source or "bottom_region",
+                "capture_backend_kind": str(capture_backend_kind or ""),
+                "target_foreground": bool(target_foreground),
+                "capture_region_occluded": bool(capture_region_occluded),
+                "ocr_capture_content_trusted": bool(capture_content_trusted),
+                "ocr_capture_rejected_reason": str(capture_untrusted_reason or ""),
             },
             ts=ts,
         )
@@ -327,6 +337,11 @@ class OcrReaderBridgeWriter:
         ts: str,
         ocr_confidence: float | None = None,
         text_source: str = "",
+        capture_backend_kind: str = "",
+        target_foreground: bool = False,
+        capture_region_occluded: bool = False,
+        capture_content_trusted: bool = True,
+        capture_untrusted_reason: str = "",
     ) -> bool:
         cleaned = raw_text.strip()
         if not cleaned or not self._session_id:
@@ -374,6 +389,11 @@ class OcrReaderBridgeWriter:
                 "ocr_confidence": _bounded_confidence_or_zero(ocr_confidence),
                 "speaker_confidence": speaker_confidence,
                 "text_source": text_source or "bottom_region",
+                "capture_backend_kind": str(capture_backend_kind or ""),
+                "target_foreground": bool(target_foreground),
+                "capture_region_occluded": bool(capture_region_occluded),
+                "ocr_capture_content_trusted": bool(capture_content_trusted),
+                "ocr_capture_rejected_reason": str(capture_untrusted_reason or ""),
             },
             ts=ts,
         )

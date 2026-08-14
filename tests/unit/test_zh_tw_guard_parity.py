@@ -865,23 +865,6 @@ def test_an_english_full_rewrite_still_matches(text):
     assert router._chat_text_requests_full_rewrite(text) is True, text
 
 
-@pytest.mark.parametrize(
-    ("simplified", "traditional"),
-    [
-        ("停止这些红心歌单", "停止這些紅心歌單"),
-        ("停止那些歌单", "停止那些歌單"),
-    ],
-)
-def test_plural_demonstratives_reach_the_stop_target(simplified, traditional):
-    """限定词闭集漏了复数指示词。`停止这些红心歌单` 命中否定判据却撞不上
-    直接停止判据，于是降级成窄范围来源排除、音乐继续放（CodeRabbit）。
-    """  # noqa: DOCSTRING_CJK
-    from main_logic.music_requests import is_explicit_music_cancellation
-
-    for text in (simplified, traditional):
-        assert is_explicit_music_cancellation(text) is True, text
-
-
 def test_the_clause_splitter_and_the_negation_window_share_one_table():
     """⚠️⚠️ 切分器的标点表和否定守卫里那个「不许跨过」的字符类必须同源。
 
@@ -2600,39 +2583,36 @@ _SIMPLIFIED_TO_TRADITIONAL.update({
 
 # 上一轮这里是**手写清单**，于是新加一张表就漏一张——第六十一轮加
 # `_WHOLE_CARD_MODAL_VERBS` / `_ZH_FRAME_SCOPE_COORDINATORS` 时当场撞上。
-# 改成**自动发现**：两个模块里所有「全大写名 + 字符串元组 + 含汉字」的常量。
+# 改成**自动发现**：模块里所有「全大写名 + 字符串元组 + 含汉字」的常量。
 # ⚠️ 这条断言是自限的——只有当某个词按字映射出**不同于自己**的繁体形时才要求
 # 配对，纯数字/量词/标点那些表天然免检，不必再维护豁免名单。
 _PAIRED_TABLE_FLOOR = frozenset({
-    "_ZH_NON_INTERROGATIVE_FRAMES", "_ZH_A_NOT_A_MODALS", "_ZH_FREE_CHOICE_WH_WORDS",
-    "_ZH_TARGET_MODIFIER_NOUNS", "_WHOLE_CARD_QUANTIFIERS", "_WHOLE_CARD_BARE_ADVERBS",
+    "_WHOLE_CARD_QUANTIFIERS", "_WHOLE_CARD_BARE_ADVERBS",
     "_WHOLE_CARD_LIGHT_VERBS", "_WHOLE_CARD_MEASURE_WORDS",
     "_WHOLE_CARD_INDEFINITE_QUANTITIES", "_WHOLE_CARD_CLAUSE_CONTINUATIONS",
     "_WHOLE_CARD_RESULT_PHRASES", "_CHAT_NEGATION_WORDS",
-    "_WHOLE_CARD_MODAL_VERBS", "_ZH_FRAME_SCOPE_COORDINATORS",
+    "_WHOLE_CARD_MODAL_VERBS",
 })
 
 
 def _paired_tables():
-    """两个实现模块里所有「简繁成对」的词表，**自动发现**。"""  # noqa: DOCSTRING_CJK
-    import main_logic.music_requests as music
+    """实现模块里所有「简繁成对」的词表，**自动发现**。"""  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
     found = {}
-    for module in (music, router):
-        for name, value in vars(module).items():
-            # ⚠️ 只看**私有**常量。公开的那些是**数据契约**而不是匹配词表——
-            # `CHARACTER_RESERVED_FIELDS` 存的是角色卡 JSON 的字段名，
-            # 把 `原始数据` 配成 `原始數據` 会凭空造出一个读不到的键。
-            # 判据不是「这张表我审过」而是「它是不是拿去匹配用户输入的」。
-            if not name.startswith("_"):
-                continue
-            if not name.isupper() or not isinstance(value, tuple) or not value:
-                continue
-            if not all(isinstance(entry, str) for entry in value):
-                continue
-            if any("\u4e00" <= ch <= "\u9fff" for entry in value for ch in entry):
-                found[name] = value
+    for name, value in vars(router).items():
+        # ⚠️ 只看**私有**常量。公开的那些是**数据契约**而不是匹配词表——
+        # `CHARACTER_RESERVED_FIELDS` 存的是角色卡 JSON 的字段名，
+        # 把 `原始数据` 配成 `原始數據` 会凭空造出一个读不到的键。
+        # 判据不是「这张表我审过」而是「它是不是拿去匹配用户输入的」。
+        if not name.startswith("_"):
+            continue
+        if not name.isupper() or not isinstance(value, tuple) or not value:
+            continue
+        if not all(isinstance(entry, str) for entry in value):
+            continue
+        if any("\u4e00" <= ch <= "\u9fff" for entry in value for ch in entry):
+            found[name] = value
     return found
 
 
@@ -3197,8 +3177,8 @@ def test_quoted_field_values_and_quoted_targets_still_work():
     assert router._chat_text_requests_full_rewrite('把《整个卡》重写') is True
 
 
-def test_the_modal_a_not_a_family_comes_from_the_music_generator():
-    """⚠️⚠️ 情态 A-not-A **跟音乐侧用同一张表的生成器**，不在卡片侧抄一份。
+def test_the_modal_a_not_a_family_comes_from_the_shared_generator():
+    """⚠️⚠️ 情态 A-not-A **跟共享文本模块用同一张表的生成器**，不在卡片侧抄一份。
 
     手抄那一版只有 9 个，`愿不愿意 / 值不值得 / 允不允许 / 舍不舍得` 全漏，用户在问
     却被判成整卡命令并 autosave（base 都是 False，第六十九轮 P1）。
@@ -3208,10 +3188,10 @@ def test_the_modal_a_not_a_family_comes_from_the_music_generator():
     这条断言钉住「同源」本身——有人把它抄回卡片侧就会红。
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
-    from main_logic.music_requests import _zh_a_not_a_forms
+    from main_logic.text_patterns import zh_a_not_a_forms
 
     pattern = router._CHAT_QUESTION_CLAUSE_RE.pattern
-    forms = _zh_a_not_a_forms()
+    forms = zh_a_not_a_forms()
     assert len(forms) >= 40, len(forms)
     for form in forms:
         assert form in pattern, form

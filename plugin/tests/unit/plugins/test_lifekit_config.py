@@ -371,9 +371,15 @@ async def test_lifekit_add_location_serializes_store_updates(monkeypatch) -> Non
     plugin.store = _MemoryStore()
     router = next(item for item in plugin._routers if item.name() == "locations")
 
+    async def add_confirmed(label: str, city: str):
+        challenge = await router.add_location(label=label, city=city)
+        assert challenge.is_ok()
+        assert challenge.value["status"] == "clarify"
+        return await router.add_location(**challenge.value["context"])
+
     first, second = await asyncio.gather(
-        router.add_location(label="Home", city="Tokyo"),
-        router.add_location(label="Office", city="Osaka"),
+        add_confirmed("Home", "Tokyo"),
+        add_confirmed("Office", "Osaka"),
     )
 
     assert first.is_ok()

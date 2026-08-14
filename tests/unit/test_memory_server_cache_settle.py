@@ -453,5 +453,6 @@ async def test_settle_empty_payload_persists_explicit_locale():
         "测试角色",
         [],
         language="zh-TW",
+        render_language=None,
         locale_admission_order=314,
     )
