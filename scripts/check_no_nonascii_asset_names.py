@@ -648,9 +648,17 @@ def _baseline_growth(repo_root: Path, base_ref: str) -> list[str]:
         cwd=repo_root,
         capture_output=True,
     )
-    reference = (
-        merge_base.stdout.decode().strip() if merge_base.returncode == 0 else base_ref
-    )
+    if merge_base.returncode != 0:
+        # No common ancestor: unrelated histories, or a clone shallow enough
+        # that the ancestor was never fetched. Falling back to the tip would
+        # quietly restore the bug this function exists to avoid, so say so.
+        print(
+            f"error: no merge base between {base_ref} and HEAD "
+            "(unrelated histories, or the shared history was not fetched)",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+    reference = merge_base.stdout.decode().strip()
 
     rel = BASELINE_PATH.relative_to(repo_root).as_posix()
     completed = subprocess.run(

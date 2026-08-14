@@ -807,3 +807,30 @@ def test_baseline_growth_is_measured_at_the_merge_base(tmp_path: Path) -> None:
     # …while a line this branch really adds is still caught.
     _write_baseline(tmp_path, [f"static/audio/{CJK_NAME}", "static/audio/new.mp3"])
     assert module._baseline_growth(tmp_path, "main") == ["static/audio/new.mp3"]
+
+
+@pytest.mark.unit
+def test_missing_merge_base_fails_instead_of_using_the_tip(tmp_path: Path) -> None:
+    """Unrelated histories must not silently degrade to a tip comparison.
+
+    That fallback would restore the very bug the merge-base lookup fixes, and
+    it would do it invisibly — the same failure shape as an unresolvable ref.
+    """
+    module = _load_script_module()
+    _init_repo(tmp_path)
+    commit = ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm"]
+    _write_baseline(tmp_path, ["static/audio/base.mp3"])
+    subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True)
+    subprocess.run(["git", *commit, "main"], cwd=tmp_path, check=True)
+
+    # An orphan branch shares no history with main.
+    subprocess.run(["git", "checkout", "-q", "--orphan", "unrelated"], cwd=tmp_path, check=True)
+    _write_baseline(tmp_path, ["static/audio/other.mp3"])
+    subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True)
+    subprocess.run(["git", *commit, "unrelated"], cwd=tmp_path, check=True)
+
+    module.REPO_ROOT = tmp_path
+    module.BASELINE_PATH = tmp_path / "scripts" / "nonascii_asset_baseline.txt"
+    with pytest.raises(SystemExit) as excinfo:
+        module._baseline_growth(tmp_path, "main")
+    assert excinfo.value.code == 2
