@@ -93,7 +93,7 @@ class OwnBroadsideDetector(Detector):
             detail={
                 "broadside_angle_deg": round(angle),
                 "enemy_distance_m": round(nearest.distance_m),
-                "enemy_bearing_deg": round(nearest.bearing_deg),
+                **nearest.direction_fields(),
                 "enemy_type": nearest.ship.ship_type,
                 "geometry_only": True,
             },

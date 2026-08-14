@@ -290,6 +290,7 @@ def test_the_scene_block_explains_the_count_fields_once():
         assert "allies_not_confirmed_sunk" in scene
         assert "confirmed_visible_allies" in scene
         assert "bearing_deg" in scene
+        assert "relative_sector" in scene
 
 
 _GLOSSARY_PHRASES = (
@@ -297,6 +298,7 @@ _GLOSSARY_PHRASES = (
     "allies_not_confirmed_sunk",
     "人数劣势",
     "bearing_deg",
+    "relative_sector",
 )
 
 
@@ -393,6 +395,20 @@ def test_lifecycle_claim_limits_forbid_spotting_talk_and_repeating_the_last_line
     joined = "\n".join(built.claim_limits)
     assert "小地图" in joined or "点亮" in joined
     assert "方位" in joined
+    assert "上一次" in joined
+    assert "只说对局开始" not in joined
+    assert "陪玩" in joined
+
+
+def test_lifecycle_end_claim_limits_allow_companion_wrap_up():
+    event = GameEvent(
+        event_id=BATTLE_ENDED, severity=45, at=100.0, seq=1, battle_id="b-1",
+        detail={"map_name": "North"})
+    built = WowsTacticPolicy(CFG).expand([event], _facts_with_spotting_noise())[0]
+    joined = "\n".join(built.claim_limits)
+    assert "只说对局结束" not in joined
+    assert "陪玩" in joined
+    assert "小地图" in joined or "点亮" in joined
     assert "上一次" in joined
 
 

@@ -298,11 +298,18 @@ def _bearing(threat) -> dict[str, Any]:
     ship = getattr(threat, "ship", None)
     spoken = getattr(ship, "spoken_name", None) if ship is not None else None
     raw_name = getattr(ship, "name", "") or ""
-    return {
+    payload: dict[str, Any] = {
         "name": spoken or raw_name,
         "distance_m": _rounded(threat.distance_m, 0),
         "bearing_deg": _rounded(threat.bearing_deg, 0),
     }
+    relative = getattr(threat, "relative_bearing_deg", None)
+    if relative is not None:
+        payload["relative_bearing_deg"] = _rounded(relative, 0)
+    sector = getattr(threat, "relative_sector", None)
+    if sector:
+        payload["relative_sector"] = sector
+    return payload
 
 
 def _rounded(value, digits: int):

@@ -26,11 +26,37 @@ from .snapshot import (
 )
 
 
+# Spoken 8-point sectors, indexed from the bow clockwise.
+# 0° = 正前方, 45° = 右前方, … 315° = 左前方.
+_RELATIVE_SECTORS = (
+    "正前方",
+    "右前方",
+    "正右",
+    "右后方",
+    "正后方",
+    "左后方",
+    "正左",
+    "左前方",
+)
+
+
 @dataclass(frozen=True)
 class ThreatBearing:
     ship: Ship
     distance_m: float
     bearing_deg: float
+    # 0 = bow, positive = starboard, negative = port, -180..180.
+    relative_bearing_deg: float | None = None
+    relative_sector: str | None = None
+
+    def direction_fields(self) -> dict[str, object]:
+        """Compass bearing plus bow-relative labels the model may quote."""
+        fields: dict[str, object] = {"bearing_deg": round(self.bearing_deg)}
+        if self.relative_bearing_deg is not None:
+            fields["relative_bearing_deg"] = round(self.relative_bearing_deg)
+        if self.relative_sector:
+            fields["relative_sector"] = self.relative_sector
+        return fields
 
 
 @dataclass(frozen=True)
@@ -95,6 +121,21 @@ def _distance(ax: float, az: float, bx: float, bz: float) -> float:
 def _bearing_deg(from_x: float, from_z: float, to_x: float, to_z: float) -> float:
     """Compass-style bearing in degrees, 0 = +Z (north), clockwise."""
     return math.degrees(math.atan2(to_x - from_x, to_z - from_z)) % 360.0
+
+
+def _relative_bearing_deg(
+    target_bearing: float, own_heading: float | None,
+) -> float | None:
+    """Target vs own bow: -180..180, 0 = ahead, positive = starboard."""
+    if own_heading is None:
+        return None
+    return (target_bearing - own_heading + 180.0) % 360.0 - 180.0
+
+
+def _relative_sector(relative: float | None) -> str | None:
+    if relative is None:
+        return None
+    return _RELATIVE_SECTORS[int((relative % 360.0) / 45.0 + 0.5) % 8]
 
 
 def _angle_between(a_deg: float, b_deg: float) -> float:
@@ -211,7 +252,8 @@ class FactBuilder:
         nearest_enemy: ThreatBearing | None = None
         nearest_ally_distance: float | None = None
         if own is not None and own.has_position and objects_ok:
-            visible_enemy_bearings = self._enemy_bearings(own, visible_enemies)
+            visible_enemy_bearings = self._enemy_bearings(
+                own, visible_enemies, own_heading)
             # Exact telemetry covers every visible enemy; only tactical threat
             # consumers are intentionally capped by the configured scan range.
             nearest_enemy = (
@@ -291,17 +333,21 @@ class FactBuilder:
         )
 
     # ------------------------------------------------------------------
-    def _enemy_bearings(self, own, enemies) -> tuple[ThreatBearing, ...]:
+    def _enemy_bearings(self, own, enemies, own_heading) -> tuple[ThreatBearing, ...]:
         """Return every positioned visible enemy, nearest first."""
         found: list[ThreatBearing] = []
         for enemy in enemies:
             if not enemy.has_position:
                 continue
             distance = _distance(own.x, own.z, enemy.x, enemy.z)
+            bearing = _bearing_deg(own.x, own.z, enemy.x, enemy.z)
+            relative = _relative_bearing_deg(bearing, own_heading)
             found.append(ThreatBearing(
                 ship=enemy,
                 distance_m=distance,
-                bearing_deg=_bearing_deg(own.x, own.z, enemy.x, enemy.z),
+                bearing_deg=bearing,
+                relative_bearing_deg=relative,
+                relative_sector=_relative_sector(relative),
             ))
         found.sort(key=lambda t: t.distance_m)
         return tuple(found)

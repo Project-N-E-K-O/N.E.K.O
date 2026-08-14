@@ -696,6 +696,29 @@ def test_facts_are_flattened_and_rounded():
     }
 
 
+def test_facts_telemetry_includes_bow_relative_sector():
+    from plugin.plugins.neko_wows.domain.facts import ThreatBearing, WowsFacts
+    from plugin.plugins.neko_wows.domain.snapshot import Ship
+
+    facts = WowsFacts(
+        nearest_enemy=ThreatBearing(
+            ship=Ship(name="Yamato"),
+            distance_m=4000.0,
+            bearing_deg=225.0,
+            relative_bearing_deg=45.0,
+            relative_sector="右前方",
+        ),
+    )
+    telemetry = facts_to_telemetry(facts)
+    assert telemetry["nearest_enemy"] == {
+        "name": "Yamato",
+        "distance_m": 4000,
+        "bearing_deg": 225,
+        "relative_bearing_deg": 45,
+        "relative_sector": "右前方",
+    }
+
+
 def test_absent_fields_are_omitted_rather_than_sent_as_null():
     from plugin.plugins.neko_wows.domain.facts import WowsFacts
 

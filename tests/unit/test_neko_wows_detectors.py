@@ -820,6 +820,93 @@ def test_multi_direction_threat_never_claims_crossfire():
     assert events[0].detail["spread_deg"] == 90
 
 
+@pytest.mark.parametrize(
+    "own_yaw, enemy_x, enemy_z, sector",
+    [
+        (0.0, 0.0, 1000.0, "正前方"),
+        (0.0, 1000.0, 1000.0, "右前方"),
+        (0.0, 1000.0, 0.0, "正右"),
+        (0.0, 1000.0, -1000.0, "右后方"),
+        (0.0, 0.0, -1000.0, "正后方"),
+        (0.0, -1000.0, -1000.0, "左后方"),
+        (0.0, -1000.0, 0.0, "正左"),
+        (0.0, -1000.0, 1000.0, "左前方"),
+        # Heading south: compass NE is behind-left, own right-front is SW.
+        # Models that treat bearing_deg as if 0 were the bow call this 左后.
+        (math.pi, -1000.0, -1000.0, "右前方"),
+        (math.pi, 1000.0, -1000.0, "左前方"),
+        (math.pi / 2, 1000.0, 0.0, "正前方"),
+        (math.pi / 2, 0.0, -1000.0, "正右"),
+    ],
+)
+def test_relative_sector_is_from_the_bow_not_compass_north(
+        own_yaw, enemy_x, enemy_z, sector):
+    facts = BUILDER.build(frame(
+        yaw=own_yaw, ships=(enemy(x=enemy_x, z=enemy_z),)))
+    nearest = facts.nearest_enemy
+    assert nearest is not None
+    assert nearest.relative_sector == sector
+
+
+def test_relative_sector_is_absent_without_a_heading():
+    facts = BUILDER.build(frame(
+        yaw=None, ships=(enemy(x=1000.0, z=1000.0),)))
+    nearest = facts.nearest_enemy
+    assert nearest is not None
+    assert nearest.bearing_deg == pytest.approx(45.0, abs=0.5)
+    assert nearest.relative_bearing_deg is None
+    assert nearest.relative_sector is None
+
+
+def test_enemy_closing_quotes_bow_relative_sector_not_compass_reciprocal():
+    """Heading south, enemy on the right bow: spoken sector is 右前方.
+
+    Absolute bearing_deg is then ~225 (SW). Models that read that number as
+    relative-to-bow call it 左后 — the live complaint this field exists to stop.
+    """
+    registry = DetectorRegistry(build_threat_detectors(CFG))
+    results = feed(registry, [
+        frame(seq=1, at=100.0, yaw=math.pi, ships=(
+            enemy(ui_id=2, x=-9000.0, z=-9000.0),)),
+        frame(seq=2, at=101.0, yaw=math.pi, ships=(
+            enemy(ui_id=2, x=-1000.0, z=-1000.0),)),
+    ])
+    closing = [
+        event for result in results for event in result.events
+        if event.event_id == ENEMY_CLOSING
+    ]
+    assert closing
+    assert closing[0].detail["relative_sector"] == "右前方"
+    assert closing[0].detail["relative_bearing_deg"] == 45
+
+
+def test_multi_direction_pairs_compass_bearing_with_bow_relative_sector():
+    """Heading south: compass SW is 右前方, SE is 左前方. Parallel arrays
+    named bearings_deg / relative_sectors would miss the reading-rule keys.
+    """
+    registry = DetectorRegistry(build_threat_detectors(CFG))
+    south_west = enemy(ui_id=2, x=-5000.0, z=-5000.0)
+    south_east = enemy(ui_id=3, x=5000.0, z=-5000.0)
+    results = feed(registry, [
+        frame(seq=1, at=100.0, yaw=math.pi, ships=(south_west,)),
+        frame(seq=2, at=101.0, yaw=math.pi, ships=(south_west,)),
+        frame(seq=3, at=102.0, yaw=math.pi, ships=(south_west, south_east)),
+    ])
+    events = [
+        event for result in results for event in result.events
+        if event.event_id == MULTI_DIRECTION_THREAT
+    ]
+    assert events
+    detail = events[0].detail
+    assert "bearings_deg" not in detail
+    assert "relative_sectors" not in detail
+    threats = detail["threats"]
+    assert threats[0]["bearing_deg"] == 225
+    assert threats[0]["relative_sector"] == "右前方"
+    assert threats[1]["bearing_deg"] == 135
+    assert threats[1]["relative_sector"] == "左前方"
+
+
 # --- geometry ------------------------------------------------------------
 
 def test_boundary_risk_needs_a_heading_towards_the_edge():
@@ -863,6 +950,30 @@ def test_broadside_exposure_requires_a_heading():
         frame(seq=4, at=103.0, yaw=math.pi / 2, ships=(headless,)),
     ])
     assert "target_broadside_window" not in fired(results)
+
+
+def test_own_broadside_quotes_bow_relative_sector_as_bearing_deg():
+    """Heading south, enemy due west: compass 270 reads as 正左 if 0 were the
+    bow. Spoken sector is 正右. The compass key must be bearing_deg so the
+    reading rules apply.
+    """
+    registry = DetectorRegistry(build_geometry_detectors(CFG))
+    west = enemy(ui_id=2, x=-5000.0, z=0.0)
+    south = enemy(ui_id=2, x=0.0, z=-5000.0)
+    results = feed(registry, [
+        frame(seq=1, at=100.0, yaw=math.pi, ships=(south,)),
+        frame(seq=2, at=101.0, yaw=math.pi, ships=(south,)),
+        frame(seq=3, at=102.0, yaw=math.pi, ships=(west,)),
+    ])
+    broadside = [
+        event for result in results for event in result.events
+        if event.event_id == OWN_BROADSIDE_EXPOSED
+    ]
+    assert broadside
+    assert "enemy_bearing_deg" not in broadside[0].detail
+    assert broadside[0].detail["bearing_deg"] == 270
+    assert broadside[0].detail["relative_sector"] == "正右"
+    assert broadside[0].detail["relative_bearing_deg"] == 90
 
 
 # --- targeting -----------------------------------------------------------

@@ -61,7 +61,7 @@ class EnemyClosingDetector(Detector):
             facts=facts,
             detail={
                 "distance_m": round(nearest.distance_m),
-                "bearing_deg": round(nearest.bearing_deg),
+                **nearest.direction_fields(),
                 "ship_type": nearest.ship.ship_type,
                 "ship_name": nearest.ship.spoken_name,
                 "player_id": nearest.ship.player_id,
@@ -104,7 +104,7 @@ class MultiDirectionThreatDetector(Detector):
             detail={
                 "spread_deg": round(spread),
                 "threat_count": len(threats),
-                "bearings_deg": [round(t.bearing_deg) for t in threats[:4]],
+                "threats": [t.direction_fields() for t in threats[:4]],
                 "nearest_m": round(threats[0].distance_m),
                 # Positions and bearings only. Whether these ships are actually
                 # coordinating is not observable, so crossfire is never claimed.

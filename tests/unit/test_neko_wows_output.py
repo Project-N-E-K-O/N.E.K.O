@@ -1192,10 +1192,20 @@ def test_the_reading_rules_forbid_inventing_consumables_and_relative_sectors():
         "小地图上敌舰图标亮起只表示被点亮/被发现，绝不等于对方开了雷达"
         in WOWS_TELEMETRY_READING_RULES
     )
-    assert (
-        "没有给出相对方位字段时，不要说左前方、正前方、右前方"
-        in WOWS_TELEMETRY_READING_RULES
+    assert "relative_sector" in WOWS_TELEMETRY_READING_RULES
+    assert "bearing_deg 是罗盘方位" in WOWS_TELEMETRY_READING_RULES
+    assert "不要用它换算" in WOWS_TELEMETRY_READING_RULES
+    spoken = (
+        "正前方", "右前方", "正右", "右后方", "正后方", "左后方", "正左", "左前方",
     )
+    convert_at = WOWS_TELEMETRY_READING_RULES.index("不要用它换算成")
+    allowed_at = WOWS_TELEMETRY_READING_RULES.index("口语方向只用 relative_sector")
+    invent_at = WOWS_TELEMETRY_READING_RULES.index("没有给出相对方位字段时")
+    convert_clause = WOWS_TELEMETRY_READING_RULES[convert_at:allowed_at]
+    invent_clause = WOWS_TELEMETRY_READING_RULES[invent_at:]
+    for sector in spoken:
+        assert sector in convert_clause, sector
+        assert sector in invent_clause, sector
 
 
 def test_live_vision_allows_own_hud_cooldowns_but_not_others():
