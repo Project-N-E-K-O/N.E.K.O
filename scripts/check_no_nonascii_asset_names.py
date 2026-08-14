@@ -208,6 +208,10 @@ BUNDLED_ROOTS: tuple[str, ...] = (
     "frontend/plugin-manager/src",
     "frontend/react-neko-chat/src",
     "plugin/plugins",
+    # --include-package=steamworks pulls every native lib in this directory in
+    # as package data; the workflow's cleanup only removes the fixed
+    # wrong-platform filenames, so anything else here lands in the payload.
+    "steamworks",
     # Voice-turn + speaker models, both --include-data-dir'd. The .onnx weights
     # are downloaded at build time and gitignored, so the git listing cannot see
     # them; these roots cover whatever *is* tracked here, and make

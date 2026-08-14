@@ -881,3 +881,17 @@ def test_loose_plugin_runtime_artifacts_are_not_reported(tmp_path: Path) -> None
 
     offenders, _ = module.collect_offenders(tmp_path)
     assert offenders == {f"plugin/plugins/{CJK_NAME}.json"}
+
+
+@pytest.mark.unit
+def test_steamworks_native_libraries_are_scanned(tmp_path: Path) -> None:
+    """--include-package=steamworks carries this directory in as package data."""
+    module = _load_script_module()
+    _init_repo(tmp_path)
+    steamworks = tmp_path / "steamworks"
+    steamworks.mkdir()
+    (steamworks / f"{CJK_NAME}.dylib").write_bytes(b"x")
+    (steamworks / "SteamworksPy.dylib").write_bytes(b"x")
+
+    offenders, _ = module.collect_offenders(tmp_path)
+    assert offenders == {f"steamworks/{CJK_NAME}.dylib"}
