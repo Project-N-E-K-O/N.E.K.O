@@ -88,6 +88,28 @@ eval({provider_source});
     throw new Error('Electron capture call contract changed');
   }}
 
+  let getSourcesArgs = null;
+  const sourceOptions = {{
+    types: ['window', 'screen'],
+    thumbnailSize: {{ width: 160, height: 100 }}
+  }};
+  const sources = await window.invokeDesktopCaptureWithTimeout(
+    {{
+      getSources(options) {{
+        getSourcesArgs = Array.from(arguments);
+        return Promise.resolve([{{ id: 'screen:1', options }}]);
+      }}
+    }},
+    'getSources',
+    [sourceOptions],
+    50
+  );
+  if (getSourcesArgs.length !== 1
+      || getSourcesArgs[0] !== sourceOptions
+      || sources[0].options !== sourceOptions) {{
+    throw new Error('Generic timeout changed the getSources(options) contract');
+  }}
+
   const tauriProvider = {{ captureSourceAsDataUrl() {{ return Promise.resolve(null); }} }};
   window.tauriDesktopCapturer = tauriProvider;
   if (window.getDesktopCaptureProvider() !== tauriProvider) {{
