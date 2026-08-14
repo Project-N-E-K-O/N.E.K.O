@@ -280,11 +280,12 @@ def _under_bundled_root(rel_posix: str) -> bool:
 # pydantic (plugin/neko_plugin_cli/core/build_rules.py) and the analyze job runs
 # these scripts on a bare interpreter with no dependencies installed.
 #
-# The two directions of drift are not symmetric, so keep this list a SUBSET of
-# the real one. Listing something the real staging keeps means we stop scanning
-# a file that does ship — a hole. Missing something it drops only leaves a
-# false positive. tests/unit/test_check_no_nonascii_asset_names.py imports the
-# real ``should_skip_path`` and fails on the first direction.
+# tests/unit/test_check_no_nonascii_asset_names.py imports the real
+# ``should_skip_path`` and demands the same verdict in both directions, so this
+# copy cannot drift silently. The two directions are not equally bad, which is
+# worth knowing when one does slip: listing something the real staging keeps
+# stops us scanning a file that ships (a hole), while missing something it drops
+# only leaves a false positive. Both fail the test; only the first is dangerous.
 _PLUGIN_SKIP_DIR_NAMES = frozenset(
     {"__pycache__", ".github", ".pytest_cache", ".venv", ".git"}
 )
@@ -322,7 +323,7 @@ def _plugin_rules(repo_root: Path, plugin_dir: str) -> dict[str, list[str]]:
         return {}
     return {
         key: [item for item in build.get(key, []) if isinstance(item, str)]
-        for key in ("exclude", "exclude_dirs", "exclude_files")
+        for key in ("include", "exclude", "exclude_dirs", "exclude_files")
     }
 
 
@@ -365,7 +366,14 @@ def _plugin_stage_filter(repo_root: Path):
         exclude_files = rules.get("exclude_files", [])
         if relative.name in exclude_files:
             return False
-        return not any(_match_build_pattern(path_str, p) for p in exclude_files)
+        if any(_match_build_pattern(path_str, p) for p in exclude_files):
+            return False
+        # `include` is an allow-list applied after every exclude has run: with
+        # it present, anything unmatched is dropped from the stage.
+        include = rules.get("include", [])
+        if not include:
+            return True
+        return any(_match_build_pattern(path_str, p) for p in include)
 
     return keep
 

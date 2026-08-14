@@ -533,10 +533,17 @@ def test_plugin_stage_filter_matches_the_real_build_rules(tmp_path: Path) -> Non
     module = _load_script_module()
     plugin_dir = tmp_path / "plugin" / "plugins" / "demo"
     plugin_dir.mkdir(parents=True)
+    build_table = {
+        "include": ["*.py", "assets/*", "data layer/*"],
+        "exclude": ["*.tmp", "secrets/*"],
+        "exclude_dirs": ["tests", "local_logs"],
+        "exclude_files": ["README.md", "*.bak"],
+    }
     (plugin_dir / "pyproject.toml").write_text(
         "\n".join(
             [
                 "[tool.neko.build]",
+                'include = ["*.py", "assets/*", "data layer/*"]',
                 'exclude = ["*.tmp", "secrets/*"]',
                 'exclude_dirs = ["tests", "local_logs"]',
                 'exclude_files = ["README.md", "*.bak"]',
@@ -544,13 +551,7 @@ def test_plugin_stage_filter_matches_the_real_build_rules(tmp_path: Path) -> Non
         ),
         encoding="utf-8",
     )
-    rules = load_build_rules(
-        {"tool": {"neko": {"build": {
-            "exclude": ["*.tmp", "secrets/*"],
-            "exclude_dirs": ["tests", "local_logs"],
-            "exclude_files": ["README.md", "*.bak"],
-        }}}}
-    )
+    rules = load_build_rules({"tool": {"neko": {"build": build_table}}})
 
     keep = module._plugin_stage_filter(tmp_path)
     relatives = [
@@ -575,21 +576,26 @@ def test_plugin_stage_filter_matches_the_real_build_rules(tmp_path: Path) -> Non
         ".vscode/settings.json",
         "data layer/worker.py",
         "assets/nested/ok.png",
+        # Not matched by any `include` pattern -> dropped by the allow-list.
+        "docs/manual.md",
+        "styles/theme.css",
     ]
-    # The two directions are not symmetric. Dropping a path the real staging
-    # keeps means the check stops scanning a file that ships — a hole, and the
-    # only direction worth failing on. Keeping one it drops merely leaves a
-    # false positive, so it is reported but tolerated.
+    # Demand the same verdict in both directions. One direction is a hole (the
+    # mirror drops a path that really ships, so the check stops looking at it),
+    # the other only a false positive — but a mismatch either way means the copy
+    # has drifted, and the fix is the same one line. The sole documented
+    # asymmetry is .db/.log, which staging strips afterwards rather than through
+    # these rules, so should_skip_path has no opinion on them.
     for relative in relatives:
         mirrored_keep = keep(f"plugin/plugins/demo/{relative}")
         if PurePosixPath(relative).suffix.lower() in {".db", ".log"}:
-            # Stripped after staging by _remove_private_runtime_artifacts rather
-            # than by the rules, so the real should_skip_path says nothing here.
             assert not mirrored_keep, relative
             continue
         real_keeps = not should_skip_path(Path(relative), is_dir=False, rules=rules)
-        if real_keeps:
-            assert mirrored_keep, f"mirror drops a staged path: {relative}"
+        assert mirrored_keep == real_keeps, (
+            f"mirror and build rules disagree on {relative}: "
+            f"mirror keeps={mirrored_keep}, staging keeps={real_keeps}"
+        )
 
     # And it must actually drop the families it exists for.
     for dropped in (
@@ -603,6 +609,7 @@ def test_plugin_stage_filter_matches_the_real_build_rules(tmp_path: Path) -> Non
         "__pycache__/mod.pyc",
         "store.db",
         "runtime.log",
+        "docs/manual.md",
     ):
         assert not keep(f"plugin/plugins/demo/{dropped}"), dropped
 
@@ -730,3 +737,21 @@ def test_vite_imported_source_assets_are_scanned(tmp_path: Path) -> None:
 
     offenders, _ = module.collect_offenders(tmp_path)
     assert offenders == {f"frontend/plugin-manager/src/assets/{CJK_NAME}.png"}
+
+
+@pytest.mark.unit
+def test_include_allow_list_keeps_unpackaged_files_out_of_the_scan(tmp_path: Path) -> None:
+    """With `include` set, staging drops everything unmatched — so do not report it."""
+    module = _load_script_module()
+    _init_repo(tmp_path)
+    plugin_dir = tmp_path / "plugin" / "plugins" / "demo"
+    (plugin_dir / "assets").mkdir(parents=True)
+    (plugin_dir / "docs").mkdir()
+    (plugin_dir / "pyproject.toml").write_text(
+        '[tool.neko.build]\ninclude = ["assets/*"]\n', encoding="utf-8"
+    )
+    (plugin_dir / "assets" / f"{CJK_NAME}.png").write_bytes(b"x")
+    (plugin_dir / "docs" / f"{CJK_NAME}.md").write_bytes(b"x")
+
+    offenders, _ = module.collect_offenders(tmp_path)
+    assert offenders == {f"plugin/plugins/demo/assets/{CJK_NAME}.png"}
