@@ -60,6 +60,54 @@ def test_init_creates_complete_market_repository_by_default(
     ).read_text(encoding="utf-8")
 
 
+def test_init_creates_minimal_callable_plugin_entry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    exit_code = neko_plugin_cli.main(["init", "hello_world", "--name", "Hello World"])
+
+    entry = tmp_path / "n.e.k.o_plugin_hello_world" / "__init__.py"
+    assert exit_code == 0
+    assert entry.read_text(encoding="utf-8") == '''from plugin.sdk.plugin import NekoPluginBase, Ok, neko_plugin, plugin_entry
+
+
+@neko_plugin
+class HelloWorldPlugin(NekoPluginBase):
+    @plugin_entry(id="hello", name="Hello", description="Say hello")
+    async def hello(self, name: str = "World"):
+        return Ok({"message": f"Hello, {name}!"})
+'''
+
+
+@pytest.mark.parametrize(
+    "guide_path",
+    [
+        "docs/plugins/quick-start.md",
+        "docs/zh-CN/plugins/quick-start.md",
+        "docs/ja/plugins/quick-start.md",
+    ],
+)
+def test_quick_start_guides_show_generated_minimal_entry(guide_path: str) -> None:
+    root = Path(__file__).resolve().parents[3]
+    guide = (root / guide_path).read_text(encoding="utf-8")
+    feature_section = guide.split("## 7.", maxsplit=1)[1].split("## 8.", maxsplit=1)[0]
+
+    assert '''from plugin.sdk.plugin import NekoPluginBase, Ok, neko_plugin, plugin_entry
+
+
+@neko_plugin
+class HelloWorldPlugin(NekoPluginBase):
+    @plugin_entry(id="hello", name="Hello", description="Say hello")
+    async def hello(self, name: str = "World"):
+        return Ok({"message": f"Hello, {name}!"})
+''' in feature_section
+    assert "from typing import Any" not in feature_section
+    assert "@lifecycle" not in feature_section
+    assert "input_schema" not in feature_section
+
+
 def test_init_repo_command_is_removed(capsys: pytest.CaptureFixture[str]) -> None:
     with pytest.raises(SystemExit) as exc_info:
         neko_plugin_cli.main(["init-repo", "demo"])

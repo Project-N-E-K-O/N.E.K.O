@@ -296,47 +296,13 @@ def _render_init_py(spec: PluginSpec) -> str:
 
 
 def _render_quick_start_init(spec: PluginSpec) -> str:
-    return f'''from typing import Any
-
-from plugin.sdk.plugin import (
-    NekoPluginBase,
-    Ok,
-    lifecycle,
-    neko_plugin,
-    plugin_entry,
-)
+    return f'''from plugin.sdk.plugin import NekoPluginBase, Ok, neko_plugin, plugin_entry
 
 
 @neko_plugin
 class {spec.class_name}(NekoPluginBase):
-    """{_escape(spec.name or spec.plugin_id)}"""
-
-    def __init__(self, ctx: Any):
-        super().__init__(ctx)
-        self.logger = ctx.logger
-
-    @lifecycle(id="startup")
-    def on_startup(self, **_):
-        self.logger.info("{spec.class_name} started")
-        return Ok({{"status": "ready"}})
-
-    @lifecycle(id="shutdown")
-    def on_shutdown(self, **_):
-        self.logger.info("{spec.class_name} stopped")
-        return Ok({{"status": "stopped"}})
-
-    @plugin_entry(
-        id="hello",
-        name="Hello",
-        description="Say hello",
-        input_schema={{
-            "type": "object",
-            "properties": {{
-                "name": {{"type": "string", "default": "World"}}
-            }}
-        }}
-    )
-    async def hello(self, name: str = "World", **_):
+    @plugin_entry(id="hello", name="Hello", description="Say hello")
+    async def hello(self, name: str = "World"):
         return Ok({{"message": f"Hello, {{name}}!"}})
 '''
 

@@ -149,47 +149,13 @@ auto_start = false
 生成された `__init__.py` には、名前を受け取って greeting を返す entry がすでにあります：
 
 ```python
-from typing import Any
-
-from plugin.sdk.plugin import (
-    NekoPluginBase,
-    Ok,
-    lifecycle,
-    neko_plugin,
-    plugin_entry,
-)
+from plugin.sdk.plugin import NekoPluginBase, Ok, neko_plugin, plugin_entry
 
 
 @neko_plugin
 class HelloWorldPlugin(NekoPluginBase):
-    """Hello World"""
-
-    def __init__(self, ctx: Any):
-        super().__init__(ctx)
-        self.logger = ctx.logger
-
-    @lifecycle(id="startup")
-    def on_startup(self, **_):
-        self.logger.info("HelloWorldPlugin started")
-        return Ok({"status": "ready"})
-
-    @lifecycle(id="shutdown")
-    def on_shutdown(self, **_):
-        self.logger.info("HelloWorldPlugin stopped")
-        return Ok({"status": "stopped"})
-
-    @plugin_entry(
-        id="hello",
-        name="Hello",
-        description="Say hello",
-        input_schema={
-            "type": "object",
-            "properties": {
-                "name": {"type": "string", "default": "World"}
-            }
-        }
-    )
-    async def hello(self, name: str = "World", **_):
+    @plugin_entry(id="hello", name="Hello", description="Say hello")
+    async def hello(self, name: str = "World"):
         return Ok({"message": f"Hello, {name}!"})
 ```
 
@@ -197,9 +163,8 @@ class HelloWorldPlugin(NekoPluginBase):
 | --- | --- |
 | `@neko_plugin` | class を N.E.K.O plugin として宣言 |
 | `NekoPluginBase` | logging、config、storage などを提供 |
-| `@lifecycle(...)` | plugin の start と stop で code を実行 |
 | `@plugin_entry(...)` | Plugin Manager に呼び出し可能な機能を公開 |
-| `input_schema` | interface に表示する入力項目を記述 |
+| `name: str = "World"` | optional string parameter を宣言し、SDK が入力 UI を自動生成 |
 | `Ok({...})` | successful result を返す |
 
 `plugin_id` は `hello_world`、この機能の `entry_id` は `hello` です。別の identity なので混同しないでください。

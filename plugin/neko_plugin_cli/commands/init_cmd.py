@@ -162,7 +162,7 @@ def handle(args: argparse.Namespace) -> int:
         name=args.name or plugin_id,
         plugin_type=args.plugin_type,
         quick_start=True,
-        features=["lifecycle", "entry_point"],
+        features=["entry_point"],
         create_github_actions=True,
         neko_repository=_DEFAULT_NEKO_REPOSITORY,
         neko_ref="main",

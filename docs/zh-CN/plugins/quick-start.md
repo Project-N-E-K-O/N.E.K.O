@@ -152,47 +152,13 @@ auto_start = false
 打开生成的 `__init__.py`。它已经包含一个可以按名字问候用户的入口：
 
 ```python
-from typing import Any
-
-from plugin.sdk.plugin import (
-    NekoPluginBase,
-    Ok,
-    lifecycle,
-    neko_plugin,
-    plugin_entry,
-)
+from plugin.sdk.plugin import NekoPluginBase, Ok, neko_plugin, plugin_entry
 
 
 @neko_plugin
 class HelloWorldPlugin(NekoPluginBase):
-    """Hello World"""
-
-    def __init__(self, ctx: Any):
-        super().__init__(ctx)
-        self.logger = ctx.logger
-
-    @lifecycle(id="startup")
-    def on_startup(self, **_):
-        self.logger.info("HelloWorldPlugin started")
-        return Ok({"status": "ready"})
-
-    @lifecycle(id="shutdown")
-    def on_shutdown(self, **_):
-        self.logger.info("HelloWorldPlugin stopped")
-        return Ok({"status": "stopped"})
-
-    @plugin_entry(
-        id="hello",
-        name="Hello",
-        description="Say hello",
-        input_schema={
-            "type": "object",
-            "properties": {
-                "name": {"type": "string", "default": "World"}
-            }
-        }
-    )
-    async def hello(self, name: str = "World", **_):
+    @plugin_entry(id="hello", name="Hello", description="Say hello")
+    async def hello(self, name: str = "World"):
         return Ok({"message": f"Hello, {name}!"})
 ```
 
@@ -200,9 +166,8 @@ class HelloWorldPlugin(NekoPluginBase):
 | --- | --- |
 | `@neko_plugin` | 把这个类声明为 N.E.K.O 插件 |
 | `NekoPluginBase` | 提供日志、配置、存储等插件能力 |
-| `@lifecycle(...)` | 在插件启动和停止时执行代码 |
 | `@plugin_entry(...)` | 在插件管理器中公开一个可调用功能 |
-| `input_schema` | 描述界面需要显示的输入参数 |
+| `name: str = "World"` | 声明一个可选字符串参数；SDK 会自动生成输入表单 |
 | `Ok({...})` | 返回一次成功结果 |
 
 `plugin_id` 是 `hello_world`，这个功能自己的 `entry_id` 是 `hello`。两者用途不同，不要互换。
