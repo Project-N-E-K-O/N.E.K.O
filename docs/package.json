@@ -19,7 +19,8 @@
     "test:indexnow": "node --test scripts/submit-indexnow.test.mjs",
     "test:analytics": "node --test scripts/analytics-consent.test.mjs",
     "test:steam-cta": "node --test scripts/steam-cta.test.mjs",
-    "test": "npm run test:indexnow && npm run test:analytics && npm run test:steam-cta && npm run test:dataforseo && npm run test:seo-monitoring"
+    "test:seo-output": "node --test scripts/seo-description-policy.test.mjs",
+    "test": "npm run test:indexnow && npm run test:analytics && npm run test:steam-cta && npm run test:seo-output && npm run test:dataforseo && npm run test:seo-monitoring"
   },
   "devDependencies": {
     "vitepress": "^1.6.3",

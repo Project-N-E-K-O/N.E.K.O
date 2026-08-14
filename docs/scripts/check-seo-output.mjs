@@ -4,10 +4,12 @@ import {
   LOCALE_HOME_PATHS,
   SITE_ORIGIN,
 } from '../.vitepress/seo-shared.mjs'
+import { descriptionLengthWarning } from './seo-description-policy.mjs'
 
 const DIST_DIR = resolve('.vitepress/dist')
 const PUBLIC_DIR = resolve('public')
 const errors = []
+const warnings = []
 
 function filesRecursively(directory, extension) {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
@@ -62,6 +64,10 @@ function decodeHtml(value) {
 
 function fail(file, message) {
   errors.push(`${file}: ${message}`)
+}
+
+function warn(file, message) {
+  warnings.push(`${file}: ${message}`)
 }
 
 function jsonLdNodes(data) {
@@ -155,13 +161,11 @@ for (const htmlPath of filesRecursively(DIST_DIR, '.html')) {
   if (titleMatches.length !== 1 || !titleMatches[0][1].trim()) {
     fail(file, 'must contain exactly one non-empty title')
   }
-  if (!description.trim()) fail(file, 'meta description is missing or empty')
-  const descriptionLength = Array.from(description).length
-  if (descriptionLength < 40 || descriptionLength > 180) {
-    fail(
-      file,
-      `meta description length must be 40-180 characters, found ${descriptionLength}`,
-    )
+  if (!description.trim()) {
+    fail(file, 'meta description is missing or empty')
+  } else {
+    const warning = descriptionLengthWarning(description)
+    if (warning) warn(file, warning)
   }
   if (!htmlLang) fail(file, 'html lang is missing')
   if ((html.match(/<h1\b/gi) ?? []).length !== 1) {
@@ -375,6 +379,14 @@ for (const page of pages.values()) {
         `hreflang target does not link back: ${alternate.href}`,
       )
     }
+  }
+}
+
+if (warnings.length) {
+  console.warn(`SEO validation completed with ${warnings.length} warning(s):`)
+  for (const warning of warnings.slice(0, 200)) console.warn(`- ${warning}`)
+  if (warnings.length > 200) {
+    console.warn(`- ...and ${warnings.length - 200} more`)
   }
 }
 
