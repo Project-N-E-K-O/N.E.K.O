@@ -286,6 +286,7 @@ def test_ally_death_is_not_a_praise_event():
     )
 
     assert ENEMY_SUNK not in event_ids(results)
+    assert DEVASTATING_STRIKE in event_ids(results)
 
 
 def test_enemy_sunk_requires_recent_damage_from_us():
@@ -300,6 +301,70 @@ def test_enemy_sunk_requires_recent_damage_from_us():
     )
 
     assert event_ids(results) == []
+
+
+def test_death_frame_dropping_the_victim_row_still_uses_the_burst():
+    results = run_frames(
+        frame(1, 100.0, {3002: 0}, enemy(max_health=40_000.0)),
+        frame(2, 101.0, {3002: 20_000}, enemy(max_health=40_000.0)),
+        frame(3, 102.0, {}, enemy(alive=False, max_health=40_000.0)),
+    )
+
+    assert event_ids(results) == [ENEMY_SUNK, DEVASTATING_STRIKE]
+    assert emitted(results, ENEMY_SUNK).detail["window_damage"] == 20_000
+    assert emitted(results, ENEMY_SUNK).detail["kill_credit"] is False
+
+
+def test_counter_rollback_then_death_does_not_praise_the_sink():
+    results = run_frames(
+        frame(1, 100.0, {3002: 0}, enemy(max_health=40_000.0)),
+        frame(2, 101.0, {3002: 20_000}, enemy(max_health=40_000.0)),
+        frame(
+            3,
+            102.0,
+            {3002: 5_000},
+            enemy(alive=False, max_health=40_000.0),
+        ),
+    )
+
+    assert event_ids(results) == []
+
+
+def test_a_stale_hit_outside_the_window_does_not_become_enemy_sunk():
+    results = run_frames(
+        frame(1, 100.0, {3002: 0}, enemy(max_health=100_000.0)),
+        frame(2, 101.0, {3002: 4_000}, enemy(max_health=100_000.0)),
+        frame(3, 106.0, {3002: 4_000}, enemy(max_health=100_000.0)),
+        frame(
+            4,
+            107.0,
+            {3002: 4_000},
+            enemy(alive=False, max_health=100_000.0),
+        ),
+    )
+
+    assert event_ids(results) == []
+
+
+def test_a_small_sink_does_not_consume_another_target_high_damage():
+    alive_a = enemy(player_id=3002, max_health=100_000.0, name="Scratch")
+    alive_b = enemy(player_id=3003, max_health=100_000.0, name="Chunk")
+    dead_a = enemy(
+        player_id=3002,
+        alive=False,
+        max_health=100_000.0,
+        name="Scratch",
+    )
+    results = run_frames(
+        frame(1, 100.0, {3002: 0, 3003: 0}, alive_a, alive_b),
+        frame(2, 101.0, {3002: 4_000, 3003: 20_000}, alive_a, alive_b),
+        frame(3, 102.0, {3002: 4_000, 3003: 20_000}, dead_a, alive_b),
+        frame(4, 106.0, {3002: 4_000, 3003: 20_000}, dead_a, alive_b),
+    )
+
+    assert event_ids(results) == [ENEMY_SUNK, HIGH_DAMAGE]
+    assert emitted(results, ENEMY_SUNK).detail["target_name"] == "Scratch"
+    assert emitted(results, HIGH_DAMAGE).detail["target_name"] == "Chunk"
 
 
 def test_counter_rollback_discards_the_pending_burst():
@@ -446,9 +511,10 @@ def test_multiple_resolved_victims_choose_devastating_and_consume_the_rest():
         ),
     )
 
-    assert event_ids(results) == [ENEMY_SUNK, DEVASTATING_STRIKE]
+    assert event_ids(results) == [ENEMY_SUNK, DEVASTATING_STRIKE, HIGH_DAMAGE]
     assert emitted(results, DEVASTATING_STRIKE).detail["target_name"] == "Dev"
     assert emitted(results, ENEMY_SUNK).detail["target_name"] == "Dev"
+    assert emitted(results, HIGH_DAMAGE).detail["target_name"] == "High"
 
 
 def wire_payload(*, seq: int, damage: float | None, alive: bool) -> dict:

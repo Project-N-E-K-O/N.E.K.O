@@ -18,6 +18,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any, Sequence
 
+from ..domain.catalog import ENEMY_SUNK
 from ..domain.contracts import (
     ALL_LANES,
     INTRUSION_ALLOW_INTERRUPT,
@@ -333,6 +334,7 @@ class Arbiter:
                         candidate.spec.attach_group
                         and sibling.spec.attach_group
                         == candidate.spec.attach_group
+                        and ENEMY_SUNK in (candidate.event_id, sibling.event_id)
                     )
                     if not in_window and not same_group:
                         continue

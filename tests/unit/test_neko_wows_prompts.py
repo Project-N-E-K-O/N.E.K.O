@@ -273,6 +273,7 @@ def test_enemy_sunk_claim_limits_ask_for_praise_without_kill_credit():
     assert any("夸奖" in line for line in sink.claim_limits)
     assert any("击杀" in line for line in sink.claim_limits)
     assert any("勋带" in line or "成就" in line for line in sink.claim_limits)
+    assert any("附带伤害" in line for line in sink.claim_limits)
 
 
 _FORBIDDEN_CONSUMABLE_STATE = (

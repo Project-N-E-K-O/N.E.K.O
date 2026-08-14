@@ -205,6 +205,18 @@ def test_enemy_sunk_attaches_devastating_strike():
     )
 
 
+def test_high_damage_coalesces_with_devastating_without_a_sink():
+    decision = Arbiter(CFG).decide([
+        candidate(DEVASTATING_STRIKE),
+        candidate(HIGH_DAMAGE),
+    ], 100.0)
+
+    assert decision.chosen.event_id == DEVASTATING_STRIKE
+    assert decision.attached == ()
+    assert REASON_COALESCED in outcomes(decision, HIGH_DAMAGE)
+    assert decision.queued == 0
+
+
 def test_enemy_sunk_does_not_coalesce_away_a_damage_burst():
     arbiter = Arbiter(CFG)
     steps = arbiter.submit(
