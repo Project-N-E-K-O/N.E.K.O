@@ -198,15 +198,15 @@ BUNDLED_ROOTS: tuple[str, ...] = (
     # still lands in the payload.
     "frontend/plugin-manager/public",
     "frontend/react-neko-chat/public",
-    # Imported assets keep their source basename in the output
-    # (`assets/[name]-[hash][extname]`, explicit in react-neko-chat's config and
-    # the Vite default elsewhere), so a non-ASCII name under src/assets/ ships
-    # as `<same-name>-<hash>.png`.
-    # Code modules are not scanned: they are bundled into chunks. A dynamically
-    # imported module can still donate its basename to a chunk name — that
-    # residue is only visible to the post-build --include-untracked sweep.
-    "frontend/plugin-manager/src/assets",
-    "frontend/react-neko-chat/src/assets",
+    # Whole source trees, not just src/assets: Vite decides by *import*, not by
+    # directory. An imported asset above the inline limit is emitted as
+    # `assets/[name]-[hash][extname]` wherever it lives, and a dynamically
+    # imported module donates its basename to the chunk name the same way. Both
+    # outputs are gitignored, so the source tree is the only place CI can see
+    # these names without building. An ASCII-only rule for frontend sources
+    # costs a rename; missing one costs the whole mac release.
+    "frontend/plugin-manager/src",
+    "frontend/react-neko-chat/src",
     "plugin/plugins",
     # Voice-turn + speaker models, both --include-data-dir'd. The .onnx weights
     # are downloaded at build time and gitignored, so the git listing cannot see
@@ -639,9 +639,22 @@ def _baseline_growth(repo_root: Path, base_ref: str) -> list[str]:
         )
         raise SystemExit(2)
 
+    # The merge base, not the tip of base_ref. If main drops grandfathered
+    # entries after this branch was cut, the branch still carries them and a
+    # tip comparison would report those as newly added — a red build for
+    # somebody else's cleanup.
+    merge_base = subprocess.run(
+        ["git", "merge-base", base_ref, "HEAD"],
+        cwd=repo_root,
+        capture_output=True,
+    )
+    reference = (
+        merge_base.stdout.decode().strip() if merge_base.returncode == 0 else base_ref
+    )
+
     rel = BASELINE_PATH.relative_to(repo_root).as_posix()
     completed = subprocess.run(
-        ["git", "show", f"{base_ref}:{rel}"],
+        ["git", "show", f"{reference}:{rel}"],
         cwd=repo_root,
         capture_output=True,
     )

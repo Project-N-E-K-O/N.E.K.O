@@ -504,19 +504,26 @@ def test_unresolvable_base_ref_fails_instead_of_passing(tmp_path: Path) -> None:
 
 
 @pytest.mark.unit
-def test_only_the_packaged_frontend_output_is_scanned(tmp_path: Path) -> None:
-    """All three build scripts pack frontend/plugin-manager/dist and nothing else."""
+def test_frontend_scan_covers_output_and_sources_but_not_tooling(tmp_path: Path) -> None:
+    """dist/ is what ships; src/ is where the emitted names come from.
+
+    Files outside both — configs, lockfiles, node tooling — never contribute a
+    basename to the payload, so they stay out of scope.
+    """
     module = _load_script_module()
     _init_repo(tmp_path)
-    source = tmp_path / "frontend" / "plugin-manager" / "src"
-    source.mkdir(parents=True)
-    (source / f"{CJK_NAME}.vue").write_bytes(b"x")
-    packaged = tmp_path / "frontend" / "plugin-manager" / "dist" / "assets"
-    packaged.mkdir(parents=True)
-    (packaged / f"{CJK_NAME}.js").write_bytes(b"x")
+    root = tmp_path / "frontend" / "plugin-manager"
+    (root / "src").mkdir(parents=True)
+    (root / "dist" / "assets").mkdir(parents=True)
+    (root / "src" / f"{CJK_NAME}.vue").write_bytes(b"x")
+    (root / "dist" / "assets" / f"{CJK_NAME}.js").write_bytes(b"x")
+    (root / f"{CJK_NAME}.config.ts").write_bytes(b"x")
 
     offenders, _ = module.collect_offenders(tmp_path)
-    assert offenders == {f"frontend/plugin-manager/dist/assets/{CJK_NAME}.js"}
+    assert offenders == {
+        f"frontend/plugin-manager/src/{CJK_NAME}.vue",
+        f"frontend/plugin-manager/dist/assets/{CJK_NAME}.js",
+    }
 
 
 @pytest.mark.unit
@@ -667,9 +674,7 @@ def test_vite_public_assets_are_scanned(tmp_path: Path) -> None:
     for rel in ("frontend/plugin-manager/public", "frontend/react-neko-chat/public"):
         (tmp_path / rel).mkdir(parents=True)
         (tmp_path / rel / f"{CJK_NAME}.png").write_bytes(b"x")
-    unpackaged = tmp_path / "frontend" / "react-neko-chat" / "src"
-    unpackaged.mkdir(parents=True)
-    (unpackaged / f"{CJK_NAME}.tsx").write_bytes(b"x")
+    (tmp_path / "frontend" / "react-neko-chat" / f"{CJK_NAME}.config.ts").write_bytes(b"x")
 
     offenders, _ = module.collect_offenders(tmp_path)
     assert offenders == {
@@ -724,19 +729,31 @@ def test_uppercase_bytecode_suffix_is_still_scanned(tmp_path: Path) -> None:
 
 
 @pytest.mark.unit
-def test_vite_imported_source_assets_are_scanned(tmp_path: Path) -> None:
-    """Imported assets keep their basename in the output; code does not."""
+def test_vite_source_basenames_are_scanned_anywhere_under_src(tmp_path: Path) -> None:
+    """Vite emits by import, not by directory, so the whole source tree counts.
+
+    An imported asset above the inline limit keeps its basename wherever it
+    lives, and a dynamically imported module donates its basename to the chunk
+    name. Both outputs are gitignored, so the source tree is the only place a
+    plain CI run can see these names.
+    """
     module = _load_script_module()
     _init_repo(tmp_path)
-    assets = tmp_path / "frontend" / "plugin-manager" / "src" / "assets"
-    assets.mkdir(parents=True)
-    (assets / f"{CJK_NAME}.png").write_bytes(b"x")
-    code = tmp_path / "frontend" / "plugin-manager" / "src" / "components"
-    code.mkdir(parents=True)
-    (code / f"{CJK_NAME}.vue").write_bytes(b"x")
+    for rel in ("src/assets", "src/components", "src/views"):
+        (tmp_path / "frontend" / "plugin-manager" / rel).mkdir(parents=True)
+    root = tmp_path / "frontend" / "plugin-manager"
+    (root / "src" / "assets" / f"{CJK_NAME}.png").write_bytes(b"x")
+    (root / "src" / "components" / f"{CJK_NAME}.png").write_bytes(b"x")
+    (root / "src" / "views" / f"{CJK_NAME}.vue").write_bytes(b"x")
+    # Outside any source tree: build tooling, never emitted with its own name.
+    (root / f"{CJK_NAME}.config.ts").write_bytes(b"x")
 
     offenders, _ = module.collect_offenders(tmp_path)
-    assert offenders == {f"frontend/plugin-manager/src/assets/{CJK_NAME}.png"}
+    assert offenders == {
+        f"frontend/plugin-manager/src/assets/{CJK_NAME}.png",
+        f"frontend/plugin-manager/src/components/{CJK_NAME}.png",
+        f"frontend/plugin-manager/src/views/{CJK_NAME}.vue",
+    }
 
 
 @pytest.mark.unit
@@ -755,3 +772,38 @@ def test_include_allow_list_keeps_unpackaged_files_out_of_the_scan(tmp_path: Pat
 
     offenders, _ = module.collect_offenders(tmp_path)
     assert offenders == {f"plugin/plugins/demo/assets/{CJK_NAME}.png"}
+
+
+@pytest.mark.unit
+def test_baseline_growth_is_measured_at_the_merge_base(tmp_path: Path) -> None:
+    """A cleanup landing on main after the branch was cut must not read as growth.
+
+    Comparing against the tip would show entries the branch never added — they
+    were present when it was created and only removed on main afterwards.
+    """
+    module = _load_script_module()
+    _init_repo(tmp_path)
+    assets = tmp_path / "static" / "audio"
+    assets.mkdir(parents=True)
+    (assets / CJK_NAME).write_bytes(b"x")
+    _write_baseline(tmp_path, [f"static/audio/{CJK_NAME}"])
+    commit = ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm"]
+    subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True)
+    subprocess.run(["git", *commit, "shared base"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "branch", "feature"], cwd=tmp_path, check=True)
+
+    # main removes the grandfathered asset and its baseline line.
+    (assets / CJK_NAME).unlink()
+    _write_baseline(tmp_path, [])
+    subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True)
+    subprocess.run(["git", *commit, "main: shrink baseline"], cwd=tmp_path, check=True)
+
+    # The feature branch still carries the entry it inherited.
+    subprocess.run(["git", "checkout", "-q", "feature"], cwd=tmp_path, check=True)
+    module.REPO_ROOT = tmp_path
+    module.BASELINE_PATH = tmp_path / "scripts" / "nonascii_asset_baseline.txt"
+    assert module._baseline_growth(tmp_path, "main") == []
+
+    # …while a line this branch really adds is still caught.
+    _write_baseline(tmp_path, [f"static/audio/{CJK_NAME}", "static/audio/new.mp3"])
+    assert module._baseline_growth(tmp_path, "main") == ["static/audio/new.mp3"]
