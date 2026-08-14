@@ -14,6 +14,11 @@ from plugin.plugins.neko_wows.adapters.schema_adapter import (
     UnsupportedApiVersion,
     WowsSchemaAdapter,
 )
+from plugin.plugins.neko_wows.detectors._base import DetectorRegistry
+from plugin.plugins.neko_wows.detectors.damage import build_damage_detectors
+from plugin.plugins.neko_wows.detectors.geometry import build_geometry_detectors
+from plugin.plugins.neko_wows.detectors.targeting import build_targeting_detectors
+from plugin.plugins.neko_wows.domain.catalog import HIGH_DAMAGE
 from plugin.plugins.neko_wows.domain.facts import FactBuilder
 from plugin.plugins.neko_wows.adapters.transport import (
     DROP_DUPLICATE_SEQ,
@@ -101,10 +106,11 @@ def v1_payload(*, seq=1, instance_id="inst-a", battle_id="b-1",
         "battleId": battle_id,
         "source": {"kind": "mod-file-bridge", "mode": "live",
                    "status": status, "updatedAt": 1700.0},
+        # `map` is the wire spelling; the plugin calls that domain `mapBounds`.
         "capabilities": {
             name: {"supported": True, "version": "1.0"}
             for name in ("self", "objects", "roster", "damage",
-                         "ballistics", "mapBounds")
+                         "ballistics", "map")
         },
         "availability": availability if availability is not None else {
             "self": AVAIL_AVAILABLE,
@@ -112,7 +118,7 @@ def v1_payload(*, seq=1, instance_id="inst-a", battle_id="b-1",
             "roster": AVAIL_AVAILABLE,
             "damage": AVAIL_AVAILABLE,
             "ballistics": AVAIL_AVAILABLE,
-            "mapBounds": AVAIL_AVAILABLE,
+            "map": AVAIL_AVAILABLE,
             "kills": AVAIL_UNSUPPORTED,
             "capturePoints": AVAIL_UNSUPPORTED,
             "torpedoes": AVAIL_UNSUPPORTED,
@@ -167,6 +173,216 @@ def test_v1_body_is_normalized():
     assert snapshot.damage_inflicted == pytest.approx(15000.0)
     assert len(snapshot.ships) == 2
     assert snapshot.enemies()[0].name == "Shimakaze"
+
+
+def test_the_services_map_domain_arms_the_map_bounds_detectors():
+    """8111_for_wows publishes this domain as `map`, not `mapBounds`.
+
+    Reading only the local spelling left the domain permanently `unknown`, which
+    silently disarmed every boundary call-out.
+    """
+    snapshot = WowsSchemaAdapter().parse(v1_payload(
+        availability={
+            "self": AVAIL_AVAILABLE,
+            "objects": AVAIL_AVAILABLE,
+            "roster": AVAIL_AVAILABLE,
+            "damage": AVAIL_AVAILABLE,
+            "ballistics": AVAIL_AVAILABLE,
+            "map": AVAIL_AVAILABLE,
+        },
+    ))
+
+    assert snapshot.availability_of(DOMAIN_MAP_BOUNDS) == AVAIL_AVAILABLE
+    assert snapshot.is_available(DOMAIN_MAP_BOUNDS) is True
+    assert snapshot.supports(DOMAIN_MAP_BOUNDS) is True
+
+
+def test_a_stale_map_domain_is_not_promoted_by_the_wire_name():
+    snapshot = WowsSchemaAdapter().parse(v1_payload(
+        availability={"map": AVAIL_STALE},
+    ))
+
+    assert snapshot.availability_of(DOMAIN_MAP_BOUNDS) == AVAIL_STALE
+    assert snapshot.is_available(DOMAIN_MAP_BOUNDS) is False
+
+
+def test_the_local_domain_name_still_wins_when_a_service_sends_both():
+    snapshot = WowsSchemaAdapter().parse(v1_payload(
+        availability={"map": AVAIL_STALE, "mapBounds": AVAIL_AVAILABLE},
+    ))
+
+    assert snapshot.availability_of(DOMAIN_MAP_BOUNDS) == AVAIL_AVAILABLE
+
+
+def test_map_bounds_facts_are_derived_once_the_wire_name_is_understood():
+    snapshot = WowsSchemaAdapter().parse(v1_payload())
+
+    facts = FactBuilder(WowsConfig()).build(snapshot)
+
+    assert DOMAIN_MAP_BOUNDS in facts.sourced_domains
+    assert facts.distance_to_boundary_m is not None
+
+
+def test_the_published_service_availability_blocks_nothing_unexpected():
+    """Guards against a wire name the plugin cannot see disarming a detector.
+
+    The table below is copied from a live `/all` response during a battle. Only
+    ballistics is genuinely absent there, so it is the only reason a detector may
+    be held back.
+    """
+    cfg = WowsConfig()
+    registry = DetectorRegistry((
+        *build_geometry_detectors(cfg),
+        *build_targeting_detectors(cfg),
+    ))
+    builder = FactBuilder(cfg)
+    live_service_availability = {
+        "self": AVAIL_AVAILABLE,
+        "objects": AVAIL_AVAILABLE,
+        "roster": AVAIL_AVAILABLE,
+        "damage": AVAIL_AVAILABLE,
+        "ballistics": AVAIL_UNKNOWN,
+        "map": AVAIL_AVAILABLE,
+        "kills": AVAIL_UNSUPPORTED,
+        "capturePoints": AVAIL_UNSUPPORTED,
+        "torpedoes": AVAIL_UNSUPPORTED,
+        "consumables": AVAIL_UNSUPPORTED,
+    }
+
+    adapter = WowsSchemaAdapter()
+    blocked: dict[str, tuple[str, ...]] = {}
+    previous = None
+    for seq in (1, 2):
+        snapshot = adapter.parse(
+            v1_payload(seq=seq, availability=live_service_availability),
+            received_at=100.0 + seq)
+        current = (snapshot, builder.build(snapshot))
+        result = registry.feed(previous, current, cfg=cfg)
+        previous = current
+        blocked.update(
+            {entry.detector: entry.missing for entry in result.blocked})
+
+    assert blocked == {"ammo_recheck_hint": (DOMAIN_BALLISTICS,)}
+
+
+def _crew(**overrides):
+    """Own hull plus two enemies, with the alive flag under test."""
+    flags = {"own": 1, "foe": 1, "wreck": 0}
+    flags.update(overrides)
+    return [
+        {"uiId": 1, "playerId": 2000, "teamId": 0, "relation": 0,
+         "alive": flags["own"], "visible": True, "x": 0.0, "z": 0.0},
+        {"uiId": 2, "playerId": 3000, "teamId": 1, "relation": 2,
+         "alive": flags["foe"], "visible": True, "x": 100.0, "z": 0.0},
+        {"uiId": 3, "playerId": 3001, "teamId": 1, "relation": 2,
+         "alive": flags["wreck"], "visible": True, "x": 200.0, "z": 0.0},
+    ]
+
+
+def test_an_integer_alive_flag_is_read_as_a_boolean():
+    """This client build reports `isAlive()` as 1/0 rather than True/False.
+
+    Insisting on a real boolean turned every living hull into `alive=None`,
+    which is indistinguishable from "not reported" everywhere downstream.
+    """
+    snapshot = WowsSchemaAdapter().parse(v1_payload(objects=_crew()))
+
+    afloat = {ship.player_id: ship.alive for ship in snapshot.ships}
+    assert afloat[2000] is True
+    assert afloat[3000] is True
+    assert afloat[3001] is False
+
+
+def test_an_unreadable_alive_flag_stays_unknown():
+    """`None` has to keep meaning "not reported", never "afloat"."""
+    snapshot = WowsSchemaAdapter().parse(v1_payload(
+        objects=_crew(foe="yes", wreck=None)))
+
+    afloat = {ship.player_id: ship.alive for ship in snapshot.ships}
+    assert afloat[3000] is None
+    assert afloat[3001] is None
+
+
+def test_integer_alive_flags_reach_the_confirmed_visible_counts():
+    """These counts are the only ones a call-out may compare, so a dropped
+    flag silently reported an empty battlefield."""
+    snapshot = WowsSchemaAdapter().parse(v1_payload(objects=_crew()))
+
+    facts = FactBuilder(WowsConfig()).build(snapshot)
+
+    assert facts.confirmed_visible_allies == 1
+    assert facts.confirmed_visible_enemies == 1
+    assert facts.team_counts_confirmed is True
+
+
+def test_an_integer_death_flag_is_a_sinking_the_detectors_can_see():
+    """Sink detection compares an explicit True against an explicit False.
+
+    With both ends arriving as integers, neither was explicit and the kill went
+    unnoticed.
+    """
+    cfg = WowsConfig()
+    adapter = WowsSchemaAdapter()
+    builder = FactBuilder(cfg)
+    registry = DetectorRegistry(build_damage_detectors(cfg))
+    burst = {"2000": {"total": 30_000, "byVictim": {"3000": 30_000}}}
+
+    previous = None
+    events = []
+    for seq, (foe_alive, inflicted) in enumerate((
+        (1, {}),
+        (1, burst),
+        (0, burst),
+    ), start=1):
+        snapshot = adapter.parse(
+            v1_payload(
+                seq=seq,
+                objects=_crew(foe=foe_alive),
+                damage={"inflicted": inflicted, "received": {}, "teamTotal": {}},
+            ),
+            received_at=100.0 + seq,
+        )
+        current = (snapshot, builder.build(snapshot))
+        events.extend(registry.feed(previous, current, cfg=cfg).events)
+        previous = current
+
+    high = next(event for event in events if event.event_id == HIGH_DAMAGE)
+    assert high.detail["target_sunk"] is True
+
+
+def test_zero_health_marks_the_hull_dead_even_if_the_alive_flag_is_still_set():
+    """TTaro's UI bar is the live HP source; 3D isAlive() can lag a tick.
+
+    A wreck still flagged `alive=1` with `health=0` must not stay in the
+    confirmed-visible counts or sticky alive memory.
+    """
+    objects = _crew()
+    objects[1] = {**objects[1], "alive": 1, "health": 0, "maxHealth": 80_000}
+
+    snapshot = WowsSchemaAdapter().parse(v1_payload(objects=objects))
+    wreck = next(ship for ship in snapshot.ships if ship.player_id == 3000)
+
+    assert wreck.alive is False
+    facts = FactBuilder(WowsConfig()).build(snapshot)
+    assert facts.confirmed_visible_enemies == 0
+
+
+def test_positive_health_confirms_alive_when_the_flag_is_missing():
+    """Avatar health is enough to prove a hull is still afloat."""
+    objects = _crew()
+    objects[1] = {
+        **objects[1],
+        "health": 50_000,
+        "maxHealth": 80_000,
+    }
+    objects[1].pop("alive")
+
+    snapshot = WowsSchemaAdapter().parse(v1_payload(objects=objects))
+    foe = next(ship for ship in snapshot.ships if ship.player_id == 3000)
+
+    assert foe.alive is True
+    facts = FactBuilder(WowsConfig()).build(snapshot)
+    assert facts.confirmed_visible_enemies == 1
 
 
 def test_current_8111_damage_selects_only_the_local_attacker():
@@ -558,7 +774,7 @@ def test_roster_counts_survive_when_objects_domain_is_stale():
             "roster": AVAIL_AVAILABLE,
             "damage": AVAIL_STALE,
             "ballistics": AVAIL_STALE,
-            "mapBounds": AVAIL_AVAILABLE,
+            "map": AVAIL_AVAILABLE,
             "kills": AVAIL_UNSUPPORTED,
             "capturePoints": AVAIL_UNSUPPORTED,
             "torpedoes": AVAIL_UNSUPPORTED,

@@ -59,6 +59,7 @@ from plugin.plugins.neko_wows.presentation.instructions import (
     WOWS_CONTEXT_INSTRUCTIONS,
     WOWS_CONTEXT_WITH_LIVE_VISION_INSTRUCTIONS,
     WOWS_CONTEXT_WITH_VISION_INSTRUCTIONS,
+    WOWS_TELEMETRY_READING_RULES,
     context_instructions,
     instructions_for,
 )
@@ -506,15 +507,16 @@ def test_a_no_event_frame_drains_the_arbiter_queue():
 
 
 @pytest.mark.parametrize(("outcome", "expected"), [
-    (REASON_PAUSED, []),
-    (REASON_QUIET_WINDOW, []),
-    (REASON_COOLDOWN, []),
-    (REASON_LANE_GAP, []),
+    (REASON_PAUSED, [REASON_PAUSED]),
+    (REASON_QUIET_WINDOW, [REASON_QUIET_WINDOW]),
+    (REASON_COOLDOWN, [REASON_COOLDOWN]),
+    (REASON_LANE_GAP, [REASON_LANE_GAP]),
     (REASON_EXPIRED, [REASON_EXPIRED]),
     (REASON_CHOSEN, [REASON_CHOSEN]),
     (REASON_ATTACHED, [REASON_ATTACHED]),
+    (REASON_QUEUED, []),
 ])
-def test_no_event_frame_only_records_arbiter_state_changes(outcome, expected):
+def test_no_event_frame_records_why_a_queued_event_is_still_waiting(outcome, expected):
     plugin, snapshot, _calls = _catalog_order_target()
     plugin.registry.feed = lambda *_args, **_kwargs: SimpleNamespace(
         identity_reset=False,
@@ -543,6 +545,39 @@ def test_no_event_frame_only_records_arbiter_state_changes(outcome, expected):
         if args[0] == STAGE_ARBITER
     ]
     assert arbiter_outcomes == expected
+
+
+def test_waiting_arbiter_reason_is_not_repeated_every_empty_frame():
+    plugin, snapshot, _calls = _catalog_order_target()
+    plugin.registry.feed = lambda *_args, **_kwargs: SimpleNamespace(
+        identity_reset=False,
+        blocked=(),
+        events=(),
+        reason="no_events",
+    )
+    plugin.policy.expand = lambda *_args: ()
+    step = SimpleNamespace(
+        event_id="high_damage",
+        lane="normal",
+        outcome=REASON_LANE_GAP,
+        detail="17.0s until the normal lane reopens",
+    )
+    plugin.arbiter.decide = lambda *_args: SimpleNamespace(
+        chosen=None,
+        candidates=(),
+        chain=(step,),
+    )
+
+    NekoWowsPlugin._evaluate_locked(plugin, snapshot)
+    NekoWowsPlugin._evaluate_locked(plugin, snapshot)
+    NekoWowsPlugin._evaluate_locked(plugin, snapshot)
+
+    arbiter_outcomes = [
+        args[1]
+        for args, _kwargs in plugin.timeline.records
+        if args[0] == STAGE_ARBITER
+    ]
+    assert arbiter_outcomes == [REASON_LANE_GAP]
 
 
 def test_unchanged_pending_retries_do_not_flood_the_timeline():
@@ -970,17 +1005,28 @@ def test_claim_limits_reach_the_prompt():
         assert forbidden in built.text, event_id
 
 
-def test_bundled_claim_limits_are_merged_without_duplicate_global_rules():
-    low_health = build_candidate(LOW_HEALTH)
+def test_a_bundle_lists_each_events_own_limits_once():
     rapid_damage = build_candidate(RAPID_DAMAGE)
 
     built = WowsPromptRouter(WowsConfig()).build(
-        (low_health, rapid_damage),
+        (build_candidate(LOW_HEALTH), rapid_damage),
         PromptProfile(channel_mode=CHANNEL_DUAL, dry_run=True),
     )
 
     assert "不能说“被集火”" in built.text
-    assert built.text.count(low_health.claim_limits[0]) == 1
+    for limit in rapid_damage.claim_limits:
+        assert built.text.count(limit) == 1
+
+
+def test_an_event_without_limits_gets_no_limit_block():
+    """Standing rules live in the once-per-battle scene block, not in here."""
+    built = WowsPromptRouter(WowsConfig()).build(
+        build_candidate(LOW_HEALTH),
+        PromptProfile(channel_mode=CHANNEL_DUAL, dry_run=True),
+    )
+
+    assert build_candidate(LOW_HEALTH).claim_limits == ()
+    assert "表述限制" not in built.text
 
 
 def test_the_character_words_the_call_out_herself():
@@ -1087,6 +1133,12 @@ def test_screenshot_soft_prompt_is_appended_when_enabled():
         assert built.metadata["screenshot_enabled"] is True
 
 
+def test_screenshot_nudge_puts_the_event_before_the_minimap():
+    assert "先看小地图" not in VISION_LOOK_BEFORE_SPEAK
+    assert "主事件" in VISION_LOOK_BEFORE_SPEAK
+    assert "不要把小地图解说当成这条要说的话" in VISION_LOOK_BEFORE_SPEAK
+
+
 def test_context_instructions_follow_the_screenshot_switch():
     assert context_instructions(screenshot_enabled=False) == WOWS_CONTEXT_INSTRUCTIONS
     enabled = context_instructions(screenshot_enabled=True)
@@ -1097,32 +1149,46 @@ def test_context_instructions_follow_the_screenshot_switch():
 
 def test_live_vision_context_describes_team_counts_as_upper_bounds():
     text = WOWS_CONTEXT_WITH_LIVE_VISION_INSTRUCTIONS
-    assert "存活数" not in text
+    assert "不是确认存活数" in text
     assert "未确认沉没" in text
     assert "点亮" in text
 
 
-def test_base_instructions_distinguish_visible_from_alive_counts():
-    assert "visible_enemies" in BASE_INSTRUCTIONS
-    assert "confirmed_visible_allies" in BASE_INSTRUCTIONS
-    assert "未确认沉没" in BASE_INSTRUCTIONS
-    assert "已知仍存活" not in BASE_INSTRUCTIONS
-    assert "失去联系" in BASE_INSTRUCTIONS
-    assert "团灭" in BASE_INSTRUCTIONS
-    assert "似了" in BASE_INSTRUCTIONS
-    assert "index" in BASE_INSTRUCTIONS
+def test_the_reading_rules_distinguish_visible_from_alive_counts():
+    rules = WOWS_TELEMETRY_READING_RULES
+    assert "visible_enemies" in rules
+    assert "confirmed_visible_allies" in rules
+    assert "未确认沉没" in rules
+    assert "已知仍存活" not in rules
+    assert "失去联系" in rules
+    assert "团灭" in rules
+    assert "似了" in rules
+    assert "index" in rules
 
 
-def test_base_instructions_forbid_inventing_consumables_and_relative_sectors():
+def test_the_reading_rules_forbid_inventing_consumables_and_relative_sectors():
     assert (
-        "消耗品实时状态当前不可用：不要说雷达、水听、烟幕、损伤控制等是否开启、持续或冷却"
-        in BASE_INSTRUCTIONS
+        "消耗品实时状态（雷达、水听、烟幕、损伤控制等是否开启或持续）当前不可用，不要提及。"
+        in WOWS_TELEMETRY_READING_RULES
     )
-    assert "也不要把“被点亮”说成对方开了雷达。" in BASE_INSTRUCTIONS
+    assert (
+        "小地图上敌舰图标亮起只表示被点亮/被发现，绝不等于对方开了雷达"
+        in WOWS_TELEMETRY_READING_RULES
+    )
     assert (
         "没有给出相对方位字段时，不要说左前方、正前方、右前方"
-        in BASE_INSTRUCTIONS
+        in WOWS_TELEMETRY_READING_RULES
     )
+
+
+def test_every_scene_block_carries_the_reading_rules():
+    """The rules must reach her once per battle, whichever way she can see it."""
+    for scene in (
+        WOWS_CONTEXT_INSTRUCTIONS,
+        WOWS_CONTEXT_WITH_VISION_INSTRUCTIONS,
+        WOWS_CONTEXT_WITH_LIVE_VISION_INSTRUCTIONS,
+    ):
+        assert WOWS_TELEMETRY_READING_RULES in scene
 
 
 def test_vision_prompts_forbid_reading_enemy_radar_from_minimap():

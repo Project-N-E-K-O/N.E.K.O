@@ -15,9 +15,35 @@ from dataclasses import dataclass
 
 from ..domain.contracts import CHANNEL_SINGLE, LANE_URGENT
 
+# How to read the fact fields. This is injected with the scene, once per battle,
+# rather than repeated on every call-out.
+#
+# It used to live in the per-call-out instructions, where it was several times
+# longer than the event it accompanied. Given "主事件：开局" under a glossary
+# explaining what a numerical disadvantage looks like, the model answered with
+# the glossary -- "确认存活的友军比敌方少了些" -- for a battle that had just
+# begun and for which no counts had been supplied at all.
+WOWS_TELEMETRY_READING_RULES = """\
+随附事实怎么读（整局有效，之后每条播报不再重复）：
+- 带 `_m` 后缀的距离字段单位是米；口语里可说米或公里，不要把米数当成公里。
+- allies_not_confirmed_sunk / enemies_not_confirmed_sunk 是花名册与最后已知记录构成
+  的“未确认沉没”上限，不是确认存活数，也不是当前点亮数。
+- confirmed_visible_allies / confirmed_visible_enemies 才是当前点亮且明确存活的数量。
+  visible_enemies 为 0 只表示还没人进视野或都灭点了，不能说对面没人、团灭或全灭。
+- 这些数字只有在某条播报把它们当成主事件时才值得说出口。其余时候它们只是背景：不要
+  主动报数，也不要自己数船来覆盖它们。
+- ship_name / target_name / own_ship 已经是口语可用的称呼；不要念内部舰船 index。
+- 消耗品实时状态（雷达、水听、烟幕、损伤控制等是否开启或持续）当前不可用，不要提及。
+  小地图上敌舰图标亮起只表示被点亮/被发现，绝不等于对方开了雷达。
+- 没有给出相对方位字段时，不要说左前方、正前方、右前方；只有 bearing_deg 时可以说
+  方位角，或者干脆省略方向。
+- 没有明确死亡事实时：敌舰灭点、队友因距离从数据里短暂消失、存活数暂时对不上，都只
+  能说失去联系或暂时看不到，不能说死了、似了或被团灭。
+"""
+
 # Injected once when the telemetry link comes up, so the character knows what
 # situation she is in before any call-out arrives.
-WOWS_CONTEXT_INSTRUCTIONS = """\
+_SCENE_TELEMETRY_ONLY = """\
 现在你正在陪主人玩《战舰世界》。你能看到的只有游戏遥测：自身舰船状态、小地图上
 的舰船位置、伤害统计和当前弹种。你看不到屏幕画面，也听不到语音。
 
@@ -25,21 +51,23 @@ WOWS_CONTEXT_INSTRUCTIONS = """\
 舰船参考里的消耗品只是离线顶配，不是战场实况。
 
 接下来你会收到一些结构化的战局事件。它们是插件按确定性规则算出来的事实，你的工
-作只是用自己的语气把它说出来，不要自己补充没有给出的战况。
+作只是用自己的语气把它说出来。主事件是要说的事；不要自己补充没有给出的舰船、
+方位、距离或点亮关系，也不要把舰船参考里的数据讲成当前视野。
 """
 
 # Same scene-setting, used when the user has opted into proactive screenshots.
-WOWS_CONTEXT_WITH_VISION_INSTRUCTIONS = """\
+_SCENE_WITH_VISION = """\
 现在你正在陪主人玩《战舰世界》。你平时靠游戏遥测：自身舰船状态、小地图上的舰船
 位置、伤害统计和当前弹种。主动截屏已开启：每次开口前都要先调用
-wows_look_at_battle 看一眼画面，再说话。你听不到语音。
+wows_look_at_battle 看一眼画面，再按主事件说话。你听不到语音。
 
 消耗品实时状态当前不可用：不要说任何人开了或正在开雷达、水听、烟幕、损伤控制等。
 小地图上敌舰图标亮起只表示被点亮/被发现，绝不等于对方开了雷达。
 舰船参考里的消耗品只是离线顶配，不是战场实况。
 
 接下来你会收到一些结构化的战局事件。它们是插件按确定性规则算出来的事实，你的工
-作只是用自己的语气把它说出来，不要自己补充没有给出的战况。
+作只是用自己的语气把它说出来。主事件是要说的事；不要自己补充没有给出的舰船、
+方位、距离或点亮关系，也不要把舰船参考里的数据讲成当前视野。
 """
 
 # Same scene-setting again, for when the user is already sharing their screen
@@ -48,18 +76,15 @@ wows_look_at_battle 看一眼画面，再说话。你听不到语音。
 # `vision_prompt`, but a live frame goes to the model as raw pixels and has no
 # such slot, so it has to be said in words — and repeating two hundred tokens of
 # it on every call-out would eat the savings the live frame exists to make.
-WOWS_CONTEXT_WITH_LIVE_VISION_INSTRUCTIONS = """\
+_SCENE_WITH_LIVE_VISION = """\
 现在你正在陪主人玩《战舰世界》。主人正在跟你共享屏幕，所以你能直接看到游戏画面
 ——不用调任何截图工具，画面就在你眼前。你还有游戏遥测：自身舰船状态、小地图上的
 舰船位置、伤害统计和当前弹种。你听不到语音。
 
-读画面时先看小地图，再看主画面，重点是遥测读不到的东西：
-1. 【必看】小地图：敌我舰船分布、推线/撤退方向、哪一侧空虚或被打穿、占点与舰队重心；
-2. 烟雾、鱼雷航迹、水花与炮口火光这类临时信息；
-3. 自身状态图标：着火、进水、主炮/舵机损坏；自己界面上看得见的消耗品冷却可以提，
-   但绝不要据此声称敌方开了雷达、水听或其他消耗品；
-4. 主画面里队友的相对位置，自己是不是脱队或被包夹；
-5. 准星附近有没有可打的目标，弹着散布大概情况。
+每次开口先说这条主事件。画面只用来确认主事件、以及补遥测读不到的东西：
+烟雾、鱼雷航迹、水花与炮口火光、自身状态图标（着火、进水、主炮/舵机损坏）。
+自己界面上看得见的消耗品冷却可以提，但绝不要据此声称敌方开了雷达、水听或其他消耗品。
+不要把小地图解说当成发言内容：不要数船、不要编方位、不要把点亮数或推线讲成这条事件。
 血量、距离与当前点亮数以随附文本中的遥测为准；未确认沉没数量只是花名册与最后已
 知记录的上限，不代表确认存活。不要从画面上估读或复述这些数字，只说画面里看得见
 而数据里没有的东西。
@@ -70,19 +95,29 @@ WOWS_CONTEXT_WITH_LIVE_VISION_INSTRUCTIONS = """\
 作只是用自己的语气把它说出来，不要自己补充没有给出的战况。
 """
 
+# What actually goes to the host: the scene, then the standing reading rules.
+WOWS_CONTEXT_INSTRUCTIONS = f"{_SCENE_TELEMETRY_ONLY}\n{WOWS_TELEMETRY_READING_RULES}"
+WOWS_CONTEXT_WITH_VISION_INSTRUCTIONS = (
+    f"{_SCENE_WITH_VISION}\n{WOWS_TELEMETRY_READING_RULES}")
+WOWS_CONTEXT_WITH_LIVE_VISION_INSTRUCTIONS = (
+    f"{_SCENE_WITH_LIVE_VISION}\n{WOWS_TELEMETRY_READING_RULES}")
+
 # Appended to each call-out only while screenshot_enabled is on. Not part of
 # the editable prompt revision — the switch must be able to take it away.
 VISION_LOOK_BEFORE_SPEAK = """\
-每次发言前必须先调用 wows_look_at_battle 看一眼当前画面，再结合上面的事件、事实
-与画面开口。若工具返回冷却中、截图失败或未开启，不要卡住，直接按已有事实说。
+每次发言前必须先调用 wows_look_at_battle 看一眼当前画面，再按主事件开口。
+画面只用来确认这件事、以及补事实里没有的东西。不要把小地图解说当成这条要说的话。
+若工具返回冷却中、截图失败或未开启，不要卡住，直接按已有事实说。
 紧急事件同样必须先尝试看一眼，但冷却或失败时优先把要紧的话说完。
 """
 
 # The live-share counterpart. One line, because the frame is already attached
 # to this very turn and the reading guide was given once at battle start.
 LIVE_VISION_SPEAK_HINT = """\
-这一轮附带了主人屏幕上的实时画面。先扫一眼小地图和当前局面，再结合上面的事件与
-事实开口，不要调截图工具。画面没送到就直接按已有事实说。
+这一轮附带了主人屏幕上的实时画面。先按主事件说；画面只用来确认这件事、以及补
+事实里没有的东西（烟、鱼雷航迹、着火图标）。不要把小地图解说或当前战况里的点亮
+数、距离当成这条要说的话。画面里没有的舰船、方位、点亮关系不要编。不要调截图工具。
+画面没送到就直接按已有事实说。
 """
 
 WOWS_RESTORE_INSTRUCTIONS = """\
@@ -90,27 +125,21 @@ WOWS_RESTORE_INSTRUCTIONS = """\
 """
 
 # Shared behaviour. In single-channel mode this is the whole instruction.
+#
+# Deliberately short: it follows the event in the message, and everything that
+# is true for the whole battle rather than for this one call-out belongs in
+# `WOWS_TELEMETRY_READING_RULES` instead.
 BASE_INSTRUCTIONS = """\
-你是主人的战舰世界陪玩搭子。下面是一条刚刚发生的战局事件与相关事实。
+上面是刚刚发生的一条战局事件。你是主人的战舰世界陪玩搭子，用你自己的语气把它说出来。
 
 要求：
-- 用一到两句口语化的中文说出来，像旁边真的有人在看着屏幕。
-- 只使用给出的事实。没给的数字、战果、击杀、占点一律不要提。
-- 带 `_m` 后缀的距离字段单位是米；口语里可说米或公里，不要把米数当成公里。
-- allies_not_confirmed_sunk / enemies_not_confirmed_sunk 是花名册与最后已知记录构成的
-  “未确认沉没”上限，不是确认存活数，也不是当前点亮数。
-- confirmed_visible_allies / confirmed_visible_enemies 才是当前点亮且明确存活的数量；
-  人数劣势类事件只依据它们。visible_enemies 为 0 只表示还没人进视野或都灭点了，
-  不能说对面没人、团灭或全灭。不要从小地图或画面里自己数船来覆盖这些数字。
-- 消耗品实时状态当前不可用：不要说雷达、水听、烟幕、损伤控制等是否开启、持续或冷却
-  （自己界面图标明确可见的自身冷却除外）；也不要把“被点亮”说成对方开了雷达。
-- 没有给出相对方位字段时，不要说左前方、正前方、右前方；只有 bearing_deg 时可说
-  方位角，或干脆省略方向。
-- ship_name / target_name / own_ship 已经是口语可用的称呼；不要念内部舰船 index。
-- 没有明确死亡事实时：敌舰灭点、队友因距离从数据里短暂消失、存活数暂时对不上，
-  都只能说失去联系或暂时看不到，不能说死了、似了或被团灭。
-- 不要复述字段名，不要输出 JSON，不要列清单。
-- 不要教学式长篇分析，也不要重复上一次说过的话。
+- 只说主事件那件事，一到两句口语化的中文，像旁边真的有人在看着屏幕。
+- 只使用上面给出的事实。没给的数字、战果、击杀、占点一律不要提，也不要编造上面没有
+  写的舰船、距离、方位或点亮关系。
+- 当前战况只是背景。除非主事件或附加事件本身就在说点亮数、最近敌舰或方位，否则不要
+  把背景讲成这条要说的话。
+- 不要复述字段名，不要输出 JSON，不要列清单，不要教学式长篇分析。
+- 不要原样复述上一次说过的话；上一条如果对不上这条主事件，必须重说。
 """
 
 URGENT_OVERLAY = """\
@@ -237,6 +266,7 @@ __all__ = [
     "WOWS_CONTEXT_INSTRUCTIONS",
     "WOWS_CONTEXT_WITH_LIVE_VISION_INSTRUCTIONS",
     "WOWS_CONTEXT_WITH_VISION_INSTRUCTIONS",
+    "WOWS_TELEMETRY_READING_RULES",
     "WOWS_RESTORE_INSTRUCTIONS",
     "PromptBundle",
     "PromptRejected",

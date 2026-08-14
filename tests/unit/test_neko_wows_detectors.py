@@ -429,6 +429,30 @@ def test_sinking_attaches_visible_team_counts_after_own_hull_dies():
     }
 
 
+def test_sinking_follows_own_object_death_when_self_health_is_stale():
+    """3D self.health can lag; the avatar health bar already reads dead."""
+    registry = DetectorRegistry(build_survival_detectors(CFG))
+    living = (
+        Ship(
+            ui_id=1, player_id=2000, team_id=0, relation=0,
+            name="OwnShip", alive=True, visible=True,
+            x=0.0, z=0.0, health=32000.0, max_health=80000.0, hp_ratio=0.4,
+        ),
+    )
+    dead_hull = (
+        Ship(
+            ui_id=1, player_id=2000, team_id=0, relation=0,
+            name="OwnShip", alive=False, visible=True,
+            x=0.0, z=0.0, health=0.0, max_health=80000.0, hp_ratio=0.0,
+        ),
+    )
+    results = feed(registry, [
+        frame(seq=1, at=100.0, hp_ratio=0.4, ships=living),
+        frame(seq=2, at=101.0, hp_ratio=0.4, ships=dead_hull),
+    ])
+    assert OWN_SHIP_SUNK in fired(results)
+
+
 def test_sinking_repeats_until_delivery_is_acknowledged():
     registry = DetectorRegistry(build_survival_detectors(CFG))
     previous, _ = feed_one(

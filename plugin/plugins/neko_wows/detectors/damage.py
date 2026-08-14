@@ -43,17 +43,20 @@ class DamageBurstDetector(Detector):
         self._bursts: dict[int, _Burst] = {}
         self._target_names: dict[int, str] = {}
         self._target_max_health: dict[int, float] = {}
+        self._target_health: dict[int, float] = {}
         self._explicit_alive: dict[int, bool] = {}
+        self._pending_sinks: dict[int, float] = {}
         self._objects_ready = False
 
     def observe(self, snapshot, facts) -> None:
-        self._last_totals = dict(facts.damage_inflicted_by_victim)
+        self._last_totals = self._sticky_totals(facts.damage_inflicted_by_victim)
         if not snapshot.is_available(DOMAIN_OBJECTS):
             self._explicit_alive.clear()
             self._objects_ready = False
             return
 
         self._cache_target_metadata(snapshot)
+        self._cache_target_health(snapshot)
         for ship in snapshot.ships:
             player_id = ship.player_id
             if player_id is None or not isinstance(ship.alive, bool):
@@ -74,16 +77,23 @@ class DamageBurstDetector(Detector):
             return ()
 
         now = facts.at
-        current_totals = dict(facts.damage_inflicted_by_victim)
+        raw_totals = dict(facts.damage_inflicted_by_victim)
+        current_totals = self._sticky_totals(raw_totals)
         resolved: list[_ResolvedBurst] = []
 
         objects_available = snapshot.is_available(DOMAIN_OBJECTS)
         if objects_available:
             self._cache_target_metadata(snapshot)
         sunk_ids = self._sunk_targets(snapshot) if objects_available else set()
+        for victim_id in sunk_ids:
+            self._pending_sinks.setdefault(victim_id, now)
+        for victim_id, died_at in tuple(self._pending_sinks.items()):
+            if now - died_at > window:
+                self._pending_sinks.pop(victim_id, None)
 
-        for victim_id in self._last_totals.keys() - current_totals.keys():
-            self._bursts.pop(victim_id, None)
+        for victim_id in self._last_totals.keys() - raw_totals.keys():
+            if victim_id in self._bursts:
+                continue
             self._rebaseline_victims.add(victim_id)
 
         for victim_id in sorted(current_totals):
@@ -107,47 +117,40 @@ class DamageBurstDetector(Detector):
 
             burst = self._bursts.get(victim_id)
             if burst is not None and now - burst.last_damage_at > window:
-                old = self._resolve_high(
-                    victim_id,
-                    burst,
-                    sunk=self._known_sunk_state(snapshot, victim_id),
-                )
+                old = self._close_burst(victim_id, burst, now, snapshot)
                 if old is not None:
                     resolved.append(old)
                 self._bursts.pop(victim_id, None)
             self._record_damage(victim_id, now, delta, window)
+            burst = self._bursts[victim_id]
+            closed = self._resolve_devastating(
+                victim_id,
+                burst,
+                now,
+                snapshot,
+                sunk=self._is_sunk(victim_id),
+                tick_damage=delta,
+            )
+            if closed is not None:
+                resolved.append(closed)
+                self._consume_burst(victim_id, raw_totals)
 
-        for victim_id in sorted(sunk_ids):
-            burst = self._bursts.pop(victim_id, None)
+        for victim_id in sorted(sunk_ids | self._pending_sinks.keys()):
+            burst = self._bursts.get(victim_id)
             if burst is None:
                 continue
-            window_damage = self._window_damage(burst, now, window)
-            maximum = self._target_max_health.get(victim_id)
-            ratio = window_damage / maximum if maximum else None
-            if ratio is not None and ratio >= self.cfg.devastating_strike_ratio_threshold:
-                resolved.append(_ResolvedBurst(
-                    event_id=DEVASTATING_STRIKE,
-                    victim_id=victim_id,
-                    damage=window_damage,
-                    ratio=ratio,
-                    sunk=True,
-                ))
-                continue
-            high = self._resolve_high(victim_id, burst, sunk=True)
-            if high is not None:
-                resolved.append(high)
+            closed = self._close_burst(victim_id, burst, now, snapshot, sunk=True)
+            if closed is not None:
+                resolved.append(closed)
+                self._consume_burst(victim_id, raw_totals)
 
         for victim_id, burst in tuple(self._bursts.items()):
             if now - burst.last_damage_at < window:
                 continue
-            self._bursts.pop(victim_id, None)
-            high = self._resolve_high(
-                victim_id,
-                burst,
-                sunk=self._known_sunk_state(snapshot, victim_id),
-            )
-            if high is not None:
-                resolved.append(high)
+            closed = self._close_burst(victim_id, burst, now, snapshot)
+            self._consume_burst(victim_id, raw_totals)
+            if closed is not None:
+                resolved.append(closed)
 
         if not resolved:
             return ()
@@ -162,6 +165,91 @@ class DamageBurstDetector(Detector):
         if not math.isfinite(total) or total < 0:
             return None
         return total
+
+    def _sticky_totals(self, totals: dict[int, float]) -> dict[int, float]:
+        merged = dict(totals)
+        for victim_id in self._bursts:
+            if victim_id not in merged and victim_id in self._last_totals:
+                merged[victim_id] = self._last_totals[victim_id]
+        return merged
+
+    def _consume_burst(self, victim_id: int, raw_totals: dict[int, float]) -> None:
+        self._bursts.pop(victim_id, None)
+        self._pending_sinks.pop(victim_id, None)
+        if victim_id not in raw_totals:
+            self._rebaseline_victims.add(victim_id)
+
+    def _close_burst(
+        self,
+        victim_id: int,
+        burst: _Burst,
+        now: float,
+        snapshot,
+        *,
+        sunk: bool | None = None,
+    ) -> _ResolvedBurst | None:
+        is_sunk = self._is_sunk(victim_id) if sunk is None else sunk
+        devastating = self._resolve_devastating(
+            victim_id, burst, now, snapshot, sunk=is_sunk)
+        if devastating is not None:
+            return devastating
+        return self._resolve_high(
+            victim_id,
+            burst,
+            sunk=True if is_sunk else self._known_sunk_state(snapshot, victim_id),
+        )
+
+    def _is_sunk(self, victim_id: int) -> bool:
+        return victim_id in self._pending_sinks
+
+    def _resolve_devastating(
+        self,
+        victim_id: int,
+        burst: _Burst,
+        now: float,
+        snapshot,
+        *,
+        sunk: bool,
+        tick_damage: float = 0.0,
+    ) -> _ResolvedBurst | None:
+        damage = self._window_damage(
+            burst, now, self.cfg.damage_burst_window_seconds)
+        maximum = self._target_max_health.get(victim_id)
+        # In-game Devastating Strike is window damage / max HP, not remaining HP.
+        ratio = damage / maximum if maximum else None
+        if ratio is None or ratio < self.cfg.devastating_strike_ratio_threshold:
+            return None
+        remaining = self._target_health.get(victim_id)
+        # Last-tick remaining already includes earlier salvos in this window, so
+        # only this tick can prove a finishing blow. A still-visible positive
+        # HP bar means the hull is afloat regardless of the rolling total.
+        lethal = (
+            remaining is not None
+            and remaining > 0
+            and tick_damage >= remaining
+            and not self._snapshot_shows_positive_health(snapshot, victim_id)
+        )
+        if not (sunk or lethal):
+            return None
+        return _ResolvedBurst(
+            event_id=DEVASTATING_STRIKE,
+            victim_id=victim_id,
+            damage=damage,
+            ratio=ratio,
+            sunk=True,
+        )
+
+    def _snapshot_shows_positive_health(self, snapshot, victim_id: int) -> bool:
+        if snapshot is None or not snapshot.is_available(DOMAIN_OBJECTS):
+            return False
+        for ship in snapshot.ships:
+            if ship.player_id != victim_id:
+                continue
+            health = self._valid_total(ship.health)
+            if health is not None:
+                return health > 0
+            return ship.alive is not False
+        return False
 
     def _record_damage(
         self,
@@ -223,16 +311,35 @@ class DamageBurstDetector(Detector):
             if maximum:
                 self._target_max_health[player_id] = maximum
 
+    def _cache_target_health(self, snapshot) -> None:
+        for ship in snapshot.ships:
+            player_id = ship.player_id
+            if player_id is None:
+                continue
+            health = self._valid_total(ship.health)
+            if health:
+                self._target_health[player_id] = health
+            elif health == 0.0:
+                self._target_health.pop(player_id, None)
+
     def _sunk_targets(self, snapshot) -> set[int]:
         if not self._objects_ready:
             return set()
-        return {
-            ship.player_id
-            for ship in snapshot.ships
-            if ship.player_id is not None
-            and ship.alive is False
-            and self._explicit_alive.get(ship.player_id) is True
-        }
+        sunk: set[int] = set()
+        for ship in snapshot.ships:
+            player_id = ship.player_id
+            if player_id is None:
+                continue
+            if (
+                ship.alive is False
+                and self._explicit_alive.get(player_id) is True
+            ):
+                sunk.add(player_id)
+                continue
+            health = self._valid_total(ship.health)
+            if health == 0.0 and self._target_health.get(player_id):
+                sunk.add(player_id)
+        return sunk
 
     @staticmethod
     def _known_sunk_state(snapshot, victim_id: int) -> bool | None:
@@ -256,6 +363,7 @@ class DamageBurstDetector(Detector):
         }
         if item.sunk is not None:
             detail["target_sunk"] = item.sunk
+        detail["victim_id"] = item.victim_id
         target_name = self._target_names.get(item.victim_id)
         if target_name:
             detail["target_name"] = target_name

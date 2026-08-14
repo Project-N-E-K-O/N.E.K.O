@@ -37,9 +37,11 @@ def enemy(
     player_id: int = 3002,
     alive: bool = True,
     max_health: float | None = 40_000.0,
+    health: float | None = None,
     name: str = "Zao",
 ) -> Ship:
-    health = max_health if alive and max_health is not None else 0.0
+    if health is None:
+        health = max_health if alive and max_health is not None else 0.0
     return Ship(
         ui_id=player_id,
         player_id=player_id,
@@ -55,7 +57,11 @@ def enemy(
         yaw=0.0,
         health=health,
         max_health=max_health,
-        hp_ratio=(1.0 if alive and max_health else 0.0),
+        hp_ratio=(
+            max(0.0, min(1.0, health / max_health))
+            if health is not None and max_health
+            else 0.0
+        ),
     )
 
 
@@ -172,6 +178,64 @@ def test_damage_below_both_thresholds_stays_silent():
     assert event_ids(results) == []
 
 
+def test_same_frame_full_hp_one_shot_is_devastating():
+    results = run_frames(
+        frame(1, 100.0, {3002: 0}, enemy(max_health=40_000.0)),
+        frame(
+            2,
+            101.0,
+            {3002: 40_000},
+            enemy(alive=False, max_health=40_000.0),
+        ),
+    )
+
+    assert event_ids(results) == [DEVASTATING_STRIKE]
+    event = emitted(results, DEVASTATING_STRIKE)
+    assert event.detail["window_damage"] == 40_000
+    assert event.detail["damage_ratio"] == pytest.approx(1.0)
+    assert event.detail["target_sunk"] is True
+
+
+def test_death_flag_before_damage_counter_still_counts_as_devastating():
+    results = run_frames(
+        frame(1, 100.0, {3002: 0}, enemy(max_health=40_000.0)),
+        frame(2, 101.0, {3002: 0}, enemy(alive=False, max_health=40_000.0)),
+        frame(3, 101.5, {3002: 40_000}, enemy(alive=False, max_health=40_000.0)),
+    )
+
+    assert event_ids(results) == [DEVASTATING_STRIKE]
+    event = emitted(results, DEVASTATING_STRIKE)
+    assert event.detail["window_damage"] == 40_000
+    assert event.detail["target_sunk"] is True
+
+
+def test_full_hp_burst_is_devastating_even_if_the_hull_vanishes():
+    results = run_frames(
+        frame(1, 100.0, {3002: 0}, enemy(max_health=40_000.0)),
+        frame(2, 101.0, {3002: 40_000}),
+    )
+
+    assert event_ids(results) == [DEVASTATING_STRIKE]
+    event = emitted(results, DEVASTATING_STRIKE)
+    assert event.detail["window_damage"] == 40_000
+    assert event.detail["damage_ratio"] == pytest.approx(1.0)
+
+
+def test_zero_health_without_alive_false_still_counts_as_devastating():
+    results = run_frames(
+        frame(1, 100.0, {3002: 0}, enemy(max_health=40_000.0)),
+        frame(
+            2,
+            101.0,
+            {3002: 40_000},
+            enemy(alive=True, max_health=40_000.0, health=0.0),
+        ),
+    )
+
+    assert event_ids(results) == [DEVASTATING_STRIKE]
+    assert emitted(results, DEVASTATING_STRIKE).detail["window_damage"] == 40_000
+
+
 def test_sink_upgrades_the_same_burst_to_devastating_strike_only():
     results = run_frames(
         frame(1, 100.0, {3002: 0}, enemy(max_health=40_000.0)),
@@ -189,6 +253,7 @@ def test_sink_upgrades_the_same_burst_to_devastating_strike_only():
     assert event.detail["window_damage"] == 20_000
     assert event.detail["damage_ratio"] == pytest.approx(0.5)
     assert event.detail["target_sunk"] is True
+    assert event.detail["victim_id"] == 3002
     assert event.detail["classification"] == "telemetry_estimate"
 
 
@@ -206,6 +271,35 @@ def test_sunk_below_half_can_emit_high_damage_but_not_devastating():
 
     assert event_ids(results) == [HIGH_DAMAGE]
     assert emitted(results, HIGH_DAMAGE).detail["target_sunk"] is True
+
+
+def test_kill_below_half_max_hp_is_not_devastating_even_if_it_finishes_the_hull():
+    """The in-game ribbon is damage vs max HP, not vs remaining HP.
+
+    A 12k finishing blow on a 40k hull covers every last hit point and still
+    sits at 0.30 of max — below the 0.50 devastating gate, above the 0.25
+    high-damage gate.
+    """
+    results = run_frames(
+        frame(
+            1,
+            100.0,
+            {3002: 0},
+            enemy(max_health=40_000.0, health=12_000.0),
+        ),
+        frame(
+            2,
+            101.0,
+            {3002: 12_000},
+            enemy(alive=False, max_health=40_000.0),
+        ),
+    )
+
+    assert event_ids(results) == [HIGH_DAMAGE]
+    event = emitted(results, HIGH_DAMAGE)
+    assert event.detail["window_damage"] == 12_000
+    assert event.detail["target_sunk"] is True
+    assert event.detail["damage_ratio"] == pytest.approx(0.3)
 
 
 def test_unknown_max_health_allows_absolute_high_but_not_devastating():
@@ -276,7 +370,7 @@ def test_first_victim_row_in_a_healthy_stream_counts_from_zero():
     assert event_ids(results) == [HIGH_DAMAGE]
 
 
-def test_victim_table_disappearance_discards_the_pending_burst():
+def test_victim_table_flicker_keeps_the_pending_burst_without_double_counting():
     target = enemy(max_health=100_000.0)
     results = run_frames(
         frame(1, 100.0, {3002: 0}, target),
@@ -286,7 +380,57 @@ def test_victim_table_disappearance_discards_the_pending_burst():
         frame(5, 108.0, {3002: 20_000}, target),
     )
 
-    assert event_ids(results) == []
+    assert event_ids(results) == [HIGH_DAMAGE]
+    assert emitted(results, HIGH_DAMAGE).detail["window_damage"] == 20_000
+
+
+def test_victim_row_drop_on_the_kill_frame_still_counts_as_devastating():
+    results = run_frames(
+        frame(1, 100.0, {3002: 0}, enemy(max_health=40_000.0)),
+        frame(2, 101.0, {3002: 40_000}, enemy(max_health=40_000.0)),
+        frame(3, 102.0, {}, enemy(alive=False, max_health=40_000.0)),
+    )
+
+    assert event_ids(results) == [DEVASTATING_STRIKE]
+    assert emitted(results, DEVASTATING_STRIKE).detail["window_damage"] == 40_000
+
+
+def test_multi_tick_half_hp_burst_on_a_living_target_is_not_devastating():
+    """Window damage vs last-tick remaining is not a killing blow.
+
+    Two salvos inside 5s on a 40k hull (15k then 10k) yield window=25k
+    against remaining=25k — above the 0.50 ribbon gate, but the target
+    still has 15k HP.
+    """
+    results = run_frames(
+        frame(1, 100.0, {3002: 0}, enemy(max_health=40_000.0, health=40_000.0)),
+        frame(2, 101.0, {3002: 15_000}, enemy(max_health=40_000.0, health=25_000.0)),
+        frame(3, 102.0, {3002: 25_000}, enemy(max_health=40_000.0, health=15_000.0)),
+        frame(4, 107.0, {3002: 25_000}, enemy(max_health=40_000.0, health=15_000.0)),
+    )
+
+    assert DEVASTATING_STRIKE not in event_ids(results)
+    assert event_ids(results) == [HIGH_DAMAGE]
+    event = emitted(results, HIGH_DAMAGE)
+    assert event.detail["window_damage"] == 25_000
+    assert event.detail["target_sunk"] is False
+
+
+def test_victim_row_returning_after_kill_does_not_replay_the_burst():
+    """A byVictim flicker after the kill must not count the cumulative total again.
+
+    The burst has to still be open on the kill frame: a same-tick one-shot
+    already consumed it before the row disappeared, which skips this path.
+    """
+    results = run_frames(
+        frame(1, 100.0, {3002: 0}, enemy(max_health=40_000.0, health=40_000.0)),
+        frame(2, 101.0, {3002: 20_000}, enemy(max_health=40_000.0, health=20_000.0)),
+        frame(3, 102.0, {}, enemy(alive=False, max_health=40_000.0)),
+        frame(4, 103.0, {3002: 20_000}, enemy(alive=False, max_health=40_000.0)),
+        frame(5, 108.0, {3002: 20_000}, enemy(alive=False, max_health=40_000.0)),
+    )
+
+    assert event_ids(results) == [DEVASTATING_STRIKE]
 
 
 def test_object_domain_gap_blocks_retroactive_devastating_strike():
@@ -459,7 +603,7 @@ def test_realistic_nested_8111_payload_reaches_the_arbiter_once():
 
     assert [candidate.event_id for candidate in chosen] == [DEVASTATING_STRIKE]
     candidate = chosen[0]
-    assert candidate.lane == "normal"
+    assert candidate.lane == "urgent"
     assert candidate.detail["target_name"] == "Zao"
     assert candidate.detail["window_damage"] == 20_000
     assert candidate.detail["damage_ratio"] == pytest.approx(0.5)

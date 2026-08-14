@@ -54,6 +54,7 @@ from plugin.plugins.neko_wows.domain.snapshot import (
 )
 from plugin.plugins.neko_wows.policy.arbiter import Arbiter
 from plugin.plugins.neko_wows.policy.tactic_policy import WowsTacticPolicy
+from plugin.plugins.neko_wows.presentation.instructions import BASE_INSTRUCTIONS
 from plugin.plugins.neko_wows.presentation.prompt_router import (
     PromptProfile,
     WowsPromptRouter,
@@ -681,8 +682,10 @@ def test_delivered_prompts_forbid_unsupported_claims(replay, pipeline):
     assert respond_calls
     for call in respond_calls:
         text = call["parts"][0]["text"]
-        assert "只使用给出的事实" in text
+        assert BASE_INSTRUCTIONS in text
         assert "击杀" in text  # named explicitly as off limits
+        # The event is what she is answering; the rules only qualify it.
+        assert text.index("主事件：") < text.index(BASE_INSTRUCTIONS)
 
 
 def test_rendered_facts_contain_no_unsupported_domain_data(replay, pipeline):

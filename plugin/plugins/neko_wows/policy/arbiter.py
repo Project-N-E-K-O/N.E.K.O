@@ -143,6 +143,9 @@ class Arbiter:
         self._fired_once.clear()
         self._cooldowns.clear()
         self._failure_cooldowns.clear()
+        self._quiet_until = 0.0
+        for lane in self._lanes.values():
+            lane.last_output_at = 0.0
 
     def clear_shadow_state(self) -> None:
         """Drop cooldowns accumulated while dry-run was suppressing output.
@@ -202,6 +205,7 @@ class Arbiter:
         steps.extend(collapsed)
         active_preemptor: AdviceCandidate | None = None
         for candidate in incoming:
+            blocked = self._blocked_reason(candidate, now)
             if (
                 active_preemptor is not None
                 and candidate.priority
@@ -217,15 +221,24 @@ class Arbiter:
 
             key = candidate.coalesce_key
             if key:
-                superseded = [c for c in self._queue if c.coalesce_key == key]
-                if superseded:
+                siblings = [c for c in self._queue if c.coalesce_key == key]
+                if siblings:
+                    best_queued = min(siblings, key=self._coalesce_rank)
+                    if self._coalesce_rank(candidate) > self._coalesce_rank(best_queued):
+                        steps.append(DecisionStep(
+                            candidate.event_id,
+                            candidate.lane,
+                            REASON_COALESCED,
+                            f"queued sibling kept {best_queued.event_id}",
+                        ))
+                        continue
                     self._queue = [c for c in self._queue if c.coalesce_key != key]
-                    for old in superseded:
+                    for old in siblings:
                         steps.append(DecisionStep(
                             old.event_id, old.lane, REASON_COALESCED,
-                            f"replaced by newer {candidate.event_id}"))
+                            f"replaced by stronger {candidate.event_id}"))
 
-            if candidate.spec.preempt:
+            if candidate.spec.preempt and blocked is None:
                 if (
                     active_preemptor is None
                     or candidate.rank < active_preemptor.rank
@@ -269,10 +282,7 @@ class Arbiter:
             winner_index, winner = min(
                 siblings,
                 key=lambda entry: (
-                    -entry[1].priority,
-                    -entry[1].severity,
-                    -entry[1].at,
-                    entry[1].event_id,
+                    *Arbiter._coalesce_rank(entry[1]),
                     entry[0],
                 ),
             )
@@ -290,6 +300,15 @@ class Arbiter:
         retained = tuple(
             candidate for index, candidate in indexed if index not in discarded)
         return retained, steps
+
+    @staticmethod
+    def _coalesce_rank(candidate: AdviceCandidate) -> tuple[int, int, float, str]:
+        return (
+            -candidate.priority,
+            -candidate.severity,
+            -candidate.at,
+            candidate.event_id,
+        )
 
     def decide(
         self,
@@ -376,11 +395,11 @@ class Arbiter:
         for item in candidates:
             spec = item.spec
             if outcome_reason in COOLDOWN_REASONS:
-                self._cooldowns[item.event_id] = now + spec.cooldown_seconds
+                self._cooldowns[item.cooldown_key] = now + spec.cooldown_seconds
             if outcome_reason == "failed":
-                self._failure_cooldowns.add(item.event_id)
+                self._failure_cooldowns.add(item.cooldown_key)
             elif committed:
-                self._failure_cooldowns.discard(item.event_id)
+                self._failure_cooldowns.discard(item.cooldown_key)
 
             if not committed:
                 continue
@@ -404,7 +423,7 @@ class Arbiter:
         if spec.once_per_battle and candidate.event_id in self._fired_once:
             return REASON_ONCE_PER_BATTLE, "already said once this battle"
 
-        until = self._cooldowns.get(candidate.event_id, 0.0)
+        until = self._cooldowns.get(candidate.cooldown_key, 0.0)
         if now < until:
             return REASON_COOLDOWN, f"{until - now:.1f}s remaining"
 

@@ -7,11 +7,14 @@ Only the final wording is left to the model.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Sequence
 
 from ..domain.catalog import (
     AMMO_RECHECK_HINT,
+    BATTLE_ENDED,
+    BATTLE_STARTED,
     DEVASTATING_STRIKE,
     EventSpec,
     HIGH_DAMAGE,
@@ -26,16 +29,13 @@ from ..domain.catalog import (
 from ..domain.facts import WowsFacts
 from ..detectors._base import GameEvent
 
-# Always attached: consumable active-state and relative sectors are not in
-# live telemetry, and ship-catalog Radar text must not become a call-out.
-_GLOBAL_CLAIM_LIMITS: tuple[str, ...] = (
-    "消耗品实时状态（雷达、水听、烟幕、损伤控制等是否开启或持续）当前不可用，不要提及；"
-    "不要把小地图上敌舰被点亮说成对方开了雷达。",
-    "没有给出相对方位字段时，不要说左前方、正前方、右前方。",
-)
-
 # Constraints attached per event so the prompt cannot drift into claims the
 # telemetry does not support. Keyed by event id.
+#
+# Only what is specific to this event belongs here. Rules that hold for the whole
+# battle -- consumable state, relative sectors, how to read the count fields --
+# are injected once with the scene instead. Repeating them on every call-out made
+# them the bulk of the message, and the model started reciting them as content.
 _CLAIM_LIMITS: dict[str, tuple[str, ...]] = {
     HIGH_DAMAGE: (
         "只能说同一目标在短时间内承受了较高伤害；不能说成一发、单轮齐射、特定弹种或击杀。",
@@ -64,8 +64,32 @@ _CLAIM_LIMITS: dict[str, tuple[str, ...]] = {
     ),
     POST_BATTLE_SUMMARY: (
         "击杀归属、占点与鱼雷数据当前不可用，不要提及具体击杀数。",
+        "不要描述小地图、点亮数、方位或还在视野里的船。",
+        "不要沿用上一次发言；这条不是点亮或方位通报。",
+    ),
+    BATTLE_STARTED: (
+        "只说对局开始；可以带地图名和自己的船。不要描述小地图、点亮数、方位、距离或还在视野里的船。",
+        "不要沿用上一次发言；这条不是点亮或方位通报。",
+    ),
+    BATTLE_ENDED: (
+        "只说对局结束。不要描述小地图、点亮数、方位、距离或还在视野里的船。",
+        "不要沿用上一次发言；这条不是点亮或方位通报。",
     ),
 }
+
+
+def _cooldown_identity(detail: Mapping[str, Any]) -> str | None:
+    """Stable per-target suffix so two ships do not share one cooldown slot."""
+    for key in ("victim_id", "player_id", "ui_id", "target_id"):
+        value = detail.get(key)
+        if isinstance(value, bool) or not isinstance(value, (int, str)):
+            continue
+        if isinstance(value, int) and value < 0:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return None
 
 
 @dataclass(frozen=True)
@@ -96,6 +120,13 @@ class AdviceCandidate:
     def is_expired(self, now: float) -> bool:
         return self.expires_at > 0.0 and now >= self.expires_at
 
+    @property
+    def cooldown_key(self) -> str:
+        identity = _cooldown_identity(self.detail)
+        if identity is None:
+            return self.event_id
+        return f"{self.event_id}:{identity}"
+
     # Fixed ordering: priority, then severity, then age, then id. The event id
     # tiebreak is what makes the whole chain reproducible in a replay.
     @property
@@ -125,7 +156,9 @@ class WowsTacticPolicy:
             if not self.cfg.category_enabled(spec.coalesce_key):
                 continue
             ttl = spec.ttl_seconds or self.cfg.ttl_for(spec.lane)
-            per_event = _CLAIM_LIMITS.get(event.event_id, ())
+            context = (
+                self._shared_context(facts) if spec.include_frame_context else {}
+            )
             candidates.append(AdviceCandidate(
                 event_id=event.event_id,
                 lane=spec.lane,
@@ -136,8 +169,8 @@ class WowsTacticPolicy:
                 battle_id=event.battle_id,
                 summary=spec.summary,
                 detail=dict(event.detail),
-                context=self._shared_context(facts),
-                claim_limits=_GLOBAL_CLAIM_LIMITS + per_event,
+                context=context,
+                claim_limits=_CLAIM_LIMITS.get(event.event_id, ()),
                 expires_at=event.at + ttl,
             ))
         candidates.sort(key=lambda c: c.rank)

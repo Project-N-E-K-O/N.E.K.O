@@ -274,6 +274,250 @@ def test_unknown_class_does_not_guess_between_candidates(snapshot):
     assert result.reason == "ambiguous_alias"
 
 
+def _clone_pair_snapshot(
+    catalog_meta: CatalogMeta,
+    yamato_profile: ShipProfile,
+    *ships: CatalogShip,
+    alias: str,
+) -> FakeCatalogSnapshot:
+    profiles = {
+        ship.ship_id: replace(
+            yamato_profile,
+            profile_id=f"{ship.ship_id}:reference_top:primary",
+            ship_id=ship.ship_id,
+        )
+        for ship in ships
+    }
+    return FakeCatalogSnapshot(
+        catalog_meta, aliases={alias: ships}, profiles=profiles)
+
+
+def test_resolver_prefers_upgradeable_hull_of_same_tier_and_class(
+    catalog_meta: CatalogMeta,
+    yamato: CatalogShip,
+    yamato_profile: ShipProfile,
+):
+    tech = replace(
+        yamato,
+        ship_id=4074682352,
+        ship_index="PASC210",
+        display_name="伍斯特",
+        ship_class="Cruiser",
+        tier=10,
+        is_premium=False,
+        is_special=False,
+        availability_group="upgradeable",
+    )
+    clone = replace(
+        yamato,
+        ship_id=4278106096,
+        ship_index="PASC016",
+        display_name="伍斯特",
+        ship_class="Cruiser",
+        tier=10,
+        is_premium=False,
+        is_special=True,
+        availability_group="disabled",
+    )
+    snapshot = _clone_pair_snapshot(
+        catalog_meta, yamato_profile, tech, clone, alias="伍斯特")
+
+    result = ShipResolver(snapshot).resolve(
+        "伍斯特", tier=10, ship_type="Cruiser")
+
+    assert result.reason == "resolved"
+    assert result.ship is not None
+    assert result.ship.ship_index == "PASC210"
+
+
+def test_resolver_prefers_ultimate_when_both_hulls_are_special(
+    catalog_meta: CatalogMeta,
+    yamato: CatalogShip,
+    yamato_profile: ShipProfile,
+):
+    ultimate = replace(
+        yamato,
+        ship_id=3550394192,
+        ship_index="PFSC710",
+        display_name="布伦努斯",
+        ship_class="Cruiser",
+        tier=10,
+        is_premium=True,
+        is_special=True,
+        availability_group="ultimate",
+    )
+    disabled = replace(
+        yamato,
+        ship_id=3445536592,
+        ship_index="PFSC810",
+        display_name="布伦努斯",
+        ship_class="Cruiser",
+        tier=10,
+        is_premium=True,
+        is_special=True,
+        availability_group="disabled",
+    )
+    snapshot = _clone_pair_snapshot(
+        catalog_meta, yamato_profile, ultimate, disabled,
+        alias="布伦努斯")
+
+    result = ShipResolver(snapshot).resolve(
+        "布伦努斯", tier=10, ship_type="巡洋舰")
+
+    assert result.reason == "resolved"
+    assert result.ship is not None
+    assert result.ship.ship_index == "PFSC710"
+
+
+def test_resolver_stays_ambiguous_when_clone_availability_ties(
+    catalog_meta: CatalogMeta,
+    yamato: CatalogShip,
+    yamato_profile: ShipProfile,
+):
+    first = replace(
+        yamato,
+        ship_id=4249105680,
+        ship_index="PXSX043",
+        display_name="梅德韦皇后",
+        ship_class="Auxiliary",
+        tier=2,
+        is_premium=True,
+        is_special=True,
+        availability_group="disabled",
+    )
+    second = replace(
+        yamato,
+        ship_id=4267980048,
+        ship_index="PXSX025",
+        display_name="梅德韦皇后",
+        ship_class="Auxiliary",
+        tier=2,
+        is_premium=True,
+        is_special=True,
+        availability_group="disabled",
+    )
+    snapshot = _clone_pair_snapshot(
+        catalog_meta, yamato_profile, first, second,
+        alias="梅德韦皇后")
+
+    result = ShipResolver(snapshot).resolve(
+        "梅德韦皇后", tier=2, ship_type="Auxiliary")
+
+    assert result.reason == "ambiguous_alias"
+    assert result.ship is None
+
+
+def test_resolver_prefers_upgradeable_t9_buffalo_over_t10_clone(
+    catalog_meta: CatalogMeta,
+    yamato: CatalogShip,
+    yamato_profile: ShipProfile,
+):
+    tech = replace(
+        yamato,
+        ship_id=4180588528,
+        ship_index="PASC109",
+        display_name="水牛城",
+        ship_class="Cruiser",
+        tier=9,
+        is_premium=False,
+        is_special=False,
+        availability_group="upgradeable",
+    )
+    premium = replace(
+        yamato,
+        ship_id=4274960368,
+        ship_index="PASC019",
+        display_name="水牛城",
+        ship_class="Cruiser",
+        tier=10,
+        is_premium=True,
+        is_special=True,
+        availability_group="disabled",
+    )
+    snapshot = _clone_pair_snapshot(
+        catalog_meta, yamato_profile, tech, premium, alias="水牛城")
+
+    result = ShipResolver(snapshot).resolve("水牛城")
+
+    assert result.reason == "resolved"
+    assert result.ship is not None
+    assert result.ship.ship_index == "PASC109"
+    assert result.ship.tier == 9
+
+
+def test_resolver_keeps_explicit_tier_when_buffalo_clone_exists(
+    catalog_meta: CatalogMeta,
+    yamato: CatalogShip,
+    yamato_profile: ShipProfile,
+):
+    tech = replace(
+        yamato,
+        ship_id=4180588528,
+        ship_index="PASC109",
+        display_name="水牛城",
+        ship_class="Cruiser",
+        tier=9,
+        is_premium=False,
+        is_special=False,
+        availability_group="upgradeable",
+    )
+    premium = replace(
+        yamato,
+        ship_id=4274960368,
+        ship_index="PASC019",
+        display_name="水牛城",
+        ship_class="Cruiser",
+        tier=10,
+        is_premium=True,
+        is_special=True,
+        availability_group="disabled",
+    )
+    snapshot = _clone_pair_snapshot(
+        catalog_meta, yamato_profile, tech, premium, alias="水牛城")
+
+    result = ShipResolver(snapshot).resolve("水牛城", tier=10, ship_type="Cruiser")
+
+    assert result.reason == "resolved"
+    assert result.ship is not None
+    assert result.ship.ship_index == "PASC019"
+
+
+def test_resolver_stays_ambiguous_when_two_playable_hulls_differ_in_tier(
+    catalog_meta: CatalogMeta,
+    yamato: CatalogShip,
+    yamato_profile: ShipProfile,
+):
+    lower = replace(
+        yamato,
+        ship_id=1,
+        ship_index="PASC001",
+        display_name="同名巡洋",
+        ship_class="Cruiser",
+        tier=8,
+        is_premium=False,
+        is_special=False,
+        availability_group="upgradeable",
+    )
+    higher = replace(
+        yamato,
+        ship_id=2,
+        ship_index="PASC002",
+        display_name="同名巡洋",
+        ship_class="Cruiser",
+        tier=9,
+        is_premium=False,
+        is_special=False,
+        availability_group="upgradeable",
+    )
+    snapshot = _clone_pair_snapshot(
+        catalog_meta, yamato_profile, lower, higher, alias="同名巡洋")
+
+    result = ShipResolver(snapshot).resolve("同名巡洋")
+
+    assert result.reason == "ambiguous_alias"
+    assert result.ship is None
+
+
 def test_resolver_reports_missing_primary_profile(
     catalog_meta: CatalogMeta,
     yamato: CatalogShip,

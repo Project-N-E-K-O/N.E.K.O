@@ -47,7 +47,7 @@ class SinkingDetector(Detector):
         # partial self payload cannot cancel a queued sinking call-out.
         if self._pending and (
             snapshot.status == STATUS_ENDED
-            or (facts.own_health is not None and facts.own_health > 0)
+            or _own_afloat(facts) is True
         ):
             self._pending = False
 
@@ -67,18 +67,15 @@ class SinkingDetector(Detector):
             return ()
         # A null current reading is unknown, not death. Keep any pending latch
         # so delivery can retry once health returns.
-        if facts.own_health is None:
+        current = _own_afloat(facts)
+        previous = _own_afloat(previous_facts)
+        if current is None:
             return ()
-        if self._pending and facts.own_health > 0:
+        if self._pending and current is True:
             self._pending = False
-        if (
-            not self._pending
-            and previous_facts.own_health is not None
-            and previous_facts.own_health > 0
-            and facts.own_health <= 0
-        ):
+        if not self._pending and previous is True and current is False:
             self._pending = True
-        if not self._pending or facts.own_health > 0:
+        if not self._pending or current is True:
             return ()
         # Own hull is usually alive=False on this frame, so team_counts_confirmed
         # (which requires our own object still lit-and-alive) is false. Visible
@@ -306,6 +303,19 @@ class IsolationDetector(Detector):
 
 def _nearest_distance(facts) -> float | None:
     return round(facts.nearest_enemy.distance_m) if facts.nearest_enemy else None
+
+
+def _own_afloat(facts) -> bool | None:
+    """Whether the player's hull is still afloat.
+
+    `own_alive` already combines 3D self.health with the avatar object. Fall
+    back to a raw health reading only when that combined flag is missing.
+    """
+    if facts.own_alive is not None:
+        return facts.own_alive
+    if facts.own_health is not None:
+        return facts.own_health > 0
+    return None
 
 
 def build_survival_detectors(cfg) -> tuple[Detector, ...]:

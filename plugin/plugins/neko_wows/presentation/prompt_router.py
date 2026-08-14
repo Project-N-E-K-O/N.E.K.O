@@ -82,17 +82,15 @@ class WowsPromptRouter:
             raise ValueError("at least one advice candidate is required")
         primary = candidates[0]
         bundle = profile.bundle or DEFAULT_BUNDLE
-        sections = [bundle.instructions_for(primary.lane, profile.channel_mode)]
-        # Only ever one of the two. Telling her to call the screenshot tool on a
-        # turn that already carries the shared frame would buy the same picture
-        # twice, once at the price this whole path exists to avoid.
-        if profile.live_vision_active:
-            sections.append(LIVE_VISION_SPEAK_HINT.strip())
-        elif profile.screenshot_enabled:
-            sections.append(VISION_LOOK_BEFORE_SPEAK.strip())
 
-        newest = max(candidates, key=lambda item: (item.at, item.seq))
-        sections.append(_render_primary(primary, newest.context))
+        # The event goes first. When the instructions led, the model answered the
+        # instructions: a two-character "开局" underneath twenty lines of "do not
+        # say X" got read as a prompt to recite X.
+        frame_context = {}
+        if primary.spec.include_frame_context:
+            newest = max(candidates, key=lambda item: (item.at, item.seq))
+            frame_context = newest.context
+        sections = [_render_primary(primary, frame_context)]
         if len(candidates) > 1:
             sections.append(_render_attached(candidates[1:]))
 
@@ -104,6 +102,15 @@ class WowsPromptRouter:
         if claim_limits:
             sections.append("表述限制：\n" + "\n".join(
                 f"- {limit}" for limit in claim_limits))
+
+        sections.append(bundle.instructions_for(primary.lane, profile.channel_mode))
+        # Only ever one of the two. Telling her to call the screenshot tool on a
+        # turn that already carries the shared frame would buy the same picture
+        # twice, once at the price this whole path exists to avoid.
+        if profile.live_vision_active:
+            sections.append(LIVE_VISION_SPEAK_HINT.strip())
+        elif profile.screenshot_enabled:
+            sections.append(VISION_LOOK_BEFORE_SPEAK.strip())
 
         reference, excerpts_used = _render_reference(excerpts, primary.lane)
         if reference:
@@ -165,14 +172,16 @@ def _render_primary(
     candidate: AdviceCandidate,
     current_context: dict[str, Any],
 ) -> str:
-    return (
-        f"主事件：{candidate.summary}（{candidate.event_id}）\n"
-        f"仲裁优先级：{candidate.priority}\n"
-        f"实时强度：{candidate.severity}\n"
-        f"发生序号：{candidate.seq}\n"
-        f"事实：{_render_facts(candidate.detail)}\n"
-        f"当前战况：{_render_facts(current_context)}"
-    )
+    lines = [
+        f"主事件：{candidate.summary}（{candidate.event_id}）",
+        f"仲裁优先级：{candidate.priority}",
+        f"实时强度：{candidate.severity}",
+        f"发生序号：{candidate.seq}",
+        f"事实：{_render_facts(candidate.detail)}",
+    ]
+    if _usable_facts(current_context):
+        lines.append(f"当前战况：{_render_facts(current_context)}")
+    return "\n".join(lines)
 
 
 def _render_attached(candidates: Sequence[AdviceCandidate]) -> str:
@@ -188,16 +197,21 @@ def _render_attached(candidates: Sequence[AdviceCandidate]) -> str:
     return "附加事件：\n" + "\n".join(rendered)
 
 
+def _usable_facts(payload: dict[str, Any]) -> dict[str, Any]:
+    """Keys with no value are dropped rather than shown as null."""
+    return {
+        key: value for key, value in payload.items()
+        if value is not None and value != "" and value != []
+    }
+
+
 def _render_facts(payload: dict[str, Any]) -> str:
     """Compact, stable rendering of the fact dict.
 
     Keys with no value are dropped rather than shown as null: an absent
     measurement must not read as a zero to the model.
     """
-    usable = {
-        key: value for key, value in payload.items()
-        if value is not None and value != "" and value != []
-    }
+    usable = _usable_facts(payload)
     if not usable:
         return "（无）"
     return json.dumps(usable, ensure_ascii=False, sort_keys=True)

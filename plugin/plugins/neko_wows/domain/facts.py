@@ -20,6 +20,9 @@ from .snapshot import (
     DOMAIN_SELF,
     Ship,
     WowsSnapshot,
+    alive_from_health,
+    combine_alive_signals,
+    resolve_alive,
 )
 
 
@@ -128,6 +131,25 @@ def _broadside_angle(heading_deg: float, bearing_deg: float) -> float:
     return 90.0 - abs(offset - 90.0) if offset <= 180.0 else 0.0
 
 
+def _own_alive(own, snapshot: WowsSnapshot | None) -> bool | None:
+    """Afloat signal for the player's hull.
+
+    3D `self.health` and the avatar/UI object can disagree for a tick after
+    death. Either source reporting dead wins; a missing reading stays unknown.
+    """
+    if own is None:
+        return None
+    hull = snapshot.own_ship if snapshot is not None else None
+    hull_signal = (
+        resolve_alive(hull.alive, hull.health, hull.hp_ratio)
+        if hull is not None else None
+    )
+    return combine_alive_signals(
+        hull_signal,
+        alive_from_health(own.health, own.hp_ratio),
+    )
+
+
 class FactBuilder:
     """Turns a snapshot into `WowsFacts`. Pure: no memory between frames."""
 
@@ -161,16 +183,18 @@ class FactBuilder:
         if objects_ok:
             confirmed_visible_allies = sum(
                 1 for ship in snapshot.own_side(visible_only=True)
-                if ship.alive is True
+                if ship.is_confirmed_alive
             )
             confirmed_visible_enemies = sum(
-                1 for ship in visible_enemies if ship.alive is True
+                1 for ship in visible_enemies if ship.is_confirmed_alive
             )
         own_player_id = own.player_id if own is not None else None
         own_confirmed_visible = bool(
             own_player_id is not None
             and any(
-                ship.player_id == own_player_id and ship.alive is True and ship.visible
+                ship.player_id == own_player_id
+                and ship.is_confirmed_alive
+                and ship.visible
                 for ship in snapshot.own_side(visible_only=True)
             )
         )
@@ -239,7 +263,7 @@ class FactBuilder:
             own_hp_ratio=own.hp_ratio if own is not None else None,
             own_health=own.health if own is not None else None,
             own_max_health=own.max_health if own is not None else None,
-            own_alive=(own.health is not None and own.health > 0) if own is not None else None,
+            own_alive=_own_alive(own, snapshot if objects_ok else None),
             own_speed=own.speed if own is not None else None,
             own_heading_deg=own_heading,
             allies_not_confirmed_sunk=len(own_side) if count_ok else None,
