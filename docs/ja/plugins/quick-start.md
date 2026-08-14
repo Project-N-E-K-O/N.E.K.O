@@ -1,8 +1,8 @@
-# CLI で最初のプラグインを作成する
+# N.E.K.O Plugin CLI で最初のプラグインを作成する
 
-このクイックスタートの目的は一つです。Plugin CLI が自分の環境で動くことを確認し、開発を始められる独立したプラグインリポジトリを作成します。
+このページの目的は一つです。GitHub から N.E.K.O のソースを取得できること、そのソースに含まれる N.E.K.O Plugin CLI が自分の環境で動くことを確認し、開発を続けられる独立したプラグインリポジトリを作成します。
 
-完了すると、サンプルコード、テスト、コードチェック、GitHub の公開 Workflow を含む `hello_world` プロジェクトができます。
+完了すると、サンプルコード、テスト、コードチェック、GitHub Actions のリリース設定を含む `hello_world` プロジェクトができます。このプロジェクトがプラグイン開発の出発点になります。
 
 ## 1. Git と uv を確認する
 
@@ -13,30 +13,26 @@ git --version
 uv --version
 ```
 
-この二つはインストール用のコマンドではありません。現在のターミナルから必要なツールを実際に使用できるか確認します：
-
 | コマンド | 確認すること |
 | --- | --- |
 | `git --version` | Git を使用できること。N.E.K.O のソースを複製し、プラグインの変更履歴を記録して GitHub へ送信するために使います。 |
 | `uv --version` | uv を使用できること。`uv.lock` に固定された Python 依存関係のインストールと Plugin CLI の実行に使います。 |
 
-両方ともバージョンを表示する必要があります。どちらかで「コマンドが見つかりません」と表示された場合は、ここで停止します：
+両方ともバージョンを表示する必要があります。どちらかで「コマンドが見つかりません」と表示された場合は、先にそのツールをインストールします：
 
 - [Git 公式ダウンロード](https://git-scm.com/downloads)から Git をインストールします。
 - [uv 公式インストールガイド](https://docs.astral.sh/uv/getting-started/installation/)に従って uv をインストールします。
 
-インストール後はターミナルを閉じて開き直し、二つの確認を再実行します。両方のバージョンが表示されてから次へ進みます。
-
 ## 2. N.E.K.O のソースを取得する
 
-Plugin CLI は現在 N.E.K.O のソースに含まれており、まだ単独ではインストールできません。初回は公式リポジトリを clone します：
+Plugin CLI は N.E.K.O のソースに含まれており、単独ではインストールできません。**N.E.K.O プラグイン**の開発を始める推奨方法は、ソースを直接取得することです：
 
 ```bash
 git clone --filter=blob:none https://github.com/Project-N-E-K-O/N.E.K.O.git
 cd N.E.K.O
 ```
 
-すでにソースがある場合は、再度 clone したり既存ディレクトリを削除したりせず、その checkout に移動します：
+すでにソースがある場合は、再度 clone せず、その checkout に移動します：
 
 ```bash
 cd /path/to/N.E.K.O
@@ -51,11 +47,11 @@ cd /path/to/N.E.K.O
 N.E.K.O リポジトリのルートで実行します：
 
 ```bash
-uv sync --locked
+uv sync
 uv run neko-plugin --help
 ```
 
-ヘルプには少なくとも次のコマンドが表示されます：
+`neko-plugin` のヘルプには少なくとも次のコマンドが表示されます：
 
 ```text
 init
@@ -65,9 +61,7 @@ build
 publish
 ```
 
-これらが表示されれば CLI を使用できます。以後も `uv run neko-plugin` を使用し、グローバルな `neko-plugin` コマンドがインストール済みとは仮定しません。
-
-`uv sync --locked` が失敗した場合は停止し、完全なエラー内容を残してください。network、Python platform、dependency state のいずれも原因になり得るため、失敗を隠す目的で `uv.lock` を再生成しないでください。ソースを更新する前だけ `git status --short` を実行します。ローカル変更がある場合は作業を保全し、pull や reset を行いません。checkout が clean で `init` または `publish` がない場合は `git pull --ff-only` を実行し、上の二つのコマンドを再実行します。
+これらが表示されれば CLI を使用できます。以後も `uv run neko-plugin` を使用します。
 
 ## 4. 独立したプラグインリポジトリを作成する
 
@@ -77,7 +71,9 @@ N.E.K.O リポジトリのルートから実行します：
 uv run neko-plugin init hello_world --type plugin --name "Hello World" --output ../n.e.k.o_plugin_hello_world
 ```
 
-`--output` は最終ディレクトリそのものです。N.E.K.O の隣に作成することで、N.E.K.O checkout の内部に Git リポジトリを入れ子にすることを避けます。
+このコマンドは **Hello World** プラグインを初期化します。
+
+N.E.K.O の checkout 内に Git リポジトリを入れ子にしないよう、プラグインは N.E.K.O の隣に作成されます。以下の手順にある `../n.e.k.o_plugin_hello_world` は、今作成したプラグインのディレクトリです。N.E.K.O のソースディレクトリから一つ上の階層へ移動すると到達できます。
 
 対象ディレクトリがすでにある場合、CLI は上書きせず停止します。別の新しいディレクトリを選ぶか、既存ディレクトリの用途を確認してください。
 
@@ -93,7 +89,7 @@ uv run neko-plugin check ../n.e.k.o_plugin_hello_world
 [OK] hello_world: check found 0 error(s), 2 warning(s)
 ```
 
-GitHub remote が未設定、またはファイルが未コミットという警告は、この時点では正常です。新しいリポジトリをまだ commit、push していないためです。`[FAIL]` または error が表示された場合だけ停止し、コマンドの修正案に従ってください。
+GitHub remote が未設定、またはファイルが未コミットという警告は、この時点では正常です。新しいリポジトリをまだ commit、push していないためです。今後 `[FAIL]` または error が表示された場合は停止し、コマンドの修正案に従ってください。
 
 ## CLI が作成したもの
 

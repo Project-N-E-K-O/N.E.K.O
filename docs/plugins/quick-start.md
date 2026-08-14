@@ -1,8 +1,8 @@
-# Create your first plugin with the CLI
+# Create your first plugin with the N.E.K.O Plugin CLI
 
-This quick start has one goal: verify that Plugin CLI works on your computer, then use it to create a standalone plugin repository that is ready for development.
+This page has one goal: confirm that you can get N.E.K.O from its GitHub source, verify that the included N.E.K.O Plugin CLI works on your computer, and use it to create a standalone plugin repository that is ready for development.
 
-You will finish with a `hello_world` project that already contains example code, tests, code checks, and GitHub release workflows.
+You will finish with a `hello_world` project that already contains example code, tests, code checks, and GitHub release workflows. This project is the starting point for your plugin development.
 
 ## 1. Check Git and uv
 
@@ -13,30 +13,26 @@ git --version
 uv --version
 ```
 
-These commands do not install anything. They verify that the current terminal can find both required tools before you continue:
-
 | Command | What it verifies |
 | --- | --- |
 | `git --version` | Git is available. You will use it to clone N.E.K.O and later commit and push plugin versions. |
 | `uv --version` | uv is available. You will use it to install the locked Python dependencies and run Plugin CLI. |
 
-Both commands must print a version. If either command is not found, stop here:
+Both commands must print a version. If either command is not found, install the missing tool first:
 
 - Install Git from the [official Git downloads](https://git-scm.com/downloads).
 - Install uv using the [official uv installation guide](https://docs.astral.sh/uv/getting-started/installation/).
 
-Close and reopen the terminal after installation, then run both checks again. Continue only when both commands print a version.
-
 ## 2. Get the N.E.K.O source
 
-Plugin CLI currently ships with the N.E.K.O source and cannot yet be installed separately. Clone the official repository the first time you use it:
+Plugin CLI ships with the N.E.K.O source and cannot be installed separately. The recommended way to start developing a **N.E.K.O plugin** is to get the source directly:
 
 ```bash
 git clone --filter=blob:none https://github.com/Project-N-E-K-O/N.E.K.O.git
 cd N.E.K.O
 ```
 
-If you already have the source, do not clone it again or delete the existing directory. Enter your existing checkout instead:
+If you already have the source, do not clone it again. Enter your existing checkout instead:
 
 ```bash
 cd /path/to/N.E.K.O
@@ -51,11 +47,11 @@ cd /path/to/N.E.K.O
 Run these commands from the N.E.K.O repository root:
 
 ```bash
-uv sync --locked
+uv sync
 uv run neko-plugin --help
 ```
 
-The help output should include at least:
+The `neko-plugin` help output should include at least:
 
 ```text
 init
@@ -65,9 +61,7 @@ build
 publish
 ```
 
-When those commands appear, the CLI is ready. Continue using `uv run neko-plugin`; do not assume that a global `neko-plugin` executable is installed.
-
-If `uv sync --locked` fails, stop and keep the complete error message. Network access, the Python platform, or dependency state may be responsible; do not regenerate `uv.lock` merely to suppress the failure. Run `git status --short` only before updating the source. If it shows local changes, preserve your work and do not pull or reset. If the checkout is clean and `init` or `publish` is missing, run `git pull --ff-only`, then repeat the two commands above.
+When those commands appear, the CLI is ready. Continue using `uv run neko-plugin`.
 
 ## 4. Create a standalone plugin repository
 
@@ -77,7 +71,9 @@ Stay in the N.E.K.O repository root and run:
 uv run neko-plugin init hello_world --type plugin --name "Hello World" --output ../n.e.k.o_plugin_hello_world
 ```
 
-`--output` is the exact final directory. Keeping the plugin beside N.E.K.O avoids creating a nested Git repository inside the N.E.K.O checkout.
+This initializes a **Hello World** plugin.
+
+The plugin is created beside N.E.K.O to avoid nesting a Git repository inside the N.E.K.O checkout. In the steps below, `../n.e.k.o_plugin_hello_world` means the plugin directory that was just created: from the N.E.K.O source directory, go up one level to reach it.
 
 If the destination already exists, the CLI stops without overwriting it. Choose a new directory or inspect the existing one before continuing.
 
@@ -93,7 +89,7 @@ A new project should report:
 [OK] hello_world: check found 0 error(s), 2 warning(s)
 ```
 
-Warnings about a missing GitHub remote or uncommitted files are expected at this point: the new repository has not been committed or pushed. Stop and follow the suggested fix only when the command reports `[FAIL]` or an error.
+Warnings about a missing GitHub remote or uncommitted files are expected at this point: the new repository has not been committed or pushed. In later work, stop and follow the suggested fix whenever the command reports `[FAIL]` or an error.
 
 ## What the CLI created
 
