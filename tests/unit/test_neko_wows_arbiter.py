@@ -230,6 +230,23 @@ def test_progress_bursts_on_different_targets_do_not_coalesce():
     assert decision.queued == 1
 
 
+def test_same_spoken_name_on_different_ships_does_not_coalesce():
+    decision = Arbiter(CFG).decide([
+        candidate(
+            DEVASTATING_STRIKE,
+            detail={"target_name": "Zao", "target_id": 3002},
+        ),
+        candidate(
+            HIGH_DAMAGE,
+            detail={"target_name": "Zao", "target_id": 3003},
+        ),
+    ], 100.0)
+
+    assert decision.chosen.event_id == DEVASTATING_STRIKE
+    assert decision.attached == ()
+    assert decision.queued == 1
+
+
 def test_enemy_sunk_attaches_another_target_progress_burst():
     decision = Arbiter(CFG).decide([
         candidate(ENEMY_SUNK, detail={"target_name": "Dev"}),

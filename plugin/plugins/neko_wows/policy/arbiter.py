@@ -44,15 +44,19 @@ ATTACH_PRIORITY_WINDOW = 15
 MAX_DECISION_EVENTS = 4
 
 
-def _coalesce_identity(candidate: AdviceCandidate) -> tuple[str, str] | None:
+def _coalesce_identity(candidate: AdviceCandidate) -> tuple[str, str | int] | None:
     """Collapse siblings that share a category and, when present, a target.
 
     Broadcast categories still group the panel switch, but two progress bursts
-    on different ships must both be allowed to reach attach.
+    on different ships must both be allowed to reach attach. Spoken hull names
+    collide (two Zaos), so a numeric target_id wins when the detector stamped one.
     """
     key = candidate.coalesce_key
     if not key:
         return None
+    target_id = candidate.detail.get("target_id")
+    if isinstance(target_id, int) and not isinstance(target_id, bool):
+        return (key, target_id)
     target = candidate.detail.get("target_name")
     if isinstance(target, str) and target:
         return (key, target)
@@ -279,7 +283,7 @@ class Arbiter:
         batch from overwriting the stronger item that preceded it.
         """
         indexed = tuple(enumerate(candidates))
-        groups: dict[str, list[tuple[int, AdviceCandidate]]] = {}
+        groups: dict[tuple[str, str | int], list[tuple[int, AdviceCandidate]]] = {}
         for index, candidate in indexed:
             identity = _coalesce_identity(candidate)
             if identity:

@@ -363,6 +363,7 @@ class DamageBurstDetector(Detector):
             detail["target_max_health"] = round(maximum)
         if item.ratio is not None:
             detail["damage_ratio"] = round(item.ratio, 3)
+        detail["target_id"] = item.victim_id
         return self._event(
             ENEMY_SUNK,
             severity=90,
@@ -387,6 +388,7 @@ class DamageBurstDetector(Detector):
             detail["damage_ratio"] = round(item.ratio, 3)
         if item.event_id == DEVASTATING_STRIKE:
             detail["classification"] = "telemetry_estimate"
+        detail["target_id"] = item.victim_id
         return self._event(
             item.event_id,
             severity=80 if item.event_id == DEVASTATING_STRIKE else 55,

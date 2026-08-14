@@ -274,6 +274,31 @@ def test_enemy_sunk_claim_limits_ask_for_praise_without_kill_credit():
     assert any("击杀" in line for line in sink.claim_limits)
     assert any("勋带" in line or "成就" in line for line in sink.claim_limits)
     assert any("附带伤害" in line for line in sink.claim_limits)
+    assert sum(1 for line in sink.claim_limits if "附带伤害" in line) == 1
+    assert sum(1 for line in sink.claim_limits if "夸奖" in line) == 1
+
+
+def test_target_id_is_not_spoken_in_the_prompt():
+    event = GameEvent(
+        event_id=ENEMY_SUNK,
+        severity=90,
+        at=100.0,
+        seq=1,
+        battle_id="b-1",
+        detail={
+            "target_name": "Zao",
+            "target_id": 3002,
+            "window_damage": 20_000,
+            "kill_credit": False,
+        },
+    )
+    facts = WowsFacts(seq=1, at=100.0, battle_id="b-1")
+    built = WowsTacticPolicy(CFG).expand([event], facts)[0]
+    request = WowsPromptRouter(CFG).build(
+        built, PromptProfile(channel_mode=CHANNEL_DUAL, dry_run=True))
+    assert "Zao" in request.text
+    assert "3002" not in request.text
+    assert "target_id" not in request.text
 
 
 _FORBIDDEN_CONSUMABLE_STATE = (

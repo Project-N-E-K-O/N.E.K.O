@@ -327,6 +327,7 @@ def test_death_frame_dropping_the_victim_row_still_uses_the_burst():
     assert event_ids(results) == [ENEMY_SUNK, DEVASTATING_STRIKE]
     assert emitted(results, ENEMY_SUNK).detail["window_damage"] == 20_000
     assert emitted(results, ENEMY_SUNK).detail["kill_credit"] is False
+    assert emitted(results, ENEMY_SUNK).detail["target_id"] == 3002
 
 
 def test_counter_rollback_then_death_does_not_praise_the_sink():
@@ -563,7 +564,54 @@ def test_multiple_resolved_victims_keep_the_other_target_strike():
     assert emitted(results, DEVASTATING_STRIKE).detail["target_name"] == "Dev"
     assert emitted(results, ENEMY_SUNK).detail["target_name"] == "Dev"
     assert emitted(results, HIGH_DAMAGE).detail["target_name"] == "High"
+    assert emitted(results, HIGH_DAMAGE).detail["target_id"] == 3002
+    assert emitted(results, ENEMY_SUNK).detail["target_id"] == 3003
     assert "target_sunk" not in emitted(results, HIGH_DAMAGE).detail
+
+    cfg = WowsConfig()
+    decision = Arbiter(cfg).decide(
+        WowsTacticPolicy(cfg).expand(emitted(results), FactBuilder(cfg).build(death)),
+        death.received_at,
+    )
+    assert tuple(item.event_id for item in decision.candidates) == (
+        ENEMY_SUNK,
+        DEVASTATING_STRIKE,
+        HIGH_DAMAGE,
+    )
+
+
+def test_two_same_class_ships_keep_both_progress_events():
+    alive_a = enemy(player_id=3002, max_health=40_000.0, name="Zao")
+    alive_b = enemy(player_id=3003, max_health=100_000.0, name="Zao")
+    sunk_a = enemy(
+        player_id=3002,
+        alive=False,
+        max_health=40_000.0,
+        name="Zao",
+    )
+    sunk_b = enemy(
+        player_id=3003,
+        alive=False,
+        max_health=100_000.0,
+        name="Zao",
+    )
+    death = frame(
+        3,
+        102.0,
+        {3002: 20_000, 3003: 20_000},
+        sunk_a,
+        sunk_b,
+    )
+    results = run_frames(
+        frame(1, 100.0, {3002: 0, 3003: 0}, alive_a, alive_b),
+        frame(2, 101.0, {3002: 20_000, 3003: 20_000}, alive_a, alive_b),
+        death,
+    )
+
+    assert event_ids(results) == [ENEMY_SUNK, DEVASTATING_STRIKE, HIGH_DAMAGE]
+    assert emitted(results, ENEMY_SUNK).detail["target_id"] == 3002
+    assert emitted(results, DEVASTATING_STRIKE).detail["target_id"] == 3002
+    assert emitted(results, HIGH_DAMAGE).detail["target_id"] == 3003
 
     cfg = WowsConfig()
     decision = Arbiter(cfg).decide(
