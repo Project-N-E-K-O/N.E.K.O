@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from plugin.plugins.neko_wows.adapters.schema_adapter import WowsSchemaAdapter
@@ -289,6 +291,18 @@ def test_ally_death_is_not_a_praise_event():
     assert DEVASTATING_STRIKE in event_ids(results)
 
 
+def test_missing_relation_on_the_death_frame_keeps_prior_enemy_status():
+    alive = enemy(max_health=40_000.0)
+    dead = replace(enemy(alive=False, max_health=40_000.0), relation=None)
+    results = run_frames(
+        frame(1, 100.0, {3002: 0}, alive),
+        frame(2, 101.0, {3002: 20_000}, alive),
+        frame(3, 102.0, {3002: 20_000}, dead),
+    )
+
+    assert event_ids(results) == [ENEMY_SUNK, DEVASTATING_STRIKE]
+
+
 def test_enemy_sunk_requires_recent_damage_from_us():
     results = run_frames(
         frame(1, 100.0, {}, enemy(max_health=40_000.0)),
@@ -344,6 +358,39 @@ def test_a_stale_hit_outside_the_window_does_not_become_enemy_sunk():
     )
 
     assert event_ids(results) == []
+
+
+def test_death_just_past_the_window_does_not_praise_with_stale_peak():
+    results = run_frames(
+        frame(1, 100.0, {3002: 0}, enemy(max_health=100_000.0)),
+        frame(2, 101.0, {3002: 4_000}, enemy(max_health=100_000.0)),
+        frame(3, 105.5, {3002: 4_000}, enemy(max_health=100_000.0)),
+        frame(
+            4,
+            106.1,
+            {3002: 4_000},
+            enemy(alive=False, max_health=100_000.0),
+        ),
+    )
+
+    assert event_ids(results) == []
+
+
+def test_a_qualifying_burst_still_flushes_when_death_misses_the_window():
+    results = run_frames(
+        frame(1, 100.0, {3002: 0}, enemy(max_health=100_000.0)),
+        frame(2, 101.0, {3002: 20_000}, enemy(max_health=100_000.0)),
+        frame(3, 105.5, {3002: 20_000}, enemy(max_health=100_000.0)),
+        frame(
+            4,
+            106.1,
+            {3002: 20_000},
+            enemy(alive=False, max_health=100_000.0),
+        ),
+    )
+
+    assert event_ids(results) == [HIGH_DAMAGE]
+    assert emitted(results, HIGH_DAMAGE).detail["target_sunk"] is True
 
 
 def test_a_small_sink_does_not_consume_another_target_high_damage():
@@ -471,7 +518,7 @@ def test_battle_switch_does_not_replay_existing_damage():
     assert event_ids(results) == []
 
 
-def test_multiple_resolved_victims_choose_devastating_and_consume_the_rest():
+def test_multiple_resolved_victims_keep_the_other_target_strike():
     alive_high = enemy(player_id=3002, max_health=100_000.0, name="High")
     alive_dev = enemy(player_id=3003, max_health=40_000.0, name="Dev")
     sunk_high = enemy(
@@ -486,6 +533,13 @@ def test_multiple_resolved_victims_choose_devastating_and_consume_the_rest():
         max_health=40_000.0,
         name="Dev",
     )
+    death = frame(
+        3,
+        102.0,
+        {3002: 20_000, 3003: 20_000},
+        sunk_high,
+        sunk_dev,
+    )
     results = run_frames(
         frame(1, 100.0, {3002: 0, 3003: 0}, alive_high, alive_dev),
         frame(
@@ -495,13 +549,7 @@ def test_multiple_resolved_victims_choose_devastating_and_consume_the_rest():
             alive_high,
             alive_dev,
         ),
-        frame(
-            3,
-            102.0,
-            {3002: 20_000, 3003: 20_000},
-            sunk_high,
-            sunk_dev,
-        ),
+        death,
         frame(
             4,
             107.0,
@@ -515,6 +563,18 @@ def test_multiple_resolved_victims_choose_devastating_and_consume_the_rest():
     assert emitted(results, DEVASTATING_STRIKE).detail["target_name"] == "Dev"
     assert emitted(results, ENEMY_SUNK).detail["target_name"] == "Dev"
     assert emitted(results, HIGH_DAMAGE).detail["target_name"] == "High"
+    assert "target_sunk" not in emitted(results, HIGH_DAMAGE).detail
+
+    cfg = WowsConfig()
+    decision = Arbiter(cfg).decide(
+        WowsTacticPolicy(cfg).expand(emitted(results), FactBuilder(cfg).build(death)),
+        death.received_at,
+    )
+    assert tuple(item.event_id for item in decision.candidates) == (
+        ENEMY_SUNK,
+        DEVASTATING_STRIKE,
+        HIGH_DAMAGE,
+    )
 
 
 def wire_payload(*, seq: int, damage: float | None, alive: bool) -> dict:

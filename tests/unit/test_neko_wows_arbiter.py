@@ -58,6 +58,7 @@ def candidate(
     severity=50,
     ttl=None,
     seq=1,
+    detail=None,
 ):
     spec = spec_for(event_id)
     lane_ttl = ttl if ttl is not None else CFG.ttl_for(spec.lane)
@@ -70,6 +71,7 @@ def candidate(
         seq=seq,
         battle_id="b-1",
         summary=spec.summary,
+        detail=dict(detail or {}),
         expires_at=at + lane_ttl,
     )
 
@@ -215,6 +217,31 @@ def test_high_damage_coalesces_with_devastating_without_a_sink():
     assert decision.attached == ()
     assert REASON_COALESCED in outcomes(decision, HIGH_DAMAGE)
     assert decision.queued == 0
+
+
+def test_progress_bursts_on_different_targets_do_not_coalesce():
+    decision = Arbiter(CFG).decide([
+        candidate(DEVASTATING_STRIKE, detail={"target_name": "Dev"}),
+        candidate(HIGH_DAMAGE, detail={"target_name": "High"}),
+    ], 100.0)
+
+    assert decision.chosen.event_id == DEVASTATING_STRIKE
+    assert decision.attached == ()
+    assert decision.queued == 1
+
+
+def test_enemy_sunk_attaches_another_target_progress_burst():
+    decision = Arbiter(CFG).decide([
+        candidate(ENEMY_SUNK, detail={"target_name": "Dev"}),
+        candidate(DEVASTATING_STRIKE, detail={"target_name": "Dev"}),
+        candidate(HIGH_DAMAGE, detail={"target_name": "High"}),
+    ], 100.0)
+
+    assert tuple(item.event_id for item in decision.candidates) == (
+        ENEMY_SUNK,
+        DEVASTATING_STRIKE,
+        HIGH_DAMAGE,
+    )
 
 
 def test_enemy_sunk_does_not_coalesce_away_a_damage_burst():

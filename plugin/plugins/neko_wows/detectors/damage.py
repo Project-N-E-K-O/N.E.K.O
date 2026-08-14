@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import math
 from typing import Sequence
 
@@ -125,6 +125,16 @@ class DamageBurstDetector(Detector):
             item = self._resolve_sunk_victim(victim_id, burst, now, window)
             if item is not None:
                 resolved.append(item)
+            elif burst is not None:
+                # Death landed after the window emptied; do not praise the sink,
+                # but still flush a qualifying peak so the burst is not eaten.
+                high = self._resolve_high(
+                    victim_id,
+                    burst,
+                    sunk=self._known_sunk_state(snapshot, victim_id),
+                )
+                if high is not None:
+                    resolved.append(high)
 
         for victim_id in disappeared:
             self._discard_untrusted(victim_id)
@@ -184,8 +194,9 @@ class DamageBurstDetector(Detector):
         *,
         sunk: bool | None,
         announce_sink: bool = False,
+        damage: float | None = None,
     ) -> _ResolvedBurst | None:
-        damage = burst.peak_damage
+        damage = burst.peak_damage if damage is None else damage
         maximum = self._target_max_health.get(victim_id)
         ratio = damage / maximum if maximum else None
         qualifies = damage >= self.cfg.high_damage_absolute_threshold
@@ -210,7 +221,8 @@ class DamageBurstDetector(Detector):
             spoken_name = ship.spoken_name
             if spoken_name:
                 self._target_names[player_id] = spoken_name
-            self._target_enemy[player_id] = ship.is_enemy
+            if ship.relation is not None:
+                self._target_enemy[player_id] = ship.is_enemy
             maximum = self._valid_total(ship.max_health)
             if maximum:
                 self._target_max_health[player_id] = maximum
@@ -250,15 +262,16 @@ class DamageBurstDetector(Detector):
         if burst is None:
             return None
         window_damage = self._window_damage(burst, now, window)
-        damage = window_damage or burst.peak_damage
+        if window_damage <= 0:
+            return None
         maximum = self._target_max_health.get(victim_id)
-        ratio = damage / maximum if maximum else None
+        ratio = window_damage / maximum if maximum else None
         announce_sink = self._is_enemy_id(victim_id)
         if ratio is not None and ratio >= self.cfg.devastating_strike_ratio_threshold:
             return _ResolvedBurst(
                 event_id=DEVASTATING_STRIKE,
                 victim_id=victim_id,
-                damage=damage,
+                damage=window_damage,
                 ratio=ratio,
                 sunk=True,
                 announce_sink=announce_sink,
@@ -268,6 +281,7 @@ class DamageBurstDetector(Detector):
             burst,
             sunk=True,
             announce_sink=announce_sink,
+            damage=window_damage,
         )
         if high is not None:
             return high
@@ -276,7 +290,7 @@ class DamageBurstDetector(Detector):
         return _ResolvedBurst(
             event_id=ENEMY_SUNK,
             victim_id=victim_id,
-            damage=damage,
+            damage=window_damage,
             ratio=ratio,
             sunk=True,
             announce_sink=True,
@@ -315,6 +329,10 @@ class DamageBurstDetector(Detector):
             strikes = [
                 item for item in strikes if item.victim_id != chosen_sink.victim_id
             ]
+            if strikes:
+                extra = min(strikes, key=self._resolved_rank)
+                events.append(self._to_event(replace(extra, sunk=None), facts))
+            return tuple(events)
         if strikes:
             extra = min(strikes, key=self._resolved_rank)
             events.append(self._to_event(extra, facts))

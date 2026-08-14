@@ -43,6 +43,21 @@ REASON_ATTACHED = "attached"
 ATTACH_PRIORITY_WINDOW = 15
 MAX_DECISION_EVENTS = 4
 
+
+def _coalesce_identity(candidate: AdviceCandidate) -> tuple[str, str] | None:
+    """Collapse siblings that share a category and, when present, a target.
+
+    Broadcast categories still group the panel switch, but two progress bursts
+    on different ships must both be allowed to reach attach.
+    """
+    key = candidate.coalesce_key
+    if not key:
+        return None
+    target = candidate.detail.get("target_name")
+    if isinstance(target, str) and target:
+        return (key, target)
+    return (key, "")
+
 # Dispatcher outcomes that consumed the candidate. Anything else leaves
 # `once_per_battle` unspent and the lane gap untouched.
 COMMITTED_REASONS = frozenset({"delivered", "dry_run"})
@@ -216,11 +231,19 @@ class Arbiter:
                 ))
                 continue
 
-            key = candidate.coalesce_key
-            if key:
-                superseded = [c for c in self._queue if c.coalesce_key == key]
+            identity = _coalesce_identity(candidate)
+            if identity:
+                superseded = [
+                    queued
+                    for queued in self._queue
+                    if _coalesce_identity(queued) == identity
+                ]
                 if superseded:
-                    self._queue = [c for c in self._queue if c.coalesce_key != key]
+                    self._queue = [
+                        queued
+                        for queued in self._queue
+                        if _coalesce_identity(queued) != identity
+                    ]
                     for old in superseded:
                         steps.append(DecisionStep(
                             old.event_id, old.lane, REASON_COALESCED,
@@ -258,8 +281,9 @@ class Arbiter:
         indexed = tuple(enumerate(candidates))
         groups: dict[str, list[tuple[int, AdviceCandidate]]] = {}
         for index, candidate in indexed:
-            if candidate.coalesce_key:
-                groups.setdefault(candidate.coalesce_key, []).append(
+            identity = _coalesce_identity(candidate)
+            if identity:
+                groups.setdefault(identity, []).append(
                     (index, candidate))
 
         discarded: set[int] = set()
