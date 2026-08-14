@@ -258,3 +258,4 @@ tests/testbench/docs/dev_note.txt
 /plugin/plugins/*/plugin.toml.lock
 /.codex-live-screen.png
 plugin/plugins/data/user_profile_cache.json
+plugin/plugins/sts2_autoplay
