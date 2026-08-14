@@ -859,10 +859,10 @@ def test_relative_sector_is_absent_without_a_heading():
 
 
 def test_enemy_closing_quotes_bow_relative_sector_not_compass_reciprocal():
-    """Heading south, enemy on the right bow: spoken sector is 右前方.
+    """Heading south, enemy on the right bow: spoken sector is right-front.
 
     Absolute bearing_deg is then ~225 (SW). Models that read that number as
-    relative-to-bow call it 左后 — the live complaint this field exists to stop.
+    relative-to-bow call it rear-left — the live complaint this field exists to stop.
     """
     registry = DetectorRegistry(build_threat_detectors(CFG))
     results = feed(registry, [
@@ -881,8 +881,10 @@ def test_enemy_closing_quotes_bow_relative_sector_not_compass_reciprocal():
 
 
 def test_multi_direction_pairs_compass_bearing_with_bow_relative_sector():
-    """Heading south: compass SW is 右前方, SE is 左前方. Parallel arrays
-    named bearings_deg / relative_sectors would miss the reading-rule keys.
+    """Heading south: compass SW is right-front, SE is left-front.
+
+    Parallel arrays named bearings_deg / relative_sectors would miss the
+    reading-rule keys.
     """
     registry = DetectorRegistry(build_threat_detectors(CFG))
     south_west = enemy(ui_id=2, x=-5000.0, z=-5000.0)
@@ -953,9 +955,9 @@ def test_broadside_exposure_requires_a_heading():
 
 
 def test_own_broadside_quotes_bow_relative_sector_as_bearing_deg():
-    """Heading south, enemy due west: compass 270 reads as 正左 if 0 were the
-    bow. Spoken sector is 正右. The compass key must be bearing_deg so the
-    reading rules apply.
+    """Heading south, enemy due west: compass 270 reads as due-left if 0 were
+    the bow. Spoken sector is due-right. The compass key must be bearing_deg
+    so the reading rules apply.
     """
     registry = DetectorRegistry(build_geometry_detectors(CFG))
     west = enemy(ui_id=2, x=-5000.0, z=0.0)
