@@ -953,11 +953,13 @@
     "speaker": {
         "volumeLabel": "スピーカー音量",
         "volumeHint": "AI音声の再生音量を調整",
-        "title": "スピーカーを選択",
-        "defaultDevice": "システムのデフォルトスピーカー",
-        "deviceLabel": "スピーカー {{index}}",
+        "title": "再生デバイスを選択",
+        "defaultDevice": "システムのデフォルト再生デバイス",
+        "deviceLabel": "再生デバイス {{index}}",
         "loadFailed": "スピーカーリストの取得に失敗しました",
         "noDevices": "スピーカーデバイスが検出されませんでした",
+        "switchFailed": "再生デバイスの切り替えに失敗しました",
+        "unavailableFallback": "選択したデバイスを利用できないため、システムのデフォルトを使用中",
         "spatialAudioLabel": "空間オーディオ",
         "spatialAudioHint": "キャラクターウィンドウのメインモニターに対する位置からステレオ定位と距離減衰を適用"
     },

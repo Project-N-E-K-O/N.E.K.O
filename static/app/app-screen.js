@@ -1216,9 +1216,14 @@
             // 初始化音频播放上下文
             await ensureModelVisibleForScreenSharing();
             if (discardCancelledScreenSharingStart(attempt)) return;
-            if (!S.audioPlayerContext) {
+            if (typeof window.ensureAudioPlayerContext === 'function') {
+                await window.ensureAudioPlayerContext();
+            } else if (!S.audioPlayerContext) {
+                // Backward-compatible fallback for isolated route/test harnesses.
                 S.audioPlayerContext = new (window.AudioContext || window.webkitAudioContext)();
-                window.syncAudioGlobals();
+                if (typeof window.syncAudioGlobals === 'function') {
+                    window.syncAudioGlobals();
+                }
             }
 
             // 如果上下文被暂停，则恢复它

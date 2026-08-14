@@ -953,11 +953,13 @@
     "speaker": {
         "volumeLabel": "Volume do alto-falante",
         "volumeHint": "Ajustar o volume de reprodução de voz AI",
-        "title": "Selecione o alto-falante",
-        "defaultDevice": "Alto-falante padrão do sistema",
-        "deviceLabel": "Palestrante {{index}}",
+        "title": "Selecionar dispositivo de reprodução",
+        "defaultDevice": "Dispositivo de reprodução padrão do sistema",
+        "deviceLabel": "Dispositivo de reprodução {{index}}",
         "loadFailed": "Falha ao obter lista de palestrantes",
         "noDevices": "Nenhum dispositivo de alto-falante detectado",
+        "switchFailed": "Falha ao trocar o dispositivo de reprodução",
+        "unavailableFallback": "O dispositivo selecionado está indisponível; usando o padrão do sistema",
         "spatialAudioLabel": "Áudio espacial",
         "spatialAudioHint": "Panorâmica estéreo e atenuação por distância conforme a posição da janela do personagem em relação ao monitor principal"
     },

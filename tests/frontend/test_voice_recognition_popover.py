@@ -18,6 +18,7 @@ VOICE_POPOVER_GLOBAL_LISTENERS = (
     "window:neko:voice-session-started",
     "window:neko:voice-settings-pending-changed",
     "window:neko:core-api-capability-changed",
+    "window:neko:speaker-device-changed",
 )
 
 
@@ -103,6 +104,10 @@ def _install_voice_popover_harness(
             enumerateDevices() {
                 return Promise.resolve([
                     { kind: 'audioinput', deviceId: 'test-mic' },
+                    { kind: 'audiooutput', deviceId: 'default', label: 'Default pseudo device' },
+                    { kind: 'audiooutput', deviceId: 'communications', label: 'Communications pseudo device' },
+                    { kind: 'audiooutput', deviceId: 'speaker-a', label: 'Speaker A' },
+                    { kind: 'audiooutput', deviceId: 'speaker-b', label: 'Speaker B' },
                 ]);
             },
             addEventListener() {},
@@ -112,6 +117,9 @@ def _install_voice_popover_harness(
     const S = {
         speakerVolume: 100,
         speakerGainNode: null,
+        selectedSpeakerId: 'default',
+        effectiveSpeakerId: 'default',
+        selectedSpeakerAvailable: true,
         spatialAudioEnabled: true,
         independentAsrEnabled: true,
         coreApiSupportsIndependentAsr: true,
@@ -130,6 +138,7 @@ def _install_voice_popover_harness(
     };
     const C = {
         DEFAULT_SPEAKER_VOLUME: 100,
+        DEFAULT_SPEAKER_DEVICE_ID: 'default',
         MAX_SPEAKER_VOLUME: 200,
         SPEAKER_VOLUME_KNEE_RATIO: 0.75,
         MIN_MIC_GAIN_DB: -5,
@@ -148,6 +157,23 @@ def _install_voice_popover_harness(
     };
     window.appSettings = { saveSettings: () => { window.__saveCalls += 1; } };
     window.__saveCalls = 0;
+    window.__speakerSelections = [];
+    window.selectSpeakerDevice = async (deviceId) => {
+        window.__speakerSelections.push(deviceId);
+        S.selectedSpeakerId = deviceId;
+        S.effectiveSpeakerId = deviceId;
+        S.selectedSpeakerAvailable = true;
+        return true;
+    };
+    window.reconcileSelectedSpeakerDevices = async (devices) => {
+        const preferred = S.selectedSpeakerId;
+        S.selectedSpeakerAvailable = preferred === 'default'
+            || devices.some((device) => (
+                device.kind === 'audiooutput' && device.deviceId === preferred
+            ));
+        S.effectiveSpeakerId = S.selectedSpeakerAvailable ? preferred : 'default';
+        return S.selectedSpeakerAvailable;
+    };
     window.t = (key) => key;
 
     function formatGainDisplay(value) { return String(value); }
@@ -571,6 +597,7 @@ def test_voice_device_and_screen_actions_share_one_owned_subwindow(
 
             const voice = await openAndSnapshot('voice-recognition');
             const device = await openAndSnapshot('device');
+            const speaker = await openAndSnapshot('speaker-device');
             const screen = await openAndSnapshot('screen');
             const closeButton = test.ownedPanels()[0].querySelector(
                 'button[aria-label="Close"]'
@@ -579,6 +606,7 @@ def test_voice_device_and_screen_actions_share_one_owned_subwindow(
             return {
                 voice,
                 device,
+                speaker,
                 screen,
                 panelsAfterClose: test.ownedPanels().length,
             };
@@ -597,6 +625,12 @@ def test_voice_device_and_screen_actions_share_one_owned_subwindow(
         "owner": "live2d-popup-mic",
         "sidePanel": True,
     }
+    assert result["speaker"] == {
+        "count": 1,
+        "actionKey": "speaker-device",
+        "owner": "live2d-popup-mic",
+        "sidePanel": True,
+    }
     assert result["screen"] == {
         "count": 1,
         "actionKey": "screen",
@@ -604,6 +638,75 @@ def test_voice_device_and_screen_actions_share_one_owned_subwindow(
         "sidePanel": True,
     }
     assert result["panelsAfterClose"] == 0
+
+
+@pytest.mark.frontend
+def test_playback_device_action_position_and_pseudo_device_filtering(
+    page: Page,
+) -> None:
+    _install_voice_popover_harness(page, deferred_permission=False)
+
+    result = page.evaluate(
+        """async () => {
+            const test = window.__voicePopoverTest;
+            await window.renderFloatingMicList(test.popup());
+            const column = test.popup().firstElementChild;
+            const order = Array.from(column.children).map((node) => (
+                node.dataset.nekoMicMainActionRow
+                || (node.classList.contains('speaker-volume-container')
+                    ? 'speaker-volume'
+                    : null)
+            )).filter(Boolean);
+
+            test.action('speaker-device').click();
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const options = Array.from(
+                test.panel('speaker-device').querySelectorAll('.speaker-option')
+            ).map((option) => ({
+                deviceId: option.dataset.deviceId,
+                text: option.textContent,
+                selected: option.classList.contains('selected'),
+                pressed: option.getAttribute('aria-pressed'),
+            }));
+            const speakerB = test.panel('speaker-device').querySelector(
+                '.speaker-option[data-device-id="speaker-b"]'
+            );
+            speakerB.click();
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            return {
+                order,
+                options,
+                selections: window.__speakerSelections.slice(),
+                selectedSpeakerId: test.state.selectedSpeakerId,
+                summary: test.action('speaker-device').querySelector(
+                    '.neko-mic-action-sub-label'
+                ).textContent,
+                summaryLive: test.action('speaker-device').querySelector(
+                    '.neko-mic-action-sub-label'
+                ).getAttribute('aria-live'),
+            };
+        }"""
+    )
+
+    assert result["order"][:5] == [
+        "screen",
+        "device",
+        "voice-recognition",
+        "speaker-device",
+        "speaker-volume",
+    ]
+    assert [option["deviceId"] for option in result["options"]] == [
+        "default",
+        "speaker-a",
+        "speaker-b",
+    ]
+    assert result["options"][0]["selected"] is True
+    assert result["options"][0]["pressed"] == "true"
+    assert all(option["pressed"] == "false" for option in result["options"][1:])
+    assert result["selections"] == ["speaker-b"]
+    assert result["selectedSpeakerId"] == "speaker-b"
+    assert result["summary"] == "Speaker B"
+    assert result["summaryLive"] == "polite"
 
 
 @pytest.mark.frontend
