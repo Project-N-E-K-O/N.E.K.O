@@ -373,7 +373,7 @@ def _facts_with_spotting_noise():
 
 
 def test_lifecycle_callouts_do_not_carry_frame_spotting_context():
-    """Start/end must not feed 当前战况 numbers the model can recap instead of the event."""
+    """Start/end must not feed current-situation numbers the model can recap instead of the event."""
     facts = _facts_with_spotting_noise()
     for event_id in (BATTLE_STARTED, BATTLE_ENDED, POST_BATTLE_SUMMARY):
         event = GameEvent(
