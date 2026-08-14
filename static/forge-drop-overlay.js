@@ -658,7 +658,7 @@
       expiryRefreshTimer = null;
       creditStateRevision += 1;
       // 到期只说明最早的一张券失效，不能据此推断全部券都已清空。
-      // 请求 Electron 主进程回放 / 重读云端权威状态；本体不访问本地券账本。
+      // 请求 Electron 主进程重新读取云端权威状态；本体不访问本地券账本。
       requestCreditStateRefresh();
     }, delay);
   }
@@ -678,12 +678,8 @@
   }
 
   function requestCreditStateRefresh() {
-    try {
-      if (window.nekoSocial && typeof window.nekoSocial.replaySnapshots === 'function') {
-        window.nekoSocial.replaySnapshots();
-        return;
-      }
-    } catch (_) {}
+    // 到期 / 晚挂载必须走 PC 的云端权威刷新（CREDIT_STATE_REFRESH）。
+    // 不要回放 SSE 缓存快照：那只会重播过期的 lastForgeCredit。
     try {
       window.dispatchEvent(new window.CustomEvent('neko-forge-credit-state-refresh'));
     } catch (_) {}

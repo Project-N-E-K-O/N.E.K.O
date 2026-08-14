@@ -129,12 +129,6 @@
     });
   }
 
-  window.addEventListener('neko-forge-credit-state-refresh', () => {
-    if (typeof window.nekoSocial.replaySnapshots === 'function') {
-      try { window.nekoSocial.replaySnapshots(); } catch (_) {}
-    }
-  });
-
   // social 按钮的 id 在插入 DOM 前就已设好，新挂载时用缓存补画
   const buttonObserver = new MutationObserver((mutations) => {
     for (const m of mutations) {
