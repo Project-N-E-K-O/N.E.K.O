@@ -109,6 +109,25 @@ def test_known_legacy_message_type_keeps_defaults_when_v2_fields_are_absent(
     assert payload["ai_behavior"] == "blind"
 
 
+def test_legacy_music_allowlist_preserves_exact_http_urls() -> None:
+    url = "http://127.0.0.1:48916/plugin/music_pusher/ui/uploads/song.mp3"
+
+    with pytest.warns(DeprecationWarning):
+        payload = translate_push_message(
+            message_type="music_allowlist_add",
+            metadata={"domains": ["127.0.0.1"], "http_urls": [url]},
+        )
+
+    assert payload["parts"] == [
+        {
+            "type": "ui_action",
+            "action": "media_allowlist_add",
+            "domains": ["127.0.0.1"],
+            "http_urls": [url],
+        }
+    ]
+
+
 @pytest.mark.parametrize(
     ("message_type", "expected_visibility"),
     [

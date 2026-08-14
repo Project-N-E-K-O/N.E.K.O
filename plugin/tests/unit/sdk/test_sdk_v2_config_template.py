@@ -60,6 +60,19 @@ class _CtxFull:
         self.updated = updates
         return {"config": updates}
 
+    async def replace_own_config(self, config: dict[str, object], timeout: float = 10.0):
+        self.updated = config
+        self.base_cfg = dict(config)
+        return {"config": self.base_cfg}
+
+
+class _RecordingLogger:
+    def __init__(self) -> None:
+        self.warning_messages: list[str] = []
+
+    def warning(self, message: str, *args: object, **kwargs: object) -> None:
+        self.warning_messages.append(message)
+
 
 class _CtxNoProfileApis:
     async def get_own_config(self, timeout: float = 5.0):
@@ -118,14 +131,14 @@ async def test_config_template_main_view_write_semantics() -> None:
     dumped = await cfg.dump()
     assert dumped["feature"]["enabled"] is False
     await cfg.set("feature.flag", True)
+    assert ctx.updated == {"feature": {"flag": True}}
     updated = await cfg.update({"feature": {"mode": "fast"}})
+    assert ctx.updated == {"feature": {"mode": "fast"}}
     assert updated["feature"]["mode"] == "fast"
 
     fallback = core_config.PluginConfig(_CtxNoProfileApis())
-    with pytest.raises((ValidationError, TransportError)):
-        await fallback.set("feature.flag", True)
-    with pytest.raises((ValidationError, TransportError)):
-        await fallback.update({"x": 1})
+    await fallback.set("feature.flag", True)
+    assert await fallback.update({"x": 1}) == {"x": 1}
 
     no_active_ctx = _CtxFull()
     no_active_ctx.profiles_state["config_profiles"]["active"] = None
@@ -133,7 +146,68 @@ async def test_config_template_main_view_write_semantics() -> None:
     assert (await no_active.profile_ensure_active("runtime", {"feature": {"enabled": True}})) == "runtime"
     assert (await no_active.profile_active()) == "runtime"
     await no_active.set("x", 1)
-    await no_active.update({"x": 1})
+    assert no_active_ctx.updated == {"x": 1}
+
+
+@pytest.mark.asyncio
+async def test_config_set_empty_path_replaces_runtime_config_root() -> None:
+    ctx = _CtxFull()
+    cfg = core_config.PluginConfig(ctx)
+
+    await cfg.set("", {"replacement": {"enabled": True}})
+
+    assert ctx.base_cfg == {"replacement": {"enabled": True}}
+
+
+@pytest.mark.asyncio
+async def test_config_set_replaces_existing_table_value() -> None:
+    ctx = _CtxFull()
+    cfg = core_config.PluginConfig(ctx)
+
+    await cfg.set("feature", {"enabled": False})
+
+    assert ctx.updated == {
+        "feature": {
+            "__replace__": True,
+            "enabled": False,
+        }
+    }
+
+
+@pytest.mark.asyncio
+async def test_config_runtime_writes_warn_for_plugin_metadata() -> None:
+    class _RecordingCtx(_CtxFull):
+        def __init__(self) -> None:
+            super().__init__()
+            self.write_calls: list[tuple[str, dict[str, object]]] = []
+
+        async def update_own_config(self, updates: dict[str, object], timeout: float = 10.0):
+            self.write_calls.append(("update", updates))
+            return await super().update_own_config(updates, timeout=timeout)
+
+        async def replace_own_config(self, config: dict[str, object], timeout: float = 10.0):
+            self.write_calls.append(("replace", config))
+            return await super().replace_own_config(config, timeout=timeout)
+
+    ctx = _RecordingCtx()
+    logger = _RecordingLogger()
+    ctx.logger = logger
+    cfg = core_config.PluginConfig(ctx)
+
+    await cfg.set("plugin.version", "2.0.0")
+    await cfg.update({"plugin": {"name": "renamed"}})
+    await cfg.set("", {"plugin": {"version": "3.0.0"}})
+    await cfg.update({"feature": {"enabled": True}})
+
+    assert logger.warning_messages == [
+        "Runtime config writes under [plugin] may be ignored because plugin.toml manifest metadata is authoritative."
+    ] * 3
+    assert ctx.write_calls == [
+        ("update", {"plugin": {"version": "2.0.0"}}),
+        ("update", {"plugin": {"name": "renamed"}}),
+        ("replace", {"plugin": {"version": "3.0.0"}}),
+        ("update", {"feature": {"enabled": True}}),
+    ]
 
 
 @pytest.mark.asyncio
@@ -310,18 +384,15 @@ async def test_config_template_branch_edges() -> None:
             self.profiles_state["config_profiles"]["active"] = None
 
     no_active = core_config.PluginConfig(_CtxNoActive())
-    with pytest.raises((ValidationError, TransportError)):
-        await no_active.set("x", 1)
-    with pytest.raises((ValidationError, TransportError)):
-        await no_active.update({"x": 1})
+    await no_active.set("x", 1)
+    assert await no_active.update({"x": 1}) == {"x": 1}
 
 
 @pytest.mark.asyncio
-async def test_config_template_set_profile_write_error_branch() -> None:
+async def test_config_template_set_does_not_use_profile_write_api() -> None:
     class _CtxSetFail(_CtxFull):
         async def upsert_own_profile_config(self, profile_name: str, config: dict[str, object], *, make_active: bool = False, timeout: float = 10.0):
             return {"data": {"config": "bad"}}
 
     cfg = core_config.PluginConfig(_CtxSetFail())
-    with pytest.raises((ValidationError, TransportError)):
-        await cfg.set("feature.flag", True)
+    await cfg.set("feature.flag", True)

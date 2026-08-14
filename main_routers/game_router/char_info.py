@@ -41,6 +41,35 @@ def _extract_request_language_full(data: Any) -> str | None:
         return None
 
 
+def _extract_request_render_language_full(data: Any) -> str | None:
+    """Return the request-only template locale without mutating session state."""
+    if not isinstance(data, dict):
+        return None
+    raw = data.get("render_language")
+    if not raw or not is_supported_language_code(raw):
+        return None
+    try:
+        return normalize_language_code(str(raw), format="full")
+    except Exception:
+        return None
+
+
+def _apply_request_render_language(data: Any, manager: Any) -> str | None:
+    """Apply a request-only renderer locale without promoting it to durable state."""
+    render_language = _extract_request_render_language_full(data)
+    if not render_language or manager is None:
+        return None
+    try:
+        setter = getattr(manager, "set_render_language", None)
+        if not callable(setter):
+            return None
+        setter(render_language)
+    except Exception:
+        logger.debug("🎮 apply request render language failed", exc_info=True)
+        return None
+    return render_language
+
+
 def _absorb_request_language(data: Any, lanlan_name: str | None) -> str | None:
     """Extract the frontend i18n ground truth from the request body, writing it back to ``mgr.user_language`` along the way.
 
@@ -94,15 +123,9 @@ def _resolve_game_prompt_language(
 ) -> str:
     """Resolve the user's current language for game-route LLM prompts.
 
-    Priority (same shape as ``main_routers/system_router._resolve_proactive_locale``):
-      1. ``i18n_language`` / ``language`` / ``lang`` in ``data`` (request body)
-         — explicitly sent by the frontend, highest priority; the value is also
-         written back to ``mgr.user_language`` so every downstream
-         ``_resolve_game_prompt_language`` in this request without access to
-         ``data`` hits it too.
-      2. ``mgr.user_language`` — the session ground truth synced by the websocket
-         greeting_check.
-      3. ``get_global_language_full()`` — process-level cache, final fallback.
+    Priority (same shape as the proactive-chat resolver): explicit request,
+    explicit manager preference, request render fallback, non-explicit manager
+    fallback, then the process-level global language.
 
     Layer 1 covers a hole beyond PR #1150: in a Steam=zh / system=en environment,
     ``mgr.user_language`` gets overwritten by the (wrong, 'en') global cache at
@@ -129,19 +152,35 @@ def _resolve_game_prompt_locale(
     if request_locale:
         _absorb_request_language(data, lanlan_name)
         return request_locale
+
+    manager_locale = None
+    manager_language_is_explicit = False
     try:
         name = str(lanlan_name or "").strip()
         session_manager = get_session_manager()
         manager = session_manager.get(name) if name and hasattr(session_manager, "get") else None
         language = getattr(manager, "user_language", None)
-        if language:
-            return normalize_language_code(str(language), format="full") or "en"
+        manager_language_is_explicit = bool(
+            getattr(manager, "_user_language_explicit", False)
+        )
+        if language and is_supported_language_code(language):
+            manager_locale = normalize_language_code(str(language), format="full")
     except Exception:
         logger.debug(
             "🎮 赛后归档语言解析失败，使用默认 prompt 语言: lanlan=%s",
             lanlan_name,
             exc_info=True,
         )
+
+    if manager_language_is_explicit and manager_locale:
+        return manager_locale
+
+    render_locale = _extract_request_render_language_full(data)
+    if render_locale:
+        return render_locale
+
+    if manager_locale:
+        return manager_locale
 
     try:
         return normalize_language_code(

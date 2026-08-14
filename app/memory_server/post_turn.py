@@ -43,7 +43,12 @@ def _with_language_context(func):
     """Run one post-turn operation with its persisted task-local locale."""
 
     @wraps(func)
-    async def wrapped(*args, language: str | None = None, **kwargs):
+    async def wrapped(
+        *args,
+        language: str | None = None,
+        render_language: str | None = None,
+        **kwargs,
+    ):
         from utils.language_utils import is_supported_language_code, language_context
 
         if is_supported_language_code(language):
@@ -59,18 +64,19 @@ def _with_language_context(func):
             with language_context(effective_language):
                 return await func(*args, language=language, **kwargs)
 
-        # Missing language is valid for legacy outbox entries and callers that
-        # did not declare a UI locale. Keep the payload value missing so the
-        # signal state does not persist a guess, while prompt-producing work
-        # restores the character's latest explicit session locale.
+        # A render locale is request-local replay context, not durable evidence.
+        # Keep ``language`` missing so no signal-side locale write is attempted;
+        # a newer durable character preference still wins over the recorded
+        # fallback when replay runs after a restart.
         lanlan_name = args[1]
-        return await locale_state.run_with_character_prompt_locale(
+        selected = await asyncio.to_thread(
+            locale_state.get_character_prompt_locale,
             lanlan_name,
-            func,
-            *args,
-            language=language,
-            **kwargs,
         )
+        if not is_supported_language_code(selected):
+            selected = render_language
+        with language_context(selected):
+            return await func(*args, language=language, **kwargs)
 
     return wrapped
 
@@ -80,6 +86,7 @@ async def _spawn_outbox_post_turn_signals(
     messages: list,
     *,
     language: str | None = None,
+    render_language: str | None = None,
     locale_admission_order: int | None = None,
 ) -> asyncio.Task:
     """Register the per-turn signals background task in the outbox and spawn it.
@@ -95,7 +102,10 @@ async def _spawn_outbox_post_turn_signals(
         reserve_character_prompt_locale_order,
     )
     from utils.cloudsave_runtime import MaintenanceModeError
-    from utils.language_utils import is_supported_language_code
+    from utils.language_utils import (
+        is_supported_language_code,
+        normalize_language_code,
+    )
     from utils.llm_client import messages_to_dict
 
     has_explicit_language = is_supported_language_code(language)
@@ -146,6 +156,14 @@ async def _spawn_outbox_post_turn_signals(
         # whereas omitting the key lets replay re-resolve against the then-current
         # process language (the pre-outbox behaviour).
         payload['language'] = language
+    elif is_supported_language_code(render_language):
+        # Unlike the process-global fallback, this is explicit request context
+        # for the queued turn. Persist it separately so restart replay can render
+        # the same work without declaring or writing a character preference.
+        payload['render_language'] = normalize_language_code(
+            render_language,
+            format='full',
+        )
     try:
         op_id = await runtime.outbox.aappend_pending(lanlan_name, OP_POST_TURN_SIGNALS, payload)
     except Exception as e:
@@ -167,6 +185,7 @@ async def _spawn_outbox_post_turn_signals(
                 messages,
                 lanlan_name,
                 language=language,
+                render_language=payload.get('render_language'),
                 locale_order=locale_order,
                 locale_only=not messages,
             )
@@ -464,6 +483,13 @@ async def _outbox_post_turn_signals_handler(lanlan_name: str, payload: dict) -> 
     raw = payload.get('messages') or []
     messages = messages_from_dict(raw) if raw else []
     language = payload.get('language')
+    render_language = (
+        payload.get('render_language')
+        if not is_supported_language_code(language)
+        else None
+    )
+    if not is_supported_language_code(render_language):
+        render_language = None
     if not messages and not is_supported_language_code(language):
         return
     if payload.get('locale_order_deferred'):
@@ -483,6 +509,8 @@ async def _outbox_post_turn_signals_handler(lanlan_name: str, payload: dict) -> 
         'language': language,
         'locale_order': payload.get('locale_order'),
     }
+    if render_language is not None:
+        kwargs['render_language'] = render_language
     if not messages:
         kwargs['locale_only'] = True
     await _run_post_turn_signals(messages, lanlan_name, **kwargs)

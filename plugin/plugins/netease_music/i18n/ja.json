@@ -1,0 +1,17 @@
+{
+  "plugin.name": "NetEase Cloud Music 匿名リクエスト",
+  "plugin.description": "NetEase Cloud Music を匿名で検索して先頭結果を再生し、不確かな場合はやさしく案内します",
+  "plugin.short_description": "NetEase Cloud Music の完全一致曲を匿名検索して再生",
+  "entry.play.name": "NetEase Cloud Music の曲を再生",
+  "entry.play.description": "ユーザーが NetEase Cloud Music の特定の曲を明確に再生またはリクエストした場合だけ呼び出します。query は「曲名 アーティスト」に整え、ライブ版やカバー版などの指定を残してください。歌詞、曲の情報、一般的なおすすめ、プレイリスト、一時停止、停止、曲送り、次の曲には使用しません。",
+  "entry.play.param.query": "曲の検索語。できれば「曲名 アーティスト」の形式で、最大 100 文字",
+  "messages.no_results": "一致する NetEase Cloud Music の曲が見つかりませんでした。より具体的な曲名やアーティスト名でお試しください。",
+  "messages.unavailable": "この曲には匿名で再生できる公開音源がありません。ログインまたは会員権限が必要な可能性があります。",
+  "messages.submitted": "再生アクションを送信しました。",
+  "messages.fallback": "お探しのバージョンか確信がないので、ひとまず検索結果の先頭を再生しますね。",
+  "errors.missing_target": "現在の再生セッションを特定できなかったため、リクエストをキャンセルしました。",
+  "errors.search_failed": "NetEase Cloud Music の検索を一時的に利用できません。後でもう一度お試しください。",
+  "errors.media_failed": "NetEase Cloud Music の音源を検証できなかったため、再生は送信されませんでした。",
+  "errors.delivery_failed": "再生アクションを送信できず、再生は開始されませんでした。",
+  "errors.message_delivery_failed": "結果メッセージを送信できませんでした。"
+}

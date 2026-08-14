@@ -748,6 +748,63 @@
             margin-bottom: 0;
             padding: 0;
         }
+        .qr-login-hint {
+            margin-bottom: 10px;
+            color: var(--muted);
+            font-size: 14px;
+        }
+        .qr-open-btn {
+            width: 100%;
+            margin-top: 10px;
+            padding: 12px;
+            border: 2px dashed var(--qr-platform-border, var(--accent));
+            border-radius: 10px;
+            background: var(--qr-platform-color, var(--accent));
+            color: #f8fafc;
+            font: 600 14px/1.2 var(--font-ui);
+            cursor: pointer;
+            transition: transform 0.2s ease, background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+        }
+        .qr-open-btn:hover {
+            transform: translateY(-1px);
+            background: color-mix(in oklch, var(--qr-platform-color, var(--accent)) 80%, black);
+            box-shadow: 0 8px 18px color-mix(in oklch, var(--qr-platform-color, var(--accent)) 28%, transparent);
+        }
+        .qr-open-btn:active { transform: translateY(0); }
+        .qr-open-btn:focus-visible,
+        .qr-session-refresh:focus-visible,
+        .qr-session-retry:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+        .qr-session {
+            position: relative;
+            padding: 15px;
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            background: var(--surface-raised);
+            color: var(--fg);
+            text-align: center;
+            box-shadow: inset 0 1px color-mix(in oklch, white 26%, transparent);
+        }
+        .qr-session-title { margin: 5px 0 12px; color: var(--fg); font-size: 14px; font-weight: 600; }
+        .qr-session-image { width: 200px; height: 200px; border-radius: 8px; box-shadow: 0 2px 8px rgb(0 0 0 / 0.1); }
+        .qr-session-status { margin-top: 12px; color: var(--muted); font-size: 13px; }
+        .qr-session-validity { margin-top: 10px; color: color-mix(in oklch, var(--muted) 76%, transparent); font-size: 12px; }
+        .qr-session-refresh,
+        .qr-session-retry {
+            margin-top: 12px;
+            padding: 8px 16px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: var(--surface);
+            color: var(--fg);
+            font: 600 13px/1 var(--font-ui);
+            cursor: pointer;
+            transition: background 0.18s ease, border-color 0.18s ease, transform 0.18s ease;
+        }
+        .qr-session-refresh:hover { border-color: var(--accent); background: var(--accent-soft); }
+        .qr-session-retry { display: block; margin-right: auto; margin-left: auto; border-color: oklch(0.62 0.19 28 / 0.72); color: oklch(0.55 0.19 28); }
+        .qr-session-retry:hover { background: oklch(0.94 0.06 28 / 0.65); }
+        .qr-session-error { padding: 20px; color: oklch(0.59 0.2 28); text-align: center; }
+        .qr-session-loading { padding: 20px; color: var(--muted); text-align: center; }
 
         .encrypt-row {
             display: flex;
@@ -1068,11 +1125,41 @@
             animation: pulse 2s ease-in-out infinite;
         }
         .status-tag.inactive { background: var(--border); color: var(--muted); }
-        .sta…84 tokens truncated…
-            cursor: pointer;
-            transition: background 0.15s;
+        .del-btn {
+            border: 0;
+            background: transparent;
+            color: oklch(0.55 0.19 28);
         }
         .del-btn:hover { background: oklch(0.92 0.06 30); }
+        /* Compact danger action: visually distinct without competing with the status badge. */
+        .del-btn {
+            display: inline-grid;
+            width: 34px;
+            height: 34px;
+            padding: 0;
+            place-items: center;
+            border: 1px solid oklch(0.72 0.1 28 / 0.32);
+            border-radius: 10px;
+            background: oklch(0.97 0.025 28 / 0.72);
+            color: oklch(0.53 0.18 28);
+            box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.65);
+            cursor: pointer;
+            transition: transform 0.16s ease, background 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease, color 0.16s ease;
+        }
+        .del-btn svg { width: 17px; height: 17px; transition: transform 0.16s ease; }
+        .del-btn:hover {
+            transform: translateY(-1px);
+            border-color: oklch(0.61 0.18 28 / 0.64);
+            background: oklch(0.93 0.065 28);
+            color: oklch(0.45 0.19 28);
+            box-shadow: 0 5px 12px oklch(0.52 0.18 28 / 0.16);
+        }
+        .del-btn:hover svg { transform: scale(1.08); }
+        .del-btn:active { transform: translateY(0) scale(0.96); box-shadow: none; }
+        .del-btn:focus-visible {
+            outline: 2px solid var(--accent);
+            outline-offset: 2px;
+        }
 
         /* ==============================
            QR COLLAPSE BUTTON
@@ -1206,10 +1293,29 @@
         [data-theme="dark"] .tab-btn:hover { border-color: var(--accent); background: var(--accent-soft); }
         [data-theme="dark"] .qr-collapse-btn { background: var(--accent-soft); color: var(--accent); }
         [data-theme="dark"] .qr-collapse-btn:hover { background: oklch(0.3 0.04 230); }
+        [data-theme="dark"] .qr-open-btn {
+            background: color-mix(in oklch, var(--qr-platform-color, var(--accent)) 66%, var(--surface-raised));
+            border-color: color-mix(in oklch, var(--qr-platform-border, var(--accent)) 72%, var(--border));
+            box-shadow: inset 0 1px rgb(255 255 255 / 0.08);
+        }
+        [data-theme="dark"] .qr-open-btn:hover { background: color-mix(in oklch, var(--qr-platform-color, var(--accent)) 78%, var(--surface-raised)); }
+        [data-theme="dark"] .qr-session { box-shadow: inset 0 1px rgb(255 255 255 / 0.05); }
+        [data-theme="dark"] .qr-session-retry { color: oklch(0.8 0.14 28); }
+        [data-theme="dark"] .qr-session-retry:hover { background: oklch(0.31 0.07 28); }
         [data-theme="dark"] .status-tag.active { background: oklch(0.28 0.08 150); color: var(--success); }
         [data-theme="dark"] .status-tag.inactive { background: var(--border); color: var(--muted); }
-        [data-theme="dark"] .del-btn { color: oklch(0.65 0.14 30); }
-        [data-theme="dark"] .del-btn:hover { background: oklch(0.25 0.04 30); }
+        [data-theme="dark"] .del-btn {
+            border-color: oklch(0.58 0.13 28 / 0.34);
+            background: oklch(0.28 0.045 28 / 0.72);
+            color: oklch(0.76 0.14 28);
+            box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.05);
+        }
+        [data-theme="dark"] .del-btn:hover {
+            border-color: oklch(0.69 0.17 28 / 0.7);
+            background: oklch(0.36 0.075 28);
+            color: oklch(0.91 0.1 28);
+            box-shadow: 0 5px 14px oklch(0.08 0.02 28 / 0.42);
+        }
         [data-theme="dark"] .close-btn:hover { background: rgba(255,255,255,0.08); }
         [data-theme="dark"] .plat-icon svg [stroke="#000"] { stroke: var(--fg) !important; }
         [data-theme="dark"] .plat-icon svg [fill="#000"] { fill: var(--fg) !important; }
@@ -1300,6 +1406,7 @@
         <!-- Platform tab bar (uses same class names as JS expects) -->
         <div class="platform-bar tabs" role="tablist">
             <button class="tab-btn active" onclick="switchTab('netease', this)" data-platform="netease" data-i18n="cookiesLogin.netease" role="tab" aria-controls="main-panel" aria-selected="true">网易云音乐</button>
+            <button class="tab-btn" onclick="switchTab('qqmusic', this)" data-platform="qqmusic" data-i18n="cookiesLogin.qqmusic" role="tab" aria-controls="main-panel" aria-selected="false">QQ音乐</button>
             <button class="tab-btn" onclick="switchTab('bilibili', this)" data-platform="bilibili" data-i18n="cookiesLogin.bilibili" role="tab" aria-controls="main-panel" aria-selected="false">Bilibili</button>
             <button class="tab-btn" onclick="switchTab('xhh', this)" data-platform="xhh" data-i18n="cookiesLogin.xhh" role="tab" aria-controls="main-panel" aria-selected="false">小黑盒</button>
             <button class="tab-btn" onclick="switchTab('youtube', this)" data-platform="youtube" data-i18n="cookiesLogin.youtube" role="tab" aria-controls="main-panel" aria-selected="false">YouTube</button>
@@ -1384,6 +1491,7 @@
     (function(){
       var platformIcons = {
         'netease': '<svg viewBox="0 0 24 24" fill="none" stroke="#D43C33" stroke-width="1.5"><circle cx="12" cy="12" r="9"/><path d="M15 9l-5 4 5 4" stroke-linecap="round" stroke-linejoin="round"/><path d="M9 9v6" stroke-linecap="round"/></svg>',
+        'qqmusic': '<svg viewBox="0 0 24 24" fill="none" stroke="#31C27C" stroke-width="1.5"><circle cx="12" cy="12" r="9"/><path d="M10 8v8l6-4-6-4z" fill="#31C27C" stroke-linejoin="round"/></svg>',
         'bilibili': '<svg viewBox="0 0 24 24" fill="none" stroke="#00A1D6" stroke-width="1.5"><rect x="4" y="6" width="16" height="13" rx="2"/><path d="M9 3l2 3h2l2-3" stroke-linecap="round" stroke-linejoin="round"/><path d="M9 12l2 2 4-3" stroke-linecap="round" stroke-linejoin="round"/></svg>',
         'xhh': '<svg viewBox="0 0 24 24" fill="none" stroke="#5E8B3C" stroke-width="1.5"><path d="M4 20V7l8-5 8 5v13H4z" stroke-linejoin="round"/><path d="M12 7v6" stroke-linecap="round"/><circle cx="12" cy="16" r="1" fill="#5E8B3C"/></svg>',
         'youtube': '<svg viewBox="0 0 24 24" fill="none" stroke="#FF0000" stroke-width="1.5"><rect x="3" y="6" width="18" height="12" rx="2"/><path d="M10 9l5 3-5 3V9z" fill="#FF0000"/></svg>',
@@ -1396,7 +1504,7 @@
       };
       function platKey(name) {
         var m = {
-          '网易云音乐': 'netease', 'bilibili': 'bilibili', 'Bilibili': 'bilibili',
+          '网易云音乐': 'netease', 'QQ音乐': 'qqmusic', 'bilibili': 'bilibili', 'Bilibili': 'bilibili',
           '小黑盒': 'xhh', 'youtube': 'youtube', 'YouTube': 'youtube',
           'twitch': 'twitch', 'Twitch': 'twitch',
           '抖音': 'douyin', 'douyin': 'douyin',

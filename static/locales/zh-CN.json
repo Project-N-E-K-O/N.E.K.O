@@ -2201,6 +2201,14 @@
         "voiceNotSet": "未指定音色",
         "voiceSetting": "音色设定",
         "personalitySetting": "人格设定",
+        "languagePreference": "语言偏好",
+        "languagePreferenceDescription": "此偏好并非强制限制，角色设定以及当前对话中使用的语言仍可能影响实际回复。",
+        "languagePreferenceSaved": "语言偏好已更新",
+        "languagePreferencePartiallySaved": "语言偏好已保存，但当前会话同步未完全完成",
+        "languagePreferenceSuperseded": "已有更新的语言偏好生效，已为你刷新",
+        "languagePreferenceUnverified": "语言偏好已保存，但暂时无法确认是否为最新",
+        "languagePreferenceSaveFailed": "语言偏好保存失败",
+        "languagePreferenceLoadFailed": "语言偏好加载失败",
         "personalityUseDefault": "跟随角色卡默认设定",
         "personalitySelect": "选择人格",
         "personalityClear": "恢复默认",
@@ -2901,6 +2909,7 @@
             "fullscreenTracking": "全屏跟踪",
             "localTracking": "局部跟踪",
             "lockedHoverFade": "锁定悬停淡化",
+            "forgeDropEffects": "掉券动画与音效",
             "textGuardMaxLength": "回复长度上限",
             "unlimited": "无限制",
             "characters": "字",
@@ -3990,6 +3999,7 @@
         "twitter": "Twitter/X",
         "reddit": "Reddit",
         "netease": "网易云音乐",
+        "qqmusic": "QQ音乐",
         "saveConfig": "保存配置",
         "encryptStorage": "安全加密存储至本地文件",
         "localMonitoring": "本地状态监控",
@@ -4028,7 +4038,8 @@
             "weibo": "<b>目标：</b> 请前往 <code>m.weibo.cn</code> 获取这些 Cookies。",
             "twitter": "<b>目标：</b> 请前往 <code>x.com</code> 获取这些 Cookies。",
             "reddit": "<b>目标：</b> 请前往 <code>reddit.com</code> 获取这些 Cookies。",
-            "netease": "<b>目标：</b> 请前往 <code>music.163.com</code> 获取这些 Cookies。"
+            "netease": "<b>目标：</b> 请前往 <code>music.163.com</code> 获取这些 Cookies。",
+            "qqmusic": "<b>目标：</b> 请前往 <code>y.qq.com</code> 获取这些 Cookies。"
         },
         "guide": {
             "title": "新手通用获取教程",
@@ -4143,6 +4154,14 @@
             "MUSIC_U": {
                 "label": "MUSIC_U",
                 "desc": "核心身份凭证 (必填)"
+            },
+            "qqmusicUin": {
+                "label": "uin",
+                "desc": "QQ 账号标识（通常以 o 加数字开头）"
+            },
+            "qqmusicKey": {
+                "label": "qqmusic_key",
+                "desc": "QQ 音乐登录凭证（必填）"
             },
             "NMTID": {
                 "label": "NMTID",

@@ -11,7 +11,7 @@ import httpx
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
 from utils.music_crawlers import (
-    NeteaseCrawler, iTunesCrawler, SoundCloudCrawler, 
+    NeteaseCrawler, QQMusicCrawler, iTunesCrawler, SoundCloudCrawler,
     MusopenCrawler, FMACrawler, BandcampCrawler, MusicCache, fetch_music_content,
     music_cache, close_all_crawlers, _select_requested_song,
     _sample_distinct_background_sources,
@@ -63,6 +63,34 @@ MOCK_ITUNES_JSON = {
             "artworkUrl100": "http://artwork.url/100x100bb.jpg"
         }
     ]
+}
+
+MOCK_QQMUSIC_SEARCH_JSON = {
+    "music.search.SearchCgiService": {
+        "data": {
+            "body": {
+                "song": {
+                    "list": [
+                        {
+                            "mid": "song_mid_1",
+                            "name": "QQ Music Song",
+                            "interval": 180,
+                            "singer": [{"name": "QQ Artist"}, {"name": "Featured Artist"}],
+                            "album": {"mid": "album_mid_1"},
+                            "file": {"media_mid": "media_mid_1"},
+                        },
+                        {
+                            "mid": "too_long",
+                            "name": "Long DJ Set",
+                            "interval": 601,
+                            "singer": [{"name": "DJ"}],
+                            "album": {"mid": "album_mid_2"},
+                        },
+                    ]
+                }
+            }
+        }
+    }
 }
 
 MOCK_FMA_HTML = """
@@ -138,6 +166,59 @@ async def test_netease_crawler_parsing():
         assert post.await_args.kwargs['headers'] == {'Cookie': ''}
         assert post.await_args.kwargs['data']['limit'] == 5
         assert post.await_args.kwargs['timeout'] == 5.0
+    await crawler.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_qqmusic_crawler_returns_only_resolved_playable_tracks():
+    crawler = QQMusicCrawler()
+    search_response = MagicMock(status_code=200)
+    search_response.json.return_value = MOCK_QQMUSIC_SEARCH_JSON
+    search_response.raise_for_status.return_value = None
+
+    with (
+        patch.object(httpx.AsyncClient, 'post', new=AsyncMock(return_value=search_response)) as post,
+        patch.object(
+            crawler,
+            '_resolve_playable_url',
+            new=AsyncMock(return_value='https://dl.stream.qqmusic.qq.com/C400song_mid_1.m4a'),
+        ) as resolve,
+    ):
+        results = await crawler.search('测试歌曲', limit=2)
+
+    assert len(results) == 1
+    assert results[0]['name'] == 'QQ Music Song'
+    assert results[0]['artist'] == 'QQ Artist / Featured Artist'
+    assert results[0]['url'].startswith('https://dl.stream.qqmusic.qq.com/')
+    assert results[0]['cover'].endswith('album_mid_1.jpg')
+    assert results[0]['duration'] == 180
+    assert resolve.await_args.args == ('song_mid_1', 'media_mid_1')
+    assert post.await_args.kwargs['json']['music.search.SearchCgiService']['module'] == 'music.search.SearchCgiService'
+    await crawler.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_qqmusic_crawler_resolves_https_stream_url():
+    crawler = QQMusicCrawler()
+    stream_response = MagicMock(status_code=200)
+    stream_response.raise_for_status.return_value = None
+    stream_response.json.return_value = {
+        'req_0': {
+            'data': {
+                'sip': ['https://dl.stream.qqmusic.qq.com/'],
+                'midurlinfo': [{'purl': 'C400song_mid_1.m4a?vkey=temporary'}],
+            }
+        }
+    }
+
+    with patch.object(httpx.AsyncClient, 'post', new=AsyncMock(return_value=stream_response)) as post:
+        result = await crawler._resolve_playable_url('song_mid_1', 'media_mid_1')
+
+    assert result == 'https://dl.stream.qqmusic.qq.com/C400song_mid_1.m4a?vkey=temporary'
+    assert post.await_args.kwargs['json']['req_0']['module'] == 'vkey.GetVkeyServer'
+    assert post.await_args.kwargs['json']['req_0']['param']['filename'] == ['C400media_mid_1.m4a']
     await crawler.close()
 
 
@@ -1603,6 +1684,96 @@ async def test_fetch_music_content_orchestration():
             response = await fetch_music_content("keyword", limit=1)
             assert response['success'] is True
             assert any(r['name'] == "Mock Netease" for r in response['data'])
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fetch_music_content_tries_qqmusic_before_open_fallbacks():
+    """QQ Music is the first Chinese fallback, not one more race participant."""
+    mock_netease = MagicMock()
+    mock_netease._cookie_invalid = False
+    mock_netease.search = AsyncMock(return_value=[])
+    mock_qqmusic = MagicMock()
+    mock_qqmusic.search = AsyncMock(return_value=[{
+        'name': 'QQ Fallback',
+        'artist': 'QQ Artist',
+        'url': 'https://dl.stream.qqmusic.qq.com/free-track.m4a',
+        'duration': 180,
+    }])
+    mock_fma = MagicMock()
+    mock_fma.search = AsyncMock(return_value=[])
+    mock_soundcloud = MagicMock()
+    mock_soundcloud.search = AsyncMock(return_value=[])
+    mock_bandcamp = MagicMock()
+    mock_bandcamp.search = AsyncMock(return_value=[])
+
+    with (
+        patch(
+            'utils.music_crawlers.get_music_crawlers',
+            return_value={
+                'netease': mock_netease,
+                'qqmusic': mock_qqmusic,
+                'fma': mock_fma,
+                'soundcloud': mock_soundcloud,
+                'bandcamp': mock_bandcamp,
+            },
+        ),
+        patch('utils.music_crawlers.is_china_region', return_value=True),
+    ):
+        response = await fetch_music_content(
+            'fallback query', limit=1, bypass_recommendation_dedupe=True,
+        )
+
+    assert response['success'] is True
+    assert response['data'][0]['name'] == 'QQ Fallback'
+    mock_qqmusic.search.assert_awaited_once_with('fallback query', 1)
+    mock_fma.search.assert_not_awaited()
+    mock_soundcloud.search.assert_not_awaited()
+    mock_bandcamp.search.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fetch_music_content_skips_qqmusic_fallback_outside_china():
+    """Global searches keep the existing open-source fallback behavior."""
+    mock_netease = MagicMock()
+    mock_netease._cookie_invalid = False
+    mock_netease.search = AsyncMock(return_value=[])
+    mock_qqmusic = MagicMock()
+    mock_qqmusic.search = AsyncMock(return_value=[])
+    mock_itunes = MagicMock()
+    mock_itunes.search = AsyncMock(return_value=[])
+    mock_fma = MagicMock()
+    mock_fma.search = AsyncMock(return_value=[])
+    mock_soundcloud = MagicMock()
+    mock_soundcloud.search = AsyncMock(return_value=[])
+    mock_bandcamp = MagicMock()
+    mock_bandcamp.search = AsyncMock(return_value=[])
+
+    with (
+        patch(
+            'utils.music_crawlers.get_music_crawlers',
+            return_value={
+                'netease': mock_netease,
+                'qqmusic': mock_qqmusic,
+                'itunes': mock_itunes,
+                'fma': mock_fma,
+                'soundcloud': mock_soundcloud,
+                'bandcamp': mock_bandcamp,
+            },
+        ),
+        patch('utils.music_crawlers.source_region_from_locale', return_value='non-china'),
+    ):
+        await fetch_music_content(
+            'unmatched global query',
+            limit=1,
+            source_locale='en-US',
+            bypass_recommendation_dedupe=True,
+        )
+
+    mock_qqmusic.search.assert_not_awaited()
+    mock_fma.search.assert_awaited_once_with('unmatched global query', 1)
+    mock_bandcamp.search.assert_awaited_once_with('unmatched global query', 1)
 
 
 @pytest.mark.unit

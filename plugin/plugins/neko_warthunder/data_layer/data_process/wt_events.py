@@ -522,6 +522,9 @@ class NoticeTracker:
 #   "<[战队] 玩家名> (载具) 获得嘉奖“双杀！”"
 #   "<[战队] 玩家名> (载具) 获得嘉奖“连续无伤歼敌×3！”"
 #   "<玩家名> (载具) 先拔头筹！"            ← 一血是独立句式，无“获得嘉奖”包裹
+# 英文客户端对应使用 "earned the/an award" 包裹，First strike / Final blow
+# 也可能作为独立句式出现。英文匹配忽略大小写，但只接受明确包裹或行尾独立嘉奖，
+# 避免把 "dealt the final blow <victim>" 这类击杀描述误判为嘉奖。
 # 与击杀流无关（无施动者→受动者结构），KillTracker 已把它们当系统噪声跳过；
 # 这里独立解析，按“是否罕见而重要”给 notable 标记，供前端做高光/情报推送。
 # 嘉奖天然带玩家名+战队+载具，可用于识别敌方高威胁玩家（连杀王）。
@@ -540,18 +543,33 @@ class _AwardRule:
 # 按重要性/出现顺序排列；嘉奖名命中第一个关键词即归类。
 # tier: major(高光级，连杀/一血) > notable(值得一提) > minor(常见，默认不推)。
 # 独立句式成就（无“获得嘉奖”包裹，直接 "<玩家>(载具) XXX！"）。
-_STANDALONE_AWARDS: tuple[str, ...] = ("先拔头筹", "完成了最后一击")
+_STANDALONE_AWARDS: tuple[str, ...] = (
+    "先拔头筹",
+    "完成了最后一击",
+    "first strike",
+    "first blood",
+    "final blow",
+)
 
 
 _AWARD_RULES: list[_AwardRule] = [
     _AwardRule("先拔头筹", "first_blood", "major", True),
+    _AwardRule("first strike", "first_blood", "major", True),
+    _AwardRule("first blood", "first_blood", "major", True),
     _AwardRule("最后一击", "final_blow", "major", True),  # “完成了最后一击！”绝杀
+    _AwardRule("final blow", "final_blow", "major", True),
     _AwardRule("连续无伤歼敌", "killing_spree", "major", True),
     _AwardRule("五杀", "penta_kill", "major", True),
     _AwardRule("四杀", "quad_kill", "major", True),
     _AwardRule("三杀", "triple_kill", "major", True),
+    _AwardRule("triple strike", "triple_kill", "major", True),
+    _AwardRule("triple kill", "triple_kill", "major", True),
     _AwardRule("双杀", "double_kill", "notable", True),
+    _AwardRule("double strike", "double_kill", "notable", True),
+    _AwardRule("double kill", "double_kill", "notable", True),
     _AwardRule("多杀", "multi_kill", "major", True),
+    _AwardRule("multi strike", "multi_kill", "major", True),
+    _AwardRule("multi kill", "multi_kill", "major", True),
     _AwardRule("终结者", "terminator", "major", True),
     _AwardRule("战场英雄", "battle_hero", "major", True),
     _AwardRule("战斗英雄", "battle_hero", "major", True),
@@ -599,12 +617,29 @@ def parse_award(text: str, event_id: int = 0, time: int | None = None) -> Award 
         m = re.search(r"[“\"']\s*(.+?)\s*[”\"']", tail)
         name = (m.group(1) if m else tail).strip(" “”\"'！!：:")
     else:
-        # 独立句式成就（无“获得嘉奖”包裹）：实测 先拔头筹 / 完成了最后一击
-        for kw in _STANDALONE_AWARDS:
-            if kw in raw:
-                actor_part = raw.split(kw, 1)[0]
-                name = kw
-                break
+        english_wrapper = re.search(
+            r"\bearned\s+(?:the|an)\s+award\b",
+            raw,
+            flags=re.IGNORECASE,
+        )
+        if english_wrapper is not None:
+            actor_part = raw[: english_wrapper.start()]
+            tail = raw[english_wrapper.end() :]
+            m = re.search(r"[“\"']\s*(.+?)\s*[”\"']", tail)
+            name = (m.group(1) if m else tail).strip(" “”\"'！!：:")
+        else:
+            # 独立句式必须位于消息末尾；否则 "dealt the final blow <victim>"
+            # 这类双方击杀描述会被错误吞成嘉奖。
+            for kw in _STANDALONE_AWARDS:
+                match = re.search(
+                    rf"{re.escape(kw)}[!！.。]*$",
+                    raw,
+                    flags=re.IGNORECASE,
+                )
+                if match is not None:
+                    actor_part = raw[: match.start()].rstrip()
+                    name = match.group(0).rstrip("!！.。")
+                    break
         if not name:
             return None
 
@@ -612,7 +647,7 @@ def parse_award(text: str, event_id: int = 0, time: int | None = None) -> Award 
         return None
     player, squad, vehicle, is_ai = _parse_actor(actor_part)
     code, tier, notable = "award_other", "minor", False
-    low = name
+    low = name.casefold()
     for rule in _AWARD_RULES:
         if rule.keyword in low:
             code, tier, notable = rule.code, rule.tier, rule.notable

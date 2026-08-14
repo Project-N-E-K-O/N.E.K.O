@@ -21,6 +21,57 @@ I.BUNDLE_SRC = '/static/react/neko-chat/neko-chat-window.iife.js';
     I.STORAGE_HEIGHT_KEY = 'neko.reactChatWindow.height';
     var GALGAME_STORAGE_KEY = 'neko.reactChatWindow.galgameMode';
     var CHAT_SURFACE_MODE_STORAGE_KEY = 'neko.reactChatWindow.chatSurfaceMode';
+    var CHAT_FONT_PRESET_STORAGE_KEY = 'neko.reactChatWindow.fontPreset';
+    var CHAT_FONT_PRESET_ATTRIBUTE = 'data-neko-chat-font-preset';
+
+    function normalizeChatFontPreset(value) {
+        return value === 'system' ? 'system' : 'handwritten';
+    }
+
+    function readChatFontPreset() {
+        try {
+            return normalizeChatFontPreset(window.localStorage.getItem(CHAT_FONT_PRESET_STORAGE_KEY));
+        } catch (_) {
+            return 'handwritten';
+        }
+    }
+
+    function applyChatFontPreset(value) {
+        var preset = normalizeChatFontPreset(value);
+        if (document.documentElement) {
+            document.documentElement.setAttribute(CHAT_FONT_PRESET_ATTRIBUTE, preset);
+        }
+        return preset;
+    }
+
+    I.restoreChatFontPresetPreference = function restoreChatFontPresetPreference() {
+        return applyChatFontPreset(readChatFontPreset());
+    };
+
+    function installChatFontPresetSync() {
+        if (I.chatFontPresetSyncInstalled) return;
+        I.chatFontPresetSyncInstalled = true;
+
+        window.addEventListener('storage', function (event) {
+            if (
+                event.storageArea === window.localStorage
+                && (event.key === CHAT_FONT_PRESET_STORAGE_KEY || event.key === null)
+            ) {
+                applyChatFontPreset(event.newValue);
+            }
+        });
+        window.addEventListener('neko:chat-font-preset-changed', function (event) {
+            var detail = event && event.detail;
+            var preset = detail && detail.preset != null
+                ? detail.preset
+                : readChatFontPreset();
+            applyChatFontPreset(preset);
+        });
+    }
+
+    // Install live synchronization immediately, but defer the initial read until
+    // initAfterStorageBarrier() has resolved the active storage namespace.
+    installChatFontPresetSync();
     I.GALGAME_HISTORY_LIMIT = 6;
     I.EVENT_PREFIX = 'react-chat-window:';
     I.CHAT_MINIMIZED_BALL_ICON_SRC = '/static/assets/neko-idle/chat-minimized-yarn-ball-116.png';

@@ -13,7 +13,7 @@ from plugin.plugins.neko_warthunder.detectors.discrete.lifecycle import BattleEn
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DATA_PROCESS_DIR = PROJECT_ROOT / "plugin" / "plugins" / "neko_warthunder" / "data_layer" / "data process"
+DATA_PROCESS_DIR = PROJECT_ROOT / "plugin" / "plugins" / "neko_warthunder" / "data_layer" / "data_process"
 
 
 def test_coalesced_kill_bypasses_post_flush_event_cooldown() -> None:

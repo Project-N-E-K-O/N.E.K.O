@@ -14,7 +14,7 @@ pytestmark = pytest.mark.unit
 
 PLUGIN_DIR = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
 I18N_DIR = PLUGIN_DIR / "i18n"
-_NODE_SCRIPT_TIMEOUT_SECONDS = 30
+NODE_SUBPROCESS_TIMEOUT_SECONDS = 30
 
 
 def _run_node_script(script: str) -> str:
@@ -35,7 +35,7 @@ def _run_node_script(script: str) -> str:
             check=True,
             capture_output=True,
             encoding="utf-8",
-            timeout=_NODE_SCRIPT_TIMEOUT_SECONDS,
+            timeout=NODE_SUBPROCESS_TIMEOUT_SECONDS,
         )
     return result.stdout
 

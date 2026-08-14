@@ -4,13 +4,20 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from plugin.sdk.plugin import plugin_entry, quick_action, Ok, Err, SdkError
+from plugin.sdk.plugin import Ok, plugin_entry, quick_action, tr
 from plugin.sdk.shared.core.router import PluginRouter
 
+from .._advice_policy import DEFAULT_ADVICE_POLICY
 from .._api import RAIN_CODES, SNOW_CODES
 from .._chat import push_lifekit_content
 from .._contracts import CityParams, TravelAdviceResult
 from .._i18n import I18n
+from .._location import LocationPurpose
+from .._location_entry import (
+    apply_location_assumption,
+    location_unavailable_result,
+    upstream_unavailable_result,
+)
 
 
 def build_travel_advice(
@@ -21,17 +28,20 @@ def build_travel_advice(
     temp = current.get("temperature_2m")
     ref = feels if feels is not None else temp
     code = current.get("weather_code", -1)
-    uv = current.get("uv_index", 0)
-    wind = current.get("wind_speed_10m", 0)
+    uv = current.get("uv_index")
+    wind = current.get("wind_speed_10m")
+    uv = uv if isinstance(uv, (int, float)) else 0
+    wind = wind if isinstance(wind, (int, float)) else 0
 
     tips: List[str] = []
+    policy = DEFAULT_ADVICE_POLICY
 
     if ref is not None:
-        if ref < 5:
+        if ref < policy.cold_below_c:
             tips.append(t.t("advice.cold"))
-        elif ref < 15:
+        elif ref < policy.cool_below_c:
             tips.append(t.t("advice.cool"))
-        elif ref < 25:
+        elif ref < policy.mild_below_c:
             tips.append(t.t("advice.mild"))
         else:
             tips.append(t.t("advice.hot"))
@@ -41,12 +51,12 @@ def build_travel_advice(
     elif code in SNOW_CODES:
         tips.append(t.t("advice.snow"))
 
-    if uv >= 8:
+    if uv >= policy.uv_extreme_from:
         tips.append(t.t("advice.uv_extreme"))
-    elif uv >= 5:
+    elif policy.needs_sun_protection(uv):
         tips.append(t.t("advice.uv_high"))
 
-    if wind >= 40:
+    if wind >= policy.strong_wind_from_kmh:
         tips.append(t.t("advice.wind_strong"))
 
     daily_codes = daily.get("weather_code", [])
@@ -59,9 +69,9 @@ def build_travel_advice(
         tips.append(t.t("advice.rain_forecast", dates=", ".join(rain_days)))
 
     eff = ref if ref is not None else 20
-    if eff < 10:
+    if eff < policy.heavy_clothing_below_c:
         clothing = t.t("clothing.heavy")
-    elif eff < 22:
+    elif eff < policy.light_clothing_below_c:
         clothing = t.t("clothing.light")
     else:
         clothing = t.t("clothing.cool")
@@ -70,7 +80,7 @@ def build_travel_advice(
         "tips": tips,
         "clothing": clothing,
         "umbrella": code in RAIN_CODES,
-        "sunscreen": uv >= 5,
+        "sunscreen": policy.needs_sun_protection(uv),
     }
 
 
@@ -82,8 +92,8 @@ class TravelAdviceRouter(PluginRouter):
 
     @plugin_entry(
         id="travel_advice",
-        name="出行建议",
-        description="根据天气给出穿衣、带伞、防晒等出行建议。可配合 food_recommend 获取美食推荐，或 trip_advice 规划路线。",
+        name=tr("entries.travelAdvice.name", default="Travel advice"),
+        description=tr("entries.travelAdvice.description", default="Give clothing, umbrella, sunscreen, and travel advice based on weather."),
         params=CityParams,
         llm_result_model=TravelAdviceResult,
     )
@@ -96,13 +106,17 @@ class TravelAdviceRouter(PluginRouter):
         plugin._resolve_locale()
         i18n = plugin._i18n
 
-        loc, loc_err = await plugin._resolve_location(city)
+        loc, loc_err = await plugin._resolve_location(city, purpose=LocationPurpose.WEATHER)
         if not loc:
-            return Err(SdkError(i18n.t(loc_err or "error.no_location")))
+            return location_unavailable_result(loc_err, i18n)
 
         data, data_err = await plugin._get_weather_data(loc)
         if not data:
-            return Err(SdkError(i18n.t(data_err or "error.fetch_failed", city=loc["city"])))
+            return upstream_unavailable_result(
+                i18n.t(data_err or "error.fetch_failed", city=loc["city"]),
+                i18n,
+                location=loc,
+            )
 
         current_raw = data.get("current", {})
         daily_raw = data.get("daily", {})
@@ -118,20 +132,21 @@ class TravelAdviceRouter(PluginRouter):
         card_lines.append(f"👔 {advice['clothing']}")
         extras = []
         if advice["umbrella"]:
-            extras.append("☂️ " + i18n.t("advice.bring_umbrella", fallback="带伞"))
+            extras.append("☂️ " + i18n.t("advice.bring_umbrella"))
         if advice["sunscreen"]:
-            extras.append("🧴 " + i18n.t("advice.bring_sunscreen", fallback="防晒"))
+            extras.append("🧴 " + i18n.t("advice.bring_sunscreen"))
         if extras:
             card_lines.append(" | ".join(extras))
 
         push_lifekit_content(plugin, [
-            {"type": "text", "text": f"🧳 {loc['city']} — {i18n.t('entry.travel_advice', fallback='出行建议')}"},
+            {"type": "text", "text": f"🧳 {loc['city']} — {i18n.t('runtime.travel_title')}"},
             {"type": "text", "text": "\n".join(card_lines)},
         ])
 
-        return Ok({
+        return Ok(apply_location_assumption({
+            "status": "ready",
             "city": loc["city"],
             "summary": summary,
             **advice,
-            "next_actions": ["food_recommend — 美食推荐", "trip_advice — 路线规划"],
-        })
+            "next_actions": ["food_recommend", "trip_advice"],
+        }, loc, i18n))

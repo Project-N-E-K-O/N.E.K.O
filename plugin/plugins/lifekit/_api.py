@@ -6,20 +6,25 @@ from typing import Any, Dict, Optional
 
 import httpx
 
+from ._geocoders import nominatim_candidates, open_meteo_candidates
+from ._location import LocationPurpose, LocationRequest, LocationResolver, LocationStatus
+
 # HTTPS IP 定位 provider；旧版用的 ip-api.com 免费端点是纯 HTTP + 禁止商用喵
 _GEOIP_BASE = "https://ipapi.co"
-_GEOCODE_URL = "https://geocoding-api.open-meteo.com/v1/search"
 _FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 _AIR_QUALITY_URL = "https://air-quality-api.open-meteo.com/v1/air-quality"
-_UA = "NEKO-LifeKit-Plugin/0.2"
+_UA = "NEKO-LifeKit-Plugin/0.3"
 
 # ipapi.co 用 ISO 639 简码；Content-Language 头部即可
 LOCALE_TO_GEOIP_LANG: Dict[str, str] = {
-    "zh-CN": "zh", "zh-TW": "zh", "en": "en",
-}
-# locale → Open-Meteo geocoding language
-LOCALE_TO_GEOCODE_LANG: Dict[str, str] = {
-    "zh-CN": "zh", "zh-TW": "zh", "en": "en",
+    "zh-CN": "zh",
+    "zh-TW": "zh",
+    "en": "en",
+    "ja": "ja",
+    "ko": "ko",
+    "ru": "ru",
+    "es": "es",
+    "pt": "pt",
 }
 
 # WMO 降水/降雪代码集
@@ -76,57 +81,50 @@ async def geoip_locate(locale: str = "zh-CN", timeout: float = 2.0) -> Optional[
         raise GeoIPError(f"IP locate failed: {e}", cause="network")
 
 
-_NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
-
-
 async def geocode_city(city: str, locale: str = "zh-CN", timeout: float = 5.0) -> Optional[Dict[str, Any]]:
-    """Geocoding：先试 Open-Meteo（城市名），再试 Nominatim（支持地址）。"""
-    lang = LOCALE_TO_GEOCODE_LANG.get(locale, "en")
+    """Strict compatibility wrapper used by saved-location writes."""
 
-    # 1. Open-Meteo（快，但只支持城市名）
-    try:
-        async with httpx.AsyncClient(timeout=timeout) as c:
-            r = await c.get(_GEOCODE_URL, params={"name": city, "count": 1, "language": lang})
-            results = r.json().get("results")
-            if results:
-                hit = results[0]
-                return {
-                    "city": hit.get("name", city),
-                    "lat": float(hit["latitude"]),
-                    "lon": float(hit["longitude"]),
-                    "country": hit.get("country_code", ""),
-                }
-    except (httpx.TimeoutException, httpx.ConnectTimeout, httpx.ReadTimeout):
-        pass  # 继续尝试 Nominatim
-    except httpx.ConnectError:
-        pass
-    except Exception:
-        pass
+    async def open_meteo(query: str, **kwargs: Any):
+        return await open_meteo_candidates(
+            query,
+            locale=str(kwargs.get("locale") or locale),
+            country_code=str(kwargs.get("country_code") or ""),
+            timeout=min(timeout, 2.0),
+        )
 
-    # 2. Nominatim fallback（支持地址、POI、街道等）
-    try:
-        async with httpx.AsyncClient(timeout=timeout) as c:
-            r = await c.get(_NOMINATIM_URL, params={
-                "q": city, "format": "json", "limit": "1",
-                "accept-language": lang,
-            }, headers={"User-Agent": _UA})
-            results = r.json()
-            if isinstance(results, list) and results:
-                hit = results[0]
-                display = hit.get("display_name", city).split(",")[0].strip()
-                return {
-                    "city": display,
-                    "lat": float(hit["lat"]),
-                    "lon": float(hit["lon"]),
-                    "country": "",
-                }
-    except (httpx.TimeoutException, httpx.ConnectTimeout, httpx.ReadTimeout):
-        raise GeocodeError(f"Geocode '{city}' timed out", cause="timeout")
-    except httpx.ConnectError:
-        raise GeocodeError(f"Geocode '{city}' connection failed", cause="network")
-    except Exception as e:
-        raise GeocodeError(f"Geocode '{city}' failed: {e}", cause="network")
+    async def nominatim(query: str, **kwargs: Any):
+        return await nominatim_candidates(
+            query,
+            locale=str(kwargs.get("locale") or locale),
+            country_code=str(kwargs.get("country_code") or ""),
+            timeout=timeout,
+        )
 
+    result = await LocationResolver(
+        open_meteo=open_meteo,
+        nominatim=nominatim,
+    ).resolve(
+        LocationRequest(
+            text=city,
+            purpose=LocationPurpose.SAVE,
+            allow_geoip=False,
+            locale=locale,
+        )
+    )
+    if result.status is LocationStatus.RESOLVED and result.location is not None:
+        return result.location.as_legacy_dict()
+    if result.status is LocationStatus.PROVIDER_FAILED:
+        raise GeocodeError(
+            f"Geocode '{city}' failed",
+            cause=result.cause or "network",
+        )
+    if result.status in {
+        LocationStatus.AMBIGUOUS,
+        LocationStatus.NEEDS_CONFIRMATION,
+        LocationStatus.NOT_FOUND,
+        LocationStatus.NO_LOCATION,
+    }:
+        raise GeocodeError(f"Geocode '{city}' unresolved", cause=result.status.value)
     return None
 
 
@@ -156,7 +154,13 @@ async def fetch_forecast(
         async with httpx.AsyncClient(timeout=timeout) as c:
             r = await c.get(_FORECAST_URL, params=params)
             if r.status_code == 200:
-                return r.json()
+                payload = r.json()
+                if not isinstance(payload, dict):
+                    raise ForecastError(
+                        "Weather API returned an invalid response",
+                        cause="api_error",
+                    )
+                return payload
             raise ForecastError(f"API returned HTTP {r.status_code}", cause="api_error")
     except ForecastError:
         raise
@@ -202,7 +206,13 @@ async def fetch_air_quality(
         async with httpx.AsyncClient(timeout=timeout) as c:
             r = await c.get(_AIR_QUALITY_URL, params=params)
             if r.status_code == 200:
-                return r.json()
+                payload = r.json()
+                if not isinstance(payload, dict):
+                    raise AirQualityError(
+                        "Air quality API returned an invalid response",
+                        cause="api_error",
+                    )
+                return payload
             raise AirQualityError(f"Air quality API returned HTTP {r.status_code}", cause="api_error")
     except AirQualityError:
         raise

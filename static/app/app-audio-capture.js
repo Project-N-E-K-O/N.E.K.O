@@ -3754,7 +3754,8 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 return panel;
             }
 
-            function createMainActionButton(iconText, label, subLabel, actionKey, onClick) {
+            function createMainActionButton(iconText, label, subLabel, actionKey, onClick, interactionOptions) {
+                interactionOptions = interactionOptions || {};
                 var button = document.createElement('button');
                 button.type = 'button';
                 button.dataset.nekoMicMainAction = actionKey;
@@ -3816,10 +3817,20 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                     });
                 }
 
-                // Hover-to-expand like settings side panels.
-                button.addEventListener('mouseenter', function (event) {
-                    openActionPanel(event);
-                });
+                // Most settings side panels may expand on hover. Screen-source
+                // enumeration is different: on Linux it can invoke
+                // xdg-desktop-portal and show an OS sharing dialog, so that
+                // action must require an explicit click/user gesture.
+                if (interactionOptions.openOnHover !== false) {
+                    button.addEventListener('mouseenter', function (event) {
+                        openActionPanel(event);
+                    });
+                } else {
+                    button.addEventListener('mouseenter', function () {
+                        clearMicActionHoverCollapseTimer();
+                        actionSurface().style.background = 'var(--neko-popup-hover)';
+                    });
+                }
                 button.addEventListener('mouseleave', function () {
                     // Shared rows own the full hover surface, including any
                     // sibling toggle. Their mouseleave handler closes the panel.
@@ -4057,7 +4068,8 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 screenButtonLabel,
                 window.t ? window.t('app.screenSource.screens') : 'Screens',
                 'screen',
-                openScreenSourceSubwindow
+                openScreenSourceSubwindow,
+                { openOnHover: false }
             );
             var shareToggleButton = createScreenShareToggleButton({ mini: true });
             var screenActionRow = createMainActionRow(

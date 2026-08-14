@@ -67,6 +67,25 @@ class PermissionManager:
         return normalized
 
     @classmethod
+    def validate_nickname(cls, nickname: str) -> Optional[str]:
+        """校验昵称是否可写。合法返回 None；否则返回原因键（``too_long`` /
+        ``control_char``），供上层在提交前区分「昵称非法」与其它失败。
+
+        与 ``_normalize_nickname_for_write`` 同一套规则：超长、含控制字符或
+        不可见字符（除允许的格式字符）均判非法。
+        """
+        raw = str(nickname or "")
+        normalized = raw.strip()
+        if len(normalized) > cls.NICKNAME_MAX_CHARS:
+            return "too_long"
+        for char in raw:
+            if char in cls._NICKNAME_FORBIDDEN_CHARS or (
+                not char.isprintable()
+                and char not in cls._NICKNAME_ALLOWED_FORMAT_CHARS
+            ):
+                return "control_char"
+        return None
+
     def _normalize_nickname_for_write(cls, nickname: str) -> Optional[str]:
         raw = str(nickname or "")
         normalized = raw.strip()

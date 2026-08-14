@@ -360,13 +360,19 @@ def test_plugin_base_convenience_accessors(tmp_path, monkeypatch) -> None:
     runtime_root = tmp_path / "runtime"
     monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
     base = _DemoPlugin(ctx=_Ctx(config_path=config_path))
+    storage_dir = runtime_root / "plugins" / "demo"
     assert base.plugin_id == "demo"
     assert base.metadata == {"role": "demo"}
     assert base.bus is not None
     assert base.bus.messages.get().count() == 0
     assert base.config_dir == tmp_path / "demo"
-    assert base.data_path() == runtime_root / "plugins" / "demo" / "data"
-    assert base.data_path("cache", "x.json") == runtime_root / "plugins" / "demo" / "data" / "cache" / "x.json"
+    assert base.plugin_dir == tmp_path / "demo"
+    assert base.storage_dir == storage_dir
+    assert base.runtime_config_path == storage_dir / "config" / "plugin.toml"
+    assert base.data_path() == storage_dir / "data"
+    assert base.data_path("records", "x.json") == storage_dir / "data" / "records" / "x.json"
+    assert base.cache_path() == storage_dir / "cache"
+    assert base.cache_path("preview", "x.png") == storage_dir / "cache" / "preview" / "x.png"
 
 
 def test_plugin_base_system_info_facade_is_lazy_and_cached() -> None:

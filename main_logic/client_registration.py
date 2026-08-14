@@ -3,12 +3,11 @@
 ``config_manager.ensure_cloudsave_client_credentials()`` mints the local
 ``client_id``/``client_proof`` pair without ever touching the network, so until
 this module has registered them the cloud holds no row for the id. Every
-proof-bearing callback (``cards/.../debit-confirmation``,
-``clients/bind-approval``) then fails closed with 403 even though the local
-install is perfectly healthy. Registration used to live inside the facts-sync
-sweep, which is off unless ``NEKO_FACTS_SYNC_ENABLED=1``; the forge debit path
-has no such flag and defaults straight to production. This module owns the
-bootstrap so the producer can no longer be gated while the consumers run.
+proof-bearing callback such as ``clients/bind-approval`` then fails closed with
+403 even though the local install is perfectly healthy. Registration used to
+live inside the facts-sync sweep, which is off unless
+``NEKO_FACTS_SYNC_ENABLED=1``. This module owns the bootstrap so registration is
+not accidentally gated by an optional sync worker.
 """
 
 from __future__ import annotations

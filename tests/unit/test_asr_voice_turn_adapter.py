@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import math
 import threading
 from collections import deque
 from collections.abc import Iterable
@@ -212,8 +213,55 @@ class _FakeCoordinator:
         self.unload_calls += 1
 
 
+class _EvidenceSpy:
+    def __init__(self) -> None:
+        self.accepted: list[bytes] = []
+        self.current: list[bytes] = []
+        self.completed: list[tuple[bytes, ...]] = []
+
+    @property
+    def enabled(self) -> bool:
+        return True
+
+    def accepted_audio(self, *, identity, pcm16: bytes) -> None:
+        del identity
+        self.accepted.append(pcm16)
+        self.current.append(pcm16)
+
+    def complete(self, *, identity, reason, probability, threshold) -> None:
+        del identity, reason, probability, threshold
+        self.completed.append(tuple(self.current))
+        self.current.clear()
+
+    def discard(self) -> None:
+        self.current.clear()
+
+    async def close(self) -> None:
+        return None
+
+
 async def _noop_commit(generation: int, buffer_epoch: int, utterance_id: int) -> None:
     del generation, buffer_epoch, utterance_id
+
+
+@pytest.mark.parametrize(
+    ("argument", "value"),
+    [
+        ("candidate_complete_confirmation_seconds", math.nan),
+        ("candidate_complete_confirmation_seconds", math.inf),
+        ("strict_complete_confirmation_seconds", math.nan),
+        ("strict_complete_confirmation_seconds", math.inf),
+    ],
+)
+def test_confirmation_delays_must_be_finite(argument: str, value: float) -> None:
+    with pytest.raises(ValueError, match="finite and non-negative"):
+        _VoiceTurnAdapter(
+            vad=_FakeVad(),
+            gate=_FakeGate(),
+            coordinator=_FakeCoordinator(),
+            on_commit=_noop_commit,
+            **{argument: value},
+        )
 
 
 async def test_first_audio_lazy_loads_vad_off_loop_once() -> None:
@@ -287,7 +335,7 @@ async def test_silent_audio_does_not_extend_smart_turn_warm_ttl() -> None:
     await _eventually(lambda: coordinator.unload_calls == 1, timeout=2.0)
 
     await adapter.reset(generation=1, buffer_epoch=1, utterance_id=3)
-    armed = adapter._smart_turn_unload_task   # reset() 排下的这一轮 TTL 卸载
+    armed = adapter._smart_turn_unload_task  # reset() 排下的这一轮 TTL 卸载
     assert armed is not None
     await adapter.push_audio(
         generation=1,
@@ -548,7 +596,9 @@ async def test_silero_keeps_consuming_while_smart_turn_is_blocked() -> None:
             (SpeechActivityEvent.SPEECH_RESUMED,),
         ]
     )
-    coordinator = _FakeCoordinator([_failed_evaluation(EvaluationStatus.STALE)], block_evaluation=True)
+    coordinator = _FakeCoordinator(
+        [_failed_evaluation(EvaluationStatus.STALE)], block_evaluation=True
+    )
     adapter = _VoiceTurnAdapter(
         vad=_FakeVad(),
         gate=gate,
@@ -628,6 +678,497 @@ async def test_evaluation_tail_overflow_uses_backpressure_without_failure() -> N
         assert adapter.failed is False
     finally:
         coordinator.evaluate_release.set()
+        await adapter.close()
+
+
+async def test_confirmation_observes_evaluation_tail_without_refeeding_audio() -> None:
+    first_pcm = b"\x01\x00" * 160
+    tail_pcm = b"\x02\x00" * 160
+    coordinator = _FakeCoordinator([_complete()], block_evaluation=True)
+    gate = _FakeGate([(SpeechActivityEvent.CANDIDATE_PAUSE,), ()])
+    adapter = _VoiceTurnAdapter(
+        vad=_FakeVad(),
+        gate=gate,
+        coordinator=coordinator,
+        on_commit=_noop_commit,
+        candidate_complete_confirmation_seconds=10.0,
+        smart_turn_required=True,
+    )
+    await adapter.start()
+    try:
+        await adapter.push_audio(
+            generation=1,
+            buffer_epoch=1,
+            utterance_id=1,
+            pcm16=first_pcm,
+        )
+        await asyncio.wait_for(coordinator.evaluate_started.wait(), 1)
+        await adapter.push_audio(
+            generation=1,
+            buffer_epoch=1,
+            utterance_id=1,
+            pcm16=tail_pcm,
+        )
+        await _eventually(lambda: len(gate.feed_calls) == 2)
+
+        coordinator.evaluate_release.set()
+        await adapter.wait_idle()
+
+        assert coordinator.evaluate_calls == 1
+        assert adapter.failed is False
+        assert coordinator.pushed_audio == [first_pcm, tail_pcm]
+        assert gate.feed_calls == [first_pcm, tail_pcm]
+    finally:
+        coordinator.evaluate_release.set()
+        await adapter.close()
+
+
+async def test_confirmation_preserves_unscoped_evaluation_tail_in_evidence() -> None:
+    first_pcm = b"\x01\x00" * 160
+    evaluation_tail_pcm = b"\x02\x00" * 160
+    observed: list[bytes] = []
+    coordinator = _FakeCoordinator([_complete()], block_evaluation=True)
+    adapter = _VoiceTurnAdapter(
+        vad=_FakeVad(),
+        gate=_FakeGate([(SpeechActivityEvent.CANDIDATE_PAUSE,), ()]),
+        coordinator=coordinator,
+        on_commit=_noop_commit,
+        on_accepted_audio=lambda pcm16, *_args: observed.append(pcm16),
+        candidate_complete_confirmation_seconds=10.0,
+        smart_turn_required=True,
+    )
+    evidence = _EvidenceSpy()
+    adapter._smart_turn_audio_evidence = evidence
+    await adapter.start()
+    try:
+        await adapter.push_audio(
+            generation=1,
+            buffer_epoch=1,
+            utterance_id=1,
+            pcm16=first_pcm,
+        )
+        await asyncio.wait_for(coordinator.evaluate_started.wait(), 1)
+        await adapter.push_audio(
+            generation=1,
+            buffer_epoch=1,
+            utterance_id=1,
+            pcm16=evaluation_tail_pcm,
+        )
+        await _eventually(lambda: len(coordinator.pushed_audio) == 2)
+
+        coordinator.evaluate_release.set()
+        await adapter.wait_idle()
+        pending = adapter._pending_complete_confirmation
+        assert pending is not None
+        assert observed == [first_pcm, evaluation_tail_pcm]
+        assert evidence.accepted == [first_pcm, evaluation_tail_pcm]
+
+        assert await adapter._publish_pending_complete_confirmation(pending)
+
+        assert observed == [first_pcm, evaluation_tail_pcm]
+        assert evidence.accepted == [first_pcm, evaluation_tail_pcm]
+        assert evidence.completed == [(first_pcm, evaluation_tail_pcm)]
+        assert coordinator.pushed_audio == [first_pcm, evaluation_tail_pcm]
+    finally:
+        coordinator.evaluate_release.set()
+        await adapter.close()
+
+
+async def test_confirmation_expiry_waits_for_inflight_continuation() -> None:
+    commits: list[tuple[int, int, int]] = []
+    first_pcm = b"\x01\x00"
+    continuation_pcm = b"\x02\x00"
+    observed: list[bytes] = []
+    ingress = VoiceIngressToken(1, "socket", 1, 1, 1)
+
+    async def commit(generation: int, buffer_epoch: int, utterance_id: int) -> None:
+        commits.append((generation, buffer_epoch, utterance_id))
+
+    gate = _BlockingGate(
+        [
+            (SpeechActivityEvent.CANDIDATE_PAUSE,),
+            (SpeechActivityEvent.SPEECH_RESUMED,),
+        ],
+        blocked_indices=(1,),
+    )
+    coordinator = _FakeCoordinator([_complete()])
+    adapter = _VoiceTurnAdapter(
+        vad=_FakeVad(),
+        gate=gate,
+        coordinator=coordinator,
+        on_commit=commit,
+        on_accepted_audio=lambda pcm16, *_args: observed.append(pcm16),
+        candidate_complete_confirmation_seconds=0.05,
+        smart_turn_required=True,
+    )
+    evidence = _EvidenceSpy()
+    adapter._smart_turn_audio_evidence = evidence
+    await adapter.start()
+    try:
+        await adapter.push_audio(
+            generation=1,
+            buffer_epoch=1,
+            utterance_id=1,
+            pcm16=first_pcm,
+            detector_identity=DetectorIngressIdentity(ingress, 1, 1),
+        )
+        await adapter.wait_idle()
+        await adapter.push_audio(
+            generation=1,
+            buffer_epoch=1,
+            utterance_id=1,
+            pcm16=continuation_pcm,
+            detector_identity=DetectorIngressIdentity(ingress, 1, 2),
+        )
+        assert await asyncio.to_thread(gate.started[1].wait, 1)
+
+        await asyncio.sleep(0.1)
+        assert commits == []
+        assert observed == [first_pcm]
+        assert evidence.accepted == [first_pcm]
+
+        gate.release[1].set()
+        await adapter.wait_idle()
+        assert commits == []
+        assert observed == [first_pcm, continuation_pcm]
+        assert evidence.accepted == [first_pcm, continuation_pcm]
+        assert evidence.completed == []
+        assert evidence.current == [first_pcm, continuation_pcm]
+    finally:
+        gate.release[1].set()
+        await adapter.close()
+
+
+async def test_confirmation_replays_newer_pcm_once_for_successor() -> None:
+    first_pcm = b"\x01\x00" * 160
+    evaluation_tail_pcm = b"\x02\x00" * 160
+    confirmation_pcm = b"\x03\x00" * 160
+    ingress = VoiceIngressToken(1, "socket", 1, 1, 1)
+    coordinator = _FakeCoordinator([_complete()], block_evaluation=True)
+    gate = _FakeGate([(SpeechActivityEvent.CANDIDATE_PAUSE,), (), (), (), ()])
+    successor = (2, 1, 2)
+    attribution_log: list[tuple[str, bytes | None]] = []
+
+    def observe_audio(pcm16, _sample_rate_hz, _detector_identity) -> None:
+        attribution_log.append(("audio", pcm16))
+
+    def advance_fence(*_args):
+        attribution_log.append(("fence", None))
+        return successor
+
+    adapter = _VoiceTurnAdapter(
+        vad=_FakeVad(),
+        gate=gate,
+        coordinator=coordinator,
+        on_commit=_noop_commit,
+        on_accepted_audio=observe_audio,
+        on_completion_fence=advance_fence,
+        candidate_complete_confirmation_seconds=10.0,
+        smart_turn_required=True,
+    )
+    evidence = _EvidenceSpy()
+    adapter._smart_turn_audio_evidence = evidence
+    await adapter.start()
+    try:
+        await adapter.push_audio(
+            generation=1,
+            buffer_epoch=1,
+            utterance_id=1,
+            pcm16=first_pcm,
+            detector_identity=DetectorIngressIdentity(ingress, 1, 1),
+        )
+        await asyncio.wait_for(coordinator.evaluate_started.wait(), 1)
+        await adapter.push_audio(
+            generation=1,
+            buffer_epoch=1,
+            utterance_id=1,
+            pcm16=evaluation_tail_pcm,
+            detector_identity=DetectorIngressIdentity(ingress, 1, 2),
+        )
+        await _eventually(lambda: len(gate.feed_calls) == 2)
+        coordinator.evaluate_release.set()
+        await adapter.wait_idle()
+        assert adapter._pending_complete_confirmation is not None
+        assert attribution_log == [("audio", first_pcm)]
+        assert evidence.accepted == [first_pcm]
+
+        await adapter.push_audio(
+            generation=1,
+            buffer_epoch=1,
+            utterance_id=1,
+            pcm16=confirmation_pcm,
+            detector_identity=DetectorIngressIdentity(ingress, 1, 3),
+        )
+        await adapter.wait_idle()
+        pending = adapter._pending_complete_confirmation
+        assert pending is not None
+        assert attribution_log == [("audio", first_pcm)]
+        assert evidence.accepted == [first_pcm]
+
+        assert await adapter._publish_pending_complete_confirmation(pending)
+
+        assert adapter._identity == successor
+        assert attribution_log == [
+            ("audio", first_pcm),
+            ("fence", None),
+            ("audio", evaluation_tail_pcm),
+            ("audio", confirmation_pcm),
+        ]
+        assert evidence.accepted == [
+            first_pcm,
+            evaluation_tail_pcm,
+            confirmation_pcm,
+        ]
+        assert evidence.completed == [(first_pcm,)]
+        assert evidence.current == [evaluation_tail_pcm, confirmation_pcm]
+        assert coordinator.pushed_audio == [
+            first_pcm,
+            evaluation_tail_pcm,
+            confirmation_pcm,
+            evaluation_tail_pcm,
+            confirmation_pcm,
+        ]
+        assert gate.feed_calls == coordinator.pushed_audio
+    finally:
+        coordinator.evaluate_release.set()
+        await adapter.close()
+
+
+async def test_confirmation_does_not_refeed_pcm_without_identity_advance() -> None:
+    first_pcm = b"\x01\x00" * 160
+    continuation_pcm = b"\x02\x00" * 160
+    ingress = VoiceIngressToken(1, "socket", 1, 1, 1)
+    coordinator = _FakeCoordinator([_complete()])
+    gate = _FakeGate([(SpeechActivityEvent.CANDIDATE_PAUSE,), ()])
+    observed: list[bytes] = []
+    adapter = _VoiceTurnAdapter(
+        vad=_FakeVad(),
+        gate=gate,
+        coordinator=coordinator,
+        on_commit=_noop_commit,
+        on_accepted_audio=lambda pcm16, *_args: observed.append(pcm16),
+        candidate_complete_confirmation_seconds=10.0,
+        smart_turn_required=True,
+    )
+    evidence = _EvidenceSpy()
+    adapter._smart_turn_audio_evidence = evidence
+    await adapter.start()
+    try:
+        for sequence_no, pcm16 in ((1, first_pcm), (2, continuation_pcm)):
+            await adapter.push_audio(
+                generation=1,
+                buffer_epoch=1,
+                utterance_id=1,
+                pcm16=pcm16,
+                detector_identity=DetectorIngressIdentity(ingress, 1, sequence_no),
+            )
+            await adapter.wait_idle()
+        pending = adapter._pending_complete_confirmation
+        assert pending is not None
+        assert observed == [first_pcm]
+        assert evidence.accepted == [first_pcm]
+
+        assert await adapter._publish_pending_complete_confirmation(pending)
+
+        assert observed == [first_pcm, continuation_pcm]
+        assert evidence.accepted == [first_pcm, continuation_pcm]
+        assert evidence.completed == [(first_pcm, continuation_pcm)]
+        assert evidence.current == []
+        assert coordinator.pushed_audio == [first_pcm, continuation_pcm]
+        assert gate.feed_calls == [first_pcm, continuation_pcm]
+    finally:
+        await adapter.close()
+
+
+async def test_confirmation_tail_overflow_uses_shared_backpressure_budget() -> None:
+    ingress = VoiceIngressToken(1, "socket", 1, 1, 1)
+    coordinator = _FakeCoordinator([_complete()])
+    adapter = _VoiceTurnAdapter(
+        vad=_FakeVad(),
+        gate=_FakeGate([(SpeechActivityEvent.CANDIDATE_PAUSE,), (), ()]),
+        coordinator=coordinator,
+        on_commit=_noop_commit,
+        queue_capacity_ms=20,
+        candidate_complete_confirmation_seconds=10.0,
+        smart_turn_required=True,
+    )
+    await adapter.start()
+    try:
+        for sequence_no in (1, 2, 3):
+            await adapter.push_audio(
+                generation=1,
+                buffer_epoch=1,
+                utterance_id=1,
+                pcm16=bytes((sequence_no, 0)) * 160,
+                detector_identity=DetectorIngressIdentity(ingress, 1, sequence_no),
+            )
+            await adapter.wait_idle()
+
+        with pytest.raises(asyncio.QueueFull):
+            await adapter.push_audio(
+                generation=1,
+                buffer_epoch=1,
+                utterance_id=1,
+                pcm16=b"\x04\x00" * (10_030 * 16),
+                detector_identity=DetectorIngressIdentity(ingress, 1, 4),
+            )
+
+        assert adapter.failed is False
+        assert len(coordinator.pushed_audio) == 3
+    finally:
+        await adapter.close()
+
+
+async def test_default_confirmation_window_fits_evaluation_and_confirmation_tail() -> (
+    None
+):
+    frame = b"\x01\x00" * 1_600  # 100 ms of 16 kHz mono PCM16.
+    ingress = VoiceIngressToken(1, "socket", 1, 1, 1)
+    coordinator = _FakeCoordinator([_complete()], block_evaluation=True)
+    adapter = _VoiceTurnAdapter(
+        vad=_FakeVad(),
+        gate=_FakeGate([(SpeechActivityEvent.CANDIDATE_PAUSE,)]),
+        coordinator=coordinator,
+        on_commit=_noop_commit,
+        candidate_complete_confirmation_seconds=1.0,
+        smart_turn_required=True,
+    )
+    await adapter.start()
+    try:
+        await adapter.push_audio(
+            generation=1,
+            buffer_epoch=1,
+            utterance_id=1,
+            pcm16=frame,
+            detector_identity=DetectorIngressIdentity(ingress, 1, 1),
+        )
+        await asyncio.wait_for(coordinator.evaluate_started.wait(), 1)
+        await adapter.push_audio(
+            generation=1,
+            buffer_epoch=1,
+            utterance_id=1,
+            pcm16=frame,
+            detector_identity=DetectorIngressIdentity(ingress, 1, 2),
+        )
+        await _eventually(lambda: len(coordinator.pushed_audio) == 2)
+        coordinator.evaluate_release.set()
+        await adapter.wait_idle()
+        assert adapter._pending_complete_confirmation is not None
+
+        for sequence_no in range(3, 13):
+            await adapter.push_audio(
+                generation=1,
+                buffer_epoch=1,
+                utterance_id=1,
+                pcm16=frame,
+                detector_identity=DetectorIngressIdentity(ingress, 1, sequence_no),
+            )
+            await adapter.wait_idle()
+
+        assert adapter._pending_complete_confirmation is not None
+        assert len(coordinator.pushed_audio) == 12
+    finally:
+        coordinator.evaluate_release.set()
+        await adapter.close()
+
+
+async def test_close_bounds_stalled_pending_completion_callback() -> None:
+    scoped_started = asyncio.Event()
+    never_release = asyncio.Event()
+    ingress = VoiceIngressToken(1, "socket", 1, 1, 1)
+    vad = _FakeVad()
+    coordinator = _FakeCoordinator([_complete()])
+
+    async def stalled_scoped_commit(*_args) -> None:
+        scoped_started.set()
+        await never_release.wait()
+
+    adapter = _VoiceTurnAdapter(
+        vad=vad,
+        gate=_FakeGate([(SpeechActivityEvent.CANDIDATE_PAUSE,)]),
+        coordinator=coordinator,
+        on_commit=_noop_commit,
+        on_scoped_commit=stalled_scoped_commit,
+        candidate_complete_confirmation_seconds=10.0,
+        smart_turn_required=True,
+    )
+    await adapter.start()
+    await adapter.push_audio(
+        generation=1,
+        buffer_epoch=1,
+        utterance_id=1,
+        pcm16=b"\x01\x00" * 160,
+        detector_identity=DetectorIngressIdentity(ingress, 1, 1),
+    )
+    await adapter.wait_idle()
+    assert adapter._pending_complete_confirmation is not None
+
+    await asyncio.wait_for(adapter.close(), 1.5)
+
+    assert scoped_started.is_set()
+    assert (vad.close_calls, coordinator.close_calls) == (1, 1)
+
+
+async def test_close_processes_admitted_continuation_before_pending_complete() -> None:
+    commits: list[tuple[int, int, int]] = []
+    first_pcm = b"\x01\x00" * 160
+    blocker_pcm = b"\x02\x00" * 160
+    continuation_pcm = b"\x03\x00" * 160
+    gate = _BlockingGate(
+        [
+            (SpeechActivityEvent.CANDIDATE_PAUSE,),
+            (),
+            (SpeechActivityEvent.SPEECH_RESUMED,),
+        ],
+        blocked_indices=(1,),
+    )
+    coordinator = _FakeCoordinator([_complete()])
+
+    async def commit(generation: int, buffer_epoch: int, utterance_id: int) -> None:
+        commits.append((generation, buffer_epoch, utterance_id))
+
+    adapter = _VoiceTurnAdapter(
+        vad=_FakeVad(),
+        gate=gate,
+        coordinator=coordinator,
+        on_commit=commit,
+        candidate_complete_confirmation_seconds=10.0,
+        smart_turn_required=True,
+    )
+    await adapter.start()
+    try:
+        await adapter.push_audio(
+            generation=1,
+            buffer_epoch=1,
+            utterance_id=1,
+            pcm16=first_pcm,
+        )
+        await adapter.wait_idle()
+        assert adapter._pending_complete_confirmation is not None
+
+        await adapter.push_audio(
+            generation=1,
+            buffer_epoch=1,
+            utterance_id=1,
+            pcm16=blocker_pcm,
+        )
+        await asyncio.to_thread(gate.started[1].wait, 1)
+        await adapter.push_audio(
+            generation=1,
+            buffer_epoch=1,
+            utterance_id=1,
+            pcm16=continuation_pcm,
+        )
+        close_task = asyncio.create_task(adapter.close())
+        await _eventually(lambda: adapter._queue.qsize() == 2)
+        gate.release[1].set()
+        await asyncio.wait_for(close_task, 1)
+
+        assert gate.feed_calls == [first_pcm, blocker_pcm, continuation_pcm]
+        assert SpeechActivityEvent.SPEECH_RESUMED in coordinator.activity_events
+        assert commits == []
+    finally:
+        gate.release[1].set()
         await adapter.close()
 
 
@@ -851,7 +1392,9 @@ async def test_required_incomplete_rechecks_and_only_complete_commits() -> None:
     await adapter.close()
 
 
-async def test_required_incomplete_blocks_after_max_endpoint_wait_without_commit() -> None:
+async def test_required_incomplete_blocks_after_max_endpoint_wait_without_commit() -> (
+    None
+):
     commits: list[tuple[int, int, int]] = []
 
     async def commit(generation: int, buffer_epoch: int, utterance_id: int) -> None:
@@ -929,9 +1472,7 @@ async def test_semantic_degraded_fallback_is_cancelled_by_speech_resume() -> Non
     async def commit(generation: int, buffer_epoch: int, utterance_id: int) -> None:
         commits.append((generation, buffer_epoch, utterance_id))
 
-    coordinator = _FakeCoordinator(
-        [_failed_evaluation(EvaluationStatus.UNAVAILABLE)]
-    )
+    coordinator = _FakeCoordinator([_failed_evaluation(EvaluationStatus.UNAVAILABLE)])
     adapter = _VoiceTurnAdapter(
         vad=_FakeVad(),
         gate=_FakeGate(

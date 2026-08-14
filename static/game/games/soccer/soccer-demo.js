@@ -13,8 +13,8 @@
     // mini-game 邀请被接受后由 chat.html / Pet 主聊天 window.open 打开本页面，
     // URL 形如 `/soccer_demo?lanlan_name=<active_character>&session_id=<invite_uuid>`。
     // 提前从 query 解出来，覆盖默认 'soccer_demo' 值，避免后端 game route 用错角色。
-    // 直接手敲 /soccer_demo 进来时 query 缺失，沿用旧默认（route_start 内部会调
-    // /api/game/soccer/character 解出当前角色作为兜底，PR #1110 已实现）。
+    // 直接手敲 /soccer_demo 进来时 query 缺失，先通过
+    // /api/game/soccer/character 解出当前角色，再启动台词与 game route 请求。
     (function () {
       var params = null;
       try { params = new URLSearchParams(window.location.search); } catch (_) { params = null; }
@@ -25,9 +25,10 @@
         master_name: '', master_profile_name: '', master_nickname: '', master_display_name: '',
         model_type: 'vrm', live3d_sub_type: 'vrm'
       };
-      if (queryLanlan && !window.lanlan_config.lanlan_name) {
+      if (queryLanlan) {
         window.lanlan_config.lanlan_name = queryLanlan;
       }
+      window.__SoccerResolvedLanlanName = queryLanlan || '';
       // 留个全局让游戏内逻辑可见 invite 来源（例如赛后归档时打个 tag）
       window.__nekoMiniGameInviteSessionId = queryInviteSession || '';
     })();
@@ -188,6 +189,51 @@
         console.log('[soccer_demo] THREE ready');
   })();
 
+    const normalizeSoccerExplicitLanguage = (value) => {
+      const language = String(value || '').trim();
+      return ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'].includes(language)
+        ? language
+        : '';
+    };
+    let soccerCharacterInfoPromise = null;
+    let soccerCharacterExplicitLanguage = '';
+    let soccerCharacterLanguagePreferenceResolved = false;
+    let soccerCharacterLanguageRevision = 0;
+    const ensureSoccerCharacterInfo = () => {
+      if (soccerCharacterInfoPromise) return soccerCharacterInfoPromise;
+      soccerCharacterInfoPromise = (async () => {
+        const languageRevision = soccerCharacterLanguageRevision;
+        const url = new URL('/api/game/soccer/character', window.location.origin);
+        const configuredName = String(window.lanlan_config?.lanlan_name || '').trim();
+        const requestedName = String(window.__SoccerResolvedLanlanName || configuredName).trim();
+        if (requestedName && requestedName !== 'soccer_demo') {
+          url.searchParams.set('lanlan_name', requestedName);
+        }
+        const response = await fetch(url.toString());
+        if (!response.ok) {
+          soccerCharacterInfoPromise = null;
+          return {};
+        }
+        const characterInfo = await response.json();
+        const resolvedName = String(characterInfo?.lanlan_name || '').trim();
+        if (soccerCharacterLanguageRevision === languageRevision
+            && characterInfo?.language_preference_resolved === true) {
+          soccerCharacterExplicitLanguage = normalizeSoccerExplicitLanguage(characterInfo?.language);
+          soccerCharacterLanguagePreferenceResolved = true;
+        }
+        if (resolvedName) {
+          window.__SoccerResolvedLanlanName = resolvedName;
+          if (window.lanlan_config) window.lanlan_config.lanlan_name = resolvedName;
+        }
+        return characterInfo;
+      })().catch((error) => {
+        soccerCharacterInfoPromise = null;
+        console.warn('[soccer_demo] 获取角色信息失败:', error);
+        return {};
+      });
+      return soccerCharacterInfoPromise;
+    };
+
     (async () => {
       const statusEl = document.getElementById('status');
       const soccerLoadingText = (key, fallback) => {
@@ -209,14 +255,7 @@
 
       async function fetchSoccerCharacterInfo() {
         try {
-          const url = new URL('/api/game/soccer/character', window.location.origin);
-          const lanlanName = window.lanlan_config?.lanlan_name || '';
-          if (lanlanName && lanlanName !== 'soccer_demo') {
-            url.searchParams.set('lanlan_name', lanlanName);
-          }
-          const charResp = await fetch(url.toString());
-          if (!charResp.ok) return {};
-          return await charResp.json();
+          return await ensureSoccerCharacterInfo();
         } catch (e) {
           console.warn('[soccer_demo] 获取角色信息失败:', e);
           return {};
@@ -820,7 +859,12 @@
       window.addEventListener('localechange', () => setTimeout(applySoccerI18nFallbacks, 0));
       setTimeout(applySoccerI18nFallbacks, 0);
       const _resolveSpeechLang = () => {
-        const raw = (typeof window.i18next !== 'undefined' && window.i18next.language)
+        let raw = (typeof window.i18next !== 'undefined' && window.i18next.language) || '';
+        if (!raw && typeof localStorage !== 'undefined') {
+          try { raw = localStorage.getItem('i18nextLng') || ''; }
+          catch (_) { raw = ''; }
+        }
+        raw = raw
           || (typeof navigator !== 'undefined' && navigator.language)
           || 'zh-CN';
         const tag = String(raw).toLowerCase();
@@ -834,11 +878,8 @@
         if (tag.startsWith('pt')) return 'pt-BR';
         return raw;
       };
-      // 当前 UI locale（同 app-proactive.js 的 i18nLanguage 三级兜底）。
-      // 后端 _absorb_request_language 优先吃这个字段并回写 mgr.user_language，
-      // 不再依赖 ws greeting_check 的同步时机或全局缓存的 Steam SDK race。
-      // Steam=中文 / 系统=英文 + Steam SDK 启动期 race 失败的场景下，没有这条
-      // 路径 in-game LLM 的 prompt 会跑成英文。
+      // In-game internal templates follow the conversation preference. UI copy
+      // can switch independently without rewriting the character's language.
       window.SoccerCurrentI18nLang = function () {
         try {
           if (typeof window.i18next !== 'undefined'
@@ -856,7 +897,76 @@
         } catch (_) { /* swallow: fetch payload tolerates empty */ }
         return '';
       };
+      window.SoccerExplicitConversationLang = function (characterName) {
+        if (characterName !== _soccerConversationCharacterName()) return '';
+        if (soccerCharacterLanguagePreferenceResolved) {
+          return soccerCharacterExplicitLanguage;
+        }
+        try {
+          if (typeof window.getExplicitConversationLanguagePreference === 'function') {
+            const liveLanguage = normalizeSoccerExplicitLanguage(
+              window.getExplicitConversationLanguagePreference(characterName)
+            );
+            if (liveLanguage) {
+              soccerCharacterExplicitLanguage = liveLanguage;
+              return liveLanguage;
+            }
+          }
+        } catch (_) { /* omit unavailable explicit preference */ }
+        return soccerCharacterExplicitLanguage;
+      };
       const _currentI18nLang = window.SoccerCurrentI18nLang;
+      const _explicitConversationLang = window.SoccerExplicitConversationLang;
+      const _soccerConversationCharacterName = () => {
+        const configuredName = String(window.lanlan_config?.lanlan_name || '').trim();
+        return String(
+          window.__SoccerResolvedLanlanName
+          || (configuredName !== 'soccer_demo' ? configuredName : '')
+          || ''
+        ).trim();
+      };
+      const _updateSoccerCharacterExplicitLanguage = (event, cleared) => {
+        const detail = event?.detail || {};
+        const eventCharacterName = String(detail.character_name || '').trim();
+        const currentCharacterName = _soccerConversationCharacterName();
+        if (!currentCharacterName) {
+          if (eventCharacterName) soccerCharacterLanguageRevision += 1;
+          return;
+        }
+        if (eventCharacterName !== currentCharacterName) return;
+        soccerCharacterLanguageRevision += 1;
+        soccerCharacterExplicitLanguage = cleared
+          ? ''
+          : normalizeSoccerExplicitLanguage(detail.language);
+        soccerCharacterLanguagePreferenceResolved = true;
+      };
+      window.addEventListener('neko:conversation-language-changed', (event) => {
+        _updateSoccerCharacterExplicitLanguage(event, false);
+      });
+      window.addEventListener('neko:conversation-language-cleared', (event) => {
+        _updateSoccerCharacterExplicitLanguage(event, true);
+      });
+      window.addEventListener('storage', (event) => {
+        const characterName = _soccerConversationCharacterName();
+        const storageKey = String(event?.key || '');
+        if (!storageKey.startsWith('nekoConversationLanguage:')) return;
+        if (!characterName) {
+          soccerCharacterLanguageRevision += 1;
+          return;
+        }
+        if (storageKey !== `nekoConversationLanguage:${encodeURIComponent(characterName)}`) return;
+        soccerCharacterLanguageRevision += 1;
+        soccerCharacterExplicitLanguage = normalizeSoccerExplicitLanguage(event.newValue);
+        soccerCharacterLanguagePreferenceResolved = true;
+      });
+      const _conversationLanguagePayload = () => {
+        const payload = {};
+        const explicitLanguage = _explicitConversationLang(_soccerConversationCharacterName());
+        const renderLanguage = _currentI18nLang();
+        if (explicitLanguage) payload.i18n_language = explicitLanguage;
+        if (renderLanguage) payload.render_language = renderLanguage;
+        return payload;
+      };
       const canvas = document.getElementById('game');
       const ctx = canvas.getContext('2d');
       const debugCanvas = document.getElementById('debug');
@@ -2478,14 +2588,17 @@
 
       async function loadGeneratedQuickLines() {
         try {
-          // quick-lines 在 _startGameRoute 之前就开炮，是整个 soccer 流程里第一个会
-          // 命中 LLM 的端点；得自带 i18n_language 让后端 _absorb_request_language
-          // 在 mgr.user_language 还是错的全局缓存值时就把它纠正过来，否则首批 quick
-          // lines 会落英文。
+          await ensureSoccerCharacterInfo();
+          const routeCharacterName = _soccerConversationCharacterName();
+          // quick-lines 在 _startGameRoute 之前就命中 LLM；同时发送显式偏好和
+          // render-only 兜底，让首批台词选对模板又不把 UI 语言持久化成角色偏好。
           const resp = await fetch('/api/game/soccer/quick-lines', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ i18n_language: _currentI18nLang() }),
+            body: JSON.stringify({
+              ...(routeCharacterName ? { lanlan_name: routeCharacterName } : {}),
+              ..._conversationLanguagePayload(),
+            }),
           });
           if (!resp.ok) {
             _recordFallbackDiagnostic('快路径台词生成', {
@@ -3775,7 +3888,7 @@
               session_id: _llm.sessionId,
               ...(_llm.routeLanlanName ? { lanlan_name: _llm.routeLanlanName } : {}),
               ..._soccerGameMemoryPolicyPayload(),
-              i18n_language: _currentI18nLang(),
+              ..._conversationLanguagePayload(),
               event: {
                 ...eventPayload,
                 ..._soccerGameMemoryPolicyPayload(),
@@ -3929,7 +4042,7 @@
         const body = {
           session_id: requestSessionId,
           ...(_llm.routeLanlanName ? { lanlan_name: _llm.routeLanlanName } : {}),
-          i18n_language: _currentI18nLang(),
+          ..._conversationLanguagePayload(),
           currentState: SoccerDemo._snapshot(),
           preGameContext: _llm.preGameContext || null,
           passiveGuardState: _currentPassiveSnapshot(),
@@ -4573,9 +4686,10 @@
           : DEFAULT_GAME_MEMORY_TAIL_COUNT;
         const soccerGameMemoryEnabled = _isGameMemoryEnabled();
         _llm.soccerGameMemoryEnabled = soccerGameMemoryEnabled;
+        const routeLanlanName = _soccerConversationCharacterName();
         return JSON.stringify({
           session_id: _llm.sessionId,
-          ...(_llm.routeLanlanName ? { lanlan_name: _llm.routeLanlanName } : {}),
+          ...(routeLanlanName ? { lanlan_name: routeLanlanName } : {}),
           currentState: SoccerDemo._snapshot(),
           pageVisible,
           visibilityState,
@@ -4587,10 +4701,9 @@
           gameStartedElapsedMs,
           game_started_elapsed_ms: gameStartedElapsedMs,
           gameStartedAtEpochMs: Math.round(Number(_llm.gameStartedAtEpochMs || 0)),
-          // 见 _currentI18nLang 注释：把前端 i18n 真值随 route/heartbeat/start/end/
-          // voice-transcript 一起捎给后端，后端 _absorb_request_language 自愈
-          // mgr.user_language。
-          i18n_language: _currentI18nLang(),
+          // 显式角色偏好与 render-only 兜底分开发送；后端只允许前者更新
+          // mgr.user_language，后者仅用于当前请求的模板选择。
+          ..._conversationLanguagePayload(),
           ...extra,
         });
       }
@@ -4796,6 +4909,7 @@
           try {
             window.__SoccerLoading?.beginStart?.(_i18n('loading.beginStartDefault', '分析开局上下文…'));
             resetSoccerSessionDebugLogEnableState();
+            await ensureSoccerCharacterInfo();
             const resp = await fetch('/api/game/soccer/route/start', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
@@ -4805,6 +4919,9 @@
             if (data.ok) {
               _enableSoccerSessionDebugLogAfterRouteStart();
               _llm.routeLanlanName = data.state?.lanlan_name || _llm.routeLanlanName || '';
+              if (_llm.routeLanlanName) {
+                window.__SoccerResolvedLanlanName = _llm.routeLanlanName;
+              }
               console.log('[SoccerRoute] 已接管主语音入口/主聊天窗:', data.state);
               _applyPreGameContext(data.state);
               if (data.state?.game_external_voice_route_active) {
@@ -5121,7 +5238,7 @@
             ...(_llm.routeLanlanName ? { lanlan_name: _llm.routeLanlanName } : {}),
             state: stateNow,
             pendingItems: safeItems,
-            i18n_language: _currentI18nLang(),
+            ..._conversationLanguagePayload(),
           });
           const postWithHeaders = (headers) => fetch('/api/game/soccer/realtime-context', {
             method: 'POST',
@@ -5164,7 +5281,7 @@
               turn_id: `game-mirror-${requestId}`,
               finalize_turn: shouldFinalizeTurn,
               line: clean,
-              i18n_language: _currentI18nLang(),
+              ..._conversationLanguagePayload(),
               event: {
                 kind: meta.kind || 'mailbox',
                 round: meta.round,
@@ -5232,7 +5349,7 @@
               voice_arbiter_reason: voiceArbiterReason,
               line,
               state: stateNow,
-              i18n_language: _currentI18nLang(),
+              ..._conversationLanguagePayload(),
               event: {
                 kind: meta.kind || 'mailbox',
                 round: meta.round,
@@ -5796,7 +5913,7 @@
               session_id: _llm.sessionId,
               ...(_llm.routeLanlanName ? { lanlan_name: _llm.routeLanlanName } : {}),
               ..._soccerGameMemoryPolicyPayload(),
-              i18n_language: _currentI18nLang(),
+              ..._conversationLanguagePayload(),
               event: {
                 ...eventPayload,
                 ..._soccerGameMemoryPolicyPayload(),
@@ -6015,7 +6132,7 @@
             body: JSON.stringify({
               session_id: _llm.sessionId,
               ...(_llm.routeLanlanName ? { lanlan_name: _llm.routeLanlanName } : {}),
-              i18n_language: _currentI18nLang(),
+              ..._conversationLanguagePayload(),
             }),
           });
           if (!resp.ok) return;

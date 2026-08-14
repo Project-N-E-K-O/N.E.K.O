@@ -37,6 +37,7 @@ AND the pre-existing fail-closes — while direct-await tests stayed green.
 its cancel set; ``assert not swap_task.cancelled()`` pins that guard.
 """
 import asyncio
+import time
 
 import pytest
 
@@ -44,6 +45,7 @@ import main_logic.core as core_module
 from main_logic.omni_offline_client import OmniOfflineClient
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.proactive_delivery import (
+    CALLBACK_EXPIRES_AT_KEY,
     DELIVERY_ACK_FUTURE_KEY,
     DELIVERY_RETRACTED_KEY,
     SWAP_PRIME_DELIVERY_CLAIM_KEY,
@@ -395,6 +397,28 @@ async def _run_swap_as_final_swap_task(mgr):
     return task
 
 
+@pytest.mark.asyncio
+async def test_final_swap_drops_expired_orphan_extra_before_render():
+    """An orphan voice mirror expiring during warm-up is never primed."""
+    mgr = _make_swap_manager()
+    old_session = _FakeSession("old")
+    new_session = _FakeSession("pending")
+    mgr.session = old_session
+    mgr.pending_session = new_session
+    mgr.is_hot_swap_imminent = True
+    mgr.message_handler_task = None
+    extra = _extra_entry("id-expired", "stale event")
+    extra[CALLBACK_EXPIRES_AT_KEY] = time.monotonic() - 1
+    mgr.pending_extra_replies = [extra]
+
+    swap_task = await _run_swap_as_final_swap_task(mgr)
+
+    assert not swap_task.cancelled()
+    assert mgr.pending_extra_replies == []
+    assert new_session.prime_calls
+    assert all("stale event" not in text for text, _skipped in new_session.prime_calls)
+
+
 def _passive_callback(summary, *, coalesce_key=""):
     return {
         "event": "agent_task_callback",
@@ -419,6 +443,49 @@ def _install_passive_prime_barrier(session, *, expected_text):
 
     session.prime_context = _prime
     return prime_entered, allow_prime
+
+
+@pytest.mark.asyncio
+async def test_final_swap_drops_passive_callback_expired_during_initial_prime():
+    mgr = _make_swap_manager()
+    mgr.pending_agent_callbacks = []
+    mgr._normalize_context_text_for_source = lambda _source, text: text
+    old_session = _FakeSession("old")
+    new_session = _make_fake_realtime_session("pending")
+    initial_prime_entered = asyncio.Event()
+    allow_initial_prime = asyncio.Event()
+
+    async def _prime(text, *, skipped=False):
+        new_session.prime_calls.append((text, skipped))
+        if len(new_session.prime_calls) == 1:
+            initial_prime_entered.set()
+            await allow_initial_prime.wait()
+
+    new_session.prime_context = _prime
+    mgr.session = old_session
+    mgr.pending_session = new_session
+    mgr.is_hot_swap_imminent = True
+
+    delivery_ack = asyncio.get_running_loop().create_future()
+    callback = _passive_callback("expires during initial prime")
+    callback[CALLBACK_EXPIRES_AT_KEY] = time.monotonic() + 60
+    callback[DELIVERY_ACK_FUTURE_KEY] = delivery_ack
+    mgr.enqueue_agent_callback(callback)
+
+    mgr.final_swap_task = asyncio.create_task(mgr._perform_final_swap_sequence())
+    swap_task = mgr.final_swap_task
+    await asyncio.wait_for(initial_prime_entered.wait(), timeout=5)
+    callback[CALLBACK_EXPIRES_AT_KEY] = time.monotonic() - 1
+    allow_initial_prime.set()
+    await asyncio.wait_for(swap_task, timeout=10)
+    try:
+        assert mgr.session is new_session
+        assert len(new_session.prime_calls) == 1
+        assert "expires during initial prime" not in new_session.prime_calls[0][0]
+        assert delivery_ack.done() and delivery_ack.result() is False
+        assert callback not in mgr.pending_agent_callbacks
+    finally:
+        await _drain_task(mgr.message_handler_task)
 
 
 @pytest.mark.asyncio
@@ -586,7 +653,7 @@ async def test_final_swap_retracted_claim_aborts_pending_session():
     legacy_extra = "legacy plain-string extra"
     mgr.pending_extra_replies.extend([legacy_extra, mirror])
     callback[DELIVERY_RETRACTED_KEY] = True
-    mgr._purge_retracted_agent_callbacks()
+    mgr._purge_undeliverable_callbacks()
     assert mgr.pending_agent_callbacks == [callback]
     assert mgr.pending_extra_replies == [legacy_extra, mirror]
     assert callback.get(SWAP_PRIME_DELIVERY_CLAIM_KEY) is True
@@ -646,7 +713,7 @@ async def test_final_swap_rechecks_retraction_after_core_voice_lock_wait():
         allow_prime.set()
         await asyncio.wait_for(voice_lock.entered.wait(), timeout=5)
         callback[DELIVERY_RETRACTED_KEY] = True
-        mgr._purge_retracted_agent_callbacks()
+        mgr._purge_undeliverable_callbacks()
         assert callback.get(SWAP_PRIME_DELIVERY_CLAIM_KEY) is True
         voice_lock.release.set()
         await asyncio.wait_for(swap_task, timeout=10)
@@ -703,7 +770,7 @@ async def test_final_swap_rechecks_retraction_after_waiting_for_promote_lock():
         allow_prime.set()
         await asyncio.wait_for(old_close_complete.wait(), timeout=5)
         callback[DELIVERY_RETRACTED_KEY] = True
-        mgr._purge_retracted_agent_callbacks()
+        mgr._purge_undeliverable_callbacks()
         assert callback.get(SWAP_PRIME_DELIVERY_CLAIM_KEY) is True
     finally:
         mgr.lock.release()
@@ -1013,7 +1080,7 @@ async def test_final_swap_abort_leaves_retracted_extras_purgeable():
 
     assert not swap_task.cancelled()
     # 中止后条目仍在队列（原地保留），常规 purge 照常清掉窗口期内 retract 的那条
-    mgr._purge_retracted_agent_callbacks()
+    mgr._purge_undeliverable_callbacks()
     assert mgr.pending_extra_replies == [extra_kept], \
         "a retraction inside the swap window must remain purgeable after the abort"
 

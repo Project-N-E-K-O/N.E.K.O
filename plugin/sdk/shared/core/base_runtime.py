@@ -76,8 +76,20 @@ def resolve_runtime_data_root() -> Path:
     return policy_root or anchor_root
 
 
+def resolve_plugin_storage_dir(ctx: object) -> Path:
+    return resolve_runtime_data_root() / "plugins" / _safe_plugin_dirname(getattr(ctx, "plugin_id", "plugin"))
+
+
 def resolve_plugin_data_dir(ctx: object) -> Path:
-    return resolve_runtime_data_root() / "plugins" / _safe_plugin_dirname(getattr(ctx, "plugin_id", "plugin")) / "data"
+    return resolve_plugin_storage_dir(ctx) / "data"
+
+
+def resolve_plugin_cache_dir(ctx: object) -> Path:
+    return resolve_plugin_storage_dir(ctx) / "cache"
+
+
+def resolve_plugin_runtime_config_path(ctx: object) -> Path:
+    return resolve_plugin_storage_dir(ctx) / "config" / "plugin.toml"
 
 
 def resolve_effective_config(ctx: object) -> dict[str, object]:
@@ -124,10 +136,13 @@ def setup_plugin_file_logging(
 
 
 __all__ = [
+    "resolve_plugin_cache_dir",
     "resolve_db_config",
     "resolve_effective_config",
     "resolve_plugin_data_dir",
     "resolve_plugin_dir",
+    "resolve_plugin_runtime_config_path",
+    "resolve_plugin_storage_dir",
     "resolve_runtime_data_root",
     "resolve_state_backend",
     "resolve_store_enabled",

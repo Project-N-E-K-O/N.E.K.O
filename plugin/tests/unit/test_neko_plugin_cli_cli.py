@@ -108,6 +108,29 @@ def test_cli_build_inspect_verify_and_install(tmp_path: Path, capsys: pytest.Cap
     assert "payload_hash_verified=True" in captured.out
 
 
+def test_cli_build_profile_prefers_config_example_over_legacy_manifest_config(tmp_path: Path) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    (plugin_dir / "config.example.toml").write_text(
+        "[plugin_runtime]\n"
+        "enabled = true\n"
+        "auto_start = true\n"
+        "\n"
+        "[cli_demo]\n"
+        'token = "portable-default"\n',
+        encoding="utf-8",
+    )
+    package_path = tmp_path / "cli_demo.neko-plugin"
+
+    assert neko_plugin_cli.main(["build", str(plugin_dir), "-o", str(package_path)]) == 0
+
+    with zipfile.ZipFile(package_path) as archive:
+        assert "payload/plugins/cli_demo/config.example.toml" in archive.namelist()
+        profile = archive.read("payload/profiles/default.toml").decode("utf-8")
+    assert "auto_start = true" in profile
+    assert 'token = "portable-default"' in profile
+    assert 'token = "demo"' not in profile
+
+
 def test_cli_verify_fails_when_package_hash_is_tampered(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -232,6 +255,66 @@ def test_validate_plugin_dir_reports_invalid_toml_without_crashing(tmp_path: Pat
     issues = validate_plugin_dir(plugin_dir)
 
     assert any(level == "error" and "plugin.toml could not be read" in message for level, message in issues)
+
+
+def test_validate_plugin_dir_reports_invalid_config_example_without_crashing(tmp_path: Path) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    (plugin_dir / "config.example.toml").write_text("[plugin_runtime\n", encoding="utf-8")
+
+    issues = validate_plugin_dir(plugin_dir)
+
+    assert any(
+        level == "error" and "config.example.toml could not be read" in message
+        for level, message in issues
+    )
+
+
+def test_validate_plugin_dir_rejects_plugin_identity_in_config_example(tmp_path: Path) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    (plugin_dir / "config.example.toml").write_text(
+        "[plugin]\n"
+        'id = "hijack"\n'
+        "\n"
+        "[plugin_runtime]\n"
+        "enabled = true\n",
+        encoding="utf-8",
+    )
+
+    issues = validate_plugin_dir(plugin_dir)
+
+    assert any(
+        level == "error" and "config.example.toml must not contain [plugin]" in message
+        for level, message in issues
+    )
+
+
+def test_validate_plugin_dir_checks_runtime_fields_in_config_example(tmp_path: Path) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    (plugin_dir / "config.example.toml").write_text(
+        "[plugin_runtime]\n"
+        "enabled = true\n"
+        "timeout = 0\n",
+        encoding="utf-8",
+    )
+
+    issues = validate_plugin_dir(plugin_dir)
+
+    assert any(
+        level == "error" and "[plugin_runtime].timeout must be > 0" in message
+        for level, message in issues
+    )
+
+
+def test_validate_plugin_dir_warns_without_rejecting_legacy_mixed_config(tmp_path: Path) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+
+    issues = validate_plugin_dir(plugin_dir)
+
+    assert not any(level == "error" for level, _message in issues)
+    assert any(
+        level == "warning" and "move mutable defaults to config.example.toml" in message
+        for level, message in issues
+    )
 
 
 def test_validate_plugin_dir_reports_invalid_utf8_optional_files(tmp_path: Path) -> None:
@@ -623,8 +706,11 @@ def test_init_repo_uses_market_repository_name_and_keeps_plugin_id(
     assert repo_dir.is_dir()
     assert not (tmp_path / "market_demo").exists()
     plugin_toml_text = (repo_dir / "plugin.toml").read_text(encoding="utf-8")
+    config_example_text = (repo_dir / "config.example.toml").read_text(encoding="utf-8")
     assert 'id = "market_demo"' in plugin_toml_text
     assert 'entry = "plugin.plugins.market_demo:MarketDemoPlugin"' in plugin_toml_text
+    assert "[plugin_runtime]" not in plugin_toml_text
+    assert config_example_text == "[plugin_runtime]\nenabled = true\nauto_start = false\n"
     assert "store.db" in (repo_dir / ".gitignore").read_text(encoding="utf-8")
     assert (repo_dir / ".github" / "workflows" / "verify.yml").is_file()
     release_workflow = repo_dir / ".github" / "workflows" / "release.yml"

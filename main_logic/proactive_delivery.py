@@ -66,6 +66,7 @@ logger = logging.getLogger("main_logic.proactive_delivery")
 
 DELIVERY_ACK_FUTURE_KEY = "_proactive_delivery_ack_future"
 DELIVERY_RETRACTED_KEY = "_proactive_delivery_retracted"
+CALLBACK_EXPIRES_AT_KEY = "_expires_at_monotonic"
 VOICE_DELIVERY_COMMITTED_KEY = "_voice_delivery_committed"
 SWAP_PRIME_DELIVERY_CLAIM_KEY = "_swap_prime_delivery_claimed"
 
@@ -80,6 +81,20 @@ def resolve_callback_delivery_ack(callback: dict, delivered: bool) -> None:
             future.set_result(bool(delivered))
     except Exception:
         logger.debug("delivery ack future resolution failed", exc_info=True)
+
+
+def callback_is_expired(callback: dict, *, now: Optional[float] = None) -> bool:
+    """Return whether a host-stamped callback deadline has elapsed."""
+    deadline = callback.get(CALLBACK_EXPIRES_AT_KEY)
+    if isinstance(deadline, bool):
+        return False
+    try:
+        deadline_value = float(deadline)
+    except (TypeError, ValueError, OverflowError):
+        return False
+    if not 0.0 < deadline_value < float("inf"):
+        return False
+    return (time.monotonic() if now is None else now) >= deadline_value
 
 
 def effective_priority(raw: Any) -> int:
@@ -289,7 +304,7 @@ class ProactiveDeliveryManager:
         behind earlier low-priority ones on redelivery."""
         ordered = sorted(self._queue, key=lambda c: c.sort_key)
         self._queue = []
-        return [c.callback for c in ordered]
+        return [cue.callback for cue in ordered]
 
     def latest_queued_coalesce_seq(self, key: str) -> Optional[int]:
         """Return the newest submit seq still waiting under ``key``."""
@@ -321,16 +336,17 @@ class ProactiveDeliveryManager:
         self._pump_handle = loop.call_later(max(0.0, delay), self._pump)
 
     def _drop_stale(self) -> None:
-        if self._ttl_s <= 0 or not self._queue:
+        if not self._queue:
             return
         now = self._now()
         fresh: list[_QueuedCue] = []
         for c in self._queue:
-            if now - c.submitted_at > self._ttl_s:
+            ttl_stale = self._ttl_s > 0 and now - c.submitted_at > self._ttl_s
+            if ttl_stale:
                 resolve_callback_delivery_ack(c.callback, False)
                 logger.info(
-                    "[proactive%s] dropping stale cue key=%r age=%.1fs (ttl=%.0fs)",
-                    self._suffix(), c.coalesce_key, now - c.submitted_at, self._ttl_s,
+                    "[proactive%s] dropping stale cue key=%r age=%.1fs reason=ttl",
+                    self._suffix(), c.coalesce_key, now - c.submitted_at,
                 )
             else:
                 fresh.append(c)
@@ -422,7 +438,11 @@ class ProactiveDeliveryManager:
         self._schedule_pump(self._inflight_timeout_s)
 
     async def _run_deliver(self, callbacks: list[dict]) -> None:
-        callbacks = [cb for cb in callbacks if not cb.get(DELIVERY_RETRACTED_KEY)]
+        callbacks = [
+            callback
+            for callback in callbacks
+            if not callback.get(DELIVERY_RETRACTED_KEY)
+        ]
         if not callbacks:
             self._inflight = False
             self._schedule_pump(0.0)

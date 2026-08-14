@@ -60,14 +60,16 @@ from ..shared_state import (
     get_initialize_character_data,
     get_init_one_catgirl,
 )
-from ..workshop_router import _ugc_sync_lock
 from utils.config_manager import (
     get_reserved,
 )
 from utils.file_utils import atomic_write_json_async, read_json_async
 from utils.frontend_utils import find_model_directory, is_user_imported_model
 from utils.cloudsave_runtime import MaintenanceModeError
-from utils.character_memory import asave_characters_with_recent_activation
+from utils.character_memory import (
+    asave_characters_with_recent_activation,
+    character_config_mutation_lock,
+)
 from config import (
     BUILTIN_LIVE2D_MODEL_NAMES,
 )
@@ -194,9 +196,25 @@ async def save_catgirl_to_model_folder(request: Request):
 
 @router.post('/character-card/save')
 async def save_character_card(request: Request):
-    """Save the character card to characters.json."""
+    # Parse the body BEFORE taking the transaction: ``request.json()`` awaits
+    # the client's socket, and a slow or stalled upload would otherwise hold the
+    # process-wide characters.json lock for the whole transfer, blocking every
+    # other character mutation (add/rename/delete/import, workshop sync,
+    # language preference).  Same ordering as rename_catgirl / add_catgirl.
     try:
         data = await request.json()
+    except Exception as e:
+        logger.warning(f"解析角色卡保存请求体失败: {e}")
+        return JSONResponse({"success": False, "error": "请求体必须是合法的JSON格式"}, status_code=400)
+    if not isinstance(data, dict):
+        return JSONResponse({"success": False, "error": "请求体必须是JSON对象"}, status_code=400)
+    async with character_config_mutation_lock:
+        return await _save_character_card_serialized(data)
+
+
+async def _save_character_card_serialized(data: dict):
+    """Save the character card to characters.json."""
+    try:
         chara_data = data.get('charaData')
         character_card_name = data.get('character_card_name')
 
@@ -816,7 +834,7 @@ async def import_character_card(
 
         _config_manager = get_config_manager()
 
-        async with _ugc_sync_lock:
+        async with character_config_mutation_lock:
             characters = await _config_manager.aload_characters()
 
             # 检查是否已存在同名角色，使用 Windows 风格的命名 (x)

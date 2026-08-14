@@ -113,7 +113,7 @@ from .ocr_window_scanner import (
 
 from .ocr_bridge_writer import *
 from .ocr_manager_capture import CaptureMixin
-from .ocr_manager_text import TextMixin
+from .ocr_manager_text import DialoguePipeline, TextMixin
 from .ocr_manager_poll import PollMixin
 from .ocr_manager_observe import ObserveMixin
 from .ocr_manager_runtime import RuntimeMixin
@@ -147,6 +147,54 @@ class OcrReaderManager(
     ObserveMixin,
     RuntimeMixin,
 ):
+    @property
+    def _default_ocr_state(self) -> _StableOcrTextState:
+        return self._dialogue_pipeline.state.default_text_state
+
+    @_default_ocr_state.setter
+    def _default_ocr_state(self, value: _StableOcrTextState) -> None:
+        self._dialogue_pipeline.state.default_text_state = value
+
+    @property
+    def _aihong_menu_ocr_state(self) -> _StableOcrTextState:
+        return self._dialogue_pipeline.state.menu_text_state
+
+    @_aihong_menu_ocr_state.setter
+    def _aihong_menu_ocr_state(self, value: _StableOcrTextState) -> None:
+        self._dialogue_pipeline.state.menu_text_state = value
+
+    @property
+    def _last_observed_line(self) -> dict[str, Any]:
+        return self._dialogue_pipeline.state.observed_line
+
+    @_last_observed_line.setter
+    def _last_observed_line(self, value: dict[str, Any]) -> None:
+        self._dialogue_pipeline.state.observed_line = dict(value or {})
+
+    @property
+    def _last_stable_line(self) -> dict[str, Any]:
+        return self._dialogue_pipeline.state.stable_line
+
+    @_last_stable_line.setter
+    def _last_stable_line(self, value: dict[str, Any]) -> None:
+        self._dialogue_pipeline.state.stable_line = dict(value or {})
+
+    @property
+    def _last_title_narration_key(self) -> str:
+        return self._dialogue_pipeline.state.title_narration_key
+
+    @_last_title_narration_key.setter
+    def _last_title_narration_key(self, value: str) -> None:
+        self._dialogue_pipeline.state.title_narration_key = str(value or "")
+
+    @property
+    def _title_narration_streak(self) -> int:
+        return self._dialogue_pipeline.state.title_narration_streak
+
+    @_title_narration_streak.setter
+    def _title_narration_streak(self, value: int) -> None:
+        self._dialogue_pipeline.state.title_narration_streak = max(0, int(value))
+
     def __init__(
         self,
         *,
@@ -161,6 +209,8 @@ class OcrReaderManager(
         rapidocr_lang_changed_callback: Callable[[str], None] | None = None,
     ) -> None:
         self._logger = logger
+        self._dialogue_pipeline = DialoguePipeline()
+        self._last_dialogue_decision = None
         self._config = config
         self._time_fn = time_fn or time.time
         platform_checker = platform_fn or _is_windows_platform
@@ -196,8 +246,6 @@ class OcrReaderManager(
         self._last_seen_memory_reader_text_seq = 0
         self._last_heartbeat_at = 0.0
         self._attached_window: DetectedGameWindow | None = None
-        self._default_ocr_state = _StableOcrTextState()
-        self._aihong_menu_ocr_state = _StableOcrTextState()
         self._aihong_stage = _AIHONG_DIALOGUE_STAGE
         self._aihong_dialogue_idle_polls = 0
         self._aihong_menu_missing_polls = 0
@@ -220,8 +268,8 @@ class OcrReaderManager(
         self._last_rejected_capture_backend = ""
         self._ocr_capture_content_trusted = True
         self._ocr_capture_rejected_reason = ""
-        self._last_observed_line: dict[str, Any] = {}
-        self._last_stable_line: dict[str, Any] = {}
+        self._capture_region_occluded = False
+        self._capture_target_foreground = False
         self._last_capture_image_hash = ""
         self._last_capture_source_size: dict[str, float] = {}
         self._last_capture_rect: dict[str, float] = {}
@@ -283,12 +331,18 @@ class OcrReaderManager(
         self._ocr_lang_detector = _OcrLangDetector()
         self._ocr_lang_cooldown_seconds = 60.0
         self.vision_classifier = None
-        self._vision_classifier_detail = "disabled"
+        self._vision_classifier_detail = (
+            "pending"
+            if bool(getattr(config, "vision_classifier_enabled", False))
+            else "disabled"
+        )
         self._vision_classifier_last_label = ""
         self._vision_classifier_last_confidence = 0.0
         self._vision_classifier_last_latency_ms = 0.0
         self._vision_classifier_tick_count = 0
-        self._initialize_vision_classifier()
+        self._vision_classifier_init_lock = threading.Lock()
+        self._vision_classifier_initialized = False
+        self._vision_classifier_shutdown_requested = False
         self._backend_plan_cache_key: tuple[str, ...] | None = None
         self._backend_plan_cache_at = 0.0
         self._backend_plan_cache: SelectedOcrBackendPlan | None = None
@@ -306,7 +360,30 @@ class OcrReaderManager(
         self._window_inventory_cache_at = 0.0
         self._window_inventory_cache: list[DetectedGameWindow] = []
 
+    def initialize_vision_classifier_if_needed(self) -> None:
+        """Load the optional ONNX classifier once, outside plugin startup.
+
+        ``GalgamePlugin.bridge_tick`` invokes this after the host has already
+        received the plugin's ready result.  Keeping the one-time native ORT
+        session construction behind this lock also prevents the bridge and
+        fast OCR loops from racing a future deferred initialization.
+        """
+        with self._vision_classifier_init_lock:
+            if self._vision_classifier_shutdown_requested:
+                self._vision_classifier_detail = "shutdown"
+                return
+            if self._vision_classifier_initialized:
+                return
+            self._initialize_vision_classifier()
+
+    def vision_classifier_initialization_pending(self) -> bool:
+        return bool(
+            not self._vision_classifier_shutdown_requested
+            and not self._vision_classifier_initialized
+        )
+
     def _initialize_vision_classifier(self) -> None:
+        self._vision_classifier_initialized = True
         self.vision_classifier = None
         self._vision_classifier_detail = "disabled"
         self._vision_classifier_last_label = ""
@@ -358,6 +435,31 @@ class OcrReaderManager(
             self._vision_classifier_detail = "load_failed"
             self._log_warning("galgame vision classifier failed to load: {}", exc)
 
+    def _release_vision_classifier(self, *, detail: str) -> None:
+        init_lock = getattr(self, "_vision_classifier_init_lock", None)
+        if init_lock is None:
+            # Teardown is intentionally safe for a manager whose construction
+            # stopped before the lazy-classifier state was fully installed.
+            init_lock = threading.Lock()
+            self._vision_classifier_init_lock = init_lock
+        with init_lock:
+            classifier = getattr(self, "vision_classifier", None)
+            self.vision_classifier = None
+            self._vision_classifier_initialized = False
+            self._vision_classifier_detail = str(detail or "disabled")
+            self._vision_classifier_last_label = ""
+            self._vision_classifier_last_confidence = 0.0
+            self._vision_classifier_last_latency_ms = 0.0
+            self._vision_classifier_tick_count = 0
+            close_classifier = getattr(classifier, "close", None)
+            if callable(close_classifier):
+                try:
+                    close_classifier()
+                except Exception as exc:
+                    self._log_warning(
+                        "ocr_reader vision classifier close failed: {}", exc
+                    )
+
     @staticmethod
     def _vision_classifier_config_key(config: GalgameConfig) -> tuple[bool, str, str, tuple[int, int], float]:
         return (
@@ -407,14 +509,8 @@ class OcrReaderManager(
         # 引用先摘掉再 close：close 失败也不能把一个已经宣告释放的 classifier
         # 继续挂在 self 上。getattr 兜底与本文件对 _logger 的取法一致——收尾
         # 路径不该假设自己被构造完整。
-        classifier = getattr(self, "vision_classifier", None)
-        self.vision_classifier = None
-        close_classifier = getattr(classifier, "close", None)
-        if callable(close_classifier):
-            try:
-                close_classifier()
-            except Exception as exc:
-                self._log_warning("ocr_reader vision classifier close failed: {}", exc)
+        self._vision_classifier_shutdown_requested = True
+        self._release_vision_classifier(detail="shutdown")
 
     def __enter__(self) -> "OcrReaderManager":
         return self
@@ -470,11 +566,11 @@ class OcrReaderManager(
         self._config = config
         self._runtime.enabled = config.ocr_reader_enabled
         if old_vision_key != self._vision_classifier_config_key(config):
-            classifier = self.vision_classifier
-            close_classifier = getattr(classifier, "close", None)
-            if callable(close_classifier):
-                close_classifier()
-            self._initialize_vision_classifier()
+            self._release_vision_classifier(
+                detail=(
+                    "pending" if bool(config.vision_classifier_enabled) else "disabled"
+                )
+            )
         if not bool(config.llm_vision_enabled):
             self._clear_vision_snapshot()
         if float(getattr(config, "ocr_reader_known_screen_timeout_seconds", 0.0) or 0.0) <= 0.0:

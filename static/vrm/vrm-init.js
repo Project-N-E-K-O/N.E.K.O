@@ -668,6 +668,13 @@ function _clearVrmIdleSchedule() {
 
 function _startVrmIdleRotation(urls) {
     _stopVrmIdleRotation();
+    // The semantic motion state machine owns VRMA transitions on the main 3D
+    // surface. Keep the currently loaded idle, but never schedule another idle
+    // clip behind the state machine's back.
+    if (window.__nekoMotionOwnsVrmPlayback === true) {
+        console.info('[VRM IdleRotation] disabled while semantic motion owns playback');
+        return;
+    }
     if (!Array.isArray(urls) || urls.length < 2) return;
 
     function pickRandom() {

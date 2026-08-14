@@ -126,8 +126,27 @@ def _foreground_window_handle() -> int:
     return _ocr_reader_module._foreground_window_handle()
 
 
+@dataclass(frozen=True, slots=True)
+class SceneObservation:
+    """Visual facts supplied to dialogue processing without dialogue policy."""
+
+    raw_screen_type: str
+    background_hash: str | None
+    pending_scene_id: str | None
+    capture_trusted: bool
+
+
 class ObserveMixin:
     """窗口扫描、目标匹配、前景检测、vision snapshot"""
+
+    def scene_observation(self) -> SceneObservation:
+        writer_state = self._writer.current_state or {}
+        return SceneObservation(
+            raw_screen_type=str(writer_state.get("screen_type") or ""),
+            background_hash=str(self._last_background_hash or "") or None,
+            pending_scene_id=str(self._pending_visual_scene_hash or "") or None,
+            capture_trusted=bool(self._ocr_capture_content_trusted),
+        )
 
     def _observe_memory_reader_text_progress(
         self,
@@ -323,15 +342,9 @@ class ObserveMixin:
         diagnostic: str,
         set_commit_diagnostic: bool = False,
     ) -> None:
-        last_observed_line = dict(self._last_observed_line or {})
-        last_stable_line = dict(self._last_stable_line or {})
-        consecutive_no_text_polls = int(self._consecutive_no_text_polls or 0)
-        self._reset_default_ocr_state()
-        self._last_observed_line = last_observed_line
-        self._last_stable_line = last_stable_line
-        self._consecutive_no_text_polls = consecutive_no_text_polls
         self._last_background_hash = background_hash
-        self._reset_aihong_menu_state()
+        self._pending_background_hash = ""
+        self._pending_background_change_count = 0
         self._pending_visual_scene_hash = background_hash
         self._pending_visual_scene_at = now
         self._pending_visual_scene_distance = distance
@@ -385,10 +398,6 @@ class ObserveMixin:
             now=now,
             diagnostic=diagnostic,
             set_commit_diagnostic=True,
-        )
-        self._commit_pending_visual_scene(
-            now=now,
-            diagnostic=diagnostic,
         )
         self._clear_pending_background_candidate(diagnostic=diagnostic)
 
@@ -563,22 +572,23 @@ class ObserveMixin:
         if not self._pending_visual_scene_hash:
             return
         if int(self._pending_visual_scene_distance or 0) >= _BACKGROUND_SCENE_CHANGE_FORCE_DISTANCE:
-            self._commit_pending_visual_scene(
-                now=now,
-                diagnostic=self._pending_visual_scene_commit_diagnostic
-                or "pending_scene_committed_by_force_background_distance",
+            self._pending_visual_scene_commit_diagnostic = (
+                self._pending_visual_scene_commit_diagnostic
+                or "pending_scene_confirmed_by_force_background_distance"
             )
             return
         state = getattr(self._writer, "_state", {})
         has_choices = bool((state or {}).get("choices")) if isinstance(state, dict) else False
         screen_type = str((state or {}).get("screen_type") or "") if isinstance(state, dict) else ""
         if int(self._consecutive_no_text_polls or 0) >= _DIALOGUE_BLOCK_NO_TEXT_GAP_POLLS:
-            self._commit_pending_visual_scene(
-                now=now,
-                diagnostic="pending_scene_committed_after_no_text_gap",
+            self._pending_visual_scene_commit_diagnostic = (
+                "pending_scene_confirmed_after_no_text_gap"
             )
             return
-        previous_line = self._last_stable_line or self._last_observed_line
+        # A tentative line captured while a visual boundary is pending belongs to
+        # the new-scene confirmation attempt. It must not be mistaken for the
+        # previous scene's dialogue on the repeat capture.
+        previous_line = self._last_stable_line
         if previous_line and self._is_dialogue_block_continuation(
             previous_line,
             text or cleaned_text,
@@ -591,10 +601,8 @@ class ObserveMixin:
                 diagnostic="pending_scene_suppressed_by_dialogue_continuation"
             )
             return
-        self._commit_pending_visual_scene(
-            now=now,
-            diagnostic=self._pending_visual_scene_commit_diagnostic
-            or commit_diagnostic,
+        self._pending_visual_scene_commit_diagnostic = (
+            self._pending_visual_scene_commit_diagnostic or commit_diagnostic
         )
 
 

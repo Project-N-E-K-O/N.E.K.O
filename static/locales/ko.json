@@ -2201,6 +2201,14 @@
         "voiceNotSet": "지정된 음성 없음",
         "voiceSetting": "음성 설정",
         "personalitySetting": "성격 설정",
+        "languagePreference": "언어 선호",
+        "languagePreferenceDescription": "이 설정은 강제되지 않습니다. 캐릭터 설정과 현재 대화에서 사용하는 언어에 따라 실제 응답 언어가 달라질 수 있습니다.",
+        "languagePreferenceSaved": "언어 선호를 업데이트했습니다",
+        "languagePreferencePartiallySaved": "언어 선호는 저장되었지만 현재 세션과의 동기화가 완료되지 않았습니다",
+        "languagePreferenceSuperseded": "다른 창에서 더 새로운 언어 선호가 저장되었습니다. 표시를 새로 고쳤습니다",
+        "languagePreferenceUnverified": "언어 선호는 저장되었지만 지금은 최신인지 확인할 수 없었습니다",
+        "languagePreferenceSaveFailed": "언어 선호를 저장하지 못했습니다",
+        "languagePreferenceLoadFailed": "언어 선호를 불러오지 못했습니다",
         "personalityUseDefault": "캐릭터 카드 기본 성격을 따르기",
         "personalitySelect": "성격 선택",
         "personalityClear": "기본값 복원",
@@ -2901,6 +2909,7 @@
             "fullscreenTracking": "전체 화면 추적",
             "localTracking": "로컬 추적",
             "lockedHoverFade": "잠금 호버 페이드",
+            "forgeDropEffects": "티켓 획득 연출 및 효과음",
             "textGuardMaxLength": "응답 길이 상한",
             "unlimited": "무제한",
             "characters": "자",
@@ -3990,6 +3999,7 @@
         "twitter": "트위터/X (Twitter/X)",
         "reddit": "레딧 (Reddit)",
         "netease": "넷이즈 뮤직 (NetEase)",
+        "qqmusic": "QQ 뮤직",
         "saveConfig": "설정 저장",
         "encryptStorage": "로컬 파일에 안전하게 암호화 저장",
         "localMonitoring": "로컬 상태 모니터링",
@@ -4028,7 +4038,8 @@
             "weibo": "<b>대상:</b> <code>m.weibo.cn</code>에 접속하여 해당 쿠키를 가져오세요.",
             "twitter": "<b>대상:</b> <code>x.com</code>에 접속하여 해당 쿠키를 가져오세요.",
             "reddit": "<b>대상:</b> <code>reddit.com</code>에 접속하여 해당 쿠키를 가져오세요.",
-            "netease": "<b>대상:</b> <code>music.163.com</code>에 접속하여 해당 쿠키를 가져오세요."
+            "netease": "<b>대상:</b> <code>music.163.com</code>에 접속하여 해당 쿠키를 가져오세요.",
+            "qqmusic": "<b>대상:</b> <code>y.qq.com</code>에 접속하여 해당 쿠키를 가져오세요."
         },
         "guide": {
             "title": "초보자를 위한 공통 가이드",
@@ -4143,6 +4154,14 @@
             "MUSIC_U": {
                 "label": "MUSIC_U",
                 "desc": "핵심 신원 증명 (필수)"
+            },
+            "qqmusicUin": {
+                "label": "uin",
+                "desc": "QQ 계정 식별자(일반적으로 o 뒤에 숫자가 붙음)"
+            },
+            "qqmusicKey": {
+                "label": "qqmusic_key",
+                "desc": "QQ 뮤직 로그인 자격 증명(필수)"
             },
             "NMTID": {
                 "label": "NMTID",

@@ -2,6 +2,7 @@
     'use strict';
 
     const MANIFEST_URL = '/static/vrm/motion/manifest.json';
+    const FETCH_TIMEOUT_MS = 10000;
     const ASSET_ROOT = '/static/vrm/';
     const LOW_POSES = new Set(['sit', 'lie', 'sleep']);
     const POSE_DEPTH = Object.freeze({ stand: 0, sit: 1, lie: 2, sleep: 2 });
@@ -46,6 +47,22 @@
     function assetUrl(asset) {
         const suffix = asset.compression === 'gzip' ? '.gz' : '';
         return ASSET_ROOT + asset.f + suffix;
+    }
+
+    async function fetchWithTimeout(url, options, consumeResponse) {
+        const controller = typeof AbortController === 'function' ? new AbortController() : null;
+        const requestOptions = Object.assign({}, options || {});
+        let timeoutId = null;
+        if (controller && !requestOptions.signal) {
+            requestOptions.signal = controller.signal;
+            timeoutId = setTimeout(function () { controller.abort(); }, FETCH_TIMEOUT_MS);
+        }
+        try {
+            const response = await fetch(url, requestOptions);
+            return consumeResponse ? await consumeResponse(response) : response;
+        } finally {
+            if (timeoutId !== null) clearTimeout(timeoutId);
+        }
     }
 
     function sha256Fallback(buffer) {
@@ -154,9 +171,10 @@
         }
 
         async load() {
-            const response = await fetch(MANIFEST_URL, { cache: 'no-store' });
-            if (!response.ok) throw new Error('Motion manifest HTTP ' + response.status);
-            const manifest = await response.json();
+            const manifest = await fetchWithTimeout(MANIFEST_URL, { cache: 'no-store' }, async function (response) {
+                if (!response.ok) throw new Error('Motion manifest HTTP ' + response.status);
+                return response.json();
+            });
             const policy = manifest && manifest.policy || {};
             const localHost = location.hostname === '127.0.0.1' || location.hostname === 'localhost';
             const isPublicRelease = policy.distribution === 'public-release'
@@ -178,7 +196,7 @@
                     && asset.packedSha && asset.decodedSha
                     && ['none', 'gzip'].includes(asset.compression);
             });
-            if (isPublicRelease && this.assets.some(function (asset) {
+            if (isPublicRelease && manifest.assets.some(function (asset) {
                 return asset.ok !== true || asset.license === '?' || !asset.license;
             })) {
                 throw new Error('Public motion pack contains an unapproved or unlicensed asset');
@@ -503,9 +521,10 @@
             // 官方内置动作直接复用 static/vrm/animation，避免在源码和安装包
             // 同时保存 VRMA 与 gzip 副本。外部已授权动作包仍可声明 gzip transport。
             // 无论 transport 为何，解码后的 Blob URL 都只在当前播放期间存在。
-            const response = await fetch(assetUrl(asset), { cache: 'no-cache' });
-            if (!response.ok) throw new Error(asset.id + ' HTTP ' + response.status);
-            const packed = await response.arrayBuffer();
+            const packed = await fetchWithTimeout(assetUrl(asset), { cache: 'no-cache' }, async function (response) {
+                if (!response.ok) throw new Error(asset.id + ' HTTP ' + response.status);
+                return response.arrayBuffer();
+            });
             const packedBytes = new Uint8Array(packed);
             const isGzipPayload = packedBytes.length >= 2
                 && packedBytes[0] === 0x1f
@@ -667,7 +686,7 @@
             return true;
         }
 
-        noteActivity(seed) {
+        noteActivity() {
             this.idleActivityVersion += 1;
             this._clearIdleSwitch();
             return true;

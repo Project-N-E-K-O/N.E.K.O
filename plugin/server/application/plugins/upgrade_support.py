@@ -7,26 +7,30 @@ from datetime import UTC, datetime
 from pathlib import Path
 import shutil
 
+from plugin.core.plugin_layout import PluginLayout
 from plugin.logging_config import get_logger
 from plugin.server.domain.errors import ServerDomainError
+from plugin.server.infrastructure.config_paths import ensure_plugin_layout_runtime_config
 
 logger = get_logger("server.application.plugins.upgrade_support")
 
+_MANIFEST_ADJACENT_PROFILE_PATHS = (Path("profiles.toml"), Path("profiles"))
+
 
 @dataclass(frozen=True, slots=True)
-class SafeUpgradeResult:
-    operation: str
+class ReplacePluginResult:
     restarted: bool
     rollback_status: str
     install_result: dict[str, object]
     backup_dir: Path
 
 
-class SafeUpgradeError(RuntimeError):
+class ReplacePluginError(RuntimeError):
     def __init__(self, *, stage: str, rollback_status: str, cause: Exception) -> None:
         super().__init__(f"{stage} failed: {cause}")
         self.stage = stage
         self.rollback_status = rollback_status
+        self.cause = cause
 
 
 async def plugin_is_running(plugin_id: str) -> bool:
@@ -45,7 +49,7 @@ async def plugin_is_running(plugin_id: str) -> bool:
         raise
 
 
-async def stop_plugin_for_upgrade(plugin_id: str) -> None:
+async def stop_plugin_for_replace(plugin_id: str) -> None:
     if not plugin_id:
         return
     from plugin.server.application.plugins.lifecycle_service import PluginLifecycleService
@@ -58,7 +62,7 @@ async def stop_plugin_for_upgrade(plugin_id: str) -> None:
         raise
 
 
-async def start_plugin_after_upgrade(plugin_id: str, *, strict: bool) -> bool:
+async def start_plugin_after_replace(plugin_id: str, *, strict: bool) -> bool:
     if not plugin_id:
         return False
     from plugin.server.application.plugins.lifecycle_service import PluginLifecycleService
@@ -75,6 +79,12 @@ async def start_plugin_after_upgrade(plugin_id: str, *, strict: bool) -> bool:
         if strict:
             raise
         return False
+
+
+# Market keeps the established names until its Day 3 adapter switches to the
+# shared replace transaction.
+stop_plugin_for_upgrade = stop_plugin_for_replace
+start_plugin_after_upgrade = start_plugin_after_replace
 
 
 def backup_path_for(target_dir: Path, *, backup_root: Path | None = None) -> Path:
@@ -103,6 +113,23 @@ async def merge_directory_contents(source_dir: Path, target_dir: Path) -> None:
         raise NotADirectoryError(source_dir)
     await asyncio.to_thread(target_dir.mkdir, parents=True, exist_ok=True)
     await asyncio.to_thread(shutil.copytree, source_dir, target_dir, dirs_exist_ok=True)
+
+
+async def _restore_manifest_adjacent_profiles(backup_dir: Path, target_dir: Path) -> None:
+    for relative_path in _MANIFEST_ADJACENT_PROFILE_PATHS:
+        source = backup_dir / relative_path
+        if source.is_symlink():
+            raise OSError(f"symbolic links are not supported for profile paths: {source}")
+        if not source.exists():
+            continue
+        target = target_dir / relative_path
+        if source.is_dir():
+            await merge_directory_contents(source, target)
+            continue
+        if not source.is_file():
+            raise OSError(f"unsupported profile path: {source}")
+        await asyncio.to_thread(target.parent.mkdir, parents=True, exist_ok=True)
+        await asyncio.to_thread(shutil.copy2, source, target)
 
 
 async def run_rollback(
@@ -153,7 +180,7 @@ async def _rollback_targets(
                 except Exception as exc:
                     restored = False
                     logger.error(
-                        "plugin upgrade created-target cleanup failed target={} err_type={}",
+                        "plugin replacement created-target cleanup failed target={} err_type={}",
                         target.name,
                         type(exc).__name__,
                     )
@@ -164,17 +191,28 @@ async def _rollback_targets(
         except Exception as exc:
             restored = False
             logger.error(
-                "plugin upgrade target rollback failed target={} err_type={}",
+                "plugin replacement target rollback failed target={} err_type={}",
                 target.name,
                 type(exc).__name__,
             )
     return restored
 
 
-async def perform_safe_upgrade(
+def _notify_rollback_start(callback: Callable[[], None] | None) -> None:
+    if callback is None:
+        return
+    try:
+        callback()
+    except Exception as exc:
+        logger.warning(
+            "plugin replacement rollback observer failed err_type={}",
+            type(exc).__name__,
+        )
+
+
+async def replace_plugin(
     *,
-    plan: object,
-    target_dir: Path,
+    layout: PluginLayout,
     install_new: Callable[[], Awaitable[dict[str, object]]],
     validate_new: Callable[[], Awaitable[None]],
     is_running: Callable[[str], Awaitable[bool]],
@@ -183,22 +221,26 @@ async def perform_safe_upgrade(
     cleanup_backup: Callable[[Path], Awaitable[None]],
     additional_targets: tuple[Path, ...] = (),
     preserve_targets: tuple[Path, ...] = (),
-) -> SafeUpgradeResult:
-    if getattr(plan, "action", "") != "upgrade":
-        raise ValueError("safe upgrade requires an upgrade install plan")
-    plugin_id = str(getattr(plan, "plugin_id", ""))
+    on_rollback_start: Callable[[], None] | None = None,
+) -> ReplacePluginResult:
+    plugin_id = layout.plugin_id
+    target_dir = layout.installed_dir
     if not plugin_id:
-        raise ValueError("safe upgrade requires a plugin id")
+        raise ValueError("plugin replacement requires a plugin id")
     if not target_dir.is_dir():
         raise FileNotFoundError(f"installed plugin directory is missing: {target_dir.name}")
+    targets = (target_dir, *additional_targets)
+    if any(target not in targets for target in preserve_targets):
+        raise ValueError("preserve targets must also be replacement targets")
 
+    await asyncio.to_thread(
+        ensure_plugin_layout_runtime_config,
+        layout,
+    )
     was_running = await is_running(plugin_id)
     if was_running:
         await stop(plugin_id)
 
-    targets = (target_dir, *additional_targets)
-    if any(target not in targets for target in preserve_targets):
-        raise ValueError("preserve targets must also be upgrade targets")
     preexisting_targets = frozenset(target for target in targets if target.exists())
     backups: dict[Path, Path] = {}
     backup_dir = backup_path_for(target_dir)
@@ -213,6 +255,7 @@ async def perform_safe_upgrade(
             await asyncio.to_thread(target.rename, backup)
             backups[target] = backup
     except Exception as exc:
+        _notify_rollback_start(on_rollback_start)
         recovered = await _rollback_targets(
             targets=targets,
             backups=backups,
@@ -229,7 +272,7 @@ async def perform_safe_upgrade(
                     plugin_id,
                     type(restart_exc).__name__,
                 )
-        raise SafeUpgradeError(
+        raise ReplacePluginError(
             stage="backup",
             rollback_status="completed" if recovered else "incomplete",
             cause=exc,
@@ -244,6 +287,7 @@ async def perform_safe_upgrade(
             backup = backups.get(target)
             if backup is not None:
                 await merge_directory_contents(backup, target)
+        await _restore_manifest_adjacent_profiles(backup_dir, target_dir)
         if was_running:
             stage = "restart"
             await start(plugin_id)
@@ -251,20 +295,20 @@ async def perform_safe_upgrade(
         for backup in backups.values():
             try:
                 await cleanup_backup(backup)
-            except Exception as exc:  # cleanup must not roll back a valid upgrade
+            except Exception as exc:  # cleanup must not roll back a valid replacement
                 logger.warning(
                     "plugin backup cleanup failed plugin_id={} err_type={}",
                     plugin_id,
                     type(exc).__name__,
                 )
-        return SafeUpgradeResult(
-            operation="upgrade",
+        return ReplacePluginResult(
             restarted=was_running,
             rollback_status="not_needed",
             install_result=install_result,
             backup_dir=backup_dir,
         )
     except Exception as exc:
+        _notify_rollback_start(on_rollback_start)
         restored = await _rollback_targets(
             targets=targets,
             backups=backups,
@@ -281,7 +325,7 @@ async def perform_safe_upgrade(
                     plugin_id,
                     type(restart_exc).__name__,
                 )
-        raise SafeUpgradeError(
+        raise ReplacePluginError(
             stage=stage,
             rollback_status="completed" if restored else "incomplete",
             cause=exc,

@@ -2432,7 +2432,9 @@ def test_external_import_refreshes_open_memory_after_persisting(
     mock_page.goto(f"{running_server}/memory_browser")
     mock_page.wait_for_function("window.i18next && window.i18next.isInitialized")
     mock_page.evaluate("() => window.i18next.changeLanguage('zh-TW')")
-    mock_page.evaluate("() => { window.i18n = { language: '   ' }; }")
+    mock_page.evaluate(
+        "() => { window.i18n = { language: '   ', on: () => undefined }; }"
+    )
     memo = mock_page.locator("#memory-chat-edit .memo-textarea").first
     expect(memo).to_have_value("这是测试备忘录内容。", timeout=10000)
     if edit_during_import or refresh_failure:
@@ -2483,7 +2485,10 @@ def test_external_import_refreshes_open_memory_after_persisting(
     expect(mock_page.locator("#external-memory-files")).to_be_enabled()
     expect(mock_page.locator("#external-memory-format")).to_be_enabled()
     assert mock_page.evaluate("window._memoryImportInProgress") is False
-    assert commit_payloads[0]["language"] == "zh-TW"
+    # The page locale is only an effective fallback. External import must not
+    # submit it as an explicit per-character prompt locale.
+    assert "language" not in commit_payloads[0]
+    assert commit_payloads[0]["render_language"] == "zh-TW"
     if refresh_failure:
         assert request_counts["recent_files"] == 1
     else:

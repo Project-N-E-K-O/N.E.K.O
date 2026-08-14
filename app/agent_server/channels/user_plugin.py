@@ -111,23 +111,83 @@ def _resolve_delivery_mode(result: Optional[Dict]) -> str:
     return "proactive"
 
 
-def _lookup_llm_result_fields(plugin_id: str, entry_id: Optional[str]) -> Optional[list]:
-    """Look up the llm_result_fields declaration of the given entry in plugin_list."""
+def _lookup_plugin_entry(plugin_id: str, entry_id: Optional[str]) -> Optional[dict]:
+    """Return the runtime entry descriptor exposed by the plugin server."""
     try:
         plugins = getattr(_shared.Modules.task_executor, "plugin_list", None) or []
-        for p in plugins:
-            if not isinstance(p, dict) or p.get("id") != plugin_id:
+        for plugin in plugins:
+            if not isinstance(plugin, dict) or plugin.get("id") != plugin_id:
                 continue
-            for e in p.get("entries") or []:
-                if not isinstance(e, dict):
-                    continue
-                if e.get("id") == entry_id:
-                    fields = e.get("llm_result_fields")
-                    return list(fields) if isinstance(fields, list) else None
+            for entry in plugin.get("entries") or []:
+                if isinstance(entry, dict) and entry.get("id") == entry_id:
+                    return entry
             break
-    except Exception as e:
-        logger.debug("_lookup_llm_result_fields failed: plugin_id=%s entry_id=%s error=%s", plugin_id, entry_id, e)
+    except Exception as exc:
+        logger.debug(
+            "_lookup_plugin_entry failed: plugin_id=%s entry_id=%s error=%s",
+            plugin_id,
+            entry_id,
+            exc,
+        )
     return None
+
+
+def _lookup_llm_result_fields(plugin_id: str, entry_id: Optional[str]) -> Optional[list]:
+    """Look up the llm_result_fields declaration of the given entry in plugin_list."""
+    entry = _lookup_plugin_entry(plugin_id, entry_id)
+    if entry is not None:
+        fields = entry.get("llm_result_fields")
+        return list(fields) if isinstance(fields, list) else None
+    return None
+
+
+def _positive_finite_seconds(value: Any) -> Optional[float]:
+    if isinstance(value, bool):
+        return None
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return seconds if 0.0 < seconds < float("inf") else None
+
+
+def _resolve_plugin_result_contract(
+    plugin_id: str,
+    entry_id: Optional[str],
+    result: Optional[Dict],
+) -> tuple[str, Optional[float]]:
+    """Resolve LLM result semantics from runtime then static entry metadata.
+
+    ``result_kind="event"`` downgrades a successful plugin entry result from
+    task-completion wording to the existing neutral event wording. Unknown or
+    absent values preserve the historical ``task_result`` default. Per-result
+    expiry follows the same runtime-over-static precedence.
+    """
+    entry = _lookup_plugin_entry(plugin_id, entry_id) or {}
+    static_meta = entry.get("metadata")
+    if not isinstance(static_meta, dict):
+        static_meta = {}
+
+    runtime_agent: dict = {}
+    if isinstance(result, dict):
+        result_meta = result.get("meta")
+        if isinstance(result_meta, dict) and isinstance(result_meta.get("agent"), dict):
+            runtime_agent = result_meta["agent"]
+
+    result_kind = "task_result"
+    for raw_kind in (runtime_agent.get("result_kind"), static_meta.get("result_kind")):
+        if isinstance(raw_kind, str) and raw_kind.strip() in ("task_result", "event"):
+            result_kind = raw_kind.strip()
+            break
+
+    expires_in_s = None
+    for raw_expiry in (runtime_agent.get("expires_in_s"), static_meta.get("expires_in_s")):
+        expires_in_s = _positive_finite_seconds(raw_expiry)
+        if expires_in_s is not None:
+            break
+    if result_kind != "event":
+        expires_in_s = None
+    return result_kind, expires_in_s
 
 
 def _is_reply_suppressed(result: Optional[Dict]) -> bool:
@@ -256,7 +316,7 @@ async def dispatch(
                 )
                 run_data = up_result.result.get("run_data") if isinstance(up_result.result, dict) else None
                 run_error = up_result.result.get("run_error") if isinstance(up_result.result, dict) else None
-                _llm_fields = _lookup_llm_result_fields(plugin_id, entry_id)
+                _llm_fields = _lookup_llm_result_fields(plugin_id, up_result.entry_id)
                 _plugin_msg = str(up_result.result.get("message") or "") if isinstance(up_result.result, dict) else ""
                 _error_to_pass = (run_error or up_result.error) if not up_result.success else None
                 detail = parse_plugin_result(
@@ -266,6 +326,11 @@ async def dispatch(
                     error=_error_to_pass,
                 )
                 up_terminal = _plugin_terminal_status(up_result.success, run_data)
+                _result_kind, _expires_in_s = _resolve_plugin_result_contract(
+                    plugin_id,
+                    up_result.entry_id,
+                    up_result.result if isinstance(up_result.result, dict) else None,
+                )
                 # Resolve plugin's declared delivery mode (proactive/passive/silent).
                 # silent → skip task_result emit entirely; the rest reach
                 # main_server which routes proactive vs passive scheduling.
@@ -326,6 +391,8 @@ async def dispatch(
                                 source_kind="plugin",
                                 source_name=display_id,
                                 delivery_mode=_delivery_mode,
+                                result_kind=_result_kind if _completed else "task_result",
+                                expires_in_s=_expires_in_s if _completed else None,
                             )
                         except Exception as emit_err:
                             logger.debug("[TaskExecutor] emit task_result(success) failed: task_id=%s plugin_id=%s error=%s", up_result.task_id, plugin_id, emit_err)

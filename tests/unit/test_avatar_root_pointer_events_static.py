@@ -5,6 +5,7 @@ from tests.static_app_parts import read_js_parts
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 APP_UI_PATH = PROJECT_ROOT / "static" / "app" / "app-ui"
 APP_INTERPAGE_PATH = PROJECT_ROOT / "static" / "app" / "app-interpage"
+AVATAR_DRAG_PATH = PROJECT_ROOT / "static" / "avatar" / "avatar-ui-drag.js"
 UNIVERSAL_MANAGER_PATH = PROJECT_ROOT / "static" / "tutorial" / "core" / "universal-manager.js"
 
 
@@ -29,6 +30,36 @@ def test_live2d_restore_keeps_root_container_passthrough():
     assert "live2dContainer.style.removeProperty('pointer-events');" not in restore_block
     assert "if (!keepAvatarRootContainerPassthrough(container)) {" in return_prepare_block
     assert "container.style.removeProperty('pointer-events');" in return_prepare_block
+
+
+def test_live2d_return_keeps_floating_toolbar_drag_passthrough():
+    source = read_js_parts(APP_UI_PATH)
+    drag_source = AVATAR_DRAG_PATH.read_text(encoding="utf-8")
+    show_live2d_block = source[
+        source.index("showLive2d = function showLive2d()"):
+        source.index("mod.showLive2d = showLive2d;")
+    ]
+    drag_rule_block = drag_source[
+        drag_source.index("style.textContent = ["):
+        drag_source.index("].join('\\n');")
+    ]
+
+    assert "floatingButtons.style.setProperty('pointer-events', 'auto');" in show_live2d_block
+    assert (
+        "floatingButtons.style.setProperty('pointer-events', 'auto', 'important');"
+        not in show_live2d_block
+    )
+    toolbar_selector_index = drag_rule_block.index(
+        "'body.' + DRAGGING_CLASS + ' #live2d-floating-buttons,'"
+    )
+    toolbar_children_selector_index = drag_rule_block.index(
+        "'body.' + DRAGGING_CLASS + ' #live2d-floating-buttons *,'"
+    )
+    passthrough_declaration_index = drag_rule_block.index(
+        "'    pointer-events: none !important;'"
+    )
+    assert toolbar_selector_index < passthrough_declaration_index
+    assert toolbar_children_selector_index < passthrough_declaration_index
 
 
 def test_model_reload_live2d_restore_keeps_root_container_passthrough():

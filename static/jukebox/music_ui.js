@@ -35,7 +35,9 @@
         titleOverflowRatio: 1,
         // 域名白名单
         allowlist: [
-            'i.scdn.co', 'p.scdn.co', 'a.scdn.co', 'i.imgur.com', 'y.qq.com',
+            'i.scdn.co', 'p.scdn.co', 'a.scdn.co', 'i.imgur.com',
+            'y.qq.com', 'u.y.qq.com', 'dl.stream.qqmusic.com', 'dl.stream.qqmusic.qq.com',
+            'isure.stream.qqmusic.qq.com',
             'music.126.net', 'p1.music.126.net', 'p2.music.126.net', 'p3.music.126.net',
             'm7.music.126.net', 'm8.music.126.net', 'm9.music.126.net',
             'mmusic.spriteapp.cn', 'gg.spriteapp.cn',
@@ -50,6 +52,8 @@
     // Only domains advertised by the backend may use the local music proxy.
     // Frontend-only plugin allowlist entries have not passed server-side SSRF checks.
     const backendProxyDomains = new Set(MUSIC_CONFIG.allowlist);
+    // HTTP is allowed only for complete URLs explicitly advertised by a plugin.
+    const pluginHttpUrls = new Set();
     const MAX_RECOMMENDED_TRACK_DURATION_SECONDS = 10 * 60;
     const MUSIC_MEDIA_LOAD_TIMEOUT_MS = 10000;
 
@@ -120,13 +124,12 @@
     let musicCardMessageId = null;
     let aplayerLoadPromise = null;
     let latestMusicRequestToken = 0;
-    let currentMusicPlaybackContext = { source: '', requestId: null };
+    let currentMusicPlaybackContext = { source: '' };
 
     function setMusicPlaybackContext(options) {
         options = options || {};
         currentMusicPlaybackContext = {
-            source: typeof options.source === 'string' ? options.source.slice(0, 16) : '',
-            requestId: options.requestId ?? null
+            source: typeof options.source === 'string' ? options.source.slice(0, 16) : ''
         };
     }
 
@@ -165,7 +168,6 @@
             lifecycleStartedAt: getMusicLifecycleTimestamp(),
             mediaReady: false,
             source: typeof options.source === 'string' ? options.source.slice(0, 16) : '',
-            requestId: options.requestId ?? null,
             url: String(track.url || ''),
             track: {
                 name: String(track.name || '').slice(0, 120),
@@ -193,7 +195,6 @@
                 playback_id: context.playbackId,
                 playback_window_id: MUSIC_COORD_SENDER_ID,
                 playback_started_at: context.lifecycleStartedAt,
-                request_id: context.requestId,
                 source: context.source,
                 reason: state === 'error'
                     ? String(failureReason || 'unknown').slice(0, 32)
@@ -1794,6 +1795,20 @@
     let currentVolumeDragHandlers = null;
 
     // --- 2. 原始工具函数 ---
+    const normalizeMusicUrlEscapes = (url) => {
+        if (typeof url !== 'string') return url;
+        let normalized = url;
+        let previous = '';
+        while (normalized !== previous) {
+            previous = normalized;
+            normalized = normalized
+                .replace(/&amp;/g, '&')
+                .replace(/&amp%3B/g, '&')
+                .replace(/%26amp%3B/g, '&');
+        }
+        return normalized;
+    };
+
     /**
      * 安全提取域名/IP
      */
@@ -1817,6 +1832,7 @@
             // 对内部代理路径直接放行（后端已做安全检查）
             if (url.startsWith('/api/')) return true;
             const parsed = new URL(url);
+            if (parsed.protocol === 'http:') return pluginHttpUrls.has(parsed.href);
             if (parsed.protocol !== 'https:') return false;
             const hostname = parsed.hostname;
             return MUSIC_CONFIG.allowlist.some(d => hostname === d || hostname.endsWith('.' + d));
@@ -1895,8 +1911,7 @@
         player,
         token,
         expectedUrl,
-        enforceRecommendationLimit,
-        requestId
+        enforceRecommendationLimit
     ) => new Promise((resolve) => {
         const audio = player && player.audio;
         if (!audio) {
@@ -1924,7 +1939,6 @@
             resolve({ ok: ok, reason: reason || '' });
         };
         cancelWait = () => finish(false, 'superseded');
-        cancelWait.requestId = requestId ?? null;
         pendingMusicMediaReadyCancel = cancelWait;
         const isExpectedSource = () => {
             const activeUrl = audio.currentSrc || audio.src || '';
@@ -2196,18 +2210,6 @@
         if (removeDOM) broadcastBarDestroyed(fullTeardown, destroyedPlaybackId);
         currentMusicPlaybackId = null;
         currentMusicOwnerStartedAt = 0;
-    };
-
-    const cancelActiveMusicPlayback = () => {
-        if (localPlayer) {
-            destroyMusicPlayer(true, true, true);
-            return true;
-        }
-        if (mirrorBarLeaderSender) {
-            broadcastBarCtrl('close');
-            return true;
-        }
-        return false;
     };
 
     // --- 查找并替换整个 loadAPlayerLibrary 函数 ---
@@ -2897,8 +2899,7 @@
                 localPlayer,
                 currentToken,
                 trackInfo.url,
-                playbackOptions.source === 'proactive',
-                playbackOptions.requestId
+                playbackOptions.source === 'proactive'
             );
 
             // 执行播放
@@ -2981,20 +2982,9 @@
         };
         broadcastMusicCoord('music_pending');
 
-        // --- 核心修复：更鲁棒的 URL 预清理 ---
+        // Keep playback and plugin allowlist registration on the same URL form.
         if (trackInfo.url && typeof trackInfo.url === 'string') {
-            try {
-                let lastUrl = '';
-                while (trackInfo.url !== lastUrl) {
-                    lastUrl = trackInfo.url;
-                    trackInfo.url = trackInfo.url
-                        .replace(/&amp;/g, '&')
-                        .replace(/&amp%3B/g, '&')
-                        .replace(/%26amp%3B/g, '&');
-                }
-            } catch (e) {
-                console.warn('[Music UI] URL sanitization failed:', e);
-            }
+            trackInfo.url = normalizeMusicUrlEscapes(trackInfo.url);
         }
 
         const currentToken = ++latestMusicRequestToken;
@@ -3264,15 +3254,32 @@
 
     const MusicPluginAPI = {
         getAllowlist: () => [...MUSIC_CONFIG.allowlist],
-        addAllowlist: (input) => {
+        getHttpUrls: () => [...pluginHttpUrls],
+        addAllowlist: (input, httpUrlInput = []) => {
             const inputs = Array.isArray(input) ? input : [input];
             const newDomains = inputs
                 .map(extractHostname)
                 .filter(d => d && !MUSIC_CONFIG.allowlist.includes(d));
+            const explicitHttpInputs = Array.isArray(httpUrlInput) ? httpUrlInput : [httpUrlInput];
+            const httpInputs = inputs.concat(explicitHttpInputs);
+            const newHttpUrls = httpInputs
+                .map(value => {
+                    try {
+                        const parsed = new URL(normalizeMusicUrlEscapes(value));
+                        return parsed.protocol === 'http:' ? parsed.href : null;
+                    } catch (_) { return null; }
+                })
+                .filter(value => value && !pluginHttpUrls.has(value));
 
             if (newDomains.length > 0) {
                 MUSIC_CONFIG.allowlist.push(...newDomains);
                 console.log('[Music UI] Allowlist updated:', newDomains);
+            }
+            if (newHttpUrls.length > 0) {
+                newHttpUrls.forEach(value => pluginHttpUrls.add(value));
+                console.log('[Music UI] HTTP URL allowlist updated:', newHttpUrls);
+            }
+            if (newDomains.length > 0 || newHttpUrls.length > 0) {
                 window.dispatchEvent(new CustomEvent('music-allowlist-updated'));
             }
         }
@@ -3280,35 +3287,16 @@
 
     // --- 暴露接口 ---
     window.destroyMusicPlayer = destroyMusicPlayer;
-    window.cancelActiveMusicPlayback = cancelActiveMusicPlayback;
     window.getMusicPlayerInstance = getMusicPlayerInstance;
     window.isMusicPlaying = isMusicPlaying;
     window.isMusicOccupied = isMusicOccupied;
     window.isMusicCooldown = isInMusicCooldown;
     window.getMusicCurrentTrack = getMusicCurrentTrack;
     window.MusicPluginAPI = MusicPluginAPI;
-    window.cancelPendingMusicMediaReady = (requestId) => {
-        const nextRequestId = Number(requestId);
-        if (!Number.isFinite(nextRequestId) || nextRequestId <= 0) return 'invalid';
-        if (!pendingMusicMediaReadyCancel) {
-            latestMusicRequestToken++;
-            if (!localPlayer && currentPlayingTrack) {
-                updateMusicCard('ended', currentPlayingTrack);
-                destroyMusicPlayer(true, false, false);
-            }
-            return 'no_pending';
-        }
-        const pendingRequestId = Number(pendingMusicMediaReadyCancel.requestId);
-        if (
-            Number.isFinite(pendingRequestId)
-            && Number.isFinite(nextRequestId)
-            && nextRequestId < pendingRequestId
-        ) return 'stale';
+    window.cancelPendingMusicMediaReady = () => {
         latestMusicRequestToken++;
-        pendingMusicMediaReadyCancel();
-        return 'cancelled';
+        if (pendingMusicMediaReadyCancel) pendingMusicMediaReadyCancel();
     };
-
     // 竞态拦截辅助：dispatch 流水线中（URL 校验/库加载/init）的占位标记
     window.isMusicPending = () => musicDispatchPendingCount > 0;
     // 跨窗口协调：其他窗口正在播歌（基于 BroadcastChannel 通报）

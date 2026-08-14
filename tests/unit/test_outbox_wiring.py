@@ -89,8 +89,8 @@ async def test_spawn_outbox_happy_path_marks_done(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_spawn_outbox_omits_language_when_request_declared_none(tmp_path):
-    """A locale this process merely guessed must never be written into the payload."""
+async def test_spawn_outbox_keeps_render_fallback_out_of_durable_language(tmp_path):
+    """Only request render evidence may accompany an undeclared language."""
     # _activate_request_language 在请求没带 language 时会回落到
     # get_global_language_full()。那个回落值用于处理本次请求没问题，但一旦被持久化
     # 进 outbox.ndjson，重启 replay 就会一直复用这个「猜测」——即使探测本身后来修好
@@ -120,12 +120,24 @@ async def test_spawn_outbox_omits_language_when_request_declared_none(tmp_path):
         )
         await task
 
-    assert len(calls) == 1
-    _name, payload = calls[0]
-    assert "language" not in payload
-    assert "locale_order" not in payload
-    assert "locale_order_deferred" not in payload
-    assert "locale_admission_order" not in payload
+        task = await memory_server._spawn_outbox_post_turn_signals(
+            "小天",
+            [HumanMessage(content="喵")],
+            language=None,
+            render_language="ja",
+        )
+        await task
+
+    assert len(calls) == 2
+    plain_payload = calls[0][1]
+    render_payload = calls[1][1]
+    for payload in (plain_payload, render_payload):
+        assert "language" not in payload
+        assert "locale_order" not in payload
+        assert "locale_order_deferred" not in payload
+        assert "locale_admission_order" not in payload
+    assert "render_language" not in plain_payload
+    assert render_payload["render_language"] == "ja"
     allocate_locale.assert_not_called()
     reserve_locale.assert_not_called()
 
@@ -539,7 +551,7 @@ def test_deferred_locale_admission_order_cannot_overwrite_newer_turn(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_stale_post_turn_runs_under_newer_durable_locale(
+async def test_post_turn_context_prefers_current_durable_then_recorded_render(
     tmp_path,
     monkeypatch,
 ):
@@ -581,6 +593,29 @@ async def test_stale_post_turn_runs_under_newer_durable_locale(
 
     assert observed == ["zh-TW"]
     assert locale_state.get_character_prompt_locale("小天") == "zh-TW"
+
+    observed.clear()
+    with language_context("en"), pytest.raises(StopAfterLocale):
+        await memory_server._run_post_turn_signals(
+            [HumanMessage(content="請記住")],
+            "小天",
+            render_language="ja",
+        )
+    assert observed == ["zh-TW"]
+
+    monkeypatch.setattr(
+        memory_server.locale_state,
+        "get_character_prompt_locale",
+        lambda _name: None,
+    )
+    observed.clear()
+    with language_context("en"), pytest.raises(StopAfterLocale):
+        await memory_server._run_post_turn_signals(
+            [HumanMessage(content="請記住")],
+            "小天",
+            render_language="ja",
+        )
+    assert observed == ["ja"]
 
 
 @pytest.mark.asyncio
@@ -652,21 +687,32 @@ async def test_legacy_deferred_locale_replay_sorts_before_newer_turn(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_replay_without_recorded_language_defers_locale_resolution():
-    """Legacy entries leave locale selection to the post-turn operation wrapper."""
+async def test_replay_without_durable_language_restores_optional_render_context():
+    """Legacy rows defer resolution; new rows also carry their render fallback."""
     # 这是升级用户唯一会走的路径：#1542 之前入队的条目都没有这个键。
     from app import memory_server
     from utils.llm_client import messages_to_dict
 
     runner = AsyncMock(return_value=None)
-    payload = {"messages": messages_to_dict([HumanMessage(content="旧条目")])}
+    messages = messages_to_dict([HumanMessage(content="旧条目")])
 
     with patch("app.memory_server.post_turn._run_post_turn_signals", runner):
-        await memory_server._outbox_post_turn_signals_handler("小天", payload)
+        await memory_server._outbox_post_turn_signals_handler(
+            "小天",
+            {"messages": messages},
+        )
+        await memory_server._outbox_post_turn_signals_handler(
+            "小天",
+            {"messages": messages, "render_language": "ja"},
+        )
 
-    runner.assert_awaited_once()
-    assert runner.await_args.kwargs["language"] is None
-    assert runner.await_args.kwargs["locale_order"] is None
+    legacy_call, render_call = runner.await_args_list
+    assert legacy_call.kwargs == {"language": None, "locale_order": None}
+    assert render_call.kwargs == {
+        "language": None,
+        "locale_order": None,
+        "render_language": "ja",
+    }
 
 
 @pytest.mark.asyncio

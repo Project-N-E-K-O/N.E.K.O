@@ -931,13 +931,14 @@ class WarThunderClient:
         返回保存后的文件路径；离线 / 战局外 / 地图未变化 / 无有效图片时返回 None。
         """
         # 先用 map_info 判断是否在战局，并取地图版本号。
-        _, info_data = self._fetch("/map_info.json")
+        info_connected, info_data = self._fetch("/map_info.json")
+        if not info_connected or not isinstance(info_data, dict):
+            return None
         gen: int | None = None
-        if isinstance(info_data, dict):
-            if not info_data.get("valid", False):
-                return None  # 战局外
-            raw_gen = info_data.get("map_generation")
-            gen = _safe_int(raw_gen) if raw_gen is not None else None
+        if not info_data.get("valid", False):
+            return None  # 战局外
+        raw_gen = info_data.get("map_generation")
+        gen = _safe_int(raw_gen) if raw_gen is not None else None
 
         if only_if_changed and gen is not None and gen == self._last_map_gen:
             return None  # 地图没变，跳过

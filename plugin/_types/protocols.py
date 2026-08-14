@@ -121,6 +121,10 @@ class PluginContextProtocol(Protocol):
             更新后的配置字典
         """
         ...
+
+    async def replace_own_config(self, config: Dict[str, Any], timeout: float = 10.0) -> Dict[str, Any]:
+        """Replace this plugin's runtime configuration."""
+        ...
     
     async def get_system_config(self, timeout: float = 5.0) -> Dict[str, Any]:
         """获取系统配置

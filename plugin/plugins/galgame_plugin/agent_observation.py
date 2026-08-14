@@ -128,40 +128,10 @@ class AgentObservationMixin:
                 },
                 limit=32,
             )
-            if self._observed_scene_id and self._should_push_scene(shared):
-                self._schedule_scene_summary_task(
-                    shared=shared,
-                    session_id=session_id,
-                    scene_id=current_scene_id,
-                    route_id=current_route_id,
-                    snapshot=snapshot,
-                    context=context,
-                    trigger="scene_changed",
-                    metadata={
-                        "context_type": "galgame_scene_context",
-                        "trigger": "scene_changed",
-                    },
-                    update_scene_memory=True,
-                )
             self._observed_scene_id = current_scene_id
             self._observed_route_id = current_route_id
             self._scene_tracker.reset_summary(scene_id=current_scene_id)
             self._remember_context_boundary(context_boundary)
-            # host-play-mode plan, step 13: refresh cross-scene memory on every
-            # confirmed scene change. Heuristic merge today; LLM-driven update
-            # routed through this same hook once a summary-tier extraction op
-            # lands in LLMGateway.
-            try:
-                self._maybe_update_cross_scene_memory(
-                    shared,
-                    scene_id=current_scene_id,
-                    route_id=current_route_id,
-                )
-            except Exception:  # noqa: BLE001 — cross-scene merge must never break observe
-                self._logger.warning(
-                    "galgame cross_scene_memory update failed",
-                    exc_info=True,
-                )
 
         if allow_agent_side_effects:
             if not scene_changed:
@@ -180,7 +150,7 @@ class AgentObservationMixin:
                 await self._maybe_consult_cat(
                     shared,
                     snapshot=snapshot,
-                    scene_changed=bool(scene_changed),
+                    scene_changed=scene_changed,
                 )
             except Exception:  # noqa: BLE001 — consultation must never break observe
                 self._logger.warning(

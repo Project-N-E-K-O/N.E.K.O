@@ -2201,6 +2201,14 @@
         "voiceNotSet": "Nenhuma voz especificada",
         "voiceSetting": "Configurações de voz",
         "personalitySetting": "Configuração de personalidade",
+        "languagePreference": "Preferência de idioma",
+        "languagePreferenceDescription": "Esta preferência não impõe um idioma. As configurações do personagem e o idioma usado na conversa atual ainda podem influenciar a resposta real.",
+        "languagePreferenceSaved": "Preferência de idioma atualizada",
+        "languagePreferencePartiallySaved": "A preferência de idioma foi salva, mas a sessão atual não foi sincronizada por completo",
+        "languagePreferenceSuperseded": "Outra janela salvou uma preferência de idioma mais recente; atualizamos para você",
+        "languagePreferenceUnverified": "A preferência de idioma foi salva, mas não foi possível confirmar agora se é a mais recente",
+        "languagePreferenceSaveFailed": "Não foi possível salvar a preferência de idioma",
+        "languagePreferenceLoadFailed": "Não foi possível carregar a preferência de idioma",
         "personalityUseDefault": "Seguir a personalidade padrão do cartão de personagem",
         "personalitySelect": "Escolher personalidade",
         "personalityClear": "Restaurar padrão",
@@ -2901,6 +2909,7 @@
             "fullscreenTracking": "Rastreamento em tela cheia",
             "localTracking": "Rastreamento Local",
             "lockedHoverFade": "Desbotamento de foco bloqueado",
+            "forgeDropEffects": "Efeitos ao receber bilhete",
             "textGuardMaxLength": "Limite de comprimento de resposta",
             "unlimited": "Ilimitado",
             "characters": "caracteres",
@@ -3990,6 +3999,7 @@
         "twitter": "Twitter/X",
         "reddit": "Reddit",
         "netease": "NetEase Cloud Music",
+        "qqmusic": "QQ Music",
         "saveConfig": "Salvar configuração",
         "encryptStorage": "Criptografe e armazene com segurança em arquivo local",
         "localMonitoring": "Monitoramento de status local",
@@ -4028,7 +4038,8 @@
             "weibo": "<b>Destino:</b> Vá para <code>m.weibo.cn</code> para buscar esses cookies.",
             "twitter": "<b>Destino:</b> Vá para <code>x.com</code> para buscar esses cookies.",
             "reddit": "<b>Destino:</b> Vá para <code>reddit.com</code> para buscar esses cookies.",
-            "netease": "<b>Destino:</b> Vá para <code>music.163.com</code> para buscar esses cookies."
+            "netease": "<b>Destino:</b> Vá para <code>music.163.com</code> para buscar esses cookies.",
+            "qqmusic": "<b>Destino:</b> Vá para <code>y.qq.com</code> para buscar esses cookies."
         },
         "guide": {
             "title": "Guia universal para iniciantes",
@@ -4143,6 +4154,14 @@
             "MUSIC_U": {
                 "label": "MÚSICA_U",
                 "desc": "Credencial de identidade principal (obrigatório)"
+            },
+            "qqmusicUin": {
+                "label": "uin",
+                "desc": "Identificador da conta QQ (geralmente começa com o seguido de dígitos)"
+            },
+            "qqmusicKey": {
+                "label": "qqmusic_key",
+                "desc": "Credencial de login do QQ Music (obrigatória)"
             },
             "NMTID": {
                 "label": "NMTID",

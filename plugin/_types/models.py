@@ -105,6 +105,9 @@ class PluginUiSurface(BaseModel):
     context: Optional[str] = None
     permissions: List[str] = Field(default_factory=list)
     available: bool = True
+    # True only for the host-generated static/index.html surface that keeps
+    # legacy static UIs reachable after a plugin declares newer surfaces.
+    legacy_static_compat: bool = False
 
 
 class PluginUiWarning(BaseModel):

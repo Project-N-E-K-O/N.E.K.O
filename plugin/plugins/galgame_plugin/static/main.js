@@ -421,6 +421,7 @@ const DEFAULT_CAPTURE_PROFILE = {
   bottom_inset_ratio: 0.08,
 };
 const AIHONG_PROCESS_NAMES = new Set(['thelamentinggeese.exe']);
+const SENREN_BANKA_PROCESS_NAMES = new Set(['senrenbanka.exe', 'senrenbanka']);
 const OCR_PROFILE_STAGE_LABELS_ZH = {
   default: '通用区域',
   dialogue_stage: '对白区',
@@ -482,6 +483,21 @@ const AIHONG_CAPTURE_PRESETS = {
   },
 };
 
+const SENREN_BANKA_CAPTURE_PRESETS = {
+  dialogue_stage: {
+    left_inset_ratio: 0.25,
+    right_inset_ratio: 0.05,
+    top_ratio: 0.62,
+    bottom_inset_ratio: 0.08,
+  },
+};
+const OCR_GAME_CAPTURE_PRESETS = {
+  senren_banka: {
+    process_name: 'SenrenBanka.exe',
+    default_stage: 'dialogue_stage',
+    profiles: SENREN_BANKA_CAPTURE_PRESETS,
+  },
+};
 const AUTO_REFRESH_IDLE_INTERVAL_MS = 5000;
 const AUTO_REFRESH_ACTIVE_INTERVAL_MS = 1000;
 const AUTO_REFRESH_URGENT_INTERVAL_MS = 500;
@@ -3496,7 +3512,13 @@ function resolveRuntimeDefaultSaveScope(status, processName) {
     : 'process_fallback';
 }
 
-function resolveEditableCaptureProfile(status, processName, stage, saveScope) {
+function resolveEditableCaptureProfile(status, processName, stage, saveScope, gamePresetId = 'auto') {
+  const selectedGamePreset = OCR_GAME_CAPTURE_PRESETS[String(gamePresetId || '').trim()];
+  const selectedStageProfile = selectedGamePreset?.profiles?.[stage];
+  if (isRatioProfileValue(selectedStageProfile)) {
+    return selectedStageProfile;
+  }
+
   const runtime = status?.ocr_reader_runtime || {};
   const entry = findStoredCaptureProfileEntry(status, processName);
   const normalizedScope = normalizeCaptureProfileSaveScope(saveScope);
@@ -3529,6 +3551,9 @@ function resolveEditableCaptureProfile(status, processName, stage, saveScope) {
   }
   if (isAihongProcessName(processName) && AIHONG_CAPTURE_PRESETS[stage]) {
     return AIHONG_CAPTURE_PRESETS[stage];
+  }
+  if (SENREN_BANKA_PROCESS_NAMES.has(normalizeProcessName(processName)) && SENREN_BANKA_CAPTURE_PRESETS[stage]) {
+    return SENREN_BANKA_CAPTURE_PRESETS[stage];
   }
   return DEFAULT_CAPTURE_PROFILE;
 }
@@ -5857,6 +5882,7 @@ function renderTextractor(status) {
 
 function renderOcrProfile(status) {
   const runtime = status.ocr_reader_runtime || {};
+  const gamePresetSelect = document.getElementById('ocrProfileGamePresetSelect');
   const processInput = document.getElementById('ocrProfileProcessInput');
   const stageSelect = document.getElementById('ocrProfileStageSelect');
   const saveScopeSelect = document.getElementById('ocrProfileSaveScopeSelect');
@@ -5866,6 +5892,7 @@ function renderOcrProfile(status) {
   const bottomInput = document.getElementById('ocrProfileBottomInput');
   const hint = document.getElementById('ocrProfileRuntimeHint');
   const currentProcessName = processInput.value.trim() || runtime.process_name || '';
+  const currentGamePresetId = gamePresetSelect?.value || 'auto';
   const currentStage = stageSelect.value || 'default';
   const defaultSaveScope = resolveRuntimeDefaultSaveScope(status, currentProcessName);
   if (!saveScopeSelect.value || (saveScopeSelect.value === 'window_bucket' && defaultSaveScope === 'process_fallback' && !runtime.width)) {
@@ -5873,7 +5900,13 @@ function renderOcrProfile(status) {
   }
   const currentSaveScope = normalizeCaptureProfileSaveScope(saveScopeSelect.value || defaultSaveScope);
   const profileValues = profileValueForInputs(
-    resolveEditableCaptureProfile(status, currentProcessName, currentStage, currentSaveScope),
+    resolveEditableCaptureProfile(
+      status,
+      currentProcessName,
+      currentStage,
+      currentSaveScope,
+      currentGamePresetId,
+    ),
   );
   const autoRecalibrateButton = document.getElementById('ocrProfileAutoRecalibrateBtn');
   const applyRecommendedButton = document.getElementById('ocrProfileApplyRecommendedBtn');
@@ -5994,6 +6027,35 @@ function renderOcrProfile(status) {
   }
   if (autoApplyInput && document.activeElement !== autoApplyInput) {
     autoApplyInput.checked = Boolean(runtime.capture_profile_auto_apply_enabled);
+  }
+}
+
+function selectOcrGameCapturePreset() {
+  const gamePresetSelect = document.getElementById('ocrProfileGamePresetSelect');
+  const processInput = document.getElementById('ocrProfileProcessInput');
+  const selectedGamePreset = OCR_GAME_CAPTURE_PRESETS[gamePresetSelect?.value || ''];
+  if (selectedGamePreset) {
+    const stageSelect = document.getElementById('ocrProfileStageSelect');
+    const saveScopeSelect = document.getElementById('ocrProfileSaveScopeSelect');
+    if (processInput) {
+      processInput.value = selectedGamePreset.process_name;
+    }
+    if (stageSelect) {
+      stageSelect.value = selectedGamePreset.default_stage;
+    }
+    if (
+      saveScopeSelect
+      && resolveRuntimeDefaultSaveScope(
+        latestStatus || {},
+        selectedGamePreset.process_name,
+      ) === 'process_fallback'
+    ) {
+      saveScopeSelect.value = 'process_fallback';
+    }
+  }
+  renderOcrProfile(latestStatus || { ocr_reader_runtime: {} });
+  if (selectedGamePreset && processInput) {
+    processInput.value = selectedGamePreset.process_name;
   }
 }
 
@@ -6989,6 +7051,10 @@ async function saveOcrCaptureProfile() {
       bottom_inset_ratio: bottomInsetRatio,
       clear: false,
     });
+    const gamePresetSelect = document.getElementById('ocrProfileGamePresetSelect');
+    if (gamePresetSelect) {
+      gamePresetSelect.value = 'auto';
+    }
     setFlash(payload.summary || uiT('ui.flash.ocr_profile_saved', 'OCR 截图校准已保存'), 'success');
     await refreshAll({ preserveFlash: true, forceInsights: true });
   } catch (error) {
@@ -7833,6 +7899,7 @@ document.getElementById('ocrProfileClearBtn').addEventListener('click', clearOcr
 document.getElementById('ocrProfileAutoRecalibrateBtn').addEventListener('click', autoRecalibrateOcrDialogueProfile);
 document.getElementById('ocrProfileApplyRecommendedBtn').addEventListener('click', applyRecommendedOcrCaptureProfile);
 document.getElementById('ocrProfileRollbackBtn').addEventListener('click', rollbackOcrCaptureProfileRecommendation);
+document.getElementById('ocrProfileGamePresetSelect').addEventListener('change', selectOcrGameCapturePreset);
 document.getElementById('ocrProfileStageSelect').addEventListener('change', () => {
   if (latestStatus) {
     renderOcrProfile(latestStatus);

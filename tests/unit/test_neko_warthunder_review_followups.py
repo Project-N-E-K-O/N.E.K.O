@@ -2,16 +2,23 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import json
 import sys
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
 
 import pytest
 
 from plugin.plugins.neko_warthunder import NekoWarthunderPlugin
+from plugin.plugins.neko_warthunder.adapters import data_layer_process
 from plugin.plugins.neko_warthunder.adapters.data_layer_process import (
     DataLayerProcessManager,
+)
+from plugin.plugins.neko_warthunder.adapters.neko_dispatcher import (
+    NekoDispatcher,
+    PushMessageSubmissionRejected,
+    ensure_push_message_submitted,
 )
 from plugin.plugins.neko_warthunder.core.contracts import (
     COMBAT_STRESS,
@@ -19,6 +26,7 @@ from plugin.plugins.neko_warthunder.core.contracts import (
     BattleState,
     WtConfig,
 )
+from plugin.plugins.neko_warthunder.data_layer.data_process.wt_events import parse_award
 from plugin.plugins.neko_warthunder.core.scenario import ScenarioResolver
 from plugin.plugins.neko_warthunder.detectors._base import (
     ConditionDetector,
@@ -36,7 +44,7 @@ def _load_wt_server():
         / "plugins"
         / "neko_warthunder"
         / "data_layer"
-        / "data process"
+        / "data_process"
     )
     spec = importlib.util.spec_from_file_location(module_name, data_dir / "wt_server.py")
     assert spec is not None and spec.loader is not None
@@ -52,7 +60,7 @@ def _load_wt_server():
 
 
 def test_invalid_url_does_not_retry_stale_python_runner(tmp_path: Path) -> None:
-    data_dir = tmp_path / "data_layer" / "data process"
+    data_dir = tmp_path / "data_layer" / "data_process"
     data_dir.mkdir(parents=True)
     (data_dir / "wt_server.py").write_text("", encoding="utf-8")
     manager = DataLayerProcessManager(
@@ -74,7 +82,7 @@ def test_invalid_url_does_not_retry_stale_python_runner(tmp_path: Path) -> None:
 
 
 def test_invalid_port_does_not_blacklist_python_runners(tmp_path: Path) -> None:
-    data_dir = tmp_path / "data_layer" / "data process"
+    data_dir = tmp_path / "data_layer" / "data_process"
     data_dir.mkdir(parents=True)
     (data_dir / "wt_server.py").write_text("", encoding="utf-8")
     manager = DataLayerProcessManager(
@@ -92,6 +100,229 @@ def test_invalid_port_does_not_blacklist_python_runners(tmp_path: Path) -> None:
     assert "port" in status["last_error"].lower()
     assert manager._failed_python_prefixes == set()
     assert status["python_cmd"] == ""
+
+
+def test_windows_store_python_alias_is_not_a_runtime() -> None:
+    alias = r"C:\Users\tester\AppData\Local\Microsoft\WindowsApps\python.exe"
+
+    assert data_layer_process._looks_like_python(alias) is False
+    assert data_layer_process._looks_like_python(r"C:\Python311\python.exe") is True
+
+
+def test_windows_python_path_is_recognized_on_posix_hosts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(data_layer_process, "Path", PurePosixPath)
+
+    assert data_layer_process._looks_like_python(r"C:\Python311\python.exe") is True
+
+
+def test_windows_store_py_launcher_is_not_a_runtime_candidate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    alias = r"C:\Users\tester\AppData\Local\Microsoft\WindowsApps\py.exe"
+    monkeypatch.setattr(data_layer_process.sys, "executable", "projectneko_server.exe")
+    monkeypatch.setattr(data_layer_process.sys, "_base_executable", "", raising=False)
+    monkeypatch.delenv("PYTHON", raising=False)
+    monkeypatch.setattr(
+        data_layer_process.shutil,
+        "which",
+        lambda name: alias if name == "py" else None,
+    )
+
+    assert data_layer_process._python_command_prefixes() == []
+
+
+def test_base_python_precedes_uv_venv_launcher(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base = r"C:\Python311\python.exe"
+    launcher = r"C:\project\.venv\Scripts\python.exe"
+    monkeypatch.setattr(data_layer_process.sys, "_base_executable", base, raising=False)
+    monkeypatch.setattr(data_layer_process.sys, "executable", launcher)
+    monkeypatch.delenv("PYTHON", raising=False)
+    monkeypatch.setattr(data_layer_process.shutil, "which", lambda _name: None)
+
+    assert data_layer_process._python_command_prefixes() == [[base], [launcher]]
+
+
+def test_explicit_push_rejection_is_not_committed() -> None:
+    observed: list[dict[str, object]] = []
+    plugin = SimpleNamespace(
+        cfg=WtConfig(
+            dry_run=False,
+            global_rate_limit_seconds=0,
+            output_backpressure_seconds=0,
+            dialogue_intrusion_mode="allow_interrupt",
+            user_chat_quiet_window_seconds=0,
+            battle_output_quiet_window_seconds=0,
+        ),
+        logger=SimpleNamespace(warning=lambda _message: None),
+        push_message=lambda **_kwargs: {"submitted": False, "reason": "backpressure"},
+        _last_user_chat_at=0.0,
+        _last_user_chat_mode="unknown",
+        _last_battle_respond_at=0.0,
+    )
+    dispatcher = NekoDispatcher(plugin, clock=lambda: 100.0)
+    dispatcher._observer = SimpleNamespace(
+        record_event=lambda _event, **kwargs: observed.append(kwargs)
+    )
+
+    with pytest.raises(PushMessageSubmissionRejected, match="backpressure"):
+        dispatcher.push_event(BattleEvent("spawn", ts=100.0), dry_run=False)
+
+    assert dispatcher._last_push_at is None
+    assert observed[-1]["stage"] == "dispatcher_failed"
+    assert observed[-1]["reason"] == "backpressure"
+    assert observed[-1]["pushed"] is False
+
+
+def test_push_submission_receipt_remains_compatible_with_old_sdk() -> None:
+    ensure_push_message_submitted(None)
+    ensure_push_message_submitted({"submitted": True})
+
+
+def test_runtime_state_migrates_to_external_data_without_touching_legacy(tmp_path: Path) -> None:
+    legacy = tmp_path / "plugin" / ".runtime_state.json"
+    primary = tmp_path / "storage" / "data" / ".runtime_state.json"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text('{"player_name": "legacy"}', encoding="utf-8")
+    plugin = object.__new__(NekoWarthunderPlugin)
+    plugin.logger = SimpleNamespace(warning=lambda _message: None)
+    plugin._legacy_runtime_state_path = legacy
+    plugin._runtime_state_path = primary
+
+    plugin._save_runtime_state({"broadcast_frequency": "normal"})
+
+    assert json.loads(primary.read_text(encoding="utf-8")) == {
+        "broadcast_frequency": "normal",
+        "player_name": "legacy",
+    }
+    assert legacy.read_text(encoding="utf-8") == '{"player_name": "legacy"}'
+
+
+def test_runtime_state_uses_new_sdk_data_path_when_available(tmp_path: Path) -> None:
+    plugin = object.__new__(NekoWarthunderPlugin)
+    plugin.logger = SimpleNamespace(warning=lambda _message: None)
+    plugin._legacy_runtime_state_path = tmp_path / "plugin" / ".runtime_state.json"
+    plugin.data_path = lambda *parts: tmp_path / "storage" / "data" / Path(*parts)
+
+    assert plugin._resolve_runtime_state_path() == tmp_path / "storage" / "data" / ".runtime_state.json"
+
+
+def test_startup_log_error_code_excludes_runner_paths() -> None:
+    raw = r"all_data_layer_runners_failed: C:\Users\tester\python.exe: FileNotFoundError"
+
+    assert NekoWarthunderPlugin._diagnostic_error_code(raw) == "all_data_layer_runners_failed"
+
+
+def test_packaged_runtime_uses_embedded_data_layer_without_system_python(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    data_dir = tmp_path / "data_layer" / "data_process"
+    data_dir.mkdir(parents=True)
+    (data_dir / "wt_server.py").write_text("", encoding="utf-8")
+    embedded_process = SimpleNamespace(poll=lambda: None, pid=4321)
+    seen: dict[str, object] = {}
+
+    monkeypatch.setattr(data_layer_process, "_is_packaged_runtime", lambda: True)
+    monkeypatch.setattr(
+        data_layer_process,
+        "_python_command_prefixes",
+        lambda: pytest.fail("packaged runtime must not inspect system Python"),
+    )
+
+    def fake_spawn(data_process_dir: Path, *, host: str, port: int):
+        seen.update(path=data_process_dir, host=host, port=port)
+        return embedded_process
+
+    monkeypatch.setattr(data_layer_process, "_spawn_embedded_data_layer", fake_spawn)
+    manager = DataLayerProcessManager(WtConfig(), plugin_root=tmp_path)
+
+    process = manager._spawn()
+
+    assert process is embedded_process
+    assert manager._python_cmd == ["embedded"]
+    assert seen == {"path": data_dir, "host": "127.0.0.1", "port": 8112}
+
+
+def test_embedded_loader_imports_packaged_data_layer_module() -> None:
+    module = data_layer_process._load_wt_server_module()
+
+    assert module.__name__.endswith("data_layer.data_process.wt_server")
+    assert callable(module.create_http_server)
+
+
+def test_embedded_data_layer_serves_health_without_system_python(tmp_path: Path) -> None:
+    process = data_layer_process._spawn_embedded_data_layer(
+        tmp_path,
+        host="127.0.0.1",
+        port=0,
+    )
+    port = int(process.httpd.server_address[1])
+    try:
+        assert data_layer_process.check_data_layer_health(
+            f"http://127.0.0.1:{port}",
+            1.0,
+        )
+    finally:
+        process.terminate()
+        process.wait(timeout=3.0)
+
+
+@pytest.mark.parametrize(
+    ("message", "code", "label"),
+    [
+        ("Ace (P-51D) First Strike!", "first_blood", "First Strike"),
+        ("Ace (P-51D) first blood!", "first_blood", "first blood"),
+        ("Ace (P-51D) FINAL BLOW!", "final_blow", "FINAL BLOW"),
+        (
+            'Ace (P-51D) earned the award "Double Strike!"',
+            "double_kill",
+            "Double Strike",
+        ),
+        (
+            "Ace (P-51D) earned an award 'Triple Kill!'",
+            "triple_kill",
+            "Triple Kill",
+        ),
+        (
+            'Ace (P-51D) EARNED THE AWARD "Multi Strike x4!"',
+            "multi_kill",
+            "Multi Strike x4",
+        ),
+    ],
+)
+def test_english_awards_are_recognized(
+    message: str,
+    code: str,
+    label: str,
+) -> None:
+    award = parse_award(message, event_id=7, time=11)
+
+    assert award is not None
+    assert award.player == "Ace"
+    assert award.vehicle == "P-51D"
+    assert award.code == code
+    assert award.label == label
+    assert award.notable is True
+
+
+def test_final_blow_kill_description_is_not_misclassified_as_award() -> None:
+    assert (
+        parse_award("Ace (P-51D) dealt the final blow Rival (Bf 109)")
+        is None
+    )
+
+
+def test_english_award_offsets_are_taken_from_original_unicode_text() -> None:
+    award = parse_award("Straße first blood!", event_id=8, time=12)
+
+    assert award is not None
+    assert award.player == "Straße"
+    assert award.code == "first_blood"
+    assert award.label == "first blood"
 
 
 def test_large_replay_scrub_is_not_mistaken_for_midnight_wrap() -> None:

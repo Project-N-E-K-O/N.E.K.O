@@ -11,6 +11,7 @@ from .aihong_state import (
     AIHONG_MENU_STAGE as _AIHONG_MENU_STAGE,
     matches_aihong_target as _matches_aihong_target_info,
 )
+from .dialogue_library import matches_senren_banka_target
 from .models import (
     DEFAULT_OCR_CAPTURE_BOTTOM_INSET_RATIO,
     DEFAULT_OCR_CAPTURE_LEFT_INSET_RATIO,
@@ -28,6 +29,7 @@ from .models import (
     compute_ocr_window_aspect_ratio,
     parse_ocr_capture_profile_bucket_key,
 )
+from .ocr_game_presets import SENREN_BANKA_CAPTURE_PROFILE_PRESETS
 
 __all__ = [
     "OcrCaptureProfile",
@@ -110,11 +112,19 @@ def _builtin_capture_profile_for_target_stage(
     *,
     stage: str,
 ) -> OcrCaptureProfile | None:
-    if not _matches_aihong_target(target):
-        return None
-    if stage == _AIHONG_MENU_STAGE:
-        return OcrCaptureProfile.from_dict(_AIHONG_MENU_CAPTURE_PROFILE_PRESET)
-    return OcrCaptureProfile.from_dict(_AIHONG_DIALOGUE_CAPTURE_PROFILE_PRESET)
+    if _matches_aihong_target(target):
+        if stage == _AIHONG_MENU_STAGE:
+            return OcrCaptureProfile.from_dict(_AIHONG_MENU_CAPTURE_PROFILE_PRESET)
+        return OcrCaptureProfile.from_dict(_AIHONG_DIALOGUE_CAPTURE_PROFILE_PRESET)
+
+    if matches_senren_banka_target(
+        process_name=target.process_name,
+        normalized_title=target.normalized_title,
+    ):
+        preset = SENREN_BANKA_CAPTURE_PROFILE_PRESETS.get(stage)
+        if preset is not None:
+            return OcrCaptureProfile.from_dict(preset)
+    return None
 
 
 @dataclass(slots=True)

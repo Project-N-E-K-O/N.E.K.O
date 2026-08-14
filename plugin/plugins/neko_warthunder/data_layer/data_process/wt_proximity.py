@@ -19,7 +19,10 @@ import math
 from collections.abc import Callable
 from typing import Any
 
-from wt_geo import clock_position, compass_8
+if __package__:
+    from .wt_geo import clock_position, compass_8
+else:
+    from wt_geo import clock_position, compass_8
 
 
 def _pos_num(v: Any) -> float | None:

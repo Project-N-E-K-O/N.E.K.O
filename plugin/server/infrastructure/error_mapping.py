@@ -7,7 +7,12 @@ from fastapi import HTTPException
 from plugin.server.domain.errors import ServerDomainError
 
 
-def raise_http_from_domain(error: ServerDomainError, *, logger: Any) -> NoReturn:
+def raise_http_from_domain(
+    error: ServerDomainError,
+    *,
+    logger: Any,
+    include_details: bool = False,
+) -> NoReturn:
     log = getattr(logger, error.log_level, logger.warning)
     log(
         "Domain error: code={}, status_code={}, message={}",
@@ -17,6 +22,14 @@ def raise_http_from_domain(error: ServerDomainError, *, logger: Any) -> NoReturn
     )
     raise HTTPException(
         status_code=error.status_code,
-        detail=error.message,
+        detail=(
+            {
+                "code": error.code,
+                "message": error.message,
+                "details": error.details,
+            }
+            if include_details
+            else error.message
+        ),
         headers={"X-Error-Code": error.code},
     )
