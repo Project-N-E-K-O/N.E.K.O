@@ -23,7 +23,7 @@ import subprocess
 import sys
 import tarfile
 import zipfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -517,3 +517,173 @@ def test_only_the_packaged_frontend_output_is_scanned(tmp_path: Path) -> None:
 
     offenders, _ = module.collect_offenders(tmp_path)
     assert offenders == {f"frontend/plugin-manager/dist/assets/{CJK_NAME}.js"}
+
+
+@pytest.mark.unit
+def test_plugin_stage_filter_matches_the_real_build_rules(tmp_path: Path) -> None:
+    """Pin the mirrored staging filter against the implementation it copies.
+
+    The checker cannot import plugin.neko_plugin_cli.core.build_rules (pydantic;
+    the analyze job runs on a bare interpreter), so it reimplements the file-side
+    of should_skip_path. This test imports the real one and demands the same
+    verdict, so the copy cannot drift unnoticed.
+    """
+    from plugin.neko_plugin_cli.core.build_rules import load_build_rules, should_skip_path
+
+    module = _load_script_module()
+    plugin_dir = tmp_path / "plugin" / "plugins" / "demo"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "pyproject.toml").write_text(
+        "\n".join(
+            [
+                "[tool.neko.build]",
+                'exclude = ["*.tmp", "secrets/*"]',
+                'exclude_dirs = ["tests", "local_logs"]',
+                'exclude_files = ["README.md", "*.bak"]',
+            ]
+        ),
+        encoding="utf-8",
+    )
+    rules = load_build_rules(
+        {"tool": {"neko": {"build": {
+            "exclude": ["*.tmp", "secrets/*"],
+            "exclude_dirs": ["tests", "local_logs"],
+            "exclude_files": ["README.md", "*.bak"],
+        }}}}
+    )
+
+    keep = module._plugin_stage_filter(tmp_path)
+    relatives = [
+        "runtime.py",
+        "README.md",
+        "notes.bak",
+        "scratch.tmp",
+        "store.db",
+        "runtime.log",
+        "cached.pyc",
+        ".DS_Store",
+        "tests/test_runtime.py",
+        "tests/nested/deep.json",
+        "local_logs/private.txt",
+        "secrets/token.json",
+        "dist/bundle.js",
+        "build/out.js",
+        "__pycache__/mod.pyc",
+        ".github/workflows/ci.yml",
+        ".vscode/settings.json",
+        "data layer/worker.py",
+        "assets/nested/ok.png",
+    ]
+    # The two directions are not symmetric. Dropping a path the real staging
+    # keeps means the check stops scanning a file that ships — a hole, and the
+    # only direction worth failing on. Keeping one it drops merely leaves a
+    # false positive, so it is reported but tolerated.
+    for relative in relatives:
+        mirrored_keep = keep(f"plugin/plugins/demo/{relative}")
+        if PurePosixPath(relative).suffix.lower() in {".db", ".log"}:
+            # Stripped after staging by _remove_private_runtime_artifacts rather
+            # than by the rules, so the real should_skip_path says nothing here.
+            assert not mirrored_keep, relative
+            continue
+        real_keeps = not should_skip_path(Path(relative), is_dir=False, rules=rules)
+        if real_keeps:
+            assert mirrored_keep, f"mirror drops a staged path: {relative}"
+
+    # And it must actually drop the families it exists for.
+    for dropped in (
+        "tests/test_runtime.py",
+        "local_logs/private.txt",
+        "secrets/token.json",
+        "scratch.tmp",
+        "README.md",
+        "notes.bak",
+        "dist/bundle.js",
+        "__pycache__/mod.pyc",
+        "store.db",
+        "runtime.log",
+    ):
+        assert not keep(f"plugin/plugins/demo/{dropped}"), dropped
+
+
+@pytest.mark.unit
+def test_excluded_plugin_paths_are_not_reported(tmp_path: Path) -> None:
+    """A CJK name under a path the stage drops must not fail the build."""
+    module = _load_script_module()
+    _init_repo(tmp_path)
+    plugin_dir = tmp_path / "plugin" / "plugins" / "demo"
+    (plugin_dir / "tests").mkdir(parents=True)
+    (plugin_dir / "pyproject.toml").write_text(
+        '[tool.neko.build]\nexclude_dirs = ["tests"]\n', encoding="utf-8"
+    )
+    (plugin_dir / "tests" / f"{CJK_NAME}.json").write_bytes(b"x")
+    (plugin_dir / f"{CJK_NAME}.db").write_bytes(b"x")
+    (plugin_dir / "__pycache__").mkdir()
+    (plugin_dir / "__pycache__" / f"{CJK_NAME}.pyc").write_bytes(b"x")
+    shipped = plugin_dir / "assets"
+    shipped.mkdir()
+    (shipped / f"{CJK_NAME}.png").write_bytes(b"x")
+
+    offenders, _ = module.collect_offenders(tmp_path)
+    assert offenders == {f"plugin/plugins/demo/assets/{CJK_NAME}.png"}
+
+
+@pytest.mark.unit
+def test_windows_zip_separators_are_normalized(tmp_path: Path) -> None:
+    """`中文目录\\plain.png` is an ASCII file in a CJK folder — allowed."""
+    module = _load_script_module()
+    _init_repo(tmp_path)
+    packs = tmp_path / "frontend" / "pngtuber-packs"
+    packs.mkdir(parents=True)
+    with zipfile.ZipFile(packs / "tuber.zip", "w") as archive:
+        archive.writestr("中文目录\\plain.png", "x")
+        archive.writestr(f"层\\{CJK_NAME}", "x")
+    (packs / "manifest.json").write_text(
+        json.dumps({"models": [{"folder": "tuber", "archive": "tuber.zip"}]}),
+        encoding="utf-8",
+    )
+
+    offenders, _ = module.collect_offenders(tmp_path)
+    assert offenders == {f"static/pngtuber/tuber/层/{CJK_NAME}"}
+
+
+@pytest.mark.unit
+def test_vite_public_assets_are_scanned(tmp_path: Path) -> None:
+    """public/ is copied verbatim into gitignored output, so scan the source."""
+    module = _load_script_module()
+    _init_repo(tmp_path)
+    for rel in ("frontend/plugin-manager/public", "frontend/react-neko-chat/public"):
+        (tmp_path / rel).mkdir(parents=True)
+        (tmp_path / rel / f"{CJK_NAME}.png").write_bytes(b"x")
+    unpackaged = tmp_path / "frontend" / "react-neko-chat" / "src"
+    unpackaged.mkdir(parents=True)
+    (unpackaged / f"{CJK_NAME}.tsx").write_bytes(b"x")
+
+    offenders, _ = module.collect_offenders(tmp_path)
+    assert offenders == {
+        f"frontend/plugin-manager/public/{CJK_NAME}.png",
+        f"frontend/react-neko-chat/public/{CJK_NAME}.png",
+    }
+
+
+@pytest.mark.unit
+def test_only_packaged_config_and_data_entries_are_scanned(tmp_path: Path) -> None:
+    """config/ and data/ ship a named subset, not the whole root."""
+    module = _load_script_module()
+    _init_repo(tmp_path)
+    for rel in (
+        f"config/characters/{CJK_NAME}.json",
+        f"config/changelog/{CJK_NAME}.md",
+        f"data/browser_use_prompts/{CJK_NAME}.md",
+        f"config/prompts/{CJK_NAME}.md",
+        f"data/notes/{CJK_NAME}.md",
+    ):
+        path = tmp_path / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"x")
+
+    offenders, _ = module.collect_offenders(tmp_path)
+    assert offenders == {
+        f"config/characters/{CJK_NAME}.json",
+        f"config/changelog/{CJK_NAME}.md",
+        f"data/browser_use_prompts/{CJK_NAME}.md",
+    }

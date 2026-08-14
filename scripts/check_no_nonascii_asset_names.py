@@ -137,6 +137,7 @@ same PR leaves nothing for the in-tree comparison to see.
 from __future__ import annotations
 
 import argparse
+from fnmatch import fnmatchcase
 import json
 import os
 import subprocess
@@ -144,6 +145,13 @@ import sys
 import tarfile
 import zipfile
 from pathlib import Path, PurePosixPath
+
+try:  # 3.11+ stdlib; the repo pins ==3.11.*, this is belt-and-braces
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - only on an older interpreter
+    # Without it we simply do not know each plugin's [tool.neko.build] rules,
+    # which means scanning more than ships — false positives, never a hole.
+    tomllib = None
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BASELINE_PATH = REPO_ROOT / "scripts" / "nonascii_asset_baseline.txt"
@@ -156,10 +164,24 @@ CODE = "NONASCII_ASSET_NAME"
 # new payload directory is added there.
 BUNDLED_ROOTS: tuple[str, ...] = (
     "static",
-    "config",
     "templates",
     "assets",
-    "data",
+    # config/ and data/ ship a named subset, not the whole root:
+    # --include-package=config compiles Python modules but copies no data, so
+    # everything that actually lands is listed explicitly in the build scripts.
+    # Scanning the roots wholesale would fail a PR over e.g. config/prompts/*.md,
+    # which never reaches the payload.
+    "config/__init__.py",
+    "config/api_providers.json",
+    "config/characters.json",
+    "config/core_config.json",
+    "config/user_preferences.json",
+    "config/characters",
+    "config/changelog",
+    "config/surveys",
+    "data/browser_use_prompts",
+    "data/tiktoken_cache",
+    "data/embedding_models",
     # Not all of docs/ — the build packs exactly one subtree
     # (--include-data-dir=docs/zh-CN/guide). Scanning the whole root would fail
     # documentation PRs over files that never enter the payload.
@@ -170,6 +192,12 @@ BUNDLED_ROOTS: tuple[str, ...] = (
     # static/ — so scanning all of frontend/ would fail a PR over a file that
     # cannot possibly break signing.
     "frontend/plugin-manager/dist",
+    # Vite copies public/ verbatim into the build output, keeping the filename.
+    # Those outputs are gitignored (plugin-manager/dist, static/react/neko-chat),
+    # so without these two roots a tracked public/ asset is invisible here yet
+    # still lands in the payload.
+    "frontend/plugin-manager/public",
+    "frontend/react-neko-chat/public",
     "plugin/plugins",
     # Voice-turn + speaker models, both --include-data-dir'd. The .onnx weights
     # are downloaded at build time and gitignored, so the git listing cannot see
@@ -233,6 +261,100 @@ def _under_bundled_root(rel_posix: str) -> bool:
     )
 
 
+# Mirror of the staging filter in scripts/prepare_nuitka_plugins.py, which runs
+# each plugin's ``[tool.neko.build]`` rules (plus hard defaults) before the
+# payload is installed into the bundle. Without it this check rejects files that
+# never reach Contents/MacOS — a plugin's own tests/, its .db/.log runtime
+# leftovers, editor directories.
+#
+# It is a mirror rather than an import on purpose: the real rules live behind
+# pydantic (plugin/neko_plugin_cli/core/build_rules.py) and the analyze job runs
+# these scripts on a bare interpreter with no dependencies installed.
+#
+# The two directions of drift are not symmetric, so keep this list a SUBSET of
+# the real one. Listing something the real staging keeps means we stop scanning
+# a file that does ship — a hole. Missing something it drops only leaves a
+# false positive. tests/unit/test_check_no_nonascii_asset_names.py imports the
+# real ``should_skip_path`` and fails on the first direction.
+_PLUGIN_SKIP_DIR_NAMES = frozenset(
+    {"__pycache__", ".github", ".pytest_cache", ".venv", ".git"}
+)
+_PLUGIN_SKIP_ROOT_DIR_NAMES = frozenset({"dist", "build"})
+_PLUGIN_SKIP_FILE_NAMES = frozenset({".DS_Store"})
+# .pyc/.pyo come from the build rules; .db/.log are stripped unconditionally by
+# _remove_private_runtime_artifacts after staging.
+_PLUGIN_SKIP_SUFFIXES = frozenset({".pyc", ".pyo", ".db", ".log"})
+
+PLUGINS_ROOT = "plugin/plugins"
+
+
+def _match_build_pattern(path_str: str, pattern: str) -> bool:
+    if fnmatchcase(path_str, pattern):
+        return True
+    return "/" not in pattern and fnmatchcase(PurePosixPath(path_str).name, pattern)
+
+
+def _plugin_rules(repo_root: Path, plugin_dir: str) -> dict[str, list[str]]:
+    pyproject = repo_root / PLUGINS_ROOT / plugin_dir / "pyproject.toml"
+    if tomllib is None or not pyproject.is_file():
+        return {}
+    try:
+        table = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        # A broken pyproject is the plugin CLI's problem to report; here it just
+        # means "no extra rules", which only ever widens what we scan.
+        return {}
+    build = table.get("tool", {}).get("neko", {}).get("build", {})
+    if not isinstance(build, dict):
+        return {}
+    return {
+        key: [item for item in build.get(key, []) if isinstance(item, str)]
+        for key in ("exclude", "exclude_dirs", "exclude_files")
+    }
+
+
+def _plugin_stage_filter(repo_root: Path):
+    """Return ``keep(path)`` — False for repo paths the plugin stage drops."""
+    cache: dict[str, dict[str, list[str]]] = {}
+
+    def keep(path: str) -> bool:
+        prefix = PLUGINS_ROOT + "/"
+        if not path.startswith(prefix):
+            return True
+        parts = PurePosixPath(path[len(prefix):]).parts
+        if len(parts) < 2:
+            return True  # a loose file directly under plugin/plugins/
+        plugin_dir, relative = parts[0], PurePosixPath(*parts[1:])
+        dir_parts = relative.parts[:-1]
+        if dir_parts and dir_parts[0] in _PLUGIN_SKIP_ROOT_DIR_NAMES:
+            return False
+        if any(part in _PLUGIN_SKIP_DIR_NAMES for part in dir_parts):
+            return False
+        if relative.name in _PLUGIN_SKIP_FILE_NAMES:
+            return False
+        if relative.suffix.lower() in _PLUGIN_SKIP_SUFFIXES:
+            return False
+
+        rules = cache.setdefault(plugin_dir, _plugin_rules(repo_root, plugin_dir))
+        if not rules:
+            return True
+        path_str = relative.as_posix()
+        if any(_match_build_pattern(path_str, p) for p in rules.get("exclude", [])):
+            return False
+        for index in range(len(dir_parts)):
+            candidate = "/".join(dir_parts[: index + 1])
+            if any(
+                _match_build_pattern(candidate, p) for p in rules.get("exclude_dirs", [])
+            ):
+                return False
+        exclude_files = rules.get("exclude_files", [])
+        if relative.name in exclude_files:
+            return False
+        return not any(_match_build_pattern(path_str, p) for p in exclude_files)
+
+    return keep
+
+
 def _git_listed_offenders(repo_root: Path) -> set[str]:
     """Non-ASCII git-visible paths under the bundled roots.
 
@@ -257,11 +379,13 @@ def _git_listed_offenders(repo_root: Path) -> set[str]:
         print(f"error: cannot list git files: {exc}", file=sys.stderr)
         raise SystemExit(2) from exc
 
+    staged = _plugin_stage_filter(repo_root)
     return {
         path
         for path in raw.split("\0")
         if path
         and _under_bundled_root(path)
+        and staged(path)
         and not _is_ascii(PurePosixPath(path).name)
     }
 
@@ -277,9 +401,15 @@ def _archive_offenders(repo_root: Path) -> dict[str, str]:
 
     def _record(members: list[str], dest_prefix: str, archive_rel: str) -> None:
         for member in members:
-            if _is_ascii(PurePosixPath(member).name):
+            # A ZIP written on Windows can carry backslash separators; the
+            # unpacker normalizes them (`_safe_relative_path`), so a member like
+            # `中文目录\plain.png` really lands as an ASCII file inside a CJK
+            # directory — allowed. Without this the whole string reads as one
+            # basename and the check rejects a file that signs fine.
+            normalized = member.replace("\\", "/")
+            if _is_ascii(PurePosixPath(normalized).name):
                 continue
-            offenders[f"{dest_prefix}/{member}"] = archive_rel
+            offenders[f"{dest_prefix}/{normalized}"] = archive_rel
 
     for source_dir, dest_prefix in TAR_ARCHIVE_DESTS:
         directory = repo_root / source_dir
