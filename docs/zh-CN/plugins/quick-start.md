@@ -1,8 +1,8 @@
-# 用 CLI 创建第一个插件
+# 用  PLUGIN CLI 创建第一个插件
 
-这篇快速开始只做一件事：确认你电脑上的 Plugin CLI 可以正常运行，并用它创建一个能够继续开发的独立插件仓库。
+这篇只做一件事：确认你电脑上的 N.E.K.O.可以从github源码获取，其中自带的N.E.K.O. Plugin CLI 可以正常工作，并用它创建一个能够继续开发的独立插件仓库。
 
-完成后，你会得到一个已经包含插件示例、测试、代码检查和 GitHub 发布配置的 `hello_world` 项目。
+完成后，你会得到一个已经包含插件示例、测试、代码检查和 GitHub 发布配置的 `hello_world` 项目,这将是你开发插件的起点。
 
 ## 1. 确认 Git 和 uv 已安装
 
@@ -13,30 +13,28 @@ git --version
 uv --version
 ```
 
-这两条命令不是安装命令，而是在继续前确认终端确实能找到所需工具：
 
 | 命令 | 确认什么 |
 | --- | --- |
 | `git --version` | Git 可以使用。后面需要用它克隆 N.E.K.O 源码，并为插件提交和推送版本。 |
 | `uv --version` | uv 可以使用。后面需要用它安装锁定的 Python 依赖并启动 Plugin CLI。 |
 
-两条命令都必须显示版本号。如果任何一条提示“找不到命令”或“不是内部或外部命令”，先停止教程：
+两条命令都必须显示版本号。如果任何一条提示“找不到命令”或“不是内部或外部命令”，先安装：
 
 - 安装 Git：[Git 官方下载](https://git-scm.com/downloads)；
 - 安装 uv：[uv 官方安装说明](https://docs.astral.sh/uv/getting-started/installation/)。
 
-安装完成后关闭并重新打开终端，再次运行这两条命令。只有两条都能显示版本号时才继续下一步。
 
 ## 2. 获取 N.E.K.O 源码
 
-Plugin CLI 目前随 N.E.K.O 源码提供，还不能单独安装。第一次使用时，克隆官方仓库：
+Plugin CLI 目前随 N.E.K.O 源码提供，不能单独安装。开始开发 **N.E.K.O. 插件** 的推荐方式是直接获取源码：
 
 ```bash
 git clone --filter=blob:none https://github.com/Project-N-E-K-O/N.E.K.O.git
 cd N.E.K.O
 ```
 
-如果你已经有 N.E.K.O 源码，不要再次克隆，也不要删除现有目录。直接进入原来的仓库：
+如果你已经有 N.E.K.O 源码，不要再次克隆，直接进入原来的仓库：
 
 ```bash
 cd /path/to/N.E.K.O
@@ -51,11 +49,11 @@ cd /path/to/N.E.K.O
 在 N.E.K.O 仓库根目录运行：
 
 ```bash
-uv sync --locked
+uv sync 
 uv run neko-plugin --help
 ```
 
-帮助信息中应至少能看到：
+neko-plugin 帮助信息中应至少能看到：
 
 ```text
 init
@@ -65,9 +63,8 @@ build
 publish
 ```
 
-看到这些命令，说明 CLI 已经可以使用。后续都使用 `uv run neko-plugin`，不要假设系统中已经安装了一个全局的 `neko-plugin` 命令。
+看到这些命令，说明 CLI 已经可以使用。后续都使用 `uv run neko-plugin`。
 
-如果 `uv sync --locked` 失败，先停下来并保留完整错误信息；网络、Python 平台或依赖状态都可能是原因，不要通过重新生成 `uv.lock` 来绕过错误。只有准备更新源码时才运行 `git status --short`：如果有本地修改，先保留自己的工作，不要直接拉取或重置；如果仓库干净且帮助中缺少 `init` 或 `publish`，可以执行 `git pull --ff-only` 后重新运行上面的两条命令。
 
 ## 4. 创建独立插件仓库
 
@@ -77,10 +74,10 @@ publish
 uv run neko-plugin init hello_world --type plugin --name "Hello World" --output ../n.e.k.o_plugin_hello_world
 ```
 
-`--output` 是最终目录，不会再自动追加一层文件夹。这里把插件放在 N.E.K.O 旁边，避免在 N.E.K.O 仓库内部创建嵌套 Git 仓库。
-
+这会初始化一个 **Hello World** 的插件。
+这里把插件放在 N.E.K.O 旁边，避免在 N.E.K.O 仓库内部创建嵌套 Git 仓库。
+下文中 **../n.e.k.o_plugin_hello_world**目录指的是刚才创建的插件的目录，请在N.E.K.O. 源码目录下，返回上一级。
 如果目标目录已经存在，CLI 会停止且不会覆盖其中的文件。请换一个新目录，或者先确认已有目录的用途。
-
 ## 5. 运行第一次检查
 
 ```bash
@@ -93,7 +90,7 @@ uv run neko-plugin check ../n.e.k.o_plugin_hello_world
 [OK] hello_world: check found 0 error(s), 2 warning(s)
 ```
 
-此时出现“尚未配置 GitHub remote”或“工作区有未提交修改”的警告是正常的：项目还没有推送和提交。只有出现 `[FAIL]` 或 error 时才需要先停下来，根据命令给出的修复建议处理。
+此时出现“尚未配置 GitHub remote”或“工作区有未提交修改”的警告是正常的：项目还没有推送和提交。以后出现 `[FAIL]` 或 error 时才需要先停下来，根据命令给出的修复建议处理。
 
 ## CLI 已经为你准备了什么
 
