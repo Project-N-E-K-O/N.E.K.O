@@ -878,9 +878,18 @@ class QQClient(QQConnectionBase):
             group_id = str(msg.get("group_id") or "").strip()
             try:
                 if msg_type == "group" and group_id:
-                    ret = await self.get_group_file_url(
-                        group_id, file_id, busid=int(data.get("busid") or 0),
-                    )
+                    # 群文件：有真实 busid 才走 get_group_file_url（NapCat 要求真
+                    # busid，0 会被拒）；只有 file_id 时用通用 get_file 兜底。
+                    try:
+                        busid = int(data.get("busid") or 0)
+                    except (TypeError, ValueError):
+                        busid = 0
+                    if busid:
+                        ret = await self.get_group_file_url(
+                            group_id, file_id, busid=busid,
+                        )
+                    else:
+                        ret = await self.get_file_by_id(file_id)
                 elif msg_type == "private":
                     # NapCat 的 get_private_file_url 需要发送者 user_id，缺了就
                     # 拿不到 URL，落到下方兜底（裸 [文件 name]）。
@@ -1089,9 +1098,18 @@ class QQClient(QQConnectionBase):
             try:
                 if not url and file_id:
                     if msg_type == "group" and group_id:
-                        ret = await self.get_group_file_url(
-                            group_id, file_id, busid=int(f.get("busid") or 0),
-                        )
+                        # 有真实 busid 才走 get_group_file_url，否则通用 get_file
+                        # 兜底（群文件消息常只带 file_id）。
+                        try:
+                            busid = int(f.get("busid") or 0)
+                        except (TypeError, ValueError):
+                            busid = 0
+                        if busid:
+                            ret = await self.get_group_file_url(
+                                group_id, file_id, busid=busid,
+                            )
+                        else:
+                            ret = await self.get_file_by_id(file_id)
                         url = str((ret or {}).get("url") or "").strip()
                     elif msg_type == "private":
                         # NapCat 的 get_private_file_url 需要发送者 user_id，缺了
@@ -1989,6 +2007,15 @@ class QQClient(QQConnectionBase):
     async def get_file(self, url: str, thread_count: int = 3, headers: Optional[list[str]] = None) -> Dict[str, Any]:
         """获取文件数据。"""
         return await self.call_action("get_file", {"url": str(url), "thread_count": int(thread_count), "headers": headers or []}, timeout=60.0)
+
+    async def get_file_by_id(self, file_id: str) -> Dict[str, Any]:
+        """通过 file_id 获取文件信息（OneBot v11 标准 ``get_file``）。
+
+        用于群文件消息只有 ``file_id``、没有 ``busid`` 时替代
+        ``get_group_file_url``（NapCat 的 get_group_file_url 需要真实 busid，
+        传 0 会被拒）。
+        """
+        return await self.call_action("get_file", {"file_id": str(file_id)}, timeout=5.0)
 
     # ── AI / OCR / 翻译 ─────────────────────────────────────────
 

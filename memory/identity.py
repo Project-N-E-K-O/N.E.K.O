@@ -140,9 +140,16 @@ def normalize_channel(value: Any) -> str | None:
     provenance (the pre-upgrade plugin profile carried only adjustment /
     message_count / two rings), and encoding an unknown as a concrete channel
     is exactly the move that makes a stranger inherit somebody else's ledger.
+
+    Historical alias: the QQ plugin's channel was renamed ``napcat`` ->
+    ``onebot``; old ledgers may still carry ``napcat`` in ``channels_seen``.
+    Normalize it to ``onebot`` so a legacy account and a fresh message are not
+    misjudged as a multi-channel collision.
     """
     text = str(value or "").strip().lower()
-    return text if _CHANNEL_RE.fullmatch(text) else None
+    if not _CHANNEL_RE.fullmatch(text):
+        return None
+    return "onebot" if text == "napcat" else text
 
 
 def activity_count_cap() -> int:

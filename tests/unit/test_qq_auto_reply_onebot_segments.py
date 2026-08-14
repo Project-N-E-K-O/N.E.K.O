@@ -156,6 +156,25 @@ async def test_file_napcat_group_calls_file_url_api():
     assert elem.url == "https://dl/a.zip"
 
 
+async def test_file_napcat_group_without_busid_uses_generic_get_file():
+    """Group file carrying only file_id (no busid) -> use generic get_file_by_id,
+    not get_group_file_url (which needs a real busid, 0 gets rejected)."""
+    client = _client()
+    async def fake(file_id):
+        assert file_id == "fid7"
+        return {"url": "https://dl/nobusid.txt", "name": "nobusid.txt"}
+    with patch.object(client, "get_group_file_url", AsyncMock()) as group_mock, \
+         patch.object(client, "get_file_by_id", fake):
+        chain = await client._build_message_chain(_msg({
+            "type": "file",
+            "data": {"file": "uuid", "file_id": "fid7"},
+        }))
+    elem = chain.elements[0]
+    assert isinstance(elem, File)
+    assert elem.url == "https://dl/nobusid.txt"
+    group_mock.assert_not_called()
+
+
 async def test_file_napcat_private_calls_private_file_url():
     """NapCat private file: message_type=private -> call get_private_file_url
     with the sender's user_id (NapCat requires both user_id and file_id)."""
@@ -308,6 +327,23 @@ async def test_file_fetch_text_private_decodes():
     assert "# design doc" in message["content"]
     assert "a.md" in message["content"]
     assert "[CQ:file," not in message["content"]
+
+
+async def test_file_fetch_group_without_busid_uses_generic_get_file():
+    """Group file without busid in _fetch_file_content -> get_file_by_id."""
+    client = _client()
+    async def fake(file_id):
+        assert file_id == "fid8"
+        return {"url": "https://dl/g.txt"}
+    message = _file_msg(message_type="group", group_id="g1",
+                        cq="[CQ:file,file=g.txt,file_id=fid8]")
+    files = [{"file_id": "fid8", "name": "g.txt", "url": "", "busid": 0}]
+    with patch.object(client, "get_group_file_url", AsyncMock()) as group_mock, \
+         patch.object(client, "get_file_by_id", fake), \
+         _patch_http(_FakeResp(b"group content")):
+        await client._fetch_file_content(message, files)
+    assert "group content" in message["content"]
+    group_mock.assert_not_called()
 
 
 async def test_file_fetch_group_calls_group_file_url():
