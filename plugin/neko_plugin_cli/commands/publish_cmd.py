@@ -251,6 +251,7 @@ def _publish_github(
     source = load_plugin_source(plugin_dir)
     _ensure_clean_worktree(plugin_dir)
     _ensure_standard_release_workflow(plugin_dir, plugin_id=source.plugin_id)
+    repository = _github_repository(plugin_dir)
     tag = f"v{source.version}"
 
     with tempfile.TemporaryDirectory(prefix="neko-plugin-publish-") as target_dir:
@@ -267,6 +268,7 @@ def _publish_github(
             skip_tests=False,
             target_dir=target_dir,
             market_release=True,
+            _release_repository=repository,
             _release_ref_name=tag,
         )
         if release_cmd.handle_release_check(check_args) != 0:
@@ -279,9 +281,9 @@ def _publish_github(
             )
     _ensure_clean_worktree(plugin_dir)
 
-    repository = _github_repository(plugin_dir)
     head = _git(plugin_dir, "rev-parse", "HEAD")
     _ensure_head_pushed(plugin_dir, head=head)
+    _ensure_release_ruff_passes(plugin_dir)
     _ensure_remote_tag(plugin_dir, tag=tag, head=head)
     return _wait_for_release(
         repository,
@@ -365,6 +367,43 @@ def _ensure_head_pushed(plugin_dir: Path, *, head: str) -> None:
                 "HEAD が origin ブランチに push されていません。先にブランチを push してください",
             )
         )
+
+
+def _ensure_release_ruff_passes(plugin_dir: Path) -> None:
+    completed = subprocess.run(
+        [
+            "uvx",
+            "ruff==0.12.4",
+            "check",
+            "--ignore-noqa",
+            "--isolated",
+            "--target-version",
+            "py311",
+            "--line-length",
+            "120",
+            "--select",
+            "E4,E7,E9,F,I",
+            "--exclude",
+            "vendor",
+            ".",
+        ],
+        cwd=plugin_dir,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    if completed.returncode == 0:
+        return
+    output = completed.stdout.strip()
+    if output:
+        print(output, file=sys.stderr)
+    raise RuntimeError(
+        _tri(
+            "Ruff check failed",
+            "Ruff 检查未通过",
+            "Ruff チェックに失敗しました",
+        )
+    )
 
 
 def _github_repository(plugin_dir: Path) -> str:

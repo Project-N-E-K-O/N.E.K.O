@@ -63,6 +63,7 @@ def handle_release_check(args: argparse.Namespace) -> int:
                     plugin_dir,
                     plugin_id=source.plugin_id,
                     version=source.version,
+                    github_repository=getattr(args, "_release_repository", None),
                     ref_name=getattr(args, "_release_ref_name", None),
                 )
             )
@@ -137,11 +138,13 @@ def _diagnose_market_release(
     *,
     plugin_id: str,
     version: str,
+    github_repository: str | None = None,
     ref_name: str | None = None,
 ) -> list[Issue]:
     issues: list[Issue] = []
     expected_repo = f"{_MARKET_REPO_PREFIX}{plugin_id}"
-    github_repository = os.environ.get("GITHUB_REPOSITORY", "").strip()
+    if github_repository is None:
+        github_repository = os.environ.get("GITHUB_REPOSITORY", "").strip()
     remote_url = ""
     if (plugin_dir / ".git").exists():
         remote = _run_git(["remote", "get-url", "origin"], cwd=plugin_dir)

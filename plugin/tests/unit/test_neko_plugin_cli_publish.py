@@ -133,6 +133,49 @@ def _make_publish_repo(tmp_path: Path) -> tuple[Path, Path]:
     return plugin_dir, remote
 
 
+def _make_cli_publish_repo(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    defaults: CliDefaults | None = None,
+) -> tuple[Path, Path]:
+    if defaults is None:
+        defaults = _source_tree_defaults(tmp_path)
+    monkeypatch.setattr(
+        neko_plugin_cli,
+        "resolve_default_paths",
+        lambda: defaults,
+    )
+    remote = tmp_path / "publish-demo.git"
+    github_url = "https://github.com/neko/n.e.k.o_plugin_publish_demo"
+    assert (
+        neko_plugin_cli.main(
+            ["init", "publish_demo", "--remote", github_url]
+        )
+        == 0
+    )
+    plugin_dir = defaults.plugins_root / "publish_demo"
+    _run_git(plugin_dir, "config", "user.name", "Publish Test")
+    _run_git(plugin_dir, "config", "user.email", "publish@example.com")
+    _run_git(plugin_dir, "add", ".")
+    _run_git(plugin_dir, "commit", "-m", "initial")
+    subprocess.run(
+        ["git", "init", "--bare", str(remote)],
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    _run_git(
+        plugin_dir,
+        "config",
+        f"url.file://{remote}.insteadOf",
+        github_url,
+    )
+    _run_git(plugin_dir, "push", "-u", "origin", "main")
+    return plugin_dir, remote
+
+
 def test_publish_market_anonymously_notifies_market(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -209,12 +252,6 @@ def test_publish_ignores_ambient_branch_ref_when_creating_version_tag(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    defaults = _source_tree_defaults(tmp_path)
-    monkeypatch.setattr(
-        neko_plugin_cli,
-        "resolve_default_paths",
-        lambda: defaults,
-    )
     monkeypatch.setenv("GITHUB_REF_NAME", "main")
     monkeypatch.setenv(
         "GITHUB_REPOSITORY",
@@ -222,34 +259,7 @@ def test_publish_ignores_ambient_branch_ref_when_creating_version_tag(
     )
     monkeypatch.delenv("GH_TOKEN", raising=False)
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
-
-    remote = tmp_path / "publish-demo.git"
-    github_url = "https://github.com/neko/n.e.k.o_plugin_publish_demo"
-    assert (
-        neko_plugin_cli.main(
-            ["init", "publish_demo", "--remote", github_url]
-        )
-        == 0
-    )
-    plugin_dir = defaults.plugins_root / "publish_demo"
-    _run_git(plugin_dir, "config", "user.name", "Publish Test")
-    _run_git(plugin_dir, "config", "user.email", "publish@example.com")
-    _run_git(plugin_dir, "add", ".")
-    _run_git(plugin_dir, "commit", "-m", "initial")
-    subprocess.run(
-        ["git", "init", "--bare", str(remote)],
-        check=True,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    _run_git(
-        plugin_dir,
-        "config",
-        f"url.file://{remote}.insteadOf",
-        github_url,
-    )
-    _run_git(plugin_dir, "push", "-u", "origin", "main")
+    _, remote = _make_cli_publish_repo(tmp_path, monkeypatch)
 
     release_url = (
         "https://github.com/neko/n.e.k.o_plugin_publish_demo/releases/tag/v0.1.0"
@@ -279,45 +289,13 @@ def test_publish_uses_writable_preflight_directory_when_default_is_unusable(
         plugins_root=defaults.plugins_root,
         profiles_root=defaults.profiles_root,
     )
-    monkeypatch.setattr(
-        neko_plugin_cli,
-        "resolve_default_paths",
-        lambda: defaults,
-    )
-    monkeypatch.setenv(
-        "GITHUB_REPOSITORY",
-        "neko/n.e.k.o_plugin_publish_demo",
-    )
     monkeypatch.delenv("GH_TOKEN", raising=False)
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
-
-    remote = tmp_path / "publish-demo.git"
-    github_url = "https://github.com/neko/n.e.k.o_plugin_publish_demo"
-    assert (
-        neko_plugin_cli.main(
-            ["init", "publish_demo", "--remote", github_url]
-        )
-        == 0
+    _, remote = _make_cli_publish_repo(
+        tmp_path,
+        monkeypatch,
+        defaults=defaults,
     )
-    plugin_dir = defaults.plugins_root / "publish_demo"
-    _run_git(plugin_dir, "config", "user.name", "Publish Test")
-    _run_git(plugin_dir, "config", "user.email", "publish@example.com")
-    _run_git(plugin_dir, "add", ".")
-    _run_git(plugin_dir, "commit", "-m", "initial")
-    subprocess.run(
-        ["git", "init", "--bare", str(remote)],
-        check=True,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    _run_git(
-        plugin_dir,
-        "config",
-        f"url.file://{remote}.insteadOf",
-        github_url,
-    )
-    _run_git(plugin_dir, "push", "-u", "origin", "main")
 
     release_url = (
         "https://github.com/neko/n.e.k.o_plugin_publish_demo/releases/tag/v0.1.0"
@@ -332,6 +310,44 @@ def test_publish_uses_writable_preflight_directory_when_default_is_unusable(
     assert exit_code == 0
     assert _run_git(remote, "tag", "--list") == "v0.1.0"
     assert len(client.requests) == 1
+
+
+def test_publish_rejects_wrong_origin_even_when_github_repository_matches(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv(
+        "GITHUB_REPOSITORY",
+        "neko/n.e.k.o_plugin_publish_demo",
+    )
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    plugin_dir, remote = _make_cli_publish_repo(tmp_path, monkeypatch)
+
+    wrong_github_url = "https://github.com/neko/wrong-repository"
+    _run_git(plugin_dir, "remote", "set-url", "origin", wrong_github_url)
+    _run_git(
+        plugin_dir,
+        "config",
+        f"url.file://{remote}.insteadOf",
+        wrong_github_url,
+    )
+    client = _RecordingClient(
+        _ready_release(
+            "https://github.com/neko/wrong-repository/releases/tag/v0.1.0"
+        )
+    )
+    monkeypatch.setattr(publish_cmd.httpx, "Client", lambda **_: client)
+
+    exit_code = neko_plugin_cli.main(
+        ["publish", "github", "publish_demo"]
+    )
+
+    assert exit_code == 1
+    assert _run_git(remote, "tag", "--list") == ""
+    assert client.requests == []
+    assert "market repository name must be" in capsys.readouterr().err
 
 
 def test_publish_defaults_to_github_then_market(
@@ -506,6 +522,35 @@ def test_publish_github_rechecks_worktree_after_release_preflight(
     assert _run_git(remote, "tag", "--list") == ""
     assert client.requests == []
     assert "git working tree has uncommitted changes" in capsys.readouterr().err
+
+
+def test_publish_stops_before_tag_when_ruff_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    plugin_dir, remote = _make_cli_publish_repo(tmp_path, monkeypatch)
+    (plugin_dir / "ruff_failure.py").write_text(
+        "print(undefined_name)\n",
+        encoding="utf-8",
+    )
+    _run_git(plugin_dir, "add", "ruff_failure.py")
+    _run_git(plugin_dir, "commit", "-m", "add ruff violation")
+    _run_git(plugin_dir, "push", "origin", "main")
+    release_url = (
+        "https://github.com/neko/n.e.k.o_plugin_publish_demo/releases/tag/v1.2.0"
+    )
+    client = _RecordingClient(_ready_release(release_url))
+    monkeypatch.setattr(publish_cmd.httpx, "Client", lambda **_: client)
+
+    exit_code = neko_plugin_cli.main(
+        ["publish", "github", str(plugin_dir)]
+    )
+
+    assert exit_code == 1
+    assert _run_git(remote, "tag", "--list") == ""
+    assert client.requests == []
+    assert "Ruff check failed" in capsys.readouterr().err
 
 
 def test_publish_github_stops_before_tag_when_release_workflow_is_not_standard(
