@@ -541,7 +541,9 @@ def test_plugin_stage_filter_matches_the_real_build_rules(tmp_path: Path) -> Non
     plugin_dir = tmp_path / "plugin" / "plugins" / "demo"
     plugin_dir.mkdir(parents=True)
     build_table = {
-        "include": ["*.py", "assets/*", "data layer/*"],
+        # Padded on purpose: BuildRuleSet strips entries, and a mirror that
+        # does not would reject everything the allow-list should have kept.
+        "include": ["*.py", " assets/* ", "data layer/*"],
         "exclude": ["*.tmp", "secrets/*"],
         "exclude_dirs": ["tests", "local_logs"],
         "exclude_files": ["README.md", "*.bak"],
@@ -550,7 +552,7 @@ def test_plugin_stage_filter_matches_the_real_build_rules(tmp_path: Path) -> Non
         "\n".join(
             [
                 "[tool.neko.build]",
-                'include = ["*.py", "assets/*", "data layer/*"]',
+                'include = ["*.py", " assets/* ", "data layer/*"]',
                 'exclude = ["*.tmp", "secrets/*"]',
                 'exclude_dirs = ["tests", "local_logs"]',
                 'exclude_files = ["README.md", "*.bak"]',
@@ -581,6 +583,7 @@ def test_plugin_stage_filter_matches_the_real_build_rules(tmp_path: Path) -> Non
         "__pycache__/mod.pyc",
         ".github/workflows/ci.yml",
         ".vscode/settings.json",
+        ".mypy_cache/module.json",
         "data layer/worker.py",
         "assets/nested/ok.png",
         # Not matched by any `include` pattern -> dropped by the allow-list.
@@ -614,6 +617,7 @@ def test_plugin_stage_filter_matches_the_real_build_rules(tmp_path: Path) -> Non
         "notes.bak",
         "dist/bundle.js",
         "__pycache__/mod.pyc",
+        ".mypy_cache/module.json",
         "store.db",
         "runtime.log",
         "docs/manual.md",
@@ -834,3 +838,22 @@ def test_missing_merge_base_fails_instead_of_using_the_tip(tmp_path: Path) -> No
     with pytest.raises(SystemExit) as excinfo:
         module._baseline_growth(tmp_path, "main")
     assert excinfo.value.code == 2
+
+
+@pytest.mark.unit
+def test_loose_plugin_runtime_artifacts_are_not_reported(tmp_path: Path) -> None:
+    """`.db`/`.log` directly under plugin/plugins/ are swept after staging too.
+
+    _remove_private_runtime_artifacts walks the whole stage, including the loose
+    files copied from the plugins root, so reporting one is a false failure.
+    """
+    module = _load_script_module()
+    _init_repo(tmp_path)
+    loose = tmp_path / "plugin" / "plugins"
+    loose.mkdir(parents=True)
+    (loose / f"{CJK_NAME}.db").write_bytes(b"x")
+    (loose / f"{CJK_NAME}.LOG").write_bytes(b"x")
+    (loose / f"{CJK_NAME}.json").write_bytes(b"x")
+
+    offenders, _ = module.collect_offenders(tmp_path)
+    assert offenders == {f"plugin/plugins/{CJK_NAME}.json"}

@@ -287,7 +287,7 @@ def _under_bundled_root(rel_posix: str) -> bool:
 # stops us scanning a file that ships (a hole), while missing something it drops
 # only leaves a false positive. Both fail the test; only the first is dangerous.
 _PLUGIN_SKIP_DIR_NAMES = frozenset(
-    {"__pycache__", ".github", ".pytest_cache", ".venv", ".git"}
+    {"__pycache__", ".github", ".pytest_cache", ".mypy_cache", ".venv", ".git"}
 )
 _PLUGIN_SKIP_ROOT_DIR_NAMES = frozenset({"dist", "build"})
 _PLUGIN_SKIP_FILE_NAMES = frozenset({".DS_Store"})
@@ -321,8 +321,25 @@ def _plugin_rules(repo_root: Path, plugin_dir: str) -> dict[str, list[str]]:
     build = table.get("tool", {}).get("neko", {}).get("build", {})
     if not isinstance(build, dict):
         return {}
+    # BuildRuleSet._normalize_pattern_list strips each entry and drops blanks
+    # and duplicates. Skipping that here is not cosmetic: ` assets/* ` would
+    # fail to match, the include allow-list would then reject everything, and
+    # the checker would stop scanning files that really do ship.
+    def _patterns(key: str) -> list[str]:
+        seen: set[str] = set()
+        out: list[str] = []
+        for item in build.get(key, []):
+            if not isinstance(item, str):
+                continue
+            pattern = item.strip()
+            if not pattern or pattern in seen:
+                continue
+            seen.add(pattern)
+            out.append(pattern)
+        return out
+
     return {
-        key: [item for item in build.get(key, []) if isinstance(item, str)]
+        key: _patterns(key)
         for key in ("include", "exclude", "exclude_dirs", "exclude_files")
     }
 
@@ -337,7 +354,10 @@ def _plugin_stage_filter(repo_root: Path):
             return True
         parts = PurePosixPath(path[len(prefix):]).parts
         if len(parts) < 2:
-            return True  # a loose file directly under plugin/plugins/
+            # A loose file directly under plugin/plugins/. No plugin rules apply,
+            # but _remove_private_runtime_artifacts sweeps the whole stage, so
+            # .db/.log still go.
+            return PurePosixPath(parts[-1]).suffix.lower() not in _PLUGIN_SKIP_SUFFIXES_FOLDED
         plugin_dir, relative = parts[0], PurePosixPath(*parts[1:])
         dir_parts = relative.parts[:-1]
         if dir_parts and dir_parts[0] in _PLUGIN_SKIP_ROOT_DIR_NAMES:
