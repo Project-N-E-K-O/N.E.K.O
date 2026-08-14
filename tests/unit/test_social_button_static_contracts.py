@@ -485,6 +485,7 @@ def test_credit_badge_social_bridge_forwards_pc_credit_state():
 
     assert "window.nekoSocial.onForgeCreditChanged" in source
     assert "new window.CustomEvent('neko-forge-credit-state'" in source
+    assert "detail: data || {}" in source
     # Refresh is owned by PC CREDIT_STATE_REFRESH. Replaying cached snapshots
     # here would hide expiry and keep the old next_expires_at timer.
     assert "replaySnapshots" not in source
