@@ -8,31 +8,6 @@
 Plugin CLI 目前随 N.E.K.O 源码提供，还不能单独安装。下面的命令都需要在 N.E.K.O 源码目录中运行。
 :::
 
-## 开始前准备
-
-你需要：
-
-- 一份 N.E.K.O 源码；
-- 已安装 [uv](https://docs.astral.sh/uv/) 和 Git；
-- 一个用于保存插件的目录；
-- 发布时使用的 GitHub 账号。
-
-如果本地还没有 N.E.K.O 源码，先准备运行环境：
-
-```bash
-git clone --filter=blob:none \
-  https://github.com/Project-N-E-K-O/N.E.K.O.git
-cd N.E.K.O
-uv sync
-```
-
-然后确认命令可以运行：
-
-```bash
-cd /path/to/N.E.K.O
-uv run neko-plugin --help
-```
-
 ## 创建插件项目
 
 下面的命令会创建一个名为“天气助手”的普通插件：

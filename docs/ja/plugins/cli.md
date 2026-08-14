@@ -8,26 +8,6 @@ N.E.K.O プラグインを作り始めるときに、ディレクトリ、テス
 Plugin CLI は現在 N.E.K.O ソースツリーに含まれており、まだ単独ではインストールできません。以下のコマンドは N.E.K.O のソースチェックアウトから実行してください。
 :::
 
-## 準備
-
-N.E.K.O のソース、[uv](https://docs.astral.sh/uv/)、Git、プラグインを保存するディレクトリ、公開時に使用する GitHub アカウントが必要です。
-
-N.E.K.O のソースがまだない場合は、先に実行環境を準備します：
-
-```bash
-git clone --filter=blob:none \
-  https://github.com/Project-N-E-K-O/N.E.K.O.git
-cd N.E.K.O
-uv sync
-```
-
-次に CLI を確認します：
-
-```bash
-cd /path/to/N.E.K.O
-uv run neko-plugin --help
-```
-
 ## プラグインプロジェクトを作成する
 
 ```bash

@@ -8,26 +8,6 @@ This guide follows one plugin from an empty directory to its first release in th
 Plugin CLI currently ships with the N.E.K.O source tree and is not yet available as a standalone installation. Run the commands below from a N.E.K.O source checkout.
 :::
 
-## Before you start
-
-You need a N.E.K.O source checkout, [uv](https://docs.astral.sh/uv/), Git, a directory for the plugin, and a GitHub account when you are ready to publish.
-
-If you do not have the N.E.K.O source yet, prepare it first:
-
-```bash
-git clone --filter=blob:none \
-  https://github.com/Project-N-E-K-O/N.E.K.O.git
-cd N.E.K.O
-uv sync
-```
-
-Then confirm that the command works:
-
-```bash
-cd /path/to/N.E.K.O
-uv run neko-plugin --help
-```
-
 ## Create a plugin project
 
 ```bash
