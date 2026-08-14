@@ -1958,8 +1958,9 @@
 
                 // 名称阶段先保留与最终图片一致的 90x56 预览区域。
                 var previewHost = document.createElement('div');
-                if (source.thumbnail) renderPreviewImage(previewHost, source);
-                else renderPreviewLoading(previewHost);
+                // 元数据请求明确使用 0x0 跳过缩略图；Electron 仍可能返回
+                // truthy 但为空的 NativeImage，因此这里始终等待第二阶段结果。
+                renderPreviewLoading(previewHost);
                 previewHosts.set(source.id, { host: previewHost, source: source });
                 option.appendChild(previewHost);
 
@@ -2043,6 +2044,15 @@
                     windowGrid.appendChild(createSourceOption(source, null));
                 });
                 screenPopup.appendChild(windowGrid);
+            }
+
+            // Linux portal 的来源枚举可能再次弹出系统选择器。名称阶段已经完成
+            // 一次必要枚举，此类 provider 不再为缩略图重复请求。
+            if (desktopSourceEnumerationMayPrompt(desktopProvider)) {
+                previewHosts.forEach(function (entry) {
+                    renderPreviewFallback(entry.host, entry.source);
+                });
+                return true;
             }
 
             // 第二阶段在后台获取整批缩略图。N.E.K.O.-PC 对这个显式缓存请求

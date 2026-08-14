@@ -13,16 +13,17 @@ def _install_screen_source_harness(
     page: Page,
     *,
     thumbnail_timeout_ms: int = 15_000,
+    source_enumeration_may_prompt: bool = False,
 ) -> None:
     page.set_content(
         '<div id="live2d-popup-screen" '
         'style="display:flex;opacity:1"></div>'
     )
     page.evaluate(
-        """(thumbnailTimeoutMs) => {
+        """(options) => {
             window.appState = { selectedScreenSourceId: null };
             window.appConst = {
-                SCREEN_SOURCE_THUMBNAIL_TIMEOUT: thumbnailTimeoutMs,
+                SCREEN_SOURCE_THUMBNAIL_TIMEOUT: options.thumbnailTimeoutMs,
             };
             window.appUtils = { isMobile: () => false };
             window.safeT = (_key, fallback) => fallback;
@@ -35,15 +36,24 @@ def _install_screen_source_harness(
             };
             window.showStatusToast = () => {};
             window.__captureCalls = [];
+            window.__metadataThumbnailReads = 0;
             window.__thumbnailResolve = null;
             const thumbnailPromise = new Promise((resolve) => {
                 window.__thumbnailResolve = resolve;
             });
+            const emptyMetadataThumbnail = {
+                isEmpty() { return true; },
+                toDataURL() {
+                    window.__metadataThumbnailReads += 1;
+                    return '';
+                },
+            };
             const metadataSources = [
-                { id: 'screen:1', name: 'Entire Screen', display_id: '1', thumbnail: null },
-                { id: 'window:2', name: 'Editor', display_id: '', thumbnail: null },
+                { id: 'screen:1', name: 'Entire Screen', display_id: '1', thumbnail: emptyMetadataThumbnail },
+                { id: 'window:2', name: 'Editor', display_id: '', thumbnail: emptyMetadataThumbnail },
             ];
             window.__desktopProvider = {
+                sourceEnumerationMayPrompt: options.sourceEnumerationMayPrompt,
                 getSources(options) {
                     window.__captureCalls.push(options);
                     if (options.thumbnailSize.width === 0) {
@@ -55,7 +65,10 @@ def _install_screen_source_harness(
             };
             window.electronDesktopCapturer = window.__desktopProvider;
         }""",
-        thumbnail_timeout_ms,
+        {
+            "thumbnailTimeoutMs": thumbnail_timeout_ms,
+            "sourceEnumerationMayPrompt": source_enumeration_may_prompt,
+        },
     )
     page.add_script_tag(path=str(DESKTOP_CAPTURE_PROVIDER))
     page.add_script_tag(path=str(APP_SCREEN))
@@ -83,6 +96,7 @@ def test_screen_source_names_render_before_cached_thumbnails(page: Page) -> None
             imageCount: document.querySelectorAll(
                 '.screen-source-thumbnail-ready img'
             ).length,
+            metadataThumbnailReads: window.__metadataThumbnailReads,
             calls: window.__captureCalls,
         })"""
     )
@@ -90,6 +104,7 @@ def test_screen_source_names_render_before_cached_thumbnails(page: Page) -> None
         "labels": ["Screen 1", "Editor"],
         "loadingCount": 2,
         "imageCount": 0,
+        "metadataThumbnailReads": 0,
         "calls": [
             {
                 "types": ["window", "screen"],
@@ -186,6 +201,44 @@ def test_screen_source_hung_thumbnail_request_falls_back_after_timeout(
                 "thumbnailCache": True,
             },
         ],
+        "loadingCount": 0,
+        "fallbackCount": 2,
+    }
+
+
+@pytest.mark.frontend
+def test_screen_source_prompt_provider_skips_thumbnail_reenumeration(
+    page: Page,
+) -> None:
+    _install_screen_source_harness(page, source_enumeration_may_prompt=True)
+
+    rendered = page.evaluate(
+        """async () => window.renderFloatingScreenSourceList(
+            document.getElementById('live2d-popup-screen')
+        )"""
+    )
+    assert rendered is True
+
+    state = page.evaluate(
+        """() => ({
+            calls: window.__captureCalls,
+            metadataThumbnailReads: window.__metadataThumbnailReads,
+            loadingCount: document.querySelectorAll(
+                '.screen-source-thumbnail-loading'
+            ).length,
+            fallbackCount: document.querySelectorAll(
+                '.screen-source-thumbnail-fallback'
+            ).length,
+        })"""
+    )
+    assert state == {
+        "calls": [
+            {
+                "types": ["window", "screen"],
+                "thumbnailSize": {"width": 0, "height": 0},
+            }
+        ],
+        "metadataThumbnailReads": 0,
         "loadingCount": 0,
         "fallbackCount": 2,
     }
