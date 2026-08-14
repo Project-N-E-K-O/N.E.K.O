@@ -66,6 +66,7 @@ from plugin.plugins.neko_wows.presentation.instructions import (
 from plugin.plugins.neko_wows.presentation.prompt_router import (
     REFERENCE_CLOSE,
     REFERENCE_OPEN,
+    TITLE_BUDGET,
     URGENT_EXCERPT_BUDGET,
     PromptProfile,
     WowsPromptRouter,
@@ -1065,6 +1066,18 @@ def test_excerpts_are_fenced_as_untrusted_and_budgeted():
     assert built.metadata["excerpt_count"] == 1
 
 
+def test_excerpt_titles_count_toward_the_budget():
+    router = WowsPromptRouter(WowsConfig())
+    built = router.build(
+        build_candidate(LOW_HEALTH),
+        PromptProfile(channel_mode=CHANNEL_DUAL, dry_run=True),
+        [TacticExcerpt(doc_id="d1", title="T" * 5000, text="X" * 5000)],
+    )
+    body = built.text.split(REFERENCE_OPEN, 1)[1].split(REFERENCE_CLOSE, 1)[0]
+    assert body.count("T") + body.count("X") <= URGENT_EXCERPT_BUDGET
+    assert body.count("T") <= TITLE_BUDGET
+
+
 def test_excerpt_fence_markers_cannot_close_the_untrusted_block():
     """Imported docs must not reopen or close the reference fence early."""
     router = WowsPromptRouter(WowsConfig())
@@ -1171,10 +1184,10 @@ def test_the_reading_rules_distinguish_visible_from_alive_counts():
 
 
 def test_the_reading_rules_forbid_inventing_consumables_and_relative_sectors():
-    assert (
-        "消耗品实时状态（雷达、水听、烟幕、损伤控制等是否开启或持续）当前不可用，不要提及。"
-        in WOWS_TELEMETRY_READING_RULES
-    )
+    assert "消耗品实时状态" in WOWS_TELEMETRY_READING_RULES
+    assert "遥测里没有，不要从数据里编" in WOWS_TELEMETRY_READING_RULES
+    assert "自己界面上看得见的冷却可以提" in WOWS_TELEMETRY_READING_RULES
+    assert "绝不要据此声称他人开了雷达" in WOWS_TELEMETRY_READING_RULES
     assert (
         "小地图上敌舰图标亮起只表示被点亮/被发现，绝不等于对方开了雷达"
         in WOWS_TELEMETRY_READING_RULES
@@ -1183,6 +1196,15 @@ def test_the_reading_rules_forbid_inventing_consumables_and_relative_sectors():
         "没有给出相对方位字段时，不要说左前方、正前方、右前方"
         in WOWS_TELEMETRY_READING_RULES
     )
+
+
+def test_live_vision_allows_own_hud_cooldowns_but_not_others():
+    text = WOWS_CONTEXT_WITH_LIVE_VISION_INSTRUCTIONS
+    assert "自己界面上看得见的消耗品冷却可以提" in text
+    assert "他人（含友军与敌方）的消耗品实时状态" in text
+    own_ok = text.index("自己界面上看得见的消耗品冷却可以提")
+    others_forbidden = text.index("他人（含友军与敌方）的消耗品实时状态")
+    assert own_ok < others_forbidden
 
 
 def test_every_scene_block_carries_the_reading_rules():

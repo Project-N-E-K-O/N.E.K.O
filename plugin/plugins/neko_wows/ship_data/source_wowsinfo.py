@@ -401,6 +401,9 @@ class WowsInfoSourceAdapter:
             except ModuleGraphError as exc:
                 raise SourceValidationError(
                     f"invalid {slot} module graph: {exc}") from exc
+            if not terminals:
+                raise SourceValidationError(
+                    f"no terminal {slot} module could be selected")
             ordered = tuple(node.payload for node in terminals)
             slots[slot] = (ordered[0], ordered[1:])
 

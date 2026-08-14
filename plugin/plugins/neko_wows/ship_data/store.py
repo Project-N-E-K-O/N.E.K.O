@@ -249,6 +249,26 @@ class ShipCatalogStore:
         self.logger = logger
         self._last_failure = ""
 
+    def _validated_active_catalog(self) -> tuple[dict[str, Any], Path] | str:
+        """Load a path-safe active catalog, or return a snapshot reason."""
+        manifest_path = self.root / MANIFEST_NAME
+        if not manifest_path.is_file():
+            return "manifest_missing"
+        if manifest_path.stat().st_size > MAX_MANIFEST_BYTES:
+            return "manifest_too_large"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if not isinstance(manifest, dict):
+            return "manifest_invalid"
+        if manifest.get("manifest_version") != MANIFEST_VERSION:
+            return "manifest_unsupported"
+        name = manifest.get("active_file")
+        if not self._safe_filename(name):
+            return "manifest_invalid_path"
+        db_path = (self.root / str(name)).resolve()
+        if db_path.parent != self.root.resolve():
+            return "manifest_invalid_path"
+        return manifest, db_path
+
     def active_manifest_info(self) -> dict[str, str | int | None]:
         """Return bounded, non-sensitive diagnostics from the active manifest."""
         empty: dict[str, str | int | None] = {
@@ -256,64 +276,42 @@ class ShipCatalogStore:
             "game_version": "",
             "schema_version": None,
         }
-        manifest_path = self.root / MANIFEST_NAME
         try:
-            if not manifest_path.is_file():
-                return empty
-            if manifest_path.stat().st_size > MAX_MANIFEST_BYTES:
-                return empty
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            if not isinstance(manifest, dict):
-                return empty
-            if manifest.get("manifest_version") != MANIFEST_VERSION:
-                return empty
-            name = manifest.get("active_file")
-            if not self._safe_filename(name):
-                return empty
-            db_path = (self.root / str(name)).resolve()
-            if db_path.parent != self.root.resolve():
-                return empty
-
-            catalog_version = manifest.get("catalog_version")
-            game_version = manifest.get("game_version")
-            schema_version = manifest.get("schema_version")
-            if (
-                not isinstance(catalog_version, str)
-                or not catalog_version
-                or not isinstance(game_version, str)
-                or not game_version
-                or type(schema_version) is not int
-            ):
-                return empty
-            return {
-                "catalog_version": catalog_version,
-                "game_version": game_version,
-                "schema_version": schema_version,
-            }
+            loaded = self._validated_active_catalog()
         except (OSError, ValueError, TypeError):
             return empty
+        if isinstance(loaded, str):
+            return empty
+        manifest, _db_path = loaded
+        catalog_version = manifest.get("catalog_version")
+        game_version = manifest.get("game_version")
+        schema_version = manifest.get("schema_version")
+        if (
+            not isinstance(catalog_version, str)
+            or not catalog_version
+            or not isinstance(game_version, str)
+            or not game_version
+            or type(schema_version) is not int
+        ):
+            return empty
+        return {
+            "catalog_version": catalog_version,
+            "game_version": game_version,
+            "schema_version": schema_version,
+        }
 
     def snapshot(
         self,
         language: str | None = None,
     ) -> SQLiteCatalogSnapshot | NullCatalogSnapshot:
-        manifest_path = self.root / MANIFEST_NAME
-        if not manifest_path.is_file():
-            return self._null("manifest_missing")
         try:
-            if manifest_path.stat().st_size > MAX_MANIFEST_BYTES:
-                return self._null("manifest_too_large")
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            if not isinstance(manifest, dict):
-                return self._null("manifest_invalid")
-            if manifest.get("manifest_version") != MANIFEST_VERSION:
-                return self._null("manifest_unsupported")
-            name = manifest.get("active_file")
-            if not self._safe_filename(name):
-                return self._null("manifest_invalid_path")
-            db_path = (self.root / str(name)).resolve()
-            if db_path.parent != self.root.resolve():
-                return self._null("manifest_invalid_path")
+            loaded = self._validated_active_catalog()
+        except (OSError, ValueError, TypeError) as exc:
+            return self._null("catalog_unavailable", exc)
+        if isinstance(loaded, str):
+            return self._null(loaded)
+        manifest, db_path = loaded
+        try:
             if not db_path.is_file():
                 return self._null("catalog_missing")
             expected_hash = manifest.get("sha256")

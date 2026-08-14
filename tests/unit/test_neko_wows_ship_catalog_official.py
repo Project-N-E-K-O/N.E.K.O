@@ -174,6 +174,19 @@ def test_official_client_uses_only_region_whitelist(region, hostname):
     assert all(urlparse(call[0]).scheme == "https" for call in transport.calls)
 
 
+def test_apply_config_strips_region_like_the_constructor():
+    client, _transport = make_client(region="asia")
+    client.apply_config(SimpleNamespace(
+        official_api_application_id="test-app-id",
+        official_api_region=" ASIA ",
+        official_api_timeout_seconds=3.0,
+        official_api_cache_ttl_seconds=300.0,
+    ))
+
+    assert client.region == "asia"
+    assert client._validate("top", "zh-cn") == ""
+
+
 @pytest.mark.parametrize(("status", "code"), [
     (401, "unauthorized"),
     (403, "unauthorized"),

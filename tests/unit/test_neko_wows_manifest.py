@@ -136,6 +136,8 @@ def test_quiet_window_countdown_is_visible_without_opening_the_timeline():
         PLUGIN_DIR / "ui" / "preferences.tsx").read_text(encoding="utf-8")
 
     assert "quietRemainingSeconds" in overview
+    assert "typeof runtimeNow === \"number\"" in overview
+    assert "runtime_now || 0" not in overview
     assert "state.arbiter" in overview
     assert 't("overview.output.quietWindow"' in overview
     assert "quietRemainingSeconds" in preferences

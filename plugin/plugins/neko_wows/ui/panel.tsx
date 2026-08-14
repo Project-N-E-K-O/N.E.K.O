@@ -129,7 +129,7 @@ export default function NekoWowsPanel(props: PluginSurfaceProps<DashboardState>)
                   <PreferencesSection
                     config={state.config || {}}
                     arbiter={state.arbiter || {}}
-                    runtimeNow={state.runtime_now || 0}
+                    runtimeNow={state.runtime_now}
                     categories={state.categories || []}
                     lanes={state.lanes || []}
                     busy={busy}

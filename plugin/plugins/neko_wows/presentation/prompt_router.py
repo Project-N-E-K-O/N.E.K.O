@@ -33,6 +33,8 @@ REFERENCE_PREAMBLE = (
 # Excerpt budgets per lane, in characters.
 URGENT_EXCERPT_BUDGET = 800
 NORMAL_EXCERPT_BUDGET = 3000
+# Titles come from user front matter and have no upstream length limit.
+TITLE_BUDGET = 120
 
 
 @dataclass(frozen=True)
@@ -236,9 +238,10 @@ def _render_reference(excerpts: Sequence[TacticExcerpt], lane: str) -> tuple[str
         if remaining <= 0:
             break
         # Strip before truncating: cutting mid-marker would leave a residue.
-        text = _strip_fence(excerpt.text)[:remaining]
-        used += len(text)
-        body.append(f"# {_strip_fence(excerpt.title)}\n{text}")
+        title = _strip_fence(excerpt.title)[:min(TITLE_BUDGET, remaining)]
+        text = _strip_fence(excerpt.text)[:max(0, remaining - len(title))]
+        used += len(title) + len(text)
+        body.append(f"# {title}\n{text}")
     if not body:
         return "", 0
     block = (
@@ -253,6 +256,7 @@ __all__ = [
     "NORMAL_EXCERPT_BUDGET",
     "REFERENCE_CLOSE",
     "REFERENCE_OPEN",
+    "TITLE_BUDGET",
     "URGENT_EXCERPT_BUDGET",
     "PromptProfile",
     "WowsPromptRouter",

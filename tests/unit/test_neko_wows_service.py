@@ -520,6 +520,71 @@ def test_a_startup_timeout_is_cleaned_up_and_counted(monkeypatch, tmp_path):
     assert status.crash_count == 1
 
 
+def test_a_failed_popen_closes_the_service_log_handle(monkeypatch, tmp_path):
+    """Popen OSError must close the locally opened log; _close_log never sees it."""
+    source = prepare_source(tmp_path)
+    log_dir = tmp_path / "logs"
+    opened = {}
+    real_open_log = WowsServiceManager._open_log
+
+    def tracking_open_log(self):
+        handle = real_open_log(self)
+        opened["handle"] = handle
+        return handle
+
+    def fail_popen(*args, **kwargs):
+        raise OSError("simulated spawn failure")
+
+    patch_urlopen(monkeypatch, error=urllib.error.URLError("refused"))
+    monkeypatch.setattr(WowsServiceManager, "_open_log", tracking_open_log)
+    monkeypatch.setattr(sm.subprocess, "Popen", fail_popen)
+    monkeypatch.setattr(sm, "_which_uv", lambda: "uv")
+
+    manager = WowsServiceManager(
+        cfg(service_source_dir=str(source)),
+        log_dir=log_dir,
+    )
+    status = manager.start_if_needed()
+
+    assert "launch failed" in status.detail
+    assert manager._log_handle is None
+    handle = opened["handle"]
+    assert handle is not None
+    assert handle.closed is True
+
+
+def test_a_successful_launch_owns_the_service_log_handle(monkeypatch, tmp_path):
+    source = prepare_source(tmp_path)
+    log_dir = tmp_path / "logs"
+    states = iter([None, healthy_payload()])
+    payloads = {"current": None}
+
+    def fake_urlopen(url, timeout=None):
+        try:
+            payloads["current"] = next(states)
+        except StopIteration:
+            pass
+        if payloads["current"] is None:
+            raise urllib.error.URLError("refused")
+        return FakeResponse(payloads["current"])
+
+    monkeypatch.setattr(sm.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(sm.subprocess, "Popen", lambda *a, **k: FakeProcess())
+    monkeypatch.setattr(sm, "_which_uv", lambda: "uv")
+
+    manager = WowsServiceManager(
+        cfg(service_source_dir=str(source)),
+        log_dir=log_dir,
+    )
+    status = manager.start_if_needed()
+
+    assert status.mode == MODE_MANAGED
+    assert manager._log_handle is not None
+    assert manager._log_handle.closed is False
+    manager.stop()
+    assert manager._log_handle is None
+
+
 def test_repeated_failed_starts_pause_auto_management(monkeypatch, tmp_path):
     source = prepare_source(tmp_path)
     patch_urlopen(monkeypatch, error=urllib.error.URLError("refused"))
