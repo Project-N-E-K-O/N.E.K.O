@@ -1,0 +1,437 @@
+#!/usr/bin/env python3
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Ratchet: no NEW non-ASCII filenames in anything bundled into the desktop app.
+
+Why this exists
+---------------
+Nuitka ``--mode=app`` puts the whole payload under
+``projectneko_server.app/Contents/MacOS/``. codesign's default bundle rules
+(``rules2``) classify everything under that directory as *nested code*::
+
+    ^(Frameworks|SharedFrameworks|PlugIns|Plug-ins|XPCServices|Helpers|MacOS|
+      Library/(Automator|Spotlight|LoginItems))/   =>   nested
+
+So every .mp3 / .png / .json we ship is signed as its own code object, and for
+each one codesign writes a designated requirement into
+``Contents/_CodeSignature/CodeResources``::
+
+    identifier <name> and anchor apple generic and certificate ...
+
+When the filename is non-ASCII, codesign emits that identifier as a **hex
+literal** instead of a quoted string::
+
+    identifier 0xe4b883e5a4a9e5898defbc8ce68891e4bbace8bf98e58faae698afe7a...
+
+That is not valid requirement syntax. Reading the seal back fails, and the
+whole bundle then verifies as::
+
+    <app>: the sealed resource directory is invalid
+
+…which blocks signing, notarization, and Steam upload. One such file poisons
+the entire bundle; the error names no path, so it is genuinely painful to
+diagnose from scratch.
+
+Why CI can never catch it on its own
+------------------------------------
+``.github/workflows/build-desktop.yml`` signs ad-hoc::
+
+    codesign --force --deep --sign - dist/Xiao8/projectneko_server.app
+
+Ad-hoc signatures use ``cdhash H"..."`` requirements, which carry no
+identifier at all — so the hex-literal bug simply does not occur there and
+the workflow is always green. The breakage only appears on the local
+Developer ID signing path (``build_mac.sh``). This lint is the substitute for
+a signal CI structurally cannot produce.
+
+What it scans
+-------------
+Only what actually ships:
+
+- files git knows about under the bundled roots (``BUNDLED_ROOTS``) —
+  tracked plus untracked-but-not-ignored, so the check fires before
+  ``git add`` rather than only after commit;
+- member names inside the archives that get unpacked into those roots at
+  build time (``assets/*.tar.gz`` -> ``static/<model>/`` via
+  ``build_frontend.sh``; ``frontend/pngtuber-packs/*.zip`` ->
+  ``static/pngtuber/<model>/`` via ``scripts/unpack_builtin_pngtuber.py``).
+  Reading member names needs no build and no extraction, so the check gives
+  the same answer in a fresh checkout as on a build machine.
+
+Asking git (rather than walking the working tree) keeps the result
+deterministic: gitignored build outputs, downloaded model weights, and local
+runtime files never make the answer wander between a fresh checkout and a
+built one. Pass ``--include-untracked`` to additionally walk the on-disk tree
+— useful right after a build, when you want to sanity-check generated payload
+too.
+
+Only **basenames** are checked, not whole paths. codesign derives the nested
+identifier from the filename alone, so a non-ASCII *directory* holding
+ASCII-named files signs and verifies cleanly (checked against a real
+Developer ID certificate: ``MacOS/<cjk-dir>/plain_name.png`` seals as
+``identifier "plain_name"`` and passes ``--verify --deep --strict``).
+Flagging those too would only produce failures nobody can act on.
+
+``tests/`` is deliberately out of scope: it carries a few CJK fixture paths
+and never reaches the .app.
+
+Baseline
+--------
+338 tracked files plus 1 archive member are already non-ASCII when this check
+was written, across three unrelated subsystems:
+
+- ``static/assets/tutorial/guide-audio/{zh,ja,ko,ru,en}/*.mp3`` — filenames
+  are truncated line transcripts, referenced from the ``audioFilesByKey``
+  manifests in ``static/tutorial/yui-guide/days/*.js``;
+- ``static/vrm/motion/**``, ``static/vrm/animation/*``,
+  ``static/mmd/animation/*`` — ``static/vrm/motion/manifest.json`` states the
+  convention outright (``"fileNaming": "descriptive Chinese filename with
+  stable id"``, ``"authoritativeLanguage": "zh-CN"``), because motion lookup
+  runs through Chinese action-card retrieval;
+- ``static/game/games/soccer/audio/*.mp3``, plus one Live2D expression file
+  under ``static/yui-origin/expressions/`` that ships inside
+  ``assets/yui-origin.tar.gz`` and is named from the ``.model3.json``.
+
+Renaming those is a product decision, not a mechanical sweep — the VRM naming
+scheme in particular is load-bearing for motion retrieval. So this is a
+ratchet, not a clean-room ban: everything listed in
+``scripts/nonascii_asset_baseline.txt`` is grandfathered, anything new fails.
+
+TODO: shrink the baseline. Each family needs its own follow-up — rename the
+files to ASCII (stable slug or id) and update the manifest that names them.
+An empty baseline is the goal; when it gets there, delete the file and make
+this a plain ban.
+
+Usage
+-----
+    python scripts/check_no_nonascii_asset_names.py
+    python scripts/check_no_nonascii_asset_names.py --list
+    python scripts/check_no_nonascii_asset_names.py --include-untracked
+    python scripts/check_no_nonascii_asset_names.py --update-baseline
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import subprocess
+import sys
+import tarfile
+import zipfile
+from pathlib import Path, PurePosixPath
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+BASELINE_PATH = REPO_ROOT / "scripts" / "nonascii_asset_baseline.txt"
+
+CODE = "NONASCII_ASSET_NAME"
+
+# Directories whose contents end up inside the .app payload. Mirrors the
+# --include-data-dir / --include-package-data set in build_nuitka.bat,
+# build_mac.sh and .github/workflows/build-desktop.yml; keep in sync when a
+# new payload directory is added there.
+BUNDLED_ROOTS: tuple[str, ...] = (
+    "static",
+    "config",
+    "templates",
+    "assets",
+    "data",
+    "docs",
+    "frontend",
+    "plugin/plugins",
+)
+
+# Archives that are expanded into a bundled root at build time. Value is the
+# bundled path prefix the members land under, so a violation reports where the
+# file will actually sit inside the .app rather than where it hides today.
+TAR_ARCHIVE_DESTS: tuple[tuple[str, str], ...] = (
+    # build_frontend.sh: unpack_live2d_model <name>  ->  static/<name>/
+    ("assets", "static"),
+)
+ZIP_ARCHIVE_DESTS: tuple[tuple[str, str], ...] = (
+    # scripts/unpack_builtin_pngtuber.py  ->  static/pngtuber/<name>/
+    ("frontend/pngtuber-packs", "static/pngtuber"),
+)
+
+# Never walked under --include-untracked. Vendored/derived trees whose names
+# we do not author; a hit in here is a bug in the upstream package, not in
+# this repo, and the .app build has its own gates for those.
+WALK_EXCLUDE_DIRS = frozenset(
+    {
+        "node_modules",
+        "__pycache__",
+        ".git",
+        ".venv",
+        "venv",
+        ".mypy_cache",
+        ".ruff_cache",
+        ".pytest_cache",
+    }
+)
+
+
+def _is_ascii(text: str) -> bool:
+    return all(ord(ch) < 128 for ch in text)
+
+
+def _under_bundled_root(rel_posix: str) -> bool:
+    return any(
+        rel_posix == root or rel_posix.startswith(root + "/") for root in BUNDLED_ROOTS
+    )
+
+
+def _git_listed_offenders(repo_root: Path) -> set[str]:
+    """Non-ASCII git-visible paths under the bundled roots.
+
+    ``--cached --others --exclude-standard`` = tracked files plus untracked
+    ones that are not gitignored. The ``--others`` half is what makes the
+    check fire before ``git add``, while ``--exclude-standard`` keeps build
+    outputs and downloaded weights out so the answer does not depend on
+    whether the tree has been built.
+
+    ``-z`` matters: without it git quote-escapes non-ASCII paths
+    (``"static/\\344\\270\\203....mp3"``), which is exactly the set we are
+    looking for.
+    """
+    try:
+        raw = subprocess.run(
+            ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+            cwd=repo_root,
+            capture_output=True,
+            check=True,
+        ).stdout.decode("utf-8", errors="surrogateescape")
+    except (OSError, subprocess.CalledProcessError) as exc:
+        print(f"error: cannot list git files: {exc}", file=sys.stderr)
+        raise SystemExit(2) from exc
+
+    return {
+        path
+        for path in raw.split("\0")
+        if path
+        and _under_bundled_root(path)
+        and not _is_ascii(PurePosixPath(path).name)
+    }
+
+
+def _archive_offenders(repo_root: Path) -> dict[str, str]:
+    """Non-ASCII member names inside archives that get unpacked into the app.
+
+    Keyed by the path the member will occupy once unpacked, so both the
+    baseline and the violation message point at the bundled location; the
+    value is the archive to edit.
+    """
+    offenders: dict[str, str] = {}
+
+    def _record(members: list[str], dest_prefix: str, archive_rel: str) -> None:
+        for member in members:
+            if _is_ascii(PurePosixPath(member).name):
+                continue
+            offenders[f"{dest_prefix}/{member}"] = archive_rel
+
+    for source_dir, dest_prefix in TAR_ARCHIVE_DESTS:
+        directory = repo_root / source_dir
+        if not directory.is_dir():
+            continue
+        for archive in sorted(directory.glob("*.tar.gz")):
+            with tarfile.open(archive) as handle:
+                names = [m.name for m in handle.getmembers() if m.isfile()]
+            _record(names, dest_prefix, archive.relative_to(repo_root).as_posix())
+
+    for source_dir, dest_prefix in ZIP_ARCHIVE_DESTS:
+        directory = repo_root / source_dir
+        if not directory.is_dir():
+            continue
+        for archive in sorted(directory.glob("*.zip")):
+            with zipfile.ZipFile(archive) as handle:
+                names = [i.filename for i in handle.infolist() if not i.is_dir()]
+            _record(names, dest_prefix, archive.relative_to(repo_root).as_posix())
+
+    return offenders
+
+
+def _untracked_offenders(repo_root: Path) -> set[str]:
+    """Non-ASCII paths found by walking the on-disk bundled roots.
+
+    Only used with ``--include-untracked``: after a build these roots also
+    hold generated payload (unpacked models, vite bundles, downloaded model
+    weights) that no git listing can see.
+    """
+    offenders: set[str] = set()
+    for root in BUNDLED_ROOTS:
+        base = repo_root / root
+        if not base.is_dir():
+            continue
+        for current, dirs, files in os.walk(base):
+            dirs[:] = [d for d in dirs if d not in WALK_EXCLUDE_DIRS]
+            current_path = Path(current)
+            for name in files:
+                if _is_ascii(name):
+                    continue
+                offenders.add(
+                    (current_path / name).relative_to(repo_root).as_posix()
+                )
+    return offenders
+
+
+def collect_offenders(
+    repo_root: Path, include_untracked: bool = False
+) -> tuple[set[str], dict[str, str]]:
+    """Return (bundled paths with non-ASCII names, path -> owning archive)."""
+    from_archives = _archive_offenders(repo_root)
+    offenders = _git_listed_offenders(repo_root) | set(from_archives)
+    if include_untracked:
+        offenders |= _untracked_offenders(repo_root)
+    return offenders, from_archives
+
+
+def load_baseline(path: Path) -> set[str]:
+    if not path.is_file():
+        return set()
+    entries: set[str] = set()
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        entries.add(stripped)
+    return entries
+
+
+def write_baseline(path: Path, offenders: set[str]) -> None:
+    header = (
+        "# Grandfathered non-ASCII filenames in bundled assets.\n"
+        "#\n"
+        "# See scripts/check_no_nonascii_asset_names.py for why these break macOS\n"
+        "# Developer ID signing (codesign emits a hex-literal `identifier` in the\n"
+        "# nested-code requirement, and the sealed resource directory then fails to\n"
+        "# parse). Entries here are tolerated; anything NOT here fails the check.\n"
+        "#\n"
+        "# This list should only ever shrink. Regenerate after renaming or deleting\n"
+        "# files with:  python scripts/check_no_nonascii_asset_names.py --update-baseline\n"
+        "#\n"
+        "# Paths are where the file lands inside the .app payload. A few of them do\n"
+        "# not exist in the source tree because they ship inside an archive that is\n"
+        "# unpacked at build time (assets/*.tar.gz, frontend/pngtuber-packs/*.zip).\n"
+    )
+    body = "".join(f"{entry}\n" for entry in sorted(offenders))
+    path.write_text(header + body, encoding="utf-8")
+
+
+def _explain(count: int) -> str:
+    return (
+        f"\n{count} new non-ASCII bundled filename(s) found.\n"
+        "\n"
+        "Why this fails the build: Nuitka --mode=app puts the payload under\n"
+        "projectneko_server.app/Contents/MacOS/, and codesign treats everything\n"
+        "there as nested code. For each file it writes a requirement of the form\n"
+        "`identifier <name> and anchor apple generic and ...` into CodeResources.\n"
+        "A non-ASCII name becomes a hex literal (`identifier 0xe4b883...`), which\n"
+        "is not valid requirement syntax, so the whole bundle then fails with\n"
+        "`the sealed resource directory is invalid` — blocking signing,\n"
+        "notarization and Steam upload. The error names no file, so this costs\n"
+        "hours to trace after the fact.\n"
+        "\n"
+        "CI cannot catch this: build-desktop.yml signs ad-hoc (`--sign -`), whose\n"
+        "requirements are `cdhash H\"...\"` and carry no identifier at all. Only the\n"
+        "local Developer ID path (build_mac.sh) hits it.\n"
+        "\n"
+        "Fix: give the file an ASCII name (stable slug or id) and update whatever\n"
+        "manifest references it. Do NOT add it to\n"
+        "scripts/nonascii_asset_baseline.txt — that list is a ratchet for assets\n"
+        "that predate this check and is only allowed to shrink.\n"
+    )
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Fail on new non-ASCII filenames in assets bundled into the desktop app."
+        )
+    )
+    parser.add_argument(
+        "--include-untracked",
+        action="store_true",
+        help=(
+            "also walk the on-disk bundled roots (build outputs, unpacked models); "
+            "off by default so the result does not depend on build state"
+        ),
+    )
+    parser.add_argument(
+        "--list",
+        action="store_true",
+        help="print every current offender (baselined included) and exit 0",
+    )
+    parser.add_argument(
+        "--update-baseline",
+        action="store_true",
+        help="rewrite scripts/nonascii_asset_baseline.txt from the current tree",
+    )
+    args = parser.parse_args(argv)
+
+    offenders, from_archives = collect_offenders(
+        REPO_ROOT, include_untracked=args.include_untracked
+    )
+
+    if args.list:
+        for entry in sorted(offenders):
+            origin = from_archives.get(entry)
+            print(f"{entry}" + (f"  (in {origin})" if origin else ""))
+        print(f"\n{len(offenders)} non-ASCII bundled path(s).")
+        return 0
+
+    if args.update_baseline:
+        if args.include_untracked:
+            # Untracked payload is build-state dependent; baking it into the
+            # baseline would make the file differ per machine.
+            print(
+                "error: --update-baseline refuses --include-untracked "
+                "(the result would depend on local build state)",
+                file=sys.stderr,
+            )
+            return 2
+        write_baseline(BASELINE_PATH, offenders)
+        rel = BASELINE_PATH.relative_to(REPO_ROOT).as_posix()
+        print(f"wrote {len(offenders)} entr(ies) to {rel}")
+        return 0
+
+    baseline = load_baseline(BASELINE_PATH)
+    new = sorted(offenders - baseline)
+    stale = sorted(baseline - offenders)
+
+    for entry in new:
+        origin = from_archives.get(entry)
+        where = f" (ships inside {origin})" if origin else ""
+        print(f"{entry}  {CODE}  non-ASCII filename in bundled asset{where}")
+
+    if stale and not new:
+        # Renamed or deleted — progress, never a failure. Nudge only, so a PR
+        # that legitimately removes an asset does not go red for it.
+        rel = BASELINE_PATH.relative_to(REPO_ROOT).as_posix()
+        print(
+            f"note: {len(stale)} baseline entr(ies) no longer exist — "
+            f"run `python scripts/check_no_nonascii_asset_names.py "
+            f"--update-baseline` to shrink {rel}:",
+            file=sys.stderr,
+        )
+        for entry in stale[:10]:
+            print(f"  - {entry}", file=sys.stderr)
+        if len(stale) > 10:
+            print(f"  … and {len(stale) - 10} more", file=sys.stderr)
+
+    if new:
+        print(_explain(len(new)), file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

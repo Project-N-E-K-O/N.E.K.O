@@ -278,6 +278,24 @@ jobs:
         # link, or move the referenced content into docs/.
         run: python scripts/check_docs_no_relative_paths.py
 
+      - name: Forbid new non-ASCII filenames in bundled assets
+        # Nuitka --mode=app puts the payload under Contents/MacOS/, where
+        # codesign treats every file as nested code and writes an
+        # `identifier <name> ...` requirement into CodeResources. A non-ASCII
+        # name becomes a hex literal, which is not valid requirement syntax,
+        # and the whole bundle then fails to verify with "the sealed resource
+        # directory is invalid" — dead in the water for signing, notarization
+        # and Steam upload, with no filename in the error to go on.
+        #
+        # This step exists because build-desktop.yml cannot catch it: it signs
+        # ad-hoc (`--sign -`), whose requirements are `cdhash H"..."` and carry
+        # no identifier, so the bug is invisible there and only bites the local
+        # Developer ID path (build_mac.sh). Ratchet, not a ban — the assets
+        # that predate the check live in scripts/nonascii_asset_baseline.txt
+        # and that list may only shrink. Companion unit test:
+        # tests/unit/test_check_no_nonascii_asset_names.py.
+        run: python scripts/check_no_nonascii_asset_names.py
+
   core-contracts:
     name: Core package contracts
     runs-on: ubuntu-latest
