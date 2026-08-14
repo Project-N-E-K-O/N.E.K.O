@@ -629,7 +629,11 @@ def test_excluded_plugin_paths_are_not_reported(tmp_path: Path) -> None:
 
 @pytest.mark.unit
 def test_windows_zip_separators_are_normalized(tmp_path: Path) -> None:
-    """`中文目录\\plain.png` is an ASCII file in a CJK folder — allowed."""
+    """A CJK directory holding an ASCII basename is allowed; only the name counts.
+
+    The fixture writes that member with a Windows backslash separator, which is
+    what used to make the whole string read as a single non-ASCII basename.
+    """
     module = _load_script_module()
     _init_repo(tmp_path)
     packs = tmp_path / "frontend" / "pngtuber-packs"
