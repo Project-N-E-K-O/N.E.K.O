@@ -35,6 +35,7 @@ class AgentObservationMixin:
             self._pending_choice_advice = None
             if transition_type == "real_session_reset":
                 self._cancel_summary_tasks()
+                self._reset_scene_summary_repeat_guard()
                 self._scene_tracker.reset(scene_id=str(snapshot.get("scene_id") or ""))
                 self._summary_debug.clear()
                 self._cat_opinions.clear()

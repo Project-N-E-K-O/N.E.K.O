@@ -45,6 +45,8 @@ warmup_replay_bytes_limit = 65536
 warmup_replay_events_limit = 50
 default_mode = "companion"
 push_notifications = true
+scene_summary_repeat_guard_enabled = true
+scene_summary_duplicate_window_seconds = 45
 auto_open_ui = true
 reader_mode = "auto"
 

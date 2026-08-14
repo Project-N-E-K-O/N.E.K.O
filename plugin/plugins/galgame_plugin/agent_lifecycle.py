@@ -107,6 +107,22 @@ class AgentLifecycleMixin:
         self._pending_consults: set[str] = set()
         self._summary_generation = 0
         self._summary_debug: dict[str, Any] = {}
+        self._scene_summary_repeat_guard_enabled = bool(
+            getattr(config, "scene_summary_repeat_guard_enabled", True)
+        )
+        self._scene_summary_duplicate_window_seconds = max(
+            0.0,
+            float(
+                getattr(config, "scene_summary_duplicate_window_seconds", 45.0)
+                or 0.0
+            ),
+        )
+        self._scene_summary_repeat_reservations: set[str] = set()
+        self._scene_summary_repeat_deliveries: dict[str, dict[str, Any]] = {}
+        self._scene_summary_latest_scene_content: dict[str, dict[str, Any]] = {}
+        self._scene_summary_repeat_data_source = ""
+        self._scene_summary_suppressed_count = 0
+        self._scene_summary_last_success_at = 0.0
         self._failure_memory: list[dict[str, Any]] = []
         self._recent_local_inputs: list[dict[str, Any]] = []
         self._virtual_mouse_stats: dict[str, dict[str, Any]] = {}
@@ -156,6 +172,14 @@ class AgentLifecycleMixin:
         self._lines_seen_for_consult = 0
         self._last_consult_seen_line_count = 0
         self._pending_consults.clear()
+
+    def _reset_scene_summary_repeat_guard(self) -> None:
+        self._scene_summary_repeat_reservations.clear()
+        self._scene_summary_repeat_deliveries.clear()
+        self._scene_summary_latest_scene_content.clear()
+        self._scene_summary_repeat_data_source = ""
+        self._scene_summary_suppressed_count = 0
+        self._scene_summary_last_success_at = 0.0
 
     def _ensure_loop_affinity(self) -> None:
         loop = asyncio.get_running_loop()
@@ -209,6 +233,7 @@ class AgentLifecycleMixin:
         if not self._summary_tasks:
             return
         self._summary_generation += 1
+        self._reset_scene_summary_repeat_guard()
         self._summary_debug["last_task_cancelled"] = {
             "reason": "cancel_summary_tasks",
             "pending_count": len(self._summary_tasks),
@@ -269,6 +294,7 @@ class AgentLifecycleMixin:
         self._last_delivered_summary_key = ""
         self._last_delivered_summary_seq = 0
         self._last_delivered_summary_scene_id = ""
+        self._reset_scene_summary_repeat_guard()
         self._inbound_messages.clear()
         self._outbound_messages.clear()
         self._last_interruption = {}

@@ -354,6 +354,7 @@ class AgentSyncMixin:
         route_id: str,
         metadata: dict[str, Any] | None = None,
         priority: int = 6,
+        coalesce_key: str | None = None,
     ) -> bool:
         if not content:
             return False
@@ -378,18 +379,23 @@ class AgentSyncMixin:
             self._mark_message(outbound, status="completed", delivered=False)
             self._recent_pushes = self._recent_push_records()
             return False
+        push_kwargs: dict[str, Any] = {
+            "source": str(
+                getattr(self._plugin, "plugin_id", "") or "galgame_plugin"
+            ),
+            "message_type": "proactive_notification",
+            "description": f"Galgame Agent | {kind}",
+            "priority": priority,
+            "content": content,
+            "metadata": outbound_metadata,
+        }
+        if coalesce_key:
+            push_kwargs["coalesce_key"] = coalesce_key
         delivered = False
         try:
             # push_message is synchronous in the plugin SDK; keep this call inline
             # so delivery failures can be caught and retried below.
-            self._plugin.push_message(
-                source=str(getattr(self._plugin, "plugin_id", "") or "galgame_plugin"),
-                message_type="proactive_notification",
-                description=f"Galgame Agent | {kind}",
-                priority=priority,
-                content=content,
-                metadata=outbound_metadata,
-            )
+            self._plugin.push_message(**push_kwargs)
             self._mark_message(outbound, status="delivered", delivered=True)
             delivered = True
         except Exception as exc:
@@ -397,14 +403,7 @@ class AgentSyncMixin:
             try:
                 await asyncio.sleep(1.0)
                 # push_message is synchronous in the plugin SDK; retry inline.
-                self._plugin.push_message(
-                    source=str(getattr(self._plugin, "plugin_id", "") or "galgame_plugin"),
-                    message_type="proactive_notification",
-                    description=f"Galgame Agent | {kind}",
-                    priority=priority,
-                    content=content,
-                    metadata=outbound_metadata,
-                )
+                self._plugin.push_message(**push_kwargs)
                 self._mark_message(
                     outbound,
                     status="delivered",

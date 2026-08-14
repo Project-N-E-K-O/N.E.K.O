@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+
 from .agent_shared import *  # noqa: F401,F403
 from .agent_prompt import _context_line_count
 
@@ -58,6 +60,177 @@ class AgentSummaryMixin:
             f"{normalized_scene_id}:{int(last_line_seq or 0)}:"
             f"{int(stable_line_count or 0)}"
         )
+
+    @staticmethod
+    def _normalize_scene_summary_fingerprint_text(value: Any) -> str:
+        return re.sub(r"\s+", " ", str(value or "").strip()).casefold()
+
+    def _scene_summary_content_fingerprint(
+        self,
+        *,
+        shared: dict[str, Any],
+        snapshot: dict[str, Any] | None = None,
+        context: dict[str, Any],
+        route_id: str,
+    ) -> tuple[str, tuple[str, ...], tuple[str, ...]]:
+        stable_lines: list[dict[str, str]] = []
+        for item in list(context.get("stable_lines") or []):
+            if isinstance(item, dict):
+                stable_lines.append(
+                    {
+                        "line_id": self._normalize_scene_summary_fingerprint_text(
+                            item.get("line_id")
+                        ),
+                        "speaker": self._normalize_scene_summary_fingerprint_text(
+                            item.get("speaker")
+                        ),
+                        "text": self._normalize_scene_summary_fingerprint_text(
+                            item.get("text")
+                        ),
+                    }
+                )
+            else:
+                stable_lines.append(
+                    {
+                        "line_id": "",
+                        "speaker": "",
+                        "text": self._normalize_scene_summary_fingerprint_text(item),
+                    }
+                )
+        choices: list[dict[str, str]] = []
+        raw_choices = [
+            *list(context.get("recent_choices") or []),
+            *list((snapshot or {}).get("choices") or []),
+        ]
+        for item in raw_choices:
+            if isinstance(item, dict):
+                choices.append(
+                    {
+                        "choice_id": self._normalize_scene_summary_fingerprint_text(
+                            item.get("choice_id") or item.get("option_id")
+                        ),
+                        "text": self._normalize_scene_summary_fingerprint_text(
+                            item.get("text") or item.get("label")
+                        ),
+                    }
+                )
+            else:
+                choices.append(
+                    {
+                        "choice_id": "",
+                        "text": self._normalize_scene_summary_fingerprint_text(item),
+                    }
+                )
+        payload = {
+            "data_source": self._normalize_scene_summary_fingerprint_text(
+                self._current_input_source(shared)
+            ),
+            "route_id": self._normalize_scene_summary_fingerprint_text(route_id),
+            "stable_lines": stable_lines,
+            "choices": choices,
+        }
+        serialized = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        stable_line_keys = tuple(
+            json.dumps(item, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            for item in stable_lines
+        )
+        choice_keys = tuple(
+            json.dumps(item, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            for item in choices
+        )
+        return (
+            hashlib.sha256(serialized.encode("utf-8")).hexdigest(),
+            stable_line_keys,
+            choice_keys,
+        )
+
+    def _prune_scene_summary_repeat_deliveries(self, now: float) -> None:
+        window = self._scene_summary_duplicate_window_seconds
+        if window <= 0:
+            self._scene_summary_repeat_deliveries.clear()
+            return
+        expired = [
+            fingerprint
+            for fingerprint, record in self._scene_summary_repeat_deliveries.items()
+            if now - float(record.get("delivered_at") or 0.0) > window
+        ]
+        for fingerprint in expired:
+            self._scene_summary_repeat_deliveries.pop(fingerprint, None)
+
+    def _note_scene_summary_suppressed(
+        self,
+        *,
+        reason: str,
+        trigger: str,
+        fingerprint: str,
+        stable_line_delta_count: int,
+        choice_count: int,
+    ) -> None:
+        now = time.monotonic()
+        since_last_delivery = (
+            max(0.0, now - self._scene_summary_last_success_at)
+            if self._scene_summary_last_success_at > 0
+            else 0.0
+        )
+        self._scene_summary_suppressed_count += 1
+        event = {
+            "reason": reason,
+            "trigger": trigger,
+            "fingerprint": fingerprint[:8],
+            "stable_line_delta_count": stable_line_delta_count,
+            "choice_count": choice_count,
+            "seconds_since_last_delivery": round(since_last_delivery, 3),
+            "ts": self._utc_now_iso(),
+        }
+        self._summary_debug["scene_summary_suppressed_count"] = (
+            self._scene_summary_suppressed_count
+        )
+        self._summary_debug["last_suppress_reason"] = reason
+        self._summary_debug["last_suppressed"] = event
+        self._logger.info(
+            "galgame scene_summary suppressed: reason=%s trigger=%s fingerprint=%s "
+            "stable_line_delta=%d choice_delta=%d since_last_delivery=%.3f",
+            reason,
+            trigger,
+            fingerprint[:8],
+            stable_line_delta_count,
+            choice_count,
+            since_last_delivery,
+        )
+
+    def _commit_scene_summary_repeat_delivery(
+        self,
+        *,
+        fingerprint: str,
+        reservation_key: str,
+        scene_id: str,
+        trigger: str,
+        stable_line_keys: tuple[str, ...],
+        choice_keys: tuple[str, ...],
+    ) -> None:
+        delivered_at = time.monotonic()
+        self._scene_summary_repeat_deliveries[reservation_key] = {
+            "delivered_at": delivered_at,
+            "scene_id": scene_id,
+            "trigger": trigger,
+        }
+        self._scene_summary_latest_scene_content[scene_id] = {
+            "stable_line_keys": stable_line_keys,
+            "choice_keys": choice_keys,
+        }
+        self._scene_summary_last_success_at = delivered_at
+        self._summary_debug["last_repeat_guard_delivery"] = {
+            "fingerprint": fingerprint[:8],
+            "trigger": trigger,
+            "stable_line_count": len(stable_line_keys),
+            "choice_count": len(choice_keys),
+            "ts": self._utc_now_iso(),
+        }
 
     def _summary_task_status_debug(self) -> dict[str, Any]:
         pending: list[dict[str, Any]] = []
@@ -146,6 +319,7 @@ class AgentSummaryMixin:
         scheduled_seq: int = 0,
         scheduled_line_count: int = 0,
         merged_schedule_restore: list[dict[str, Any]] | None = None,
+        repeat_reservation_key: str = "",
         meta: dict[str, Any] | None = None,
     ) -> None:
         self._summary_tasks.add(task)
@@ -156,6 +330,10 @@ class AgentSummaryMixin:
         def _finish(done: asyncio.Task[bool]) -> None:
             self._summary_tasks.discard(done)
             done_meta = self._summary_task_meta.pop(done, None) or task_meta
+            if repeat_reservation_key:
+                self._scene_summary_repeat_reservations.discard(
+                    repeat_reservation_key
+                )
             delivery_key = str(done_meta.get("summary_delivery_key") or "")
             if done.cancelled():
                 self._restore_failed_summary_schedule(
@@ -260,8 +438,107 @@ class AgentSummaryMixin:
             snapshot_payload = dict(snapshot)
             context_payload = dict(context)
             metadata_payload = dict(metadata)
+        current_data_source = self._current_input_source(shared_payload)
+        if (
+            self._scene_summary_repeat_guard_enabled
+            and self._scene_summary_repeat_data_source
+            and current_data_source != self._scene_summary_repeat_data_source
+        ):
+            self._cancel_summary_tasks()
+            self._reset_scene_summary_repeat_guard()
+            self._last_delivered_summary_key = ""
+            self._last_delivered_summary_seq = 0
+            self._last_delivered_summary_scene_id = ""
+        if self._scene_summary_repeat_guard_enabled:
+            self._scene_summary_repeat_data_source = current_data_source
         scheduled_seq = int(metadata_payload.get("scheduled_from_event_seq") or 0)
         stable_line_count = _context_line_count(context_payload.get("stable_lines"))
+        repeat_fingerprint = ""
+        repeat_reservation_key = ""
+        repeat_stable_line_keys: tuple[str, ...] = ()
+        repeat_choice_keys: tuple[str, ...] = ()
+        choice_count = len(list(context_payload.get("recent_choices") or []))
+        if self._scene_summary_repeat_guard_enabled:
+            (
+                repeat_fingerprint,
+                repeat_stable_line_keys,
+                repeat_choice_keys,
+            ) = self._scene_summary_content_fingerprint(
+                shared=shared_payload,
+                snapshot=snapshot_payload,
+                context=context_payload,
+                route_id=route_id,
+            )
+            fingerprint_line_count = len(repeat_stable_line_keys)
+            choice_count = len(repeat_choice_keys)
+            history_boundary = self._trusted_history_token(shared_payload) or session_id
+            repeat_reservation_key = (
+                f"{history_boundary}:{scene_id}:{repeat_fingerprint}"
+            )
+            now = time.monotonic()
+            self._prune_scene_summary_repeat_deliveries(now)
+            previous_content = self._scene_summary_latest_scene_content.get(scene_id)
+            if previous_content:
+                previous_line_keys = set(
+                    previous_content.get("stable_line_keys") or ()
+                )
+                previous_choice_keys = set(previous_content.get("choice_keys") or ())
+                stable_line_delta_count = len(
+                    set(repeat_stable_line_keys) - previous_line_keys
+                )
+                choice_delta_count = len(set(repeat_choice_keys) - previous_choice_keys)
+            else:
+                stable_line_delta_count = fingerprint_line_count
+                choice_delta_count = choice_count
+            if repeat_reservation_key in self._scene_summary_repeat_reservations:
+                self._note_scene_summary_suppressed(
+                    reason="fingerprint_reserved",
+                    trigger=trigger,
+                    fingerprint=repeat_fingerprint,
+                    stable_line_delta_count=stable_line_delta_count,
+                    choice_count=choice_delta_count,
+                )
+                return
+            prior_delivery = self._scene_summary_repeat_deliveries.get(
+                repeat_reservation_key
+            )
+            duplicate_in_window = bool(
+                prior_delivery
+                and now - float(prior_delivery.get("delivered_at") or 0.0)
+                <= self._scene_summary_duplicate_window_seconds
+            )
+            if trigger != "line_count" and duplicate_in_window:
+                self._note_scene_summary_suppressed(
+                    reason="duplicate_content_fingerprint",
+                    trigger=trigger,
+                    fingerprint=repeat_fingerprint,
+                    stable_line_delta_count=stable_line_delta_count,
+                    choice_count=choice_delta_count,
+                )
+                return
+            if (
+                trigger == "screen_stage_changed"
+                and stable_line_delta_count <= 0
+                and choice_delta_count <= 0
+            ):
+                self._note_scene_summary_suppressed(
+                    reason="screen_stage_without_new_content",
+                    trigger=trigger,
+                    fingerprint=repeat_fingerprint,
+                    stable_line_delta_count=stable_line_delta_count,
+                    choice_count=choice_delta_count,
+                )
+                return
+            self._scene_summary_repeat_reservations.add(repeat_reservation_key)
+            metadata_payload["_repeat_guard_fingerprint"] = repeat_fingerprint
+            metadata_payload["_repeat_guard_reservation_key"] = (
+                repeat_reservation_key
+            )
+            metadata_payload["_repeat_guard_stable_line_keys"] = list(
+                repeat_stable_line_keys
+            )
+            metadata_payload["_repeat_guard_choice_keys"] = list(repeat_choice_keys)
+            metadata_payload["summary_content_fingerprint"] = repeat_fingerprint[:8]
         last_line_seq = int(metadata_payload.get("last_line_seq") or scheduled_seq or 0)
         delivery_key = str(metadata_payload.get("summary_delivery_key") or "")
         if not delivery_key:
@@ -273,29 +550,37 @@ class AgentSummaryMixin:
             )
             metadata_payload["summary_delivery_key"] = delivery_key
         metadata_payload.setdefault("stable_line_count", stable_line_count)
-        task = asyncio.create_task(
-            self._run_scene_summary_task(
-                summary_lock=self._op_lock,
-                generation=self._summary_generation,
-                session_id=session_id,
-                data_source_at_schedule=self._current_input_source(shared),
-                trusted_history_token=self._trusted_history_token(shared),
-                scene_id=scene_id,
-                route_id=route_id,
-                shared=shared_payload,
-                snapshot=snapshot_payload,
-                context=context_payload,
-                trigger=trigger,
-                metadata=metadata_payload,
-                update_scene_memory=update_scene_memory,
+        try:
+            task = asyncio.create_task(
+                self._run_scene_summary_task(
+                    summary_lock=self._op_lock,
+                    generation=self._summary_generation,
+                    session_id=session_id,
+                    data_source_at_schedule=current_data_source,
+                    trusted_history_token=self._trusted_history_token(shared),
+                    scene_id=scene_id,
+                    route_id=route_id,
+                    shared=shared_payload,
+                    snapshot=snapshot_payload,
+                    context=context_payload,
+                    trigger=trigger,
+                    metadata=metadata_payload,
+                    update_scene_memory=update_scene_memory,
+                )
             )
-        )
+        except Exception:
+            if repeat_reservation_key:
+                self._scene_summary_repeat_reservations.discard(
+                    repeat_reservation_key
+                )
+            raise
         self._track_summary_task(
             task,
             scene_id=scene_id,
             scheduled_seq=scheduled_seq,
             scheduled_line_count=scheduled_line_count,
             merged_schedule_restore=merged_schedule_restore,
+            repeat_reservation_key=repeat_reservation_key,
             meta={
                 "scene_id": scene_id,
                 "scheduled_seq": scheduled_seq,
@@ -304,7 +589,7 @@ class AgentSummaryMixin:
                 "stable_line_count": stable_line_count,
                 "summary_delivery_key": delivery_key,
                 "session_id_at_schedule": session_id,
-                "data_source_at_schedule": self._current_input_source(shared),
+                "data_source_at_schedule": current_data_source,
                 "trusted_history_token": self._trusted_history_token(shared),
             },
         )
@@ -328,6 +613,18 @@ class AgentSummaryMixin:
     ) -> bool:
         scheduled_seq = int(metadata.get("scheduled_from_event_seq") or 0)
         delivery_key = str(metadata.get("summary_delivery_key") or "")
+        repeat_fingerprint = str(metadata.get("_repeat_guard_fingerprint") or "")
+        repeat_reservation_key = str(
+            metadata.get("_repeat_guard_reservation_key") or ""
+        )
+        repeat_stable_line_keys = tuple(
+            str(item)
+            for item in list(metadata.get("_repeat_guard_stable_line_keys") or [])
+        )
+        repeat_choice_keys = tuple(
+            str(item)
+            for item in list(metadata.get("_repeat_guard_choice_keys") or [])
+        )
         self._record_summary_task_event(
             "started",
             {
@@ -453,6 +750,10 @@ class AgentSummaryMixin:
                     summary=str(summary_meta.get("scene_summary") or summary),
                 )
             push_metadata = dict(metadata)
+            push_metadata.pop("_repeat_guard_fingerprint", None)
+            push_metadata.pop("_repeat_guard_reservation_key", None)
+            push_metadata.pop("_repeat_guard_stable_line_keys", None)
+            push_metadata.pop("_repeat_guard_choice_keys", None)
             push_metadata.update(summary_meta)
             if trigger:
                 push_metadata.setdefault("trigger", trigger)
@@ -478,13 +779,19 @@ class AgentSummaryMixin:
                     "以下内容来自 galgame 插件对当前游戏画面和近期台词的理解。"
                     "这不是后台任务，也不是任务完成通知。回复时不要说“后台任务完成”、"
                     "“任务跑完了”、“插件完成了”。请直接以当前角色人格自然评论剧情、"
-                    "回应角色处境，或给出简短陪伴式反应。\n"
+                    "回应角色处境，或给出简短陪伴式反应。只评论本次新增剧情点；"
+                    "不得复用最近两次自己回复中的完整句子，不得使用相同问句式收尾。"
+                    "优先引用一个新的具体剧情细节，回复限制为 1～3 句。\n"
                     + str(summary or "")
                     + "\n======"
                 ),
                 scene_id=scene_id,
                 route_id=route_id,
                 metadata=push_metadata,
+                coalesce_key=(
+                    "galgame:scene_summary:"
+                    f"{self._observed_session_id or session_id}"
+                ),
             )
             if not delivered:
                 self._summary_debug["last_drop"] = {
@@ -507,6 +814,15 @@ class AgentSummaryMixin:
             self._last_delivered_summary_key = delivery_key
             self._last_delivered_summary_seq = scheduled_seq
             self._last_delivered_summary_scene_id = scene_id
+            if repeat_fingerprint:
+                self._commit_scene_summary_repeat_delivery(
+                    fingerprint=repeat_fingerprint,
+                    reservation_key=repeat_reservation_key,
+                    scene_id=scene_id,
+                    trigger=trigger,
+                    stable_line_keys=repeat_stable_line_keys,
+                    choice_keys=repeat_choice_keys,
+                )
             self._scene_tracker.mark_scene_summary_delivered(scene_id, seq=scheduled_seq)
             story_recorder = getattr(
                 self._plugin,
