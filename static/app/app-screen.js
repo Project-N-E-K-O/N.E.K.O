@@ -2048,11 +2048,21 @@
             // 第二阶段在后台获取整批缩略图。N.E.K.O.-PC 对这个显式缓存请求
             // 做 60 秒单快照缓存和 in-flight 去重；旧弹窗的迟到结果不会越过 token。
             Promise.resolve().then(function () {
-                return desktopProvider.getSources({
+                var thumbnailOptions = {
                     types: ['window', 'screen'],
                     thumbnailSize: { width: 160, height: 100 },
                     thumbnailCache: true
-                });
+                };
+                var configuredTimeoutMs = Number(C.SCREEN_SOURCE_THUMBNAIL_TIMEOUT);
+                var thumbnailTimeoutMs = Number.isFinite(configuredTimeoutMs) && configuredTimeoutMs > 0
+                    ? configuredTimeoutMs
+                    : 15000;
+                return window.invokeDesktopCaptureWithTimeout(
+                    desktopProvider,
+                    'getSources',
+                    [thumbnailOptions],
+                    thumbnailTimeoutMs
+                );
             }).then(function (thumbnailSources) {
                 if (!isPopupAvailable()) return;
                 var thumbnailsById = new Map();

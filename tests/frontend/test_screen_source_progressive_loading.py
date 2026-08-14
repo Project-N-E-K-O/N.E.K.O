@@ -6,17 +6,24 @@ from playwright.sync_api import Page
 
 ROOT = Path(__file__).resolve().parents[2]
 APP_SCREEN = ROOT / "static" / "app" / "app-screen.js"
+DESKTOP_CAPTURE_PROVIDER = ROOT / "static" / "app" / "desktop-capture-provider.js"
 
 
-def _install_screen_source_harness(page: Page) -> None:
+def _install_screen_source_harness(
+    page: Page,
+    *,
+    thumbnail_timeout_ms: int = 15_000,
+) -> None:
     page.set_content(
         '<div id="live2d-popup-screen" '
         'style="display:flex;opacity:1"></div>'
     )
     page.evaluate(
-        """() => {
+        """(thumbnailTimeoutMs) => {
             window.appState = { selectedScreenSourceId: null };
-            window.appConst = {};
+            window.appConst = {
+                SCREEN_SOURCE_THUMBNAIL_TIMEOUT: thumbnailTimeoutMs,
+            };
             window.appUtils = { isMobile: () => false };
             window.safeT = (_key, fallback) => fallback;
             window.t = (key, options = {}) => {
@@ -46,9 +53,11 @@ def _install_screen_source_harness(page: Page) -> None:
                 },
                 setSelectedSource() { return Promise.resolve(); },
             };
-            window.getDesktopCaptureProvider = () => window.__desktopProvider;
-        }"""
+            window.electronDesktopCapturer = window.__desktopProvider;
+        }""",
+        thumbnail_timeout_ms,
     )
+    page.add_script_tag(path=str(DESKTOP_CAPTURE_PROVIDER))
     page.add_script_tag(path=str(APP_SCREEN))
 
 
@@ -135,4 +144,48 @@ def test_screen_source_names_render_before_cached_thumbnails(page: Page) -> None
         "optionCount": 2,
         "loadingCount": 0,
         "imageCount": 2,
+    }
+
+
+@pytest.mark.frontend
+def test_screen_source_hung_thumbnail_request_falls_back_after_timeout(
+    page: Page,
+) -> None:
+    _install_screen_source_harness(page, thumbnail_timeout_ms=25)
+
+    rendered = page.evaluate(
+        """async () => window.renderFloatingScreenSourceList(
+            document.getElementById('live2d-popup-screen')
+        )"""
+    )
+    assert rendered is True
+    page.wait_for_function(
+        "document.querySelectorAll('.screen-source-thumbnail-fallback').length === 2"
+    )
+
+    state = page.evaluate(
+        """() => ({
+            calls: window.__captureCalls,
+            loadingCount: document.querySelectorAll(
+                '.screen-source-thumbnail-loading'
+            ).length,
+            fallbackCount: document.querySelectorAll(
+                '.screen-source-thumbnail-fallback'
+            ).length,
+        })"""
+    )
+    assert state == {
+        "calls": [
+            {
+                "types": ["window", "screen"],
+                "thumbnailSize": {"width": 0, "height": 0},
+            },
+            {
+                "types": ["window", "screen"],
+                "thumbnailSize": {"width": 160, "height": 100},
+                "thumbnailCache": True,
+            },
+        ],
+        "loadingCount": 0,
+        "fallbackCount": 2,
     }
