@@ -84,6 +84,7 @@
   "format.category.wows_geometry": "几何（边界/露侧）",
   "format.category.wows_targeting": "目标与弹药",
   "format.category.wows_progress": "伤害里程碑",
+  "format.category.wows_praise": "夸夸（击沉）",
   "overview.reconnectRequired": "数据源配置已改动。改动只在重连后生效，点“重连数据源”应用。",
   "overview.stats.service": "遥测服务",
   "overview.stats.transport": "传输",

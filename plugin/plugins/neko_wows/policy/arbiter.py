@@ -18,6 +18,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any, Sequence
 
+from ..domain.catalog import ENEMY_SUNK
 from ..domain.contracts import (
     ALL_LANES,
     INTRUSION_ALLOW_INTERRUPT,
@@ -41,6 +42,25 @@ REASON_ATTACHED = "attached"
 
 ATTACH_PRIORITY_WINDOW = 15
 MAX_DECISION_EVENTS = 4
+
+
+def _coalesce_identity(candidate: AdviceCandidate) -> tuple[str, str | int] | None:
+    """Collapse siblings that share a category and, when present, a target.
+
+    Broadcast categories still group the panel switch, but two progress bursts
+    on different ships must both be allowed to reach attach. Spoken hull names
+    collide (two Zaos), so a numeric target_id wins when the detector stamped one.
+    """
+    key = candidate.coalesce_key
+    if not key:
+        return None
+    target_id = candidate.detail.get("target_id")
+    if isinstance(target_id, int) and not isinstance(target_id, bool):
+        return (key, target_id)
+    target = candidate.detail.get("target_name")
+    if isinstance(target, str) and target:
+        return (key, target)
+    return (key, "")
 
 # Dispatcher outcomes that consumed the candidate. Anything else leaves
 # `once_per_battle` unspent and the lane gap untouched.
@@ -219,9 +239,13 @@ class Arbiter:
                 ))
                 continue
 
-            key = candidate.coalesce_key
-            if key:
-                siblings = [c for c in self._queue if c.coalesce_key == key]
+            identity = _coalesce_identity(candidate)
+            if identity:
+                siblings = [
+                    queued
+                    for queued in self._queue
+                    if _coalesce_identity(queued) == identity
+                ]
                 if siblings:
                     best_queued = min(siblings, key=self._coalesce_rank)
                     if self._coalesce_rank(candidate) > self._coalesce_rank(best_queued):
@@ -232,7 +256,11 @@ class Arbiter:
                             f"queued sibling kept {best_queued.event_id}",
                         ))
                         continue
-                    self._queue = [c for c in self._queue if c.coalesce_key != key]
+                    self._queue = [
+                        queued
+                        for queued in self._queue
+                        if _coalesce_identity(queued) != identity
+                    ]
                     for old in siblings:
                         steps.append(DecisionStep(
                             old.event_id, old.lane, REASON_COALESCED,
@@ -268,10 +296,11 @@ class Arbiter:
         batch from overwriting the stronger item that preceded it.
         """
         indexed = tuple(enumerate(candidates))
-        groups: dict[str, list[tuple[int, AdviceCandidate]]] = {}
+        groups: dict[tuple[str, str | int], list[tuple[int, AdviceCandidate]]] = {}
         for index, candidate in indexed:
-            if candidate.coalesce_key:
-                groups.setdefault(candidate.coalesce_key, []).append(
+            identity = _coalesce_identity(candidate)
+            if identity:
+                groups.setdefault(identity, []).append(
                     (index, candidate))
 
         discarded: set[int] = set()
@@ -344,8 +373,18 @@ class Arbiter:
                         continue
                     if sibling.rank < candidate.rank:
                         continue
-                    if sibling.priority < candidate.priority - ATTACH_PRIORITY_WINDOW:
-                        break
+                    in_window = (
+                        sibling.priority
+                        >= candidate.priority - ATTACH_PRIORITY_WINDOW
+                    )
+                    same_group = bool(
+                        candidate.spec.attach_group
+                        and sibling.spec.attach_group
+                        == candidate.spec.attach_group
+                        and ENEMY_SUNK in (candidate.event_id, sibling.event_id)
+                    )
+                    if not in_window and not same_group:
+                        continue
                     if len(attached) >= MAX_DECISION_EVENTS - 1:
                         break
                     sibling_blocked = self._blocked_reason(sibling, now)

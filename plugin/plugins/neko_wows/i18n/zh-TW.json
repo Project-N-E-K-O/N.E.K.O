@@ -84,6 +84,7 @@
   "format.category.wows_geometry": "幾何（邊界/露側）",
   "format.category.wows_targeting": "目標與彈藥",
   "format.category.wows_progress": "傷害里程碑",
+  "format.category.wows_praise": "誇誇（擊沉）",
   "overview.reconnectRequired": "資料來源配置已改動。改動只在重連後生效，點“重連資料來源”應用。",
   "overview.stats.service": "遙測服務",
   "overview.stats.transport": "傳輸",

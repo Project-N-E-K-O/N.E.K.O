@@ -11,6 +11,7 @@ from plugin.plugins.neko_wows.domain.catalog import (
     DAMAGE_MILESTONE,
     DEVASTATING_STRIKE,
     ENEMY_CLOSING,
+    ENEMY_SUNK,
     HIGH_DAMAGE,
     LOCALLY_ISOLATED,
     LOW_HP_TARGET,
@@ -194,6 +195,108 @@ def test_devastating_attaches_to_rapid_damage_instead_of_being_dropped():
     )
     assert REASON_ATTACHED in outcomes(decision, DEVASTATING_STRIKE)
     assert decision.queued == 0
+
+
+def test_enemy_sunk_is_a_high_priority_normal_praise_event():
+    spec = spec_for(ENEMY_SUNK)
+    assert spec.lane == LANE_NORMAL
+    assert spec.coalesce_key == "wows_praise"
+    assert spec.attach_group == spec_for(HIGH_DAMAGE).attach_group
+    assert spec.attach_group == spec_for(DEVASTATING_STRIKE).attach_group
+    assert spec.attach_group
+    assert spec.priority >= 65
+    assert spec.preempt is False
+
+
+def test_enemy_sunk_attaches_high_damage_outside_the_default_window():
+    decision = Arbiter(CFG).decide([
+        candidate(ENEMY_SUNK),
+        candidate(HIGH_DAMAGE),
+    ], 100.0)
+
+    assert decision.chosen.event_id == ENEMY_SUNK
+    assert tuple(item.event_id for item in decision.attached) == (HIGH_DAMAGE,)
+    assert REASON_ATTACHED in outcomes(decision, HIGH_DAMAGE)
+
+
+def test_enemy_sunk_attaches_to_an_urgent_devastating_strike():
+    decision = Arbiter(CFG).decide([
+        candidate(ENEMY_SUNK),
+        candidate(DEVASTATING_STRIKE),
+    ], 100.0)
+
+    assert tuple(item.event_id for item in decision.candidates) == (
+        DEVASTATING_STRIKE,
+        ENEMY_SUNK,
+    )
+
+
+def test_high_damage_coalesces_with_devastating_without_a_sink():
+    decision = Arbiter(CFG).decide([
+        candidate(DEVASTATING_STRIKE),
+        candidate(HIGH_DAMAGE),
+    ], 100.0)
+
+    assert decision.chosen.event_id == DEVASTATING_STRIKE
+    assert decision.attached == ()
+    assert REASON_COALESCED in outcomes(decision, HIGH_DAMAGE)
+    assert decision.queued == 0
+
+
+def test_progress_bursts_on_different_targets_do_not_coalesce():
+    decision = Arbiter(CFG).decide([
+        candidate(DEVASTATING_STRIKE, detail={"target_name": "Dev"}),
+        candidate(HIGH_DAMAGE, detail={"target_name": "High"}),
+    ], 100.0)
+
+    assert decision.chosen.event_id == DEVASTATING_STRIKE
+    assert decision.attached == ()
+    assert REASON_COALESCED not in outcomes(decision, HIGH_DAMAGE)
+    assert REASON_PREEMPTED in outcomes(decision, HIGH_DAMAGE)
+    assert decision.queued == 0
+
+
+def test_same_spoken_name_on_different_ships_does_not_coalesce():
+    decision = Arbiter(CFG).decide([
+        candidate(
+            DEVASTATING_STRIKE,
+            detail={"target_name": "Zao", "target_id": 3002},
+        ),
+        candidate(
+            HIGH_DAMAGE,
+            detail={"target_name": "Zao", "target_id": 3003},
+        ),
+    ], 100.0)
+
+    assert decision.chosen.event_id == DEVASTATING_STRIKE
+    assert decision.attached == ()
+    assert REASON_COALESCED not in outcomes(decision, HIGH_DAMAGE)
+    assert REASON_PREEMPTED in outcomes(decision, HIGH_DAMAGE)
+    assert decision.queued == 0
+
+
+def test_enemy_sunk_attaches_to_devastating_while_a_weaker_burst_is_preempted():
+    decision = Arbiter(CFG).decide([
+        candidate(ENEMY_SUNK, detail={"target_name": "Dev"}),
+        candidate(DEVASTATING_STRIKE, detail={"target_name": "Dev"}),
+        candidate(HIGH_DAMAGE, detail={"target_name": "High"}),
+    ], 100.0)
+
+    assert tuple(item.event_id for item in decision.candidates) == (
+        DEVASTATING_STRIKE,
+        ENEMY_SUNK,
+    )
+    assert REASON_PREEMPTED in outcomes(decision, HIGH_DAMAGE)
+
+
+def test_enemy_sunk_does_not_coalesce_away_a_damage_burst():
+    arbiter = Arbiter(CFG)
+    steps = arbiter.submit(
+        [candidate(ENEMY_SUNK), candidate(HIGH_DAMAGE)], 100.0)
+    coalesced = [step for step in steps if step.outcome == REASON_COALESCED]
+    assert coalesced == []
+    assert arbiter.stats()["queued"] == 2
+
 
 
 def test_situation_advice_and_outnumbered_priorities_are_swapped():

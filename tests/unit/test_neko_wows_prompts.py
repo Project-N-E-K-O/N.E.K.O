@@ -10,6 +10,7 @@ from plugin.plugins.neko_wows.domain.catalog import (
     BATTLE_STARTED,
     DAMAGE_MILESTONE,
     DEVASTATING_STRIKE,
+    ENEMY_SUNK,
     HIGH_DAMAGE,
     LOW_HEALTH,
     POST_BATTLE_SUMMARY,
@@ -17,6 +18,7 @@ from plugin.plugins.neko_wows.domain.catalog import (
 from plugin.plugins.neko_wows.domain.contracts import (
     CHANNEL_DUAL,
     CHANNEL_SINGLE,
+    LANE_NORMAL,
     LANE_URGENT,
     WowsConfig,
 )
@@ -339,6 +341,41 @@ def test_the_event_outweighs_the_boilerplate_in_a_callout():
         built, PromptProfile(channel_mode=CHANNEL_DUAL, dry_run=True))
 
     assert len(request.text) < 700
+
+
+def test_enemy_sunk_claim_limits_ask_for_praise_without_kill_credit():
+    sink = candidate(ENEMY_SUNK)
+    assert sink.lane == LANE_NORMAL
+    assert any("夸奖" in line for line in sink.claim_limits)
+    assert any("击杀" in line for line in sink.claim_limits)
+    assert any("勋带" in line or "成就" in line for line in sink.claim_limits)
+    assert any("附带伤害" in line for line in sink.claim_limits)
+    assert sum(1 for line in sink.claim_limits if "附带伤害" in line) == 1
+    assert sum(1 for line in sink.claim_limits if "夸奖" in line) == 1
+
+
+def test_target_id_is_not_spoken_in_the_prompt():
+    event = GameEvent(
+        event_id=ENEMY_SUNK,
+        severity=90,
+        at=100.0,
+        seq=1,
+        battle_id="b-1",
+        detail={
+            "target_name": "Zao",
+            "target_id": 3002,
+            "window_damage": 20_000,
+            "kill_credit": False,
+        },
+    )
+    facts = WowsFacts(seq=1, at=100.0, battle_id="b-1")
+    built = WowsTacticPolicy(CFG).expand([event], facts)[0]
+    request = WowsPromptRouter(CFG).build(
+        built, PromptProfile(channel_mode=CHANNEL_DUAL, dry_run=True))
+    assert "Zao" in request.text
+    assert "3002" not in request.text
+    assert "target_id" not in request.text
+
 
 
 def test_shared_context_carries_confirmed_visible_team_counts():

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from plugin.plugins.neko_wows.adapters.schema_adapter import WowsSchemaAdapter
@@ -12,6 +14,7 @@ from plugin.plugins.neko_wows.detectors.damage import (
 )
 from plugin.plugins.neko_wows.domain.catalog import (
     DEVASTATING_STRIKE,
+    ENEMY_SUNK,
     HIGH_DAMAGE,
 )
 from plugin.plugins.neko_wows.domain.contracts import WowsConfig
@@ -128,6 +131,10 @@ def event_ids(results) -> list[str]:
     return [event.event_id for event in emitted(results)]
 
 
+def events_named(results, event_id: str):
+    return [event for event in emitted(results) if event.event_id == event_id]
+
+
 def test_absolute_high_damage_waits_until_five_seconds_after_last_damage():
     target = enemy(max_health=100_000.0)
     results = run_frames(
@@ -189,7 +196,7 @@ def test_same_frame_full_hp_one_shot_is_devastating():
         ),
     )
 
-    assert event_ids(results) == [DEVASTATING_STRIKE]
+    assert event_ids(results) == [ENEMY_SUNK, DEVASTATING_STRIKE]
     event = emitted(results, DEVASTATING_STRIKE)
     assert event.detail["window_damage"] == 40_000
     assert event.detail["damage_ratio"] == pytest.approx(1.0)
@@ -203,7 +210,7 @@ def test_death_flag_before_damage_counter_still_counts_as_devastating():
         frame(3, 101.5, {3002: 40_000}, enemy(alive=False, max_health=40_000.0)),
     )
 
-    assert event_ids(results) == [DEVASTATING_STRIKE]
+    assert event_ids(results) == [ENEMY_SUNK, DEVASTATING_STRIKE]
     event = emitted(results, DEVASTATING_STRIKE)
     assert event.detail["window_damage"] == 40_000
     assert event.detail["target_sunk"] is True
@@ -215,7 +222,7 @@ def test_full_hp_burst_is_devastating_even_if_the_hull_vanishes():
         frame(2, 101.0, {3002: 40_000}),
     )
 
-    assert event_ids(results) == [DEVASTATING_STRIKE]
+    assert event_ids(results) == [ENEMY_SUNK, DEVASTATING_STRIKE]
     event = emitted(results, DEVASTATING_STRIKE)
     assert event.detail["window_damage"] == 40_000
     assert event.detail["damage_ratio"] == pytest.approx(1.0)
@@ -232,11 +239,11 @@ def test_zero_health_without_alive_false_still_counts_as_devastating():
         ),
     )
 
-    assert event_ids(results) == [DEVASTATING_STRIKE]
+    assert event_ids(results) == [ENEMY_SUNK, DEVASTATING_STRIKE]
     assert emitted(results, DEVASTATING_STRIKE).detail["window_damage"] == 40_000
 
 
-def test_sink_upgrades_the_same_burst_to_devastating_strike_only():
+def test_sink_upgrades_the_same_burst_to_devastating_strike_and_enemy_sunk():
     results = run_frames(
         frame(1, 100.0, {3002: 0}, enemy(max_health=40_000.0)),
         frame(2, 101.0, {3002: 20_000}, enemy(max_health=40_000.0)),
@@ -248,16 +255,19 @@ def test_sink_upgrades_the_same_burst_to_devastating_strike_only():
         ),
     )
 
-    assert event_ids(results) == [DEVASTATING_STRIKE]
+    assert event_ids(results) == [ENEMY_SUNK, DEVASTATING_STRIKE]
     event = emitted(results, DEVASTATING_STRIKE)
     assert event.detail["window_damage"] == 20_000
     assert event.detail["damage_ratio"] == pytest.approx(0.5)
     assert event.detail["target_sunk"] is True
     assert event.detail["victim_id"] == 3002
     assert event.detail["classification"] == "telemetry_estimate"
+    sink = emitted(results, ENEMY_SUNK)
+    assert sink.detail["target_name"] == "Zao"
+    assert sink.detail["target_sunk"] is True
 
 
-def test_sunk_below_half_can_emit_high_damage_but_not_devastating():
+def test_sunk_below_half_emits_enemy_sunk_with_high_damage():
     results = run_frames(
         frame(1, 100.0, {3002: 0}, enemy(max_health=100_000.0)),
         frame(2, 101.0, {3002: 20_000}, enemy(max_health=100_000.0)),
@@ -269,8 +279,9 @@ def test_sunk_below_half_can_emit_high_damage_but_not_devastating():
         ),
     )
 
-    assert event_ids(results) == [HIGH_DAMAGE]
+    assert event_ids(results) == [ENEMY_SUNK, HIGH_DAMAGE]
     assert emitted(results, HIGH_DAMAGE).detail["target_sunk"] is True
+    assert emitted(results, ENEMY_SUNK).detail["window_damage"] == 20_000
 
 
 def test_kill_below_half_max_hp_is_not_devastating_even_if_it_finishes_the_hull():
@@ -295,11 +306,12 @@ def test_kill_below_half_max_hp_is_not_devastating_even_if_it_finishes_the_hull(
         ),
     )
 
-    assert event_ids(results) == [HIGH_DAMAGE]
+    assert event_ids(results) == [ENEMY_SUNK, HIGH_DAMAGE]
     event = emitted(results, HIGH_DAMAGE)
     assert event.detail["window_damage"] == 12_000
     assert event.detail["target_sunk"] is True
     assert event.detail["damage_ratio"] == pytest.approx(0.3)
+    assert DEVASTATING_STRIKE not in event_ids(results)
 
 
 def test_unknown_max_health_allows_absolute_high_but_not_devastating():
@@ -311,7 +323,210 @@ def test_unknown_max_health_allows_absolute_high_but_not_devastating():
         frame(4, 106.0, {3002: 20_000}, enemy(alive=False, max_health=None)),
     )
 
+    assert event_ids(results) == [ENEMY_SUNK, HIGH_DAMAGE]
+
+
+def test_small_killing_blow_still_emits_enemy_sunk():
+    results = run_frames(
+        frame(1, 100.0, {3002: 0}, enemy(max_health=100_000.0)),
+        frame(2, 101.0, {3002: 4_000}, enemy(max_health=100_000.0)),
+        frame(
+            3,
+            102.0,
+            {3002: 4_000},
+            enemy(alive=False, max_health=100_000.0),
+        ),
+    )
+
+    assert event_ids(results) == [ENEMY_SUNK]
+    sink = emitted(results, ENEMY_SUNK)
+    assert sink.detail["target_name"] == "Zao"
+    assert sink.detail["window_damage"] == 4_000
+    assert sink.severity >= 80
+
+
+def test_a_scratch_assist_does_not_emit_enemy_sunk():
+    results = run_frames(
+        frame(1, 100.0, {3002: 0}, enemy(max_health=100_000.0)),
+        frame(2, 101.0, {3002: 800}, enemy(max_health=100_000.0)),
+        frame(
+            3,
+            102.0,
+            {3002: 800},
+            enemy(alive=False, max_health=100_000.0),
+        ),
+    )
+
+    assert event_ids(results) == []
+
+
+def test_ally_death_is_not_a_praise_event():
+    ally = Ship(
+        ui_id=3002,
+        player_id=3002,
+        team_id=0,
+        relation=1,
+        ship_type="Cruiser",
+        name="Cleveland",
+        tier=10,
+        alive=True,
+        visible=True,
+        x=6000.0,
+        z=0.0,
+        yaw=0.0,
+        health=40_000.0,
+        max_health=40_000.0,
+        hp_ratio=1.0,
+    )
+    dead = Ship(
+        ui_id=3002,
+        player_id=3002,
+        team_id=0,
+        relation=1,
+        ship_type="Cruiser",
+        name="Cleveland",
+        tier=10,
+        alive=False,
+        visible=True,
+        x=6000.0,
+        z=0.0,
+        yaw=0.0,
+        health=0.0,
+        max_health=40_000.0,
+        hp_ratio=0.0,
+    )
+    results = run_frames(
+        frame(1, 100.0, {3002: 0}, ally),
+        frame(2, 101.0, {3002: 20_000}, ally),
+        frame(3, 102.0, {3002: 20_000}, dead),
+    )
+
+    assert ENEMY_SUNK not in event_ids(results)
+    assert DEVASTATING_STRIKE in event_ids(results)
+
+
+def test_missing_relation_on_the_death_frame_keeps_prior_enemy_status():
+    alive = enemy(max_health=40_000.0)
+    dead = replace(enemy(alive=False, max_health=40_000.0), relation=None)
+    results = run_frames(
+        frame(1, 100.0, {3002: 0}, alive),
+        frame(2, 101.0, {3002: 20_000}, alive),
+        frame(3, 102.0, {3002: 20_000}, dead),
+    )
+
+    assert event_ids(results) == [ENEMY_SUNK, DEVASTATING_STRIKE]
+
+
+def test_enemy_sunk_requires_recent_damage_from_us():
+    results = run_frames(
+        frame(1, 100.0, {}, enemy(max_health=40_000.0)),
+        frame(
+            2,
+            101.0,
+            {},
+            enemy(alive=False, max_health=40_000.0),
+        ),
+    )
+
+    assert event_ids(results) == []
+
+
+def test_death_frame_dropping_the_victim_row_still_uses_the_burst():
+    results = run_frames(
+        frame(1, 100.0, {3002: 0}, enemy(max_health=40_000.0)),
+        frame(2, 101.0, {3002: 20_000}, enemy(max_health=40_000.0)),
+        frame(3, 102.0, {}, enemy(alive=False, max_health=40_000.0)),
+    )
+
+    assert event_ids(results) == [ENEMY_SUNK, DEVASTATING_STRIKE]
+    assert emitted(results, ENEMY_SUNK).detail["window_damage"] == 20_000
+    assert emitted(results, ENEMY_SUNK).detail["kill_credit"] is False
+    assert emitted(results, ENEMY_SUNK).detail["target_id"] == 3002
+
+
+def test_counter_rollback_then_death_does_not_praise_the_sink():
+    results = run_frames(
+        frame(1, 100.0, {3002: 0}, enemy(max_health=40_000.0)),
+        frame(2, 101.0, {3002: 20_000}, enemy(max_health=40_000.0)),
+        frame(
+            3,
+            102.0,
+            {3002: 5_000},
+            enemy(alive=False, max_health=40_000.0),
+        ),
+    )
+
+    assert event_ids(results) == []
+
+
+def test_a_stale_hit_outside_the_window_does_not_become_enemy_sunk():
+    results = run_frames(
+        frame(1, 100.0, {3002: 0}, enemy(max_health=100_000.0)),
+        frame(2, 101.0, {3002: 4_000}, enemy(max_health=100_000.0)),
+        frame(3, 106.0, {3002: 4_000}, enemy(max_health=100_000.0)),
+        frame(
+            4,
+            107.0,
+            {3002: 4_000},
+            enemy(alive=False, max_health=100_000.0),
+        ),
+    )
+
+    assert event_ids(results) == []
+
+
+def test_death_just_past_the_window_does_not_praise_with_stale_peak():
+    results = run_frames(
+        frame(1, 100.0, {3002: 0}, enemy(max_health=100_000.0)),
+        frame(2, 101.0, {3002: 4_000}, enemy(max_health=100_000.0)),
+        frame(3, 105.5, {3002: 4_000}, enemy(max_health=100_000.0)),
+        frame(
+            4,
+            106.1,
+            {3002: 4_000},
+            enemy(alive=False, max_health=100_000.0),
+        ),
+    )
+
+    assert event_ids(results) == []
+
+
+def test_a_qualifying_burst_still_flushes_when_death_misses_the_window():
+    results = run_frames(
+        frame(1, 100.0, {3002: 0}, enemy(max_health=100_000.0)),
+        frame(2, 101.0, {3002: 20_000}, enemy(max_health=100_000.0)),
+        frame(3, 105.5, {3002: 20_000}, enemy(max_health=100_000.0)),
+        frame(
+            4,
+            106.1,
+            {3002: 20_000},
+            enemy(alive=False, max_health=100_000.0),
+        ),
+    )
+
     assert event_ids(results) == [HIGH_DAMAGE]
+    assert emitted(results, HIGH_DAMAGE).detail["target_sunk"] is True
+
+
+def test_a_small_sink_does_not_consume_another_target_high_damage():
+    alive_a = enemy(player_id=3002, max_health=100_000.0, name="Scratch")
+    alive_b = enemy(player_id=3003, max_health=100_000.0, name="Chunk")
+    dead_a = enemy(
+        player_id=3002,
+        alive=False,
+        max_health=100_000.0,
+        name="Scratch",
+    )
+    results = run_frames(
+        frame(1, 100.0, {3002: 0, 3003: 0}, alive_a, alive_b),
+        frame(2, 101.0, {3002: 4_000, 3003: 20_000}, alive_a, alive_b),
+        frame(3, 102.0, {3002: 4_000, 3003: 20_000}, dead_a, alive_b),
+        frame(4, 106.0, {3002: 4_000, 3003: 20_000}, dead_a, alive_b),
+    )
+
+    assert event_ids(results) == [ENEMY_SUNK, HIGH_DAMAGE]
+    assert emitted(results, ENEMY_SUNK).detail["target_name"] == "Scratch"
+    assert emitted(results, HIGH_DAMAGE).detail["target_name"] == "Chunk"
 
 
 def test_counter_rollback_discards_the_pending_burst():
@@ -391,7 +606,7 @@ def test_victim_row_drop_on_the_kill_frame_still_counts_as_devastating():
         frame(3, 102.0, {}, enemy(alive=False, max_health=40_000.0)),
     )
 
-    assert event_ids(results) == [DEVASTATING_STRIKE]
+    assert event_ids(results) == [ENEMY_SUNK, DEVASTATING_STRIKE]
     assert emitted(results, DEVASTATING_STRIKE).detail["window_damage"] == 40_000
 
 
@@ -430,7 +645,7 @@ def test_victim_row_returning_after_kill_does_not_replay_the_burst():
         frame(5, 108.0, {3002: 20_000}, enemy(alive=False, max_health=40_000.0)),
     )
 
-    assert event_ids(results) == [DEVASTATING_STRIKE]
+    assert event_ids(results) == [ENEMY_SUNK, DEVASTATING_STRIKE]
 
 
 def test_object_domain_gap_blocks_retroactive_devastating_strike():
@@ -468,7 +683,7 @@ def test_battle_switch_does_not_replay_existing_damage():
     assert event_ids(results) == []
 
 
-def test_multiple_resolved_victims_choose_devastating_and_consume_the_rest():
+def test_multiple_resolved_victims_keep_the_other_target_strike():
     alive_high = enemy(player_id=3002, max_health=100_000.0, name="High")
     alive_dev = enemy(player_id=3003, max_health=40_000.0, name="Dev")
     sunk_high = enemy(
@@ -483,6 +698,13 @@ def test_multiple_resolved_victims_choose_devastating_and_consume_the_rest():
         max_health=40_000.0,
         name="Dev",
     )
+    death = frame(
+        3,
+        102.0,
+        {3002: 20_000, 3003: 20_000},
+        sunk_high,
+        sunk_dev,
+    )
     results = run_frames(
         frame(1, 100.0, {3002: 0, 3003: 0}, alive_high, alive_dev),
         frame(
@@ -492,13 +714,7 @@ def test_multiple_resolved_victims_choose_devastating_and_consume_the_rest():
             alive_high,
             alive_dev,
         ),
-        frame(
-            3,
-            102.0,
-            {3002: 20_000, 3003: 20_000},
-            sunk_high,
-            sunk_dev,
-        ),
+        death,
         frame(
             4,
             107.0,
@@ -508,8 +724,77 @@ def test_multiple_resolved_victims_choose_devastating_and_consume_the_rest():
         ),
     )
 
-    assert event_ids(results) == [DEVASTATING_STRIKE]
+    assert event_ids(results).count(ENEMY_SUNK) == 2
+    assert DEVASTATING_STRIKE in event_ids(results)
+    assert HIGH_DAMAGE in event_ids(results)
     assert emitted(results, DEVASTATING_STRIKE).detail["target_name"] == "Dev"
+    assert {event.detail["target_id"] for event in events_named(results, ENEMY_SUNK)} == {
+        3002,
+        3003,
+    }
+    assert emitted(results, HIGH_DAMAGE).detail["target_name"] == "High"
+    assert emitted(results, HIGH_DAMAGE).detail["target_id"] == 3002
+    assert emitted(results, HIGH_DAMAGE).detail["target_sunk"] is True
+
+    cfg = WowsConfig()
+    decision = Arbiter(cfg).decide(
+        WowsTacticPolicy(cfg).expand(emitted(results), FactBuilder(cfg).build(death)),
+        death.received_at,
+    )
+    assert tuple(item.event_id for item in decision.candidates) == (
+        DEVASTATING_STRIKE,
+        ENEMY_SUNK,
+        ENEMY_SUNK,
+    )
+
+
+def test_two_same_class_ships_keep_both_progress_events():
+    alive_a = enemy(player_id=3002, max_health=40_000.0, name="Zao")
+    alive_b = enemy(player_id=3003, max_health=100_000.0, name="Zao")
+    sunk_a = enemy(
+        player_id=3002,
+        alive=False,
+        max_health=40_000.0,
+        name="Zao",
+    )
+    sunk_b = enemy(
+        player_id=3003,
+        alive=False,
+        max_health=100_000.0,
+        name="Zao",
+    )
+    death = frame(
+        3,
+        102.0,
+        {3002: 20_000, 3003: 20_000},
+        sunk_a,
+        sunk_b,
+    )
+    results = run_frames(
+        frame(1, 100.0, {3002: 0, 3003: 0}, alive_a, alive_b),
+        frame(2, 101.0, {3002: 20_000, 3003: 20_000}, alive_a, alive_b),
+        death,
+    )
+
+    assert event_ids(results).count(ENEMY_SUNK) == 2
+    assert {event.detail["target_id"] for event in events_named(results, ENEMY_SUNK)} == {
+        3002,
+        3003,
+    }
+    assert emitted(results, DEVASTATING_STRIKE).detail["target_id"] == 3002
+    assert emitted(results, HIGH_DAMAGE).detail["target_id"] == 3003
+    assert emitted(results, HIGH_DAMAGE).detail["target_sunk"] is True
+
+    cfg = WowsConfig()
+    decision = Arbiter(cfg).decide(
+        WowsTacticPolicy(cfg).expand(emitted(results), FactBuilder(cfg).build(death)),
+        death.received_at,
+    )
+    assert tuple(item.event_id for item in decision.candidates) == (
+        DEVASTATING_STRIKE,
+        ENEMY_SUNK,
+        ENEMY_SUNK,
+    )
 
 
 def wire_payload(*, seq: int, damage: float | None, alive: bool) -> dict:
@@ -599,12 +884,22 @@ def test_realistic_nested_8111_payload_reaches_the_arbiter_once():
         previous = current
         decision = arbiter.decide(policy.expand(result.events, current[1]), at)
         if decision.chosen is not None:
-            chosen.append(decision.chosen)
+            chosen.append(decision)
 
-    assert [candidate.event_id for candidate in chosen] == [DEVASTATING_STRIKE]
-    candidate = chosen[0]
+    assert len(chosen) == 1
+    decision = chosen[0]
+    assert tuple(item.event_id for item in decision.candidates) == (
+        DEVASTATING_STRIKE,
+        ENEMY_SUNK,
+    )
+    candidate = decision.chosen
+    assert candidate.event_id == DEVASTATING_STRIKE
     assert candidate.lane == "urgent"
     assert candidate.detail["target_name"] == "Zao"
     assert candidate.detail["window_damage"] == 20_000
+    praise = decision.attached[0]
+    assert praise.event_id == ENEMY_SUNK
+    assert praise.detail["target_name"] == "Zao"
+    assert praise.detail["window_damage"] == 20_000
     assert candidate.detail["damage_ratio"] == pytest.approx(0.5)
     assert candidate.detail["classification"] == "telemetry_estimate"
