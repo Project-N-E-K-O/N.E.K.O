@@ -561,6 +561,8 @@ def test_plugin_stage_filter_matches_the_real_build_rules(tmp_path: Path) -> Non
         "store.db",
         "runtime.log",
         "cached.pyc",
+        "CACHED.PYC",
+        "cached.PYO",
         ".DS_Store",
         "tests/test_runtime.py",
         "tests/nested/deep.json",
@@ -691,3 +693,40 @@ def test_only_packaged_config_and_data_entries_are_scanned(tmp_path: Path) -> No
         f"config/changelog/{CJK_NAME}.md",
         f"data/browser_use_prompts/{CJK_NAME}.md",
     }
+
+
+@pytest.mark.unit
+def test_uppercase_bytecode_suffix_is_still_scanned(tmp_path: Path) -> None:
+    """The build rules compare suffixes case-sensitively, so `.PYC` ships.
+
+    Folding case in the mirrored filter would drop such a file from the scan
+    while staging still installs it — the one drift direction that hides a
+    signing break rather than merely adding noise.
+    """
+    module = _load_script_module()
+    _init_repo(tmp_path)
+    plugin_dir = tmp_path / "plugin" / "plugins" / "demo"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / f"{CJK_NAME}.PYC").write_bytes(b"x")
+    (plugin_dir / f"{CJK_NAME}.pyc").write_bytes(b"x")
+    # .db/.log are stripped case-insensitively after staging, so both go.
+    (plugin_dir / f"{CJK_NAME}.DB").write_bytes(b"x")
+
+    offenders, _ = module.collect_offenders(tmp_path)
+    assert offenders == {f"plugin/plugins/demo/{CJK_NAME}.PYC"}
+
+
+@pytest.mark.unit
+def test_vite_imported_source_assets_are_scanned(tmp_path: Path) -> None:
+    """Imported assets keep their basename in the output; code does not."""
+    module = _load_script_module()
+    _init_repo(tmp_path)
+    assets = tmp_path / "frontend" / "plugin-manager" / "src" / "assets"
+    assets.mkdir(parents=True)
+    (assets / f"{CJK_NAME}.png").write_bytes(b"x")
+    code = tmp_path / "frontend" / "plugin-manager" / "src" / "components"
+    code.mkdir(parents=True)
+    (code / f"{CJK_NAME}.vue").write_bytes(b"x")
+
+    offenders, _ = module.collect_offenders(tmp_path)
+    assert offenders == {f"frontend/plugin-manager/src/assets/{CJK_NAME}.png"}

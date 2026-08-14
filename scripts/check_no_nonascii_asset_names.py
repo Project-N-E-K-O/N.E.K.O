@@ -198,6 +198,15 @@ BUNDLED_ROOTS: tuple[str, ...] = (
     # still lands in the payload.
     "frontend/plugin-manager/public",
     "frontend/react-neko-chat/public",
+    # Imported assets keep their source basename in the output
+    # (`assets/[name]-[hash][extname]`, explicit in react-neko-chat's config and
+    # the Vite default elsewhere), so a non-ASCII name under src/assets/ ships
+    # as `<same-name>-<hash>.png`.
+    # Code modules are not scanned: they are bundled into chunks. A dynamically
+    # imported module can still donate its basename to a chunk name — that
+    # residue is only visible to the post-build --include-untracked sweep.
+    "frontend/plugin-manager/src/assets",
+    "frontend/react-neko-chat/src/assets",
     "plugin/plugins",
     # Voice-turn + speaker models, both --include-data-dir'd. The .onnx weights
     # are downloaded at build time and gitignored, so the git listing cannot see
@@ -281,9 +290,13 @@ _PLUGIN_SKIP_DIR_NAMES = frozenset(
 )
 _PLUGIN_SKIP_ROOT_DIR_NAMES = frozenset({"dist", "build"})
 _PLUGIN_SKIP_FILE_NAMES = frozenset({".DS_Store"})
-# .pyc/.pyo come from the build rules; .db/.log are stripped unconditionally by
-# _remove_private_runtime_artifacts after staging.
-_PLUGIN_SKIP_SUFFIXES = frozenset({".pyc", ".pyo", ".db", ".log"})
+# Two different comparisons upstream, and the difference matters: the build
+# rules test `Path.suffix` case-SENSITIVELY against lowercase .pyc/.pyo, while
+# _remove_private_runtime_artifacts lowercases before testing .db/.log. So a
+# file named `x.PYC` really is staged and shipped — folding case here would
+# drop it from the scan and hide it.
+_PLUGIN_SKIP_SUFFIXES_EXACT = frozenset({".pyc", ".pyo"})
+_PLUGIN_SKIP_SUFFIXES_FOLDED = frozenset({".db", ".log"})
 
 PLUGINS_ROOT = "plugin/plugins"
 
@@ -332,7 +345,9 @@ def _plugin_stage_filter(repo_root: Path):
             return False
         if relative.name in _PLUGIN_SKIP_FILE_NAMES:
             return False
-        if relative.suffix.lower() in _PLUGIN_SKIP_SUFFIXES:
+        if relative.suffix in _PLUGIN_SKIP_SUFFIXES_EXACT:
+            return False
+        if relative.suffix.lower() in _PLUGIN_SKIP_SUFFIXES_FOLDED:
             return False
 
         rules = cache.setdefault(plugin_dir, _plugin_rules(repo_root, plugin_dir))

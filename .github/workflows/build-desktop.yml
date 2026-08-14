@@ -235,6 +235,17 @@ jobs:
           src = Path(sp.__file__).parent
           dst = Path('data/browser_use_prompts')
           dst.mkdir(parents=True, exist_ok=True)
+          bad = [md.name for md in src.glob('*.md') if not md.name.isascii()]
+          if bad:
+              # Non-ASCII basenames under Contents/MacOS/ make codesign emit a
+              # hex-literal identifier and the whole bundle then fails to seal.
+              # scripts/check_no_nonascii_asset_names.py cannot see this one:
+              # data/ is gitignored and the analyze job installs no dependencies,
+              # so the names only exist here, right after generation.
+              raise SystemExit(
+                  'non-ASCII browser_use prompt template name(s), which break '
+                  f'macOS signing: {bad}'
+              )
           for md in src.glob('*.md'):
               shutil.copy2(md, dst / md.name)
               print(f'Copied {md.name}')
