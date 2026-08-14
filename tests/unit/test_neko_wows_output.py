@@ -1137,6 +1137,10 @@ def test_screenshot_nudge_puts_the_event_before_the_minimap():
     assert "先看小地图" not in VISION_LOOK_BEFORE_SPEAK
     assert "主事件" in VISION_LOOK_BEFORE_SPEAK
     assert "不要把小地图解说当成这条要说的话" in VISION_LOOK_BEFORE_SPEAK
+    assert (
+        VISION_LOOK_BEFORE_SPEAK.index("主事件")
+        < VISION_LOOK_BEFORE_SPEAK.index("不要把小地图解说当成这条要说的话")
+    )
 
 
 def test_context_instructions_follow_the_screenshot_switch():
