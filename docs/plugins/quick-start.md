@@ -13,7 +13,19 @@ git --version
 uv --version
 ```
 
-Both commands should print a version. If `uv` is missing, follow the [uv installation guide](https://docs.astral.sh/uv/getting-started/installation/) first.
+These commands do not install anything. They verify that the current terminal can find both required tools before you continue:
+
+| Command | What it verifies |
+| --- | --- |
+| `git --version` | Git is available. You will use it to clone N.E.K.O and later commit and push plugin versions. |
+| `uv --version` | uv is available. You will use it to install the locked Python dependencies and run Plugin CLI. |
+
+Both commands must print a version. If either command is not found, stop here:
+
+- Install Git from the [official Git downloads](https://git-scm.com/downloads).
+- Install uv using the [official uv installation guide](https://docs.astral.sh/uv/getting-started/installation/).
+
+Close and reopen the terminal after installation, then run both checks again. Continue only when both commands print a version.
 
 ## 2. Get the N.E.K.O source
 

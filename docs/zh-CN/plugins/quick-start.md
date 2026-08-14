@@ -13,7 +13,19 @@ git --version
 uv --version
 ```
 
-两条命令都应显示版本号。如果系统找不到 `uv`，请先按照 [uv 安装说明](https://docs.astral.sh/uv/getting-started/installation/)完成安装。
+这两条命令不是安装命令，而是在继续前确认终端确实能找到所需工具：
+
+| 命令 | 确认什么 |
+| --- | --- |
+| `git --version` | Git 可以使用。后面需要用它克隆 N.E.K.O 源码，并为插件提交和推送版本。 |
+| `uv --version` | uv 可以使用。后面需要用它安装锁定的 Python 依赖并启动 Plugin CLI。 |
+
+两条命令都必须显示版本号。如果任何一条提示“找不到命令”或“不是内部或外部命令”，先停止教程：
+
+- 安装 Git：[Git 官方下载](https://git-scm.com/downloads)；
+- 安装 uv：[uv 官方安装说明](https://docs.astral.sh/uv/getting-started/installation/)。
+
+安装完成后关闭并重新打开终端，再次运行这两条命令。只有两条都能显示版本号时才继续下一步。
 
 ## 2. 获取 N.E.K.O 源码
 
