@@ -19,7 +19,6 @@ from ._resolve import parse_github_repository_remote
 
 _MARKET_PLUGIN_ID_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 _MARKET_REPO_PREFIX = "n.e.k.o_plugin_"
-_DEFAULT_NEKO_REPOSITORY = "Project-N-E-K-O/N.E.K.O"
 
 
 def _tri(english: str, chinese: str, japanese: str) -> str:
@@ -91,8 +90,6 @@ def register(subparsers: argparse._SubParsersAction, *, defaults: CliDefaults) -
             "プレビューのみ（書き込みなし）"
         ),
     )
-    setup_parser.add_argument("--neko-repo", default=_DEFAULT_NEKO_REPOSITORY, help="N.E.K.O repository used by generated GitHub Actions")
-    setup_parser.add_argument("--neko-ref", default="main", help="N.E.K.O git ref used by generated GitHub Actions")
     setup_parser.add_argument("--overwrite", action="store_true", help="Overwrite existing support files")
     setup_parser.add_argument("--git", action="store_true", help="Initialize a git repository if this plugin directory is not already inside one")
     setup_parser.add_argument("--remote", help="Add a git remote named origin after --git initialization")
@@ -165,8 +162,6 @@ def handle(args: argparse.Namespace) -> int:
         quick_start=True,
         features=["entry_point"],
         create_github_actions=True,
-        neko_repository=_DEFAULT_NEKO_REPOSITORY,
-        neko_ref="main",
     )
     target_created = False
     try:
@@ -177,7 +172,8 @@ def handle(args: argparse.Namespace) -> int:
             target_dir,
             repo_root=defaults.repo_root,
         )
-        _run_git(["init", "-b", "main"], cwd=target_dir)
+        _run_git(["init"], cwd=target_dir)
+        _run_git(["symbolic-ref", "HEAD", "refs/heads/main"], cwd=target_dir)
         if args.remote:
             _run_git(["remote", "add", "origin", args.remote], cwd=target_dir)
     except Exception as exc:
@@ -263,8 +259,6 @@ def handle_setup_repo(args: argparse.Namespace) -> int:
             create_gitignore=not args.no_gitignore,
             create_vscode=not args.no_vscode,
             create_github_actions=args.github_actions or args.upgrade_github_actions,
-            neko_repository=args.neko_repo,
-            neko_ref=args.neko_ref,
         )
         if args.upgrade_github_actions:
             changes = migrate_github_actions(spec, plugin_dir, dry_run=args.dry_run)

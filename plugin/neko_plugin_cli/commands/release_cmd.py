@@ -58,7 +58,14 @@ def handle_release_check(args: argparse.Namespace) -> int:
         source = load_plugin_source(plugin_dir)
         issues = validate_plugin_dir(plugin_dir, strict=True)
         if getattr(args, "market_release", False):
-            issues.extend(_diagnose_market_release(plugin_dir, plugin_id=source.plugin_id, version=source.version))
+            issues.extend(
+                _diagnose_market_release(
+                    plugin_dir,
+                    plugin_id=source.plugin_id,
+                    version=source.version,
+                    ref_name=getattr(args, "_release_ref_name", None),
+                )
+            )
         errors = [issue for issue in issues if issue[0] == "error"]
         if errors:
             print(f"[FAIL] {source.plugin_id}: {command_label} blocked by validation errors", file=sys.stderr)
@@ -125,7 +132,13 @@ def _diagnose_repository(plugin_dir: Path) -> list[Issue]:
     return issues
 
 
-def _diagnose_market_release(plugin_dir: Path, *, plugin_id: str, version: str) -> list[Issue]:
+def _diagnose_market_release(
+    plugin_dir: Path,
+    *,
+    plugin_id: str,
+    version: str,
+    ref_name: str | None = None,
+) -> list[Issue]:
     issues: list[Issue] = []
     expected_repo = f"{_MARKET_REPO_PREFIX}{plugin_id}"
     github_repository = os.environ.get("GITHUB_REPOSITORY", "").strip()
@@ -180,7 +193,8 @@ def _diagnose_market_release(plugin_dir: Path, *, plugin_id: str, version: str) 
     if repo_name is not None and repo_name.casefold() != expected_repo.casefold():
         issues.append(("error", f"market repository name must be {expected_repo}, got {repo_name}"))
 
-    ref_name = os.environ.get("GITHUB_REF_NAME", "").strip()
+    if ref_name is None:
+        ref_name = os.environ.get("GITHUB_REF_NAME", "").strip()
     if ref_name:
         ref_version = ref_name[1:] if ref_name.startswith(("v", "V")) else ref_name
         if ref_version != version:

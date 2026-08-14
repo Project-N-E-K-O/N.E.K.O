@@ -106,7 +106,7 @@ Unless the storage location or related environment variables have been changed, 
 | --- | --- |
 | Linux | `~/.local/share/N.E.K.O` |
 | macOS | `~/Library/Application Support/N.E.K.O` |
-| Windows | `%LOCALAPPDATA%\\N.E.K.O` |
+| Windows | `%LOCALAPPDATA%\N.E.K.O` |
 
 The root `plugin.toml` is the plugin manifest. `config/plugin.toml` in user data is that user's runtime configuration. On first use, N.E.K.O copies `config.example.toml` to the runtime configuration path; it does not overwrite an existing configuration.
 

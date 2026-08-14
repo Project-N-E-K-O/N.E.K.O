@@ -173,7 +173,7 @@ uv run neko-plugin publish hello_world
 
 正常に完了すると、ターミナルには最初に GitHub Release の準備完了が表示され、その後に対応する Market バージョンの公開完了が表示されます。
 
-`publish` がコードとタグを push するときは、あなたの GitHub 認証情報を使います。Market への通知に Market のパスワードやトークンは必要ありません。Market が受け付けるのは、審査に合格し、登録されたリポジトリと一致し、標準のリリース検証に成功したプラグインだけです。
+`publish` がバージョンタグを push するときは、あなたの GitHub 認証情報を使います。プラグインのコードは push しません。Market への通知に Market のパスワードやトークンは必要ありません。Market が受け付けるのは、審査に合格し、登録されたリポジトリと一致し、標準のリリース検証に成功したプラグインだけです。
 
 ::: warning タグを push しただけでは公開は完了しません
 `release.yml` は GitHub Release を作成しますが、それだけでは Market にバージョンを作成しません。通常は `neko-plugin publish` を Market への公開成功が表示されるまで実行してください。

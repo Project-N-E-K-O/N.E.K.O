@@ -173,7 +173,7 @@ The command completes these steps in order:
 
 When the command succeeds, the terminal first reports that the GitHub Release is ready and then that the corresponding Market version has been published.
 
-`publish` uses your GitHub credentials when it pushes code and tags. You do not enter a Market password or token for the Market notification. The Market accepts only plugins that have passed review, match the registered repository, and pass the standard release verification.
+`publish` uses your GitHub credentials when it pushes the version tag. It does not push your plugin code. You do not enter a Market password or token for the Market notification. The Market accepts only plugins that have passed review, match the registered repository, and pass the standard release verification.
 
 ::: warning Pushing the tag alone does not finish publication
 `release.yml` creates the GitHub Release, but it does not create a Market version by itself. Normally, let `neko-plugin publish` continue until it reports that publication to the Market succeeded.

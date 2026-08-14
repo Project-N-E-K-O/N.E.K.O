@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import math
 import os
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import time
 from urllib.parse import quote
 
@@ -28,6 +30,19 @@ _MARKET_EVIDENCE_NAME = "market-evidence.json"
 
 def _tri(english: str, chinese: str, japanese: str) -> str:
     return f"{english} / {chinese} / {japanese}"
+
+
+def _finite_timeout(value: str) -> float:
+    timeout = float(value)
+    if not math.isfinite(timeout):
+        raise argparse.ArgumentTypeError(
+            _tri(
+                "timeout must be finite",
+                "timeout 必须是有限数值",
+                "timeout には有限の数値を指定してください",
+            )
+        )
+    return timeout
 
 
 def register(
@@ -83,7 +98,7 @@ def register(
     )
     parser.add_argument(
         "--timeout",
-        type=float,
+        type=_finite_timeout,
         default=900.0,
         help=_tri(
             "Seconds to wait for the GitHub Release assets (default: 900)",
@@ -236,34 +251,37 @@ def _publish_github(
     source = load_plugin_source(plugin_dir)
     _ensure_clean_worktree(plugin_dir)
     _ensure_standard_release_workflow(plugin_dir, plugin_id=source.plugin_id)
+    tag = f"v{source.version}"
 
-    check_args = argparse.Namespace(
-        _defaults=defaults,
-        _command_label=_tri(
-            "publish github preflight",
-            "publish github 发布前检查",
-            "publish github 公開前チェック",
-        ),
-        plugin=str(plugin_dir),
-        plugins_root=None,
-        strict=True,
-        skip_tests=False,
-        target_dir=str(defaults.target_dir),
-        market_release=True,
-    )
-    if release_cmd.handle_release_check(check_args) != 0:
-        raise RuntimeError(
-            _tri(
-                "release checks did not pass",
-                "发布检查未通过",
-                "リリースチェックに合格しませんでした",
-            )
+    with tempfile.TemporaryDirectory(prefix="neko-plugin-publish-") as target_dir:
+        check_args = argparse.Namespace(
+            _defaults=defaults,
+            _command_label=_tri(
+                "publish github preflight",
+                "publish github 发布前检查",
+                "publish github 公開前チェック",
+            ),
+            plugin=str(plugin_dir),
+            plugins_root=None,
+            strict=True,
+            skip_tests=False,
+            target_dir=target_dir,
+            market_release=True,
+            _release_ref_name=tag,
         )
+        if release_cmd.handle_release_check(check_args) != 0:
+            raise RuntimeError(
+                _tri(
+                    "release checks did not pass",
+                    "发布检查未通过",
+                    "リリースチェックに合格しませんでした",
+                )
+            )
+    _ensure_clean_worktree(plugin_dir)
 
     repository = _github_repository(plugin_dir)
     head = _git(plugin_dir, "rev-parse", "HEAD")
     _ensure_head_pushed(plugin_dir, head=head)
-    tag = f"v{source.version}"
     _ensure_remote_tag(plugin_dir, tag=tag, head=head)
     return _wait_for_release(
         repository,

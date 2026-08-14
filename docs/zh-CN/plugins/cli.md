@@ -173,7 +173,7 @@ uv run neko-plugin publish hello_world
 
 正常完成时，终端会先显示 GitHub Release 已就绪，再显示 Market 已发布对应版本。
 
-`publish` 推送代码和标签时使用你的 GitHub 凭据；通知 Market 的这一步不需要填写 Market 密码或令牌。Market 只接受已经审核通过、仓库匹配并且标准发布验证成功的插件。
+`publish` 推送版本标签时使用你的 GitHub 凭据，它不会推送插件代码；通知 Market 的这一步不需要填写 Market 密码或令牌。Market 只接受已经审核通过、仓库匹配并且标准发布验证成功的插件。
 
 ::: warning 只推送标签还没有完成发布
 `release.yml` 负责创建 GitHub Release，但它不会自己在 Market 中创建版本。正常情况下应当让 `neko-plugin publish` 完整运行到“Market 发布成功”。

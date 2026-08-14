@@ -106,7 +106,7 @@ N.E.K.O/plugin/plugins/hello_world/       <- 開発者が編集するソース
 | --- | --- |
 | Linux | `~/.local/share/N.E.K.O` |
 | macOS | `~/Library/Application Support/N.E.K.O` |
-| Windows | `%LOCALAPPDATA%\\N.E.K.O` |
+| Windows | `%LOCALAPPDATA%\N.E.K.O` |
 
 ソースルートの `plugin.toml` はプラグイン manifest です。ユーザーデータの `config/plugin.toml` は、そのユーザーが実際に使用する runtime config です。初回に N.E.K.O が `config.example.toml` を runtime config へコピーし、既存の設定は上書きしません。
 

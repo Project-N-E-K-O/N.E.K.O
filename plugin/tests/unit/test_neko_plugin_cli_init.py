@@ -7,6 +7,7 @@ import subprocess
 import pytest
 
 from plugin.neko_plugin_cli import cli as neko_plugin_cli
+from plugin.neko_plugin_cli.commands import init_cmd
 from plugin.neko_plugin_cli.paths import CliDefaults
 
 
@@ -86,6 +87,31 @@ def test_init_creates_complete_plugin_source_by_default(
     assert settings["nekoPlugin.repoRoot"] == "../../.."
     assert check_task["command"] == "uv run neko-plugin check market_demo"
     assert check_task["options"]["cwd"] == "${config:nekoPlugin.repoRoot}"
+
+
+def test_init_supports_git_without_initial_branch_option(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        neko_plugin_cli,
+        "resolve_default_paths",
+        lambda: _source_tree_defaults(tmp_path),
+    )
+    real_run_git = init_cmd._run_git
+
+    def run_as_git_227(command: list[str], *, cwd: Path) -> None:
+        if command[:2] == ["init", "-b"]:
+            raise RuntimeError("error: unknown option `b'")
+        real_run_git(command, cwd=cwd)
+
+    monkeypatch.setattr(init_cmd, "_run_git", run_as_git_227)
+
+    exit_code = neko_plugin_cli.main(["init", "legacy_git"])
+
+    repo = tmp_path / "plugin" / "plugins" / "legacy_git"
+    assert exit_code == 0
+    assert _git(repo, "branch", "--show-current") == "main"
 
 
 def test_init_creates_minimal_callable_plugin_entry(
@@ -359,6 +385,8 @@ def test_market_release_check_rejects_non_github_origin_containing_github_text(
             "--release",
             "--market-release",
             "--skip-tests",
+            "--target-dir",
+            str(tmp_path / "target"),
             str(repo),
         ]
     )
@@ -446,3 +474,17 @@ def test_init_does_not_expose_partial_repository_flags(
         neko_plugin_cli.main(["init", "demo", removed_flag])
 
     assert exc_info.value.code == 2
+
+
+@pytest.mark.parametrize("removed_flag", ["--neko-repo", "--neko-ref"])
+def test_setup_repo_does_not_expose_custom_workflow_source_flags(
+    removed_flag: str,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        neko_plugin_cli.main(
+            ["setup-repo", "missing-plugin", removed_flag, "custom-value"]
+        )
+
+    assert exc_info.value.code == 2
+    assert removed_flag in capsys.readouterr().err
