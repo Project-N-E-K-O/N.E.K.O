@@ -232,6 +232,12 @@ class LifecycleMixin:
             logger.error(f"处理静默超时时出错: {e}")
     
     async def handle_connection_error(self, message=None, *, expected_session=None):
+        message_text = str(message) if message is not None else ""
+        try:
+            _parsed = json.loads(message_text) if message_text.startswith('{') else None
+        except (json.JSONDecodeError, TypeError):
+            _parsed = None
+
         async with self.lock:
             is_pending = False
             if expected_session is not None:
@@ -239,6 +245,24 @@ class LifecycleMixin:
                     is_pending = True
                 elif expected_session is not self.session:
                     logger.info("⏭️ handle_connection_error: expected_session stale (not current session), skipping")
+                    return
+                details = _parsed.get('details') if isinstance(_parsed, dict) else None
+                failure_generation = (
+                    details.get('connection_generation')
+                    if isinstance(details, dict)
+                    else None
+                )
+                current_generation = getattr(
+                    expected_session, '_connection_generation', None
+                )
+                if (
+                    isinstance(failure_generation, int)
+                    and isinstance(current_generation, int)
+                    and failure_generation != current_generation
+                ):
+                    logger.info(
+                        "⏭️ handle_connection_error: connection generation stale, skipping"
+                    )
                     return
             # Only flag the manager-level flag for main session errors (or unguarded calls).
             # A pending_session failure must not misclassify the main session as closed.
@@ -251,17 +275,16 @@ class LifecycleMixin:
             return
         
         if message:
-            message_text = str(message)
             message_text_lower = message_text.lower()
 
             # Pre-classified structured errors from omni_realtime_client (JSON with "code")
             # Forward them directly so the frontend sees the original code.
-            try:
-                _parsed = json.loads(message_text) if message_text.startswith('{') else None
-            except (json.JSONDecodeError, TypeError):
-                _parsed = None
             if _parsed and isinstance(_parsed, dict) and _parsed.get('code'):
-                await self.send_status(message_text)
+                # Peer disconnects use the existing recovery below, which
+                # supplies CHARACTER_DISCONNECTED with the configured name.
+                # Forwarding this marker here would show the same toast twice.
+                if _parsed.get('code') != 'CHARACTER_DISCONNECTED':
+                    await self.send_status(message_text)
             elif '欠费' in message_text_lower or 'standing' in message_text_lower:
                 await self.send_status(json.dumps({"code": "API_ARREARS"}))
             elif 'quota' in message_text_lower or 'time limit' in message_text_lower:
@@ -280,7 +303,7 @@ class LifecycleMixin:
                 await self.send_status(json.dumps({"code": "API_1008_FALLBACK", "details": {"msg": message_text}}))
             else:
                 await self.send_status(json.dumps({"code": "API_UNKNOWN_ERROR", "details": {"msg": message_text}}))
-        logger.info("💥 Session closed by API Server.")
+        logger.info("💥 Realtime connection recovery requested.")
         await self.disconnected_by_server(expected_session=expected_session)
     
     async def handle_repetition_detected(self):

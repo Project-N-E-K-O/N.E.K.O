@@ -178,10 +178,10 @@ class _TransportMixin:
         headers = {
             "Authorization": f"Bearer {self.api_key}"
         }
-        # close_timeout=0.5 缩短 close handshake 的等待上限：默认 10s 会把
-        # end_session 协程挂住数百毫秒~数秒（Qwen 回 CLOSE 帧偶尔很慢），
-        # 超时后 websockets 内部会 transport.abort() 强制关闭。
-        self.ws = await websockets.connect(url, additional_headers=headers, close_timeout=0.5)
+        # Give proxies and cross-region free routes enough time to complete the
+        # close handshake without restoring websockets' 10s default. A peer
+        # that never answers is still force-aborted after this bounded wait.
+        self.ws = await websockets.connect(url, additional_headers=headers, close_timeout=2.0)
         self._on_connection_attached()
         # Do not reopen the arbiter until the replacement transport exists.
         # A failed reconnect must leave the prior shutdown state intact.
@@ -1682,11 +1682,13 @@ class _TransportMixin:
             return
 
         try:
-            if not self.ws:
+            message_ws = self.ws
+            message_generation = self._connection_generation
+            if not message_ws:
                 logger.error("WebSocket connection is not established")
                 return
 
-            async for message in self.ws:
+            async for message in message_ws:
                 event = json.loads(message)
                 event_type = event.get("type")
 
@@ -2122,26 +2124,51 @@ class _TransportMixin:
                                 self._skip_until_next_response, self._interrupted, self._current_response_id
                             )
 
-            await self._close_failed_transport("realtime message stream ended")
         except websockets.exceptions.ConnectionClosedOK:
-            await self._close_failed_transport("realtime connection closed")
-            logger.info("Connection closed as expected")
+            recovered = await self._recover_receive_loop_disconnect(
+                message_ws,
+                message_generation,
+                "realtime connection closed",
+                status_code="CHARACTER_DISCONNECTED",
+            )
+            if recovered:
+                logger.info("Realtime connection was closed by the peer")
         except websockets.exceptions.ConnectionClosedError as e:
-            error_msg = str(e)
-            await self._close_failed_transport(error_msg)
-            logger.error(f"Connection closed with error: {error_msg}")
-            if self.on_connection_error:
-                await self.on_connection_error(error_msg)
+            received_code = getattr(getattr(e, "rcvd", None), "code", None)
+            sent_code = getattr(getattr(e, "sent", None), "code", None)
+            recovered = await self._recover_receive_loop_disconnect(
+                message_ws,
+                message_generation,
+                "realtime connection closed unexpectedly",
+                status_code="CHARACTER_DISCONNECTED",
+            )
+            if recovered:
+                logger.warning(
+                    "Realtime connection closed unexpectedly "
+                    "(received_code=%s sent_code=%s)",
+                    received_code,
+                    sent_code,
+                )
         except asyncio.TimeoutError:
-            await self._close_failed_transport("realtime connection timeout")
-            if self.on_connection_error:
-                await self.on_connection_error(json.dumps({"code": "CONNECTION_TIMEOUT"}))
+            await self._recover_receive_loop_disconnect(
+                message_ws,
+                message_generation,
+                "realtime connection timeout",
+                status_code="CONNECTION_TIMEOUT",
+            )
         except Exception as e:
             await self._close_failed_transport(
                 f"realtime message handling failed: {type(e).__name__}"
             )
             logger.error(f"Error in message handling: {str(e)}")
             raise
+        else:
+            await self._recover_receive_loop_disconnect(
+                message_ws,
+                message_generation,
+                "realtime message stream ended",
+                status_code="CHARACTER_DISCONNECTED",
+            )
 
     def _on_connection_attached(self) -> None:
         """Mark a replacement connection as live and hand it the teardown latches.
@@ -2184,6 +2211,65 @@ class _TransportMixin:
         """
 
         return self._connection_generation == generation
+
+    async def _recover_receive_loop_disconnect(
+        self,
+        message_ws,
+        generation,
+        reason: str,
+        *,
+        status_code: str,
+    ) -> bool:
+        """Retire a peer-failed connection and request the existing recovery.
+
+        ``close()`` detaches its socket synchronously before awaiting the close
+        handshake. Therefore an ending receive loop still owns ``self.ws`` only
+        when the peer (or the network) ended the live connection first. An old
+        loop ending after a manager close or replacement attach must be silent:
+        reporting it as a fresh provider failure would tear down the successor.
+        """
+
+        if not self._still_owns_connection(generation) or self.ws is not message_ws:
+            logger.info(
+                "Realtime receive loop ended after its transport was already "
+                "closed or replaced; no connection error will be reported"
+            )
+            return False
+
+        await self._close_failed_transport(reason)
+        if not self._still_owns_connection(generation):
+            return False
+        self._schedule_connection_error(status_code, generation)
+        return True
+
+    def _schedule_connection_error(self, status_code: str, generation) -> None:
+        """Run manager recovery outside the receive loop that it must cancel."""
+
+        callback = self.on_connection_error
+        if callback is None:
+            return
+
+        async def _notify() -> None:
+            if not self._still_owns_connection(generation):
+                return
+            try:
+                await callback(
+                    json.dumps(
+                        {
+                            "code": status_code,
+                            "details": {"connection_generation": generation},
+                        }
+                    )
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.error(
+                    "Realtime connection recovery callback failed: %s",
+                    type(exc).__name__,
+                )
+
+        self._fire_task(_notify())
 
     async def _own_teardown(self, slot: str, detach):
         """Await a teardown that this client owns, not the caller.
@@ -2397,9 +2483,9 @@ class _TransportMixin:
             return
         if ws:
             try:
-                # 连接时已设 close_timeout=0.5s：远端超时未回 CLOSE 帧时，
+                # 连接时已设 close_timeout=2s：远端超时未回 CLOSE 帧时，
                 # websockets 内部会自行 abort transport 强制关闭，
-                # 保证 end_session 快速返回、主事件循环心跳不受影响。
+                # 在兼容慢代理的同时保持清理等待有界。
                 await ws.close()
             except Exception as e:
                 logger.error(f"Error closing websocket: {e}")
