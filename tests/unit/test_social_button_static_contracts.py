@@ -13,6 +13,7 @@ APP_UI_PATH = PROJECT_ROOT / "static" / "app" / "app-ui"
 APP_SETTINGS_PATH = PROJECT_ROOT / "static" / "app" / "app-settings.js"
 AVATAR_UI_POPUP_PATH = PROJECT_ROOT / "static" / "avatar" / "avatar-ui-popup.js"
 FORGE_DROP_OVERLAY_PATH = PROJECT_ROOT / "static" / "forge-drop-overlay.js"
+APP_SOCIAL_UI_PATH = PROJECT_ROOT / "static" / "app-social-ui.js"
 FORGE_AVATAR_REACTION_PATH = PROJECT_ROOT / "static" / "forge-avatar-reaction.js"
 FORGE_DROP_TOKENS_PATH = PROJECT_ROOT / "static" / "forge-drop-tokens.js"
 FORGE_SOUND_DIR = PROJECT_ROOT / "static" / "sounds" / "forge"
@@ -469,9 +470,26 @@ def test_credit_badge_uses_only_pc_pushed_cloud_state():
     assert "window.addEventListener('neko-forge-credit-state'" in source
     assert "scheduleExpiryClear(detail.next_expires_at);" in source
     assert "neko-forge-credit-state-refresh" in source
+    assert "function requestCreditStateRefresh()" in source
+    refresh = _extract_js_function(source, "function requestCreditStateRefresh()")
+    assert "neko-forge-credit-state-refresh" in refresh
+    assert "replaySnapshots" not in refresh
     assert "renderForgeBadge(0, false);" not in source
     assert "neko-forge-credit-animation-complete" in source
     assert "earliest - now + 1000" in source
+
+
+@pytest.mark.unit
+def test_credit_badge_social_bridge_forwards_pc_credit_state():
+    source = APP_SOCIAL_UI_PATH.read_text(encoding="utf-8")
+
+    assert "window.nekoSocial.onForgeCreditChanged" in source
+    assert "new window.CustomEvent('neko-forge-credit-state'" in source
+    assert "detail: data || {}" in source
+    # Refresh is owned by PC CREDIT_STATE_REFRESH. Replaying cached snapshots
+    # here would hide expiry and keep the old next_expires_at timer.
+    assert "replaySnapshots" not in source
+    assert "neko-forge-credit-state-refresh" not in source
 
 
 @pytest.mark.unit

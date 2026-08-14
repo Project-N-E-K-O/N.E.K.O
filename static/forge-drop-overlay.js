@@ -247,6 +247,8 @@
     try {
       var cs = window.getComputedStyle(btn);
       if (cs && cs.position === 'static') btn.style.position = 'relative';
+      btn.style.overflow = 'visible';
+      if (btn.parentElement) btn.parentElement.style.overflow = 'visible';
     } catch (_) {}
     var badge = btn.querySelector('.neko-social-forge-badge');
     if (!badge) {
@@ -657,9 +659,7 @@
       creditStateRevision += 1;
       // 到期只说明最早的一张券失效，不能据此推断全部券都已清空。
       // 请求 Electron 主进程重新读取云端权威状态；本体不访问本地券账本。
-      try {
-        window.dispatchEvent(new window.CustomEvent('neko-forge-credit-state-refresh'));
-      } catch (_) {}
+      requestCreditStateRefresh();
     }, delay);
   }
 
@@ -675,6 +675,14 @@
     }
     // 关闭效果时仍经 playOne 的 disabled 分支，以便立即派发动画完成 ACK。
     play(queuedDetail);
+  }
+
+  function requestCreditStateRefresh() {
+    // 到期 / 晚挂载必须走 PC 的云端权威刷新（CREDIT_STATE_REFRESH）。
+    // 不要回放 SSE 缓存快照：那只会重播过期的 lastForgeCredit。
+    try {
+      window.dispatchEvent(new window.CustomEvent('neko-forge-credit-state-refresh'));
+    } catch (_) {}
   }
 
   function onCreditStateEvent(event) {
@@ -717,6 +725,7 @@
     window.addEventListener('neko-forge-credit-drop', onCreditDropEvent);
     window.addEventListener('neko-forge-credit-state', onCreditStateEvent);
     window.addEventListener('neko-forge-drop-effects-changed', onDropEffectsChanged);
+    requestCreditStateRefresh();
     // 按钮可见时持续刷新缓存位置，隐藏后飞出仍能对准
     try {
       setInterval(function () { readVisibleSocialCenter(); }, 1000);
@@ -726,6 +735,7 @@
       window.addEventListener('live2d-floating-buttons-ready', function () {
         setTimeout(readVisibleSocialCenter, 50);
         setTimeout(readVisibleSocialCenter, 500);
+        setTimeout(requestCreditStateRefresh, 80);
       });
     } catch (_) {}
     setTimeout(readVisibleSocialCenter, 300);
