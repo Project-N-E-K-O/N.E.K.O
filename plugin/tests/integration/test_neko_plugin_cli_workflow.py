@@ -229,7 +229,6 @@ def test_cli_workflow_rejects_repeated_executable_install_without_renaming(tmp_p
 
     package_path = target_dir / "simple_plugin.neko-plugin"
     assert package_path.is_file()
-    assert neko_plugin_cli.main(["verify", str(package_path)]) == 0
 
     assert (
         neko_plugin_cli.main(

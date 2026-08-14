@@ -68,7 +68,10 @@ def _tamper_package(package_path: Path, target_name: str) -> None:
             dst.writestr(info, data)
 
 
-def test_cli_build_inspect_verify_and_install(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_cli_build_and_install_preserve_payload_verification(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     plugin_dir = _make_plugin_dir(tmp_path)
     target_dir = tmp_path / "target"
     plugins_root = tmp_path / "plugins"
@@ -80,12 +83,6 @@ def test_cli_build_inspect_verify_and_install(tmp_path: Path, capsys: pytest.Cap
     assert exit_code == 0
     package_path = target_dir / "cli_demo.neko-plugin"
     assert package_path.is_file()
-
-    inspect_exit = neko_plugin_cli.main(["inspect", str(package_path)])
-    assert inspect_exit == 0
-
-    verify_exit = neko_plugin_cli.main(["verify", str(package_path)])
-    assert verify_exit == 0
 
     install_exit = neko_plugin_cli.main(
         [
@@ -131,7 +128,7 @@ def test_cli_build_profile_prefers_config_example_over_legacy_manifest_config(tm
     assert 'token = "demo"' not in profile
 
 
-def test_cli_verify_fails_when_package_hash_is_tampered(
+def test_cli_install_rejects_tampered_package_hash(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -140,14 +137,26 @@ def test_cli_verify_fails_when_package_hash_is_tampered(
     neko_plugin_cli.main(["build", str(plugin_dir), "-o", str(package_path)])
     _tamper_package(package_path, "payload/profiles/default.toml")
 
-    exit_code = neko_plugin_cli.main(["verify", str(package_path)])
+    exit_code = neko_plugin_cli.main(
+        [
+            "install",
+            str(package_path),
+            "--plugins-root",
+            str(tmp_path / "plugins"),
+            "--profiles-root",
+            str(tmp_path / "profiles"),
+        ]
+    )
 
     assert exit_code == 1
     captured = capsys.readouterr()
-    assert "payload_hash_verified=False" in captured.out
+    assert "payload hash mismatch" in captured.err
 
 
-def test_cli_build_bundle_and_inspect(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_cli_build_bundle_reports_package_shape(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     first_plugin = _make_plugin_dir(tmp_path, plugin_id="bundle_cli_one")
     second_plugin = _make_plugin_dir(tmp_path, plugin_id="bundle_cli_two")
     target_dir = tmp_path / "target"
@@ -169,13 +178,9 @@ def test_cli_build_bundle_and_inspect(tmp_path: Path, capsys: pytest.CaptureFixt
     package_path = target_dir / "bundle_cli_demo.neko-bundle"
     assert package_path.is_file()
 
-    inspect_exit = neko_plugin_cli.main(["inspect", str(package_path)])
-    assert inspect_exit == 0
-
     captured = capsys.readouterr()
     assert "package_type=bundle" in captured.out
     assert "plugin_count=2" in captured.out
-    assert "type=bundle" in captured.out
 
 
 def test_cli_build_multiple_plugins_without_bundle_builds_individual_packages(
@@ -234,17 +239,42 @@ def test_cli_check_release_uses_release_check_flow(
     assert "check --release blocked by validation errors" in captured.err
 
 
-@pytest.mark.parametrize("legacy_command", ["doctor", "release-check", "validate", "pack", "unpack"])
-def test_cli_legacy_commands_are_removed(
-    legacy_command: str,
+@pytest.mark.parametrize(
+    "removed_command",
+    [
+        "add",
+        "doctor",
+        "inspect",
+        "pack",
+        "release-check",
+        "unpack",
+        "validate",
+        "verify",
+    ],
+)
+def test_cli_removed_commands_are_rejected(
+    removed_command: str,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     with pytest.raises(SystemExit) as exc_info:
-        neko_plugin_cli.main([legacy_command, "cli_demo"])
+        neko_plugin_cli.main([removed_command, "cli_demo"])
 
     assert exc_info.value.code == 2
     captured = capsys.readouterr()
-    assert f"invalid choice: '{legacy_command}'" in captured.err
+    assert f"invalid choice: '{removed_command}'" in captured.err
+
+
+def test_cli_help_only_lists_supported_package_commands(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert neko_plugin_cli.main([]) == 1
+
+    help_text = capsys.readouterr().out
+    assert "neko-plugin sync <plugin>" in help_text
+    assert "neko-plugin check -r <plugin>" in help_text
+    assert "neko-plugin add " not in help_text
+    assert "inspect" not in help_text
+    assert "verify" not in help_text
 
 
 def test_validate_plugin_dir_reports_invalid_toml_without_crashing(tmp_path: Path) -> None:

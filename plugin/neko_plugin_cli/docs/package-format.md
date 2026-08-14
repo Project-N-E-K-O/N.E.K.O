@@ -35,11 +35,8 @@ Current commands:
 - `init`
 - `setup-repo`
 - `check` (use `check -r` / `check --release` for the pre-release readiness check, `check --release --market-release` for the Market-publication variant)
-- `add` (deps): install Python dependencies into a plugin's `vendor/` and update its `pyproject.toml`
 - `sync` (deps): reinstall all declared dependencies into `vendor/` from `pyproject.toml`
 - `build`
-- `inspect`
-- `verify`
 - `install`
 - `analyze`
 - `publish`
@@ -50,11 +47,8 @@ Examples:
 uv run python -m plugin.neko_plugin_cli.cli check qq_auto_reply
 uv run python -m plugin.neko_plugin_cli.cli check -r qq_auto_reply
 uv run python -m plugin.neko_plugin_cli.cli check --release --market-release qq_auto_reply
-uv run python -m plugin.neko_plugin_cli.cli add qq_auto_reply 'httpx>=0.27' pydantic
 uv run python -m plugin.neko_plugin_cli.cli sync qq_auto_reply --clean
 uv run python -m plugin.neko_plugin_cli.cli build qq_auto_reply
-uv run python -m plugin.neko_plugin_cli.cli inspect qq_auto_reply.neko-plugin
-uv run python -m plugin.neko_plugin_cli.cli verify qq_auto_reply.neko-plugin
 uv run python -m plugin.neko_plugin_cli.cli install qq_auto_reply.neko-plugin
 uv run python -m plugin.neko_plugin_cli.cli analyze qq_auto_reply mijia
 ```

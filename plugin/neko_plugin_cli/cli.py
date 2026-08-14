@@ -31,11 +31,9 @@ if __package__ in {None, ""}:  # pragma: no cover - exercised by script invocati
         check_cmd,
         deps_cmd,
         init_cmd,
-        inspect_cmd,
         build_cmd,
         install_cmd,
         publish_cmd,
-        verify_cmd,
     )
     from plugin.neko_plugin_cli.paths import resolve_default_paths  # noqa: E402
 else:
@@ -44,11 +42,9 @@ else:
         check_cmd,
         deps_cmd,
         init_cmd,
-        inspect_cmd,
         build_cmd,
         install_cmd,
         publish_cmd,
-        verify_cmd,
     )
     from .paths import resolve_default_paths
 
@@ -75,7 +71,6 @@ def build_parser() -> argparse.ArgumentParser:
             Recommended workflow:
               neko-plugin init <plugin>            Create a Market-ready plugin repo / 创建 Market 插件仓库 / Market プラグインリポジトリを作成
               neko-plugin setup-repo <plugin>      Adopt an existing plugin directory
-              neko-plugin add <plugin> <pkg>...    Add Python dependencies to vendor/
               neko-plugin sync <plugin>            Sync vendor/ from pyproject.toml
               neko-plugin check <plugin>           Diagnose local repo readiness
               neko-plugin build <plugin>           Build a plugin package artifact
@@ -83,7 +78,7 @@ def build_parser() -> argparse.ArgumentParser:
               neko-plugin publish <plugin>         Publish on GitHub, then notify Market / 发布并通知 Market / 公開後 Market に通知
 
             Package/debug commands:
-              build, inspect, verify, install, analyze
+              build, install, analyze
             """
         ),
     )
@@ -101,8 +96,6 @@ def build_parser() -> argparse.ArgumentParser:
     check_cmd.register(subparsers, defaults=defaults)
     deps_cmd.register(subparsers, defaults=defaults)
     build_cmd.register(subparsers, defaults=defaults)
-    inspect_cmd.register(subparsers, defaults=defaults)
-    verify_cmd.register(subparsers, defaults=defaults)
     install_cmd.register(subparsers, defaults=defaults)
     analyze_cmd.register(subparsers, defaults=defaults)
     publish_cmd.register(subparsers, defaults=defaults)

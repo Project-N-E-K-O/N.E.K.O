@@ -45,15 +45,14 @@ Public command modules include:
 
 - `init_cmd.py`
 - `check_cmd.py`
-- `verify_cmd.py`
-- `inspect_cmd.py`
 - `analyze_cmd.py`
 - `deps_cmd.py`
 - `build_cmd.py`
 - `install_cmd.py`
 - `publish_cmd.py`
 
-Registered command families include `init`, `setup-repo`, `check`, `add`, `sync`, `build`, `inspect`, `verify`, `install`, `analyze`, and `publish`.
+Registered command families include `init`, `setup-repo`, `check`, `sync`,
+`build`, `install`, `analyze`, and `publish`.
 
 Internal implementation helpers include `release_cmd.py` and `validate_cmd.py`. They are imported by public commands such as `check` and `publish`, but they are not registered as direct CLI command families.
 
