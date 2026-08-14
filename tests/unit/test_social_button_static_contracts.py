@@ -469,6 +469,8 @@ def test_credit_badge_uses_only_pc_pushed_cloud_state():
     assert "window.addEventListener('neko-forge-credit-state'" in source
     assert "scheduleExpiryClear(detail.next_expires_at);" in source
     assert "neko-forge-credit-state-refresh" in source
+    assert "function requestCreditStateRefresh()" in source
+    assert "window.nekoSocial.replaySnapshots" in source
     assert "renderForgeBadge(0, false);" not in source
     assert "neko-forge-credit-animation-complete" in source
     assert "earliest - now + 1000" in source
