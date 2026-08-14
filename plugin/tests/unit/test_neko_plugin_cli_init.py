@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import subprocess
 
 import pytest
 
 from plugin.neko_plugin_cli import cli as neko_plugin_cli
+from plugin.neko_plugin_cli.paths import CliDefaults
 
 
 pytestmark = pytest.mark.plugin_unit
@@ -23,15 +25,29 @@ def _git(repo: Path, *args: str) -> str:
     return completed.stdout.strip()
 
 
-def test_init_creates_complete_market_repository_by_default(
+def _source_tree_defaults(tmp_path: Path) -> CliDefaults:
+    plugin_root = tmp_path / "plugin"
+    return CliDefaults(
+        plugin_root=plugin_root,
+        target_dir=plugin_root / "neko_plugin_cli" / "target",
+        plugins_root=plugin_root / "plugins",
+        profiles_root=plugin_root / ".neko-package-profiles",
+    )
+
+
+def test_init_creates_complete_plugin_source_by_default(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        neko_plugin_cli,
+        "resolve_default_paths",
+        lambda: _source_tree_defaults(tmp_path),
+    )
 
     exit_code = neko_plugin_cli.main(["init", "market_demo"])
 
-    repo = tmp_path / "n.e.k.o_plugin_market_demo"
+    repo = tmp_path / "plugin" / "plugins" / "market_demo"
     assert exit_code == 0
     assert {
         "plugin.toml",
@@ -58,17 +74,33 @@ def test_init_creates_complete_market_repository_by_default(
     assert "plugin-market-release.yml@main" in (
         repo / ".github/workflows/release.yml"
     ).read_text(encoding="utf-8")
+    settings = json.loads(
+        (repo / ".vscode/settings.json").read_text(encoding="utf-8")
+    )
+    tasks = json.loads(
+        (repo / ".vscode/tasks.json").read_text(encoding="utf-8")
+    )["tasks"]
+    check_task = next(
+        task for task in tasks if task["label"] == "N.E.K.O: check market_demo"
+    )
+    assert settings["nekoPlugin.repoRoot"] == "../../.."
+    assert check_task["command"] == "uv run neko-plugin check market_demo"
+    assert check_task["options"]["cwd"] == "${config:nekoPlugin.repoRoot}"
 
 
 def test_init_creates_minimal_callable_plugin_entry(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        neko_plugin_cli,
+        "resolve_default_paths",
+        lambda: _source_tree_defaults(tmp_path),
+    )
 
     exit_code = neko_plugin_cli.main(["init", "hello_world", "--name", "Hello World"])
 
-    entry = tmp_path / "n.e.k.o_plugin_hello_world" / "__init__.py"
+    entry = tmp_path / "plugin" / "plugins" / "hello_world" / "__init__.py"
     assert exit_code == 0
     assert entry.read_text(encoding="utf-8") == '''from plugin.sdk.plugin import NekoPluginBase, Ok, neko_plugin, plugin_entry
 
@@ -116,7 +148,7 @@ def test_init_repo_command_is_removed(capsys: pytest.CaptureFixture[str]) -> Non
     assert "invalid choice: 'init-repo'" in capsys.readouterr().err
 
 
-def test_init_uses_exact_custom_output_and_standalone_commands(
+def test_init_uses_exact_custom_output_and_custom_directory_commands(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -130,15 +162,12 @@ def test_init_uses_exact_custom_output_and_standalone_commands(
     assert output.is_dir()
     assert not (tmp_path / "n.e.k.o_plugin_custom_output").exists()
     readme = (output / "README.md").read_text(encoding="utf-8")
+    assert "uv run --project" in readme
     assert "neko-plugin sync . --clean" in readme
     assert "neko-plugin check ." in readme
     assert "neko-plugin check -r ." in readme
-    assert "From the N.E.K.O repository root" not in readme
-    settings = (output / ".vscode/settings.json").read_text(encoding="utf-8")
-    tasks = (output / ".vscode/tasks.json").read_text(encoding="utf-8")
-    assert '"nekoPlugin.repoRoot"' not in settings
-    assert '"cwd": "${workspaceFolder}"' in tasks
-    assert "neko-plugin check ." in tasks
+    assert "From this plugin repository root" in readme
+    assert "N.E.K.O/plugin/plugins/custom_output" not in readme
     assert neko_plugin_cli.main(["check", str(output)]) == 0
     assert "does not match directory name" not in capsys.readouterr().out
 

@@ -22,6 +22,8 @@ from ._resolve import parse_github_repository_remote, resolve_plugin_dir_candida
 _MARKET_PUBLICATION_URL = (
     "https://market.project-neko.cn/api/v1/release-publications"
 )
+_RELEASE_CHECK_SUFFIX = ".market-release-check.txt"
+_MARKET_EVIDENCE_NAME = "market-evidence.json"
 
 
 def _tri(english: str, chinese: str, japanese: str) -> str:
@@ -84,9 +86,9 @@ def register(
         type=float,
         default=900.0,
         help=_tri(
-            "Seconds to wait for the GitHub Release (default: 900)",
-            "等待 GitHub Release 的秒数（默认：900）",
-            "GitHub Release を待つ秒数（既定値：900）",
+            "Seconds to wait for the GitHub Release assets (default: 900)",
+            "等待 GitHub Release 资产上传完成的秒数（默认：900）",
+            "GitHub Release アセットのアップロード完了を待つ秒数（既定値：900）",
         ),
     )
     parser.set_defaults(handler=handle, _defaults=defaults)
@@ -263,7 +265,12 @@ def _publish_github(
     _ensure_head_pushed(plugin_dir, head=head)
     tag = f"v{source.version}"
     _ensure_remote_tag(plugin_dir, tag=tag, head=head)
-    return _wait_for_release(repository, tag=tag, timeout=timeout)
+    return _wait_for_release(
+        repository,
+        plugin_id=source.plugin_id,
+        tag=tag,
+        timeout=timeout,
+    )
 
 
 def _ensure_standard_release_workflow(
@@ -298,9 +305,9 @@ def _ensure_clean_worktree(plugin_dir: Path) -> None:
     if not (plugin_dir / ".git").exists():
         raise RuntimeError(
             _tri(
-                "plugin directory is not a standalone git repository",
-                "插件目录不是独立 Git 仓库",
-                "プラグインディレクトリは独立した Git リポジトリではありません",
+                "plugin source directory does not have its own git repository",
+                "插件源码目录没有自己的 Git 仓库",
+                "プラグインのソースディレクトリに専用 Git リポジトリがありません",
             )
         )
     if _git(plugin_dir, "status", "--porcelain"):
@@ -429,7 +436,13 @@ def _local_tag_commit(plugin_dir: Path, tag: str) -> str | None:
     return completed.stdout.strip()
 
 
-def _wait_for_release(repository: str, *, tag: str, timeout: float) -> str:
+def _wait_for_release(
+    repository: str,
+    *,
+    plugin_id: str,
+    tag: str,
+    timeout: float,
+) -> str:
     api_url = (
         f"https://api.github.com/repos/{repository}/releases/tags/"
         f"{quote(tag, safe='')}"
@@ -444,11 +457,26 @@ def _wait_for_release(repository: str, *, tag: str, timeout: float) -> str:
         headers["Authorization"] = f"Bearer {token}"
 
     deadline = time.monotonic() + max(timeout, 0)
+    expected_assets = (
+        f"{plugin_id}.neko-plugin",
+        f"{plugin_id}{_RELEASE_CHECK_SUFFIX}",
+        _MARKET_EVIDENCE_NAME,
+    )
+    unready_assets = list(expected_assets)
     with httpx.Client(timeout=30.0) as client:
         while True:
             response = client.get(api_url, headers=headers)
             if response.status_code == 200:
-                release_url = str(response.json().get("html_url") or "")
+                payload = response.json()
+                if not isinstance(payload, dict):
+                    raise RuntimeError(
+                        _tri(
+                            "GitHub Release response is not an object",
+                            "GitHub Release 响应不是对象",
+                            "GitHub Release レスポンスがオブジェクトではありません",
+                        )
+                    )
+                release_url = str(payload.get("html_url") or "")
                 if not release_url:
                     raise RuntimeError(
                         _tri(
@@ -457,16 +485,43 @@ def _wait_for_release(repository: str, *, tag: str, timeout: float) -> str:
                             "GitHub Release レスポンスに html_url がありません",
                         )
                     )
-                return release_url
-            if response.status_code != 404:
-                raise RuntimeError(
-                    _tri(
-                        f"GitHub Release lookup returned HTTP {response.status_code}",
-                        f"查询 GitHub Release 返回 HTTP {response.status_code}",
-                        f"GitHub Release の照会が HTTP {response.status_code} を返しました",
-                    )
+                assets = payload.get("assets")
+                assets_by_name = (
+                    {
+                        asset.get("name"): asset
+                        for asset in assets
+                        if isinstance(asset, dict)
+                        and isinstance(asset.get("name"), str)
+                    }
+                    if isinstance(assets, list)
+                    else {}
                 )
+                unready_assets = [
+                    name
+                    for name in expected_assets
+                    if not _release_asset_is_downloadable(assets_by_name.get(name))
+                ]
+                if not unready_assets:
+                    return release_url
+            if response.status_code != 404:
+                if response.status_code != 200:
+                    raise RuntimeError(
+                        _tri(
+                            f"GitHub Release lookup returned HTTP {response.status_code}",
+                            f"查询 GitHub Release 返回 HTTP {response.status_code}",
+                            f"GitHub Release の照会が HTTP {response.status_code} を返しました",
+                        )
+                    )
             if time.monotonic() >= deadline:
+                if response.status_code == 200:
+                    missing = ", ".join(unready_assets)
+                    raise RuntimeError(
+                        _tri(
+                            f"timed out waiting for GitHub Release assets: {missing}; check GitHub Actions",
+                            f"等待 GitHub Release 资产上传完成超时：{missing}；请检查 GitHub Actions",
+                            f"GitHub Release アセットの待機がタイムアウトしました：{missing}。GitHub Actions を確認してください",
+                        )
+                    )
                 raise RuntimeError(
                     _tri(
                         f"timed out waiting for GitHub Release {tag}; check GitHub Actions",
@@ -475,6 +530,22 @@ def _wait_for_release(repository: str, *, tag: str, timeout: float) -> str:
                     )
                 )
             time.sleep(min(5.0, max(deadline - time.monotonic(), 0)))
+
+
+def _release_asset_is_downloadable(asset: object) -> bool:
+    if not isinstance(asset, dict):
+        return False
+    size = asset.get("size")
+    state = asset.get("state")
+    download_url = asset.get("browser_download_url")
+    return (
+        state == "uploaded"
+        and isinstance(size, int)
+        and not isinstance(size, bool)
+        and size > 0
+        and isinstance(download_url, str)
+        and bool(download_url.strip())
+    )
 
 
 def _git(plugin_dir: Path, *args: str) -> str:

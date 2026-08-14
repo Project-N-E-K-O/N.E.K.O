@@ -610,6 +610,7 @@ def test_generator_rejects_removed_or_deprecated_scaffold_types(
                 plugin_type=unsupported_scaffold_type,
             ),
             target_dir,
+            repo_root=tmp_path,
         )
 
     message = str(exc_info.value)
@@ -914,7 +915,7 @@ def test_setup_repo_github_actions_preserves_files_unless_overwrite(
     assert "plugin-market-verify.yml" in verify_workflow.read_text(encoding="utf-8")
 
 
-def test_setup_repo_preserves_existing_in_tree_support_templates(
+def test_setup_repo_generates_support_templates_for_explicit_plugin_path(
     tmp_path: Path,
 ) -> None:
     plugin_dir = _make_plugin_dir(tmp_path / "repo", "setup_layout")
@@ -926,12 +927,13 @@ def test_setup_repo_preserves_existing_in_tree_support_templates(
         encoding="utf-8"
     )
     tasks = (plugin_dir / ".vscode" / "tasks.json").read_text(encoding="utf-8")
-    assert "From the N.E.K.O repository root" in readme
-    assert "plugin.neko_plugin_cli.cli check setup_layout" in readme
-    assert "neko-plugin publish setup_layout" in readme
-    assert "neko-plugin publish ." not in readme
-    assert '"nekoPlugin.repoRoot": "../../.."' in settings
+    assert "From this plugin repository root" in readme
+    assert "uv run --project" in readme
+    assert "neko-plugin check ." in readme
+    assert "neko-plugin publish ." in readme
+    assert '"nekoPlugin.repoRoot":' in settings
     assert '"cwd": "${config:nekoPlugin.repoRoot}"' in tasks
+    assert "${workspaceFolder}" in tasks
 
 
 def test_setup_repo_upgrade_github_actions_adds_only_managed_action_files(
@@ -1202,6 +1204,7 @@ def test_advanced_scaffold_with_github_actions_uses_ruff_clean_imports(
             create_github_actions=True,
         ),
         target_dir,
+        repo_root=tmp_path,
     )
 
     plugin_source = (target_dir / "__init__.py").read_text(encoding="utf-8")
@@ -1251,7 +1254,7 @@ def test_init_documents_and_exposes_dependency_sync(tmp_path: Path) -> None:
     ) in readme
     assert "Use that GitHub Release URL when publishing" not in readme
     assert "N.E.K.O: sync dependency_demo" in tasks
-    assert sync_command in tasks
+    assert 'neko-plugin sync \\"${workspaceFolder}\\" --clean' in tasks
 
 
 def test_sync_without_pyproject_is_successful_noop(

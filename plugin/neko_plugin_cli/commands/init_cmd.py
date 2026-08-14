@@ -1,4 +1,4 @@
-"""Create complete, Market-ready standalone plugin repositories."""
+"""Create complete, Market-ready plugin source directories."""
 
 from __future__ import annotations
 
@@ -30,9 +30,9 @@ def register(subparsers: argparse._SubParsersAction, *, defaults: CliDefaults) -
     parser = subparsers.add_parser(
         "init",
         help=_tri(
-            "Create a complete standalone plugin repository for Market",
-            "创建完整的 Market 独立插件仓库",
-            "Market 向けの完全な独立プラグインリポジトリを作成",
+            "Create a Market-ready plugin in the N.E.K.O source tree",
+            "在 N.E.K.O 源码目录中创建可发布到 Market 的插件",
+            "N.E.K.O ソースツリーに Market 公開可能なプラグインを作成",
         ),
     )
     parser.add_argument(
@@ -53,9 +53,9 @@ def register(subparsers: argparse._SubParsersAction, *, defaults: CliDefaults) -
     parser.add_argument(
         "--output",
         help=_tri(
-            "Exact final repository directory (default: ./n.e.k.o_plugin_<id>)",
-            "最终仓库目录（默认：./n.e.k.o_plugin_<id>）",
-            "最終リポジトリディレクトリ（既定値：./n.e.k.o_plugin_<id>）",
+            "Exact plugin source directory (default: N.E.K.O/plugin/plugins/<id>)",
+            "插件源码目录（默认：N.E.K.O/plugin/plugins/<id>）",
+            "プラグインのソースディレクトリ（既定値：N.E.K.O/plugin/plugins/<id>）",
         ),
     )
     parser.add_argument(
@@ -104,6 +104,7 @@ def register(subparsers: argparse._SubParsersAction, *, defaults: CliDefaults) -
 
 
 def handle(args: argparse.Namespace) -> int:
+    defaults: CliDefaults = args._defaults
     plugin_id = args.plugin_id.strip()
     if not _MARKET_PLUGIN_ID_RE.fullmatch(plugin_id):
         print(
@@ -121,7 +122,7 @@ def handle(args: argparse.Namespace) -> int:
     target_dir = (
         Path(args.output).expanduser().resolve()
         if args.output
-        else (Path.cwd() / _market_repo_name(plugin_id)).resolve()
+        else (defaults.plugins_root / plugin_id).resolve()
     )
     if target_dir.exists():
         print(
@@ -166,13 +167,16 @@ def handle(args: argparse.Namespace) -> int:
         create_github_actions=True,
         neko_repository=_DEFAULT_NEKO_REPOSITORY,
         neko_ref="main",
-        standalone_repository=True,
     )
     target_created = False
     try:
         target_dir.mkdir(parents=True, exist_ok=False)
         target_created = True
-        created = generate_plugin(spec, target_dir)
+        created = generate_plugin(
+            spec,
+            target_dir,
+            repo_root=defaults.repo_root,
+        )
         _run_git(["init", "-b", "main"], cwd=target_dir)
         if args.remote:
             _run_git(["remote", "add", "origin", args.remote], cwd=target_dir)
@@ -294,7 +298,12 @@ def handle_setup_repo(args: argparse.Namespace) -> int:
                 )
             return 0
         _preflight_git_request(plugin_dir, initialize_git=args.git, remote=args.remote)
-        created = generate_repo_support_files(spec, plugin_dir, overwrite=args.overwrite)
+        created = generate_repo_support_files(
+            spec,
+            plugin_dir,
+            repo_root=defaults.repo_root,
+            overwrite=args.overwrite,
+        )
         git_initialized = False
         if args.git:
             git_initialized = _initialize_git_repo(plugin_dir, remote=args.remote)

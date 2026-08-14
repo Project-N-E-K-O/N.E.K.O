@@ -1,8 +1,8 @@
 # N.E.K.O Plugin CLI で最初のプラグインを作成する
 
-このページの目的は一つです。GitHub から N.E.K.O のソースを取得できること、そのソースに含まれる N.E.K.O Plugin CLI が自分の環境で動くことを確認し、開発を続けられる独立したプラグインリポジトリを作成します。
+このページでは、N.E.K.O に含まれる Plugin CLI が動作することを確認し、すぐに実行して開発を続けられる Hello World プラグインを作成します。
 
-完了すると、サンプルコード、テスト、コードチェック、GitHub Actions のリリース設定を含む `hello_world` プロジェクトができます。このプロジェクトがプラグイン開発の出発点になります。
+開発中のプラグインは `N.E.K.O/plugin/plugins/` に直接置きます。完了すると、サンプルコード、設定、テスト、コードチェック、GitHub Actions のリリース設定を含む `hello_world` プロジェクトができます。
 
 ## 1. Git と uv を確認する
 
@@ -63,38 +63,82 @@ publish
 
 これらが表示されれば CLI を使用できます。以後も `uv run neko-plugin` を使用します。
 
-## 4. 独立したプラグインリポジトリを作成する
+## 4. ソースツリーにプラグインを作成する
 
 N.E.K.O リポジトリのルートから実行します：
 
 ```bash
-uv run neko-plugin init hello_world --type plugin --name "Hello World" --output ../n.e.k.o_plugin_hello_world
+uv run neko-plugin init hello_world \
+  --type plugin \
+  --name "Hello World"
 ```
 
-このコマンドは **Hello World** プラグインを初期化します。
+このコマンドは **Hello World** を次の場所に直接作成します：
 
-N.E.K.O の checkout 内に Git リポジトリを入れ子にしないよう、プラグインは N.E.K.O の隣に作成されます。以下の手順にある `../n.e.k.o_plugin_hello_world` は、今作成したプラグインのディレクトリです。N.E.K.O のソースディレクトリから一つ上の階層へ移動すると到達できます。
+```text
+plugin/plugins/hello_world/
+```
+
+N.E.K.O は `plugin/plugins/` をスキャンするため、開発時にはこのソースがそのまま実行されます。ユーザープラグインディレクトリへのコピーやシンボリックリンクは不要です。
+
+これはコードの読み込み元を示すものです。実行時の設定、永続データ、キャッシュはユーザーデータディレクトリに保存されます。
+
+### ソースとユーザーデータの役割
+
+ソース開発中の同じプラグインは、次の二つの場所を使用します：
+
+```text
+N.E.K.O/plugin/plugins/hello_world/       <- 開発者が編集するソース
+├── plugin.toml                           <- プラグイン identity とコード entry
+├── config.example.toml                   <- 初期 runtime config のテンプレート
+├── __init__.py                           <- プラグインコード
+└── tests/
+
+<ユーザーデータルート>/plugins/hello_world/ <- N.E.K.O が実行時に書き込む場所
+├── config/plugin.toml                    <- このユーザーの runtime config
+├── data/                                 <- 永続化するプラグインデータ
+└── cache/                                <- 再生成可能なキャッシュ
+```
+
+保存場所や関連する環境変数を変更していない場合、既定のユーザーデータルートは次のとおりです：
+
+| OS | 既定ディレクトリ |
+| --- | --- |
+| Linux | `~/.local/share/N.E.K.O` |
+| macOS | `~/Library/Application Support/N.E.K.O` |
+| Windows | `%LOCALAPPDATA%\\N.E.K.O` |
+
+ソースルートの `plugin.toml` はプラグイン manifest です。ユーザーデータの `config/plugin.toml` は、そのユーザーが実際に使用する runtime config です。初回に N.E.K.O が `config.example.toml` を runtime config へコピーし、既存の設定は上書きしません。
+
+一般ユーザーが既定パスへ `.neko-plugin` パッケージをインストールした場合、インストール済みコードと runtime ディレクトリは `<ユーザーデータルート>/plugins/hello_world/` の下にまとまります。このガイドはソース開発用なので、編集するのは `N.E.K.O/plugin/plugins/hello_world/` だけです。
 
 対象ディレクトリがすでにある場合、CLI は上書きせず停止します。別の新しいディレクトリを選ぶか、既存ディレクトリの用途を確認してください。
 
 ## 5. 最初のチェックを実行する
 
 ```bash
-uv run neko-plugin check ../n.e.k.o_plugin_hello_world
+uv run neko-plugin check hello_world
 ```
 
 新しいプロジェクトでは次のように表示されます：
 
 ```text
-[OK] hello_world: check found 0 error(s), 2 warning(s)
+[OK] hello_world: check found 0 error(s), 4 warning(s)
 ```
 
-GitHub remote が未設定、またはファイルが未コミットという警告は、この時点では正常です。新しいリポジトリをまだ commit、push していないためです。今後 `[FAIL]` または error が表示された場合は停止し、コマンドの修正案に従ってください。
+4 件の warning は次のとおりです：
+
+- `startup` lifecycle hook がない
+- `shutdown` lifecycle hook がない
+- Git remote が設定されていない
+- Git worktree に未 commit のファイルがある
+
+この Hello World plugin には startup と shutdown hook は不要です。Git remote と commit の warning は公開時にだけ影響します。どの warning も plugin の実行を妨げません。`[FAIL]` または error が表示された場合は停止し、コマンドの修正案に従ってください。
 
 ## CLI が作成したもの
 
 ```text
-n.e.k.o_plugin_hello_world/
+plugin/plugins/hello_world/
 ├── .git/
 ├── .gitignore
 ├── .vscode/
@@ -114,7 +158,7 @@ n.e.k.o_plugin_hello_world/
 
 ## 6. プラグイン設定を理解する
 
-`../n.e.k.o_plugin_hello_world/plugin.toml` を開きます。CLI は identity と entry point をすでに記述しています：
+`plugin/plugins/hello_world/plugin.toml` を開きます。CLI は identity と entry point をすでに記述しています：
 
 ```toml
 [plugin]
@@ -129,12 +173,13 @@ recommended = ">=0.1.0,<0.2.0"
 supported = ">=0.1.0,<0.3.0"
 ```
 
-- `id` は安定したプラグイン identity であり、インストール後のディレクトリ名です。
+- `id` は安定したプラグイン identity であり、ソースディレクトリ名と一致させます。
+- `name` は Plugin Manager に表示される名前です。
 - `version` は次の build と release に使われます。
 - `entry` は `module.path:ClassName` 形式で Python class を指定します。
 - `[plugin.sdk]` は対応する SDK version を宣言します。
 
-ユーザーが変更できる runtime default は `plugin.toml` ではなく `config.example.toml` に置きます：
+scaffold は新しいユーザー向けの初期 runtime config として `config.example.toml` も作成します：
 
 ```toml
 [plugin_runtime]
@@ -142,11 +187,11 @@ enabled = true
 auto_start = false
 ```
 
-`auto_start = false` の場合、インストール後に Plugin Manager から手動で start します。N.E.K.O と同時に自動起動する必要がある場合だけ `true` に変更します。
+`enabled = true` は既定で読み込み可能であることを示します。`auto_start = false` の場合は Plugin Manager から手動で start します。実際の設定を作成した後は、ユーザーデータ内の `config/plugin.toml` が使われ、`config.example.toml` の変更で既存設定が上書きされることはありません。
 
 ## 7. 最初のプラグイン機能を書く
 
-生成された `__init__.py` には、名前を受け取って greeting を返す entry がすでにあります：
+`plugin/plugins/hello_world/__init__.py` には、名前を受け取って greeting を返す entry がすでにあります：
 
 ```python
 from plugin.sdk.plugin import NekoPluginBase, Ok, neko_plugin, plugin_entry
@@ -164,13 +209,14 @@ class HelloWorldPlugin(NekoPluginBase):
 | `@neko_plugin` | class を N.E.K.O plugin として宣言 |
 | `NekoPluginBase` | logging、config、storage などを提供 |
 | `@plugin_entry(...)` | Plugin Manager に呼び出し可能な機能を公開 |
-| `name: str = "World"` | optional string parameter を宣言し、SDK が入力 UI を自動生成 |
+| `async def hello(...)` | entry の処理を定義。プラグイン entry は `async def` を使用します。 |
+| `name: str = "World"` | optional string parameter。省略時は `World` を使用します。 |
 | `Ok({...})` | successful result を返す |
 
 `plugin_id` は `hello_world`、この機能の `entry_id` は `hello` です。別の identity なので混同しないでください。
 
-::: tip Agent と LLM tool
-user-plugin Agent がこの機能を選ぶと `plugin_id` と `entry_id` の両方を返し、host が別々に検証します。これは `@llm_tool` で conversation-time tool を登録する仕組みとは異なります。最初の実行前にこの違いを理解する必要はありません。
+::: tip プラグイン entry と LLM tool は別のものです
+`@plugin_entry` は runtime のプラグイン entry を宣言します。`@llm_tool` は会話中に使う tool を登録します。最初の実行では `@plugin_entry` だけでよく、LLM tool の設定は不要です。
 :::
 
 最後の行を変更します：
@@ -182,41 +228,55 @@ return Ok({"message": f"こんにちは、{name}さん！"})
 保存後、もう一度チェックします：
 
 ```bash
-uv run neko-plugin check ../n.e.k.o_plugin_hello_world
+uv run neko-plugin check hello_world
 ```
 
-## 8. build して N.E.K.O で実行する
+## 8. N.E.K.O で実行する
 
-チェック成功後にローカルパッケージを作ります：
+ソース版 N.E.K.O がまだ起動できない場合は[開発環境の準備](/ja/guide/dev-setup)を完了し、リポジトリルートで実行します：
 
 ```bash
-uv run neko-plugin build ../n.e.k.o_plugin_hello_world --out ../hello_world.neko-plugin
+uv run python launcher.py
 ```
 
-N.E.K.O を起動し、**Plugin Manager** の **Import** から `hello_world.neko-plugin` を選びます。import 後：
+ターミナルに表示されたアドレスを開き、**Plugins** ページで次を行います：
 
-1. **Hello World** を見つけて start します。
-2. **Hello** entry を開きます。
-3. 名前を入力して実行します。
-4. 変更した greeting が返ることを確認します。
+1. **Refresh** をクリックし、`plugin/plugins/` を再スキャンします。
+2. **Hello World** を見つけて start します。
+3. 詳細画面の **Entries** を開きます。
+4. **Hello** を trigger し、名前を入力します。
 
-ソース版 N.E.K.O がまだ起動できない場合は、[開発環境の準備](../guide/dev-setup)に従って frontend build と起動を完了してください。
+成功結果が表示されれば、プラグインはソースディレクトリから直接実行されています。
 
-## 9. 変更して新しい build を読み込む
+## 9. 変更して reload する
 
-独立リポジトリの `__init__.py` を変更し、`check` と `build` を再実行します。Plugin Manager で同じパッケージを再度 import すると upgrade の確認が表示されます。確認後、インストール済みの内容が安全に置き換えられ、実行中なら自動的に再起動します。
+引き続き `plugin/plugins/hello_world/` を編集します。変更するたびに：
 
-インストール先の `plugin/plugins/hello_world` を直接編集しないでください。その変更は独立プラグインリポジトリには戻りません。
+1. 保存して `uv run neko-plugin check hello_world` を実行します。
+2. プラグイン詳細に戻り、**Reload** をクリックします。
+3. **Hello** を再度 trigger して変更を確認します。
+
+Reload は現在のプラグインを停止し、保存済みソースから再起動します。日常開発ではパッケージの build や import を繰り返す必要はありません。プラグインの追加・削除や `plugin.toml` の変更後は、先に一覧を refresh してください。
+
+## 10. 配布するときだけ build する
+
+ほかのユーザーへインストール可能な形で渡すときに `.neko-plugin` を build します：
+
+```bash
+uv run neko-plugin build hello_world --out hello_world.neko-plugin
+```
+
+このパッケージはインストールと公開のためのもので、日常開発の必須手順ではありません。GitHub、審査、公開の完全な流れは[Market にプラグインを公開する](/ja/plugins/cli)を参照してください。
 
 ## 次のステップ
 
 | 目的 | ドキュメント |
 | --- | --- |
-| チェック、パッケージ化、公開を続ける | [コマンドでプラグインを作成・公開する](./cli) |
-| `plugin.toml` を理解する | [プラグイン設定](./plugin-toml) |
-| 呼び出し可能な機能を追加する | [エントリーとパラメーター](./entries) |
-| startup と shutdown の処理を追加する | [デコレーター](./decorators) |
-| conversation-time LLM tool を登録する | [LLM Tool Calling](./tool-calling) |
-| 実際の plugin 例を見る | [サンプル](./examples) |
-| error handling を学ぶ | [ベストプラクティス](./best-practices) |
-| SDK 全体を確認する | [SDK リファレンス](./sdk-reference) |
+| GitHub へ upload し、審査提出と version 公開を行う | [Market にプラグインを公開する](/ja/plugins/cli) |
+| `plugin.toml` を理解する | [プラグイン設定](/ja/plugins/plugin-toml) |
+| 呼び出し可能な機能を追加する | [エントリーとパラメーター](/ja/plugins/entries) |
+| startup と shutdown の処理を追加する | [デコレーター](/ja/plugins/decorators) |
+| conversation-time LLM tool を登録する | [LLM Tool Calling](/ja/plugins/tool-calling) |
+| 実際の plugin 例を見る | [サンプル](/ja/plugins/examples) |
+| error handling を学ぶ | [ベストプラクティス](/ja/plugins/best-practices) |
+| SDK 全体を確認する | [SDK リファレンス](/ja/plugins/sdk-reference) |

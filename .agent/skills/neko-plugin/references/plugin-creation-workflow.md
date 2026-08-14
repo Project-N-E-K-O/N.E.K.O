@@ -79,7 +79,7 @@ Template:
 ## Read Context Plan
 
 ## Write Workspace
-`n.e.k.o_plugin_<plugin_id>/`
+`plugin/plugins/<plugin_id>/`
 
 ## Risk Follow-ups
 ```
@@ -102,7 +102,7 @@ For an adapter:
 uv run neko-plugin init <plugin_id> --type adapter --name "<Plugin Name>"
 ```
 
-By default, the CLI creates the complete standalone tree under `n.e.k.o_plugin_<plugin_id>/`. Use `--output /path/to/final/repository` when the exact final directory should be different; that local directory name does not change the Market plugin or GitHub repository identity. The tree always includes Git, standard Market workflows, `plugin.toml`, `__init__.py`, `pyproject.toml`, `README.md`, tests, `.gitignore`, `.vscode/`, and `ruff.toml`. Add capability directories such as `ui/`, `static/`, `docs/`, `i18n/`, or `vendor/` only when the plugin actually needs them.
+By default, the CLI creates the plugin directly under `plugin/plugins/<plugin_id>/`. That directory is both the editable source and the plugin's own Git working tree; do not create another source copy, a symlink, or an imported package for development. The GitHub repository name remains `n.e.k.o_plugin_<plugin_id>`. The tree includes Git, standard Market workflows, `plugin.toml`, `__init__.py`, `pyproject.toml`, `README.md`, tests, `.gitignore`, `.vscode/`, and `ruff.toml`. Add capability directories such as `ui/`, `static/`, `docs/`, `i18n/`, or `vendor/` only when the plugin actually needs them.
 
 After CLI scaffolding:
 

@@ -13,6 +13,7 @@ from plugin.neko_plugin_cli.templates.generator import (
     PluginSpec,
     render_release_workflow,
 )
+from tests.fake_clock import patch_module_clock
 
 pytestmark = pytest.mark.plugin_unit
 
@@ -41,6 +42,29 @@ class _FailingGitHubClient(_RecordingClient):
     def get(self, url: str, **kwargs: Any) -> httpx.Response:
         request = httpx.Request("GET", url)
         raise httpx.ConnectError("connection refused", request=request)
+
+
+def _ready_release(release_url: str) -> httpx.Response:
+    assets = [
+        "publish_demo.neko-plugin",
+        "publish_demo.market-release-check.txt",
+        "market-evidence.json",
+    ]
+    return httpx.Response(
+        200,
+        json={
+            "html_url": release_url,
+            "assets": [
+                {
+                    "name": name,
+                    "state": "uploaded",
+                    "size": 123,
+                    "browser_download_url": f"{release_url}/download/{name}",
+                }
+                for name in assets
+            ],
+        },
+    )
 
 
 def _run_git(repo: Path, *args: str) -> str:
@@ -135,9 +159,7 @@ def test_publish_github_pushes_version_tag_and_waits_for_release(
     release_url = (
         "https://github.com/neko/n.e.k.o_plugin_publish_demo/releases/tag/v1.2.0"
     )
-    client = _RecordingClient(
-        httpx.Response(200, json={"html_url": release_url})
-    )
+    client = _RecordingClient(_ready_release(release_url))
     monkeypatch.setattr(publish_cmd.httpx, "Client", lambda **_: client)
     monkeypatch.setattr(
         publish_cmd.release_cmd,
@@ -182,7 +204,7 @@ def test_publish_defaults_to_github_then_market(
         "https://github.com/neko/n.e.k.o_plugin_publish_demo/releases/tag/v1.2.0"
     )
     client = _RecordingClient(
-        httpx.Response(200, json={"html_url": release_url}),
+        _ready_release(release_url),
         httpx.Response(
             201,
             json={
@@ -332,12 +354,12 @@ def test_publish_can_resume_when_remote_tag_already_points_to_head(
         "https://github.com/neko/n.e.k.o_plugin_publish_demo/releases/tag/v1.2.0"
     )
     client = _RecordingClient(
-        httpx.Response(200, json={"html_url": release_url}),
+        _ready_release(release_url),
         httpx.Response(
             201,
             json={"status": "published", "version": {"version": "1.2.0"}},
         ),
-        httpx.Response(200, json={"html_url": release_url}),
+        _ready_release(release_url),
         httpx.Response(
             200,
             json={
@@ -407,6 +429,103 @@ def test_publish_does_not_notify_market_before_github_release_exists(
     assert len(client.requests) == 1
     assert client.requests[0]["method"] == "GET"
     assert "timed out waiting for GitHub Release" in capsys.readouterr().err
+
+
+def test_publish_waits_until_all_release_assets_are_downloadable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    plugin_dir, _ = _make_publish_repo(tmp_path)
+    release_url = (
+        "https://github.com/neko/n.e.k.o_plugin_publish_demo/releases/tag/v1.2.0"
+    )
+    incomplete_release = httpx.Response(
+        200,
+        json={
+            "html_url": release_url,
+            "assets": [
+                    {
+                        "name": "publish_demo.neko-plugin",
+                        "state": "uploaded",
+                        "size": 123,
+                    "browser_download_url": f"{release_url}/download/package",
+                }
+            ],
+        },
+    )
+    client = _RecordingClient(
+        incomplete_release,
+        _ready_release(release_url),
+        httpx.Response(
+            201,
+            json={"status": "published", "version": {"version": "1.2.0"}},
+        ),
+    )
+    monkeypatch.setattr(publish_cmd.httpx, "Client", lambda **_: client)
+    patch_module_clock(monkeypatch, publish_cmd, sleep=lambda _: None)
+    monkeypatch.setattr(
+        publish_cmd.release_cmd,
+        "handle_release_check",
+        lambda _: 0,
+    )
+
+    exit_code = neko_plugin_cli.main(
+        ["publish", str(plugin_dir), "--timeout", "30"]
+    )
+
+    assert exit_code == 0
+    assert [request.get("method", "POST") for request in client.requests] == [
+        "GET",
+        "GET",
+        "POST",
+    ]
+    assert "[OK] Market published v1.2.0" in capsys.readouterr().out
+
+
+def test_publish_does_not_notify_market_for_incomplete_release_assets(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    plugin_dir, _ = _make_publish_repo(tmp_path)
+    release_url = (
+        "https://github.com/neko/n.e.k.o_plugin_publish_demo/releases/tag/v1.2.0"
+    )
+    client = _RecordingClient(
+        httpx.Response(200, json={"html_url": release_url, "assets": []})
+    )
+    monkeypatch.setattr(publish_cmd.httpx, "Client", lambda **_: client)
+    monkeypatch.setattr(
+        publish_cmd.release_cmd,
+        "handle_release_check",
+        lambda _: 0,
+    )
+
+    exit_code = neko_plugin_cli.main(
+        ["publish", str(plugin_dir), "--timeout", "0"]
+    )
+
+    assert exit_code == 1
+    assert len(client.requests) == 1
+    error = capsys.readouterr().err
+    assert "timed out waiting for GitHub Release assets" in error
+    assert "publish_demo.neko-plugin" in error
+    assert "market-evidence.json" in error
+
+
+def test_release_asset_is_ready_only_after_github_marks_it_uploaded() -> None:
+    asset = {
+        "name": "publish_demo.neko-plugin",
+        "state": "open",
+        "size": 123,
+        "browser_download_url": "https://example.invalid/publish_demo.neko-plugin",
+    }
+
+    assert publish_cmd._release_asset_is_downloadable(asset) is False
+
+    asset["state"] = "uploaded"
+    assert publish_cmd._release_asset_is_downloadable(asset) is True
 
 
 def test_publish_market_surfaces_stable_market_error(

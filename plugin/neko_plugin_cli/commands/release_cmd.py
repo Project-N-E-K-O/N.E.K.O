@@ -109,7 +109,7 @@ def _diagnose_repository(plugin_dir: Path) -> list[Issue]:
         return [("warning", "git executable not found")]
 
     if not (plugin_dir / ".git").exists():
-        issues.append(("warning", "plugin directory is not a standalone git repository"))
+        issues.append(("warning", "plugin source directory does not have its own git repository"))
         return issues
 
     remote = _run_git(["remote", "get-url", "origin"], cwd=plugin_dir)
@@ -279,7 +279,7 @@ def _suggest_fix(message: str, *, plugin_id: str, plugin_dir: Path | None) -> st
     if message.startswith(".gitignore should include "):
         pattern = message.removeprefix(".gitignore should include ")
         return f"add {pattern} to .gitignore"
-    if message == "plugin directory is not a standalone git repository":
+    if message == "plugin source directory does not have its own git repository":
         if plugin_dir is None:
             return "run git init inside the plugin directory"
         return f"cd {plugin_dir} && git init"

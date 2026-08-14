@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -49,7 +51,6 @@ class PluginSpec:
     neko_repository: str = _DEFAULT_NEKO_REPOSITORY
     neko_ref: str = "main"
     quick_start: bool = False
-    standalone_repository: bool = False
 
     @property
     def class_name(self) -> str:
@@ -68,7 +69,65 @@ class PluginSpec:
         return f"plugin.plugins.{self.plugin_id}"
 
 
-def generate_plugin(spec: PluginSpec, target_dir: Path) -> list[Path]:
+@dataclass(frozen=True)
+class PluginDevelopmentLayout:
+    """Paths and commands for developing one generated plugin."""
+
+    plugin_id: str
+    is_default_source: bool
+    repo_root_from_workspace: str
+
+    @property
+    def readme_cli_prefix(self) -> str:
+        if self.is_default_source:
+            return "uv run neko-plugin"
+        return f'uv run --project "{self.repo_root_from_workspace}" neko-plugin'
+
+    def readme_plugin_command(self, command: str, *, suffix: str = "") -> str:
+        plugin_target = self.plugin_id if self.is_default_source else "."
+        return f"{self.readme_cli_prefix} {command} {plugin_target}{suffix}"
+
+    def readme_command(self, command: str) -> str:
+        return f"{self.readme_cli_prefix} {command}"
+
+    def vscode_plugin_command(self, command: str, *, suffix: str = "") -> str:
+        plugin_target = (
+            self.plugin_id
+            if self.is_default_source
+            else '\\"${workspaceFolder}\\"'
+        )
+        return f"uv run neko-plugin {command} {plugin_target}{suffix}"
+
+    @classmethod
+    def resolve(
+        cls,
+        *,
+        plugin_id: str,
+        target_dir: Path,
+        repo_root: Path,
+    ) -> PluginDevelopmentLayout:
+        resolved_target = target_dir.resolve()
+        resolved_repo_root = repo_root.resolve()
+        default_target = resolved_repo_root / "plugin" / "plugins" / plugin_id
+        try:
+            repo_root_from_workspace = Path(
+                os.path.relpath(resolved_repo_root, resolved_target)
+            ).as_posix()
+        except ValueError:
+            repo_root_from_workspace = resolved_repo_root.as_posix()
+        return cls(
+            plugin_id=plugin_id,
+            is_default_source=resolved_target == default_target,
+            repo_root_from_workspace=repo_root_from_workspace,
+        )
+
+
+def generate_plugin(
+    spec: PluginSpec,
+    target_dir: Path,
+    *,
+    repo_root: Path,
+) -> list[Path]:
     """Generate all scaffold files and return the list of created paths."""
     if spec.plugin_type not in SCAFFOLDABLE_PLUGIN_TYPES:
         raise ValueError(format_unsupported_scaffold_type(spec.plugin_type))
@@ -76,6 +135,11 @@ def generate_plugin(spec: PluginSpec, target_dir: Path) -> list[Path]:
         raise ValueError(
             "plugin_id must be a valid Python package name: use letters, numbers, and underscores only"
         )
+    layout = PluginDevelopmentLayout.resolve(
+        plugin_id=spec.plugin_id,
+        target_dir=target_dir,
+        repo_root=repo_root,
+    )
     target_dir.mkdir(parents=True, exist_ok=True)
     created: list[Path] = []
 
@@ -106,7 +170,11 @@ def generate_plugin(spec: PluginSpec, target_dir: Path) -> list[Path]:
 
     if spec.create_readme:
         readme_path = target_dir / "README.md"
-        readme_path.write_text(_render_readme_md(spec), encoding="utf-8", newline="\n")
+        readme_path.write_text(
+            _render_readme_md(spec, layout),
+            encoding="utf-8",
+            newline="\n",
+        )
         created.append(readme_path)
 
     if spec.create_tests:
@@ -126,12 +194,16 @@ def generate_plugin(spec: PluginSpec, target_dir: Path) -> list[Path]:
         vscode_dir.mkdir(parents=True, exist_ok=True)
         settings_path = vscode_dir / "settings.json"
         settings_path.write_text(
-            _render_vscode_settings(spec), encoding="utf-8", newline="\n"
+            _render_vscode_settings(layout), encoding="utf-8", newline="\n"
         )
         created.append(settings_path)
 
         tasks_path = vscode_dir / "tasks.json"
-        tasks_path.write_text(_render_vscode_tasks(spec), encoding="utf-8", newline="\n")
+        tasks_path.write_text(
+            _render_vscode_tasks(spec, layout),
+            encoding="utf-8",
+            newline="\n",
+        )
         created.append(tasks_path)
 
     if spec.create_github_actions:
@@ -155,18 +227,24 @@ def generate_repo_support_files(
     spec: PluginSpec,
     target_dir: Path,
     *,
+    repo_root: Path,
     overwrite: bool = False,
 ) -> list[Path]:
     """Generate repository support files for an existing plugin directory."""
     if not target_dir.is_dir():
         raise FileNotFoundError(f"plugin directory not found: {target_dir}")
 
+    layout = PluginDevelopmentLayout.resolve(
+        plugin_id=spec.plugin_id,
+        target_dir=target_dir,
+        repo_root=repo_root,
+    )
     created: list[Path] = []
 
     if spec.create_readme:
         _write_support_file(
             target_dir / "README.md",
-            _render_readme_md(spec),
+            _render_readme_md(spec, layout),
             created=created,
             overwrite=overwrite,
         )
@@ -194,13 +272,13 @@ def generate_repo_support_files(
         vscode_dir.mkdir(parents=True, exist_ok=True)
         _write_support_file(
             vscode_dir / "settings.json",
-            _render_vscode_settings(spec),
+            _render_vscode_settings(layout),
             created=created,
             overwrite=overwrite,
         )
         _write_support_file(
             vscode_dir / "tasks.json",
-            _render_vscode_tasks(spec),
+            _render_vscode_tasks(spec, layout),
             created=created,
             overwrite=overwrite,
         )
@@ -481,34 +559,67 @@ dependencies = []
 # Repository support files
 # ---------------------------------------------------------------------------
 
-def _dependency_sync_command(spec: PluginSpec) -> str:
-    if spec.standalone_repository:
-        return "neko-plugin sync . --clean"
-    return (
-        "uv run --with pip python -m plugin.neko_plugin_cli.cli "
-        f"sync {spec.plugin_id} --clean"
-    )
-
-
-def _render_readme_md(spec: PluginSpec) -> str:
+def _render_readme_md(
+    spec: PluginSpec,
+    layout: PluginDevelopmentLayout,
+) -> str:
     name = spec.name or spec.plugin_id
     description = spec.description or "Describe what this plugin does and how to configure it."
-    sync_command = _dependency_sync_command(spec)
-    if spec.standalone_repository:
-        location_instructions = ""
-        repository_identity_instructions = '''When publishing to the plugin market, use this GitHub repository name:
+    sync_command = layout.readme_plugin_command("sync", suffix=" --clean")
+    check_commands = (
+        f'{layout.readme_plugin_command("check")}\n'
+        f'{layout.readme_plugin_command("check -r")}'
+    )
+    publish_command = layout.readme_plugin_command("publish")
+    github_publish_command = layout.readme_plugin_command("publish github")
+    market_publish_command = layout.readme_command(
+        "publish market "
+        f"https://github.com/owner/repo/releases/tag/v{spec.version}"
+    )
+    if layout.is_default_source:
+        location_instructions = f'''The plugin source and its Git repository live at:
+
+```text
+N.E.K.O/plugin/plugins/{spec.plugin_id}
+```
+
+插件源码及其 Git 仓库直接位于：
+
+```text
+N.E.K.O/plugin/plugins/{spec.plugin_id}
+```
+
+プラグインのソースと Git リポジトリは次の場所にあります：
+
+```text
+N.E.K.O/plugin/plugins/{spec.plugin_id}
+```
+
+'''
+        command_context = (
+            "From the N.E.K.O repository root / "
+            "在 N.E.K.O 仓库根目录中 / "
+            "N.E.K.O リポジトリのルートで："
+        )
+    else:
+        location_instructions = '''This directory is both the editable plugin source and its Git repository.
+
+当前目录既是可编辑的插件源码，也是插件自己的 Git 仓库。
+
+このディレクトリは、編集するプラグインソースであり、プラグイン自身の Git リポジトリでもあります。
+
+'''
+        command_context = (
+            "From this plugin repository root / "
+            "在当前插件仓库根目录中 / "
+            "このプラグインリポジトリのルートで："
+        )
+    repository_identity_instructions = '''When publishing to the plugin market, use this GitHub repository name:
 
 发布到插件市场时，请使用以下 GitHub 仓库名：
 
 プラグインマーケットへ公開する際は、次の GitHub リポジトリ名を使用してください：'''
-        command_context = (
-            "From this plugin repository root / "
-            "在此插件仓库根目录中 / "
-            "このプラグインリポジトリのルートで："
-        )
-        check_commands = "neko-plugin check .\nneko-plugin check -r ."
-        publish_target = "."
-        dependency_instructions = '''Python runtime dependencies are declared in `pyproject.toml` and synced into
+    dependency_instructions = '''Python runtime dependencies are declared in `pyproject.toml` and synced into
 `vendor/` for packaging. The generated `vendor/` directory is not committed;
 local builds and CI recreate it before release checks.
 
@@ -518,28 +629,6 @@ Python 运行时依赖声明在 `pyproject.toml` 中，并在打包时同步到 
 Python ランタイム依存関係は `pyproject.toml` に宣言し、パッケージ化時に
 `vendor/` へ同期します。生成された `vendor/` はコミットせず、ローカルビルドと
 CI が公開前チェックで再生成します。'''
-    else:
-        location_instructions = f'''This repository is meant to live at:
-
-```text
-N.E.K.O/plugin/plugins/{spec.plugin_id}
-```
-
-'''
-        repository_identity_instructions = (
-            "When publishing to the plugin market, use this GitHub repository name:"
-        )
-        command_context = "From the N.E.K.O repository root:"
-        check_commands = (
-            "uv run python -m plugin.neko_plugin_cli.cli "
-            f"check {spec.plugin_id}\n"
-            "uv run python -m plugin.neko_plugin_cli.cli "
-            f"check -r {spec.plugin_id}"
-        )
-        publish_target = spec.plugin_id
-        dependency_instructions = '''Python runtime dependencies are declared in `pyproject.toml` and synced into
-`vendor/` for packaging. The generated `vendor/` directory is not committed;
-local builds and CI recreate it before release checks.'''
     ruff_instructions = ""
     if spec.create_github_actions:
         ruff_instructions = f'''From this plugin repository root:
@@ -582,14 +671,14 @@ Release，然后通知插件市场。
 push し、標準 GitHub Release を待ってからプラグインマーケットへ通知します。
 
 ```bash
-neko-plugin publish {publish_target}
+{publish_command}
 ```
 
 To run only one half explicitly / 如需仅执行一部分 / 一方のみを実行する場合:
 
 ```bash
-neko-plugin publish github {publish_target}
-neko-plugin publish market https://github.com/owner/repo/releases/tag/v{spec.version}
+{github_publish_command}
+{market_publish_command}
 ```
 
 The generated `.github/workflows/release.yml` builds and uploads
@@ -642,39 +731,32 @@ store.db
 '''
 
 
-def _render_vscode_settings(spec: PluginSpec) -> str:
-    if spec.standalone_repository:
-        return "{}\n"
-    return '''{
-  "nekoPlugin.repoRoot": "../../..",
-  "python.analysis.extraPaths": [
-    "${workspaceFolder}/../../.."
-  ]
-}
-'''
+def _render_vscode_settings(layout: PluginDevelopmentLayout) -> str:
+    repo_root = layout.repo_root_from_workspace
+    analysis_path = (
+        repo_root
+        if Path(repo_root).is_absolute()
+        else f"${{workspaceFolder}}/{repo_root}"
+    )
+    return json.dumps(
+        {
+            "nekoPlugin.repoRoot": repo_root,
+            "python.analysis.extraPaths": [analysis_path],
+        },
+        ensure_ascii=False,
+        indent=2,
+    ) + "\n"
 
 
-def _render_vscode_tasks(spec: PluginSpec) -> str:
-    sync_command = _dependency_sync_command(spec)
-    if spec.standalone_repository:
-        check_command = "neko-plugin check ."
-        release_check_command = "neko-plugin check -r ."
-        build_command = "neko-plugin build ."
-        cwd = "${workspaceFolder}"
-    else:
-        check_command = (
-            "uv run python -m plugin.neko_plugin_cli.cli "
-            f"check {spec.plugin_id}"
-        )
-        release_check_command = (
-            "uv run python -m plugin.neko_plugin_cli.cli "
-            f"check -r {spec.plugin_id}"
-        )
-        build_command = (
-            "uv run python -m plugin.neko_plugin_cli.cli "
-            f"build {spec.plugin_id}"
-        )
-        cwd = "${config:nekoPlugin.repoRoot}"
+def _render_vscode_tasks(
+    spec: PluginSpec,
+    layout: PluginDevelopmentLayout,
+) -> str:
+    sync_command = layout.vscode_plugin_command("sync", suffix=" --clean")
+    check_command = layout.vscode_plugin_command("check")
+    release_check_command = layout.vscode_plugin_command("check -r")
+    build_command = layout.vscode_plugin_command("build")
+    cwd = "${config:nekoPlugin.repoRoot}"
     return f'''{{
   "version": "2.0.0",
   "tasks": [

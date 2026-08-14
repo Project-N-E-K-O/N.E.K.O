@@ -24,14 +24,13 @@ Create standard plugins through the CLI. Do not hand-create the initial director
 uv run neko-plugin init <plugin_id> --type plugin --name "<Plugin Name>"
 ```
 
-Useful variants:
+Adapter variant:
 
 ```bash
 uv run neko-plugin init <plugin_id> --type adapter --name "<Plugin Name>"
-uv run neko-plugin init <plugin_id> --output /path/to/final/repository
 ```
 
-`init` always creates the complete standalone repository, including the standard Market workflows.
+`init` creates the editable source directly at `plugin/plugins/<plugin_id>/`. The same directory is initialized as the plugin's own Git repository and includes the standard Market workflows. Do not develop from a second source copy, a symlink, or an imported package.
 
 ## CLI Source Map
 
