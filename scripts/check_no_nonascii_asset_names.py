@@ -377,10 +377,15 @@ def _plugin_stage_filter(repo_root: Path):
         path_str = relative.as_posix()
         if any(_match_build_pattern(path_str, p) for p in rules.get("exclude", [])):
             return False
+        # Both lists are also tested against every ancestor directory: the real
+        # walk asks should_skip_path(is_dir=True) for each directory and prunes
+        # the whole subtree, so `exclude = ["cache"]` drops cache/** even though
+        # no file path equals "cache".
         for index in range(len(dir_parts)):
             candidate = "/".join(dir_parts[: index + 1])
             if any(
-                _match_build_pattern(candidate, p) for p in rules.get("exclude_dirs", [])
+                _match_build_pattern(candidate, p)
+                for p in rules.get("exclude_dirs", []) + rules.get("exclude", [])
             ):
                 return False
         exclude_files = rules.get("exclude_files", [])

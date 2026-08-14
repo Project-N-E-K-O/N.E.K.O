@@ -540,29 +540,40 @@ def test_plugin_stage_filter_matches_the_real_build_rules(tmp_path: Path) -> Non
     module = _load_script_module()
     plugin_dir = tmp_path / "plugin" / "plugins" / "demo"
     plugin_dir.mkdir(parents=True)
-    build_table = {
+    # Two rule shapes, because an `include` allow-list masks every other verdict:
+    # with it present, anything unmatched is dropped regardless of why. No plugin
+    # in this repo currently uses `include`, so the no-include case is the one
+    # that actually runs today — and the only one where exclude-driven directory
+    # pruning is observable.
+    base_rules = {
         # Padded on purpose: BuildRuleSet strips entries, and a mirror that
         # does not would reject everything the allow-list should have kept.
-        "include": ["*.py", " assets/* ", "data layer/*"],
-        "exclude": ["*.tmp", "secrets/*"],
+        # "cache" matches a directory, not any file path — the real walk prunes
+        # the subtree through should_skip_path(is_dir=True).
+        "exclude": ["*.tmp", " secrets/* ", "cache"],
         "exclude_dirs": ["tests", "local_logs"],
         "exclude_files": ["README.md", "*.bak"],
     }
+    for build_table in (base_rules, {**base_rules, "include": ["*.py", " assets/* ", "data layer/*"]}):
+        _assert_stage_filter_parity(plugin_dir, build_table, module, should_skip_path, load_build_rules)
+
+
+def _assert_stage_filter_parity(
+    plugin_dir: Path, build_table: dict, module, should_skip_path, load_build_rules
+) -> None:
+    def _toml_list(values: list[str]) -> str:
+        return "[" + ", ".join(f'"{value}"' for value in values) + "]"
+
     (plugin_dir / "pyproject.toml").write_text(
         "\n".join(
-            [
-                "[tool.neko.build]",
-                'include = ["*.py", " assets/* ", "data layer/*"]',
-                'exclude = ["*.tmp", "secrets/*"]',
-                'exclude_dirs = ["tests", "local_logs"]',
-                'exclude_files = ["README.md", "*.bak"]',
-            ]
+            ["[tool.neko.build]"]
+            + [f"{key} = {_toml_list(value)}" for key, value in build_table.items()]
         ),
         encoding="utf-8",
     )
     rules = load_build_rules({"tool": {"neko": {"build": build_table}}})
 
-    keep = module._plugin_stage_filter(tmp_path)
+    keep = module._plugin_stage_filter(plugin_dir.parents[2])
     relatives = [
         "runtime.py",
         "README.md",
@@ -584,6 +595,8 @@ def test_plugin_stage_filter_matches_the_real_build_rules(tmp_path: Path) -> Non
         ".github/workflows/ci.yml",
         ".vscode/settings.json",
         ".mypy_cache/module.json",
+        "cache/blob.json",
+        "cache/nested/blob.json",
         "data layer/worker.py",
         "assets/nested/ok.png",
         # Not matched by any `include` pattern -> dropped by the allow-list.
@@ -596,12 +609,21 @@ def test_plugin_stage_filter_matches_the_real_build_rules(tmp_path: Path) -> Non
     # has drifted, and the fix is the same one line. The sole documented
     # asymmetry is .db/.log, which staging strips afterwards rather than through
     # these rules, so should_skip_path has no opinion on them.
+    def _really_staged(relative: str) -> bool:
+        """Model _copy_plugin_tree: prune directories first, then judge the file."""
+        parts = PurePosixPath(relative).parts
+        for index in range(len(parts) - 1):
+            ancestor = Path(*parts[: index + 1])
+            if should_skip_path(ancestor, is_dir=True, rules=rules):
+                return False
+        return not should_skip_path(Path(relative), is_dir=False, rules=rules)
+
     for relative in relatives:
         mirrored_keep = keep(f"plugin/plugins/demo/{relative}")
         if PurePosixPath(relative).suffix.lower() in {".db", ".log"}:
             assert not mirrored_keep, relative
             continue
-        real_keeps = not should_skip_path(Path(relative), is_dir=False, rules=rules)
+        real_keeps = _really_staged(relative)
         assert mirrored_keep == real_keeps, (
             f"mirror and build rules disagree on {relative}: "
             f"mirror keeps={mirrored_keep}, staging keeps={real_keeps}"
@@ -618,9 +640,11 @@ def test_plugin_stage_filter_matches_the_real_build_rules(tmp_path: Path) -> Non
         "dist/bundle.js",
         "__pycache__/mod.pyc",
         ".mypy_cache/module.json",
+        "cache/blob.json",
         "store.db",
         "runtime.log",
-        "docs/manual.md",
+        # NOT docs/manual.md: without an `include` allow-list it is staged, and
+        # the parity loop above already pins both rule shapes.
     ):
         assert not keep(f"plugin/plugins/demo/{dropped}"), dropped
 

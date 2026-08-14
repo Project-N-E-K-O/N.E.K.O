@@ -709,7 +709,11 @@ jobs:
             .venv/bin/python -c "
             import sys
             from pathlib import Path
-            bad = [str(p) for p in Path('playwright_browsers').rglob('*') if not p.name.isascii()]
+            # Files only: a CJK *directory* holding ASCII files seals fine
+            # (verified against a real Developer ID cert; see the checker's
+            # module docstring), and failing on it would block the build for nothing.
+            bad = [str(p) for p in Path('playwright_browsers').rglob('*')
+                   if p.is_file() and not p.name.isascii()]
             if bad:
                 sys.exit('non-ASCII name(s) in playwright_browsers, which break macOS signing: ' + repr(bad[:10]))
             "
