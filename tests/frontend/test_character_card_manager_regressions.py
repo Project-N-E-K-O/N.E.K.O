@@ -433,6 +433,162 @@ def test_character_card_manager_voice_dropdown_prefers_clone_prefix(
 
 
 @pytest.mark.frontend
+def test_character_card_manager_open_voice_dropdown_stays_above_adjacent_rows(
+    mock_page: Page,
+    running_server: str,
+):
+    _open_character_card_manager(mock_page, running_server)
+
+    state = mock_page.evaluate(
+        """
+        () => {
+            const wrapper = document.createElement('div');
+            wrapper.className = 'catgirl-panel-wrapper phase-expand';
+            wrapper.style.cssText = [
+                'position: fixed',
+                'left: 120px',
+                'top: 80px',
+                'width: 720px',
+                'height: 400px',
+                'max-height: none',
+                'z-index: 2147483647',
+                'overflow: hidden',
+                'opacity: 1',
+                'transform: scale(0.95)',
+                'transform-origin: top left',
+                'transition: none'
+            ].join(';');
+
+            const host = document.createElement('div');
+            host.className = 'catgirl-panel-right';
+            host.style.cssText = [
+                'width: 720px',
+                'height: 400px',
+                'max-height: none',
+                'overflow: visible',
+                'opacity: 1',
+                'transform: none'
+            ].join(';');
+            wrapper.appendChild(host);
+
+            const scrollport = document.createElement('div');
+            scrollport.className = 'panel-tab-content active';
+            scrollport.style.cssText = 'height: 320px; overflow-y: auto; padding: 0;';
+            host.appendChild(scrollport);
+
+            const form = document.createElement('form');
+            form.className = 'settings-form-layout panel-tab-settings';
+            scrollport.appendChild(form);
+            document.body.appendChild(wrapper);
+
+            const topSpacer = document.createElement('div');
+            topSpacer.style.height = '320px';
+            form.appendChild(topSpacer);
+
+            function appendSelectRow(wrapperClass, values) {
+                const wrapper = document.createElement('div');
+                wrapper.className = `field-row-wrapper ${wrapperClass}`;
+
+                const label = document.createElement('label');
+                label.textContent = wrapperClass;
+                wrapper.appendChild(label);
+
+                const row = document.createElement('div');
+                row.className = 'field-row';
+                const select = document.createElement('select');
+                select.className = 'voice-native-select';
+                values.forEach((value, index) => {
+                    const option = document.createElement('option');
+                    option.value = value;
+                    option.textContent = `Option ${index + 1}`;
+                    select.appendChild(option);
+                });
+                row.appendChild(select);
+                const ui = _panelCreateVoiceSelectUi(select);
+                row.appendChild(ui.container);
+                wrapper.appendChild(row);
+                form.appendChild(wrapper);
+                return { wrapper, ui };
+            }
+
+            const language = appendSelectRow('language-preference-row', ['zh-CN']);
+            const voice = appendSelectRow(
+                'voice-row',
+                Array.from({ length: 12 }, (_, index) => `voice-${index}`)
+            );
+
+            const bottomSpacer = document.createElement('div');
+            bottomSpacer.style.height = '320px';
+            form.appendChild(bottomSpacer);
+
+            const header = voice.ui.container.querySelector('.voice-select-header');
+            const scrollportBefore = scrollport.getBoundingClientRect();
+            const headerBefore = header.getBoundingClientRect();
+            scrollport.scrollTop += (
+                headerBefore.bottom - (scrollportBefore.bottom - 24 * 0.95)
+            ) / 0.95;
+
+            header.click();
+
+            const options = voice.ui.container.querySelector('.voice-select-options');
+            const languageRect = language.wrapper.getBoundingClientRect();
+            const optionsRect = options.getBoundingClientRect();
+            const scrollportRect = scrollport.getBoundingClientRect();
+            const overlapTop = Math.max(languageRect.top, optionsRect.top);
+            const overlapBottom = Math.min(languageRect.bottom, optionsRect.bottom);
+            const overlapLeft = Math.max(languageRect.left, optionsRect.left);
+            const overlapRight = Math.min(languageRect.right, optionsRect.right);
+            const hasOverlap = overlapTop < overlapBottom && overlapLeft < overlapRight;
+            const topmost = hasOverlap
+                ? document.elementFromPoint(
+                    (overlapLeft + overlapRight) / 2,
+                    (overlapTop + overlapBottom) / 2
+                )
+                : null;
+            const opensUp = voice.ui.container.classList.contains('open-up');
+            const optionsOwnsOverlap = Boolean(topmost && options.contains(topmost));
+            const optionsStayInsideScrollport = optionsRect.top >= scrollportRect.top - 1
+                && optionsRect.bottom <= scrollportRect.bottom + 1;
+
+            wrapper.style.transform = 'scale(1)';
+            wrapper.getBoundingClientRect();
+            const optionsAfterScale = options.getBoundingClientRect();
+            const scrollportAfterScale = scrollport.getBoundingClientRect();
+            const staysInsideAfterScaleEnd = optionsAfterScale.top >= scrollportAfterScale.top - 1
+                && optionsAfterScale.bottom <= scrollportAfterScale.bottom + 1;
+
+            const headerAfterScale = header.getBoundingClientRect();
+            scrollport.scrollTop += headerAfterScale.top - (scrollportAfterScale.top + 40);
+            scrollport.dispatchEvent(new Event('scroll'));
+            const optionsAfterScroll = options.getBoundingClientRect();
+
+            return {
+                opensUp,
+                hasOverlap,
+                optionsOwnsOverlap,
+                optionsStayInsideScrollport,
+                staysInsideAfterScaleEnd,
+                repositionsDownAfterScroll: voice.ui.container.classList.contains('open-down'),
+                staysInsideScrollportAfterScroll: optionsAfterScroll.top >= scrollportRect.top - 1
+                    && optionsAfterScroll.bottom <= scrollportRect.bottom + 1,
+                activeRowZIndex: Number.parseInt(getComputedStyle(voice.wrapper).zIndex, 10),
+                languageRowZIndex: Number.parseInt(getComputedStyle(language.wrapper).zIndex, 10)
+            };
+        }
+        """
+    )
+
+    assert state["opensUp"] is True, state
+    assert state["hasOverlap"] is True, state
+    assert state["activeRowZIndex"] > state["languageRowZIndex"], state
+    assert state["optionsOwnsOverlap"] is True, state
+    assert state["optionsStayInsideScrollport"] is True, state
+    assert state["staysInsideAfterScaleEnd"] is True, state
+    assert state["repositionsDownAfterScroll"] is True, state
+    assert state["staysInsideScrollportAfterScroll"] is True, state
+
+
+@pytest.mark.frontend
 def test_character_language_fallback_can_be_pinned_by_reselecting_it(
     mock_page: Page,
     running_server: str,
