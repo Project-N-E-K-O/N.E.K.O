@@ -48,8 +48,15 @@ def _load_script_module():
 
 
 def _init_repo(root: Path) -> None:
-    """A minimal git repo — the checker asks git which files exist."""
-    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    """A minimal git repo — the checker asks git which files exist.
+
+    The branch name is pinned: `git init` honours init.defaultBranch, which is
+    not `main` everywhere (the Windows runner proved it), and the merge-base
+    tests name their base branch explicitly.
+    """
+    subprocess.run(
+        ["git", "-c", "init.defaultBranch=main", "init", "-q"], cwd=root, check=True
+    )
 
 
 # ---------------------------------------------------------------------------
