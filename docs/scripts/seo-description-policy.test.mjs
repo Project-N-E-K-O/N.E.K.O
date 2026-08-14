@@ -14,6 +14,14 @@ test('short CJK descriptions produce an advisory warning', () => {
   )
 })
 
+test('description length counts Unicode code points', () => {
+  const description = `${'a'.repeat(38)}😀`
+
+  assert.equal(Array.from(description).length, 39)
+  assert.equal(description.length, 40)
+  assert.match(descriptionLengthWarning(description), /found 39$/)
+})
+
 test('descriptions within the recommended range produce no warning', () => {
   assert.equal(descriptionLengthWarning('a'.repeat(40)), null)
   assert.equal(descriptionLengthWarning('a'.repeat(180)), null)
