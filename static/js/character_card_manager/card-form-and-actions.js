@@ -1374,6 +1374,8 @@ function _panelCreateVoiceSelectUi(selectEl) {
     container.appendChild(header);
     container.appendChild(options);
 
+    let geometryAnimationFrame = null;
+
     function getItems() {
         return Array.from(options.querySelectorAll('.voice-select-option:not(.disabled)'));
     }
@@ -1449,6 +1451,7 @@ function _panelCreateVoiceSelectUi(selectEl) {
 
     function closeDropdown(restoreFocus = false) {
         const wasActive = container.classList.contains('active');
+        stopTransformGeometryTracking();
         container.classList.remove('active', 'open-up', 'open-down');
         header.setAttribute('aria-expanded', 'false');
         setOptionTabbability(false);
@@ -1473,6 +1476,7 @@ function _panelCreateVoiceSelectUi(selectEl) {
         header.setAttribute('aria-expanded', 'true');
         setOptionTabbability(true);
         applyDropdownDirection();
+        startTransformGeometryTracking();
 
         const selectedItem = options.querySelector('.voice-select-option.selected:not(.disabled)');
         if (selectedItem) selectedItem.scrollIntoView({ block: 'nearest' });
@@ -1631,6 +1635,51 @@ function _panelCreateVoiceSelectUi(selectEl) {
         applyDropdownDirection();
     }
 
+    function hasRunningAncestorTransformAnimation() {
+        for (let ancestor = container.parentElement; ancestor; ancestor = ancestor.parentElement) {
+            if (typeof ancestor.getAnimations !== 'function') continue;
+            const hasRunningTransform = ancestor.getAnimations().some(animation => {
+                if (!['pending', 'running'].includes(animation.playState)) return false;
+                if (animation.transitionProperty === 'transform') return true;
+                const keyframes = animation.effect?.getKeyframes?.() || [];
+                return keyframes.some(
+                    keyframe => Object.prototype.hasOwnProperty.call(keyframe, 'transform')
+                );
+            });
+            if (hasRunningTransform) return true;
+        }
+        return false;
+    }
+
+    function stopTransformGeometryTracking() {
+        if (geometryAnimationFrame === null) return;
+        cancelAnimationFrame(geometryAnimationFrame);
+        geometryAnimationFrame = null;
+    }
+
+    function trackTransformGeometry() {
+        geometryAnimationFrame = null;
+        if (!container.classList.contains('active')) return;
+        applyDropdownDirection();
+        if (hasRunningAncestorTransformAnimation()) {
+            geometryAnimationFrame = requestAnimationFrame(trackTransformGeometry);
+        }
+    }
+
+    function startTransformGeometryTracking() {
+        if (geometryAnimationFrame !== null || !container.classList.contains('active')) return;
+        geometryAnimationFrame = requestAnimationFrame(trackTransformGeometry);
+    }
+
+    function handleAncestorTransformTransition(event) {
+        if (event.propertyName !== 'transform'
+            || !(event.target instanceof Element)
+            || !event.target.contains(container)) {
+            return;
+        }
+        startTransformGeometryTracking();
+    }
+
     header.addEventListener('click', toggleDropdown);
     header.addEventListener('keydown', event => {
         if (event.key === 'Enter' || event.key === ' ') {
@@ -1647,6 +1696,9 @@ function _panelCreateVoiceSelectUi(selectEl) {
     document.addEventListener('click', handleDocumentClick);
     document.addEventListener('keydown', handleDocumentKeydown);
     document.addEventListener('scroll', handleViewportChange, true);
+    document.addEventListener('transitionrun', handleAncestorTransformTransition, true);
+    document.addEventListener('transitionend', handleAncestorTransformTransition, true);
+    document.addEventListener('transitioncancel', handleAncestorTransformTransition, true);
     window.addEventListener('resize', handleViewportChange);
 
     refresh();
@@ -1665,6 +1717,9 @@ function _panelCreateVoiceSelectUi(selectEl) {
             document.removeEventListener('click', handleDocumentClick);
             document.removeEventListener('keydown', handleDocumentKeydown);
             document.removeEventListener('scroll', handleViewportChange, true);
+            document.removeEventListener('transitionrun', handleAncestorTransformTransition, true);
+            document.removeEventListener('transitionend', handleAncestorTransformTransition, true);
+            document.removeEventListener('transitioncancel', handleAncestorTransformTransition, true);
             window.removeEventListener('resize', handleViewportChange);
             container.remove();
         }

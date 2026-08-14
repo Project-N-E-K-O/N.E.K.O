@@ -441,13 +441,13 @@ def test_character_card_manager_open_voice_dropdown_stays_above_adjacent_rows(
 
     state = mock_page.evaluate(
         """
-        () => {
+        async () => {
             const wrapper = document.createElement('div');
             wrapper.className = 'catgirl-panel-wrapper phase-expand';
             wrapper.style.cssText = [
                 'position: fixed',
                 'left: 120px',
-                'top: 80px',
+                'top: calc(100vh - 380px)',
                 'width: 720px',
                 'height: 400px',
                 'max-height: none',
@@ -473,7 +473,7 @@ def test_character_card_manager_open_voice_dropdown_stays_above_adjacent_rows(
 
             const scrollport = document.createElement('div');
             scrollport.className = 'panel-tab-content active';
-            scrollport.style.cssText = 'height: 320px; overflow-y: auto; padding: 0;';
+            scrollport.style.cssText = 'height: 400px; overflow-y: auto; padding: 0;';
             host.appendChild(scrollport);
 
             const form = document.createElement('form');
@@ -511,11 +511,11 @@ def test_character_card_manager_open_voice_dropdown_stays_above_adjacent_rows(
                 return { wrapper, ui };
             }
 
-            const language = appendSelectRow('language-preference-row', ['zh-CN']);
             const voice = appendSelectRow(
                 'voice-row',
                 Array.from({ length: 12 }, (_, index) => `voice-${index}`)
             );
+            const language = appendSelectRow('language-preference-row', ['zh-CN']);
 
             const bottomSpacer = document.createElement('div');
             bottomSpacer.style.height = '320px';
@@ -525,7 +525,7 @@ def test_character_card_manager_open_voice_dropdown_stays_above_adjacent_rows(
             const scrollportBefore = scrollport.getBoundingClientRect();
             const headerBefore = header.getBoundingClientRect();
             scrollport.scrollTop += (
-                headerBefore.bottom - (scrollportBefore.bottom - 24 * 0.95)
+                headerBefore.top - (scrollportBefore.top + 140 * 0.95)
             ) / 0.95;
 
             header.click();
@@ -545,32 +545,47 @@ def test_character_card_manager_open_voice_dropdown_stays_above_adjacent_rows(
                     (overlapTop + overlapBottom) / 2
                 )
                 : null;
-            const opensUp = voice.ui.container.classList.contains('open-up');
+            const opensDown = voice.ui.container.classList.contains('open-down');
             const optionsOwnsOverlap = Boolean(topmost && options.contains(topmost));
             const optionsStayInsideScrollport = optionsRect.top >= scrollportRect.top - 1
-                && optionsRect.bottom <= scrollportRect.bottom + 1;
+                && optionsRect.bottom <= Math.min(scrollportRect.bottom, window.innerHeight) + 1;
+            const maxHeightBeforeScale = Number.parseFloat(options.style.maxHeight);
 
-            wrapper.style.transform = 'scale(1)';
             wrapper.getBoundingClientRect();
+            wrapper.style.transition = 'transform 80ms linear';
+            wrapper.style.transform = 'scale(1)';
+            const transformTransition = wrapper.getAnimations().find(
+                animation => animation.transitionProperty === 'transform'
+            );
+            if (!transformTransition) throw new Error('Expected wrapper transform transition');
+            await transformTransition.finished;
+            await new Promise(resolve => requestAnimationFrame(resolve));
+
             const optionsAfterScale = options.getBoundingClientRect();
             const scrollportAfterScale = scrollport.getBoundingClientRect();
+            const maxHeightAfterScale = Number.parseFloat(options.style.maxHeight);
             const staysInsideAfterScaleEnd = optionsAfterScale.top >= scrollportAfterScale.top - 1
-                && optionsAfterScale.bottom <= scrollportAfterScale.bottom + 1;
+                && optionsAfterScale.bottom
+                    <= Math.min(scrollportAfterScale.bottom, window.innerHeight) + 1;
 
             const headerAfterScale = header.getBoundingClientRect();
-            scrollport.scrollTop += headerAfterScale.top - (scrollportAfterScale.top + 40);
+            scrollport.scrollTop += headerAfterScale.top
+                - (Math.min(scrollportAfterScale.bottom, window.innerHeight) - 60);
             scrollport.dispatchEvent(new Event('scroll'));
             const optionsAfterScroll = options.getBoundingClientRect();
 
             return {
-                opensUp,
+                opensDown,
                 hasOverlap,
                 optionsOwnsOverlap,
                 optionsStayInsideScrollport,
                 staysInsideAfterScaleEnd,
-                repositionsDownAfterScroll: voice.ui.container.classList.contains('open-down'),
+                maxHeightBeforeScale,
+                maxHeightAfterScale,
+                repositionsUpAfterScroll: voice.ui.container.classList.contains('open-up'),
                 staysInsideScrollportAfterScroll: optionsAfterScroll.top >= scrollportRect.top - 1
-                    && optionsAfterScroll.bottom <= scrollportRect.bottom + 1,
+                    && optionsAfterScroll.bottom
+                        <= Math.min(scrollportAfterScale.bottom, window.innerHeight) + 1,
                 activeRowZIndex: Number.parseInt(getComputedStyle(voice.wrapper).zIndex, 10),
                 languageRowZIndex: Number.parseInt(getComputedStyle(language.wrapper).zIndex, 10)
             };
@@ -578,13 +593,14 @@ def test_character_card_manager_open_voice_dropdown_stays_above_adjacent_rows(
         """
     )
 
-    assert state["opensUp"] is True, state
+    assert state["opensDown"] is True, state
     assert state["hasOverlap"] is True, state
     assert state["activeRowZIndex"] > state["languageRowZIndex"], state
     assert state["optionsOwnsOverlap"] is True, state
     assert state["optionsStayInsideScrollport"] is True, state
     assert state["staysInsideAfterScaleEnd"] is True, state
-    assert state["repositionsDownAfterScroll"] is True, state
+    assert state["maxHeightAfterScale"] < state["maxHeightBeforeScale"], state
+    assert state["repositionsUpAfterScroll"] is True, state
     assert state["staysInsideScrollportAfterScroll"] is True, state
 
 
