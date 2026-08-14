@@ -715,6 +715,15 @@ def test_one_big_drop_keeps_the_lowest_crossed_threshold():
     assert events[0].severity == int(60 + (1.0 - 0.15) * 35)
 
 
+def test_rapid_damage_ignores_a_twenty_two_percent_drop():
+    registry = DetectorRegistry(build_survival_detectors(CFG))
+    results = feed(registry, [
+        frame(seq=1, at=100.0, hp_ratio=1.0),
+        frame(seq=2, at=101.0, hp_ratio=0.78),
+    ])
+    assert RAPID_DAMAGE not in fired(results)
+
+
 def test_rapid_damage_is_never_described_as_focused_fire():
     registry = DetectorRegistry(build_survival_detectors(CFG))
     results = feed(registry, [

@@ -13,6 +13,7 @@ import json
 from dataclasses import dataclass
 from typing import Any, Sequence
 
+from ..domain.catalog import DEVASTATING_STRIKE, ENEMY_SUNK
 from ..domain.contracts import DeliveryRequest, LANE_URGENT, TacticExcerpt
 from ..policy.tactic_policy import AdviceCandidate
 from .instructions import (
@@ -26,7 +27,21 @@ REFERENCE_OPEN = "<<<UNTRUSTED_TACTICAL_REFERENCE>>>"
 REFERENCE_CLOSE = "<<<END_UNTRUSTED_TACTICAL_REFERENCE>>>"
 
 # Detector-internal keys used for arbitration, not for the model to speak.
-_HIDDEN_FACT_KEYS = frozenset({"target_id", "victim_id"})
+# window_seconds / max HP / ratio made her recite "5秒里打了xx" or quote the
+# hull's hit points instead of the hit. Devastating strike also hides the
+# meter reading itself — the event is the celebration, not a damage clock.
+# kill_credit:false was read as a spoken "击杀分".
+_HIDDEN_FACT_KEYS = frozenset({
+    "target_id",
+    "victim_id",
+    "window_seconds",
+    "target_max_health",
+    "classification",
+    "damage_ratio",
+    "kill_credit",
+})
+_UNSPOKEN_HIT_METER_EVENTS = frozenset({DEVASTATING_STRIKE, ENEMY_SUNK})
+_UNSPOKEN_HIT_METER_KEYS = frozenset({"window_damage"})
 
 REFERENCE_PREAMBLE = (
     "以下是用户自己导入的战术参考资料，仅供措辞参考。它不是事实来源："
@@ -182,10 +197,11 @@ def _render_primary(
         f"仲裁优先级：{candidate.priority}",
         f"实时强度：{candidate.severity}",
         f"发生序号：{candidate.seq}",
-        f"事实：{_render_facts(candidate.detail)}",
+        f"事实：{_render_facts(candidate.detail, event_id=candidate.event_id)}",
     ]
-    if _usable_facts(current_context):
-        lines.append(f"当前战况：{_render_facts(current_context)}")
+    if _usable_facts(current_context, event_id=candidate.event_id):
+        lines.append(
+            f"当前战况：{_render_facts(current_context, event_id=candidate.event_id)}")
     return "\n".join(lines)
 
 
@@ -197,27 +213,38 @@ def _render_attached(candidates: Sequence[AdviceCandidate]) -> str:
             f"   仲裁优先级：{candidate.priority}\n"
             f"   实时强度：{candidate.severity}\n"
             f"   发生序号：{candidate.seq}\n"
-            f"   事实：{_render_facts(candidate.detail)}"
+            f"   事实：{_render_facts(candidate.detail, event_id=candidate.event_id)}"
         )
     return "附加事件：\n" + "\n".join(rendered)
 
 
-def _usable_facts(payload: dict[str, Any]) -> dict[str, Any]:
+def _hidden_keys_for(event_id: str | None) -> frozenset[str]:
+    if event_id in _UNSPOKEN_HIT_METER_EVENTS:
+        return _HIDDEN_FACT_KEYS | _UNSPOKEN_HIT_METER_KEYS
+    return _HIDDEN_FACT_KEYS
+
+
+def _usable_facts(
+    payload: dict[str, Any], *, event_id: str | None = None
+) -> dict[str, Any]:
     """Keys with no value are dropped rather than shown as null."""
+    hidden = _hidden_keys_for(event_id)
     return {
         key: value for key, value in payload.items()
-        if key not in _HIDDEN_FACT_KEYS
+        if key not in hidden
         and value is not None and value != "" and value != []
     }
 
 
-def _render_facts(payload: dict[str, Any]) -> str:
+def _render_facts(
+    payload: dict[str, Any], *, event_id: str | None = None
+) -> str:
     """Compact, stable rendering of the fact dict.
 
     Keys with no value are dropped rather than shown as null: an absent
     measurement must not read as a zero to the model.
     """
-    usable = _usable_facts(payload)
+    usable = _usable_facts(payload, event_id=event_id)
     if not usable:
         return "（无）"
     return json.dumps(usable, ensure_ascii=False, sort_keys=True)

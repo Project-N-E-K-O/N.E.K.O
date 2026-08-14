@@ -24,6 +24,7 @@ from plugin.plugins.neko_wows.domain.snapshot import (
     AVAIL_UNKNOWN,
     AVAIL_UNSUPPORTED,
     CORE_DOMAINS,
+    DOMAIN_DAMAGE,
     DOMAIN_OBJECTS,
     FUTURE_DOMAINS,
     STATUS_LIVE,
@@ -226,6 +227,73 @@ def test_full_hp_burst_is_devastating_even_if_the_hull_vanishes():
     event = emitted(results, DEVASTATING_STRIKE)
     assert event.detail["window_damage"] == 40_000
     assert event.detail["damage_ratio"] == pytest.approx(1.0)
+
+
+def _dark_ghost(base: Ship) -> Ship:
+    """8111 灭点 row: still flagged alive, no live HP, last-seen only."""
+    return replace(
+        base,
+        visible=False,
+        health=None,
+        hp_ratio=None,
+        stale_seconds=3.0,
+    )
+
+
+def test_unspotted_ghost_full_hp_salvo_is_devastating():
+    """A last-seen marker is not a live HP bar.
+
+    8111 keeps 灭点 hulls in objects as alive=True with health omitted.
+    Covering last-seen remaining in one window is still a finishing blow.
+    """
+    spotted = enemy(max_health=40_000.0, health=40_000.0)
+    ghost = _dark_ghost(spotted)
+    results = run_frames(
+        frame(1, 100.0, {3002: 0}, spotted),
+        frame(2, 101.0, {3002: 0}, ghost),
+        frame(3, 102.0, {3002: 40_000}, ghost),
+    )
+
+    assert event_ids(results) == [ENEMY_SUNK, DEVASTATING_STRIKE]
+    event = emitted(results, DEVASTATING_STRIKE)
+    assert event.detail["window_damage"] == 40_000
+    assert event.detail["target_sunk"] is True
+
+
+def test_unspotted_ghost_with_live_ui_hp_is_not_devastating():
+    """Team-panel HP on a dark hull still proves the ship is afloat."""
+    spotted = enemy(max_health=40_000.0, health=40_000.0)
+    ghost = replace(
+        spotted,
+        visible=False,
+        health=25_000.0,
+        hp_ratio=0.625,
+        stale_seconds=3.0,
+    )
+    results = run_frames(
+        frame(1, 100.0, {3002: 0}, spotted),
+        frame(2, 101.0, {3002: 0}, ghost),
+        frame(3, 102.0, {3002: 40_000}, ghost),
+        frame(4, 107.0, {3002: 40_000}, ghost),
+    )
+
+    assert DEVASTATING_STRIKE not in event_ids(results)
+    assert ENEMY_SUNK not in event_ids(results)
+    assert event_ids(results) == [HIGH_DAMAGE]
+
+
+def test_unspotted_partial_salvo_without_death_is_not_a_sink():
+    spotted = enemy(max_health=40_000.0, health=40_000.0)
+    ghost = _dark_ghost(spotted)
+    results = run_frames(
+        frame(1, 100.0, {3002: 0}, spotted),
+        frame(2, 101.0, {3002: 0}, ghost),
+        frame(3, 102.0, {3002: 20_000}, ghost),
+        frame(4, 107.0, {3002: 20_000}, ghost),
+    )
+
+    assert event_ids(results) == [HIGH_DAMAGE]
+    assert emitted(results, HIGH_DAMAGE).detail.get("target_sunk") is False
 
 
 def test_zero_health_without_alive_false_still_counts_as_devastating():
@@ -903,3 +971,75 @@ def test_realistic_nested_8111_payload_reaches_the_arbiter_once():
     assert praise.detail["window_damage"] == 20_000
     assert candidate.detail["damage_ratio"] == pytest.approx(0.5)
     assert candidate.detail["classification"] == "telemetry_estimate"
+
+
+def test_late_local_identity_rebaselines_accumulated_damage():
+    cfg = WowsConfig()
+    adapter = WowsSchemaAdapter()
+    builder = FactBuilder(cfg)
+    registry = DetectorRegistry(build_damage_detectors(cfg))
+    previous = None
+    results = []
+
+    frames = [
+        (100.0, wire_payload(seq=1, damage=50_000, alive=True)),
+        (101.0, wire_payload(seq=2, damage=50_000, alive=True)),
+        (106.0, wire_payload(seq=3, damage=50_000, alive=True)),
+        (107.0, wire_payload(seq=4, damage=70_000, alive=True)),
+        (112.0, wire_payload(seq=5, damage=70_000, alive=True)),
+    ]
+    frames[0][1]["self"].pop("playerId")
+
+    for at, payload in frames:
+        snapshot = adapter.parse(payload, transport="ws", received_at=at)
+        current = (snapshot, builder.build(snapshot))
+        results.append(registry.feed(previous, current, cfg=cfg))
+        previous = current
+
+    assert results[0].blocked[0].missing == (DOMAIN_DAMAGE,)
+    assert event_ids(results[:-1]) == []
+    assert event_ids(results[-1:]) == [HIGH_DAMAGE]
+    assert emitted(results, HIGH_DAMAGE).detail["window_damage"] == 20_000
+
+
+def _ghost_object(*, health=None, last_health=40_000, alive=True):
+    obj = {
+        "uiId": 2,
+        "playerId": 3002,
+        "teamId": 1,
+        "relation": 2,
+        "type": "Cruiser",
+        "name": "Zao",
+        "alive": alive,
+        "visible": False,
+        "lastX": 200.0,
+        "lastZ": 0.0,
+        "lastHealth": last_health,
+        "staleSeconds": 3.0,
+        "maxHealth": 40_000,
+    }
+    if health is not None:
+        obj["health"] = health
+    return obj
+
+
+def test_8111_dark_ghost_payload_promotes_to_devastating():
+    """Wire shape 8111 emits for 灭点: alive ghost, lastHealth only, named salvo."""
+    cfg = WowsConfig()
+    adapter = WowsSchemaAdapter()
+    builder = FactBuilder(cfg)
+    registry = DetectorRegistry(build_damage_detectors(cfg))
+    previous = None
+    events = []
+    lit = wire_payload(seq=1, damage=None, alive=True)
+    dark = wire_payload(seq=2, damage=None, alive=True)
+    dark["objects"] = [_ghost_object()]
+    kill = wire_payload(seq=3, damage=40_000, alive=True)
+    kill["objects"] = [_ghost_object()]
+    for at, payload in ((100.0, lit), (101.0, dark), (102.0, kill)):
+        snapshot = adapter.parse(payload, transport="ws", received_at=at)
+        current = (snapshot, builder.build(snapshot))
+        result = registry.feed(previous, current, cfg=cfg)
+        events.extend(result.events)
+        previous = current
+    assert [event.event_id for event in events] == [ENEMY_SUNK, DEVASTATING_STRIKE]

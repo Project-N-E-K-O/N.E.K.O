@@ -84,7 +84,7 @@ observability_max_events = 120
 # 检测阈值（米）。8111_for_wows 线上坐标是 BigWorld（×30 → 米），
 # schema_adapter 入站时已换算，这里的阈值按米理解。
 low_health_ratios = [0.35, 0.15]
-rapid_damage_ratio = 0.12
+rapid_damage_ratio = 0.23
 rapid_damage_window_seconds = 3.0
 enemy_close_range_m = 8000.0
 threat_scan_range_m = 12000.0

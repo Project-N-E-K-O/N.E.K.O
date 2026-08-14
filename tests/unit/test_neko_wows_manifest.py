@@ -238,6 +238,8 @@ def test_the_manifest_section_parses_into_the_config(manifest):
     assert cfg.devastating_strike_ratio_threshold == 0.50
     assert cfg.enemy_sunk_min_absolute_threshold == 3_000.0
     assert cfg.enemy_sunk_min_ratio_threshold == 0.05
+    assert cfg.rapid_damage_ratio == 0.23
+    assert WowsConfig().rapid_damage_ratio == 0.23
 
 
 def test_ship_catalog_config_defaults_are_offline_safe():

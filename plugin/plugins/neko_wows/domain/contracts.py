@@ -123,7 +123,7 @@ class WowsConfig:
     observability_max_events: int = 120
 
     low_health_ratios: tuple[float, ...] = (0.35, 0.15)
-    rapid_damage_ratio: float = 0.12
+    rapid_damage_ratio: float = 0.23
     rapid_damage_window_seconds: float = 3.0
     enemy_close_range_m: float = 8000.0
     threat_scan_range_m: float = 12000.0
@@ -259,7 +259,7 @@ class WowsConfig:
             if cleaned:
                 cfg.low_health_ratios = tuple(cleaned)
 
-        cfg.rapid_damage_ratio = number("rapid_damage_ratio", 0.12, 0.01, 0.9)
+        cfg.rapid_damage_ratio = number("rapid_damage_ratio", 0.23, 0.01, 0.9)
         cfg.rapid_damage_window_seconds = number(
             "rapid_damage_window_seconds", 3.0, 0.2, 60.0)
         cfg.enemy_close_range_m = number("enemy_close_range_m", 8000.0, 500.0, 50000.0)

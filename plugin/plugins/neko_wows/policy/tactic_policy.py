@@ -39,15 +39,16 @@ from ..detectors._base import GameEvent
 # them the bulk of the message, and the model started reciting them as content.
 _CLAIM_LIMITS: dict[str, tuple[str, ...]] = {
     HIGH_DAMAGE: (
-        "只能说同一目标在短时间内承受了较高伤害；不能说成一发、单轮齐射、特定弹种或击杀。",
+        "只能说同一目标刚挨了较高伤害；不要报窗口秒数或「几秒里打了多少」，不能说成一发、单轮齐射、特定弹种或击杀。",
     ),
     DEVASTATING_STRIKE: (
-        "只能说达到毁灭打击级别；不能说成一发或单轮齐射，不能声称游戏已授予毁灭打击成就、勋带或奖章，也不能虚构武器来源。",
+        "用一两句夸奖这次打出了毁灭打击级别；不要念成「几秒里打了多少伤害」这种读表，也不要报具体伤害数字。",
+        "不能说成一发或单轮齐射，不能声称游戏已授予毁灭打击成就、勋带或奖章，也不能虚构武器来源。",
     ),
     ENEMY_SUNK: (
         "这是夸奖事件：用一两句高兴或佩服的话祝贺击沉，不要改成战术警告或复盘。",
         "若同时附带伤害事件，先祝贺击沉，伤害只作点缀。",
-        "可以说这艘敌舰已经沉了；遥测没有击杀归属，不要说拿到击杀数、抢人头，也不要声称游戏发了击杀勋带或成就。",
+        "可以说这艘敌舰已经沉了；不要声称游戏发了勋带或成就。",
     ),
     RAPID_DAMAGE: (
         "只能说“掉血很快 / 正在快速受伤”，不能说“被集火”或推断攻击者数量。",
@@ -203,7 +204,6 @@ class WowsTacticPolicy:
                 else None
             ),
             "nearest_enemy_m": round(nearest.distance_m) if nearest else None,
-            "damage_inflicted": round(facts.damage_inflicted) if facts.damage_inflicted else None,
             "sourced_domains": list(facts.sourced_domains),
         }
 

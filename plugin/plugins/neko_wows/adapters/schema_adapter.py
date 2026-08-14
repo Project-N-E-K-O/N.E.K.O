@@ -179,6 +179,15 @@ class WowsSchemaAdapter:
         instance_id = str(payload.get("instanceId") or "")
         battle_id = _text(payload.get("battleId"))
         self._remember_battle(instance_id, battle_id)
+        body = self._body(payload)
+        own_ship = body.get("self_ship")
+        if (
+            availability.get(DOMAIN_DAMAGE) == AVAIL_AVAILABLE
+            and (own_ship is None or own_ship.player_id is None)
+        ):
+            # The damage table is keyed by attacker playerId. Until our own id
+            # exists, a cumulative total cannot be attributed safely.
+            availability[DOMAIN_DAMAGE] = AVAIL_UNKNOWN
         return WowsSnapshot(
             service_id=str(payload.get("serviceId") or ""),
             api_version=api_version,
@@ -198,7 +207,7 @@ class WowsSchemaAdapter:
             capabilities=capabilities,
             availability=availability,
             extensions=dict(payload.get("extensions") or {}),
-            **self._body(payload),
+            **body,
             received_at=now,
             transport=transport,
             epoch=epoch,
@@ -233,6 +242,12 @@ class WowsSchemaAdapter:
         capabilities = {domain: True for domain in CORE_DOMAINS}
         capabilities.update({domain: False for domain in FUTURE_DOMAINS})
         availability = self._derive_availability(body, status)
+        own_ship = body.get("self_ship")
+        if (
+            availability.get(DOMAIN_DAMAGE) == AVAIL_AVAILABLE
+            and (own_ship is None or own_ship.player_id is None)
+        ):
+            availability[DOMAIN_DAMAGE] = AVAIL_UNKNOWN
 
         return WowsSnapshot(
             service_id="",

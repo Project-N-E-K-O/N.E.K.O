@@ -335,6 +335,11 @@ class DamageBurstDetector(Detector):
             health = self._valid_total(ship.health)
             if health is not None:
                 return health > 0
+            # No live HP reading. A dark last-known (灭点) marker is not a
+            # hull bar — treating alive=True as "still afloat" blocked
+            # finishing blows against unspotted ships.
+            if not ship.visible:
+                return False
             return ship.alive is not False
         return False
 
