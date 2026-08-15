@@ -26,6 +26,7 @@ _MARKET_PUBLICATION_URL = (
 )
 _RELEASE_CHECK_SUFFIX = ".market-release-check.txt"
 _MARKET_EVIDENCE_NAME = "market-evidence.json"
+_RELEASE_RUFF_TIMEOUT_SECONDS = 120
 
 
 def _tri(english: str, chinese: str, japanese: str) -> str:
@@ -370,28 +371,46 @@ def _ensure_head_pushed(plugin_dir: Path, *, head: str) -> None:
 
 
 def _ensure_release_ruff_passes(plugin_dir: Path) -> None:
-    completed = subprocess.run(
-        [
-            "uvx",
-            "ruff==0.12.4",
-            "check",
-            "--ignore-noqa",
-            "--isolated",
-            "--target-version",
-            "py311",
-            "--line-length",
-            "120",
-            "--select",
-            "E4,E7,E9,F,I",
-            "--exclude",
-            "vendor",
-            ".",
-        ],
-        cwd=plugin_dir,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-    )
+    try:
+        completed = subprocess.run(
+            [
+                "uvx",
+                "ruff==0.12.4",
+                "check",
+                "--ignore-noqa",
+                "--isolated",
+                "--target-version",
+                "py311",
+                "--line-length",
+                "120",
+                "--select",
+                "E4,E7,E9,F,I",
+                "--exclude",
+                "vendor",
+                ".",
+            ],
+            cwd=plugin_dir,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=_RELEASE_RUFF_TIMEOUT_SECONDS,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            _tri(
+                "uvx executable was not found; install uv before publishing",
+                "未找到 uvx 可执行文件；请先安装 uv 再发布",
+                "uvx 実行ファイルが見つかりません。公開前に uv をインストールしてください",
+            )
+        ) from exc
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            _tri(
+                "Ruff check timed out after 120 seconds",
+                "Ruff 检查在 120 秒后超时",
+                "Ruff チェックが 120 秒でタイムアウトしました",
+            )
+        ) from exc
     if completed.returncode == 0:
         return
     output = completed.stdout.strip()

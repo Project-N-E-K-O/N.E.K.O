@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -19,6 +20,7 @@ from .validate_cmd import validate_plugin_dir
 
 Issue = tuple[str, str]
 _MARKET_REPO_PREFIX = "n.e.k.o_plugin_"
+_MARKET_PLUGIN_ID_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
 def _tri(english: str, chinese: str, japanese: str) -> str:
@@ -142,6 +144,17 @@ def _diagnose_market_release(
     ref_name: str | None = None,
 ) -> list[Issue]:
     issues: list[Issue] = []
+    if _MARKET_PLUGIN_ID_RE.fullmatch(plugin_id) is None:
+        issues.append(
+            (
+                "error",
+                _tri(
+                    f"Market plugin ID must match ^[a-z][a-z0-9_]*$, got {plugin_id}",
+                    f"Market 插件 ID 必须符合 ^[a-z][a-z0-9_]*$，当前为 {plugin_id}",
+                    f"Market プラグイン ID は ^[a-z][a-z0-9_]*$ に一致する必要があります。現在値: {plugin_id}",
+                ),
+            )
+        )
     expected_repo = f"{_MARKET_REPO_PREFIX}{plugin_id}"
     if github_repository is None:
         github_repository = os.environ.get("GITHUB_REPOSITORY", "").strip()

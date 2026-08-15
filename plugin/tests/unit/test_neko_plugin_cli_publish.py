@@ -19,6 +19,34 @@ from tests.fake_clock import patch_module_clock
 pytestmark = pytest.mark.plugin_unit
 
 
+@pytest.fixture(autouse=True)
+def release_ruff_process(
+    monkeypatch: pytest.MonkeyPatch,
+) -> dict[str, Any]:
+    real_run = subprocess.run
+    state: dict[str, Any] = {
+        "calls": [],
+        "exception": None,
+        "returncode": 0,
+        "stdout": "",
+    }
+
+    def run(command: list[str], *args: Any, **kwargs: Any) -> Any:
+        if command[:2] == ["uvx", "ruff==0.12.4"]:
+            state["calls"].append({"command": command, "kwargs": kwargs})
+            if state["exception"] is not None:
+                raise state["exception"]
+            return subprocess.CompletedProcess(
+                command,
+                state["returncode"],
+                stdout=state["stdout"],
+            )
+        return real_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    return state
+
+
 class _RecordingClient:
     def __init__(self, *responses: httpx.Response) -> None:
         self.responses = list(responses)
@@ -528,6 +556,7 @@ def test_publish_stops_before_tag_when_ruff_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    release_ruff_process: dict[str, Any],
 ) -> None:
     plugin_dir, remote = _make_cli_publish_repo(tmp_path, monkeypatch)
     (plugin_dir / "ruff_failure.py").write_text(
@@ -542,6 +571,8 @@ def test_publish_stops_before_tag_when_ruff_fails(
     )
     client = _RecordingClient(_ready_release(release_url))
     monkeypatch.setattr(publish_cmd.httpx, "Client", lambda **_: client)
+    release_ruff_process["returncode"] = 1
+    release_ruff_process["stdout"] = "ruff_failure.py:1:7: F821 Undefined name"
 
     exit_code = neko_plugin_cli.main(
         ["publish", "github", str(plugin_dir)]
@@ -551,6 +582,64 @@ def test_publish_stops_before_tag_when_ruff_fails(
     assert _run_git(remote, "tag", "--list") == ""
     assert client.requests == []
     assert "Ruff check failed" in capsys.readouterr().err
+
+
+def test_publish_reports_missing_uvx_before_tagging(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    release_ruff_process: dict[str, Any],
+) -> None:
+    plugin_dir, remote = _make_cli_publish_repo(tmp_path, monkeypatch)
+    client = _RecordingClient(
+        _ready_release(
+            "https://github.com/neko/n.e.k.o_plugin_publish_demo/releases/tag/v0.1.0"
+        )
+    )
+    monkeypatch.setattr(publish_cmd.httpx, "Client", lambda **_: client)
+    release_ruff_process["exception"] = FileNotFoundError("uvx")
+
+    exit_code = neko_plugin_cli.main(
+        ["publish", "github", str(plugin_dir)]
+    )
+
+    assert exit_code == 1
+    assert _run_git(remote, "tag", "--list") == ""
+    assert client.requests == []
+    error = capsys.readouterr().err
+    assert "uvx executable was not found" in error
+    assert "Traceback" not in error
+
+
+def test_publish_reports_ruff_timeout_before_tagging(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    release_ruff_process: dict[str, Any],
+) -> None:
+    plugin_dir, remote = _make_cli_publish_repo(tmp_path, monkeypatch)
+    client = _RecordingClient(
+        _ready_release(
+            "https://github.com/neko/n.e.k.o_plugin_publish_demo/releases/tag/v0.1.0"
+        )
+    )
+    monkeypatch.setattr(publish_cmd.httpx, "Client", lambda **_: client)
+    release_ruff_process["exception"] = subprocess.TimeoutExpired(
+        ["uvx", "ruff==0.12.4"],
+        120,
+    )
+
+    exit_code = neko_plugin_cli.main(
+        ["publish", "github", str(plugin_dir)]
+    )
+
+    assert exit_code == 1
+    assert _run_git(remote, "tag", "--list") == ""
+    assert client.requests == []
+    assert release_ruff_process["calls"][0]["kwargs"]["timeout"] == 120
+    error = capsys.readouterr().err
+    assert "Ruff check timed out after 120 seconds" in error
+    assert "Traceback" not in error
 
 
 def test_publish_github_stops_before_tag_when_release_workflow_is_not_standard(

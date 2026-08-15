@@ -1327,6 +1327,46 @@ def test_market_release_check_enforces_repo_and_tag_conventions(
     assert "release tag v9.9.9 does not match plugin.toml version 0.1.0" in captured.err
 
 
+def test_market_release_check_rejects_legacy_non_market_plugin_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    plugin_dir = tmp_path / "n.e.k.o_plugin_market_demo"
+    assert (
+        neko_plugin_cli.main(
+            ["init", "market_demo", "--output", str(plugin_dir)]
+        )
+        == 0
+    )
+    plugin_toml = plugin_dir / "plugin.toml"
+    plugin_toml.write_text(
+        plugin_toml.read_text(encoding="utf-8").replace(
+            'id = "market_demo"',
+            'id = "Demo"',
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("GITHUB_REPOSITORY", "alice/n.e.k.o_plugin_Demo")
+    monkeypatch.setenv("GITHUB_REF_NAME", "v0.1.0")
+
+    exit_code = neko_plugin_cli.main(
+        [
+            "check",
+            str(plugin_dir),
+            "--release",
+            "--market-release",
+            "--skip-tests",
+            "--target-dir",
+            str(tmp_path / "target"),
+        ]
+    )
+
+    assert exit_code == 1
+    error = capsys.readouterr().err
+    assert "Market plugin ID must match ^[a-z][a-z0-9_]*$" in error
+
+
 def test_setup_repo_git_skips_when_inside_existing_repo(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
