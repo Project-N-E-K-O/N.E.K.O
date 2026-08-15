@@ -445,7 +445,27 @@ def _github_repository(plugin_dir: Path) -> str:
                 "公開時、Git リモート 'origin' の push URL は 1 つまでです",
             )
         )
-    push_url = push_urls[0] if push_urls else origin
+    resolved_push_urls = [
+        line.strip()
+        for line in _git(
+            plugin_dir,
+            "remote",
+            "get-url",
+            "--push",
+            "--all",
+            "origin",
+        ).splitlines()
+        if line.strip()
+    ]
+    if len(resolved_push_urls) != 1:
+        raise RuntimeError(
+            _tri(
+                "git remote 'origin' must resolve to exactly one push URL for publishing",
+                "发布时 Git 远程 'origin' 必须恰好解析出一个 push URL",
+                "公開時、Git リモート 'origin' の push URL はちょうど 1 つに解決される必要があります",
+            )
+        )
+    push_url = resolved_push_urls[0]
     push_repository = parse_github_repository_remote(push_url)
     if push_repository is None:
         raise RuntimeError(
