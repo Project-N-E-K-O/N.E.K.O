@@ -885,7 +885,10 @@ async def test_game_llm_agent_uses_cat_choice_advice_and_records_push_history(
     await asyncio.sleep(0)
     status = await agent.query_status(shared)
     assert status["pending_choice_advice"]["pre_choice_save_status"] == "not_attempted"
-    assert ctx.pushed_messages[-1]["metadata"]["kind"] == "choice_advice_request"
+    assert any(
+        item["metadata"]["kind"] == "choice_advice_request"
+        for item in ctx.pushed_messages
+    )
 
     response = await agent.send_message(shared, message="建议选择 2，右边更符合当前目标")
 
@@ -936,7 +939,10 @@ async def test_game_llm_agent_uses_cat_choice_advice_and_records_push_history(
     await agent.tick(shared_after)
     status = await agent.query_status(shared_after)
 
-    assert len(ctx.pushed_messages) == 1
+    assert all(
+        item["metadata"]["kind"] != "choice_reason"
+        for item in ctx.pushed_messages
+    )
     choice_reason_push = next(
         item for item in status["recent_pushes"] if item["kind"] == "choice_reason"
     )
@@ -2141,7 +2147,10 @@ async def test_game_llm_agent_ocr_choice_planning_accepts_two_visible_choices(
     assert fake_gateway.suggest_calls == []
     assert fake_host.started == []
     assert agent._pending_choice_advice is not None
-    assert ctx.pushed_messages[-1]["metadata"]["kind"] == "choice_advice_request"
+    assert any(
+        item["metadata"]["kind"] == "choice_advice_request"
+        for item in ctx.pushed_messages
+    )
 
 
 @pytest.mark.plugin_unit
@@ -4830,26 +4839,26 @@ async def test_game_llm_agent_ocr_transient_session_reset_preserves_summary_stat
         session_id="ocr-session-a",
         active_data_source=DATA_SOURCE_OCR_READER,
         ocr_reader_runtime=runtime,
-        snapshot=_session_state(text="scene a.", scene_id="scene-a", line_id="scene-a-line-7"),
-        history_lines=[_summary_test_line("scene-a", index) for index in range(1, 8)],
+        snapshot=_session_state(text="scene a.", scene_id="scene-a", line_id="scene-a-line-3"),
+        history_lines=[_summary_test_line("scene-a", index) for index in range(1, 4)],
     )
 
     await agent.tick(shared)
     await agent.tick(shared)
-    assert agent._scene_tracker.current_scene_lines_since_push("scene-a") == 7
+    assert agent._scene_tracker.current_scene_lines_since_push("scene-a") == 3
 
     changed_shared = _shared_state(
         mode="companion",
         session_id="ocr-session-b",
         active_data_source=DATA_SOURCE_OCR_READER,
         ocr_reader_runtime=runtime,
-        snapshot=_session_state(text="scene a.", scene_id="scene-a", line_id="scene-a-line-7"),
-        history_lines=[_summary_test_line("scene-a", index) for index in range(1, 8)],
+        snapshot=_session_state(text="scene a.", scene_id="scene-a", line_id="scene-a-line-3"),
+        history_lines=[_summary_test_line("scene-a", index) for index in range(1, 4)],
     )
     await agent.tick(changed_shared)
 
     assert agent._last_session_transition_type == "ocr_transient_session_reset"
-    assert agent._scene_tracker.current_scene_lines_since_push("scene-a") == 7
+    assert agent._scene_tracker.current_scene_lines_since_push("scene-a") == 3
 
 
 @pytest.mark.asyncio
@@ -5032,6 +5041,479 @@ async def test_game_llm_agent_summary_task_survives_ocr_transient_session_reset(
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
+async def test_scene_capsule_submits_on_initial_observation_tick(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    gateway = _FakeLLMGateway()
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(ctx),
+        logger=_Logger(),
+        llm_gateway=gateway,
+        host_adapter=_FakeHostAdapter(),
+    )
+    line = _summary_test_line("scene-first", 1)
+    shared = _shared_state(
+        mode="companion",
+        session_id="session-first",
+        snapshot=_session_state(
+            text=str(line["text"]),
+            scene_id="scene-first",
+            line_id=str(line["line_id"]),
+        ),
+        history_lines=[line],
+        history_events=[
+            _summary_test_line_event(
+                "scene-first",
+                1,
+                seq=1,
+                session_id="session-first",
+            )
+        ],
+    )
+
+    await agent.tick(shared)
+    await _drain_agent_summary_tasks(agent)
+
+    assert len(ctx.pushed_messages) == 1
+    assert ctx.pushed_messages[0]["metadata"]["kind"] == "scene_delta"
+    assert gateway.summarize_calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_consecutive_strong_ocr_session_jitter_submits_each_new_suffix_same_tick(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(ctx),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    runtime = {
+        "effective_process_name": "game.exe",
+        "effective_window_title": "Demo Game",
+        "pid": 4242,
+        "target_hwnd": 100,
+        "target_window_visible": True,
+    }
+    lines: list[dict[str, object]] = []
+
+    for index, session_id in enumerate(
+        ("ocr-session-a", "ocr-session-b", "ocr-session-c"),
+        start=1,
+    ):
+        lines.append(_summary_test_line("scene-a", index))
+        shared = _shared_state(
+            mode="companion",
+            session_id=session_id,
+            active_data_source=DATA_SOURCE_OCR_READER,
+            ocr_reader_runtime=runtime,
+            snapshot=_session_state(
+                text=str(lines[-1]["text"]),
+                scene_id="scene-a",
+                line_id=str(lines[-1]["line_id"]),
+            ),
+            history_lines=list(lines),
+            history_events=[
+                _summary_test_line_event(
+                    "scene-a",
+                    line_index,
+                    seq=line_index,
+                    session_id=session_id,
+                )
+                for line_index in range(1, index + 1)
+            ],
+        )
+        await agent.tick(shared)
+        await _drain_agent_summary_tasks(agent)
+        assert len(ctx.pushed_messages) == index
+
+    assert agent._last_session_transition_type == "ocr_transient_session_reset"
+
+    jitter_without_delta = _shared_state(
+        mode="companion",
+        session_id="ocr-session-d",
+        active_data_source=DATA_SOURCE_OCR_READER,
+        ocr_reader_runtime=runtime,
+        snapshot=_session_state(
+            text=str(lines[-1]["text"]),
+            scene_id="scene-a",
+            line_id=str(lines[-1]["line_id"]),
+        ),
+        history_lines=list(lines),
+        history_events=[
+            _summary_test_line_event(
+                "scene-a",
+                line_index,
+                seq=line_index,
+                session_id="ocr-session-d",
+            )
+            for line_index in range(1, len(lines) + 1)
+        ],
+    )
+    await agent.tick(jitter_without_delta)
+    await _drain_agent_summary_tasks(agent)
+    assert len(ctx.pushed_messages) == 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_process_name_only_ocr_jitter_can_resume_on_transition_tick(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(ctx),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    runtime = {
+        "effective_process_name": "game.exe",
+        "target_window_visible": True,
+    }
+    first_line = _summary_test_line("scene-a", 1)
+    first = _shared_state(
+        mode="companion",
+        session_id="ocr-session-a",
+        active_data_source=DATA_SOURCE_OCR_READER,
+        ocr_reader_runtime=runtime,
+        snapshot=_session_state(
+            text=str(first_line["text"]),
+            scene_id="scene-a",
+            line_id=str(first_line["line_id"]),
+        ),
+        history_lines=[first_line],
+    )
+    await agent.tick(first)
+    await _drain_agent_summary_tasks(agent)
+    assert len(ctx.pushed_messages) == 1
+
+    second_line = _summary_test_line("scene-a", 2)
+    changed = _shared_state(
+        mode="companion",
+        session_id="ocr-session-b",
+        active_data_source=DATA_SOURCE_OCR_READER,
+        ocr_reader_runtime=runtime,
+        snapshot=_session_state(
+            text=str(second_line["text"]),
+            scene_id="scene-a",
+            line_id=str(second_line["line_id"]),
+        ),
+        history_lines=[first_line, second_line],
+    )
+
+    await agent.tick(changed)
+    await _drain_agent_summary_tasks(agent)
+
+    assert agent._last_session_transition_type == "ocr_transient_session_reset"
+    assert len(ctx.pushed_messages) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_trusted_source_handoff_submits_new_suffix_on_transition_tick(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(ctx),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    memory_line = {**_summary_test_line("memory-scene", 1), "text": "overlap"}
+    memory_shared = _shared_state(
+        mode="companion",
+        session_id="memory-session",
+        active_data_source=DATA_SOURCE_MEMORY_READER,
+        snapshot=_session_state(
+            text="overlap",
+            scene_id="memory-scene",
+            line_id=str(memory_line["line_id"]),
+        ),
+        history_lines=[memory_line],
+    )
+    memory_shared["active_session_meta"] = {
+        "metadata": {
+            "game_process_name": "game.exe",
+            "game_pid": 4242,
+            "window_title": "Demo Game",
+            "target_hwnd": 100,
+        }
+    }
+    await agent.tick(memory_shared)
+    await _drain_agent_summary_tasks(agent)
+    assert len(ctx.pushed_messages) == 1
+
+    ocr_overlap = {
+        **_summary_test_line("ocr-scene", 1),
+        "line_id": "ocr-line-1",
+        "text": "overlap",
+    }
+    ocr_new = {
+        **_summary_test_line("ocr-scene", 2),
+        "line_id": "ocr-line-2",
+        "text": "new suffix",
+    }
+    ocr_shared = _shared_state(
+        mode="companion",
+        session_id="ocr-session",
+        active_data_source=DATA_SOURCE_OCR_READER,
+        ocr_reader_runtime={
+            "effective_process_name": "GAME.EXE",
+            "effective_window_title": "Demo Game",
+            "pid": 4242,
+            "target_hwnd": 100,
+            "target_window_visible": True,
+        },
+        snapshot=_session_state(
+            text="new suffix",
+            scene_id="ocr-scene",
+            line_id="ocr-line-2",
+        ),
+        history_lines=[ocr_overlap, ocr_new],
+    )
+
+    await agent.tick(ocr_shared)
+    await _drain_agent_summary_tasks(agent)
+
+    assert len(ctx.pushed_messages) == 2
+    response_target = str(ctx.pushed_messages[-1]["content"]).split(
+        "本次回应对象：", 1
+    )[-1]
+    assert "new suffix" in response_target
+    assert "overlap" not in response_target
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_conflicting_reader_handoff_waits_for_next_tick(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(ctx),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    first_line = _summary_test_line("scene-a", 1)
+    ocr_shared = _shared_state(
+        mode="companion",
+        game_id="game-a",
+        session_id="ocr-session",
+        active_data_source=DATA_SOURCE_OCR_READER,
+        ocr_reader_runtime={
+            "effective_process_name": "game-a.exe",
+            "effective_window_title": "Game A",
+            "pid": 100,
+            "target_hwnd": 1000,
+            "target_window_visible": True,
+        },
+        snapshot=_session_state(
+            text=str(first_line["text"]),
+            scene_id="scene-a",
+            line_id=str(first_line["line_id"]),
+        ),
+        history_lines=[first_line],
+    )
+    await agent.tick(ocr_shared)
+    await _drain_agent_summary_tasks(agent)
+    assert len(ctx.pushed_messages) == 1
+
+    next_line = _summary_test_line("scene-b", 1)
+    memory_shared = _shared_state(
+        mode="choice_advisor",
+        game_id="game-b",
+        session_id="memory-session",
+        active_data_source=DATA_SOURCE_MEMORY_READER,
+        snapshot=_session_state(
+            text=str(next_line["text"]),
+            scene_id="scene-b",
+            line_id=str(next_line["line_id"]),
+        ),
+        history_lines=[next_line],
+    )
+    memory_shared["active_session_meta"] = {
+        "metadata": {
+            "game_process_name": "game-b.exe",
+            "game_pid": 200,
+            "window_title": "Game B",
+            "target_hwnd": 2000,
+        }
+    }
+    strategy_calls: list[str] = []
+    monkeypatch.setattr(
+        agent,
+        "_build_scene_strategy",
+        lambda _shared, *, now: strategy_calls.append(str(now)) or None,
+    )
+
+    await agent.tick(memory_shared)
+    await _drain_agent_summary_tasks(agent)
+    assert agent._last_session_transition_reason == "trusted_reader_replaced_ocr_session"
+    assert len(ctx.pushed_messages) == 1
+    assert strategy_calls == []
+
+    await agent.tick(memory_shared)
+    await _drain_agent_summary_tasks(agent)
+    assert len(ctx.pushed_messages) == 2
+    assert len(strategy_calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_unknown_ocr_reset_blocks_one_tick_before_trusted_observation_resumes(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(ctx),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    first_line = _summary_test_line("scene-a", 1)
+    first = _shared_state(
+        mode="companion",
+        session_id="ocr-session-a",
+        active_data_source=DATA_SOURCE_OCR_READER,
+        snapshot=_session_state(
+            text=str(first_line["text"]),
+            scene_id="scene-a",
+            line_id=str(first_line["line_id"]),
+        ),
+        history_lines=[first_line],
+    )
+    await agent.tick(first)
+    await _drain_agent_summary_tasks(agent)
+    assert len(ctx.pushed_messages) == 1
+
+    second_line = _summary_test_line("scene-a", 2)
+    changed = _shared_state(
+        mode="companion",
+        session_id="ocr-session-b",
+        active_data_source=DATA_SOURCE_OCR_READER,
+        snapshot=_session_state(
+            text=str(second_line["text"]),
+            scene_id="scene-a",
+            line_id=str(second_line["line_id"]),
+        ),
+        history_lines=[first_line, second_line],
+    )
+    await agent.tick(changed)
+    await _drain_agent_summary_tasks(agent)
+    assert agent._last_session_transition_type == "unknown_session_reset"
+    assert agent._session_transition_actuation_blocked is True
+    assert len(ctx.pushed_messages) == 1
+
+    await agent.tick(changed)
+    await _drain_agent_summary_tasks(agent)
+    assert agent._session_transition_actuation_blocked is False
+    assert len(ctx.pushed_messages) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_set_standby_initial_observation_has_no_capsule_side_effect(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(ctx),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    line = _summary_test_line("scene-a", 1)
+    shared = _shared_state(
+        mode="companion",
+        session_id="session-a",
+        snapshot=_session_state(
+            text=str(line["text"]),
+            scene_id="scene-a",
+            line_id=str(line["line_id"]),
+        ),
+        history_lines=[line],
+    )
+
+    result = await agent.set_standby(shared, standby=True)
+    await _drain_agent_summary_tasks(agent)
+
+    assert result["status"] == "standby"
+    assert agent._explicit_standby is True
+    assert ctx.pushed_messages == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_untrusted_same_session_retires_pending_capsule(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(ctx),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    shared = _shared_state(
+        mode="companion",
+        session_id="ocr-session",
+        active_data_source=DATA_SOURCE_OCR_READER,
+        ocr_reader_runtime={"effective_process_name": "game.exe"},
+    )
+    await agent.tick(shared)
+    await _drain_agent_summary_tasks(agent)
+
+    never = asyncio.Event()
+
+    async def _pending_capsule() -> bool:
+        await never.wait()
+        return True
+
+    task = asyncio.create_task(_pending_capsule())
+    event_key = "pending-event"
+    observation_epoch = agent._scene_capsule_observation_epoch
+    agent._scene_capsule_tasks.add(task)
+    agent._scene_capsule_task_meta[task] = {
+        "event_keys": [event_key],
+        "event_versions": {event_key: observation_epoch},
+    }
+    agent._scene_capsule_reservations.add(event_key)
+    untrusted = {
+        **shared,
+        "ocr_capture_content_trusted": False,
+    }
+
+    await agent.tick(untrusted)
+    await asyncio.gather(task, return_exceptions=True)
+
+    assert task.cancelled()
+    assert agent._scene_capsule_tasks == set()
+    assert agent._scene_capsule_retired_event_versions[event_key] == observation_epoch
+    assert agent._scene_capsule_input_marker == ""
+
+    await agent.tick(shared)
+    await _drain_agent_summary_tasks(agent)
+    assert agent._scene_capsule_observation_epoch > observation_epoch
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
 async def test_game_llm_agent_unknown_session_reset_preserves_summary_but_blocks_actuation(
     tmp_path: Path,
 ) -> None:
@@ -5048,25 +5530,25 @@ async def test_game_llm_agent_unknown_session_reset_preserves_summary_but_blocks
         mode="choice_advisor",
         session_id="ocr-session-a",
         active_data_source=DATA_SOURCE_OCR_READER,
-        snapshot=_session_state(text="scene a.", scene_id="scene-a", line_id="scene-a-line-7"),
-        history_lines=[_summary_test_line("scene-a", index) for index in range(1, 8)],
+        snapshot=_session_state(text="scene a.", scene_id="scene-a", line_id="scene-a-line-3"),
+        history_lines=[_summary_test_line("scene-a", index) for index in range(1, 4)],
     )
 
     await agent.tick(shared)
     await agent.tick(shared)
-    assert agent._scene_tracker.current_scene_lines_since_push("scene-a") == 7
+    assert agent._scene_tracker.current_scene_lines_since_push("scene-a") == 3
 
     changed_shared = _shared_state(
         mode="choice_advisor",
         session_id="ocr-session-b",
         active_data_source=DATA_SOURCE_OCR_READER,
-        snapshot=_session_state(text="scene a.", scene_id="scene-a", line_id="scene-a-line-7"),
-        history_lines=[_summary_test_line("scene-a", index) for index in range(1, 8)],
+        snapshot=_session_state(text="scene a.", scene_id="scene-a", line_id="scene-a-line-3"),
+        history_lines=[_summary_test_line("scene-a", index) for index in range(1, 4)],
     )
     status = await agent.query_status(changed_shared)
 
     assert agent._last_session_transition_type == "unknown_session_reset"
-    assert agent._scene_tracker.current_scene_lines_since_push("scene-a") == 7
+    assert agent._scene_tracker.current_scene_lines_since_push("scene-a") == 3
     assert status["session_transition_actuation_blocked"] is True
     assert status["last_session_transition_type"] == "unknown_session_reset"
 
@@ -5112,6 +5594,10 @@ async def test_game_llm_agent_pushes_context_summary_when_stage_changes_without_
             history_lines=stable_lines,
         )
     )
+    await _drain_agent_summary_tasks(agent)
+    assert len(ctx.pushed_messages) == 1
+    assert ctx.pushed_messages[0]["metadata"]["kind"] == "scene_delta"
+    ctx.pushed_messages.clear()
     await agent.tick(
         _shared_state(
             mode="companion",
@@ -5170,6 +5656,10 @@ async def test_scene_summary_guard_suppresses_zero_delta_stage_change_but_allows
         history_lines=scene_a_lines,
     )
     await agent.tick(shared_scene_a)
+    await _drain_agent_summary_tasks(agent)
+    assert len(ctx.pushed_messages) == 1
+    assert ctx.pushed_messages[0]["metadata"]["kind"] == "scene_delta"
+    ctx.pushed_messages.clear()
     scene_a_context = build_summarize_context(
         shared_scene_a,
         scene_id="scene-a",
@@ -5265,6 +5755,10 @@ async def test_scene_summary_guard_suppresses_every_zero_delta_trigger_after_win
         history_lines=lines,
     )
     await agent.tick(shared)
+    await _drain_agent_summary_tasks(agent)
+    assert len(ctx.pushed_messages) == 1
+    assert ctx.pushed_messages[0]["metadata"]["kind"] == "scene_delta"
+    ctx.pushed_messages.clear()
     context = build_summarize_context(
         shared,
         scene_id="scene-a",
@@ -5491,6 +5985,10 @@ async def test_scene_summary_guard_reserves_content_fingerprint_before_concurren
         history_lines=lines,
     )
     await agent.tick(shared)
+    await _drain_agent_summary_tasks(agent)
+    assert len(ctx.pushed_messages) == 1
+    assert ctx.pushed_messages[0]["metadata"]["kind"] == "scene_delta"
+    ctx.pushed_messages.clear()
     context = build_summarize_context(shared, scene_id="scene-a", config=agent._context_config)
 
     for scheduled_seq in (10, 11):
@@ -5570,6 +6068,10 @@ async def test_newer_same_scene_summary_wins_when_older_llm_finishes_last(
         history_lines=first_lines,
     )
     await agent.tick(shared)
+    await _drain_agent_summary_tasks(agent)
+    assert len(ctx.pushed_messages) == 1
+    assert ctx.pushed_messages[0]["metadata"]["kind"] == "scene_delta"
+    ctx.pushed_messages.clear()
 
     def _schedule(lines: list[dict[str, object]], scheduled_seq: int) -> asyncio.Task[bool]:
         scheduled_shared = {
@@ -5669,6 +6171,67 @@ async def test_scene_summary_guard_releases_reservation_after_delivery_failure(
     assert attempted_deliveries == ["scene_delta", "scene_delta"]
     assert gateway.summarize_calls == []
     assert agent._scene_summary_latest_submitted_order > 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_cancel_scene_capsule_tasks_retires_tracked_done_event_version(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(ctx),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+
+    done_event_key = "tracked-done-event"
+    done_task: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
+    agent._track_scene_capsule_task(
+        done_task,
+        order=1,
+        event_keys=(done_event_key,),
+        meta={
+            "event_keys": [done_event_key],
+            "event_versions": {done_event_key: 7},
+        },
+    )
+    agent._scene_capsule_reservations.add(done_event_key)
+    done_task.set_result(True)
+    generation_before_done_cancel = agent._scene_capsule_generation
+
+    agent._cancel_scene_capsule_tasks(reason="done_task_race", retire=True)
+
+    assert done_task.done()
+    assert not done_task.cancelled()
+    assert agent._scene_capsule_generation == generation_before_done_cancel
+    assert agent._scene_capsule_retired_event_versions[done_event_key] == 7
+    assert done_event_key not in agent._scene_capsule_reservations
+
+    pending_event_key = "tracked-pending-event"
+    never = asyncio.Event()
+
+    async def _pending_capsule() -> bool:
+        await never.wait()
+        return True
+
+    pending_task = asyncio.create_task(_pending_capsule())
+    agent._scene_capsule_tasks.add(pending_task)
+    agent._scene_capsule_task_meta[pending_task] = {
+        "event_keys": [pending_event_key],
+        "event_versions": {pending_event_key: 8},
+    }
+    agent._scene_capsule_reservations.add(pending_event_key)
+    generation_before_pending_cancel = agent._scene_capsule_generation
+
+    agent._cancel_scene_capsule_tasks(reason="pending_task", retire=True)
+    await asyncio.gather(pending_task, return_exceptions=True)
+
+    assert pending_task.cancelled()
+    assert agent._scene_capsule_generation == generation_before_pending_cancel + 1
+    assert agent._scene_capsule_retired_event_versions[pending_event_key] == 8
 
 
 @pytest.mark.asyncio
@@ -6098,6 +6661,10 @@ async def test_game_llm_agent_pushes_context_summary_when_choice_selected_withou
             history_lines=stable_lines,
         )
     )
+    await _drain_agent_summary_tasks(agent)
+    assert len(ctx.pushed_messages) == 1
+    assert ctx.pushed_messages[0]["metadata"]["kind"] == "scene_delta"
+    ctx.pushed_messages.clear()
     await agent.tick(
         _shared_state(
             mode="companion",
@@ -6173,6 +6740,10 @@ async def test_game_llm_agent_pushes_context_summary_when_save_context_changes_w
             history_lines=stable_lines,
         )
     )
+    await _drain_agent_summary_tasks(agent)
+    assert len(ctx.pushed_messages) == 1
+    assert ctx.pushed_messages[0]["metadata"]["kind"] == "scene_delta"
+    ctx.pushed_messages.clear()
     await agent.tick(
         _shared_state(
             mode="companion",
@@ -6182,8 +6753,7 @@ async def test_game_llm_agent_pushes_context_summary_when_save_context_changes_w
     )
     await _drain_agent_summary_tasks(agent)
 
-    assert ctx.pushed_messages[-1]["metadata"]["kind"] == "scene_delta"
-    assert ctx.pushed_messages[-1]["metadata"]["trigger"] == "stable_content_delta"
+    assert ctx.pushed_messages == []
     assert agent._llm_gateway.summarize_calls == []
     assert agent._observed_scene_id == "scene-a"
 
@@ -7200,6 +7770,14 @@ async def test_game_llm_agent_shutdown_clears_scene_summary_repeat_guard_state(
     }
     agent._scene_summary_repeat_reservations.add("pending")
     agent._scene_summary_repeat_data_source = DATA_SOURCE_MEMORY_READER
+    assert agent._scene_capsule_marker_event_state == {}
+    assert agent._scene_capsule_line_fallback_aliases == {}
+    agent._scene_capsule_marker_event_state["line_changed"] = {
+        "type": "line_changed",
+        "seq": 1,
+        "semantic": "digest",
+    }
+    agent._scene_capsule_line_fallback_aliases["source"] = {1: "event-key"}
 
     await agent.shutdown()
 
@@ -7207,6 +7785,49 @@ async def test_game_llm_agent_shutdown_clears_scene_summary_repeat_guard_state(
     assert agent._scene_summary_latest_scene_content == {}
     assert agent._scene_summary_repeat_reservations == set()
     assert agent._scene_summary_repeat_data_source == ""
+    assert agent._scene_capsule_marker_event_state == {}
+    assert agent._scene_capsule_line_fallback_aliases == {}
+
+
+@pytest.mark.plugin_unit
+def test_scene_capsule_alias_state_survives_trusted_handoff_only(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(ctx),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    marker_state = {
+        "line_changed": {
+            "type": "line_changed",
+            "seq": 4,
+            "semantic": "digest",
+        }
+    }
+    alias_state = {"ocr_reader|session-a|history_line": {1: "event-key"}}
+    agent._scene_capsule_marker_event_state.update(marker_state)
+    agent._scene_capsule_line_fallback_aliases.update(alias_state)
+    agent._last_session_transition_fields = {
+        "previous_data_source": DATA_SOURCE_OCR_READER,
+        "current_data_source": DATA_SOURCE_MEMORY_READER,
+        "previous_game_id": "demo.alpha",
+        "current_game_id": "demo.alpha",
+    }
+
+    agent._reset_scene_summary_repeat_guard()
+
+    assert agent._scene_capsule_marker_event_state == marker_state
+    assert agent._scene_capsule_line_fallback_aliases == alias_state
+
+    agent._last_session_transition_fields = {}
+    agent._reset_scene_summary_repeat_guard()
+
+    assert agent._scene_capsule_marker_event_state == {}
+    assert agent._scene_capsule_line_fallback_aliases == {}
 
 
 @pytest.mark.asyncio

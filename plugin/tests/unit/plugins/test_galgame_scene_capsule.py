@@ -574,7 +574,10 @@ async def test_newer_memory_summary_wins_when_old_llm_finishes_last(
     assert scene_memory[-1]["summary"] == "newer memory summary"
     assert "newer memory summary" in plugin._story_so_far
     assert "older memory summary" not in plugin._story_so_far
-    assert ctx.pushed_messages == []
+    assert all(
+        item["metadata"]["kind"] == "scene_delta"
+        for item in ctx.pushed_messages
+    )
 
 
 @pytest.mark.asyncio
@@ -761,3 +764,267 @@ async def test_source_handoff_without_game_id_uses_matching_window_identity(
     assert len(ctx.pushed_messages) == 1
     assert agent._last_session_transition_type == "real_session_reset"
     assert agent._scene_capsule_delivery_ledger
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_same_seq_stable_correction_retires_pending_event_version(
+    tmp_path: Path,
+) -> None:
+    class _CorrectionCtx(_Ctx):
+        def __init__(self, plugin_dir: Path, effective_config: dict[str, object]) -> None:
+            super().__init__(plugin_dir, effective_config)
+            self.first_attempted = asyncio.Event()
+            self.attempted_contents: list[str] = []
+
+        def push_message(self, **kwargs):
+            content = str(kwargs.get("content") or "")
+            self.attempted_contents.append(content)
+            if len(self.attempted_contents) == 1:
+                self.first_attempted.set()
+                return {"submitted": False, "reason": "backpressure"}
+            self.pushed_messages.append(dict(kwargs))
+            return {"submitted": True}
+
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _CorrectionCtx(plugin_dir, _make_effective_config(bridge_root))
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(ctx),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    original_line = {**_summary_test_line("scene-a", 1), "text": "old OCR text"}
+    original_event = _event(
+        seq=1,
+        event_type="line_changed",
+        session_id="sess-a",
+        game_id="demo.alpha",
+        ts=str(original_line["ts"]),
+        payload={**original_line, "stability": "stable"},
+    )
+    await agent.tick(_capsule_shared(events=[original_event], lines=[original_line]))
+    await asyncio.wait_for(ctx.first_attempted.wait(), timeout=0.5)
+
+    corrected_line = {**original_line, "text": "corrected stable text"}
+    corrected_event = {
+        **original_event,
+        "payload": {**corrected_line, "stability": "stable"},
+    }
+    await agent.tick(
+        _capsule_shared(events=[corrected_event], lines=[corrected_line])
+    )
+    await agent.drain_summary_tasks(timeout=1.0)
+
+    assert len(ctx.pushed_messages) == 1
+    assert "corrected stable text" in str(ctx.pushed_messages[0]["content"])
+    assert "old OCR text" not in str(ctx.pushed_messages[0]["content"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_tentative_observation_retires_pending_capsule_with_guard_disabled(
+    tmp_path: Path,
+) -> None:
+    class _TentativeCtx(_Ctx):
+        def __init__(self, plugin_dir: Path, effective_config: dict[str, object]) -> None:
+            super().__init__(plugin_dir, effective_config)
+            self.first_attempted = asyncio.Event()
+            self.attempt_count = 0
+
+        def push_message(self, **kwargs):
+            self.attempt_count += 1
+            self.first_attempted.set()
+            return {"submitted": False, "reason": "backpressure"}
+
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _TentativeCtx(plugin_dir, _make_effective_config(bridge_root))
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(ctx),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+        config=SimpleNamespace(
+            scene_summary_repeat_guard_enabled=False,
+            scene_summary_duplicate_window_seconds=45.0,
+        ),
+    )
+    stable_line = _summary_test_line("scene-a", 1)
+    stable_event = _summary_test_line_event("scene-a", 1, seq=1)
+    await agent.tick(_capsule_shared(events=[stable_event], lines=[stable_line]))
+    await asyncio.wait_for(ctx.first_attempted.wait(), timeout=0.5)
+
+    tentative_event = _event(
+        seq=2,
+        event_type="line_observed",
+        session_id="sess-a",
+        game_id="demo.alpha",
+        ts="2026-04-21T08:35:02Z",
+        payload={
+            "speaker": "Yukino",
+            "text": "tentative replacement",
+            "line_id": "tentative-2",
+            "scene_id": "scene-a",
+            "route_id": "",
+            "stability": "tentative",
+            "confidence": 0.51,
+        },
+    )
+    tentative_shared = _capsule_shared(
+        events=[stable_event, tentative_event],
+        lines=[stable_line],
+    )
+    tentative_shared["history_observed_lines"] = [tentative_event["payload"]]
+    await agent.tick(tentative_shared)
+    await agent.drain_summary_tasks(timeout=1.0)
+
+    assert ctx.attempt_count == 1
+    assert ctx.pushed_messages == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_history_event_window_slide_keeps_pending_capsule_identity(
+    tmp_path: Path,
+) -> None:
+    class _PendingCtx(_Ctx):
+        def __init__(self, plugin_dir: Path, effective_config: dict[str, object]) -> None:
+            super().__init__(plugin_dir, effective_config)
+            self.first_attempted = asyncio.Event()
+
+        def push_message(self, **kwargs):
+            self.first_attempted.set()
+            return {"submitted": False, "reason": "backpressure"}
+
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _PendingCtx(plugin_dir, _make_effective_config(bridge_root))
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(ctx),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    line = _summary_test_line("scene-a", 1)
+    event = _summary_test_line_event("scene-a", 1, seq=1)
+    await agent.tick(_capsule_shared(events=[event], lines=[line]))
+    await asyncio.wait_for(ctx.first_attempted.wait(), timeout=0.5)
+    scheduled_order = agent._scene_summary_latest_observed_order
+
+    await agent.tick(_capsule_shared(events=[], lines=[line]))
+
+    assert agent._scene_summary_latest_observed_order == scheduled_order
+    assert len(agent._scene_capsule_tasks) == 1
+    assert ctx.pushed_messages == []
+
+
+@pytest.mark.plugin_unit
+def test_capsule_marker_ignores_poll_noise_and_history_window_slide(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(
+            _Ctx(plugin_dir, _make_effective_config(bridge_root))
+        ),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    first = _summary_test_line_event("scene-a", 1, seq=1)
+    latest = _summary_test_line_event("scene-a", 2, seq=2)
+    shared = _capsule_shared(
+        events=[first, latest],
+        lines=[_summary_test_line("scene-a", 1), _summary_test_line("scene-a", 2)],
+    )
+    snapshot = shared["latest_snapshot"]
+    boundary_key = agent._scene_capsule_boundary_key(shared, session_id="sess-a")
+    marker = agent._build_scene_capsule_input_marker(
+        shared,
+        snapshot=snapshot,
+        boundary_key=boundary_key,
+        scene_id="scene-a",
+        route_id="",
+    )
+
+    noisy_latest = {
+        **latest,
+        "ts": "2099-01-01T00:00:00Z",
+        "payload": {**latest["payload"], "confidence": 0.01},
+    }
+    screen_event = _event(
+        seq=3,
+        event_type="screen_classified",
+        session_id="sess-a",
+        game_id="demo.alpha",
+        ts="2099-01-01T00:00:01Z",
+        payload={"screen_type": "dialogue", "confidence": 0.02},
+    )
+    slid = _capsule_shared(
+        events=[noisy_latest, screen_event],
+        lines=[_summary_test_line("scene-a", 2)],
+    )
+    assert agent._build_scene_capsule_input_marker(
+        slid,
+        snapshot=slid["latest_snapshot"],
+        boundary_key=boundary_key,
+        scene_id="scene-a",
+        route_id="",
+    ) == marker
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_memory_completion_ignores_unrelated_start_generation_change(
+    tmp_path: Path,
+) -> None:
+    class _BlockingGateway(_FakeLLMGateway):
+        def __init__(self) -> None:
+            super().__init__()
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def summarize_scene(self, context):
+            self.started.set()
+            await self.release.wait()
+            return {
+                "degraded": False,
+                "summary": "memory survives runtime reset",
+                "key_points": [],
+                "diagnostic": "",
+            }
+
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    gateway = _BlockingGateway()
+    plugin = GalgameBridgePlugin(ctx)
+    agent = GameLLMAgent(
+        plugin=plugin,
+        logger=_Logger(),
+        llm_gateway=gateway,
+        host_adapter=_FakeHostAdapter(),
+    )
+    line = _summary_test_line("scene-a", 1)
+    shared = _capsule_shared(events=[], lines=[line])
+    await agent.tick(shared)
+    context = build_summarize_context(
+        shared,
+        scene_id="scene-a",
+        config=agent._context_config,
+    )
+    agent._schedule_scene_summary_task(
+        shared=shared,
+        session_id="sess-a",
+        scene_id="scene-a",
+        route_id="",
+        snapshot=shared["latest_snapshot"],
+        context=context,
+        trigger="line_count",
+        metadata={"scheduled_from_event_seq": 1},
+        update_scene_memory=True,
+    )
+    await asyncio.wait_for(gateway.started.wait(), timeout=0.5)
+    agent._start_generation += 1
+    gateway.release.set()
+    await agent.drain_summary_tasks(timeout=1.0)
+
+    assert "memory survives runtime reset" in plugin._story_so_far

@@ -6,6 +6,8 @@ from .agent_scene_tracker import AgentSceneTracker
 
 
 class AgentLifecycleMixin:
+    _SCENE_CAPSULE_RETIRED_EVENT_VERSION_LIMIT = 1024
+
     def __init__(
         self,
         *,
@@ -130,6 +132,15 @@ class AgentLifecycleMixin:
         self._scene_summary_schedule_order_counter = 0
         self._scene_summary_latest_observed_order = 0
         self._scene_summary_latest_submitted_order = 0
+        self._scene_capsule_generation = 0
+        self._scene_capsule_observation_epoch = 0
+        self._scene_capsule_input_marker = ""
+        self._scene_capsule_event_versions: dict[str, int] = {}
+        self._scene_capsule_retired_event_versions: dict[str, int] = {}
+        self._scene_capsule_marker_event_state: dict[str, dict[str, Any]] = {}
+        self._scene_capsule_line_fallback_aliases: dict[
+            str, dict[int, str]
+        ] = {}
         self._scene_summary_latest_memory_order_by_scene: dict[str, int] = {}
         self._scene_capsule_reservations: set[str] = set()
         # Per logical scene, this stores only committed event/cursor state and
@@ -189,8 +200,11 @@ class AgentLifecycleMixin:
         self._last_consult_seen_line_count = 0
         self._pending_consults.clear()
 
-    def _reset_scene_summary_repeat_guard(self, *, force: bool = False) -> None:
-        fields = dict(getattr(self, "_last_session_transition_fields", {}) or {})
+    def _is_trusted_scene_source_handoff(
+        self,
+        fields: dict[str, Any],
+    ) -> bool:
+        fields = dict(fields or {})
         previous_source = str(fields.get("previous_data_source") or "")
         current_source = str(fields.get("current_data_source") or "")
         source_handoff = (
@@ -232,9 +246,8 @@ class AgentLifecycleMixin:
             )
         )
 
-        trusted_handoff = (
-            not force
-            and source_handoff
+        return bool(
+            source_handoff
             and (same_game or stable_runtime_identity)
             and not _conflicts("previous_game_id", "current_game_id")
             and not _identity_conflicts(
@@ -245,6 +258,13 @@ class AgentLifecycleMixin:
                 "previous_window_title", "current_window_title"
             )
             and not _conflicts("previous_target_hwnd", "current_target_hwnd")
+        )
+
+    def _reset_scene_summary_repeat_guard(self, *, force: bool = False) -> None:
+        fields = dict(getattr(self, "_last_session_transition_fields", {}) or {})
+        current_source = str(fields.get("current_data_source") or "")
+        trusted_handoff = (
+            not force and self._is_trusted_scene_source_handoff(fields)
         )
         self._scene_summary_repeat_reservations.clear()
         self._scene_capsule_reservations.clear()
@@ -261,6 +281,14 @@ class AgentLifecycleMixin:
         self._scene_summary_schedule_order_counter = 0
         self._scene_summary_latest_observed_order = 0
         self._scene_summary_latest_submitted_order = 0
+        # Task invalidation belongs to the matching cancel method.  Reset only
+        # clears committed boundary state so a full cancel + reset advances
+        # each generation exactly once.
+        self._scene_capsule_input_marker = ""
+        self._scene_capsule_event_versions.clear()
+        self._scene_capsule_retired_event_versions.clear()
+        self._scene_capsule_marker_event_state.clear()
+        self._scene_capsule_line_fallback_aliases.clear()
         self._scene_summary_latest_memory_order_by_scene.clear()
         self._scene_capsule_delivery_ledger.clear()
         self._scene_capsule_source_aliases.clear()
@@ -316,31 +344,145 @@ class AgentLifecycleMixin:
         except RuntimeError:
             return
 
-    def _cancel_summary_tasks(self) -> None:
-        summary_pending_count = len(self._summary_tasks)
-        capsule_pending_count = len(self._scene_capsule_tasks)
-        pending_count = summary_pending_count + capsule_pending_count
-        self._scene_summary_repeat_reservations.clear()
-        self._scene_capsule_reservations.clear()
-        if not pending_count:
-            self._summary_task_meta.clear()
-            self._scene_capsule_task_meta.clear()
-            return
-        self._summary_generation += 1
-        self._summary_debug["last_task_cancelled"] = {
-            "reason": "cancel_summary_tasks",
-            "pending_count": pending_count,
-            "summary_pending_count": summary_pending_count,
-            "capsule_pending_count": capsule_pending_count,
+    def _cancel_scene_capsule_tasks(
+        self,
+        *,
+        reason: str,
+        retire: bool,
+    ) -> None:
+        tasks = list(self._scene_capsule_tasks)
+        pending = [task for task in tasks if not task.done()]
+        pending_set = set(pending)
+        if pending:
+            self._scene_capsule_generation += 1
+
+        cancelled_event_keys: set[str] = set()
+        # A task may already be done while its done callback is still queued.
+        # Its reservation and event version remain owned until that callback
+        # runs, so retirement must inspect every tracked task, not only pending
+        # tasks.  Cancellation itself still applies only to pending tasks.
+        for task in tasks:
+            meta = dict(self._scene_capsule_task_meta.get(task) or {})
+            raw_versions = meta.get("event_versions")
+            versions: dict[str, int] = {}
+            if isinstance(raw_versions, dict):
+                for raw_key, raw_version in raw_versions.items():
+                    key = str(raw_key or "")
+                    if not key:
+                        continue
+                    try:
+                        versions[key] = int(raw_version or 0)
+                    except (TypeError, ValueError):
+                        versions[key] = 0
+
+            try:
+                fallback_version = int(
+                    meta.get("observation_epoch")
+                    or meta.get("order")
+                    or self._scene_capsule_observation_epoch
+                    or 0
+                )
+            except (TypeError, ValueError):
+                fallback_version = int(self._scene_capsule_observation_epoch or 0)
+            for raw_key in list(meta.get("event_keys") or []):
+                key = str(raw_key or "")
+                if key:
+                    versions.setdefault(key, fallback_version)
+            cancelled_event_keys.update(versions)
+
+            if retire:
+                for key, version in versions.items():
+                    previous = int(
+                        self._scene_capsule_retired_event_versions.get(key) or 0
+                    )
+                    if key in self._scene_capsule_retired_event_versions:
+                        self._scene_capsule_retired_event_versions.pop(key, None)
+                    self._scene_capsule_retired_event_versions[key] = max(
+                        previous,
+                        int(version or 0),
+                    )
+                while (
+                    len(self._scene_capsule_retired_event_versions)
+                    > self._SCENE_CAPSULE_RETIRED_EVENT_VERSION_LIMIT
+                ):
+                    oldest = next(iter(self._scene_capsule_retired_event_versions))
+                    self._scene_capsule_retired_event_versions.pop(oldest, None)
+
+            if task in pending_set:
+                task.cancel()
+
+        # Remove only the tasks captured by this cancellation pass.  If a new
+        # owner is registered re-entrantly, keep its task metadata intact so
+        # both this method and the old task's done callback can see ownership.
+        for task in tasks:
+            self._scene_capsule_tasks.discard(task)
+            self._scene_capsule_task_meta.pop(task, None)
+
+        # Only release reservations that no still-active task owns.  This is
+        # important when a cancelled task's done callback races with a newer
+        # task that inherited the same logical event.
+        active_owner_keys: set[str] = set()
+        for task in self._scene_capsule_tasks:
+            if task.done():
+                continue
+            active_meta = self._scene_capsule_task_meta.get(task) or {}
+            active_owner_keys.update(
+                str(item)
+                for item in list(active_meta.get("event_keys") or [])
+                if str(item)
+            )
+        for event_key in cancelled_event_keys:
+            if event_key not in active_owner_keys:
+                self._scene_capsule_reservations.discard(event_key)
+        if not active_owner_keys:
+            self._scene_capsule_reservations.clear()
+
+        self._summary_debug["last_capsule_task_cancelled"] = {
+            "reason": str(reason or "cancel_scene_capsule_tasks"),
+            "pending_count": len(pending),
+            "retired": bool(retire),
+            "retired_event_count": len(cancelled_event_keys) if retire else 0,
+            "capsule_generation": self._scene_capsule_generation,
             "ts": self._utc_now_iso(),
         }
-        for task in [*self._summary_tasks, *self._scene_capsule_tasks]:
-            if not task.done():
-                task.cancel()
+
+    def _cancel_scene_memory_tasks(self, *, reason: str) -> None:
+        tasks = list(self._summary_tasks)
+        pending = [task for task in tasks if not task.done()]
+        self._summary_generation += 1
+        self._scene_summary_repeat_reservations.clear()
+        for task in pending:
+            task.cancel()
         self._summary_tasks.clear()
         self._summary_task_meta.clear()
-        self._scene_capsule_tasks.clear()
-        self._scene_capsule_task_meta.clear()
+        self._summary_debug["last_memory_task_cancelled"] = {
+            "reason": str(reason or "cancel_scene_memory_tasks"),
+            "pending_count": len(pending),
+            "memory_generation": self._summary_generation,
+            "ts": self._utc_now_iso(),
+        }
+
+    def _cancel_summary_tasks(self) -> None:
+        summary_pending_count = sum(
+            1 for task in self._summary_tasks if not task.done()
+        )
+        capsule_pending_count = sum(
+            1 for task in self._scene_capsule_tasks if not task.done()
+        )
+        pending_count = summary_pending_count + capsule_pending_count
+        self._cancel_scene_capsule_tasks(
+            reason="cancel_summary_tasks",
+            retire=True,
+        )
+        self._cancel_scene_memory_tasks(reason="cancel_summary_tasks")
+        if pending_count:
+            self._summary_debug["last_task_cancelled"] = {
+                "reason": "cancel_summary_tasks",
+                "pending_count": pending_count,
+                "summary_pending_count": summary_pending_count,
+                "capsule_pending_count": capsule_pending_count,
+                "ts": self._utc_now_iso(),
+            }
 
     async def _cancel_consultation_tasks(self) -> None:
         if not self._consultation_tasks:

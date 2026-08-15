@@ -185,7 +185,12 @@ class GameLLMAgent(
 
     async def tick(self, shared: SharedStatePayload) -> None:
         self._ensure_loop_affinity()
-        await self._observe(shared)
+        if not await self._observe(
+            shared,
+            resume_safe_session_transition=True,
+        ):
+            self._last_status = self._compute_status(shared)
+            return
         now = time.monotonic()
         self._update_scene_state(shared, now)
         self._clear_actuation_error_if_read_only(shared)
@@ -433,7 +438,7 @@ class GameLLMAgent(
 
     async def set_standby(self, shared: SharedStatePayload, *, standby: bool) -> dict[str, Any]:
         self._ensure_loop_affinity()
-        await self._observe(shared)
+        await self._observe(shared, allow_agent_side_effects=False)
         message = self._enqueue_inbound_message(
             kind="set_standby",
             content="standby=true" if standby else "standby=false",

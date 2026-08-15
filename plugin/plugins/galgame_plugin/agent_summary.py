@@ -236,7 +236,20 @@ class AgentSummaryMixin:
         *,
         session_id: str,
     ) -> str:
-        fingerprint = self._session_fingerprint(shared)
+        return self._scene_capsule_boundary_key_from_fingerprint(
+            self._session_fingerprint(shared),
+            fallback_identity=(
+                self._trusted_history_token(shared)
+                or str(session_id or "").strip()
+            ),
+        )
+
+    def _scene_capsule_boundary_key_from_fingerprint(
+        self,
+        fingerprint: dict[str, Any],
+        *,
+        fallback_identity: str = "",
+    ) -> str:
         game_id = self._normalize_scene_summary_fingerprint_text(
             fingerprint.get("active_game_id")
         )
@@ -260,17 +273,191 @@ class AgentSummaryMixin:
             elif hwnd:
                 identity = f"hwnd:{hwnd}"
             else:
-                identity = (
-                    self._trusted_history_token(shared)
-                    or str(session_id or "").strip()
-                )
+                identity = str(fallback_identity or "").strip()
         if not identity:
             return ""
         return hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
 
     @staticmethod
+    def _scene_capsule_semantic_digest(payload: dict[str, Any]) -> str:
+        canonical = json.dumps(
+            payload,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:24]
+
+    def _build_scene_capsule_input_marker(
+        self,
+        shared: dict[str, Any],
+        *,
+        snapshot: dict[str, Any],
+        boundary_key: str,
+        scene_id: str,
+        route_id: str,
+    ) -> str:
+        marker_events: list[dict[str, Any]] = []
+        relevant_types = {
+            "line_observed",
+            "line_changed",
+            "choices_shown",
+            "choice_selected",
+        }
+        for event in list(shared.get("history_events") or [])[-256:]:
+            if not isinstance(event, dict):
+                continue
+            event_type = str(event.get("type") or "")
+            if event_type not in relevant_types:
+                continue
+            payload = event.get("payload")
+            payload_obj = payload if isinstance(payload, dict) else {}
+            try:
+                seq = int(event.get("seq") or 0)
+            except (TypeError, ValueError):
+                seq = 0
+            stability = str(payload_obj.get("stability") or "").strip().lower()
+            if event_type in {"line_observed", "line_changed"}:
+                semantic_payload: dict[str, Any] = {
+                    "speaker": str(payload_obj.get("speaker") or ""),
+                    "text": str(payload_obj.get("text") or ""),
+                    "line_id": str(
+                        payload_obj.get("line_id") or event.get("line_id") or ""
+                    ),
+                    "scene_id": str(
+                        payload_obj.get("scene_id")
+                        or event.get("scene_id")
+                        or scene_id
+                    ),
+                    "route_id": str(
+                        payload_obj.get("route_id")
+                        or event.get("route_id")
+                        or route_id
+                    ),
+                }
+            else:
+                raw_choices = payload_obj.get("choices")
+                if not isinstance(raw_choices, list):
+                    selected = payload_obj.get("choice")
+                    raw_choices = [
+                        selected if isinstance(selected, dict) else payload_obj
+                    ]
+                semantic_choices: list[dict[str, Any]] = []
+                for item in raw_choices:
+                    if not isinstance(item, dict):
+                        continue
+                    semantic_choices.append(
+                        {
+                            "choice_id": str(
+                                item.get("choice_id") or item.get("option_id") or ""
+                            ),
+                            "text": str(item.get("text") or item.get("label") or ""),
+                            "scene_id": str(
+                                item.get("scene_id")
+                                or payload_obj.get("scene_id")
+                                or scene_id
+                            ),
+                            "route_id": str(
+                                item.get("route_id")
+                                or payload_obj.get("route_id")
+                                or route_id
+                            ),
+                        }
+                    )
+                semantic_payload = {"choices": semantic_choices}
+            marker_events.append(
+                {
+                    "type": event_type,
+                    "seq": seq,
+                    "stability": stability,
+                    "semantic": self._scene_capsule_semantic_digest(
+                        semantic_payload
+                    ),
+                }
+            )
+
+        fallback_ids = self._scene_capsule_fallback_occurrence_ids(
+            source_key=f"marker:{boundary_key}",
+            signatures=[
+                json.dumps(item, sort_keys=True, separators=(",", ":"))
+                for item in marker_events
+            ],
+        )
+        latest_by_type: dict[str, dict[str, Any]] = {}
+        for item, fallback_id in zip(marker_events, fallback_ids, strict=False):
+            marker_item = dict(item)
+            if int(marker_item.get("seq") or 0) <= 0:
+                marker_item["seq"] = f"occurrence:{fallback_id}"
+            latest_by_type[str(marker_item.get("type") or "")] = marker_item
+        marker_event_state = getattr(self, "_scene_capsule_marker_event_state", None)
+        if not isinstance(marker_event_state, dict):
+            marker_event_state = {}
+            self._scene_capsule_marker_event_state = marker_event_state
+        for event_type, marker_item in latest_by_type.items():
+            previous_item = marker_event_state.get(event_type)
+            previous_seq = (
+                int(previous_item.get("seq") or 0)
+                if isinstance(previous_item, dict)
+                and isinstance(previous_item.get("seq"), int)
+                else 0
+            )
+            current_seq = (
+                int(marker_item.get("seq") or 0)
+                if isinstance(marker_item.get("seq"), int)
+                else 0
+            )
+            if previous_seq > 0 and current_seq < previous_seq:
+                continue
+            marker_event_state[event_type] = marker_item
+
+        save_context = snapshot.get("save_context")
+        save_obj = save_context if isinstance(save_context, dict) else {}
+        save_kind = str(save_obj.get("kind") or "").strip().lower()
+        save_marker: dict[str, Any] = {}
+        if save_kind in {"load", "rollback"}:
+            save_marker = {
+                "kind": save_kind,
+                "identity": self._scene_capsule_semantic_digest(
+                    {
+                        "slot_id": str(save_obj.get("slot_id") or ""),
+                        "save_id": str(save_obj.get("save_id") or ""),
+                        "checkpoint_id": str(save_obj.get("checkpoint_id") or ""),
+                    }
+                ),
+            }
+        return self._scene_capsule_semantic_digest(
+            {
+                "boundary": boundary_key,
+                "scene_id": scene_id,
+                "route_id": route_id,
+                "save_context": save_marker,
+                "events": [
+                    marker_event_state[key]
+                    for key in sorted(marker_event_state)
+                ],
+            }
+        )
+
+    @staticmethod
     def _scene_capsule_coalesce_key(boundary_key: str) -> str:
         return f"galgame:scene_delta:{boundary_key}" if boundary_key else ""
+
+    @staticmethod
+    def _scene_capsule_handoff_overlap_end(
+        previous_tail: list[str],
+        current_texts: list[str],
+    ) -> int:
+        for candidate in range(min(len(previous_tail), len(current_texts)), 0, -1):
+            if previous_tail[-candidate:] == current_texts[:candidate]:
+                return candidate
+        if len(previous_tail) < 2:
+            return 0
+        full_tail_matches = [
+            start + len(previous_tail)
+            for start in range(len(current_texts) - len(previous_tail) + 1)
+            if current_texts[start : start + len(previous_tail)] == previous_tail
+        ]
+        return full_tail_matches[0] if len(full_tail_matches) == 1 else 0
 
     @staticmethod
     def _scene_capsule_event_key(*parts: Any) -> str:
@@ -321,8 +508,7 @@ class AgentSummaryMixin:
         data_source = self._current_input_source(shared)
         session_id = str(shared.get("active_session_id") or "")
         event_occurrences: list[dict[str, Any]] = []
-        event_signature_counts: dict[str, int] = {}
-        for event in list(shared.get("history_events") or []):
+        for event_index, event in enumerate(list(shared.get("history_events") or [])):
             if not isinstance(event, dict) or str(event.get("type") or "") != "line_changed":
                 continue
             payload = event.get("payload")
@@ -358,32 +544,27 @@ class AgentSummaryMixin:
                 ensure_ascii=False,
                 sort_keys=True,
             )
-            event_signature_counts[signature] = event_signature_counts.get(signature, 0) + 1
             try:
                 seq = int(event.get("seq") or 0)
             except (TypeError, ValueError):
                 seq = 0
             event_session = str(event.get("session_id") or session_id)
-            fallback_event_identity = hashlib.sha256(
-                (
-                    signature
-                    + "|"
-                    + str(event.get("ts") or payload.get("ts") or "")
-                ).encode("utf-8")
+            semantic_version = hashlib.sha256(
+                signature.encode("utf-8")
             ).hexdigest()[:16]
             event_key = self._scene_capsule_event_key(
                 data_source,
                 event_session,
                 "line_changed",
-                seq if seq > 0 else f"event:{fallback_event_identity}",
+                seq if seq > 0 else f"ordered:{event_index}",
+                semantic_version,
             )
             event_occurrences.append(
                 {"event_key": event_key, "seq": seq, "line": line, "signature": signature}
             )
 
         fallback_occurrences: list[dict[str, Any]] = []
-        fallback_pending: list[tuple[dict[str, Any], str]] = []
-        consumed_event_signatures: dict[str, int] = {}
+        history_records: list[tuple[dict[str, Any], str]] = []
         for item in list(shared.get("history_lines") or []):
             if not isinstance(item, dict):
                 continue
@@ -407,28 +588,47 @@ class AgentSummaryMixin:
                 ensure_ascii=False,
                 sort_keys=True,
             )
-            consumed = consumed_event_signatures.get(signature, 0)
-            if consumed < event_signature_counts.get(signature, 0):
-                consumed_event_signatures[signature] = consumed + 1
-                continue
-            fallback_pending.append((line, signature))
+            history_records.append((line, signature))
+        fallback_source_key = f"{data_source}|{session_id}|history_line"
         fallback_ids = self._scene_capsule_fallback_occurrence_ids(
-            source_key=f"{data_source}|{session_id}|history_line",
-            signatures=[signature for _line, signature in fallback_pending],
+            source_key=fallback_source_key,
+            signatures=[signature for _line, signature in history_records],
         )
+        event_keys_by_signature: dict[str, list[str]] = {}
+        for occurrence in event_occurrences:
+            event_keys_by_signature.setdefault(
+                str(occurrence.get("signature") or ""),
+                [],
+            ).append(str(occurrence.get("event_key") or ""))
+        consumed_event_signatures: dict[str, int] = {}
+        fallback_aliases = getattr(self, "_scene_capsule_line_fallback_aliases", None)
+        if not isinstance(fallback_aliases, dict):
+            fallback_aliases = {}
+            self._scene_capsule_line_fallback_aliases = fallback_aliases
+        source_aliases = fallback_aliases.setdefault(fallback_source_key, {})
         for (line, signature), occurrence_id in zip(
-            fallback_pending,
+            history_records,
             fallback_ids,
             strict=False,
         ):
+            consumed = consumed_event_signatures.get(signature, 0)
+            matching_event_keys = event_keys_by_signature.get(signature) or []
+            if consumed < len(matching_event_keys):
+                source_aliases[occurrence_id] = matching_event_keys[consumed]
+                consumed_event_signatures[signature] = consumed + 1
+                continue
+            aliased_event_key = str(source_aliases.get(occurrence_id) or "")
             fallback_occurrences.append(
                 {
-                    "event_key": self._scene_capsule_event_key(
-                        data_source,
-                        session_id,
-                        "history_line",
-                        str(line.get("scene_id") or ""),
-                        occurrence_id,
+                    "event_key": (
+                        aliased_event_key
+                        or self._scene_capsule_event_key(
+                            data_source,
+                            session_id,
+                            "history_line",
+                            str(line.get("scene_id") or ""),
+                            occurrence_id,
+                        )
                     ),
                     "seq": 0,
                     "line": line,
@@ -447,7 +647,7 @@ class AgentSummaryMixin:
         session_id = str(shared.get("active_session_id") or "")
         scene_id = str(snapshot.get("scene_id") or "")
         occurrences: list[dict[str, Any]] = []
-        for event in list(shared.get("history_events") or []):
+        for event_index, event in enumerate(list(shared.get("history_events") or [])):
             if not isinstance(event, dict):
                 continue
             event_type = str(event.get("type") or "")
@@ -476,17 +676,21 @@ class AgentSummaryMixin:
                     "visible" if event_type == "choices_shown" else "selected"
                 )
                 choice.setdefault("scene_id", str(payload.get("scene_id") or scene_id))
-                fallback_event_identity = hashlib.sha256(
+                choice.setdefault(
+                    "route_id",
+                    str(payload.get("route_id") or snapshot.get("route_id") or ""),
+                )
+                semantic_version = hashlib.sha256(
                     json.dumps(
                         {
                             "type": event_type,
-                            "ts": str(event.get("ts") or payload.get("ts") or ""),
                             "choice_id": str(
                                 choice.get("choice_id")
                                 or choice.get("option_id")
                                 or ""
                             ),
                             "text": text,
+                            "scene_id": str(choice.get("scene_id") or ""),
                             "index": choice_index,
                         },
                         ensure_ascii=False,
@@ -499,8 +703,9 @@ class AgentSummaryMixin:
                             data_source,
                             str(event.get("session_id") or session_id),
                             event_type,
-                            seq if seq > 0 else f"event:{fallback_event_identity}",
+                            seq if seq > 0 else f"ordered:{event_index}",
                             choice_index,
+                            semantic_version,
                         ),
                         "seq": seq,
                         "ts": str(event.get("ts") or payload.get("ts") or ""),
@@ -864,26 +1069,34 @@ class AgentSummaryMixin:
     def _scene_capsule_is_fresh(
         self,
         *,
-        generation: int,
+        lifecycle_generation: int,
+        capsule_generation: int,
         order: int,
+        observation_epoch: int,
         scene_id: str,
         route_id: str,
     ) -> bool:
-        if generation != self._summary_generation:
+        if lifecycle_generation != self._start_generation:
+            return False
+        if capsule_generation != self._scene_capsule_generation:
             return False
         if order != self._scene_summary_latest_observed_order:
             return False
+        if observation_epoch != self._scene_capsule_observation_epoch:
+            return False
         if scene_id != self._observed_scene_id:
             return False
-        if route_id and self._observed_route_id and route_id != self._observed_route_id:
+        if route_id != self._observed_route_id:
             return False
         return True
 
     async def _run_scene_capsule_task(
         self,
         *,
-        generation: int,
+        lifecycle_generation: int,
+        capsule_generation: int,
         order: int,
+        observation_epoch: int,
         shared: dict[str, Any],
         session_id: str,
         scene_id: str,
@@ -898,8 +1111,10 @@ class AgentSummaryMixin:
         target_choice_count: int,
     ) -> bool:
         freshness_check = lambda: self._scene_capsule_is_fresh(
-            generation=generation,
+            lifecycle_generation=lifecycle_generation,
+            capsule_generation=capsule_generation,
             order=order,
+            observation_epoch=observation_epoch,
             scene_id=scene_id,
             route_id=route_id,
         )
@@ -972,6 +1187,64 @@ class AgentSummaryMixin:
             return
         data_source = self._current_input_source(shared)
         source_identity = f"{data_source}|{session_id}"
+        if (
+            not str(self._scene_capsule_input_marker or "")
+            and self._scene_capsule_observation_epoch > 0
+        ):
+            marker_event_state = getattr(
+                self,
+                "_scene_capsule_marker_event_state",
+                None,
+            )
+            if isinstance(marker_event_state, dict):
+                marker_event_state.clear()
+        input_marker = self._build_scene_capsule_input_marker(
+            shared,
+            snapshot=snapshot,
+            boundary_key=boundary_key,
+            scene_id=scene_id,
+            route_id=route_id,
+        )
+        previous_input_marker = str(self._scene_capsule_input_marker or "")
+        event_version_state = getattr(self, "_scene_capsule_event_versions", None)
+        if not isinstance(event_version_state, dict):
+            event_version_state = {}
+            self._scene_capsule_event_versions = event_version_state
+        save_context = snapshot.get("save_context")
+        save_obj = save_context if isinstance(save_context, dict) else {}
+        save_kind = str(save_obj.get("kind") or "").strip().lower()
+        save_boundary_marker = ""
+        if save_kind in {"load", "rollback"}:
+            save_boundary_marker = self._scene_capsule_semantic_digest(
+                {
+                    "kind": save_kind,
+                    "slot_id": str(save_obj.get("slot_id") or ""),
+                    "save_id": str(save_obj.get("save_id") or ""),
+                    "checkpoint_id": str(save_obj.get("checkpoint_id") or ""),
+                }
+            )
+        previous_save_boundary_marker = str(
+            getattr(self, "_scene_capsule_save_boundary_marker", "") or ""
+        )
+        if not previous_input_marker:
+            if self._scene_capsule_observation_epoch > 0:
+                event_version_state.clear()
+            self._scene_capsule_observation_epoch += 1
+            self._scene_capsule_input_marker = input_marker
+        elif input_marker != previous_input_marker:
+            self._scene_capsule_observation_epoch += 1
+            self._scene_capsule_input_marker = input_marker
+            self._cancel_scene_capsule_tasks(
+                reason="scene_capsule_input_changed",
+                retire=True,
+            )
+            if (
+                save_boundary_marker
+                and save_boundary_marker != previous_save_boundary_marker
+            ):
+                event_version_state.clear()
+        self._scene_capsule_save_boundary_marker = save_boundary_marker
+        observation_epoch = self._scene_capsule_observation_epoch
         self._scene_capsule_source_aliases[source_identity] = boundary_key
         ledger = self._scene_capsule_delivery_ledger.setdefault(
             boundary_key,
@@ -991,27 +1264,42 @@ class AgentSummaryMixin:
         ]
 
         previous_source_identity = str(ledger.get("source_identity") or "")
+        current_texts = [
+            self._normalize_scene_summary_fingerprint_text(
+                (item.get("line") or {}).get("text")
+            )
+            for item in current_lines
+        ]
+        previous_observed_source = str(
+            ledger.get("observed_source_identity") or ""
+        )
+        if previous_observed_source and previous_observed_source != source_identity:
+            observed_overlap_end = self._scene_capsule_handoff_overlap_end(
+                [str(item) for item in list(ledger.get("observed_tail") or [])],
+                current_texts,
+            )
+            if observed_overlap_end:
+                ledger["memory_handoff_overlap_event_keys"] = [
+                    str(item.get("event_key") or "")
+                    for item in current_lines[:observed_overlap_end]
+                    if str(item.get("event_key") or "")
+                ]
+        ledger["observed_source_identity"] = source_identity
+        ledger["observed_tail"] = list(current_texts[-4:])
         if (
             self._scene_summary_repeat_guard_enabled
             and previous_source_identity
             and previous_source_identity != source_identity
         ):
             previous_tail = [str(item) for item in list(ledger.get("stable_tail") or [])]
-            current_texts = [
-                self._normalize_scene_summary_fingerprint_text(
-                    (item.get("line") or {}).get("text")
-                )
-                for item in current_lines
-            ]
-            overlap_count = 0
-            for candidate in range(min(len(previous_tail), len(current_texts)), 0, -1):
-                if previous_tail[-candidate:] == current_texts[:candidate]:
-                    overlap_count = candidate
-                    break
-            if overlap_count:
+            overlap_end = self._scene_capsule_handoff_overlap_end(
+                previous_tail,
+                current_texts,
+            )
+            if overlap_end:
                 committed.update(
                     str(item.get("event_key") or "")
-                    for item in current_lines[:overlap_count]
+                    for item in current_lines[:overlap_end]
                     if str(item.get("event_key") or "")
                 )
                 ledger["committed_event_keys"] = list(committed)[-512:]
@@ -1027,6 +1315,13 @@ class AgentSummaryMixin:
         for index, item in enumerate(current_lines):
             event_key = str(item.get("event_key") or "")
             if not event_key or event_key in self._scene_capsule_reservations:
+                continue
+            event_version = int(
+                event_version_state.setdefault(event_key, observation_epoch)
+            )
+            if int(
+                self._scene_capsule_retired_event_versions.get(event_key) or 0
+            ) >= event_version:
                 continue
             if self._scene_summary_repeat_guard_enabled and event_key in committed:
                 continue
@@ -1045,6 +1340,13 @@ class AgentSummaryMixin:
         for index, item in enumerate(choice_occurrences):
             event_key = str(item.get("event_key") or "")
             if not event_key or event_key in self._scene_capsule_reservations:
+                continue
+            event_version = int(
+                event_version_state.setdefault(event_key, observation_epoch)
+            )
+            if int(
+                self._scene_capsule_retired_event_versions.get(event_key) or 0
+            ) >= event_version:
                 continue
             if self._scene_summary_repeat_guard_enabled and event_key in committed:
                 continue
@@ -1105,6 +1407,7 @@ class AgentSummaryMixin:
         order = self._scene_summary_schedule_order_counter
         self._scene_summary_latest_observed_order = order
         superseded_event_keys: list[str] = []
+        superseded_event_versions: dict[str, int] = {}
         for pending in list(self._scene_capsule_tasks):
             pending_meta = self._scene_capsule_task_meta.get(pending) or {}
             if int(pending_meta.get("order") or 0) < order and not pending.done():
@@ -1113,10 +1416,28 @@ class AgentSummaryMixin:
                     for item in list(pending_meta.get("event_keys") or [])
                     if str(item)
                 )
+                superseded_event_versions.update(
+                    {
+                        str(key): int(value or 0)
+                        for key, value in dict(
+                            pending_meta.get("event_versions") or {}
+                        ).items()
+                        if str(key)
+                    }
+                )
                 pending.cancel()
         consumed_event_keys = tuple(
             dict.fromkeys([*superseded_event_keys, *candidate_event_keys])
         )
+        consumed_event_versions = {
+            event_key: int(
+                superseded_event_versions.get(event_key)
+                or event_version_state.setdefault(event_key, observation_epoch)
+            )
+            for event_key in consumed_event_keys
+        }
+        while len(event_version_state) > 2048:
+            event_version_state.pop(next(iter(event_version_state)))
         for event_key in consumed_event_keys:
             self._scene_capsule_reservations.add(event_key)
         normalized_tail = tuple(
@@ -1130,8 +1451,10 @@ class AgentSummaryMixin:
         )
         task = asyncio.create_task(
             self._run_scene_capsule_task(
-                generation=self._summary_generation,
+                lifecycle_generation=self._start_generation,
+                capsule_generation=self._scene_capsule_generation,
                 order=order,
+                observation_epoch=observation_epoch,
                 shared=json_copy(shared),
                 session_id=session_id,
                 scene_id=scene_id,
@@ -1154,8 +1477,10 @@ class AgentSummaryMixin:
                 "order": order,
                 "scene_id": scene_id,
                 "route_id": route_id,
+                "observation_epoch": observation_epoch,
                 "event_count": len(consumed_event_keys),
                 "event_keys": list(consumed_event_keys),
+                "event_versions": consumed_event_versions,
             },
         )
 
@@ -1252,6 +1577,10 @@ class AgentSummaryMixin:
         memory_order = self._scene_summary_schedule_order_counter
         self._scene_summary_latest_memory_order_by_scene[scene_id] = memory_order
         metadata_payload["_memory_schedule_order"] = memory_order
+        metadata_payload["_memory_boundary_key"] = self._scene_capsule_boundary_key(
+            shared_payload,
+            session_id=session_id,
+        )
         last_line_seq = int(metadata_payload.get("last_line_seq") or scheduled_seq or 0)
         delivery_key = str(metadata_payload.get("summary_delivery_key") or "")
         if not delivery_key:
@@ -1320,6 +1649,7 @@ class AgentSummaryMixin:
         scheduled_seq = int(metadata.get("scheduled_from_event_seq") or 0)
         delivery_key = str(metadata.get("summary_delivery_key") or "")
         memory_order = int(metadata.get("_memory_schedule_order") or 0)
+        memory_boundary_key = str(metadata.get("_memory_boundary_key") or "")
         self._record_summary_task_event(
             "started",
             {
@@ -1343,7 +1673,25 @@ class AgentSummaryMixin:
         async with summary_lock:
             if generation != self._summary_generation:
                 return False
-            if session_id != self._observed_session_id:
+            current_fingerprint = dict(self._observed_session_fingerprint or {})
+            if not current_fingerprint and session_id == self._observed_session_id:
+                # Some internal callers schedule an already-observed scene
+                # directly without first storing a full runtime fingerprint.
+                # Exact session continuity is sufficient only for that empty-
+                # fingerprint case; real/unknown resets still invalidate the
+                # memory generation or replace the observed session.
+                current_boundary_key = memory_boundary_key
+            else:
+                current_boundary_key = self._scene_capsule_boundary_key_from_fingerprint(
+                    current_fingerprint,
+                    fallback_identity=self._trusted_history_token_from_fingerprint(
+                        current_fingerprint
+                    ),
+                )
+            if (
+                not memory_boundary_key
+                or memory_boundary_key != current_boundary_key
+            ):
                 return False
             latest_memory_order = int(
                 self._scene_summary_latest_memory_order_by_scene.get(scene_id) or 0
@@ -1480,7 +1828,10 @@ class AgentSummaryMixin:
             self._scene_summary_repeat_data_source
             and current_data_source != self._scene_summary_repeat_data_source
         ):
-            self._cancel_summary_tasks()
+            self._cancel_scene_capsule_tasks(
+                reason="scene_summary_data_source_changed",
+                retire=True,
+            )
         self._scene_summary_repeat_data_source = current_data_source
 
         line_occurrences = self._scene_capsule_line_occurrences(
@@ -1494,6 +1845,21 @@ class AgentSummaryMixin:
         )
 
         max_processed_seq = self._scene_tracker.summary_last_processed_event_seq
+        boundary_key = self._scene_capsule_boundary_key(
+            shared,
+            session_id=session_id,
+        )
+        capsule_ledger = self._scene_capsule_delivery_ledger.get(boundary_key) or {}
+        capsule_committed_keys = set(
+            str(item)
+            for item in [
+                *list(capsule_ledger.get("committed_event_keys") or []),
+                *list(
+                    capsule_ledger.get("memory_handoff_overlap_event_keys") or []
+                ),
+            ]
+            if str(item)
+        )
         changed_scene_ids: set[str] = set()
         for occurrence in line_occurrences:
             line = occurrence.get("line")
@@ -1507,6 +1873,8 @@ class AgentSummaryMixin:
                 continue
             seq = int(occurrence.get("seq") or 0)
             max_processed_seq = max(max_processed_seq, seq)
+            if key in capsule_committed_keys:
+                continue
             if self._scene_tracker.remember_scene_line(
                 scene_id,
                 key,
