@@ -13,6 +13,7 @@ APP_UI_PATH = PROJECT_ROOT / "static" / "app" / "app-ui"
 APP_SETTINGS_PATH = PROJECT_ROOT / "static" / "app" / "app-settings.js"
 AVATAR_UI_POPUP_PATH = PROJECT_ROOT / "static" / "avatar" / "avatar-ui-popup.js"
 FORGE_DROP_OVERLAY_PATH = PROJECT_ROOT / "static" / "forge-drop-overlay.js"
+APP_SOCIAL_UI_PATH = PROJECT_ROOT / "static" / "app-social-ui.js"
 FORGE_AVATAR_REACTION_PATH = PROJECT_ROOT / "static" / "forge-avatar-reaction.js"
 FORGE_DROP_TOKENS_PATH = PROJECT_ROOT / "static" / "forge-drop-tokens.js"
 FORGE_SOUND_DIR = PROJECT_ROOT / "static" / "sounds" / "forge"
@@ -228,12 +229,16 @@ def test_forge_drop_effects_can_be_disabled_without_hiding_credit_updates():
     assert "forgeDropEffectsEnabled: currentForgeDropEffects" in settings
     assert "window.forgeDropEffectsEnabled = settings.forgeDropEffectsEnabled;" in settings
     drop_handler = _extract_js_function(overlay, "function onCreditDropEvent(event)")
+    state_handler = _extract_js_function(overlay, "function onCreditStateEvent(event)")
     effects_handler = _extract_js_function(overlay, "function onDropEffectsChanged(event)")
     reaction_handler = _extract_js_function(reaction, "function react(detail)")
     play_one = _extract_js_function(overlay, "function playOne(payload)")
-    assert "if (window.forgeDropEffectsEnabled === false)" in drop_handler
-    assert "renderForgeBadge(detail.active_count, true);" in drop_handler
+    assert "if (window.forgeDropEffectsEnabled === false)" not in drop_handler
+    assert "play(queuedDetail);" in drop_handler
+    assert "renderForgeBadge(" in state_handler
+    assert "detail.active_count" in state_handler
     assert "audio.pause();" in effects_handler
+    assert "activeAnimationCompleters" in effects_handler
     assert reaction_handler.index(
         "if (window.forgeDropEffectsEnabled === false) return;"
     ) < reaction_handler.index("var now = Date.now();")
@@ -242,7 +247,7 @@ def test_forge_drop_effects_can_be_disabled_without_hiding_credit_updates():
     # 关闭效果的入口分支同样要按 revision 守卫，否则队尾券会用陈旧
     # active_count 覆盖权威刷新写过的角标。
     disabled_entry = play_one[play_one.index("if (window.forgeDropEffectsEnabled === false)"):]
-    disabled_entry = disabled_entry[: disabled_entry.index("resolve();")]
+    disabled_entry = disabled_entry[: disabled_entry.index("complete();")]
     assert "payloadRevision === creditStateRevision" in disabled_entry
     assert "renderForgeBadge(payload.active_count, true);" in disabled_entry
 
@@ -458,19 +463,33 @@ def test_credit_drop_preloads_and_plays_the_supplied_rarity_sounds():
 
 
 @pytest.mark.unit
-def test_credit_badge_uses_bounded_retry_and_low_frequency_reconciliation():
+def test_credit_badge_uses_only_pc_pushed_cloud_state():
     source = FORGE_DROP_OVERLAY_PATH.read_text(encoding="utf-8")
 
-    assert "fetch('/api/card-drop/credits/local-summary'" in source
-    assert "fetch('/api/card-drop/credits'," not in source
-    assert "var STARTUP_RETRY_DELAYS_MS = [2000, 10000, 30000];" in source
-    assert "startupRetryIndex >= STARTUP_RETRY_DELAYS_MS.length" in source
-    assert "var PASSIVE_REFRESH_MS = 10 * 60 * 1000;" in source
-    assert "}, PASSIVE_REFRESH_MS);" in source
-    assert "window.addEventListener('focus', requestInteractiveRefresh);" in source
-    assert "document.addEventListener('visibilitychange'" in source
-    assert "scheduleExpiryRefresh(data.next_expires_at);" in source
+    assert "/api/card-drop/credits" not in source
+    assert "window.addEventListener('neko-forge-credit-state'" in source
+    assert "scheduleExpiryClear(detail.next_expires_at);" in source
+    assert "neko-forge-credit-state-refresh" in source
+    assert "function requestCreditStateRefresh()" in source
+    refresh = _extract_js_function(source, "function requestCreditStateRefresh()")
+    assert "neko-forge-credit-state-refresh" in refresh
+    assert "replaySnapshots" not in refresh
+    assert "renderForgeBadge(0, false);" not in source
+    assert "neko-forge-credit-animation-complete" in source
     assert "earliest - now + 1000" in source
+
+
+@pytest.mark.unit
+def test_credit_badge_social_bridge_forwards_pc_credit_state():
+    source = APP_SOCIAL_UI_PATH.read_text(encoding="utf-8")
+
+    assert "window.nekoSocial.onForgeCreditChanged" in source
+    assert "new window.CustomEvent('neko-forge-credit-state'" in source
+    assert "detail: data || {}" in source
+    # Refresh is owned by PC CREDIT_STATE_REFRESH. Replaying cached snapshots
+    # here would hide expiry and keep the old next_expires_at timer.
+    assert "replaySnapshots" not in source
+    assert "neko-forge-credit-state-refresh" not in source
 
 
 @pytest.mark.unit
@@ -490,6 +509,7 @@ def test_authoritative_credit_refresh_cannot_be_overwritten_by_queued_animation(
     assert "creditStateRevision += 1;" in source
     assert "__credit_state_revision: creditStateRevision" in source
     assert "payloadRevision === creditStateRevision" in source
-    assert "requestRevision !== creditStateRevision" in source
-    assert "creditRefreshAfterInFlight = true;" in source
-    assert "cache: 'no-store'" in source
+    assert "function onCreditStateEvent(event)" in source
+    assert "neko-forge-credit-state" in source
+    assert "/api/card-drop/credits/local-summary" not in source
+    assert "neko-forge-credit-animation-complete" in source

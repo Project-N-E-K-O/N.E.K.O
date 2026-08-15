@@ -46,6 +46,9 @@ class _FakeAttention:
     def _focus_threshold(self) -> float:
         return 4.0
 
+    def _focus_send_threshold(self) -> float:
+        return 2.0
+
     async def update_on_message(self, message: dict) -> None:
         self.calls.append(f"update_on_message:{message.get('group_id')}")
 
@@ -92,7 +95,7 @@ async def _evaluate(plugin, **kwargs) -> tuple:
 
 def test_non_focus_plain_message_blocked_and_attention_accumulated():
     """A plain message in a non-focus group is blocked, but attention still accumulates."""
-    attention = _FakeAttention(focus_group="g2")  # 焦点是 g2，本消息来自 g1
+    attention = _FakeAttention(focus_group="g2")  # Focus is g2; this message is from g1
     plugin = _plugin(attention)
 
     decision, _ = asyncio.run(_evaluate(plugin, group_id="g1"))
@@ -100,9 +103,9 @@ def test_non_focus_plain_message_blocked_and_attention_accumulated():
     assert decision.action == "ignore"
     assert decision.reason.startswith("non_focus")
     assert not decision.force_reply
-    # 注意力必须先累计（即使后续被 block）
+    # Attention must be accumulated first (even though it is later blocked)
     assert "update_on_message:g1" in attention.calls
-    assert "mark_focus:g1" not in attention.calls  # 非焦点不抢焦点
+    assert "mark_focus:g1" not in attention.calls  # A non-focus group does not steal focus
 
 
 def test_non_focus_reply_to_bot_blocked():
@@ -114,7 +117,7 @@ def test_non_focus_reply_to_bot_blocked():
         plugin,
         group_id="g1",
         quoted_message_id="m1",
-        is_reply_to_bot=True,  # 连接层已判定这是回复猫娘的消息
+        is_reply_to_bot=True,  # The connection layer already marked this as a reply to the bot
     ))
 
     assert decision.action == "ignore"
@@ -149,7 +152,7 @@ def test_at_and_reply_combined_non_focus_blocked():
 
     assert decision.action == "ignore"
     assert decision.reason.startswith("non_focus")
-    # 不抢焦点（被 block）
+    # Does not steal focus (it was blocked)
     assert "mark_focus:g1" not in attention.calls
 
 
@@ -205,12 +208,12 @@ def test_focus_group_keyword_force_replies():
     plugin = _plugin(attention)
     plugin._qq_settings = {
         "backlog_labels": [{
-            "id": "issue", "label": "问题",
-            "keywords": ["报错"], "priority": 100,
+            "id": "issue", "label": "Issue",
+            "keywords": ["error"], "priority": 100,
         }],
     }
 
-    decision, _ = asyncio.run(_evaluate(plugin, group_id="g1", message_text="有报错"))
+    decision, _ = asyncio.run(_evaluate(plugin, group_id="g1", message_text="has error"))
 
     assert decision.action == "reply"
     assert decision.reason == "keyword:issue"
@@ -239,6 +242,23 @@ def test_focus_group_low_attention_blocked():
     assert decision.reason.startswith("focus_low_attention")
 
 
+def test_focus_group_above_send_gate_not_focus_line():
+    """A focus group whose attention is above the send gate (2.0) but below the focus
+    line (4.0) still passes.
+
+    Regression: the send gate previously misused the focus line, so a focus group at
+    2.1 < 4.0 was gated -- making focus effectively useless.
+    """
+    attention = _FakeAttention(focus_group="g1", score=2.1)
+    plugin = _plugin(attention)
+
+    decision, _ = asyncio.run(_evaluate(plugin, group_id="g1"))
+
+    assert decision.action == "reply"
+    assert decision.reason == "focus_group"
+    assert decision.force_reply is False
+
+
 class _OrderSensitiveAttention:
     """Verifies get_focus_group captures the receipt-time focus before update_on_message.
 
@@ -263,14 +283,17 @@ class _OrderSensitiveAttention:
     def _focus_threshold(self) -> float:
         return 4.0
 
+    def _focus_send_threshold(self) -> float:
+        return 2.0
+
     def get_focus_group(self) -> str | None:
         self.calls.append("get_focus_group")
-        # 接收时焦点是 g2（非 g1）；g1 只有 boost 后才会成为焦点
+        # Receipt-time focus is g2 (not g1); g1 only becomes focus after a boost
         return "g2"
 
     def get_state(self, group_id: str):
         self.calls.append("get_state")
-        return SimpleNamespace(attention_score=6.0)  # 分数足以成焦点
+        return SimpleNamespace(attention_score=6.0)  # A score high enough to become focus
 
     async def update_on_message(self, message: dict) -> None:
         self.calls.append(f"update_on_message:{message.get('group_id')}")
@@ -290,8 +313,9 @@ def test_focus_captured_before_attention_update():
 
     decision, _ = asyncio.run(_evaluate(plugin, group_id="g1"))
 
-    # 接收时 g1 非焦点（get_focus_group 返回 g2）→ 即使分数 6.0 也应 block
+    # Receipt-time g1 is not the focus (get_focus_group returns g2), so even a
+    # score of 6.0 must be blocked.
     assert decision.action == "ignore"
     assert decision.reason.startswith("non_focus")
-    # get_focus_group 必须先于 update_on_message
+    # get_focus_group must run before update_on_message
     assert attention.calls.index("get_focus_group") < attention.calls.index("update_on_message:g1")

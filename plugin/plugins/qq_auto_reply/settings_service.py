@@ -824,12 +824,15 @@ class QQSettingsService:
     #:   行」的原因。
     IDENTITY_SCOPE_BY_MODE: dict[str, tuple[str, str, str]] = {
         "napcat": ("napcat", "global", "global"),
+        # 正向连接仍是 OneBot v11 wire format，speaker 身份语义与反向 napcat 相同
+        "napcat_forward": ("napcat", "global", "global"),
         "open_platform": ("open", "per_conversation", "global"),
     }
     #: 断言来源。写协议名而不是 "code"：读的人要能一眼看出这条记录的依据是
     #: 厂商文档，而不是本机跑出来的观测。
     IDENTITY_SCOPE_ASSERTED_BY: dict[str, str] = {
         "napcat": "protocol:onebot-v11",
+        "napcat_forward": "protocol:onebot-v11",
         "open_platform": "protocol:qq-open-v2",
     }
     #: 与 legacy trust push 同族的退避，理由也相同：memory_server 可能还没起。
@@ -977,7 +980,41 @@ class QQSettingsService:
             self.plugin._qq_settings["group_attention_max_score"] = self._clamp_attention_float(group_attention_max_score, "group_attention_max_score", floor=1.0, ceiling=10.0)
         group_attention_focus_threshold = kwargs.get("group_attention_focus_threshold")
         if group_attention_focus_threshold is not None:
-            self.plugin._qq_settings["group_attention_focus_threshold"] = self._clamp_attention_float(group_attention_focus_threshold, "group_attention_focus_threshold", floor=0.1)
+            focus_value = self._clamp_attention_float(
+                group_attention_focus_threshold,
+                "group_attention_focus_threshold",
+                floor=0.1,
+            )
+            self.plugin._qq_settings["group_attention_focus_threshold"] = focus_value
+            # send ≤ focus 是设计不变量（发送门控是低于焦点线的「保持线」）。
+            # 只下调焦点线时，旧发送线若比新焦点线高，焦点群在焦点线夺冠后仍会
+            # 被门控第 5 步（focus_low_attention）拒之门外——一并收紧。
+            send_value = self.plugin._qq_settings.get(
+                "group_attention_focus_send_threshold",
+            )
+            if send_value is not None and float(send_value) > focus_value:
+                self.plugin._qq_settings[
+                    "group_attention_focus_send_threshold"
+                ] = focus_value
+        group_attention_focus_send_threshold = kwargs.get("group_attention_focus_send_threshold")
+        if group_attention_focus_send_threshold is not None:
+            # 发送门控线不得高于焦点线：高于焦点线时，群组在焦点线赢得焦点，但
+            # 之后所有焦点消息都会被门控第 5 步拒绝，直到得分超过更高的发送线
+            # ——焦点线形同虚设。钳到焦点线（同批保存先落 focus 再落 send，
+            # 这里读到的就是新焦点线）。
+            focus_ceiling = float(
+                self.plugin._qq_settings.get(
+                    "group_attention_focus_threshold", 4.0,
+                )
+            )
+            self.plugin._qq_settings["group_attention_focus_send_threshold"] = (
+                self._clamp_attention_float(
+                    group_attention_focus_send_threshold,
+                    "group_attention_focus_send_threshold",
+                    floor=0.0,
+                    ceiling=focus_ceiling,
+                )
+            )
         group_attention_min_threshold = kwargs.get("group_attention_min_threshold")
         if group_attention_min_threshold is not None:
             self.plugin._qq_settings["group_attention_min_threshold"] = self._clamp_attention_float(group_attention_min_threshold, "group_attention_min_threshold", floor=0.0)

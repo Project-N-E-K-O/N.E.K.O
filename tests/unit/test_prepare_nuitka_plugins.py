@@ -8,6 +8,7 @@ import sys
 
 import pytest
 
+from plugin.neko_plugin_cli.core.build_rules import _DEFAULT_EXCLUDE_DIR_NAMES
 from scripts.check_nuitka_dist import _check_plugin_stage, _check_plugin_tomls
 from scripts.prepare_nuitka_plugins import install_plugins, prepare_plugins
 
@@ -208,3 +209,78 @@ def test_prepare_helper_is_directly_executable_without_pythonpath(tmp_path: Path
 
     assert completed.returncode == 0, completed.stderr
     assert "stage plugins and generate launcher" in completed.stdout
+
+
+def test_prepare_drops_editor_directories_that_break_macos_codesign(tmp_path: Path) -> None:
+    """codesign reads any dotted directory under MacOS/ as a nested bundle.
+
+    A plugin that ships .vscode/ or .idea/ used to reach the staged payload
+    verbatim, and `codesign --deep` then aborted the whole backend seal with
+    "bundle format unrecognized, invalid, or unsuitable" — see the exclusion
+    list in plugin/neko_plugin_cli/core/build_rules.py.
+    """
+
+    project_root = tmp_path / "repo"
+    plugin_dir = project_root / "plugin" / "plugins" / "demo_plugin"
+    _write(project_root / "launcher.py", "print('launcher')\n")
+    _write(plugin_dir / "plugin.toml", '[plugin]\nid = "demo_plugin"\n')
+    _write(plugin_dir / "__init__.py")
+    _write(plugin_dir / "runtime.py")
+    _write(plugin_dir / ".vscode" / "settings.json", "{}\n")
+    _write(plugin_dir / ".vscode" / "tasks.json", "{}\n")
+    _write(plugin_dir / ".idea" / "workspace.xml", "<project/>\n")
+
+    result = prepare_plugins(
+        project_root=project_root,
+        plugins_root=Path("plugin/plugins"),
+        stage_dir=Path("build/nuitka-plugins"),
+        source_launcher=Path("launcher.py"),
+        generated_launcher=Path("build_nuitka_launcher.py"),
+    )
+
+    stage_plugin = result.stage_dir / "demo_plugin"
+    assert (stage_plugin / "runtime.py").is_file()
+    assert not (stage_plugin / ".vscode").exists()
+    assert not (stage_plugin / ".idea").exists()
+
+    # Nothing dotted may survive anywhere in the staged tree, whatever its depth.
+    assert not [
+        path
+        for path in result.stage_dir.rglob("*")
+        if path.is_dir() and "." in path.name
+    ]
+
+
+def test_no_bundled_plugin_ships_a_dotted_directory_besides_github() -> None:
+    """Guard the real tree, not just the staging helper.
+
+    build_rules only skips names it knows. A plugin adding some other dotted
+    directory would sail past it and kill the mac build again, so pin the set
+    of dotted directories that actually exist under plugin/plugins/.
+    """
+
+    repo_root = Path(__file__).resolve().parents[2]
+    plugins_root = repo_root / "plugin" / "plugins"
+    listed = subprocess.run(
+        ["git", "ls-files", "-z", "--", str(plugins_root)],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    offenders = sorted(
+        {
+            part
+            for entry in listed.stdout.split("\0")
+            if entry
+            for part in Path(entry).parts[:-1]
+            if "." in part
+        }
+        - set(_DEFAULT_EXCLUDE_DIR_NAMES)
+    )
+
+    assert not offenders, (
+        "dotted directories under plugin/plugins/ break `codesign --deep` on the "
+        f"macOS backend bundle; add them to _DEFAULT_EXCLUDE_DIR_NAMES: {offenders}"
+    )

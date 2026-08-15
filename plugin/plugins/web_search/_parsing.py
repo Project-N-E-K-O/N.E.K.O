@@ -10,9 +10,10 @@ web_search 插件的解析层：纯函数、不依赖 SDK 和网络，便于单�
 
 from __future__ import annotations
 
+import math
 import re
 import unicodedata
-from typing import Dict, List
+from typing import Dict, List, Optional
 from urllib.parse import unquote, urlparse
 
 from bs4 import BeautifulSoup  # type: ignore[import-untyped]
@@ -27,10 +28,23 @@ _META_CHARSET_RE = re.compile(
 )
 # gb2312/gbk 解码器会在合法页面的少数扩展字符上报错，统一升级到超集 gb18030
 _ENCODING_ALIASES = {"gb2312": "gb18030", "gbk": "gb18030"}
-
-
 class SearchBlockedError(RuntimeError):
     """搜索引擎返回了反爬验证页，而不是结果页。"""
+
+    is_search_block = True
+
+    def __init__(
+        self, message: str, *, retry_after_seconds: Optional[float] = None
+    ) -> None:
+        super().__init__(message)
+        delay = None if retry_after_seconds is None else float(retry_after_seconds)
+        self.retry_after_seconds = (
+            max(0.0, delay) if delay is not None and math.isfinite(delay) else None
+        )
+
+
+class SearchResponseError(RuntimeError):
+    """A search response could not be interpreted as a usable result page."""
 
 
 def sanitize_text(text: str) -> str:
@@ -110,6 +124,51 @@ def is_ddg_ad_url(url: str) -> bool:
     host = (parsed.hostname or "").lower()
     is_ddg_host = host == "duckduckgo.com" or host.endswith(".duckduckgo.com")
     return is_ddg_host and parsed.path == "/y.js"
+
+
+def is_ddg_blocked(html: str) -> bool:
+    """Detect known DuckDuckGo challenge pages returned with a 2xx status."""
+    soup = BeautifulSoup(html[:20000], "html.parser")
+    if soup.select_one("form#anomaly-modal") is not None:
+        return True
+
+    for tag, attribute in (("form", "action"), ("script", "src")):
+        for node in soup.find_all(tag):
+            url = str(node.get(attribute, "")).strip()
+            if not url:
+                continue
+            parsed = urlparse(url)
+            host = (parsed.hostname or "").lower()
+            if parsed.path == "/anomaly.js" and (
+                not host or host == "duckduckgo.com" or host.endswith(".duckduckgo.com")
+            ):
+                return True
+    return False
+
+
+def is_ddg_no_results(html: str) -> bool:
+    """Detect DuckDuckGo's explicit empty-results container."""
+    soup = BeautifulSoup(html, "html.parser")
+    return soup.select_one(".no-results, #no-results") is not None
+
+
+def is_baidu_no_results(html: str) -> bool:
+    """Detect Baidu's explicit empty-results response."""
+    soup = BeautifulSoup(html, "html.parser")
+    container = soup.select_one("#content_left")
+    if container is None:
+        return False
+    if container.select_one(".nors") is not None:
+        return True
+    text = sanitize_text(container.get_text(" ", strip=True))
+    return any(
+        marker in text
+        for marker in (
+            "抱歉，没有找到与",
+            "抱歉没有找到与",
+            "没有找到与您查询的",
+        )
+    )
 
 
 def parse_ddg_html(html: str, max_results: int = 8) -> List[Dict[str, str]]:

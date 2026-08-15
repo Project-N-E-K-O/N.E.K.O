@@ -805,18 +805,34 @@
      * 构造屏幕/相机分享的 stream_data 消息，并在适用时附带 Avatar 位置元数据。
      * 与主动搭话截图（app-proactive.js）口径保持一致：仅桌面/全屏分享叠加注解，
      * 窗口分享 / 移动相机不含 Avatar（captureType 为 null → 不附带）。
+     *
+     * @param {string} dataUrl 已归一化成 JPEG 的画面数据
+     * @param {string} input_type 'screen' | 'camera'
+     * @param {string|null} [sourceId] 原生帧的显式源 ID
+     * @param {'screen'|'viewport'|null} [explicitCaptureType]
+     *        调用方已经知道这一帧来自哪种画面来源时显式传入；传 null 表示
+     *        「已确认无法判定」→ 不叠加。省略时按 sourceId / 缓存流推断。
      */
-    function buildStreamDataMessage(dataUrl, input_type, sourceId) {
+    function buildStreamDataMessage(dataUrl, input_type, sourceId, explicitCaptureType) {
         var msg = { action: 'stream_data', data: dataUrl, input_type: input_type };
         // 仅屏幕分享可能包含 Avatar；移动相机拍的是现实画面，无 Avatar
         if (input_type === 'screen') {
-            // 原生帧按显式源判定；有前端流时按流/已选源判定。
-            // 两者都没有时按全屏处理；持续屏幕分享不会再进入后端整屏截图轮询。
-            var captureType = sourceId
-                ? detectScreenshotCaptureType(null, sourceId)
-                : (S.screenCaptureStream
+            var captureType;
+            if (typeof explicitCaptureType !== 'undefined') {
+                // 单帧路径的画面可能来自缓存流 / 原生帧 / 后端整屏兜底，三者互相回退。
+                // 发送时的 S.screenCaptureStream / S.selectedScreenSourceId 描述的是
+                // 「本会话配置抓什么」，不是「这一帧抓到了什么」，推不出来。
+                captureType = explicitCaptureType;
+            } else if (sourceId) {
+                // 原生帧按显式源判定。
+                captureType = detectScreenshotCaptureType(null, sourceId);
+            } else {
+                // 有前端流时按流/已选源判定；两者都没有时按全屏处理，
+                // 持续屏幕分享不会再进入后端整屏截图轮询。
+                captureType = S.screenCaptureStream
                     ? detectScreenshotCaptureType(S.screenCaptureStream, S.selectedScreenSourceId)
-                    : 'screen');
+                    : 'screen';
+            }
             var avatarPos = getAvatarScreenPosition(captureType);
             if (avatarPos) {
                 msg.avatar_position = avatarPos;
@@ -1752,10 +1768,13 @@
         }
 
         var popupId = screenPopup.id;
+        var renderToken = (Number(screenPopup._screenSourceRenderToken) || 0) + 1;
+        screenPopup._screenSourceRenderToken = renderToken;
         var requireVisible = renderOptions.requireVisible !== false;
         var isPopupAvailable = function () {
             if (!screenPopup || !screenPopup.isConnected) return false;
             if (popupId && document.getElementById(popupId) !== screenPopup) return false;
+            if (screenPopup._screenSourceRenderToken !== renderToken) return false;
             if (!requireVisible) return true;
             return screenPopup.style.display === 'flex' && screenPopup.style.opacity !== '0';
         };
@@ -1785,10 +1804,11 @@
             loadingItem.style.textAlign = 'center';
             screenPopup.appendChild(loadingItem);
 
-            // 获取屏幕源
+            // 第一阶段只枚举来源元数据。Electron 明确允许用 0x0 跳过每个窗口的
+            // 缩略图捕获，名称返回后立即绘制，完整图片在第二阶段后台补齐。
             var sources = await desktopProvider.getSources({
                 types: ['window', 'screen'],
-                thumbnailSize: { width: 160, height: 100 }
+                thumbnailSize: { width: 0, height: 0 }
             });
 
             if (!isPopupAvailable()) return false;
@@ -1809,6 +1829,92 @@
             // 分组：屏幕和窗口
             var screens = sources.filter(function (s) { return s.id.startsWith('screen:'); });
             var windows = sources.filter(function (s) { return s.id.startsWith('window:'); });
+            var previewHosts = new Map();
+
+            function previewFrameStyles() {
+                return {
+                    width: '100%',
+                    maxWidth: '90px',
+                    height: '56px',
+                    borderRadius: '4px',
+                    border: '1px solid var(--neko-popup-separator)',
+                    marginBottom: '4px',
+                    boxSizing: 'border-box',
+                    overflow: 'hidden'
+                };
+            }
+
+            function renderPreviewLoading(host) {
+                host.innerHTML = '';
+                host.className = 'screen-source-thumbnail screen-source-thumbnail-loading';
+                host.textContent = window.t ? window.t('app.screenSource.loading') : 'Loading...';
+                Object.assign(host.style, previewFrameStyles(), {
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    padding: '4px',
+                    background: 'var(--neko-screen-placeholder-bg, #f5f5f5)',
+                    color: 'var(--neko-popup-text-sub)',
+                    fontSize: '10px',
+                    textAlign: 'center'
+                });
+            }
+
+            function renderPreviewFallback(host, source) {
+                host.innerHTML = '';
+                host.className = 'screen-source-thumbnail screen-source-thumbnail-fallback';
+                host.textContent = source.id.startsWith('screen:') ? '\uD83D\uDDA5\uFE0F' : '\uD83E\uDE9F';
+                Object.assign(host.style, previewFrameStyles(), {
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    background: 'var(--neko-screen-placeholder-bg, #f5f5f5)',
+                    fontSize: '24px'
+                });
+            }
+
+            function sourceThumbnailDataUrl(source) {
+                if (!source || !source.thumbnail) return '';
+                if (typeof source.thumbnail === 'string') return source.thumbnail;
+                if (typeof source.thumbnail.toDataURL === 'function') {
+                    return source.thumbnail.toDataURL();
+                }
+                return '';
+            }
+
+            function renderPreviewImage(host, source) {
+                var thumbnailDataUrl = '';
+                try {
+                    thumbnailDataUrl = sourceThumbnailDataUrl(source);
+                    if (!thumbnailDataUrl || thumbnailDataUrl.trim() === '') {
+                        throw new Error('thumbnail data URL is empty');
+                    }
+                } catch (error) {
+                    console.warn('[屏幕源] 缩略图转换失败，使用占位图:', error);
+                    renderPreviewFallback(host, source);
+                    return false;
+                }
+
+                host.innerHTML = '';
+                host.className = 'screen-source-thumbnail screen-source-thumbnail-ready';
+                Object.assign(host.style, previewFrameStyles(), {
+                    display: 'block',
+                    padding: '0',
+                    background: 'var(--neko-screen-placeholder-bg, #f5f5f5)'
+                });
+                var thumb = document.createElement('img');
+                thumb.alt = '';
+                thumb.src = thumbnailDataUrl;
+                thumb.onerror = function () { renderPreviewFallback(host, source); };
+                Object.assign(thumb.style, {
+                    display: 'block',
+                    width: '100%',
+                    height: '100%',
+                    objectFit: 'cover'
+                });
+                host.appendChild(thumb);
+                return true;
+            }
 
             // 创建网格容器的辅助函数
             function createGridContainer() {
@@ -1850,59 +1956,13 @@
                     option.style.borderColor = '#4f8cff';
                 }
 
-                // 缩略图（带异常处理和占位图回退）
-                if (source.thumbnail) {
-                    var thumb = document.createElement('img');
-                    var thumbnailDataUrl = '';
-                    try {
-                        // NativeImage 对象需要转换为 dataURL 字符串
-                        if (typeof source.thumbnail === 'string') {
-                            thumbnailDataUrl = source.thumbnail;
-                        } else if (source.thumbnail && typeof source.thumbnail.toDataURL === 'function') {
-                            thumbnailDataUrl = source.thumbnail.toDataURL();
-                        }
-                        // 检查是否为空字符串或无效值
-                        if (!thumbnailDataUrl || thumbnailDataUrl.trim() === '') {
-                            throw new Error('thumbnail.toDataURL() 返回空值');
-                        }
-                    } catch (e) {
-                        console.warn('[屏幕源] 缩略图转换失败，使用占位图:', e);
-                        // 使用占位图（1x1 透明像素的 dataURL）
-                        thumbnailDataUrl = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
-                    }
-                    thumb.src = thumbnailDataUrl;
-                    // 添加错误处理，如果图片加载失败也使用占位图
-                    thumb.onerror = function () {
-                        thumb.src = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
-                    };
-                    Object.assign(thumb.style, {
-                        width: '100%',
-                        maxWidth: '90px',
-                        height: '56px',
-                        objectFit: 'cover',
-                        borderRadius: '4px',
-                        border: '1px solid var(--neko-popup-separator)',
-                        marginBottom: '4px'
-                    });
-                    option.appendChild(thumb);
-                } else {
-                    // 无缩略图时显示图标
-                    var iconPlaceholder = document.createElement('div');
-                    iconPlaceholder.textContent = source.id.startsWith('screen:') ? '\uD83D\uDDA5\uFE0F' : '\uD83E\uDE9F';
-                    Object.assign(iconPlaceholder.style, {
-                        width: '100%',
-                        maxWidth: '90px',
-                        height: '56px',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        fontSize: '24px',
-                        background: 'var(--neko-screen-placeholder-bg, #f5f5f5)',
-                        borderRadius: '4px',
-                        marginBottom: '4px'
-                    });
-                    option.appendChild(iconPlaceholder);
-                }
+                // 名称阶段先保留与最终图片一致的 90x56 预览区域。
+                var previewHost = document.createElement('div');
+                // 元数据请求明确使用 0x0 跳过缩略图；Electron 仍可能返回
+                // truthy 但为空的 NativeImage，因此这里始终等待第二阶段结果。
+                renderPreviewLoading(previewHost);
+                previewHosts.set(source.id, { host: previewHost, source: source });
+                option.appendChild(previewHost);
 
                 // 名称（在缩略图下方，允许多行）
                 var label = document.createElement('span');
@@ -1986,6 +2046,55 @@
                 screenPopup.appendChild(windowGrid);
             }
 
+            // Linux portal 的来源枚举可能再次弹出系统选择器。名称阶段已经完成
+            // 一次必要枚举，此类 provider 不再为缩略图重复请求。
+            if (desktopSourceEnumerationMayPrompt(desktopProvider)) {
+                previewHosts.forEach(function (entry) {
+                    renderPreviewFallback(entry.host, entry.source);
+                });
+                return true;
+            }
+
+            // 第二阶段在后台获取整批缩略图。N.E.K.O.-PC 对这个显式缓存请求
+            // 做 60 秒单快照缓存和 in-flight 去重；旧弹窗的迟到结果不会越过 token。
+            Promise.resolve().then(function () {
+                var thumbnailOptions = {
+                    types: ['window', 'screen'],
+                    thumbnailSize: { width: 160, height: 100 },
+                    thumbnailCache: true
+                };
+                var configuredTimeoutMs = Number(C.SCREEN_SOURCE_THUMBNAIL_TIMEOUT);
+                var thumbnailTimeoutMs = Number.isFinite(configuredTimeoutMs) && configuredTimeoutMs > 0
+                    ? configuredTimeoutMs
+                    : 15000;
+                return window.invokeDesktopCaptureWithTimeout(
+                    desktopProvider,
+                    'getSources',
+                    [thumbnailOptions],
+                    thumbnailTimeoutMs
+                );
+            }).then(function (thumbnailSources) {
+                if (!isPopupAvailable()) return;
+                var thumbnailsById = new Map();
+                (thumbnailSources || []).forEach(function (source) {
+                    thumbnailsById.set(source.id, source);
+                });
+                previewHosts.forEach(function (entry, sourceId) {
+                    var thumbnailSource = thumbnailsById.get(sourceId);
+                    if (thumbnailSource && thumbnailSource.thumbnail) {
+                        renderPreviewImage(entry.host, thumbnailSource);
+                    } else {
+                        renderPreviewFallback(entry.host, entry.source);
+                    }
+                });
+            }).catch(function (error) {
+                console.error('[屏幕源] 获取缩略图失败:', error);
+                if (!isPopupAvailable()) return;
+                previewHosts.forEach(function (entry) {
+                    renderPreviewFallback(entry.host, entry.source);
+                });
+            });
+
             return true;
         } catch (error) {
             if (!isPopupAvailable()) return false;
@@ -2044,6 +2153,60 @@
         return null;
     }
     mod.detectScreenshotCaptureType = detectScreenshotCaptureType;
+
+    // ======================== 多显示器闸门 ========================
+    // getAvatarScreenPosition 的 'screen' 分支用 window.screenX（虚拟桌面全局坐标）
+    // 当原点、用 window.screen.width（当前所在显示器尺寸）当归一化分母，两个参考系
+    // 差一个「当前显示器 bounds 原点」。单屏下该原点恒为 0 所以结果正确；多屏下
+    // 「捕获副屏 / Pet 窗口在主屏」会算出一个落在 [0,1] 内的错误坐标，把注解叠到
+    // 另一块屏的截图上。
+    //
+    // 要把参考系修对，必须知道「被捕获的是哪块屏」，而整条链路都不携带这个信息：
+    // sourceId 只被 startsWith('screen:') 判一下就丢弃，getSettings() 里没有任何
+    // 显示器标识，运行时又不能重新 getSources（Linux Portal 会再弹系统窗口）。
+    // 所以这里只做闸门：确认是多屏就不叠。宁可不叠，也不叠到错误的屏上。
+    var multiDisplayCache = null;   // true / false / null(未知)
+    var multiDisplayCacheAt = 0;
+    // 桥上没有显示器拓扑变更事件（electronScreen 只有 getAllDisplays /
+    // getCurrentDisplay / getCursorPoint / getDesktopCoordinateSnapshot /
+    // getPrimaryDisplayInfo / moveWindowToDisplay），只能按 TTL 重查：一次查完就
+    // 永久缓存的话，笔记本插上外接屏之后闸门会一直按单屏放行。
+    var MULTI_DISPLAY_CACHE_TTL_MS = 5000;
+
+    function refreshMultiDisplayCache() {
+        // 无条件先打时间戳，失败/没有桥时也算「这一轮问过了」：否则查询失败会让
+        // multiDisplayCache 一直是 null，下面的节流判据就永远放行，持续分享时
+        // 变成每帧一次 IPC（还会叠出多个在途请求）。
+        multiDisplayCacheAt = Date.now();
+        var bridge = window.electronScreen;
+        if (!bridge || typeof bridge.getAllDisplays !== 'function') return;
+        try {
+            Promise.resolve(bridge.getAllDisplays()).then(function (list) {
+                if (list && typeof list.length === 'number') {
+                    multiDisplayCache = list.length > 1;
+                }
+            }).catch(function () { /* 拿不到就保持上一次的判断 */ });
+        } catch (e) { /* 拿不到就保持上一次的判断 */ }
+    }
+
+    function isKnownMultiDisplay() {
+        // Chromium 的 Screen.isExtended 不需要权限，且随拓扑实时变化，是最直接的信号。
+        // 拿不到时退回 electronScreen 缓存；两者都拿不到就返回 false，
+        // 即逐字沿用改动前的行为（单屏用户与纯浏览器场景不受本闸门影响）。
+        if (window.screen && typeof window.screen.isExtended === 'boolean') {
+            return window.screen.isExtended;
+        }
+        // 刷新是 fire-and-forget：本次仍用上一轮的值，拓扑变化最多晚 TTL + 一次 IPC
+        // 生效。不 await 是因为这条在截图路径上，持续分享时每秒都会问一次。
+        // 节流只看时间戳，不看缓存是否还是未知——查询失败时 multiDisplayCache 会
+        // 一直是 null，若把它放进判据就等于不节流。
+        if (multiDisplayCacheAt === 0
+            || (Date.now() - multiDisplayCacheAt) > MULTI_DISPLAY_CACHE_TTL_MS) {
+            refreshMultiDisplayCache();
+        }
+        return multiDisplayCache === true;
+    }
+    mod.isKnownMultiDisplay = isKnownMultiDisplay;
 
     // ======================== getAvatarScreenPosition ========================
     /**
@@ -2144,6 +2307,9 @@
         var refW, refH; // 截图所覆盖区域的 CSS 尺寸（用于归一化分母）
 
         if (captureType === 'screen') {
+            // 多屏下无法判断截的是哪块屏，下面的坐标换算会算错屏，直接不叠。
+            if (isKnownMultiDisplay()) return null;
+
             // 截图覆盖整个屏幕 → 坐标需加上浏览器窗口在屏幕上的偏移
             // viewportOrigin = windowOuter 的左上角 + chrome 偏移
             var chromeLeft = Math.round((window.outerWidth - window.innerWidth) / 2);
@@ -2195,6 +2361,10 @@
     window.detectScreenshotCaptureType = detectScreenshotCaptureType;
     window.clearSelectedScreenSource = clearSelectedScreenSource;
     window.maybeClearSourceOnNotFound = maybeClearSourceOnNotFound;
+
+    // 预热多显示器缓存：electronScreen 桥是异步的，等到第一次截图再问就来不及，
+    // 那一帧会按「未知 → 单屏」处理。screen.isExtended 可用时这一步是多余的。
+    refreshMultiDisplayCache();
 
     // ======================== Export module ========================
     window.appScreen = mod;

@@ -1,8 +1,17 @@
 """
 QQ 客户端封装（基于 OneBot 协议）
 
-启动反向 WebSocket 服务器，等待 NapCat/LLOneBot/go-cqhttp 等 OneBot 实现
-作为 WS 客户端连接。与 AstrBot 的 aiocqhttp 反向 WS 模式一致。
+支持两种 WS 方向（``direction``）：
+- **反向**（默认）：启动反向 WebSocket 服务器，等待 NapCat/LLOneBot/go-cqhttp
+  等 OneBot 实现作为 WS 客户端连接。与 AstrBot 的 aiocqhttp 反向 WS 模式一致。
+- **正向**：作为 WS 客户端主动拨出到 NapCat 的 WS 服务器（``ws://host:port``），
+  用于远端设备运行 NapCat、插件侧无需暴露端口的场景。模式标识为
+  ``napcat_forward``（``qq_connection_mode`` 的第三个取值）。
+
+正向模式复用反向模式的整条入站/出站管线（``_process_incoming`` /
+``receive_message`` / echo→future 关联 / 全部 send 包装器），差别只在
+transport：把唯一出站 socket 装进 ``_main_client`` / ``_connected_clients``，
+由 ``_forward_receive_loop`` 单任务收流并在断线后自动重拨。
 """
 
 import asyncio
@@ -11,7 +20,7 @@ import re
 import secrets
 import time
 from typing import Any, Dict, Optional
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlencode, urlparse, urlunparse
 
 import websockets
 from websockets.exceptions import ConnectionClosed
@@ -33,7 +42,8 @@ class QQClient(QQConnectionBase):
     def __init__(self, *, onebot_url: str, token: str = "", logger: Any = None,
                  emit_log: Any = None, message_queue_size: int = 100,
                  image_describer: Any = None,
-                 voice_transcriber: Any = None):
+                 voice_transcriber: Any = None,
+                 direction: str = "reverse"):
         self._onebot_url = str(onebot_url or "").strip()
         self.token = str(token or "")
         self.logger = logger
@@ -43,19 +53,38 @@ class QQClient(QQConnectionBase):
         # 可选：异步回调 (audio_base64: str) → str，用于语音转文字
         self._voice_transcriber = voice_transcriber
 
-        # 从 onebot_url 解析监听地址
-        self._listen_host = "0.0.0.0"
-        self._listen_port = 6199
-        parsed = urlparse(self._onebot_url) if self._onebot_url else None
-        if parsed and parsed.hostname:
-            self._listen_host = parsed.hostname
-            if parsed.port:
-                self._listen_port = parsed.port
+        #: WS 方向："reverse"=反向 WS 服务器（默认）/ "forward"=正向 WS 客户端。
+        self.direction = str(direction or "reverse").strip().lower()
+        #: 连接模式标识，供 runtime 判断是否需要重建连接（reverse→"napcat"，
+        #: forward→"napcat_forward"）。见 runtime_ops_service 的 mode 比较。
+        self.mode = "napcat_forward" if self.direction == "forward" else "napcat"
+
+        if self.direction == "forward":
+            # 正向连接：onebot_url 是 NapCat WS 服务器的拨出目标，不拆监听地址
+            self._listen_host = "0.0.0.0"
+            self._listen_port = 6199
+        else:
+            # 反向连接：从 onebot_url 解析监听地址
+            self._listen_host = "0.0.0.0"
+            self._listen_port = 6199
+            parsed = urlparse(self._onebot_url) if self._onebot_url else None
+            if parsed and parsed.hostname:
+                self._listen_host = parsed.hostname
+                if parsed.port:
+                    self._listen_port = parsed.port
 
         self._server: Optional[websockets.WebSocketServer] = None
-        self._connected_clients: set[websockets.WebSocketServerProtocol] = set()
-        self._main_client: Optional[websockets.WebSocketServerProtocol] = None  # 最新的连接，用于发 API 调用
+        # 反向模式装的是 server 端协议（多个），正向模式装的是唯一出站客户端
+        # 协议——两者都有 .send/.close_code/.close() 且可迭代，代码通用。
+        self._connected_clients: set[Any] = set()
+        self._main_client: Optional[Any] = None  # 最新的连接，用于发 API 调用
+        # 正向模式唯一出站 socket（反向模式为 None）
+        self._ws: Optional[websockets.WebSocketClientProtocol] = None
         self._receive_task: Optional[asyncio.Task] = None
+        #: 正向模式拨出/重连参数
+        self._dial_timeout: float = 10.0
+        self._reconnect_initial_backoff: float = 1.0
+        self._reconnect_max_backoff: float = 30.0
         self._message_queue_maxsize = max(1, int(message_queue_size or 100))
         self._message_queue: asyncio.Queue = None  # lazy init in connect()
         self._pending_actions: Dict[str, asyncio.Future] = {}
@@ -72,6 +101,9 @@ class QQClient(QQConnectionBase):
     @onebot_url.setter
     def onebot_url(self, value: str) -> None:
         self._onebot_url = str(value or "").strip()
+        if self.direction == "forward":
+            # 正向模式：onebot_url 是拨出目标，直接使用，不拆监听地址
+            return
         self._listen_host = "0.0.0.0"
         self._listen_port = 6199
         parsed = urlparse(self._onebot_url) if self._onebot_url else None
@@ -253,13 +285,26 @@ class QQClient(QQConnectionBase):
             "mentions_bot": mentions_bot,
         }
 
-    # ── 反向 WebSocket 服务器 ─────────────────────────────────
+    # ── 连接生命周期 ─────────────────────────────────────────
 
     async def connect(self):
-        """启动反向 WebSocket 服务器，等待 OneBot 客户端连接"""
+        """建立连接。
+
+        反向模式：启动反向 WebSocket 服务器，等待 OneBot 客户端拨入；
+        正向模式：启动后台收流/重连循环（由循环负责拨出），返回即幂等。
+        正向**不**阻塞拨出：NapCat 的 WS 服务器要在本地 NapCat 进程起来并
+        登录后才开始监听，start 时可能还没就绪——由 ``_forward_receive_loop``
+        按退避重试，与反向模式「等待 NapCat 拨入」的语义一致。
+        """
+        self._closing = False
+        if self.direction == "forward":
+            if self._receive_task is not None and not self._receive_task.done():
+                return  # 收流/重连循环已在跑，幂等
+            self._message_queue = asyncio.Queue(maxsize=self._message_queue_maxsize)
+            self._receive_task = asyncio.create_task(self._forward_receive_loop())
+            return
         if self._server is not None:
             return
-        self._closing = False
         # 在当前 event loop 中重新创建队列（避免跨 loop 绑定错误）
         self._message_queue = asyncio.Queue(maxsize=self._message_queue_maxsize)
         self._server = await websockets.serve(
@@ -274,7 +319,7 @@ class QQClient(QQConnectionBase):
             self.logger.info(f"Reverse WS server listening on {self._listen_host}:{self._listen_port}")
 
     async def disconnect(self):
-        """关闭服务器和所有客户端连接"""
+        """关闭连接，清理资源"""
         self._closing = True
 
         # 取消所有待处理请求
@@ -282,6 +327,26 @@ class QQClient(QQConnectionBase):
             if not future.done():
                 future.cancel()
         self._pending_actions.clear()
+
+        if self.direction == "forward":
+            if self._receive_task:
+                self._receive_task.cancel()
+                try:
+                    await self._receive_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+                self._receive_task = None
+            if self._ws is not None:
+                try:
+                    await self._ws.close()
+                except Exception:
+                    pass
+                self._ws = None
+            self._connected_clients.clear()
+            self._main_client = None
+            if self.logger:
+                self.logger.info("Forward WS client stopped")
+            return
 
         # 关闭所有已连接的客户端
         for client in list(self._connected_clients):
@@ -306,6 +371,131 @@ class QQClient(QQConnectionBase):
 
         if self.logger:
             self.logger.info("Reverse WS server stopped")
+
+    # ── 正向 WebSocket 客户端 ─────────────────────────────────
+
+    def _forward_ws_url(self) -> str:
+        """构造正向拨出 URL：token 走 Authorization 头之外，也拼到 query
+        （?access_token=，幂等：已带则不重复），兼容只认 query 的 OneBot 实现。"""
+        url = self._onebot_url
+        if not self.token:
+            return url
+        parsed = urlparse(url)
+        if "access_token" in parse_qs(parsed.query):
+            return url
+        sep = "&" if parsed.query else "?"
+        return f"{url}{sep}{urlencode({'access_token': self.token})}"
+
+    def _redact_url(self, url: str) -> str:
+        """写日志前遮掉 URL query 里的 access_token，避免 token 明文落盘。
+
+        ``_forward_ws_url`` 会把 token 拼进 query；连接成功后若把完整 URL 写进
+        文件日志，token 就永久留在磁盘上了。日志里只保留主机/路径，token 值以
+        ``***`` 替代（与插件 ``_mask_token`` 的脱敏习惯一致）。
+        """
+        if not url:
+            return url
+        try:
+            parsed = urlparse(url)
+            params = parse_qs(parsed.query)
+            if "access_token" not in params:
+                return url
+            cleaned = "&".join(
+                f"{k}={'***' if k == 'access_token' else v}"
+                for k, values in params.items()
+                for v in values
+            )
+            return urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, cleaned, parsed.fragment))
+        except Exception:
+            return url
+
+    def _redact_text(self, text: str) -> str:
+        """把文本里出现的明文 token 遮掉（异常消息可能内嵌带 token 的完整 URL）。
+
+        同时替换原始值与 URL 编码值：token 若含 ``+``/``/``/``=`` 等字符，URL 里
+        是编码形式（%2B / %2F / %3D），只替换原始值会漏。
+        """
+        try:
+            raw = str(text)
+            if self.token:
+                for variant in (self.token, quote(self.token, safe="")):
+                    if variant and variant in raw:
+                        raw = raw.replace(variant, "***")
+            return raw
+        except Exception:
+            return str(text)
+
+    async def _dial_forward(self) -> bool:
+        """正向拨出到 NapCat 的 WS 服务器（收流循环调用）。
+
+        失败不 raise，记录日志并返回 False，由 ``_forward_receive_loop`` 按
+        退避重试——NapCat 的 WS 服务器可能尚未就绪（进程还在启动/登录）。
+        """
+        url = self._forward_ws_url()
+        try:
+            ws = await asyncio.wait_for(
+                websockets.connect(
+                    url,
+                    additional_headers=(
+                        {"Authorization": f"Bearer {self.token}"} if self.token else None
+                    ),
+                    ping_interval=30,
+                    ping_timeout=10,
+                    max_size=2 ** 23,
+                ),
+                timeout=self._dial_timeout,
+            )
+        except Exception as e:
+            # 异常消息可能内嵌带 token 的完整 URL（InvalidURI/InvalidStatus 等），先遮掉
+            self._emit_log("WARN", f"NapCat(正向) 拨出失败: {self._redact_text(e)}")
+            return False
+        self._ws = ws
+        self._main_client = ws
+        self._connected_clients = {ws}
+        if self.logger:
+            # 不打印带 access_token 的完整 URL，token 会明文留在日志文件里
+            self.logger.info(f"Forward WS connected to {self._redact_url(url)}")
+        self._emit_log("INFO", "NapCat(正向) 已连接")
+        # 首次连接时异步获取登录信息（不阻塞收流循环）
+        if not self._self_id:
+            asyncio.create_task(self._fetch_login_info_async())
+        return True
+
+    async def _forward_receive_loop(self):
+        """正向模式收流 + 断线重连循环。
+
+        单任务同时负责 recv 与重拨：断线后按退避重拨、换新 socket 继续收，
+        等价于反向模式下 NapCat 自己重连（只是发起方在我们这侧）。
+        """
+        backoff = self._reconnect_initial_backoff
+        while not self._closing:
+            if self._ws is None or getattr(self._ws, "close_code", None) is not None:
+                ok = await self._dial_forward()
+                if not ok:
+                    await asyncio.sleep(backoff)
+                    backoff = min(backoff * 2, self._reconnect_max_backoff)
+                    continue
+                backoff = self._reconnect_initial_backoff
+            ws = self._ws
+            try:
+                async for raw_message in ws:
+                    try:
+                        await self._process_incoming(raw_message)
+                    except Exception:
+                        if self.logger:
+                            self.logger.exception("Error processing incoming message")
+            except ConnectionClosed:
+                pass
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                if self.logger and not self._closing:
+                    self.logger.exception("Unexpected error in forward receive loop")
+            if self._closing:
+                break
+            self._emit_log("WARN", "NapCat(正向) 连接断开，等待重连...")
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, self._reconnect_max_backoff)
 
     # ── 客户端连接处理 ────────────────────────────────────────
 

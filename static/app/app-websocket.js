@@ -3789,21 +3789,40 @@
                     (async function () {
                         try {
                             var dataUrl = null;
-                            if (typeof window.captureProactiveChatScreenshot === 'function') {
+                            // captureType 由截图函数在抓帧那一刻定好，这里不再二次推断：
+                            // 抓帧是异步的，等到这一步 S 里的流 / 源可能已经换人。
+                            var shotCaptureType = null;
+                            var hasPairedCaptureType = false;
+                            if (window.appProactive
+                                && typeof window.appProactive.captureProactiveChatScreenshotWithSource === 'function') {
+                                var shot = await window.appProactive.captureProactiveChatScreenshotWithSource();
+                                dataUrl = shot && shot.dataUrl ? shot.dataUrl : null;
+                                shotCaptureType = shot ? (shot.captureType || null) : null;
+                                hasPairedCaptureType = true;
+                            } else if (typeof window.captureProactiveChatScreenshot === 'function') {
                                 dataUrl = await window.captureProactiveChatScreenshot();
                             }
                             if (dataUrl && S.socket && S.socket.readyState === WebSocket.OPEN) {
                                 var respMsg = { action: 'screenshot_response', data: dataUrl };
-                                // Determine capture type for correct coordinate mapping
-                                // null = 窗口截图或无法确定 → 不叠加；仅无流无源时默认 'screen'
+                                // null = 窗口截图或无法确定 → 不叠加
                                 var captureType = null;
-                                if (typeof window.detectScreenshotCaptureType === 'function') {
-                                    captureType = window.detectScreenshotCaptureType(
-                                        S.screenCaptureStream, S.selectedScreenSourceId
-                                    );
-                                }
-                                if (captureType === null && !S.screenCaptureStream && !S.selectedScreenSourceId) {
-                                    captureType = 'screen';
+                                if (hasPairedCaptureType) {
+                                    captureType = shotCaptureType;
+                                } else {
+                                    // 旧契约兜底：拿不到带来源的截图函数时只能就地推断。
+                                    if (typeof window.detectScreenshotCaptureType === 'function') {
+                                        captureType = window.detectScreenshotCaptureType(
+                                            S.screenCaptureStream, S.selectedScreenSourceId
+                                        );
+                                    }
+                                    // 这一步必须是独立判断而不是 else：detect 存在但判不出
+                                    // （无流无源的后端整屏兜底）时也要提升成 'screen'。写成
+                                    // else if 会让它只在 detect 缺席时生效，后端把「不带坐标」
+                                    // 当明确的否定信号，于是整屏图变成永久不叠。
+                                    if (captureType === null
+                                        && !S.screenCaptureStream && !S.selectedScreenSourceId) {
+                                        captureType = 'screen';
+                                    }
                                 }
                                 var avatarPos = typeof window.getAvatarScreenPosition === 'function'
                                     ? window.getAvatarScreenPosition(captureType) : null;

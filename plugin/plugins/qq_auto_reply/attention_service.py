@@ -266,6 +266,16 @@ class QQAttentionService:
     def _focus_threshold(self) -> float:
         return float(self._setting("group_attention_focus_threshold", 4.0))
 
+    def _focus_send_threshold(self) -> float:
+        """焦点群的发送门控线（默认 2.0）：低于焦点线、高于最低线。
+
+        焦点线（_focus_threshold，默认 4.0）是「赢得焦点」的资格线。一旦成为
+        焦点群，注意力会随回复消耗（_consume_ratio）和时间衰减；若发送门控
+        也用焦点线，焦点群回一条就跌破线、立刻被门控——焦点形同虚设。这里用
+        更低的「焦点保持线」作为发送门控，让焦点群在合理注意力水平上继续回应。
+        """
+        return float(self._setting("group_attention_focus_send_threshold", 2.0))
+
     def _minimum_threshold(self) -> float:
         return float(self._setting("group_attention_min_threshold", 1.0))
 
@@ -359,6 +369,31 @@ class QQAttentionService:
             ),
         )
 
+    def _held_focus_state(self, states: list[QQGroupAttentionState]) -> QQGroupAttentionState | None:
+        """当前被**保持**的焦点：曾夺得焦点（focus_acquired_at>0）且分数仍 >= 发送保持线
+        （``_focus_send_threshold``，默认 2.0）的群。
+
+        焦点线（``_focus_threshold``，默认 4.0）是「赢得焦点」的资格线；一旦赢得，
+        只要分数不掉破发送保持线（2.0）就继续持有——否则焦点群回复一次（分数被
+        消耗到 2.x）就跌出焦点线、下一条消息被当非焦点拦下，发送门控形同虚设。
+        多个曾夺得焦点的群取最近夺得的那个。无则返回 None。
+        """
+        held = [
+            state for state in states
+            if int(state.focus_acquired_at or 0) > 0
+            and float(state.attention_score) >= self._focus_send_threshold()
+        ]
+        if not held:
+            return None
+        return max(
+            held,
+            key=lambda item: (
+                int(item.last_focus_at or 0),
+                int(item.focus_acquired_at or 0),
+                float(item.attention_score),
+            ),
+        )
+
     def _choose_focus_state(
         self,
         states: list[QQGroupAttentionState],
@@ -368,11 +403,21 @@ class QQAttentionService:
     ) -> QQGroupAttentionState | None:
         if not states:
             return None
+        # 新焦点候选：必须达到焦点线（_focus_threshold，默认 4.0）
         candidate = self._top_candidate_state(states, now)
+        # 焦点保持：曾夺得焦点的群只要分数 >= 发送保持线（2.0）就继续持有，
+        # 即使低于焦点线；只有更高分的挑战者（>= 焦点线）才能抢走。
+        held = self._held_focus_state(states)
+        if held is not None:
+            if candidate is None or held.attention_score >= candidate.attention_score:
+                return held
+        # 无持有焦点：恢复「最高分群」回退（与 get_snapshot 的 states[0] 一致）。
+        # 否则低于焦点线且无持有群时 _choose_focus_state 返回 None，而 get_snapshot
+        # 却把最高分群报为焦点——分裂导致 _get_top_group_id 等其它调用者拿不到焦点，
+        # 门控把最高分群的后续消息判成 non_focus。
         if candidate is None:
-            return None
-        current_id = self._current_focus_group_id(states)
-        if stamp_transition and candidate.group_id != current_id:
+            return max(states, key=lambda s: float(s.attention_score))
+        if stamp_transition:
             candidate.focus_acquired_at = now
             candidate.last_focus_reason = "highest_attention"
         return candidate
@@ -441,6 +486,7 @@ class QQAttentionService:
 
         self._write_state(self._normalize_state(state))
         await self._persist()
+        getattr(self.plugin, "_maybe_push_status_event", lambda: None)()  # 注意力变更 → SSE 通知前端
         return self.get_snapshot()
 
     async def update_on_message_count(self, group_id: str, *, message_count: int = 1) -> dict[str, Any]:
@@ -648,6 +694,7 @@ class QQAttentionService:
             state.phase = "rise"
             state.phase_started_at = now
         self._write_state(state)
+        getattr(self.plugin, "_maybe_push_status_event", lambda: None)()  # 焦点变更 → SSE 通知前端
 
     def wake_boost(self, group_id: str) -> None:
         """叫醒时给一个注意力启动值，确保能突破焦点阈值。"""
@@ -661,6 +708,7 @@ class QQAttentionService:
             state.phase_started_at = self._current_time()
             self._write_state(state)
             self.plugin._emit_log("INFO", f"[Attention] 唤醒 boost: 群{normalized_group_id} score={state.attention_score:.1f}")
+            getattr(self.plugin, "_maybe_push_status_event", lambda: None)()  # 注意力唤醒 → SSE 通知前端
 
     def get_last_focus_at(self, group_id: str) -> int:
         normalized_group_id = str(group_id or "").strip()
@@ -734,6 +782,7 @@ class QQAttentionService:
         self._write_state(state)
         await self._persist()
         self.plugin._emit_log("INFO", f"[Emotion] 群{normalized_group_id} 情绪: {emotion}")
+        getattr(self.plugin, "_maybe_push_status_event", lambda: None)()  # 情绪变更 → SSE 通知前端
 
     def _decay_emotion(self, state: QQGroupAttentionState, now: int) -> None:
         """情绪自然衰减：30秒无新情绪则向 calm 方向降温一级。"""

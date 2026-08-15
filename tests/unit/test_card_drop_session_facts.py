@@ -22,33 +22,6 @@ USER_A_ID = "11111111-1111-4111-8111-111111111111"
 USER_B_ID = "22222222-2222-4222-8222-222222222222"
 
 
-def _voucher_credit(**over):
-    credit = {
-        "rarity": "R",
-        "created_at": "2026-08-09T00:00:00Z",
-        "expires_at": "2026-08-10T00:00:00Z",
-        "reserved_at": "2026-08-09T01:00:00Z",
-        "consumed_at": "2026-08-09T01:01:00Z",
-    }
-    credit.update(over)
-    return credit
-
-
-def _fixed_expected_voucher():
-    return {
-        "version": 1,
-        "operation_id": "operation-id",
-        "credit_id": "credit-id",
-        "card_id": "card-id",
-        "rarity": "R",
-        "created_at": "2026-08-09T00:00:00.000000Z",
-        "expires_at": "2026-08-10T00:00:00.000000Z",
-        "reserved_at": "2026-08-09T01:00:00.000000Z",
-        "consumed_at": "2026-08-09T01:01:00.000000Z",
-        "signature": "5e95eb9dfe25de5ad5ee661e7e47817f1ce4f4a91103572dcc574961c6ec98ab",
-    }
-
-
 @pytest.mark.parametrize(
     "malformed_origin",
     [
@@ -265,232 +238,6 @@ def test_card_drop_client_id_fails_closed_when_fresh_default_cannot_be_saved(
     monkeypatch.setattr(config_manager, "get_config_manager", lambda: FakeConfigManager())
 
     assert C._get_client_id() is None
-
-
-@pytest.mark.asyncio
-async def test_confirm_cloud_forge_debit_rejects_redirect_response(monkeypatch):
-    monkeypatch.setenv("NEKO_SOCIAL_BASE_URL", "https://community.example")
-    monkeypatch.setattr(
-        C,
-        "_get_client_credentials",
-        lambda: ("client-id", "client-proof"),
-    )
-
-    class FakeAsyncClient:
-        def __init__(self, **_kwargs):
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *args):
-            return None
-
-        async def post(self, url, *, json):
-            return httpx.Response(
-                302,
-                json={
-                    "confirmed": True,
-                    "operation_id": "operation-id",
-                    "credit_id": "credit-id",
-                    "card_id": "card-id",
-                    "confirmed_at": "now",
-                },
-                request=httpx.Request("POST", url),
-            )
-
-    monkeypatch.setattr(C.httpx, "AsyncClient", FakeAsyncClient)
-
-    result = await C._confirm_cloud_forge_debit(
-        operation_id="operation-id",
-        credit_id="credit-id",
-        card_id="card-id",
-        credit=_voucher_credit(),
-    )
-
-    assert result == {"confirmed": False, "detail": "http_302"}
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "cloud_base_url",
-    [
-        "http://community.example",
-        "ftp://community.example",
-        "https:///missing-host",
-        "https://[::1",
-    ],
-)
-async def test_confirm_cloud_forge_debit_rejects_unsafe_cloud_base_url(
-    monkeypatch, cloud_base_url,
-):
-    monkeypatch.setenv("NEKO_SOCIAL_BASE_URL", cloud_base_url)
-    monkeypatch.setattr(
-        C,
-        "_get_client_credentials",
-        lambda: ("client-id", "client-proof"),
-    )
-
-    result = await C._confirm_cloud_forge_debit(
-        operation_id="operation-id",
-        credit_id="credit-id",
-        card_id="card-id",
-        credit=_voucher_credit(),
-    )
-
-    assert result == {"confirmed": False, "detail": "invalid_cloud_base_url"}
-
-
-@pytest.mark.asyncio
-async def test_confirm_cloud_forge_debit_includes_signed_voucher_for_local_http(monkeypatch):
-    monkeypatch.setenv("NEKO_SOCIAL_BASE_URL", "http://localhost:48911")
-    monkeypatch.setattr(
-        C,
-        "_get_client_credentials",
-        lambda: ("client-id", "client-proof"),
-    )
-    captured = {}
-
-    class FakeAsyncClient:
-        def __init__(self, **_kwargs):
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *args):
-            return None
-
-        async def post(self, url, *, json):
-            captured["url"] = url
-            captured["json"] = json
-            return httpx.Response(204, json=None, request=httpx.Request("POST", url))
-
-    monkeypatch.setattr(C.httpx, "AsyncClient", FakeAsyncClient)
-
-    result = await C._confirm_cloud_forge_debit(
-        operation_id="operation-id",
-        credit_id="credit-id",
-        card_id="card-id",
-        credit=_voucher_credit(),
-    )
-
-    assert result == {"confirmed": False, "detail": "http_204"}
-    assert captured["json"] == {
-        "client_id": "client-id",
-        "client_proof": "client-proof",
-        "credit_id": "credit-id",
-        "card_id": "card-id",
-        "voucher": _fixed_expected_voucher(),
-    }
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "timestamp_update",
-    [
-        {"reserved_at": None},
-        {"consumed_at": "not-a-timestamp"},
-        {"created_at": "2026-08-09T00:00:00"},
-    ],
-)
-async def test_confirm_cloud_forge_debit_leaves_malformed_voucher_unconfirmed(
-    monkeypatch, timestamp_update,
-):
-    monkeypatch.setenv("NEKO_SOCIAL_BASE_URL", "http://localhost:48911")
-    monkeypatch.setattr(
-        C,
-        "_get_client_credentials",
-        lambda: ("client-id", "client-proof"),
-    )
-
-    class UnexpectedAsyncClient:
-        def __init__(self, **_kwargs):
-            raise AssertionError("malformed voucher must not be sent")
-
-    monkeypatch.setattr(C.httpx, "AsyncClient", UnexpectedAsyncClient)
-
-    result = await C._confirm_cloud_forge_debit(
-        operation_id="operation-id",
-        credit_id="credit-id",
-        card_id="card-id",
-        credit=_voucher_credit(**timestamp_update),
-    )
-
-    assert result == {
-        "confirmed": False,
-        "detail": "invalid_forge_voucher",
-    }
-
-
-async def test_confirm_cloud_forge_debit_retries_for_loopback_unregistered(monkeypatch):
-    monkeypatch.setenv("NEKO_SOCIAL_BASE_URL", "http://localhost:48911")
-    monkeypatch.setattr(
-        C,
-        "_get_client_credentials",
-        lambda: ("client-id", "client-proof"),
-    )
-    call_log = []
-
-    class FakeAsyncClient:
-        def __init__(self, **_kwargs):
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *args):
-            return None
-
-        async def post(self, url, *, json):
-            call_log.append(("post", url, json))
-            if len(call_log) == 1:
-                return httpx.Response(
-                    403,
-                    json={"detail": "client_not_registered"},
-                    request=httpx.Request("POST", url),
-                )
-            return httpx.Response(
-                200,
-                json={
-                    "confirmed": True,
-                    "operation_id": "operation-id",
-                    "credit_id": "credit-id",
-                    "card_id": "card-id",
-                    "confirmed_at": "2026-08-09T00:00:00Z",
-                },
-                request=httpx.Request("POST", url),
-            )
-
-    async def fake_ensure_registered(*args, **kwargs):
-        call_log.append(("ensure_registered", args, kwargs))
-        return True
-
-    monkeypatch.setattr(C.httpx, "AsyncClient", FakeAsyncClient)
-    monkeypatch.setattr(C.client_registration, "ensure_client_registered", fake_ensure_registered)
-
-    result = await C._confirm_cloud_forge_debit(
-        operation_id="operation-id",
-        credit_id="credit-id",
-        card_id="card-id",
-        credit=_voucher_credit(),
-    )
-
-    assert result == {"confirmed": True}
-    assert len(call_log) == 3
-    assert call_log[0][0] == "post"
-    assert call_log[1][0] == "ensure_registered"
-    assert call_log[2][0] == "post"
-    assert call_log[0][2] == {
-        "client_id": "client-id",
-        "client_proof": "client-proof",
-        "credit_id": "credit-id",
-        "card_id": "card-id",
-        "voucher": _fixed_expected_voucher(),
-    }
-    assert call_log[1][1] == ("http://localhost:48911",)
-    assert call_log[1][2] == {"force": True}
-    assert call_log[2][2] == call_log[0][2]
 
 
 def test_packaged_facts_module_exposes_shared_entrypoints():
@@ -815,11 +562,7 @@ def _issue_delegate_from_local_ui(
     )
     assert response.status_code == 200
     payload = response.json()
-    assert payload["scopes"] == [
-        "credits:mutate",
-        "credits:read",
-        "facts:read",
-    ]
+    assert payload["scopes"] == ["facts:read"]
     assert "local_user_id" not in payload
     return payload["native_delegate"]
 
@@ -1101,29 +844,13 @@ def test_explicit_empty_delegate_scopes_do_not_escalate(client, monkeypatch):
     assert C._native_delegate_entry(token)["scopes"] == frozenset()
 
 
-def test_credit_delegate_scopes_separate_read_from_mutation(
+def test_local_credit_routes_are_retired_for_delegates(
     client,
     monkeypatch,
 ):
-    from main_logic import forge_credit_ledger
-
     snapshot = _delegate_session()
     monkeypatch.setattr(C, "_desktop_session_snapshot", lambda: snapshot)
-    token = C._issue_native_delegate(
-        local_user_id=USER_A_ID,
-        audience="https://community.example",
-        session_fingerprint=C._desktop_session_fingerprint(snapshot),
-        scopes=frozenset({"credits:read"}),
-    )
-    monkeypatch.setattr(
-        forge_credit_ledger,
-        "list_credits",
-        lambda *, reservation_owner_id: {
-            "count": 0,
-            "credits": [],
-            "reservations": [],
-        },
-    )
+    token = _issue_delegate_from_local_ui(client, monkeypatch, snapshot)
 
     read = client.get(
         "/api/card-drop/credits",
@@ -1135,11 +862,11 @@ def test_credit_delegate_scopes_separate_read_from_mutation(
         headers=_delegate_request_headers(token),
     )
 
-    assert read.status_code == 200
-    assert mutate.status_code == 401
+    assert read.status_code == mutate.status_code == 410
+    assert read.json() == mutate.json() == {"detail": "cloud_forge_credits_required"}
 
 
-def test_credit_reservations_are_isolated_by_delegate_principal(
+def test_retired_credit_routes_ignore_delegate_principal_and_local_ledger(
     client,
     tmp_path,
     monkeypatch,
@@ -1155,6 +882,7 @@ def test_credit_reservations_are_isolated_by_delegate_principal(
         rarity="SR",
     )
     credit_id = forge_credit_ledger.list_credits()["credits"][0]["id"]
+    ledger_before = forge_credit_ledger.list_credits()
     operation_id = "33333333-3333-4333-8333-333333333333"
     card_id = "44444444-4444-4444-8444-444444444444"
 
@@ -1199,21 +927,16 @@ def test_credit_reservations_are_isolated_by_delegate_principal(
         headers=headers_b,
     )
 
-    assert reserved.status_code == replay.status_code == 200
-    assert len(visible_to_a.json()["reservations"]) == 1
-    assert visible_to_b.status_code == 200
-    assert visible_to_b.json() == {
-        "count": 0,
-        "credits": [],
-        "reservations": [],
-    }
-    assert commit_by_b.status_code == release_by_b.status_code == 409
-    assert commit_by_b.json() == release_by_b.json() == {
-        "detail": "reservation_owner_mismatch"
-    }
+    responses = [reserved, replay, visible_to_a, visible_to_b, commit_by_b, release_by_b]
+    assert all(response.status_code == 410 for response in responses)
+    assert all(
+        response.json() == {"detail": "cloud_forge_credits_required"}
+        for response in responses
+    )
+    assert forge_credit_ledger.list_credits() == ledger_before
 
 
-def test_refreshed_desktop_bearer_keeps_same_owner_reservation(
+def test_retired_credit_routes_ignore_refreshed_desktop_bearer(
     client,
     tmp_path,
     monkeypatch,
@@ -1221,13 +944,6 @@ def test_refreshed_desktop_bearer_keeps_same_owner_reservation(
     from main_logic import forge_credit_ledger
 
     monkeypatch.setenv("NEKO_USER_DATA_DIR", str(tmp_path))
-    confirmation_calls = []
-
-    async def confirm_cloud_debit(**_kwargs):
-        confirmation_calls.append(_kwargs)
-        return {"confirmed": True}
-
-    monkeypatch.setattr(C, "_confirm_cloud_forge_debit", confirm_cloud_debit)
     _write_v2_desktop_session(
         tmp_path,
         monkeypatch,
@@ -1249,6 +965,7 @@ def test_refreshed_desktop_bearer_keeps_same_owner_reservation(
         rarity="R",
     )
     credit_id = forge_credit_ledger.list_credits()["credits"][0]["id"]
+    ledger_before = forge_credit_ledger.list_credits()
     operation_id = "55555555-5555-4555-8555-555555555555"
     card_id = "66666666-6666-4666-8666-666666666666"
 
@@ -1289,27 +1006,19 @@ def test_refreshed_desktop_bearer_keeps_same_owner_reservation(
         headers=bearer_headers("browser-token-after-refresh"),
     )
 
-    assert reserved.status_code == replay_after_refresh.status_code == 200
-    assert len(visible_after_refresh.json()["reservations"]) == 1
-    assert committed.status_code == commit_replay.status_code == 200
-    assert committed.json()["committed"] is True
-    assert commit_replay.json()["committed"] is True
-    assert committed.json()["debit_confirmed"] is True
-    assert commit_replay.json()["debit_confirmed"] is True
-    assert confirmation_calls == [
-        {
-            "operation_id": operation_id,
-            "credit_id": credit_id,
-            "card_id": card_id,
-            "credit": committed.json()["credit"],
-        },
-        {
-            "operation_id": operation_id,
-            "credit_id": credit_id,
-            "card_id": card_id,
-            "credit": commit_replay.json()["credit"],
-        },
+    responses = [
+        reserved,
+        replay_after_refresh,
+        visible_after_refresh,
+        committed,
+        commit_replay,
     ]
+    assert all(response.status_code == 410 for response in responses)
+    assert all(
+        response.json() == {"detail": "cloud_forge_credits_required"}
+        for response in responses
+    )
+    assert forge_credit_ledger.list_credits() == ledger_before
 
 
 def test_card_drop_capabilities_are_exact_origin_and_no_store(client):
@@ -1336,13 +1045,9 @@ def test_card_drop_capabilities_are_exact_origin_and_no_store(client):
             "method": "POST",
             "max_exclude_hashes": 200,
         },
-        "credits": {
-            "path": "/api/card-drop/credits",
-            "read_scope": "credits:read",
-            "mutate_scope": "credits:mutate",
-        },
+        "credits": {"authority": "cloud"},
         "delegate": {
-            "scopes": ["credits:mutate", "credits:read", "facts:read"],
+            "scopes": ["facts:read"],
             "principal_header": "x-neko-local-user-id",
         },
     }
@@ -1404,44 +1109,38 @@ def test_facts_post_query_is_bounded_and_passes_validated_lists(
     )
 
 
-def test_local_credit_summary_is_same_origin_only_and_omits_credit_details(
-    client, monkeypatch,
-):
-    from main_logic import forge_credit_ledger
-
-    monkeypatch.setattr(
-        forge_credit_ledger,
-        "list_credits",
-        lambda: {
-            "count": 2,
-            "credits": [
-                {"id": "secret-a", "rarity": "SSR", "expires_at": "2026-07-15T00:00:00Z"},
-                {"id": "secret-b", "rarity": "N", "expires_at": "2026-07-16T00:00:00Z"},
-            ],
-            "reservations": [{"operation_id": "secret-operation"}],
-        },
-    )
-
-    allowed = client.get(
-        "/api/card-drop/credits/local-summary",
-        headers={"Origin": "http://localhost:48911"},
-    )
-    assert allowed.status_code == 200
-    assert allowed.json() == {
-        "count": 2,
-        "next_expires_at": "2026-07-15T00:00:00Z",
-    }
-    assert allowed.headers["cache-control"] == "no-store"
-
-    denied = client.get(
+def test_local_credit_summary_is_retired(client):
+    response = client.get(
         "/api/card-drop/credits/local-summary",
         headers={"Origin": "https://community.example"},
     )
-    assert denied.status_code == 403
-    assert denied.json() == {"detail": "origin_not_allowed"}
+    assert response.status_code == 410
+    assert response.json() == {"detail": "cloud_forge_credits_required"}
+    assert response.headers["access-control-allow-origin"] == "https://community.example"
 
 
-def test_credit_auth_failures_keep_validated_cors_headers(client, monkeypatch):
+def test_retired_credit_grant_and_summary_support_cors_preflight(client):
+    grant_headers = {
+        "Origin": "https://community.example",
+        "Access-Control-Request-Method": "POST",
+    }
+    summary_headers = {
+        "Origin": "https://community.example",
+        "Access-Control-Request-Method": "GET",
+    }
+    grant = client.options("/api/card-drop/credits/grant", headers=grant_headers)
+    summary = client.options(
+        "/api/card-drop/credits/local-summary", headers=summary_headers,
+    )
+
+    assert grant.status_code == summary.status_code == 200
+    assert grant.headers["access-control-allow-origin"] == "https://community.example"
+    assert summary.headers["access-control-allow-origin"] == "https://community.example"
+    assert "POST" in grant.headers["access-control-allow-methods"]
+    assert "GET" in summary.headers["access-control-allow-methods"]
+
+
+def test_retired_credit_routes_keep_validated_cors_headers(client, monkeypatch):
     async def no_scoped_delegate(_request, _required_scope):
         return C._BrowserAuth(None)
 
@@ -1459,8 +1158,8 @@ def test_credit_auth_failures_keep_validated_cors_headers(client, monkeypatch):
             "Authorization": "Bearer another-user-token",
         },
     )
-    assert mismatch.status_code == 401
-    assert mismatch.json() == {"detail": "local_session_mismatch"}
+    assert mismatch.status_code == 410
+    assert mismatch.json() == {"detail": "cloud_forge_credits_required"}
     assert mismatch.headers["access-control-allow-origin"] == "https://community.example"
 
     unavailable = client.get(
@@ -1470,8 +1169,8 @@ def test_credit_auth_failures_keep_validated_cors_headers(client, monkeypatch):
             "Authorization": "Bearer unavailable-token",
         },
     )
-    assert unavailable.status_code == 503
-    assert unavailable.json() == {"detail": "identity_verification_unavailable"}
+    assert unavailable.status_code == 410
+    assert unavailable.json() == {"detail": "cloud_forge_credits_required"}
     assert unavailable.headers["access-control-allow-origin"] == "https://community.example"
 
     denied = client.get(
@@ -1481,8 +1180,8 @@ def test_credit_auth_failures_keep_validated_cors_headers(client, monkeypatch):
             "Authorization": "Bearer another-user-token",
         },
     )
-    assert denied.status_code == 403
-    assert denied.json() == {"detail": "origin_not_allowed"}
+    assert denied.status_code == 410
+    assert denied.json() == {"detail": "cloud_forge_credits_required"}
     assert "access-control-allow-origin" not in denied.headers
 
 

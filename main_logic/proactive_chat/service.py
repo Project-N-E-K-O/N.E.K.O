@@ -411,6 +411,30 @@ def _new_dialog_locale_params(
     return params or None
 
 
+def _resolve_phase2_avatar_position(fresh, request_avatar_position):
+    """Pick the avatar position to annotate a freshly fetched Phase 2 screenshot with.
+
+    Who is allowed to place the annotation depends on how the image was produced:
+
+    - ``'websocket'``: the frontend already judged THIS image. A position means
+      "annotate here"; ``None`` means it deliberately decided not to annotate
+      (window capture, camera, avatar collapsed, multi-monitor). Never substitute
+      the request's older position for that ``None`` -- it is a verdict, not a
+      missing value. Same rule as ``main_logic.core.streaming``, which refuses to
+      fall back to the cached position for exactly this reason.
+    - ``'backend_fallback'``: the frontend never saw this image, so it cannot have
+      objected. The position carried by the original request is the only avatar
+      information that exists for this path.
+
+    Neither branch of ``request_fresh_screenshot`` draws the annotation itself;
+    the caller does it with whatever this returns.
+    """
+    source = getattr(fresh, "source", "")
+    if source == "backend_fallback":
+        return request_avatar_position
+    return getattr(fresh, "avatar_position", None)
+
+
 async def handle_proactive_chat(
     command: ProactiveChatCommand,
     *,
@@ -2029,13 +2053,15 @@ async def handle_proactive_chat(
         # --- 向前端请求最新截图，替换 Phase 1 时拿到的旧截图 ---
         screenshot_b64_for_phase2 = ""
         if vision_content and model_config.has_vision_model:
-            fresh_b64 = await mgr.request_fresh_screenshot(timeout=3.0)
-            if fresh_b64:
-                # 如果 request_fresh_screenshot 走了 WebSocket 路径，screenshot_response
-                # 已经在 websocket_router 中更新了 mgr._avatar_position，这里用最新的位置叠加。
-                # 如果走了 pyautogui 路径，overlay 已在 request_fresh_screenshot 内部完成。
-                # 为安全起见：若 WS 路径返回的 fresh_b64 尚未叠加，在此补叠。
-                av_pos = getattr(mgr, "_avatar_position", None) or avatar_position
+            fresh = await mgr.request_fresh_screenshot(timeout=3.0)
+            if fresh.b64:
+                fresh_b64 = fresh.b64
+                # 判据见 _resolve_phase2_avatar_position：WS 路径不给坐标 = 前端明确
+                # 说「别叠」，绝不回退请求里的旧坐标；pyautogui 兜底才用 Phase 1 坐标。
+                # ⚠️ request_fresh_screenshot 两条路径都不叠加，overlay 只在这里做。
+                # ⚠️ 已知上限：Phase1→Phase2 之间隔了一整轮 LLM（数秒），兜底路径复用
+                #    的坐标可能已经陈旧。
+                av_pos = _resolve_phase2_avatar_position(fresh, avatar_position)
                 if av_pos and isinstance(av_pos, dict):
                     try:
                         from utils.screenshot_utils import overlay_avatar_annotation

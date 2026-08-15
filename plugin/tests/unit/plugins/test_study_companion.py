@@ -5257,12 +5257,14 @@ def test_study_companion_ui_refactor_static_and_hosted_contracts() -> None:
     assert "flushSurfaceMessages()" in plugin_ui_frame
     assert "iframeGeneration" in plugin_ui_frame
     assert "isCurrentIframeEvent" in plugin_ui_frame
-    assert '@open-surface="openHostedSurfaceFromStaticUi"' in plugin_detail
     assert '@message="relayHostedSurfaceMessageToStaticUi"' in plugin_detail
     assert "studySurfaceRelayMessageTypes" not in plugin_detail
-    assert "staticUiFrameRef.value?.sendSurfaceMessage(data)" in plugin_detail
-    assert "const staticUiPluginId = ref('')" in plugin_detail
-    assert "const hasCurrentStaticUI = computed" in plugin_detail
+    assert "panelSurfaceFrameRefs.get(surface.id)?.sendSurfaceMessage(data)" in plugin_detail
+    assert "PluginUIFrame" not in plugin_detail
+    assert "needsLegacyStaticUiRelay" not in plugin_detail
+    assert "const displayedPanelSurfaces = computed(() => renderablePanelSurfaces.value)" in plugin_detail
+    assert "const defaultPanelSurface = computed(() =>" in plugin_detail
+    assert "availableDeclaredPanelSurfaces.value.find((surface) => surface.mode === 'hosted-tsx')" in plugin_detail
     assert "const preferGuide = payload.kind === 'guide' || payload.kind === 'docs'" in plugin_detail
     assert "activeGuideSurfaceId.value = guide.id" in plugin_detail
     assert "surface: activeSurfaceId" in plugin_detail

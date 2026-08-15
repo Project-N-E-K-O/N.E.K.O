@@ -1279,6 +1279,7 @@
                 return;
             }
             let hadCatCycle = false;
+            let live2DPeekRestoreAnchor = null;
             try {
                 const returnContainer = I.getVisibleIdleReturnBallContainer();
                 hadCatCycle = !!(returnContainer &&
@@ -1287,6 +1288,11 @@
                     ? window.nekoCatMind.getState()
                     : null;
                 hadCatCycle = hadCatCycle || !!(catMindState && (catMindState.active || catMindState.returnSummaryDraft));
+                // 变猫前模型若处于贴边探身态，goodbye 会把探身锚点暂存在 return-ball 容器上，
+                // 回来时用它恢复探身态。拖过 return-ball 会在 drag-start 清除该锚点，此时不恢复。
+                if (returnContainer && returnContainer.__nekoLive2DPeekEdgeAnchor) {
+                    live2DPeekRestoreAnchor = returnContainer.__nekoLive2DPeekEdgeAnchor;
+                }
             } catch (_) {}
             I.publishCatLocalActive(false, {
                 source: event && event.type ? event.type : 'return-click',
@@ -1766,6 +1772,16 @@
                 window.appInterpage.postGoodbyeChatComposerHiddenState(false, 'return-complete');
             } else if (typeof window.postGoodbyeChatComposerHiddenState === 'function') {
                 window.postGoodbyeChatComposerHiddenState(false, 'return-complete');
+            }
+            // 恢复贴边探身态：变猫前模型若在边缘探身，回来时只回到边缘 base 位置而不会重新探身。
+            // 用 goodbye 捕获的锚点重新对齐边缘并应用探身变换；贴边已关闭、模型失效或锚点缺失时静默跳过，
+            // 不阻塞普通 return。fire-and-forget，避免探身动画推迟 return-complete 的后续业务。
+            if (live2DPeekRestoreAnchor
+                && window.nekoLive2DPeek
+                && typeof window.nekoLive2DPeek.restoreAnchor === 'function') {
+                try {
+                    window.nekoLive2DPeek.restoreAnchor(live2DPeekRestoreAnchor).catch(() => {});
+                } catch (_) {}
             }
             window.dispatchEvent(new CustomEvent('neko:cat-return-complete', {
                 detail: {

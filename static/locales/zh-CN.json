@@ -2205,6 +2205,8 @@
         "languagePreferenceDescription": "此偏好并非强制限制，角色设定以及当前对话中使用的语言仍可能影响实际回复。",
         "languagePreferenceSaved": "语言偏好已更新",
         "languagePreferencePartiallySaved": "语言偏好已保存，但当前会话同步未完全完成",
+        "languagePreferenceSuperseded": "已有更新的语言偏好生效，已为你刷新",
+        "languagePreferenceUnverified": "语言偏好已保存，但暂时无法确认是否为最新",
         "languagePreferenceSaveFailed": "语言偏好保存失败",
         "languagePreferenceLoadFailed": "语言偏好加载失败",
         "personalityUseDefault": "跟随角色卡默认设定",

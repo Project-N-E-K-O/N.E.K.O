@@ -198,6 +198,20 @@ async function _hydrateCharacterLanguagePreference(name, select, selectUi) {
     }
 }
 
+function _distrustCachedLanguageBeforeRehydration(name) {
+    // The cached value is about to be superseded or is already unverified, and
+    // the authoritative re-read may itself fail (same outage). Leaving the old
+    // localStorage entry trusted lets a later websocket read it via
+    // getExplicitConversationLanguagePreference and persist it back, undoing the
+    // write we deliberately refused to cache. Successful hydration re-publishes
+    // the value and clears this marker.
+    try {
+        if (typeof window.markConversationLanguagePreferenceUntrusted === 'function') {
+            window.markConversationLanguagePreferenceUntrusted(name);
+        }
+    } catch (_) { /* hydration still runs */ }
+}
+
 async function _saveCharacterLanguagePreference(name, select, selectUi) {
     const previous = select.dataset.previousValue || select.value;
     const language = select.value;
@@ -219,10 +233,49 @@ async function _saveCharacterLanguagePreference(name, select, selectUi) {
         // A cross-window event or a newer local request may have superseded this
         // response while it was in flight. Never roll back or cache stale data.
         if (select.dataset.languageSaveId !== saveId || select.value !== language) return;
+        // Only this endpoint's causal-order conflict means "re-read the state".
+        // Both servers also answer 409 for storage-limited startup and for the
+        // cloudsave maintenance fence; those persisted nothing, so they must
+        // fall through to the failure path below (roll back + report) instead
+        // of leaving an unsaved selection on screen.
+        if (
+            response.status === 409
+            && payload.error_code === 'language_preference_superseded'
+        ) {
+            // Designed race, not a failure: another window persisted a newer
+            // preference. Rolling back to this window's previous value would
+            // display a locale that is already stale, so re-read durable state.
+            showMessage(
+                _characterLanguageT(
+                    'character.languagePreferenceSuperseded',
+                    '已有更新的语言偏好生效，已为你刷新'
+                ),
+                'warning'
+            );
+            _distrustCachedLanguageBeforeRehydration(name);
+            await _hydrateCharacterLanguagePreference(name, select, selectUi);
+            return;
+        }
         const partialSave = response.ok && payload.partial_success === true;
         const durableSave = response.ok && (
             payload.success === true || payload.partial_success === true
         );
+        if (durableSave && payload.freshness_unverified === true) {
+            // The write landed, but the server could not confirm it is still the
+            // durable value. Publishing it to the cross-window cache could pin a
+            // stale preference that a later session would re-persist, so re-read
+            // instead of caching this response.
+            showMessage(
+                _characterLanguageT(
+                    'character.languagePreferenceUnverified',
+                    '语言偏好已保存，但暂时无法确认是否为最新'
+                ),
+                'warning'
+            );
+            _distrustCachedLanguageBeforeRehydration(name);
+            await _hydrateCharacterLanguagePreference(name, select, selectUi);
+            return;
+        }
         if (durableSave && payload.language === language) {
             select.dataset.previousValue = language;
             select.dataset.durableLanguagePreference = language;
@@ -1321,6 +1374,8 @@ function _panelCreateVoiceSelectUi(selectEl) {
     container.appendChild(header);
     container.appendChild(options);
 
+    let geometryAnimationFrame = null;
+
     function getItems() {
         return Array.from(options.querySelectorAll('.voice-select-option:not(.disabled)'));
     }
@@ -1345,9 +1400,35 @@ function _panelCreateVoiceSelectUi(selectEl) {
         const maxHeight = 250;
         const gap = 8;
         const headerRect = header.getBoundingClientRect();
-        const optionHeight = Math.min(options.scrollHeight || maxHeight, maxHeight);
-        const spaceBelow = window.innerHeight - headerRect.bottom - gap;
-        const spaceAbove = headerRect.top - gap;
+        const containerRect = container.getBoundingClientRect();
+        const containerScaleY = container.offsetHeight > 0
+            ? containerRect.height / container.offsetHeight
+            : 1;
+        const safeScaleY = Number.isFinite(containerScaleY) && containerScaleY > 0
+            ? containerScaleY
+            : 1;
+        const optionHeight = Math.min(options.scrollHeight || maxHeight, maxHeight) * safeScaleY;
+        const visualGap = gap * safeScaleY;
+        let visibleTop = 0;
+        let visibleBottom = window.innerHeight;
+
+        for (let ancestor = container.parentElement; ancestor; ancestor = ancestor.parentElement) {
+            const overflowY = window.getComputedStyle(ancestor).overflowY;
+            if (!['auto', 'scroll', 'hidden', 'clip'].includes(overflowY)) continue;
+            const ancestorRect = ancestor.getBoundingClientRect();
+            const ancestorScaleY = ancestor.offsetHeight > 0
+                ? ancestorRect.height / ancestor.offsetHeight
+                : safeScaleY;
+            const clientTop = ancestorRect.top + ancestor.clientTop * ancestorScaleY;
+            visibleTop = Math.max(visibleTop, clientTop);
+            visibleBottom = Math.min(
+                visibleBottom,
+                clientTop + ancestor.clientHeight * ancestorScaleY
+            );
+        }
+
+        const spaceBelow = Math.max(0, visibleBottom - headerRect.bottom - visualGap);
+        const spaceAbove = Math.max(0, headerRect.top - visibleTop - visualGap);
         let placement = 'open-down';
         let computedMaxHeight = maxHeight;
 
@@ -1357,9 +1438,9 @@ function _panelCreateVoiceSelectUi(selectEl) {
             placement = 'open-up';
         } else if (spaceAbove > spaceBelow) {
             placement = 'open-up';
-            computedMaxHeight = Math.max(80, Math.floor(spaceAbove));
+            computedMaxHeight = Math.floor(spaceAbove / safeScaleY);
         } else {
-            computedMaxHeight = Math.max(80, Math.floor(spaceBelow));
+            computedMaxHeight = Math.floor(spaceBelow / safeScaleY);
         }
 
         container.classList.toggle('open-up', placement === 'open-up');
@@ -1370,6 +1451,7 @@ function _panelCreateVoiceSelectUi(selectEl) {
 
     function closeDropdown(restoreFocus = false) {
         const wasActive = container.classList.contains('active');
+        stopTransformGeometryTracking();
         container.classList.remove('active', 'open-up', 'open-down');
         header.setAttribute('aria-expanded', 'false');
         setOptionTabbability(false);
@@ -1394,6 +1476,7 @@ function _panelCreateVoiceSelectUi(selectEl) {
         header.setAttribute('aria-expanded', 'true');
         setOptionTabbability(true);
         applyDropdownDirection();
+        startTransformGeometryTracking();
 
         const selectedItem = options.querySelector('.voice-select-option.selected:not(.disabled)');
         if (selectedItem) selectedItem.scrollIntoView({ block: 'nearest' });
@@ -1547,6 +1630,56 @@ function _panelCreateVoiceSelectUi(selectEl) {
         }
     }
 
+    function handleViewportChange(event) {
+        if (!container.classList.contains('active') || event?.target === options) return;
+        applyDropdownDirection();
+    }
+
+    function hasRunningAncestorTransformAnimation() {
+        for (let ancestor = container.parentElement; ancestor; ancestor = ancestor.parentElement) {
+            if (typeof ancestor.getAnimations !== 'function') continue;
+            const hasRunningTransform = ancestor.getAnimations().some(animation => {
+                if (!['pending', 'running'].includes(animation.playState)) return false;
+                if (animation.transitionProperty === 'transform') return true;
+                const keyframes = animation.effect?.getKeyframes?.() || [];
+                return keyframes.some(
+                    keyframe => Object.prototype.hasOwnProperty.call(keyframe, 'transform')
+                );
+            });
+            if (hasRunningTransform) return true;
+        }
+        return false;
+    }
+
+    function stopTransformGeometryTracking() {
+        if (geometryAnimationFrame === null) return;
+        cancelAnimationFrame(geometryAnimationFrame);
+        geometryAnimationFrame = null;
+    }
+
+    function trackTransformGeometry() {
+        geometryAnimationFrame = null;
+        if (!container.classList.contains('active')) return;
+        applyDropdownDirection();
+        if (hasRunningAncestorTransformAnimation()) {
+            geometryAnimationFrame = requestAnimationFrame(trackTransformGeometry);
+        }
+    }
+
+    function startTransformGeometryTracking() {
+        if (geometryAnimationFrame !== null || !container.classList.contains('active')) return;
+        geometryAnimationFrame = requestAnimationFrame(trackTransformGeometry);
+    }
+
+    function handleAncestorTransformTransition(event) {
+        if (event.propertyName !== 'transform'
+            || !(event.target instanceof Element)
+            || !event.target.contains(container)) {
+            return;
+        }
+        startTransformGeometryTracking();
+    }
+
     header.addEventListener('click', toggleDropdown);
     header.addEventListener('keydown', event => {
         if (event.key === 'Enter' || event.key === ' ') {
@@ -1562,6 +1695,11 @@ function _panelCreateVoiceSelectUi(selectEl) {
     selectEl.addEventListener('change', syncSelectionState);
     document.addEventListener('click', handleDocumentClick);
     document.addEventListener('keydown', handleDocumentKeydown);
+    document.addEventListener('scroll', handleViewportChange, true);
+    document.addEventListener('transitionrun', handleAncestorTransformTransition, true);
+    document.addEventListener('transitionend', handleAncestorTransformTransition, true);
+    document.addEventListener('transitioncancel', handleAncestorTransformTransition, true);
+    window.addEventListener('resize', handleViewportChange);
 
     refresh();
 
@@ -1578,6 +1716,11 @@ function _panelCreateVoiceSelectUi(selectEl) {
             selectEl.removeEventListener('change', syncSelectionState);
             document.removeEventListener('click', handleDocumentClick);
             document.removeEventListener('keydown', handleDocumentKeydown);
+            document.removeEventListener('scroll', handleViewportChange, true);
+            document.removeEventListener('transitionrun', handleAncestorTransformTransition, true);
+            document.removeEventListener('transitionend', handleAncestorTransformTransition, true);
+            document.removeEventListener('transitioncancel', handleAncestorTransformTransition, true);
+            window.removeEventListener('resize', handleViewportChange);
             container.remove();
         }
     };

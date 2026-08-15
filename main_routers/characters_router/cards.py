@@ -196,14 +196,25 @@ async def save_catgirl_to_model_folder(request: Request):
 
 @router.post('/character-card/save')
 async def save_character_card(request: Request):
-    async with character_config_mutation_lock:
-        return await _save_character_card_serialized(request)
-
-
-async def _save_character_card_serialized(request: Request):
-    """Save the character card to characters.json."""
+    # Parse the body BEFORE taking the transaction: ``request.json()`` awaits
+    # the client's socket, and a slow or stalled upload would otherwise hold the
+    # process-wide characters.json lock for the whole transfer, blocking every
+    # other character mutation (add/rename/delete/import, workshop sync,
+    # language preference).  Same ordering as rename_catgirl / add_catgirl.
     try:
         data = await request.json()
+    except Exception as e:
+        logger.warning(f"解析角色卡保存请求体失败: {e}")
+        return JSONResponse({"success": False, "error": "请求体必须是合法的JSON格式"}, status_code=400)
+    if not isinstance(data, dict):
+        return JSONResponse({"success": False, "error": "请求体必须是JSON对象"}, status_code=400)
+    async with character_config_mutation_lock:
+        return await _save_character_card_serialized(data)
+
+
+async def _save_character_card_serialized(data: dict):
+    """Save the character card to characters.json."""
+    try:
         chara_data = data.get('charaData')
         character_card_name = data.get('character_card_name')
 

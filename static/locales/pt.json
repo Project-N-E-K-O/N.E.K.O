@@ -2205,6 +2205,8 @@
         "languagePreferenceDescription": "Esta preferência não impõe um idioma. As configurações do personagem e o idioma usado na conversa atual ainda podem influenciar a resposta real.",
         "languagePreferenceSaved": "Preferência de idioma atualizada",
         "languagePreferencePartiallySaved": "A preferência de idioma foi salva, mas a sessão atual não foi sincronizada por completo",
+        "languagePreferenceSuperseded": "Outra janela salvou uma preferência de idioma mais recente; atualizamos para você",
+        "languagePreferenceUnverified": "A preferência de idioma foi salva, mas não foi possível confirmar agora se é a mais recente",
         "languagePreferenceSaveFailed": "Não foi possível salvar a preferência de idioma",
         "languagePreferenceLoadFailed": "Não foi possível carregar a preferência de idioma",
         "personalityUseDefault": "Seguir a personalidade padrão do cartão de personagem",

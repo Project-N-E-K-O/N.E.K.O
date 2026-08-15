@@ -40,46 +40,25 @@ from ._shared import (
 from .crud import _clear_character_recent_history
 
 
-class _InlineCharacterMutationDrain:
-    """Let connector callbacks finish under their caller's config transaction."""
+class LanguagePreferenceConflictError(Exception):
+    """A newer language preference was persisted while this request was in flight.
 
-    def __init__(self) -> None:
-        self._open = True
-        self._tasks: set[asyncio.Task] = set()
+    This is the designed outcome of the memory server's causal-order check, not
+    a server fault, so it must reach the client as 409 instead of being folded
+    into the generic 5xx branch.
+    """
 
-    def try_borrow(self) -> asyncio.Task | None:
-        if not self._open:
-            return None
-        task = asyncio.current_task()
-        if task is None:
-            raise RuntimeError("inline character mutation requires an asyncio task")
-        # There is no await between admission and registration, so close() can
-        # atomically stop new borrowers before taking its drain snapshot.
-        self._tasks.add(task)
-        return task
 
-    def release(self, task: asyncio.Task) -> None:
-        self._tasks.discard(task)
-
-    async def close(self) -> None:
-        self._open = False
-        tasks = tuple(task for task in self._tasks if not task.done())
-        if not tasks:
-            return
-
-        async def _drain() -> None:
-            await asyncio.gather(*tasks, return_exceptions=True)
-
-        drain_task = asyncio.create_task(_drain())
-        cancelled = False
-        while not drain_task.done():
-            try:
-                await asyncio.shield(drain_task)
-            except asyncio.CancelledError:
-                cancelled = True
-        drain_task.result()
-        if cancelled:
-            raise asyncio.CancelledError
+def _is_superseded_conflict(response) -> bool:
+    """Tell this endpoint's causal-order conflict from the server's other 409s."""
+    try:
+        payload = response.json()
+    except Exception:
+        return False
+    detail = payload.get("detail") if isinstance(payload, dict) else None
+    if not isinstance(detail, dict):
+        return False
+    return detail.get("error_code") == "language_preference_superseded"
 
 
 async def _request_memory_prompt_locale(
@@ -100,6 +79,17 @@ async def _request_memory_prompt_locale(
             url,
             json={"language": language},
             timeout=5.0,
+        )
+    if response.status_code == 409 and _is_superseded_conflict(response):
+        # Raised before raise_for_status so the conflict keeps its own identity:
+        # the loser of a concurrent write must not be reported as a failure.
+        # Every other 409 the memory server can answer with (cloudsave
+        # maintenance fence, storage-limited startup) is a retryable failure and
+        # must keep falling through to the generic error path below -- reporting
+        # those as "superseded" would tell the client to re-read state that was
+        # never written.
+        raise LanguagePreferenceConflictError(
+            "a newer language preference superseded this request"
         )
     response.raise_for_status()
     payload = response.json()
@@ -124,35 +114,45 @@ async def apply_character_language_preference(name: str, language: str) -> dict:
     if not is_supported_language_code(language):
         raise ValueError("不支持的语言")
     normalized = normalize_language_code(language, format="full")
-    inline_drain = _InlineCharacterMutationDrain()
+
+    # The characters.json transaction only has to cover the existence check, the
+    # recent-file identity token, and the durable write.  Everything after it
+    # runs unlocked on purpose: the reconciliation below waits on a
+    # cross_server round-trip, and the connector may concurrently be running a
+    # *late* recent-clear callback that takes this same lock.  Holding it across
+    # the barrier would let this request block the connector it is waiting for,
+    # stalling until the barrier timeout.  Identity is still protected after the
+    # release by re-validating the character and by the recent-file generation
+    # token captured here.
     async with character_config_mutation_lock:
-        try:
-            config_manager, _characters = await _load_existing_character(name)
-            return await _apply_character_language_preference_serialized(
-                name,
-                normalized,
-                config_manager,
-                inline_drain=inline_drain,
-            )
-        finally:
-            await inline_drain.close()
+        config_manager, _characters = await _load_existing_character(name)
+        recent_path = Path(config_manager.memory_dir) / name / "recent.json"
+        admission_generation = capture_recent_generation(recent_path)
+        memory_result = await _request_memory_prompt_locale(
+            "PUT",
+            name,
+            language=normalized,
+        )
+
+    return await _reconcile_after_language_change(
+        name,
+        normalized,
+        config_manager,
+        memory_result=memory_result,
+        admission_generation=admission_generation,
+        write_order=_write_order(memory_result),
+    )
 
 
-async def _apply_character_language_preference_serialized(
+async def _reconcile_after_language_change(
     name: str,
     normalized: str,
     config_manager: object,
     *,
-    inline_drain: _InlineCharacterMutationDrain,
+    memory_result: dict,
+    admission_generation: tuple[str, int],
+    write_order: int | None,
 ) -> dict:
-    recent_path = Path(config_manager.memory_dir) / name / "recent.json"
-    admission_generation = capture_recent_generation(recent_path)
-    memory_result = await _request_memory_prompt_locale(
-        "PUT",
-        name,
-        language=normalized,
-    )
-
     result = {
         "success": True,
         "language": normalized,
@@ -170,7 +170,19 @@ async def _apply_character_language_preference_serialized(
         if isinstance(live_language, str) and is_supported_language_code(live_language)
         else None
     )
-    live_locale_changed = manager is not None and normalized_live_language != normalized
+    # An unset manager locale is *absence of evidence*, not evidence that the
+    # history was rendered in the process locale.  Startup creates a manager for
+    # every character with ``user_language=None``, and such a manager sends
+    # neither ``language`` nor ``render_language`` to /new_dialog, which then
+    # falls back to the character's own durable preference -- so the existing
+    # context was rendered in the durable locale, whatever the global locale is.
+    # Whether that durable locale actually changed is exactly what ``changed``
+    # already reports, so a manager with no locale of its own must not
+    # contribute an isolation signal here.
+    live_locale_changed = (
+        normalized_live_language is not None
+        and normalized_live_language != normalized
+    )
     needs_explicit_promotion = manager is not None and not getattr(
         manager,
         "_user_language_explicit",
@@ -209,39 +221,42 @@ async def _apply_character_language_preference_serialized(
     recent_clear_lock = asyncio.Lock()
 
     async def clear_recent_after_settlement() -> None:
-        async with recent_clear_lock:
-            async def clear_if_same_identity(*, revalidate: bool) -> None:
-                if revalidate:
-                    try:
-                        await _load_existing_character(name)
-                    except LookupError:
-                        return
-                try:
-                    await _clear_character_recent_history(
-                        config_manager,
-                        name,
-                        expected_generation=admission_generation,
-                    )
-                except RecentFileDeletedError:
-                    # The name was renamed/deleted/reused after this PUT was
-                    # admitted.  A late old-session callback must not recreate
-                    # or clear the newer identity's recent history.
-                    return
-                result["recent_history_cleared"] = True
-
-            borrowed_task = inline_drain.try_borrow()
-            if borrowed_task is not None:
-                # A connector callback can run in another Task while the PUT
-                # owner still holds the global config transaction.  Borrow that
-                # boundary inline; close() drains admitted callbacks before the
-                # owner releases it.
-                try:
-                    await clear_if_same_identity(revalidate=False)
-                finally:
-                    inline_drain.release(borrowed_task)
+        # One uniform path now that the caller no longer holds the config lock:
+        # whoever runs this callback (this request's fallback, or the connector
+        # task after a late settlement) takes the transaction itself.
+        async with recent_clear_lock, character_config_mutation_lock:
+            try:
+                await _load_existing_character(name)
+            except LookupError:
                 return
-            async with character_config_mutation_lock:
-                await clear_if_same_identity(revalidate=True)
+            # Last gate *before* the destructive write.  Two concurrent PUTs can
+            # interleave so that the older one is still notifying/ending its
+            # captured session while the newer one commits, finishes its own
+            # reset and lets a fresh conversation start.  The recent-generation
+            # token only moves on identity changes, so it would happily accept
+            # this late clear and delete that new conversation.  Checking
+            # ownership inside the same transaction that performs the clear is
+            # what makes the two mutually exclusive.  A read failure fails
+            # closed: skipping isolation is recoverable, deleting a live
+            # conversation is not.
+            if not await _durable_write_still_owned(name, normalized, write_order):
+                logger.info(
+                    "语言偏好已被更新的请求取代，跳过迟到的近期上下文清理: name=%s",
+                    name,
+                )
+                return
+            try:
+                await _clear_character_recent_history(
+                    config_manager,
+                    name,
+                    expected_generation=admission_generation,
+                )
+            except RecentFileDeletedError:
+                # The name was renamed/deleted/reused after this PUT was
+                # admitted.  A late old-session callback must not recreate
+                # or clear the newer identity's recent history.
+                return
+            result["recent_history_cleared"] = True
 
     # ``is_active`` remains false while start_session owns its in-flight setup.
     # Calling end_session with the resulting unguarded ``None`` snapshot can
@@ -337,15 +352,142 @@ async def _apply_character_language_preference_serialized(
                 "error": "语言偏好已保存，但近期上下文清理失败",
             })
 
+    await _finalize_freshness(name, normalized, result)
     return result
+
+
+def _write_order(payload: dict) -> int | None:
+    order = payload.get("order")
+    if isinstance(order, int) and not isinstance(order, bool):
+        return order
+    return None
+
+
+async def _read_durable_locale(name: str) -> tuple[str | None, int | None]:
+    """Return the durable locale and the write order that produced it."""
+    current = await _request_memory_prompt_locale("GET", name)
+    durable = current.get("language")
+    language = (
+        normalize_language_code(durable, format="full")
+        if is_supported_language_code(durable)
+        else None
+    )
+    return language, _write_order(current)
+
+
+async def _durable_write_still_owned(
+    name: str,
+    normalized: str,
+    expected_order: int | None,
+) -> bool:
+    """Report whether *this specific write* is still the newest one.
+
+    Guards the destructive clear, where equal locale strings are NOT enough: a
+    second window saving the same language gets ``changed: false`` on a fast
+    path and may already have let a new conversation start, so a stale callback
+    comparing values would clear that conversation.  The causal write order
+    identifies the individual write.
+
+    A newer order also covers the ordinary ``/new_dialog`` locale write: once
+    another session has begun, this callback has no business clearing anything.
+    """
+    language, current_order = await _read_durable_locale(name)
+    if language != normalized:
+        return False
+    if expected_order is None or current_order is None:
+        # Ownership cannot be established, and the caller guards a destructive
+        # step, so fail closed rather than fall back to the value comparison
+        # this check exists to replace.
+        logger.warning(
+            "语言偏好写序缺失，无法确认归属: name=%s expected=%s current=%s",
+            name,
+            expected_order,
+            current_order,
+        )
+        return False
+    return current_order == expected_order
+
+
+async def _durable_language_still_ours(name: str, normalized: str) -> bool:
+    """Report whether the server still holds the language this request wrote.
+
+    Deliberately compares the *value*, not the write order.  This decides what
+    the response tells the client, and the honest answer is "is my language the
+    durable one".  Ordinary session activity advances the order without changing
+    the language -- ``/new_dialog`` re-persists the same explicit locale on every
+    session start, hot swap and proactive turn -- so an order comparison here
+    reports a conflict that never happened and pushes the card manager into a
+    needless distrust-and-rehydrate cycle.
+
+    An empty value is not benign: a character deleted or renamed during the
+    unlocked settlement takes prompt_locale.json with it.
+    """
+    language, _order = await _read_durable_locale(name)
+    return language == normalized
+
+
+async def _finalize_freshness(name: str, normalized: str, result: dict) -> None:
+    """Refuse to report plain success for a preference we cannot vouch for.
+
+    Reconciliation runs outside the transaction, so a second window can commit a
+    newer locale while this request is still settling.  Returning 200 with the
+    older language would let a late-arriving response overwrite the frontend's
+    shared local cache with a value the server no longer holds, and a later
+    websocket session could then re-publish that obsolete preference.
+
+    A read failure is neither "current" nor "superseded".  Reporting success
+    would publish an unverified language; reporting a conflict would claim
+    something we did not observe.  Say so explicitly instead, so the client can
+    re-read rather than cache.
+    """
+    # Both checks belong to ONE transaction.  Reading the locale outside it and
+    # only then taking the lock leaves a window where a second PUT commits a
+    # newer locale in between -- this request would wait, revalidate only the
+    # name, and publish a language the server no longer holds.  Acquiring the
+    # lock first also makes the identity check meaningful: a matching locale is
+    # not proof the character is still there, since a delete or rename can
+    # commit after the memory server read prompt_locale.json.  Nothing may
+    # await between these two and the return.
+    async with character_config_mutation_lock:
+        try:
+            matches = await _durable_language_still_ours(name, normalized)
+        except LanguagePreferenceConflictError:
+            raise
+        except Exception as exc:
+            logger.warning(
+                "语言偏好写入后校验失败，无法确认是否仍是最新: name=%s err=%s",
+                name,
+                exc,
+            )
+            result.update({
+                "success": False,
+                "partial_success": True,
+                "freshness_unverified": True,
+                "error": "语言偏好已保存，但无法确认是否仍是最新",
+            })
+            return
+        if not matches:
+            raise LanguagePreferenceConflictError(
+                "a newer language preference superseded this request"
+            )
+        await _load_existing_character(name)
 
 
 @router.get("/character/{name}/language-preference")
 async def get_character_language_preference(name: str):
     try:
-        # Memory-server locale reads lazily resolve the character directory.
-        # Keep the existence check and read in the same config transaction so a
-        # concurrent delete/rename cannot leave an empty old-name directory.
+        # Deliberately inside the transaction.  ``ConfigManager.load_characters``
+        # is not a read: on a legacy reserved-field schema it runs
+        # ``migrate_catgirl_reserved`` and saves the migrated snapshot back
+        # (utils/config_manager/characters.py).  An unlocked existence check can
+        # therefore overwrite a concurrent save/delete/rename with its own stale
+        # snapshot.  Holding the lock also closes the delete-and-recreate window
+        # that a name-only check cannot see, without needing an identity token
+        # that ordinary saves would keep invalidating.
+        #
+        # The queueing this costs is far smaller than before this PR: the PUT no
+        # longer holds the lock across its session settlement, and unsubscribe
+        # releases it before the Steam RPC.
         async with character_config_mutation_lock:
             await _load_existing_character(name)
             payload = await _request_memory_prompt_locale("GET", name)
@@ -398,6 +540,19 @@ async def set_character_language_preference(name: str, request: Request):
                 if result.get("success") or result.get("partial_success")
                 else 500
             ),
+        )
+    except LanguagePreferenceConflictError:
+        # Expected race, not a fault: another window persisted a newer value.
+        # Log at info and let the client re-read instead of rolling its control
+        # back to a value that is already stale.
+        logger.info("角色语言偏好被更新的请求取代: name=%s", name)
+        return JSONResponse(
+            {
+                "success": False,
+                "error_code": "language_preference_superseded",
+                "error": "已有更新的语言偏好生效",
+            },
+            status_code=409,
         )
     except ValueError as exc:
         return JSONResponse(

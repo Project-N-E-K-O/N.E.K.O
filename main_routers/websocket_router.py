@@ -1122,11 +1122,12 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 b64 = raw.split(",", 1)[1] if "," in raw else raw
                 # Extract and store avatar position metadata (paired with fresh screenshot)
                 av_pos = message.get("avatar_position")
-                if av_pos and isinstance(av_pos, dict):
-                    session_manager[lanlan_name]._avatar_position = av_pos
-                else:
-                    session_manager[lanlan_name]._avatar_position = None
-                session_manager[lanlan_name].resolve_screenshot_request(b64)
+                if not (av_pos and isinstance(av_pos, dict)):
+                    # 前端明确说这张图不该叠（窗口截图 / 相机 / Avatar 已折叠 / 多屏）。
+                    av_pos = None
+                session_manager[lanlan_name]._avatar_position = av_pos
+                # 坐标随图一起交给等待方，不让它去读会被别的帧改写的 _avatar_position。
+                session_manager[lanlan_name].resolve_screenshot_request(b64, av_pos)
 
             elif action == "greeting_check":
                 # 首次连接或切换角色时，前端请求检查是否需要主动搭话

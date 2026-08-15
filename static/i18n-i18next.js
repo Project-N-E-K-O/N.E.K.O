@@ -29,9 +29,9 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // 修改原因：加入声纹注册标题以及角色语言偏好文案；递增版本让 Electron、
-    // Docker 等长期缓存重新拉取包含完整新 key 的语言包。
-    const LOCALE_VERSION = '2026-08-10-language-preferences-v6';
+    // 修改原因：角色语言偏好新增「被更新的偏好取代」提示文案；递增版本让
+    // Electron、Docker 等长期缓存重新拉取包含完整新 key 的语言包。
+    const LOCALE_VERSION = '2026-08-14-language-preference-freshness';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

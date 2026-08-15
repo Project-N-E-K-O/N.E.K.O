@@ -3356,13 +3356,16 @@ async def cancel_correction(lanlan_name: str):
 async def get_prompt_locale_preference(lanlan_name: str):
     """Return the durable internal-template locale for one character."""
     name = validate_lanlan_name(lanlan_name)
-    language = await asyncio.to_thread(
-        locale_state.get_character_prompt_locale,
+    language, order = await asyncio.to_thread(
+        locale_state.get_character_prompt_locale_state,
         name,
     )
     return {
         "success": True,
         "language": language,
+        # The write order identifies the individual write. Ownership checks must
+        # use it: two writes of the same language are equal by value.
+        "order": order,
         "effective_language": language or get_global_language_full(),
     }
 
@@ -3389,13 +3392,21 @@ async def set_prompt_locale_preference(
         order=order,
     )
     if not applied or persisted != normalized:
+        # Structured detail on purpose: this server answers 409 for several
+        # unrelated reasons (cloudsave maintenance fence, storage-limited
+        # startup).  Callers must be able to tell a superseded write -- which
+        # means "a newer preference already won" -- from a retryable failure.
         raise HTTPException(
             status_code=409,
-            detail="A newer language preference superseded this request",
+            detail={
+                "error_code": "language_preference_superseded",
+                "message": "A newer language preference superseded this request",
+            },
         )
     return {
         "success": True,
         "language": persisted,
+        "order": order,
         "previous_language": previous,
         "changed": previous != persisted,
     }

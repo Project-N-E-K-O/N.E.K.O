@@ -1,8 +1,10 @@
 import json
 import re
+import shutil
 
 import pytest
 from pathlib import Path
+from tests.node_harness import run_node_script
 from tests.static_app_parts import read_js_parts
 
 
@@ -1607,6 +1609,72 @@ def test_galgame_history_excludes_tutorial_guide_messages():
     assert "if (isYuiGuideChatMessage(m)) continue;" in history_block
     assert "if (!m) continue;" in history_block
     assert history_block.index("if (!m) continue;") < history_block.index("if (isYuiGuideChatMessage(m)) continue;")
+
+
+def test_galgame_option_template_follows_interface_language():
+    react_host = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+
+    language_tail = react_host.split("function pickAcceptLanguage()", 1)[1].split(
+        "var GALGAME_FETCH_TIMEOUT_MS",
+        1,
+    )[0]
+    language_block = "function pickAcceptLanguage()" + language_tail
+    assert "getConversationLanguagePreference" not in language_block
+    assert "window.getCurrentLocale" in language_block
+    assert "window.i18next.language" in language_block
+    assert "navigator.language" in language_block
+    assert language_block.index("window.getCurrentLocale") < language_block.index(
+        "window.i18next.language"
+    )
+    assert language_block.index("window.i18next.language") < language_block.index(
+        "navigator.language"
+    )
+
+    fetch_block = react_host.split("function fetchGalgameOptionsForLatestTurn()", 1)[1].split(
+        "I.handleGalgameModeToggle",
+        1,
+    )[0]
+    assert "language: pickAcceptLanguage()" in fetch_block
+
+    node_path = shutil.which("node")
+    if not node_path:
+        pytest.skip("node is required to verify GalGame language selection")
+    script = f"""
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+const functionSource = {json.dumps(language_block)};
+
+function resolve(windowValue, navigatorLanguage) {{
+    const context = {{ window: windowValue }};
+    if (navigatorLanguage !== undefined) {{
+        context.navigator = {{ language: navigatorLanguage }};
+    }}
+    vm.createContext(context);
+    vm.runInContext(functionSource, context);
+    return vm.runInContext('pickAcceptLanguage()', context);
+}}
+
+assert.equal(resolve({{
+    getConversationLanguagePreference: () => 'pt',
+    getCurrentLocale: () => 'ja',
+    i18next: {{ language: 'en' }}
+}}, 'ko'), 'ja');
+assert.equal(resolve({{
+    getCurrentLocale: () => '',
+    i18next: {{ language: 'en' }}
+}}, 'ko'), 'en');
+assert.equal(resolve({{ i18next: {{}} }}, 'ko'), 'ko');
+assert.equal(resolve({{ i18next: {{}} }}, undefined), '');
+"""
+    result = run_node_script(
+        node_path,
+        script,
+        cwd=Path(__file__).resolve().parents[2],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_icebreaker_reset_clears_prompt_by_source_without_session_match():

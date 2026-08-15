@@ -854,11 +854,22 @@ async def test_character_language_change_respects_session_lifecycle_owner(
         calls.append(("load", name))
         return config_manager, {"当前猫娘": name, "猫娘": {name: {}}}
 
+    _durable = {}
+
     async def persist_locale(method, name, *, language=None):
         calls.append(("persist", method, name, language))
+        if method == "GET":
+            return {
+                "success": True,
+                "language": _durable.get("language"),
+                "order": _durable.get("order"),
+            }
+        _durable["order"] = (_durable.get("order") or 0) + 1
+        _durable["language"] = language
         return {
             "success": True,
             "language": language,
+            "order": _durable["order"],
             "previous_language": "en",
             "changed": True,
         }
@@ -905,17 +916,38 @@ async def test_character_language_change_respects_session_lifecycle_owner(
     assert result["language"] == "ja"
     assert result["recent_history_cleared"] is True
     assert calls.count(("clear_recent", config_manager, "Mimi")) == 1
+    # Full tuples, not just the call kind: PUT and GET are both "persist", so a
+    # kind-only comparison would accept a stray extra PUT or a missing freshness
+    # GET -- exactly the two things this sequence is meant to pin down.
+    assert calls[-2:] == [("persist", "GET", "Mimi", None), ("load", "Mimi")], (
+        "收尾必须是不带语言参数的新鲜度 GET，随后是最终身份复核"
+    )
+    assert [call for call in calls if call[0] == "persist" and call[1] == "PUT"] == [
+        ("persist", "PUT", "Mimi", "ja")
+    ], "durable 写入必须恰好一次且带归一化后的目标语言"
+
     if lifecycle_state != "active":
         assert result["session_reset"] is False
         expected_calls = [
-            "load",
-            "persist",
-            "set_live_language",
+            ("load", "Mimi"),
+            ("persist", "PUT", "Mimi", "ja"),
+            ("set_live_language", "ja"),
         ]
         if lifecycle_state == "idle":
-            expected_calls.append("settle_idle")
-        expected_calls.append("clear_recent")
-        assert [call[0] for call in calls] == expected_calls
+            expected_calls.append(("settle_idle",))
+        # The clear callback runs outside the caller's transaction now, so it
+        # re-validates the character identity and re-checks that this write
+        # still owns the durable locale *before* the destructive clear; the
+        # final persist is the post-reconciliation freshness GET that refuses to
+        # report success for a preference something else has since replaced.
+        expected_calls.extend([
+            ("load", "Mimi"),
+            ("persist", "GET", "Mimi", None),
+            ("clear_recent", config_manager, "Mimi"),
+            ("persist", "GET", "Mimi", None),
+            ("load", "Mimi"),
+        ])
+        assert calls == expected_calls
         return
 
     assert result["session_reset"] is True
@@ -940,11 +972,22 @@ async def test_unchanged_language_reconciliation_isolates_the_live_session(monke
         calls.append(("load", name))
         return config_manager, {"当前猫娘": name, "猫娘": {name: {}}}
 
+    _durable = {}
+
     async def persist_locale(method, name, *, language=None):
         calls.append(("persist", method, name, language))
+        if method == "GET":
+            return {
+                "success": True,
+                "language": _durable.get("language"),
+                "order": _durable.get("order"),
+            }
+        _durable["order"] = (_durable.get("order") or 0) + 1
+        _durable["language"] = language
         return {
             "success": True,
             "language": language,
+            "order": _durable["order"],
             "previous_language": language,
             "changed": False,
         }
@@ -1058,24 +1101,38 @@ async def test_unchanged_language_reconciliation_isolates_the_live_session(monke
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_character_language_changes_are_serialized_through_side_effects(monkeypatch):
+    """Concurrent preference writes must not interleave their durable section.
+
+    The transaction now covers the existence check plus the memory-server write
+    rather than the whole request (live-session reconciliation runs unlocked),
+    so the serialization point observed here is the durable write itself.
+    """
     _fresh_character_config_lock(monkeypatch, preference_router)
     entered = []
     first_entered = asyncio.Event()
     release_first = asyncio.Event()
 
-    async def apply_serialized(name, language, _config_manager, *, inline_drain):
-        assert isinstance(inline_drain, preference_router._InlineCharacterMutationDrain)
+    async def persist_locale(_method, name, *, language=None):
+        if _method == "GET":
+            return {"success": True, "language": language or "ja", "order": 1}
         entered.append((name, language))
         if language == "ja":
             first_entered.set()
             await release_first.wait()
-        return {"success": True, "language": language}
+        return {
+            "success": True,
+            "language": language,
+            "order": 1,
+            "previous_language": language,
+            "changed": False,
+        }
 
     monkeypatch.setattr(
         preference_router,
-        "_apply_character_language_preference_serialized",
-        apply_serialized,
+        "_request_memory_prompt_locale",
+        persist_locale,
     )
+    monkeypatch.setattr(preference_router, "get_session_manager", dict)
     monkeypatch.setattr(
         preference_router,
         "_load_existing_character",
@@ -1103,35 +1160,12 @@ async def test_character_language_changes_are_serialized_through_side_effects(mo
     ]
 
 
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_inline_character_mutation_drain_waits_and_propagates_cancellation():
-    drain = preference_router._InlineCharacterMutationDrain()
-    started = asyncio.Event()
-    release = asyncio.Event()
-
-    async def borrower():
-        task = drain.try_borrow()
-        assert task is asyncio.current_task()
-        started.set()
-        try:
-            await release.wait()
-        finally:
-            drain.release(task)
-
-    child = asyncio.create_task(borrower())
-    await asyncio.wait_for(started.wait(), timeout=1)
-    owner = asyncio.create_task(drain.close())
-    await asyncio.sleep(0)
-    assert not owner.done()
-    assert drain.try_borrow() is None
-    owner.cancel()
-    await asyncio.sleep(0)
-    assert not owner.done()
-    release.set()
-    await child
-    with pytest.raises(asyncio.CancelledError):
-        await owner
+# ``_InlineCharacterMutationDrain`` and its test were removed together: the
+# drain only existed so a connector callback could finish under the caller's
+# still-held config transaction.  The request now releases that transaction
+# before the connector round-trip, so the callback simply takes the lock itself
+# (see test_session_reconciliation_runs_without_the_config_transaction in
+# tests/unit/test_language_preference_lock_scope.py).
 
 
 @pytest.mark.unit
@@ -1157,13 +1191,20 @@ async def test_language_save_and_identity_mutation_share_global_lock(
             raise LookupError("角色不存在")
         return config_manager, {"猫娘": {name: {}}}
 
-    async def apply_serialized(name, language, loaded_manager, *, inline_drain):
-        assert loaded_manager is config_manager
+    async def persist_locale(_method, name, *, language=None):
+        if _method == "GET":
+            return {"success": True, "language": language or "ja", "order": 1}
         calls.append(("save", name, language))
         save_entered.set()
         if save_first:
             await release_first.wait()
-        return {"success": True, "language": language}
+        return {
+            "success": True,
+            "language": language,
+            "order": 1,
+            "previous_language": language,
+            "changed": False,
+        }
 
     async def delete_serialized(name):
         calls.append(("delete", name))
@@ -1184,9 +1225,10 @@ async def test_language_save_and_identity_mutation_share_global_lock(
     monkeypatch.setattr(preference_router, "_load_existing_character", load_character)
     monkeypatch.setattr(
         preference_router,
-        "_apply_character_language_preference_serialized",
-        apply_serialized,
+        "_request_memory_prompt_locale",
+        persist_locale,
     )
+    monkeypatch.setattr(preference_router, "get_session_manager", dict)
     monkeypatch.setattr(
         characters_crud, "_delete_catgirl_by_name_serialized", delete_serialized
     )
@@ -1259,10 +1301,21 @@ async def test_late_language_clear_is_fenced_by_recent_identity(
             raise LookupError("角色不存在")
         return config_manager, {"猫娘": {name: {}}}
 
+    _durable = {}
+
     async def persist_locale(method, _name, *, language=None):
+        if method == "GET":
+            return {
+                "success": True,
+                "language": _durable.get("language"),
+                "order": _durable.get("order"),
+            }
+        _durable["order"] = (_durable.get("order") or 0) + 1
+        _durable["language"] = language
         return {
             "success": True,
             "language": language,
+            "order": _durable["order"],
             "previous_language": "en",
             "changed": True,
         }

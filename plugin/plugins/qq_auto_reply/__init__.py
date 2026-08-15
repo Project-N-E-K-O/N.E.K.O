@@ -112,12 +112,17 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         # 内存日志缓冲区（供前端运行日志页读取）
         import collections, time as _time
         self._log_buffer: collections.deque = collections.deque(maxlen=self.LOG_BUFFER_SIZE)
+        self._last_log_push_at = 0.0
+        self._log_push_throttle_seconds = 1.5
+        self._last_status_push_at = 0.0
+        self._status_push_throttle_seconds = 2.0
         def _emit(level: str, msg: str) -> None:
             try:
                 ts = _time.strftime("%H:%M:%S")
                 self._log_buffer.append(f"{ts} [{level}] {msg}")
             except Exception:
                 pass
+            self._maybe_push_log_event()
         self._emit_log = _emit
         self.config_store = QQAutoReplyConfigStore(self.data_path())
         self._qq_settings: dict[str, Any] = self.config_store.default_config()
@@ -225,7 +230,69 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             emit_log=self._emit_log,
             image_describer=self._describe_reply_image,
             voice_transcriber=self._transcribe_voice,
+            # napcat_forward = 正向 WS 客户端（主动拨出到 NapCat 的 WS 服务器）；
+            # 其余（含默认）走反向 WS 服务器。
+            direction="forward" if mode == "napcat_forward" else "reverse",
         )
+
+    # ── UI SSE 事件推送（#2822 通道）──────────────────────────
+
+    def _spawn_push_ui_event(self, msg_type: str, text: str = "") -> None:
+        """把一次 SSE 推送放进事件循环，fire-and-forget——绝不打断消息管线。
+
+        所有调用点都在插件事件循环内（消息处理/生命周期协程），get_running_loop
+        可用；推失败静默（SSE 是尽力而为，前端有兜底轮询）。
+        """
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        loop.create_task(self._push_ui_event(msg_type, text))
+
+    async def _push_ui_event(self, msg_type: str, text: str = "") -> None:
+        """经 /ui-api/push 向插件 UI 的 SSE 客户端广播一条事件。
+
+        用进程级回环 HTTP 单例 + 固定插件服务基址；只发本插件的 channel。
+        """
+        try:
+            from utils.internal_http_client import get_internal_http_client
+            from config import USER_PLUGIN_BASE
+
+            client = get_internal_http_client()
+            await client.post(
+                f"{USER_PLUGIN_BASE}/plugin/{self.plugin_id}/ui-api/push",
+                json={"type": msg_type, "text": str(text or msg_type)[:200]},
+            )
+        except Exception:
+            pass
+
+    def _maybe_push_log_event(self) -> None:
+        """日志写入后的节流推送（1.5s 内最多一次 {"type":"logs"}），避免每条日志一条 SSE。"""
+        try:
+            import time as _t
+            now = _t.time()
+            if now - self._last_log_push_at < self._log_push_throttle_seconds:
+                return
+            self._last_log_push_at = now
+            self._spawn_push_ui_event("logs")
+        except Exception:
+            pass
+
+    def _maybe_push_status_event(self) -> None:
+        """高频状态变更的节流推送（2s 内最多一次 {"type":"status"}）。
+
+        消息活动/注意力离散事件/缓冲变更都会调这里；运行翻转这种低频但重要
+        的状态用直接 ``_spawn_push_ui_event("status")``，不走节流。
+        """
+        try:
+            import time as _t
+            now = _t.time()
+            if now - self._last_status_push_at < self._status_push_throttle_seconds:
+                return
+            self._last_status_push_at = now
+            self._spawn_push_ui_event("status")
+        except Exception:
+            pass
 
     async def _transcribe_voice(self, audio_base64: str = "", *, audio_url: str = "") -> str:
         """语音转文字：优先本地 STT，其次云端 OpenAI/Qwen。audio_url 用于 Qwen。"""
@@ -495,7 +562,10 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         self._ensure_qq_client_initialized()
         if self.attention_gate_service:
             await self.attention_gate_service.start_proactive_loop()
-        self.register_static_ui("static")
+        # UI 静态文件不设强缓存（默认 max-age=3600 会让浏览器缓存旧版
+        # script.js/index.html 长达 1 小时，改代码后用户仍看到旧页面、
+        # 报早已修复的错误）。no-cache = 每次加载都重新校验，内容恒为最新。
+        self.register_static_ui("static", cache_control="no-cache")
         self.set_list_actions([
             {
                 "id": "open_ui",
@@ -669,8 +739,10 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
 
     async def _ensure_napcat_started(self) -> None:
         mode = str((self._qq_settings or {}).get("qq_connection_mode", "napcat") or "napcat").strip()
-        if mode != "napcat":
-            return
+        if mode == "open_platform":
+            return  # 开放平台不需要本地 NapCat 进程
+        # 反向和正向都需要本地 NapCat：正向模式同样是 NapCat 提供 QQ 登录/
+        # 扫码与 OneBot 服务，只是我们作为 WS 客户端拨出而不是等它拨入。
         await self.napcat_service.ensure_napcat_started()
 
     async def _stop_managed_napcat(self) -> None:
@@ -1090,7 +1162,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         return Ok({"stickers": items, "total": len(items)})
 
     @ui.action(id="save_settings", label=tr("entries.save_settings.name", default="保存 QQ 自动回复设置"), refresh_context=True)
-    @plugin_entry(id="save_settings", name=tr("entries.save_settings.name", default="保存 QQ 自动回复设置"), description=tr("entries.save_settings.description", default="保存 QQ 插件当前的 OneBot 地址、Token、NapCat 路径、回复概率和 backlog 标签等设置。"), input_schema={"type": "object", "properties": {"onebot_url": {"type": "string"}, "token": {"type": "string"}, "napcat_directory": {"type": "string"}, "show_napcat_window": {"type": "boolean"}, "reply_mode": {"type": "string", "enum": ["text", "voice", "both"]}, "show_onboarding": {"type": "boolean"}, "guide_step_napcat_done": {"type": "boolean"}, "guide_step_config_done": {"type": "boolean"}, "guide_step_runtime_done": {"type": "boolean"}, "normal_relay_probability": {"type": "number"}, "truth_reply_probability": {"type": "number"}, "backlog_labels": {"type": "array", "items": {"type": "object"}}, "strategy_mode": {"type": "string", "enum": ["neko_dynamic", "neko_scene"]}, "qq_connection_mode": {"type": "string", "enum": ["napcat", "open_platform"]}, "qq_open_app_id": {"type": "string"}, "qq_open_client_secret": {"type": "string"}, "qq_open_identity_probe_enabled": {"type": "boolean"}, "retroactive_review_max_messages": {"type": "integer"}, "retroactive_review_max_reply": {"type": "integer"}, "group_memory_enabled": {"type": "boolean"}, "group_member_memory_enabled": {"type": "boolean"}, "private_participant_memory_enabled": {"type": "boolean"}, "allow_cross_group_context": {"type": "boolean"}}, "additionalProperties": False})
+    @plugin_entry(id="save_settings", name=tr("entries.save_settings.name", default="保存 QQ 自动回复设置"), description=tr("entries.save_settings.description", default="保存 QQ 插件当前的 OneBot 地址、Token、NapCat 路径、回复概率和 backlog 标签等设置。"), input_schema={"type": "object", "properties": {"onebot_url": {"type": "string"}, "token": {"type": "string"}, "napcat_directory": {"type": "string"}, "show_napcat_window": {"type": "boolean"}, "reply_mode": {"type": "string", "enum": ["text", "voice", "both"]}, "show_onboarding": {"type": "boolean"}, "guide_step_napcat_done": {"type": "boolean"}, "guide_step_config_done": {"type": "boolean"}, "guide_step_runtime_done": {"type": "boolean"}, "normal_relay_probability": {"type": "number"}, "truth_reply_probability": {"type": "number"}, "backlog_labels": {"type": "array", "items": {"type": "object"}}, "strategy_mode": {"type": "string", "enum": ["neko_dynamic", "neko_scene"]}, "qq_connection_mode": {"type": "string", "enum": ["napcat", "napcat_forward", "open_platform"]}, "qq_open_app_id": {"type": "string"}, "qq_open_client_secret": {"type": "string"}, "qq_open_identity_probe_enabled": {"type": "boolean"}, "retroactive_review_max_messages": {"type": "integer"}, "retroactive_review_max_reply": {"type": "integer"}, "group_memory_enabled": {"type": "boolean"}, "group_member_memory_enabled": {"type": "boolean"}, "private_participant_memory_enabled": {"type": "boolean"}, "allow_cross_group_context": {"type": "boolean"}}, "additionalProperties": False})
     async def save_settings(
         self,
         onebot_url: Optional[str] = None,
@@ -1107,6 +1179,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         backlog_labels: Optional[list[dict[str, Any]]] = None,
         group_attention_max_score: Optional[float] = None,
         group_attention_focus_threshold: Optional[float] = None,
+        group_attention_focus_send_threshold: Optional[float] = None,
         group_attention_min_threshold: Optional[float] = None,
         group_attention_message_gain: Optional[float] = None,
         attention_base_rise_rate: Optional[float] = None,
@@ -1146,6 +1219,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             backlog_labels=backlog_labels,
             group_attention_max_score=group_attention_max_score,
             group_attention_focus_threshold=group_attention_focus_threshold,
+            group_attention_focus_send_threshold=group_attention_focus_send_threshold,
             group_attention_min_threshold=group_attention_min_threshold,
             group_attention_message_gain=group_attention_message_gain,
             attention_base_rise_rate=attention_base_rise_rate,
@@ -1371,7 +1445,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
     async def get_prompt_editor_state(self, mode: str = "", locale: str = "", **_):
         frontend_mode = str(mode or "").strip()
         stored_mode = str((self._qq_settings or {}).get("qq_connection_mode", "napcat") or "napcat").strip()
-        mode = frontend_mode if frontend_mode in ("napcat", "open_platform") else stored_mode
+        mode = frontend_mode if frontend_mode in ("napcat", "napcat_forward", "open_platform") else stored_mode
         from utils.language_utils import get_global_language_full
         frontend_locale = str(locale or "").strip()
         # #2500 第 2 步：兜底也用全码。这个 locale 有两个身份——查 i18n bundle 的
@@ -1381,7 +1455,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         # 翻：写侧用 'zh-TW' 存、读侧还按 'zh' 的候选链找，覆盖会静默失效。
         locale = frontend_locale if frontend_locale else get_global_language_full()
         strategy_mode = getattr(self, "_strategy_mode", "neko_dynamic")
-        is_napcat = mode == "napcat"
+        is_napcat = mode in ("napcat", "napcat_forward")
         overrides = (self._qq_settings or {}).get("prompt_overrides") or {}
         if not isinstance(overrides, dict):
             overrides = {}

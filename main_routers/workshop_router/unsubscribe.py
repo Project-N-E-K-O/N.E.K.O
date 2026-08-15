@@ -894,6 +894,17 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
                     f"取消订阅同步清理: notify_memory_server_reload 失败: {exc}"
                 )
 
+        # Everything that touches characters.json is done.  Release the shared
+        # transaction here instead of in the ``finally``: the remaining work is
+        # Steam-side (UnsubscribeItem plus its callback/delayed folder cleanup)
+        # and can take arbitrarily long, and holding the lock across it would
+        # block unrelated character mutations -- including the character-card
+        # save and language-preference endpoints -- for that entire window.
+        # The ``finally`` still releases on every early-return/exception path.
+        if mutation_lock_acquired:
+            mutation_lock_acquired = False
+            character_config_mutation_lock.release()
+
         logger.info(
             f"取消订阅同步清理汇总 item_id={item_id_int}: "
             f"cleaned={cleanup_summary['cleaned_characters']}, "

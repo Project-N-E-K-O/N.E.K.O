@@ -77,6 +77,7 @@ class QQDashboardService:
                 "allow_cross_group_context": bool(settings.get("allow_cross_group_context", False)),
                 "group_attention_max_score": float(settings.get("group_attention_max_score") if settings.get("group_attention_max_score") is not None else 10.0),
                 "group_attention_focus_threshold": float(settings.get("group_attention_focus_threshold") if settings.get("group_attention_focus_threshold") is not None else 4.0),
+                "group_attention_focus_send_threshold": float(settings.get("group_attention_focus_send_threshold") if settings.get("group_attention_focus_send_threshold") is not None else 2.0),
                 "group_attention_min_threshold": float(settings.get("group_attention_min_threshold") if settings.get("group_attention_min_threshold") is not None else 1.0),
                 "group_attention_message_gain": float(settings.get("group_attention_message_gain") if settings.get("group_attention_message_gain") is not None else 0.25),
                 "attention_base_rise_rate": float(settings.get("attention_base_rise_rate") if settings.get("attention_base_rise_rate") is not None else 0.02),
@@ -190,6 +191,7 @@ class QQDashboardService:
         backlog_labels: Optional[list[dict[str, Any]]] = None,
         group_attention_max_score: Optional[float] = None,
         group_attention_focus_threshold: Optional[float] = None,
+        group_attention_focus_send_threshold: Optional[float] = None,
         group_attention_min_threshold: Optional[float] = None,
         group_attention_message_gain: Optional[float] = None,
         attention_base_rise_rate: Optional[float] = None,
@@ -229,6 +231,7 @@ class QQDashboardService:
                 backlog_labels=backlog_labels,
                 group_attention_max_score=group_attention_max_score,
                 group_attention_focus_threshold=group_attention_focus_threshold,
+                group_attention_focus_send_threshold=group_attention_focus_send_threshold,
                 group_attention_min_threshold=group_attention_min_threshold,
                 group_attention_message_gain=group_attention_message_gain,
                 attention_base_rise_rate=attention_base_rise_rate,
@@ -263,6 +266,17 @@ class QQDashboardService:
         payload.update(result)
         return Ok(self._inject_business_permissions(payload))
 
+    def _nickname_invalid_error(self, reason: str) -> Err:
+        """昵称校验失败 → INVALID_ARGUMENT（而不是笼统的 SET_FAILED）。"""
+        if reason == "too_long":
+            default = f"昵称不能超过 {getattr(self.plugin.permission_mgr, 'NICKNAME_MAX_CHARS', 64)} 个字符"
+        else:
+            # validate_nickname 的 control_char 同时覆盖结构字符（如 []|）和真正的
+            # 控制字符，文案用通用表达避免误导（不是说成"控制/不可见字符"）。
+            default = "昵称不能包含不允许的字符"
+        msg = self.plugin.i18n.t("errors.nickname_invalid", default=default)
+        return Err(SdkError(f"INVALID_ARGUMENT: {msg}"))
+
     async def add_trusted_user(
         self,
         *,
@@ -274,6 +288,10 @@ class QQDashboardService:
         if not self.plugin.permission_mgr:
             return Err(SdkError(f"NOT_INITIALIZED: {self.plugin.i18n.t('errors.permission_manager_not_initialized', default='权限管理器未初始化')}"))
         normalized_nickname = "" if level == "admin" else nickname
+        if normalized_nickname and self.plugin.permission_mgr:
+            reason = self.plugin.permission_mgr.validate_nickname(normalized_nickname)
+            if reason:
+                return self._nickname_invalid_error(reason)
         if normal_relay_probability is not None:
             value = float(normal_relay_probability)
             if value < 0.0 or value > 1.0:
@@ -674,6 +692,9 @@ class QQDashboardService:
             return Err(SdkError(f"USER_NOT_FOUND: {self.plugin.i18n.t('errors.user_not_found', default='用户 {qq_number} 不在信任列表中', qq_number=qq_number)}"))
         if permission_level == "admin":
             return Err(SdkError(f"ADMIN_NO_NICKNAME: {self.plugin.i18n.t('errors.admin_no_nickname', default='管理员始终被称为主人，无法设置昵称')}"))
+        reason = self.plugin.permission_mgr.validate_nickname(nickname)
+        if reason:
+            return self._nickname_invalid_error(reason)
         success = self.plugin.permission_mgr.set_nickname(qq_number, nickname)
         if not success:
             return Err(SdkError(f"SET_FAILED: {self.plugin.i18n.t('errors.set_nickname_failed', default='设置昵称失败')}"))
