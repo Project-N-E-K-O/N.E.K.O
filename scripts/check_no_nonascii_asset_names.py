@@ -291,7 +291,16 @@ def _under_bundled_root(rel_posix: str) -> bool:
 # stops us scanning a file that ships (a hole), while missing something it drops
 # only leaves a false positive. Both fail the test; only the first is dangerous.
 _PLUGIN_SKIP_DIR_NAMES = frozenset(
-    {"__pycache__", ".github", ".pytest_cache", ".mypy_cache", ".venv", ".git"}
+    {
+        "__pycache__",
+        ".github",
+        ".vscode",
+        ".idea",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".venv",
+        ".git",
+    }
 )
 _PLUGIN_SKIP_ROOT_DIR_NAMES = frozenset({"dist", "build"})
 _PLUGIN_SKIP_FILE_NAMES = frozenset({".DS_Store"})
