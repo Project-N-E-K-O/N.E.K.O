@@ -882,6 +882,51 @@ from plugin.sdk.plugin import Ok, lifecycle, neko_plugin, plugin_entry
     )
 
 
+def test_init_adapter_can_build_market_release_package(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_dir = tmp_path / "n.e.k.o_plugin_adapter_demo"
+    assert (
+        neko_plugin_cli.main(
+            [
+                "init",
+                "adapter_demo",
+                "--type",
+                "adapter",
+                "--output",
+                str(plugin_dir),
+            ]
+        )
+        == 0
+    )
+    monkeypatch.setenv(
+        "GITHUB_REPOSITORY",
+        "alice/n.e.k.o_plugin_adapter_demo",
+    )
+    monkeypatch.setenv("GITHUB_REF_NAME", "v0.1.0")
+    target_dir = tmp_path / "target"
+
+    exit_code = neko_plugin_cli.main(
+        [
+            "check",
+            "--release",
+            "--market-release",
+            "--skip-tests",
+            "--target-dir",
+            str(target_dir),
+            str(plugin_dir),
+        ]
+    )
+
+    assert exit_code == 0
+    with zipfile.ZipFile(target_dir / "adapter_demo.neko-plugin") as archive:
+        plugin_toml = archive.read(
+            "payload/plugins/adapter_demo/plugin.toml"
+        ).decode("utf-8")
+    assert 'type = "adapter"' in plugin_toml
+
+
 def test_setup_repo_github_actions_preserves_files_unless_overwrite(
     tmp_path: Path,
 ) -> None:
@@ -1242,8 +1287,9 @@ def test_init_documents_and_exposes_dependency_sync(tmp_path: Path) -> None:
     readme = (repo_dir / "README.md").read_text(encoding="utf-8")
     tasks = (repo_dir / ".vscode" / "tasks.json").read_text(encoding="utf-8")
 
-    sync_command = "neko-plugin sync . --clean"
+    sync_command = "uv run --with pip --project"
     assert sync_command in readme
+    assert "neko-plugin sync . --clean" in readme
     assert "`vendor/`" in readme
     assert "not committed" in readme
     assert "neko-plugin publish ." in readme
@@ -1254,7 +1300,10 @@ def test_init_documents_and_exposes_dependency_sync(tmp_path: Path) -> None:
     ) in readme
     assert "Use that GitHub Release URL when publishing" not in readme
     assert "N.E.K.O: sync dependency_demo" in tasks
-    assert 'neko-plugin sync \\"${workspaceFolder}\\" --clean' in tasks
+    assert (
+        'uv run --with pip neko-plugin sync \\"${workspaceFolder}\\" --clean'
+        in tasks
+    )
 
 
 def test_sync_without_pyproject_is_successful_noop(

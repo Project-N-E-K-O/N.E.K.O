@@ -18,6 +18,7 @@ def parse_github_repository_remote(remote_url: str) -> str | None:
         rf"https?://github\.com/(?P<repo>{owner}/{repository})(?:\.git)?/?$",
         rf"git@github\.com:(?P<repo>{owner}/{repository})(?:\.git)?$",
         rf"ssh://git@github\.com/(?P<repo>{owner}/{repository})(?:\.git)?/?$",
+        rf"ssh://git@ssh\.github\.com:443/(?P<repo>{owner}/{repository})(?:\.git)?/?$",
     )
     value = remote_url.strip()
     for pattern in patterns:

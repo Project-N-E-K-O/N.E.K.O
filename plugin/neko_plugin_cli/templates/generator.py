@@ -76,26 +76,45 @@ class PluginDevelopmentLayout:
     is_default_source: bool
     repo_root_from_workspace: str
 
-    @property
-    def readme_cli_prefix(self) -> str:
+    def readme_cli_prefix(self, *, with_pip: bool = False) -> str:
+        command = "uv run --with pip" if with_pip else "uv run"
         if self.is_default_source:
-            return "uv run neko-plugin"
-        return f'uv run --project "{self.repo_root_from_workspace}" neko-plugin'
+            return f"{command} neko-plugin"
+        return (
+            f'{command} --project "{self.repo_root_from_workspace}" '
+            "neko-plugin"
+        )
 
-    def readme_plugin_command(self, command: str, *, suffix: str = "") -> str:
+    def readme_plugin_command(
+        self,
+        command: str,
+        *,
+        suffix: str = "",
+        with_pip: bool = False,
+    ) -> str:
         plugin_target = self.plugin_id if self.is_default_source else "."
-        return f"{self.readme_cli_prefix} {command} {plugin_target}{suffix}"
+        return (
+            f"{self.readme_cli_prefix(with_pip=with_pip)} "
+            f"{command} {plugin_target}{suffix}"
+        )
 
     def readme_command(self, command: str) -> str:
-        return f"{self.readme_cli_prefix} {command}"
+        return f"{self.readme_cli_prefix()} {command}"
 
-    def vscode_plugin_command(self, command: str, *, suffix: str = "") -> str:
+    def vscode_plugin_command(
+        self,
+        command: str,
+        *,
+        suffix: str = "",
+        with_pip: bool = False,
+    ) -> str:
         plugin_target = (
             self.plugin_id
             if self.is_default_source
             else '\\"${workspaceFolder}\\"'
         )
-        return f"uv run neko-plugin {command} {plugin_target}{suffix}"
+        prefix = "uv run --with pip" if with_pip else "uv run"
+        return f"{prefix} neko-plugin {command} {plugin_target}{suffix}"
 
     @classmethod
     def resolve(
@@ -564,7 +583,11 @@ def _render_readme_md(
 ) -> str:
     name = spec.name or spec.plugin_id
     description = spec.description or "Describe what this plugin does and how to configure it."
-    sync_command = layout.readme_plugin_command("sync", suffix=" --clean")
+    sync_command = layout.readme_plugin_command(
+        "sync",
+        suffix=" --clean",
+        with_pip=True,
+    )
     check_commands = (
         f'{layout.readme_plugin_command("check")}\n'
         f'{layout.readme_plugin_command("check -r")}'
@@ -751,7 +774,11 @@ def _render_vscode_tasks(
     spec: PluginSpec,
     layout: PluginDevelopmentLayout,
 ) -> str:
-    sync_command = layout.vscode_plugin_command("sync", suffix=" --clean")
+    sync_command = layout.vscode_plugin_command(
+        "sync",
+        suffix=" --clean",
+        with_pip=True,
+    )
     check_command = layout.vscode_plugin_command("check")
     release_check_command = layout.vscode_plugin_command("check -r")
     build_command = layout.vscode_plugin_command("build")

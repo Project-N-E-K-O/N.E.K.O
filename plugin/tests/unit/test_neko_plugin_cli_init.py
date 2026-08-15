@@ -86,8 +86,14 @@ def test_init_creates_complete_plugin_source_by_default(
     check_task = next(
         task for task in tasks if task["label"] == "N.E.K.O: check market_demo"
     )
+    sync_task = next(
+        task for task in tasks if task["label"] == "N.E.K.O: sync market_demo"
+    )
     assert settings["nekoPlugin.repoRoot"] == "../../.."
     assert check_task["command"] == "uv run neko-plugin check market_demo"
+    assert sync_task["command"] == (
+        "uv run --with pip neko-plugin sync market_demo --clean"
+    )
     assert check_task["options"]["cwd"] == "${config:nekoPlugin.repoRoot}"
 
 
@@ -208,7 +214,7 @@ def test_init_uses_exact_custom_output_and_custom_directory_commands(
     assert output.is_dir()
     assert not (tmp_path / "n.e.k.o_plugin_custom_output").exists()
     readme = (output / "README.md").read_text(encoding="utf-8")
-    assert "uv run --project" in readme
+    assert "uv run --with pip --project" in readme
     assert "neko-plugin sync . --clean" in readme
     assert "neko-plugin check ." in readme
     assert "neko-plugin check -r ." in readme
@@ -284,6 +290,48 @@ def test_init_accepts_only_matching_github_remote(
         == 1
     )
     assert not bad_repo.exists()
+
+
+def test_init_and_market_check_accept_github_ssh_over_https_remote(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    remote = (
+        "ssh://git@ssh.github.com:443/"
+        "alice/n.e.k.o_plugin_remote_demo.git"
+    )
+    monkeypatch.delenv("GITHUB_REPOSITORY", raising=False)
+    monkeypatch.delenv("GITHUB_REF_NAME", raising=False)
+
+    assert (
+        neko_plugin_cli.main(
+            [
+                "init",
+                "remote_demo",
+                "--output",
+                str(repo),
+                "--remote",
+                remote,
+            ]
+        )
+        == 0
+    )
+    assert _git(repo, "remote", "get-url", "origin") == remote
+    assert (
+        neko_plugin_cli.main(
+            [
+                "check",
+                "--release",
+                "--market-release",
+                "--skip-tests",
+                "--target-dir",
+                str(tmp_path / "target"),
+                str(repo),
+            ]
+        )
+        == 0
+    )
 
 
 @pytest.mark.parametrize(

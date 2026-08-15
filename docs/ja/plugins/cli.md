@@ -53,7 +53,7 @@ uv run neko-plugin check hello_world
 プラグインがサードパーティー製の Python ライブラリを使う場合は、先にプラグイン自身の `vendor/` を更新します：
 
 ```bash
-uv run neko-plugin sync hello_world --clean
+uv run --with pip neko-plugin sync hello_world --clean
 uv run neko-plugin check hello_world
 ```
 
@@ -196,7 +196,7 @@ Market が保存するのは、GitHub Release にあるパッケージの URL �
 
 1. `plugin/plugins/hello_world/` のソースを修正します。
 2. `plugin.toml` のバージョンを、まだ公開したことのない番号に変更します。
-3. 依存関係が変わった場合は `neko-plugin sync hello_world --clean` を実行します。
+3. 依存関係が変わった場合は `uv run --with pip neko-plugin sync hello_world --clean` を実行します。
 4. `neko-plugin check hello_world` を実行します。
 5. プラグインのリポジトリで commit して push します。
 6. `neko-plugin publish hello_world` を実行します。

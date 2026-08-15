@@ -428,15 +428,42 @@ def _ensure_release_ruff_passes(plugin_dir: Path) -> None:
 def _github_repository(plugin_dir: Path) -> str:
     origin = _git(plugin_dir, "config", "--get", "remote.origin.url")
     repository = parse_github_repository_remote(origin)
-    if repository is not None:
-        return repository
-    raise RuntimeError(
-        _tri(
-            "git remote 'origin' must point to a GitHub repository",
-            "Git 远程 'origin' 必须指向 GitHub 仓库",
-            "Git リモート 'origin' は GitHub リポジトリを指す必要があります",
+    if repository is None:
+        raise RuntimeError(
+            _tri(
+                "git remote 'origin' must point to a GitHub repository",
+                "Git 远程 'origin' 必须指向 GitHub 仓库",
+                "Git リモート 'origin' は GitHub リポジトリを指す必要があります",
+            )
         )
-    )
+    push_urls = _git_config_values(plugin_dir, "remote.origin.pushurl")
+    if len(push_urls) > 1:
+        raise RuntimeError(
+            _tri(
+                "git remote 'origin' must have at most one push URL for publishing",
+                "发布时 Git 远程 'origin' 最多只能配置一个 push URL",
+                "公開時、Git リモート 'origin' の push URL は 1 つまでです",
+            )
+        )
+    push_url = push_urls[0] if push_urls else origin
+    push_repository = parse_github_repository_remote(push_url)
+    if push_repository is None:
+        raise RuntimeError(
+            _tri(
+                "git remote 'origin' push URL must point to a GitHub repository",
+                "Git 远程 'origin' 的 push URL 必须指向 GitHub 仓库",
+                "Git リモート 'origin' の push URL は GitHub リポジトリを指す必要があります",
+            )
+        )
+    if push_repository.casefold() != repository.casefold():
+        raise RuntimeError(
+            _tri(
+                "git remote 'origin' push URL must point to the same GitHub repository as its fetch URL",
+                "Git 远程 'origin' 的 push URL 必须与 fetch URL 指向同一个 GitHub 仓库",
+                "Git リモート 'origin' の push URL と fetch URL は同じ GitHub リポジトリを指す必要があります",
+            )
+        )
+    return repository
 
 
 def _ensure_remote_tag(plugin_dir: Path, *, tag: str, head: str) -> None:
@@ -643,6 +670,29 @@ def _git(plugin_dir: Path, *args: str) -> str:
             )
         )
     return completed.stdout.strip()
+
+
+def _git_config_values(plugin_dir: Path, key: str) -> list[str]:
+    completed = subprocess.run(
+        ["git", "config", "--get-all", key],
+        cwd=plugin_dir,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if completed.returncode == 1:
+        return []
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout.strip()
+        raise RuntimeError(
+            detail
+            or _tri(
+                f"git config --get-all {key} failed",
+                f"git config --get-all {key} 执行失败",
+                f"git config --get-all {key} の実行に失敗しました",
+            )
+        )
+    return [line.strip() for line in completed.stdout.splitlines() if line.strip()]
 
 
 __all__ = ["handle", "register"]

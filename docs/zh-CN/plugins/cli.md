@@ -53,7 +53,7 @@ uv run neko-plugin check hello_world
 如果插件添加了第三方 Python 库，先更新插件自己的 `vendor/`：
 
 ```bash
-uv run neko-plugin sync hello_world --clean
+uv run --with pip neko-plugin sync hello_world --clean
 uv run neko-plugin check hello_world
 ```
 
@@ -196,7 +196,7 @@ Market 保存的是 GitHub Release 中安装包的地址和校验值。开发者
 
 1. 修改 `plugin/plugins/hello_world/` 中的源码。
 2. 在 `plugin.toml` 中换成一个从未发布过的新版本号。
-3. 如果依赖有变化，运行 `neko-plugin sync hello_world --clean`。
+3. 如果依赖有变化，运行 `uv run --with pip neko-plugin sync hello_world --clean`。
 4. 运行 `neko-plugin check hello_world`。
 5. 在插件仓库中 commit 并 push。
 6. 运行 `neko-plugin publish hello_world`。

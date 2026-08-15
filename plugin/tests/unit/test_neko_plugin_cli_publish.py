@@ -378,6 +378,139 @@ def test_publish_rejects_wrong_origin_even_when_github_repository_matches(
     assert "market repository name must be" in capsys.readouterr().err
 
 
+def test_publish_rejects_push_url_for_different_github_repository(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    plugin_dir, origin_remote = _make_cli_publish_repo(tmp_path, monkeypatch)
+    push_remote = tmp_path / "wrong-push.git"
+    subprocess.run(
+        ["git", "init", "--bare", str(push_remote)],
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    push_url = "https://github.com/neko/n.e.k.o_plugin_wrong_destination"
+    _run_git(plugin_dir, "remote", "set-url", "--push", "origin", push_url)
+    _run_git(
+        plugin_dir,
+        "config",
+        f"url.file://{push_remote}.insteadOf",
+        push_url,
+    )
+    client = _RecordingClient(
+        _ready_release(
+            "https://github.com/neko/"
+            "n.e.k.o_plugin_publish_demo/releases/tag/v0.1.0"
+        )
+    )
+    monkeypatch.setattr(publish_cmd.httpx, "Client", lambda **_: client)
+
+    exit_code = neko_plugin_cli.main(
+        ["publish", "github", str(plugin_dir)]
+    )
+
+    assert exit_code == 1
+    assert _run_git(plugin_dir, "tag", "--list") == ""
+    assert _run_git(origin_remote, "tag", "--list") == ""
+    assert _run_git(push_remote, "tag", "--list") == ""
+    assert client.requests == []
+    assert "push URL must point to the same GitHub repository" in (
+        capsys.readouterr().err
+    )
+
+
+def test_publish_accepts_same_repository_with_different_push_transport(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_dir, remote = _make_cli_publish_repo(tmp_path, monkeypatch)
+    push_url = "git@github.com:neko/n.e.k.o_plugin_publish_demo.git"
+    _run_git(plugin_dir, "remote", "set-url", "--push", "origin", push_url)
+    _run_git(
+        plugin_dir,
+        "config",
+        "--add",
+        f"url.file://{remote}.insteadOf",
+        push_url,
+    )
+    release_url = (
+        "https://github.com/neko/"
+        "n.e.k.o_plugin_publish_demo/releases/tag/v0.1.0"
+    )
+    client = _RecordingClient(_ready_release(release_url))
+    monkeypatch.setattr(publish_cmd.httpx, "Client", lambda **_: client)
+
+    exit_code = neko_plugin_cli.main(
+        ["publish", "github", str(plugin_dir)]
+    )
+
+    assert exit_code == 0
+    assert _run_git(remote, "tag", "--list") == "v0.1.0"
+    assert len(client.requests) == 1
+
+
+def test_publish_rejects_multiple_push_urls_before_tagging(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    plugin_dir, remote = _make_cli_publish_repo(tmp_path, monkeypatch)
+    first_push_url = (
+        "https://github.com/neko/n.e.k.o_plugin_publish_demo.git"
+    )
+    second_push_url = (
+        "git@github.com:neko/n.e.k.o_plugin_publish_demo.git"
+    )
+    _run_git(
+        plugin_dir,
+        "remote",
+        "set-url",
+        "--add",
+        "--push",
+        "origin",
+        first_push_url,
+    )
+    _run_git(
+        plugin_dir,
+        "remote",
+        "set-url",
+        "--add",
+        "--push",
+        "origin",
+        second_push_url,
+    )
+
+    exit_code = neko_plugin_cli.main(
+        ["publish", "github", str(plugin_dir)]
+    )
+
+    assert exit_code == 1
+    assert _run_git(plugin_dir, "tag", "--list") == ""
+    assert _run_git(remote, "tag", "--list") == ""
+    assert "at most one push URL" in capsys.readouterr().err
+
+
+def test_git_config_failure_has_trilingual_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_git_config(*_: Any, **__: Any) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(["git", "config"], 2, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fail_git_config)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        publish_cmd._git_config_values(tmp_path, "remote.origin.pushurl")
+
+    message = str(exc_info.value)
+    assert "failed" in message
+    assert "执行失败" in message
+    assert "実行に失敗しました" in message
+
+
 def test_publish_defaults_to_github_then_market(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

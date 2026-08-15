@@ -53,7 +53,7 @@ uv run neko-plugin check hello_world
 If the plugin uses third-party Python libraries, refresh its own `vendor/` directory first:
 
 ```bash
-uv run neko-plugin sync hello_world --clean
+uv run --with pip neko-plugin sync hello_world --clean
 uv run neko-plugin check hello_world
 ```
 
@@ -196,7 +196,7 @@ After the first review has passed, normal feature updates do not require another
 
 1. Edit the source in `plugin/plugins/hello_world/`.
 2. Change the version in `plugin.toml` to a number that has never been published.
-3. If dependencies changed, run `neko-plugin sync hello_world --clean`.
+3. If dependencies changed, run `uv run --with pip neko-plugin sync hello_world --clean`.
 4. Run `neko-plugin check hello_world`.
 5. Commit and push in the plugin repository.
 6. Run `neko-plugin publish hello_world`.

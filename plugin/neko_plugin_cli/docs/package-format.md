@@ -344,7 +344,7 @@ Recommended pipeline for a single plugin:
 
 Current implementation notes:
 
-- single-plugin builds only accept `package_type = "plugin"`
+- single-plugin builds package one supported runtime type (`plugin` or `adapter`) as `package_type = "plugin"`
 - install verifies `metadata.toml` payload hash when metadata exists
 - install conflict handling currently supports `rename` and `fail`
 
