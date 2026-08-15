@@ -235,7 +235,7 @@ from plugin.sdk.plugin import NekoPluginBase, Ok, neko_plugin, plugin_entry
 @neko_plugin
 class HelloWorldPlugin(NekoPluginBase):
     @plugin_entry(id="hello", name="Hello", description="Say hello")
-    async def hello(self, name: str = "World"):
+    async def hello(self, name: str = "World", **_):
         return Ok({"message": f"Hello, {name}!"})
 ```
 
@@ -246,6 +246,7 @@ class HelloWorldPlugin(NekoPluginBase):
 | `@plugin_entry(...)` | 在插件管理器中公开一个可以触发的功能。 |
 | `async def hello(...)` | 定义这个功能执行时要做的事情。插件入口必须使用 `async def`。 |
 | `name: str = "World"` | 声明一个可选的字符串参数；不填写时使用 `World`。 |
+| `**_` | 接收 N.E.K.O 运行时附带的信息；这个功能不需要读取它。 |
 | `Ok({...})` | 向 N.E.K.O 返回一次成功结果。 |
 
 `plugin_id` 是 `hello_world`，这个功能自己的 `entry_id` 是 `hello`。前者用来找到插件，后者用来找到插件中的具体功能，两者不要互换。

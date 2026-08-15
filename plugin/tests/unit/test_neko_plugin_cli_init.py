@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
+import runpy
 import subprocess
 
 import pytest
@@ -134,9 +136,27 @@ def test_init_creates_minimal_callable_plugin_entry(
 @neko_plugin
 class HelloWorldPlugin(NekoPluginBase):
     @plugin_entry(id="hello", name="Hello", description="Say hello")
-    async def hello(self, name: str = "World"):
+    async def hello(self, name: str = "World", **_):
         return Ok({"message": f"Hello, {name}!"})
 '''
+
+
+def test_generated_quick_start_entry_accepts_runtime_context(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        neko_plugin_cli,
+        "resolve_default_paths",
+        lambda: _source_tree_defaults(tmp_path),
+    )
+    assert neko_plugin_cli.main(["init", "hello_world"]) == 0
+    entry = tmp_path / "plugin" / "plugins" / "hello_world" / "__init__.py"
+    plugin_class = runpy.run_path(str(entry))["HelloWorldPlugin"]
+    handler = object.__new__(plugin_class).hello
+    result = asyncio.run(handler(name="Neko", _ctx={"run_id": "run-1"}))
+
+    assert result.value == {"message": "Hello, Neko!"}
 
 
 @pytest.mark.parametrize(
@@ -158,7 +178,7 @@ def test_quick_start_guides_show_generated_minimal_entry(guide_path: str) -> Non
 @neko_plugin
 class HelloWorldPlugin(NekoPluginBase):
     @plugin_entry(id="hello", name="Hello", description="Say hello")
-    async def hello(self, name: str = "World"):
+    async def hello(self, name: str = "World", **_):
         return Ok({"message": f"Hello, {name}!"})
 ''' in feature_section
     assert "from typing import Any" not in feature_section

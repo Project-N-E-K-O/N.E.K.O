@@ -379,7 +379,7 @@ def _render_quick_start_init(spec: PluginSpec) -> str:
 @neko_plugin
 class {spec.class_name}(NekoPluginBase):
     @plugin_entry(id="hello", name="Hello", description="Say hello")
-    async def hello(self, name: str = "World"):
+    async def hello(self, name: str = "World", **_):
         return Ok({{"message": f"Hello, {{name}}!"}})
 '''
 

@@ -202,7 +202,7 @@ from plugin.sdk.plugin import NekoPluginBase, Ok, neko_plugin, plugin_entry
 @neko_plugin
 class HelloWorldPlugin(NekoPluginBase):
     @plugin_entry(id="hello", name="Hello", description="Say hello")
-    async def hello(self, name: str = "World"):
+    async def hello(self, name: str = "World", **_):
         return Ok({"message": f"Hello, {name}!"})
 ```
 
@@ -213,6 +213,7 @@ class HelloWorldPlugin(NekoPluginBase):
 | `@plugin_entry(...)` | Exposes a callable feature in Plugin Manager |
 | `async def hello(...)` | Defines the work performed by the entry. Plugin entries must use `async def`. |
 | `name: str = "World"` | Declares an optional string parameter; it uses `World` when omitted. |
+| `**_` | Accepts extra information supplied by the N.E.K.O runtime; this entry does not need to use it. |
 | `Ok({...})` | Returns a successful result |
 
 The `plugin_id` is `hello_world`; this feature's `entry_id` is `hello`. They identify different things and are not interchangeable.

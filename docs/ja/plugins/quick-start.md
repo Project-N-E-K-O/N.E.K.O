@@ -200,7 +200,7 @@ from plugin.sdk.plugin import NekoPluginBase, Ok, neko_plugin, plugin_entry
 @neko_plugin
 class HelloWorldPlugin(NekoPluginBase):
     @plugin_entry(id="hello", name="Hello", description="Say hello")
-    async def hello(self, name: str = "World"):
+    async def hello(self, name: str = "World", **_):
         return Ok({"message": f"Hello, {name}!"})
 ```
 
@@ -211,6 +211,7 @@ class HelloWorldPlugin(NekoPluginBase):
 | `@plugin_entry(...)` | Plugin Manager に呼び出し可能な機能を公開 |
 | `async def hello(...)` | entry の処理を定義。プラグイン entry は `async def` を使用します。 |
 | `name: str = "World"` | optional string parameter。省略時は `World` を使用します。 |
+| `**_` | N.E.K.O runtime から渡される追加情報を受け取ります。この entry では使いません。 |
 | `Ok({...})` | successful result を返す |
 
 `plugin_id` は `hello_world`、この機能の `entry_id` は `hello` です。別の identity なので混同しないでください。
