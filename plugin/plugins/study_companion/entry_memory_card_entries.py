@@ -142,6 +142,7 @@ class _MemoryCardEntriesMixin:
         **kwargs,
     ):
         try:
+            target_lanlan = self._resolve_study_target_lanlan(kwargs)
             topic_key = str(topic_id or "").strip()
             due_before = await asyncio.to_thread(
                 self._count_total_due_reviews
@@ -190,9 +191,7 @@ class _MemoryCardEntriesMixin:
                                 await self._emit_review_session_completed_event(
                                     reviewed_count=1,
                                     deck_name=str(topic.get("name") or ""),
-                                    target_lanlan=self._resolve_study_target_lanlan(
-                                        kwargs
-                                    ),
+                                    target_lanlan=target_lanlan,
                                 )
                     except Exception as emit_exc:
                         self.logger.warning(
@@ -202,7 +201,9 @@ class _MemoryCardEntriesMixin:
                     return Ok(knowledge_payload)
             item = payload.get("item") if isinstance(payload, dict) else {}
             try:
-                await self._emit_memory_review_answer_event(payload)
+                await self._emit_memory_review_answer_event(
+                    payload, target_lanlan=target_lanlan
+                )
                 if due_before > 0:
                     due_after = await asyncio.to_thread(
                         self._count_total_due_reviews
@@ -215,7 +216,7 @@ class _MemoryCardEntriesMixin:
                         await self._emit_review_session_completed_event(
                             reviewed_count=1,
                             deck_name=str((reviewed_deck or {}).get("name") or ""),
-                            target_lanlan=self._resolve_study_target_lanlan(kwargs),
+                            target_lanlan=target_lanlan,
                         )
             except Exception as emit_exc:
                 self.logger.warning(

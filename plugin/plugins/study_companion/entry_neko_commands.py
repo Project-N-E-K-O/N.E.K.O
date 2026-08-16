@@ -338,7 +338,9 @@ class _NekoCommandsMixin:
 
         if isinstance(result, Ok):
             reply = result.value if isinstance(result.value, dict) else {}
-            if bool(reply.get("solution_narration_scheduled")):
+            if bool(reply.get("solution_narration_scheduled")) or bool(
+                reply.get("general_narration_scheduled")
+            ):
                 return
             await self._push_neko_command_message(
                 visibility=[],

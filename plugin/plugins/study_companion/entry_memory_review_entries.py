@@ -79,6 +79,7 @@ class _MemoryReviewEntriesMixin:
         **kwargs,
     ):
         try:
+            target_lanlan = self._resolve_study_target_lanlan(kwargs)
             due_before = await asyncio.to_thread(
                 self._count_total_due_reviews
             )
@@ -107,7 +108,9 @@ class _MemoryReviewEntriesMixin:
                         "error": str(bridge_exc),
                     }
             try:
-                await self._emit_memory_review_answer_event(payload)
+                await self._emit_memory_review_answer_event(
+                    payload, target_lanlan=target_lanlan
+                )
                 if due_before > 0:
                     due_after = await asyncio.to_thread(
                         self._count_total_due_reviews
@@ -121,7 +124,7 @@ class _MemoryReviewEntriesMixin:
                         await self._emit_review_session_completed_event(
                             reviewed_count=1,
                             deck_name=str((deck or {}).get("name") or ""),
-                            target_lanlan=self._resolve_study_target_lanlan(kwargs),
+                            target_lanlan=target_lanlan,
                         )
             except Exception as emit_exc:
                 self.logger.warning(
@@ -165,6 +168,7 @@ class _MemoryReviewEntriesMixin:
         **kwargs,
     ):
         try:
+            target_lanlan = self._resolve_study_target_lanlan(kwargs)
             due_before = await asyncio.to_thread(self._count_total_due_reviews)
             payload = await asyncio.to_thread(
                 self._memory_deck_store.add_recitation_attempt,
@@ -190,7 +194,9 @@ class _MemoryReviewEntriesMixin:
                         "error": str(bridge_exc),
                     }
             try:
-                await self._emit_recitation_answer_event(payload)
+                await self._emit_recitation_answer_event(
+                    payload, target_lanlan=target_lanlan
+                )
                 if due_before > 0:
                     due_after = await asyncio.to_thread(
                         self._count_total_due_reviews
@@ -205,7 +211,7 @@ class _MemoryReviewEntriesMixin:
                         await self._emit_review_session_completed_event(
                             reviewed_count=1,
                             deck_name=str((deck or {}).get("name") or ""),
-                            target_lanlan=self._resolve_study_target_lanlan(kwargs),
+                            target_lanlan=target_lanlan,
                         )
             except Exception as emit_exc:
                 self.logger.warning(

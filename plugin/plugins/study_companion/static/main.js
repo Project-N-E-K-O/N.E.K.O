@@ -2005,6 +2005,12 @@ async function explainText() {
     outcomeFormatters.formatKnowledgeGuidanceEvidence(data, t),
     outcomeFormatters.formatSolutionNarrationNotice(data, t),
     outcomeFormatters.formatGeneralNarrationNotice(data, t),
+    data.history_persisted === false
+      ? t(
+        'ui.error.history_not_saved',
+        'This explanation is shown, but it could not be saved to session history. It may disappear after you leave or refresh.',
+      )
+      : '',
   ].filter(Boolean).join('\n\n'));
   await refreshStatus({ updateReply: false });
 }

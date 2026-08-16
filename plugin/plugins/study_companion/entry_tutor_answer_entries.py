@@ -51,6 +51,7 @@ class _TutorAnswerEntriesMixin:
     ):
         if self._agent is None:
             return Err(SdkError("study tutor agent is not initialized"))
+        target_lanlan = self._resolve_study_target_lanlan(kwargs)
         async with self._lock:
             current_question = dict(self._state.current_question)
             active_mode = self._state.active_mode
@@ -300,6 +301,7 @@ class _TutorAnswerEntriesMixin:
                 ),
                 topic=topic,
                 mastery_after=mastery_after,
+                target_lanlan=target_lanlan,
             )
             if using_current_question and state_attempt_id:
                 public_eval_cache = {

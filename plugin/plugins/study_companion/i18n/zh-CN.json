@@ -4,6 +4,7 @@
     "ui.error.interactive_ocr_busy": "已有屏幕选区正在进行，请先完成或取消后再试。",
     "ui.error.interactive_ocr_timeout": "屏幕选区已超时，请点击 OCR 重试。",
     "ui.error.interactive_ocr_unavailable": "屏幕选区需要连接 N.E.K.O 桌面端。",
+    "ui.error.history_not_saved": "解释已显示，但未能保存到会话历史；离开或刷新后可能消失。",
     "ui.status.solution_narration_scheduled":  "已安排朗读。",
     "ui.status.solution_narration_disabled":  "解答朗读已关闭。",
     "ui.error.solution_narration_missing_answer":  "讲解生成不完整：缺少“答案”部分，因此未安排朗读。请重新解析。",

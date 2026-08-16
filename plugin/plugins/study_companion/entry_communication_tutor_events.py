@@ -82,6 +82,7 @@ class _CommunicationTutorEventsMixin:
         topic: str = "",
         mastery_before: float = -1.0,
         mastery_after: float = -1.0,
+        target_lanlan: str | None = None,
     ) -> None:
         bus = self._event_bus
         if bus is None:
@@ -98,11 +99,14 @@ class _CommunicationTutorEventsMixin:
                     "topic": str(topic or "").strip(),
                     "mastery_before": mastery_before,
                     "mastery_after": mastery_after,
+                    "target_lanlan": str(target_lanlan or "").strip() or None,
                 },
             )
         )
 
-    async def _emit_memory_review_answer_event(self, payload: dict[str, Any]) -> None:
+    async def _emit_memory_review_answer_event(
+        self, payload: dict[str, Any], *, target_lanlan: str | None = None
+    ) -> None:
         item = payload.get("item") or {}
         review = payload.get("review_record") or {}
         deck = (
@@ -120,9 +124,12 @@ class _CommunicationTutorEventsMixin:
             user_answer_summary=f"rating={rating}",
             correction_hint=str(review.get("error_type") or ""),
             topic=str(deck.get("subject") or deck.get("name") or ""),
+            target_lanlan=target_lanlan,
         )
 
-    async def _emit_recitation_answer_event(self, payload: dict[str, Any]) -> None:
+    async def _emit_recitation_answer_event(
+        self, payload: dict[str, Any], *, target_lanlan: str | None = None
+    ) -> None:
         diff_data = payload.get("diff") or {}
         review = payload.get("review") or {}
         item = review.get("item") or {}
@@ -150,6 +157,7 @@ class _CommunicationTutorEventsMixin:
                 f"extra: {diff_data.get('extra_count', 0)}"
             ),
             topic=str(deck.get("subject") or deck.get("name") or ""),
+            target_lanlan=target_lanlan,
         )
 
     async def _emit_session_summarized_event(self, payload: dict[str, Any]) -> None:

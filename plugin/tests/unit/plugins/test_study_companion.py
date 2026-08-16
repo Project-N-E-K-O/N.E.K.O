@@ -9766,10 +9766,11 @@ class _LegacyTopicReviewStore:
 async def test_legacy_topic_review_limits_metadata_lookup_to_default_deck() -> None:
     plugin = StudyCompanionPlugin.__new__(StudyCompanionPlugin)
     store = _LegacyTopicReviewStore()
+    plugin.ctx = SimpleNamespace(_current_lanlan="")
     plugin._memory_deck_store = store
     plugin._count_total_due_reviews = lambda: 0
 
-    async def ignore_review_event(_payload) -> None:
+    async def ignore_review_event(_payload, **_kwargs) -> None:
         return None
 
     plugin._emit_memory_review_answer_event = ignore_review_event
@@ -10324,12 +10325,21 @@ async def test_memory_review_emits_answer_evaluated(
         )["item"]
 
         reviewed = await plugin.study_memory_review_item(
-            item_id=item["id"], rating="good", correct=True
+            item_id=item["id"],
+            rating="good",
+            correct=True,
+            _ctx={"lanlan_name": "active-character"},
         )
 
         assert isinstance(reviewed, Ok)
         await _drain_scheduled_events()
         assert any("[Answer Evaluated]" in text for text in _study_push_texts(ctx))
+        assert any(
+            message.get("target_lanlan") == "active-character"
+            and "[Answer Evaluated]"
+            in str(((message.get("parts") or [{}])[0]).get("text") or "")
+            for message in ctx.pushed_messages
+        )
         assert any(
             "[Review Session Completed]" in text for text in _study_push_texts(ctx)
         )
@@ -10478,7 +10488,7 @@ async def test_memory_review_event_failure_does_not_fail_review(
             meaning="give up",
         )["item"]
 
-        async def _fail_emit(_payload: dict[str, object]) -> None:
+        async def _fail_emit(_payload: dict[str, object], **_kwargs) -> None:
             raise RuntimeError("event enrichment failed")
 
         plugin._emit_memory_review_answer_event = _fail_emit  # type: ignore[method-assign]

@@ -4,6 +4,7 @@
     "ui.error.interactive_ocr_busy": "Another screen selection is already active. Finish or cancel it, then try again.",
     "ui.error.interactive_ocr_timeout": "Screen selection timed out. Click OCR to try again.",
     "ui.error.interactive_ocr_unavailable": "Screen selection requires the N.E.K.O desktop app to be connected.",
+    "ui.error.history_not_saved": "This explanation is shown, but it could not be saved to session history. It may disappear after you leave or refresh.",
     "ui.status.solution_narration_scheduled":  "Narration has been scheduled.",
     "ui.status.solution_narration_disabled":  "Solution narration is turned off.",
     "ui.error.solution_narration_missing_answer":  "The explanation is incomplete: the Answer section is missing, so narration was not scheduled. Please analyze it again.",

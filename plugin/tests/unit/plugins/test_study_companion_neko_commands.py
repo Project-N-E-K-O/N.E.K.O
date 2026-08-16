@@ -315,6 +315,26 @@ async def test_neko_explain_current_pushes_with_ocr_text(
 
 
 @pytest.mark.asyncio
+async def test_neko_explain_current_accepts_general_narration_schedule(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plugin, ctx = await _started_plugin(tmp_path, monkeypatch)
+    plugin._ocr_pipeline = _FakeStudyOcrPipeline("Derivative rules")
+
+    async def _explain_with_general_narration(**_kwargs):
+        return Ok({"general_narration_scheduled": True})
+
+    plugin.study_explain_text = _explain_with_general_narration  # type: ignore[method-assign]
+    pushed_before = len(ctx.pushed_messages)
+    try:
+        await plugin._handle_neko_explain_current({})
+
+        assert len(ctx.pushed_messages) == pushed_before
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_neko_explain_current_no_ocr_pushes_unavailable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

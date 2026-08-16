@@ -134,6 +134,10 @@ type GeneralNarrationOutcome = {
   general_narration_response_mode?: string;
 };
 
+type HistoryPersistenceOutcome = {
+  history_persisted?: boolean;
+};
+
 type KnowledgeGuidanceTopic = {
   id?: string;
   label?: string;
@@ -1824,7 +1828,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
         transition_phrase?: string;
         degraded?: boolean;
         diagnostic?: string;
-      } & SolutionNarrationOutcome & GeneralNarrationOutcome & KnowledgeGuidanceOutcome;
+      } & SolutionNarrationOutcome & GeneralNarrationOutcome & KnowledgeGuidanceOutcome & HistoryPersistenceOutcome;
       if (controller.signal.aborted) {
         return;
       }
@@ -1843,11 +1847,18 @@ export default function StudyPanel(props: PluginSurfaceProps) {
       const knowledgeGuidanceEvidence = formatKnowledgeGuidanceEvidence(data, t);
       const narrationNotice = formatSolutionNarrationNotice(data, t);
       const generalNarrationNotice = formatGeneralNarrationNotice(data, t);
+      const historyPersistenceNotice = data.history_persisted === false
+        ? t(
+          'ui.error.history_not_saved',
+          'This explanation is shown, but it could not be saved to session history. It may disappear after you leave or refresh.',
+        )
+        : '';
       setReply([
         nextReply,
         knowledgeGuidanceEvidence,
         narrationNotice,
         generalNarrationNotice,
+        historyPersistenceNotice,
       ].filter(Boolean).join('\n\n'));
       await refresh(controller.signal, { updateReply: false });
     } catch (error) {

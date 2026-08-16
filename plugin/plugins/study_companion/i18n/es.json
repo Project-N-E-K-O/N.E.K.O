@@ -4,6 +4,7 @@
     "ui.error.interactive_ocr_busy": "Ya hay otra selección de pantalla activa. Complétala o cancélala y vuelve a intentarlo.",
     "ui.error.interactive_ocr_timeout": "Se agotó el tiempo de selección de pantalla. Pulsa OCR para volver a intentarlo.",
     "ui.error.interactive_ocr_unavailable": "La selección de pantalla requiere que la aplicación de escritorio N.E.K.O esté conectada.",
+    "ui.error.history_not_saved": "La explicación se muestra, pero no se pudo guardar en el historial de la sesión. Puede desaparecer al salir o actualizar la página.",
     "ui.status.solution_narration_scheduled":  "La narración se ha programado.",
     "ui.status.solution_narration_disabled":  "La narración de la solución está desactivada.",
     "ui.error.solution_narration_missing_answer":  "La explicación está incompleta: falta la sección «Respuesta», por lo que no se programó la narración. Vuelve a analizarla.",

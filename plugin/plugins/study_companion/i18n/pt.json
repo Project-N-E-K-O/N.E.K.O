@@ -4,6 +4,7 @@
     "ui.error.interactive_ocr_busy": "Já existe outra seleção da tela ativa. Conclua ou cancele-a e tente novamente.",
     "ui.error.interactive_ocr_timeout": "O tempo da seleção da tela esgotou. Clique em OCR para tentar novamente.",
     "ui.error.interactive_ocr_unavailable": "A seleção da tela requer que o aplicativo N.E.K.O para desktop esteja conectado.",
+    "ui.error.history_not_saved": "A explicação foi exibida, mas não pôde ser salva no histórico da sessão. Ela pode desaparecer ao sair ou atualizar a página.",
     "ui.status.solution_narration_scheduled":  "A narração foi agendada.",
     "ui.status.solution_narration_disabled":  "A narração da solução está desativada.",
     "ui.error.solution_narration_missing_answer":  "A explicação está incompleta: falta a seção «Resposta», portanto a narração não foi agendada. Analise novamente.",

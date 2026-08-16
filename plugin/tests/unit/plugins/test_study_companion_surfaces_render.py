@@ -106,8 +106,18 @@ def test_study_explain_surfaces_expose_general_narration_outcomes() -> None:
     assert "outcomeFormatters.formatGeneralNarrationNotice(data, t)" in fallback_main
 
 
+def test_study_explain_surfaces_warn_when_history_is_not_persisted() -> None:
+    hosted = _read("study_panel.tsx")
+    fallback = (PLUGIN_DIR / "static" / "main.js").read_text(encoding="utf-8")
+
+    for source in (hosted, fallback):
+        assert "history_persisted === false" in source
+        assert "ui.error.history_not_saved" in source
+
+
 def test_general_narration_messages_and_setting_exist_in_all_locales() -> None:
     required_keys = {
+        "ui.error.history_not_saved",
         "ui.status.general_narration_scheduled",
         "ui.status.general_narration_disabled",
         "ui.error.general_narration_degraded",
