@@ -3380,7 +3380,6 @@ Live2DManager.prototype._checkAndSwitchDisplay = async function (model, options 
                     displaySelectionPoint.x,
                     displaySelectionPoint.y
                 );
-                if (!isCurrentSettlement()) return false;
 
                 if (result && result.success && !result.sameDisplay) {
                     console.log('[Live2D] 屏幕切换成功:', result);
@@ -3392,8 +3391,13 @@ Live2DManager.prototype._checkAndSwitchDisplay = async function (model, options 
                     const targetOriginY = resultWindowBounds
                         ? resultWindowBounds.y
                         : targetDisplay.screenY;
-                    const newModelCenterX = modelScreenX - targetOriginX;
-                    const newModelCenterY = modelScreenY - targetOriginY;
+                    // moveWindowToDisplay is an external side effect: once it succeeds, the model's
+                    // renderer-local coordinates must follow the new window origin even if a newer
+                    // drag has invalidated this settlement. Apply only the origin delta so any newer
+                    // drag movement already written to model.x/y remains intact.
+                    model.x += windowScreenX - targetOriginX;
+                    model.y += windowScreenY - targetOriginY;
+                    if (!isCurrentSettlement()) return false;
 
                     // 考虑缩放因子变化
                     if (result.scaleRatio && result.scaleRatio !== 1) {
@@ -3403,9 +3407,6 @@ Live2DManager.prototype._checkAndSwitchDisplay = async function (model, options 
                     }
 
                     // 以真实 drawable 中心保持全局位置，不再用模型整体尺寸和 anchor 猜偏移。
-                    model.x += newModelCenterX - modelCenterX;
-                    model.y += newModelCenterY - modelCenterY;
-
                     console.log('[Live2D] 模型新位置:', model.x, model.y);
 
                     const settledContext = await waitForLive2DDesktopCoordinateSettlement(
@@ -3427,6 +3428,7 @@ Live2DManager.prototype._checkAndSwitchDisplay = async function (model, options 
 
                     return true;  // Display switch occurred
                 }
+                if (!isCurrentSettlement()) return false;
             } finally {
                 if (this._live2DPendingDisplaySwitchToken === displaySwitchToken) {
                     this._live2DPendingDisplaySwitchToken = null;

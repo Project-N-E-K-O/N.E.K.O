@@ -703,6 +703,51 @@ test('release pointer on another display still performs the ordinary display swi
     assert.equal(model.x, -300, 'drawable center keeps its original absolute screen position');
 });
 
+test('a completed stale display move rebases the newer drag without overwriting its movement', async () => {
+    const currentDisplay = {
+        id: 'display-a',
+        screenX: 0,
+        screenY: 0,
+        bounds: { x: 0, y: 0, width: 1000, height: 800 },
+        workArea: { x: 0, y: 0, width: 1000, height: 800 }
+    };
+    const harness = createHarness({ currentDisplay });
+    const manager = new harness.Live2DManager();
+    const model = createModel({ x: 700, y: 120, width: 500, height: 600 });
+    const displays = [
+        { id: 'display-a', screenX: 0, screenY: 0, width: 1000, height: 800 },
+        { id: 'display-b', screenX: 1000, screenY: 0, width: 1000, height: 800 }
+    ];
+    let resolveMove;
+    let current = true;
+    harness.window.electronScreen.getAllDisplays = async () => displays;
+    harness.window.electronScreen.moveWindowToDisplay = () => new Promise((resolve) => {
+        resolveMove = resolve;
+    });
+
+    const switching = manager._checkAndSwitchDisplay(model, {
+        releaseScreenPoint: { x: 1100, y: 120 },
+        isCurrentSettlement: () => current
+    });
+    for (let attempt = 0; attempt < 10 && !resolveMove; attempt += 1) {
+        await new Promise((resolve) => setImmediate(resolve));
+    }
+
+    current = false;
+    model.x = 760;
+    model.y = 150;
+    resolveMove({
+        success: true,
+        sameDisplay: false,
+        windowBounds: { x: 1000, y: 0, width: 1000, height: 800 }
+    });
+
+    assert.equal(await switching, false);
+    assert.equal(model.x, -240, 'newer drag x delta survives the window-origin rebase');
+    assert.equal(model.y, 150, 'unchanged display y origin must not alter newer drag y');
+    assert.equal(manager._pendingDisplaySwitch, false);
+});
+
 test('an older display switch cannot clear a newer switch pending state', async () => {
     const currentDisplay = {
         id: 'display-a',
