@@ -157,6 +157,46 @@
         const stage = data.stage || 'validating';
         studyDocumentState.textContent = t(`ui.document.stage.${stage}`, stage);
       },
+      async poll(jobId, signal, update) {
+        let delay = 1000;
+        let consecutiveFailures = 0;
+        while (!signal.aborted) {
+          await new Promise((resolve) => setTimeout(resolve, delay));
+          if (signal.aborted) break;
+          let data;
+          try {
+            data = await callPlugin(
+              'study_document_analysis_status',
+              { job_id: jobId },
+              signal,
+            );
+            consecutiveFailures = 0;
+          } catch (error) {
+            if (signal.aborted) break;
+            consecutiveFailures += 1;
+            if (consecutiveFailures < 3) {
+              delay = 2000;
+              continue;
+            }
+            const message = formatPluginError(error);
+            studyDocumentState.textContent = message;
+            setReply(message);
+            delay = Math.min(
+              30000,
+              2000 * (2 ** Math.min(consecutiveFailures - 2, 4)),
+            );
+            continue;
+          }
+          this.render(data);
+          update(data);
+          if (['completed', 'failed', 'canceled'].includes(data.status)) {
+            this.remember('');
+            return data;
+          }
+          delay = 2000;
+        }
+        throw new DOMException('Aborted', 'AbortError');
+      },
       async run(args, signal, update) {
         this.cancelRequested = false;
         this.markPending();
@@ -189,20 +229,7 @@
           this.remember('');
           return data;
         }
-        let delay = 1000;
-        while (!signal.aborted) {
-          await new Promise((resolve) => setTimeout(resolve, delay));
-          if (signal.aborted) break;
-          data = await callPlugin('study_document_analysis_status', { job_id: jobId }, signal);
-          this.render(data);
-          update(data);
-          if (['completed', 'failed', 'canceled'].includes(data.status)) {
-            this.remember('');
-            return data;
-          }
-          delay = 2000;
-        }
-        throw new DOMException('Aborted', 'AbortError');
+        return this.poll(jobId, signal, update);
       },
       async cancel() {
         this.cancelRequested = true;
@@ -255,24 +282,7 @@
           this.remember('');
           return data;
         }
-        let delay = 1000;
-        while (!signal.aborted) {
-          await new Promise((resolve) => setTimeout(resolve, delay));
-          if (signal.aborted) break;
-          data = await callPlugin(
-            'study_document_analysis_status',
-            { job_id: jobId },
-            signal,
-          );
-          this.render(data);
-          update(data);
-          if (['completed', 'failed', 'canceled'].includes(data.status)) {
-            this.remember('');
-            return data;
-          }
-          delay = 2000;
-        }
-        throw new DOMException('Aborted', 'AbortError');
+        return this.poll(jobId, signal, update);
       },
     };
 

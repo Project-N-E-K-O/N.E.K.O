@@ -829,7 +829,7 @@ async def test_total_timeout_returns_retained_stale_results(
 
 
 def test_search_entries_allow_internal_timeout_to_finish() -> None:
-    search_meta = web_search.WebSearchPlugin.search.__neko_plugin_meta__
-    summary_meta = web_search.WebSearchPlugin.search_summary.__neko_plugin_meta__
+    search_meta = web_search.WebSearchPlugin.search.__neko_event_meta__
+    summary_meta = web_search.WebSearchPlugin.search_summary.__neko_event_meta__
     assert search_meta.timeout == 30.0
     assert summary_meta.timeout == 30.0

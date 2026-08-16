@@ -26,6 +26,10 @@ def test_static_document_analysis_uses_cancellable_long_job_contract() -> None:
     assert "study_cancel_document_analysis" in controller
     assert "let delay = 1000" in controller
     assert "delay = 2000" in controller
+    assert "let consecutiveFailures = 0" in controller
+    assert "consecutiveFailures < 3" in controller
+    assert "Math.min(consecutiveFailures - 2, 4)" in controller
+    assert "setReply(message)" in controller
     assert "cancelRequested" in controller
     assert "if (!jobId) return" in controller
     assert "navigator.sendBeacon('/runs'" not in controller
@@ -363,6 +367,75 @@ assert(
 );
 assert(analysis.replies.at(-1) === 'analysis complete', 'analysis reply was not rendered');
 analysis.controller.dispose();
+
+const transientCalls = [];
+const transientPollDelays = [];
+let transientRefreshes = 0;
+let resolveRecoveredPoll;
+const transient = createEnvironment(async (entryId, args, signal) => {
+  transientCalls.push({ entryId, args, signal });
+  if (entryId === 'study_start_document_analysis') {
+    return { job_id: 'job-transient', status: 'queued' };
+  }
+  if (entryId === 'study_document_analysis_status') {
+    const attempt = transientCalls.filter(
+      (call) => call.entryId === 'study_document_analysis_status',
+    ).length;
+    if (attempt <= 3) throw new Error(`transient poll ${attempt}`);
+    if (attempt === 4) {
+      return new Promise((resolve) => {
+        resolveRecoveredPoll = resolve;
+      });
+    }
+    return { job_id: 'job-transient', status: 'completed', reply: 'recovered analysis' };
+  }
+  throw new Error(`unexpected transient entry: ${entryId}`);
+}, async () => {
+  transientRefreshes += 1;
+});
+transient.window.setTimeout = (callback, delay) => {
+  transientPollDelays.push(delay);
+  queueMicrotask(callback);
+  return transientPollDelays.length;
+};
+await importAndWait(
+  transient,
+  fileFromBytes(bytesForText('transient polling document')),
+  'transient polling document',
+);
+transient.document.getElementById('studyDocumentAnalyzeBtn').click();
+await waitFor(
+  () => typeof resolveRecoveredPoll === 'function',
+  'polling did not continue after three transient failures',
+);
+assert(
+  transient.document.getElementById('studyDocumentAnalyzeBtn').disabled,
+  'transient polling failure cleared the busy state',
+);
+assert(
+  transient.window.sessionStorage.getItem('study_companion.document_analysis_job_id') === 'job-transient',
+  'transient polling failure discarded the recoverable job id',
+);
+assert(
+  transient.replies.includes('transient poll 3'),
+  'third transient polling failure was not surfaced to the user',
+);
+resolveRecoveredPoll({ job_id: 'job-transient', status: 'running', stage: 'analyzing' });
+await waitFor(() => transientRefreshes === 1, 'analysis did not recover after polling resumed');
+assert(
+  transientCalls.filter((call) => call.entryId === 'study_start_document_analysis').length === 1,
+  'poll recovery started a duplicate document job',
+);
+assert(
+  transientCalls.filter((call) => call.entryId === 'study_document_analysis_status').length === 5,
+  'poll recovery did not preserve the original job',
+);
+assert(
+  transientPollDelays.slice(0, 5).join(',') === '1000,2000,2000,4000,2000',
+  `unexpected transient polling backoff: ${transientPollDelays.join(',')}`,
+);
+assert(transient.replies.at(-1) === 'recovered analysis', 'recovered result was not rendered');
+transient.controller.dispose();
 
 const beforeIdCalls = [];
 let resolveStart;
