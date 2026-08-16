@@ -85,11 +85,19 @@ def test_the_panel_modules_it_imports_all_exist():
         assert any(path.is_file() for path in candidates), specifier
 
 
-def test_all_six_pages_are_wired_into_the_panel():
+def test_all_seven_pages_are_wired_into_the_panel():
     panel = (PLUGIN_DIR / "ui" / "panel.tsx").read_text(encoding="utf-8")
-    for page_id in ("overview", "timeline", "documents", "prompts",
+    for page_id in ("guide", "overview", "timeline", "documents", "prompts",
                     "preferences", "diagnostics"):
         assert f'id: "{page_id}"' in panel, page_id
+
+
+def test_guide_page_is_text_only():
+    source = (PLUGIN_DIR / "ui" / "guide.tsx").read_text(encoding="utf-8")
+    assert "ActionButton" not in source
+    assert "actionId" not in source
+    assert "api.call" not in source
+    assert "props.api" not in source
 
 
 def test_panel_refreshes_once_per_manual_click_and_also_polls_automatically():

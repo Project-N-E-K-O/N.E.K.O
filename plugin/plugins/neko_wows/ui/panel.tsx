@@ -13,6 +13,7 @@ import type { PluginSurfaceProps } from "@neko/plugin-ui"
 
 import { DiagnosticsSection } from "./diagnostics"
 import { DocumentsSection } from "./documents"
+import { GuideSection } from "./guide"
 import { OverviewSection } from "./overview"
 import { PreferencesSection } from "./preferences"
 import { PromptsSection } from "./prompts"
@@ -72,6 +73,11 @@ export default function NekoWowsPanel(props: PluginSurfaceProps<DashboardState>)
           <Tabs
             id="neko-wows-panel"
             items={[
+              {
+                id: "guide",
+                label: props.t("panel.tabs.guide"),
+                content: <GuideSection t={props.t} />,
+              },
               {
                 id: "overview",
                 label: props.t("panel.tabs.overview"),
