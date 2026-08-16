@@ -106,6 +106,12 @@ class _InteractiveScreenshotOptions(BaseModel):
     selection_only: StrictBool = False
     copy_to_clipboard: StrictBool = True
     session_timeout_ms: int = Field(default=300000, ge=10000, le=300000, strict=True)
+    lanlan_name: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=capture_bridge.MAX_LANLAN_NAME_LEN,
+        strict=True,
+    )
 
 
 async def _capture_windows_interactive_screenshot(request: Request) -> JSONResponse:
@@ -121,19 +127,28 @@ async def _capture_windows_interactive_screenshot(request: Request) -> JSONRespo
     else:
         options = _InteractiveScreenshotOptions()
 
-    if not capture_bridge.has_region_capture_client():
+    target_lanlan = options.lanlan_name
+    has_region_client = (
+        capture_bridge.has_region_capture_client()
+        if target_lanlan is None
+        else capture_bridge.has_region_capture_client(target_lanlan)
+    )
+    if not has_region_client:
         return _json_no_store_response(
             {"success": False, "error": "no_renderer"},
             status_code=503,
         )
 
     try:
+        capture_payload = {
+            "selection_only": options.selection_only,
+            "copy_to_clipboard": options.copy_to_clipboard,
+            "session_timeout_ms": options.session_timeout_ms,
+        }
+        if target_lanlan is not None:
+            capture_payload["lanlan_name"] = target_lanlan
         result = await capture_bridge.request_capture_region(
-            {
-                "selection_only": options.selection_only,
-                "copy_to_clipboard": options.copy_to_clipboard,
-                "session_timeout_ms": options.session_timeout_ms,
-            },
+            capture_payload,
             timeout=70.0,
         )
     except capture_bridge.CaptureBridgeError as exc:

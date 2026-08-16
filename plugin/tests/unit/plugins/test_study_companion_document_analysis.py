@@ -63,10 +63,12 @@ def test_validate_document_accepts_txt_and_markdown_and_builds_safe_metadata() -
         document_text="plain notes",
         locale="en",
     )
+    hosted_english = _document(locale="en-US")
 
     assert markdown.document_type == "text/markdown"
     assert plain.name == "notes.txt"
     assert plain.document_type == "text/plain"
+    assert hosted_english.locale == "en"
     assert plain.sha256 == _document(
         document_name="notes.txt",
         document_type="text/plain",

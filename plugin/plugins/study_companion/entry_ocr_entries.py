@@ -20,6 +20,16 @@ from .interactive_screenshot import (
 from .models import OcrSnapshot
 
 
+def _ocr_request_lanlan(owner, kwargs: dict[str, object]) -> str | None:
+    resolver = getattr(owner, "_resolve_study_target_lanlan", None)
+    if callable(resolver):
+        return str(resolver(kwargs) or "").strip() or None
+    context = kwargs.get("_ctx")
+    if isinstance(context, dict):
+        return str(context.get("lanlan_name") or "").strip() or None
+    return None
+
+
 class _OcrEntriesMixin:
     @plugin_entry(
         id="study_dependency_status",
@@ -58,14 +68,16 @@ class _OcrEntriesMixin:
         timeout=90.0,
         llm_result_fields=["summary", "status", "diagnostic"],
     )
-    async def study_ocr_snapshot(self, capture_mode: str = "fullscreen", **_):
+    async def study_ocr_snapshot(self, capture_mode: str = "fullscreen", **kwargs):
         if self._ocr_pipeline is None:
             return Err(SdkError("study OCR pipeline is not initialized"))
         if capture_mode not in {"fullscreen", "interactive"}:
             return Err(SdkError("invalid capture_mode"))
         if capture_mode == "interactive":
             try:
-                capture = await capture_interactive_region()
+                capture = await capture_interactive_region(
+                    lanlan_name=_ocr_request_lanlan(self, kwargs)
+                )
             except InteractiveCaptureError as exc:
                 return Err(SdkError(str(exc)))
             if capture.canceled:

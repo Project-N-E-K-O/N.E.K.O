@@ -355,13 +355,24 @@ def test_windows_interactive_screenshot_uses_region_bridge_defaults_for_empty_bo
 def test_windows_interactive_screenshot_forwards_selection_options_and_cancel(monkeypatch):
     monkeypatch.setattr(system_router_module, "_is_loopback_request", lambda _request: True)
     monkeypatch.setattr(system_router_module.sys, "platform", "win32")
-    monkeypatch.setattr(system_router_module.capture_bridge, "has_region_capture_client", lambda: True)
+    selected_lanlan: list[str | None] = []
+
+    def _has_region_capture_client(lanlan_name=None):
+        selected_lanlan.append(lanlan_name)
+        return True
+
+    monkeypatch.setattr(
+        system_router_module.capture_bridge,
+        "has_region_capture_client",
+        _has_region_capture_client,
+    )
 
     async def _capture(payload, *, timeout):
         assert payload == {
             "selection_only": True,
             "copy_to_clipboard": False,
             "session_timeout_ms": 45000,
+            "lanlan_name": "requesting",
         }
         return {"success": False, "canceled": True}
 
@@ -375,11 +386,13 @@ def test_windows_interactive_screenshot_forwards_selection_options_and_cancel(mo
                 "selection_only": True,
                 "copy_to_clipboard": False,
                 "session_timeout_ms": 45000,
+                "lanlan_name": "requesting",
             },
         )
 
     assert response.status_code == 200
     assert response.json() == {"success": False, "canceled": True}
+    assert selected_lanlan == ["requesting"]
 
 
 @pytest.mark.unit

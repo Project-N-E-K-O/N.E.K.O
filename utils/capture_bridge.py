@@ -59,6 +59,7 @@ MAX_IMAGE_BASE64_BYTES = 10 * 1024 * 1024
 # Electron source.id like "window:123456:0" is also bounded; keep generous
 # but bounded to avoid abuse.
 MAX_TARGET_ID_LEN = 128
+MAX_LANLAN_NAME_LEN = 128
 
 # Default per-request timeout when callers do not supply one.
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 5.0
@@ -191,16 +192,18 @@ def has_capture_client() -> bool:
     return bool(_clients)
 
 
-def has_region_capture_client() -> bool:
-    """True iff the newest renderer advertises interactive region capture."""
-    client = _pick_client()
+def has_region_capture_client(lanlan_name: str | None = None) -> bool:
+    """True iff the selected renderer advertises interactive region capture."""
+    client = _pick_client(lanlan_name)
     return bool(
         client is not None
         and client.capabilities.capture_desktop_region_as_data_url
     )
 
 
-def _pick_client() -> _CaptureClient | None:
+def _pick_client(lanlan_name: str | None = None) -> _CaptureClient | None:
+    if lanlan_name is not None:
+        return _clients.get(lanlan_name)
     if not _clients:
         return None
     # newest registration wins (single-renderer assumption)
@@ -234,6 +237,19 @@ def _validate_title(title: Any) -> str:
         raise CaptureBridgeError("title must be string")
     # title is a matching hint only; keep it bounded to prevent abuse.
     return title[:256]
+
+
+def _validate_lanlan_name(lanlan_name: Any) -> str | None:
+    if lanlan_name is None:
+        return None
+    if not isinstance(lanlan_name, str):
+        raise CaptureBridgeError("lanlan_name must be string")
+    normalized = lanlan_name.strip()
+    if not normalized:
+        raise CaptureBridgeError("lanlan_name must be non-empty")
+    if len(normalized) > MAX_LANLAN_NAME_LEN:
+        raise CaptureBridgeError("lanlan_name length exceeds limit")
+    return normalized
 
 
 async def request_capture_screenshot(
@@ -308,6 +324,7 @@ async def request_capture_region(
 
     if not isinstance(payload, dict):
         raise CaptureBridgeError("region payload must be object")
+    target_lanlan = _validate_lanlan_name(payload.get("lanlan_name"))
     selection_only = payload.get("selection_only", False)
     copy_to_clipboard = payload.get("copy_to_clipboard", True)
     session_timeout_ms = payload.get("session_timeout_ms", 300000)
@@ -322,7 +339,7 @@ async def request_capture_region(
     ):
         raise CaptureBridgeError("session_timeout_ms out of range")
 
-    preflight_client = _pick_client()
+    preflight_client = _pick_client(target_lanlan)
     if (
         preflight_client is None
         or not preflight_client.capabilities.capture_desktop_region_as_data_url
@@ -336,7 +353,7 @@ async def request_capture_region(
 
     try:
         async with _capture_semaphore:
-            client = _pick_client()
+            client = _pick_client(target_lanlan)
             if (
                 client is None
                 or not client.capabilities.capture_desktop_region_as_data_url

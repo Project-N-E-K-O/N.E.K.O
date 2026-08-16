@@ -65,6 +65,7 @@ async def test_interactive_capture_waits_then_posts_the_bounded_selection_contra
         sleeps.append(delay)
 
     client = InteractiveScreenshotClient(
+        lanlan_name="requesting",
         transport=httpx.MockTransport(_handler),
         sleep=_sleep,
     )
@@ -77,6 +78,7 @@ async def test_interactive_capture_waits_then_posts_the_bounded_selection_contra
         "selection_only": True,
         "copy_to_clipboard": False,
         "session_timeout_ms": 45000,
+        "lanlan_name": "requesting",
     }
     assert result.canceled is False
     assert result.image is not None
@@ -183,7 +185,8 @@ async def test_ocr_entry_interactive_path_uses_only_the_selected_image(
     pipeline = _Pipeline()
     harness = _entry_harness(pipeline)
 
-    async def _capture():
+    async def _capture(*, lanlan_name=None):
+        assert lanlan_name is None
         return SimpleNamespace(image=selected_image, canceled=False)
 
     monkeypatch.setattr(entry_ocr_entries, "capture_interactive_region", _capture)
@@ -201,6 +204,30 @@ async def test_ocr_entry_interactive_path_uses_only_the_selected_image(
 
 
 @pytest.mark.asyncio
+async def test_ocr_entry_routes_interactive_capture_to_requesting_lanlan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    selected_image = object()
+    captured_lanlans: list[str | None] = []
+    harness = _entry_harness(_Pipeline())
+
+    async def _capture(*, lanlan_name=None):
+        captured_lanlans.append(lanlan_name)
+        return SimpleNamespace(image=selected_image, canceled=False)
+
+    monkeypatch.setattr(entry_ocr_entries, "capture_interactive_region", _capture)
+
+    result = await _OcrEntriesMixin.study_ocr_snapshot(
+        harness,
+        capture_mode="interactive",
+        _ctx={"lanlan_name": "requesting"},
+    )
+
+    assert isinstance(result, Ok)
+    assert captured_lanlans == ["requesting"]
+
+
+@pytest.mark.asyncio
 async def test_ocr_entry_cancel_preserves_all_study_state(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -209,7 +236,8 @@ async def test_ocr_entry_cancel_preserves_all_study_state(
     harness._state.last_ocr_text = "existing input"
     harness._state.last_ocr_at = "existing-time"
 
-    async def _capture():
+    async def _capture(*, lanlan_name=None):
+        assert lanlan_name is None
         return SimpleNamespace(image=None, canceled=True)
 
     monkeypatch.setattr(entry_ocr_entries, "capture_interactive_region", _capture)

@@ -36,6 +36,7 @@ DOCUMENT_ANALYSIS_KINDS = (
 )
 _SUPPORTED_ANALYSIS_KINDS = frozenset(DOCUMENT_ANALYSIS_KINDS)
 _LOCALE_ALIASES = {
+    "en-us": "en",
     "zh": "zh-CN",
     "zh-cn": "zh-CN",
     "zh-hans": "zh-CN",

@@ -115,6 +115,50 @@ async def test_region_request_uses_distinct_message_and_preserves_cancel():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_region_request_targets_the_explicit_lanlan_renderer():
+    requesting_sock = _Sock()
+    newest_sock = _Sock()
+    capture_bridge.mark_capture_client("requesting", requesting_sock, _payload(True))
+    newest_payload = _payload(True)
+    newest_payload["capabilities"]["captureDesktopRegionAsDataUrl"] = False
+    capture_bridge.mark_capture_client("newest", newest_sock, newest_payload)
+
+    assert capture_bridge.has_region_capture_client() is False
+    assert capture_bridge.has_region_capture_client("requesting") is True
+
+    async def _replier():
+        await requesting_sock.send_event.wait()
+        import json
+
+        request = json.loads(requesting_sock.sent[-1])
+        capture_bridge.resolve_capture_response(
+            "requesting",
+            {"request_id": request["request_id"], "success": False, "canceled": True},
+        )
+
+    reply_task = asyncio.create_task(_replier())
+    result = await capture_bridge.request_capture_region(
+        {"lanlan_name": "requesting"}, timeout=1.0
+    )
+    await reply_task
+
+    assert result["canceled"] is True
+    assert newest_sock.sent == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_region_request_does_not_fallback_for_missing_target_lanlan():
+    capture_bridge.mark_capture_client("other", _Sock(), _payload(True))
+
+    with pytest.raises(capture_bridge.CaptureBridgeError, match="no renderer available"):
+        await capture_bridge.request_capture_region(
+            {"lanlan_name": "missing"}, timeout=0.1
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_second_region_and_window_capture_fail_fast_while_region_active():
     sock = _Sock()
     capture_bridge.mark_capture_client("neko", sock, _payload(True))
