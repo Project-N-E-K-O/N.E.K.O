@@ -1137,6 +1137,15 @@ async def on_startup():
             release_storage_startup_barrier=release_storage_startup_barrier,
         )
         set_steamworks_initializer(ensure_steamworks_initialized)
+        try:
+            from .voice_identity_runtime import initialize_voice_identity_runtime
+
+            await initialize_voice_identity_runtime(_config_manager)
+        except Exception as _e:
+            # Voice identity is optional and fail-open. Startup and normal
+            # speech must remain available even when secure storage or model
+            # wiring cannot initialize.
+            logger.warning("voice identity startup degraded: %s", _e)
         # GeoIP 预热已移到 _ensure_main_server_runtime_initialized 末尾——配置到那里
         # 才最终成型（Cloud Save 快照导入 + Steamworks 初始化完成）。
         # asyncio 的慢回调告警只在 loop debug 模式下输出。默认关闭，
@@ -1197,6 +1206,12 @@ async def on_shutdown():
     """Clean up resources at server shutdown"""
     if _IS_MAIN_PROCESS:
         logger.info("正在清理资源...")
+        try:
+            from .voice_identity_runtime import close_voice_identity_runtime
+
+            await close_voice_identity_runtime()
+        except Exception as e:
+            logger.debug(f"voice identity cleanup failed: {e}")
         cleanup()
         try:
             # join_sync_connector_threads 内部已经 gather 并行 join，直接 await

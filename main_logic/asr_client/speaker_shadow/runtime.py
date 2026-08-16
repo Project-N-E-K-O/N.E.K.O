@@ -387,6 +387,7 @@ class _CandidateBuffer:
     sample_rate_hz: int
     pcm16: bytearray
     sample_count: int = 0
+    next_checkpoint_index: int = 0
 
     @property
     def audio_ms(self) -> int:
@@ -453,6 +454,7 @@ class SpeakerShadowRuntime:
         self._cleanup_task: asyncio.Task[None] | None = None
         self._host_start_task: asyncio.Task[_BackendProcessHost] | None = None
         self._active_evaluation: tuple[int, SpeakerShadowCandidateKey] | None = None
+        self._active_evaluation_terminal = False
         self._backend_host: _BackendProcessHost | None = None
         self._load_failure_streak = 0
         self._next_load_attempt_at = 0.0
@@ -566,7 +568,10 @@ class SpeakerShadowRuntime:
         if (
             candidate in self._finalized
             or self._candidate_was_evicted(candidate)
-            or identity == self._active_evaluation
+            or (
+                identity == self._active_evaluation
+                and self._active_evaluation_terminal
+            )
         ):
             return False
 
@@ -855,26 +860,65 @@ class SpeakerShadowRuntime:
         if allowed_samples > 0:
             buffer.pcm16.extend(frame.pcm16[: allowed_samples * 2])
             buffer.sample_count += allowed_samples
-        minimum_samples = math.ceil(
-            buffer.sample_rate_hz * self._config.minimum_audio_ms / 1_000
-        )
-        if buffer.sample_count < minimum_samples:
-            return
-
-        self._buffers.pop(frame.candidate, None)
-        candidate_pcm = bytearray(buffer.pcm16)
-        self._wipe_bytearray(buffer.pcm16)
-        try:
-            await self._evaluate_candidate(
-                generation=frame.generation,
-                candidate=frame.candidate,
-                token=frame.token,
-                pcm16=candidate_pcm,
-                sample_rate_hz=buffer.sample_rate_hz,
-                audio_ms=buffer.audio_ms,
+        explicit_checkpoints = self._config.observation_checkpoints_ms
+        checkpoints = explicit_checkpoints or (self._config.minimum_audio_ms,)
+        while buffer.next_checkpoint_index < len(checkpoints):
+            checkpoint_index = buffer.next_checkpoint_index
+            checkpoint_ms = checkpoints[checkpoint_index]
+            checkpoint_samples = math.ceil(
+                buffer.sample_rate_hz * checkpoint_ms / 1_000
             )
-        finally:
-            self._wipe_bytearray(candidate_pcm)
+            if buffer.sample_count < checkpoint_samples:
+                return
+
+            terminal = checkpoint_index == len(checkpoints) - 1
+            buffer.next_checkpoint_index += 1
+            score_sample_count = (
+                buffer.sample_count
+                if explicit_checkpoints is None
+                else checkpoint_samples
+            )
+            candidate_pcm = bytearray(buffer.pcm16[: score_sample_count * 2])
+            if terminal:
+                self._buffers.pop(frame.candidate, None)
+                self._wipe_bytearray(buffer.pcm16)
+            try:
+                await self._evaluate_candidate(
+                    generation=frame.generation,
+                    candidate=frame.candidate,
+                    token=frame.token,
+                    pcm16=candidate_pcm,
+                    sample_rate_hz=buffer.sample_rate_hz,
+                    audio_ms=(
+                        buffer.audio_ms
+                        if explicit_checkpoints is None
+                        else checkpoint_ms
+                    ),
+                    checkpoint_ms=(
+                        checkpoint_ms
+                        if explicit_checkpoints is not None
+                        else None
+                    ),
+                    terminal=terminal,
+                )
+            except BaseException:
+                retained_buffer = self._buffers.get(frame.candidate)
+                if retained_buffer is buffer:
+                    self._buffers.pop(frame.candidate, None)
+                    self._wipe_bytearray(buffer.pcm16)
+                raise
+            finally:
+                self._wipe_bytearray(candidate_pcm)
+            if not self._identity_is_current(
+                frame.generation,
+                frame.candidate,
+                frame.token,
+            ):
+                retained_buffer = self._buffers.get(frame.candidate)
+                if retained_buffer is buffer:
+                    self._buffers.pop(frame.candidate, None)
+                    self._wipe_bytearray(buffer.pcm16)
+                return
 
     async def _evaluate_candidate(
         self,
@@ -885,8 +929,11 @@ class SpeakerShadowRuntime:
         pcm16: bytearray,
         sample_rate_hz: int,
         audio_ms: int,
+        checkpoint_ms: int | None,
+        terminal: bool,
     ) -> None:
         self._active_evaluation = (generation, candidate)
+        self._active_evaluation_terminal = terminal
         self._active_pcm_bytes = len(pcm16)
         try:
             backend_host = await self._ensure_backend()
@@ -936,8 +983,9 @@ class SpeakerShadowRuntime:
                 (threshold, similarity < threshold)
                 for threshold in self._config.similarity_thresholds
             )
-            self._finalize_candidate(candidate, "scored", token=token)
-            self._metrics.evaluated_candidate_count += 1
+            if terminal:
+                self._finalize_candidate(candidate, "scored", token=token)
+                self._metrics.evaluated_candidate_count += 1
             if any(blocked for _, blocked in would_block):
                 self._metrics.would_block_count += 1
             for threshold, blocked in would_block:
@@ -957,6 +1005,7 @@ class SpeakerShadowRuntime:
                 similarity=similarity,
                 would_block=would_block,
                 audio_ms=audio_ms,
+                checkpoint_ms=checkpoint_ms,
             )
             callback_task = asyncio.create_task(
                 callback(observation),
@@ -985,6 +1034,7 @@ class SpeakerShadowRuntime:
         finally:
             if self._active_evaluation == (generation, candidate):
                 self._active_evaluation = None
+                self._active_evaluation_terminal = False
                 self._active_pcm_bytes = 0
 
     async def _ensure_backend(self) -> _BackendProcessHost | None:
@@ -1207,11 +1257,15 @@ class SpeakerShadowRuntime:
             self._record_finish(marker.candidate, finalized)
             return
         buffer = self._buffers.pop(marker.candidate, None)
+        terminal_reason: SpeakerShadowTerminalReason = "insufficient"
         if buffer is not None:
+            if buffer.next_checkpoint_index > 0:
+                terminal_reason = "scored"
+                self._metrics.evaluated_candidate_count += 1
             self._wipe_bytearray(buffer.pcm16)
         self._finalize_candidate(
             marker.candidate,
-            "insufficient",
+            terminal_reason,
             finish_seen=True,
             token=marker.token,
         )

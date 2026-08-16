@@ -507,7 +507,68 @@ class AsrRuntimeMixin:
             and not self._voice_lease_hard_muted
             and not self._voice_lease_focus_suppressed
             and not self._voice_input_suppressed
+            and not getattr(self, "_voice_input_external_suppressions", set())
         )
+
+    async def set_voice_input_suppressed(
+        self,
+        reason: str,
+        *,
+        suppressed: bool,
+    ) -> None:
+        """Apply an application-level PCM gate without becoming a consumer."""
+
+        normalized = str(reason or "").strip()
+        if not normalized:
+            raise ValueError("suppression reason must be non-empty")
+        if type(suppressed) is not bool:
+            raise TypeError("suppressed must be bool")
+        reasons = getattr(self, "_voice_input_external_suppressions", None)
+        if reasons is None:
+            reasons = set()
+            self._voice_input_external_suppressions = reasons
+        changed = False
+        if suppressed:
+            if normalized not in reasons:
+                reasons.add(normalized)
+                changed = True
+        elif normalized in reasons:
+            reasons.discard(normalized)
+            changed = True
+        if not changed:
+            return
+        self._invalidate_voice_pcm_sync(normalized)
+        if suppressed:
+            await self._abort_independent_asr(normalized)
+
+    async def set_speaker_verifier_factory(
+        self,
+        factory: SpeakerShadowFactory | None,
+        *,
+        activation_generation: str,
+    ) -> bool:
+        """Update future and active independent-ASR speaker verification."""
+
+        try:
+            updated = await self._asr_runtime.set_speaker_verifier_factory(
+                factory,
+                activation_generation=activation_generation,
+            )
+        except asyncio.CancelledError:
+            if factory is None:
+                self._speaker_shadow_factory = None
+            raise
+        if updated or factory is None:
+            self._speaker_shadow_factory = factory
+        if updated:
+            return True
+        close = getattr(factory, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:
+                pass
+        return False
 
     def set_independent_asr_handshake(self, value: object) -> None:
         # Record the frontend's authoritative independent-ASR toggle carried by

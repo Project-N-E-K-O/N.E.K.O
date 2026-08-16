@@ -1,0 +1,626 @@
+"""Fail-open application controller for the single local Owner profile."""
+
+from __future__ import annotations
+
+import asyncio
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+import math
+from typing import Literal, Protocol
+import uuid
+
+import numpy as np
+
+from main_logic.asr_client.speaker_shadow.asset_manifest import (
+    CAMPPLUS_MODEL_ID,
+    CAMPPLUS_MODEL_REVISION,
+    CAMPPLUS_SAMPLE_RATE_HZ,
+)
+from main_logic.asr_client.speaker_shadow.campplus import CAMPPLUS_EMBEDDING_DIM
+from main_logic.voice_identity.contracts import SpeakerModelIdentity
+from main_logic.voice_identity.profile import SpeakerProfile
+from main_logic.voice_identity.reference import SpeakerReference
+from main_logic.voice_input.suppression import (
+    VoiceInputSuppressionController,
+    VoiceInputSuppressionLease,
+)
+
+from .enrollment import EnrollmentAudioError, validate_enrollment_pcm16
+from .preference_store import (
+    VoiceIdentityPreferenceStore,
+    VoiceIdentityPreferenceStoreError,
+)
+from .profile_store import (
+    SecureStorageUnavailableError,
+    VoiceIdentityProfileCorruptError,
+    VoiceIdentityProfileStore,
+    VoiceIdentityProfileStoreError,
+    VoiceIdentityProfileWrite,
+)
+from .state import VoiceIdentityEffectiveReason, VoiceIdentityState
+
+
+class EnrollmentEmbeddingModel(Protocol):
+    model_id: str
+    model_revision: str
+
+    def load(self) -> bool: ...
+
+    def embedding_from_pcm16(
+        self,
+        pcm16: bytes,
+        *,
+        sample_rate_hz: int,
+    ) -> np.ndarray: ...
+
+    def close(self) -> None: ...
+
+
+EnrollmentModelFactory = Callable[[], EnrollmentEmbeddingModel]
+ActivationCallback = Callable[
+    [SpeakerProfile | None, str],
+    Awaitable[bool],
+]
+VoiceIdentityRuntimeMode = Literal["off", "shadow", "enforce"]
+
+
+class VoiceIdentityServiceError(RuntimeError):
+    """A stable, UI-safe control-plane failure."""
+
+    def __init__(self, code: str) -> None:
+        self.code = code
+        super().__init__(code)
+
+
+@dataclass(frozen=True, slots=True)
+class EnrollmentStatus:
+    enrollment_id: str
+    expires_at: float
+
+    def as_dict(self) -> dict[str, str | float]:
+        return {
+            "enrollment_id": self.enrollment_id,
+            "expires_at": self.expires_at,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class VoiceIdentityServiceStatus:
+    state: VoiceIdentityState
+    enrollment: EnrollmentStatus | None
+    runtime_mode: VoiceIdentityRuntimeMode
+
+    def as_dict(self) -> dict[str, object]:
+        result: dict[str, object] = self.state.as_dict()
+        result["enrollment"] = (
+            None if self.enrollment is None else self.enrollment.as_dict()
+        )
+        result["runtime_mode"] = self.runtime_mode
+        return result
+
+
+@dataclass(slots=True)
+class _EnrollmentSession:
+    enrollment_id: str
+    expires_at: float
+    model: EnrollmentEmbeddingModel
+    lease: VoiceInputSuppressionLease
+    expiry_task: asyncio.Task[None]
+
+
+class VoiceIdentityService:
+    """Own persistence, enrollment, activation, and fail-open state."""
+
+    def __init__(
+        self,
+        profile_store: VoiceIdentityProfileStore,
+        preference_store: VoiceIdentityPreferenceStore,
+        suppression_controller: VoiceInputSuppressionController,
+        model_factory: EnrollmentModelFactory,
+        activation_callback: ActivationCallback,
+        *,
+        runtime_mode: VoiceIdentityRuntimeMode = "enforce",
+        enrollment_ttl_seconds: float = 30.0,
+        model_timeout_seconds: float = 30.0,
+        activation_timeout_seconds: float = 5.0,
+    ) -> None:
+        if not isinstance(profile_store, VoiceIdentityProfileStore):
+            raise TypeError("profile_store must be VoiceIdentityProfileStore")
+        if not isinstance(preference_store, VoiceIdentityPreferenceStore):
+            raise TypeError("preference_store must be VoiceIdentityPreferenceStore")
+        if not isinstance(
+            suppression_controller,
+            VoiceInputSuppressionController,
+        ):
+            raise TypeError(
+                "suppression_controller must be VoiceInputSuppressionController"
+            )
+        if not callable(model_factory) or not callable(activation_callback):
+            raise TypeError("model_factory and activation_callback must be callable")
+        if runtime_mode not in ("off", "shadow", "enforce"):
+            raise ValueError("runtime_mode must be off, shadow, or enforce")
+        for name, value in (
+            ("enrollment_ttl_seconds", enrollment_ttl_seconds),
+            ("model_timeout_seconds", model_timeout_seconds),
+            ("activation_timeout_seconds", activation_timeout_seconds),
+        ):
+            if not math.isfinite(value) or value <= 0:
+                raise ValueError(f"{name} must be finite and positive")
+        if enrollment_ttl_seconds > 30.0:
+            raise ValueError("enrollment_ttl_seconds cannot exceed 30 seconds")
+
+        self._profile_store = profile_store
+        self._preference_store = preference_store
+        self._suppression_controller = suppression_controller
+        self._model_factory = model_factory
+        self._activation_callback = activation_callback
+        self._runtime_mode: VoiceIdentityRuntimeMode = runtime_mode
+        self._enrollment_ttl_seconds = float(enrollment_ttl_seconds)
+        self._model_timeout_seconds = float(model_timeout_seconds)
+        self._activation_timeout_seconds = float(activation_timeout_seconds)
+        self._operation_lock = asyncio.Lock()
+        self._profile: SpeakerProfile | None = None
+        self._requested_enabled = False
+        self._effective_enabled = False
+        self._effective_reason = VoiceIdentityEffectiveReason.DISABLED
+        self._enrollment: _EnrollmentSession | None = None
+        self._last_completed: tuple[str, str] | None = None
+        self._initialized = False
+        self._closed = False
+
+    async def initialize(self) -> VoiceIdentityServiceStatus:
+        async with self._operation_lock:
+            self._require_open()
+            if self._initialized:
+                return self.status()
+            try:
+                requested_enabled = await self._preference_store.aload()
+            except VoiceIdentityPreferenceStoreError:
+                self._set_ineffective(VoiceIdentityEffectiveReason.RUNTIME_DEGRADED)
+                self._initialized = True
+                return self.status()
+            try:
+                profile = await self._profile_store.aload()
+            except SecureStorageUnavailableError:
+                self._requested_enabled = requested_enabled
+                self._set_ineffective(
+                    VoiceIdentityEffectiveReason.SECURE_STORAGE_UNAVAILABLE
+                )
+                self._initialized = True
+                return self.status()
+            except VoiceIdentityProfileCorruptError:
+                self._requested_enabled = requested_enabled
+                self._set_ineffective(VoiceIdentityEffectiveReason.PROFILE_INCOMPATIBLE)
+                self._initialized = True
+                return self.status()
+            except VoiceIdentityProfileStoreError:
+                self._requested_enabled = requested_enabled
+                self._set_ineffective(VoiceIdentityEffectiveReason.RUNTIME_DEGRADED)
+                self._initialized = True
+                return self.status()
+
+            self._requested_enabled = requested_enabled
+            self._profile = profile
+            if profile is None:
+                self._set_ineffective(
+                    VoiceIdentityEffectiveReason.NO_PROFILE
+                    if requested_enabled
+                    else VoiceIdentityEffectiveReason.DISABLED
+                )
+            elif not self._profile_is_compatible(profile):
+                self._set_ineffective(VoiceIdentityEffectiveReason.PROFILE_INCOMPATIBLE)
+            elif not requested_enabled:
+                self._set_ineffective(VoiceIdentityEffectiveReason.DISABLED)
+            elif self._runtime_mode == "off":
+                self._set_ineffective(VoiceIdentityEffectiveReason.RUNTIME_DEGRADED)
+            elif await self._activate(profile, profile.generation):
+                self._set_ready()
+            else:
+                self._set_ineffective(VoiceIdentityEffectiveReason.RUNTIME_DEGRADED)
+            self._initialized = True
+            return self.status()
+
+    def status(self) -> VoiceIdentityServiceStatus:
+        enrollment = self._enrollment
+        enrollment_status = (
+            None
+            if enrollment is None
+            else EnrollmentStatus(
+                enrollment.enrollment_id,
+                enrollment.expires_at,
+            )
+        )
+        return VoiceIdentityServiceStatus(
+            VoiceIdentityState(
+                requested_enabled=self._requested_enabled,
+                effective_enabled=self._effective_enabled,
+                effective_reason=self._effective_reason,
+                has_profile=self._profile is not None,
+            ),
+            enrollment_status,
+            self._runtime_mode,
+        )
+
+    async def start_enrollment(self) -> EnrollmentStatus:
+        async with self._operation_lock:
+            self._require_initialized()
+            if self._enrollment is not None:
+                return EnrollmentStatus(
+                    self._enrollment.enrollment_id,
+                    self._enrollment.expires_at,
+                )
+            try:
+                model = self._model_factory()
+            except Exception as exc:
+                self._record_failure(VoiceIdentityEffectiveReason.MODEL_UNAVAILABLE)
+                raise VoiceIdentityServiceError("model_unavailable") from exc
+            loaded = False
+            try:
+                loaded = bool(
+                    await asyncio.wait_for(
+                        asyncio.to_thread(model.load),
+                        timeout=self._model_timeout_seconds,
+                    )
+                )
+            except Exception:
+                loaded = False
+            if not loaded:
+                await self._close_model(model)
+                self._record_failure(VoiceIdentityEffectiveReason.MODEL_UNAVAILABLE)
+                raise VoiceIdentityServiceError("model_unavailable")
+
+            try:
+                lease = await self._suppression_controller.acquire(
+                    "voice_identity_enrollment",
+                    ttl_seconds=self._enrollment_ttl_seconds,
+                )
+            except Exception as exc:
+                await self._close_model(model)
+                self._record_failure(VoiceIdentityEffectiveReason.RUNTIME_DEGRADED)
+                raise VoiceIdentityServiceError("runtime_degraded") from exc
+
+            enrollment_id = str(uuid.uuid4())
+            expiry_task = asyncio.create_task(
+                self._expire_enrollment(
+                    enrollment_id,
+                    self._enrollment_ttl_seconds,
+                ),
+                name="voice-identity-enrollment-expiry",
+            )
+            self._enrollment = _EnrollmentSession(
+                enrollment_id=enrollment_id,
+                expires_at=lease.expires_at,
+                model=model,
+                lease=lease,
+                expiry_task=expiry_task,
+            )
+            if not self._effective_enabled:
+                self._set_ineffective(VoiceIdentityEffectiveReason.ENROLLMENT_ACTIVE)
+            return EnrollmentStatus(enrollment_id, lease.expires_at)
+
+    async def complete_enrollment(
+        self,
+        enrollment_id: str,
+        profile_id: str,
+        pcm16: bytes,
+    ) -> VoiceIdentityServiceStatus:
+        _require_identifier("enrollment_id", enrollment_id)
+        _require_identifier("profile_id", profile_id)
+        async with self._operation_lock:
+            self._require_initialized()
+            if self._last_completed == (enrollment_id, profile_id):
+                return self.status()
+            session = self._enrollment
+            if session is None or session.enrollment_id != enrollment_id:
+                raise VoiceIdentityServiceError("stale_enrollment")
+            self._enrollment = None
+            session.expiry_task.cancel()
+
+            old_profile = self._profile
+            old_requested = self._requested_enabled
+            old_effective = self._effective_enabled
+            desired_requested = True if old_profile is None else old_requested
+            new_profile: SpeakerProfile | None = None
+            staged: VoiceIdentityProfileWrite | None = None
+            activation_changed = False
+            preference_changed = False
+            succeeded = False
+            old_activation_restored = True
+            failure_reason = VoiceIdentityEffectiveReason.RUNTIME_DEGRADED
+            try:
+                await asyncio.to_thread(validate_enrollment_pcm16, pcm16)
+                try:
+                    embedding = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            session.model.embedding_from_pcm16,
+                            pcm16,
+                            sample_rate_hz=CAMPPLUS_SAMPLE_RATE_HZ,
+                        ),
+                        timeout=self._model_timeout_seconds,
+                    )
+                except Exception as exc:
+                    failure_reason = VoiceIdentityEffectiveReason.MODEL_UNAVAILABLE
+                    raise VoiceIdentityServiceError("model_unavailable") from exc
+                try:
+                    reference = SpeakerReference(
+                        SpeakerModelIdentity(
+                            CAMPPLUS_MODEL_ID,
+                            CAMPPLUS_MODEL_REVISION,
+                            CAMPPLUS_EMBEDDING_DIM,
+                        ),
+                        embedding,
+                    )
+                    try:
+                        new_profile = SpeakerProfile(profile_id, reference)
+                    finally:
+                        reference.close()
+                finally:
+                    if isinstance(embedding, np.ndarray) and embedding.flags.writeable:
+                        embedding.fill(0.0)
+
+                staged = await self._profile_store.astage(new_profile)
+                if desired_requested and self._runtime_mode != "off":
+                    if not await self._activate(new_profile, profile_id):
+                        raise VoiceIdentityServiceError("runtime_degraded")
+                    activation_changed = True
+                if desired_requested != old_requested:
+                    await self._preference_store.asave(desired_requested)
+                    preference_changed = True
+                await staged.acommit()
+
+                self._profile = new_profile
+                new_profile = None
+                self._requested_enabled = desired_requested
+                if desired_requested and self._runtime_mode != "off":
+                    self._set_ready()
+                elif desired_requested:
+                    self._set_ineffective(VoiceIdentityEffectiveReason.RUNTIME_DEGRADED)
+                else:
+                    self._set_ineffective(VoiceIdentityEffectiveReason.DISABLED)
+                self._last_completed = (enrollment_id, profile_id)
+                succeeded = True
+                if old_profile is not None:
+                    old_profile.close()
+            except EnrollmentAudioError as exc:
+                failure_reason = self._idle_reason()
+                raise VoiceIdentityServiceError(exc.code) from exc
+            except VoiceIdentityServiceError:
+                raise
+            except VoiceIdentityPreferenceStoreError as exc:
+                raise VoiceIdentityServiceError("runtime_degraded") from exc
+            except SecureStorageUnavailableError as exc:
+                failure_reason = VoiceIdentityEffectiveReason.SECURE_STORAGE_UNAVAILABLE
+                raise VoiceIdentityServiceError("secure_storage_unavailable") from exc
+            except VoiceIdentityProfileStoreError as exc:
+                raise VoiceIdentityServiceError("runtime_degraded") from exc
+            except Exception as exc:
+                raise VoiceIdentityServiceError("runtime_degraded") from exc
+            finally:
+                if not succeeded:
+                    if staged is not None:
+                        try:
+                            await staged.aabort()
+                        except Exception:
+                            pass
+                    if activation_changed:
+                        rollback_profile = old_profile if old_effective else None
+                        rollback_generation = (
+                            old_profile.generation
+                            if rollback_profile is not None
+                            else str(uuid.uuid4())
+                        )
+                        old_activation_restored = await self._activate(
+                            rollback_profile,
+                            rollback_generation,
+                        )
+                        if not old_activation_restored:
+                            failure_reason = (
+                                VoiceIdentityEffectiveReason.RUNTIME_DEGRADED
+                            )
+                    if preference_changed:
+                        try:
+                            await self._preference_store.asave(old_requested)
+                        except VoiceIdentityPreferenceStoreError:
+                            failure_reason = (
+                                VoiceIdentityEffectiveReason.RUNTIME_DEGRADED
+                            )
+                    if new_profile is not None:
+                        new_profile.close()
+                    if old_effective and old_activation_restored:
+                        self._set_ready()
+                    else:
+                        self._set_ineffective(failure_reason)
+                cleanup_ok = await self._cleanup_session(session)
+                if not cleanup_ok and not self._effective_enabled:
+                    self._set_ineffective(VoiceIdentityEffectiveReason.RUNTIME_DEGRADED)
+            return self.status()
+
+    async def cancel_enrollment(self, enrollment_id: str | None = None) -> bool:
+        async with self._operation_lock:
+            self._require_initialized()
+            session = self._enrollment
+            if session is None:
+                return False
+            if enrollment_id is not None and session.enrollment_id != enrollment_id:
+                return False
+            self._enrollment = None
+            cleanup_ok = await self._cleanup_session(session)
+            if not self._effective_enabled:
+                self._set_ineffective(
+                    self._idle_reason()
+                    if cleanup_ok
+                    else VoiceIdentityEffectiveReason.RUNTIME_DEGRADED
+                )
+            return True
+
+    async def set_filter(self, enabled: bool) -> VoiceIdentityServiceStatus:
+        if type(enabled) is not bool:
+            raise TypeError("enabled must be bool")
+        async with self._operation_lock:
+            self._require_initialized()
+            try:
+                await self._preference_store.asave(enabled)
+            except VoiceIdentityPreferenceStoreError as exc:
+                self._record_failure(VoiceIdentityEffectiveReason.RUNTIME_DEGRADED)
+                raise VoiceIdentityServiceError("runtime_degraded") from exc
+            self._requested_enabled = enabled
+            if not enabled:
+                detached = await self._activate(None, str(uuid.uuid4()))
+                self._set_ineffective(
+                    VoiceIdentityEffectiveReason.DISABLED
+                    if detached
+                    else VoiceIdentityEffectiveReason.RUNTIME_DEGRADED
+                )
+            elif self._profile is None:
+                self._set_ineffective(VoiceIdentityEffectiveReason.NO_PROFILE)
+            elif not self._profile_is_compatible(self._profile):
+                self._set_ineffective(VoiceIdentityEffectiveReason.PROFILE_INCOMPATIBLE)
+            elif self._runtime_mode == "off":
+                self._set_ineffective(VoiceIdentityEffectiveReason.RUNTIME_DEGRADED)
+            elif await self._activate(self._profile, self._profile.generation):
+                self._set_ready()
+            else:
+                self._set_ineffective(VoiceIdentityEffectiveReason.RUNTIME_DEGRADED)
+            return self.status()
+
+    async def delete_profile(self) -> VoiceIdentityServiceStatus:
+        async with self._operation_lock:
+            self._require_initialized()
+            session = self._enrollment
+            self._enrollment = None
+            cleanup_ok = True
+            if session is not None:
+                cleanup_ok = await self._cleanup_session(session)
+                if not cleanup_ok:
+                    self._set_ineffective(VoiceIdentityEffectiveReason.RUNTIME_DEGRADED)
+            try:
+                await self._preference_store.asave(False)
+                self._requested_enabled = False
+                detached = await self._activate(None, str(uuid.uuid4()))
+                await self._profile_store.adelete()
+            except (
+                VoiceIdentityPreferenceStoreError,
+                VoiceIdentityProfileStoreError,
+            ) as exc:
+                self._set_ineffective(VoiceIdentityEffectiveReason.RUNTIME_DEGRADED)
+                raise VoiceIdentityServiceError("runtime_degraded") from exc
+            old_profile = self._profile
+            self._profile = None
+            self._set_ineffective(
+                VoiceIdentityEffectiveReason.DISABLED
+                if detached and cleanup_ok
+                else VoiceIdentityEffectiveReason.RUNTIME_DEGRADED
+            )
+            if old_profile is not None:
+                old_profile.close()
+            return self.status()
+
+    async def close(self) -> None:
+        async with self._operation_lock:
+            if self._closed:
+                return
+            self._closed = True
+            session = self._enrollment
+            self._enrollment = None
+            if session is not None:
+                await self._cleanup_session(session)
+            await self._activate(None, str(uuid.uuid4()))
+            try:
+                await self._suppression_controller.close()
+            except Exception:
+                pass
+            if self._profile is not None:
+                self._profile.close()
+                self._profile = None
+            self._effective_enabled = False
+            self._effective_reason = VoiceIdentityEffectiveReason.DISABLED
+
+    async def _expire_enrollment(
+        self,
+        enrollment_id: str,
+        ttl_seconds: float,
+    ) -> None:
+        try:
+            await asyncio.sleep(ttl_seconds)
+            await self.cancel_enrollment(enrollment_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return
+
+    async def _cleanup_session(self, session: _EnrollmentSession) -> bool:
+        current = asyncio.current_task()
+        if session.expiry_task is not current:
+            session.expiry_task.cancel()
+        ok = True
+        try:
+            await session.lease.release()
+        except Exception:
+            ok = False
+        await self._close_model(session.model)
+        return ok
+
+    async def _close_model(self, model: EnrollmentEmbeddingModel) -> None:
+        try:
+            await asyncio.wait_for(
+                asyncio.to_thread(model.close),
+                timeout=self._model_timeout_seconds,
+            )
+        except Exception:
+            pass
+
+    async def _activate(
+        self,
+        profile: SpeakerProfile | None,
+        generation: str,
+    ) -> bool:
+        try:
+            return bool(
+                await asyncio.wait_for(
+                    self._activation_callback(profile, generation),
+                    timeout=self._activation_timeout_seconds,
+                )
+            )
+        except Exception:
+            return False
+
+    def _profile_is_compatible(self, profile: SpeakerProfile) -> bool:
+        identity = profile.model_identity
+        return identity == SpeakerModelIdentity(
+            CAMPPLUS_MODEL_ID,
+            CAMPPLUS_MODEL_REVISION,
+            CAMPPLUS_EMBEDDING_DIM,
+        )
+
+    def _set_ready(self) -> None:
+        self._effective_enabled = True
+        self._effective_reason = VoiceIdentityEffectiveReason.READY
+
+    def _set_ineffective(self, reason: VoiceIdentityEffectiveReason) -> None:
+        self._effective_enabled = False
+        self._effective_reason = reason
+
+    def _record_failure(self, reason: VoiceIdentityEffectiveReason) -> None:
+        if not self._effective_enabled:
+            self._set_ineffective(reason)
+
+    def _idle_reason(self) -> VoiceIdentityEffectiveReason:
+        if not self._requested_enabled:
+            return VoiceIdentityEffectiveReason.DISABLED
+        if self._profile is None:
+            return VoiceIdentityEffectiveReason.NO_PROFILE
+        return VoiceIdentityEffectiveReason.RUNTIME_DEGRADED
+
+    def _require_open(self) -> None:
+        if self._closed:
+            raise VoiceIdentityServiceError("service_closed")
+
+    def _require_initialized(self) -> None:
+        self._require_open()
+        if not self._initialized:
+            raise VoiceIdentityServiceError("service_not_initialized")
+
+
+def _require_identifier(name: str, value: str) -> None:
+    if type(value) is not str or not value.strip() or len(value) > 128:
+        raise VoiceIdentityServiceError(f"invalid_{name}")

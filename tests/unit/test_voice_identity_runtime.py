@@ -1,0 +1,585 @@
+from __future__ import annotations
+
+import asyncio
+from dataclasses import dataclass
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+import app.main_server.voice_identity_runtime as runtime_module
+from app.main_server.voice_identity_runtime import OwnerVoiceRuntimeRegistry
+from main_logic.voice_identity.contracts import SpeakerModelIdentity
+from main_logic.voice_identity.profile import SpeakerProfile
+from main_logic.voice_identity.reference import SpeakerReference
+
+
+@dataclass
+class _Factory:
+    runtime: object
+    profile: SpeakerProfile
+    activation_generation: str
+    enforce: bool
+    closed: bool = False
+
+    def __init__(
+        self,
+        runtime: object,
+        profile: SpeakerProfile,
+        *,
+        activation_generation: str,
+        enforce: bool,
+    ) -> None:
+        self.runtime = runtime
+        self.profile = profile
+        self.activation_generation = activation_generation
+        self.enforce = enforce
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _Manager:
+    def __init__(self) -> None:
+        self._asr_runtime = object()
+        self.verifier_calls: list[tuple[_Factory | None, str]] = []
+        self.verifier_outcomes: list[bool | BaseException] = []
+        self.suppression_calls: list[tuple[str, bool]] = []
+        self.restore_failures = 0
+        self.cancel_restore = False
+        self.cancel_suppress = False
+        self.suppress_failure = False
+
+    async def set_speaker_verifier_factory(
+        self,
+        factory: _Factory | None,
+        *,
+        activation_generation: str,
+    ) -> bool:
+        self.verifier_calls.append((factory, activation_generation))
+        outcome = self.verifier_outcomes.pop(0) if self.verifier_outcomes else True
+        if isinstance(outcome, BaseException):
+            if factory is not None:
+                factory.close()
+            raise outcome
+        if not outcome and factory is not None:
+            factory.close()
+        return outcome
+
+    async def set_voice_input_suppressed(
+        self,
+        reason: str,
+        *,
+        suppressed: bool,
+    ) -> None:
+        self.suppression_calls.append((reason, suppressed))
+        if suppressed and self.cancel_suppress:
+            raise asyncio.CancelledError
+        if suppressed and self.suppress_failure:
+            raise RuntimeError("suppression failed")
+        if not suppressed and self.cancel_restore:
+            raise asyncio.CancelledError
+        if not suppressed and self.restore_failures:
+            self.restore_failures -= 1
+            raise RuntimeError("transient restore failure")
+
+
+def _profile(generation: str) -> SpeakerProfile:
+    reference = SpeakerReference(
+        SpeakerModelIdentity("model", "revision", 2),
+        [1.0, 0.0],
+    )
+    try:
+        return SpeakerProfile(generation, reference)
+    finally:
+        reference.close()
+
+
+@pytest.fixture(autouse=True)
+def _fake_composition_factory(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        runtime_module,
+        "OwnerVoiceAsrCompositionFactory",
+        _Factory,
+    )
+    monkeypatch.setattr(runtime_module, "_runtime_registry", None)
+    monkeypatch.setattr(runtime_module, "_service", None)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_activation_updates_current_and_future_managers() -> None:
+    registry = OwnerVoiceRuntimeRegistry(enforce=True)
+    current = _Manager()
+    future = _Manager()
+    await registry.register_manager(current)
+    borrowed = _profile("profile-a")
+    try:
+        assert await registry.activate(borrowed, "generation-a")
+    finally:
+        borrowed.close()
+
+    assert current.verifier_calls[-1][1] == "generation-a"
+    current_factory = current.verifier_calls[-1][0]
+    assert current_factory is not None
+    assert current_factory.enforce
+
+    assert await registry.register_manager(future)
+    assert future.verifier_calls[-1][1] == "generation-a"
+    assert future.verifier_calls[-1][0] is not current_factory
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_failed_activation_rolls_changed_managers_back() -> None:
+    registry = OwnerVoiceRuntimeRegistry(enforce=False)
+    managers = [_Manager(), _Manager()]
+    for manager in managers:
+        await registry.register_manager(manager)
+    old_profile = _profile("old")
+    new_profile = _profile("new")
+    try:
+        assert await registry.activate(old_profile, "old-generation")
+        ordered = tuple(registry._managers)  # type: ignore[attr-defined]
+        ordered[1].verifier_outcomes.append(False)
+
+        assert not await registry.activate(new_profile, "new-generation")
+
+        assert ordered[0].verifier_calls[-1][1] == "old-generation"
+        assert ordered[1].verifier_calls[-1][1] == "new-generation"
+        assert not ordered[0].verifier_calls[-1][0].enforce
+    finally:
+        old_profile.close()
+        new_profile.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cancelled_attach_closes_unadopted_factory_material() -> None:
+    class CancellingManager(_Manager):
+        async def set_speaker_verifier_factory(
+            self,
+            factory: _Factory | None,
+            *,
+            activation_generation: str,
+        ) -> bool:
+            self.verifier_calls.append((factory, activation_generation))
+            raise asyncio.CancelledError
+
+    registry = OwnerVoiceRuntimeRegistry(enforce=True)
+    manager = CancellingManager()
+    await registry.register_manager(manager)
+    profile = _profile("profile")
+    try:
+        assert not await registry.activate(profile, "generation")
+    finally:
+        profile.close()
+
+    factory = manager.verifier_calls[-1][0]
+    assert factory is not None and factory.closed
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_detach_clears_current_and_future_factory() -> None:
+    registry = OwnerVoiceRuntimeRegistry(enforce=True)
+    current = _Manager()
+    await registry.register_manager(current)
+    profile = _profile("profile")
+    try:
+        assert await registry.activate(profile, "active-generation")
+    finally:
+        profile.close()
+
+    assert await registry.activate(None, "detach-generation")
+    assert current.verifier_calls[-1] == (None, "detach-generation")
+    future = _Manager()
+    assert await registry.register_manager(future)
+    assert future.verifier_calls == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_failed_detach_never_restores_old_activation() -> None:
+    registry = OwnerVoiceRuntimeRegistry(
+        enforce=True,
+        restore_retry_interval_seconds=0.01,
+        restore_retry_timeout_seconds=0.1,
+    )
+    manager = _Manager()
+    await registry.register_manager(manager)
+    profile = _profile("profile")
+    try:
+        assert await registry.activate(profile, "active-generation")
+    finally:
+        profile.close()
+    old_activation = registry._activation  # type: ignore[attr-defined]
+    manager.verifier_outcomes.append(False)
+
+    assert not await registry.activate(None, "detach-generation")
+
+    assert registry._activation is None  # type: ignore[attr-defined]
+    assert old_activation.profile.closed
+    assert manager.verifier_calls[-1] == (None, "detach-generation")
+    assert registry._detach_pending[manager] == "detach-generation"  # type: ignore[attr-defined]
+    future = _Manager()
+    assert await registry.register_manager(future)
+    assert future.verifier_calls == []
+    await asyncio.sleep(0.03)
+    assert manager not in registry._detach_pending  # type: ignore[attr-defined]
+    assert all(
+        generation != "active-generation"
+        for _factory, generation in manager.verifier_calls[1:]
+    )
+    await registry.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_suppression_and_restore_apply_to_all_managers() -> None:
+    registry = OwnerVoiceRuntimeRegistry(enforce=True)
+    managers = [_Manager(), _Manager()]
+    for manager in managers:
+        await registry.register_manager(manager)
+
+    await registry.suppress("voice_identity_enrollment")
+    await registry.suppress("voice_identity_enrollment")
+    await registry.restore("voice_identity_enrollment")
+
+    for manager in managers:
+        assert manager.suppression_calls == [
+            ("voice_identity_enrollment", True),
+            ("voice_identity_enrollment", False),
+        ]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_transient_restore_failure_never_leaves_registry_gate() -> None:
+    registry = OwnerVoiceRuntimeRegistry(enforce=True)
+    failing = _Manager()
+    failing.restore_failures = 1
+    await registry.register_manager(failing)
+    await registry.suppress("voice_identity_enrollment")
+
+    await registry.restore("voice_identity_enrollment")
+
+    assert failing.suppression_calls[-2:] == [
+        ("voice_identity_enrollment", False),
+        ("voice_identity_enrollment", False),
+    ]
+    assert not registry._suppressed  # type: ignore[attr-defined]
+    assert not registry._restore_pending  # type: ignore[attr-defined]
+    replacement = _Manager()
+    await registry.register_manager(replacement)
+    assert replacement.suppression_calls == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_restore_watchdog_retries_pending_manager() -> None:
+    registry = OwnerVoiceRuntimeRegistry(
+        enforce=True,
+        restore_retry_interval_seconds=0.01,
+        restore_retry_timeout_seconds=0.1,
+    )
+    failing = _Manager()
+    failing.restore_failures = 3
+    await registry.register_manager(failing)
+    await registry.suppress("voice_identity_enrollment")
+
+    await registry.restore("voice_identity_enrollment")
+    assert registry._restore_pending  # type: ignore[attr-defined]
+    await asyncio.sleep(0.04)
+
+    assert not registry._restore_pending  # type: ignore[attr-defined]
+    assert registry._restore_retry_task is None  # type: ignore[attr-defined]
+    await registry.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cancelled_restore_cannot_gate_replacement_manager() -> None:
+    registry = OwnerVoiceRuntimeRegistry(enforce=True)
+    cancelled = _Manager()
+    await registry.register_manager(cancelled)
+    await registry.suppress("voice_identity_enrollment")
+    cancelled.cancel_restore = True
+
+    with pytest.raises(asyncio.CancelledError):
+        await registry.restore("voice_identity_enrollment")
+
+    assert not registry._suppressed  # type: ignore[attr-defined]
+    replacement = _Manager()
+    await registry.register_manager(replacement)
+    assert replacement.suppression_calls == []
+    cancelled.cancel_restore = False
+    await registry.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_manager_replacement_gets_current_state_and_old_is_detached() -> None:
+    registry = OwnerVoiceRuntimeRegistry(enforce=True)
+    old = _Manager()
+    await registry.register_manager(old)
+    profile = _profile("profile")
+    try:
+        assert await registry.activate(profile, "generation")
+    finally:
+        profile.close()
+    await registry.suppress("voice_identity_enrollment")
+
+    replacement = _Manager()
+    assert await registry.register_manager(replacement)
+    assert replacement.suppression_calls == [("voice_identity_enrollment", True)]
+    assert replacement.verifier_calls[-1][1] == "generation"
+
+    await registry.unregister_manager(old)
+    assert old.verifier_calls[-1][0] is None
+    assert old.suppression_calls[-1] == ("voice_identity_enrollment", False)
+
+    new_profile = _profile("new")
+    try:
+        assert await registry.activate(new_profile, "new-generation")
+    finally:
+        new_profile.close()
+    assert replacement.verifier_calls[-1][1] == "new-generation"
+    assert old.verifier_calls[-1][1] != "new-generation"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_attach_failure_keeps_manager_registered_for_recovery() -> None:
+    registry = OwnerVoiceRuntimeRegistry(enforce=True)
+    active_profile = _profile("profile")
+    try:
+        assert await registry.activate(active_profile, "generation")
+    finally:
+        active_profile.close()
+    await registry.suppress("voice_identity_enrollment")
+    manager = _Manager()
+    manager.verifier_outcomes.append(False)
+
+    assert not await registry.register_manager(manager)
+
+    assert manager in registry._managers  # type: ignore[attr-defined]
+    assert manager.suppression_calls == [
+        ("voice_identity_enrollment", True),
+    ]
+    replacement_profile = _profile("replacement")
+    try:
+        assert await registry.activate(replacement_profile, "replacement-generation")
+    finally:
+        replacement_profile.close()
+    assert manager.verifier_calls[-1][1] == "replacement-generation"
+    await registry.restore("voice_identity_enrollment")
+    assert manager.suppression_calls[-1] == (
+        "voice_identity_enrollment",
+        False,
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_failed_suppression_rollback_gets_watchdog_retry() -> None:
+    registry = OwnerVoiceRuntimeRegistry(
+        enforce=True,
+        restore_retry_interval_seconds=0.01,
+        restore_retry_timeout_seconds=0.1,
+    )
+    changed = _Manager()
+    failing = _Manager()
+    await registry.register_manager(changed)
+    await registry.register_manager(failing)
+    ordered = tuple(registry._managers)  # type: ignore[attr-defined]
+    ordered[1].suppress_failure = True
+    ordered[0].restore_failures = 3
+
+    with pytest.raises(RuntimeError, match="suppression failed"):
+        await registry.suppress("voice_identity_enrollment")
+
+    assert registry._restore_retry_task is not None  # type: ignore[attr-defined]
+    await asyncio.sleep(0.04)
+    assert not registry._restore_pending  # type: ignore[attr-defined]
+    await registry.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cancelled_inflight_suppression_restores_current_manager() -> None:
+    registry = OwnerVoiceRuntimeRegistry(enforce=True)
+    manager = _Manager()
+    manager.cancel_suppress = True
+    await registry.register_manager(manager)
+
+    with pytest.raises(asyncio.CancelledError):
+        await registry.suppress("voice_identity_enrollment")
+
+    assert manager.suppression_calls == [
+        ("voice_identity_enrollment", True),
+        ("voice_identity_enrollment", False),
+    ]
+    assert not registry._suppressed  # type: ignore[attr-defined]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_rejects_unknown_suppression_reason() -> None:
+    registry = OwnerVoiceRuntimeRegistry(enforce=True)
+    with pytest.raises(ValueError, match="unsupported"):
+        await registry.suppress("other")
+
+
+@pytest.mark.unit
+def test_registry_requires_boolean_enforcement_mode() -> None:
+    with pytest.raises(TypeError, match="enforce"):
+        OwnerVoiceRuntimeRegistry(enforce=1)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="retry bounds"):
+        OwnerVoiceRuntimeRegistry(
+            enforce=True,
+            restore_retry_interval_seconds=2.0,
+            restore_retry_timeout_seconds=1.0,
+        )
+
+
+@pytest.mark.unit
+def test_unavailable_profile_store_never_falls_back_to_plaintext(
+    tmp_path: Path,
+) -> None:
+    store = runtime_module._UnavailableProfileStore(tmp_path / "profile")
+    profile = _profile("profile")
+    try:
+        with pytest.raises(RuntimeError, match="secure_storage_unavailable"):
+            store.load()
+        with pytest.raises(RuntimeError, match="secure_storage_unavailable"):
+            store.stage(profile)
+        with pytest.raises(RuntimeError, match="secure_storage_unavailable"):
+            store.delete()
+    finally:
+        profile.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_runtime_install_and_wrapper_lifecycle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    installed: list[object] = []
+
+    class FakeProfileStore:
+        def __init__(self, _path: Path) -> None:
+            raise runtime_module.SecureStorageUnavailableError(
+                "secure_storage_unavailable"
+            )
+
+    class FakePreferenceStore:
+        def __init__(self, path: Path) -> None:
+            self.path = path
+
+    class FakeSuppression:
+        def __init__(self, suppress, restore, **kwargs) -> None:
+            self.suppress = suppress
+            self.restore = restore
+            self.kwargs = kwargs
+
+    class FakeService:
+        def __init__(self, *args, runtime_mode: str) -> None:
+            self.args = args
+            self.runtime_mode = runtime_mode
+            self.initialized = 0
+            self.closed = 0
+
+        async def initialize(self) -> None:
+            self.initialized += 1
+
+        async def close(self) -> None:
+            self.closed += 1
+
+    monkeypatch.setattr(runtime_module, "VoiceIdentityProfileStore", FakeProfileStore)
+    monkeypatch.setattr(
+        runtime_module,
+        "VoiceIdentityPreferenceStore",
+        FakePreferenceStore,
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "VoiceInputSuppressionController",
+        FakeSuppression,
+    )
+    monkeypatch.setattr(runtime_module, "VoiceIdentityService", FakeService)
+    monkeypatch.setattr(
+        runtime_module,
+        "install_voice_identity_service_for_app",
+        installed.append,
+    )
+    monkeypatch.setenv("NEKO_VOICE_IDENTITY_MODE", "invalid-mode")
+    config = SimpleNamespace(local_state_dir=tmp_path)
+
+    service = runtime_module.install_voice_identity_runtime(config)
+    assert service.runtime_mode == "off"
+    assert isinstance(service.args[0], runtime_module._UnavailableProfileStore)
+    assert installed == [service]
+    assert runtime_module.install_voice_identity_runtime(config) is service
+
+    await runtime_module.initialize_voice_identity_runtime(config)
+    assert service.initialized == 1
+    await runtime_module.close_voice_identity_runtime()
+    assert service.closed == 1
+
+    manager = _Manager()
+    assert not await runtime_module.register_voice_identity_manager(manager)
+    await runtime_module.unregister_voice_identity_manager(manager)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_registration_wrapper_fails_open(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FailingRegistry:
+        async def register_manager(self, _manager) -> bool:
+            raise RuntimeError("registration failed")
+
+        async def unregister_manager(self, _manager) -> None:
+            self.unregistered = True
+
+    registry = FailingRegistry()
+    monkeypatch.setattr(runtime_module, "_runtime_registry", registry)
+
+    assert not await runtime_module.register_voice_identity_manager(object())
+    await runtime_module.unregister_voice_identity_manager(object())
+    assert registry.unregistered
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_registry_close_cancels_watchdog_and_detaches_managers() -> None:
+    registry = OwnerVoiceRuntimeRegistry(
+        enforce=True,
+        restore_retry_interval_seconds=0.01,
+        restore_retry_timeout_seconds=1.0,
+    )
+    manager = _Manager()
+    manager.restore_failures = 100
+    await registry.register_manager(manager)
+    profile = _profile("profile")
+    try:
+        assert await registry.activate(profile, "generation")
+    finally:
+        profile.close()
+    await registry.suppress("voice_identity_enrollment")
+    await registry.restore("voice_identity_enrollment")
+    retry_task = registry._restore_retry_task  # type: ignore[attr-defined]
+    assert retry_task is not None
+
+    await registry.close()
+    await registry.close()
+
+    assert retry_task.done()
+    assert registry._restore_retry_task is None  # type: ignore[attr-defined]
+    assert not registry._managers  # type: ignore[attr-defined]
+    assert registry._activation is None  # type: ignore[attr-defined]
+    assert manager.verifier_calls[-1][0] is None

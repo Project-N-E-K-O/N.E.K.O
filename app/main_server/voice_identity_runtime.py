@@ -1,0 +1,578 @@
+"""Application wiring for the single Owner profile across character runtimes."""
+
+from __future__ import annotations
+
+import asyncio
+import copy
+from dataclasses import dataclass
+import math
+import os
+from pathlib import Path
+import uuid
+import weakref
+
+from main_logic.asr_client.speaker_shadow.campplus import CampPlusEmbeddingModel
+from main_logic.voice_identity.profile import SpeakerProfile
+from main_logic.voice_identity_service.asr_composition import (
+    OwnerVoiceAsrCompositionFactory,
+)
+from main_logic.voice_identity_service.preference_store import (
+    VoiceIdentityPreferenceStore,
+)
+from main_logic.voice_identity_service.profile_store import (
+    SecureStorageUnavailableError,
+    VoiceIdentityProfileStore,
+)
+from main_logic.voice_identity_service.registry import (
+    install_voice_identity_service_for_app,
+)
+from main_logic.voice_identity_service.service import VoiceIdentityService
+from main_logic.voice_input.suppression import VoiceInputSuppressionController
+
+
+@dataclass(slots=True)
+class _OwnerActivation:
+    profile: SpeakerProfile
+    generation: str
+    enforce: bool
+
+    @classmethod
+    def from_borrowed(
+        cls,
+        profile: SpeakerProfile,
+        generation: str,
+        *,
+        enforce: bool,
+    ) -> "_OwnerActivation":
+        return cls(copy.copy(profile), generation, enforce)
+
+    def factory_for(self, manager) -> OwnerVoiceAsrCompositionFactory:
+        return OwnerVoiceAsrCompositionFactory(
+            manager._asr_runtime,
+            self.profile,
+            activation_generation=self.generation,
+            enforce=self.enforce,
+        )
+
+    def close(self) -> None:
+        self.profile.close()
+
+
+class OwnerVoiceRuntimeRegistry:
+    """Serialize activation, manager replacement, and enrollment suppression."""
+
+    def __init__(
+        self,
+        *,
+        enforce: bool,
+        restore_retry_interval_seconds: float = 0.1,
+        restore_retry_timeout_seconds: float = 10.0,
+    ) -> None:
+        if type(enforce) is not bool:
+            raise TypeError("enforce must be bool")
+        if (
+            not math.isfinite(restore_retry_interval_seconds)
+            or not math.isfinite(restore_retry_timeout_seconds)
+            or restore_retry_interval_seconds <= 0
+            or restore_retry_timeout_seconds < restore_retry_interval_seconds
+        ):
+            raise ValueError("restore retry bounds are invalid")
+        self._enforce = enforce
+        self._restore_retry_interval_seconds = float(restore_retry_interval_seconds)
+        self._restore_retry_timeout_seconds = float(restore_retry_timeout_seconds)
+        self._lock = asyncio.Lock()
+        self._managers: weakref.WeakSet = weakref.WeakSet()
+        self._restore_pending: weakref.WeakSet = weakref.WeakSet()
+        self._restore_retry_task: asyncio.Task[None] | None = None
+        self._detach_pending: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+        self._detach_retry_task: asyncio.Task[None] | None = None
+        self._activation: _OwnerActivation | None = None
+        self._suppressed = False
+        self._closed = False
+
+    async def register_manager(self, manager) -> bool:
+        async with self._lock:
+            if self._closed:
+                raise RuntimeError("Owner voice runtime registry is closed")
+            if manager in self._managers:
+                return True
+            self._managers.add(manager)
+            try:
+                if self._suppressed:
+                    await manager.set_voice_input_suppressed(
+                        "voice_identity_enrollment",
+                        suppressed=True,
+                    )
+                    self._restore_pending.discard(manager)
+                elif manager in self._restore_pending:
+                    await self._restore_manager(
+                        manager,
+                        "voice_identity_enrollment",
+                    )
+                    self._restore_pending.discard(manager)
+                activation = self._activation
+                if activation is not None:
+                    factory: OwnerVoiceAsrCompositionFactory | None = None
+                    try:
+                        factory = activation.factory_for(manager)
+                        updated = await manager.set_speaker_verifier_factory(
+                            factory,
+                            activation_generation=activation.generation,
+                        )
+                    except BaseException:
+                        if factory is not None:
+                            factory.close()
+                        return False
+                    if not updated:
+                        factory.close()
+                        return False
+                    self._detach_pending.pop(manager, None)
+                return True
+            except BaseException:
+                self._managers.discard(manager)
+                if self._suppressed:
+                    try:
+                        await self._restore_manager(
+                            manager,
+                            "voice_identity_enrollment",
+                        )
+                    except Exception:
+                        self._restore_pending.add(manager)
+                elif manager in self._restore_pending:
+                    self._ensure_restore_watchdog("voice_identity_enrollment")
+                raise
+
+    async def unregister_manager(self, manager) -> None:
+        async with self._lock:
+            self._managers.discard(manager)
+            detach_generation = str(uuid.uuid4())
+            try:
+                detached = await manager.set_speaker_verifier_factory(
+                    None,
+                    activation_generation=detach_generation,
+                )
+            except Exception:
+                detached = False
+            if detached:
+                self._detach_pending.pop(manager, None)
+            else:
+                self._detach_pending[manager] = detach_generation
+                self._ensure_detach_watchdog()
+            if self._suppressed or manager in self._restore_pending:
+                try:
+                    await self._restore_manager(
+                        manager,
+                        "voice_identity_enrollment",
+                    )
+                except Exception:
+                    self._restore_pending.add(manager)
+                    if not self._suppressed:
+                        self._ensure_restore_watchdog("voice_identity_enrollment")
+                else:
+                    self._restore_pending.discard(manager)
+
+    async def activate(
+        self,
+        profile: SpeakerProfile | None,
+        generation: str,
+    ) -> bool:
+        if type(generation) is not str or not generation.strip():
+            return False
+        try:
+            next_activation = (
+                None
+                if profile is None
+                else _OwnerActivation.from_borrowed(
+                    profile,
+                    generation,
+                    enforce=self._enforce,
+                )
+            )
+        except Exception:
+            return False
+
+        async with self._lock:
+            if self._closed:
+                if next_activation is not None:
+                    next_activation.close()
+                return False
+            old_activation = self._activation
+            if next_activation is None:
+                self._activation = None
+                if old_activation is not None:
+                    old_activation.close()
+                all_detached = True
+                for manager in tuple(self._managers):
+                    try:
+                        detached = await manager.set_speaker_verifier_factory(
+                            None,
+                            activation_generation=generation,
+                        )
+                    except BaseException:
+                        detached = False
+                    if detached:
+                        self._detach_pending.pop(manager, None)
+                    else:
+                        all_detached = False
+                        self._detach_pending[manager] = generation
+                if self._detach_pending:
+                    self._ensure_detach_watchdog()
+                return all_detached
+            changed: list[object] = []
+            try:
+                for manager in tuple(self._managers):
+                    factory = next_activation.factory_for(manager)
+                    try:
+                        updated = await manager.set_speaker_verifier_factory(
+                            factory,
+                            activation_generation=generation,
+                        )
+                    except BaseException:
+                        factory.close()
+                        raise
+                    if not updated:
+                        factory.close()
+                        raise RuntimeError("speaker verifier activation failed")
+                    changed.append(manager)
+                    self._detach_pending.pop(manager, None)
+            except BaseException:
+                await asyncio.shield(self._rollback_activation(changed, old_activation))
+                if next_activation is not None:
+                    next_activation.close()
+                return False
+
+            self._activation = next_activation
+            if old_activation is not None:
+                old_activation.close()
+            return True
+
+    async def _rollback_activation(
+        self,
+        managers: list[object],
+        activation: _OwnerActivation | None,
+    ) -> None:
+        for manager in reversed(managers):
+            factory: OwnerVoiceAsrCompositionFactory | None = None
+            try:
+                factory = (
+                    None if activation is None else activation.factory_for(manager)
+                )
+                updated = await manager.set_speaker_verifier_factory(
+                    factory,
+                    activation_generation=(
+                        str(uuid.uuid4())
+                        if activation is None
+                        else activation.generation
+                    ),
+                )
+                if not updated and factory is not None:
+                    factory.close()
+            except Exception:
+                if factory is not None:
+                    factory.close()
+                continue
+
+    async def suppress(self, reason: str) -> None:
+        await self._set_suppressed(reason, True)
+
+    async def restore(self, reason: str) -> None:
+        await self._set_suppressed(reason, False)
+
+    async def _set_suppressed(self, reason: str, suppressed: bool) -> None:
+        if reason != "voice_identity_enrollment":
+            raise ValueError("unsupported voice input suppression reason")
+        async with self._lock:
+            if self._closed:
+                if suppressed:
+                    raise RuntimeError("Owner voice runtime registry is closed")
+                return
+            if self._suppressed is suppressed and (
+                suppressed or not self._restore_pending
+            ):
+                return
+            if not suppressed:
+                targets = tuple(set(self._managers).union(self._restore_pending))
+                try:
+                    for manager in targets:
+                        self._restore_pending.add(manager)
+                        try:
+                            await self._restore_manager(manager, reason)
+                        except Exception:
+                            self._restore_pending.add(manager)
+                        else:
+                            self._restore_pending.discard(manager)
+                finally:
+                    # Even cancellation or an unexpected BaseException cannot
+                    # make future/replacement managers inherit a stale gate.
+                    # Per-manager transient failures are retried immediately
+                    # and then by the bounded watchdog below.
+                    self._suppressed = False
+                    if self._restore_pending:
+                        self._ensure_restore_watchdog(reason)
+                return
+            changed: list[object] = []
+            try:
+                for manager in tuple(self._managers):
+                    # Include the in-flight manager before awaiting: its Core
+                    # gate is published synchronously before ASR abort/cleanup,
+                    # so cancellation may leave work incomplete but must still
+                    # trigger a restore attempt.
+                    changed.append(manager)
+                    await manager.set_voice_input_suppressed(
+                        reason,
+                        suppressed=suppressed,
+                    )
+            except BaseException:
+                for manager in reversed(changed):
+                    try:
+                        await self._restore_manager(manager, reason)
+                    except Exception:
+                        self._restore_pending.add(manager)
+                if self._restore_pending:
+                    self._ensure_restore_watchdog(reason)
+                raise
+            for manager in changed:
+                self._restore_pending.discard(manager)
+            self._suppressed = suppressed
+
+    def _ensure_restore_watchdog(self, reason: str) -> None:
+        task = self._restore_retry_task
+        if task is not None and not task.done():
+            return
+        self._restore_retry_task = asyncio.create_task(
+            self._run_restore_watchdog(reason),
+            name="voice-identity-restore-watchdog",
+        )
+
+    async def _run_restore_watchdog(self, reason: str) -> None:
+        current = asyncio.current_task()
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self._restore_retry_timeout_seconds
+        try:
+            while loop.time() < deadline:
+                await asyncio.sleep(self._restore_retry_interval_seconds)
+                async with self._lock:
+                    if self._closed or self._suppressed:
+                        return
+                    targets = tuple(self._restore_pending)
+                    if not targets:
+                        return
+                    for manager in targets:
+                        try:
+                            await self._restore_manager(manager, reason)
+                        except Exception:
+                            continue
+                        self._restore_pending.discard(manager)
+        except asyncio.CancelledError:
+            raise
+        finally:
+            if self._restore_retry_task is current:
+                self._restore_retry_task = None
+
+    def _ensure_detach_watchdog(self) -> None:
+        task = self._detach_retry_task
+        if task is not None and not task.done():
+            return
+        self._detach_retry_task = asyncio.create_task(
+            self._run_detach_watchdog(),
+            name="voice-identity-detach-watchdog",
+        )
+
+    async def _run_detach_watchdog(self) -> None:
+        current = asyncio.current_task()
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self._restore_retry_timeout_seconds
+        try:
+            while loop.time() < deadline:
+                await asyncio.sleep(self._restore_retry_interval_seconds)
+                async with self._lock:
+                    if self._closed:
+                        return
+                    targets = tuple(self._detach_pending.items())
+                    if not targets:
+                        return
+                    for manager, generation in targets:
+                        try:
+                            detached = await manager.set_speaker_verifier_factory(
+                                None,
+                                activation_generation=generation,
+                            )
+                        except Exception:
+                            continue
+                        if detached:
+                            self._detach_pending.pop(manager, None)
+        except asyncio.CancelledError:
+            raise
+        finally:
+            if self._detach_retry_task is current:
+                self._detach_retry_task = None
+
+    async def close(self) -> None:
+        async with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            retry_task = self._restore_retry_task
+            detach_task = self._detach_retry_task
+        tasks = tuple(task for task in (retry_task, detach_task) if task is not None)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        if self._restore_retry_task is retry_task:
+            self._restore_retry_task = None
+        if self._detach_retry_task is detach_task:
+            self._detach_retry_task = None
+        async with self._lock:
+            managers = tuple(
+                set(self._managers)
+                .union(self._restore_pending)
+                .union(self._detach_pending)
+            )
+            self._suppressed = False
+            self._restore_pending.clear()
+            self._detach_pending.clear()
+            for manager in managers:
+                try:
+                    await self._restore_manager(
+                        manager,
+                        "voice_identity_enrollment",
+                    )
+                except Exception:
+                    pass
+                try:
+                    await manager.set_speaker_verifier_factory(
+                        None,
+                        activation_generation=str(uuid.uuid4()),
+                    )
+                except Exception:
+                    pass
+            self._managers.clear()
+            activation = self._activation
+            self._activation = None
+            if activation is not None:
+                activation.close()
+
+    @staticmethod
+    async def _restore_manager(manager, reason: str) -> None:
+        last_error: Exception | None = None
+        for _attempt in range(2):
+            try:
+                await manager.set_voice_input_suppressed(
+                    reason,
+                    suppressed=False,
+                )
+                return
+            except Exception as exc:
+                last_error = exc
+                await asyncio.sleep(0)
+        assert last_error is not None
+        raise last_error
+
+
+_runtime_registry: OwnerVoiceRuntimeRegistry | None = None
+_service: VoiceIdentityService | None = None
+
+
+class _UnavailableProfileStore(VoiceIdentityProfileStore):
+    """Concrete fail-closed store used when DPAPI cannot be constructed."""
+
+    def __init__(self, path: Path) -> None:
+        self._path = path
+
+    def load(self) -> SpeakerProfile | None:
+        raise SecureStorageUnavailableError("secure_storage_unavailable")
+
+    def stage(self, profile: SpeakerProfile):
+        del profile
+        raise SecureStorageUnavailableError("secure_storage_unavailable")
+
+    def delete(self) -> bool:
+        raise SecureStorageUnavailableError("secure_storage_unavailable")
+
+
+def install_voice_identity_runtime(config_manager) -> VoiceIdentityService:
+    """Construct and install the application singleton once."""
+
+    global _runtime_registry, _service
+    if _service is not None:
+        return _service
+    configured_mode = (
+        os.environ.get(
+            "NEKO_VOICE_IDENTITY_MODE",
+            "enforce",
+        )
+        .strip()
+        .lower()
+    )
+    runtime_mode = (
+        configured_mode if configured_mode in {"off", "shadow", "enforce"} else "off"
+    )
+    registry = OwnerVoiceRuntimeRegistry(enforce=runtime_mode == "enforce")
+    local_state_dir = Path(config_manager.local_state_dir)
+    try:
+        profile_store = VoiceIdentityProfileStore(
+            local_state_dir / "voice_identity.profile"
+        )
+    except SecureStorageUnavailableError:
+        profile_store = _UnavailableProfileStore(
+            local_state_dir / "voice_identity.profile"
+        )
+    suppression = VoiceInputSuppressionController(
+        registry.suppress,
+        registry.restore,
+        default_ttl_seconds=30.0,
+        hard_ttl_seconds=60.0,
+    )
+    service = VoiceIdentityService(
+        profile_store,
+        VoiceIdentityPreferenceStore(local_state_dir / "voice_identity.settings.json"),
+        suppression,
+        CampPlusEmbeddingModel,
+        registry.activate,
+        runtime_mode=runtime_mode,
+    )
+    install_voice_identity_service_for_app(service)
+    _runtime_registry = registry
+    _service = service
+    return service
+
+
+async def initialize_voice_identity_runtime(config_manager) -> None:
+    service = install_voice_identity_runtime(config_manager)
+    await service.initialize()
+
+
+async def close_voice_identity_runtime() -> None:
+    service = _service
+    if service is not None:
+        await service.close()
+    registry = _runtime_registry
+    if registry is not None:
+        await registry.close()
+
+
+async def register_voice_identity_manager(manager) -> bool:
+    registry = _runtime_registry
+    if registry is None:
+        return True
+    try:
+        return await registry.register_manager(manager)
+    except Exception:
+        return False
+
+
+async def unregister_voice_identity_manager(manager) -> None:
+    registry = _runtime_registry
+    if registry is not None:
+        await registry.unregister_manager(manager)
+
+
+__all__ = [
+    "OwnerVoiceRuntimeRegistry",
+    "close_voice_identity_runtime",
+    "initialize_voice_identity_runtime",
+    "install_voice_identity_runtime",
+    "register_voice_identity_manager",
+    "unregister_voice_identity_manager",
+]

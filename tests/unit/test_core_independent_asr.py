@@ -118,6 +118,67 @@ class _Runtime(AsrRuntimeMixin):
         object.__setattr__(self, name, value)
 
 
+async def test_external_voice_suppression_aborts_once_and_restores_pcm_gate() -> None:
+    runtime = _Runtime()
+    runtime._invalidate_voice_pcm_sync = MagicMock()
+    runtime._abort_independent_asr = AsyncMock()
+    assert runtime._voice_input_accepts_pcm() is True
+
+    await runtime.set_voice_input_suppressed(
+        "voice_identity_enrollment",
+        suppressed=True,
+    )
+    await runtime.set_voice_input_suppressed(
+        "voice_identity_enrollment",
+        suppressed=True,
+    )
+
+    assert runtime._voice_input_accepts_pcm() is False
+    runtime._abort_independent_asr.assert_awaited_once_with(
+        "voice_identity_enrollment"
+    )
+    assert runtime._invalidate_voice_pcm_sync.call_count == 1
+
+    await runtime.set_voice_input_suppressed(
+        "voice_identity_enrollment",
+        suppressed=False,
+    )
+
+    assert runtime._voice_input_accepts_pcm() is True
+    assert runtime._invalidate_voice_pcm_sync.call_count == 2
+
+
+async def test_external_voice_suppression_reasons_are_independent() -> None:
+    runtime = _Runtime()
+    runtime._invalidate_voice_pcm_sync = MagicMock()
+    runtime._abort_independent_asr = AsyncMock()
+
+    await runtime.set_voice_input_suppressed("enrollment", suppressed=True)
+    await runtime.set_voice_input_suppressed("maintenance", suppressed=True)
+    await runtime.set_voice_input_suppressed("enrollment", suppressed=False)
+
+    assert runtime._voice_input_accepts_pcm() is False
+
+    await runtime.set_voice_input_suppressed("maintenance", suppressed=False)
+
+    assert runtime._voice_input_accepts_pcm() is True
+    assert runtime._abort_independent_asr.await_count == 2
+
+
+async def test_core_forgets_future_verifier_when_physical_detach_degrades() -> None:
+    runtime = _Runtime()
+    runtime._speaker_shadow_factory = MagicMock()
+    runtime._asr_runtime.set_speaker_verifier_factory = AsyncMock(return_value=False)
+
+    updated = await runtime.set_speaker_verifier_factory(
+        None,
+        activation_generation="revoked-profile",
+    )
+
+    assert updated is False
+    assert runtime._speaker_shadow_factory is None
+
+
 class _TestSmartTurnLease:
     def __init__(self, token) -> None:
         self.token = token
