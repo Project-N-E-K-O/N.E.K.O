@@ -617,6 +617,7 @@
   "ui.error.document_chunk_failed":  "文書の一部を分析できませんでした。",
   "ui.error.document_merge_failed":  "各部分を最終分析に統合できませんでした。",
   "ui.error.document_merge_budget_exceeded":  "部分分析が長すぎるため安全に統合できません。",
+  "ui.error.document_output_truncated":  "文書分析が出力上限に達しました。上の結果は不完全な可能性があります。",
   "ui.error.document_canceled":  "文書分析をキャンセルしました。",
     "ui.document.kind_label":  "文書タイプ",
     "ui.document.kind.auto":  "自動判定",

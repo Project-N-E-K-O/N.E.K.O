@@ -177,6 +177,26 @@ def test_document_frontends_resume_jobs_without_canceling_on_unload() -> None:
     assert "study_cancel_document_analysis" not in hosted[cleanup_start:cleanup_end]
 
 
+def test_hosted_document_job_recovery_survives_opaque_storage_and_transient_failures() -> None:
+    plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
+    hosted = (plugin_dir / "surfaces" / "study_panel.tsx").read_text(encoding="utf-8")
+
+    resume_start = hosted.index("async function resumeDocumentJob")
+    resume_end = hosted.index("async function cancelDocumentJob", resume_start)
+    resume = hosted[resume_start:resume_end]
+    assert "if (!savedJobId) return;" not in resume
+    assert "savedJobId && savedJobId !== PENDING_DOCUMENT_JOB_ID" in resume
+    assert "study_active_document_analysis" in resume
+
+    poll_start = hosted.index("async function pollDocumentJob")
+    poll_end = hosted.index("async function resumeDocumentJob", poll_start)
+    poll = hosted[poll_start:poll_end]
+    assert "throw error;" not in poll
+    assert "setReply(formatPluginError(error));" in poll
+    assert "Math.min(" in poll
+    assert "continue;" in poll
+
+
 def test_static_document_job_storage_recovers_valid_and_clears_stale_ids() -> None:
     if shutil.which("node") is None:
         pytest.skip("node is not installed")

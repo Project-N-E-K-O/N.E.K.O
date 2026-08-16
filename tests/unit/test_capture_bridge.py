@@ -147,6 +147,15 @@ async def test_region_request_targets_the_explicit_lanlan_renderer():
 
 
 @pytest.mark.unit
+def test_region_client_lookup_normalizes_explicit_lanlan_name():
+    capture_bridge.mark_capture_client("requesting", _Sock(), _payload(True))
+
+    assert capture_bridge.has_region_capture_client("  requesting  ") is True
+    assert capture_bridge._pick_client("  requesting  ") is not None
+    assert capture_bridge.has_region_capture_client("   ") is False
+
+
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_region_request_does_not_fallback_for_missing_target_lanlan():
     capture_bridge.mark_capture_client("other", _Sock(), _payload(True))

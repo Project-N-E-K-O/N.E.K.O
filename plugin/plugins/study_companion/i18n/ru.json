@@ -617,6 +617,7 @@
   "ui.error.document_chunk_failed":  "Не удалось проанализировать одну из частей документа.",
   "ui.error.document_merge_failed":  "Не удалось объединить части в итоговый анализ.",
   "ui.error.document_merge_budget_exceeded":  "Анализы частей слишком велики для безопасного объединения.",
+  "ui.error.document_output_truncated":  "Анализ документа достиг ограничения вывода. Результат выше может быть неполным.",
   "ui.error.document_canceled":  "Анализ документа отменён.",
     "ui.document.kind_label":  "Тип документа",
     "ui.document.kind.auto":  "Определить автоматически",

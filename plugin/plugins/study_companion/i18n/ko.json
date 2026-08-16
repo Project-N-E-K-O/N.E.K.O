@@ -617,6 +617,7 @@
   "ui.error.document_chunk_failed":  "문서의 한 부분을 분석하지 못했습니다.",
   "ui.error.document_merge_failed":  "각 부분을 최종 분석으로 병합하지 못했습니다.",
   "ui.error.document_merge_budget_exceeded":  "부분 분석 결과가 너무 길어 안전하게 병합할 수 없습니다.",
+  "ui.error.document_output_truncated":  "문서 분석이 출력 한도에 도달했습니다. 위 결과가 불완전할 수 있습니다.",
   "ui.error.document_canceled":  "문서 분석이 취소되었습니다.",
     "ui.document.kind_label":  "문서 유형",
     "ui.document.kind.auto":  "자동 감지",

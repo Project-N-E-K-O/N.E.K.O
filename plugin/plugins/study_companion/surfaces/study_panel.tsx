@@ -1333,6 +1333,18 @@ export default function StudyPanel(props: PluginSurfaceProps) {
     };
   }
 
+  function formatDocumentCompletion(payload: DocumentJobPayload) {
+    const result = payload.reply || payload.summary || '';
+    if (payload.diagnostic !== 'output_truncated') return result;
+    return [
+      result,
+      t(
+        'ui.error.document_output_truncated',
+        'The document analysis reached the output limit. The result above may be incomplete.',
+      ),
+    ].filter(Boolean).join('\n\n');
+  }
+
   function rememberDocumentJobId(jobId: string) {
     documentJobIdRef.current = jobId;
     try {
@@ -1397,7 +1409,12 @@ export default function StudyPanel(props: PluginSurfaceProps) {
             pollDelayMs = 2000;
             continue;
           }
-          throw error;
+          setReply(formatPluginError(error));
+          pollDelayMs = Math.min(
+            30_000,
+            2_000 * (2 ** Math.min(consecutiveFailures - 2, 4)),
+          );
+          continue;
         }
         if (controller.signal.aborted || !mountedRef.current) return;
         const nextJob = normalizeDocumentJob(data, jobId);
@@ -1407,7 +1424,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
           rememberDocumentJobId('');
           setReply(data.degraded
             ? formatTutorDiagnostic(data.diagnostic, true)
-            : (data.reply || data.summary || ''));
+            : formatDocumentCompletion(data));
           await refresh(controller.signal, { updateReply: false });
           return;
         }
@@ -1435,9 +1452,8 @@ export default function StudyPanel(props: PluginSurfaceProps) {
 
   async function resumeDocumentJob(signal: AbortSignal) {
     const savedJobId = savedDocumentJobId();
-    if (!savedJobId) return;
     let data: DocumentJobPayload | null = null;
-    if (savedJobId !== PENDING_DOCUMENT_JOB_ID) {
+    if (savedJobId && savedJobId !== PENDING_DOCUMENT_JOB_ID) {
       data = await callStudyPlugin<DocumentJobPayload>(
         props.api,
         'study_document_analysis_status',
@@ -1469,7 +1485,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
       rememberDocumentJobId('');
       setReply(data?.degraded
         ? formatTutorDiagnostic(data.diagnostic, true)
-        : (data?.reply || data?.summary || ''));
+        : formatDocumentCompletion(data || {}));
       setDocumentJob(null);
       return;
     }

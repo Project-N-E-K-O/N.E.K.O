@@ -500,8 +500,11 @@
         }, controller.signal, () => {});
         if (controller.signal.aborted) return;
         const failed = data.status !== 'completed' || data.degraded;
+        const completedReply = data.diagnostic === 'output_truncated'
+          ? [data.reply || data.summary || '', formatDocumentDiagnostic(data.diagnostic)].filter(Boolean).join('\n\n')
+          : (data.reply || data.summary || '');
         setStatus(failed ? t('ui.status.error', 'Error') : t('ui.status.document_complete'));
-        setReply(failed ? formatDocumentDiagnostic(data.diagnostic) : (data.reply || data.summary || ''));
+        setReply(failed ? formatDocumentDiagnostic(data.diagnostic) : completedReply);
         studyDocumentState.textContent = failed ? formatDocumentDiagnostic(data.diagnostic) : t('ui.status.document_complete');
         await onAnalysisComplete({ updateReply: false });
       } catch (error) {
@@ -526,8 +529,11 @@
         );
         if (!data || controller.signal.aborted) return;
         const failed = data.status !== 'completed' || data.degraded;
+        const completedReply = data.diagnostic === 'output_truncated'
+          ? [data.reply || data.summary || '', formatDocumentDiagnostic(data.diagnostic)].filter(Boolean).join('\n\n')
+          : (data.reply || data.summary || '');
         setStatus(failed ? t('ui.status.error', 'Error') : t('ui.status.document_complete'));
-        setReply(failed ? formatDocumentDiagnostic(data.diagnostic) : (data.reply || data.summary || ''));
+        setReply(failed ? formatDocumentDiagnostic(data.diagnostic) : completedReply);
         studyDocumentState.textContent = failed ? formatDocumentDiagnostic(data.diagnostic) : t('ui.status.document_complete');
         if (!failed) await onAnalysisComplete({ updateReply: false });
       } catch (error) {

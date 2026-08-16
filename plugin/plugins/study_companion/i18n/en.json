@@ -617,6 +617,7 @@
   "ui.error.document_chunk_failed":  "A document section could not be analyzed.",
   "ui.error.document_merge_failed":  "The document sections could not be merged into a final analysis.",
   "ui.error.document_merge_budget_exceeded":  "The section analyses are too long to merge safely.",
+  "ui.error.document_output_truncated":  "The document analysis reached the output limit. The result above may be incomplete.",
   "ui.error.document_canceled":  "Document analysis canceled.",
     "ui.document.kind_label":  "Document type",
     "ui.document.kind.auto":  "Auto detect",

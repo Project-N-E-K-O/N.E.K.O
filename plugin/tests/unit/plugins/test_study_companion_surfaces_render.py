@@ -567,6 +567,16 @@ def test_study_companion_surfaces_share_ui8_interaction_styles_and_messages() ->
     assert "panel.removeEventListener('keydown', closeOrCancelOnEscape, true)" in study_panel
 
 
+def test_memory_deck_surface_refetches_items_when_reopened() -> None:
+    source = _read("memory_deck_list.tsx")
+    toggle_start = source.index("async function toggleDeckItems")
+    toggle_end = source.index("async function saveDeckGoal", toggle_start)
+    toggle = source[toggle_start:toggle_end]
+
+    assert "if (itemsByDeck[deckId]) return;" not in toggle
+    assert "study_memory_list_deck_items" in toggle
+
+
 def test_knowledge_map_graph_and_dialog_regressions_are_guarded() -> None:
     hosted = _read("knowledge_map.tsx")
     fallback = (PLUGIN_DIR / "static" / "knowledge-map.js").read_text(encoding="utf-8")

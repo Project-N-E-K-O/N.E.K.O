@@ -104,7 +104,6 @@ export default function MemoryDeckList(props: PluginSurfaceProps) {
       return;
     }
     setExpandedDeckId(deckId);
-    if (itemsByDeck[deckId]) return;
     setBusy(true);
     try {
       const payload = await callPlugin<{ items?: MemoryItem[] }>(

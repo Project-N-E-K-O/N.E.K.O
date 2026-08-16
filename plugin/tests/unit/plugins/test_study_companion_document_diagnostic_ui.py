@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -31,3 +32,28 @@ def test_static_document_diagnostics_map_invalid_endpoint_and_request() -> None:
 
     assert "invalid_endpoint invalid_request" in formatter
     assert "`analysis_${code}`" in formatter
+
+
+def test_document_surfaces_warn_when_completed_output_is_truncated() -> None:
+    hosted = (_PLUGIN_DIR / "surfaces" / "study_panel.tsx").read_text(
+        encoding="utf-8"
+    )
+    static = (_PLUGIN_DIR / "static" / "document-controller.js").read_text(
+        encoding="utf-8"
+    )
+
+    assert "function formatDocumentCompletion" in hosted
+    assert "payload.diagnostic !== 'output_truncated'" in hosted
+    assert "formatDocumentCompletion(data)" in hosted
+    assert "formatDocumentCompletion(data || {})" in hosted
+    assert static.count("data.diagnostic === 'output_truncated'") == 2
+    assert static.count("formatDocumentDiagnostic(data.diagnostic)") >= 4
+
+
+def test_document_output_truncation_warning_exists_in_all_locales() -> None:
+    locale_paths = sorted((_PLUGIN_DIR / "i18n").glob("*.json"))
+
+    assert len(locale_paths) == 8
+    for locale_path in locale_paths:
+        bundle = json.loads(locale_path.read_text(encoding="utf-8"))
+        assert bundle["ui.error.document_output_truncated"].strip(), locale_path.stem

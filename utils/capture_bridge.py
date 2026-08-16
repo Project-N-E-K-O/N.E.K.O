@@ -157,8 +157,11 @@ def mark_capture_client(lanlan_name: str, websocket: Any, payload: dict[str, Any
         _drop_client_pendings(lanlan_name, reason="was replaced by new renderer")
 
     registered_at = time.time()
-    if existing is not None:
-        registered_at = max(registered_at, existing.registered_at + 1e-6)
+    if _clients:
+        registered_at = max(
+            registered_at,
+            max(client.registered_at for client in _clients.values()) + 1e-6,
+        )
 
     _clients[lanlan_name] = _CaptureClient(
         lanlan_name=lanlan_name,
@@ -194,7 +197,10 @@ def has_capture_client() -> bool:
 
 def has_region_capture_client(lanlan_name: str | None = None) -> bool:
     """True iff the selected renderer advertises interactive region capture."""
-    client = _pick_client(lanlan_name)
+    try:
+        client = _pick_client(lanlan_name)
+    except CaptureBridgeError:
+        return False
     return bool(
         client is not None
         and client.capabilities.capture_desktop_region_as_data_url
@@ -202,8 +208,9 @@ def has_region_capture_client(lanlan_name: str | None = None) -> bool:
 
 
 def _pick_client(lanlan_name: str | None = None) -> _CaptureClient | None:
-    if lanlan_name is not None:
-        return _clients.get(lanlan_name)
+    target_lanlan = _validate_lanlan_name(lanlan_name)
+    if target_lanlan is not None:
+        return _clients.get(target_lanlan)
     if not _clients:
         return None
     # newest registration wins (single-renderer assumption)

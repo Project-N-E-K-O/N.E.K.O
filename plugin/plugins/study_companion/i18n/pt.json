@@ -617,6 +617,7 @@
   "ui.error.document_chunk_failed":  "Não foi possível analisar uma parte do documento.",
   "ui.error.document_merge_failed":  "Não foi possível consolidar as partes em uma análise final.",
   "ui.error.document_merge_budget_exceeded":  "As análises parciais são longas demais para uma consolidação segura.",
+  "ui.error.document_output_truncated":  "A análise do documento atingiu o limite de saída. O resultado acima pode estar incompleto.",
   "ui.error.document_canceled":  "A análise do documento foi cancelada.",
     "ui.document.kind_label":  "Tipo de documento",
     "ui.document.kind.auto":  "Detectar automaticamente",

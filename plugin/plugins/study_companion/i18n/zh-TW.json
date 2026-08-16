@@ -617,6 +617,7 @@
   "ui.error.document_chunk_failed":  "某個文件部分分析失敗。",
   "ui.error.document_merge_failed":  "無法將各部分歸併為完整分析。",
   "ui.error.document_merge_budget_exceeded":  "分段分析結果過長，無法安全歸併。",
+  "ui.error.document_output_truncated":  "文件分析已達到輸出上限，上方結果可能不完整。",
   "ui.error.document_canceled":  "文件分析已取消。",
     "ui.document.kind_label":  "文件類型",
     "ui.document.kind.auto":  "自動識別",
