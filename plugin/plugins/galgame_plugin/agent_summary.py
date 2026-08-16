@@ -564,7 +564,17 @@ class AgentSummaryMixin:
         data_source = self._current_input_source(shared)
         session_id = str(shared.get("active_session_id") or "")
         event_occurrences: list[dict[str, Any]] = []
-        for event_index, event in enumerate(list(shared.get("history_events") or [])):
+        history_events = list(shared.get("history_events") or [])
+        latest_line_event_index = max(
+            (
+                index
+                for index, item in enumerate(history_events)
+                if isinstance(item, dict)
+                and str(item.get("type") or "") == "line_changed"
+            ),
+            default=-1,
+        )
+        for event_index, event in enumerate(history_events):
             if not isinstance(event, dict) or str(event.get("type") or "") != "line_changed":
                 continue
             payload = event.get("payload")
@@ -589,6 +599,11 @@ class AgentSummaryMixin:
                 "route_id": str(
                     payload.get("route_id")
                     or event.get("route_id")
+                    or (
+                        snapshot.get("route_id")
+                        if event_index == latest_line_event_index
+                        else ""
+                    )
                     or ""
                 ),
                 "ts": str(event.get("ts") or payload.get("ts") or ""),
@@ -715,7 +730,18 @@ class AgentSummaryMixin:
         session_id = str(shared.get("active_session_id") or "")
         scene_id = str(snapshot.get("scene_id") or "")
         occurrences: list[dict[str, Any]] = []
-        for event_index, event in enumerate(list(shared.get("history_events") or [])):
+        history_events = list(shared.get("history_events") or [])
+        latest_choice_event_index = max(
+            (
+                index
+                for index, item in enumerate(history_events)
+                if isinstance(item, dict)
+                and str(item.get("type") or "")
+                in {"choices_shown", "choice_selected"}
+            ),
+            default=-1,
+        )
+        for event_index, event in enumerate(history_events):
             if not isinstance(event, dict):
                 continue
             event_type = str(event.get("type") or "")
@@ -725,7 +751,21 @@ class AgentSummaryMixin:
             if not isinstance(payload, dict):
                 continue
             raw_choices = payload.get("choices") if event_type == "choices_shown" else None
-            if not isinstance(raw_choices, list):
+            if event_type == "choice_selected":
+                selected = payload.get("choice")
+                selected_choice = dict(selected) if isinstance(selected, dict) else {}
+                if not str(
+                    selected_choice.get("text")
+                    or selected_choice.get("label")
+                    or ""
+                ).strip():
+                    selected_choice["text"] = str(payload.get("choice_text") or "")
+                if "index" not in selected_choice:
+                    selected_choice["index"] = payload.get("choice_index")
+                if not str(selected_choice.get("choice_id") or ""):
+                    selected_choice["choice_id"] = str(payload.get("choice_id") or "")
+                raw_choices = [selected_choice]
+            elif not isinstance(raw_choices, list):
                 selected = payload.get("choice")
                 raw_choices = [selected if isinstance(selected, dict) else payload]
             try:
@@ -735,7 +775,14 @@ class AgentSummaryMixin:
             event_session_id = str(event.get("session_id") or session_id)
             event_occurrence = seq if seq > 0 else f"ordered:{event_index}"
             event_route_id = str(
-                payload.get("route_id") or event.get("route_id") or ""
+                payload.get("route_id")
+                or event.get("route_id")
+                or (
+                    snapshot.get("route_id")
+                    if event_index == latest_choice_event_index
+                    else ""
+                )
+                or ""
             )
             event_group_signature = json.dumps(
                 {
@@ -750,7 +797,7 @@ class AgentSummaryMixin:
                             "text": str(
                                 item.get("text") or item.get("label") or ""
                             ).strip(),
-                            "index": choice_index,
+                            "index": item.get("index", choice_index),
                         }
                         for choice_index, item in enumerate(raw_choices)
                         if isinstance(item, dict)
@@ -808,7 +855,7 @@ class AgentSummaryMixin:
                             "text": text,
                             "scene_id": str(choice.get("scene_id") or ""),
                             "route_id": str(choice.get("route_id") or ""),
-                            "index": choice_index,
+                            "index": choice.get("index", choice_index),
                         },
                         ensure_ascii=False,
                         sort_keys=True,
@@ -834,8 +881,14 @@ class AgentSummaryMixin:
 
         if occurrences:
             return occurrences
+        selected_history_choices = [
+            item
+            for item in list(shared.get("history_choices") or [])
+            if not isinstance(item, dict)
+            or str(item.get("action") or "selected").strip().lower() == "selected"
+        ]
         for choice_state, items in (
-            ("selected", list(shared.get("history_choices") or [])),
+            ("selected", selected_history_choices),
             ("visible", list(snapshot.get("choices") or [])),
         ):
             fallback_choices: list[tuple[dict[str, Any], str, str]] = []

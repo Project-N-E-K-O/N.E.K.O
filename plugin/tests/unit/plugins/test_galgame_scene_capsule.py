@@ -113,6 +113,162 @@ async def test_choices_shown_event_submits_complete_menu_atomically(tmp_path: Pa
 
 
 @pytest.mark.plugin_unit
+def test_choice_selected_event_normalizes_canonical_payload_fields(tmp_path: Path) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(_Ctx(plugin_dir, _make_effective_config(bridge_root))),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    shown = _event(
+        seq=1,
+        event_type="choices_shown",
+        session_id="sess-a",
+        game_id="demo.alpha",
+        ts="2026-04-21T08:35:01Z",
+        payload={
+            "scene_id": "scene-a",
+            "choices": [
+                {"choice_id": "choice-a", "text": "追上去", "index": 0},
+                {"choice_id": "choice-b", "text": "留在原地", "index": 1},
+            ],
+        },
+    )
+    selected = _event(
+        seq=2,
+        event_type="choice_selected",
+        session_id="sess-a",
+        game_id="demo.alpha",
+        ts="2026-04-21T08:35:02Z",
+        payload={
+            "scene_id": "scene-a",
+            "choice_id": "choice-b",
+            "choice_text": "留在原地",
+            "choice_index": 1,
+        },
+    )
+    shared = _shared_state(
+        mode="companion",
+        session_id="sess-a",
+        last_seq=2,
+        snapshot=_session_state(scene_id="scene-a", route_id="route-a"),
+        history_events=[shown, selected],
+    )
+
+    occurrences = agent._scene_capsule_choice_occurrences(
+        shared,
+        snapshot=dict(shared["latest_snapshot"]),
+    )
+
+    selected_choices = [
+        dict(item.get("choice") or {})
+        for item in occurrences
+        if str((item.get("choice") or {}).get("choice_state") or "") == "selected"
+    ]
+    assert selected_choices == [
+        {
+            "choice_id": "choice-b",
+            "text": "留在原地",
+            "index": 1,
+            "choice_state": "selected",
+            "scene_id": "scene-a",
+            "route_id": "route-a",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_route_less_line_event_inherits_current_route_for_capsule(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(ctx),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    old_line = _summary_test_line("scene-a", 1)
+    line = _summary_test_line("scene-a", 2)
+    events = [
+        _summary_test_line_event("scene-a", 1, seq=1),
+        _summary_test_line_event("scene-a", 2, seq=2),
+    ]
+    for item in [old_line, line]:
+        item.pop("route_id", None)
+    for event in events:
+        event_payload = event.get("payload")
+        assert isinstance(event_payload, dict)
+        event_payload.pop("route_id", None)
+    shared = _shared_state(
+        mode="companion",
+        session_id="sess-a",
+        last_seq=2,
+        snapshot=_session_state(
+            speaker=str(line["speaker"]),
+            text=str(line["text"]),
+            scene_id="scene-a",
+            route_id="route-a",
+            line_id=str(line["line_id"]),
+            ts=str(line["ts"]),
+        ),
+        history_events=events,
+        history_lines=[old_line, line],
+    )
+
+    await agent.tick(shared)
+    await agent.drain_summary_tasks(timeout=1.0)
+
+    assert len(ctx.pushed_messages) == 1
+    assert ctx.pushed_messages[0]["metadata"]["route_id"] == "route-a"
+    assert str(line["text"]) in str(ctx.pushed_messages[0]["content"])
+    assert str(old_line["text"]) not in str(ctx.pushed_messages[0]["content"])
+
+
+@pytest.mark.plugin_unit
+def test_choice_history_fallback_does_not_treat_shown_as_selected(tmp_path: Path) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(_Ctx(plugin_dir, _make_effective_config(bridge_root))),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    shared = _shared_state(
+        mode="companion",
+        session_id="sess-a",
+        snapshot=_session_state(scene_id="scene-a"),
+        history_choices=[
+            {
+                "choice_id": "choice-a",
+                "text": "追上去",
+                "scene_id": "scene-a",
+                "action": "shown",
+            },
+            {
+                "choice_id": "choice-b",
+                "text": "留在原地",
+                "scene_id": "scene-a",
+                "action": "selected",
+            },
+        ],
+    )
+
+    occurrences = agent._scene_capsule_choice_occurrences(
+        shared,
+        snapshot=dict(shared["latest_snapshot"]),
+    )
+
+    choices = [dict(item.get("choice") or {}) for item in occurrences]
+    assert [(item["text"], item["choice_state"]) for item in choices] == [
+        ("留在原地", "selected")
+    ]
+
+
+@pytest.mark.plugin_unit
 def test_fallback_occurrence_state_evicts_jittered_session_keys(tmp_path: Path) -> None:
     plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
     agent = GameLLMAgent(
