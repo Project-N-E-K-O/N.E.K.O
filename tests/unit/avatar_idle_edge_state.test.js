@@ -228,10 +228,11 @@ test('CAT1 edge cleanup owns visualShiftY for direct clear, tier exit, and the n
     );
 });
 
-function createDragEndHarness() {
-    const fixture = createEdgeFixture();
+function createDragEndHarness({ transferredAnchor = '' } = {}) {
+    const fixture = createEdgeFixture({ transferredAnchor });
     const observations = [];
     const cancellations = [];
+    const scheduledContainers = [];
     const context = createBaseEdgeContext(fixture);
     Object.assign(context, {
         document: {
@@ -261,7 +262,9 @@ function createDragEndHarness() {
         _shouldRecheckNekoIdleCat1AfterManualMove() {
             return false;
         },
-        _scheduleNekoIdleCat1JourneySyncForContainer() {},
+        _scheduleNekoIdleCat1JourneySyncForContainer(container) {
+            scheduledContainers.push(container);
+        },
         _prepareNekoIdleReturnDragActionForContainer() {},
         _startNekoIdleReturnDragActionForContainer() {},
         _handleNekoIdleCat1RapidDragMotionForContainer() {},
@@ -290,7 +293,7 @@ function createDragEndHarness() {
     vm.runInContext(readFunction(journeySourcePath, '_ensureNekoIdleReturnPresentationBridge'), context);
     vm.runInContext('_ensureNekoIdleReturnPresentationBridge()', context);
     context.targetContainer = fixture.container;
-    return { context, fixture, observations, cancellations };
+    return { context, fixture, observations, cancellations, scheduledContainers };
 }
 
 function dispatchManualMove(harness, detail) {
@@ -372,6 +375,21 @@ test('cancelled, unmoved, and non-edge drag completions do not report EDGE obser
         });
         assert.equal(harness.observations.length, 0);
     });
+});
+
+test('drag cancel resumes journey after active dragging releases a transferred anchor', () => {
+    const harness = createDragEndHarness({ transferredAnchor: 'left' });
+
+    dispatchManualMove(harness, { reason: 'return-ball-drag-active' });
+    harness.fixture.container.removeAttribute('data-neko-live2d-peek-anchor');
+    dispatchManualMove(harness, {
+        reason: 'return-ball-drag-cancel',
+        movedDistancePx: 0,
+        dragCancelled: true
+    });
+
+    assert.deepEqual(harness.scheduledContainers, [harness.fixture.container]);
+    assert.equal(harness.observations.length, 0);
 });
 
 function createMovementHarness() {

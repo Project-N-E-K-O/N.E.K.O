@@ -2158,6 +2158,7 @@ function _ensureNekoIdleReturnPresentationBridge() {
         }
         if (detail.reason === 'return-ball-drag-cancel') {
             _finishNekoIdleReturnDragActionForContainer(detail.container, { restoreArt: false });
+            _scheduleNekoIdleCat1JourneySyncForContainer(detail.container);
             return;
         }
         if (detail.reason === 'return-ball-drag-start') {
