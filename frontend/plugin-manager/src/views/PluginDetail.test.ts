@@ -177,14 +177,14 @@ describe('PluginDetail surface selection', () => {
     routerMocks.replace.mockReset()
   })
 
-  it('hides legacy compatibility main and does not add a duplicate static UI tab when hosted panels exist', async () => {
+  it('keeps legacy compatibility main without adding a duplicate static UI tab when hosted panels exist', async () => {
     const mounted = await mountDetail([
       surface({ id: 'main' }),
       surface({ id: 'legacy-main', mode: 'static', legacy_static_compat: true }),
     ])
 
     expect(mounted.container.querySelector('[data-surface-id="main"]')).not.toBeNull()
-    expect(mounted.container.querySelector('[data-surface-id="legacy-main"]')).toBeNull()
+    expect(mounted.container.querySelector('[data-surface-id="legacy-main"]')).not.toBeNull()
     expect(mounted.container.querySelector('[data-tab-name="ui"]')).toBeNull()
     expect(mounted.container.querySelector('[data-testid="plugin-actions"]')).not.toBeNull()
     mounted.unmount()

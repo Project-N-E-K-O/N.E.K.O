@@ -136,14 +136,14 @@ describe('PluginDetail legacy static compatibility', () => {
     vi.clearAllMocks()
   })
 
-  it('hides the legacy main and duplicate static UI tab when hosted panels exist', async () => {
+  it('keeps the legacy main without adding a duplicate static UI tab when hosted panels exist', async () => {
     const mounted = await mountDetail([
       surface({ id: 'study-panel' }),
       surface({ id: 'main', mode: 'static', legacy_static_compat: true }),
     ])
 
     expect(mounted.container.querySelector('[data-surface-id="study-panel"]')).not.toBeNull()
-    expect(mounted.container.querySelector('[data-surface-id="main"]')).toBeNull()
+    expect(mounted.container.querySelector('[data-surface-id="main"]')).not.toBeNull()
     expect(mounted.container.querySelector('[data-tab-name="ui"]')).toBeNull()
     mounted.unmount()
   })
