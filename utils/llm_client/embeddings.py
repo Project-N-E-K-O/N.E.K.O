@@ -33,8 +33,12 @@ class OpenAIEmbeddings:
 
         self.model = model
         _api_key = api_key or "sk-placeholder"
-        self._client = OpenAI(base_url=base_url, api_key=_api_key)
-        self._aclient = AsyncOpenAI(base_url=base_url, api_key=_api_key)
+        # 注入 neko/<版本号> User-Agent 覆盖 SDK 自带 UA，防止自定义 embedding
+        # 端点的 Cloudflare "Manage AI bots" 规则拦截。
+        from utils.http_client import ensure_user_agent
+        _headers = ensure_user_agent(None)
+        self._client = OpenAI(base_url=base_url, api_key=_api_key, default_headers=_headers)
+        self._aclient = AsyncOpenAI(base_url=base_url, api_key=_api_key, default_headers=_headers)
 
     def embed_query(self, text: str) -> list[float]:
         resp = self._client.embeddings.create(model=self.model, input=text)
