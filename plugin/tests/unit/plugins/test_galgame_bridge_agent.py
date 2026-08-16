@@ -4198,17 +4198,17 @@ async def test_game_llm_agent_pushes_scene_summary_after_eight_lines(
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
-async def test_scene_memory_summary_seeds_next_archive_for_same_route(
+async def test_scene_memory_summary_seeds_degraded_archive_for_same_route(
     tmp_path: Path,
 ) -> None:
     plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
     ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
     gateway = _FakeLLMGateway(
         summarize_payload={
-            "degraded": False,
-            "summary": "updated cumulative archive",
+            "degraded": True,
+            "summary": "",
             "key_points": [],
-            "diagnostic": "",
+            "diagnostic": "timeout",
         }
     )
     agent = GameLLMAgent(
@@ -4254,6 +4254,10 @@ async def test_scene_memory_summary_seeds_next_archive_for_same_route(
         gateway.summarize_calls[0]["previous_scene_summary"]
         == "prior cumulative archive"
     )
+    memory_summary = str(agent._scene_memory[-1]["summary"])
+    assert "prior cumulative archive" in memory_summary
+    assert str(lines[-1]["text"]) in memory_summary
+    assert len(memory_summary) <= 1600
 
 
 @pytest.mark.asyncio

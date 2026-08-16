@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from .agent_shared import *  # noqa: F401,F403
+from .context_builder import _SUMMARY_MAX_CHARS, _bounded_summary_text
 
 
 class AgentSceneContextMixin:
@@ -77,7 +78,7 @@ class AgentSceneContextMixin:
                     "summary_diagnostic": str(exc),
                 }
         if not summary:
-            summary = self._build_scene_context_fallback(
+            local_progress_summary = self._build_scene_context_fallback(
                 scene_id=scene_id,
                 route_id=route_id,
                 lines=list(context.get("stable_lines") or []),
@@ -85,6 +86,39 @@ class AgentSceneContextMixin:
                 snapshot=snapshot,
                 key_points=key_points or [],
             )
+            previous_scene_summary = str(
+                context.get("previous_scene_summary") or ""
+            ).strip()
+            if (
+                previous_scene_summary
+                and local_progress_summary
+                and previous_scene_summary != local_progress_summary
+            ):
+                separator = " 最新进展："
+                latest_reserved_chars = min(600, len(local_progress_summary))
+                previous_budget = max(
+                    1,
+                    _SUMMARY_MAX_CHARS
+                    - len(separator)
+                    - latest_reserved_chars,
+                )
+                bounded_previous = _bounded_summary_text(
+                    previous_scene_summary,
+                    max_chars=previous_budget,
+                )
+                latest_budget = max(
+                    1,
+                    _SUMMARY_MAX_CHARS
+                    - len(separator)
+                    - len(bounded_previous),
+                )
+                bounded_latest = _bounded_summary_text(
+                    local_progress_summary,
+                    max_chars=latest_budget,
+                )
+                summary = f"{bounded_previous}{separator}{bounded_latest}"
+            else:
+                summary = previous_scene_summary or local_progress_summary
         formatted = self._format_scene_context_for_cat(
             summary=summary,
             key_points=key_points,
