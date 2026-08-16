@@ -27,6 +27,20 @@ _STATUS_ENTRY_TIMEOUT_SECONDS = 10.0
 _DOCUMENT_CONCURRENCY = 2
 
 
+def _document_job_owner(owner, kwargs: dict[str, object] | None = None) -> str:
+    resolver = getattr(owner, "_resolve_study_target_lanlan", None)
+    if callable(resolver):
+        return str(resolver(kwargs) or "").strip()
+    context = kwargs.get("_ctx") if isinstance(kwargs, dict) else None
+    if isinstance(context, dict):
+        target = str(context.get("lanlan_name") or "").strip()
+        if target:
+            return target
+    return str(
+        getattr(getattr(owner, "ctx", None), "_current_lanlan", "") or ""
+    ).strip()
+
+
 def _failed_payload(diagnostic: str) -> dict[str, object]:
     return {
         "job_id": "",
@@ -167,6 +181,7 @@ class _DocumentAnalysisJobsEntriesMixin:
     ):
         if self._agent is None:
             return Ok(_failed_payload("model_unavailable"))
+        job_owner = _document_job_owner(self, _)
         try:
             document = await asyncio.to_thread(
                 validate_document,
@@ -398,6 +413,11 @@ class _DocumentAnalysisJobsEntriesMixin:
                             payload={
                                 "response_mode": "document_analysis",
                                 "content": content,
+                                **(
+                                    {"target_lanlan": job_owner}
+                                    if job_owner
+                                    else {}
+                                ),
                             },
                         )
                     )
@@ -423,6 +443,7 @@ class _DocumentAnalysisJobsEntriesMixin:
             # snapshot, while unrelated tutor calls keep resolving current settings.
             with runtime_context:
                 payload = await self._document_job_manager().start(
+                    owner_id=job_owner,
                     analysis_mode=analysis_mode,
                     document=document.public_metadata(),
                     total_chunks=total_chunks,
@@ -460,9 +481,14 @@ class _DocumentAnalysisJobsEntriesMixin:
         },
         timeout=_STATUS_ENTRY_TIMEOUT_SECONDS,
     )
-    async def study_document_analysis_status(self, job_id: str, **_):
+    async def study_document_analysis_status(self, job_id: str, **kwargs):
         try:
-            return Ok(await self._document_job_manager().status(job_id))
+            return Ok(
+                await self._document_job_manager().status(
+                    job_id,
+                    owner_id=_document_job_owner(self, kwargs),
+                )
+            )
         except DocumentAnalysisJobError as exc:
             return Ok(_failed_payload(exc.diagnostic))
 
@@ -477,8 +503,12 @@ class _DocumentAnalysisJobsEntriesMixin:
         input_schema={"type": "object", "properties": {}},
         timeout=_STATUS_ENTRY_TIMEOUT_SECONDS,
     )
-    async def study_active_document_analysis(self, **_):
-        return Ok(await self._document_job_manager().active())
+    async def study_active_document_analysis(self, **kwargs):
+        return Ok(
+            await self._document_job_manager().active(
+                owner_id=_document_job_owner(self, kwargs)
+            )
+        )
 
     @ui.action()
     @plugin_entry(
@@ -502,13 +532,14 @@ class _DocumentAnalysisJobsEntriesMixin:
         timeout=_STATUS_ENTRY_TIMEOUT_SECONDS,
     )
     async def study_cancel_document_analysis(
-        self, job_id: str, cancellation_source: str = "user", **_
+        self, job_id: str, cancellation_source: str = "user", **kwargs
     ):
         try:
             return Ok(
                 await self._document_job_manager().cancel(
                     job_id,
                     source="user",
+                    owner_id=_document_job_owner(self, kwargs),
                 )
             )
         except DocumentAnalysisJobError as exc:

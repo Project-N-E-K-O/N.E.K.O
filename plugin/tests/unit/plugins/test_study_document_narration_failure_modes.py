@@ -194,6 +194,88 @@ async def test_direct_job_public_payload_preserves_output_truncated(
 
 
 @pytest.mark.asyncio
+async def test_document_narration_targets_the_requesting_role(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from plugin.plugins.study_companion import entry_document_analysis_jobs as entry
+
+    document, _ = _chunked_document()
+    direct_document = ValidatedDocument(
+        name=document.name,
+        document_type=document.document_type,
+        text=document.text,
+        instruction="",
+        locale="en",
+        analysis_kind="auto",
+        chars=document.chars,
+        tokens=10,
+        sha256=document.sha256,
+    )
+    monkeypatch.setattr(entry, "validate_document", lambda **_kwargs: direct_document)
+
+    class Agent:
+        async def document_analyze(self, current):
+            return TutorReply(
+                operation=LLM_OPERATION_DOCUMENT_ANALYZE,
+                input_text=current.descriptor,
+                reply="private summary",
+            )
+
+    bus = _RecordingBus()
+
+    class Owner:
+        _agent = Agent()
+        _event_bus = bus
+        _cfg = SimpleNamespace(
+            communication=SimpleNamespace(
+                enabled=True, general_narration_enabled=True
+            )
+        )
+        logger = _Logger()
+
+        def __init__(self) -> None:
+            self._document_jobs = DocumentAnalysisJobManager()
+
+        _document_job_manager = StudyCompanionPlugin._document_job_manager
+
+        async def _finalize_tutor_call(self, operation, result, **kwargs):
+            return {
+                "operation": operation,
+                "reply": result.reply,
+                "summary": result.reply,
+                "document": kwargs["public_payload"]["document"],
+                "degraded": result.degraded,
+                "diagnostic": result.diagnostic,
+            }
+
+    owner = Owner()
+    started = await StudyCompanionPlugin.study_start_document_analysis(
+        owner,
+        document_name="book.txt",
+        document_type="text/plain",
+        document_text=document.text,
+        locale="en",
+        _ctx={"lanlan_name": "alice"},
+    )
+    for _ in range(100):
+        status = await owner._document_jobs.status(
+            started.value["job_id"], owner_id="alice"
+        )
+        if status["status"] != "running":
+            break
+        await asyncio.sleep(0.001)
+
+    assert status["status"] == "completed"
+    assert len(bus.events) == 1
+    assert bus.events[0].payload == {
+        "response_mode": "document_analysis",
+        "content": "private summary",
+        "target_lanlan": "alice",
+    }
+    await owner._document_jobs.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_legacy_chunk_and_merge_methods_still_return_strings(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

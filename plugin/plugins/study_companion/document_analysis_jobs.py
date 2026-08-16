@@ -40,6 +40,7 @@ class DocumentJobBudget:
 @dataclass(slots=True)
 class _Job:
     job_id: str
+    owner_id: str
     analysis_mode: str
     document: dict[str, object]
     total_chunks: int
@@ -92,6 +93,7 @@ class DocumentAnalysisJobManager:
     async def start(
         self,
         *,
+        owner_id: str = "",
         analysis_mode: str,
         document: dict[str, object],
         total_chunks: int,
@@ -109,6 +111,7 @@ class DocumentAnalysisJobManager:
             job_id = secrets.token_urlsafe(24)
             job = _Job(
                 job_id=job_id,
+                owner_id=str(owner_id or "").strip(),
                 analysis_mode=analysis_mode,
                 document=dict(document),
                 total_chunks=max(1, int(total_chunks)),
@@ -119,22 +122,26 @@ class DocumentAnalysisJobManager:
             job.task = asyncio.create_task(self._run(job, runner, on_completed))
             return job.public_payload()
 
-    async def status(self, job_id: str) -> dict[str, Any]:
+    async def status(self, job_id: str, *, owner_id: str = "") -> dict[str, Any]:
         async with self._lock:
             self._reap_locked()
             job = self._jobs.get(str(job_id or "").strip())
-            if job is None:
+            if job is None or job.owner_id != str(owner_id or "").strip():
                 raise DocumentAnalysisJobError(
                     "document analysis job was not found",
                     diagnostic="document_job_not_found",
                 )
             return job.public_payload()
 
-    async def active(self) -> dict[str, Any]:
+    async def active(self, *, owner_id: str = "") -> dict[str, Any]:
         async with self._lock:
             self._reap_locked()
             job = self._jobs.get(self._active_job_id)
-            if job is None or job.status != "running":
+            if (
+                job is None
+                or job.status != "running"
+                or job.owner_id != str(owner_id or "").strip()
+            ):
                 return {
                     "job_id": "",
                     "status": "idle",
@@ -145,12 +152,18 @@ class DocumentAnalysisJobManager:
                 }
             return job.public_payload()
 
-    async def cancel(self, job_id: str, *, source: str = "user") -> dict[str, Any]:
+    async def cancel(
+        self,
+        job_id: str,
+        *,
+        source: str = "user",
+        owner_id: str = "",
+    ) -> dict[str, Any]:
         task: asyncio.Task[None] | None = None
         async with self._lock:
             self._reap_locked()
             job = self._jobs.get(str(job_id or "").strip())
-            if job is None:
+            if job is None or job.owner_id != str(owner_id or "").strip():
                 raise DocumentAnalysisJobError(
                     "document analysis job was not found",
                     diagnostic="document_job_not_found",
