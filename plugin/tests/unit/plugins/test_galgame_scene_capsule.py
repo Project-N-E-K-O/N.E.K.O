@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from _galgame_bridge_support import *
+from plugin.plugins.galgame_plugin.agent_scene_tracker import AgentSceneTracker
 
 
 def _capsule_shared(
@@ -25,6 +26,51 @@ def _capsule_shared(
         history_events=events,
         history_lines=lines,
     )
+
+
+@pytest.mark.plugin_unit
+def test_sequence_less_delivery_key_uses_occurrence_high_water() -> None:
+    first = GameLLMAgent._summary_delivery_key(
+        scene_id="scene-a",
+        route_id="",
+        stable_line_count=16,
+        last_line_occurrence_key="private-occurrence-a",
+    )
+    second = GameLLMAgent._summary_delivery_key(
+        scene_id="scene-a",
+        route_id="",
+        stable_line_count=16,
+        last_line_occurrence_key="private-occurrence-b",
+    )
+
+    assert first != second
+    assert "private-occurrence" not in first
+    assert "private-occurrence" not in second
+
+
+@pytest.mark.plugin_unit
+def test_scene_tracker_retains_all_pending_scopes_above_soft_limit() -> None:
+    tracker = AgentSceneTracker(seen_line_limit=64)
+    tracker.sync_current_scene_summary_mirror("scene-a", route_id="current")
+
+    for index in range(33):
+        assert tracker.remember_scene_line(
+            "scene-a",
+            f"event-{index}",
+            route_id=f"route-{index}",
+            seq=0,
+            ts=f"2026-04-21T08:35:{index:02d}Z",
+        )
+
+    pending_states = [
+        state
+        for state in tracker.summary_scene_states.values()
+        if int(state.get("lines_since_push") or 0) > 0
+    ]
+    assert len(pending_states) == 33
+    assert {str(state.get("route_id") or "") for state in pending_states} == {
+        f"route-{index}" for index in range(33)
+    }
 
 
 @pytest.mark.asyncio
@@ -405,9 +451,17 @@ async def test_route_less_line_event_inherits_current_route_for_capsule(
     )
     old_line = _summary_test_line("scene-a", 1)
     line = _summary_test_line("scene-a", 2)
+    route_boundary = _event(
+        seq=1,
+        event_type="session_started",
+        session_id="sess-a",
+        game_id="demo.alpha",
+        ts="2026-04-21T08:35:00Z",
+        payload={"scene_id": "scene-a", "route_id": "route-a"},
+    )
     events = [
-        _summary_test_line_event("scene-a", 1, seq=1),
-        _summary_test_line_event("scene-a", 2, seq=2),
+        _summary_test_line_event("scene-a", 1, seq=2),
+        _summary_test_line_event("scene-a", 2, seq=3),
     ]
     for item in [old_line, line]:
         item.pop("route_id", None)
@@ -418,7 +472,7 @@ async def test_route_less_line_event_inherits_current_route_for_capsule(
     shared = _shared_state(
         mode="companion",
         session_id="sess-a",
-        last_seq=2,
+        last_seq=3,
         snapshot=_session_state(
             speaker=str(line["speaker"]),
             text=str(line["text"]),
@@ -427,8 +481,18 @@ async def test_route_less_line_event_inherits_current_route_for_capsule(
             line_id=str(line["line_id"]),
             ts=str(line["ts"]),
         ),
-        history_events=events,
+        history_events=[route_boundary, *events],
         history_lines=[old_line, line],
+    )
+
+    occurrences = agent._scene_capsule_line_occurrences(
+        shared,
+        snapshot=dict(shared["latest_snapshot"]),
+    )
+    assert len(occurrences) == 2
+    assert all(
+        str((item.get("line") or {}).get("route_id") or "") == "route-a"
+        for item in occurrences
     )
 
     await agent.tick(shared)
@@ -436,8 +500,51 @@ async def test_route_less_line_event_inherits_current_route_for_capsule(
 
     assert len(ctx.pushed_messages) == 1
     assert ctx.pushed_messages[0]["metadata"]["route_id"] == "route-a"
-    assert str(line["text"]) in str(ctx.pushed_messages[0]["content"])
-    assert str(old_line["text"]) not in str(ctx.pushed_messages[0]["content"])
+    response_target = str(ctx.pushed_messages[0]["content"]).split(
+        "本次回应对象：", 1
+    )[-1]
+    assert str(line["text"]) in response_target
+    assert str(old_line["text"]) not in response_target
+
+
+@pytest.mark.plugin_unit
+def test_latest_scene_summary_text_matches_exact_route(tmp_path: Path) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(
+            _Ctx(plugin_dir, _make_effective_config(bridge_root))
+        ),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    agent._scene_memory.extend(
+        [
+            {
+                "scene_id": "scene-a",
+                "route_id": "route-a",
+                "summary": "route A memory",
+            },
+            {
+                "scene_id": "scene-a",
+                "route_id": "route-b",
+                "summary": "route B memory",
+            },
+        ]
+    )
+
+    assert (
+        agent._latest_scene_summary_text(
+            {"scene_id": "scene-a", "route_id": "route-a"}
+        )
+        == "route A memory"
+    )
+    assert (
+        agent._latest_scene_summary_text(
+            {"scene_id": "scene-a", "route_id": "route-c"}
+        )
+        == ""
+    )
 
 
 @pytest.mark.plugin_unit
@@ -889,6 +996,78 @@ async def test_trusted_memory_to_ocr_handoff_skips_overlap_and_pushes_new_suffix
     assert "same handoff line" not in str(ctx.pushed_messages[-1]["content"]).split(
         "本次回应对象：", 1
     )[-1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_trusted_handoff_uses_previous_native_scene_summary_as_seed(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    gateway = _FakeLLMGateway()
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(ctx),
+        logger=_Logger(),
+        llm_gateway=gateway,
+        host_adapter=_FakeHostAdapter(),
+    )
+    memory_line = _summary_test_line("memory-scene", 1)
+    memory_shared = _shared_state(
+        mode="companion",
+        game_id="demo.alpha",
+        session_id="memory-session",
+        active_data_source=DATA_SOURCE_MEMORY_READER,
+        snapshot=_session_state(
+            text=str(memory_line["text"]),
+            scene_id="memory-scene",
+            line_id=str(memory_line["line_id"]),
+        ),
+        history_lines=[memory_line],
+    )
+    await agent.tick(memory_shared)
+    agent._scene_memory.append(
+        {
+            "scene_id": "memory-scene",
+            "route_id": "",
+            "summary": "cumulative memory before handoff",
+        }
+    )
+
+    ocr_lines = [_summary_test_line("ocr-scene", index) for index in range(1, 9)]
+    ocr_events = [
+        _summary_test_line_event("ocr-scene", index, seq=index)
+        for index in range(1, 9)
+    ]
+    latest_line = ocr_lines[-1]
+    ocr_shared = _shared_state(
+        mode="companion",
+        game_id="demo.alpha",
+        session_id="ocr-session",
+        active_data_source=DATA_SOURCE_OCR_READER,
+        ocr_reader_runtime={
+            "effective_process_name": "demo.exe",
+            "effective_window_title": "Demo",
+            "target_hwnd": 100,
+            "target_window_visible": True,
+        },
+        snapshot=_session_state(
+            text=str(latest_line["text"]),
+            scene_id="ocr-scene",
+            line_id=str(latest_line["line_id"]),
+            ts=str(latest_line["ts"]),
+        ),
+        history_events=ocr_events,
+        history_lines=ocr_lines,
+    )
+    await agent.tick(ocr_shared)
+    await agent.drain_summary_tasks(timeout=1.0)
+
+    assert len(gateway.summarize_calls) == 1
+    assert (
+        gateway.summarize_calls[0]["previous_scene_summary"]
+        == "cumulative memory before handoff"
+    )
 
 
 @pytest.mark.asyncio

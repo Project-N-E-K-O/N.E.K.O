@@ -76,7 +76,7 @@ class AgentSceneTracker:
                 "last_scheduled_seq": 0,
             }
             self.summary_scene_states[scope_key] = state
-            self._trim_scene_states()
+            self._trim_scene_states(preserve_scope_key=scope_key)
         return state
 
     def remember_scene_line(
@@ -248,21 +248,21 @@ class AgentSceneTracker:
             )
         return items[-self._SUMMARY_SCENE_STATE_LIMIT :]
 
-    def _trim_scene_states(self) -> None:
+    def _trim_scene_states(self, *, preserve_scope_key: str = "") -> None:
         while len(self.summary_scene_states) > self._SUMMARY_SCENE_STATE_LIMIT:
             removable_scope_key = ""
             for scope_key, state in self.summary_scene_states.items():
-                if scope_key == self.summary_scene_scope_key:
+                if scope_key in {
+                    self.summary_scene_scope_key,
+                    str(preserve_scope_key or ""),
+                }:
                     continue
                 if int(state.get("lines_since_push") or 0) <= 0:
                     removable_scope_key = scope_key
                     break
             if not removable_scope_key:
-                for scope_key in self.summary_scene_states:
-                    if scope_key != self.summary_scene_scope_key:
-                        removable_scope_key = scope_key
-                        break
-            if not removable_scope_key:
+                # The fixed limit is a pruning target, not permission to drop
+                # live facts that have not reached an archive threshold yet.
                 break
             self.summary_scene_states.pop(removable_scope_key, None)
 

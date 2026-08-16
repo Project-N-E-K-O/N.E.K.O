@@ -433,10 +433,14 @@ class AgentSceneContextMixin:
 
     def _latest_scene_summary_text(self, snapshot: dict[str, Any]) -> str:
         scene_id = str((snapshot or {}).get("scene_id") or "")
+        route_id = str((snapshot or {}).get("route_id") or "")
         for entry in reversed(self._scene_memory or []):
-            if str(entry.get("scene_id") or "") == scene_id:
+            if (
+                str(entry.get("scene_id") or "") == scene_id
+                and str(entry.get("route_id") or "") == route_id
+            ):
                 return str(entry.get("summary") or "")
-        if self._scene_memory:
+        if not scene_id and not route_id and self._scene_memory:
             return str(self._scene_memory[-1].get("summary") or "")
         return ""
 
