@@ -114,6 +114,9 @@ class _InteractiveScreenshotOptions(BaseModel):
     )
 
 
+_INTERACTIVE_SCREENSHOT_TRANSPORT_MARGIN_SECONDS = 5.0
+
+
 async def _capture_windows_interactive_screenshot(request: Request) -> JSONResponse:
     raw_body = await request.body()
     if raw_body:
@@ -149,7 +152,10 @@ async def _capture_windows_interactive_screenshot(request: Request) -> JSONRespo
             capture_payload["lanlan_name"] = target_lanlan
         result = await capture_bridge.request_capture_region(
             capture_payload,
-            timeout=70.0,
+            timeout=(
+                options.session_timeout_ms / 1000.0
+                + _INTERACTIVE_SCREENSHOT_TRANSPORT_MARGIN_SECONDS
+            ),
         )
     except capture_bridge.CaptureBridgeError as exc:
         message = str(exc)

@@ -335,7 +335,7 @@ def test_windows_interactive_screenshot_uses_region_bridge_defaults_for_empty_bo
             "copy_to_clipboard": True,
             "session_timeout_ms": 300000,
         }
-        assert timeout == 70.0
+        assert timeout == 305.0
         return {"success": True, "image": "data:image/png;base64,AAAA"}
 
     monkeypatch.setattr(system_router_module.capture_bridge, "request_capture_region", _capture)
@@ -374,6 +374,7 @@ def test_windows_interactive_screenshot_forwards_selection_options_and_cancel(mo
             "session_timeout_ms": 45000,
             "lanlan_name": "requesting",
         }
+        assert timeout == 50.0
         return {"success": False, "canceled": True}
 
     monkeypatch.setattr(system_router_module.capture_bridge, "request_capture_region", _capture)
