@@ -1591,7 +1591,9 @@ Live2DManager.prototype._performSnapAnimation = function (model, snapInfo, optio
 
         const animate = (currentTime) => {
             // 检查模型是否仍然有效
-            if (!model || model.destroyed || !isCurrentSettlement()) {
+            if (!model || model.destroyed ||
+                    this._live2DActiveSnapAnimation !== animationToken ||
+                    !isCurrentSettlement()) {
                 finish(false);
                 return;
             }

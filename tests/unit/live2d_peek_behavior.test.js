@@ -676,6 +676,31 @@ test('stale terminal snap animation stops before writing the next drag position'
     assert.equal(manager._live2DActiveSnapAnimation, null);
 });
 
+test('cancelled unguarded snap animation stops before overwriting drag coordinates', async () => {
+    const harness = createHarness({ widgetModeEnabled: false });
+    const manager = new harness.Live2DManager();
+    const model = createModel({ x: -400, y: 120, width: 500, height: 600 });
+
+    const animation = manager._performSnapAnimation(model, {
+        startX: -400,
+        startY: 120,
+        targetX: 5,
+        targetY: 120,
+        overflow: { left: 400, right: 0, top: 0, bottom: 0 }
+    });
+    await waitForQueuedFrame(harness);
+
+    manager._live2DActiveSnapAnimation = null;
+    manager._isSnapping = false;
+    model.x = 240;
+    flushNextFrame(harness, 16);
+
+    assert.equal(await animation, false);
+    assert.equal(model.x, 240);
+    assert.equal(manager._isSnapping, false);
+    assert.equal(manager._live2DActiveSnapAnimation, null);
+});
+
 test('peek application rechecks settlement generation after display refresh', async () => {
     const currentDisplay = {
         id: 'display-a',
