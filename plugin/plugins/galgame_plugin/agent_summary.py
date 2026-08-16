@@ -603,9 +603,8 @@ class AgentSummaryMixin:
                 "route_id": str(route_id or ""),
                 "choices": [
                     {
-                        "choice_id": str(
-                            item.get("choice_id") or item.get("option_id") or ""
-                        ),
+                        # Reader-generated IDs are source-local (mem:/ocr:).
+                        # Trusted handoff matching is semantic and positional.
                         "text": str(
                             item.get("text") or item.get("label") or ""
                         ).strip(),
@@ -2206,9 +2205,6 @@ class AgentSummaryMixin:
             scene_id=scene_id,
             route_id=route_id,
         )
-        self._scene_summary_latest_memory_order_by_scene[memory_scope_key] = (
-            memory_order
-        )
         metadata_payload["_memory_schedule_order"] = memory_order
         metadata_payload["_memory_scope_key"] = memory_scope_key
         metadata_payload["_memory_boundary_key"] = self._scene_capsule_boundary_key(
@@ -2265,6 +2261,7 @@ class AgentSummaryMixin:
                 "data_source_at_schedule": current_data_source,
                 "trusted_history_token": self._trusted_history_token(shared),
                 "memory_order": memory_order,
+                "memory_scope_key": memory_scope_key,
             },
         )
 
@@ -2309,6 +2306,44 @@ class AgentSummaryMixin:
                 "memory_order": memory_order,
             },
         )
+        current_task = asyncio.current_task()
+        predecessors: list[tuple[int, asyncio.Task[bool]]] = []
+        for pending_task in self._summary_tasks:
+            if pending_task is current_task or pending_task.done():
+                continue
+            pending_meta = self._summary_task_meta.get(pending_task) or {}
+            if str(pending_meta.get("memory_scope_key") or "") != memory_scope_key:
+                continue
+            pending_order = int(pending_meta.get("memory_order") or 0)
+            if 0 < pending_order < memory_order:
+                predecessors.append((pending_order, pending_task))
+        if predecessors:
+            _, predecessor = max(predecessors, key=lambda item: item[0])
+            try:
+                await asyncio.shield(predecessor)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # The predecessor's tracker restores its schedule.  A newer
+                # archive may still proceed from the last committed memory.
+                pass
+        if generation != self._summary_generation:
+            return False
+        previous_scene_summary = next(
+            (
+                str(item.get("summary") or "").strip()
+                for item in reversed(self._scene_memory)
+                if isinstance(item, dict)
+                and str(item.get("scene_id") or "") == scene_id
+                and str(item.get("route_id") or "") == route_id
+            ),
+            "",
+        )
+        if previous_scene_summary:
+            context = {
+                **context,
+                "previous_scene_summary": previous_scene_summary,
+            }
         _formatted_summary, summary_meta = await self._summarize_scene_context_for_cat(
             context,
             scene_id=scene_id,

@@ -1292,6 +1292,7 @@ async def test_newer_memory_summary_wins_when_old_llm_finishes_last(
         def __init__(self) -> None:
             super().__init__()
             self.first_started = asyncio.Event()
+            self.second_started = asyncio.Event()
             self.release_first = asyncio.Event()
             self.call_count = 0
 
@@ -1304,6 +1305,7 @@ async def test_newer_memory_summary_wins_when_old_llm_finishes_last(
                 await self.release_first.wait()
                 summary = "older memory summary"
             else:
+                self.second_started.set()
                 summary = "newer memory summary"
             return {
                 "degraded": False,
@@ -1360,6 +1362,7 @@ async def test_newer_memory_summary_wins_when_old_llm_finishes_last(
         metadata={"scheduled_from_event_seq": 2},
     )
     await asyncio.sleep(0)
+    assert not gateway.second_started.is_set()
     gateway.release_first.set()
     await agent.drain_summary_tasks(timeout=1.0)
 
@@ -1369,6 +1372,11 @@ async def test_newer_memory_summary_wins_when_old_llm_finishes_last(
     assert scene_memory[-1]["summary"] == "newer memory summary"
     assert "newer memory summary" in plugin._story_so_far
     assert "older memory summary" not in plugin._story_so_far
+    assert gateway.second_started.is_set()
+    assert (
+        gateway.summarize_calls[-1]["previous_scene_summary"]
+        == "older memory summary"
+    )
     assert all(
         item["metadata"]["kind"] == "scene_delta"
         for item in ctx.pushed_messages
@@ -1988,9 +1996,13 @@ async def test_trusted_source_handoff_reconciles_same_choice_menu(
         llm_gateway=_FakeLLMGateway(),
         host_adapter=_FakeHostAdapter(),
     )
-    choices = [
-        {"choice_id": "a", "text": "follow her"},
-        {"choice_id": "b", "text": "wait here"},
+    memory_choices = [
+        {"choice_id": "mem:line-1#choice0", "text": "follow her"},
+        {"choice_id": "mem:line-1#choice1", "text": "wait here"},
+    ]
+    ocr_choices = [
+        {"choice_id": "ocr:line-1#choice0", "text": "follow her"},
+        {"choice_id": "ocr:line-1#choice1", "text": "wait here"},
     ]
 
     def _choice_shared(
@@ -2031,14 +2043,18 @@ async def test_trusted_source_handoff_reconciles_same_choice_menu(
         session_id="memory-session",
         game_id="demo.alpha",
         ts="2026-04-21T08:35:01Z",
-        payload={"scene_id": "memory-scene", "route_id": "", "choices": choices},
+        payload={
+            "scene_id": "memory-scene",
+            "route_id": "",
+            "choices": memory_choices,
+        },
     )
     memory_shared = _choice_shared(
         source=DATA_SOURCE_MEMORY_READER,
         session_id="memory-session",
         scene_id="memory-scene",
         events=[memory_event],
-        visible=choices,
+        visible=memory_choices,
     )
     await agent.tick(memory_shared)
     await agent.drain_summary_tasks(timeout=1.0)
@@ -2050,14 +2066,18 @@ async def test_trusted_source_handoff_reconciles_same_choice_menu(
         session_id="ocr-session",
         game_id="demo.alpha",
         ts="2026-04-21T08:35:01Z",
-        payload={"scene_id": "ocr-scene", "route_id": "", "choices": choices},
+        payload={
+            "scene_id": "ocr-scene",
+            "route_id": "",
+            "choices": ocr_choices,
+        },
     )
     ocr_shared = _choice_shared(
         source=DATA_SOURCE_OCR_READER,
         session_id="ocr-session",
         scene_id="ocr-scene",
         events=[ocr_event],
-        visible=choices,
+        visible=ocr_choices,
     )
     await agent.tick(ocr_shared)
     await agent.drain_summary_tasks(timeout=1.0)

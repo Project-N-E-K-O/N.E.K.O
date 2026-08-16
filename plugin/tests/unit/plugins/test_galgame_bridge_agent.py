@@ -6236,6 +6236,7 @@ async def test_newer_same_scene_summary_wins_when_older_llm_finishes_last(
         def __init__(self) -> None:
             super().__init__()
             self.older_started = asyncio.Event()
+            self.newer_started = asyncio.Event()
             self.release_older = asyncio.Event()
 
         async def summarize_scene(
@@ -6252,6 +6253,7 @@ async def test_newer_same_scene_summary_wins_when_older_llm_finishes_last(
                     "summary": "older summary",
                     "diagnostic": "",
                 }
+            self.newer_started.set()
             return {
                 "degraded": False,
                 "summary": "newer summary",
@@ -6322,31 +6324,20 @@ async def test_newer_same_scene_summary_wins_when_older_llm_finishes_last(
         [*first_lines, _summary_test_line("scene-a", 2)],
         11,
     )
+    await asyncio.sleep(0)
+    assert ctx.pushed_messages == []
+    assert not gateway.newer_started.is_set()
+
+    gateway.release_older.set()
+    await asyncio.wait_for(asyncio.shield(older_task), timeout=0.5)
     await asyncio.wait_for(asyncio.shield(newer_task), timeout=0.5)
 
     assert ctx.pushed_messages == []
     assert agent._last_delivered_summary_seq == 11
     assert agent._scene_memory[-1]["summary"] == "newer summary"
-    assert "newer summary" in plugin._story_so_far
-    memory_scope_key = agent._scene_route_scope_key(
-        scene_id="scene-a",
-        route_id="",
-    )
-    latest_memory_order = agent._scene_summary_latest_memory_order_by_scene[
-        memory_scope_key
-    ]
-
-    gateway.release_older.set()
-    await asyncio.wait_for(asyncio.shield(older_task), timeout=0.5)
-
-    assert ctx.pushed_messages == []
-    assert agent._last_delivered_summary_seq == 11
-    assert agent._scene_memory[-1]["summary"] == "newer summary"
     assert "older summary" not in plugin._story_so_far
-    assert (
-        agent._scene_summary_latest_memory_order_by_scene[memory_scope_key]
-        == latest_memory_order
-    )
+    assert gateway.newer_started.is_set()
+    assert gateway.summarize_calls[-1]["previous_scene_summary"] == "older summary"
 
 
 @pytest.mark.asyncio
