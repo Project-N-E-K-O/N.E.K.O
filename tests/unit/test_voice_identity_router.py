@@ -364,6 +364,19 @@ def test_cancel_forwards_enrollment_header_and_returns_status(
 
 
 @pytest.mark.unit
+def test_cancel_without_enrollment_header_passes_stable_empty_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _fake_service()
+    client = _client(monkeypatch, service)
+
+    response = client.post(f"{API_ROOT}/enrollment/cancel")
+
+    assert response.status_code == 200
+    service.cancel_enrollment.assert_awaited_once_with("")
+
+
+@pytest.mark.unit
 def test_filter_requires_boolean_and_forwards_requested_value(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

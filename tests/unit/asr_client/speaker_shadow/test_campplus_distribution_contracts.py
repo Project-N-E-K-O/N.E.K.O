@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import re
 import tomllib
 from pathlib import Path
@@ -72,8 +73,20 @@ def test_windows_nuitka_runs_frozen_voice_identity_release_smoke() -> None:
     assert "taskkill.exe /PID $process.Id /T /F" in workflow
     assert "NEKO_VOICE_IDENTITY_RELEASE_SMOKE_OK" in workflow
     assert 'os.environ.get("NEKO_VOICE_IDENTITY_RELEASE_SMOKE") == "1"' in launcher
-    assert launcher.index("_release_smoke_freeze_support()") < launcher.index(
-        "_run_voice_identity_release_smoke()"
+    tree = ast.parse(launcher)
+    calls = {
+        node.func.id: node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    assert (
+        calls["_release_smoke_freeze_support"]
+        < calls["_run_voice_identity_release_smoke"]
+    )
+    stdout_index = workflow.index("$stdoutText = if")
+    assert workflow.index("$timedOut = -not $process.WaitForExit") < stdout_index
+    assert stdout_index < workflow.index(
+        'throw "Frozen Owner voice identity smoke timed out"'
     )
 
 

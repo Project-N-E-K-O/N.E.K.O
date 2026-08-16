@@ -2104,15 +2104,18 @@ async def test_runtime_state_initializes_and_backfills_phase4a_fields() -> None:
     assert runtime._voice_input_resource_optimization_handshake_override is None
     assert runtime._voice_input_resource_optimization_session_value is None
     assert runtime._core_asr_preview_turn_token is None
+    assert runtime._voice_input_external_suppressions == set()
 
     del runtime._voice_input_resource_optimization_handshake_override
     del runtime._voice_input_resource_optimization_session_value
     del runtime._core_asr_preview_turn_token
+    del runtime._voice_input_external_suppressions
     runtime._ensure_asr_runtime_state()
 
     assert runtime._voice_input_resource_optimization_handshake_override is None
     assert runtime._voice_input_resource_optimization_session_value is None
     assert runtime._core_asr_preview_turn_token is None
+    assert runtime._voice_input_external_suppressions == set()
 
 
 async def test_provider_final_watchdog_blocks_only_independent_asr() -> None:

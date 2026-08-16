@@ -96,6 +96,15 @@ def _profile(generation: str) -> SpeakerProfile:
         reference.close()
 
 
+async def _wait_until(predicate, *, timeout_seconds: float = 2.0) -> None:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout_seconds
+    while not predicate():
+        if loop.time() >= deadline:
+            raise AssertionError("condition was not satisfied before timeout")
+        await asyncio.sleep(0.01)
+
+
 @pytest.fixture(autouse=True)
 def _fake_composition_factory(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
@@ -152,6 +161,31 @@ async def test_failed_activation_rolls_changed_managers_back() -> None:
     finally:
         old_profile.close()
         new_profile.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_failed_activation_queues_detach_when_rollback_degrades() -> None:
+    registry = OwnerVoiceRuntimeRegistry(enforce=True)
+    managers = [_Manager(), _Manager()]
+    for manager in managers:
+        await registry.register_manager(manager)
+    old_profile = _profile("old")
+    new_profile = _profile("new")
+    try:
+        assert await registry.activate(old_profile, "old-generation")
+        ordered = tuple(registry._managers)  # type: ignore[attr-defined]
+        ordered[0].verifier_outcomes.extend([True, False])
+        ordered[1].verifier_outcomes.append(False)
+
+        assert not await registry.activate(new_profile, "new-generation")
+
+        assert ordered[0] in registry._detach_pending  # type: ignore[attr-defined]
+        assert registry._detach_retry_task is not None  # type: ignore[attr-defined]
+    finally:
+        old_profile.close()
+        new_profile.close()
+        await registry.close()
 
 
 @pytest.mark.unit
@@ -282,7 +316,7 @@ async def test_restore_watchdog_retries_pending_manager() -> None:
     registry = OwnerVoiceRuntimeRegistry(
         enforce=True,
         restore_retry_interval_seconds=0.01,
-        restore_retry_timeout_seconds=0.1,
+        restore_retry_timeout_seconds=2.0,
     )
     failing = _Manager()
     failing.restore_failures = 3
@@ -291,7 +325,12 @@ async def test_restore_watchdog_retries_pending_manager() -> None:
 
     await registry.restore("voice_identity_enrollment")
     assert registry._restore_pending  # type: ignore[attr-defined]
-    await asyncio.sleep(0.04)
+    await _wait_until(
+        lambda: (
+            not registry._restore_pending  # type: ignore[attr-defined]
+            and registry._restore_retry_task is None
+        )  # type: ignore[attr-defined]
+    )
 
     assert not registry._restore_pending  # type: ignore[attr-defined]
     assert registry._restore_retry_task is None  # type: ignore[attr-defined]
@@ -351,6 +390,26 @@ async def test_manager_replacement_gets_current_state_and_old_is_detached() -> N
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_unregister_cancellation_records_cleanup_before_propagating() -> None:
+    registry = OwnerVoiceRuntimeRegistry(enforce=True)
+    manager = _Manager()
+    await registry.register_manager(manager)
+    await registry.suppress("voice_identity_enrollment")
+    manager.verifier_outcomes.append(asyncio.CancelledError())
+
+    with pytest.raises(asyncio.CancelledError):
+        await registry.unregister_manager(manager)
+
+    assert manager in registry._detach_pending  # type: ignore[attr-defined]
+    assert manager.suppression_calls[-1] == (
+        "voice_identity_enrollment",
+        False,
+    )
+    await registry.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_attach_failure_keeps_manager_registered_for_recovery() -> None:
     registry = OwnerVoiceRuntimeRegistry(enforce=True)
     active_profile = _profile("profile")
@@ -387,7 +446,7 @@ async def test_failed_suppression_rollback_gets_watchdog_retry() -> None:
     registry = OwnerVoiceRuntimeRegistry(
         enforce=True,
         restore_retry_interval_seconds=0.01,
-        restore_retry_timeout_seconds=0.1,
+        restore_retry_timeout_seconds=2.0,
     )
     changed = _Manager()
     failing = _Manager()
@@ -401,8 +460,61 @@ async def test_failed_suppression_rollback_gets_watchdog_retry() -> None:
         await registry.suppress("voice_identity_enrollment")
 
     assert registry._restore_retry_task is not None  # type: ignore[attr-defined]
-    await asyncio.sleep(0.04)
+    await _wait_until(
+        lambda: (
+            not registry._restore_pending  # type: ignore[attr-defined]
+            and registry._restore_retry_task is None
+        )  # type: ignore[attr-defined]
+    )
     assert not registry._restore_pending  # type: ignore[attr-defined]
+    await registry.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_watchdog_exhaustion_emits_restore_and_detach_warnings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        runtime_module.logger,
+        "warning",
+        lambda message, *_args, **_kwargs: warnings.append(message),
+    )
+    registry = OwnerVoiceRuntimeRegistry(
+        enforce=True,
+        restore_retry_interval_seconds=0.01,
+        restore_retry_timeout_seconds=0.1,
+    )
+    restore_manager = _Manager()
+    detach_manager = _Manager()
+    await registry.register_manager(restore_manager)
+    await registry.register_manager(detach_manager)
+    await registry.suppress("voice_identity_enrollment")
+
+    async def never_restore(reason: str, *, suppressed: bool) -> None:
+        restore_manager.suppression_calls.append((reason, suppressed))
+        if not suppressed:
+            raise RuntimeError("restore remains unavailable")
+
+    restore_manager.set_voice_input_suppressed = never_restore  # type: ignore[method-assign]
+    await registry.restore("voice_identity_enrollment")
+    restore_task = registry._restore_retry_task  # type: ignore[attr-defined]
+    assert restore_task is not None
+
+    async def never_detach(_factory, *, activation_generation: str) -> bool:
+        del activation_generation
+        return False
+
+    detach_manager.set_speaker_verifier_factory = never_detach  # type: ignore[method-assign]
+    await registry.unregister_manager(detach_manager)
+    detach_task = registry._detach_retry_task  # type: ignore[attr-defined]
+    assert detach_task is not None
+
+    await asyncio.gather(restore_task, detach_task)
+
+    assert any("restore watchdog exhausted" in message for message in warnings)
+    assert any("detach watchdog exhausted" in message for message in warnings)
     await registry.close()
 
 
@@ -466,6 +578,7 @@ def test_unavailable_profile_store_never_falls_back_to_plaintext(
 async def test_runtime_install_and_wrapper_lifecycle(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     installed: list[object] = []
 
@@ -520,6 +633,7 @@ async def test_runtime_install_and_wrapper_lifecycle(
 
     service = runtime_module.install_voice_identity_runtime(config)
     assert service.runtime_mode == "off"
+    assert "Unsupported NEKO_VOICE_IDENTITY_MODE" in caplog.text
     assert isinstance(service.args[0], runtime_module._UnavailableProfileStore)
     assert installed == [service]
     assert runtime_module.install_voice_identity_runtime(config) is service
@@ -532,6 +646,31 @@ async def test_runtime_install_and_wrapper_lifecycle(
     manager = _Manager()
     assert not await runtime_module.register_voice_identity_manager(manager)
     await runtime_module.unregister_voice_identity_manager(manager)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_runtime_close_always_closes_registry_and_preserves_service_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FailingService:
+        async def close(self) -> None:
+            raise RuntimeError("service close failed")
+
+    class Registry:
+        closed = False
+
+        async def close(self) -> None:
+            self.closed = True
+
+    registry = Registry()
+    monkeypatch.setattr(runtime_module, "_service", FailingService())
+    monkeypatch.setattr(runtime_module, "_runtime_registry", registry)
+
+    with pytest.raises(RuntimeError, match="service close failed"):
+        await runtime_module.close_voice_identity_runtime()
+
+    assert registry.closed
 
 
 @pytest.mark.unit

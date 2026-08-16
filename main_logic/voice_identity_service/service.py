@@ -493,18 +493,25 @@ class VoiceIdentityService:
                 cleanup_ok = await self._cleanup_session(session)
                 if not cleanup_ok:
                     self._set_ineffective(VoiceIdentityEffectiveReason.RUNTIME_DEGRADED)
+            old_profile = self._profile
+            try:
+                await self._profile_store.adelete()
+            except VoiceIdentityProfileStoreError as exc:
+                raise VoiceIdentityServiceError("runtime_degraded") from exc
             try:
                 await self._preference_store.asave(False)
-                self._requested_enabled = False
-                detached = await self._activate(None, str(uuid.uuid4()))
-                await self._profile_store.adelete()
-            except (
-                VoiceIdentityPreferenceStoreError,
-                VoiceIdentityProfileStoreError,
-            ) as exc:
-                self._set_ineffective(VoiceIdentityEffectiveReason.RUNTIME_DEGRADED)
+            except VoiceIdentityPreferenceStoreError as exc:
+                rollback_failed = False
+                if old_profile is not None:
+                    try:
+                        await self._profile_store.asave(old_profile)
+                    except VoiceIdentityProfileStoreError:
+                        rollback_failed = True
+                if rollback_failed:
+                    self._set_ineffective(VoiceIdentityEffectiveReason.RUNTIME_DEGRADED)
                 raise VoiceIdentityServiceError("runtime_degraded") from exc
-            old_profile = self._profile
+            self._requested_enabled = False
+            detached = await self._activate(None, str(uuid.uuid4()))
             self._profile = None
             self._set_ineffective(
                 VoiceIdentityEffectiveReason.DISABLED

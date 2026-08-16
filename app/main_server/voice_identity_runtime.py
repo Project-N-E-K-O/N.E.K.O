@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import copy
 from dataclasses import dataclass
+import logging
 import math
 import os
 from pathlib import Path
@@ -28,6 +29,9 @@ from main_logic.voice_identity_service.registry import (
 )
 from main_logic.voice_identity_service.service import VoiceIdentityService
 from main_logic.voice_input.suppression import VoiceInputSuppressionController
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -146,11 +150,15 @@ class OwnerVoiceRuntimeRegistry:
         async with self._lock:
             self._managers.discard(manager)
             detach_generation = str(uuid.uuid4())
+            cancellation: asyncio.CancelledError | None = None
             try:
                 detached = await manager.set_speaker_verifier_factory(
                     None,
                     activation_generation=detach_generation,
                 )
+            except asyncio.CancelledError as exc:
+                cancellation = exc
+                detached = False
             except Exception:
                 detached = False
             if detached:
@@ -160,16 +168,26 @@ class OwnerVoiceRuntimeRegistry:
                 self._ensure_detach_watchdog()
             if self._suppressed or manager in self._restore_pending:
                 try:
-                    await self._restore_manager(
-                        manager,
-                        "voice_identity_enrollment",
+                    await asyncio.shield(
+                        self._restore_manager(
+                            manager,
+                            "voice_identity_enrollment",
+                        )
                     )
+                except asyncio.CancelledError as exc:
+                    self._restore_pending.add(manager)
+                    if not self._suppressed:
+                        self._ensure_restore_watchdog("voice_identity_enrollment")
+                    if cancellation is None:
+                        cancellation = exc
                 except Exception:
                     self._restore_pending.add(manager)
                     if not self._suppressed:
                         self._ensure_restore_watchdog("voice_identity_enrollment")
                 else:
                     self._restore_pending.discard(manager)
+            if cancellation is not None:
+                raise cancellation
 
     async def activate(
         self,
@@ -253,6 +271,7 @@ class OwnerVoiceRuntimeRegistry:
     ) -> None:
         for manager in reversed(managers):
             factory: OwnerVoiceAsrCompositionFactory | None = None
+            detach_generation = str(uuid.uuid4())
             try:
                 factory = (
                     None if activation is None else activation.factory_for(manager)
@@ -265,12 +284,18 @@ class OwnerVoiceRuntimeRegistry:
                         else activation.generation
                     ),
                 )
-                if not updated and factory is not None:
-                    factory.close()
-            except Exception:
+                if updated:
+                    self._detach_pending.pop(manager, None)
+                else:
+                    if factory is not None:
+                        factory.close()
+                    self._detach_pending[manager] = detach_generation
+            except BaseException:
                 if factory is not None:
                     factory.close()
-                continue
+                self._detach_pending[manager] = detach_generation
+        if self._detach_pending:
+            self._ensure_detach_watchdog()
 
     async def suppress(self, reason: str) -> None:
         await self._set_suppressed(reason, True)
@@ -363,6 +388,18 @@ class OwnerVoiceRuntimeRegistry:
                         except Exception:
                             continue
                         self._restore_pending.discard(manager)
+            async with self._lock:
+                pending_count = (
+                    0
+                    if self._closed or self._suppressed
+                    else len(self._restore_pending)
+                )
+            if pending_count:
+                logger.warning(
+                    "Owner voice input restore watchdog exhausted with %d "
+                    "manager(s) still pending",
+                    pending_count,
+                )
         except asyncio.CancelledError:
             raise
         finally:
@@ -401,6 +438,14 @@ class OwnerVoiceRuntimeRegistry:
                             continue
                         if detached:
                             self._detach_pending.pop(manager, None)
+            async with self._lock:
+                pending_count = 0 if self._closed else len(self._detach_pending)
+            if pending_count:
+                logger.warning(
+                    "Owner voice verifier detach watchdog exhausted with %d "
+                    "manager(s) still pending",
+                    pending_count,
+                )
         except asyncio.CancelledError:
             raise
         finally:
@@ -508,6 +553,12 @@ def install_voice_identity_runtime(config_manager) -> VoiceIdentityService:
     runtime_mode = (
         configured_mode if configured_mode in {"off", "shadow", "enforce"} else "off"
     )
+    if configured_mode not in {"off", "shadow", "enforce"}:
+        logger.warning(
+            "Unsupported NEKO_VOICE_IDENTITY_MODE value %r; Owner voice "
+            "filtering is disabled",
+            configured_mode,
+        )
     registry = OwnerVoiceRuntimeRegistry(enforce=runtime_mode == "enforce")
     local_state_dir = Path(config_manager.local_state_dir)
     try:
@@ -545,9 +596,21 @@ async def initialize_voice_identity_runtime(config_manager) -> None:
 
 async def close_voice_identity_runtime() -> None:
     service = _service
-    if service is not None:
-        await service.close()
     registry = _runtime_registry
+    try:
+        if service is not None:
+            await service.close()
+    except BaseException:
+        try:
+            if registry is not None:
+                await registry.close()
+        except BaseException:
+            logger.warning(
+                "Owner voice runtime registry cleanup failed after service "
+                "cleanup failure",
+                exc_info=True,
+            )
+        raise
     if registry is not None:
         await registry.close()
 

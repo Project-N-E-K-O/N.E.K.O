@@ -1167,10 +1167,10 @@ async def _init_character_resources(k: str, is_new_character: bool):
 
             rs.session_manager = new_mgr
 
-    from .voice_identity_runtime import register_voice_identity_manager
+        from .voice_identity_runtime import register_voice_identity_manager
 
-    if rs.session_manager is not None:
-        await register_voice_identity_manager(rs.session_manager)
+        if rs.session_manager is not None:
+            await register_voice_identity_manager(rs.session_manager)
 
     # 检查并启动同步连接器 task
     # 如果是新角色，或者 task 不存在/已结束，需要启动

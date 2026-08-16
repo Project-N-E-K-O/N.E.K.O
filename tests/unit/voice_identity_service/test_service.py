@@ -543,8 +543,48 @@ async def test_delete_failure_still_disables_requested_filter(
         await service.delete_profile()
 
     status = service.status()
-    assert not status.state.requested_enabled
+    assert status.state.requested_enabled
     assert status.state.has_profile
-    assert not status.state.effective_enabled
-    assert activations[-1][0] is None
+    assert status.state.effective_enabled
+    assert activations[-1][0] is not None
+    await service.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_delete_rolls_back_profile_when_preference_write_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _model, activations, _events = _service(tmp_path)
+    await service.initialize()
+    enrollment = await service.start_enrollment()
+    await service.complete_enrollment(
+        enrollment.enrollment_id,
+        "profile-a",
+        _pcm(),
+    )
+
+    async def fail_preference(_enabled: bool) -> None:
+        raise VoiceIdentityPreferenceStoreError("write failed")
+
+    monkeypatch.setattr(
+        service._preference_store,  # type: ignore[attr-defined]
+        "asave",
+        fail_preference,
+    )
+    with pytest.raises(VoiceIdentityServiceError, match="runtime_degraded"):
+        await service.delete_profile()
+
+    restored = await service._profile_store.aload()  # type: ignore[attr-defined]
+    assert restored is not None
+    try:
+        assert restored.generation == "profile-a"
+    finally:
+        restored.close()
+    status = service.status()
+    assert status.state.requested_enabled
+    assert status.state.has_profile
+    assert status.state.effective_enabled
+    assert activations[-1][0] is not None
     await service.close()

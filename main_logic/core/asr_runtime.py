@@ -224,6 +224,7 @@ class AsrRuntimeMixin:
         self._voice_lease_requires_abort = False
         self._voice_input_suppressed = True
         self._voice_input_suppression_reasons: set[str] = {"owner_none"}
+        self._voice_input_external_suppressions: set[str] = set()
         self._voice_lease_resync_signal_state: tuple[str, int, bool, str] | None = (
             None
         )
@@ -353,6 +354,8 @@ class AsrRuntimeMixin:
             self._independent_asr_handshake_override = None
         if not hasattr(self, "_speaker_shadow_factory"):
             self._speaker_shadow_factory = None
+        if not hasattr(self, "_voice_input_external_suppressions"):
+            self._voice_input_external_suppressions = set()
         if not hasattr(
             self,
             "_voice_input_resource_optimization_handshake_override",

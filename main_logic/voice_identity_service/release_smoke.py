@@ -93,6 +93,8 @@ async def run_release_smoke() -> None:
     reference: SpeakerReference | None = None
     runtime: SpeakerShadowRuntime | None = None
     observations = []
+    primary_error: BaseException | None = None
+    cleanup_errors: list[BaseException] = []
     try:
         if not model.load():
             raise RuntimeError("campplus_model_unavailable")
@@ -181,20 +183,37 @@ async def run_release_smoke() -> None:
             for item in observations
         ):
             raise RuntimeError("speaker_shadow_score_invalid")
+    except BaseException as exc:
+        primary_error = exc
     finally:
-        model.close()
+        try:
+            model.close()
+        except BaseException as exc:
+            cleanup_errors.append(exc)
         if runtime is not None:
-            await runtime.close()
-        if loaded_profile is not None:
-            loaded_profile.close()
-        if profile is not None:
-            profile.close()
-        if reference is not None:
-            reference.close()
-        if loaded_embedding is not None:
-            loaded_embedding.fill(0)
-        if embedding is not None:
-            embedding.fill(0)
+            try:
+                await runtime.close()
+            except BaseException as exc:
+                cleanup_errors.append(exc)
+        for owned in (loaded_profile, profile, reference):
+            if owned is None:
+                continue
+            try:
+                owned.close()
+            except BaseException as exc:
+                cleanup_errors.append(exc)
+        for owned_embedding in (loaded_embedding, embedding):
+            if owned_embedding is None:
+                continue
+            try:
+                owned_embedding.fill(0)
+            except BaseException as exc:
+                cleanup_errors.append(exc)
+    if primary_error is not None:
+        raise primary_error.with_traceback(primary_error.__traceback__)
+    if cleanup_errors:
+        cleanup_error = cleanup_errors[0]
+        raise cleanup_error.with_traceback(cleanup_error.__traceback__)
 
 
 def main() -> int:

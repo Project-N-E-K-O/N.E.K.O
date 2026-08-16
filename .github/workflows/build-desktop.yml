@@ -742,14 +742,22 @@ jobs:
             -RedirectStandardOutput $stdout `
             -RedirectStandardError $stderr `
             -PassThru
-          if (-not $process.WaitForExit(120000)) {
+          $timedOut = -not $process.WaitForExit(120000)
+          if ($timedOut) {
             taskkill.exe /PID $process.Id /T /F | Out-Host
-            throw "Frozen Owner voice identity smoke timed out"
+            $process.WaitForExit()
           }
-          $stdoutText = Get-Content -LiteralPath $stdout -Raw
-          $stderrText = Get-Content -LiteralPath $stderr -Raw
+          $stdoutText = if (Test-Path -LiteralPath $stdout) {
+            Get-Content -LiteralPath $stdout -Raw
+          } else { "" }
+          $stderrText = if (Test-Path -LiteralPath $stderr) {
+            Get-Content -LiteralPath $stderr -Raw
+          } else { "" }
           Write-Host $stdoutText
           if ($stderrText) { Write-Host $stderrText }
+          if ($timedOut) {
+            throw "Frozen Owner voice identity smoke timed out"
+          }
           if ($process.ExitCode -ne 0) {
             throw "Frozen Owner voice identity smoke exited with $($process.ExitCode)"
           }

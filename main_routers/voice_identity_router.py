@@ -142,7 +142,7 @@ async def cancel_voice_identity_enrollment(request: Request):
     service = _service()
     if service is None:
         return _service_unavailable()
-    enrollment_id = request.headers.get(_ENROLLMENT_HEADER)
+    enrollment_id = request.headers.get(_ENROLLMENT_HEADER, "")
     try:
         await service.cancel_enrollment(enrollment_id)
     except VoiceIdentityServiceError as exc:
