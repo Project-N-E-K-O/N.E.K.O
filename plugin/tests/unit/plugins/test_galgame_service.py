@@ -142,13 +142,11 @@ def test_build_config_reads_scene_summary_repeat_guard_fields() -> None:
         {
             "galgame": {
                 "scene_summary_repeat_guard_enabled": False,
-                "scene_summary_duplicate_window_seconds": 12.5,
             }
         }
     )
 
     assert cfg.scene_summary_repeat_guard_enabled is False
-    assert cfg.scene_summary_duplicate_window_seconds == 12.5
 
 
 def test_build_config_defaults_invalid_scene_summary_repeat_guard_fields() -> None:
@@ -157,15 +155,12 @@ def test_build_config_defaults_invalid_scene_summary_repeat_guard_fields() -> No
         {
             "galgame": {
                 "scene_summary_repeat_guard_enabled": "false",
-                "scene_summary_duplicate_window_seconds": -1,
             }
         }
     )
 
     assert default_cfg.scene_summary_repeat_guard_enabled is True
-    assert default_cfg.scene_summary_duplicate_window_seconds == 45.0
     assert invalid_cfg.scene_summary_repeat_guard_enabled is True
-    assert invalid_cfg.scene_summary_duplicate_window_seconds == 45.0
 
 
 def test_build_config_defaults_fast_loop_enabled() -> None:

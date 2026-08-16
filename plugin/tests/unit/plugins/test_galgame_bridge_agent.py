@@ -6414,7 +6414,6 @@ async def test_scene_summary_repeat_guard_can_be_disabled_without_fingerprint_su
         host_adapter=_FakeHostAdapter(),
         config=SimpleNamespace(
             scene_summary_repeat_guard_enabled=False,
-            scene_summary_duplicate_window_seconds=45.0,
         ),
     )
     lines = [_summary_test_line("scene-a", 1)]

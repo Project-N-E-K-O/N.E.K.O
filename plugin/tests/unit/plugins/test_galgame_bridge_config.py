@@ -1805,6 +1805,105 @@ async def test_session_appearing_after_empty_startup_scan_still_baselines_old_da
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
+async def test_preexisting_boundary_keeps_event_appended_after_candidate_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    plugin = GalgameBridgePlugin(_Ctx(plugin_dir, _make_effective_config(bridge_root)))
+    await plugin.startup()
+    try:
+        await plugin._poll_bridge(force=True)
+        game_id = "demo.boundary-race"
+        session_id = "sess-boundary-race"
+        old_line = _event(
+            seq=1,
+            event_type="line_changed",
+            session_id=session_id,
+            game_id=game_id,
+            payload={
+                "speaker": "雪乃",
+                "text": "候选快照内的旧台词",
+                "line_id": "line-old",
+                "scene_id": "scene-a",
+                "route_id": "",
+            },
+            ts="2000-01-01T00:00:01Z",
+        )
+        new_line = _event(
+            seq=2,
+            event_type="line_changed",
+            session_id=session_id,
+            game_id=game_id,
+            payload={
+                "speaker": "雪乃",
+                "text": "候选读取后追加的新台词",
+                "line_id": "line-new",
+                "scene_id": "scene-a",
+                "route_id": "",
+            },
+            ts="2026-04-21T08:30:02Z",
+        )
+        game_dir = _create_game_dir(
+            bridge_root,
+            game_id=game_id,
+            session_payload=_session(
+                game_id=game_id,
+                session_id=session_id,
+                last_seq=1,
+                started_at="2000-01-01T00:00:00Z",
+                state=_session_state(
+                    speaker="雪乃",
+                    text="候选快照内的旧台词",
+                    line_id="line-old",
+                    scene_id="scene-a",
+                    ts="2000-01-01T00:00:01Z",
+                ),
+            ),
+            events=[old_line],
+        )
+        events_path = game_dir / "events.jsonl"
+        boundary_calls = 0
+
+        def _append_during_boundary(path: Path, **kwargs: object) -> EventStreamBoundary:
+            nonlocal boundary_calls
+            boundary_calls += 1
+            if boundary_calls == 1:
+                with events_path.open("ab") as handle:
+                    handle.write(
+                        json.dumps(
+                            new_line,
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                        ).encode("utf-8")
+                        + b"\n"
+                    )
+            return read_events_boundary(path, **kwargs)
+
+        monkeypatch.setattr(
+            "plugin.plugins.galgame_plugin.plugin_core.snapshot_events_boundary",
+            _append_during_boundary,
+        )
+
+        await plugin._poll_bridge(force=True)
+
+        mounted = plugin._snapshot_state()
+        history = await plugin.galgame_get_history(limit=20, include_events=True)
+        assert boundary_calls == 1
+        assert mounted["last_seq"] == 2
+        assert mounted["latest_snapshot"]["line_id"] == "line-new"
+        assert mounted["events_byte_offset"] == events_path.stat().st_size
+        assert isinstance(history, Ok)
+        assert [event["seq"] for event in history.value["events"]] == [2]
+        assert [line["line_id"] for line in history.value["stable_lines"]] == [
+            "line-new"
+        ]
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
 async def test_boundary_retry_discards_stale_checkpoint_before_processing_new_tail(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1857,12 +1956,12 @@ async def test_boundary_retry_discards_stale_checkpoint_before_processing_new_ta
     )
     boundary_calls = 0
 
-    def _flaky_boundary(path: Path) -> EventStreamBoundary:
+    def _flaky_boundary(path: Path, **kwargs: object) -> EventStreamBoundary:
         nonlocal boundary_calls
         boundary_calls += 1
         if boundary_calls == 1:
             return EventStreamBoundary(error="simulated boundary read failure")
-        return read_events_boundary(path)
+        return read_events_boundary(path, **kwargs)
 
     monkeypatch.setattr(
         "plugin.plugins.galgame_plugin.plugin_core.snapshot_events_boundary",

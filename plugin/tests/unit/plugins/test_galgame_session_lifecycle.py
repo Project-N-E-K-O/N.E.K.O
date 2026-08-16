@@ -163,6 +163,27 @@ def test_snapshot_events_boundary_keeps_incomplete_line_for_tail_reader(
 
 
 @pytest.mark.plugin_unit
+def test_snapshot_events_boundary_stops_at_session_checkpoint(tmp_path: Path) -> None:
+    events_path = tmp_path / "events.jsonl"
+    checkpoint_line = b'{"session_id":"sess-a","seq":1}\n'
+    events_path.write_bytes(
+        checkpoint_line
+        + b'{"session_id":"sess-a","seq":2}\n'
+        + b'{"session_id":"sess-b","seq":1}\n'
+    )
+
+    boundary = snapshot_events_boundary(
+        events_path,
+        session_id="sess-a",
+        last_seq=1,
+    )
+
+    assert boundary.offset == len(checkpoint_line)
+    assert boundary.file_size == events_path.stat().st_size
+    assert boundary.error == ""
+
+
+@pytest.mark.plugin_unit
 def test_snapshot_events_boundary_handles_missing_and_unreadable_paths(
     tmp_path: Path,
 ) -> None:

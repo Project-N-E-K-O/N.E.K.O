@@ -4060,6 +4060,8 @@ class GalgamePlugin(
             boundary = await asyncio.to_thread(
                 snapshot_events_boundary,
                 candidate.events_path,
+                session_id=session_id,
+                last_seq=int(session.get("last_seq") or 0),
             )
             if boundary.error:
                 warnings.append(boundary.error)

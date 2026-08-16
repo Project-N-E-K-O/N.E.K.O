@@ -59,6 +59,61 @@ async def test_first_stable_event_submits_capsule_without_game_llm(tmp_path: Pat
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
+async def test_choices_shown_event_submits_complete_menu_atomically(tmp_path: Path) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(ctx),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    choices = [
+        {"choice_id": "choice-a", "text": "追上去", "index": 0},
+        {"choice_id": "choice-b", "text": "留在原地", "index": 1},
+        {"choice_id": "choice-c", "text": "先观察四周", "index": 2},
+    ]
+    event = _event(
+        seq=1,
+        event_type="choices_shown",
+        session_id="sess-a",
+        game_id="demo.alpha",
+        ts="2026-04-21T08:35:01Z",
+        payload={
+            "scene_id": "scene-a",
+            "route_id": "",
+            "choices": choices,
+        },
+    )
+    shared = _shared_state(
+        mode="companion",
+        session_id="sess-a",
+        last_seq=1,
+        snapshot=_session_state(
+            scene_id="scene-a",
+            choices=choices,
+            is_menu_open=True,
+        ),
+        history_events=[event],
+    )
+
+    await agent.tick(shared)
+    await agent.tick(shared)
+    await agent.drain_summary_tasks(timeout=1.0)
+
+    assert len(ctx.pushed_messages) == 1
+    pushed = ctx.pushed_messages[0]
+    assert pushed["metadata"]["new_choice_count"] == 3
+    response_target = str(pushed["content"]).split("本次回应对象：", 1)[-1]
+    assert all(choice["text"] in response_target for choice in choices)
+
+    await agent.tick(shared)
+    await agent.drain_summary_tasks(timeout=1.0)
+    assert len(ctx.pushed_messages) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
 async def test_eight_lines_update_memory_without_summary_notification(tmp_path: Path) -> None:
     plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
     ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
@@ -454,7 +509,6 @@ async def test_new_capsule_cancels_old_retry_and_commits_superseded_events(
         host_adapter=_FakeHostAdapter(),
         config=SimpleNamespace(
             scene_summary_repeat_guard_enabled=repeat_guard_enabled,
-            scene_summary_duplicate_window_seconds=45.0,
         ),
     )
     first_line = _summary_test_line("scene-a", 1)
@@ -846,7 +900,6 @@ async def test_tentative_observation_retires_pending_capsule_with_guard_disabled
         host_adapter=_FakeHostAdapter(),
         config=SimpleNamespace(
             scene_summary_repeat_guard_enabled=False,
-            scene_summary_duplicate_window_seconds=45.0,
         ),
     )
     stable_line = _summary_test_line("scene-a", 1)

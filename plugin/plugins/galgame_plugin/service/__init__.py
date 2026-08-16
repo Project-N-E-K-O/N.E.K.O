@@ -671,11 +671,6 @@ def build_config(raw_config: dict[str, Any]) -> GalgameConfig:
         scene_summary_repeat_guard_enabled=_coerce_bool(
             galgame_obj.get("scene_summary_repeat_guard_enabled"), True
         ),
-        scene_summary_duplicate_window_seconds=_coerce_float(
-            galgame_obj.get("scene_summary_duplicate_window_seconds"),
-            45.0,
-            minimum=0.0,
-        ),
         scene_push_half_threshold=max(1, int(galgame_obj.get("scene_push_half_threshold") or 4)),
         scene_push_time_fallback_seconds=_coerce_float(
             galgame_obj.get("scene_push_time_fallback_seconds"), 120.0, minimum=10.0

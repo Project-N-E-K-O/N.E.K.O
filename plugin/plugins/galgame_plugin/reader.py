@@ -91,7 +91,12 @@ def read_session_json(session_path: Path) -> SessionReadResult:
     return SessionReadResult(session=sanitize_session_snapshot(payload))
 
 
-def snapshot_events_boundary(events_path: Path) -> EventStreamBoundary:
+def snapshot_events_boundary(
+    events_path: Path,
+    *,
+    session_id: str = "",
+    last_seq: int | None = None,
+) -> EventStreamBoundary:
     if not events_path.exists():
         return EventStreamBoundary()
 
@@ -101,6 +106,41 @@ def snapshot_events_boundary(events_path: Path) -> EventStreamBoundary:
             file_size = handle.tell()
             if file_size <= 0:
                 return EventStreamBoundary()
+
+            if session_id and last_seq is not None:
+                checkpoint_seq = max(0, int(last_seq))
+                matched_offset = 0
+                cursor = 0
+                buffer = b""
+                buffer_start = 0
+                while cursor < file_size:
+                    handle.seek(cursor)
+                    chunk = handle.read(min(64 * 1024, file_size - cursor))
+                    if not chunk:
+                        break
+                    cursor += len(chunk)
+                    data = buffer + chunk
+                    data_start = buffer_start
+                    line_start = 0
+                    while True:
+                        newline_index = data.find(b"\n", line_start)
+                        if newline_index < 0:
+                            break
+                        event, _error = _parse_jsonl_line(data[line_start:newline_index])
+                        if event is not None and str(event.get("session_id") or "") == session_id:
+                            try:
+                                seq = int(event.get("seq") or 0)
+                            except (TypeError, ValueError):
+                                seq = 0
+                            if 0 < seq <= checkpoint_seq:
+                                matched_offset = data_start + newline_index + 1
+                        line_start = newline_index + 1
+                    buffer = data[line_start:]
+                    buffer_start = data_start + line_start
+                return EventStreamBoundary(
+                    offset=matched_offset,
+                    file_size=file_size,
+                )
 
             cursor = file_size
             while cursor > 0:

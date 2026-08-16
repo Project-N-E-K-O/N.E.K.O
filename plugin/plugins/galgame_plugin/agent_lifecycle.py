@@ -116,13 +116,6 @@ class AgentLifecycleMixin:
         self._scene_summary_repeat_guard_enabled = bool(
             getattr(config, "scene_summary_repeat_guard_enabled", True)
         )
-        self._scene_summary_duplicate_window_seconds = max(
-            0.0,
-            float(
-                getattr(config, "scene_summary_duplicate_window_seconds", 45.0)
-                or 0.0
-            ),
-        )
         self._scene_summary_repeat_reservations: set[str] = set()
         self._scene_summary_repeat_deliveries: dict[str, dict[str, Any]] = {}
         self._scene_summary_latest_scene_content: dict[str, dict[str, Any]] = {}

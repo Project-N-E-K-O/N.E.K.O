@@ -664,6 +664,40 @@ class AgentSummaryMixin:
                 seq = int(event.get("seq") or 0)
             except (TypeError, ValueError):
                 seq = 0
+            event_session_id = str(event.get("session_id") or session_id)
+            event_occurrence = seq if seq > 0 else f"ordered:{event_index}"
+            event_semantic_version = hashlib.sha256(
+                json.dumps(
+                    {
+                        "type": event_type,
+                        "scene_id": str(payload.get("scene_id") or scene_id),
+                        "route_id": str(
+                            payload.get("route_id") or snapshot.get("route_id") or ""
+                        ),
+                        "choices": [
+                            {
+                                "choice_id": str(
+                                    item.get("choice_id") or item.get("option_id") or ""
+                                ),
+                                "text": str(item.get("text") or item.get("label") or "").strip(),
+                                "index": choice_index,
+                            }
+                            for choice_index, item in enumerate(raw_choices)
+                            if isinstance(item, dict)
+                        ],
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ).encode("utf-8")
+            ).hexdigest()[:16]
+            event_group_key = self._scene_capsule_event_key(
+                data_source,
+                event_session_id,
+                event_type,
+                event_occurrence,
+                "choice_event_group",
+                event_semantic_version,
+            )
             for choice_index, item in enumerate(raw_choices):
                 if not isinstance(item, dict):
                     continue
@@ -701,12 +735,13 @@ class AgentSummaryMixin:
                     {
                         "event_key": self._scene_capsule_event_key(
                             data_source,
-                            str(event.get("session_id") or session_id),
+                            event_session_id,
                             event_type,
-                            seq if seq > 0 else f"ordered:{event_index}",
+                            event_occurrence,
                             choice_index,
                             semantic_version,
                         ),
+                        "event_group_key": event_group_key,
                         "seq": seq,
                         "ts": str(event.get("ts") or payload.get("ts") or ""),
                         "choice": choice,
@@ -770,19 +805,6 @@ class AgentSummaryMixin:
                     }
                 )
         return occurrences
-
-    def _prune_scene_summary_repeat_deliveries(self, now: float) -> None:
-        window = self._scene_summary_duplicate_window_seconds
-        if window <= 0:
-            self._scene_summary_repeat_deliveries.clear()
-            return
-        expired = [
-            fingerprint
-            for fingerprint, record in self._scene_summary_repeat_deliveries.items()
-            if now - float(record.get("delivered_at") or 0.0) > window
-        ]
-        for fingerprint in expired:
-            self._scene_summary_repeat_deliveries.pop(fingerprint, None)
 
     def _note_scene_summary_suppressed(
         self,
@@ -1394,7 +1416,13 @@ class AgentSummaryMixin:
                 dict(item.get("line") or {}) for item in current_lines[-2:]
             ]
             new_stable_lines = []
-            new_choices = [dict(target.get("choice") or {})]
+            target_group_key = str(target.get("event_group_key") or "")
+            new_choices = [
+                dict(item.get("choice") or {})
+                for item in choice_occurrences
+                if target_group_key
+                and str(item.get("event_group_key") or "") == target_group_key
+            ] or [dict(target.get("choice") or {})]
         content = self._format_scene_delta_for_cat(
             new_stable_lines=new_stable_lines,
             new_choices=new_choices,
