@@ -493,8 +493,13 @@ function getLive2DPeekDragEdgeIntent(options, workArea) {
         return { horizontal: '', vertical: '' };
     }
 
-    const screenX = Number(live2DPeekDisplayContext && live2DPeekDisplayContext.screenX) || 0;
-    const screenY = Number(live2DPeekDisplayContext && live2DPeekDisplayContext.screenY) || 0;
+    if (!live2DPeekDisplayContext ||
+            !Number.isFinite(Number(live2DPeekDisplayContext.screenX)) ||
+            !Number.isFinite(Number(live2DPeekDisplayContext.screenY))) {
+        return { horizontal: '', vertical: '' };
+    }
+    const screenX = Number(live2DPeekDisplayContext.screenX);
+    const screenY = Number(live2DPeekDisplayContext.screenY);
     const releaseX = releaseScreenPoint.x - screenX;
     const releaseY = releaseScreenPoint.y - screenY;
     const deltaX = releaseScreenPoint.x - startScreenPoint.x;

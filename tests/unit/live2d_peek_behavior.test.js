@@ -163,6 +163,7 @@ function createHarness({
         controls,
         getLive2DPeekViewport: context.getLive2DPeekViewport,
         getLive2DPeekEdgeContact: context.getLive2DPeekEdgeContact,
+        refreshLive2DPeekDisplayContext: context.refreshLive2DPeekDisplayContext,
         validateLive2DPeekEdgeContact: context.validateLive2DPeekEdgeContact,
         settleLive2DBaseAtEdgeContact: context.settleLive2DBaseAtEdgeContact,
         getLive2DModelLocalGrabPoint: context.getLive2DModelLocalGrabPoint,
@@ -772,8 +773,17 @@ test('edge contact follows drawable geometry instead of transparent model bounds
     assert.equal(harness.getLive2DPeekEdgeContact(manager, model), null);
 });
 
-test('oversize edge contact requires an exact edge or explicit drag intent', () => {
-    const harness = createHarness();
+test('oversize edge contact requires an exact edge or explicit drag intent', async () => {
+    const harness = createHarness({
+        currentDisplay: {
+            id: 'display-test',
+            screenX: 0,
+            screenY: 0,
+            bounds: { x: 0, y: 0, width: 1000, height: 800 },
+            workArea: { x: 0, y: 0, width: 1000, height: 800 }
+        }
+    });
+    await harness.refreshLive2DPeekDisplayContext(true);
     const manager = new harness.Live2DManager();
 
     const exactLeft = createModel({ x: 0, y: 100, width: 1200, height: 600 });
@@ -801,8 +811,28 @@ test('oversize edge contact requires an exact edge or explicit drag intent', () 
     assert.equal(rightIntent.edge, 'right');
 });
 
-test('oversize vertical ambiguity degrades to a side edge without implicit y alignment', () => {
+test('screen-coordinate drag intent fails closed without display context', () => {
     const harness = createHarness();
+    const manager = new harness.Live2DManager();
+    const ambiguous = createModel({ x: -100, y: 100, width: 1200, height: 600 });
+
+    assert.equal(harness.getLive2DPeekEdgeContact(manager, ambiguous, null, {
+        startScreenPoint: { x: 300, y: 300 },
+        releaseScreenPoint: { x: 20, y: 300 }
+    }), null);
+});
+
+test('oversize vertical ambiguity degrades to a side edge without implicit y alignment', async () => {
+    const harness = createHarness({
+        currentDisplay: {
+            id: 'display-test',
+            screenX: 0,
+            screenY: 0,
+            bounds: { x: 0, y: 0, width: 1000, height: 800 },
+            workArea: { x: 0, y: 0, width: 1000, height: 800 }
+        }
+    });
+    await harness.refreshLive2DPeekDisplayContext(true);
     const manager = new harness.Live2DManager();
     const model = createModel({ x: 0, y: -100, width: 500, height: 1000 });
 
