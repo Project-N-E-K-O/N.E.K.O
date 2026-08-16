@@ -281,6 +281,7 @@
       },
       async resume(signal, update) {
         let recoveryFailures = 0;
+        const maxRecoveryFailures = 5;
         while (!signal.aborted) {
           const savedId = this.savedId();
           if (!savedId) return null;
@@ -302,8 +303,10 @@
             } catch (error) {
               if (signal.aborted) break;
               lookupFailed = true;
-              studyDocumentState.textContent = formatPluginError(error);
-              setReply(formatPluginError(error));
+              if (recoveryFailures === 0) {
+                studyDocumentState.textContent = formatPluginError(error);
+                setReply(formatPluginError(error));
+              }
             }
           }
           if (!data && !lookupFailed) {
@@ -312,12 +315,15 @@
             } catch (error) {
               if (signal.aborted) break;
               lookupFailed = true;
-              studyDocumentState.textContent = formatPluginError(error);
-              setReply(formatPluginError(error));
+              if (recoveryFailures === 0) {
+                studyDocumentState.textContent = formatPluginError(error);
+                setReply(formatPluginError(error));
+              }
             }
           }
           if (lookupFailed) {
             recoveryFailures += 1;
+            if (recoveryFailures >= maxRecoveryFailures) return null;
             const delay = Math.min(
               30000,
               2000 * (2 ** Math.min(recoveryFailures - 1, 4)),

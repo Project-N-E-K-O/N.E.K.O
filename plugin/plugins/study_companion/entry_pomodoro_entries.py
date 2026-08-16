@@ -193,11 +193,35 @@ class _PomodoroEntriesMixin:
     async def study_pomodoro_stop(self, **_):
         try:
             _, _, timer, supervision = self._require_habit_components()
+            transition: dict[str, Any] | None = None
             async with self._pomodoro_runtime_lock():
+                before_status = await asyncio.to_thread(timer.status)
+                before_state = str(before_status.get("state") or "")
                 status = await asyncio.to_thread(timer.stop)
-                self._pomodoro_session_id = ""
-                self._pomodoro_target_lanlan = None
+                after_state = str(status.get("state") or "")
+                if before_state == "focusing" and after_state in {
+                    "short_break",
+                    "long_break",
+                }:
+                    transition = {
+                        "name": "pomodoro_focus_completed",
+                        "payload": {
+                            "session_id": str(
+                                status.get("current_focus_session", {}).get("id")
+                                or getattr(self, "_pomodoro_session_id", "")
+                                or ""
+                            ),
+                            "break_type": after_state,
+                            "target_lanlan": getattr(
+                                self, "_pomodoro_target_lanlan", None
+                            ),
+                        },
+                    }
+                else:
+                    self._pomodoro_session_id = ""
+                    self._pomodoro_target_lanlan = None
             supervision.on_focus_end()
+            await self._emit_pomodoro_transition(transition)
             self._wake_pomodoro_watcher()
             return Ok(build_pomodoro_status_payload(status))
         except Exception as exc:

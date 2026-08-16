@@ -63,6 +63,7 @@ from tests.fake_clock import patch_module_clock
 from plugin.core.ui_manifest import normalize_plugin_ui_manifest
 from plugin.plugins import study_companion as study_companion_module
 from plugin.plugins.study_companion import StudyCompanionPlugin
+from plugin.plugins.study_companion._event_bus import StudyEvent
 from plugin.plugins.study_companion.awareness_buffer import ActivityBuffer
 from plugin.plugins.study_companion.llm_prompts import (
     _compact_prompt_value,
@@ -9327,6 +9328,12 @@ async def test_study_pomodoro_stop_offloads_timer_operation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class _Timer:
+        def status(self) -> dict[str, object]:
+            return {
+                "state": "focusing",
+                "current_focus_session": {"id": "focus-1", "status": "running"},
+            }
+
         def stop(self) -> dict[str, object]:
             return {
                 "state": "cancelled",
@@ -9358,8 +9365,73 @@ async def test_study_pomodoro_stop_offloads_timer_operation(
 
     assert isinstance(status, Ok)
     assert status.value["state"] == "cancelled"
-    assert to_thread_calls == ["stop"]
+    assert to_thread_calls == ["status", "stop"]
     assert supervision.focus_end_count == 1
+
+
+@pytest.mark.asyncio
+async def test_study_pomodoro_stop_emits_focus_completion_after_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Timer:
+        def status(self) -> dict[str, object]:
+            return {
+                "state": "focusing",
+                "current_focus_session": {"id": "focus-deadline"},
+            }
+
+        def stop(self) -> dict[str, object]:
+            return {
+                "state": "short_break",
+                "current_focus_session": {
+                    "id": "focus-deadline",
+                    "status": "completed",
+                },
+            }
+
+    class _Supervision:
+        def __init__(self) -> None:
+            self.focus_end_count = 0
+
+        def on_focus_end(self) -> None:
+            self.focus_end_count += 1
+
+    class _EventBus:
+        def __init__(self) -> None:
+            self.events: list[StudyEvent] = []
+
+        async def emit(self, event: StudyEvent) -> None:
+            self.events.append(event)
+
+    async def _to_thread(func, /, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(study_companion_module.asyncio, "to_thread", _to_thread)
+    plugin = StudyCompanionPlugin.__new__(StudyCompanionPlugin)
+    supervision = _Supervision()
+    event_bus = _EventBus()
+    plugin._habit_store = object()
+    plugin._checkin_manager = object()
+    plugin._pomodoro_timer = _Timer()
+    plugin._supervision = supervision
+    plugin._event_bus = event_bus
+    plugin._pomodoro_session_id = "focus-deadline"
+    plugin._pomodoro_target_lanlan = "lanlan-at-start"
+
+    result = await plugin.study_pomodoro_stop()
+
+    assert isinstance(result, Ok)
+    assert result.value["state"] == "short_break"
+    assert supervision.focus_end_count == 1
+    assert len(event_bus.events) == 1
+    assert event_bus.events[0].name == "pomodoro_focus_completed"
+    assert event_bus.events[0].payload == {
+        "session_id": "focus-deadline",
+        "break_type": "short_break",
+        "target_lanlan": "lanlan-at-start",
+    }
+    assert plugin._pomodoro_session_id == "focus-deadline"
+    assert plugin._pomodoro_target_lanlan == "lanlan-at-start"
 
 
 @pytest.mark.asyncio

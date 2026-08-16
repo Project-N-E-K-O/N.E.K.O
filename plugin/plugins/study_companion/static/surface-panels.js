@@ -600,6 +600,7 @@
     const itemsByDeck = new Map();
     const hasMoreByDeck = new Map();
     const nextOffsetByDeck = new Map();
+    const loadingByDeck = new Map();
 
     async function refresh() {
       const payload = await ctx.callPlugin('study_memory_list_decks', { limit: 100 });
@@ -646,6 +647,9 @@
     }
 
     async function loadDeckItems(deckId, append = false) {
+      if (loadingByDeck.get(deckId)) return;
+      loadingByDeck.set(deckId, true);
+      draw();
       try {
         const offset = append ? (nextOffsetByDeck.get(deckId) || 0) : 0;
         const payload = await ctx.callPlugin('study_memory_list_deck_items', {
@@ -666,8 +670,10 @@
       } catch (error) {
         status = errText(error);
         if (!append) itemsByDeck.set(deckId, []);
+      } finally {
+        loadingByDeck.set(deckId, false);
+        draw();
       }
-      draw();
     }
 
     async function toggleDeckItems(deckId) {
@@ -715,10 +721,12 @@
           itemList.appendChild(el('p', 'study-panel__empty', t(ctx, 'ui.memory.empty_deck', 'No cards in this deck')));
         }
         if (hasMoreByDeck.get(deck.id)) {
-          itemList.appendChild(button(
+          const loadMore = button(
             t(ctx, 'ui.button.load_more_cards', 'Load more cards'),
             () => loadDeckItems(deck.id, true),
-          ));
+          );
+          loadMore.disabled = loadingByDeck.get(deck.id) === true;
+          itemList.appendChild(loadMore);
         }
         wrapper.appendChild(itemList);
       }

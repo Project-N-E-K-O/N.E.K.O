@@ -119,6 +119,75 @@ async def test_emit_answer_evaluated_respond_cooldown_30s() -> None:
 
 
 @pytest.mark.asyncio
+async def test_answer_respond_cooldown_is_scoped_to_target_lanlan() -> None:
+    ctx = _Ctx()
+    bus = StudyEventBus(plugin_ctx=ctx)
+
+    for target_lanlan in ("lanlan-a", "lanlan-b", "lanlan-a"):
+        await bus.emit(
+            StudyEvent(
+                name="answer_evaluated",
+                payload={
+                    "verdict": "incorrect",
+                    "score": 0.1,
+                    "question_summary": "Q",
+                    "user_answer_summary": "A",
+                    "target_lanlan": target_lanlan,
+                },
+            )
+        )
+
+    assert [item["target_lanlan"] for item in ctx.messages] == [
+        "lanlan-a",
+        "lanlan-b",
+        "lanlan-a",
+    ]
+    assert [item["ai_behavior"] for item in ctx.messages] == [
+        "respond",
+        "respond",
+        "read",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_pending_answer_respond_is_scoped_to_target_lanlan() -> None:
+    first_push_started = asyncio.Event()
+    release_first_push = asyncio.Event()
+
+    class _BlockingCtx(_Ctx):
+        async def push_message(self, **kwargs):
+            self.messages.append(dict(kwargs))
+            if kwargs.get("target_lanlan") == "lanlan-a":
+                first_push_started.set()
+                await release_first_push.wait()
+            return {"ok": True}
+
+    ctx = _BlockingCtx()
+    bus = StudyEventBus(plugin_ctx=ctx)
+
+    def event(target_lanlan: str) -> StudyEvent:
+        return StudyEvent(
+            name="answer_evaluated",
+            payload={
+                "verdict": "incorrect",
+                "score": 0.1,
+                "question_summary": "Q",
+                "user_answer_summary": "A",
+                "target_lanlan": target_lanlan,
+            },
+        )
+
+    first = asyncio.create_task(bus.emit(event("lanlan-a")))
+    await asyncio.wait_for(first_push_started.wait(), timeout=1.0)
+    await bus.emit(event("lanlan-b"))
+    release_first_push.set()
+    await asyncio.wait_for(first, timeout=1.0)
+
+    assert [item["ai_behavior"] for item in ctx.messages] == ["respond", "respond"]
+    assert bus._pending_respond_count_by_target == {}
+
+
+@pytest.mark.asyncio
 async def test_emit_answer_respond_cooldown_starts_after_async_push(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

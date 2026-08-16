@@ -151,6 +151,10 @@ def test_memory_deck_surfaces_expose_pagination_and_localized_load_more() -> Non
         assert "offset" in source
         assert "ui.button.load_more_cards" in source
 
+    assert "const loadingByDeck = new Map();" in fallback
+    assert "if (loadingByDeck.get(deckId)) return;" in fallback
+    assert "loadMore.disabled = loadingByDeck.get(deck.id) === true;" in fallback
+
     locale_paths = sorted((PLUGIN_DIR / "i18n").glob("*.json"))
     assert len(locale_paths) == 8
     for locale_path in locale_paths:

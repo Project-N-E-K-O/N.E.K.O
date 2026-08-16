@@ -442,6 +442,40 @@ assert(
 assert(transient.replies.at(-1) === 'recovered analysis', 'recovered result was not rendered');
 transient.controller.dispose();
 
+const exhaustedCalls = [];
+const exhausted = createEnvironment(async (entryId) => {
+  exhaustedCalls.push(entryId);
+  if (entryId === 'study_start_document_analysis') throw new Error('start offline');
+  if (entryId === 'study_active_document_analysis') throw new Error('recovery offline');
+  throw new Error(`unexpected exhausted entry: ${entryId}`);
+}, async () => {}, (window) => {
+  window.setTimeout = (callback) => {
+    queueMicrotask(callback);
+    return 1;
+  };
+});
+await importAndWait(
+  exhausted,
+  fileFromBytes(bytesForText('exhausted recovery document')),
+  'exhausted recovery document',
+);
+exhausted.document.getElementById('studyDocumentAnalyzeBtn').click();
+await waitFor(
+  () => exhaustedCalls.filter((entryId) => entryId === 'study_active_document_analysis').length === 5
+    && !exhausted.document.getElementById('studyDocumentAnalyzeBtn').disabled,
+  'exhausted recovery did not release the busy UI',
+);
+assert(
+  exhausted.replies.filter((reply) => reply === 'recovery offline').length === 1,
+  'recovery failure repeatedly overwrote the reply',
+);
+assert(exhausted.replies.at(-1) === 'start offline', 'original start error was not restored');
+assert(
+  exhausted.window.sessionStorage.getItem('study_companion.document_analysis_job_id') === '__pending__',
+  'exhausted recovery discarded the pending marker',
+);
+exhausted.controller.dispose();
+
 const ambiguousCalls = [];
 let resolveAmbiguousActive;
 let ambiguousRefreshes = 0;

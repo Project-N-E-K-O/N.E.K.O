@@ -27,6 +27,7 @@ class _EmitDecision:
     allowed: bool
     throttle_key: str = ""
     screen_context_type: str = ""
+    respond_target: str | None = None
 
 
 @dataclass(frozen=True)
@@ -100,6 +101,7 @@ class StudyEventBus:
         self._pending_throttle: set[str] = set()
         self._pending_screen_context_types: set[str] = set()
         self._pending_respond_count = 0
+        self._pending_respond_count_by_target: dict[str, int] = {}
         self._scheduled_emit_count = 0
         self._dropped_emit_count = 0
         self._emit_semaphore = asyncio.Semaphore(self._MAX_IN_FLIGHT_EMITS)
@@ -109,6 +111,7 @@ class StudyEventBus:
         self._worker_task: asyncio.Task[None] | None = None
         self._worker_failure_count = 0
         self._last_respond_at = -self._RESPOND_COOLDOWN
+        self._last_respond_at_by_target: dict[str, float] = {}
         self._last_screen_context_type = ""
         self._screen_buf: list[tuple[str, float]] = []
         self._emit_count = 0
@@ -268,6 +271,14 @@ class StudyEventBus:
                 self._block_count += 1
                 return
             behavior, mark_respond = self._resolve_behavior(event, now)
+            respond_target = _target_lanlan(event.payload) if mark_respond else None
+            if mark_respond:
+                decision = _EmitDecision(
+                    allowed=decision.allowed,
+                    throttle_key=decision.throttle_key,
+                    screen_context_type=decision.screen_context_type,
+                    respond_target=respond_target,
+                )
             text = self._format(event)
             visibility = VISIBILITY_MAP.get(event.name, [])
             priority = PRIORITY_MAP.get(event.name, 2)
@@ -313,31 +324,57 @@ class StudyEventBus:
             raise
         else:
             async with self._lock:
-                self._commit_emit(decision, mark_respond=mark_respond)
+                self._commit_emit(
+                    decision,
+                    mark_respond=mark_respond,
+                )
                 self._release_emit_reservation(
                     prepared.decision,
                     mark_respond=prepared.mark_respond,
                 )
 
     def _reserve_emit(
-        self, decision: _EmitDecision, *, mark_respond: bool = False
+        self,
+        decision: _EmitDecision,
+        *,
+        mark_respond: bool = False,
     ) -> None:
         if decision.throttle_key:
             self._pending_throttle.add(decision.throttle_key)
         if decision.screen_context_type:
             self._pending_screen_context_types.add(decision.screen_context_type)
         if mark_respond:
-            self._pending_respond_count += 1
+            respond_target = decision.respond_target
+            if respond_target is None:
+                self._pending_respond_count += 1
+            else:
+                self._pending_respond_count_by_target[respond_target] = (
+                    self._pending_respond_count_by_target.get(respond_target, 0) + 1
+                )
 
     def _release_emit_reservation(
-        self, decision: _EmitDecision, *, mark_respond: bool = False
+        self,
+        decision: _EmitDecision,
+        *,
+        mark_respond: bool = False,
     ) -> None:
         if decision.throttle_key:
             self._pending_throttle.discard(decision.throttle_key)
         if decision.screen_context_type:
             self._pending_screen_context_types.discard(decision.screen_context_type)
         if mark_respond:
-            self._pending_respond_count = max(0, self._pending_respond_count - 1)
+            respond_target = decision.respond_target
+            if respond_target is None:
+                self._pending_respond_count = max(0, self._pending_respond_count - 1)
+            else:
+                pending = max(
+                    0,
+                    self._pending_respond_count_by_target.get(respond_target, 0) - 1,
+                )
+                if pending:
+                    self._pending_respond_count_by_target[respond_target] = pending
+                else:
+                    self._pending_respond_count_by_target.pop(respond_target, None)
 
     def _emit_decision(self, event: StudyEvent, now: float) -> _EmitDecision:
         if event.name == "screen_context_changed":
@@ -351,7 +388,10 @@ class StudyEventBus:
         return _EmitDecision(allowed=True)
 
     def _commit_emit(
-        self, decision: _EmitDecision, *, mark_respond: bool = False
+        self,
+        decision: _EmitDecision,
+        *,
+        mark_respond: bool = False,
     ) -> None:
         committed_at = time.monotonic()
         if decision.throttle_key:
@@ -359,7 +399,11 @@ class StudyEventBus:
         if decision.screen_context_type:
             self._last_screen_context_type = decision.screen_context_type
         if mark_respond:
-            self._last_respond_at = committed_at
+            respond_target = decision.respond_target
+            if respond_target is None:
+                self._last_respond_at = committed_at
+            else:
+                self._last_respond_at_by_target[respond_target] = committed_at
         self._emit_count += 1
 
     def _prune_throttle(self, now: float) -> None:
@@ -442,9 +486,20 @@ class StudyEventBus:
         verdict = str(event.payload.get("verdict") or "").strip().lower()
         if verdict not in {"incorrect", "partial", "wrong", "dont_know"}:
             return behavior, False
-        if self._pending_respond_count > 0:
+        target_lanlan = _target_lanlan(event.payload)
+        if target_lanlan is None:
+            pending_respond_count = self._pending_respond_count
+            last_respond_at = self._last_respond_at
+        else:
+            pending_respond_count = self._pending_respond_count_by_target.get(
+                target_lanlan, 0
+            )
+            last_respond_at = self._last_respond_at_by_target.get(
+                target_lanlan, -self._RESPOND_COOLDOWN
+            )
+        if pending_respond_count > 0:
             return behavior, False
-        if now - self._last_respond_at < self._RESPOND_COOLDOWN:
+        if now - last_respond_at < self._RESPOND_COOLDOWN:
             return behavior, False
         return "respond", True
 
