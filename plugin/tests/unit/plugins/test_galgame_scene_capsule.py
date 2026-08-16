@@ -181,6 +181,59 @@ async def test_sequence_less_choice_event_keeps_identity_when_prefix_is_trimmed(
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
+async def test_later_sequence_less_history_event_wins_over_older_sequenced_event(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(ctx),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    old_line = _summary_test_line("scene-a", 1)
+    old_line_event = _summary_test_line_event("scene-a", 1, seq=9)
+    latest_choice_text = "追上最新的脚步"
+    latest_choice = {
+        "choice_id": "choice-latest",
+        "text": latest_choice_text,
+        "index": 0,
+    }
+    latest_choice_event = _event(
+        seq=0,
+        event_type="choices_shown",
+        session_id="sess-a",
+        game_id="demo.alpha",
+        ts="",
+        payload={"scene_id": "scene-a", "choices": [latest_choice]},
+    )
+    shared = _shared_state(
+        mode="companion",
+        session_id="sess-a",
+        last_seq=9,
+        snapshot=_session_state(
+            scene_id="scene-a",
+            choices=[latest_choice],
+            is_menu_open=True,
+        ),
+        history_events=[old_line_event, latest_choice_event],
+        history_lines=[old_line],
+    )
+
+    await agent.tick(shared)
+    await agent.drain_summary_tasks(timeout=1.0)
+
+    assert len(ctx.pushed_messages) == 1
+    response_target = str(ctx.pushed_messages[0]["content"]).split(
+        "本次回应对象：", 1
+    )[-1]
+    assert latest_choice_text in response_target
+    assert str(old_line["text"]) not in response_target
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
 async def test_scene_delta_includes_fixed_character_anchor(tmp_path: Path) -> None:
     plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
     ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))

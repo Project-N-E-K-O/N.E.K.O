@@ -817,7 +817,13 @@ class AgentSummaryMixin:
                 semantic_version,
             )
             event_occurrences.append(
-                {"event_key": event_key, "seq": seq, "line": line, "signature": signature}
+                {
+                    "event_key": event_key,
+                    "seq": seq,
+                    "history_event_index": event_index,
+                    "line": line,
+                    "signature": signature,
+                }
             )
 
         fallback_occurrences: list[dict[str, Any]] = []
@@ -1148,6 +1154,7 @@ class AgentSummaryMixin:
                         "event_group_key": event_group_key,
                         "handoff_group_signature": handoff_group_signature,
                         "seq": seq,
+                        "history_event_index": event_index,
                         "ts": str(event.get("ts") or payload.get("ts") or ""),
                         "choice": choice,
                     }
@@ -1961,7 +1968,20 @@ class AgentSummaryMixin:
         if not candidates:
             return
 
-        candidates.sort(key=lambda item: (item[0], item[1], item[2], item[3]))
+        if all(item[1] > 0 for item in candidates):
+            candidates.sort(key=lambda item: (item[1], item[2], item[3]))
+        elif all(
+            isinstance(item[5].get("history_event_index"), int)
+            for item in candidates
+        ):
+            candidates.sort(
+                key=lambda item: (
+                    int(item[5]["history_event_index"]),
+                    item[3],
+                )
+            )
+        else:
+            candidates.sort(key=lambda item: (item[0], item[1], item[2], item[3]))
         _has_seq, _seq, _ts, _index, target_kind, target = candidates[-1]
         # Only the newest candidate is rendered.  Earlier candidates observed in
         # the same tick are deliberately consumed as superseded so they cannot
