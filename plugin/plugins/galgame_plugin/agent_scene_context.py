@@ -118,7 +118,10 @@ class AgentSceneContextMixin:
                 )
                 summary = f"{bounded_previous}{separator}{bounded_latest}"
             else:
-                summary = previous_scene_summary or local_progress_summary
+                summary = _bounded_summary_text(
+                    previous_scene_summary or local_progress_summary,
+                    max_chars=_SUMMARY_MAX_CHARS,
+                )
         formatted = self._format_scene_context_for_cat(
             summary=summary,
             key_points=key_points,

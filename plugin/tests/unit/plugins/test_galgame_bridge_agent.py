@@ -4262,6 +4262,55 @@ async def test_scene_memory_summary_seeds_degraded_archive_for_same_route(
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
+async def test_degraded_scene_summary_bounds_oversized_local_progress(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    gateway = _FakeLLMGateway(
+        summarize_payload={
+            "degraded": True,
+            "summary": "",
+            "key_points": [],
+            "diagnostic": "timeout",
+        }
+    )
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(ctx),
+        logger=_Logger(),
+        llm_gateway=gateway,
+        host_adapter=_FakeHostAdapter(),
+    )
+    oversized_line = {
+        **_summary_test_line("scene-a", 1),
+        "text": "超长稳定台词" * 400,
+    }
+    context = build_summarize_context(
+        _shared_state(
+            snapshot=_session_state(
+                text=str(oversized_line["text"]),
+                scene_id="scene-a",
+                line_id=str(oversized_line["line_id"]),
+            ),
+            history_lines=[oversized_line],
+        ),
+        scene_id="scene-a",
+    )
+
+    _, meta = await agent._summarize_scene_context_for_cat(
+        context,
+        scene_id="scene-a",
+        route_id="",
+        snapshot=context["current_snapshot"],
+    )
+
+    assert not gateway.summarize_calls[0].get("previous_scene_summary")
+    assert len(meta["scene_summary"]) <= 1600
+    assert meta["scene_summary"].endswith("...[truncated]")
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
 async def test_merge_fallback_archives_each_scene_scope_independently(
     tmp_path: Path,
 ) -> None:
