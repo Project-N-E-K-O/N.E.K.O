@@ -26,6 +26,12 @@ type MemoryItem = {
   item_type?: string;
 };
 
+type MemoryItemPage = {
+  items?: MemoryItem[];
+  has_more?: boolean;
+  next_offset?: number | null;
+};
+
 function formatText(
   props: PluginSurfaceProps,
   key: string,
@@ -54,6 +60,8 @@ export default function MemoryDeckList(props: PluginSurfaceProps) {
   const [busy, setBusy] = useState(false);
   const [expandedDeckId, setExpandedDeckId] = useState('');
   const [itemsByDeck, setItemsByDeck] = useState<Record<string, MemoryItem[]>>({});
+  const [hasMoreByDeck, setHasMoreByDeck] = useState<Record<string, boolean>>({});
+  const [nextOffsetByDeck, setNextOffsetByDeck] = useState<Record<string, number>>({});
 
   async function refresh(signal?: AbortSignal) {
     const payload = await callPlugin<{ decks?: MemoryDeck[] }>(props.api, 'study_memory_list_decks', { limit: 100 }, signal);
@@ -98,28 +106,39 @@ export default function MemoryDeckList(props: PluginSurfaceProps) {
     }
   }
 
-  async function toggleDeckItems(deckId: string) {
-    if (expandedDeckId === deckId) {
-      setExpandedDeckId('');
-      return;
-    }
-    setExpandedDeckId(deckId);
+  async function loadDeckItems(deckId: string, append = false) {
     setBusy(true);
     try {
-      const payload = await callPlugin<{ items?: MemoryItem[] }>(
+      const offset = append ? (nextOffsetByDeck[deckId] || 0) : 0;
+      const payload = await callPlugin<MemoryItemPage>(
         props.api,
         'study_memory_list_deck_items',
-        { deck_id: deckId, limit: 500 },
+        { deck_id: deckId, limit: 500, offset },
       );
+      const pageItems = Array.isArray(payload.items) ? payload.items : [];
       setItemsByDeck((current) => ({
         ...current,
-        [deckId]: Array.isArray(payload.items) ? payload.items : [],
+        [deckId]: append ? [...(current[deckId] || []), ...pageItems] : pageItems,
+      }));
+      setHasMoreByDeck((current) => ({ ...current, [deckId]: payload.has_more === true }));
+      setNextOffsetByDeck((current) => ({
+        ...current,
+        [deckId]: Number(payload.next_offset) || offset + pageItems.length,
       }));
     } catch (error) {
       setStatus(errorMessage(error));
     } finally {
       setBusy(false);
     }
+  }
+
+  async function toggleDeckItems(deckId: string) {
+    if (expandedDeckId === deckId) {
+      setExpandedDeckId('');
+      return;
+    }
+    setExpandedDeckId(deckId);
+    await loadDeckItems(deckId);
   }
 
   async function saveDeckGoal(deckId: string) {
@@ -231,6 +250,11 @@ export default function MemoryDeckList(props: PluginSurfaceProps) {
                 )) : (
                   <p className="study-panel__empty">{text(props, 'ui.memory.empty_deck', 'No cards in this deck')}</p>
                 )}
+                {hasMoreByDeck[deck.id] ? (
+                  <button type="button" disabled={busy} onClick={() => loadDeckItems(deck.id, true)}>
+                    {text(props, 'ui.button.load_more_cards', 'Load more cards')}
+                  </button>
+                ) : null}
               </div>
             ) : null}
           </div>

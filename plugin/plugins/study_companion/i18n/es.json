@@ -330,6 +330,7 @@
     "ui.memory.deck_name_placeholder":  "Por ejemplo: Repaso de cálculo",
     "ui.memory.empty_deck":  "Este mazo no tiene tarjetas",
     "ui.button.view_cards":  "Ver tarjetas",
+    "ui.button.load_more_cards":  "Cargar más tarjetas",
     "ui.button.hide_cards":  "Ocultar tarjetas",
     "ui.button.create_and_save":  "Crear y guardar",
     "ui.button.skip_use_default_deck":  "Omitir y usar predeterminado",

@@ -330,6 +330,7 @@
     "ui.memory.deck_name_placeholder":  "예: 미적분 복습",
     "ui.memory.empty_deck":  "이 덱에는 카드가 없습니다",
     "ui.button.view_cards":  "카드 보기",
+    "ui.button.load_more_cards":  "카드 더 불러오기",
     "ui.button.hide_cards":  "카드 접기",
     "ui.button.create_and_save":  "만들고 저장",
     "ui.button.skip_use_default_deck":  "건너뛰고 기본 덱 사용",

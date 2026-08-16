@@ -232,7 +232,11 @@ function fileFromBytes(bytes, name = 'notes.txt', type = 'text/plain') {
   };
 }
 
-function createEnvironment(callPlugin = async () => ({}), onAnalysisComplete = async () => {}) {
+function createEnvironment(
+  callPlugin = async () => ({}),
+  onAnalysisComplete = async () => {},
+  beforeBind = () => {},
+) {
   const window = new Window({ url: 'http://testserver/plugin/study_companion/ui/?locale=en' });
   const { document } = window;
   document.write(html);
@@ -259,6 +263,7 @@ function createEnvironment(callPlugin = async () => ({}), onAnalysisComplete = a
     },
     onAnalysisComplete,
   });
+  beforeBind(window, document);
   controller.bind();
   return { window, document, controller, pasteErrors, statuses, replies };
 }
@@ -436,6 +441,148 @@ assert(
 );
 assert(transient.replies.at(-1) === 'recovered analysis', 'recovered result was not rendered');
 transient.controller.dispose();
+
+const ambiguousCalls = [];
+let resolveAmbiguousActive;
+let ambiguousRefreshes = 0;
+const ambiguous = createEnvironment(async (entryId, args, signal) => {
+  ambiguousCalls.push({ entryId, args, signal });
+  if (entryId === 'study_start_document_analysis') {
+    throw new Error('start response lost');
+  }
+  if (entryId === 'study_active_document_analysis') {
+    const attempt = ambiguousCalls.filter(
+      (call) => call.entryId === 'study_active_document_analysis',
+    ).length;
+    if (attempt === 1) throw new Error('active lookup unavailable');
+    return new Promise((resolve) => {
+      resolveAmbiguousActive = resolve;
+    });
+  }
+  if (entryId === 'study_document_analysis_status') {
+    return { job_id: 'job-ambiguous', status: 'completed', reply: 'reconciled analysis' };
+  }
+  throw new Error(`unexpected ambiguous entry: ${entryId}`);
+}, async () => {
+  ambiguousRefreshes += 1;
+}, (window) => {
+  window.setTimeout = (callback) => {
+    queueMicrotask(callback);
+    return 1;
+  };
+});
+await importAndWait(
+  ambiguous,
+  fileFromBytes(bytesForText('ambiguous start document')),
+  'ambiguous start document',
+);
+ambiguous.document.getElementById('studyDocumentAnalyzeBtn').click();
+await waitFor(
+  () => typeof resolveAmbiguousActive === 'function',
+  'ambiguous start did not retry active-job reconciliation',
+);
+assert(
+  ambiguous.window.sessionStorage.getItem('study_companion.document_analysis_job_id') === '__pending__',
+  'ambiguous start discarded the pending recovery marker',
+);
+assert(
+  ambiguous.document.getElementById('studyDocumentAnalyzeBtn').disabled,
+  'ambiguous start returned the document UI to idle before reconciliation',
+);
+resolveAmbiguousActive({ job_id: 'job-ambiguous', status: 'running', stage: 'analyzing' });
+await waitFor(() => ambiguousRefreshes === 1, 'ambiguous start did not recover its result');
+assert(
+  ambiguousCalls.filter((call) => call.entryId === 'study_start_document_analysis').length === 1,
+  'ambiguous start created a duplicate job',
+);
+assert(ambiguous.replies.at(-1) === 'reconciled analysis', 'reconciled result was not rendered');
+ambiguous.controller.dispose();
+
+const resumeCalls = [];
+let resumeRefreshes = 0;
+const resumed = createEnvironment(async (entryId, args, signal) => {
+  resumeCalls.push({ entryId, args, signal });
+  if (entryId === 'study_document_analysis_status') {
+    const attempt = resumeCalls.filter(
+      (call) => call.entryId === 'study_document_analysis_status',
+    ).length;
+    if (attempt === 1) throw new Error('saved status transport failed');
+    return { job_id: 'job-saved', status: 'completed', reply: 'saved completed result' };
+  }
+  throw new Error(`unexpected resume entry: ${entryId}`);
+}, async () => {
+  resumeRefreshes += 1;
+}, (window) => {
+  window.sessionStorage.setItem('study_companion.document_analysis_job_id', 'job-saved');
+  window.setTimeout = (callback) => {
+    queueMicrotask(callback);
+    return 1;
+  };
+});
+await waitFor(() => resumeRefreshes === 1, 'saved job did not recover after transport failure');
+assert(
+  resumeCalls.filter((call) => call.entryId === 'study_document_analysis_status').length === 2,
+  'saved job status was not retried directly',
+);
+assert(
+  resumeCalls.every((call) => call.entryId !== 'study_active_document_analysis'),
+  'saved status transport failure incorrectly fell back to the active endpoint',
+);
+assert(resumed.replies.at(-1) === 'saved completed result', 'saved result was not rendered');
+resumed.controller.dispose();
+
+const terminalCancelCalls = [];
+let terminalCancelRefreshes = 0;
+let resolveTerminalCancelPoll;
+const terminalCancel = createEnvironment(async (entryId, args, signal) => {
+  terminalCancelCalls.push({ entryId, args, signal });
+  if (entryId === 'study_start_document_analysis') {
+    return { job_id: 'job-terminal-cancel', status: 'queued' };
+  }
+  if (entryId === 'study_document_analysis_status') {
+    return new Promise((resolve) => {
+      resolveTerminalCancelPoll = resolve;
+    });
+  }
+  if (entryId === 'study_cancel_document_analysis') {
+    const completed = {
+      job_id: 'job-terminal-cancel',
+      status: 'completed',
+      reply: 'completed before cancel',
+    };
+    resolveTerminalCancelPoll?.(completed);
+    return completed;
+  }
+  throw new Error(`unexpected terminal cancel entry: ${entryId}`);
+}, async () => {
+  terminalCancelRefreshes += 1;
+}, (window) => {
+  window.setTimeout = (callback) => {
+    queueMicrotask(callback);
+    return 1;
+  };
+});
+await importAndWait(
+  terminalCancel,
+  fileFromBytes(bytesForText('terminal cancel document')),
+  'terminal cancel document',
+);
+terminalCancel.document.getElementById('studyDocumentAnalyzeBtn').click();
+await waitFor(
+  () => terminalCancelCalls.some((call) => call.entryId === 'study_document_analysis_status'),
+  'terminal cancel analysis never entered polling',
+);
+terminalCancel.document.getElementById('studyDocumentCancelBtn').click();
+await waitFor(() => terminalCancelRefreshes === 1, 'terminal cancel result was discarded');
+assert(
+  terminalCancel.replies.at(-1) === 'completed before cancel',
+  'terminal cancel response was mislabeled as canceled',
+);
+const terminalCancelStart = terminalCancelCalls.find(
+  (call) => call.entryId === 'study_start_document_analysis',
+);
+assert(!terminalCancelStart.signal.aborted, 'terminal cancel response aborted result processing');
+terminalCancel.controller.dispose();
 
 const beforeIdCalls = [];
 let resolveStart;

@@ -139,6 +139,25 @@ def test_general_narration_messages_and_setting_exist_in_all_locales() -> None:
     assert zh_cn["ui.settings.general_narration_enabled.label"] == "通用回答讲述"
 
 
+def test_memory_deck_surfaces_expose_pagination_and_localized_load_more() -> None:
+    hosted = _read("memory_deck_list.tsx")
+    fallback = (PLUGIN_DIR / "static" / "surface-panels.js").read_text(
+        encoding="utf-8"
+    )
+
+    for source in (hosted, fallback):
+        assert "next_offset" in source
+        assert "has_more" in source
+        assert "offset" in source
+        assert "ui.button.load_more_cards" in source
+
+    locale_paths = sorted((PLUGIN_DIR / "i18n").glob("*.json"))
+    assert len(locale_paths) == 8
+    for locale_path in locale_paths:
+        bundle = json.loads(locale_path.read_text(encoding="utf-8"))
+        assert bundle["ui.button.load_more_cards"].strip(), locale_path.stem
+
+
 def test_solution_narration_outcome_messages_exist_in_all_locales() -> None:
     expected_truncated_zh_cn = (
         "解答因达到输出长度上限而被截断，自动补全未能在时限内完成，因此未安排朗读。"
@@ -579,12 +598,17 @@ def test_study_companion_surfaces_share_ui8_interaction_styles_and_messages() ->
 
 def test_memory_deck_surface_refetches_items_when_reopened() -> None:
     source = _read("memory_deck_list.tsx")
+    loader_start = source.index("async function loadDeckItems")
     toggle_start = source.index("async function toggleDeckItems")
     toggle_end = source.index("async function saveDeckGoal", toggle_start)
+    loader = source[loader_start:toggle_start]
     toggle = source[toggle_start:toggle_end]
 
     assert "if (itemsByDeck[deckId]) return;" not in toggle
-    assert "study_memory_list_deck_items" in toggle
+    assert "await loadDeckItems(deckId);" in toggle
+    assert "study_memory_list_deck_items" in loader
+    assert "append = false" in loader
+    assert ": 0;" in loader
 
 
 def test_knowledge_map_graph_and_dialog_regressions_are_guarded() -> None:

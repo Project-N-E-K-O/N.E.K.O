@@ -330,6 +330,7 @@
     "ui.memory.deck_name_placeholder":  "Por exemplo: Revisão de cálculo",
     "ui.memory.empty_deck":  "Este deck não tem cartões",
     "ui.button.view_cards":  "Ver cartões",
+    "ui.button.load_more_cards":  "Carregar mais cartões",
     "ui.button.hide_cards":  "Ocultar cartões",
     "ui.button.create_and_save":  "Criar e salvar",
     "ui.button.skip_use_default_deck":  "Pular e usar o padrão",

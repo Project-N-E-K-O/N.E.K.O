@@ -409,7 +409,12 @@ class MemoryDeckStore:
         return item
 
     def list_items(
-        self, *, deck_id: str = "", limit: int = 100, include_archived: bool = False
+        self,
+        *,
+        deck_id: str = "",
+        limit: int = 100,
+        offset: int = 0,
+        include_archived: bool = False,
     ) -> list[dict[str, Any]]:
         params: list[Any] = []
         clauses: list[str] = []
@@ -420,6 +425,7 @@ class MemoryDeckStore:
             clauses.append("mi.status = 'active'")
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         params.append(max(1, int(limit or 100)))
+        params.append(max(0, int(offset or 0)))
         with self.store._lock:
             rows = (
                 self.store._require_conn()
@@ -429,8 +435,8 @@ class MemoryDeckStore:
                 FROM memory_items mi
                 LEFT JOIN decks d ON d.id = mi.deck_id
                 {where}
-                ORDER BY mi.updated_at DESC, mi.created_at DESC
-                LIMIT ?
+                ORDER BY mi.updated_at DESC, mi.created_at DESC, mi.id DESC
+                LIMIT ? OFFSET ?
                 """,
                     params,
                 )

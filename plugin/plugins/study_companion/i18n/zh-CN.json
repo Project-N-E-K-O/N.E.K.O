@@ -330,6 +330,7 @@
     "ui.memory.deck_name_placeholder":  "例如：高数复习",
     "ui.memory.empty_deck":  "这个卡组还没有卡片",
     "ui.button.view_cards":  "查看卡片",
+    "ui.button.load_more_cards":  "加载更多卡片",
     "ui.button.hide_cards":  "收起卡片",
     "ui.button.create_and_save":  "创建并保存",
     "ui.button.skip_use_default_deck":  "略过并使用默认卡组",

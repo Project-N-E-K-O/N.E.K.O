@@ -330,6 +330,7 @@
     "ui.memory.deck_name_placeholder":  "Например: Повторение матанализа",
     "ui.memory.empty_deck":  "В этой колоде пока нет карточек",
     "ui.button.view_cards":  "Показать карточки",
+    "ui.button.load_more_cards":  "Загрузить ещё карточки",
     "ui.button.hide_cards":  "Скрыть карточки",
     "ui.button.create_and_save":  "Создать и сохранить",
     "ui.button.skip_use_default_deck":  "Пропустить и использовать стандартную",

@@ -330,6 +330,7 @@
     "ui.memory.deck_name_placeholder":  "For example: Calculus review",
     "ui.memory.empty_deck":  "No cards in this deck",
     "ui.button.view_cards":  "View cards",
+    "ui.button.load_more_cards":  "Load more cards",
     "ui.button.hide_cards":  "Hide cards",
     "ui.button.create_and_save":  "Create and save",
     "ui.button.skip_use_default_deck":  "Skip and use default",

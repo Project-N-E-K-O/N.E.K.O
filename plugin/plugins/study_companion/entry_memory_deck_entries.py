@@ -208,26 +208,43 @@ class _MemoryDeckEntriesMixin:
             "properties": {
                 "deck_id": {"type": "string", "default": ""},
                 "limit": {"type": "integer", "default": 200},
+                "offset": {"type": "integer", "default": 0},
             },
             "required": ["deck_id"],
         },
-        llm_result_fields=["deck", "items"],
+        llm_result_fields=["deck", "items", "has_more", "next_offset"],
     )
     async def study_memory_list_deck_items(
-        self, deck_id: str = "", limit: int = 200, **_
+        self, deck_id: str = "", limit: int = 200, offset: int = 0, **_
     ):
         try:
             deck_key = str(deck_id or "").strip()
+            page_limit = max(1, min(500, int(limit or 200)))
+            page_offset = max(0, int(offset or 0))
             deck = await asyncio.to_thread(self._memory_deck_store.get_deck, deck_key)
             if deck is None:
                 raise ValueError("deck not found")
             items = await asyncio.to_thread(
                 self._memory_deck_store.list_items,
                 deck_id=deck_key,
-                limit=max(1, min(500, int(limit or 200))),
+                limit=page_limit + 1,
+                offset=page_offset,
                 include_archived=False,
             )
-            return Ok({"deck": deck, "items": items})
+            page_items = items[:page_limit]
+            has_more = len(items) > page_limit
+            return Ok(
+                {
+                    "deck": deck,
+                    "items": page_items,
+                    "offset": page_offset,
+                    "limit": page_limit,
+                    "has_more": has_more,
+                    "next_offset": page_offset + len(page_items)
+                    if has_more
+                    else None,
+                }
+            )
         except Exception as exc:
             return _entry_exception_error(
                 self, exc, operation="study_memory_list_deck_items"

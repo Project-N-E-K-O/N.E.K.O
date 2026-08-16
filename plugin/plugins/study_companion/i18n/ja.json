@@ -330,6 +330,7 @@
     "ui.memory.deck_name_placeholder":  "例：微積分の復習",
     "ui.memory.empty_deck":  "このデッキにはカードがありません",
     "ui.button.view_cards":  "カードを見る",
+    "ui.button.load_more_cards":  "さらにカードを読み込む",
     "ui.button.hide_cards":  "カードを閉じる",
     "ui.button.create_and_save":  "作成して保存",
     "ui.button.skip_use_default_deck":  "スキップしてデフォルトを使用",

@@ -330,6 +330,7 @@
     "ui.memory.deck_name_placeholder":  "例如：微積分複習",
     "ui.memory.empty_deck":  "這個卡組還沒有卡片",
     "ui.button.view_cards":  "查看卡片",
+    "ui.button.load_more_cards":  "載入更多卡片",
     "ui.button.hide_cards":  "收起卡片",
     "ui.button.create_and_save":  "建立並儲存",
     "ui.button.skip_use_default_deck":  "略過並使用預設卡組",

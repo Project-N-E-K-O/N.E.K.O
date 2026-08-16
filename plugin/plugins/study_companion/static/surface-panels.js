@@ -598,6 +598,8 @@
     let status = '';
     let expandedDeckId = '';
     const itemsByDeck = new Map();
+    const hasMoreByDeck = new Map();
+    const nextOffsetByDeck = new Map();
 
     async function refresh() {
       const payload = await ctx.callPlugin('study_memory_list_decks', { limit: 100 });
@@ -643,6 +645,31 @@
       }
     }
 
+    async function loadDeckItems(deckId, append = false) {
+      try {
+        const offset = append ? (nextOffsetByDeck.get(deckId) || 0) : 0;
+        const payload = await ctx.callPlugin('study_memory_list_deck_items', {
+          deck_id: deckId,
+          limit: 500,
+          offset,
+        });
+        const pageItems = safeList(payload, 'items');
+        itemsByDeck.set(
+          deckId,
+          append ? [...(itemsByDeck.get(deckId) || []), ...pageItems] : pageItems,
+        );
+        hasMoreByDeck.set(deckId, payload?.has_more === true);
+        nextOffsetByDeck.set(
+          deckId,
+          Number(payload?.next_offset) || offset + pageItems.length,
+        );
+      } catch (error) {
+        status = errText(error);
+        if (!append) itemsByDeck.set(deckId, []);
+      }
+      draw();
+    }
+
     async function toggleDeckItems(deckId) {
       if (expandedDeckId === deckId) {
         expandedDeckId = '';
@@ -651,15 +678,7 @@
       }
       expandedDeckId = deckId;
       draw();
-      if (itemsByDeck.has(deckId)) return;
-      try {
-        const payload = await ctx.callPlugin('study_memory_list_deck_items', { deck_id: deckId, limit: 500 });
-        itemsByDeck.set(deckId, safeList(payload, 'items'));
-      } catch (error) {
-        status = errText(error);
-        itemsByDeck.set(deckId, []);
-      }
-      draw();
+      await loadDeckItems(deckId);
     }
 
     function deckRow(deck) {
@@ -694,6 +713,12 @@
           });
         } else {
           itemList.appendChild(el('p', 'study-panel__empty', t(ctx, 'ui.memory.empty_deck', 'No cards in this deck')));
+        }
+        if (hasMoreByDeck.get(deck.id)) {
+          itemList.appendChild(button(
+            t(ctx, 'ui.button.load_more_cards', 'Load more cards'),
+            () => loadDeckItems(deck.id, true),
+          ));
         }
         wrapper.appendChild(itemList);
       }
