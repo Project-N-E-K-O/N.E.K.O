@@ -2111,6 +2111,57 @@ async def test_route_less_line_does_not_inherit_route_from_later_boundary(
 
 
 @pytest.mark.plugin_unit
+async def test_scene_less_line_does_not_inherit_scene_from_later_boundary(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(ctx),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    session_started = _event(
+        seq=1,
+        event_type="session_started",
+        session_id="sess-a",
+        game_id="demo.alpha",
+        ts="2026-04-21T08:35:00Z",
+        payload={"scene_id": "scene-a", "route_id": "route-a"},
+    )
+    line = _summary_test_line_event("scene-a", 1, seq=2)
+    line_payload = line.get("payload")
+    assert isinstance(line_payload, dict)
+    line_payload.pop("scene_id", None)
+    scene_boundary = _event(
+        seq=3,
+        event_type="scene_changed",
+        session_id="sess-a",
+        game_id="demo.alpha",
+        ts="2026-04-21T08:35:03Z",
+        payload={"scene_id": "scene-b", "route_id": "route-a"},
+    )
+    shared = _shared_state(
+        mode="companion",
+        session_id="sess-a",
+        last_seq=3,
+        snapshot=_session_state(scene_id="scene-b", route_id="route-a"),
+        history_events=[session_started, line, scene_boundary],
+    )
+
+    occurrences = agent._scene_capsule_line_occurrences(
+        shared,
+        snapshot=dict(shared["latest_snapshot"]),
+    )
+    await agent.tick(shared)
+    await agent.drain_summary_tasks(timeout=1.0)
+
+    assert str((occurrences[0].get("line") or {}).get("scene_id") or "") == "scene-a"
+    assert ctx.pushed_messages == []
+
+
+@pytest.mark.plugin_unit
 def test_invalid_tail_choice_does_not_block_current_route_inheritance(
     tmp_path: Path,
 ) -> None:
@@ -2159,6 +2210,66 @@ def test_invalid_tail_choice_does_not_block_current_route_inheritance(
     assert str((occurrences[0].get("choice") or {}).get("route_id") or "") == (
         "route-a"
     )
+
+
+@pytest.mark.plugin_unit
+async def test_scene_less_choice_does_not_inherit_scene_from_later_boundary(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(ctx),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    session_started = _event(
+        seq=1,
+        event_type="session_started",
+        session_id="sess-a",
+        game_id="demo.alpha",
+        ts="2026-04-21T08:35:00Z",
+        payload={"scene_id": "scene-a", "route_id": "route-a"},
+    )
+    choices = _event(
+        seq=2,
+        event_type="choices_shown",
+        session_id="sess-a",
+        game_id="demo.alpha",
+        ts="2026-04-21T08:35:02Z",
+        payload={
+            "route_id": "route-a",
+            "choices": [{"choice_id": "choice-a", "text": "追上去"}],
+        },
+    )
+    scene_boundary = _event(
+        seq=3,
+        event_type="scene_changed",
+        session_id="sess-a",
+        game_id="demo.alpha",
+        ts="2026-04-21T08:35:03Z",
+        payload={"scene_id": "scene-b", "route_id": "route-a"},
+    )
+    shared = _shared_state(
+        mode="companion",
+        session_id="sess-a",
+        last_seq=3,
+        snapshot=_session_state(scene_id="scene-b", route_id="route-a"),
+        history_events=[session_started, choices, scene_boundary],
+    )
+
+    occurrences = agent._scene_capsule_choice_occurrences(
+        shared,
+        snapshot=dict(shared["latest_snapshot"]),
+    )
+    await agent.tick(shared)
+    await agent.drain_summary_tasks(timeout=1.0)
+
+    assert str((occurrences[0].get("choice") or {}).get("scene_id") or "") == (
+        "scene-a"
+    )
+    assert ctx.pushed_messages == []
 
 
 @pytest.mark.plugin_unit
@@ -2248,3 +2359,28 @@ def test_scene_summary_tracker_isolates_same_scene_across_routes(
         == 0
     )
     assert len(agent._scene_tracker.summary_scene_states) == 2
+
+
+@pytest.mark.plugin_unit
+def test_summary_scene_setter_preserves_current_route_scope(tmp_path: Path) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(
+            _Ctx(plugin_dir, _make_effective_config(bridge_root))
+        ),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    agent._scene_tracker.sync_current_scene_summary_mirror(
+        "scene-a",
+        route_id="route-a",
+    )
+
+    agent._summary_scene_id = "scene-b"
+
+    assert agent._scene_tracker.summary_scene_id == "scene-b"
+    assert agent._scene_tracker.summary_route_id == "route-a"
+    assert agent._scene_tracker.summary_scene_scope_key == (
+        agent._scene_tracker.summary_scope_key("scene-b", "route-a")
+    )

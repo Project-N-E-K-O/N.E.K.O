@@ -46,7 +46,10 @@ class AgentSummaryMixin:
 
     @_summary_scene_id.setter
     def _summary_scene_id(self, value: str) -> None:
-        self._scene_tracker.sync_current_scene_summary_mirror(str(value or ""))
+        self._scene_tracker.sync_current_scene_summary_mirror(
+            str(value or ""),
+            route_id=self._scene_tracker.summary_route_id,
+        )
 
     @staticmethod
     def _summary_delivery_key(
@@ -480,27 +483,49 @@ class AgentSummaryMixin:
         )
 
     @staticmethod
-    def _scene_capsule_event_route_ids(
+    def _scene_capsule_event_identity_ids(
         history_events: list[Any],
+        *,
+        field_name: str,
     ) -> tuple[list[str], int]:
-        """Resolve route identity at each event without borrowing from its future."""
-        route_ids: list[str] = []
-        active_route_id = ""
-        last_explicit_route_index = -1
+        """Resolve one event-time identity without borrowing from its future."""
+        identity_ids: list[str] = []
+        active_identity_id = ""
+        last_explicit_identity_index = -1
         for event_index, event in enumerate(history_events):
             if not isinstance(event, dict):
-                route_ids.append(active_route_id)
+                identity_ids.append(active_identity_id)
                 continue
             payload = event.get("payload")
             payload_obj = payload if isinstance(payload, dict) else {}
-            explicit_route_id = str(
-                payload_obj.get("route_id") or event.get("route_id") or ""
+            explicit_identity_id = str(
+                payload_obj.get(field_name) or event.get(field_name) or ""
             )
-            if explicit_route_id:
-                active_route_id = explicit_route_id
-                last_explicit_route_index = event_index
-            route_ids.append(active_route_id)
-        return route_ids, last_explicit_route_index
+            if explicit_identity_id:
+                active_identity_id = explicit_identity_id
+                last_explicit_identity_index = event_index
+            identity_ids.append(active_identity_id)
+        return identity_ids, last_explicit_identity_index
+
+    @classmethod
+    def _scene_capsule_event_route_ids(
+        cls,
+        history_events: list[Any],
+    ) -> tuple[list[str], int]:
+        return cls._scene_capsule_event_identity_ids(
+            history_events,
+            field_name="route_id",
+        )
+
+    @classmethod
+    def _scene_capsule_event_scene_ids(
+        cls,
+        history_events: list[Any],
+    ) -> tuple[list[str], int]:
+        return cls._scene_capsule_event_identity_ids(
+            history_events,
+            field_name="scene_id",
+        )
 
     @staticmethod
     def _scene_capsule_choice_handoff_signature(
@@ -584,6 +609,9 @@ class AgentSummaryMixin:
         session_id = str(shared.get("active_session_id") or "")
         event_occurrences: list[dict[str, Any]] = []
         history_events = list(shared.get("history_events") or [])
+        event_scene_ids, last_explicit_scene_index = (
+            self._scene_capsule_event_scene_ids(history_events)
+        )
         event_route_ids, last_explicit_route_index = (
             self._scene_capsule_event_route_ids(history_events)
         )
@@ -618,7 +646,13 @@ class AgentSummaryMixin:
                 "scene_id": str(
                     payload.get("scene_id")
                     or event.get("scene_id")
-                    or snapshot.get("scene_id")
+                    or event_scene_ids[event_index]
+                    or (
+                        snapshot.get("scene_id")
+                        if event_index == latest_valid_line_event_index
+                        and last_explicit_scene_index < event_index
+                        else ""
+                    )
                     or ""
                 ),
                 "route_id": str(
@@ -758,6 +792,9 @@ class AgentSummaryMixin:
         scene_id = str(snapshot.get("scene_id") or "")
         occurrences: list[dict[str, Any]] = []
         history_events = list(shared.get("history_events") or [])
+        event_scene_ids, last_explicit_scene_index = (
+            self._scene_capsule_event_scene_ids(history_events)
+        )
         event_route_ids, last_explicit_route_index = (
             self._scene_capsule_event_route_ids(history_events)
         )
@@ -849,10 +886,22 @@ class AgentSummaryMixin:
                 )
                 or ""
             )
+            event_scene_id = str(
+                payload.get("scene_id")
+                or event.get("scene_id")
+                or event_scene_ids[event_index]
+                or (
+                    snapshot.get("scene_id")
+                    if event_index == latest_valid_choice_event_index
+                    and last_explicit_scene_index < event_index
+                    else ""
+                )
+                or ""
+            )
             event_group_signature = json.dumps(
                 {
                     "type": event_type,
-                    "scene_id": str(payload.get("scene_id") or scene_id),
+                    "scene_id": event_scene_id,
                     "route_id": event_route_id,
                     "choices": [
                         {
@@ -890,7 +939,7 @@ class AgentSummaryMixin:
                 choice["choice_state"] = (
                     "visible" if event_type == "choices_shown" else "selected"
                 )
-                choice.setdefault("scene_id", str(payload.get("scene_id") or scene_id))
+                choice.setdefault("scene_id", event_scene_id)
                 choice.setdefault(
                     "route_id",
                     event_route_id,
