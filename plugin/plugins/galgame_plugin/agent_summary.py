@@ -404,6 +404,23 @@ class AgentSummaryMixin:
         if not isinstance(marker_event_state, dict):
             marker_event_state = {}
             self._scene_capsule_marker_event_state = marker_event_state
+        try:
+            stream_last_seq = max(0, int(shared.get("last_seq") or 0))
+        except (TypeError, ValueError):
+            stream_last_seq = 0
+        previous_stream_high_water = max(
+            (
+                int(item.get("seq") or 0)
+                for item in marker_event_state.values()
+                if isinstance(item, dict) and isinstance(item.get("seq"), int)
+            ),
+            default=0,
+        )
+        if stream_last_seq > 0 and previous_stream_high_water > stream_last_seq:
+            # Bridge streams may restart at seq=1 without changing session_id.
+            # Their old per-type high-water marks must not hide the first new
+            # tentative observation, which retires any stale capsule retry.
+            marker_event_state.clear()
         for event_type, marker_item in latest_by_type.items():
             previous_item = marker_event_state.get(event_type)
             previous_seq = (
@@ -1608,6 +1625,13 @@ class AgentSummaryMixin:
             )
         )
         boundary_live_event_key_set = set(boundary_live_event_keys)
+        # Event versions must cover every occurrence still present in the
+        # bounded live history.  A fixed cap can evict a live key before its
+        # cancellation version is compared, allowing stale content to revive
+        # under a newer observation epoch.  Prune only after history drops it.
+        for versioned_event_key in list(event_version_state):
+            if versioned_event_key not in boundary_live_event_key_set:
+                event_version_state.pop(versioned_event_key, None)
         # Retirement must cover every occurrence still present in the bounded
         # history window, even when one large choice batch exceeds the old
         # fixed-size ledger cap. Prune only keys that actually left history so
@@ -1860,8 +1884,6 @@ class AgentSummaryMixin:
             )
             for event_key in consumed_event_keys
         }
-        while len(event_version_state) > 2048:
-            event_version_state.pop(next(iter(event_version_state)))
         for event_key in consumed_event_keys:
             self._scene_capsule_reservations.add(event_key)
         normalized_tail = tuple(

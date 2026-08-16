@@ -396,13 +396,97 @@ async def test_same_seq_is_suppressed_but_same_text_with_new_seq_is_allowed(
     }
     second = _capsule_shared(
         events=[first_event, repeated_event],
-        lines=[first_line, repeated_line],
+        # The service's text-dedupe window keeps only the first copy in the
+        # cumulative line list.  The newer seq remains a distinct story event.
+        lines=[first_line],
     )
     await agent.tick(second)
     await agent.drain_summary_tasks(timeout=1.0)
 
     assert len(ctx.pushed_messages) == 2
     assert ctx.pushed_messages[-1]["metadata"]["kind"] == "scene_delta"
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_same_session_stream_reset_retires_high_seq_pending_capsule(
+    tmp_path: Path,
+) -> None:
+    class _PendingCtx(_Ctx):
+        def __init__(self, plugin_dir: Path, effective_config: dict[str, object]) -> None:
+            super().__init__(plugin_dir, effective_config)
+            self.first_attempted = asyncio.Event()
+            self.attempts = 0
+
+        def push_message(self, **kwargs):
+            self.attempts += 1
+            self.first_attempted.set()
+            return {"submitted": False, "reason": "backpressure"}
+
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _PendingCtx(plugin_dir, _make_effective_config(bridge_root))
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(ctx),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    stable_line = _summary_test_line("scene-a", 1)
+    high_observed = _event(
+        seq=99,
+        event_type="line_observed",
+        session_id="sess-a",
+        game_id="demo.alpha",
+        ts="2026-04-21T08:35:00Z",
+        payload={
+            "speaker": "Yukino",
+            "text": "old tentative",
+            "line_id": "line-observed-99",
+            "scene_id": "scene-a",
+            "route_id": "",
+            "stability": "tentative",
+        },
+    )
+    high_stable = _summary_test_line_event("scene-a", 1, seq=100)
+    await agent.tick(
+        _capsule_shared(
+            events=[high_observed, high_stable],
+            lines=[stable_line],
+        )
+    )
+    await asyncio.wait_for(ctx.first_attempted.wait(), timeout=0.5)
+    previous_epoch = agent._scene_capsule_observation_epoch
+
+    reset_observed = _event(
+        seq=1,
+        event_type="line_observed",
+        session_id="sess-a",
+        game_id="demo.alpha",
+        ts="2026-04-21T08:36:00Z",
+        payload={
+            "speaker": "Yukino",
+            "text": "new tentative",
+            "line_id": "line-observed-1",
+            "scene_id": "scene-a",
+            "route_id": "",
+            "stability": "tentative",
+        },
+    )
+    reset_shared = _shared_state(
+        mode="companion",
+        session_id="sess-a",
+        last_seq=1,
+        snapshot=_session_state(scene_id="scene-a"),
+        history_events=[reset_observed],
+        history_lines=[],
+        history_observed_lines=[reset_observed["payload"]],
+    )
+    await agent.tick(reset_shared)
+    await asyncio.sleep(0)
+
+    assert agent._scene_capsule_observation_epoch > previous_epoch
+    assert agent._scene_capsule_tasks == set()
+    assert ctx.attempts == 1
 
 
 @pytest.mark.asyncio
@@ -2306,6 +2390,94 @@ async def test_capsule_cancellation_retires_every_live_occurrence(
     assert task.cancelled()
     assert len(agent._scene_capsule_retired_event_versions) == 1200
     assert set(agent._scene_capsule_retired_event_versions) == set(event_versions)
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_live_event_versions_are_not_evicted_before_tentative_cancellation(
+    tmp_path: Path,
+) -> None:
+    class _PendingCtx(_Ctx):
+        def __init__(self, plugin_dir: Path, effective_config: dict[str, object]) -> None:
+            super().__init__(plugin_dir, effective_config)
+            self.first_attempted = asyncio.Event()
+            self.attempts = 0
+
+        def push_message(self, **kwargs):
+            self.attempts += 1
+            self.first_attempted.set()
+            return {"submitted": False, "reason": "backpressure"}
+
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _PendingCtx(plugin_dir, _make_effective_config(bridge_root))
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(ctx),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    choices = [
+        {
+            "choice_id": f"choice-{index}",
+            "text": f"option-{index}",
+            "index": index,
+        }
+        for index in range(2050)
+    ]
+    choices_event = _event(
+        seq=1,
+        event_type="choices_shown",
+        session_id="sess-a",
+        game_id="demo.alpha",
+        ts="2026-04-21T08:35:01Z",
+        payload={"scene_id": "scene-a", "route_id": "", "choices": choices},
+    )
+    snapshot = _session_state(
+        scene_id="scene-a",
+        choices=choices,
+        is_menu_open=True,
+    )
+    initial = _shared_state(
+        mode="companion",
+        session_id="sess-a",
+        last_seq=1,
+        snapshot=snapshot,
+        history_events=[choices_event],
+    )
+    await agent.tick(initial)
+    await asyncio.wait_for(ctx.first_attempted.wait(), timeout=0.5)
+
+    assert len(agent._scene_capsule_event_versions) == len(choices)
+
+    tentative = _event(
+        seq=2,
+        event_type="line_observed",
+        session_id="sess-a",
+        game_id="demo.alpha",
+        ts="2026-04-21T08:35:02Z",
+        payload={
+            "speaker": "Yukino",
+            "text": "new tentative",
+            "line_id": "line-observed-2",
+            "scene_id": "scene-a",
+            "route_id": "",
+            "stability": "tentative",
+        },
+    )
+    updated = _shared_state(
+        mode="companion",
+        session_id="sess-a",
+        last_seq=2,
+        snapshot=snapshot,
+        history_events=[choices_event, tentative],
+        history_observed_lines=[tentative["payload"]],
+    )
+    await agent.tick(updated)
+    await asyncio.sleep(0)
+
+    assert len(agent._scene_capsule_retired_event_versions) == len(choices)
+    assert agent._scene_capsule_tasks == set()
+    assert ctx.attempts == 1
 
 
 @pytest.mark.plugin_unit
