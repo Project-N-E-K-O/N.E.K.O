@@ -411,8 +411,8 @@ test('drag cancel resumes journey after active dragging releases a transferred a
     assert.equal(harness.observations.length, 0);
 });
 
-function createMovementHarness() {
-    const fixture = createEdgeFixture({ transferredAnchor: 'left' });
+function createMovementHarness({ transferredAnchor = 'left' } = {}) {
+    const fixture = createEdgeFixture({ transferredAnchor });
     const state = {
         paused: false,
         pairMovePlan: null,
@@ -435,6 +435,7 @@ function createMovementHarness() {
     fixture.button.__nekoIdleReturnSubactionState = state;
     const rafCallbacks = [];
     const cancellations = [];
+    const containerObservers = [];
     let reclampCount = 0;
     const context = createBaseEdgeContext(fixture);
     Object.assign(context, {
@@ -442,6 +443,22 @@ function createMovementHarness() {
             requestAnimationFrame(callback) {
                 rafCallbacks.push(callback);
                 return rafCallbacks.length;
+            }
+        },
+        document: {
+            getElementById() {
+                return null;
+            }
+        },
+        MutationObserver: class {
+            constructor(callback) {
+                this.callback = callback;
+            }
+
+            observe(target, options) {
+                this.target = target;
+                this.options = options;
+                containerObservers.push(this);
             }
         },
         performance: { now: () => 10 },
@@ -484,6 +501,7 @@ function createMovementHarness() {
         readFunction(journeySourcePath, '_prepareNekoIdleCat1PairMoveStart'),
         readFunction(journeySourcePath, '_canScheduleNekoIdleCat1PairMove'),
         readFunction(journeySourcePath, '_startNekoIdleCat1PairMove'),
+        readFunction(journeySourcePath, '_refreshNekoIdleCat1Observer'),
         readFunction(journeySourcePath, '_syncNekoIdleCat1Journey'),
         readFunction(journeySourcePath, '_scheduleNekoIdleCat1JourneySync')
     ].join('\n'), context);
@@ -496,9 +514,34 @@ function createMovementHarness() {
         state,
         rafCallbacks,
         cancellations,
+        containerObservers,
         getReclampCount: () => reclampCount
     };
 }
+
+test('transferred anchor mutation cancels an in-flight walk through the existing sync gate', () => {
+    const harness = createMovementHarness({ transferredAnchor: '' });
+    harness.state.substate = harness.state.profile.walkingSubstate;
+
+    vm.runInContext('_refreshNekoIdleCat1Observer(targetButton)', harness.context);
+    assert.equal(harness.containerObservers.length, 1);
+    const observer = harness.containerObservers[0];
+    assert.ok(observer.options.attributeFilter.includes('data-neko-live2d-peek-anchor'));
+
+    observer.callback([{ type: 'attributes', attributeName: 'style' }]);
+    assert.equal(harness.cancellations.length, 0, 'walking style updates must remain ignored');
+
+    harness.fixture.container.setAttribute('data-neko-live2d-peek-anchor', 'left');
+    observer.callback([{
+        type: 'attributes',
+        attributeName: 'data-neko-live2d-peek-anchor'
+    }]);
+
+    assert.equal(harness.cancellations.length, 1);
+    assert.equal(harness.cancellations[0].options.resetArt, false);
+    assert.equal(harness.cancellations[0].options.preserveObservers, true);
+    assert.equal(harness.getReclampCount(), 0, 'transferred anchor must not use CAT reclamp');
+});
 
 test('transferred Live2D anchor blocks every CAT1 movement entry without becoming CAT edge peek', () => {
     const harness = createMovementHarness();

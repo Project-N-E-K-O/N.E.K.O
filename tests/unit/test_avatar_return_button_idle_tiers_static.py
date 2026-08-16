@@ -3704,7 +3704,10 @@ def test_cat1_walk_to_minimized_chat_contract_is_present():
     assert '_settleNekoIdleReturnSubactionToIdle' not in source
     assert '_NEKO_IDLE_CAT1_STRETCH_FINAL_HOLD_MS' in source
     assert 'containerObserver' in source
-    assert "attributeFilter: ['style', 'data-dragging']" in source
+    assert (
+        "attributeFilter: ['style', 'data-dragging', 'data-neko-live2d-peek-anchor']"
+        in source
+    )
     assert '_scheduleNekoIdleCat1JourneySyncForContainer' in source
     assert '_shouldRecheckNekoIdleCat1AfterManualMove' in source
     assert '_getNekoIdleRectCenterMoveDistance' in source
@@ -4059,9 +4062,17 @@ def test_cat1_walk_is_blocked_while_return_ball_drag_is_active_or_pending():
 
     container_observer = _source_slice_between(
         source,
-        "state.containerObserver = new MutationObserver(() => {",
+        "state.containerObserver = new MutationObserver((mutations) => {",
         "state.containerObserver.observe(container",
         "cat1 container observer",
+    )
+    _assert_source_order(
+        container_observer,
+        "transferred anchor interrupts a running walk through the existing sync gate",
+        "const transferredAnchorChanged = mutations.some((mutation) =>",
+        "mutation.attributeName === 'data-neko-live2d-peek-anchor');",
+        "if (currentState.substate === currentState.profile.walkingSubstate && !transferredAnchorChanged) return;",
+        "_scheduleNekoIdleCat1JourneySync(button);",
     )
     _assert_source_contains(
         container_observer,
@@ -4071,6 +4082,11 @@ def test_cat1_walk_is_blocked_while_return_ball_drag_is_active_or_pending():
     _assert_source_contains(
         container_observer,
         "if (observerDragging && observerDragging !== 'false') return;",
+        "cat1 container observer",
+    )
+    _assert_source_contains(
+        source,
+        "attributeFilter: ['style', 'data-dragging', 'data-neko-live2d-peek-anchor']",
         "cat1 container observer",
     )
 

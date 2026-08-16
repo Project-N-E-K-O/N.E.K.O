@@ -1602,17 +1602,20 @@ function _refreshNekoIdleCat1Observer(button) {
     if (!state.containerObserver) {
         const container = _getNekoIdleReturnContainerFromButton(button);
         if (container) {
-            state.containerObserver = new MutationObserver(() => {
+            state.containerObserver = new MutationObserver((mutations) => {
                 const currentState = button.__nekoIdleReturnSubactionState || button.__nekoIdleCat1Journey;
                 if (!currentState || currentState.paused) return;
-                if (currentState.substate === currentState.profile.walkingSubstate) return;
+                const transferredAnchorChanged = mutations.some((mutation) =>
+                    mutation && mutation.type === 'attributes' &&
+                    mutation.attributeName === 'data-neko-live2d-peek-anchor');
+                if (currentState.substate === currentState.profile.walkingSubstate && !transferredAnchorChanged) return;
                 const observerDragging = container.getAttribute('data-dragging');
                 if (observerDragging && observerDragging !== 'false') return;
                 _scheduleNekoIdleCat1JourneySync(button);
             });
             state.containerObserver.observe(container, {
                 attributes: true,
-                attributeFilter: ['style', 'data-dragging']
+                attributeFilter: ['style', 'data-dragging', 'data-neko-live2d-peek-anchor']
             });
         }
     }
