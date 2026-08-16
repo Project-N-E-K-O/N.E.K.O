@@ -6,8 +6,6 @@ from .agent_scene_tracker import AgentSceneTracker
 
 
 class AgentLifecycleMixin:
-    _SCENE_CAPSULE_RETIRED_EVENT_VERSION_LIMIT = 1024
-
     def __init__(
         self,
         *,
@@ -107,7 +105,8 @@ class AgentLifecycleMixin:
         self._summary_task_meta: dict[asyncio.Task[bool], dict[str, Any]] = {}
         self._scene_capsule_tasks: set[asyncio.Task[bool]] = set()
         self._scene_capsule_task_meta: dict[
-            asyncio.Task[bool], dict[str, Any]
+            asyncio.Task[bool],
+            dict[str, Any],
         ] = {}
         self._consultation_tasks: set[asyncio.Task[bool]] = set()
         self._pending_consults: set[str] = set()
@@ -132,7 +131,8 @@ class AgentLifecycleMixin:
         self._scene_capsule_retired_event_versions: dict[str, int] = {}
         self._scene_capsule_marker_event_state: dict[str, dict[str, Any]] = {}
         self._scene_capsule_line_fallback_aliases: dict[
-            str, dict[int, str]
+            str,
+            dict[int, str],
         ] = {}
         self._scene_summary_latest_memory_order_by_scene: dict[str, int] = {}
         self._scene_capsule_reservations: set[str] = set()
@@ -402,13 +402,6 @@ class AgentLifecycleMixin:
                         previous,
                         int(version or 0),
                     )
-                while (
-                    len(self._scene_capsule_retired_event_versions)
-                    > self._SCENE_CAPSULE_RETIRED_EVENT_VERSION_LIMIT
-                ):
-                    oldest = next(iter(self._scene_capsule_retired_event_versions))
-                    self._scene_capsule_retired_event_versions.pop(oldest, None)
-
             if task in pending_set:
                 task.cancel()
 
