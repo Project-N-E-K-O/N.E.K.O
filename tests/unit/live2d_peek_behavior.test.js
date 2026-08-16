@@ -1019,7 +1019,7 @@ test('a completed stale display move rebases the newer drag without overwriting 
     assert.equal(manager._pendingDisplaySwitch, false);
 });
 
-test('an older display switch cannot clear a newer switch pending state', async () => {
+test('a newer display switch waits until the older pending move finishes', async () => {
     const currentDisplay = {
         id: 'display-a',
         screenX: 0,
@@ -1046,14 +1046,18 @@ test('an older display switch cannot clear a newer switch pending state', async 
     const secondSwitch = manager._checkAndSwitchDisplay(model, {
         releaseScreenPoint: { x: 1100, y: 120 }
     });
-    for (let attempt = 0; attempt < 10 && moveResolvers.length < 2; attempt += 1) {
+    for (let attempt = 0; attempt < 10 && moveResolvers.length < 1; attempt += 1) {
         await new Promise((resolve) => setImmediate(resolve));
     }
-    assert.equal(moveResolvers.length, 2);
+    assert.equal(moveResolvers.length, 1, 'the newer display transaction must remain queued');
     assert.equal(manager._pendingDisplaySwitch, true);
 
     moveResolvers[0]({ success: false });
     assert.equal(await firstSwitch, false);
+    for (let attempt = 0; attempt < 10 && moveResolvers.length < 2; attempt += 1) {
+        await new Promise((resolve) => setImmediate(resolve));
+    }
+    assert.equal(moveResolvers.length, 2);
     assert.equal(manager._pendingDisplaySwitch, true);
 
     moveResolvers[1]({ success: false });
@@ -1062,7 +1066,7 @@ test('an older display switch cannot clear a newer switch pending state', async 
     assert.equal(manager._live2DPendingDisplaySwitchToken, null);
 });
 
-test('overlapping successful display moves apply a shared origin transition only once', async () => {
+test('the newest display request runs last after an older move succeeds', async () => {
     const currentDisplay = {
         id: 'display-a',
         screenX: 0,
@@ -1073,14 +1077,15 @@ test('overlapping successful display moves apply a shared origin transition only
     const harness = createHarness({ currentDisplay });
     const manager = new harness.Live2DManager();
     const model = createModel({ x: 700, y: 120, width: 500, height: 600 });
-    const moveResolvers = [];
+    const moveRequests = [];
     const settlementsCurrent = [true, true];
     harness.window.electronScreen.getAllDisplays = async () => [
         { id: 'display-a', screenX: 0, screenY: 0, width: 1000, height: 800 },
-        { id: 'display-b', screenX: 1000, screenY: 0, width: 1000, height: 800 }
+        { id: 'display-b', screenX: 1000, screenY: 0, width: 1000, height: 800 },
+        { id: 'display-c', screenX: 2000, screenY: 0, width: 1000, height: 800 }
     ];
-    harness.window.electronScreen.moveWindowToDisplay = () => new Promise((resolve) => {
-        moveResolvers.push(resolve);
+    harness.window.electronScreen.moveWindowToDisplay = (x, y) => new Promise((resolve) => {
+        moveRequests.push({ x, y, resolve });
     });
 
     const firstSwitch = manager._checkAndSwitchDisplay(model, {
@@ -1088,35 +1093,57 @@ test('overlapping successful display moves apply a shared origin transition only
         isCurrentSettlement: () => settlementsCurrent[0]
     });
     const secondSwitch = manager._checkAndSwitchDisplay(model, {
-        releaseScreenPoint: { x: 1100, y: 120 },
+        releaseScreenPoint: { x: 2100, y: 120 },
         isCurrentSettlement: () => settlementsCurrent[1]
     });
-    for (let attempt = 0; attempt < 10 && moveResolvers.length < 2; attempt += 1) {
+    for (let attempt = 0; attempt < 10 && moveRequests.length < 1; attempt += 1) {
         await new Promise((resolve) => setImmediate(resolve));
     }
-    assert.equal(moveResolvers.length, 2);
+    assert.deepEqual(
+        moveRequests.map(({ x, y }) => ({ x, y })),
+        [{ x: 1100, y: 120 }],
+        'the newer request must not race the older IPC'
+    );
     assert.equal(manager._pendingDisplaySwitch, true);
-    assert.equal(manager._live2DDisplaySwitchInFlightCount, 2);
-
-    settlementsCurrent[1] = false;
-    moveResolvers[1]({
-        success: true,
-        sameDisplay: false,
-        windowBounds: { x: 1000, y: 0, width: 1000, height: 800 }
-    });
-    assert.equal(await secondSwitch, false);
-    assert.equal(model.x, -300);
-    assert.equal(manager._pendingDisplaySwitch, true, 'the older IPC move is still in flight');
     assert.equal(manager._live2DDisplaySwitchInFlightCount, 1);
 
     settlementsCurrent[0] = false;
-    moveResolvers[0]({
+    currentDisplay.id = 'display-b';
+    currentDisplay.screenX = 1000;
+    currentDisplay.bounds = { x: 1000, y: 0, width: 1000, height: 800 };
+    currentDisplay.workArea = { x: 1000, y: 0, width: 1000, height: 800 };
+    moveRequests[0].resolve({
         success: true,
         sameDisplay: false,
         windowBounds: { x: 1000, y: 0, width: 1000, height: 800 }
     });
     assert.equal(await firstSwitch, false);
-    assert.equal(model.x, -300, 'the stale completion must not apply the A-to-B delta twice');
+    for (let attempt = 0; attempt < 10 && moveRequests.length < 2; attempt += 1) {
+        await new Promise((resolve) => setImmediate(resolve));
+    }
+    assert.deepEqual(
+        moveRequests.map(({ x, y }) => ({ x, y })),
+        [{ x: 1100, y: 120 }, { x: 2100, y: 120 }]
+    );
+    assert.equal(model.x, -300);
+    assert.equal(manager._pendingDisplaySwitch, true);
+    assert.equal(manager._live2DDisplaySwitchInFlightCount, 1);
+
+    currentDisplay.id = 'display-c';
+    currentDisplay.screenX = 2000;
+    currentDisplay.bounds = { x: 2000, y: 0, width: 1000, height: 800 };
+    currentDisplay.workArea = { x: 2000, y: 0, width: 1000, height: 800 };
+    moveRequests[1].resolve({
+        success: true,
+        sameDisplay: false,
+        windowBounds: { x: 2000, y: 0, width: 1000, height: 800 }
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    await waitForQueuedFrame(harness);
+    flushNextFrame(harness, 16);
+
+    assert.equal(await secondSwitch, true);
+    assert.equal(manager._live2DModelCoordinateScreenOrigin.x, 2000);
     assert.equal(manager._pendingDisplaySwitch, false);
     assert.equal(manager._live2DDisplaySwitchInFlightCount, 0);
 });

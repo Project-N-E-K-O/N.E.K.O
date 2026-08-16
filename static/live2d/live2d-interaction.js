@@ -3331,9 +3331,22 @@ Live2DManager.prototype._checkAndSwitchDisplay = async function (model, options 
         ? options.isCurrentSettlement
         : () => true;
     if (!isCurrentSettlement()) return false;
+    const previousDisplaySwitchQueue = this._live2DDisplaySwitchQueue || Promise.resolve();
+    let releaseDisplaySwitchQueue;
+    const currentDisplaySwitchGate = new Promise((resolve) => {
+        releaseDisplaySwitchQueue = resolve;
+    });
+    const currentDisplaySwitchQueue = Promise.resolve(previousDisplaySwitchQueue)
+        .then(() => currentDisplaySwitchGate);
+    this._live2DDisplaySwitchQueue = currentDisplaySwitchQueue;
     let displaySwitchToken = null;
 
     try {
+        // Serialize the whole selection + move transaction. A newer release must inspect the
+        // display that an older in-flight IPC actually left behind before choosing its target.
+        await previousDisplaySwitchQueue;
+        if (!isCurrentSettlement()) return false;
+
         // 获取模型中心点的窗口坐标
         const bounds = getLive2DModelGeometryBounds(this, model);
         if (!bounds) return false;
@@ -3522,6 +3535,13 @@ Live2DManager.prototype._checkAndSwitchDisplay = async function (model, options 
         }
         console.error('[Live2D] 检测/切换屏幕时出错:', error);
         return false;
+    } finally {
+        if (typeof releaseDisplaySwitchQueue === 'function') {
+            releaseDisplaySwitchQueue();
+        }
+        if (this._live2DDisplaySwitchQueue === currentDisplaySwitchQueue) {
+            this._live2DDisplaySwitchQueue = null;
+        }
     }
 };
 
