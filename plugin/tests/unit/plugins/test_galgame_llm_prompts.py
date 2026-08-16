@@ -307,6 +307,21 @@ def test_scene_delta_capsule_only_exposes_latest_confirmed_target() -> None:
     assert "当前可关注点" not in content
 
 
+def test_scene_delta_capsule_preserves_complete_visible_choice_group() -> None:
+    choices = [
+        {"text": f"Option {index}", "choice_state": "visible"}
+        for index in range(1, 6)
+    ]
+
+    content = AgentSceneContextMixin._format_scene_delta_for_cat(
+        new_stable_lines=[],
+        new_choices=choices,
+    )
+
+    for choice in choices:
+        assert str(choice["text"]) in content
+
+
 def test_scene_delta_capsule_rejects_tentative_only_delta() -> None:
     content = AgentSceneContextMixin._format_scene_delta_for_cat(
         new_stable_lines=[

@@ -2593,7 +2593,9 @@ class AgentSummaryMixin:
                     ready_scene_scope_keys.add(scope_key)
                     time_fallback_scope_keys.add(scope_key)
 
-        # C: 合并回退
+        # C: 多场景累计回退。每个 scene/route 必须独立归档；把多个
+        # scene 合并进 primary context 会将事实写入错误的单场景 memory。
+        merge_fallback_scope_keys: set[str] = set()
         if not ready_scene_scope_keys:
             total_lines = sum(
                 int(s.get("lines_since_push") or 0)
@@ -2612,11 +2614,12 @@ class AgentSummaryMixin:
                     reverse=True,
                 )
                 if sorted_scenes:
-                    self._pending_merge_primary = sorted_scenes[0][0]
-                    self._pending_merge_scene_ids = [
-                        sid for sid, _ in sorted_scenes[1:]
-                    ]
-                    ready_scene_scope_keys.add(self._pending_merge_primary)
+                    self._pending_merge_primary = ""
+                    self._pending_merge_scene_ids = None
+                    merge_fallback_scope_keys.update(
+                        scope_key for scope_key, _state in sorted_scenes
+                    )
+                    ready_scene_scope_keys.update(merge_fallback_scope_keys)
 
         # E: 跨 scene 累计回退
         if not ready_scene_scope_keys:
@@ -2667,6 +2670,7 @@ class AgentSummaryMixin:
             lines_since_push = int(state.get("lines_since_push") or 0)
             is_fallback = (
                 scene_scope_key in time_fallback_scope_keys
+                or scene_scope_key in merge_fallback_scope_keys
                 or scene_scope_key == self._pending_merge_primary
                 or scene_scope_key == self._pending_cross_scene_primary
             )
@@ -2698,6 +2702,19 @@ class AgentSummaryMixin:
             scope_snapshot["route_id"] = route_id
             scope_shared = dict(shared)
             scope_shared["latest_snapshot"] = scope_snapshot
+            previous_scene_summary = next(
+                (
+                    str(memory_item.get("summary") or "").strip()
+                    for memory_item in reversed(self._scene_memory)
+                    if isinstance(memory_item, dict)
+                    and str(memory_item.get("scene_id") or "") == scene_id
+                    and str(memory_item.get("route_id") or "") == route_id
+                    and str(memory_item.get("summary") or "").strip()
+                ),
+                "",
+            )
+            if previous_scene_summary:
+                scope_shared["previous_scene_summary"] = previous_scene_summary
             allowed_scene_routes = {
                 (scene_id, route_id),
                 *[
@@ -2751,6 +2768,10 @@ class AgentSummaryMixin:
                 merge_from_scene_ids=merge_ids,
                 config=self._context_config,
             )
+            if previous_scene_summary:
+                # Keep the prior LLM archive explicit even in rolling context
+                # mode, where scene_summary_seed intentionally remains local.
+                context["previous_scene_summary"] = previous_scene_summary
             if scene_scope_key == self._pending_merge_primary:
                 self._pending_merge_scene_ids = None
                 self._pending_merge_primary = ""

@@ -4198,6 +4198,132 @@ async def test_game_llm_agent_pushes_scene_summary_after_eight_lines(
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
+async def test_scene_memory_summary_seeds_next_archive_for_same_route(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    gateway = _FakeLLMGateway(
+        summarize_payload={
+            "degraded": False,
+            "summary": "updated cumulative archive",
+            "key_points": [],
+            "diagnostic": "",
+        }
+    )
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(ctx),
+        logger=_Logger(),
+        llm_gateway=gateway,
+        host_adapter=_FakeHostAdapter(),
+    )
+    first_line = _summary_test_line("scene-a", 1)
+    first = _shared_state(
+        mode="companion",
+        push_notifications=False,
+        snapshot=_session_state(
+            text=str(first_line["text"]),
+            scene_id="scene-a",
+            line_id=str(first_line["line_id"]),
+        ),
+        history_lines=[first_line],
+    )
+    await agent.tick(first)
+    agent._replace_scene_memory_summary(
+        scene_id="scene-a",
+        route_id="",
+        summary="prior cumulative archive",
+    )
+    lines = [_summary_test_line("scene-a", index) for index in range(1, 9)]
+    shared = _shared_state(
+        mode="companion",
+        push_notifications=False,
+        snapshot=_session_state(
+            text=str(lines[-1]["text"]),
+            scene_id="scene-a",
+            line_id=str(lines[-1]["line_id"]),
+        ),
+        history_lines=lines,
+    )
+
+    await agent.tick(shared)
+    await _drain_agent_summary_tasks(agent)
+
+    assert len(gateway.summarize_calls) == 1
+    assert (
+        gateway.summarize_calls[0]["previous_scene_summary"]
+        == "prior cumulative archive"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_merge_fallback_archives_each_scene_scope_independently(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    gateway = _FakeLLMGateway(
+        summarize_payload={
+            "degraded": False,
+            "summary": "scope archive",
+            "key_points": [],
+            "diagnostic": "",
+        }
+    )
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(ctx),
+        logger=_Logger(),
+        llm_gateway=gateway,
+        host_adapter=_FakeHostAdapter(),
+        config=SimpleNamespace(
+            scene_summary_push_line_interval=8,
+            scene_merge_total_threshold=6,
+            scene_cross_scene_total_threshold=99,
+        ),
+    )
+    await agent.tick(
+        _shared_state(
+            mode="companion",
+            push_notifications=False,
+            snapshot=_session_state(scene_id="scene-b"),
+        )
+    )
+    lines = [
+        *[_summary_test_line("scene-a", index) for index in range(1, 4)],
+        *[_summary_test_line("scene-b", index) for index in range(1, 4)],
+    ]
+    shared = _shared_state(
+        mode="companion",
+        push_notifications=False,
+        snapshot=_session_state(
+            text=str(lines[-1]["text"]),
+            scene_id="scene-b",
+            line_id=str(lines[-1]["line_id"]),
+        ),
+        history_lines=lines,
+    )
+
+    await agent.tick(shared)
+    await agent.tick(shared)
+    await _drain_agent_summary_tasks(agent)
+
+    assert len(gateway.summarize_calls) == 2
+    assert {str(call["scene_id"]) for call in gateway.summarize_calls} == {
+        "scene-a",
+        "scene-b",
+    }
+    for call in gateway.summarize_calls:
+        scene_id = str(call["scene_id"])
+        assert {
+            str(line["scene_id"])
+            for line in call["stable_lines"]
+            if isinstance(line, dict)
+        } == {scene_id}
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
 async def test_game_llm_agent_delivers_line_count_summary_after_scene_change(
     tmp_path: Path,
 ) -> None:

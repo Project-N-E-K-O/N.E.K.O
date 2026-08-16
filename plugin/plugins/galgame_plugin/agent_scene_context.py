@@ -196,7 +196,7 @@ class AgentSceneContextMixin:
 
         selected_choices: list[str] = []
         visible_choices: list[str] = []
-        for choice in choices_delta[-3:]:
+        for choice in choices_delta:
             rendered = cls._format_choice_text(
                 {**choice, "text": choice.get("text") or choice.get("label")}
             )
