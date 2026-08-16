@@ -3407,6 +3407,8 @@ Live2DManager.prototype._checkAndSwitchDisplay = async function (model, options 
             }
             displaySwitchToken = {};
             this._live2DPendingDisplaySwitchToken = displaySwitchToken;
+            this._live2DDisplaySwitchInFlightCount =
+                Math.max(0, Number(this._live2DDisplaySwitchInFlightCount) || 0) + 1;
             this._pendingDisplaySwitch = true;
             try {
                 if (!isCurrentSettlement()) return false;
@@ -3472,15 +3474,22 @@ Live2DManager.prototype._checkAndSwitchDisplay = async function (model, options 
                 }
                 if (!isCurrentSettlement()) return false;
             } finally {
+                const remainingDisplaySwitches = Math.max(
+                    0,
+                    (Number(this._live2DDisplaySwitchInFlightCount) || 0) - 1
+                );
+                this._live2DDisplaySwitchInFlightCount = remainingDisplaySwitches;
                 if (this._live2DPendingDisplaySwitchToken === displaySwitchToken) {
                     this._live2DPendingDisplaySwitchToken = null;
-                    this._pendingDisplaySwitch = false;
                 }
+                this._pendingDisplaySwitch = remainingDisplaySwitches > 0;
             }
         }
         return false;  // No display switch occurred
     } catch (error) {
-        if (displaySwitchToken && this._live2DPendingDisplaySwitchToken === displaySwitchToken) {
+        if (displaySwitchToken &&
+                this._live2DDisplaySwitchInFlightCount === 0 &&
+                this._live2DPendingDisplaySwitchToken === displaySwitchToken) {
             this._live2DPendingDisplaySwitchToken = null;
             this._pendingDisplaySwitch = false;
         }

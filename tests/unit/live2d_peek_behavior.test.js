@@ -959,6 +959,8 @@ test('overlapping successful display moves apply a shared origin transition only
         await new Promise((resolve) => setImmediate(resolve));
     }
     assert.equal(moveResolvers.length, 2);
+    assert.equal(manager._pendingDisplaySwitch, true);
+    assert.equal(manager._live2DDisplaySwitchInFlightCount, 2);
 
     settlementsCurrent[1] = false;
     moveResolvers[1]({
@@ -968,6 +970,8 @@ test('overlapping successful display moves apply a shared origin transition only
     });
     assert.equal(await secondSwitch, false);
     assert.equal(model.x, -300);
+    assert.equal(manager._pendingDisplaySwitch, true, 'the older IPC move is still in flight');
+    assert.equal(manager._live2DDisplaySwitchInFlightCount, 1);
 
     settlementsCurrent[0] = false;
     moveResolvers[0]({
@@ -977,6 +981,8 @@ test('overlapping successful display moves apply a shared origin transition only
     });
     assert.equal(await firstSwitch, false);
     assert.equal(model.x, -300, 'the stale completion must not apply the A-to-B delta twice');
+    assert.equal(manager._pendingDisplaySwitch, false);
+    assert.equal(manager._live2DDisplaySwitchInFlightCount, 0);
 });
 
 test('edge contact follows drawable geometry instead of transparent model bounds', () => {
