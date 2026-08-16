@@ -320,10 +320,10 @@ def test_devastating_claim_limits_forbid_reading_the_damage_clock():
 
 
 def test_devastating_callout_does_not_invite_a_five_second_damage_reading():
-    """window_seconds and competing totals made her recite '5秒里打了xx'.
+    """window_seconds and competing totals made her recite 'dealt xx in 5 seconds'.
 
-    First-salvo AP 毁打 still quoted 3w8/7w — those were max HP or battle
-    total sitting next to the hit. Leave the celebration, hide the meter.
+    First-salvo AP devastating strike still quoted 3w8/7w — those were max HP
+    or battle total sitting next to the hit. Leave the celebration, hide the meter.
     """
     built = WowsTacticPolicy(CFG).expand(
         [_strike_event(DEVASTATING_STRIKE)], _strike_facts())[0]
@@ -482,7 +482,7 @@ def test_target_id_is_not_spoken_in_the_prompt():
 
 
 def test_devastating_with_sink_does_not_speak_kill_credit():
-    """毁打常附带击沉；kill_credit:false 被念成「击杀分」。"""
+    """A devastating strike often arrives with a sink; kill_credit:false was spoken as 'kill credit'."""
     sink = GameEvent(
         event_id=ENEMY_SUNK,
         severity=90,

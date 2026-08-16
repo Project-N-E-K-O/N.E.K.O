@@ -230,7 +230,7 @@ def test_full_hp_burst_is_devastating_even_if_the_hull_vanishes():
 
 
 def _dark_ghost(base: Ship) -> Ship:
-    """8111 灭点 row: still flagged alive, no live HP, last-seen only."""
+    """8111 dark-ghost row: still flagged alive, no live HP, last-seen only."""
     return replace(
         base,
         visible=False,
@@ -243,7 +243,7 @@ def _dark_ghost(base: Ship) -> Ship:
 def test_unspotted_ghost_full_hp_salvo_is_devastating():
     """A last-seen marker is not a live HP bar.
 
-    8111 keeps 灭点 hulls in objects as alive=True with health omitted.
+    8111 keeps dark-ghost hulls in objects as alive=True with health omitted.
     Covering last-seen remaining in one window is still a finishing blow.
     """
     spotted = enemy(max_health=40_000.0, health=40_000.0)
@@ -1024,7 +1024,7 @@ def _ghost_object(*, health=None, last_health=40_000, alive=True):
 
 
 def test_8111_dark_ghost_payload_promotes_to_devastating():
-    """Wire shape 8111 emits for 灭点: alive ghost, lastHealth only, named salvo."""
+    """Wire shape 8111 emits for a dark ghost: alive ghost, lastHealth only, named salvo."""
     cfg = WowsConfig()
     adapter = WowsSchemaAdapter()
     builder = FactBuilder(cfg)

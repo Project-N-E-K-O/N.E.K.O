@@ -601,6 +601,7 @@ def _assert_stage_filter_parity(
         "__pycache__/mod.pyc",
         ".github/workflows/ci.yml",
         ".vscode/settings.json",
+        ".idea/workspace.xml",
         ".mypy_cache/module.json",
         "cache/blob.json",
         "cache/nested/blob.json",
