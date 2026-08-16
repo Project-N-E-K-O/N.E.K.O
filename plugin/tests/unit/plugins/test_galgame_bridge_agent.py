@@ -12,12 +12,6 @@ from tests.fake_clock import patch_module_clock
 from utils.result_parser import parse_push_message_content
 
 
-async def _drain_agent_summary_tasks(agent: GameLLMAgent) -> None:
-    """Drain both the realtime capsule and background memory pipelines."""
-    await agent.drain_summary_tasks(timeout=1.0)
-    await asyncio.sleep(0)
-
-
 @pytest.mark.plugin_unit
 def test_game_llm_agent_menu_stage_without_choices_is_choice_menu(tmp_path: Path) -> None:
     plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)

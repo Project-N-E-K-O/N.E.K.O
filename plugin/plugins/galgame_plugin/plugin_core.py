@@ -4280,12 +4280,12 @@ class GalgamePlugin(
 
         if self._startup_existing_session_ids is None:
             self._startup_existing_session_ids = {
-                candidate.session_id
+                normalized_session_id
                 for candidate in raw_candidates.values()
-                if candidate.session_id
+                if (normalized_session_id := str(candidate.session_id or "").strip())
                 and classify_session_origin(
                     data_source=candidate.data_source,
-                    session_id=candidate.session_id,
+                    session_id=normalized_session_id,
                     started_at=str(candidate.session.get("started_at") or ""),
                     plugin_run_started_at=self._plugin_run_started_at,
                     startup_existing_session_ids=None,

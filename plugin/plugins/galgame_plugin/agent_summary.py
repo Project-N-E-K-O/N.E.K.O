@@ -470,10 +470,17 @@ class AgentSummaryMixin:
         source_key: str,
         signatures: list[str],
     ) -> list[int]:
-        state = self._scene_capsule_fallback_occurrences.setdefault(
+        state = self._scene_capsule_fallback_occurrences.pop(
             source_key,
-            {"signatures": [], "occurrence_ids": [], "next_id": 1},
+            None,
         )
+        if not isinstance(state, dict):
+            state = {"signatures": [], "occurrence_ids": [], "next_id": 1}
+        self._scene_capsule_fallback_occurrences[source_key] = state
+        while len(self._scene_capsule_fallback_occurrences) > 32:
+            oldest_source_key = next(iter(self._scene_capsule_fallback_occurrences))
+            self._scene_capsule_fallback_occurrences.pop(oldest_source_key, None)
+            self._scene_capsule_line_fallback_aliases.pop(oldest_source_key, None)
         previous_signatures = [
             str(item) for item in list(state.get("signatures") or [])
         ]
@@ -635,6 +642,10 @@ class AgentSummaryMixin:
                     "signature": signature,
                 }
             )
+        active_occurrence_ids = set(fallback_ids)
+        for occurrence_id in list(source_aliases):
+            if occurrence_id not in active_occurrence_ids:
+                source_aliases.pop(occurrence_id, None)
         return [*event_occurrences, *fallback_occurrences]
 
     def _scene_capsule_choice_occurrences(

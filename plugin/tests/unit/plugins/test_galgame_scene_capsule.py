@@ -112,6 +112,67 @@ async def test_choices_shown_event_submits_complete_menu_atomically(tmp_path: Pa
     assert len(ctx.pushed_messages) == 1
 
 
+@pytest.mark.plugin_unit
+def test_fallback_occurrence_state_evicts_jittered_session_keys(tmp_path: Path) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(_Ctx(plugin_dir, _make_effective_config(bridge_root))),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+
+    for index in range(40):
+        source_key = f"ocr_reader|session-{index}|history_line"
+        agent._scene_capsule_line_fallback_aliases[source_key] = {1: "event-key"}
+        agent._scene_capsule_fallback_occurrence_ids(
+            source_key=source_key,
+            signatures=[f"line-{index}"],
+        )
+
+    assert len(agent._scene_capsule_fallback_occurrences) == 32
+    assert len(agent._scene_capsule_line_fallback_aliases) == 32
+    assert "ocr_reader|session-0|history_line" not in (
+        agent._scene_capsule_fallback_occurrences
+    )
+    assert "ocr_reader|session-0|history_line" not in (
+        agent._scene_capsule_line_fallback_aliases
+    )
+    assert "ocr_reader|session-39|history_line" in (
+        agent._scene_capsule_fallback_occurrences
+    )
+
+
+@pytest.mark.plugin_unit
+def test_fallback_line_aliases_only_keep_current_history_window(tmp_path: Path) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(_Ctx(plugin_dir, _make_effective_config(bridge_root))),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    source_key = "bridge_sdk|sess-a|history_line"
+
+    for index in range(1, 80):
+        line_indexes = range(max(1, index - 1), index + 1)
+        lines = [_summary_test_line("scene-a", item) for item in line_indexes]
+        events = [
+            _summary_test_line_event("scene-a", item, seq=item)
+            for item in line_indexes
+        ]
+        shared = _capsule_shared(events=events, lines=lines)
+        agent._scene_capsule_line_occurrences(
+            shared,
+            snapshot=dict(shared["latest_snapshot"]),
+        )
+
+    assert len(agent._scene_capsule_line_fallback_aliases[source_key]) == 2
+    assert len(
+        agent._scene_capsule_fallback_occurrences[source_key]["signatures"]
+    ) == 2
+
+
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
 async def test_eight_lines_update_memory_without_summary_notification(tmp_path: Path) -> None:

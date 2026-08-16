@@ -1904,6 +1904,73 @@ async def test_preexisting_boundary_keeps_event_appended_after_candidate_snapsho
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
+async def test_startup_session_id_normalization_preserves_preexisting_boundary(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    game_id = "demo.spaced-session"
+    raw_session_id = "  sess-spaced  "
+    old_line = _event(
+        seq=1,
+        event_type="line_changed",
+        session_id=raw_session_id,
+        game_id=game_id,
+        payload={
+            "speaker": "雪乃",
+            "text": "启动前旧台词",
+            "line_id": "line-old",
+            "scene_id": "scene-a",
+            "route_id": "",
+        },
+        ts="2000-01-01T00:00:01Z",
+    )
+    game_dir = _create_game_dir(
+        bridge_root,
+        game_id=game_id,
+        session_payload=_session(
+            game_id=game_id,
+            session_id=raw_session_id,
+            last_seq=1,
+            started_at="2000-01-01T00:00:00Z",
+            state=_session_state(
+                text="启动前旧台词",
+                line_id="line-old",
+                scene_id="scene-a",
+            ),
+        ),
+        events=[old_line],
+    )
+    plugin = GalgameBridgePlugin(_Ctx(plugin_dir, _make_effective_config(bridge_root)))
+    await plugin.startup()
+    try:
+        await plugin._poll_bridge(force=True)
+        assert plugin._startup_existing_session_ids == {"sess-spaced"}
+        assert plugin._snapshot_state()["latest_snapshot"] == {}
+
+        _write_session(
+            game_dir / "session.json",
+            _session(
+                game_id=game_id,
+                session_id=raw_session_id,
+                last_seq=1,
+                started_at="2999-01-01T00:00:00Z",
+                state=_session_state(
+                    text="不应因时间戳变化越过启动边界",
+                    line_id="line-future",
+                    scene_id="scene-a",
+                ),
+            ),
+        )
+
+        await plugin._poll_bridge(force=True)
+
+        assert plugin._snapshot_state()["latest_snapshot"] == {}
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
 async def test_boundary_retry_discards_stale_checkpoint_before_processing_new_tail(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
