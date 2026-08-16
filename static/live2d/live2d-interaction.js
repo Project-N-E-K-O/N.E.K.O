@@ -1916,8 +1916,6 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
             this._isDraggingModel = false;
             return;
         }
-        this._live2DDragGeneration = (Number(this._live2DDragGeneration) || 0) + 1;
-
         // 记录点击开始信息
         clickStartTime = Date.now();
         clickStartX = globalPos.x;
@@ -2012,7 +2010,6 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
 
     const onDragMove = (event) => {
         if (!this._isModelReadyForInteraction) return;
-        if (isLive2DHostModelDragActive()) return;
         if (this._isDraggingModel) {
             if (typeof this.boostLinuxX11InteractiveFPS === 'function') {
                 this.boostLinuxX11InteractiveFPS(1400);
@@ -2046,10 +2043,21 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
             const moveDistance = Math.sqrt(
                 Math.pow(x - clickStartX, 2) + Math.pow(y - clickStartY, 2)
             );
-            if (moveDistance > CLICK_THRESHOLD_DISTANCE) {
+            if (!hasMoved && moveDistance > CLICK_THRESHOLD_DISTANCE) {
                 hasMoved = true;
+                this._live2DDragGeneration = (Number(this._live2DDragGeneration) || 0) + 1;
+                // A superseded snap would otherwise keep _isSnapping until its next RAF and
+                // could make this drag's terminal snap incorrectly short-circuit. Its own
+                // generation guard prevents the stale RAF from writing model coordinates.
+                if (this._live2DActiveSnapAnimation) {
+                    this._live2DActiveSnapAnimation = null;
+                    this._isSnapping = false;
+                }
             }
             if (!hasMoved) return;
+            // The physical-crop host owns coordinate writes, but the local interaction still
+            // commits the drag generation above when the shared pointer crosses the threshold.
+            if (isLive2DHostModelDragActive()) return;
 
             if (edgePeekStartedDrag && !edgePeekDragCleared) {
                 // 先恢复 base 姿态，再用原始模型局部抓取点反解平移；旋转/镜像
@@ -3320,8 +3328,26 @@ Live2DManager.prototype._checkAndSwitchDisplay = async function (model, options 
         const modelCenterY = bounds.centerY;
 
         // 获取所有屏幕信息
-        const displays = await window.electronScreen.getAllDisplays();
+        const rawDisplays = await window.electronScreen.getAllDisplays();
         if (!isCurrentSettlement()) return false;
+        const displays = Array.isArray(rawDisplays)
+            ? rawDisplays.map((display) => {
+                const displayBounds = normalizeLive2DPeekRect(display && display.bounds) ||
+                    normalizeLive2DPeekRect(display && {
+                        x: display.screenX,
+                        y: display.screenY,
+                        width: display.width,
+                        height: display.height
+                    });
+                return displayBounds ? {
+                    ...display,
+                    screenX: displayBounds.x,
+                    screenY: displayBounds.y,
+                    width: displayBounds.width,
+                    height: displayBounds.height
+                } : null;
+            }).filter(Boolean)
+            : [];
         if (!displays || displays.length <= 1) {
             // 只有一个屏幕，不需要切换
             return false;
@@ -3371,6 +3397,12 @@ Live2DManager.prototype._checkAndSwitchDisplay = async function (model, options 
             console.log('[Live2D] 检测到模型移出当前屏幕，准备切换到屏幕:', targetDisplay.id);
 
             // 切换期间屏蔽常规吸附，防止中间态用旧窗口尺寸做 clamp 导致误吸附
+            if (!this._pendingDisplaySwitch) {
+                this._live2DModelCoordinateScreenOrigin = {
+                    x: windowScreenX,
+                    y: windowScreenY
+                };
+            }
             displaySwitchToken = {};
             this._live2DPendingDisplaySwitchToken = displaySwitchToken;
             this._pendingDisplaySwitch = true;
@@ -3393,10 +3425,18 @@ Live2DManager.prototype._checkAndSwitchDisplay = async function (model, options 
                         : targetDisplay.screenY;
                     // moveWindowToDisplay is an external side effect: once it succeeds, the model's
                     // renderer-local coordinates must follow the new window origin even if a newer
-                    // drag has invalidated this settlement. Apply only the origin delta so any newer
-                    // drag movement already written to model.x/y remains intact.
-                    model.x += windowScreenX - targetOriginX;
-                    model.y += windowScreenY - targetOriginY;
+                    // drag has invalidated this settlement. Overlapping successful moves share the
+                    // last applied origin so the same A -> B transition cannot be applied twice.
+                    const appliedOrigin = normalizeLive2DPoint(this._live2DModelCoordinateScreenOrigin) || {
+                        x: windowScreenX,
+                        y: windowScreenY
+                    };
+                    model.x += appliedOrigin.x - targetOriginX;
+                    model.y += appliedOrigin.y - targetOriginY;
+                    this._live2DModelCoordinateScreenOrigin = {
+                        x: targetOriginX,
+                        y: targetOriginY
+                    };
                     if (!isCurrentSettlement()) return false;
 
                     // 考虑缩放因子变化

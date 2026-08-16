@@ -548,6 +548,13 @@ test('pointerup snapshots settlement context before an asynchronous release hint
             originalEvent: { screenX: 200, screenY: 100 }
         }
     });
+    harness.window.dispatchEvent({
+        type: 'pointermove',
+        clientX: 250,
+        clientY: 100,
+        screenX: 250,
+        screenY: 100
+    });
     releaseHint(false);
     await new Promise((resolve) => setImmediate(resolve));
 
@@ -558,6 +565,82 @@ test('pointerup snapshots settlement context before an asynchronous release hint
         startedFromPeek: false,
         dragGeneration: 1
     });
+});
+
+test('pointerdown without threshold movement does not invalidate an older settlement', () => {
+    const canvas = { style: {} };
+    const harness = createHarness({ controls: { 'live2d-canvas': canvas } });
+    const manager = new harness.Live2DManager();
+    const model = createModel({ x: 0 });
+    const modelListeners = new Map();
+    model.parent = null;
+    model.toLocal = (point) => ({ x: point.x - model.x, y: point.y - model.y });
+    model.toGlobal = (point) => ({ x: point.x + model.x, y: point.y + model.y });
+    model.on = (type, handler) => {
+        modelListeners.set(type, handler);
+        return model;
+    };
+    manager.currentModel = model;
+    manager._isModelReadyForInteraction = true;
+    manager._live2DDragGeneration = 7;
+    harness.window.live2dManager = manager;
+
+    manager.setupDragAndDrop(model);
+    modelListeners.get('pointerdown')({
+        data: {
+            global: { x: 100, y: 100 },
+            originalEvent: { screenX: 100, screenY: 100 }
+        }
+    });
+    harness.window.dispatchEvent({
+        type: 'pointermove',
+        clientX: 101,
+        clientY: 100,
+        screenX: 101,
+        screenY: 100
+    });
+
+    assert.equal(manager._live2DDragGeneration, 7);
+});
+
+test('threshold movement synchronously releases a stale snap before terminal settlement', () => {
+    const canvas = { style: {} };
+    const harness = createHarness({ controls: { 'live2d-canvas': canvas } });
+    const manager = new harness.Live2DManager();
+    const model = createModel({ x: 0 });
+    const modelListeners = new Map();
+    model.parent = null;
+    model.toLocal = (point) => ({ x: point.x - model.x, y: point.y - model.y });
+    model.toGlobal = (point) => ({ x: point.x + model.x, y: point.y + model.y });
+    model.on = (type, handler) => {
+        modelListeners.set(type, handler);
+        return model;
+    };
+    manager.currentModel = model;
+    manager._isModelReadyForInteraction = true;
+    manager._live2DDragGeneration = 3;
+    manager._isSnapping = true;
+    manager._live2DActiveSnapAnimation = {};
+    harness.window.live2dManager = manager;
+
+    manager.setupDragAndDrop(model);
+    modelListeners.get('pointerdown')({
+        data: {
+            global: { x: 100, y: 100 },
+            originalEvent: { screenX: 100, screenY: 100 }
+        }
+    });
+    harness.window.dispatchEvent({
+        type: 'pointermove',
+        clientX: 150,
+        clientY: 100,
+        screenX: 150,
+        screenY: 100
+    });
+
+    assert.equal(manager._live2DDragGeneration, 4);
+    assert.equal(manager._isSnapping, false);
+    assert.equal(manager._live2DActiveSnapAnimation, null);
 });
 
 test('stale terminal snap animation stops before writing the next drag position', async () => {
@@ -703,6 +786,33 @@ test('release pointer on another display still performs the ordinary display swi
     assert.equal(model.x, -300, 'drawable center keeps its original absolute screen position');
 });
 
+test('release pointer selects Electron displays that expose geometry under bounds', async () => {
+    const currentDisplay = {
+        id: 'display-a',
+        screenX: 0,
+        screenY: 0,
+        bounds: { x: 0, y: 0, width: 1000, height: 800 },
+        workArea: { x: 0, y: 0, width: 1000, height: 800 }
+    };
+    const harness = createHarness({ currentDisplay });
+    const manager = new harness.Live2DManager();
+    const model = createModel({ x: 700, y: 120, width: 500, height: 600 });
+    const movePoints = [];
+    harness.window.electronScreen.getAllDisplays = async () => [
+        { id: 'display-a', bounds: { x: 0, y: 0, width: 1000, height: 800 } },
+        { id: 'display-b', bounds: { x: 1000, y: 0, width: 1000, height: 800 } }
+    ];
+    harness.window.electronScreen.moveWindowToDisplay = async (x, y) => {
+        movePoints.push({ x, y });
+        return { success: false };
+    };
+
+    assert.equal(await manager._checkAndSwitchDisplay(model, {
+        releaseScreenPoint: { x: 1100, y: 120 }
+    }), false);
+    assert.deepEqual(movePoints, [{ x: 1100, y: 120 }]);
+});
+
 test('a completed stale display move rebases the newer drag without overwriting its movement', async () => {
     const currentDisplay = {
         id: 'display-a',
@@ -789,6 +899,59 @@ test('an older display switch cannot clear a newer switch pending state', async 
     assert.equal(await secondSwitch, false);
     assert.equal(manager._pendingDisplaySwitch, false);
     assert.equal(manager._live2DPendingDisplaySwitchToken, null);
+});
+
+test('overlapping successful display moves apply a shared origin transition only once', async () => {
+    const currentDisplay = {
+        id: 'display-a',
+        screenX: 0,
+        screenY: 0,
+        bounds: { x: 0, y: 0, width: 1000, height: 800 },
+        workArea: { x: 0, y: 0, width: 1000, height: 800 }
+    };
+    const harness = createHarness({ currentDisplay });
+    const manager = new harness.Live2DManager();
+    const model = createModel({ x: 700, y: 120, width: 500, height: 600 });
+    const moveResolvers = [];
+    const settlementsCurrent = [true, true];
+    harness.window.electronScreen.getAllDisplays = async () => [
+        { id: 'display-a', screenX: 0, screenY: 0, width: 1000, height: 800 },
+        { id: 'display-b', screenX: 1000, screenY: 0, width: 1000, height: 800 }
+    ];
+    harness.window.electronScreen.moveWindowToDisplay = () => new Promise((resolve) => {
+        moveResolvers.push(resolve);
+    });
+
+    const firstSwitch = manager._checkAndSwitchDisplay(model, {
+        releaseScreenPoint: { x: 1100, y: 120 },
+        isCurrentSettlement: () => settlementsCurrent[0]
+    });
+    const secondSwitch = manager._checkAndSwitchDisplay(model, {
+        releaseScreenPoint: { x: 1100, y: 120 },
+        isCurrentSettlement: () => settlementsCurrent[1]
+    });
+    for (let attempt = 0; attempt < 10 && moveResolvers.length < 2; attempt += 1) {
+        await new Promise((resolve) => setImmediate(resolve));
+    }
+    assert.equal(moveResolvers.length, 2);
+
+    settlementsCurrent[1] = false;
+    moveResolvers[1]({
+        success: true,
+        sameDisplay: false,
+        windowBounds: { x: 1000, y: 0, width: 1000, height: 800 }
+    });
+    assert.equal(await secondSwitch, false);
+    assert.equal(model.x, -300);
+
+    settlementsCurrent[0] = false;
+    moveResolvers[0]({
+        success: true,
+        sameDisplay: false,
+        windowBounds: { x: 1000, y: 0, width: 1000, height: 800 }
+    });
+    assert.equal(await firstSwitch, false);
+    assert.equal(model.x, -300, 'the stale completion must not apply the A-to-B delta twice');
 });
 
 test('edge contact follows drawable geometry instead of transparent model bounds', () => {
