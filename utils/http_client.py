@@ -45,10 +45,29 @@ def ensure_user_agent(headers: dict[str, Any] | None) -> dict[str, Any]:
         合并后的新 headers 字典（至少包含 User-Agent）
     """
     merged: dict[str, Any] = dict(headers) if headers else {}
-    # 大小写不敏感地检查调用方是否已设置 UA
-    has_ua = any(str(k).lower() == "user-agent" for k in merged)
-    if not has_ua:
+
+    # 查找是否有任意大小写形式的 User-Agent
+    ua_key_found: str | None = None
+    ua_value: Any | None = None
+    for k in merged:
+        if str(k).lower() == "user-agent":
+            ua_key_found = k
+            ua_value = merged[k]
+            break
+
+    # 删除所有大小写变体的 user-agent，避免重复请求头
+    keys_to_remove = [k for k in merged if str(k).lower() == "user-agent"]
+    for k in keys_to_remove:
+        del merged[k]
+
+    # 仅写入一个规范的 User-Agent 键
+    if ua_value is not None:
+        # 调用方显式提供了值，保留
+        merged["User-Agent"] = ua_value
+    else:
+        # 调用方未提供，注入默认值
         merged["User-Agent"] = get_default_user_agent()
+
     return merged
 
 
@@ -61,8 +80,12 @@ def patch_requests_default_user_agent() -> None:
     import requests.utils
 
     _default_ua = get_default_user_agent()
+    _original_default_user_agent = requests.utils.default_user_agent
 
     def _neko_default_user_agent(name: str = "python-requests") -> str:
-        return _default_ua
+        # name 为默认值时返回 neko UA，否则调用原始函数保留调用方名称
+        if name == "python-requests":
+            return _default_ua
+        return _original_default_user_agent(name)
 
     requests.utils.default_user_agent = _neko_default_user_agent
