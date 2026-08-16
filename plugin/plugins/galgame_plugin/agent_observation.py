@@ -40,6 +40,11 @@ class AgentObservationMixin:
                 source_changed
                 and self._is_trusted_scene_source_handoff(transition_fields)
             )
+            if trusted_source_handoff:
+                self._remember_trusted_scene_source_handoff(
+                    self._observed_session_fingerprint,
+                    current_fingerprint,
+                )
 
             def _identity_matches(previous_key: str, current_key: str) -> bool:
                 previous = self._normalized_identity_text(

@@ -59,6 +59,33 @@ async def test_first_stable_event_submits_capsule_without_game_llm(tmp_path: Pat
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
+async def test_capsule_ignores_reader_private_binary_shared_state(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(ctx),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    line = _summary_test_line("scene-a", 1)
+    shared = _capsule_shared(
+        events=[_summary_test_line_event("scene-a", 1, seq=1)],
+        lines=[line],
+    )
+    shared["reader_private_transport"] = b"\x00\xff"
+
+    await agent.tick(shared)
+    await agent.drain_summary_tasks(timeout=1.0)
+
+    assert len(ctx.pushed_messages) == 1
+    assert str(line["text"]) in str(ctx.pushed_messages[0]["content"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
 async def test_choices_shown_event_submits_complete_menu_atomically(tmp_path: Path) -> None:
     plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
     ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
@@ -2049,9 +2076,41 @@ async def test_trusted_source_handoff_allows_same_boundary_memory_backfill(
         host_adapter=_FakeHostAdapter(),
     )
     line = _summary_test_line("ocr-scene", 1)
+    memory_shared = _shared_state(
+        mode="companion",
+        game_id="mem-0123456789abcdef",
+        session_id="memory-session",
+        active_data_source=DATA_SOURCE_MEMORY_READER,
+        snapshot=_session_state(scene_id="memory-scene"),
+        history_lines=[line],
+    )
+    memory_shared["active_session_meta"] = {
+        "metadata": {
+            "game_process_name": "demo.exe",
+            "window_title": "Demo",
+        }
+    }
+    await agent.tick(memory_shared)
+    context = build_summarize_context(
+        memory_shared,
+        scene_id="memory-scene",
+        config=agent._context_config,
+    )
+    agent._schedule_scene_summary_task(
+        shared=memory_shared,
+        session_id="memory-session",
+        scene_id="memory-scene",
+        route_id="",
+        snapshot=memory_shared["latest_snapshot"],
+        context=context,
+        trigger="line_count",
+        metadata={"scheduled_from_event_seq": 1},
+    )
+    await asyncio.wait_for(gateway.started.wait(), timeout=0.5)
+
     ocr_shared = _shared_state(
         mode="companion",
-        game_id="demo.alpha",
+        game_id="ocr-0123456789ab",
         session_id="ocr-session",
         active_data_source=DATA_SOURCE_OCR_READER,
         ocr_reader_runtime={
@@ -2061,35 +2120,9 @@ async def test_trusted_source_handoff_allows_same_boundary_memory_backfill(
             "target_window_visible": True,
         },
         snapshot=_session_state(scene_id="ocr-scene"),
-        history_lines=[line],
-    )
-    await agent.tick(ocr_shared)
-    context = build_summarize_context(
-        ocr_shared,
-        scene_id="ocr-scene",
-        config=agent._context_config,
-    )
-    agent._schedule_scene_summary_task(
-        shared=ocr_shared,
-        session_id="ocr-session",
-        scene_id="ocr-scene",
-        route_id="",
-        snapshot=ocr_shared["latest_snapshot"],
-        context=context,
-        trigger="line_count",
-        metadata={"scheduled_from_event_seq": 1},
-    )
-    await asyncio.wait_for(gateway.started.wait(), timeout=0.5)
-
-    memory_shared = _shared_state(
-        mode="companion",
-        game_id="demo.alpha",
-        session_id="memory-session",
-        active_data_source=DATA_SOURCE_MEMORY_READER,
-        snapshot=_session_state(scene_id="memory-scene"),
         history_lines=[],
     )
-    await agent.tick(memory_shared)
+    await agent.tick(ocr_shared)
     gateway.release.set()
     await agent.drain_summary_tasks(timeout=1.0)
 

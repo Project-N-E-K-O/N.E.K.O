@@ -105,7 +105,7 @@ def test_started_at_fallback_is_strict_and_conservative(
         ("2026-08-14T00:00:00.123Z", 1_786_665_600.1235),
     ],
 )
-def test_lower_precision_session_started_at_covers_same_tick_run_start(
+def test_lower_precision_session_started_at_does_not_guess_same_tick_origin(
     started_at: str,
     plugin_run_started_at: float,
 ) -> None:
@@ -117,7 +117,7 @@ def test_lower_precision_session_started_at_covers_same_tick_run_start(
             plugin_run_started_at=plugin_run_started_at,
             startup_existing_session_ids=set(),
         )
-        == SESSION_ORIGIN_CURRENT_RUN
+        == SESSION_ORIGIN_PREEXISTING
     )
 
 

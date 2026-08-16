@@ -267,6 +267,14 @@ class AgentSummaryMixin:
         *,
         fallback_identity: str = "",
     ) -> str:
+        source_identity = self._scene_capsule_source_identity_from_fingerprint(
+            fingerprint
+        )
+        source_aliases = getattr(self, "_scene_capsule_source_aliases", None)
+        if source_identity and isinstance(source_aliases, dict):
+            aliased_boundary = str(source_aliases.get(source_identity) or "")
+            if aliased_boundary:
+                return aliased_boundary
         game_id = self._normalize_scene_summary_fingerprint_text(
             fingerprint.get("active_game_id")
         )
@@ -294,6 +302,42 @@ class AgentSummaryMixin:
         if not identity:
             return ""
         return hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
+
+    @staticmethod
+    def _scene_capsule_source_identity_from_fingerprint(
+        fingerprint: dict[str, Any],
+    ) -> str:
+        data_source = str(fingerprint.get("active_data_source") or "").strip()
+        session_id = str(fingerprint.get("active_session_id") or "").strip()
+        if not data_source or not session_id:
+            return ""
+        return f"{data_source}|{session_id}"
+
+    def _remember_trusted_scene_source_handoff(
+        self,
+        previous_fingerprint: dict[str, Any],
+        current_fingerprint: dict[str, Any],
+    ) -> None:
+        previous_source_identity = (
+            self._scene_capsule_source_identity_from_fingerprint(
+                previous_fingerprint
+            )
+        )
+        current_source_identity = self._scene_capsule_source_identity_from_fingerprint(
+            current_fingerprint
+        )
+        if not previous_source_identity or not current_source_identity:
+            return
+        previous_boundary = self._scene_capsule_boundary_key_from_fingerprint(
+            previous_fingerprint,
+            fallback_identity=self._trusted_history_token_from_fingerprint(
+                previous_fingerprint
+            ),
+        )
+        if previous_boundary:
+            self._scene_capsule_source_aliases[current_source_identity] = (
+                previous_boundary
+            )
 
     @staticmethod
     def _scene_capsule_semantic_digest(payload: dict[str, Any]) -> str:
@@ -1902,7 +1946,10 @@ class AgentSummaryMixin:
                 capsule_generation=self._scene_capsule_generation,
                 order=order,
                 observation_epoch=observation_epoch,
-                shared=json_copy(shared),
+                # scene_delta does not consume the cumulative bridge payload.
+                # Keeping it out of the task also avoids copying reader-private
+                # binary transport state through the JSON-only copy helper.
+                shared={},
                 session_id=session_id,
                 scene_id=scene_id,
                 route_id=route_id,
