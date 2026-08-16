@@ -98,6 +98,30 @@ def test_started_at_fallback_is_strict_and_conservative(
 
 
 @pytest.mark.plugin_unit
+@pytest.mark.parametrize(
+    ("started_at", "plugin_run_started_at"),
+    [
+        ("2026-08-14T00:00:00Z", 1_786_665_600.75),
+        ("2026-08-14T00:00:00.123Z", 1_786_665_600.1235),
+    ],
+)
+def test_lower_precision_session_started_at_covers_same_tick_run_start(
+    started_at: str,
+    plugin_run_started_at: float,
+) -> None:
+    assert (
+        classify_session_origin(
+            data_source="bridge_sdk",
+            session_id="same-tick-new-session",
+            started_at=started_at,
+            plugin_run_started_at=plugin_run_started_at,
+            startup_existing_session_ids=set(),
+        )
+        == SESSION_ORIGIN_CURRENT_RUN
+    )
+
+
+@pytest.mark.plugin_unit
 def test_missing_session_id_is_always_preexisting() -> None:
     assert (
         classify_session_origin(

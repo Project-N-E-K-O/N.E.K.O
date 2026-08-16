@@ -2292,7 +2292,8 @@ class AgentSummaryMixin:
         *,
         snapshot: dict[str, Any],
     ) -> None:
-        if not self._should_push_scene(shared):
+        allow_capsule_delivery = self._should_push_scene(shared)
+        if not allow_capsule_delivery:
             self._summary_debug["gate_blocked"] = {
                 "gate": "should_push_scene",
                 "push_notifications": bool(shared.get("push_notifications")),
@@ -2301,7 +2302,10 @@ class AgentSummaryMixin:
             self._logger.info("galgame scene_summary gate: push_notifications=%s mode=%s",
                              bool(shared.get("push_notifications")),
                              str(shared.get("mode") or ""))
-            return
+            self._cancel_scene_capsule_tasks(
+                reason="scene_push_disabled",
+                retire=True,
+            )
         session_id = str(shared.get("active_session_id") or "")
         if not session_id:
             self._summary_debug["gate_blocked"] = {"gate": "missing_session_id"}
@@ -2332,11 +2336,12 @@ class AgentSummaryMixin:
             shared,
             snapshot=snapshot,
         )
-        self._maybe_schedule_scene_capsule(
-            shared,
-            snapshot=snapshot,
-            line_occurrences=line_occurrences,
-        )
+        if allow_capsule_delivery:
+            self._maybe_schedule_scene_capsule(
+                shared,
+                snapshot=snapshot,
+                line_occurrences=line_occurrences,
+            )
 
         max_processed_seq = self._scene_tracker.summary_last_processed_event_seq
         boundary_key = self._scene_capsule_boundary_key(

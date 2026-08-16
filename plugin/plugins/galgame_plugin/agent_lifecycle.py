@@ -212,6 +212,27 @@ class AgentLifecycleMixin:
             == str(fields.get("current_game_id") or "")
         )
 
+        def _is_native_reader_game_id(source: str, game_id: Any) -> bool:
+            normalized_game_id = str(game_id or "").strip().lower()
+            if source == DATA_SOURCE_MEMORY_READER:
+                return re.fullmatch(r"mem-[0-9a-f]{16}", normalized_game_id) is not None
+            if source == DATA_SOURCE_OCR_READER:
+                return re.fullmatch(r"ocr-[0-9a-f]{12}", normalized_game_id) is not None
+            return False
+
+        native_reader_game_ids = (
+            {previous_source, current_source}
+            == {DATA_SOURCE_MEMORY_READER, DATA_SOURCE_OCR_READER}
+            and _is_native_reader_game_id(
+                previous_source,
+                fields.get("previous_game_id"),
+            )
+            and _is_native_reader_game_id(
+                current_source,
+                fields.get("current_game_id"),
+            )
+        )
+
         def _conflicts(previous_key: str, current_key: str) -> bool:
             previous = fields.get(previous_key)
             current = fields.get(current_key)
@@ -242,7 +263,10 @@ class AgentLifecycleMixin:
         return bool(
             source_handoff
             and (same_game or stable_runtime_identity)
-            and not _conflicts("previous_game_id", "current_game_id")
+            and (
+                native_reader_game_ids
+                or not _conflicts("previous_game_id", "current_game_id")
+            )
             and not _identity_conflicts(
                 "previous_process_name", "current_process_name"
             )

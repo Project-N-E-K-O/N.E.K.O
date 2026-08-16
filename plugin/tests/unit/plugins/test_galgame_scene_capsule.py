@@ -1030,6 +1030,49 @@ async def test_read_only_scene_change_invalidates_pending_capsule(
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
+async def test_disabling_notifications_retires_pending_capsule_retry(
+    tmp_path: Path,
+) -> None:
+    class _NotificationCtx(_Ctx):
+        def __init__(self, plugin_dir: Path, effective_config: dict[str, object]) -> None:
+            super().__init__(plugin_dir, effective_config)
+            self.first_attempted = asyncio.Event()
+            self.attempt_count = 0
+
+        def push_message(self, **kwargs):
+            self.attempt_count += 1
+            self.first_attempted.set()
+            return {"submitted": False, "reason": "backpressure"}
+
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _NotificationCtx(plugin_dir, _make_effective_config(bridge_root))
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(ctx),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    shared = _capsule_shared(
+        events=[_summary_test_line_event("scene-a", 1, seq=1)],
+        lines=[_summary_test_line("scene-a", 1)],
+    )
+
+    await agent.tick(shared)
+    await asyncio.wait_for(ctx.first_attempted.wait(), timeout=1.0)
+    disabled = {**shared, "push_notifications": False}
+    await agent.tick(disabled)
+    await agent.drain_summary_tasks(timeout=1.5)
+
+    assert ctx.attempt_count == 1
+    assert ctx.pushed_messages == []
+    assert all(
+        str(item.get("status") or "") != "queued"
+        for item in agent._outbound_messages
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
 async def test_newer_memory_summary_wins_when_old_llm_finishes_last(
     tmp_path: Path,
 ) -> None:

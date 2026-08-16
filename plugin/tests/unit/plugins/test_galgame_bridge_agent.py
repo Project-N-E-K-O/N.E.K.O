@@ -4642,6 +4642,55 @@ async def test_game_llm_agent_scene_summary_push_policy_blocks_event_history_cou
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
+@pytest.mark.parametrize(
+    ("mode", "push_notifications"),
+    [("companion", False), ("silent", True)],
+)
+async def test_scene_memory_archive_runs_when_notifications_are_disabled(
+    tmp_path: Path,
+    mode: str,
+    push_notifications: bool,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    gateway = _FakeLLMGateway(
+        summarize_payload={
+            "degraded": False,
+            "summary": "background memory archive",
+            "key_points": [],
+            "diagnostic": "",
+        }
+    )
+    plugin = GalgameBridgePlugin(ctx)
+    agent = GameLLMAgent(
+        plugin=plugin,
+        logger=_Logger(),
+        llm_gateway=gateway,
+        host_adapter=_FakeHostAdapter(),
+    )
+    lines = [_summary_test_line("scene-a", index) for index in range(1, 9)]
+    shared = _shared_state(
+        mode=mode,
+        push_notifications=push_notifications,
+        snapshot=_session_state(
+            text="scene a.",
+            scene_id="scene-a",
+            line_id="scene-a-line-8",
+        ),
+        history_lines=lines,
+    )
+
+    await agent.tick(shared)
+    await agent.tick(shared)
+    await _drain_agent_summary_tasks(agent)
+
+    assert len(gateway.summarize_calls) == 1
+    assert "background memory archive" in plugin._story_so_far
+    assert ctx.pushed_messages == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
 async def test_game_llm_agent_scene_summary_counters_reset_on_session_change(
     tmp_path: Path,
 ) -> None:
@@ -7822,6 +7871,52 @@ def test_scene_capsule_alias_state_survives_trusted_handoff_only(
 
     assert agent._scene_capsule_marker_event_state == {}
     assert agent._scene_capsule_line_fallback_aliases == {}
+
+
+@pytest.mark.plugin_unit
+def test_native_memory_ocr_game_ids_allow_only_identity_matched_handoff(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(ctx),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    native_fields = {
+        "previous_data_source": DATA_SOURCE_MEMORY_READER,
+        "current_data_source": DATA_SOURCE_OCR_READER,
+        "previous_game_id": "mem-0123456789abcdef",
+        "current_game_id": "ocr-0123456789ab",
+        "previous_process_name": "game.exe",
+        "current_process_name": "GAME.EXE",
+        "previous_pid": 4242,
+        "current_pid": 4242,
+    }
+
+    assert agent._is_trusted_scene_source_handoff(native_fields) is True
+    assert (
+        agent._is_trusted_scene_source_handoff(
+            {
+                **native_fields,
+                "current_process_name": "other.exe",
+                "current_pid": 5252,
+            }
+        )
+        is False
+    )
+    assert (
+        agent._is_trusted_scene_source_handoff(
+            {
+                **native_fields,
+                "previous_data_source": DATA_SOURCE_BRIDGE_SDK,
+                "previous_game_id": "bridge-game",
+            }
+        )
+        is False
+    )
 
 
 @pytest.mark.asyncio

@@ -41,6 +41,24 @@ def _parse_session_started_at(value: Any) -> float | None:
         return None
 
 
+def _session_started_at_precision_seconds(value: Any) -> float:
+    text = str(value or "").strip()
+    if not text or ("T" not in text and " " not in text):
+        return 0.0
+    time_text = text.split("T", 1)[-1] if "T" in text else text.split(" ", 1)[-1]
+    separator_index = max(time_text.find("."), time_text.find(","))
+    if separator_index < 0:
+        return 1.0
+    fractional_digits = 0
+    for character in time_text[separator_index + 1 :]:
+        if not character.isdigit():
+            break
+        fractional_digits += 1
+    if fractional_digits <= 0:
+        return 0.0
+    return 10.0 ** -min(fractional_digits, 6)
+
+
 def classify_session_origin(
     *,
     data_source: str,
@@ -79,6 +97,13 @@ def classify_session_origin(
     except (TypeError, ValueError, OverflowError):
         return SESSION_ORIGIN_PREEXISTING
     if started_at_timestamp > run_started_at:
+        return SESSION_ORIGIN_CURRENT_RUN
+    timestamp_precision = _session_started_at_precision_seconds(started_at)
+    if (
+        timestamp_precision > 0.0
+        and started_at_timestamp < run_started_at
+        and run_started_at < started_at_timestamp + timestamp_precision
+    ):
         return SESSION_ORIGIN_CURRENT_RUN
     return SESSION_ORIGIN_PREEXISTING
 
