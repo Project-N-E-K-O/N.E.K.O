@@ -235,6 +235,17 @@ jobs:
           src = Path(sp.__file__).parent
           dst = Path('data/browser_use_prompts')
           dst.mkdir(parents=True, exist_ok=True)
+          bad = [md.name for md in src.glob('*.md') if not md.name.isascii()]
+          if bad:
+              # Non-ASCII basenames under Contents/MacOS/ make codesign emit a
+              # hex-literal identifier and the whole bundle then fails to seal.
+              # scripts/check_no_nonascii_asset_names.py cannot see this one:
+              # data/ is gitignored and the analyze job installs no dependencies,
+              # so the names only exist here, right after generation.
+              raise SystemExit(
+                  'non-ASCII browser_use prompt template name(s), which break '
+                  f'macOS signing: {bad}'
+              )
           for md in src.glob('*.md'):
               shutil.copy2(md, dst / md.name)
               print(f'Copied {md.name}')
@@ -690,6 +701,22 @@ jobs:
           # macOS: playwright_browsers was excluded from Nuitka (xattr bug with
           # spaces in .app paths), copy it manually into the output directory
           if [[ "$RUNNER_OS" == "macOS" && -d "playwright_browsers" ]]; then
+            # This tree lands under Contents/MacOS/, where codesign treats every
+            # file as nested code; a non-ASCII basename becomes a hex-literal
+            # identifier and the whole bundle then fails to seal. The payload is
+            # downloaded, so scripts/check_no_nonascii_asset_names.py structurally
+            # cannot see it — the only place to look is right here, before the copy.
+            .venv/bin/python -c "
+            import sys
+            from pathlib import Path
+            # Files only: a CJK *directory* holding ASCII files seals fine
+            # (verified against a real Developer ID cert; see the checker's
+            # module docstring), and failing on it would block the build for nothing.
+            bad = [str(p) for p in Path('playwright_browsers').rglob('*')
+                   if p.is_file() and not p.name.isascii()]
+            if bad:
+                sys.exit('non-ASCII name(s) in playwright_browsers, which break macOS signing: ' + repr(bad[:10]))
+            "
             cp -R playwright_browsers "$RUNTIME_DIR/playwright_browsers"
             echo "Copied playwright_browsers into $RUNTIME_DIR/"
           fi
