@@ -344,6 +344,22 @@ test('fallback and native drag-end producers each report one shared EDGE observa
         assert.equal(harness.observations[0].detail.reason, 'drag-edge-peek');
         assert.equal(harness.observations[0].detail.edge, 'right');
     });
+
+    await t.test('fallback pre-snap motion survives zero post-snap net distance', () => {
+        const harness = createDragEndHarness();
+        harness.fixture.button.classList.add('is-cat1-edge-peek-left');
+
+        dispatchManualMove(harness, {
+            reason: 'return-ball-drag-end',
+            movedDistancePx: 0,
+            displacementPx: 12,
+            pathDistancePx: 12,
+            producer: 'web-fallback'
+        });
+
+        assert.equal(harness.observations.length, 1);
+        assert.equal(harness.observations[0].detail.edge, 'left');
+    });
 });
 
 test('cancelled, unmoved, and non-edge drag completions do not report EDGE observations', async (t) => {
@@ -363,7 +379,9 @@ test('cancelled, unmoved, and non-edge drag completions do not report EDGE obser
         harness.fixture.button.classList.add('is-cat1-edge-peek-left');
         dispatchManualMove(harness, {
             reason: 'return-ball-drag-end',
-            movedDistancePx: 0
+            movedDistancePx: 0,
+            displacementPx: 0,
+            pathDistancePx: 0
         });
         assert.equal(harness.observations.length, 0);
     });

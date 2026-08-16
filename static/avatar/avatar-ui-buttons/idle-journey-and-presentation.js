@@ -2141,7 +2141,12 @@ function _ensureNekoIdleReturnPresentationBridge() {
         if (detail.reason === 'return-ball-drag-end') {
             _finishNekoIdleReturnDragActionForContainer(detail.container);
             if (_isNekoIdleCat1EdgePeekActive(detail.container)) {
-                if (detail.dragCancelled !== true && Number(detail.movedDistancePx) > 0) {
+                const dragMoved = [
+                    detail.movedDistancePx,
+                    detail.displacementPx,
+                    detail.pathDistancePx
+                ].some((distance) => Number(distance) > 0);
+                if (detail.dragCancelled !== true && dragMoved) {
                     _dispatchNekoIdleCat1EdgePeekAfterDragObservation(detail.container);
                 }
                 _cancelNekoIdleCat1JourneyForContainer(detail.container, {
