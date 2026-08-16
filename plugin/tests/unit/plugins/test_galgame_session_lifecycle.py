@@ -208,6 +208,30 @@ def test_snapshot_events_boundary_stops_at_session_checkpoint(tmp_path: Path) ->
 
 
 @pytest.mark.plugin_unit
+@pytest.mark.parametrize("last_seq", [0, -1])
+def test_snapshot_events_boundary_uses_eof_for_nonpositive_checkpoint(
+    tmp_path: Path,
+    last_seq: int,
+) -> None:
+    events_path = tmp_path / "events.jsonl"
+    complete_stream = (
+        b'{"session_id":"sess-a","seq":1}\n'
+        b'{"session_id":"sess-a","seq":2}\n'
+    )
+    events_path.write_bytes(complete_stream)
+
+    boundary = snapshot_events_boundary(
+        events_path,
+        session_id="sess-a",
+        last_seq=last_seq,
+    )
+
+    assert boundary.offset == len(complete_stream)
+    assert boundary.file_size == len(complete_stream)
+    assert boundary.error == ""
+
+
+@pytest.mark.plugin_unit
 def test_snapshot_events_boundary_handles_missing_and_unreadable_paths(
     tmp_path: Path,
 ) -> None:

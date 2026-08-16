@@ -893,6 +893,95 @@ async def test_trusted_memory_to_ocr_handoff_skips_overlap_and_pushes_new_suffix
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
+async def test_disabled_notifications_still_reconcile_handoff_for_memory(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(ctx),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    memory_line = {
+        **_summary_test_line("memory-scene", 1),
+        "text": "same silent handoff line",
+    }
+    memory_event = _event(
+        seq=1,
+        event_type="line_changed",
+        session_id="memory-session",
+        game_id="demo.alpha",
+        ts=str(memory_line["ts"]),
+        payload={**memory_line, "stability": "stable"},
+    )
+    memory_shared = _shared_state(
+        mode="companion",
+        push_notifications=False,
+        game_id="demo.alpha",
+        session_id="memory-session",
+        active_data_source=DATA_SOURCE_MEMORY_READER,
+        snapshot=_session_state(
+            text="same silent handoff line",
+            scene_id="memory-scene",
+            line_id="memory-line-1",
+        ),
+        history_events=[memory_event],
+        history_lines=[memory_line],
+    )
+    await agent.tick(memory_shared)
+    before_count = sum(
+        int(state.get("lines_since_push") or 0)
+        for state in agent._scene_tracker.summary_scene_states.values()
+    )
+
+    ocr_line = {
+        **_summary_test_line("ocr-scene", 1),
+        "line_id": "ocr-line-1",
+        "text": "same silent handoff line",
+    }
+    ocr_event = _event(
+        seq=1,
+        event_type="line_changed",
+        session_id="ocr-session",
+        game_id="demo.alpha",
+        ts=str(ocr_line["ts"]),
+        payload={**ocr_line, "stability": "stable"},
+    )
+    ocr_shared = _shared_state(
+        mode="companion",
+        push_notifications=False,
+        game_id="demo.alpha",
+        session_id="ocr-session",
+        active_data_source=DATA_SOURCE_OCR_READER,
+        ocr_reader_runtime={
+            "effective_process_name": "demo.exe",
+            "effective_window_title": "Demo",
+            "target_hwnd": 100,
+            "target_window_visible": True,
+        },
+        snapshot=_session_state(
+            text="same silent handoff line",
+            scene_id="ocr-scene",
+            line_id="ocr-line-1",
+        ),
+        history_events=[ocr_event],
+        history_lines=[ocr_line],
+    )
+    await agent.tick(ocr_shared)
+    after_count = sum(
+        int(state.get("lines_since_push") or 0)
+        for state in agent._scene_tracker.summary_scene_states.values()
+    )
+
+    assert before_count == 1
+    assert after_count == before_count
+    assert ctx.pushed_messages == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
 async def test_trusted_handoff_resets_marker_sequence_space(
     tmp_path: Path,
 ) -> None:

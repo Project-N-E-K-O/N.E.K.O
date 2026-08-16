@@ -107,8 +107,8 @@ def snapshot_events_boundary(
             if file_size <= 0:
                 return EventStreamBoundary()
 
-            if session_id and last_seq is not None:
-                checkpoint_seq = max(0, int(last_seq))
+            checkpoint_seq = max(0, int(last_seq or 0))
+            if session_id and checkpoint_seq > 0:
                 matched_offset = 0
                 cursor = 0
                 buffer = b""

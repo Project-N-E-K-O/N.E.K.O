@@ -1679,6 +1679,7 @@ class AgentSummaryMixin:
         *,
         snapshot: dict[str, Any],
         line_occurrences: list[dict[str, Any]],
+        allow_delivery: bool = True,
     ) -> None:
         session_id = str(shared.get("active_session_id") or "")
         scene_id = str(snapshot.get("scene_id") or "")
@@ -1914,6 +1915,8 @@ class AgentSummaryMixin:
             ledger["data_source"] = data_source
             ledger["scene_id"] = scene_id
             ledger["route_id"] = route_id
+        if not allow_delivery:
+            return
         candidates: list[tuple[int, int, str, int, str, dict[str, Any]]] = []
         for index, item in enumerate(current_lines):
             event_key = str(item.get("event_key") or "")
@@ -2552,12 +2555,12 @@ class AgentSummaryMixin:
             shared,
             snapshot=snapshot,
         )
-        if allow_capsule_delivery:
-            self._maybe_schedule_scene_capsule(
-                shared,
-                snapshot=snapshot,
-                line_occurrences=line_occurrences,
-            )
+        self._maybe_schedule_scene_capsule(
+            shared,
+            snapshot=snapshot,
+            line_occurrences=line_occurrences,
+            allow_delivery=allow_capsule_delivery,
+        )
 
         max_processed_seq = self._scene_tracker.summary_last_processed_event_seq
         boundary_key = self._scene_capsule_boundary_key(
