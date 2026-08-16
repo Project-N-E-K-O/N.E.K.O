@@ -1662,7 +1662,7 @@ Live2DManager.prototype._checkAndPerformSnap = async function (model, options = 
 
     if (animated && isCurrentSettlement()) {
         // 吸附完成后保存位置
-        await this._savePositionAfterInteraction();
+        await this._savePositionAfterInteraction({ isCurrentSettlement });
         if (!isCurrentSettlement()) return false;
     }
 
@@ -1744,6 +1744,11 @@ Live2DManager.prototype._settleLive2DDragTerminal = async function (model, optio
         isCurrentSettlement
     });
     if (!isCurrentSettlement()) return false;
+    const displaySwitchIdle = this._live2DDisplaySwitchIdlePromise;
+    if (displaySwitchIdle && typeof displaySwitchIdle.then === 'function') {
+        await displaySwitchIdle;
+        if (!isCurrentSettlement()) return false;
+    }
     if (isLive2DPeekDesktopRuntime() && window.electronScreen) {
         const settledContext = await waitForLive2DDesktopCoordinateSettlement();
         if (!isCurrentSettlement()) return false;
@@ -1761,7 +1766,7 @@ Live2DManager.prototype._settleLive2DDragTerminal = async function (model, optio
         const settledContact = validateLive2DPeekEdgeContact(this, model, edgeContact);
         if (settledContact) {
             if (!isCurrentSettlement()) return false;
-            await this._savePositionAfterInteraction();
+            await this._savePositionAfterInteraction({ isCurrentSettlement });
             if (!isCurrentSettlement()) return false;
             await this._tryApplyLive2DPeek(model, settledContact, { isCurrentSettlement });
             if (!isCurrentSettlement()) return false;
@@ -1776,7 +1781,7 @@ Live2DManager.prototype._settleLive2DDragTerminal = async function (model, optio
     const snapped = await this._checkAndPerformSnap(model, { isCurrentSettlement });
     if (!isCurrentSettlement()) return false;
     if (!snapped) {
-        await this._savePositionAfterInteraction();
+        await this._savePositionAfterInteraction({ isCurrentSettlement });
         if (!isCurrentSettlement()) return false;
     }
     return true;
@@ -2061,7 +2066,7 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
             // commits the drag generation above when the shared pointer crosses the threshold.
             if (isLive2DHostModelDragActive()) return;
 
-            if (edgePeekStartedDrag && !edgePeekDragCleared) {
+            if ((edgePeekStartedDrag || this.isLive2DPeekActive()) && !edgePeekDragCleared) {
                 // 先恢复 base 姿态，再用原始模型局部抓取点反解平移；旋转/镜像
                 // 解除后鼠标下仍是用户按住的同一点。
                 clearLive2DPeek('drag-start');
@@ -3188,10 +3193,14 @@ Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, dura
 };
 
 // 交互后保存位置和缩放的辅助函数
-Live2DManager.prototype._savePositionAfterInteraction = async function () {
+Live2DManager.prototype._savePositionAfterInteraction = async function (options = {}) {
+    const isCurrentSettlement = typeof options.isCurrentSettlement === 'function'
+        ? options.isCurrentSettlement
+        : () => true;
+    if (!isCurrentSettlement()) return false;
     if (!this.currentModel || !this._lastLoadedModelPath) {
         console.debug('无法保存位置：模型或路径未设置');
-        return;
+        return false;
     }
 
     if (typeof this.recoverRendererFromReturnBallViewport === 'function') {
@@ -3246,6 +3255,7 @@ Live2DManager.prototype._savePositionAfterInteraction = async function () {
             console.warn('获取显示器信息失败:', error);
         }
     }
+    if (!isCurrentSettlement()) return false;
 
     // 使用渲染器逻辑尺寸作为归一化基准（renderer 不再自动 resize，尺寸与稳定屏幕分辨率等价）
     let viewportInfo = null;
@@ -3268,6 +3278,7 @@ Live2DManager.prototype._savePositionAfterInteraction = async function () {
         .catch(error => {
             console.error('自动保存位置时出错:', error);
         });
+    return true;
 };
 
 // 防抖动保存位置的辅助函数（用于滚轮缩放等连续操作）
@@ -3407,8 +3418,16 @@ Live2DManager.prototype._checkAndSwitchDisplay = async function (model, options 
             }
             displaySwitchToken = {};
             this._live2DPendingDisplaySwitchToken = displaySwitchToken;
-            this._live2DDisplaySwitchInFlightCount =
-                Math.max(0, Number(this._live2DDisplaySwitchInFlightCount) || 0) + 1;
+            const previousDisplaySwitches = Math.max(
+                0,
+                Number(this._live2DDisplaySwitchInFlightCount) || 0
+            );
+            if (previousDisplaySwitches === 0) {
+                this._live2DDisplaySwitchIdlePromise = new Promise((resolve) => {
+                    this._resolveLive2DDisplaySwitchIdle = resolve;
+                });
+            }
+            this._live2DDisplaySwitchInFlightCount = previousDisplaySwitches + 1;
             this._pendingDisplaySwitch = true;
             try {
                 if (!isCurrentSettlement()) return false;
@@ -3483,6 +3502,14 @@ Live2DManager.prototype._checkAndSwitchDisplay = async function (model, options 
                     this._live2DPendingDisplaySwitchToken = null;
                 }
                 this._pendingDisplaySwitch = remainingDisplaySwitches > 0;
+                if (remainingDisplaySwitches === 0) {
+                    const resolveDisplaySwitchIdle = this._resolveLive2DDisplaySwitchIdle;
+                    this._resolveLive2DDisplaySwitchIdle = null;
+                    this._live2DDisplaySwitchIdlePromise = null;
+                    if (typeof resolveDisplaySwitchIdle === 'function') {
+                        resolveDisplaySwitchIdle();
+                    }
+                }
             }
         }
         return false;  // No display switch occurred

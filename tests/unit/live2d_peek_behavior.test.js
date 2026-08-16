@@ -495,6 +495,48 @@ test('new drag generation cancels an older asynchronous terminal settlement', as
     assert.equal(harness.rafQueue.length, 0);
 });
 
+test('terminal settlement waits for every in-flight display move before snap and save', async () => {
+    const harness = createHarness({ widgetModeEnabled: false });
+    const manager = new harness.Live2DManager();
+    const model = createModel({ x: 100, y: 120, width: 500, height: 600 });
+    let resolveDisplaySwitchIdle;
+    let snapCalls = 0;
+    let saveCalls = 0;
+    manager.currentModel = model;
+    manager._isModelReadyForInteraction = true;
+    manager._live2DDragGeneration = 1;
+    manager._live2DDisplaySwitchIdlePromise = new Promise((resolve) => {
+        resolveDisplaySwitchIdle = resolve;
+    });
+    manager._checkAndSwitchDisplay = async () => false;
+    manager._checkAndPerformSnap = async () => {
+        snapCalls += 1;
+        return false;
+    };
+    manager._savePositionAfterInteraction = async () => {
+        saveCalls += 1;
+        return true;
+    };
+    harness.window.electronScreen = null;
+
+    let settlementFinished = false;
+    const settlement = manager._settleLive2DDragTerminal(model, { dragGeneration: 1 })
+        .then((result) => {
+            settlementFinished = true;
+            return result;
+        });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.equal(settlementFinished, false);
+    assert.equal(snapCalls, 0);
+    assert.equal(saveCalls, 0);
+
+    resolveDisplaySwitchIdle();
+    assert.equal(await settlement, true);
+    assert.equal(snapCalls, 1);
+    assert.equal(saveCalls, 1);
+});
+
 test('pointerup snapshots settlement context before an asynchronous release hint', async () => {
     const canvas = { style: {} };
     const harness = createHarness({ controls: { 'live2d-canvas': canvas } });
@@ -699,6 +741,100 @@ test('cancelled unguarded snap animation stops before overwriting drag coordinat
     assert.equal(model.x, 240);
     assert.equal(manager._isSnapping, false);
     assert.equal(manager._live2DActiveSnapAnimation, null);
+});
+
+test('threshold movement cancels a Peek transition created after pointerdown', async () => {
+    const canvas = { style: {} };
+    const harness = createHarness({ controls: { 'live2d-canvas': canvas } });
+    const manager = new harness.Live2DManager();
+    const model = createModel({ x: 0, y: 120, width: 500, height: 600 });
+    const modelListeners = new Map();
+    model.parent = null;
+    model.toLocal = (point) => ({ x: point.x - model.x, y: point.y - model.y });
+    model.toGlobal = (point) => ({ x: point.x + model.x, y: point.y + model.y });
+    model.on = (type, handler) => {
+        modelListeners.set(type, handler);
+        return model;
+    };
+    manager.currentModel = model;
+    manager._isModelReadyForInteraction = true;
+    manager._live2DDragGeneration = 1;
+    manager.getModelDrawableScreenRects = () => [{
+        left: 0,
+        top: 120,
+        right: 500,
+        bottom: 720,
+        width: 500,
+        height: 600
+    }];
+    harness.window.live2dManager = manager;
+
+    manager.setupDragAndDrop(model);
+    modelListeners.get('pointerdown')({
+        data: {
+            global: { x: 100, y: 200 },
+            originalEvent: { screenX: 100, screenY: 200 }
+        }
+    });
+    const applyingPeek = manager._tryApplyLive2DPeek(model, null, {
+        isCurrentSettlement: () => manager._live2DDragGeneration === 1
+    });
+    await waitForQueuedFrame(harness);
+    assert.equal(manager.isLive2DPeekActive(), true);
+
+    harness.window.dispatchEvent({
+        type: 'pointermove',
+        clientX: 150,
+        clientY: 200,
+        screenX: 150,
+        screenY: 200
+    });
+    const draggedPosition = { x: model.x, y: model.y };
+    flushNextFrame(harness, 16);
+
+    assert.equal(await applyingPeek, false);
+    assert.equal(manager._live2DDragGeneration, 2);
+    assert.equal(manager.isLive2DPeekActive(), false);
+    assert.deepEqual({ x: model.x, y: model.y }, draggedPosition);
+    assert.equal(model.rotation, 0);
+});
+
+test('stale terminal save stops before starting persistence', async () => {
+    const harness = createHarness({
+        currentDisplay: {
+            id: 'display-a',
+            screenX: 0,
+            screenY: 0,
+            bounds: { x: 0, y: 0, width: 1000, height: 800 },
+            workArea: { x: 0, y: 0, width: 1000, height: 800 }
+        }
+    });
+    const manager = new harness.Live2DManager();
+    const model = createModel({ x: 100, y: 120, width: 500, height: 600 });
+    let resolveDisplay;
+    let current = true;
+    let saveCalls = 0;
+    manager.currentModel = model;
+    manager._lastLoadedModelPath = 'model.json';
+    manager.pixi_app = {
+        renderer: { screen: { width: 1000, height: 800 } }
+    };
+    harness.window.electronScreen.getCurrentDisplay = () => new Promise((resolve) => {
+        resolveDisplay = resolve;
+    });
+    manager.saveUserPreferences = () => {
+        saveCalls += 1;
+        return Promise.resolve(true);
+    };
+
+    const saving = manager._savePositionAfterInteraction({
+        isCurrentSettlement: () => current
+    });
+    current = false;
+    resolveDisplay({ screenX: 0, screenY: 0 });
+
+    assert.equal(await saving, false);
+    assert.equal(saveCalls, 0);
 });
 
 test('peek application rechecks settlement generation after display refresh', async () => {

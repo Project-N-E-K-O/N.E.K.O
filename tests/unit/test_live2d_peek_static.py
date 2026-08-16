@@ -284,7 +284,7 @@ def test_live2d_widget_mode_edge_peek_does_not_persist_peek_position():
     assert "hiddenX" in edge_peek_source
     assert "hiddenY" in edge_peek_source
     assert "await this._settleLive2DDragTerminal(model, settlementOptions);" in drag_source
-    assert "await this._savePositionAfterInteraction();" in terminal_source
+    assert "await this._savePositionAfterInteraction({ isCurrentSettlement });" in terminal_source
     assert "const edgeContact = isLive2DPeekEnabled()" in terminal_source
     assert "settleLive2DBaseAtEdgeContact(model, edgeContact)" in terminal_source
     edge_terminal_source = terminal_source.split(
@@ -293,13 +293,18 @@ def test_live2d_widget_mode_edge_peek_does_not_persist_peek_position():
         "const snapped = await this._checkAndPerformSnap(model, { isCurrentSettlement });",
         1,
     )[0]
-    assert "await this._savePositionAfterInteraction();" in edge_terminal_source
+    assert (
+        "await this._savePositionAfterInteraction({ isCurrentSettlement });"
+        in edge_terminal_source
+    )
     assert (
         "await this._tryApplyLive2DPeek(model, settledContact, { isCurrentSettlement });"
         in edge_terminal_source
     )
     assert (
-        edge_terminal_source.index("await this._savePositionAfterInteraction();")
+        edge_terminal_source.index(
+            "await this._savePositionAfterInteraction({ isCurrentSettlement });"
+        )
         < edge_terminal_source.index(
             "await this._tryApplyLive2DPeek(model, settledContact, { isCurrentSettlement });"
         )
