@@ -4836,15 +4836,21 @@ class GalgamePlugin(
         if not normalized_summary:
             return
         normalized_scene_id = str(scene_id or "").strip()
+        normalized_route_id = str(route_id or "").strip()
         scenes = self._layer1_scene_summaries()
         merged: list[dict[str, Any]] = []
         replaced = False
         for entry in scenes:
             item = dict(entry)
-            if normalized_scene_id and str(item.get("scene_id") or "") == normalized_scene_id:
+            if (
+                normalized_scene_id
+                and str(item.get("scene_id") or "").strip()
+                == normalized_scene_id
+                and str(item.get("route_id") or "").strip()
+                == normalized_route_id
+            ):
                 item["summary"] = normalized_summary
-                if route_id:
-                    item["route_id"] = str(route_id or "")
+                item["route_id"] = normalized_route_id
                 try:
                     existing_push_seq = int(item.get("push_seq") or 0)
                 except (TypeError, ValueError):
@@ -4856,7 +4862,7 @@ class GalgamePlugin(
             merged.append(
                 {
                     "scene_id": normalized_scene_id,
-                    "route_id": str(route_id or ""),
+                    "route_id": normalized_route_id,
                     "summary": normalized_summary,
                     "push_seq": int(push_seq or 0),
                 }

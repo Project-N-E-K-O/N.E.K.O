@@ -453,6 +453,28 @@ class AgentSyncMixin:
                     },
                 )
                 delivered = True
+            except asyncio.CancelledError:
+                # A newer observation may cancel this task while it sleeps before
+                # retry. Finalize both the outbound message and the router's push
+                # record so read-only status APIs never expose phantom queued work.
+                self._mark_message(
+                    outbound,
+                    status="superseded",
+                    delivered=False,
+                    metadata={
+                        "retried": False,
+                        "initial_error_type": initial_error_type,
+                        "cancelled_during_retry": True,
+                    },
+                )
+                self._recent_pushes = self._recent_push_records()
+                self._record_push_history(
+                    outbound,
+                    kind=kind,
+                    scene_id=scene_id,
+                    content_len=len(content),
+                )
+                raise
             except Exception as retry_exc:
                 self._mark_message(outbound, status="failed", metadata={
                     "error_type": type(retry_exc).__name__,

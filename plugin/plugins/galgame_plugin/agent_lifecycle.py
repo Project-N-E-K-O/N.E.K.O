@@ -350,6 +350,7 @@ class AgentLifecycleMixin:
             self._scene_capsule_generation += 1
 
         cancelled_event_keys: set[str] = set()
+        cancelled_orders: set[int] = set()
         # A task may already be done while its done callback is still queued.
         # Its reservation and event version remain owned until that callback
         # runs, so retirement must inspect every tracked task, not only pending
@@ -382,6 +383,13 @@ class AgentLifecycleMixin:
                 if key:
                     versions.setdefault(key, fallback_version)
             cancelled_event_keys.update(versions)
+            if task in pending_set:
+                try:
+                    cancelled_order = int(meta.get("order") or 0)
+                except (TypeError, ValueError):
+                    cancelled_order = 0
+                if cancelled_order > 0:
+                    cancelled_orders.add(cancelled_order)
 
             if retire:
                 for key, version in versions.items():
@@ -403,6 +411,30 @@ class AgentLifecycleMixin:
 
             if task in pending_set:
                 task.cancel()
+
+        if cancelled_orders:
+            for outbound in self._outbound_messages:
+                metadata = outbound.get("metadata")
+                metadata_obj = metadata if isinstance(metadata, dict) else {}
+                try:
+                    outbound_order = int(metadata_obj.get("capsule_order") or 0)
+                except (TypeError, ValueError):
+                    outbound_order = 0
+                if (
+                    str(outbound.get("kind") or "") == "scene_delta"
+                    and str(outbound.get("status") or "") == "queued"
+                    and outbound_order in cancelled_orders
+                ):
+                    self._mark_message(
+                        outbound,
+                        status="superseded",
+                        delivered=False,
+                        metadata={
+                            "cancelled_before_retry": True,
+                            "cancellation_reason": str(reason or ""),
+                        },
+                    )
+            self._recent_pushes = self._recent_push_records()
 
         # Remove only the tasks captured by this cancellation pass.  If a new
         # owner is registered re-entrantly, keep its task metadata intact so

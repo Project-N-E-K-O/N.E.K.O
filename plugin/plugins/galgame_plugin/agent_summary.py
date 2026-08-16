@@ -1426,17 +1426,26 @@ class AgentSummaryMixin:
             if str((item.get("line") or {}).get("scene_id") or "") == scene_id
             and str((item.get("line") or {}).get("route_id") or "") == route_id
         ]
+        all_choice_occurrences = self._scene_capsule_choice_occurrences(
+            shared,
+            snapshot=snapshot,
+        )
         choice_occurrences = [
             item
-            for item in self._scene_capsule_choice_occurrences(
-                shared,
-                snapshot=snapshot,
-            )
+            for item in all_choice_occurrences
             if str((item.get("choice") or {}).get("scene_id") or scene_id)
             == scene_id
             and str((item.get("choice") or {}).get("route_id") or "")
             == route_id
         ]
+        boundary_live_event_keys = tuple(
+            dict.fromkeys(
+                str(item.get("event_key") or "")
+                for item in [*line_occurrences, *all_choice_occurrences]
+                if str(item.get("event_key") or "")
+            )
+        )
+        boundary_live_event_key_set = set(boundary_live_event_keys)
         live_event_keys = tuple(
             dict.fromkeys(
                 str(item.get("event_key") or "")
@@ -1444,11 +1453,10 @@ class AgentSummaryMixin:
                 if str(item.get("event_key") or "")
             )
         )
-        live_event_key_set = set(live_event_keys)
         ledger["committed_event_keys"] = [
             str(item)
             for item in list(ledger.get("committed_event_keys") or [])
-            if str(item) in live_event_key_set
+            if str(item) in boundary_live_event_key_set
         ]
         committed = set(ledger.get("committed_event_keys") or [])
 
@@ -1538,7 +1546,9 @@ class AgentSummaryMixin:
                         if str(item)
                     )
             ledger["committed_event_keys"] = [
-                event_key for event_key in live_event_keys if event_key in committed
+                event_key
+                for event_key in boundary_live_event_keys
+                if event_key in committed
             ]
             ledger["source_identity"] = source_identity
             ledger["data_source"] = data_source
@@ -1785,7 +1795,6 @@ class AgentSummaryMixin:
         context: dict[str, Any],
         trigger: str,
         metadata: dict[str, Any],
-        update_scene_memory: bool,
         scheduled_line_count: int = 0,
         merged_schedule_restore: list[dict[str, Any]] | None = None,
     ) -> None:
@@ -1857,6 +1866,8 @@ class AgentSummaryMixin:
                 context=context_payload,
                 trigger=trigger,
                 metadata=metadata_payload,
+                # Every accepted line-count GameLLM task is a cumulative memory
+                # archive. It never drives the cat reply pipeline.
                 update_scene_memory=True,
             )
         )
@@ -2355,7 +2366,6 @@ class AgentSummaryMixin:
                 context=context,
                 trigger="line_count",
                 metadata=metadata,
-                update_scene_memory=False,
                 scheduled_line_count=scheduled_line_count,
                 merged_schedule_restore=merged_schedule_restore,
             )

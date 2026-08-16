@@ -122,6 +122,10 @@ class AgentObservationMixin:
                     reason=f"session_transition:{transition_reason}",
                     retire=True,
                 )
+                # Reader and OCR event sequences belong to independent streams.
+                # Preserve delivered content, but never compare the new source's
+                # sequence markers with the previous source's high-water marks.
+                self._scene_capsule_marker_event_state.clear()
                 self._reset_scene_summary_repeat_guard()
                 self._session_transition_actuation_blocked = False
             elif transition_type == "real_session_reset":
@@ -221,6 +225,17 @@ class AgentObservationMixin:
         )
         if scene_changed:
             if not allow_agent_side_effects:
+                # Read-only calls must not archive or schedule, but the newly
+                # observed scene still makes any retry for the previous scene
+                # permanently stale. Keep the old observed ids so the next
+                # normal tick can perform the scene-transition side effects.
+                if self._scene_capsule_input_marker:
+                    self._scene_capsule_observation_epoch += 1
+                self._scene_capsule_input_marker = ""
+                self._cancel_scene_capsule_tasks(
+                    reason="read_only_scene_changed",
+                    retire=True,
+                )
                 return False
             context = build_summarize_context(
                 shared,

@@ -5668,7 +5668,6 @@ async def test_scene_summary_guard_suppresses_zero_delta_stage_change_but_allows
         context=scene_a_context,
         trigger="choice_selected",
         metadata={"scheduled_from_event_seq": 10},
-        update_scene_memory=False,
     )
     await _drain_agent_summary_tasks(agent)
     assert ctx.pushed_messages == []
@@ -5685,7 +5684,6 @@ async def test_scene_summary_guard_suppresses_zero_delta_stage_change_but_allows
         context=scene_a_context,
         trigger="screen_stage_changed",
         metadata={"scheduled_from_event_seq": 11},
-        update_scene_memory=False,
     )
     await _drain_agent_summary_tasks(agent)
 
@@ -5769,7 +5767,6 @@ async def test_scene_summary_guard_suppresses_every_zero_delta_trigger_after_win
             context=context,
             trigger=scheduled_trigger,
             metadata={"scheduled_from_event_seq": scheduled_seq},
-            update_scene_memory=False,
         )
 
     _schedule(scheduled_seq=11, scheduled_trigger=trigger)
@@ -5825,7 +5822,6 @@ async def test_scene_summary_new_line_is_the_only_response_target(
             context=context,
             trigger="line_count",
             metadata={"scheduled_from_event_seq": scheduled_seq},
-            update_scene_memory=False,
         )
         await _drain_agent_summary_tasks(agent)
 
@@ -5894,7 +5890,6 @@ async def test_scene_summary_selected_choice_is_new_after_same_visible_choice(
         context=visible_context,
         trigger="screen_stage_changed",
         metadata={"scheduled_from_event_seq": 10},
-        update_scene_memory=False,
     )
     await _drain_agent_summary_tasks(agent)
     visible_target = str(ctx.pushed_messages[-1]["content"]).split(
@@ -5938,7 +5933,6 @@ async def test_scene_summary_selected_choice_is_new_after_same_visible_choice(
         context=selected_context,
         trigger="choice_selected",
         metadata={"scheduled_from_event_seq": 11},
-        update_scene_memory=False,
     )
     await _drain_agent_summary_tasks(agent)
 
@@ -5998,7 +5992,6 @@ async def test_scene_summary_guard_reserves_content_fingerprint_before_concurren
                 "context_type": "galgame_scene_context",
                 "scheduled_from_event_seq": scheduled_seq,
             },
-            update_scene_memory=False,
         )
     await _drain_agent_summary_tasks(agent)
 
@@ -6092,7 +6085,6 @@ async def test_newer_same_scene_summary_wins_when_older_llm_finishes_last(
             context=context,
             trigger="line_count",
             metadata={"scheduled_from_event_seq": scheduled_seq},
-            update_scene_memory=True,
         )
         return next(iter(agent._summary_tasks - before))
 

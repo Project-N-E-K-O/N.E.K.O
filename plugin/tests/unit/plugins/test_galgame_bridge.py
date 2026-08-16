@@ -392,7 +392,6 @@ async def test_game_llm_agent_scene_summary_counts_condensed_stable_lines(
             "scheduled_from_event_seq": 0,
             "last_line_seq": 0,
         },
-        update_scene_memory=False,
         scheduled_line_count=8,
     )
     await _drain_agent_summary_tasks(agent)

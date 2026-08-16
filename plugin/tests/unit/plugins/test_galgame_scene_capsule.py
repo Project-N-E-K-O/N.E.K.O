@@ -441,6 +441,133 @@ async def test_trusted_memory_to_ocr_handoff_skips_overlap_and_pushes_new_suffix
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
+async def test_trusted_handoff_resets_marker_sequence_space(
+    tmp_path: Path,
+) -> None:
+    class _HandoffCtx(_Ctx):
+        def __init__(self, plugin_dir: Path, effective_config: dict[str, object]) -> None:
+            super().__init__(plugin_dir, effective_config)
+            self.receipts = iter(
+                (
+                    {"submitted": True},
+                    {"submitted": False, "reason": "backpressure"},
+                    {"submitted": True},
+                )
+            )
+            self.attempted = asyncio.Event()
+            self.attempt_count = 0
+
+        def push_message(self, **kwargs):
+            self.attempt_count += 1
+            receipt = next(self.receipts)
+            if self.attempt_count == 2:
+                self.attempted.set()
+            if receipt["submitted"]:
+                self.pushed_messages.append(dict(kwargs))
+            return receipt
+
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _HandoffCtx(plugin_dir, _make_effective_config(bridge_root))
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(ctx),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+        config=SimpleNamespace(scene_summary_repeat_guard_enabled=False),
+    )
+    memory_line = {
+        **_summary_test_line("memory-scene", 1),
+        "text": "handoff overlap",
+    }
+    memory_observed = _event(
+        seq=100,
+        event_type="line_observed",
+        session_id="memory-session",
+        game_id="demo.alpha",
+        ts=str(memory_line["ts"]),
+        payload={**memory_line, "stability": "tentative"},
+    )
+    memory_changed = _event(
+        seq=101,
+        event_type="line_changed",
+        session_id="memory-session",
+        game_id="demo.alpha",
+        ts=str(memory_line["ts"]),
+        payload={**memory_line, "stability": "stable"},
+    )
+    memory_shared = _shared_state(
+        mode="companion",
+        game_id="demo.alpha",
+        session_id="memory-session",
+        active_data_source=DATA_SOURCE_MEMORY_READER,
+        snapshot=_session_state(
+            text="handoff overlap",
+            scene_id="memory-scene",
+            line_id=str(memory_line["line_id"]),
+        ),
+        history_events=[memory_observed, memory_changed],
+        history_lines=[memory_line],
+    )
+    await agent.tick(memory_shared)
+    await agent.drain_summary_tasks(timeout=1.0)
+    assert len(ctx.pushed_messages) == 1
+
+    ocr_line = {
+        **_summary_test_line("ocr-scene", 1),
+        "line_id": "ocr-line-1",
+        "text": "handoff overlap",
+    }
+    ocr_changed = _event(
+        seq=1,
+        event_type="line_changed",
+        session_id="ocr-session",
+        game_id="demo.alpha",
+        ts=str(ocr_line["ts"]),
+        payload={**ocr_line, "stability": "stable"},
+    )
+    ocr_shared = _shared_state(
+        mode="companion",
+        game_id="demo.alpha",
+        session_id="ocr-session",
+        active_data_source=DATA_SOURCE_OCR_READER,
+        snapshot=_session_state(
+            text="handoff overlap",
+            scene_id="ocr-scene",
+            line_id="ocr-line-1",
+        ),
+        history_events=[ocr_changed],
+        history_lines=[ocr_line],
+    )
+    await agent.tick(ocr_shared)
+    await asyncio.wait_for(ctx.attempted.wait(), timeout=0.5)
+
+    tentative = _event(
+        seq=2,
+        event_type="line_observed",
+        session_id="ocr-session",
+        game_id="demo.alpha",
+        ts="2026-04-21T08:35:02Z",
+        payload={
+            **ocr_line,
+            "text": "new tentative text",
+            "stability": "tentative",
+        },
+    )
+    ocr_shared["history_events"] = [ocr_changed, tentative]
+    ocr_shared["history_observed_lines"] = [tentative["payload"]]
+    await agent.tick(ocr_shared)
+    await agent.drain_summary_tasks(timeout=1.5)
+
+    assert ctx.attempt_count == 2
+    assert len(ctx.pushed_messages) == 1
+    assert all(
+        str(item.get("status") or "") != "queued"
+        for item in agent._outbound_messages
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
 async def test_real_game_reset_allows_same_text_again(tmp_path: Path) -> None:
     plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
     ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
@@ -595,10 +722,70 @@ async def test_new_capsule_cancels_old_retry_and_commits_superseded_events(
     )[-1]
     assert str(second_line["text"]) in response_target
     assert str(first_line["text"]) not in response_target
+    assert [item["status"] for item in agent._outbound_messages] == [
+        "superseded",
+        "delivered",
+    ]
+    assert all(item["status"] != "queued" for item in agent._recent_pushes)
 
     await agent.tick(second)
     await agent.drain_summary_tasks(timeout=1.0)
     assert len(ctx.pushed_messages) == (1 if repeat_guard_enabled else 2)
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_read_only_scene_change_invalidates_pending_capsule(
+    tmp_path: Path,
+) -> None:
+    class _ReadOnlyCtx(_Ctx):
+        def __init__(self, plugin_dir: Path, effective_config: dict[str, object]) -> None:
+            super().__init__(plugin_dir, effective_config)
+            self.first_attempted = asyncio.Event()
+            self.attempt_count = 0
+
+        def push_message(self, **kwargs):
+            self.attempt_count += 1
+            if self.attempt_count == 1:
+                self.first_attempted.set()
+                return {"submitted": False, "reason": "backpressure"}
+            self.pushed_messages.append(dict(kwargs))
+            return {"submitted": True}
+
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _ReadOnlyCtx(plugin_dir, _make_effective_config(bridge_root))
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(ctx),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    scene_a_line = _summary_test_line("scene-a", 1)
+    scene_a_event = _summary_test_line_event("scene-a", 1, seq=1)
+    scene_a = _capsule_shared(events=[scene_a_event], lines=[scene_a_line])
+    await agent.tick(scene_a)
+    await asyncio.wait_for(ctx.first_attempted.wait(), timeout=0.5)
+
+    scene_b_line = _summary_test_line("scene-b", 2)
+    scene_b_event = _summary_test_line_event("scene-b", 2, seq=2)
+    scene_b = _capsule_shared(
+        events=[scene_a_event, scene_b_event],
+        lines=[scene_a_line, scene_b_line],
+        scene_id="scene-b",
+    )
+    messages = await agent.list_messages(scene_b, direction="outbound")
+    await agent.drain_summary_tasks(timeout=1.5)
+
+    assert messages["messages"][0]["status"] == "superseded"
+    assert ctx.attempt_count == 1
+    assert ctx.pushed_messages == []
+    assert agent._observed_scene_id == "scene-a"
+
+    await agent.tick(scene_b)
+    await agent.drain_summary_tasks(timeout=1.0)
+    assert ctx.attempt_count == 2
+    assert len(ctx.pushed_messages) == 1
+    assert str(scene_b_line["text"]) in str(ctx.pushed_messages[0]["content"])
 
 
 @pytest.mark.asyncio
@@ -665,7 +852,6 @@ async def test_newer_memory_summary_wins_when_old_llm_finishes_last(
         context=context,
         trigger="line_count",
         metadata={"scheduled_from_event_seq": 1},
-        update_scene_memory=True,
     )
     await asyncio.wait_for(gateway.first_started.wait(), timeout=0.5)
     agent._schedule_scene_summary_task(
@@ -677,7 +863,6 @@ async def test_newer_memory_summary_wins_when_old_llm_finishes_last(
         context=context,
         trigger="line_count",
         metadata={"scheduled_from_event_seq": 2},
-        update_scene_memory=True,
     )
     await asyncio.sleep(0)
     gateway.release_first.set()
@@ -1134,7 +1319,6 @@ async def test_memory_completion_ignores_unrelated_start_generation_change(
         context=context,
         trigger="line_count",
         metadata={"scheduled_from_event_seq": 1},
-        update_scene_memory=True,
     )
     await asyncio.wait_for(gateway.started.wait(), timeout=0.5)
     agent._start_generation += 1
@@ -1244,6 +1428,55 @@ async def test_committed_ledger_covers_full_multi_choice_history(
     await agent.tick(shared)
     await agent.drain_summary_tasks(timeout=2.0)
     assert len(ctx.pushed_messages) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_scene_round_trip_preserves_boundary_delivery_ledger(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(ctx),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    scene_a_line = _summary_test_line("scene-a", 1)
+    scene_a_event = _summary_test_line_event("scene-a", 1, seq=1)
+    scene_a = _capsule_shared(events=[scene_a_event], lines=[scene_a_line])
+    await agent.tick(scene_a)
+    await agent.drain_summary_tasks(timeout=1.0)
+
+    scene_b_line = _summary_test_line("scene-b", 2)
+    scene_b_event = _summary_test_line_event("scene-b", 2, seq=2)
+    scene_b = _capsule_shared(
+        events=[scene_a_event, scene_b_event],
+        lines=[scene_a_line, scene_b_line],
+        scene_id="scene-b",
+    )
+    await agent.tick(scene_b)
+    await agent.drain_summary_tasks(timeout=1.0)
+    assert len(ctx.pushed_messages) == 2
+
+    returned_to_scene_a = _capsule_shared(
+        events=[scene_a_event, scene_b_event],
+        lines=[scene_a_line, scene_b_line],
+        scene_id="scene-a",
+    )
+    returned_to_scene_a["latest_snapshot"] = _session_state(
+        text=str(scene_a_line["text"]),
+        scene_id="scene-a",
+        line_id=str(scene_a_line["line_id"]),
+        ts=str(scene_a_line["ts"]),
+    )
+    await agent.tick(returned_to_scene_a)
+    await agent.drain_summary_tasks(timeout=1.0)
+
+    assert len(ctx.pushed_messages) == 2
+    ledger = next(iter(agent._scene_capsule_delivery_ledger.values()))
+    assert len(ledger["committed_event_keys"]) == 2
 
 
 @pytest.mark.asyncio
@@ -1388,12 +1621,14 @@ async def test_same_scene_different_routes_keep_capsules_and_memory_separate(
     plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
     ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
     gateway = _RouteGateway()
+    plugin = GalgameBridgePlugin(ctx)
     agent = GameLLMAgent(
-        plugin=GalgameBridgePlugin(ctx),
+        plugin=plugin,
         logger=_Logger(),
         llm_gateway=gateway,
         host_adapter=_FakeHostAdapter(),
     )
+    plugin._game_agent = agent
 
     def _route_line(route_id: str, seq: int) -> dict[str, object]:
         return {
@@ -1470,7 +1705,6 @@ async def test_same_scene_different_routes_keep_capsules_and_memory_separate(
         context=route_a_context,
         trigger="line_count",
         metadata={"scheduled_from_event_seq": 10},
-        update_scene_memory=True,
     )
     await asyncio.wait_for(gateway.route_a_started.wait(), timeout=0.5)
     agent._schedule_scene_summary_task(
@@ -1482,7 +1716,6 @@ async def test_same_scene_different_routes_keep_capsules_and_memory_separate(
         context=route_b_context,
         trigger="line_count",
         metadata={"scheduled_from_event_seq": 10},
-        update_scene_memory=True,
     )
     await asyncio.sleep(0)
     gateway.release_route_a.set()
@@ -1496,6 +1729,8 @@ async def test_same_scene_different_routes_keep_capsules_and_memory_separate(
     assert memories["route-a"] == "memory for route-a"
     assert memories["route-b"] == "memory for route-b"
     assert len(agent._scene_summary_latest_memory_order_by_scene) == 2
+    assert plugin._story_so_far.count("memory for route-a") == 1
+    assert plugin._story_so_far.count("memory for route-b") == 1
 
 
 @pytest.mark.asyncio
@@ -1559,7 +1794,6 @@ async def test_trusted_source_handoff_allows_same_boundary_memory_backfill(
         context=context,
         trigger="line_count",
         metadata={"scheduled_from_event_seq": 1},
-        update_scene_memory=True,
     )
     await asyncio.wait_for(gateway.started.wait(), timeout=0.5)
 
