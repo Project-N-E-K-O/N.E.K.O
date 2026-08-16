@@ -18,7 +18,8 @@ class _CommunicationReviewEventsMixin:
                 lanlan_name = str(ctx_payload.get("lanlan_name") or "").strip()
                 if lanlan_name:
                     return lanlan_name
-        lanlan_name = str(getattr(self.ctx, "_current_lanlan", "") or "").strip()
+        ctx = getattr(self, "ctx", None)
+        lanlan_name = str(getattr(ctx, "_current_lanlan", "") or "").strip()
         return lanlan_name or None
 
     def _count_total_due_reviews(self) -> int:

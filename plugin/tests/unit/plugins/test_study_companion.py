@@ -10701,6 +10701,12 @@ def test_study_target_lanlan_resolution_prefers_entry_context() -> None:
     assert plugin._resolve_study_target_lanlan({}) is None
 
 
+def test_study_target_lanlan_resolution_without_runtime_context_returns_none() -> None:
+    plugin = StudyCompanionPlugin.__new__(StudyCompanionPlugin)
+
+    assert plugin._resolve_study_target_lanlan({}) is None
+
+
 @pytest.mark.asyncio
 async def test_summarize_session_emits_event(
     tmp_path: Path,
