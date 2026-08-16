@@ -1142,3 +1142,437 @@ async def test_memory_completion_ignores_unrelated_start_generation_change(
     await agent.drain_summary_tasks(timeout=1.0)
 
     assert "memory survives runtime reset" in plugin._story_so_far
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_submitted_capsule_is_committed_when_input_turns_stale_during_push(
+    tmp_path: Path,
+) -> None:
+    class _StaleAfterSubmitCtx(_Ctx):
+        agent: GameLLMAgent | None = None
+
+        def push_message(self, **kwargs):
+            self.pushed_messages.append(dict(kwargs))
+            assert self.agent is not None
+            self.agent._scene_capsule_observation_epoch += 1
+            return {"submitted": True}
+
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _StaleAfterSubmitCtx(plugin_dir, _make_effective_config(bridge_root))
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(ctx),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    ctx.agent = agent
+    line = _summary_test_line("scene-a", 1)
+    shared = _capsule_shared(
+        events=[_summary_test_line_event("scene-a", 1, seq=1)],
+        lines=[line],
+    )
+
+    await agent.tick(shared)
+    await agent.drain_summary_tasks(timeout=1.0)
+
+    ledger = next(iter(agent._scene_capsule_delivery_ledger.values()))
+    assert len(ctx.pushed_messages) == 1
+    assert ledger["committed_event_keys"]
+    assert agent._summary_debug["last_capsule_submitted"][
+        "stale_after_submission"
+    ] is True
+
+    await agent.tick(shared)
+    await agent.drain_summary_tasks(timeout=1.0)
+    assert len(ctx.pushed_messages) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_committed_ledger_covers_full_multi_choice_history(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(ctx),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    events: list[dict[str, object]] = []
+    latest_choices: list[dict[str, object]] = []
+    for seq in range(1, 501):
+        latest_choices = [
+            {"choice_id": f"{seq}-a", "text": f"menu {seq} option a"},
+            {"choice_id": f"{seq}-b", "text": f"menu {seq} option b"},
+        ]
+        events.append(
+            _event(
+                seq=seq,
+                event_type="choices_shown",
+                session_id="sess-a",
+                game_id="demo.alpha",
+                ts=f"2026-04-21T08:{seq // 60:02d}:{seq % 60:02d}Z",
+                payload={
+                    "scene_id": "scene-a",
+                    "route_id": "",
+                    "choices": latest_choices,
+                },
+            )
+        )
+    shared = _shared_state(
+        mode="companion",
+        session_id="sess-a",
+        last_seq=500,
+        snapshot=_session_state(
+            scene_id="scene-a",
+            choices=latest_choices,
+            is_menu_open=True,
+        ),
+        history_events=events,
+    )
+
+    await agent.tick(shared)
+    await agent.drain_summary_tasks(timeout=2.0)
+
+    ledger = next(iter(agent._scene_capsule_delivery_ledger.values()))
+    assert len(ledger["committed_event_keys"]) == 1000
+    assert len(ctx.pushed_messages) == 1
+
+    await agent.tick(shared)
+    await agent.drain_summary_tasks(timeout=2.0)
+    assert len(ctx.pushed_messages) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_trusted_source_handoff_reconciles_same_choice_menu(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(ctx),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    choices = [
+        {"choice_id": "a", "text": "follow her"},
+        {"choice_id": "b", "text": "wait here"},
+    ]
+
+    def _choice_shared(
+        *,
+        source: str,
+        session_id: str,
+        scene_id: str,
+        events: list[dict[str, object]],
+        visible: list[dict[str, object]],
+    ) -> dict[str, object]:
+        return _shared_state(
+            mode="companion",
+            game_id="demo.alpha",
+            session_id=session_id,
+            active_data_source=source,
+            ocr_reader_runtime=(
+                {
+                    "effective_process_name": "demo.exe",
+                    "effective_window_title": "Demo",
+                    "target_hwnd": 100,
+                    "target_window_visible": True,
+                }
+                if source == DATA_SOURCE_OCR_READER
+                else None
+            ),
+            snapshot=_session_state(
+                scene_id=scene_id,
+                choices=visible,
+                is_menu_open=True,
+            ),
+            last_seq=max((int(item.get("seq") or 0) for item in events), default=0),
+            history_events=events,
+        )
+
+    memory_event = _event(
+        seq=1,
+        event_type="choices_shown",
+        session_id="memory-session",
+        game_id="demo.alpha",
+        ts="2026-04-21T08:35:01Z",
+        payload={"scene_id": "memory-scene", "route_id": "", "choices": choices},
+    )
+    memory_shared = _choice_shared(
+        source=DATA_SOURCE_MEMORY_READER,
+        session_id="memory-session",
+        scene_id="memory-scene",
+        events=[memory_event],
+        visible=choices,
+    )
+    await agent.tick(memory_shared)
+    await agent.drain_summary_tasks(timeout=1.0)
+    assert len(ctx.pushed_messages) == 1
+
+    ocr_event = _event(
+        seq=1,
+        event_type="choices_shown",
+        session_id="ocr-session",
+        game_id="demo.alpha",
+        ts="2026-04-21T08:35:01Z",
+        payload={"scene_id": "ocr-scene", "route_id": "", "choices": choices},
+    )
+    ocr_shared = _choice_shared(
+        source=DATA_SOURCE_OCR_READER,
+        session_id="ocr-session",
+        scene_id="ocr-scene",
+        events=[ocr_event],
+        visible=choices,
+    )
+    await agent.tick(ocr_shared)
+    await agent.drain_summary_tasks(timeout=1.0)
+    assert len(ctx.pushed_messages) == 1
+
+    new_choices = [{"choice_id": "c", "text": "open the door"}]
+    new_event = _event(
+        seq=2,
+        event_type="choices_shown",
+        session_id="ocr-session",
+        game_id="demo.alpha",
+        ts="2026-04-21T08:35:02Z",
+        payload={
+            "scene_id": "ocr-scene",
+            "route_id": "",
+            "choices": new_choices,
+        },
+    )
+    updated = _choice_shared(
+        source=DATA_SOURCE_OCR_READER,
+        session_id="ocr-session",
+        scene_id="ocr-scene",
+        events=[ocr_event, new_event],
+        visible=new_choices,
+    )
+    await agent.tick(updated)
+    await agent.drain_summary_tasks(timeout=1.0)
+
+    assert len(ctx.pushed_messages) == 2
+    assert "open the door" in str(ctx.pushed_messages[-1]["content"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_same_scene_different_routes_keep_capsules_and_memory_separate(
+    tmp_path: Path,
+) -> None:
+    class _RouteGateway(_FakeLLMGateway):
+        def __init__(self) -> None:
+            super().__init__()
+            self.route_a_started = asyncio.Event()
+            self.release_route_a = asyncio.Event()
+
+        async def summarize_scene(self, context):
+            line = list(context.get("stable_lines") or [])[0]
+            route_id = str(line.get("route_id") or "")
+            if route_id == "route-a":
+                self.route_a_started.set()
+                await self.release_route_a.wait()
+            return {
+                "degraded": False,
+                "summary": f"memory for {route_id}",
+                "key_points": [],
+                "diagnostic": "",
+            }
+
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    gateway = _RouteGateway()
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(ctx),
+        logger=_Logger(),
+        llm_gateway=gateway,
+        host_adapter=_FakeHostAdapter(),
+    )
+
+    def _route_line(route_id: str, seq: int) -> dict[str, object]:
+        return {
+            **_summary_test_line("scene-a", seq),
+            "line_id": "shared-line-id",
+            "text": "same route text",
+            "route_id": route_id,
+        }
+
+    route_a_line = _route_line("route-a", 1)
+    route_a_event = _event(
+        seq=1,
+        event_type="line_changed",
+        session_id="sess-a",
+        game_id="demo.alpha",
+        ts=str(route_a_line["ts"]),
+        payload={**route_a_line, "stability": "stable"},
+    )
+    route_a_shared = _shared_state(
+        mode="companion",
+        session_id="sess-a",
+        snapshot=_session_state(
+            text="same route text",
+            scene_id="scene-a",
+            route_id="route-a",
+            line_id="shared-line-id",
+        ),
+        history_events=[route_a_event],
+        history_lines=[route_a_line],
+    )
+    await agent.tick(route_a_shared)
+    await agent.drain_summary_tasks(timeout=1.0)
+
+    route_b_line = _route_line("route-b", 2)
+    route_b_event = _event(
+        seq=2,
+        event_type="line_changed",
+        session_id="sess-a",
+        game_id="demo.alpha",
+        ts=str(route_b_line["ts"]),
+        payload={**route_b_line, "stability": "stable"},
+    )
+    route_b_shared = _shared_state(
+        mode="companion",
+        session_id="sess-a",
+        snapshot=_session_state(
+            text="same route text",
+            scene_id="scene-a",
+            route_id="route-b",
+            line_id="shared-line-id",
+        ),
+        history_events=[route_a_event, route_b_event],
+        history_lines=[route_a_line, route_b_line],
+    )
+    await agent.tick(route_b_shared)
+    await agent.drain_summary_tasks(timeout=1.0)
+    assert len(ctx.pushed_messages) == 2
+    assert ctx.pushed_messages[-1]["metadata"]["route_id"] == "route-b"
+
+    route_a_context = {
+        "stable_lines": [route_a_line],
+        "current_snapshot": route_a_shared["latest_snapshot"],
+    }
+    route_b_context = {
+        "stable_lines": [route_b_line],
+        "current_snapshot": route_b_shared["latest_snapshot"],
+    }
+    agent._schedule_scene_summary_task(
+        shared=route_b_shared,
+        session_id="sess-a",
+        scene_id="scene-a",
+        route_id="route-a",
+        snapshot=route_a_shared["latest_snapshot"],
+        context=route_a_context,
+        trigger="line_count",
+        metadata={"scheduled_from_event_seq": 10},
+        update_scene_memory=True,
+    )
+    await asyncio.wait_for(gateway.route_a_started.wait(), timeout=0.5)
+    agent._schedule_scene_summary_task(
+        shared=route_b_shared,
+        session_id="sess-a",
+        scene_id="scene-a",
+        route_id="route-b",
+        snapshot=route_b_shared["latest_snapshot"],
+        context=route_b_context,
+        trigger="line_count",
+        metadata={"scheduled_from_event_seq": 10},
+        update_scene_memory=True,
+    )
+    await asyncio.sleep(0)
+    gateway.release_route_a.set()
+    await agent.drain_summary_tasks(timeout=1.0)
+
+    memories = {
+        str(item.get("route_id") or ""): str(item.get("summary") or "")
+        for item in agent._scene_memory
+        if item.get("scene_id") == "scene-a"
+    }
+    assert memories["route-a"] == "memory for route-a"
+    assert memories["route-b"] == "memory for route-b"
+    assert len(agent._scene_summary_latest_memory_order_by_scene) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_trusted_source_handoff_allows_same_boundary_memory_backfill(
+    tmp_path: Path,
+) -> None:
+    class _BlockingGateway(_FakeLLMGateway):
+        def __init__(self) -> None:
+            super().__init__()
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def summarize_scene(self, context):
+            self.started.set()
+            await self.release.wait()
+            return {
+                "degraded": False,
+                "summary": "trusted handoff memory backfill",
+                "key_points": [],
+                "diagnostic": "",
+            }
+
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    gateway = _BlockingGateway()
+    plugin = GalgameBridgePlugin(ctx)
+    agent = GameLLMAgent(
+        plugin=plugin,
+        logger=_Logger(),
+        llm_gateway=gateway,
+        host_adapter=_FakeHostAdapter(),
+    )
+    line = _summary_test_line("ocr-scene", 1)
+    ocr_shared = _shared_state(
+        mode="companion",
+        game_id="demo.alpha",
+        session_id="ocr-session",
+        active_data_source=DATA_SOURCE_OCR_READER,
+        ocr_reader_runtime={
+            "effective_process_name": "demo.exe",
+            "effective_window_title": "Demo",
+            "target_hwnd": 100,
+            "target_window_visible": True,
+        },
+        snapshot=_session_state(scene_id="ocr-scene"),
+        history_lines=[line],
+    )
+    await agent.tick(ocr_shared)
+    context = build_summarize_context(
+        ocr_shared,
+        scene_id="ocr-scene",
+        config=agent._context_config,
+    )
+    agent._schedule_scene_summary_task(
+        shared=ocr_shared,
+        session_id="ocr-session",
+        scene_id="ocr-scene",
+        route_id="",
+        snapshot=ocr_shared["latest_snapshot"],
+        context=context,
+        trigger="line_count",
+        metadata={"scheduled_from_event_seq": 1},
+        update_scene_memory=True,
+    )
+    await asyncio.wait_for(gateway.started.wait(), timeout=0.5)
+
+    memory_shared = _shared_state(
+        mode="companion",
+        game_id="demo.alpha",
+        session_id="memory-session",
+        active_data_source=DATA_SOURCE_MEMORY_READER,
+        snapshot=_session_state(scene_id="memory-scene"),
+        history_lines=[],
+    )
+    await agent.tick(memory_shared)
+    gateway.release.set()
+    await agent.drain_summary_tasks(timeout=1.0)
+
+    assert "trusted handoff memory backfill" in plugin._story_so_far

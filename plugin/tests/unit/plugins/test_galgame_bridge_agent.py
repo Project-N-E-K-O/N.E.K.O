@@ -6108,7 +6108,13 @@ async def test_newer_same_scene_summary_wins_when_older_llm_finishes_last(
     assert agent._last_delivered_summary_seq == 11
     assert agent._scene_memory[-1]["summary"] == "newer summary"
     assert "newer summary" in plugin._story_so_far
-    latest_memory_order = agent._scene_summary_latest_memory_order_by_scene["scene-a"]
+    memory_scope_key = agent._scene_route_scope_key(
+        scene_id="scene-a",
+        route_id="",
+    )
+    latest_memory_order = agent._scene_summary_latest_memory_order_by_scene[
+        memory_scope_key
+    ]
 
     gateway.release_older.set()
     await asyncio.wait_for(asyncio.shield(older_task), timeout=0.5)
@@ -6117,7 +6123,10 @@ async def test_newer_same_scene_summary_wins_when_older_llm_finishes_last(
     assert agent._last_delivered_summary_seq == 11
     assert agent._scene_memory[-1]["summary"] == "newer summary"
     assert "older summary" not in plugin._story_so_far
-    assert agent._scene_summary_latest_memory_order_by_scene["scene-a"] == latest_memory_order
+    assert (
+        agent._scene_summary_latest_memory_order_by_scene[memory_scope_key]
+        == latest_memory_order
+    )
 
 
 @pytest.mark.asyncio
