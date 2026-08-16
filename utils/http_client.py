@@ -46,13 +46,11 @@ def ensure_user_agent(headers: dict[str, Any] | None) -> dict[str, Any]:
     """
     merged: dict[str, Any] = dict(headers) if headers else {}
 
-    # 查找是否有任意大小写形式的 User-Agent
-    ua_key_found: str | None = None
+    # 遍历所有大小写变体，选取首个非空的显式值（跳过 None / 空字符串）
     ua_value: Any | None = None
-    for k in merged:
-        if str(k).lower() == "user-agent":
-            ua_key_found = k
-            ua_value = merged[k]
+    for k, value in merged.items():
+        if str(k).lower() == "user-agent" and value not in (None, ""):
+            ua_value = value
             break
 
     # 删除所有大小写变体的 user-agent，避免重复请求头
@@ -62,10 +60,10 @@ def ensure_user_agent(headers: dict[str, Any] | None) -> dict[str, Any]:
 
     # 仅写入一个规范的 User-Agent 键
     if ua_value is not None:
-        # 调用方显式提供了值，保留
+        # 调用方显式提供了非空值，保留
         merged["User-Agent"] = ua_value
     else:
-        # 调用方未提供，注入默认值
+        # 调用方未提供或值为空，注入默认值
         merged["User-Agent"] = get_default_user_agent()
 
     return merged
