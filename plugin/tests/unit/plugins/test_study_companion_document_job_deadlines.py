@@ -187,6 +187,11 @@ def test_hosted_document_job_recovery_survives_opaque_storage_and_transient_fail
     assert "if (!savedJobId) return;" not in resume
     assert "savedJobId && savedJobId !== PENDING_DOCUMENT_JOB_ID" in resume
     assert "study_active_document_analysis" in resume
+    assert ".catch(() => null)" not in resume
+    assert "if (lookupFailed)" in resume
+    assert "await waitForDocumentPoll(retryDelayMs, signal);" in resume
+    assert "continue;" in resume
+    assert "savedJobNotFound = true;" in resume
 
     poll_start = hosted.index("async function pollDocumentJob")
     poll_end = hosted.index("async function resumeDocumentJob", poll_start)
@@ -195,6 +200,32 @@ def test_hosted_document_job_recovery_survives_opaque_storage_and_transient_fail
     assert "setReply(formatPluginError(error));" in poll
     assert "Math.min(" in poll
     assert "continue;" in poll
+
+
+def test_hosted_document_job_ambiguous_start_and_cancel_failures_keep_recovery() -> None:
+    plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
+    hosted = (plugin_dir / "surfaces" / "study_panel.tsx").read_text(encoding="utf-8")
+
+    cancel_helper_start = hosted.index("async function cancelKnownDocumentJob")
+    cancel_start = hosted.index("async function cancelDocumentJob", cancel_helper_start)
+    cancel_helper = hosted[cancel_helper_start:cancel_start]
+    assert "rememberDocumentJobId(jobId);" in cancel_helper
+    assert "setDocumentJob(fallbackJob);" in cancel_helper
+    assert "await pollDocumentJob(jobId, controller);" in cancel_helper
+
+    cancel_end = hosted.index("async function analyzeDocument", cancel_start)
+    cancel = hosted[cancel_start:cancel_end]
+    assert "finally" not in cancel
+    assert "await cancelKnownDocumentJob(jobId, fallbackJob);" in cancel
+    assert "rememberDocumentJobId('');" not in cancel
+
+    analyze_start = cancel_end
+    analyze_end = hosted.index("async function refresh", analyze_start)
+    analyze = hosted[analyze_start:analyze_end]
+    analyze_catch_start = analyze.index("} catch (error) {")
+    analyze_catch = analyze[analyze_catch_start:]
+    assert "rememberDocumentJobId('');" not in analyze_catch
+    assert "await resumeDocumentJob(controller.signal);" in analyze_catch
 
 
 def test_static_document_job_storage_recovers_valid_and_clears_stale_ids() -> None:

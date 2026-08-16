@@ -1385,6 +1385,29 @@ export default function StudyPanel(props: PluginSurfaceProps) {
     });
   }
 
+  function documentPollingController(parentSignal?: AbortSignal) {
+    const current = documentJobControllerRef.current;
+    if (parentSignal && current?.signal === parentSignal) return current;
+    current?.abort();
+    const controller = new AbortController();
+    if (parentSignal?.aborted) controller.abort();
+    else parentSignal?.addEventListener('abort', () => controller.abort(), { once: true });
+    documentJobControllerRef.current = controller;
+    return controller;
+  }
+
+  function recoveringDocumentJob(jobId: string): DocumentJobState {
+    return {
+      jobId: jobId === PENDING_DOCUMENT_JOB_ID ? '' : jobId,
+      status: jobId === PENDING_DOCUMENT_JOB_ID ? 'starting' : 'running',
+      stage: 'validating',
+      analysisMode: '',
+      completedChunks: 0,
+      totalChunks: 0,
+      progress: 0,
+    };
+  }
+
   async function pollDocumentJob(jobId: string, controller: AbortController) {
     let pollDelayMs = 1000;
     let consecutiveFailures = 0;
@@ -1451,55 +1474,146 @@ export default function StudyPanel(props: PluginSurfaceProps) {
   }
 
   async function resumeDocumentJob(signal: AbortSignal) {
-    const savedJobId = savedDocumentJobId();
-    let data: DocumentJobPayload | null = null;
-    if (savedJobId && savedJobId !== PENDING_DOCUMENT_JOB_ID) {
-      data = await callStudyPlugin<DocumentJobPayload>(
+    let recoveryFailures = 0;
+    while (!signal.aborted && mountedRef.current) {
+      const savedJobId = savedDocumentJobId();
+      const hasSavedJobId = Boolean(savedJobId && savedJobId !== PENDING_DOCUMENT_JOB_ID);
+      let data: DocumentJobPayload | null = null;
+      let savedJobNotFound = false;
+      let lookupFailed = false;
+
+      if (savedJobId) {
+        setDocumentJob((current) => current || recoveringDocumentJob(savedJobId));
+      }
+      if (hasSavedJobId) {
+        try {
+          data = await callStudyPlugin<DocumentJobPayload>(
+            props.api,
+            'study_document_analysis_status',
+            props.locale,
+            { job_id: savedJobId },
+            signal,
+          );
+          if (data?.diagnostic === 'document_job_not_found') {
+            savedJobNotFound = true;
+            data = null;
+          }
+        } catch (error) {
+          if (signal.aborted) return;
+          lookupFailed = true;
+          setReply(formatPluginError(error));
+        }
+      }
+
+      if (!data && !lookupFailed) {
+        try {
+          data = await callStudyPlugin<DocumentJobPayload>(
+            props.api,
+            'study_active_document_analysis',
+            props.locale,
+            {},
+            signal,
+          );
+        } catch (error) {
+          if (signal.aborted) return;
+          lookupFailed = true;
+          setReply(formatPluginError(error));
+        }
+      }
+      if (signal.aborted || !mountedRef.current) return;
+
+      if (lookupFailed) {
+        recoveryFailures += 1;
+        const retryDelayMs = Math.min(30_000, 2_000 * (2 ** Math.min(recoveryFailures - 1, 4)));
+        try {
+          await waitForDocumentPoll(retryDelayMs, signal);
+        } catch (error) {
+          if (signal.aborted) return;
+          throw error;
+        }
+        continue;
+      }
+
+      if (data?.status === 'idle') {
+        rememberDocumentJobId('');
+        setDocumentJob(null);
+        return;
+      }
+      const jobId = String(
+        data?.job_id || (hasSavedJobId && !savedJobNotFound ? savedJobId : ''),
+      );
+      if (!jobId) {
+        rememberDocumentJobId('');
+        setDocumentJob(null);
+        return;
+      }
+
+      rememberDocumentJobId(jobId);
+      const nextJob = normalizeDocumentJob(data || {}, jobId);
+      setDocumentJob(nextJob);
+      if (['completed', 'succeeded'].includes(nextJob.status)) {
+        rememberDocumentJobId('');
+        setReply(data?.degraded
+          ? formatTutorDiagnostic(data.diagnostic, true)
+          : formatDocumentCompletion(data || {}));
+        setDocumentJob(null);
+        return;
+      }
+      if (['failed', 'canceled', 'timeout'].includes(nextJob.status)) {
+        rememberDocumentJobId('');
+        setReply(formatTutorDiagnostic(data?.diagnostic || nextJob.status, true));
+        setDocumentJob(null);
+        return;
+      }
+      if (documentCancelRequestedRef.current) {
+        documentCancelRequestedRef.current = false;
+        await cancelKnownDocumentJob(jobId, nextJob, signal);
+        return;
+      }
+      await pollDocumentJob(jobId, documentPollingController(signal));
+      return;
+    }
+  }
+
+  async function cancelKnownDocumentJob(
+    jobId: string,
+    fallbackJob: DocumentJobState,
+    parentSignal?: AbortSignal,
+  ) {
+    try {
+      const data = await callHostedPlugin<DocumentJobPayload>(
         props.api,
-        'study_document_analysis_status',
-        props.locale,
-        { job_id: savedJobId },
-        signal,
-      ).catch(() => null);
-    }
-    if (data?.diagnostic === 'document_job_not_found') data = null;
-    if (!data) {
-      data = await callStudyPlugin<DocumentJobPayload>(
-        props.api,
-        'study_active_document_analysis',
-        props.locale,
-        {},
-        signal,
-      ).catch(() => null);
-    }
-    if (signal.aborted || !mountedRef.current) return;
-    const jobId = String(data?.job_id || '');
-    if (!jobId || data?.status === 'idle') {
+        'study_cancel_document_analysis',
+        {
+          job_id: jobId,
+          cancellation_source: 'user',
+          locale: String(props.locale || '').trim(),
+        },
+        { timeoutMs: timeoutForEntry('study_cancel_document_analysis') },
+      );
+      const cancellationConfirmed = data.status === 'canceled'
+        || data.diagnostic === 'document_canceled'
+        || data.diagnostic === 'document_job_not_found';
+      if (!cancellationConfirmed) {
+        throw new Error(data.diagnostic || 'document cancellation was not confirmed');
+      }
       rememberDocumentJobId('');
+      if (mountedRef.current) {
+        setReply(formatTutorDiagnostic(data.diagnostic || 'document_canceled', true));
+        setDocumentJob(null);
+      }
+      if (documentJobControllerRef.current?.signal === parentSignal) {
+        documentJobControllerRef.current = null;
+      }
       return;
+    } catch (error) {
+      if (!mountedRef.current) return;
+      rememberDocumentJobId(jobId);
+      setReply(formatPluginError(error));
+      setDocumentJob(fallbackJob);
+      const controller = documentPollingController(parentSignal);
+      await pollDocumentJob(jobId, controller);
     }
-    rememberDocumentJobId(jobId);
-    const nextJob = normalizeDocumentJob(data || {}, jobId);
-    setDocumentJob(nextJob);
-    if (['completed', 'succeeded'].includes(nextJob.status)) {
-      rememberDocumentJobId('');
-      setReply(data?.degraded
-        ? formatTutorDiagnostic(data.diagnostic, true)
-        : formatDocumentCompletion(data || {}));
-      setDocumentJob(null);
-      return;
-    }
-    if (['failed', 'canceled', 'timeout'].includes(nextJob.status)) {
-      rememberDocumentJobId('');
-      setReply(formatTutorDiagnostic(data?.diagnostic || nextJob.status, true));
-      setDocumentJob(null);
-      return;
-    }
-    const controller = new AbortController();
-    signal.addEventListener('abort', () => controller.abort(), { once: true });
-    documentJobControllerRef.current?.abort();
-    documentJobControllerRef.current = controller;
-    await pollDocumentJob(jobId, controller);
   }
 
   async function cancelDocumentJob() {
@@ -1512,26 +1626,9 @@ export default function StudyPanel(props: PluginSurfaceProps) {
     documentCancelRequestedRef.current = false;
     documentJobControllerRef.current?.abort();
     documentJobControllerRef.current = null;
+    const fallbackJob = documentJob || recoveringDocumentJob(jobId);
     setDocumentJob((current) => current ? { ...current, status: 'cancel_requested', stage: 'canceling' } : current);
-    try {
-      const data = await callHostedPlugin<DocumentJobPayload>(
-        props.api,
-        'study_cancel_document_analysis',
-        {
-          job_id: jobId,
-          cancellation_source: 'user',
-          locale: String(props.locale || '').trim(),
-        },
-        { timeoutMs: timeoutForEntry('study_cancel_document_analysis') },
-      );
-      if (!mountedRef.current) return;
-      setReply(formatTutorDiagnostic(data.diagnostic || 'document_canceled', true));
-    } catch (error) {
-      if (mountedRef.current) setReply(formatPluginError(error));
-    } finally {
-      rememberDocumentJobId('');
-      if (mountedRef.current) setDocumentJob(null);
-    }
+    await cancelKnownDocumentJob(jobId, fallbackJob);
   }
 
   async function analyzeDocument() {
@@ -1592,17 +1689,8 @@ export default function StudyPanel(props: PluginSurfaceProps) {
       const jobId = String(data.job_id);
       rememberDocumentJobId(jobId);
       if (documentCancelRequestedRef.current) {
-        await callHostedPlugin(
-          props.api,
-          'study_cancel_document_analysis',
-          {
-            job_id: jobId,
-            cancellation_source: 'user',
-            locale: String(props.locale || '').trim(),
-          },
-          { timeoutMs: timeoutForEntry('study_cancel_document_analysis') },
-        ).catch(() => undefined);
-        rememberDocumentJobId('');
+        documentCancelRequestedRef.current = false;
+        await cancelKnownDocumentJob(jobId, normalizeDocumentJob(data, jobId), controller.signal);
         return;
       }
       if (!mountedRef.current) return;
@@ -1611,10 +1699,10 @@ export default function StudyPanel(props: PluginSurfaceProps) {
       await pollDocumentJob(jobId, controller);
     } catch (error) {
       if (!controller.signal.aborted) {
-        rememberDocumentJobId('');
         setReply(error instanceof Error && /plugin call timed out|plugin_call_timeout/i.test(error.message)
           ? t('ui.document.error.timeout', 'Document analysis timed out. Please retry shortly.')
           : formatPluginError(error));
+        await resumeDocumentJob(controller.signal);
       }
     } finally {
       if (documentJobControllerRef.current === controller && !documentJobIdRef.current) {
