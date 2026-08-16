@@ -79,7 +79,11 @@ class _OcrEntriesMixin:
                     lanlan_name=_ocr_request_lanlan(self, kwargs)
                 )
             except InteractiveCaptureError as exc:
-                return Err(SdkError(str(exc)))
+                return _entry_exception_error(
+                    self,
+                    exc,
+                    operation="study_ocr_snapshot",
+                )
             if capture.canceled:
                 return Ok(build_ocr_payload(OcrSnapshot(status="canceled")))
             if capture.image is None:
