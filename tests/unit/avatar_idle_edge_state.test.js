@@ -232,7 +232,7 @@ function createDragEndHarness({ transferredAnchor = '' } = {}) {
     const fixture = createEdgeFixture({ transferredAnchor });
     const observations = [];
     const cancellations = [];
-    const scheduledContainers = [];
+    const scheduledButtons = [];
     const context = createBaseEdgeContext(fixture);
     Object.assign(context, {
         document: {
@@ -262,8 +262,8 @@ function createDragEndHarness({ transferredAnchor = '' } = {}) {
         _shouldRecheckNekoIdleCat1AfterManualMove() {
             return false;
         },
-        _scheduleNekoIdleCat1JourneySyncForContainer(container) {
-            scheduledContainers.push(container);
+        _scheduleNekoIdleCat1JourneySync(button) {
+            scheduledButtons.push(button);
         },
         _prepareNekoIdleReturnDragActionForContainer() {},
         _startNekoIdleReturnDragActionForContainer() {},
@@ -288,12 +288,13 @@ function createDragEndHarness({ transferredAnchor = '' } = {}) {
         '_getNekoIdleCat1EdgePeekPlacement',
         '_applyNekoIdleCat1EdgePeek',
         '_applyNekoIdleCat1EdgePeekAfterDrag',
-        '_dispatchNekoIdleCat1EdgePeekAfterDragObservation'
+        '_dispatchNekoIdleCat1EdgePeekAfterDragObservation',
+        '_scheduleNekoIdleCat1JourneySyncForContainer'
     ]);
     vm.runInContext(readFunction(journeySourcePath, '_ensureNekoIdleReturnPresentationBridge'), context);
     vm.runInContext('_ensureNekoIdleReturnPresentationBridge()', context);
     context.targetContainer = fixture.container;
-    return { context, fixture, observations, cancellations, scheduledContainers };
+    return { context, fixture, observations, cancellations, scheduledButtons };
 }
 
 function dispatchManualMove(harness, detail) {
@@ -388,7 +389,7 @@ test('drag cancel resumes journey after active dragging releases a transferred a
         dragCancelled: true
     });
 
-    assert.deepEqual(harness.scheduledContainers, [harness.fixture.container]);
+    assert.deepEqual(harness.scheduledButtons, [harness.fixture.button]);
     assert.equal(harness.observations.length, 0);
 });
 
