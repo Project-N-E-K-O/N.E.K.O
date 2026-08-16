@@ -141,4 +141,18 @@ describe('plugin list UI-action wiring contract', () => {
     expect(listSource).toContain('openExternalUrl(router.resolve(fallback).href)')
     expect(listSource).not.toContain('study_companion')
   })
+
+  it('routes direct hold-confirmed UI actions through the shared danger dialog', async () => {
+    const listSource = await import('@/views/PluginList.vue?raw').then((module) => module.default)
+    const handler = listSource.slice(
+      listSource.indexOf('async function handlePluginUiAction'),
+      listSource.indexOf('function toggleMultiSelectMode'),
+    )
+
+    expect(handler).toContain('if (shouldUseHoldConfirm(resolvedAction))')
+    expect(handler).toContain('openDangerDialog(resolvedAction, plugin)')
+    expect(handler.indexOf('openDangerDialog(resolvedAction, plugin)')).toBeLessThan(
+      handler.indexOf('await executeAction(resolvedAction, plugin)'),
+    )
+  })
 })

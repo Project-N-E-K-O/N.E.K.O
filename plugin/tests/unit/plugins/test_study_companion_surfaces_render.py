@@ -509,7 +509,10 @@ def test_study_companion_surfaces_share_ui8_interaction_styles_and_messages() ->
     assert ".study-panel button:focus-visible" in surface_utils
     assert "@media (prefers-reduced-motion: reduce)" in surface_utils
     assert ".knowledge-node[data-mastery=\"weak\"]" in surface_utils
-    assert ".pomodoro-ring[data-mode=\"break_short\"]" in surface_utils
+    assert ".pomodoro-ring[data-mode=\"short_break\"]" in surface_utils
+    assert ".pomodoro-ring[data-mode=\"long_break\"]" in surface_utils
+    assert "modeKey === 'short_break'" in pomodoro
+    assert "modeKey === 'long_break'" in pomodoro
     assert ".study-panel button[data-rating=\"again\"]" in surface_utils
 
     assert "data-rating={rating}" in word_review

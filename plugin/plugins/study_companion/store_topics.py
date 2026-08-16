@@ -367,8 +367,20 @@ def list_topics(
         "unit": str(unit or "").strip(),
         "course_family": str(course_family or "").strip(),
     }
-    clauses = [f"{column} = ?" for column, value in filters.items() if value]
-    params: list[Any] = [value for value in filters.values() if value]
+    machine_key_columns = {"subject", "stage", "course_family"}
+    clauses: list[str] = []
+    params: list[Any] = []
+    for column, value in filters.items():
+        if not value:
+            continue
+        if column in machine_key_columns:
+            clauses.append(
+                f"lower(replace(replace({column}, '-', '_'), ' ', '_')) = ?"
+            )
+            params.append(value.lower().replace("-", "_").replace(" ", "_"))
+        else:
+            clauses.append(f"{column} = ?")
+            params.append(value)
     where_sql = f" WHERE {' AND '.join(clauses)}" if clauses else ""
     params.append(max(1, int(limit)))
     rows = (

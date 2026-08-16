@@ -728,22 +728,25 @@ async function handlePluginUiAction(plugin: PluginMeta, action: PluginListAction
   ))
   if (!resolvedAction || resolvedAction.disabled) return
 
+  if (shouldUseHoldConfirm(resolvedAction)) {
+    openDangerDialog(resolvedAction, plugin)
+    return
+  }
+
   const target = action.target?.trim() || ''
   if (target) {
     await executeAction(resolvedAction, plugin)
     return
   }
 
-  if (action.confirm_mode !== 'hold') {
-    const confirmMessage = resolveLocalizedText(action.confirm_message, locale.value, '')
-    if (confirmMessage) {
-      try {
-        await ElMessageBox.confirm(confirmMessage, t('common.confirm'), {
-          type: action.danger ? 'warning' : 'info',
-        })
-      } catch {
-        return
-      }
+  const confirmMessage = resolveLocalizedText(action.confirm_message, locale.value, '')
+  if (confirmMessage) {
+    try {
+      await ElMessageBox.confirm(confirmMessage, t('common.confirm'), {
+        type: action.danger ? 'warning' : 'info',
+      })
+    } catch {
+      return
     }
   }
 

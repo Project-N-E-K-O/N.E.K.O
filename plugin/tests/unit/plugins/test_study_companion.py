@@ -9737,6 +9737,57 @@ async def test_memory_card_upsert_rejects_unsupported_item_type() -> None:
     assert store.item_types == []
 
 
+class _LegacyTopicReviewStore:
+    def __init__(self) -> None:
+        self.review_calls: list[dict[str, str]] = []
+
+    def get_item(self, _item_id: str):
+        return None
+
+    def get_or_create_default_deck(self, *, deck_type: str):
+        assert deck_type == "custom"
+        return {"id": "default-deck"}
+
+    def review_item(self, *, item_id: str, rating: str, deck_id: str = ""):
+        self.review_calls.append(
+            {"item_id": item_id, "rating": rating, "deck_id": deck_id}
+        )
+        return {
+            "item": {"id": "default-item", "deck_id": deck_id},
+            "rating": 3,
+            "schedule": {"scheduled_days": 1.0},
+        }
+
+    def compat_card_payload(self, item):
+        return {"item_id": item["id"], "deck_id": item["deck_id"]}
+
+
+@pytest.mark.asyncio
+async def test_legacy_topic_review_limits_metadata_lookup_to_default_deck() -> None:
+    plugin = StudyCompanionPlugin.__new__(StudyCompanionPlugin)
+    store = _LegacyTopicReviewStore()
+    plugin._memory_deck_store = store
+    plugin._count_total_due_reviews = lambda: 0
+
+    async def ignore_review_event(_payload) -> None:
+        return None
+
+    plugin._emit_memory_review_answer_event = ignore_review_event
+
+    reviewed = await plugin.study_memory_card_review(
+        topic_id="shared-topic", rating="good"
+    )
+
+    assert isinstance(reviewed, Ok)
+    assert store.review_calls == [
+        {
+            "item_id": "shared-topic",
+            "rating": "good",
+            "deck_id": "default-deck",
+        }
+    ]
+
+
 @pytest.mark.asyncio
 async def test_study_plugin_starts_and_collects_entries(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

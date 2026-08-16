@@ -216,6 +216,44 @@ async def test_scope_with_no_matching_topics_is_rejected_without_revision_change
 
 
 @pytest.mark.asyncio
+async def test_scope_query_matches_noncanonical_machine_keys(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plugin = await _start_plugin(tmp_path, monkeypatch)
+    try:
+        plugin._store.upsert_topic(
+            {
+                "id": "normalized-scope-topic",
+                "name": "Normalized scope topic",
+                "stage": "junior-high",
+                "subject": "computer science",
+                "chapter": "Normalization",
+                "unit": "Aliases",
+                "source": "runtime",
+            }
+        )
+
+        selected = await plugin.study_set_practice_scope(
+            scope={
+                "schema_version": 1,
+                "mode": "explicit_topic",
+                "stage": "junior-high",
+                "subject": "computer science",
+                "chapter": "Normalization",
+                "unit": "Aliases",
+                "topic_id": "normalized-scope-topic",
+            }
+        )
+
+        assert isinstance(selected, Ok)
+        assert selected.value["scope"]["stage"] == "junior_high"
+        assert selected.value["scope"]["subject"] == "computer_science"
+        assert selected.value["scope"]["topic_id"] == "normalized-scope-topic"
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_scope_mutation_rolls_back_when_persistence_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

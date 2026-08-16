@@ -146,13 +146,16 @@ class _MemoryCardEntriesMixin:
             due_before = await asyncio.to_thread(
                 self._count_total_due_reviews
             )
-            try:
+            exact_item = await asyncio.to_thread(
+                self._memory_deck_store.get_item, topic_key
+            )
+            if exact_item is not None:
                 payload = await asyncio.to_thread(
                     self._memory_deck_store.review_item,
                     item_id=topic_key,
                     rating=rating,
                 )
-            except MemoryItemNotFoundError:
+            else:
                 default_deck = await asyncio.to_thread(
                     self._memory_deck_store.get_or_create_default_deck,
                     deck_type="custom",
@@ -167,7 +170,9 @@ class _MemoryCardEntriesMixin:
                 except MemoryItemNotFoundError:
                     # Not a memory/custom item: a knowledge-graph topic card surfaced
                     # via study_memory_deck(include_topic_cards=True) is reviewed through
-                    # the topic FSRS backend instead.
+                    # the topic FSRS backend instead. Metadata fallback is intentionally
+                    # limited to the default deck; arbitrary custom decks use the stable
+                    # item_id contract exposed by study_memory_review_item.
                     knowledge_payload = await asyncio.to_thread(
                         self._knowledge_tracker.review_memory_card,
                         topic_id=topic_key,

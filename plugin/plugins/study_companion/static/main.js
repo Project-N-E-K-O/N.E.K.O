@@ -28,6 +28,7 @@ const ENTRY_TIMEOUT_MS = {
   study_memory_create_deck: 30000,
   study_memory_deck: 30000,
   study_memory_card_review: 30000,
+  study_memory_review_item: 30000,
   study_export_notes: 90000,
 };
 const STUDY_SURFACE_MESSAGE_TYPES = Object.freeze({
@@ -2121,15 +2122,15 @@ async function saveMemoryCard() {
 }
 
 async function reviewMemoryCard(rating) {
-  const topicId = currentMemoryCard?.topic_id || currentMemoryCard?.item_id || '';
-  if (!topicId) {
+  const itemId = currentMemoryCard?.item_id || currentMemoryCard?.item?.id || '';
+  const topicId = currentMemoryCard?.topic_id || '';
+  if (!itemId && !topicId) {
     return;
   }
   setStatus(t('ui.memory.reviewing', 'Reviewing memory card...'));
-  const data = await callPlugin('study_memory_card_review', {
-    topic_id: topicId,
-    rating,
-  });
+  const data = itemId
+    ? await callPlugin('study_memory_review_item', { item_id: itemId, rating })
+    : await callPlugin('study_memory_card_review', { topic_id: topicId, rating });
   const scheduledDays = data.schedule && Number.isFinite(Number(data.schedule.scheduled_days))
     ? Number(data.schedule.scheduled_days).toFixed(1)
     : '';

@@ -134,8 +134,8 @@
     const key = String(value || 'focus');
     const labels = {
       focus: ['ui.pomodoro.mode.focus', 'Focus'],
-      break_short: ['ui.pomodoro.mode.break_short', 'Short break'],
-      break_long: ['ui.pomodoro.mode.break_long', 'Long break'],
+      short_break: ['ui.pomodoro.mode.break_short', 'Short break'],
+      long_break: ['ui.pomodoro.mode.break_long', 'Long break'],
     };
     const pair = labels[key] || [null, key];
     return pair[0] ? t(ctx, pair[0], pair[1]) : pair[1];
@@ -373,9 +373,9 @@
       const isBreak = stateKey === 'short_break' || stateKey === 'long_break';
       const isRunning = isFocusing || isPaused || isBreak;
       const selectedMinutes = Math.min(120, Math.max(1, Math.round(Number(focusMinutes) || 25)));
-      const modeMinutes = modeKey === 'break_short'
+      const modeMinutes = modeKey === 'short_break'
         ? Number(status.config?.short_break_minutes || 5)
-        : modeKey === 'break_long'
+        : modeKey === 'long_break'
           ? Number(status.config?.long_break_minutes || 15)
           : Number(status.current_focus_session?.planned_minutes || selectedMinutes);
       const totalSeconds = Math.max(60, modeMinutes * 60);

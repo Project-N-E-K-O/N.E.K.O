@@ -23,9 +23,9 @@ export default function PomodoroPanel(props: PluginSurfaceProps) {
   const modeLabel = pomodoroModeLabel(props, modeKey);
   const remaining = formatSeconds(status.remaining_seconds);
   const selectedMinutes = Math.min(120, Math.max(1, Math.round(Number(focusMinutes) || 25)));
-  const modeMinutes = modeKey === 'break_short'
+  const modeMinutes = modeKey === 'short_break'
     ? Number(status.config?.short_break_minutes || 5)
-    : modeKey === 'break_long'
+    : modeKey === 'long_break'
       ? Number(status.config?.long_break_minutes || 15)
       : Number(status.current_focus_session?.planned_minutes || selectedMinutes);
   const totalSeconds = Math.max(60, modeMinutes * 60);

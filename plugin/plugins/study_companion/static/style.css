@@ -1647,8 +1647,8 @@ pre,
 }
 
 .surface-shell[data-surface="pomodoro-panel"] { --surface-accent: var(--pomodoro-focus); --pomodoro-color: var(--pomodoro-focus); --pomodoro-color-strong: #991b1b; --pomodoro-color-soft: rgba(239, 68, 68, 0.11); overflow: hidden; background: radial-gradient(circle at 50% 42%, var(--pomodoro-color-soft), transparent 38%), linear-gradient(180deg, rgba(255, 255, 255, 0.99), #fff9f7); }
-.surface-shell[data-surface="pomodoro-panel"][data-mode="break_short"] { --surface-accent: var(--pomodoro-break-short); --pomodoro-color: var(--pomodoro-break-short); --pomodoro-color-strong: #166534; --pomodoro-color-soft: rgba(34, 197, 94, 0.11); }
-.surface-shell[data-surface="pomodoro-panel"][data-mode="break_long"] { --surface-accent: var(--pomodoro-break-long); --pomodoro-color: var(--pomodoro-break-long); --pomodoro-color-strong: #1d4f91; --pomodoro-color-soft: rgba(59, 130, 246, 0.11); }
+.surface-shell[data-surface="pomodoro-panel"][data-mode="short_break"] { --surface-accent: var(--pomodoro-break-short); --pomodoro-color: var(--pomodoro-break-short); --pomodoro-color-strong: #166534; --pomodoro-color-soft: rgba(34, 197, 94, 0.11); }
+.surface-shell[data-surface="pomodoro-panel"][data-mode="long_break"] { --surface-accent: var(--pomodoro-break-long); --pomodoro-color: var(--pomodoro-break-long); --pomodoro-color-strong: #1d4f91; --pomodoro-color-soft: rgba(59, 130, 246, 0.11); }
 
 .surface-shell[data-surface="habit-dashboard"],
 .surface-shell[data-surface="daily-goal-editor"] {

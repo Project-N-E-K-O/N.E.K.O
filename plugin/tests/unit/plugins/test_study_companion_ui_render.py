@@ -513,6 +513,22 @@ def test_static_scope_read_failure_clears_the_stale_question_context() -> None:
     assert "setQuestionContext({ selection_reason: 'no_data', no_data: true })" in catch_body
 
 
+def test_static_memory_review_uses_exact_item_id_for_custom_decks() -> None:
+    source = (STATIC_DIR / "main.js").read_text(encoding="utf-8")
+    review = source[
+        source.index("async function reviewMemoryCard") : source.index(
+            "async function setMode"
+        )
+    ]
+
+    assert "currentMemoryCard?.item_id" in review
+    assert "study_memory_review_item" in review
+    assert "item_id: itemId" in review
+    assert review.index("study_memory_review_item") < review.index(
+        "study_memory_card_review"
+    )
+
+
 def test_study_companion_static_ui_browser_smoke_desktop_reduced_motion() -> None:
     playwright_sync_api = pytest.importorskip("playwright.sync_api")
     if not _has_playwright_chromium():
