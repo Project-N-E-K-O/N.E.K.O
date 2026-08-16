@@ -86,6 +86,138 @@ async def test_capsule_ignores_reader_private_binary_shared_state(
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
+async def test_sequence_less_line_event_keeps_identity_when_prefix_is_trimmed(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(ctx),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    line = _summary_test_line("scene-a", 1)
+    line_event = _summary_test_line_event("scene-a", 1, seq=0)
+    prefix_event = _event(
+        seq=0,
+        event_type="screen_classified",
+        session_id="sess-a",
+        game_id="demo.alpha",
+        ts="2026-04-21T08:34:59Z",
+        payload={"screen_type": "dialogue"},
+    )
+    shared = _capsule_shared(
+        events=[prefix_event, line_event],
+        lines=[line],
+    )
+
+    await agent.tick(shared)
+    await agent.drain_summary_tasks(timeout=1.0)
+    assert len(ctx.pushed_messages) == 1
+
+    shared["history_events"] = [line_event]
+    await agent.tick(shared)
+    await agent.drain_summary_tasks(timeout=1.0)
+
+    assert len(ctx.pushed_messages) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_sequence_less_choice_event_keeps_identity_when_prefix_is_trimmed(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(ctx),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    choices = [
+        {"choice_id": "choice-a", "text": "追上去", "index": 0},
+        {"choice_id": "choice-b", "text": "留在原地", "index": 1},
+    ]
+    choice_event = _event(
+        seq=0,
+        event_type="choices_shown",
+        session_id="sess-a",
+        game_id="demo.alpha",
+        ts="2026-04-21T08:35:01Z",
+        payload={"scene_id": "scene-a", "choices": choices},
+    )
+    prefix_event = _event(
+        seq=0,
+        event_type="screen_classified",
+        session_id="sess-a",
+        game_id="demo.alpha",
+        ts="2026-04-21T08:35:00Z",
+        payload={"screen_type": "dialogue"},
+    )
+    shared = _shared_state(
+        mode="companion",
+        session_id="sess-a",
+        last_seq=0,
+        snapshot=_session_state(
+            scene_id="scene-a",
+            choices=choices,
+            is_menu_open=True,
+        ),
+        history_events=[prefix_event, choice_event],
+    )
+
+    await agent.tick(shared)
+    await agent.drain_summary_tasks(timeout=1.0)
+    assert len(ctx.pushed_messages) == 1
+
+    shared["history_events"] = [choice_event]
+    await agent.tick(shared)
+    await agent.drain_summary_tasks(timeout=1.0)
+
+    assert len(ctx.pushed_messages) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_scene_delta_includes_fixed_character_anchor(tmp_path: Path) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    agent = GameLLMAgent(
+        plugin=plugin,
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    with plugin._state_lock:
+        plugin._state.character_mode = "fixed"
+        plugin._state.character_fixed_name = "Murasame"
+        plugin._state.character_profile_game_id = "senren_banka"
+        plugin._state.character_profiles = {
+            "Murasame": {
+                "identity": "A guarded blade spirit",
+                "background": ["sealed for centuries"],
+            }
+        }
+    line = _summary_test_line("scene-a", 1)
+    shared = _capsule_shared(
+        events=[_summary_test_line_event("scene-a", 1, seq=1)],
+        lines=[line],
+    )
+
+    await agent.tick(shared)
+    await agent.drain_summary_tasks(timeout=1.0)
+
+    pushed_content = str(ctx.pushed_messages[0]["content"])
+    assert "======[角色身份]" in pushed_content
+    assert "Murasame" in pushed_content
+    assert str(line["text"]) in pushed_content
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
 async def test_choices_shown_event_submits_complete_menu_atomically(tmp_path: Path) -> None:
     plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
     ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))

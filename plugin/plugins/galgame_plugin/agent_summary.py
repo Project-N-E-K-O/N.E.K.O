@@ -660,6 +660,24 @@ class AgentSummaryMixin:
         state["next_id"] = next_id
         return occurrence_ids
 
+    def _scene_capsule_sequence_less_event_ids(
+        self,
+        *,
+        source_key: str,
+        event_indices: list[int],
+        signatures: list[str],
+    ) -> dict[int, int]:
+        return dict(
+            zip(
+                event_indices,
+                self._scene_capsule_fallback_occurrence_ids(
+                    source_key=source_key,
+                    signatures=signatures,
+                ),
+                strict=False,
+            )
+        )
+
     def _scene_capsule_line_occurrences(
         self,
         shared: dict[str, Any],
@@ -698,6 +716,43 @@ class AgentSummaryMixin:
 
         latest_valid_line_event_index = (
             valid_line_event_candidates[-1][0] if valid_line_event_candidates else -1
+        )
+        sequence_less_line_event_indices: list[int] = []
+        sequence_less_line_event_signatures: list[str] = []
+        for event_index, event, payload, text in valid_line_event_candidates:
+            try:
+                candidate_seq = int(event.get("seq") or 0)
+            except (TypeError, ValueError):
+                candidate_seq = 0
+            if candidate_seq > 0:
+                continue
+            sequence_less_line_event_indices.append(event_index)
+            sequence_less_line_event_signatures.append(
+                json.dumps(
+                    {
+                        "session_id": str(event.get("session_id") or session_id),
+                        "ts": str(event.get("ts") or payload.get("ts") or ""),
+                        "line_id": str(
+                            payload.get("line_id") or event.get("line_id") or ""
+                        ),
+                        "speaker": str(payload.get("speaker") or ""),
+                        "text": text,
+                        "scene_id": str(
+                            payload.get("scene_id") or event.get("scene_id") or ""
+                        ),
+                        "route_id": str(
+                            payload.get("route_id") or event.get("route_id") or ""
+                        ),
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            )
+        sequence_less_line_event_ids = self._scene_capsule_sequence_less_event_ids(
+            source_key=f"{data_source}|{session_id}|history_event:line_changed",
+            event_indices=sequence_less_line_event_indices,
+            signatures=sequence_less_line_event_signatures,
         )
         for event_index, event, payload, text in valid_line_event_candidates:
             line = {
@@ -754,7 +809,11 @@ class AgentSummaryMixin:
                 data_source,
                 event_session,
                 "line_changed",
-                seq if seq > 0 else f"ordered:{event_index}",
+                (
+                    seq
+                    if seq > 0
+                    else f"occurrence:{sequence_less_line_event_ids[event_index]}"
+                ),
                 semantic_version,
             )
             event_occurrences.append(
@@ -922,6 +981,57 @@ class AgentSummaryMixin:
             if valid_choice_event_candidates
             else -1
         )
+        sequence_less_choice_event_indices: list[int] = []
+        sequence_less_choice_event_signatures: list[str] = []
+        for (
+            event_index,
+            event,
+            event_type,
+            payload,
+            valid_choices,
+        ) in valid_choice_event_candidates:
+            try:
+                candidate_seq = int(event.get("seq") or 0)
+            except (TypeError, ValueError):
+                candidate_seq = 0
+            if candidate_seq > 0:
+                continue
+            sequence_less_choice_event_indices.append(event_index)
+            sequence_less_choice_event_signatures.append(
+                json.dumps(
+                    {
+                        "session_id": str(event.get("session_id") or session_id),
+                        "type": event_type,
+                        "ts": str(event.get("ts") or payload.get("ts") or ""),
+                        "scene_id": str(
+                            payload.get("scene_id") or event.get("scene_id") or ""
+                        ),
+                        "route_id": str(
+                            payload.get("route_id") or event.get("route_id") or ""
+                        ),
+                        "choices": [
+                            {
+                                "choice_id": str(
+                                    choice.get("choice_id")
+                                    or choice.get("option_id")
+                                    or ""
+                                ),
+                                "text": str(choice.get("text") or ""),
+                                "index": normalized_index,
+                            }
+                            for _choice_index, choice, normalized_index in valid_choices
+                        ],
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            )
+        sequence_less_choice_event_ids = self._scene_capsule_sequence_less_event_ids(
+            source_key=f"{data_source}|{session_id}|history_event:choice",
+            event_indices=sequence_less_choice_event_indices,
+            signatures=sequence_less_choice_event_signatures,
+        )
         for (
             event_index,
             event,
@@ -934,7 +1044,11 @@ class AgentSummaryMixin:
             except (TypeError, ValueError):
                 seq = 0
             event_session_id = str(event.get("session_id") or session_id)
-            event_occurrence = seq if seq > 0 else f"ordered:{event_index}"
+            event_occurrence = (
+                seq
+                if seq > 0
+                else f"occurrence:{sequence_less_choice_event_ids[event_index]}"
+            )
             event_route_id = str(
                 payload.get("route_id")
                 or event.get("route_id")
