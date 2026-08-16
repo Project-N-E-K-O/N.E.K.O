@@ -138,6 +138,9 @@ class _ManualTimer:
     def __init__(self, state: str) -> None:
         self.state = state
 
+    def status(self) -> dict[str, object]:
+        return {"state": self.state}
+
     def stop(self) -> dict[str, object]:
         self.state = "cancelled"
         return {"state": self.state, "current_focus_session": {"id": "focus-1"}}
