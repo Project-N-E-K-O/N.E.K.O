@@ -1557,7 +1557,9 @@ _CHAT_SCOPED_SIGNAL_BRIDGE_RE = re.compile(
 _CHAT_GOVERNING_CONDITION_PATTERN = (
     r"(?:如果|假如|若是|要是|倘若|万一|萬一|假若)"
     r"[^。，、！？,.!?;；]{0,64}?(?:[，,]\s*)?(?:再|才|就)\s*"
-    r"(?:执行|執行|应用|應用|采用|採用|进行|進行)"
+    r"(?:执行|執行|应用|應用|采用|採用|进行|進行|"
+    + _CHAT_ZH_COMMAND_HEAD
+    + r")"
 )
 _CHAT_GOVERNING_CONDITION_RE = re.compile(
     r"^\s*" + _CHAT_GOVERNING_CONDITION_PATTERN

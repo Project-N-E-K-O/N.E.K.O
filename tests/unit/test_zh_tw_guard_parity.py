@@ -3685,6 +3685,14 @@ def test_a_question_after_a_secondary_field_value_blocks_recovery():
     assert router._chat_text_requests_full_rewrite(text) is False
 
 
+def test_a_condition_directly_governing_rewrite_blocks_recovery():
+    import main_routers.card_assist_router as router
+
+    text = '如果我确认后，再重写所有字段并保留是否会员'
+    assert router._chat_text_requests_full_rewrite_core(text) is False
+    assert router._chat_text_requests_full_rewrite(text) is False
+
+
 def test_a_leading_execution_question_governs_all_recovered_list_items():
     import main_routers.card_assist_router as router
 
