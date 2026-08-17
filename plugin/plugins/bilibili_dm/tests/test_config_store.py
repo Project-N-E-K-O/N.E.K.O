@@ -164,6 +164,37 @@ def test_notification_is_completed_only_after_delivery_ack():
     assert identity in client._notification_seen_set
 
 
+def test_notification_retry_attempts_and_queue_are_bounded():
+    client = BiliDMClient(sesdata="sess", bili_jct="csrf")
+    client._notification_backlog_limit = 2
+
+    for identity in ("oldest", "newer", "newest"):
+        client._notification_inflight.add(identity)
+    client._notification_retries = {
+        "oldest": {"message": {}, "ready_at": 1},
+        "newer": {"message": {}, "ready_at": 2},
+    }
+
+    client.retry_comment_notification(
+        {"notification_identity": "newest", "notification_attempt": 0}
+    )
+
+    assert set(client._notification_retries) == {"newer", "newest"}
+    assert "oldest" not in client._notification_inflight
+    assert "oldest" in client._notification_seen_set
+
+    client.retry_comment_notification(
+        {
+            "notification_identity": "newest",
+            "notification_attempt": client.NOTIFICATION_MAX_RETRY_ATTEMPTS,
+        }
+    )
+
+    assert "newest" not in client._notification_retries
+    assert "newest" not in client._notification_inflight
+    assert "newest" in client._notification_seen_set
+
+
 def test_comment_and_private_messages_use_separate_sessions():
     assert BiliDMPlugin._build_session_key("42") == "bili:dm:42"
     assert (
@@ -390,6 +421,54 @@ async def test_notification_feed_pages_until_seen_item(url, time_param):
 
 
 @pytest.mark.asyncio
+async def test_notification_pagination_stops_when_backlog_capacity_is_filled():
+    class FakeResponse:
+        @staticmethod
+        def raise_for_status():
+            return None
+
+        @staticmethod
+        def json():
+            return {
+                "code": 0,
+                "data": {
+                    "items": [{"id": "new-3"}, {"id": "new-2"}],
+                    "cursor": {
+                        "is_end": False,
+                        "id": 10,
+                        "reply_time": 20,
+                    },
+                },
+            }
+
+    class FakeHttpClient:
+        def __init__(self):
+            self.calls = 0
+
+        async def get(self, *_args, **_kwargs):
+            self.calls += 1
+            return FakeResponse()
+
+    client = object.__new__(BiliDMClient)
+    client._credential = SimpleNamespace(
+        sessdata="", bili_jct="", buvid3="", dedeuserid=""
+    )
+    client._notification_backlog_limit = 2
+    client._notification_feed_seen_set = {"reply": set(), "at": set()}
+    client.logger = None
+    http_client = FakeHttpClient()
+
+    result = await client._get_notification_items(
+        http_client,
+        "https://api.bilibili.com/x/msgfeed/reply",
+        paginate=True,
+    )
+
+    assert result == [{"id": "new-3"}, {"id": "new-2"}]
+    assert http_client.calls == 1
+
+
+@pytest.mark.asyncio
 async def test_force_uid_resolution_revalidates_configured_dedeuserid(monkeypatch):
     client = object.__new__(BiliDMClient)
     client._current_uid = "old-account"
@@ -438,6 +517,9 @@ async def test_notification_backlog_is_bounded_and_drops_oldest():
         notifications[1], "reply"
     )
     assert list(client._notification_pending) == [("reply", notifications[0])]
+    dropped_identity = client._notification_identity(notifications[2])
+    assert dropped_identity not in client._notification_inflight
+    assert dropped_identity in client._notification_seen_set
     assert warnings
 
 
@@ -569,17 +651,31 @@ async def test_disconnect_cancels_all_background_tasks():
 
 
 @pytest.mark.asyncio
-async def test_dm_failure_does_not_stop_comment_notifications():
+async def test_dm_failure_restarts_private_polling_without_stopping_comments():
     client = object.__new__(BiliDMClient)
     client._running = True
-    client.logger = SimpleNamespace(error=lambda *_: None)
-    client._session = SimpleNamespace(
+    client.logger = SimpleNamespace(error=lambda *_: None, warning=lambda *_: None)
+    client.SESSION_RESTART_INITIAL_DELAY_SECONDS = 0
+    client.SESSION_RESTART_MAX_DELAY_SECONDS = 0
+    failed_session = SimpleNamespace(
         start=AsyncMock(side_effect=RuntimeError("dm failed"))
     )
 
+    async def stop_after_reconnect(*, exclude_self):
+        assert exclude_self is True
+        client._running = False
+
+    recovered_session = SimpleNamespace(
+        start=AsyncMock(side_effect=stop_after_reconnect)
+    )
+    client._session = failed_session
+    client._create_session = MagicMock(return_value=recovered_session)
+
     await client._run_session()
 
-    assert client._running is True
+    failed_session.start.assert_awaited_once_with(exclude_self=True)
+    client._create_session.assert_called_once_with()
+    recovered_session.start.assert_awaited_once_with(exclude_self=True)
 
 
 def test_at_feed_is_blocked_when_current_uid_cannot_be_resolved():

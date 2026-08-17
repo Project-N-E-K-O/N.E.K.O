@@ -24,6 +24,9 @@ class BiliDMClient:
     """B站私信与评论通知客户端。"""
 
     NOTIFICATION_BACKLOG_LIMIT = 500
+    NOTIFICATION_MAX_RETRY_ATTEMPTS = 5
+    SESSION_RESTART_INITIAL_DELAY_SECONDS = 2
+    SESSION_RESTART_MAX_DELAY_SECONDS = 60
 
     def __init__(
         self,
@@ -87,19 +90,7 @@ class BiliDMClient:
             # 每次连接都向 B站重新确认，避免替换 Cookie 后沿用旧账号 UID。
             await self._resolve_current_uid(force=True)
 
-            self._session = Session(self._credential, debug=False)
-
-            @self._session.on(EventType.TEXT)
-            async def on_text(event: Event):
-                await self._enqueue_event(event, "text")
-
-            @self._session.on(EventType.PICTURE)
-            async def on_picture(event: Event):
-                await self._enqueue_event(event, "picture")
-
-            @self._session.on(EventType.SHARE_VIDEO)
-            async def on_share_video(event: Event):
-                await self._enqueue_event(event, "share_video")
+            self._session = self._create_session()
 
             self._running = True
             if self.logger:
@@ -118,17 +109,48 @@ class BiliDMClient:
                 self.logger.error(f"启动 B站私信监听失败: {e}")
             raise
 
+    def _create_session(self) -> Session:
+        """Create a fresh private-message session with all event handlers."""
+        session = Session(self._credential, debug=False)
+
+        @session.on(EventType.TEXT)
+        async def on_text(event: Event):
+            await self._enqueue_event(event, "text")
+
+        @session.on(EventType.PICTURE)
+        async def on_picture(event: Event):
+            await self._enqueue_event(event, "picture")
+
+        @session.on(EventType.SHARE_VIDEO)
+        async def on_share_video(event: Event):
+            await self._enqueue_event(event, "share_video")
+
+        return session
+
     async def _run_session(self):
-        """在后台运行 Session 轮询"""
-        try:
-            await self._session.start(exclude_self=True)
-        except asyncio.CancelledError:
-            pass
-        except Exception as e:
-            if self.logger:
-                self.logger.error(
-                    f"B站私信 Session 轮询异常退出，评论通知继续运行: {e}"
-                )
+        """Supervise private-message polling and reconnect after failures."""
+        retry_delay = self.SESSION_RESTART_INITIAL_DELAY_SECONDS
+        while self._running:
+            try:
+                await self._session.start(exclude_self=True)
+                if self._running and self.logger:
+                    self.logger.warning("B站私信 Session 意外停止，准备重新连接")
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                if self.logger:
+                    self.logger.error(
+                        "B站私信 Session 轮询异常，准备重新连接；"
+                        f"评论通知继续运行: {exc}"
+                    )
+
+            if not self._running:
+                break
+            await asyncio.sleep(retry_delay)
+            if not self._running:
+                break
+            self._session = self._create_session()
+            retry_delay = min(retry_delay * 2, self.SESSION_RESTART_MAX_DELAY_SECONDS)
 
     async def disconnect(self):
         """停止 B站私信与评论通知监听。"""
@@ -373,6 +395,27 @@ class BiliDMClient:
         retry_message = dict(message)
         attempt = int(retry_message.get("notification_attempt") or 0) + 1
         retry_message["notification_attempt"] = attempt
+        if attempt > self.NOTIFICATION_MAX_RETRY_ATTEMPTS:
+            self.complete_comment_notification(identity)
+            if self.logger:
+                self.logger.error(
+                    "B站评论通知重试达到上限，已转为终止状态: "
+                    f"identity={identity}, attempts={attempt - 1}"
+                )
+            return
+
+        # retry 与 pending 使用相同容量级别；永久故障时将最旧重试转为终止
+        # 状态，避免 retry/inflight 随新通知持续增长。
+        self._notification_retries.pop(identity, None)
+        if len(self._notification_retries) >= self._notification_backlog_limit:
+            expired_identity = next(iter(self._notification_retries))
+            self.complete_comment_notification(expired_identity)
+            if self.logger:
+                self.logger.error(
+                    "B站评论通知重试队列达到上限，已终止最旧重试: "
+                    f"identity={expired_identity}, "
+                    f"limit={self._notification_backlog_limit}"
+                )
         delay = min(5 * (2 ** min(attempt - 1, 6)), 300)
         self._notification_retries[identity] = {
             "message": retry_message,
@@ -506,7 +549,10 @@ class BiliDMClient:
         # 拉取的 @ 通知被固定排在更晚发生的回复之后。
         for _, _, source, item in sorted(new_notifications):
             if len(self._notification_pending) >= self._notification_backlog_limit:
-                self._notification_pending.popleft()
+                _, dropped_item = self._notification_pending.popleft()
+                self.complete_comment_notification(
+                    self._notification_identity(dropped_item)
+                )
                 dropped_from_pending += 1
             self._notification_pending.append((source, item))
 
@@ -592,7 +638,8 @@ class BiliDMClient:
                 else:
                     skipped_for_capacity += 1
 
-            if not paginate or reached_seen:
+            capacity_reached = len(retained) >= self._notification_backlog_limit
+            if not paginate or reached_seen or capacity_reached:
                 break
             cursor = data.get("cursor") or {}
             if not isinstance(cursor, dict) or cursor.get("is_end"):
