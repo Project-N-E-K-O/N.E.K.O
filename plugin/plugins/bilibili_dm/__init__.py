@@ -1063,6 +1063,7 @@ class BiliDMPlugin(NekoPluginBase):
             message=message_with_context,
             permission_level=permission_level,
             sender_uid=sender_uid,
+            conversation_key=conversation_key,
             user_nickname=bili_nickname,
             pending_image_b64=pending_image_b64,
         )
@@ -1070,7 +1071,19 @@ class BiliDMPlugin(NekoPluginBase):
         if reply_text:
             try:
                 if reply_target:
-                    await self.bili_client.send_comment_reply(reply_target, reply_text)
+                    response = await self.bili_client.send_comment_reply(
+                        reply_target, reply_text
+                    )
+                    reply_data = response.get("data") or {}
+                    rpid = reply_data.get("rpid") if isinstance(reply_data, dict) else None
+                    self.logger.info(
+                        "B站评论回复已受理: "
+                        f"type={reply_target.get('type')} "
+                        f"oid={reply_target.get('oid')} "
+                        f"root={reply_target.get('root')} "
+                        f"parent={reply_target.get('parent')} "
+                        f"rpid={rpid or 'unknown'}"
+                    )
                     self.logger.info(
                         f"已回复 B站评论 {sender_uid} ({bili_nickname}): {reply_text[:100]}"
                     )
@@ -1089,6 +1102,7 @@ class BiliDMPlugin(NekoPluginBase):
         message: str,
         permission_level: str,
         sender_uid: str,
+        conversation_key: str = "dm",
         user_nickname: Optional[str] = None,
         persist_memory: Optional[bool] = None,
         pending_image_b64: Optional[str] = None,
@@ -1105,7 +1119,7 @@ class BiliDMPlugin(NekoPluginBase):
 
             # 会话 key 提前算：只有「要新建会话」时才需要等区域落定，已有会话的线路
             # 早就冻好了，再等只会给每条消息平白加最多 1.5 秒。
-            session_key = self._build_session_key(sender_uid)
+            session_key = self._build_session_key(sender_uid, conversation_key)
 
             # 新会话的线路会连 base_url 一起冻进 OmniOfflineClient 并缓存整场，所以
             # 先给仍在飞的区域探测一个收尾窗口（与 core/lifecycle、游戏会话池对偶）。

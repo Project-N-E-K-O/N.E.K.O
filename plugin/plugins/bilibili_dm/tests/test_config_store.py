@@ -121,6 +121,86 @@ def test_comment_notification_target_and_deduplication():
     assert client._mark_notification_seen("at", notification) is True
 
 
+def test_comment_and_private_messages_use_separate_sessions():
+    assert BiliDMPlugin._build_session_key("42") == "bili:dm:42"
+    assert (
+        BiliDMPlugin._build_session_key("42", "comment:1:987654")
+        == "bili:comment:1:987654:42"
+    )
+
+
+@pytest.mark.asyncio
+async def test_comment_reply_uses_signed_bili_request_and_logs_response(monkeypatch):
+    from bilibili_api.utils import network as bili_network
+    from bilibili_api.utils import utils as bili_utils
+
+    captured: dict[str, object] = {}
+
+    class FakeResponse:
+        code = 200
+
+        @staticmethod
+        def utf8_text():
+            return '{"code":0,"message":"0","data":{"rpid":778899}}'
+
+    class FakeApi:
+        def __init__(self, **kwargs):
+            captured["api_kwargs"] = kwargs
+
+        def update_data(self, **data):
+            captured["data"] = data
+            return self
+
+        async def request(self, **kwargs):
+            captured["request_kwargs"] = kwargs
+            return FakeResponse()
+
+    monkeypatch.setattr(bili_network, "Api", FakeApi)
+    monkeypatch.setattr(
+        bili_utils,
+        "get_api",
+        lambda _: {
+            "comment": {
+                "send": {
+                    "url": "https://api.bilibili.com/x/v2/reply/add",
+                    "method": "POST",
+                    "verify": True,
+                    "wbi": True,
+                    "dm": True,
+                }
+            }
+        },
+    )
+
+    messages: list[str] = []
+    client = object.__new__(BiliDMClient)
+    client._credential = object()
+    client.logger = SimpleNamespace(
+        info=messages.append,
+        error=messages.append,
+    )
+
+    result = await client.send_comment_reply(
+        {"type": 1, "oid": 987654, "root": 123}, "测试回复"
+    )
+
+    assert result["data"]["rpid"] == 778899
+    assert captured["request_kwargs"] == {"bili_res": True}
+    assert captured["data"] == {
+        "type": 1,
+        "oid": 987654,
+        "message": "测试回复",
+        "plat": 1,
+        "statistics": {"appId": 100, "platform": 5},
+        "gaia_source": "main_web",
+        "root": 123,
+        "parent": 123,
+    }
+    assert captured["api_kwargs"]["wbi"] is True
+    assert captured["api_kwargs"]["dm"] is True
+    assert any("HTTP 200" in message and '"rpid":778899' in message for message in messages)
+
+
 @pytest.mark.asyncio
 async def test_config_store_recovers_from_invalid_json(tmp_path):
     messages: list[tuple[object, ...]] = []

@@ -383,33 +383,86 @@ class BiliDMClient:
             _ = self._message_queue.get_nowait()
             self._message_queue.put_nowait(message)
 
-    async def send_comment_reply(self, target: Dict[str, int], text: str) -> None:
-        """回复消息中心通知所对应的 B站评论线程。"""
+    async def send_comment_reply(
+        self, target: Dict[str, int], text: str
+    ) -> Dict[str, Any]:
+        """回复消息中心通知所对应的 B站评论线程。
+
+        评论接口目前需要 WBI/DM 风控签名，因此复用项目固定版本的
+        ``bilibili_api`` 请求器。日志记录目标参数和完整接口响应，但不会输出
+        Cookie 或 CSRF。
+        """
+        from bilibili_api.utils.network import Api
+        from bilibili_api.utils.utils import get_api
+
         payload: Dict[str, Any] = {
             "type": target["type"],
             "oid": target["oid"],
             "message": text,
             "plat": 1,
-            "csrf": self._credential.bili_jct,
+            "statistics": {"appId": 100, "platform": 5},
+            "gaia_source": "main_web",
         }
-        for key in ("root", "parent"):
-            if target.get(key):
-                payload[key] = target[key]
-        async with httpx.AsyncClient(timeout=20.0) as client:
-            response = await client.post(
-                "https://api.bilibili.com/x/v2/reply/add",
-                data=payload,
-                cookies=self._cookies(),
-                headers={
-                    "Referer": "https://www.bilibili.com/",
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36",
-                },
+        root = target.get("root")
+        parent = target.get("parent")
+        if root:
+            payload["root"] = root
+            # B站接口要求回复一级评论时 parent 与 root 相同。
+            payload["parent"] = parent or root
+
+        response_target = {
+            "type": payload["type"],
+            "oid": payload["oid"],
+            "root": payload.get("root"),
+            "parent": payload.get("parent"),
+        }
+        try:
+            api_config = get_api("common")["comment"]["send"]
+            response = await (
+                Api(**api_config, credential=self._credential)
+                .update_data(**payload)
+                .request(bili_res=True)
             )
-        response.raise_for_status()
-        result = response.json()
+            response_text = response.utf8_text()
+            if self.logger:
+                self.logger.info(
+                    f"B站评论发送接口 response: HTTP {response.code}, "
+                    f"target={response_target}, body={response_text}"
+                )
+        except Exception as exc:
+            if self.logger:
+                self.logger.error(
+                    f"B站评论发送接口请求异常: target={response_target}, "
+                    f"error={type(exc).__name__}: {exc}"
+                )
+            raise
+
+        if response.code != 200:
+            raise RuntimeError(
+                f"B站评论回复 HTTP 错误: status={response.code}, body={response_text}"
+            )
+        try:
+            result = json.loads(response_text)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"B站评论接口返回非 JSON: {response_text}") from exc
         if not isinstance(result, dict) or result.get("code") != 0:
-            message = result.get("message") if isinstance(result, dict) else "未知错误"
+            message = (
+                result.get("message") or result.get("msg")
+                if isinstance(result, dict)
+                else "未知错误"
+            )
             raise RuntimeError(f"B站评论回复失败: {message}")
+        data = result.get("data") or {}
+        rpid = (
+            data.get("rpid") or data.get("rpid_str")
+            if isinstance(data, dict)
+            else None
+        )
+        if not rpid:
+            raise RuntimeError(
+                f"B站评论接口返回成功但未创建评论（缺少 rpid）: {response_text}"
+            )
+        return result
 
     async def _enqueue_event(self, event: Event, msg_kind: str):
         """将原始事件标准化后放入队列"""
