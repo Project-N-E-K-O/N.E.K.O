@@ -1632,10 +1632,13 @@ def _chat_scoped_suffix_has_governing_guard(
     ):
         return True
     readable = _chat_clause_without_free_choice(readable_suffix)
-    question = _CHAT_QUESTION_CLAUSE_RE.search(readable)
     # `是否会员` / `为什么` / `好不好` can be the secondary value itself. A question
     # marker after leading object text governs the proposed operation, so recovery must fail.
-    return question is not None and bool(suffix[:question.start()].strip())
+    # Keep scanning after an exempt leading field value: it can be followed by a real question.
+    return any(
+        bool(suffix[:question.start()].strip())
+        for question in _CHAT_QUESTION_CLAUSE_RE.finditer(readable)
+    )
 
 
 def _chat_scoped_governed_full_rewrite_end(clause: str) -> int | None:
