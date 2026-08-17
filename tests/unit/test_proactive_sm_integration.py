@@ -297,7 +297,10 @@ async def test_voice_nudge_waits_for_callback_inject_lock():
 
     mgr._voice_proactive_inject_lock.release()
     assert await task is True
-    sess.prompt_ephemeral.assert_awaited_once_with(language="en")
+    sess.prompt_ephemeral.assert_awaited_once_with(
+        language="en",
+        user_turn_active=mgr._independent_asr_user_turn_active,
+    )
 
 
 async def test_voice_nudge_request_locale_is_forwarded_without_mutating_manager_state():
@@ -318,7 +321,10 @@ async def test_voice_nudge_request_locale_is_forwarded_without_mutating_manager_
     )
 
     assert delivered is True
-    sess.prompt_ephemeral.assert_awaited_once_with(language="zh-TW")
+    sess.prompt_ephemeral.assert_awaited_once_with(
+        language="zh-TW",
+        user_turn_active=mgr._independent_asr_user_turn_active,
+    )
     assert mgr.user_language == "en"
     assert mgr._user_language_explicit is False
     assert mgr._conversation_render_language is None

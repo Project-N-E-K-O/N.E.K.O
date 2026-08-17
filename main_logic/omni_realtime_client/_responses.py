@@ -389,9 +389,18 @@ class _ResponseMixin:
             stable_turn_id = str(turn_id or "").strip()
             if not stable_turn_id:
                 raise ValueError("external voice turn_id must not be empty")
+            visual_record = getattr(self, "_external_visual_turns", {}).get(
+                stable_turn_id
+            )
             visual_description = await self._resolve_external_visual_turn(
                 stable_turn_id
             )
+            if (
+                visual_record is not None
+                and self._external_visual_turns.get(stable_turn_id)
+                is not visual_record
+            ):
+                raise asyncio.CancelledError
             item_text = clean
             if visual_description:
                 item_text = (
@@ -400,7 +409,17 @@ class _ResponseMixin:
                     "[用户语音转写]\n"
                     f"{clean}"
                 )
-            await self.create_response(item_text)
+            if visual_record is not None:
+                visual_record["submit_task"] = asyncio.current_task()
+            try:
+                await self.create_response(item_text)
+            finally:
+                if (
+                    visual_record is not None
+                    and self._external_visual_turns.get(stable_turn_id)
+                    is visual_record
+                ):
+                    self._external_visual_turns.pop(stable_turn_id, None)
             return
         await self.submit_external_text_turn(text, turn_id=turn_id)
 
@@ -939,6 +958,7 @@ class _ResponseMixin:
         instruction: str = "",
         *,
         language: str = "zh",
+        user_turn_active: Optional[Callable[[], bool]] = None,
     ) -> bool:
         """Inject a text turn and explicitly request proactive speech.
 
@@ -1005,6 +1025,11 @@ class _ResponseMixin:
             if _now - self._client_vad_last_speech_time < self._client_vad_grace_period:
                 logger.debug("prompt_ephemeral: skipped — VAD grace period")
                 return False
+        if callable(user_turn_active) and user_turn_active():
+            logger.debug(
+                "prompt_ephemeral: skipped — external user turn is active"
+            )
+            return False
 
         outcome_observed = asyncio.Event()
         delivery_rejected = False
@@ -1119,6 +1144,7 @@ class _ResponseMixin:
             if (
                 self.is_active_response()
                 or self._client_vad_active
+                or (callable(user_turn_active) and user_turn_active())
                 or self._user_recent_activity_time > _now
                 or self._ai_recent_activity_time > _now
             ):
@@ -1262,6 +1288,7 @@ class _ResponseMixin:
         # during the visual send must preempt this proactive response.create.
         if (
             self.is_active_response()
+            or (callable(user_turn_active) and user_turn_active())
             or self._user_recent_activity_time > _now
             or self._ai_recent_activity_time > _now
         ):

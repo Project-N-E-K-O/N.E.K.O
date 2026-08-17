@@ -137,7 +137,10 @@ class ProactiveMixin:
                 language or self.user_language,
                 format='full',
             ) or 'en'
-            delivered = await session.prompt_ephemeral(language=_lang)
+            delivered = await session.prompt_ephemeral(
+                language=_lang,
+                user_turn_active=self._independent_asr_user_turn_active,
+            )
         if delivered:
             logger.info("[%s] voice proactive nudge delivered (%s)", self.lanlan_name, _lang)
         else:

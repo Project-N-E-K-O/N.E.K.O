@@ -228,6 +228,44 @@ async def test_external_proactive_snapshot_queues_description_without_raw_event(
 
 
 @pytest.mark.asyncio
+async def test_external_proactive_visual_await_yields_to_independent_asr_turn():
+    """A user turn that starts during vision analysis must preempt the nudge."""
+    client = _make_qwen_client()
+    client._is_gemini = True
+    client._gemini_session = object()
+    client.set_visual_delivery_mode(VisualDeliveryMode.EXTERNAL_DESCRIPTION)
+    client._ai_recent_activity_time = 0
+    client._user_recent_activity_time = 0
+    client._client_vad_active = False
+    client._client_vad_last_speech_time = 0
+    independent_turn_active = False
+
+    async def analyze(_image_b64, *, update_turn_state=False):
+        nonlocal independent_turn_active
+        assert update_turn_state is False
+        independent_turn_active = True
+        return "屏幕上显示番茄钟结束提醒"
+
+    client._analyze_image_with_vision_model = AsyncMock(side_effect=analyze)
+    client.inject_text_and_request_response = AsyncMock()
+    await client.stream_image(
+        DUMMY_IMAGE_B64,
+        source="screen",
+        request_id="proactive-independent-asr-race",
+    )
+
+    delivered = await client.prompt_ephemeral(
+        "主动看看屏幕",
+        user_turn_active=lambda: independent_turn_active,
+    )
+
+    assert delivered is False
+    client.inject_text_and_request_response.assert_not_awaited()
+    assert client._proactive_image_consumed is False
+    await client.close()
+
+
+@pytest.mark.asyncio
 async def test_external_proactive_failure_retires_only_the_failed_snapshot():
     """A terminally empty analysis is not retried forever on the same frame."""
     client = _make_qwen_client()
@@ -307,6 +345,46 @@ async def test_gemini_external_voice_turn_includes_visual_description():
         f"{VISUAL_CONTEXT_PREFIX}\n当前画面：桌上有一只白杯子\n"
         f"{ASR_TRANSCRIPT_PREFIX}\n这是什么"
     )
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_new_gemini_turn_cancels_resolved_turn_during_sdk_send():
+    """A superseded Gemini transcript stays cancellable through SDK send."""
+    client = _make_qwen_client()
+    client._is_gemini = True
+    client._gemini_session = AsyncMock()
+    client.set_visual_delivery_mode(VisualDeliveryMode.EXTERNAL_DESCRIPTION)
+    client.handle_interruption = AsyncMock()
+    client._analyze_image_with_vision_model = AsyncMock(return_value="旧画面")
+    send_started = asyncio.Event()
+    release_send = asyncio.Event()
+
+    async def send_client_content(*_args, **_kwargs):
+        send_started.set()
+        await release_send.wait()
+
+    client._gemini_session.send_client_content.side_effect = send_client_content
+    await client.prepare_external_voice_turn(turn_id="gemini-old-turn")
+    await client.stream_image(DUMMY_IMAGE_B64, source="screen", request_id="old")
+    old_submit = asyncio.create_task(
+        client.submit_external_voice_turn("旧转写", turn_id="gemini-old-turn")
+    )
+    await send_started.wait()
+
+    await client.prepare_external_voice_turn(turn_id="gemini-new-turn")
+    await asyncio.sleep(0)
+    cancelled_by_new_turn = old_submit.done()
+    if not cancelled_by_new_turn:
+        old_submit.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await old_submit
+
+    assert cancelled_by_new_turn is True
+    assert "gemini-old-turn" not in client._external_visual_turns
+    client._gemini_session.send_client_content.assert_awaited_once()
+    client.abandon_external_voice_turn("gemini-new-turn")
+    release_send.set()
     await client.close()
 
 
