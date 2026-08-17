@@ -356,11 +356,34 @@ async def test_dm_failure_does_not_stop_comment_notifications():
     assert client._running is True
 
 
-def test_at_feed_is_trusted_when_current_uid_cannot_be_resolved():
+def test_at_feed_is_blocked_when_current_uid_cannot_be_resolved():
     client = object.__new__(BiliDMClient)
     client._current_uid = ""
 
-    assert client._is_at_current_user({"item": {"at_details": []}}) is True
+    assert client._is_at_current_user({"item": {"at_details": []}}) is False
+
+
+@pytest.mark.asyncio
+async def test_comment_notification_is_not_enqueued_without_current_uid():
+    client = object.__new__(BiliDMClient)
+    client._credential = SimpleNamespace(dedeuserid="")
+    client._current_uid = ""
+    client._message_queue = asyncio.Queue()
+    notification = {
+        "id": 101,
+        "user": {"mid": 42, "nickname": "tester"},
+        "item": {
+            "business_id": 1,
+            "subject_id": 987654,
+            "root_id": 11,
+            "source_id": 12,
+            "source_content": "新评论",
+        },
+    }
+
+    await client._enqueue_comment_notification(notification, "reply")
+
+    assert client._message_queue.empty()
 
 
 def test_at_feed_without_at_details_is_not_discarded():

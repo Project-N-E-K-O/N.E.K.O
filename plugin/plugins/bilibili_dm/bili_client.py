@@ -76,17 +76,7 @@ class BiliDMClient:
             )
 
         try:
-            if not self._current_uid:
-                try:
-                    self_info = await get_self_info(self._credential)
-                    self._current_uid = str(self_info.get("mid") or "").strip()
-                    if self._current_uid:
-                        self._credential.dedeuserid = self._current_uid
-                except Exception as exc:
-                    if self.logger:
-                        self.logger.warning(
-                            f"无法解析当前 B站账号 UID，@ 通知将按账号消息流处理: {exc}"
-                        )
+            await self._resolve_current_uid()
 
             self._session = Session(self._credential, debug=False)
 
@@ -167,6 +157,23 @@ class BiliDMClient:
         if self._credential.dedeuserid:
             cookies["DedeUserID"] = self._credential.dedeuserid
         return cookies
+
+    async def _resolve_current_uid(self) -> bool:
+        """解析当前登录账号 UID；通知处理依赖它来排除账号自身。"""
+        if self._current_uid:
+            return True
+        try:
+            self_info = await get_self_info(self._credential)
+            self._current_uid = str(self_info.get("mid") or "").strip()
+            if self._current_uid:
+                self._credential.dedeuserid = self._current_uid
+                return True
+        except Exception as exc:
+            if self.logger:
+                self.logger.warning(
+                    f"无法解析当前 B站账号 UID，评论通知将在下轮重试: {exc}"
+                )
+        return False
 
     @staticmethod
     def _notification_content(item: Dict[str, Any]) -> str:
@@ -298,8 +305,7 @@ class BiliDMClient:
     def _is_at_current_user(self, item: Dict[str, Any]) -> bool:
         current_uid = self._current_uid
         if not current_uid:
-            # @ 消息流属于当前登录账号；UID 无法解析时不能将整条消息流误删。
-            return True
+            return False
         details = item.get("item") or {}
         at_details = details.get("at_details") if isinstance(details, dict) else None
         if not isinstance(at_details, list) or not at_details:
@@ -313,7 +319,8 @@ class BiliDMClient:
         """Poll B站消息中心的评论回复与 @ 通知。"""
         while self._running:
             try:
-                await self._poll_comment_notifications()
+                if await self._resolve_current_uid():
+                    await self._poll_comment_notifications()
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -410,9 +417,9 @@ class BiliDMClient:
         sender_uid = str(user.get("mid") or "").strip()
         content = self._notification_content(item)
         reply_target = self._comment_reply_target(item)
-        if not sender_uid or not content or not reply_target:
+        if not self._current_uid or not sender_uid or not content or not reply_target:
             return
-        if sender_uid == str(self._credential.dedeuserid or "").strip():
+        if sender_uid == self._current_uid:
             return
         message = {
             "sender_uid": sender_uid,
