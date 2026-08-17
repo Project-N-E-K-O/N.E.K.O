@@ -457,12 +457,18 @@ assert(
 assert(transient.replies.at(-1) === 'recovered analysis', 'recovered result was not rendered');
 transient.controller.dispose();
 
-const exhaustedCalls = [];
-const exhausted = createEnvironment(async (entryId) => {
-  exhaustedCalls.push(entryId);
+const extendedRecoveryCalls = [];
+const extendedRecovery = createEnvironment(async (entryId) => {
+  extendedRecoveryCalls.push(entryId);
   if (entryId === 'study_start_document_analysis') throw new Error('start offline');
-  if (entryId === 'study_active_document_analysis') throw new Error('recovery offline');
-  throw new Error(`unexpected exhausted entry: ${entryId}`);
+  if (entryId === 'study_active_document_analysis') {
+    const attempt = extendedRecoveryCalls.filter(
+      (calledEntryId) => calledEntryId === 'study_active_document_analysis',
+    ).length;
+    if (attempt <= 5) throw new Error('recovery offline');
+    return { job_id: 'job-extended', status: 'completed', reply: 'extended recovery result' };
+  }
+  throw new Error(`unexpected extended recovery entry: ${entryId}`);
 }, async () => {}, (window) => {
   window.setTimeout = (callback) => {
     queueMicrotask(callback);
@@ -470,26 +476,31 @@ const exhausted = createEnvironment(async (entryId) => {
   };
 });
 await importAndWait(
-  exhausted,
-  fileFromBytes(bytesForText('exhausted recovery document')),
-  'exhausted recovery document',
+  extendedRecovery,
+  fileFromBytes(bytesForText('extended recovery document')),
+  'extended recovery document',
 );
-exhausted.document.getElementById('studyDocumentAnalyzeBtn').click();
+extendedRecovery.document.getElementById('studyDocumentAnalyzeBtn').click();
 await waitFor(
-  () => exhaustedCalls.filter((entryId) => entryId === 'study_active_document_analysis').length === 5
-    && !exhausted.document.getElementById('studyDocumentAnalyzeBtn').disabled,
-  'exhausted recovery did not release the busy UI',
+  () => extendedRecoveryCalls.filter(
+    (entryId) => entryId === 'study_active_document_analysis',
+  ).length === 6
+    && !extendedRecovery.document.getElementById('studyDocumentAnalyzeBtn').disabled,
+  'legacy recovery stopped before the backend became reachable',
 );
 assert(
-  exhausted.replies.filter((reply) => reply === 'recovery offline').length === 1,
+  extendedRecovery.replies.filter((reply) => reply === 'recovery offline').length === 1,
   'recovery failure repeatedly overwrote the reply',
 );
-assert(exhausted.replies.at(-1) === 'start offline', 'original start error was not restored');
 assert(
-  exhausted.window.sessionStorage.getItem('study_companion.document_analysis_job_id') === '__pending__',
-  'exhausted recovery discarded the pending marker',
+  extendedRecovery.replies.at(-1) === 'extended recovery result',
+  'extended recovery result was not rendered',
 );
-exhausted.controller.dispose();
+assert(
+  extendedRecovery.window.sessionStorage.getItem('study_companion.document_analysis_job_id') === null,
+  'completed extended recovery retained the pending marker',
+);
+extendedRecovery.controller.dispose();
 
 const ambiguousCalls = [];
 let resolveAmbiguousActive;

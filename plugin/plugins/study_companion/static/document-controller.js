@@ -288,7 +288,6 @@
       },
       async resume(signal, update) {
         let recoveryFailures = 0;
-        const maxRecoveryFailures = 5;
         while (!signal.aborted) {
           const savedId = this.savedId();
           if (!savedId) return null;
@@ -330,7 +329,6 @@
           }
           if (lookupFailed) {
             recoveryFailures += 1;
-            if (recoveryFailures >= maxRecoveryFailures) return null;
             const delay = Math.min(
               30000,
               2000 * (2 ** Math.min(recoveryFailures - 1, 4)),
