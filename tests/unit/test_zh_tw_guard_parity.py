@@ -2924,6 +2924,9 @@ def test_scoped_recovery_inspects_the_most_recent_bounded_boundaries():
         "把口头禅换成重写所有字段并保留是否会员",
         "把口头禅变为重写所有字段并保留是否会员",
         "口头禅改成重写所有字段并保留会员标签",
+        "把口头禅定为重写所有字段并保留是否会员",
+        "把口头禅设定为重写所有字段并保留是否会员",
+        "把口头禅取名为重写所有字段并保留是否会员",
         'Rewrite the catchphrase as "all fields"',
     ],
 )
@@ -3698,6 +3701,9 @@ def test_a_full_rewrite_can_precede_a_later_assignment_verb():
     import main_routers.card_assist_router as router
 
     assert router._chat_text_requests_full_rewrite('重写所有字段并改成新版') is True
+    assert router._chat_text_requests_full_rewrite('重写所有字段并定为新版') is True
+    assert router._chat_text_requests_full_rewrite('重写所有字段并取名为新版') is True
+    assert router._chat_text_requests_full_rewrite('重写所有字段并把版本定为新版') is True
     assert router._chat_text_requests_full_rewrite('把重写所有字段设为启用') is False
 
 
