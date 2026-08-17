@@ -1515,7 +1515,7 @@ _CHAT_ZH_COMMAND_HEAD = (
 )
 _CHAT_ZH_CONTRAST_COMMAND_RE = re.compile(r"^\s*" + _CHAT_ZH_COMMAND_HEAD)
 _CHAT_SCOPED_REPORTED_SPEECH_RE = re.compile(
-    r"(?:他|她|它|他们|她们|它们|對方|对方|用户|用戶|别人|別人|有人|某人)\s*"
+    r"[^。，、！？,.!?;；]{1,64}?\s*"
     r"(?:说|說|表示|提到|写道|寫道|回复|回覆|要求)(?:过|過)?\s*$"
 )
 _CHAT_SCOPED_NEXT_COMMAND_RE = re.compile(
