@@ -23,7 +23,16 @@ class AgentObservationMixin:
             now=now,
         )
         current_fingerprint = self._session_fingerprint(shared)
-        if session_id != self._observed_session_id:
+        previous_game_id = self._normalized_identity_text(
+            self._observed_session_fingerprint.get("active_game_id")
+        )
+        current_game_id = self._normalized_identity_text(
+            current_fingerprint.get("active_game_id")
+        )
+        game_identity_changed = bool(previous_game_id and current_game_id) and (
+            previous_game_id != current_game_id
+        )
+        if session_id != self._observed_session_id or game_identity_changed:
             transition_type, transition_reason, transition_fields = self._classify_session_transition(
                 self._observed_session_fingerprint,
                 current_fingerprint,

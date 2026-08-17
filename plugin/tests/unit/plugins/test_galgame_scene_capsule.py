@@ -75,6 +75,57 @@ def test_scene_tracker_retains_all_pending_scopes_above_soft_limit() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
+async def test_same_session_id_across_games_uses_distinct_boundary_and_resets_memory(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(_Ctx(plugin_dir, _make_effective_config(bridge_root))),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    alpha = _shared_state(
+        mode="companion",
+        push_notifications=False,
+        game_id="demo.alpha",
+        session_id="shared-session",
+        snapshot=_session_state(scene_id="scene-alpha"),
+    )
+    await agent.tick(alpha)
+    await agent.tick(alpha)
+    alpha_boundary = agent._scene_capsule_boundary_key(
+        alpha,
+        session_id="shared-session",
+    )
+    agent._scene_memory[:] = [
+        {
+            "scene_id": "scene-alpha",
+            "route_id": "",
+            "summary": "alpha-only memory",
+        }
+    ]
+    beta = _shared_state(
+        mode="companion",
+        push_notifications=False,
+        game_id="demo.beta",
+        session_id="shared-session",
+        snapshot=_session_state(scene_id="scene-beta"),
+    )
+
+    await agent.tick(beta)
+    beta_boundary = agent._scene_capsule_boundary_key(
+        beta,
+        session_id="shared-session",
+    )
+
+    assert beta_boundary != alpha_boundary
+    assert agent._last_session_transition_type == "real_session_reset"
+    assert agent._scene_memory == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
 async def test_first_stable_event_submits_capsule_without_game_llm(tmp_path: Path) -> None:
     plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
     ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))

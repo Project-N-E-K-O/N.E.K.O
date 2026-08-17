@@ -315,10 +315,15 @@ class AgentSummaryMixin:
         fingerprint: dict[str, Any],
     ) -> str:
         data_source = str(fingerprint.get("active_data_source") or "").strip()
+        game_id = str(fingerprint.get("active_game_id") or "").strip().casefold()
         session_id = str(fingerprint.get("active_session_id") or "").strip()
         if not data_source or not session_id:
             return ""
-        return f"{data_source}|{session_id}"
+        return (
+            f"{data_source}|{game_id}|{session_id}"
+            if game_id
+            else f"{data_source}|{session_id}"
+        )
 
     def _remember_trusted_scene_source_handoff(
         self,
@@ -1883,7 +1888,9 @@ class AgentSummaryMixin:
         if not boundary_key:
             return
         data_source = self._current_input_source(shared)
-        source_identity = f"{data_source}|{session_id}"
+        source_identity = self._scene_capsule_source_identity_from_fingerprint(
+            self._session_fingerprint(shared)
+        )
         if (
             not str(self._scene_capsule_input_marker or "")
             and self._scene_capsule_observation_epoch > 0
