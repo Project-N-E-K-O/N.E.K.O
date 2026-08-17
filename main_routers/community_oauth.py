@@ -42,7 +42,7 @@ _HTTP_TIMEOUT_SEC = 30.0
 _BIND_OWNERSHIP_CONFLICT = "client_already_bound_to_other_user"
 _oauth_start_lock = asyncio.Lock()
 _oauth_status_lock = asyncio.Lock()
-_oauth_status_task: asyncio.Task[dict[str, Any]] | None = None
+_oauth_status_tasks: dict[str, asyncio.Task[dict[str, Any]]] = {}
 
 _CALLBACK_PAGE = """<!doctype html>
 <html lang="zh-CN">
@@ -153,6 +153,17 @@ def _unlink_pending() -> None:
 def _load_oauth_status_records() -> tuple[dict | None, dict]:
     """Read the status snapshot together on a worker thread."""
     return C._desktop_session_snapshot(), C._load_auth() or {}
+
+
+def _oauth_status_records_key(snapshot: dict | None, auth: dict) -> str:
+    """Fingerprint one credential snapshot without retaining tokens as map keys."""
+    encoded = json.dumps(
+        {"snapshot": snapshot, "auth": auth},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _status_snapshot_matches(current: dict | None, expected: dict) -> bool:
@@ -285,9 +296,15 @@ async def _refresh_oauth_token(
     return "ok", payload
 
 
-async def _resolve_saved_oauth_status(_attempt: int = 0) -> dict[str, Any]:
+async def _resolve_saved_oauth_status(
+    _attempt: int = 0,
+    _records: tuple[dict | None, dict] | None = None,
+) -> dict[str, Any]:
     """Validate and, for expired OAuth credentials, refresh the saved session."""
-    snapshot, auth = await asyncio.to_thread(_load_oauth_status_records)
+    if _records is None:
+        snapshot, auth = await asyncio.to_thread(_load_oauth_status_records)
+    else:
+        snapshot, auth = _records
     if not snapshot or not snapshot.get("access_token"):
         return {"logged_in": False, "snapshot": None, "auth": auth}
 
@@ -387,6 +404,18 @@ async def _resolve_saved_oauth_status(_attempt: int = 0) -> dict[str, Any]:
     }
 
 
+async def _run_oauth_status_resolution(
+    records_key: str,
+    records: tuple[dict | None, dict],
+) -> dict[str, Any]:
+    try:
+        return await _resolve_saved_oauth_status(_records=records)
+    finally:
+        async with _oauth_status_lock:
+            if _oauth_status_tasks.get(records_key) is asyncio.current_task():
+                _oauth_status_tasks.pop(records_key, None)
+
+
 async def resolve_saved_oauth_status() -> dict[str, Any]:
     """Share one refresh-capable saved-session resolution at a time.
 
@@ -395,18 +424,16 @@ async def resolve_saved_oauth_status() -> dict[str, Any]:
     auth-status fallback cannot queue behind and then repeat a slow delegate
     validation.
     """
-    global _oauth_status_task
+    records = await asyncio.to_thread(_load_oauth_status_records)
+    records_key = _oauth_status_records_key(*records)
     async with _oauth_status_lock:
-        if _oauth_status_task is None or _oauth_status_task.done():
-            _oauth_status_task = asyncio.create_task(_resolve_saved_oauth_status())
-        task = _oauth_status_task
-    try:
-        return await asyncio.shield(task)
-    finally:
-        if task.done():
-            async with _oauth_status_lock:
-                if _oauth_status_task is task:
-                    _oauth_status_task = None
+        task = _oauth_status_tasks.get(records_key)
+        if task is None or task.done():
+            task = asyncio.create_task(
+                _run_oauth_status_resolution(records_key, records)
+            )
+            _oauth_status_tasks[records_key] = task
+    return await asyncio.shield(task)
 
 
 def _load_oauth_logout_records() -> tuple[dict, dict, dict]:

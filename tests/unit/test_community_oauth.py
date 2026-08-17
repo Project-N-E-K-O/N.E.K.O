@@ -287,17 +287,33 @@ async def test_oauth_status_serializes_concurrent_rotating_refreshes(monkeypatch
 @pytest.mark.unit
 async def test_oauth_status_reuses_validation_after_first_waiter_is_cancelled(monkeypatch):
     started = asyncio.Event()
+    second_keyed = asyncio.Event()
     release = asyncio.Event()
     calls = 0
+    key_calls = 0
 
-    async def resolve_status():
+    async def resolve_status(*, _records=None):
         nonlocal calls
         calls += 1
         started.set()
         await release.wait()
         return {"logged_in": True, "snapshot": {"access_token": "ok"}, "auth": {}}
 
-    monkeypatch.setattr(O, "_oauth_status_task", None)
+    monkeypatch.setattr(O, "_oauth_status_tasks", {})
+    monkeypatch.setattr(
+        O,
+        "_load_oauth_status_records",
+        lambda: ({"access_token": "ok"}, {}),
+    )
+
+    def records_key(_snapshot, _auth):
+        nonlocal key_calls
+        key_calls += 1
+        if key_calls == 2:
+            second_keyed.set()
+        return "same-credentials"
+
+    monkeypatch.setattr(O, "_oauth_status_records_key", records_key)
     monkeypatch.setattr(O, "_resolve_saved_oauth_status", resolve_status)
 
     first = asyncio.create_task(O.resolve_saved_oauth_status())
@@ -307,13 +323,52 @@ async def test_oauth_status_reuses_validation_after_first_waiter_is_cancelled(mo
         await first
 
     second = asyncio.create_task(O.resolve_saved_oauth_status())
-    await asyncio.sleep(0)
+    await second_keyed.wait()
     assert calls == 1
     release.set()
 
     status = await second
     assert status["logged_in"] is True
     assert calls == 1
+
+
+@pytest.mark.unit
+async def test_oauth_status_does_not_reuse_validation_after_credentials_change(
+    monkeypatch,
+):
+    old_started = asyncio.Event()
+    release_old = asyncio.Event()
+    current = {"records": ({"access_token": "old"}, {"user": {"display_name": "Old"}})}
+    calls: list[str | None] = []
+
+    async def resolve_status(*, _records=None):
+        snapshot, auth = _records
+        access_token = snapshot.get("access_token") if snapshot else None
+        calls.append(access_token)
+        if access_token == "old":
+            old_started.set()
+            await release_old.wait()
+        return {
+            "logged_in": bool(snapshot),
+            "snapshot": snapshot,
+            "auth": auth,
+        }
+
+    monkeypatch.setattr(O, "_oauth_status_tasks", {})
+    monkeypatch.setattr(O, "_load_oauth_status_records", lambda: current["records"])
+    monkeypatch.setattr(O, "_resolve_saved_oauth_status", resolve_status)
+
+    old_request = asyncio.create_task(O.resolve_saved_oauth_status())
+    await old_started.wait()
+    current["records"] = (None, {})
+
+    logged_out = await O.resolve_saved_oauth_status()
+    assert logged_out["logged_in"] is False
+    assert calls == ["old", None]
+
+    release_old.set()
+    old_result = await old_request
+    assert old_result["snapshot"]["access_token"] == "old"
 
 
 @pytest.mark.unit
