@@ -101,6 +101,7 @@ from config import (
     HYBRID_RECALL_POOL_CACHE_MAX_FILES,
     HYBRID_RECALL_RRF_K,
     HYBRID_RECALL_TIME_BUDGET,
+    HYBRID_RECALL_VEC_CACHE_MAX_ENTRIES,
 )
 from memory.script_fold import fold_script
 from utils.logger_config import get_module_logger
@@ -291,6 +292,81 @@ def _bm25_rank(
 
 
 # ── cosine retrieval ──────────────────────────────────────────────────
+#
+# Decoded-vector cache
+# ====================
+# ``_POOL_CACHE`` (#2550) keeps the *parsed rows* resident across recalls; the
+# cosine path nonetheless re-decoded every candidate's base64-fp16 embedding on
+# **every query**. At 5000 rows that decode loop is ~49ms of the ~54ms cosine
+# path (base64+fp16→fp32 ~32ms, per-vec ``np.isfinite`` ~7ms, sha256 ~4ms) —
+# pure recomputation on a steady-state corpus where the vectors never change,
+# and it all runs on the event loop, stalling every other request in the
+# memory_server for its duration.
+#
+# So: decode once per (doc, model, text, embedding-bytes), keep the fp32
+# vector. Validation is content-based, mirroring ``decode_valid_cached_embedding``
+# itself — a cached hit is only served when **all three** fingerprints still
+# match the row in front of us:
+#
+#   1. ``model_id``        — embedding space changed (dim/quantization/profile)
+#   2. ``sha256(text)``    — text edited since the vector was cached
+#   3. ``embedding`` str   — writer re-stamped the vector itself (repair /
+#                           requantize); compared by equality, and pool rows
+#                           come from ``_POOL_CACHE`` so the identical str
+#                           object short-circuits the memcmp
+#
+# Any mismatch falls through to the full ``decode_valid_cached_embedding``
+# path, which applies the exact same checks plus the dimension/finite guards —
+# a stale or hostile cache entry can therefore never smuggle a vector past
+# validation, it can only cost one wasted probe.
+#
+# Eviction: LRU capped at ``HYBRID_RECALL_VEC_CACHE_MAX_ENTRIES``. Vectors are
+# 512d fp32 ≈ 2KB each (see ``_DIM_STEPS``), so the cap is a memory bound, not
+# a correctness bound. No lock, same reasoning as ``_POOL_CACHE``: dict ops are
+# atomic under the GIL, and recall runs on the memory_server event loop.
+#
+# ⚠️ Same discipline as the pool cache: never hand out a stored vector that a
+# caller could mutate in place. Consumers only read (``vstack`` copies), and
+# this module never writes into a cached array after store.
+_VEC_CACHE: OrderedDict[str, tuple[str, str, str, Any]] = OrderedDict()
+
+
+def _cached_doc_vector(doc: dict, text, model_id: str):
+    """``decode_valid_cached_embedding`` with a process-level decode cache.
+
+    Returns the fp32 vector on validation success, else ``None`` — verdict
+    identical to calling ``decode_valid_cached_embedding`` directly.
+    """
+    from memory._embeddings.schema import embedding_text_sha256
+    from memory.embeddings import decode_valid_cached_embedding
+
+    did = doc.get('id')
+    emb = doc.get('embedding')
+    cacheable = isinstance(did, str) and bool(did) and isinstance(emb, str)
+
+    if cacheable:
+        cached = _VEC_CACHE.get(did)
+        if (
+            cached is not None
+            and cached[0] == model_id
+            and cached[1] == embedding_text_sha256(text)
+            and cached[2] == emb
+        ):
+            _VEC_CACHE.move_to_end(did)
+            return cached[3]
+
+    # 一次解码拿到向量，而不是「is_cached_embedding_valid 里解一遍判维度
+    # → 丢掉 → decode_embedding 再解一遍」。两次 base64 解码 + 两次
+    # np.isfinite 全扫在 5000 条池子上实测约 26ms 纯白费（#2550）。
+    cvec = decode_valid_cached_embedding(doc, text, model_id)
+    if cvec is not None and cacheable:
+        _VEC_CACHE[did] = (
+            model_id, embedding_text_sha256(text), emb, cvec,
+        )
+        _VEC_CACHE.move_to_end(did)
+        while len(_VEC_CACHE) > HYBRID_RECALL_VEC_CACHE_MAX_ENTRIES:
+            _VEC_CACHE.popitem(last=False)
+    return cvec
 
 
 async def _cosine_rank(
@@ -310,7 +386,6 @@ async def _cosine_rank(
         return []
 
     from memory.embeddings import (
-        decode_valid_cached_embedding,
         get_embedding_service,
         parse_dim_from_model_id,
     )
@@ -341,24 +416,39 @@ async def _cosine_rank(
 
         target_dim = parse_dim_from_model_id(model_id) or int(qarr.size)
 
-        scored: list[tuple[dict, float]] = []
+        # ── batch scoring：解码循环只收集向量，norm/dot 交给一次矩阵运算 ──
+        #
+        # 逐条 ``np.linalg.norm`` + ``np.dot`` 在 5000 条池子上是 ~3 万次
+        # Python↔numpy 派发（每次 ~10µs 的固定开销，BLAS 本体反而微不足道）。
+        # 改成 decode 循环只攒 (doc, vec)，最后 vstack 成 (n, dim) 矩阵、一次
+        # axis=1 norm、一次 matmul，同样的语义（cnorm<=0 跳过、维度不匹配
+        # 跳过）。
+        rows: list[dict] = []
+        vecs: list = []
         for doc in pool:
             text = doc.get('text', '') or ''
-            # 一次解码拿到向量，而不是「is_cached_embedding_valid 里解一遍判维度
-            # → 丢掉 → decode_embedding 再解一遍」。两次 base64 解码 + 两次
-            # np.isfinite 全扫在 5000 条池子上实测约 26ms 纯白费（#2550）。
-            # 维度判定语义不变：valid 判的是 model_id 解析出的期望维度，下面这行
-            # 判的是 target_dim（model_id 解析失败时回落成 query 维度），后者仍是
-            # 兜底那一路唯一的约束，不能省。
-            cvec = decode_valid_cached_embedding(doc, text, model_id)
+            cvec = _cached_doc_vector(doc, text, model_id)
             if cvec is None or cvec.size != target_dim:
                 continue
-            carr = np.asarray(cvec, dtype=np.float32)
-            cnorm = float(np.linalg.norm(carr))
-            if cnorm <= 0:
-                continue
-            cos = float(np.dot(qarr, carr) / (qnorm * cnorm))
-            scored.append((doc, cos))
+            rows.append(doc)
+            vecs.append(cvec)
+
+        if not rows:
+            return []
+
+        mat = np.vstack(vecs).astype(np.float32, copy=False)
+        norms = np.linalg.norm(mat, axis=1)
+        # cnorm<=0 原来是逐条 continue（不进结果）；矩阵化后同样用 mask 滤掉，
+        # 除零处先垫 1.0 保证 0 向量行算出 0 而不是 NaN，再由 keep 剔除。
+        keep = norms > 0
+        safe_norms = np.where(keep, norms, 1.0)
+        sims = (mat @ qarr) / (qnorm * safe_norms)
+
+        scored: list[tuple[dict, float]] = [
+            (doc, float(cos))
+            for doc, cos, ok in zip(rows, sims, keep)
+            if ok
+        ]
 
         scored.sort(key=lambda p: p[1], reverse=True)
         return scored
@@ -526,7 +616,12 @@ def _invalidate_pool_cache(path: str | None = None) -> None:
 
     Exists for tests and for callers that knowingly bypass ``atomic_write_json``;
     the normal path needs no explicit invalidation (see the module note above).
+    Also drops the decoded-vector cache (``_VEC_CACHE``): its entries are
+    content-validated per probe, so clearing is never *required* for
+    correctness, but tests reuse doc ids across cases and a shared cache would
+    turn test isolation into an accident of content addressing.
     """
+    _VEC_CACHE.clear()
     if path is None:
         _POOL_CACHE.clear()
     else:

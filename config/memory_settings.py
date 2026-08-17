@@ -400,6 +400,21 @@ HYBRID_RECALL_RRF_K = 60                 # RRF 常数（k=60 = Elastic / OpenSea
 # 调小到 2 会让"两个角色交替说话"退化成每轮都重新解析，别为了省几十 MB 这么调。
 HYBRID_RECALL_POOL_CACHE_MAX_FILES = 6
 
+# 召回向量解码缓存（memory.hybrid_recall._VEC_CACHE）保留的条目数上限。
+# cosine 路径每次查询都要把池子里每条候选的 base64-fp16 embedding 解成
+# fp32 向量——5000 条实测 ~49ms（base64+fp16→fp32 ~32ms、逐条 isfinite
+# ~7ms、sha256 ~4ms），全部跑在 memory_server 的事件循环上；而池子行本身
+# 已被 _POOL_CACHE 按文件身份缓存，稳态语料下这些向量每次解出来都一样，
+# 纯属重复劳动。缓存按 (model_id, text 指纹, embedding 原串) 三重校验，
+# 任何一项对不上都自动回退完整解码校验路径，所以这个上限只影响内存，
+# 不影响正确性。
+#
+# 内存账：一条 512d fp32 ≈ 2KB，10000 条 ≈ 20MB 封顶。向量池只含活跃
+# facts + reflections（归档行入池前就被投影掉 embedding 列），正常远低于
+# 上限；这个闸防的是"多角色 × 大语料"叠出来的极端常驻，和上面的文件数
+# 闸一个思路。
+HYBRID_RECALL_VEC_CACHE_MAX_ENTRIES = 10000
+
 # ========================================================================
 # §3.7 LLM Context & Output Budget
 # ------------------------------------------------------------------------
