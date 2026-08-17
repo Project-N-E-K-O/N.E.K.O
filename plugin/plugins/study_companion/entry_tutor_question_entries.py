@@ -295,7 +295,14 @@ class _TutorQuestionEntriesMixin:
         eligible = set(scope.eligible_topic_ids)
         topics = [
             topic
-            for topic in self._knowledge_tracker.store.list_topics(limit=5000)
+            for topic in self._knowledge_tracker.store.list_topics(
+                5000,
+                scope.subject or None,
+                scope.stage or None,
+                chapter=scope.chapter or None,
+                unit=scope.unit or None,
+                course_family=scope.course_family or None,
+            )
             if str(topic.get("id") or "") in eligible
         ]
         mastery_overview = self._knowledge_tracker.store.list_mastery_overview(

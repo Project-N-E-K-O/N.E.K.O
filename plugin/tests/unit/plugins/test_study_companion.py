@@ -988,7 +988,9 @@ def test_reviewed_entry_context_contracts_remain_session_local() -> None:
     assert 'payload["target_lanlan"] = normalized_target' in events
     assert "supplied_question_id and state_question_id" in answer
     assert "supplied_attempt_id and state_attempt_id" in answer
-    assert ".store.list_topics(limit=5000)" in questions
+    assert "scope.subject or None" in questions
+    assert "scope.stage or None" in questions
+    assert "course_family=scope.course_family or None" in questions
     assert 'code="PRACTICE_SCOPE_INVALIDATED"' in questions
 
 

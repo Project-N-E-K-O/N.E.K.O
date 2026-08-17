@@ -324,6 +324,58 @@ async def test_new_user_scope_context_cold_starts_from_a_seed_topic(
 
 
 @pytest.mark.asyncio
+async def test_scope_context_queries_topics_before_applying_the_global_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plugin = await _start_plugin(tmp_path, monkeypatch)
+    inside, _ = _two_distinct_topics(plugin)
+    original_list_topics = plugin._store.list_topics
+    request = _scope_request(inside)
+    eligible_ids = {
+        str(topic["id"])
+        for topic in original_list_topics(
+            5000,
+            request["subject"],
+            request["stage"],
+            chapter=request["chapter"],
+            unit=request["unit"],
+            course_family=request["course_family"] or None,
+        )
+    }
+
+    def list_topics(
+        limit=100,
+        subject=None,
+        stage=None,
+        *,
+        chapter=None,
+        unit=None,
+        course_family=None,
+    ):
+        if not any((subject, stage, chapter, unit, course_family)):
+            return [{"id": "globally-earlier-topic"}]
+        return original_list_topics(
+            limit,
+            subject,
+            stage,
+            chapter=chapter,
+            unit=unit,
+            course_family=course_family,
+        )
+
+    monkeypatch.setattr(plugin._store, "list_topics", list_topics)
+    try:
+        selected = await plugin.study_set_practice_scope(scope=request)
+        context = await plugin.study_question_context()
+
+        assert isinstance(selected, Ok)
+        assert isinstance(context, Ok)
+        assert context.value["selected_topic_id"] in eligible_ids
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_all_broad_course_modules_cold_start_without_history_or_text(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
