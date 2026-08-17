@@ -1485,13 +1485,26 @@ _CHAT_EN_TRAILING_SAFE_SUFFIX_RE = re.compile(
     r"^\s*(?:you\s+can|possible|done|ready)\s*[.!]?\s*$",
     re.IGNORECASE,
 )
-_CHAT_SCOPED_SENTENCE_FINAL_QUESTION_RE = re.compile(r"[吗嗎呢]\s*[？?]?\s*$")
+_CHAT_SCOPED_SENTENCE_FINAL_QUESTION_RE = re.compile(
+    r"[吗嗎呢]\s*[？?]?\s*"
+    r"(?:[,，。；;、]\s*(?:谢谢你?|謝謝你?|感谢你?|感謝你?|麻烦了|麻煩了|"
+    r"辛苦了|thanks|thank\s+you)\s*[。.!！]?\s*)?$",
+    re.IGNORECASE,
+)
 _CHAT_SCOPED_VALUE_ASSIGNMENT_RE = re.compile(
-    r"(?:(?:把|将|將)\s*)?[^。，、！？,.!?;；]{1,24}?"
-    r"(?:设为|設為|改成|写成|寫成)"
+    r"(?:(?:(?:把|将|將)\s*[^。，、！？,.!?;；把将將并並]{1,24}?|"
+    r"^[^。，、！？,.!?;；]{1,12}?)(?:设为|設為|改成|写成|寫成)"
+    r"|(?i:(?:rewrite|revise|regenerate|redo|refresh)\s+"
+    r"(?!(?:all\s+fields|all\s+visible\s+fields|full\s+card|whole\s+card|"
+    r"entire\s+card)\b)[^,.!?;]{1,40}?\s+as\s+))"
 )
 _CHAT_SCOPED_COMPLETED_COMMAND_TAIL_RE = re.compile(
     r"\s*(?:一遍|一次|一下|下|一回)?\s*(?:吧|好|即可|就行)?\s*$"
+)
+_CHAT_ZH_CONTRAST_COMMAND_RE = re.compile(
+    r"^\s*(?:(?:请|請|麻烦|麻煩|帮我|幫我|替我|给我|給我|务必|務必|"
+    r"直接|现在|現在|马上|馬上|继续|繼續|再|然后|然後)\s*)*"
+    r"(?:把|将|將|重写|重寫|重新写|重新寫|改写|改寫|重做|重生|梳理|完善)"
 )
 
 
@@ -1536,9 +1549,9 @@ def _chat_scoped_candidate_is_completed_command(candidate: str) -> bool:
     if not clauses:
         return False
     clause = clauses[-1]
-    assignments = tuple(_CHAT_SCOPED_VALUE_ASSIGNMENT_RE.finditer(clause))
-    if assignments and _chat_text_requests_full_rewrite_core(
-        clause[assignments[-1].end():]
+    assignment = _CHAT_SCOPED_VALUE_ASSIGNMENT_RE.search(clause)
+    if assignment is not None and not _chat_text_requests_full_rewrite_core(
+        clause[:assignment.start()]
     ):
         return False
     signal_ends = [
@@ -1784,6 +1797,9 @@ def _chat_text_requests_full_rewrite_core(text: str) -> bool:
         if _CHAT_QUESTION_CLAUSE_RE.search(readable_question):
             continue
         readable = _chat_clause_without_quoted_prohibitions(clause)
+        assignment = _CHAT_SCOPED_VALUE_ASSIGNMENT_RE.search(readable)
+        if assignment is not None:
+            readable = readable[:assignment.start()]
         if (
             _CHAT_FULL_REWRITE_RE.search(readable)
             and _CHAT_REWRITE_VERB_RE.search(readable)
@@ -1816,6 +1832,8 @@ def _chat_text_requests_full_rewrite_from_scoped_segments(text: str) -> bool:
                 governing_segment = text[segment_start:]
                 if (
                     not _CHAT_NEGATED_REWRITE_RE.search(governing_segment)
+                    and _CHAT_ZH_CONTRAST_COMMAND_RE.search(candidate)
+                    and _chat_scoped_candidate_is_completed_command(candidate)
                     and _chat_text_requests_full_rewrite_core(candidate)
                 ):
                     return True
@@ -1835,6 +1853,7 @@ def _chat_text_requests_full_rewrite_from_scoped_segments(text: str) -> bool:
                 match.group("trailing_en") is not None
                 and (
                     not _CHAT_EN_TRAILING_COMMAND_RE.search(candidate)
+                    or not _chat_scoped_candidate_is_completed_command(candidate)
                     or not _CHAT_EN_TRAILING_SAFE_SUFFIX_RE.search(masked[match.end():])
                 )
             ):

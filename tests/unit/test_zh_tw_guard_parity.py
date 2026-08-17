@@ -2842,6 +2842,7 @@ def test_a_completed_rewrite_survives_a_separator_inside_a_quoted_value(
         "重写所有字段并把口头禅设为好不好",
         "请重写所有字段并写清楚是否原创",
         "请重写所有字段并说明为什么",
+        "把所有字段重写并把口头禅设为好不好",
     ],
 )
 def test_a_completed_rewrite_survives_secondary_content(text):
@@ -2877,6 +2878,9 @@ def test_a_completed_rewrite_survives_secondary_content(text):
         "把口头禅改成重写所有字段并保留是否会员",
         "口头禅改成重写所有字段并保留是否会员",
         "所有字段重写的合并说明是否正确",
+        "重写所有字段并保留头像吗，谢谢",
+        'Rewrite the catchphrase as "all fields" if possible',
+        "是否修改名字不过用户可能会重写所有字段",
     ],
 )
 def test_scoped_recovery_does_not_bypass_existing_guards(text):
@@ -2903,6 +2907,22 @@ def test_scoped_recovery_inspects_the_most_recent_bounded_boundaries():
     text = "说明并保留" * 33 + "重写所有字段并保留是否会员"
     assert router._chat_text_requests_full_rewrite_core(text) is False
     assert router._chat_text_requests_full_rewrite(text) is True
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "把口头禅改成重写所有字段并保留会员标签",
+        "口头禅改成重写所有字段并保留会员标签",
+        'Rewrite the catchphrase as "all fields"',
+    ],
+)
+def test_single_field_assignment_values_are_not_full_rewrite_commands(text):
+    """字段值里的整卡词不能触发缺失字段补全和自动保存。"""  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    assert router._chat_text_requests_full_rewrite_core(text) is False
+    assert router._chat_text_requests_full_rewrite(text) is False
 
 
 def test_clause_splitting_still_does_not_parse_quotes():
