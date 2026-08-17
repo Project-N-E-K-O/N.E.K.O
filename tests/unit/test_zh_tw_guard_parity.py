@@ -3814,6 +3814,29 @@ def test_a_condition_directly_governing_rewrite_blocks_recovery():
     assert router._chat_text_requests_full_rewrite(text) is False
 
 
+@pytest.mark.parametrize(
+    'condition',
+    [
+        '只有在用户确认后才能',
+        '等用户确认后再',
+        '用户确认后方可',
+    ],
+)
+def test_a_confirmation_condition_governs_all_recovered_list_items(condition):
+    import main_routers.card_assist_router as router
+
+    text = f'{condition}执行以下修改：先重写名字，然后请重写所有字段并保留是否会员'
+    assert router._chat_text_requests_full_rewrite_core(text) is False
+    assert router._chat_text_requests_full_rewrite(text) is False
+
+
+def test_an_already_satisfied_confirmation_allows_the_explicit_list_command():
+    import main_routers.card_assist_router as router
+
+    text = '用户已经确认，现在执行以下修改：先重写名字，然后请重写所有字段并保留是否会员'
+    assert router._chat_text_requests_full_rewrite(text) is True
+
+
 def test_a_long_condition_directly_governing_rewrite_blocks_recovery():
     import main_routers.card_assist_router as router
 
