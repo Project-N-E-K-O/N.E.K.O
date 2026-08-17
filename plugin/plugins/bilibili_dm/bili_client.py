@@ -399,6 +399,8 @@ class BiliDMClient:
                         )
 
         dropped_from_pending = 0
+        new_notifications: list[tuple[int, int, str, Dict[str, Any]]] = []
+        sequence = 0
         for source, items, succeeded in (
             ("reply", reply_items, reply_succeeded),
             ("at", at_items, at_succeeded),
@@ -411,16 +413,24 @@ class BiliDMClient:
                 self._notification_bootstrap_done[source] = True
                 continue
 
-            # 消息中心通常按新到旧返回；反转后按发生顺序入队。
+            # 单个消息源通常按新到旧返回；反转后，同时间或缺少时间字段时
+            # 仍保持旧到新的处理顺序。
             for item in reversed(items):
                 if not self._mark_notification_seen(source, item):
                     continue
                 if source == "at" and not self._is_at_current_user(item):
                     continue
-                if len(self._notification_pending) >= self._notification_backlog_limit:
-                    self._notification_pending.popleft()
-                    dropped_from_pending += 1
-                self._notification_pending.append((source, item))
+                event_time = self._notification_event_time(source, item)
+                new_notifications.append((event_time, sequence, source, item))
+                sequence += 1
+
+        # 两个消息源各自按新到旧返回。合并后按事件时间全局排序，避免较晚
+        # 拉取的 @ 通知被固定排在更晚发生的回复之后。
+        for _, _, source, item in sorted(new_notifications):
+            if len(self._notification_pending) >= self._notification_backlog_limit:
+                self._notification_pending.popleft()
+                dropped_from_pending += 1
+            self._notification_pending.append((source, item))
 
         if dropped_from_pending and self.logger:
             self.logger.warning(
@@ -434,6 +444,19 @@ class BiliDMClient:
             source, item = self._notification_pending.popleft()
             await self._enqueue_comment_notification(item, source)
             processed += 1
+
+    @staticmethod
+    def _notification_event_time(source: str, item: Dict[str, Any]) -> int:
+        """Return a comparable event timestamp for reply and @ feed entries."""
+        preferred_key = "reply_time" if source == "reply" else "at_time"
+        for key in (preferred_key, "reply_time", "at_time", "timestamp", "time"):
+            try:
+                value = int(item.get(key) or 0)
+            except (TypeError, ValueError):
+                continue
+            if value:
+                return value
+        return 0
 
     async def _get_notification_items(
         self,

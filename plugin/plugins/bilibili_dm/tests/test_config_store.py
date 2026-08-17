@@ -29,6 +29,7 @@ def make_plugin(tmp_path: Path) -> BiliDMPlugin:
     plugin._lifecycle_lock = asyncio.Lock()
     plugin._user_sessions = {}
     plugin._session_locks = {}
+    plugin._session_lock_refs = {}
     plugin._session_locks_guard = asyncio.Lock()
     plugin._max_concurrent_messages = 3
     plugin._message_concurrency = asyncio.Semaphore(3)
@@ -220,6 +221,41 @@ async def test_notification_bootstrap_waits_for_each_feed_and_preserves_tail():
     assert client._enqueue_comment_notification.await_count == 3
     client._enqueue_comment_notification.assert_awaited_with(at_newer, "at")
     assert not client._notification_pending
+
+
+@pytest.mark.asyncio
+async def test_notification_feeds_are_merged_by_event_time():
+    client = object.__new__(BiliDMClient)
+    client.logger = SimpleNamespace(warning=lambda *_: None)
+    client._notification_bootstrap_done = {"reply": True, "at": True}
+    client._notification_seen = []
+    client._notification_seen_set = set()
+    client._notification_feed_seen = {"reply": [], "at": []}
+    client._notification_feed_seen_set = {"reply": set(), "at": set()}
+    client._notification_pending = deque()
+    client._notification_backlog_limit = 500
+    client._notification_max_items = 2
+    client._current_uid = "999"
+    client._enqueue_comment_notification = AsyncMock()
+    client._is_at_current_user = lambda _: True
+
+    reply_newer = {"id": "reply-newer", "reply_time": 30}
+    at_older = {"id": "at-older", "at_time": 20}
+
+    async def get_items(_http_client, url, *, paginate=False):
+        del paginate
+        return [reply_newer] if url.endswith("/reply") else [at_older]
+
+    client._get_notification_items = get_items
+
+    await client._poll_comment_notifications()
+
+    assert [
+        args.args for args in client._enqueue_comment_notification.await_args_list
+    ] == [
+        (at_older, "at"),
+        (reply_newer, "reply"),
+    ]
 
 
 @pytest.mark.asyncio
@@ -548,6 +584,81 @@ async def test_permission_change_invalidates_all_user_sessions(tmp_path):
     dm_session.close.assert_awaited_once()
     comment_session.close.assert_awaited_once()
     other_session.close.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_permission_change_waits_for_in_flight_session_creation(tmp_path):
+    plugin = make_plugin(tmp_path)
+    session_key = "bili:comment:1:2:3:42"
+    session = SimpleNamespace(close=AsyncMock())
+    handler_entered = asyncio.Event()
+    allow_session_creation = asyncio.Event()
+
+    async def create_session_in_flight():
+        session_lock = await plugin._get_session_lock(session_key)
+        try:
+            async with session_lock:
+                handler_entered.set()
+                await allow_session_creation.wait()
+                plugin._user_sessions[session_key] = {
+                    "sender_uid": "42",
+                    "session": session,
+                }
+        finally:
+            await plugin._release_session_lock(session_key, session_lock)
+
+    handler_task = asyncio.create_task(create_session_in_flight())
+    await handler_entered.wait()
+    invalidation_task = asyncio.create_task(plugin._invalidate_user_sessions("42"))
+    await asyncio.sleep(0)
+
+    assert not invalidation_task.done()
+    allow_session_creation.set()
+    await asyncio.gather(handler_task, invalidation_task)
+
+    assert session_key not in plugin._user_sessions
+    assert session_key not in plugin._session_locks
+    session.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("permission_mode", ("open", "deny_list"))
+async def test_unlisted_users_get_effective_trusted_role(tmp_path, permission_mode):
+    plugin = make_plugin(tmp_path)
+    plugin._permission_mode = permission_mode
+    plugin._generate_reply = AsyncMock(return_value=None)
+
+    await plugin._handle_message(
+        {
+            "sender_uid": "42",
+            "sender_nickname": "tester",
+            "content": "hello",
+        }
+    )
+
+    assert plugin._generate_reply.await_args.kwargs["permission_level"] == "trusted"
+
+
+@pytest.mark.asyncio
+async def test_idle_session_cleanup_also_reclaims_session_lock(tmp_path):
+    plugin = make_plugin(tmp_path)
+    session_key = "bili:comment:1:2:3:42"
+    session = SimpleNamespace(close=AsyncMock())
+    plugin._user_sessions[session_key] = {
+        "sender_uid": "42",
+        "session": session,
+        "memory_enabled": False,
+        "last_activity_at": 0.1,
+    }
+    session_lock = await plugin._get_session_lock(session_key)
+    await plugin._release_session_lock(session_key, session_lock)
+
+    await plugin._flush_idle_sessions()
+
+    assert session_key not in plugin._user_sessions
+    assert session_key not in plugin._session_locks
+    assert session_key not in plugin._session_lock_refs
+    session.close.assert_awaited_once()
 
 
 @pytest.mark.asyncio

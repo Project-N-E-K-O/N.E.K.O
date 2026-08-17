@@ -66,6 +66,7 @@ class BiliDMPlugin(NekoPluginBase):
         # AI 会话管理
         self._user_sessions: dict[str, dict[str, Any]] = {}
         self._session_locks: dict[str, asyncio.Lock] = {}
+        self._session_lock_refs: dict[str, int] = {}
         self._session_locks_guard = asyncio.Lock()
 
         # 并发控制
@@ -256,24 +257,36 @@ class BiliDMPlugin(NekoPluginBase):
     async def _invalidate_user_sessions(self, sender_uid: str) -> None:
         """关闭指定用户的全部私信与评论会话。"""
         uid = str(sender_uid or "").strip()
-        session_keys = [
-            session_key
-            for session_key, user_data in list(self._user_sessions.items())
-            if str(user_data.get("sender_uid") or "") == uid
-            or session_key.endswith(f":{uid}")
-        ]
+        suffix = f":{uid}"
+        async with self._session_locks_guard:
+            session_keys = {
+                session_key
+                for session_key, user_data in list(self._user_sessions.items())
+                if str(user_data.get("sender_uid") or "") == uid
+                or session_key.endswith(suffix)
+            }
+            # 也等待尚未把会话写入 _user_sessions 的处理中消息。权限数据会先
+            # 更新再调用本方法，因此快照之后新来的处理任务会直接使用新权限。
+            session_keys.update(
+                session_key
+                for session_key in self._session_locks
+                if session_key.endswith(suffix)
+            )
         for session_key in session_keys:
             session_lock = await self._get_session_lock(session_key)
-            async with session_lock:
-                user_data = self._user_sessions.pop(session_key, None)
-                session = user_data.get("session") if user_data else None
-                if session:
-                    try:
-                        await session.close()
-                    except Exception as exc:
-                        self.logger.warning(
-                            f"关闭权限已变更用户的会话失败 {session_key}: {exc}"
-                        )
+            try:
+                async with session_lock:
+                    user_data = self._user_sessions.pop(session_key, None)
+                    session = user_data.get("session") if user_data else None
+                    if session:
+                        try:
+                            await session.close()
+                        except Exception as exc:
+                            self.logger.warning(
+                                f"关闭权限已变更用户的会话失败 {session_key}: {exc}"
+                            )
+            finally:
+                await self._release_session_lock(session_key, session_lock)
 
     async def _get_session_lock(self, session_key: str) -> asyncio.Lock:
         async with self._session_locks_guard:
@@ -281,7 +294,23 @@ class BiliDMPlugin(NekoPluginBase):
             if lock is None:
                 lock = asyncio.Lock()
                 self._session_locks[session_key] = lock
+            self._session_lock_refs[session_key] = (
+                self._session_lock_refs.get(session_key, 0) + 1
+            )
             return lock
+
+    async def _release_session_lock(self, session_key: str, lock: asyncio.Lock) -> None:
+        """释放锁引用，并在会话与等待者都不存在时回收锁。"""
+        async with self._session_locks_guard:
+            if self._session_locks.get(session_key) is not lock:
+                return
+            refs = self._session_lock_refs.get(session_key, 0) - 1
+            if refs > 0:
+                self._session_lock_refs[session_key] = refs
+                return
+            self._session_lock_refs.pop(session_key, None)
+            if session_key not in self._user_sessions:
+                self._session_locks.pop(session_key, None)
 
     def _track_handler_task(self, task: asyncio.Task) -> None:
         self._handler_tasks.add(task)
@@ -304,10 +333,13 @@ class BiliDMPlugin(NekoPluginBase):
         )
         async with self._message_concurrency:
             session_lock = await self._get_session_lock(session_key)
-            async with session_lock:
-                if not self._running:
-                    return
-                await self._handle_message(message)
+            try:
+                async with session_lock:
+                    if not self._running:
+                        return
+                    await self._handle_message(message)
+            finally:
+                await self._release_session_lock(session_key, session_lock)
 
     async def _wait_session_response_complete(
         self, session: Any, timeout: float = 30.0
@@ -747,6 +779,7 @@ class BiliDMPlugin(NekoPluginBase):
             await self.bili_client.disconnect()
 
         self._session_locks.clear()
+        self._session_lock_refs.clear()
 
     @plugin_entry(
         id="send_message",
@@ -1008,6 +1041,13 @@ class BiliDMPlugin(NekoPluginBase):
             return
 
         permission_level = self.permission_mgr.get_permission_level(sender_uid)
+        if permission_level == "none" and self._permission_mode in (
+            "open",
+            "deny_list",
+        ):
+            # 开放/黑名单模式允许未列出的用户；按普通可信用户生成回复，但不
+            # 授予管理员专属的记忆能力。
+            permission_level = "trusted"
 
         self.logger.info(
             f"收到 B站集成消息 [{msg_kind}] from {sender_uid} ({bili_nickname}), "
@@ -1501,8 +1541,11 @@ class BiliDMPlugin(NekoPluginBase):
                 return await self._finalize_session(session_key, reason="idle_timeout")
 
             session_lock = await self._get_session_lock(session_key)
-            async with session_lock:
-                await _finalize_if_still_idle()
+            try:
+                async with session_lock:
+                    await _finalize_if_still_idle()
+            finally:
+                await self._release_session_lock(session_key, session_lock)
 
     async def _flush_all_sessions(self, reason: str):
         """回收所有会话"""
@@ -1515,8 +1558,11 @@ class BiliDMPlugin(NekoPluginBase):
                 return await self._finalize_session(session_key, reason=reason)
 
             session_lock = await self._get_session_lock(session_key)
-            async with session_lock:
-                await _finalize_existing()
+            try:
+                async with session_lock:
+                    await _finalize_existing()
+            finally:
+                await self._release_session_lock(session_key, session_lock)
 
     async def _finalize_session(self, session_key: str, reason: str) -> bool:
         """结算并关闭会话"""
