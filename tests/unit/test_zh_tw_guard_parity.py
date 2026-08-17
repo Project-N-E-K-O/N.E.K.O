@@ -3781,6 +3781,22 @@ def test_a_bare_trailing_cancellation_blocks_scoped_recovery():
     ) is False
 
 
+@pytest.mark.parametrize('suspension', ['先别执行', '暂时不要执行', '暫時不要執行'])
+def test_a_trailing_execution_suspension_blocks_scoped_recovery(suspension):
+    import main_routers.card_assist_router as router
+
+    text = f'重写所有字段并保留是否会员，{suspension}'
+    assert router._chat_text_requests_full_rewrite_core(text) is False
+    assert router._chat_text_requests_full_rewrite(text) is False
+
+
+def test_a_suspension_of_an_old_operation_does_not_cancel_the_current_command():
+    import main_routers.card_assist_router as router
+
+    text = '暂时不要执行旧操作；然后请重写所有字段并保留是否会员'
+    assert router._chat_text_requests_full_rewrite(text) is True
+
+
 def test_bu_yong_le_blocks_scoped_recovery():
     import main_routers.card_assist_router as router
 
