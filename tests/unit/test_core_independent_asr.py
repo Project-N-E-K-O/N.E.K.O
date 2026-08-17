@@ -356,6 +356,52 @@ async def _start_and_seal_turn(
     await runtime._handle_independent_asr_endpoint(runtime._asr_session_epoch)
 
 
+async def test_activity_probe_tracks_accepted_final_until_dispatch_completes() -> None:
+    runtime = _Runtime()
+    await _start_and_seal_turn(runtime, "qwen")
+    sealed_token = runtime._asr_sealed_turn_token
+    assert sealed_token is not None
+    release_started = asyncio.Event()
+    release_lease = asyncio.Event()
+    dispatch_started = asyncio.Event()
+    release_dispatch = asyncio.Event()
+
+    class _BlockingLease:
+        token = sealed_token.turn
+
+        async def release(self) -> None:
+            release_started.set()
+            await release_lease.wait()
+
+    async def block_dispatch(*_args, **_kwargs) -> bool:
+        dispatch_started.set()
+        await release_dispatch.wait()
+        return True
+
+    runtime._asr_smart_turn_lease = _BlockingLease()
+    runtime.handle_input_transcript.side_effect = block_dispatch
+    final_task = asyncio.create_task(
+        runtime._handle_independent_asr_final(
+            "短语音",
+            runtime._asr_session_epoch,
+            "qwen",
+        )
+    )
+
+    await release_started.wait()
+    assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.WARM_IDLE
+    assert runtime._independent_asr_user_turn_active() is True
+
+    release_lease.set()
+    await dispatch_started.wait()
+    assert runtime._independent_asr_user_turn_active() is True
+
+    release_dispatch.set()
+    await final_task
+    await runtime._wait_asr_transcript_dispatch_idle()
+    assert runtime._independent_asr_user_turn_active() is False
+
+
 async def test_independent_route_sends_pcm_to_asr_only() -> None:
     runtime = _Runtime()
     asr = type("Asr", (), {})()

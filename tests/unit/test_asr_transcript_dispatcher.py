@@ -27,6 +27,31 @@ def _envelope(turn_id: int) -> TranscriptEnvelope:
     return TranscriptEnvelope(token, "qwen", f"text-{turn_id}")
 
 
+async def test_pending_delivery_spans_reservation_queue_and_active_dispatch() -> None:
+    dispatch_started = asyncio.Event()
+    release_dispatch = asyncio.Event()
+
+    async def dispatch(_envelope: TranscriptEnvelope) -> None:
+        dispatch_started.set()
+        await release_dispatch.wait()
+
+    dispatcher = TranscriptDispatcher(dispatch)
+    envelope = _envelope(1)
+
+    assert dispatcher.has_pending_delivery is False
+    assert dispatcher.try_reserve(envelope.final_key) is True
+    assert dispatcher.has_pending_delivery is True
+
+    dispatcher.submit(envelope)
+    assert dispatcher.has_pending_delivery is True
+    await dispatch_started.wait()
+    assert dispatcher.has_pending_delivery is True
+
+    release_dispatch.set()
+    await dispatcher.wait_idle()
+    assert dispatcher.has_pending_delivery is False
+
+
 async def test_dispatcher_reserves_capacity_and_serializes_delivery() -> None:
     release_first = asyncio.Event()
     delivered: list[int] = []

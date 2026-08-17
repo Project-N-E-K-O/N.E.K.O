@@ -2405,11 +2405,21 @@ class AsrRuntimeMixin:
         runtime = getattr(self, "_asr_runtime", None)
         lifecycle = getattr(runtime, "_asr_lifecycle", None)
         state = getattr(getattr(lifecycle, "snapshot", None), "state", None)
-        return state in {
-            VoiceLifecycleState.PREWARMING,
-            VoiceLifecycleState.ACTIVE,
-            VoiceLifecycleState.DRAINING,
-        }
+        pending_delivery = getattr(
+            runtime,
+            "has_pending_transcript_delivery",
+            None,
+        )
+        return (
+            state
+            in {
+                VoiceLifecycleState.PREWARMING,
+                VoiceLifecycleState.ACTIVE,
+                VoiceLifecycleState.DRAINING,
+            }
+            or callable(pending_delivery)
+            and pending_delivery()
+        )
 
     async def _prepare_voice_input_turn(self, token: VoiceTurnToken) -> bool:
         self._ensure_asr_runtime_state()
