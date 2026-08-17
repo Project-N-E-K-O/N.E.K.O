@@ -1496,7 +1496,8 @@ _CHAT_SCOPED_SENTENCE_FINAL_QUESTION_RE = re.compile(
 )
 _CHAT_SCOPED_VALUE_ASSIGNMENT_RE = re.compile(
     r"(?:(?:(?:把|将|將)\s*[^。，、！？,.!?;；把将將并並]{1,24}?|"
-    r"^[^。，、！？,.!?;；]{1,12}?)(?:设为|設為|设成|設成|设置为|設定為|改成|修改成|"
+    r"^[^。，、！？,.!?;；]{1,12}?)(?:设为|設為|设成|設成|设置为|設定為|"
+    r"设置成|設定成|改成|修改成|"
     r"换成|換成|变成|變成|变为|變為|调整为|調整為|写成|寫成|"
     r"填为|填為|填写为|填寫為|填成|填写成|填寫成)"
     r"|(?i:(?:rewrite|revise|regenerate|redo|refresh)\s+"
@@ -1556,15 +1557,22 @@ _CHAT_GOVERNING_CONDITION_RE = re.compile(
     r"^\s*" + _CHAT_GOVERNING_CONDITION_PATTERN
 )
 _CHAT_GOVERNING_EXECUTION_QUESTION_RE = re.compile(
-    r"^\s*(?:是否|能否|可否|要不要|该不该|該不該|需不需要|应不应该|應不應該)\s*"
+    r"^\s*(?:(?:请问|請問|你觉得|你覺得|我想知道)\s*)?"
+    r"(?:是否|能否|可否|要不要|该不该|該不該|需不需要|应不应该|應不應該)\s*"
     r"(?:执行|執行|应用|應用|采用|採用|进行|進行)\s*"
     r"(?:以下|下面|上述|上面|这些|這些)?\s*(?:修改|操作|指令|命令|要求|内容|內容)?"
+)
+_CHAT_GOVERNING_LIST_DISCLAIMER_RE = re.compile(
+    r"^\s*(?:以下|以上|上述|前述|这些|這些|这|這)?\s*"
+    r"(?:(?:只|仅|僅)(?:是|为|為)\s*(?:示例|例子|范例|範例)"
+    r"|(?:仅|僅|只)(?:供|作)(?:参考|參考))\s*[：:]"
 )
 _CHAT_SCOPED_GOVERNING_CONDITION_RE = re.compile(
     _CHAT_GOVERNING_CONDITION_PATTERN
 )
 _CHAT_SCOPED_POST_REWRITE_ASSIGNMENT_RE = re.compile(
-    r"\s*(?:并|並)\s*(?:设为|設為|设成|設成|设置为|設定為|改成|修改成|换成|換成|"
+    r"\s*(?:并|並)\s*(?:设为|設為|设成|設成|设置为|設定為|设置成|設定成|"
+    r"改成|修改成|换成|換成|"
     r"变成|變成|变为|變為|调整为|調整為|写成|寫成|填为|填為|填写为|"
     r"填寫為|填成|填写成|填寫成)\s*$"
 )
@@ -1966,6 +1974,8 @@ def _chat_text_requests_full_rewrite_from_scoped_segments(text: str) -> bool:
     if _CHAT_GOVERNING_CONDITION_RE.search(masked):
         return False
     if _CHAT_GOVERNING_EXECUTION_QUESTION_RE.search(masked):
+        return False
+    if _CHAT_GOVERNING_LIST_DISCLAIMER_RE.search(masked):
         return False
     recent_boundaries = deque(
         _CHAT_SCOPED_RECOVERY_BOUNDARY_RE.finditer(masked),

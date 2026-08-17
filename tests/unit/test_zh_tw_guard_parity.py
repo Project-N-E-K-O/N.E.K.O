@@ -3609,3 +3609,28 @@ def test_an_english_command_after_a_field_assignment_remains_visible():
     text = 'Rewrite the name as Bob and rewrite all fields'
     assert router._chat_text_requests_full_rewrite_core(text) is True
     assert router._chat_text_requests_full_rewrite(text) is True
+
+
+@pytest.mark.parametrize('verb', ['设置成', '設定成'])
+def test_she_zhi_cheng_marks_the_following_text_as_a_field_value(verb):
+    import main_routers.card_assist_router as router
+
+    text = f'把口头禅{verb}重写所有字段并保留是否会员'
+    assert router._chat_text_requests_full_rewrite(text) is False
+
+
+@pytest.mark.parametrize('prefix', ['请问', '請問', '你觉得', '你覺得', '我想知道'])
+def test_a_polite_execution_question_governs_all_recovered_list_items(prefix):
+    import main_routers.card_assist_router as router
+
+    text = f'{prefix}是否执行以下修改：先重写名字并保留头像，然后请重写所有字段并保留是否会员标签'
+    assert router._chat_text_requests_full_rewrite_core(text) is False
+    assert router._chat_text_requests_full_rewrite(text) is False
+
+
+def test_a_leading_list_disclaimer_governs_all_recovered_items():
+    import main_routers.card_assist_router as router
+
+    text = '以下只是示例：先重写名字并保留头像，然后请重写所有字段并保留是否会员标签'
+    assert router._chat_text_requests_full_rewrite_core(text) is False
+    assert router._chat_text_requests_full_rewrite(text) is False
