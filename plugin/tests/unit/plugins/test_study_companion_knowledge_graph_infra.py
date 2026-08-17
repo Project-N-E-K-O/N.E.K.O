@@ -206,6 +206,55 @@ def test_knowledge_guidance_cache_can_be_invalidated() -> None:
     assert host._knowledge_guidance_topics_cache == {}
 
 
+@pytest.mark.asyncio
+async def test_explicit_guidance_topic_outside_cache_loads_its_subgraph() -> None:
+    cached_topic = {
+        "id": "cached",
+        "name": "Cached Topic",
+        "subject": "math",
+        "prerequisites": [],
+        "related": [],
+    }
+    selected_topic = {
+        "id": "selected_after_cache_cap",
+        "name": "Selected Topic",
+        "subject": "math",
+        "prerequisites": [{"id": "selected_foundation"}],
+        "related": [],
+    }
+    foundation_topic = {
+        "id": "selected_foundation",
+        "name": "Selected Foundation",
+        "subject": "math",
+        "prerequisites": [],
+        "related": [],
+    }
+
+    class Store:
+        def list_topics(self, *_args):
+            return [cached_topic]
+
+        def get_topic(self, topic_id: str):
+            return {
+                selected_topic["id"]: selected_topic,
+                foundation_topic["id"]: foundation_topic,
+            }.get(topic_id)
+
+    class Host(_TutorContextSupportMixin):
+        _store = Store()
+
+    guidance, outcome = await Host()._build_knowledge_guidance_context(
+        "question_generate",
+        context={"selected_topic_id": selected_topic["id"]},
+    )
+
+    assert outcome["knowledge_guidance_status"] == "applied"
+    assert guidance["topic"]["id"] == selected_topic["id"]
+    assert {
+        node["id"] for node in guidance["relevant_subgraph"]["nodes"]
+    } >= {selected_topic["id"], foundation_topic["id"]}
+
+
 def test_related_prerequisite_edges_point_from_prerequisite_to_topic() -> None:
     edges = build_topic_edges(
         [

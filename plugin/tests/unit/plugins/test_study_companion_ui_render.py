@@ -268,8 +268,17 @@ def test_memory_card_first_save_prompts_for_deck_and_supports_skip() -> None:
         assert f'<option value="{deck_type}" data-i18n="ui.memory.deck_type.{deck_type}">' in index_html
     assert 'id="memoryDeckCreateBtn"' in index_html
     assert 'id="memoryDeckSkipBtn"' in index_html
+    load_call = (
+        "memoryDecks = await window.StudyCompanionSurfacePanels."
+        "listAllMemoryDecks({ callPlugin });"
+    )
+    assert load_call in main_js
     assert "async function chooseDeckForFirstCard()" in main_js
-    assert "callPlugin('study_memory_list_decks'" in main_js
+    choose_start = main_js.index("async function chooseDeckForFirstCard()")
+    choose_end = main_js.index("\nfunction setStatusLine", choose_start)
+    choose_source = main_js[choose_start:choose_end]
+    load_index = choose_source.index(load_call)
+    assert "if (memoryDecks.length)" not in choose_source[:load_index]
     assert "callPlugin('study_memory_create_deck'" in main_js
     assert "deck_type: deckType" in main_js
     assert "deck_id: deckId" in main_js

@@ -58,6 +58,7 @@ describe('hosted ui runtime', () => {
     ['change', 'select', 'onChange'],
     ['input', 'input', 'onInput'],
     ['drop', 'div', 'onDrop'],
+    ['paste', 'textarea', 'onPaste'],
   ])('marks hosted action calls triggered by a trusted iframe %s as user initiated', (eventName, tagName, propName) => {
     let requestMessage: any
     Object.defineProperty(window, 'parent', {

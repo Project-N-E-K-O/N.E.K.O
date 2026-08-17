@@ -198,13 +198,10 @@ def has_capture_client() -> bool:
 def has_region_capture_client(lanlan_name: str | None = None) -> bool:
     """True iff the selected renderer advertises interactive region capture."""
     try:
-        client = _pick_client(lanlan_name)
+        client = _pick_region_capture_client(lanlan_name)
     except CaptureBridgeError:
         return False
-    return bool(
-        client is not None
-        and client.capabilities.capture_desktop_region_as_data_url
-    )
+    return client is not None
 
 
 def _pick_client(lanlan_name: str | None = None) -> _CaptureClient | None:
@@ -220,6 +217,23 @@ def _pick_client(lanlan_name: str | None = None) -> _CaptureClient | None:
 def _supports_window_capture(client: _CaptureClient) -> bool:
     capabilities = client.capabilities
     return bool(capabilities.get_sources and capabilities.capture_source_as_data_url)
+
+
+def _supports_region_capture(client: _CaptureClient) -> bool:
+    return bool(client.capabilities.capture_desktop_region_as_data_url)
+
+
+def _pick_region_capture_client(
+    lanlan_name: str | None = None,
+) -> _CaptureClient | None:
+    target_lanlan = _validate_lanlan_name(lanlan_name)
+    if target_lanlan is not None:
+        client = _clients.get(target_lanlan)
+        return client if client is not None and _supports_region_capture(client) else None
+    candidates = [client for client in _clients.values() if _supports_region_capture(client)]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda client: client.registered_at)
 
 
 def _pick_window_capture_client() -> _CaptureClient | None:
@@ -354,11 +368,8 @@ async def request_capture_region(
     ):
         raise CaptureBridgeError("session_timeout_ms out of range")
 
-    preflight_client = _pick_client(target_lanlan)
-    if (
-        preflight_client is None
-        or not preflight_client.capabilities.capture_desktop_region_as_data_url
-    ):
+    preflight_client = _pick_region_capture_client(target_lanlan)
+    if preflight_client is None:
         raise CaptureBridgeError("no renderer available")
 
     async with _interactive_state_lock:
@@ -368,11 +379,8 @@ async def request_capture_region(
 
     try:
         async with _capture_semaphore:
-            client = _pick_client(target_lanlan)
-            if (
-                client is None
-                or not client.capabilities.capture_desktop_region_as_data_url
-            ):
+            client = _pick_region_capture_client(target_lanlan)
+            if client is None:
                 raise CaptureBridgeError("no renderer available")
             request_id = uuid.uuid4().hex
             loop = asyncio.get_running_loop()

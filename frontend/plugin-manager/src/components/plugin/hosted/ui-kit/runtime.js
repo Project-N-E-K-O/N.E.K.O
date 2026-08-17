@@ -578,7 +578,7 @@ function patchProps(dom, oldProps, newProps) {
     if (oldProps[name] !== newProps[name]) setProp(dom, name, oldProps[name], newProps[name]);
   });
 }
-const __hostedUserActionEvents = new Set(['click', 'submit', 'keydown', 'change', 'input', 'drop']);
+const __hostedUserActionEvents = new Set(['click', 'submit', 'keydown', 'change', 'input', 'drop', 'paste']);
 let __hostedUserActionDepth = 0;
 const __hostedConfirmedActionCredits = [];
 function retainHostedConfirmedAction() {

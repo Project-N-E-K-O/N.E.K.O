@@ -117,6 +117,36 @@ async def test_region_only_newest_renderer_does_not_shadow_window_capture_client
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_window_only_newest_renderer_does_not_shadow_region_capture_client():
+    region_sock = _Sock()
+    window_sock = _Sock()
+    capture_bridge.mark_capture_client("region", region_sock, _payload(True))
+    window_payload = _payload(True)
+    window_payload["capabilities"]["captureDesktopRegionAsDataUrl"] = False
+    capture_bridge.mark_capture_client("window", window_sock, window_payload)
+
+    assert capture_bridge.has_region_capture_client() is True
+
+    async def _replier():
+        await region_sock.send_event.wait()
+        import json
+
+        request = json.loads(region_sock.sent[-1])
+        capture_bridge.resolve_capture_response(
+            "region",
+            {"request_id": request["request_id"], "success": False, "canceled": True},
+        )
+
+    reply_task = asyncio.create_task(_replier())
+    result = await capture_bridge.request_capture_region({}, timeout=1.0)
+    await reply_task
+
+    assert result["canceled"] is True
+    assert window_sock.sent == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_region_request_uses_distinct_message_and_preserves_cancel():
     sock = _Sock()
     capture_bridge.mark_capture_client("neko", sock, _payload(True))
@@ -188,7 +218,7 @@ async def test_region_request_targets_the_explicit_lanlan_renderer():
     newest_payload["capabilities"]["captureDesktopRegionAsDataUrl"] = False
     capture_bridge.mark_capture_client("newest", newest_sock, newest_payload)
 
-    assert capture_bridge.has_region_capture_client() is False
+    assert capture_bridge.has_region_capture_client() is True
     assert capture_bridge.has_region_capture_client("requesting") is True
 
     async def _replier():

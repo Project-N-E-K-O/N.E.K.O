@@ -1242,11 +1242,7 @@ const quickCardController = window.StudyQuickCardController?.create({
 });
 
 async function chooseDeckForFirstCard() {
-  if (memoryDecks.length) {
-    return memoryDeckSelect?.value || String(memoryDecks[0]?.id || '');
-  }
-  const payload = await callPlugin('study_memory_list_decks', { limit: 100 });
-  memoryDecks = Array.isArray(payload.decks) ? payload.decks : [];
+  memoryDecks = await window.StudyCompanionSurfacePanels.listAllMemoryDecks({ callPlugin });
   renderMemoryDeckOptions();
   if (memoryDecks.length) {
     return memoryDeckSelect?.value || String(memoryDecks[0]?.id || '');

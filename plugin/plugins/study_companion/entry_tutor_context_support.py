@@ -107,6 +107,50 @@ def _knowledge_guidance_outcome(
     }
 
 
+def _topic_reference_ids(topic: dict[str, Any]) -> list[str]:
+    reference_ids: list[str] = []
+    for field in ("prerequisites", "related"):
+        refs = topic.get(field)
+        if not isinstance(refs, list):
+            continue
+        for ref in refs:
+            if isinstance(ref, dict):
+                ref_id = str(ref.get("id") or ref.get("topic_id") or "").strip()
+            else:
+                ref_id = str(ref or "").strip()
+            if ref_id:
+                reference_ids.append(ref_id)
+    return reference_ids
+
+
+def _load_explicit_guidance_topics(
+    store: Any,
+    topic_id: str,
+    *,
+    max_depth: int = 2,
+) -> list[dict[str, Any]]:
+    topics: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    queue: list[tuple[str, int]] = [(topic_id, 0)]
+    while queue and len(topics) < 24:
+        current_id, depth = queue.pop(0)
+        if not current_id or current_id in seen:
+            continue
+        seen.add(current_id)
+        topic = store.get_topic(current_id)
+        if not isinstance(topic, dict):
+            continue
+        topics.append(topic)
+        if depth >= max_depth:
+            continue
+        queue.extend(
+            (reference_id, depth + 1)
+            for reference_id in _topic_reference_ids(topic)
+            if reference_id not in seen
+        )
+    return topics
+
+
 class _TutorContextSupportMixin:
     def _invalidate_knowledge_guidance_cache(self) -> None:
         cache = getattr(self, "_knowledge_guidance_topics_cache", None)
@@ -155,6 +199,26 @@ class _TutorContextSupportMixin:
             topic_items = list(topics or [])
             if topic_id:
                 explicit = match_topics(topic_items, topic_id=topic_id, limit=1)
+                if not explicit:
+                    explicit_topics = await asyncio.to_thread(
+                        _load_explicit_guidance_topics,
+                        self._store,
+                        topic_id,
+                    )
+                    topics_by_id = {
+                        str(topic.get("id") or ""): topic
+                        for topic in topic_items
+                        if isinstance(topic, dict) and topic.get("id")
+                    }
+                    topics_by_id.update(
+                        {
+                            str(topic.get("id") or ""): topic
+                            for topic in explicit_topics or []
+                            if isinstance(topic, dict) and topic.get("id")
+                        }
+                    )
+                    topic_items = list(topics_by_id.values())
+                    explicit = match_topics(topic_items, topic_id=topic_id, limit=1)
                 if not explicit:
                     return {}, _knowledge_guidance_outcome(
                         status="not_matched", source="selected_topic"

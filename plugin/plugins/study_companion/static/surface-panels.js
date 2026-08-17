@@ -993,6 +993,7 @@
 
   window.StudyCompanionSurfacePanels = {
     render,
+    listAllMemoryDecks,
     close() {
       panelToken += 1;
     },
