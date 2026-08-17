@@ -3573,6 +3573,15 @@ def test_treating_following_content_as_instructions_can_be_prohibited():
     assert router._chat_text_requests_full_rewrite(text) is False
 
 
+@pytest.mark.parametrize('verb', ['重写', '重寫', '做'])
+def test_a_direct_list_action_can_be_prohibited(verb):
+    import main_routers.card_assist_router as router
+
+    text = f'不要{verb}以下内容：先重写名字并保留头像，然后请重写所有字段并保留是否会员'
+    assert router._chat_text_requests_full_rewrite_core(text) is False
+    assert router._chat_text_requests_full_rewrite(text) is False
+
+
 def test_a_full_rewrite_can_precede_a_later_assignment_verb():
     import main_routers.card_assist_router as router
 
