@@ -285,6 +285,38 @@ async def test_oauth_status_serializes_concurrent_rotating_refreshes(monkeypatch
 
 
 @pytest.mark.unit
+async def test_oauth_status_reuses_validation_after_first_waiter_is_cancelled(monkeypatch):
+    started = asyncio.Event()
+    release = asyncio.Event()
+    calls = 0
+
+    async def resolve_status():
+        nonlocal calls
+        calls += 1
+        started.set()
+        await release.wait()
+        return {"logged_in": True, "snapshot": {"access_token": "ok"}, "auth": {}}
+
+    monkeypatch.setattr(O, "_oauth_status_task", None)
+    monkeypatch.setattr(O, "_resolve_saved_oauth_status", resolve_status)
+
+    first = asyncio.create_task(O.resolve_saved_oauth_status())
+    await started.wait()
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+
+    second = asyncio.create_task(O.resolve_saved_oauth_status())
+    await asyncio.sleep(0)
+    assert calls == 1
+    release.set()
+
+    status = await second
+    assert status["logged_in"] is True
+    assert calls == 1
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("status_code", "payload", "expected_outcome"),
     [

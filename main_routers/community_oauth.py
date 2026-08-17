@@ -42,6 +42,7 @@ _HTTP_TIMEOUT_SEC = 30.0
 _BIND_OWNERSHIP_CONFLICT = "client_already_bound_to_other_user"
 _oauth_start_lock = asyncio.Lock()
 _oauth_status_lock = asyncio.Lock()
+_oauth_status_task: asyncio.Task[dict[str, Any]] | None = None
 
 _CALLBACK_PAGE = """<!doctype html>
 <html lang="zh-CN">
@@ -387,9 +388,25 @@ async def _resolve_saved_oauth_status(_attempt: int = 0) -> dict[str, Any]:
 
 
 async def resolve_saved_oauth_status() -> dict[str, Any]:
-    """Share one refresh-capable saved-session resolution at a time."""
+    """Share one refresh-capable saved-session resolution at a time.
+
+    A browser abandoning its local request must not cancel the underlying
+    cloud validation. Concurrent callers await the same shielded task, so an
+    auth-status fallback cannot queue behind and then repeat a slow delegate
+    validation.
+    """
+    global _oauth_status_task
     async with _oauth_status_lock:
-        return await _resolve_saved_oauth_status()
+        if _oauth_status_task is None or _oauth_status_task.done():
+            _oauth_status_task = asyncio.create_task(_resolve_saved_oauth_status())
+        task = _oauth_status_task
+    try:
+        return await asyncio.shield(task)
+    finally:
+        if task.done():
+            async with _oauth_status_lock:
+                if _oauth_status_task is task:
+                    _oauth_status_task = None
 
 
 def _load_oauth_logout_records() -> tuple[dict, dict, dict]:
