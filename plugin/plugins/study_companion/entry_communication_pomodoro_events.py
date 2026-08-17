@@ -10,6 +10,12 @@ _POMODORO_DEADLINE_EPSILON_SECONDS = 0.55
 class _CommunicationPomodoroEventsMixin:
     """Drive pomodoro deadlines independently from the hosted UI lifecycle."""
 
+    async def _on_command_loop_start(self) -> None:
+        self._pomodoro_lock = asyncio.Lock()
+        self._pomodoro_wakeup = asyncio.Event()
+        self._pomodoro_watcher_task = None
+        self._start_pomodoro_watcher()
+
     def _pomodoro_runtime_lock(self) -> asyncio.Lock:
         lock = getattr(self, "_pomodoro_lock", None)
         if lock is None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 from types import SimpleNamespace
 
 import pytest
@@ -73,6 +74,33 @@ def _plugin(timer, *, event_bus=None) -> StudyCompanionPlugin:
     plugin._pomodoro_session_id = "focus-1"
     plugin._pomodoro_target_lanlan = "yui-at-start"
     return plugin
+
+
+def test_command_loop_hook_recreates_loop_bound_pomodoro_primitives() -> None:
+    plugin = _plugin(_DeadlineTimer(), event_bus=_EventBus())
+    plugin._pomodoro_timer.state = "paused"
+    startup_wakeup = plugin._pomodoro_wakeup
+    startup_lock = plugin._pomodoro_lock
+
+    async def bind_startup_wakeup() -> None:
+        waiter = asyncio.create_task(startup_wakeup.wait())
+        await asyncio.sleep(0)
+        waiter.cancel()
+        with suppress(asyncio.CancelledError):
+            await waiter
+
+    asyncio.run(bind_startup_wakeup())
+
+    async def start_command_loop() -> None:
+        await plugin._on_command_loop_start()
+        await asyncio.sleep(0)
+        assert plugin._pomodoro_wakeup is not startup_wakeup
+        assert plugin._pomodoro_lock is not startup_lock
+        assert plugin._pomodoro_watcher_task is not None
+        assert not plugin._pomodoro_watcher_task.done()
+        await plugin._cancel_pomodoro_watcher()
+
+    asyncio.run(start_command_loop())
 
 
 @pytest.mark.asyncio

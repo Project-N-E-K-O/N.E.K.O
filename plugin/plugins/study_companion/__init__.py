@@ -366,7 +366,6 @@ class StudyCompanionPlugin(
             )
             self._sync_doc_export_entry()
             await self._persist_state()
-            self._start_pomodoro_watcher()
             self._start_review_due_task()
             if self._event_bus is not None:
                 await self._subscribe_neko_commands()
