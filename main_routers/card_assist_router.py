@@ -1516,9 +1516,17 @@ _CHAT_ZH_COMMAND_HEAD = (
 )
 _CHAT_ZH_CONTRAST_COMMAND_RE = re.compile(r"^\s*" + _CHAT_ZH_COMMAND_HEAD)
 _CHAT_SCOPED_REPORTED_SPEECH_RE = re.compile(
-    r"(?:[^。，、！？,.!?;；]{1,64}?\s*"
+    r"^\s*(?:[^。，、！？,.!?;；]+?\s*"
     r"(?:说|說|表示|提到|写道|寫道|回复|回覆|要求)(?:过|過)?"
-    r"|[^。，、！？,.!?;；]{1,64}?(?:原话|原話|原文))\s*[：:]?\s*$"
+    r"|[^。，、！？,.!?;；]+?(?:原话|原話|原文))\s*[：:]?\s*$"
+)
+_CHAT_FIRST_PERSON_REPORTING_RE = re.compile(
+    r"^\s*(?:我|我们|我們|咱们|咱們|俺|我的|我们的|我們的)\s*"
+    r"(?:说|說|表示|提到|写道|寫道|回复|回覆|要求|原话|原話|原文)"
+)
+_CHAT_FIRST_PERSON_REQUEST_HEAD_RE = re.compile(
+    r"^\s*(?:(?:我|我们|我們|咱们|咱們)\s*要求|"
+    r"(?:我的|我们的|我們的)\s*要求)\s*[：:,，]\s*"
 )
 _CHAT_REPORTING_CONTEXT_RESET_RE = re.compile(r"[。！？.!?]+")
 _CHAT_SCOPED_NEXT_COMMAND_RE = re.compile(
@@ -1701,14 +1709,48 @@ def _chat_remaining_secondary_segments_have_governing_guard(
     return False
 
 
-def _chat_scoped_has_reporting_context(prefix: str) -> bool:
-    """Keep speaker attribution until a strong sentence boundary resets it."""
-    bounded_prefix = prefix[-_CHAT_SCOPED_RECOVERY_WINDOW_CHARS:]
-    current_sentence = _CHAT_REPORTING_CONTEXT_RESET_RE.split(bounded_prefix)[-1]
-    return any(
-        _CHAT_SCOPED_REPORTED_SPEECH_RE.search(clause)
-        for clause in _chat_clauses(current_sentence)
+def _chat_clause_has_third_party_reporting_context(clause: str) -> bool:
+    """Recognize a third-party report at a clause end or before a colon."""
+    candidates = [clause]
+    candidates.extend(
+        clause[:index + 1]
+        for index, character in enumerate(clause)
+        if character in "：:"
     )
+    return any(
+        not _CHAT_FIRST_PERSON_REPORTING_RE.search(candidate)
+        and _CHAT_SCOPED_REPORTED_SPEECH_RE.search(candidate)
+        for candidate in candidates
+    )
+
+
+def _chat_sentence_has_third_party_reporting_context(sentence: str) -> bool:
+    return any(
+        _chat_clause_has_third_party_reporting_context(clause)
+        for clause in _chat_clauses(sentence)
+    )
+
+
+def _chat_reporting_contexts_for_boundaries(text: str, boundaries: list) -> list[bool]:
+    """Carry reporting state across boundaries in one linear pass."""
+    contexts = []
+    reported = False
+    pending = ""
+    scan_start = 0
+    for boundary in boundaries:
+        chunk = text[scan_start:boundary.start()]
+        sentence_parts = _CHAT_REPORTING_CONTEXT_RESET_RE.split(chunk)
+        if len(sentence_parts) > 1:
+            reported = False
+            pending = ""
+            chunk = sentence_parts[-1]
+        if not reported:
+            candidate = pending + chunk
+            reported = _chat_sentence_has_third_party_reporting_context(candidate)
+            pending = candidate[-128:]
+        contexts.append(reported)
+        scan_start = boundary.end()
+    return contexts
 
 
 def _chat_scoped_governed_full_rewrite_end(clause: str) -> int | None:
@@ -1738,9 +1780,11 @@ def _chat_scoped_candidate_is_completed_command(candidate: str) -> bool:
     clauses = _chat_clauses(candidate)
     if not clauses:
         return False
-    if len(clauses) > 1 and _CHAT_SCOPED_REPORTED_SPEECH_RE.search(clauses[-2]):
+    if len(clauses) > 1 and _chat_clause_has_third_party_reporting_context(
+        clauses[-2]
+    ):
         return False
-    clause = clauses[-1]
+    clause = _CHAT_FIRST_PERSON_REQUEST_HEAD_RE.sub("", clauses[-1], count=1)
     assignment = _CHAT_SCOPED_VALUE_ASSIGNMENT_RE.search(clause)
     if assignment is not None:
         if _chat_text_requests_full_rewrite_core(clause[:assignment.end()]):
@@ -1771,7 +1815,7 @@ def _chat_scoped_candidate_is_command(candidate: str) -> bool:
     clauses = _chat_clauses(candidate)
     if not clauses:
         return False
-    clause = clauses[-1]
+    clause = _CHAT_FIRST_PERSON_REQUEST_HEAD_RE.sub("", clauses[-1], count=1)
     return bool(
         _CHAT_ZH_CONTRAST_COMMAND_RE.search(clause)
         or _CHAT_EN_TRAILING_COMMAND_RE.search(clause)
@@ -1983,7 +2027,10 @@ def _chat_text_requests_full_rewrite_core(text: str) -> bool:
     """  # noqa: DOCSTRING_CJK
     if not text:
         return False
-    for clause in _chat_clauses(text):
+    for sentence in _CHAT_REPORTING_CONTEXT_RESET_RE.split(text):
+        if _chat_sentence_has_third_party_reporting_context(sentence):
+            continue
+        for clause in _chat_clauses(sentence):
         # ⚠️ 三条谓词读的必须是**同一份文本**：抹掉的那段引用对否定和正向信号
         # 一视同仁。上一版只从否定守卫里抹，正向信号照读原文，于是引号里的
         # `all fields` 配上引号外的单字段 `rewrite` 进了整卡补全通路
@@ -1992,10 +2039,10 @@ def _chat_text_requests_full_rewrite_core(text: str) -> bool:
         # ⚠️ 后置的否定断言：`把整个卡的每一项内容都重写并不是必要的`——否定在
         # 动词**后面**，前置窗口够不着（base 是 False，第六十八轮 P1）。
         # 这一族是闭集（并不是/不是/算不上 + 必要/必须/必需 + 的），单列一条。
-        if _CHAT_POSTPOSED_NEGATION_RE.search(clause):
-            continue
-        if _CHAT_NEGATED_REWRITE_RE.search(clause):
-            continue
+            if _CHAT_POSTPOSED_NEGATION_RE.search(clause):
+                continue
+            if _CHAT_NEGATED_REWRITE_RE.search(clause):
+                continue
         # ⚠️ 疑问子句同样跳过：用户在问要不要改，不是在下命令。
         # ⚠️ 但要看**抹掉引用跨度之后**的文本：`重写所有字段并把口头禅设为“好不好”`
         # 里的 `好不好` 是字段内容不是提问，整条命令不该被丢掉
@@ -2005,53 +2052,55 @@ def _chat_text_requests_full_rewrite_core(text: str) -> bool:
         # ⚠️ 任指框架的辖域里，极性标记是「无论是否」的意思，不是提问：
         # `无论是否缺失都重写所有字段` base 是 True，疑问守卫却把整条命令丢掉
         # （Codex P2 第六十二轮，同族实测 60 条）。
-        readable_question = _chat_clause_without_free_choice(
-            _chat_clause_without_quotes(clause)
-        )
-        if _CHAT_QUESTION_CLAUSE_RE.search(readable_question):
-            continue
-        assignment = _CHAT_SCOPED_VALUE_ASSIGNMENT_RE.search(clause)
-        if assignment is not None:
-            assignment_head = _chat_clause_without_quoted_prohibitions(
-                clause[:assignment.end()]
+            readable_question = _chat_clause_without_free_choice(
+                _chat_clause_without_quotes(clause)
             )
-            target_match = _CHAT_FULL_REWRITE_RE.search(assignment_head)
-            rewrite_match = _CHAT_REWRITE_VERB_RE.search(assignment_head)
-            if (
-                target_match is not None
-                and rewrite_match is not None
-                and target_match.start() < rewrite_match.start()
-                and len(assignment_head) - rewrite_match.end() <= 1
-            ):
-                return True
-            signal_end = _chat_scoped_governed_full_rewrite_end(assignment_head)
-            if (
-                target_match is not None
-                and rewrite_match is not None
-                and rewrite_match.start() < target_match.start()
-                and not re.search(r"(?:把|将|將)", assignment_head[:rewrite_match.start()])
-                and signal_end is not None
-                and _CHAT_SCOPED_POST_REWRITE_ASSIGNMENT_RE.fullmatch(
-                    assignment_head[signal_end:]
+            if _CHAT_QUESTION_CLAUSE_RE.search(readable_question):
+                continue
+            assignment = _CHAT_SCOPED_VALUE_ASSIGNMENT_RE.search(clause)
+            if assignment is not None:
+                assignment_head = _chat_clause_without_quoted_prohibitions(
+                    clause[:assignment.end()]
                 )
+                target_match = _CHAT_FULL_REWRITE_RE.search(assignment_head)
+                rewrite_match = _CHAT_REWRITE_VERB_RE.search(assignment_head)
+                if (
+                    target_match is not None
+                    and rewrite_match is not None
+                    and target_match.start() < rewrite_match.start()
+                    and len(assignment_head) - rewrite_match.end() <= 1
+                ):
+                    return True
+                signal_end = _chat_scoped_governed_full_rewrite_end(assignment_head)
+                if (
+                    target_match is not None
+                    and rewrite_match is not None
+                    and rewrite_match.start() < target_match.start()
+                    and not re.search(
+                        r"(?:把|将|將)", assignment_head[:rewrite_match.start()]
+                    )
+                    and signal_end is not None
+                    and _CHAT_SCOPED_POST_REWRITE_ASSIGNMENT_RE.fullmatch(
+                        assignment_head[signal_end:]
+                    )
+                ):
+                    return True
+                parts = [clause[:assignment.start()]]
+                value_tail = clause[assignment.end():]
+                next_command = _CHAT_SCOPED_NEXT_COMMAND_RE.search(
+                    _chat_mask_quoted_spans(value_tail)
+                )
+                if next_command is not None:
+                    parts.append(value_tail[next_command.end():])
+                if any(_chat_text_requests_full_rewrite_core(part) for part in parts):
+                    return True
+                continue
+            readable = _chat_clause_without_quoted_prohibitions(clause)
+            if (
+                _CHAT_FULL_REWRITE_RE.search(readable)
+                and _CHAT_REWRITE_VERB_RE.search(readable)
             ):
                 return True
-            parts = [clause[:assignment.start()]]
-            value_tail = clause[assignment.end():]
-            next_command = _CHAT_SCOPED_NEXT_COMMAND_RE.search(
-                _chat_mask_quoted_spans(value_tail)
-            )
-            if next_command is not None:
-                parts.append(value_tail[next_command.end():])
-            if any(_chat_text_requests_full_rewrite_core(part) for part in parts):
-                return True
-            continue
-        readable = _chat_clause_without_quoted_prohibitions(clause)
-        if (
-            _CHAT_FULL_REWRITE_RE.search(readable)
-            and _CHAT_REWRITE_VERB_RE.search(readable)
-        ):
-            return True
     return False
 
 
@@ -2103,8 +2152,9 @@ def _chat_text_requests_full_rewrite_from_scoped_segments(text: str) -> bool:
     if len(recent_boundaries) > _CHAT_SCOPED_RECOVERY_MAX_BOUNDARIES:
         segment_start = recent_boundaries.popleft().end()
     boundaries = list(recent_boundaries)
+    reporting_contexts = _chat_reporting_contexts_for_boundaries(text, boundaries)
     for index, match in enumerate(boundaries):
-        if _chat_scoped_has_reporting_context(text[:match.start()]):
+        if reporting_contexts[index]:
             continue
         if match.group("contrast") is not None:
             if len(text) - match.end() <= _CHAT_SCOPED_RECOVERY_WINDOW_CHARS:

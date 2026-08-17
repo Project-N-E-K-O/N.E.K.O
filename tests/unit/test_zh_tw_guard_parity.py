@@ -3820,6 +3820,33 @@ def test_reported_context_is_retained_across_secondary_list_items():
     assert router._chat_text_requests_full_rewrite(text) is False
 
 
+def test_reported_context_survives_beyond_the_recovery_window():
+    import main_routers.card_assist_router as router
+
+    text = ('小明说，' + '甲' * 257
+            + '并保留头像，然后请重写所有字段并保留是否会员')
+    assert router._chat_text_requests_full_rewrite_core(text) is False
+    assert router._chat_text_requests_full_rewrite(text) is False
+
+
+@pytest.mark.parametrize('prefix', ['我要求，', '我的要求：'])
+def test_first_person_request_framing_is_not_reported_speech(prefix):
+    import main_routers.card_assist_router as router
+
+    text = prefix + '请重写所有字段并保留是否会员'
+    assert router._chat_text_requests_full_rewrite_core(text) is False
+    assert router._chat_text_requests_full_rewrite(text) is True
+
+
+def test_a_colon_report_keeps_context_until_sentence_end():
+    import main_routers.card_assist_router as router
+
+    text = '他说：不要重写名字，但是请重写所有字段'
+    assert router._chat_text_requests_full_rewrite_core(text) is False
+    assert router._chat_text_requests_full_rewrite_from_scoped_segments(text) is False
+    assert router._chat_text_requests_full_rewrite(text) is False
+
+
 @pytest.mark.parametrize('verb', ['设置成', '設定成'])
 def test_she_zhi_cheng_marks_the_following_text_as_a_field_value(verb):
     import main_routers.card_assist_router as router
