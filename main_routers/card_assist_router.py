@@ -1458,7 +1458,8 @@ _CHAT_POSTPOSED_NEGATION_RE = re.compile(
     r"(?:必要|必须|必須|必需|需要|应该|應該)"
 )
 _CHAT_QUOTED_SPAN_RE = re.compile(
-    r"“[^”]*”|「[^」]*」|『[^』]*』|《[^》]*》|【[^】]*】|\"[^\"]*\""
+    r"“[^”]*”|‘[^’]*’|「[^」]*」|『[^』]*』|《[^》]*》|【[^】]*】|\"[^\"]*\"|"
+    r"(?<![A-Za-z0-9_])'[^'\r\n]*'(?![A-Za-z0-9_])"
 )
 _CHAT_QUOTE_OPENERS = ("“", "「", "『", "《", "【", '"')
 _CHAT_FEET_INCHES_BEFORE_MARK_RE = re.compile(r"\d+\s*['’′]\s*\d+\s*$")

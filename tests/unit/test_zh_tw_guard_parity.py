@@ -3653,18 +3653,24 @@ def test_she_cheng_marks_the_following_text_as_a_field_value():
     ) is False
 
 
-def test_a_next_command_connector_inside_a_quoted_field_value_is_not_a_command():
+@pytest.mark.parametrize(("opener", "closer"), [("“", "”"), ("‘", "’"), ("'", "'")])
+def test_a_next_command_connector_inside_a_quoted_field_value_is_not_a_command(
+    opener, closer
+):
     import main_routers.card_assist_router as router
 
-    text = '把口头禅改成“然后重写所有字段”'
+    text = f'把口头禅改成{opener}然后重写所有字段{closer}'
     assert router._chat_text_requests_full_rewrite_core(text) is False
     assert router._chat_text_requests_full_rewrite(text) is False
 
 
-def test_a_next_command_connector_after_a_quoted_field_value_remains_visible():
+@pytest.mark.parametrize(("opener", "closer"), [("“", "”"), ("‘", "’"), ("'", "'")])
+def test_a_next_command_connector_after_a_quoted_field_value_remains_visible(
+    opener, closer
+):
     import main_routers.card_assist_router as router
 
-    text = '把口头禅改成“然后重写所有字段”然后请重写所有字段'
+    text = f'把口头禅改成{opener}然后重写所有字段{closer}然后请重写所有字段'
     assert router._chat_text_requests_full_rewrite_core(text) is True
     assert router._chat_text_requests_full_rewrite(text) is True
 
