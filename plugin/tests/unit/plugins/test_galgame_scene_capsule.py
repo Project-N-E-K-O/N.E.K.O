@@ -1554,6 +1554,67 @@ async def test_disabling_notifications_retires_pending_capsule_retry(
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
+async def test_disabled_interval_events_are_not_replayed_when_notifications_resume(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(ctx),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    line = _summary_test_line("scene-a", 1)
+    choices = [
+        {"choice_id": "choice-a", "text": "追上去", "index": 0},
+        {"choice_id": "choice-b", "text": "留在原地", "index": 1},
+    ]
+    choice_event = _event(
+        seq=2,
+        event_type="choices_shown",
+        session_id="sess-a",
+        game_id="demo.alpha",
+        ts="2026-04-21T08:35:02Z",
+        payload={"scene_id": "scene-a", "route_id": "", "choices": choices},
+    )
+    disabled = _shared_state(
+        mode="companion",
+        push_notifications=False,
+        session_id="sess-a",
+        last_seq=2,
+        snapshot=_session_state(
+            speaker=str(line["speaker"]),
+            text=str(line["text"]),
+            scene_id="scene-a",
+            line_id=str(line["line_id"]),
+            ts=str(line["ts"]),
+            choices=choices,
+            is_menu_open=True,
+        ),
+        history_events=[
+            _summary_test_line_event("scene-a", 1, seq=1),
+            choice_event,
+        ],
+        history_lines=[line],
+    )
+
+    await agent.tick(disabled)
+    await agent.drain_summary_tasks(timeout=1.0)
+
+    assert agent._scene_tracker.current_scene_lines_since_push("scene-a") == 1
+    assert ctx.pushed_messages == []
+
+    resumed = {**disabled, "push_notifications": True}
+    await agent.tick(resumed)
+    await agent.drain_summary_tasks(timeout=1.0)
+
+    assert agent._scene_tracker.current_scene_lines_since_push("scene-a") == 1
+    assert ctx.pushed_messages == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
 async def test_newer_memory_summary_wins_when_old_llm_finishes_last(
     tmp_path: Path,
 ) -> None:

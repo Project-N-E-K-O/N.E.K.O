@@ -1977,6 +1977,21 @@ class AgentSummaryMixin:
             ledger["scene_id"] = scene_id
             ledger["route_id"] = route_id
         if not allow_delivery:
+            # Delivery-disabled observations still feed the cumulative memory
+            # path below, but they must never become a capsule backlog when the
+            # gate reopens.  Retire only the delivery versions: marking these
+            # keys committed would also hide them from memory accounting.
+            for event_key in live_event_keys:
+                event_version = int(
+                    event_version_state.setdefault(event_key, observation_epoch)
+                )
+                previous_retired_version = int(
+                    self._scene_capsule_retired_event_versions.get(event_key) or 0
+                )
+                self._scene_capsule_retired_event_versions[event_key] = max(
+                    previous_retired_version,
+                    event_version,
+                )
             return
         candidates: list[tuple[int, int, str, int, str, dict[str, Any]]] = []
         for index, item in enumerate(current_lines):
