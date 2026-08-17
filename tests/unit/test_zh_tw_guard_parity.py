@@ -3634,3 +3634,13 @@ def test_a_leading_list_disclaimer_governs_all_recovered_items():
     text = '以下只是示例：先重写名字并保留头像，然后请重写所有字段并保留是否会员标签'
     assert router._chat_text_requests_full_rewrite_core(text) is False
     assert router._chat_text_requests_full_rewrite(text) is False
+
+
+@pytest.mark.parametrize(('prefix', 'length'), [('把', 25), ('', 13)])
+def test_assignment_isolation_does_not_cap_custom_field_names(prefix, length):
+    import main_routers.card_assist_router as router
+
+    text = f'{prefix}{"自" * length}改成重写所有字段并保留是否会员'
+    assignment = router._CHAT_SCOPED_VALUE_ASSIGNMENT_RE.search(text)
+    assert assignment is not None
+    assert router._chat_text_requests_full_rewrite(text) is False
