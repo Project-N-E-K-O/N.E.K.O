@@ -375,10 +375,10 @@ async def plugin_cli_upload(
     passed to ``/plugin-cli/install`` or ``/plugin-cli/inspect``.
     """
     try:
-        content = await file.read()
-        return await service.save_uploaded_package(
+        await file.seek(0)
+        return await service.save_uploaded_file(
             filename=file.filename or "unknown.neko-plugin",
-            content=content,
+            source_file=file.file,
         )
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
@@ -398,10 +398,14 @@ async def plugin_cli_upload_and_install(
     Combines upload + install into a single request for convenience.
     """
     try:
-        content = await file.read()
-        return await service.upload_and_install(
+        await file.seek(0)
+        uploaded = await service.save_uploaded_file(
             filename=file.filename or "unknown.neko-plugin",
-            content=content,
+            source_file=file.file,
+        )
+        return await service.upload_and_install(
+            filename=str(uploaded["name"]),
+            package_path=str(uploaded["path"]),
             on_conflict=on_conflict,
         )
     except ServerDomainError as error:

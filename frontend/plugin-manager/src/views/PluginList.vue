@@ -399,9 +399,14 @@
     >
       <div
         class="plugin-import-dropzone"
-        :class="{ 'plugin-import-dropzone--active': importDropActive, 'plugin-import-dropzone--selected': selectedImportFile }"
+        :class="{
+          'plugin-import-dropzone--active': importDropActive,
+          'plugin-import-dropzone--selected': selectedImportFile,
+          'plugin-import-dropzone--disabled': importing,
+        }"
         role="button"
-        tabindex="0"
+        :tabindex="importing ? -1 : 0"
+        :aria-disabled="importing"
         @click="triggerImportFile"
         @keydown.enter.prevent="triggerImportFile"
         @keydown.space.prevent="triggerImportFile"
@@ -963,6 +968,7 @@ function openImportDialog() {
 }
 
 function triggerImportFile() {
+  if (importing.value) return
   importFileInputRef.value?.click()
 }
 
@@ -977,6 +983,7 @@ function formatImportFileSize(size: number): string {
 }
 
 function selectImportFile(file: File) {
+  if (importing.value) return
   const filename = file.name.toLowerCase()
   if (!PLUGIN_PACKAGE_SUFFIXES.some((suffix) => filename.endsWith(suffix))) {
     selectedImportFile.value = null
@@ -996,11 +1003,13 @@ function handleImportFileChange(event: Event) {
   const file = input.files?.[0]
   // Reset input so the same file can be re-selected
   input.value = ''
+  if (importing.value) return
   if (file) selectImportFile(file)
 }
 
 function handleImportDrop(event: DragEvent) {
   importDropActive.value = false
+  if (importing.value) return
   const file = event.dataTransfer?.files?.[0]
   if (file) selectImportFile(file)
 }
@@ -1009,6 +1018,7 @@ async function importSelectedPluginPackage() {
   const file = selectedImportFile.value
   if (!file) return
 
+  importDropActive.value = false
   importing.value = true
   try {
     const upload = await uploadPluginPackage(file)
@@ -1639,6 +1649,13 @@ onUnmounted(() => {
   border-style: solid;
   border-color: color-mix(in srgb, var(--el-color-success) 62%, var(--el-border-color));
   background: color-mix(in srgb, var(--el-color-success) 7%, var(--el-bg-color));
+}
+
+.plugin-import-dropzone--disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
+  pointer-events: none;
+  transform: none;
 }
 
 .plugin-import-dropzone strong {
