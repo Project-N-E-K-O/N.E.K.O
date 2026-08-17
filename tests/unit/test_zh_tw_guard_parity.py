@@ -3714,6 +3714,16 @@ def test_a_condition_directly_governing_rewrite_blocks_recovery():
     assert router._chat_text_requests_full_rewrite(text) is False
 
 
+def test_a_long_condition_directly_governing_rewrite_blocks_recovery():
+    import main_routers.card_assist_router as router
+
+    text = ('如果用户已经仔细阅读完当前角色卡的全部设定并与团队逐项核对所有字段的具体内容'
+            '而且和所有相关人员充分讨论后最终明确确认这些修改不会影响现有角色定位之后，'
+            '再重写所有字段并保留是否会员')
+    assert router._chat_text_requests_full_rewrite_core(text) is False
+    assert router._chat_text_requests_full_rewrite(text) is False
+
+
 def test_a_leading_execution_question_governs_all_recovered_list_items():
     import main_routers.card_assist_router as router
 
