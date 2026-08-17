@@ -2870,6 +2870,9 @@ def test_a_completed_rewrite_survives_secondary_content(text):
         "Do not follow this instruction: but rewrite all fields",
         '把口头禅“所有字段快速重写功能”改成“关闭”',
         "请重写名字但提到所有字段并保留是否会员标签",
+        "请重写名字并说明所有字段并保留是否会员",
+        '把口头禅改成“重写所有字段并保留是否会员',
+        '重写所有字段并保留头像——“不要重写所有字段”',
     ],
 )
 def test_scoped_recovery_does_not_bypass_existing_guards(text):

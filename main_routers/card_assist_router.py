@@ -1459,6 +1459,7 @@ _CHAT_POSTPOSED_NEGATION_RE = re.compile(
 _CHAT_QUOTED_SPAN_RE = re.compile(
     r"“[^”]*”|「[^」]*」|『[^』]*』|《[^》]*》|【[^】]*】|\"[^\"]*\""
 )
+_CHAT_QUOTE_OPENERS = ("“", "「", "『", "《", "【", '"')
 
 # 只恢复已经闭合的整卡命令，不改变核心疑问/否定/目标判据。窗口不够时仍返回 False，
 # 因此这里可以安全地使用固定上限；它不能替代否定守卫那种必须覆盖完整宾语的窗口。
@@ -1488,21 +1489,33 @@ _CHAT_SCOPED_SENTENCE_FINAL_QUESTION_RE = re.compile(r"[吗嗎呢]\s*[？?]?\s*$
 
 def _chat_mask_quoted_spans(text: str) -> str:
     """Mask balanced quoted spans while preserving offsets."""
-    return _CHAT_QUOTED_SPAN_RE.sub(
+    masked = _CHAT_QUOTED_SPAN_RE.sub(
         lambda match: " " * len(match.group(0)),
         text,
     )
+    unmatched_starts = [
+        position
+        for opener in _CHAT_QUOTE_OPENERS
+        if (position := masked.find(opener)) >= 0
+    ]
+    if unmatched_starts:
+        start = min(unmatched_starts)
+        return masked[:start] + " " * (len(masked) - start)
+    return masked
 
 
-def _chat_scoped_suffix_has_governing_guard(suffix: str) -> bool:
+def _chat_scoped_suffix_has_governing_guard(
+    suffix: str,
+    readable_suffix: str,
+) -> bool:
     """Return whether a discarded secondary suffix still governs the command."""
-    if _CHAT_POSTPOSED_NEGATION_RE.search(suffix):
-        return True
     if _CHAT_NEGATED_REWRITE_RE.search(suffix):
         return True
-    if _CHAT_SCOPED_SENTENCE_FINAL_QUESTION_RE.search(suffix):
+    if _CHAT_POSTPOSED_NEGATION_RE.search(readable_suffix):
         return True
-    readable = _chat_clause_without_free_choice(suffix)
+    if _CHAT_SCOPED_SENTENCE_FINAL_QUESTION_RE.search(readable_suffix):
+        return True
+    readable = _chat_clause_without_free_choice(readable_suffix)
     question = _CHAT_QUESTION_CLAUSE_RE.search(readable)
     # `是否会员` / `为什么` / `好不好` can be the secondary value itself. A question
     # marker after leading object text governs the proposed operation, so recovery must fail.
@@ -1769,13 +1782,15 @@ def _chat_text_requests_full_rewrite_from_scoped_segments(text: str) -> bool:
             segment_start = match.end()
             continue
         else:
+            candidate_start = segment_start
+            segment_start = match.end()
             # Never truncate unseen governing context on either side of a recovery boundary.
             if (
-                match.start() - segment_start > _CHAT_SCOPED_RECOVERY_WINDOW_CHARS
+                match.start() - candidate_start > _CHAT_SCOPED_RECOVERY_WINDOW_CHARS
                 or len(text) - match.end() > _CHAT_SCOPED_RECOVERY_WINDOW_CHARS
             ):
                 continue
-            candidate = text[segment_start:match.start()]
+            candidate = text[candidate_start:match.start()]
             if (
                 match.group("trailing_en") is not None
                 and (
@@ -1786,7 +1801,10 @@ def _chat_text_requests_full_rewrite_from_scoped_segments(text: str) -> bool:
                 continue
             if (
                 match.group("secondary") is not None
-                and _chat_scoped_suffix_has_governing_guard(masked[match.end():])
+                and _chat_scoped_suffix_has_governing_guard(
+                    text[match.end():],
+                    masked[match.end():],
+                )
             ):
                 continue
         if _chat_text_requests_full_rewrite_core(candidate):
