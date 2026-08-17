@@ -54,6 +54,51 @@ def test_plugin_server_registers_hosted_document_parse_route():
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    "browser_header",
+    [
+        {"Origin": "https://attacker.example"},
+        {"Referer": "https://attacker.example/drive-by"},
+    ],
+)
+def test_documents_parse_rejects_untrusted_browser_origin_before_parsing(
+    browser_header,
+):
+    with TestClient(
+        build_plugin_server_app(), base_url="http://127.0.0.1:48916"
+    ) as client:
+        response = client.post(
+            "/api/documents/parse",
+            headers=browser_header,
+            files={"file": ("attack.pdf", _blank_pdf_bytes(), "application/pdf")},
+        )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == {"code": "untrusted_origin"}
+
+
+@pytest.mark.unit
+def test_documents_parse_allows_loopback_browser_origin():
+    with TestClient(
+        build_plugin_server_app(), base_url="http://127.0.0.1:48916"
+    ) as client:
+        response = client.post(
+            "/api/documents/parse",
+            headers={"Origin": "http://localhost:48911"},
+            files={
+                "file": (
+                    "notes.pdf",
+                    _pdf_bytes("Loopback endpoint"),
+                    "application/pdf",
+                )
+            },
+        )
+
+    assert response.status_code == 200
+    assert "Loopback endpoint" in response.json()["document"]["content"]
+
+
+@pytest.mark.unit
 def test_plugin_server_redirects_model_settings_to_main_server(monkeypatch):
     import config
 

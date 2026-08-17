@@ -6,9 +6,10 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 
 from utils.document_upload import parse_uploaded_document
+from utils.host_origin_guard import is_http_browser_origin_allowed
 
 
 router = APIRouter(prefix="/api/documents", tags=["documents"])
@@ -33,7 +34,9 @@ _PUBLIC_PARSE_ERROR_CODES = frozenset({
 
 
 @router.post("/parse")
-async def parse_document_upload(file: UploadFile = File(...)):
+async def parse_document_upload(request: Request, file: UploadFile = File(...)):
+    if not is_http_browser_origin_allowed(request.scope):
+        raise HTTPException(status_code=403, detail={"code": "untrusted_origin"})
     try:
         parsed = await parse_uploaded_document(
             file,
