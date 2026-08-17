@@ -1567,7 +1567,9 @@ async def test_preexisting_session_resumes_cursor_after_candidate_gap(
 
         session_path.unlink()
         await plugin._poll_bridge(force=True)
-        assert plugin._snapshot_state()["active_session_id"] == ""
+        during_gap = plugin._snapshot_state()
+        assert during_gap["active_session_id"] == ""
+        assert during_gap["last_seq"] == 2
 
         gap_line = _event(
             seq=3,
