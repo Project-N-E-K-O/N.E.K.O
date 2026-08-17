@@ -1608,6 +1608,21 @@ def _chat_mask_quoted_spans(text: str) -> str:
     return masked
 
 
+def _chat_mask_assignment_value_before_next_command(text: str, masked: str) -> str:
+    """Mask an assigned value while retaining a following explicit command."""
+    assignment = _CHAT_SCOPED_VALUE_ASSIGNMENT_RE.search(text)
+    if assignment is None:
+        return masked
+    next_command = _CHAT_SCOPED_NEXT_COMMAND_RE.search(masked, assignment.end())
+    if next_command is None:
+        return masked
+    return (
+        masked[:assignment.end()]
+        + " " * (next_command.start() - assignment.end())
+        + masked[next_command.start():]
+    )
+
+
 def _chat_scoped_suffix_has_governing_guard(
     suffix: str,
     readable_suffix: str,
@@ -1997,13 +2012,14 @@ def _chat_text_requests_full_rewrite_from_scoped_segments(text: str) -> bool:
     if not text:
         return False
     masked = _chat_mask_quoted_spans(text)
+    prohibition_masked = _chat_mask_assignment_value_before_next_command(text, masked)
     governing_prohibitions = list(
-        _CHAT_GOVERNING_INSTRUCTION_PROHIBITION_RE.finditer(masked)
+        _CHAT_GOVERNING_INSTRUCTION_PROHIBITION_RE.finditer(prohibition_masked)
     )
     if governing_prohibitions:
         governing_prohibition = governing_prohibitions[-1]
         sentence_end = _CHAT_GOVERNING_PROHIBITION_SENTENCE_END_RE.search(
-            masked,
+            prohibition_masked,
             governing_prohibition.end(),
         )
         if sentence_end is None:

@@ -3661,6 +3661,17 @@ def test_a_next_command_connector_after_a_quoted_field_value_remains_visible():
     assert router._chat_text_requests_full_rewrite(text) is True
 
 
+def test_a_prohibition_inside_an_assigned_value_does_not_block_the_next_command():
+    import main_routers.card_assist_router as router
+
+    text = '把口头禅改成不要执行修改，然后请重写所有字段并保留是否会员'
+    assert router._chat_text_requests_full_rewrite_core(text) is False
+    assert router._chat_text_requests_full_rewrite(text) is True
+    assert router._chat_text_requests_full_rewrite(
+        '不要执行修改，然后请重写所有字段并保留是否会员'
+    ) is False
+
+
 def test_a_bare_trailing_cancellation_blocks_scoped_recovery():
     import main_routers.card_assist_router as router
 
