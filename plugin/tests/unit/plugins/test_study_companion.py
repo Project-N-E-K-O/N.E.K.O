@@ -10016,6 +10016,46 @@ async def test_memory_deck_item_listing_exposes_stable_pagination(
 
 
 @pytest.mark.asyncio
+async def test_memory_deck_listing_exposes_continuation_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(tmp_path, {"study": {"language": "en", "auto_open_ui": False}})
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    try:
+        assert isinstance(result, Ok)
+        created_ids = {
+            plugin._memory_deck_store.create_deck(
+                name=f"Paged Deck {index}", deck_type="custom"
+            )["id"]
+            for index in range(3)
+        }
+
+        first = await plugin.study_memory_list_decks(limit=2, offset=0)
+        assert isinstance(first, Ok)
+        assert len(first.value["decks"]) == 2
+        assert first.value["has_more"] is True
+        assert first.value["next_offset"] == 2
+
+        second = await plugin.study_memory_list_decks(
+            limit=2, offset=first.value["next_offset"]
+        )
+        assert isinstance(second, Ok)
+        assert len(second.value["decks"]) == 1
+        assert second.value["has_more"] is False
+        assert second.value["next_offset"] is None
+        returned_ids = {
+            deck["id"] for deck in [*first.value["decks"], *second.value["decks"]]
+        }
+        assert returned_ids == created_ids
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_study_plugin_starts_and_collects_entries(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

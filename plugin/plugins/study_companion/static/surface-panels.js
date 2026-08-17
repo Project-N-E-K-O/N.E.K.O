@@ -199,6 +199,24 @@
     return Array.isArray(payload?.[key]) ? payload[key] : [];
   }
 
+  async function listAllMemoryDecks(ctx) {
+    const decks = [];
+    let offset = 0;
+    let hasMore = true;
+    while (hasMore) {
+      const payload = await ctx.callPlugin('study_memory_list_decks', { limit: 100, offset });
+      decks.push(...safeList(payload, 'decks'));
+      hasMore = payload?.has_more === true;
+      if (!hasMore) break;
+      const nextOffset = Number(payload?.next_offset);
+      if (!Number.isSafeInteger(nextOffset) || nextOffset <= offset) {
+        throw new Error('Invalid memory deck continuation offset');
+      }
+      offset = nextOffset;
+    }
+    return decks;
+  }
+
   function valid(root, token, allowDetached = false) {
     return token === panelToken && (allowDetached || root.isConnected);
   }
@@ -603,8 +621,7 @@
     const loadingByDeck = new Map();
 
     async function refresh() {
-      const payload = await ctx.callPlugin('study_memory_list_decks', { limit: 100 });
-      decks = safeList(payload, 'decks');
+      decks = await listAllMemoryDecks(ctx);
       draw();
     }
 
@@ -773,8 +790,7 @@
     let result = '';
 
     async function refresh() {
-      const payload = await ctx.callPlugin('study_memory_list_decks', { limit: 100 });
-      decks = safeList(payload, 'decks');
+      decks = await listAllMemoryDecks(ctx);
       deckId = deckId || decks[0]?.id || '';
       draw();
     }

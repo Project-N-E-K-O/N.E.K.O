@@ -168,6 +168,24 @@ def test_memory_deck_surfaces_expose_pagination_and_localized_load_more() -> Non
         assert bundle["ui.button.load_more_cards"].strip(), locale_path.stem
 
 
+def test_memory_deck_surfaces_load_every_deck_page() -> None:
+    shared = _read("memory_shared.ts")
+    hosted_list = _read("memory_deck_list.tsx")
+    hosted_importer = _read("memory_importer.tsx")
+    fallback = (PLUGIN_DIR / "static" / "surface-panels.js").read_text(
+        encoding="utf-8"
+    )
+
+    assert "export async function listAllMemoryDecks" in shared
+    assert "while (hasMore)" in shared
+    assert "next_offset" in shared
+    for source in (hosted_list, hosted_importer):
+        assert "listAllMemoryDecks" in source
+        assert "study_memory_list_decks" not in source
+    assert "async function listAllMemoryDecks(ctx)" in fallback
+    assert fallback.count("decks = await listAllMemoryDecks(ctx);") == 2
+
+
 def test_solution_narration_outcome_messages_exist_in_all_locales() -> None:
     expected_truncated_zh_cn = (
         "解答因达到输出长度上限而被截断，自动补全未能在时限内完成，因此未安排朗读。"

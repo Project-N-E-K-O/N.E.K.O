@@ -104,7 +104,9 @@ class MemoryDeckStore:
             )
         return deck_from_row(row)
 
-    def list_decks(self, *, limit: int = 100) -> list[dict[str, Any]]:
+    def list_decks(
+        self, *, limit: int = 100, offset: int = 0
+    ) -> list[dict[str, Any]]:
         with self.store._lock:
             rows = (
                 self.store._require_conn()
@@ -115,10 +117,10 @@ class MemoryDeckStore:
                 FROM decks d
                 LEFT JOIN memory_items mi ON mi.deck_id = d.id AND mi.status = 'active'
                 GROUP BY d.id
-                ORDER BY d.updated_at DESC, d.created_at DESC
-                LIMIT ?
+                ORDER BY d.updated_at DESC, d.created_at DESC, d.id DESC
+                LIMIT ? OFFSET ?
                 """,
-                    (max(1, int(limit or 100)),),
+                    (max(1, int(limit or 100)), max(0, int(offset or 0))),
                 )
                 .fetchall()
             )

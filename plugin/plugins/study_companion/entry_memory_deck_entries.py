@@ -178,17 +178,37 @@ class _MemoryDeckEntriesMixin:
         ),
         input_schema={
             "type": "object",
-            "properties": {"limit": {"type": "integer", "default": 100}},
+            "properties": {
+                "limit": {"type": "integer", "default": 100},
+                "offset": {"type": "integer", "default": 0},
+            },
         },
-        llm_result_fields=["decks"],
+        llm_result_fields=["decks", "has_more", "next_offset"],
     )
-    async def study_memory_list_decks(self, limit: int = 100, **_):
+    async def study_memory_list_decks(
+        self, limit: int = 100, offset: int = 0, **_
+    ):
         try:
+            page_limit = max(1, min(500, int(limit or 100)))
+            page_offset = max(0, int(offset or 0))
             decks = await asyncio.to_thread(
                 self._memory_deck_store.list_decks,
-                limit=max(1, min(500, int(limit or 100))),
+                limit=page_limit + 1,
+                offset=page_offset,
             )
-            return Ok({"decks": decks})
+            page_decks = decks[:page_limit]
+            has_more = len(decks) > page_limit
+            return Ok(
+                {
+                    "decks": page_decks,
+                    "offset": page_offset,
+                    "limit": page_limit,
+                    "has_more": has_more,
+                    "next_offset": page_offset + len(page_decks)
+                    if has_more
+                    else None,
+                }
+            )
         except Exception as exc:
             return _entry_exception_error(self, exc, operation="study_memory_list_decks")
 
