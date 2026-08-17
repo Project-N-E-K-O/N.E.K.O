@@ -1566,6 +1566,9 @@ _CHAT_SCOPED_CANCELLATION_RE = re.compile(
 )
 _CHAT_SCOPED_SCOPE_REPLACEMENT_RE = re.compile(
     r"(?:改为|改為|改成|更正为|更正為|调整为|調整為)\s*(?:只|仅|僅)"
+    r"|(?:其实|其實)\s*(?:只|仅|僅)"
+    r"|(?:后来|後來)\s*我?\s*(?:改|改变|改變)主意了?\s*[，,]?\s*(?:只|仅|僅)"
+    r"|(?:我|我们|我們|咱们|咱們)\s*(?:只|仅|僅)\s*(?:想|要|需要)?"
 )
 _CHAT_SCOPED_SIGNAL_BRIDGE_RE = re.compile(
     rf"\s*(?:(?:一遍|一次|一下|下|一回)\s*|(?i:the)\s*|{_WHOLE_CARD_ADVERB_RUN})*"

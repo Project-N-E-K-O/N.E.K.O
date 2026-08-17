@@ -3030,6 +3030,34 @@ def test_scoped_recovery_honors_a_narrowing_scope_replacement():
     ) is False
 
 
+@pytest.mark.parametrize(
+    'narrowing',
+    [
+        '其实只重写名字',
+        '后来我改主意了，只重写名字',
+        '我只想重写名字',
+    ],
+)
+def test_natural_language_narrowing_replaces_the_full_card_scope(narrowing):
+    import main_routers.card_assist_router as router
+
+    text = f'重写所有字段并保留是否会员，{narrowing}'
+    assert router._chat_text_requests_full_rewrite_core(text) is False
+    assert router._chat_text_requests_full_rewrite(text) is False
+
+
+@pytest.mark.parametrize(
+    'replacement', ['其实只重写所有字段', '我只想重写所有字段']
+)
+def test_a_natural_language_replacement_that_keeps_full_scope_still_recovers(
+    replacement,
+):
+    import main_routers.card_assist_router as router
+
+    text = f'重写所有字段并保留是否会员，{replacement}'
+    assert router._chat_text_requests_full_rewrite(text) is True
+
+
 def test_scoped_recovery_keeps_offsets_after_masking_a_quoted_question():
     """等长遮蔽引用后，后续整卡命令的闭合位置仍须对应原句。"""  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
