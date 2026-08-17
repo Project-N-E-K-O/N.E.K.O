@@ -642,8 +642,11 @@ class ChatAnthropic:
             client_kw["base_url"] = self.base_url
         if _timeout is not None:
             client_kw["timeout"] = _timeout
-        if default_headers:
-            client_kw["default_headers"] = default_headers
+        # 注入 neko/<版本号> User-Agent 覆盖 SDK 自带 UA（AsyncAnthropic/Python x.y.z），
+        # 防止自定义 API 端点的 Cloudflare "Manage AI bots" 规则拦截。调用方若已在
+        # default_headers 里显式指定 UA（如 Kimi Code 的 claude-code/0.1.0）则不覆盖。
+        from utils.http_client import ensure_user_agent
+        client_kw["default_headers"] = ensure_user_agent(default_headers)
 
         self._client = anthropic_cls(**client_kw)
         self._aclient = async_anthropic_cls(**client_kw)
