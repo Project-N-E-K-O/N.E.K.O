@@ -2935,6 +2935,14 @@ def test_single_field_assignment_values_are_not_full_rewrite_commands(text):
     assert router._chat_text_requests_full_rewrite(text) is False
 
 
+def test_object_first_full_rewrite_survives_a_post_rewrite_assignment():
+    import main_routers.card_assist_router as router
+
+    text = '把所有字段重写并更新为新版'
+    assert router._chat_text_requests_full_rewrite_core(text) is True
+    assert router._chat_text_requests_full_rewrite(text) is True
+
+
 def test_command_words_inside_a_field_name_do_not_trigger_full_rewrite():
     """字段名里的命令词不能触发整卡补全。"""  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router

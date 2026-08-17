@@ -2076,9 +2076,15 @@ def _chat_text_requests_full_rewrite_core(text: str) -> bool:
                 if (
                     target_match is not None
                     and rewrite_match is not None
-                    and rewrite_match.start() < target_match.start()
-                    and not re.search(
-                        r"(?:把|将|將)", assignment_head[:rewrite_match.start()]
+                    and (
+                        target_match.start() < rewrite_match.start()
+                        or (
+                            rewrite_match.start() < target_match.start()
+                            and not re.search(
+                                r"(?:把|将|將)",
+                                assignment_head[:rewrite_match.start()],
+                            )
+                        )
                     )
                     and signal_end is not None
                     and _CHAT_SCOPED_POST_REWRITE_ASSIGNMENT_RE.fullmatch(
