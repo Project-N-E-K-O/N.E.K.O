@@ -8446,7 +8446,11 @@ async def test_semantic_route_for_image_keeps_image_context(
                 "detail": "auto",
             },
         }
-        assert 0 < fake_agent.semantic_routing_deadlines[-1] - time.monotonic() <= 12
+        remaining_seconds = (
+            fake_agent.semantic_routing_deadlines[-1] - time.monotonic()
+        )
+        assert remaining_seconds > 0
+        assert remaining_seconds <= 12.0 + 1e-6
         assert context["knowledge_guidance_subject"] == "chinese"
     finally:
         await plugin.shutdown()
