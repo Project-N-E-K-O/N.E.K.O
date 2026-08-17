@@ -197,10 +197,8 @@ class SearchCoordinator:
     ) -> SearchResults:
         state = self._backends.setdefault(backend, _BackendState(asyncio.Lock()))
         try:
-            await asyncio.wait_for(
-                state.lock.acquire(),
-                timeout=self.queue_wait_seconds,
-            )
+            async with asyncio.timeout(self.queue_wait_seconds):
+                await state.lock.acquire()
         except TimeoutError as error:
             raise SearchBusyError("search backend is busy; retry shortly") from error
         try:
