@@ -1520,6 +1520,7 @@ _CHAT_SCOPED_REPORTED_SPEECH_RE = re.compile(
     r"(?:说|說|表示|提到|写道|寫道|回复|回覆|要求)(?:过|過)?"
     r"|[^。，、！？,.!?;；]{1,64}?(?:原话|原話|原文))\s*[：:]?\s*$"
 )
+_CHAT_REPORTING_CONTEXT_RESET_RE = re.compile(r"[。！？.!?]+")
 _CHAT_SCOPED_NEXT_COMMAND_RE = re.compile(
     r"(?:(?:并|並|然后|然後|接着|接著|随后|隨後|同时|同時|以及|还要|還要|再)"
     r"|(?i:\b(?:and|then)\b))\s*(?="
@@ -1690,6 +1691,15 @@ def _chat_remaining_secondary_segments_have_governing_guard(
         ):
             return True
     return False
+
+
+def _chat_scoped_has_reporting_context(prefix: str) -> bool:
+    """Keep speaker attribution until a strong sentence boundary resets it."""
+    current_sentence = _CHAT_REPORTING_CONTEXT_RESET_RE.split(prefix)[-1]
+    return any(
+        _CHAT_SCOPED_REPORTED_SPEECH_RE.search(clause)
+        for clause in _chat_clauses(current_sentence)
+    )
 
 
 def _chat_scoped_governed_full_rewrite_end(clause: str) -> int | None:
@@ -2084,10 +2094,9 @@ def _chat_text_requests_full_rewrite_from_scoped_segments(text: str) -> bool:
         segment_start = recent_boundaries.popleft().end()
     boundaries = list(recent_boundaries)
     for index, match in enumerate(boundaries):
+        if _chat_scoped_has_reporting_context(text[:match.start()]):
+            continue
         if match.group("contrast") is not None:
-            reporting_prefix = text[segment_start:match.start()]
-            if _CHAT_SCOPED_REPORTED_SPEECH_RE.search(reporting_prefix):
-                continue
             if len(text) - match.end() <= _CHAT_SCOPED_RECOVERY_WINDOW_CHARS:
                 candidate = text[match.end():]
                 if (
