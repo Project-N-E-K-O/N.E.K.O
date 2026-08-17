@@ -101,6 +101,7 @@ class DocumentAnalysisJobManager:
         self._jobs: dict[str, _Job] = {}
         self._active_job_id = ""
         self._expiry_tasks: set[asyncio.Task[None]] = set()
+        self._closed = False
 
     async def start(
         self,
@@ -114,6 +115,11 @@ class DocumentAnalysisJobManager:
         on_completed: CompletionCallback | None = None,
     ) -> dict[str, Any]:
         async with self._lock:
+            if self._closed:
+                raise DocumentAnalysisJobError(
+                    "document analysis job manager is closed",
+                    diagnostic="document_job_busy",
+                )
             self._reap_locked()
             active = self._jobs.get(self._active_job_id)
             if active is not None and active.status == "running":
@@ -221,6 +227,7 @@ class DocumentAnalysisJobManager:
 
     async def shutdown(self) -> None:
         async with self._lock:
+            self._closed = True
             tasks: list[asyncio.Task[None]] = []
             for job in self._jobs.values():
                 if job.task is None or job.task.done():

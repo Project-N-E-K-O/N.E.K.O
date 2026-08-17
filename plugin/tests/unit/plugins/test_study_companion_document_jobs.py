@@ -170,6 +170,49 @@ async def test_job_manager_allows_one_active_job_and_cancel_propagates() -> None
 
 
 @pytest.mark.asyncio
+async def test_shutdown_rejects_a_new_start_while_job_cancellation_unwinds() -> None:
+    manager = DocumentAnalysisJobManager()
+    cancellation_started = asyncio.Event()
+    allow_cancellation_to_finish = asyncio.Event()
+    replacement_started = asyncio.Event()
+
+    async def running_job(_update):
+        try:
+            await asyncio.Future()
+        except asyncio.CancelledError:
+            cancellation_started.set()
+            await allow_cancellation_to_finish.wait()
+            raise
+
+    async def replacement_job(_update):
+        replacement_started.set()
+        await asyncio.Future()
+
+    await manager.start(
+        analysis_mode="direct",
+        document={"name": "running.txt"},
+        total_chunks=1,
+        runner=running_job,
+    )
+    shutdown_task = asyncio.create_task(manager.shutdown())
+    await cancellation_started.wait()
+
+    try:
+        with pytest.raises(DocumentAnalysisJobError) as raised:
+            await manager.start(
+                analysis_mode="direct",
+                document={"name": "replacement.txt"},
+                total_chunks=1,
+                runner=replacement_job,
+            )
+        assert raised.value.diagnostic == "document_job_busy"
+        assert replacement_started.is_set() is False
+    finally:
+        allow_cancellation_to_finish.set()
+        await shutdown_task
+
+
+@pytest.mark.asyncio
 async def test_document_job_entries_hide_jobs_from_other_roles() -> None:
     manager = DocumentAnalysisJobManager()
     started = asyncio.Event()
