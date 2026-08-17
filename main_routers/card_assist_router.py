@@ -1497,22 +1497,24 @@ _CHAT_SCOPED_SENTENCE_FINAL_QUESTION_RE = re.compile(
 _CHAT_SCOPED_VALUE_ASSIGNMENT_RE = re.compile(
     r"(?:(?:(?:把|将|將)\s*[^。，、！？,.!?;；把将將并並]{1,24}?|"
     r"^[^。，、！？,.!?;；]{1,12}?)(?:设为|設為|设置为|設定為|改成|修改成|"
-    r"换成|換成|变成|變成|变为|變為|调整为|調整為|写成|寫成)"
+    r"换成|換成|变成|變成|变为|變為|调整为|調整為|写成|寫成|"
+    r"填为|填為|填写为|填寫為|填成|填写成|填寫成)"
     r"|(?i:(?:rewrite|revise|regenerate|redo|refresh)\s+"
     r"(?!(?:all\s+fields|all\s+visible\s+fields|full\s+card|whole\s+card|"
     r"entire\s+card)\b)[^,.!?;]{1,40}?\s+as\s+))"
 )
 _CHAT_SCOPED_COMPLETED_COMMAND_TAIL_RE = re.compile(
-    r"\s*(?:一遍|一次|一下|下|一回)?\s*(?:吧|好|即可|就行)?\s*$"
+    r"\s*(?:一遍|一次|一下|下|一回)?\s*"
+    r"(?:吧|啊|呀|嘛|喔|哦|啦|喽|嘍|咯|嘞|咧|了|好|即可|就行)?\s*$"
 )
 _CHAT_ZH_COMMAND_HEAD = (
-    r"(?:(?:请|請|麻烦|麻煩|帮我|幫我|替我|给我|給我|务必|務必|"
+    r"(?:(?:请你|請你|麻烦你|麻煩你|请|請|麻烦|麻煩|帮我|幫我|替我|给我|給我|务必|務必|"
     r"直接|现在|現在|马上|馬上|继续|繼續|再|然后|然後)\s*)*"
     r"(?:把|将|將|重写|重寫|重新写|重新寫|改写|改寫|重做|重生|梳理|完善)"
 )
 _CHAT_ZH_CONTRAST_COMMAND_RE = re.compile(r"^\s*" + _CHAT_ZH_COMMAND_HEAD)
 _CHAT_SCOPED_NEXT_COMMAND_RE = re.compile(
-    r"(?:并|並|然后|然後|接着|接著|随后|隨後|同时|同時|以及|再)\s*(?="
+    r"(?:并|並|然后|然後|接着|接著|随后|隨後|同时|同時|以及|还要|還要|再)\s*(?="
     + _CHAT_ZH_COMMAND_HEAD
     + r"|(?i:(?:please\s+)?(?:rewrite|revise|regenerate|redo|refresh)\b))"
 )
@@ -1521,12 +1523,21 @@ _CHAT_GOVERNING_INSTRUCTION_PROHIBITION_RE = re.compile(
     r"(?:(?:执行|執行|遵循|照做|采用|採用|应用|應用)\s*"
     r"(?:这|這|以下|上述|上面)?\s*(?:条|條|个|個)?\s*"
     r"(?:指令|命令|修改|要求|内容|內容)"
-    r"|(?:按照|依照|根据|根據)\s*(?:下面|以下|上述|上面)?\s*"
-    r"(?:文字|内容|內容|指令|命令)?\s*(?:操作|执行|執行|照做))"
+    r"|(?:按照|依照|根据|根據|照)\s*(?:下面|以下|上述|上面)?\s*的?\s*"
+    r"(?:文字|内容|內容|指令|命令)?\s*(?:操作|执行|執行|照做|做))"
 )
 _CHAT_SCOPED_DISCLAIMER_RE = re.compile(
     r"(?:以上|上述|前述|这些|這些|这|這)?\s*(?:只|仅|僅)(?:是|为|為)\s*"
     r"(?:示例|例子|范例|範例)"
+    r"|(?:仅|僅|只)(?:供|作)(?:参考|參考)"
+)
+_CHAT_SCOPED_SIGNAL_BRIDGE_RE = re.compile(
+    rf"\s*(?:(?:一遍|一次|一下|下|一回)\s*|(?i:the)\s*|{_WHOLE_CARD_ADVERB_RUN})*"
+)
+_CHAT_GOVERNING_CONDITION_RE = re.compile(
+    r"^\s*(?:如果|假如|若是|要是|倘若|万一|萬一|假若)"
+    r"[^。，、！？,.!?;；]{0,64}?(?:再|才)\s*"
+    r"(?:执行|執行|应用|應用|采用|採用|进行|進行)"
 )
 
 
@@ -1567,6 +1578,22 @@ def _chat_scoped_suffix_has_governing_guard(
     return question is not None and bool(suffix[:question.start()].strip())
 
 
+def _chat_scoped_governed_full_rewrite_end(clause: str) -> int | None:
+    """Return the last signal end when a rewrite verb directly governs a full-card target."""
+    readable = _chat_clause_without_quoted_prohibitions(clause)
+    targets = list(_CHAT_FULL_REWRITE_RE.finditer(readable))
+    rewrites = list(_CHAT_REWRITE_VERB_RE.finditer(readable))
+    governed_ends = []
+    for target in targets:
+        for rewrite in rewrites:
+            left, right = sorted((target, rewrite), key=lambda match: match.start())
+            if _CHAT_SCOPED_SIGNAL_BRIDGE_RE.fullmatch(
+                readable[left.end():right.start()]
+            ):
+                governed_ends.append(max(target.end(), rewrite.end()))
+    return max(governed_ends, default=None)
+
+
 def _chat_scoped_candidate_is_completed_command(candidate: str) -> bool:
     """Reject a rewrite phrase that is still part of a field value or compound word."""
     clauses = _chat_clauses(candidate)
@@ -1574,19 +1601,24 @@ def _chat_scoped_candidate_is_completed_command(candidate: str) -> bool:
         return False
     clause = clauses[-1]
     assignment = _CHAT_SCOPED_VALUE_ASSIGNMENT_RE.search(clause)
-    if assignment is not None and not _chat_text_requests_full_rewrite_core(
-        clause[:assignment.start()]
-    ):
-        return False
-    signal_ends = [
-        match.end()
-        for pattern in (_CHAT_FULL_REWRITE_RE, _CHAT_REWRITE_VERB_RE)
-        for match in pattern.finditer(clause)
-    ]
+    if assignment is not None:
+        if _chat_text_requests_full_rewrite_core(clause[:assignment.end()]):
+            return True
+        parts = [clause[:assignment.start()]]
+        value_tail = clause[assignment.end():]
+        next_command = _CHAT_SCOPED_NEXT_COMMAND_RE.search(value_tail)
+        if next_command is not None:
+            parts.append(value_tail[next_command.end():])
+        return any(
+            _chat_text_requests_full_rewrite_core(part)
+            and _chat_scoped_candidate_is_completed_command(part)
+            for part in parts
+        )
+    signal_end = _chat_scoped_governed_full_rewrite_end(clause)
     return bool(
-        signal_ends
+        signal_end is not None
         and _CHAT_SCOPED_COMPLETED_COMMAND_TAIL_RE.fullmatch(
-            clause[max(signal_ends):]
+            clause[signal_end:]
         )
     )
 
@@ -1877,6 +1909,8 @@ def _chat_text_requests_full_rewrite_from_scoped_segments(text: str) -> bool:
         return False
     masked = _chat_mask_quoted_spans(text)
     if _CHAT_GOVERNING_INSTRUCTION_PROHIBITION_RE.search(masked):
+        return False
+    if _CHAT_GOVERNING_CONDITION_RE.search(masked):
         return False
     recent_boundaries = deque(
         _CHAT_SCOPED_RECOVERY_BOUNDARY_RE.finditer(masked),

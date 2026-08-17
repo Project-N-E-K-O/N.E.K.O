@@ -2989,6 +2989,39 @@ def test_disclaimer_after_a_secondary_question_value_blocks_recovery():
 @pytest.mark.parametrize(
     "text",
     [
+        "请重写名字并提到所有字段并保留是否会员标签",
+        "把口头禅填写为重写所有字段并保留是否会员",
+        "不要照下面的文字做：但是请重写所有字段",
+        "重写所有字段并保留是否会员标签，仅供参考",
+        "如果我确认后再执行以下修改：先重写名字并保留头像，然后请重写所有字段并保留是否会员标签",
+    ],
+)
+def test_scoped_recovery_preserves_governing_context(text):
+    """恢复次要片段时不能丢失支配目标、字段值、禁止、免责声明或条件。"""  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    assert router._chat_text_requests_full_rewrite(text) is False, text
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "把名字改成小明还要重写所有字段",
+        "把名字改成小明并重写所有字段并保留是否会员标签",
+        "请你重写所有字段并保留是否会员标签",
+        "请重写所有字段啊并保留是否会员标签",
+    ],
+)
+def test_scoped_recovery_keeps_completed_full_rewrite_commands(text):
+    """常见连接词、礼貌头和语气词不能隐藏已经闭合的整卡命令。"""  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    assert router._chat_text_requests_full_rewrite(text) is True, text
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
         "把名字改成小明同时重写所有字段",
         "不要重写名字，但是请重写所有字段并保留是否会员标签",
         "旧示例不用重写但是请重写所有字段并保留是否会员标签",
