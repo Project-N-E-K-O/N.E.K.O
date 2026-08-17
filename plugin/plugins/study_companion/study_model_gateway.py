@@ -112,6 +112,7 @@ def _runtime_transport(model: str, base_url: str, provider_type: str) -> str:
         return "unsupported"
     try:
         parsed = urlsplit(base_url)
+        port = parsed.port
     except ValueError:
         return "unsupported"
     host = str(parsed.hostname or "").lower().rstrip(".")
@@ -124,7 +125,7 @@ def _runtime_transport(model: str, base_url: str, provider_type: str) -> str:
         and parsed.scheme.lower() == "https"
         and host in _DASHSCOPE_HOSTS
         and path == "/api/v1"
-        and parsed.port is None
+        and port is None
         and parsed.username is None
         and parsed.password is None
         and not parsed.query

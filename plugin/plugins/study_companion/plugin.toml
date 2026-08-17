@@ -71,7 +71,7 @@ solution_narration_enabled = true
 general_narration_enabled = true
 
 [llm]
-llm_call_timeout_seconds = 75
+llm_call_timeout_seconds = 120
 llm_vision_enabled = false
 llm_vision_max_image_px = 768
 

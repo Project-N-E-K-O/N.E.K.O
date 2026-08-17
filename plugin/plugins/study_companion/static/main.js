@@ -1703,11 +1703,12 @@ function ensureConfigSection(config, key) {
 }
 
 function syncCommunicationControls(saving = false) {
+  if (!settingsCommunicationEnabled) return;
   const enabled = settingsCommunicationEnabled.checked;
   settingsCommunicationEnabled.disabled = saving;
-  settingsSolutionNarrationEnabled.disabled = saving || !enabled;
-  settingsGeneralNarrationEnabled.disabled = saving || !enabled;
-  settingsCommunicationRequiresEnabled.hidden = enabled;
+  if (settingsSolutionNarrationEnabled) settingsSolutionNarrationEnabled.disabled = saving || !enabled;
+  if (settingsGeneralNarrationEnabled) settingsGeneralNarrationEnabled.disabled = saving || !enabled;
+  if (settingsCommunicationRequiresEnabled) settingsCommunicationRequiresEnabled.hidden = enabled;
 }
 
 function syncSettingsSavingControls(saving = false) {
@@ -2358,7 +2359,7 @@ async function bootstrap() {
     });
   }
   if (settingsModelRefreshBtn) {
-    settingsModelRefreshBtn.addEventListener('click', () => loadSettingsConfig(true));
+    settingsModelRefreshBtn.addEventListener('click', () => StudyModelRuntime.refresh(callPlugin, t, tf));
   }
   if (settingsDataSaveBtn) {
     settingsDataSaveBtn.addEventListener('click', () => {
@@ -2447,7 +2448,7 @@ async function bootstrap() {
     });
   });
   await refreshStatus();
-  await loadPracticeScope({ silent: true });
+  await loadPracticeScope({ silent: true }).catch(() => null);
   await loadQuestionContext({ silent: true });
 }
 

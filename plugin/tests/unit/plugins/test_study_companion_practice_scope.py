@@ -14,6 +14,19 @@ from plugin.plugins.study_companion.practice_scope import (
 pytestmark = pytest.mark.unit
 
 
+def test_filter_question_params_deduplicates_primary_retry_candidate() -> None:
+    candidate = {"id": "wrong-1", "topic_id": "topic-1"}
+    filtered = filter_question_params_to_scope(
+        {
+            "retry_wrong_question": candidate,
+            "retry_wrong_questions": [candidate],
+        },
+        {"topic-1"},
+    )
+
+    assert filtered["retry_wrong_questions"] == [candidate]
+
+
 def _topic(
     topic_id: str,
     *,

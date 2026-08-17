@@ -947,8 +947,8 @@ async def test_study_status_uses_plugin_page_locale_without_persisting_it(
         result = await plugin.study_status(locale="zh-TW")
 
         assert isinstance(result, Ok)
-        assert result.value["config"]["language"] == "zh-TW"
-        assert plugin._cfg.language == "zh-TW"
+        assert result.value["config"]["language"] == "en"
+        assert plugin._cfg.language == "en"
         assert plugin._agent is not None
         assert plugin._agent._config is plugin._cfg
         assert "language" not in (plugin._store.get_raw("config") or {})
@@ -969,6 +969,27 @@ def test_study_companion_pages_forward_current_locale_to_plugin_entries() -> Non
     assert "}, [props.locale]);" in hosted_source
     assert "typeof window.I18n.lang === 'function'" in static_source
     assert "createRun(entryId, { ...args, locale }, deadline, signal)" in static_source
+
+
+def test_reviewed_entry_context_contracts_remain_session_local() -> None:
+    plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
+    status = (plugin_dir / "entry_status_entries.py").read_text(encoding="utf-8")
+    explain = (plugin_dir / "entry_tutor_explain_entries.py").read_text(encoding="utf-8")
+    events = (plugin_dir / "entry_communication_tutor_events.py").read_text(encoding="utf-8")
+    answer = " ".join(
+        (plugin_dir / "entry_tutor_answer_entries.py")
+        .read_text(encoding="utf-8")
+        .split()
+    )
+    questions = (plugin_dir / "entry_tutor_question_entries.py").read_text(encoding="utf-8")
+
+    assert "self._cfg.language = page_locale" not in status
+    assert "target_lanlan = self._resolve_study_target_lanlan" in explain
+    assert 'payload["target_lanlan"] = normalized_target' in events
+    assert "supplied_question_id and state_question_id" in answer
+    assert "supplied_attempt_id and state_attempt_id" in answer
+    assert ".store.list_topics(limit=5000)" in questions
+    assert 'code="PRACTICE_SCOPE_INVALIDATED"' in questions
 
 
 @pytest.mark.asyncio
@@ -6464,7 +6485,7 @@ def test_study_companion_explain_timeouts_cover_vision_solving() -> None:
     assert answer_meta.timeout == 70.0
     assert 120.0 > submit_meta.timeout
     assert 120.0 > meta.timeout
-    assert "llm_call_timeout_seconds = 75" in plugin_toml
+    assert "llm_call_timeout_seconds = 120" in plugin_toml
     for entry_timeout in (
         submit_meta.timeout,
         meta.timeout,
@@ -6472,7 +6493,7 @@ def test_study_companion_explain_timeouts_cover_vision_solving() -> None:
         answer_meta.timeout,
     ):
         assert entry_timeout > 60.0
-    assert llm_timeout == 75.0
+    assert llm_timeout == 120.0
 
 
 def test_study_companion_static_knowledge_map_groups_by_base_library_hierarchy() -> None:

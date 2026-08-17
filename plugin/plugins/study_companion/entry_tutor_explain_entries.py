@@ -126,7 +126,7 @@ class _TutorExplainEntriesMixin:
         timeout=105.0,
         llm_result_fields=["summary", "reply", "diagnostic"],
     )
-    async def study_submit_image(self, image_base64: str, text: str = "", **_):
+    async def study_submit_image(self, image_base64: str, text: str = "", **kwargs):
         try:
             image_payload = _normalize_submitted_image_payload(image_base64)
         except ValueError as exc:
@@ -143,6 +143,7 @@ class _TutorExplainEntriesMixin:
         return await self.study_explain_text(
             text=source_text,
             vision_image_base64=image_payload,
+            **kwargs,
         )
 
     @ui.action()
@@ -164,10 +165,11 @@ class _TutorExplainEntriesMixin:
         llm_result_fields=["summary", "reply", "diagnostic"],
     )
     async def study_explain_text(
-        self, text: str = "", vision_image_base64: str = "", **_
+        self, text: str = "", vision_image_base64: str = "", **kwargs
     ):
         if self._agent is None:
             return Err(SdkError("study tutor agent is not initialized"))
+        target_lanlan = self._resolve_study_target_lanlan(kwargs)
         started_monotonic = monotonic()
         primary_deadline_monotonic = (
             started_monotonic + _PRIMARY_EXPLAIN_TIMEOUT_SECONDS
@@ -459,7 +461,8 @@ class _TutorExplainEntriesMixin:
                 )
                 if sections is not None:
                     narration_scheduled = await self._emit_solution_completed_event(
-                        sections
+                        sections,
+                        target_lanlan=target_lanlan,
                     )
                 if narration_scheduled:
                     narration_status = "scheduled"
@@ -525,6 +528,7 @@ class _TutorExplainEntriesMixin:
                         await self._emit_general_response_completed_event(
                             response_mode=general_response_mode,
                             content=prepared_general_content,
+                            target_lanlan=target_lanlan,
                         )
                     )
                     if general_narration_scheduled:

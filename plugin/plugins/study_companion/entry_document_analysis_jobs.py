@@ -126,7 +126,12 @@ class _DocumentAnalysisJobsEntriesMixin:
                 "document_name": {"type": "string", "maxLength": 255},
                 "document_type": {
                     "type": "string",
-                    "enum": ["text/plain", "text/markdown"],
+                    "enum": [
+                        "text/plain",
+                        "text/markdown",
+                        "application/pdf",
+                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    ],
                 },
                 "document_text": {
                     "type": "string",

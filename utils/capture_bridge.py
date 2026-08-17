@@ -391,7 +391,7 @@ async def request_capture_region(
                 _pending_by_client.get(client.lanlan_name, {}).pop(request_id, None)
 
             if isinstance(response, dict) and response.get("canceled") is True:
-                return response
+                return {"success": False, "canceled": True}
             return _validate_response_payload(response)
     finally:
         async with _interactive_state_lock:

@@ -228,7 +228,11 @@ def filter_question_params_to_scope(
         if isinstance(item, Mapping) and _candidate_topic_id(item) in eligible
     ]
     existing_retry = filtered.get("retry_wrong_question")
-    if isinstance(existing_retry, Mapping) and _candidate_topic_id(existing_retry) in eligible:
+    if (
+        isinstance(existing_retry, Mapping)
+        and _candidate_topic_id(existing_retry) in eligible
+        and dict(existing_retry) not in retry_candidates
+    ):
         retry_candidates.insert(0, dict(existing_retry))
     filtered["retry_wrong_questions"] = retry_candidates
     filtered["retry_wrong_question"] = retry_candidates[0] if retry_candidates else {}

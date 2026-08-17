@@ -20,6 +20,13 @@ PLUGIN_DIR = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
 SURFACES_DIR = PLUGIN_DIR / "surfaces"
 
 
+def _javascript_function(source: str, name: str) -> str:
+    start = source.index(f"function {name}")
+    end = source.find("\nfunction ", start + 1)
+    assert end > start, f"could not find the end of JavaScript function {name}"
+    return source[start:end]
+
+
 SURFACE_FILES = {
     "daily-goal-editor": "daily_goal_editor.tsx",
     "due-review-panel": "due_review_panel.tsx",
@@ -98,8 +105,7 @@ def test_study_explain_surfaces_expose_general_narration_outcomes() -> None:
         assert "ui.error.general_narration_degraded" in source
         assert "ui.error.general_narration_runtime_unavailable" in source
         assert "ui.error.general_narration_delivery_failed" in source
-        formatter = source[source.index("function formatGeneralNarrationNotice") :]
-        formatter = formatter[: formatter.index("\n}") + 2]
+        formatter = _javascript_function(source, "formatGeneralNarrationNotice")
         assert "data.reply" not in formatter
 
     assert "formatGeneralNarrationNotice(data, t)" in hosted
@@ -234,8 +240,7 @@ def test_study_explain_surfaces_render_backend_knowledge_guidance_evidence() -> 
         assert "status === 'not_applicable'" in source
         assert "knowledge_guidance_focus_topic" in source
         assert "knowledge_guidance_related_topics" in source
-        formatter = source[source.index("function formatKnowledgeGuidanceEvidence") :]
-        formatter = formatter[: formatter.index("\n}\n") + 3]
+        formatter = _javascript_function(source, "formatKnowledgeGuidanceEvidence")
         assert "data.reply" not in formatter
 
 

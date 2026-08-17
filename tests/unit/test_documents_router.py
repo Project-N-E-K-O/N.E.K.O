@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import io
 
 import pytest
@@ -50,6 +51,22 @@ def test_plugin_server_registers_hosted_document_parse_route():
 
     assert len(matching) == 1
     assert "POST" in matching[0].methods
+
+
+@pytest.mark.unit
+def test_plugin_server_redirects_model_settings_to_main_server(monkeypatch):
+    import config
+
+    monkeypatch.setattr(config, "MAIN_SERVER_PORT", 49123)
+    app = build_plugin_server_app()
+    route = next(
+        route for route in app.routes if getattr(route, "path", "") == "/api_key"
+    )
+
+    response = asyncio.run(route.endpoint())
+
+    assert response.status_code == 307
+    assert response.headers["location"] == "http://127.0.0.1:49123/api_key"
 
 
 @pytest.mark.unit

@@ -11,10 +11,23 @@ from plugin.plugins.study_companion.study_model_gateway import (
     StudyModelGateway,
     StudyModelResult,
     StudyModelRuntimeSnapshot,
+    _runtime_transport,
 )
 
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.mark.parametrize("port", ["notaport", "70000"])
+def test_runtime_transport_rejects_invalid_ports(port: str) -> None:
+    assert (
+        _runtime_transport(
+            "qwen-plus",
+            f"https://dashscope.aliyuncs.com:{port}/api/v1",
+            "openai_compatible",
+        )
+        == "unsupported"
+    )
 
 
 class _Logger:

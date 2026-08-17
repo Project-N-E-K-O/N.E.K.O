@@ -115,6 +115,35 @@ async def test_region_request_uses_distinct_message_and_preserves_cancel():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_region_cancel_response_discards_untrusted_extra_fields():
+    sock = _Sock()
+    capture_bridge.mark_capture_client("neko", sock, _payload(True))
+
+    async def _replier():
+        await sock.send_event.wait()
+        import json
+
+        request = json.loads(sock.sent[-1])
+        capture_bridge.resolve_capture_response(
+            "neko",
+            {
+                "request_id": request["request_id"],
+                "success": False,
+                "canceled": True,
+                "image": "untrusted-large-payload",
+                "unexpected": "value",
+            },
+        )
+
+    reply_task = asyncio.create_task(_replier())
+    result = await capture_bridge.request_capture_region({}, timeout=1.0)
+    await reply_task
+
+    assert result == {"success": False, "canceled": True}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_region_request_targets_the_explicit_lanlan_renderer():
     requesting_sock = _Sock()
     newest_sock = _Sock()

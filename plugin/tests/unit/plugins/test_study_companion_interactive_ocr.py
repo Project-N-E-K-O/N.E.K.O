@@ -65,6 +65,7 @@ async def test_interactive_capture_waits_then_posts_the_bounded_selection_contra
         sleeps.append(delay)
 
     client = InteractiveScreenshotClient(
+        base_url="http://127.0.0.1:48911",
         lanlan_name="requesting",
         transport=httpx.MockTransport(_handler),
         sleep=_sleep,
@@ -124,6 +125,23 @@ async def test_interactive_capture_surfaces_safe_core_error_codes(
     )
 
     with pytest.raises(InteractiveCaptureError, match=error_code):
+        await client.capture_region()
+
+
+@pytest.mark.asyncio
+async def test_interactive_capture_maps_bridge_error_to_localized_code() -> None:
+    client = InteractiveScreenshotClient(
+        base_url="http://127.0.0.1:48911",
+        activation_delay_seconds=0,
+        transport=httpx.MockTransport(
+            lambda _request: httpx.Response(
+                502,
+                json={"success": False, "error": "bridge_error"},
+            )
+        ),
+    )
+
+    with pytest.raises(InteractiveCaptureError, match="no_renderer"):
         await client.capture_region()
 
 

@@ -110,7 +110,17 @@ def _build_ocr_readiness(
 ) -> dict[str, Any]:
     enabled = bool(config.ocr_enabled)
     selected_backend = str(config.ocr_backend_selection or "rapidocr").strip().lower()
-    capture_ready = dxcam.get("installed") is True
+    capture_backend = str(config.ocr_capture_backend or "auto").strip().lower()
+    if capture_backend == "auto":
+        capture_backend = "dxcam"
+    if capture_backend == "dxcam":
+        capture_ready = dxcam.get("installed") is True
+    elif capture_backend in {"mss", "pyautogui"}:
+        capture_ready = importlib.util.find_spec(capture_backend) is not None
+    elif capture_backend == "printwindow":
+        capture_ready = sys.platform == "win32"
+    else:
+        capture_ready = False
 
     selected_status: dict[str, Any] | None
     if selected_backend == "rapidocr":
@@ -142,6 +152,8 @@ def _build_ocr_readiness(
                 if detail == "missing_languages"
                 else "tesseract_missing"
             )
+    elif capture_backend not in {"dxcam", "mss", "pyautogui", "printwindow"}:
+        diagnostic = "unsupported_capture_backend"
     elif not capture_ready:
         diagnostic = "capture_dependency_missing"
     else:

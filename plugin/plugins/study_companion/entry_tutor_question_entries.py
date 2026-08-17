@@ -295,8 +295,8 @@ class _TutorQuestionEntriesMixin:
         eligible = set(scope.eligible_topic_ids)
         topics = [
             topic
-            for topic_id in scope.eligible_topic_ids
-            if (topic := self._knowledge_tracker.store.get_topic(topic_id))
+            for topic in self._knowledge_tracker.store.list_topics(limit=5000)
+            if str(topic.get("id") or "") in eligible
         ]
         mastery_overview = self._knowledge_tracker.store.list_mastery_overview(
             limit=5000
@@ -309,6 +309,11 @@ class _TutorQuestionEntriesMixin:
         ordered_topics = ordered_scope_topics(
             topics, attempted_topic_ids=set(mastery_by_topic)
         )
+        if not ordered_topics:
+            raise SdkError(
+                "practice scope no longer contains any topics",
+                code="PRACTICE_SCOPE_INVALIDATED",
+            )
         unattempted = [
             topic
             for topic in ordered_topics

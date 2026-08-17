@@ -26,6 +26,7 @@
     const skipButton = document.getElementById('memoryDeckSkipBtn');
     let dialogMode = '';
     let dialogResolve = null;
+    let dialogPromise = null;
     let busy = false;
     let lastSelectedDeckId = '';
     let itemTypeOverridden = false;
@@ -82,6 +83,7 @@
     function finishDialog(result) {
       const resolve = dialogResolve;
       dialogResolve = null;
+      dialogPromise = null;
       dialogMode = '';
       if (dialog?.open) dialog.close();
       if (resolve) resolve(result);
@@ -91,6 +93,7 @@
       if (busy || !dialog || typeof dialog.showModal !== 'function') {
         return Promise.resolve(null);
       }
+      if (dialogPromise) return dialogPromise;
       dialogMode = mode;
       const standalone = mode === 'standalone';
       if (dialogLabel) dialogLabel.textContent = t(
@@ -117,11 +120,12 @@
       }
       if (deckTypeSelect) deckTypeSelect.value = 'custom';
       if (skipButton) skipButton.hidden = mode !== 'first-card';
-      return new Promise((resolve) => {
+      dialogPromise = new Promise((resolve) => {
         dialogResolve = resolve;
         dialog.showModal();
         nameInput?.focus();
       });
+      return dialogPromise;
     }
 
     async function submitDialog(event) {

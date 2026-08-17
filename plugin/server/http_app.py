@@ -13,7 +13,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from starlette.responses import Response
+from starlette.responses import RedirectResponse, Response
 
 from plugin.logging_config import get_logger
 from utils.host_origin_guard import HostOriginGuardMiddleware
@@ -184,6 +184,15 @@ async def plugin_server_lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 def build_plugin_server_app(title: str = "N.E.K.O User Plugin Server") -> FastAPI:
     app = FastAPI(title=title, lifespan=plugin_server_lifespan)
+
+    @app.get("/api_key", include_in_schema=False)
+    async def redirect_model_settings() -> RedirectResponse:
+        import config
+
+        return RedirectResponse(
+            url=f"http://127.0.0.1:{int(config.MAIN_SERVER_PORT)}/api_key",
+            status_code=307,
+        )
 
     # Market 域名通过 settings 配置，支持自部署
     from plugin.settings import MARKET_ORIGINS as _market_origins

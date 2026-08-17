@@ -47,3 +47,18 @@ def test_document_diagnostic_i18n_keys_are_complete_and_consistent() -> None:
             bundle["entries.cancel_document_analysis.name"],
         }
         assert len(entry_names) == 4, f"{locale} document entry names collide"
+
+
+def test_portuguese_document_errors_are_localized() -> None:
+    path = (
+        Path(__file__).resolve().parents[3]
+        / "plugins"
+        / "study_companion"
+        / "i18n"
+        / "pt.json"
+    )
+    payload = json.loads(path.read_text(encoding="utf-8"))
+
+    assert payload["ui.error.document_invalid_kind"] == "Escolha um tipo de documento compatível."
+    assert payload["ui.error.document_type_mismatch"] == "O tipo do documento não corresponde ao nome do arquivo."
+    assert payload["ui.error.document_unsupported_locale"] == "O idioma selecionado não é compatível."

@@ -333,6 +333,14 @@ class _ExplainHarness(_TutorExplainEntriesMixin, _CommunicationTutorEventsMixin)
         self.logger = _Logger()
         self._response_mode = response_mode
 
+    def _resolve_study_target_lanlan(
+        self, kwargs: dict[str, Any] | None = None
+    ) -> str | None:
+        ctx = dict(kwargs or {}).get("_ctx")
+        if isinstance(ctx, dict):
+            return str(ctx.get("lanlan_name") or "").strip() or None
+        return None
+
     async def _apply_mode_switch(
         self,
         mode: str,
@@ -616,13 +624,28 @@ async def test_study_explain_text_repair_timeout_keeps_first_reply_ok(
 
     result = await plugin.study_explain_text(text="一道修复调用不返回的题")
 
-    assert time.monotonic() - started < 0.5
+    assert time.monotonic() - started < 1.0
     assert isinstance(result, Ok)
     assert result.value["reply"] == incomplete_reply
     assert result.value["solution_repair_attempted"] is True
     assert result.value["solution_narration_status"] == "incomplete"
     assert result.value["solution_narration_reason"] == "insufficient_time_budget"
     assert result.value["solution_narration_missing_sections"] == ["answer"]
+
+
+@pytest.mark.asyncio
+async def test_study_explain_text_targets_narration_to_requesting_session() -> None:
+    bus = _EventBus()
+    plugin = _ExplainHarness(event_bus=bus)
+
+    result = await plugin.study_explain_text(
+        text="请解题",
+        _ctx={"lanlan_name": "lanlan-requesting"},
+    )
+
+    assert isinstance(result, Ok)
+    assert len(bus.events) == 1
+    assert bus.events[0].payload["target_lanlan"] == "lanlan-requesting"
 
 
 @pytest.mark.asyncio

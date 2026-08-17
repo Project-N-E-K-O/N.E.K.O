@@ -176,6 +176,8 @@ class InteractiveScreenshotClient:
             return InteractiveCaptureResult(canceled=True)
         if response.status_code != 200 or payload.get("success") is False:
             error_code = str(payload.get("error") or f"http_status_{response.status_code}")
+            if error_code == "bridge_error":
+                error_code = "no_renderer"
             raise InteractiveCaptureError(f"interactive_capture: {error_code}")
 
         data_url = payload.get("data")

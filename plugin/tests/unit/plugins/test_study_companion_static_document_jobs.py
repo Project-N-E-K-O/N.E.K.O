@@ -49,15 +49,30 @@ def test_static_document_analysis_uses_cancellable_long_job_contract() -> None:
     assert script_tags == sorted(script_tags)
 
 
+def test_static_document_review_contracts_cover_parsed_types_and_recovery_races() -> None:
+    plugin_root = STATIC.parent
+    entry = (plugin_root / "entry_document_analysis_jobs.py").read_text(encoding="utf-8")
+    controller = (STATIC / "document-controller.js").read_text(encoding="utf-8")
+
+    assert '"application/pdf"' in entry
+    assert '"application/vnd.openxmlformats-officedocument.wordprocessingml.document"' in entry
+    assert "const analysisErrors = new Set([" in controller
+    assert "model_unavailable: 'model_not_supported'" in controller
+    assert "analysisErrors.has(code)" in controller
+    resume_start = controller.index("async function resumeDocumentAnalysis")
+    resume_end = controller.index("function handlePageHide", resume_start)
+    resume = controller[resume_start:resume_end]
+    assert "if (documentRequestController === controller)" in resume
+
+
 def test_static_document_busy_isolated_and_budget_hints_match_backend_modes() -> None:
     controller = (STATIC / "document-controller.js").read_text(encoding="utf-8")
     style = (STATIC / "style.css").read_text(encoding="utf-8")
 
-    busy = controller[
-        controller.index("function setDocumentBusy") : controller.index(
-            "function documentErrorMessage"
-        )
-    ]
+    busy_start = controller.index("function setDocumentBusy")
+    busy_end = controller.index("function documentErrorMessage")
+    assert busy_start < busy_end
+    busy = controller[busy_start:busy_end]
     assert "setPanelBusy" not in busy
     assert "studyDocumentCard.dataset.busy" in busy
     assert "tokens > 160000 ? 'document_too_long'" in controller

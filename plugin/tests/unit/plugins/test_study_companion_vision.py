@@ -7,6 +7,7 @@ import threading
 import time
 from types import MethodType, SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 from PIL import Image
@@ -912,6 +913,7 @@ async def test_qwen_native_deadline_exhaustion_skips_sdk_request(
     monkeypatch.setattr(config_manager, "get_config_manager", lambda: _ConfigManager())
     monkeypatch.setattr(qwen_native_client, "AioGeneration", _FakeGeneration)
     client = QwenNativeClient(logger=_Logger())
+    monkeypatch.setattr(client, "_record_usage", AsyncMock())
 
     with pytest.raises(QwenNativeError) as raised:
         await client.call(
@@ -961,7 +963,7 @@ async def test_qwen_native_timeout_cancels_sdk_call_without_background_close_tas
     current = asyncio.current_task()
     tasks_before = {task for task in asyncio.all_tasks() if task is not current}
 
-    with pytest.raises(asyncio.TimeoutError):
+    with pytest.raises(QwenNativeError) as raised:
         await client.call(
             [{"role": "user", "content": "hello"}],
             operation="concept_explain",
@@ -973,7 +975,44 @@ async def test_qwen_native_timeout_cancels_sdk_call_without_background_close_tas
         task for task in asyncio.all_tasks() if task is not current and not task.done()
     }
     assert cancelled.is_set()
+    assert raised.value.diagnostic == "timeout"
     assert tasks_after <= tasks_before
+
+
+@pytest.mark.asyncio
+async def test_qwen_native_network_failure_is_normalized(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from plugin.plugins.study_companion import qwen_native_client
+    from utils import config_manager
+
+    class _ConfigManager:
+        def get_model_api_config(self, group: str) -> dict[str, str]:
+            assert group == "agent"
+            return {
+                "base_url": "https://dashscope.aliyuncs.com/api/v1",
+                "model": "qwen-plus",
+                "api_key": "text-key",
+            }
+
+    class _FakeGeneration:
+        @staticmethod
+        async def call(**_kwargs: Any) -> SimpleNamespace:
+            raise ConnectionError("network unavailable")
+
+    monkeypatch.setattr(config_manager, "get_config_manager", lambda: _ConfigManager())
+    monkeypatch.setattr(qwen_native_client, "AioGeneration", _FakeGeneration)
+    client = QwenNativeClient(logger=_Logger())
+    monkeypatch.setattr(client, "_record_usage", AsyncMock())
+
+    with pytest.raises(QwenNativeError) as raised:
+        await client.call(
+            [{"role": "user", "content": "hello"}],
+            operation="concept_explain",
+            deadline=time.monotonic() + 1.0,
+        )
+
+    assert raised.value.diagnostic == "provider_unavailable"
 
 
 @pytest.mark.asyncio

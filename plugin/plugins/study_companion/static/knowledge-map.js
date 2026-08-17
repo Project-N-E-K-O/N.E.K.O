@@ -31,14 +31,15 @@ function knowledgePracticeScopeFromNode(node = {}) {
   const courseFamily = courseFamilyValueFromNode(node);
   const topicId = topicIdFromNode(node);
   if (!stage || !subject || !topicId || (stage === 'college' && !courseFamily)) return null;
+  const chapter = String(node.chapter || '').trim();
   return {
     schema_version: 1,
     mode: 'explicit_topic',
     stage,
     subject,
     course_family: courseFamily,
-    chapter: String(node.chapter || '').trim(),
-    unit: String(node.unit || '').trim(),
+    chapter,
+    unit: chapter ? String(node.unit || '').trim() : '',
     topic_id: topicId,
   };
 }
@@ -53,14 +54,15 @@ function knowledgeCurrentPracticeScope(nodes = []) {
   const courseFamily = String(knowledgeMapCourseFamily || '').trim()
     || (availableFamilies.length === 1 ? availableFamilies[0] : '');
   if (stage === 'college' && !courseFamily) return null;
+  const chapter = String(knowledgeMapChapter || '').trim();
   return {
     schema_version: 1,
     mode: 'explicit_scope',
     stage,
     subject,
     course_family: courseFamily,
-    chapter: String(knowledgeMapChapter || '').trim(),
-    unit: String(knowledgeMapUnit || '').trim(),
+    chapter,
+    unit: chapter ? String(knowledgeMapUnit || '').trim() : '',
   };
 }
 

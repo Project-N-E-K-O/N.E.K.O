@@ -115,8 +115,15 @@
         document_parse_timeout: 'parse_timeout',
         document_parse_permission_denied: 'parse_permission_denied',
       };
-      const analysisErrors = 'timeout rate_limited authentication_failed model_not_supported provider_unavailable unsupported_provider context_limit_exceeded vision_not_supported agent_quota_exceeded invalid_endpoint invalid_request unsafe_model_output llm_call_failed';
-      return t(`ui.error.document_${analysisErrors.includes(code) ? `analysis_${code}` : validation[code] || code.replace(/^document_/, '') || 'analysis_failed'}`);
+      const analysisErrors = new Set([
+        'timeout', 'rate_limited', 'authentication_failed', 'model_not_supported',
+        'model_unavailable', 'provider_unavailable', 'unsupported_provider',
+        'context_limit_exceeded', 'vision_not_supported', 'agent_quota_exceeded',
+        'invalid_endpoint', 'invalid_request', 'unsafe_model_output', 'llm_call_failed',
+      ]);
+      const analysisAliases = { model_unavailable: 'model_not_supported' };
+      const analysisCode = analysisAliases[code] || code;
+      return t(`ui.error.document_${analysisErrors.has(code) ? `analysis_${analysisCode}` : validation[code] || code.replace(/^document_/, '') || 'analysis_failed'}`);
     }
 
     const documentJobs = {
@@ -615,8 +622,10 @@
         setStatus(t('ui.status.error', 'Error'));
         setReply(/timed out|timeout/i.test(error.message) ? t('ui.error.document_analysis_timeout') : formatPluginError(error));
       } finally {
-        if (documentRequestController === controller) documentRequestController = null;
-        setDocumentBusy(false);
+        if (documentRequestController === controller) {
+          documentRequestController = null;
+          setDocumentBusy(false);
+        }
       }
     }
 

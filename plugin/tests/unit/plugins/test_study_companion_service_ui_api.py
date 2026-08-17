@@ -10,6 +10,7 @@ from plugin.plugins._shared.rapidocr import _runtime as shared_rapidocr_runtime
 from plugin.plugins._shared.rapidocr import rapidocr_support as shared_rapidocr_support
 from plugin.plugins.study_companion.models import OcrSnapshot, StudyConfig, TutorReply
 from plugin.plugins.study_companion.service import (
+    _build_ocr_readiness,
     _available_tesseract_languages,
     build_dependency_status,
     build_explain_payload,
@@ -25,6 +26,28 @@ from plugin.plugins.study_companion.ui_api import (
 )
 
 pytestmark = pytest.mark.unit
+
+
+def test_ocr_readiness_uses_selected_capture_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "plugin.plugins.study_companion.service.importlib.util.find_spec",
+        lambda name: object() if name == "mss" else None,
+    )
+    readiness = _build_ocr_readiness(
+        config=StudyConfig(
+            ocr_enabled=True,
+            ocr_backend_selection="rapidocr",
+            ocr_capture_backend="mss",
+        ),
+        rapidocr={"installed": True},
+        tesseract={"installed": False},
+        dxcam={"installed": False},
+    )
+
+    assert readiness["ready"] is True
+    assert readiness["diagnostic"] == "ready"
 
 
 class _RapidOcrWithKwargs:

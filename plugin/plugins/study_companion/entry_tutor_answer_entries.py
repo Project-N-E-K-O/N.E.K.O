@@ -67,8 +67,16 @@ class _TutorAnswerEntriesMixin:
         supplied_current_identity = bool(
             current_question_requires_identity
             and (
-                supplied_question_id == state_question_id
-                or supplied_attempt_id == state_attempt_id
+                (
+                    supplied_question_id
+                    and state_question_id
+                    and supplied_question_id == state_question_id
+                )
+                or (
+                    supplied_attempt_id
+                    and state_attempt_id
+                    and supplied_attempt_id == state_attempt_id
+                )
             )
         )
         using_current_question = (

@@ -16,6 +16,7 @@ class _CommunicationTutorEventsMixin:
         *,
         response_mode: str,
         content: str,
+        target_lanlan: str | None = None,
     ) -> bool:
         normalized_mode = str(response_mode or "").strip()
         if normalized_mode not in {
@@ -30,13 +31,10 @@ class _CommunicationTutorEventsMixin:
         bus = self._event_bus
         if bus is None:
             return False
-        event = StudyEvent(
-            name="general_response_completed",
-            payload={
-                "response_mode": normalized_mode,
-                "content": prepared_content,
-            },
-        )
+        payload = {"response_mode": normalized_mode, "content": prepared_content}
+        if normalized_target := str(target_lanlan or "").strip():
+            payload["target_lanlan"] = normalized_target
+        event = StudyEvent(name="general_response_completed", payload=payload)
         schedule_emit = getattr(bus, "schedule_emit", None)
         if callable(schedule_emit):
             try:
@@ -51,7 +49,9 @@ class _CommunicationTutorEventsMixin:
             return False
         return True
 
-    async def _emit_solution_completed_event(self, sections: dict[str, str]) -> bool:
+    async def _emit_solution_completed_event(
+        self, sections: dict[str, str], *, target_lanlan: str | None = None
+    ) -> bool:
         bus = self._event_bus
         if bus is None:
             return False
@@ -60,8 +60,10 @@ class _CommunicationTutorEventsMixin:
             "answer": str(sections.get("answer") or "").strip(),
             "transfer": str(sections.get("transfer") or "").strip(),
         }
-        if any(not value for value in payload.values()):
+        if any(not payload[key] for key in ("analysis", "answer", "transfer")):
             return False
+        if normalized_target := str(target_lanlan or "").strip():
+            payload["target_lanlan"] = normalized_target
         try:
             scheduled = bus.schedule_emit(
                 StudyEvent(name="solution_completed", payload=payload)

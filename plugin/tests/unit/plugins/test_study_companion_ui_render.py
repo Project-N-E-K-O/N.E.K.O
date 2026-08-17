@@ -1141,10 +1141,33 @@ def test_study_companion_static_dependency_ui_contract() -> None:
     assert "/ui-api/tesseract/install" in dependency_js
     assert "/ui-api/rapidocr-models" in dependency_js
     assert "new EventSource" in dependency_js
-    assert "attempt < 3" in dependency_js
+    assert "while (state.busy && state.kind === kind && state.taskId === taskId)" in dependency_js
+    assert "consecutiveFailures >= 3" in dependency_js
     assert "await refreshStatus({ updateReply: false });" in main_js
     assert "StudyDependencyController?.initialize" in main_js
     assert ".dependency-progress[hidden]" in style_css
+
+
+def test_reviewed_settings_scope_and_dialog_contracts_are_isolated() -> None:
+    main = (STATIC_DIR / "main.js").read_text(encoding="utf-8")
+    model_runtime = (STATIC_DIR / "model-runtime.js").read_text(encoding="utf-8")
+    knowledge_map = (STATIC_DIR / "knowledge-map.js").read_text(encoding="utf-8")
+    quick_card = (STATIC_DIR / "quick-card-controller.js").read_text(encoding="utf-8")
+    interactive_capture = (
+        STATIC_DIR.parent / "interactive_screenshot.py"
+    ).read_text(encoding="utf-8")
+
+    assert "StudyModelRuntime.refresh(callPlugin, t, tf)" in main
+    assert "await loadPracticeScope({ silent: true }).catch(() => null);" in main
+    assert "if (!settingsCommunicationEnabled) return;" in main
+    assert "Object.assign(Object.create(null)" in model_runtime
+    assert "STATUS_FALLBACKS[key]" in model_runtime
+    assert "model_unavailable:" in model_runtime
+    assert "unit: chapter ?" in knowledge_map
+    assert "let dialogPromise = null;" in quick_card
+    assert "if (dialogPromise) return dialogPromise;" in quick_card
+    assert 'if error_code == "bridge_error":' in interactive_capture
+    assert 'error_code = "no_renderer"' in interactive_capture
 
 def test_study_companion_neko_coach_actions_avoid_stale_ocr_and_unused_scene_cache() -> None:
     main_js = (STATIC_DIR / "main.js").read_text(encoding="utf-8")

@@ -687,6 +687,24 @@ class QwenNativeClient:
                 error.diagnostic,
             )
             raise error from exc
+        except (TimeoutError, OSError) as exc:
+            diagnostic = "timeout" if isinstance(exc, TimeoutError) else "provider_unavailable"
+            error = QwenNativeError(
+                "DashScope native request failed",
+                diagnostic=diagnostic,
+                request_id=request_id,
+                operation=operation,
+            )
+            self._logger.warning(
+                "study Qwen request failed: operation={} status_code={} "
+                "provider_code={} request_id={} diagnostic={}",
+                operation,
+                error.status_code,
+                error.provider_code,
+                error.request_id,
+                error.diagnostic,
+            )
+            raise error from exc
         except QwenNativeError as exc:
             self._logger.warning(
                 "study Qwen request failed: operation={} status_code={} "

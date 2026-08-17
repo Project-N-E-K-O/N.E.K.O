@@ -136,14 +136,20 @@
   }
 
   async function poll(kind, taskId) {
-    for (let attempt = 0; attempt < 3 && state.busy; attempt += 1) {
+    let consecutiveFailures = 0;
+    while (state.busy && state.kind === kind && state.taskId === taskId) {
       try {
         const response = await fetch(`${URLS[kind]}/${encodeURIComponent(taskId)}`);
         if (!response.ok) throw new Error('install_status_unavailable');
         await apply(kind, await response.json());
+        consecutiveFailures = 0;
         if (!state.busy) return;
       } catch (_) {
-        if (attempt === 2) await apply(kind, { status: 'failed', diagnostic: 'install_network_error' });
+        consecutiveFailures += 1;
+        if (consecutiveFailures >= 3) {
+          await apply(kind, { status: 'failed', diagnostic: 'install_network_error' });
+          return;
+        }
       }
       if (state.busy) await new Promise((resolve) => setTimeout(resolve, 900));
     }
@@ -157,7 +163,7 @@
     const source = new EventSource(`${URLS[kind]}/${encodeURIComponent(taskId)}/stream`);
     state.source = source;
     source.onmessage = (event) => {
-      try { apply(kind, JSON.parse(event.data)); } catch (_) { /* finite GET fallback handles malformed events */ }
+      try { apply(kind, JSON.parse(event.data)); } catch (_) { /* GET fallback handles malformed events */ }
     };
     source.onerror = () => {
       if (state.source !== source || !state.busy) return;

@@ -435,12 +435,7 @@ class _StatusEntriesMixin:
     )
     async def study_status(self, locale: str = "", **_):
         try:
-            page_locale = str(locale or "").strip()
-            if page_locale:
-                async with _plugin_lock(self._lock):
-                    self._cfg.language = page_locale
-                    if self._agent is not None:
-                        self._agent.update_config(self._cfg)
+            del locale
             payload = await asyncio.to_thread(self._status_payload)
             return Ok(payload)
         except Exception as exc:
