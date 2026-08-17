@@ -460,10 +460,6 @@
                 return targetUrl;
             };
             const completeInitialCommunityHandoff = async (targetUrl, initialNativeDelegate = '') => {
-                if (!isElectron) {
-                    // 先让用户看到 Community；保留 WindowProxy 仅用于随后补发 delegate。
-                    navigateBrowserPopup(targetUrl, { keepReference: true });
-                }
                 // 已登录快速路径直接复用并行取得的 delegate。仅在状态接口失败、
                 // 但 auth-status 兜底确认已登录时重试一次，避免重复解析 OAuth 会话。
                 let nativeDelegate = initialNativeDelegate;
@@ -564,6 +560,8 @@
                     if (!openElectronSocialWindow(url)) {
                         throw new Error('popup blocked');
                     }
+                } else if (!navigateBrowserPopup(url, { keepReference: true })) {
+                    throw new Error('popup blocked');
                 }
                 const initialNativeHandoff = await initialNativeHandoffPromise;
                 let communityLoggedIn = initialNativeHandoff.loginState === 'logged-in';

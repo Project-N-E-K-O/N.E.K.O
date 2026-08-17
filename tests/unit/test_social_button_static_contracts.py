@@ -125,9 +125,7 @@ def test_social_open_request_is_deduped_before_fetching_config():
     )
     helper_end = listener.index("\n            try {", helper_start)
     helper = listener[helper_start:helper_end]
-    assert helper.index("navigateBrowserPopup(targetUrl, { keepReference: true })") < helper.index(
-        "let nativeDelegate = initialNativeDelegate;"
-    )
+    assert "navigateBrowserPopup(targetUrl, { keepReference: true })" not in helper
     assert "const retryHandoff = await fetchNativeDelegate();" in helper
     assert helper.index("let nativeDelegate = initialNativeDelegate;") < helper.index(
         "openElectronSocialWindow(delegateTargetUrl.toString())"
@@ -226,7 +224,9 @@ def test_social_browser_fallback_preopens_popup_before_async_fetches():
         r"await waitForOAuthCompletion\(\s*browserOAuthTimeoutMs,\s*!isElectron\s*\)",
         listener,
     )
-    assert "navigateBrowserPopup(targetUrl, { keepReference: true })" in listener
+    assert listener.index("navigateBrowserPopup(url, { keepReference: true })") < listener.index(
+        "const initialNativeHandoff = await initialNativeHandoffPromise;"
+    )
     assert listener.index("fetch('/api/card-drop/auth-status'") < listener.index(
         "navigateBrowserPopup(authUrl, { keepReference: true })"
     )
