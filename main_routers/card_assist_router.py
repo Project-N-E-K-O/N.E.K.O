@@ -1509,15 +1509,21 @@ _CHAT_ZH_COMMAND_HEAD = (
 )
 _CHAT_ZH_CONTRAST_COMMAND_RE = re.compile(r"^\s*" + _CHAT_ZH_COMMAND_HEAD)
 _CHAT_SCOPED_NEXT_COMMAND_RE = re.compile(
-    r"(?:并|並|然后|然後|接着|接著|随后|隨後|同时|同時|再)\s*(?="
+    r"(?:并|並|然后|然後|接着|接著|随后|隨後|同时|同時|以及|再)\s*(?="
     + _CHAT_ZH_COMMAND_HEAD
     + r"|(?i:(?:please\s+)?(?:rewrite|revise|regenerate|redo|refresh)\b))"
 )
 _CHAT_GOVERNING_INSTRUCTION_PROHIBITION_RE = re.compile(
     r"(?:不要|别|別|请勿|請勿|禁止|不能|不可)\s*"
-    r"(?:执行|執行|遵循|照做|采用|採用|应用|應用)\s*"
+    r"(?:(?:执行|執行|遵循|照做|采用|採用|应用|應用)\s*"
     r"(?:这|這|以下|上述|上面)?\s*(?:条|條|个|個)?\s*"
     r"(?:指令|命令|修改|要求|内容|內容)"
+    r"|(?:按照|依照|根据|根據)\s*(?:下面|以下|上述|上面)?\s*"
+    r"(?:文字|内容|內容|指令|命令)?\s*(?:操作|执行|執行|照做))"
+)
+_CHAT_SCOPED_DISCLAIMER_RE = re.compile(
+    r"(?:以上|上述|前述|这些|這些|这|這)?\s*(?:只|仅|僅)(?:是|为|為)\s*"
+    r"(?:示例|例子|范例|範例)"
 )
 
 
@@ -1548,6 +1554,8 @@ def _chat_scoped_suffix_has_governing_guard(
     if _CHAT_POSTPOSED_NEGATION_RE.search(readable_suffix):
         return True
     if _CHAT_SCOPED_SENTENCE_FINAL_QUESTION_RE.search(readable_suffix):
+        return True
+    if _CHAT_SCOPED_DISCLAIMER_RE.search(readable_suffix):
         return True
     readable = _chat_clause_without_free_choice(readable_suffix)
     question = _CHAT_QUESTION_CLAUSE_RE.search(readable)
@@ -1829,9 +1837,13 @@ def _chat_text_requests_full_rewrite_core(text: str) -> bool:
             assignment_head = _chat_clause_without_quoted_prohibitions(
                 clause[:assignment.end()]
             )
+            target_match = _CHAT_FULL_REWRITE_RE.search(assignment_head)
+            rewrite_match = _CHAT_REWRITE_VERB_RE.search(assignment_head)
             if (
-                _CHAT_FULL_REWRITE_RE.search(assignment_head)
-                and _CHAT_REWRITE_VERB_RE.search(assignment_head)
+                target_match is not None
+                and rewrite_match is not None
+                and target_match.start() < rewrite_match.start()
+                and len(assignment_head) - rewrite_match.end() <= 1
             ):
                 return True
             parts = [clause[:assignment.start()]]
@@ -1860,9 +1872,9 @@ def _chat_text_requests_full_rewrite_from_scoped_segments(text: str) -> bool:
     """
     if not text:
         return False
-    if _CHAT_GOVERNING_INSTRUCTION_PROHIBITION_RE.search(text):
-        return False
     masked = _chat_mask_quoted_spans(text)
+    if _CHAT_GOVERNING_INSTRUCTION_PROHIBITION_RE.search(masked):
+        return False
     recent_boundaries = deque(
         _CHAT_SCOPED_RECOVERY_BOUNDARY_RE.finditer(masked),
         maxlen=_CHAT_SCOPED_RECOVERY_MAX_BOUNDARIES + 1,

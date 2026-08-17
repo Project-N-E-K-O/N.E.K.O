@@ -2932,6 +2932,13 @@ def test_single_field_assignment_values_are_not_full_rewrite_commands(text):
     assert router._chat_text_requests_full_rewrite(text) is False
 
 
+def test_command_words_inside_a_field_name_do_not_trigger_full_rewrite():
+    """字段名里的命令词不能触发整卡补全。"""  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    assert router._chat_text_requests_full_rewrite("把重写所有字段设为启用") is False
+
+
 def test_full_rewrite_after_a_field_assignment_remains_a_command():
     """字段赋值之后由连接词引出的独立整卡命令仍须进入补全路径。"""  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
@@ -2939,6 +2946,42 @@ def test_full_rewrite_after_a_field_assignment_remains_a_command():
     text = "把名字改成小明并把所有字段重写"
     assert router._chat_text_requests_full_rewrite_core(text) is True
     assert router._chat_text_requests_full_rewrite(text) is True
+
+
+def test_yiji_introduces_a_later_independent_full_rewrite_command():
+    """「以及」引出的独立整卡命令不能被当作字段值丢弃。"""  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    assert router._chat_text_requests_full_rewrite(
+        "把名字改成小明以及重写所有字段"
+    ) is True
+
+
+def test_paraphrased_instruction_prohibition_survives_contrast_recovery():
+    """转折恢复不能绕过「按照文字操作」形式的禁止。"""  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    assert router._chat_text_requests_full_rewrite(
+        "不要按照下面文字操作：但是请重写所有字段"
+    ) is False
+
+
+def test_quoted_old_prohibition_does_not_block_the_current_command():
+    """旧消息引用里的禁止不支配后续明确命令。"""  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    assert router._chat_text_requests_full_rewrite(
+        "旧消息是“不要执行这条指令”。现在请重写所有字段并保留是否会员标签"
+    ) is True
+
+
+def test_disclaimer_after_a_secondary_question_value_blocks_recovery():
+    """次要字段值后的免责声明仍然支配前面的整卡短语。"""  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    assert router._chat_text_requests_full_rewrite(
+        "重写所有字段并保留是否会员标签，以上只是示例"
+    ) is False
 
 
 @pytest.mark.parametrize(
