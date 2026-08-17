@@ -1490,6 +1490,132 @@ async def test_restart_baselines_existing_session_and_processes_only_post_mount_
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
+async def test_preexisting_session_resumes_cursor_after_candidate_gap(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    session_id = "sess-a"
+    game_id = "demo.alpha"
+    old_line = _event(
+        seq=1,
+        event_type="line_changed",
+        session_id=session_id,
+        game_id=game_id,
+        ts="2000-01-01T00:00:01Z",
+        payload={
+            "speaker": "Yukino",
+            "text": "pre-start line",
+            "line_id": "line-old",
+            "scene_id": "scene-a",
+            "route_id": "",
+        },
+    )
+    game_dir = _create_game_dir(
+        bridge_root,
+        game_id=game_id,
+        session_payload=_session(
+            game_id=game_id,
+            session_id=session_id,
+            last_seq=1,
+            started_at="2000-01-01T00:00:00Z",
+            state=_session_state(
+                text="pre-start line",
+                line_id="line-old",
+                scene_id="scene-a",
+            ),
+        ),
+        events=[old_line],
+    )
+    session_path = game_dir / "session.json"
+    events_path = game_dir / "events.jsonl"
+    plugin = GalgameBridgePlugin(_Ctx(plugin_dir, _make_effective_config(bridge_root)))
+    await plugin.startup()
+    try:
+        await plugin._poll_bridge(force=True)
+        first_new_line = _event(
+            seq=2,
+            event_type="line_changed",
+            session_id=session_id,
+            game_id=game_id,
+            ts="2026-04-21T08:35:02Z",
+            payload={
+                "speaker": "Yukino",
+                "text": "line before candidate gap",
+                "line_id": "line-before-gap",
+                "scene_id": "scene-a",
+                "route_id": "",
+            },
+        )
+        _append_event(events_path, first_new_line)
+        _write_session(
+            session_path,
+            _session(
+                game_id=game_id,
+                session_id=session_id,
+                last_seq=2,
+                started_at="2000-01-01T00:00:00Z",
+                state=_session_state(
+                    text="line before candidate gap",
+                    line_id="line-before-gap",
+                    scene_id="scene-a",
+                ),
+            ),
+        )
+        await plugin._poll_bridge(force=True)
+        before_gap = plugin._snapshot_state()
+        assert before_gap["last_seq"] == 2
+
+        session_path.unlink()
+        await plugin._poll_bridge(force=True)
+        assert plugin._snapshot_state()["active_session_id"] == ""
+
+        gap_line = _event(
+            seq=3,
+            event_type="line_changed",
+            session_id=session_id,
+            game_id=game_id,
+            ts="2026-04-21T08:35:03Z",
+            payload={
+                "speaker": "Yukino",
+                "text": "line during candidate gap",
+                "line_id": "line-during-gap",
+                "scene_id": "scene-a",
+                "route_id": "",
+            },
+        )
+        _append_event(events_path, gap_line)
+        _write_session(
+            session_path,
+            _session(
+                game_id=game_id,
+                session_id=session_id,
+                last_seq=3,
+                started_at="2000-01-01T00:00:00Z",
+                state=_session_state(
+                    text="line during candidate gap",
+                    line_id="line-during-gap",
+                    scene_id="scene-a",
+                ),
+            ),
+        )
+        await plugin._poll_bridge(force=True)
+
+        resumed = plugin._snapshot_state()
+        history = await plugin.galgame_get_history(limit=20, include_events=True)
+        assert resumed["active_session_id"] == session_id
+        assert resumed["last_seq"] == 3
+        assert isinstance(history, Ok)
+        assert [event["seq"] for event in history.value["events"]] == [2, 3]
+        assert [line["line_id"] for line in history.value["stable_lines"]] == [
+            "line-before-gap",
+            "line-during-gap",
+        ]
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
 async def test_current_process_new_session_warmup_keeps_first_line(tmp_path: Path) -> None:
     plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
     ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))

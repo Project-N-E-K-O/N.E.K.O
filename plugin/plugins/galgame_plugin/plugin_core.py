@@ -4001,6 +4001,42 @@ class GalgamePlugin(
                 )
             )
 
+    def _remember_active_preexisting_session_state(
+        self,
+        local: dict[str, Any],
+    ) -> None:
+        session_id = str(local.get("active_session_id") or "")
+        if not session_id or not self._startup_existing_session_ids:
+            return
+        session_identity = session_identity_key(
+            data_source=str(local.get("active_data_source") or ""),
+            game_id=str(local.get("active_game_id") or ""),
+            session_id=session_id,
+        )
+        if session_identity not in self._startup_existing_session_ids:
+            return
+        self._startup_preexisting_session_states[session_identity] = {
+            "history_events": json_copy(local.get("history_events") or []),
+            "history_lines": json_copy(local.get("history_lines") or []),
+            "history_observed_lines": json_copy(
+                local.get("history_observed_lines") or []
+            ),
+            "history_choices": json_copy(local.get("history_choices") or []),
+            "dedupe_window": json_copy(local.get("dedupe_window") or []),
+            "latest_snapshot": json_copy(local.get("latest_snapshot") or {}),
+            "events_byte_offset": int(local.get("events_byte_offset") or 0),
+            "events_file_size": int(local.get("events_file_size") or 0),
+            "last_seq": int(local.get("last_seq") or 0),
+            "line_buffer": bytes(local.get("line_buffer") or b""),
+            "stream_reset_pending": bool(local.get("stream_reset_pending")),
+            "warmup_session_id": str(
+                local.get("warmup_session_id") or session_id
+            ),
+            "last_seen_data_monotonic": float(
+                local.get("last_seen_data_monotonic") or 0.0
+            ),
+        }
+
     async def _apply_bridge_candidate_session(
         self,
         *,
@@ -4032,40 +4068,7 @@ class GalgamePlugin(
         )
         previous_session_id = str(local.get("active_session_id") or "")
         if session_changed and previous_session_id:
-            previous_session_identity = session_identity_key(
-                data_source=str(local.get("active_data_source") or ""),
-                game_id=str(local.get("active_game_id") or ""),
-                session_id=previous_session_id,
-            )
-            if (
-                self._startup_existing_session_ids
-                and previous_session_identity in self._startup_existing_session_ids
-            ):
-                self._startup_preexisting_session_states[
-                    previous_session_identity
-                ] = {
-                    "history_events": json_copy(local.get("history_events") or []),
-                    "history_lines": json_copy(local.get("history_lines") or []),
-                    "history_observed_lines": json_copy(
-                        local.get("history_observed_lines") or []
-                    ),
-                    "history_choices": json_copy(local.get("history_choices") or []),
-                    "dedupe_window": json_copy(local.get("dedupe_window") or []),
-                    "latest_snapshot": json_copy(local.get("latest_snapshot") or {}),
-                    "events_byte_offset": int(local.get("events_byte_offset") or 0),
-                    "events_file_size": int(local.get("events_file_size") or 0),
-                    "last_seq": int(local.get("last_seq") or 0),
-                    "line_buffer": bytes(local.get("line_buffer") or b""),
-                    "stream_reset_pending": bool(
-                        local.get("stream_reset_pending")
-                    ),
-                    "warmup_session_id": str(
-                        local.get("warmup_session_id") or previous_session_id
-                    ),
-                    "last_seen_data_monotonic": float(
-                        local.get("last_seen_data_monotonic") or 0.0
-                    ),
-                }
+            self._remember_active_preexisting_session_state(local)
         restore_cursor = (
             not session_changed
             and local["events_byte_offset"] > 0
@@ -4306,6 +4309,7 @@ class GalgamePlugin(
         ocr_reader_allowed: bool,
         memory_reader_candidate_available: bool,
     ) -> None:
+        self._remember_active_preexisting_session_state(local)
         local["active_data_source"] = _pending_data_source_for_reader_mode(
             reader_mode,
             memory_reader_allowed=memory_reader_allowed,
