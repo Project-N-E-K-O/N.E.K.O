@@ -33,6 +33,9 @@ from plugin.plugins.study_companion.qwen_native_client import (
     operation_timeout_seconds,
 )
 from plugin.plugins.study_companion.tutor_llm_agent import TutorLLMAgent
+from plugin.plugins.study_companion import (
+    tutor_llm_agent_document as document_agent_module,
+)
 from plugin.plugins.study_companion.tutor_llm_agent_document import (
     DocumentChunkAnalysisError,
     build_document_chunk_messages,
@@ -377,6 +380,47 @@ async def test_merge_preserves_transport_diagnostic(
     with pytest.raises(DocumentChunkAnalysisError) as raised:
         await agent.merge_document_chunks(document, chunks, ("memo",))
     assert raised.value.diagnostic == diagnostic
+
+
+@pytest.mark.asyncio
+async def test_merge_builds_default_messages_off_the_event_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    document = validate_document(
+        document_name="book.txt",
+        document_type="text/plain",
+        document_text="A short chapter.",
+        locale="en",
+    )
+    chunks = (
+        DocumentChunk(
+            index=0,
+            text=document.text,
+            tokens=document.tokens,
+            start_char=0,
+            end_char=len(document.text),
+            heading_paths=(),
+        ),
+    )
+    agent = TutorLLMAgent(
+        logger=_Logger(), config=type("C", (), {"llm_call_timeout_seconds": 3600})()
+    )
+    thread_calls: list[object] = []
+
+    async def fake_to_thread(function, /, *args, **kwargs):
+        thread_calls.append(function)
+        return function(*args, **kwargs)
+
+    async def fake_model(*_args, **_kwargs):
+        return "A concise whole-document analysis."
+
+    monkeypatch.setattr(document_agent_module.asyncio, "to_thread", fake_to_thread)
+    monkeypatch.setattr(agent, "_call_model", fake_model)
+
+    result = await agent.merge_document_chunks(document, chunks, ("Part memo.",))
+
+    assert result == "A concise whole-document analysis."
+    assert thread_calls[0] is build_document_merge_messages
 
 
 @pytest.mark.asyncio

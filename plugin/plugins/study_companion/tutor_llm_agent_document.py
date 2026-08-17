@@ -331,7 +331,10 @@ async def _merge_document_chunks_result(
     messages: list[dict[str, str]] | None = None,
     deadline_monotonic: float | None = None,
 ) -> _DocumentModelResult:
-    messages = messages or build_document_merge_messages(document, chunks, memos)
+    if messages is None:
+        messages = await asyncio.to_thread(
+            build_document_merge_messages, document, chunks, memos
+        )
     try:
         deadline = self._new_operation_deadline(LLM_OPERATION_DOCUMENT_MERGE, messages)
         if deadline_monotonic is not None:
