@@ -254,6 +254,24 @@ async def test_scope_query_matches_noncanonical_machine_keys(
 
 
 @pytest.mark.asyncio
+async def test_explicit_topic_is_loaded_by_id_before_the_scope_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plugin = await _start_plugin(tmp_path, monkeypatch)
+    topic, _ = _two_distinct_topics(plugin)
+    monkeypatch.setattr(plugin._store, "list_topics", lambda *args, **kwargs: [])
+    try:
+        selected = await plugin.study_set_practice_scope(
+            scope=_scope_request(topic, topic_only=True)
+        )
+
+        assert isinstance(selected, Ok)
+        assert selected.value["scope"]["topic_id"] == str(topic["id"])
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_scope_mutation_rolls_back_when_persistence_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

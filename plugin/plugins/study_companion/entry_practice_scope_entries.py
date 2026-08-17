@@ -52,6 +52,10 @@ class _PracticeScopeEntriesMixin:
         return lock
 
     def _practice_scope_topics(self, requested_scope: Mapping[str, object]) -> list[dict]:
+        mode = str(requested_scope.get("mode") or "explicit_scope").strip().lower()
+        if mode.replace("-", "_") == "explicit_topic":
+            topic = self._store.get_topic(str(requested_scope.get("topic_id") or ""))
+            return [topic] if topic is not None else []
         stage = str(requested_scope.get("stage") or "").strip().lower().replace("-", "_")
         subject = str(requested_scope.get("subject") or "").strip().lower().replace("-", "_")
         course_family = (
