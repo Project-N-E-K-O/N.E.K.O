@@ -1497,7 +1497,7 @@ _CHAT_SCOPED_SENTENCE_FINAL_QUESTION_RE = re.compile(
 _CHAT_SCOPED_VALUE_ASSIGNMENT_RE = re.compile(
     r"(?:(?:(?:把|将|將)\s*[^。，、！？,.!?;；把将將并並]+?|"
     r"^[^。，、！？,.!?;；]+?)(?:设为|設為|设成|設成|设置为|設定為|"
-    r"设置成|設定成|改为|改為|改成|修改成|"
+    r"设置成|設定成|改为|改為|改成|修改成|更新为|更新為|"
     r"换成|換成|变成|變成|变为|變為|调整为|調整為|写成|寫成|"
     r"填为|填為|填写为|填寫為|填成|填写成|填寫成)"
     r"|(?i:(?:rewrite|revise|regenerate|redo|refresh)\s+"
