@@ -214,7 +214,56 @@ class StreamingMixin:
         
         # Session已就绪，直接处理
         await self._process_stream_data_internal(message)
-    
+
+    async def _ensure_offline_session_for_text_input(
+        self,
+        input_type: str,
+    ) -> bool:
+        """Move text/attachment input onto its offline-session contract."""
+        if isinstance(self.session, OmniOfflineClient):
+            return True
+        if self.session_start_failure_count >= self.session_start_max_failures:
+            logger.error(
+                "💥 %s 需要文本模式，但失败次数过多，已停止自动重建",
+                input_type,
+            )
+            return False
+
+        logger.info(
+            "%s 需要 OmniOfflineClient，但当前是 %s. 自动重建 session。",
+            input_type,
+            type(self.session).__name__,
+        )
+        # Hold the startup guard across end_session's await window. Without
+        # this, concurrent microphone work can recreate an audio session before
+        # the attachment/text handoff starts its offline replacement.
+        async with self.input_cache_lock:
+            self.session_ready = False
+        self._starting_session_count += 1
+        self._starting_input_mode = "text"
+        try:
+            if self.session:
+                await self.end_session(reset_starting_count=False)
+        finally:
+            self._starting_session_count = max(0, self._starting_session_count - 1)
+            if self._starting_session_count == 0:
+                self._starting_input_mode = None
+        # Do not await between releasing the guard and entering start_session;
+        # its synchronous prologue reacquires the startup ownership.
+        await self.start_session(
+            self.websocket,
+            new=False,
+            input_mode="text",
+        )
+        if (
+            not self.session
+            or not self.is_active
+            or not isinstance(self.session, OmniOfflineClient)
+        ):
+            logger.error("💥 文本模式Session重建失败，放弃本次数据流")
+            return False
+        return True
+
     async def _process_stream_data_internal(self, message: dict):
         """Internal method: the actual stream_data processing logic"""
         data = message.get("data")
@@ -278,52 +327,11 @@ class StreamingMixin:
                 return
         
         try:
-            if input_type == 'text':
-                # 文本模式：检查 session 类型是否正确
-                if not isinstance(self.session, OmniOfflineClient):
-                    # 检查是否允许重建session
-                    if self.session_start_failure_count >= self.session_start_max_failures:
-                        logger.error("💥 Session类型不匹配，但失败次数过多，已停止自动重建")
-                        return
-                    
-                    logger.info(f"文本模式需要 OmniOfflineClient，但当前是 {type(self.session).__name__}. 自动重建 session。")
-                    # 占用 _starting_session_count guard 跨过 end_session 窗口期。
-                    # 默认 end_session(reset_starting_count=True) 会把 guard 清零；
-                    # 它内部又有多个 await 拆 session，期间另一条 _stream_data_now
-                    # （比如 audio worker 拉到下一包）看到 session=None / count=0 会
-                    # 从 4941-4953 的 auto-create 分支抢跑 start_session(audio)，
-                    # 等本路径走到 await self.start_session(text) 时命中 2776 的
-                    # "Session正在启动中" guard 被静默忽略，重建静默失败
-                    # （ERROR "💥 文本模式Session重建失败"）。
-                    #
-                    # 同时把 session_ready 提前置 False，与 start_session 2867-2868
-                    # 的初始化对偶：rebuild 期间若 session_ready 仍是 True，并发
-                    # _stream_data_now 跳过 4926-4938 的 cache 分支（条件为
-                    # not session_ready），落到 _process_stream_data_internal 后
-                    # 命中 4975 的 count>0 早退被 silent drop——用户在 rebuild
-                    # 窗口内打的字直接丢失。提前置 False 让 cache 路径接住，
-                    # rebuild 完成后 _flush_pending_input_data 会 flush 出去。
-                    async with self.input_cache_lock:
-                        self.session_ready = False
-                    self._starting_session_count += 1
-                    self._starting_input_mode = 'text'
-                    try:
-                        if self.session:
-                            await self.end_session(reset_starting_count=False)
-                    finally:
-                        self._starting_session_count = max(0, self._starting_session_count - 1)
-                        if self._starting_session_count == 0:
-                            self._starting_input_mode = None
-                    # 释放 guard 与下面的 start_session 之间禁止 await，否则窗口
-                    # 重新打开。start_session 入口的 +=1 (2781) 之前都是同步代码，
-                    # 函数调用本身不让出控制权，安全。
-                    await self.start_session(self.websocket, new=False, input_mode='text')
+            if input_type in _TEXT_SESSION_INPUT_TYPES:
+                if not await self._ensure_offline_session_for_text_input(input_type):
+                    return
 
-                    # 检查重建是否成功
-                    if not self.session or not self.is_active or not isinstance(self.session, OmniOfflineClient):
-                        logger.error("💥 文本模式Session重建失败，放弃本次数据流")
-                        return
-                
+            if input_type == 'text':
                 # 文本模式：直接发送文本
                 if isinstance(data, str):
                     memory_text = self._clean_frontend_memory_text(message.get("memory_text"))

@@ -127,6 +127,21 @@ class _TestSmartTurnLease:
         self.released = True
 
 
+async def test_independent_asr_activity_probe_is_provider_neutral() -> None:
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime, "qwen")
+
+    assert runtime._independent_asr_user_turn_active() is False
+
+    runtime._asr_lifecycle.transition(VoiceLifecycleEvent.SOFT_WAKE)
+    runtime._asr_lifecycle.transition(VoiceLifecycleEvent.SPEECH_CONFIRMED)
+    assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.ACTIVE
+    assert runtime._independent_asr_user_turn_active() is True
+
+    runtime._asr_route_mode = "native"
+    assert runtime._independent_asr_user_turn_active() is False
+
+
 class _ReadyDetector:
     def __init__(self, feed_result: DetectorFeedResult | None = None) -> None:
         self.detector_epoch = 1

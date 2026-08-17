@@ -744,19 +744,41 @@ async def test_voice_live_vision_input_preserves_source_and_request_identity(
 @pytest.mark.unit
 @pytest.mark.asyncio
 @pytest.mark.parametrize("input_type", ["avatar_drop_image", "user_image"])
-async def test_voice_session_does_not_stage_one_shot_user_images(
+async def test_voice_session_hands_one_shot_user_images_to_offline_vision(
     monkeypatch,
     input_type,
 ):
-    """Attachments stay on the text/offline path, never the ambient voice cache."""
+    """Attachments leave voice mode and stage on the text/offline vision path."""
     mgr = _make_manager()
-    mgr.session = object.__new__(core_module.OmniRealtimeClient)
-    mgr.session.ws = object()
-    mgr.session.stream_image = AsyncMock()
+    realtime_session = object.__new__(core_module.OmniRealtimeClient)
+    realtime_session.ws = object()
+    realtime_session.stream_image = AsyncMock()
+    offline_session = object.__new__(core_module.OmniOfflineClient)
+    offline_session.stream_image = AsyncMock()
+    mgr.session = realtime_session
     mgr.is_active = True
     mgr._starting_session_count = 0
     mgr._session_start_circuit_open = False
+    mgr.session_start_failure_count = 0
+    mgr.session_start_max_failures = 3
+    mgr.input_cache_lock = asyncio.Lock()
+    mgr.session_ready = True
     mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=False)
+
+    async def _end_session(*, reset_starting_count=True):
+        assert reset_starting_count is False
+        mgr.session = None
+        mgr.is_active = False
+
+    async def _start_session(_websocket, *, new=False, input_mode=None):
+        assert new is False
+        assert input_mode == "text"
+        mgr.session = offline_session
+        mgr.is_active = True
+        mgr.session_ready = True
+
+    mgr.end_session = AsyncMock(side_effect=_end_session)
+    mgr.start_session = AsyncMock(side_effect=_start_session)
     monkeypatch.setattr(
         core_module,
         "process_screen_data",
@@ -772,7 +794,14 @@ async def test_voice_session_does_not_stage_one_shot_user_images(
         },
     )
 
-    mgr.session.stream_image.assert_not_awaited()
+    realtime_session.stream_image.assert_not_awaited()
+    offline_session.stream_image.assert_awaited_once_with("img-b64")
+    mgr.end_session.assert_awaited_once_with(reset_starting_count=False)
+    mgr.start_session.assert_awaited_once_with(
+        mgr.websocket,
+        new=False,
+        input_mode="text",
+    )
 
 
 @pytest.mark.unit

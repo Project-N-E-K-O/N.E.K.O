@@ -228,6 +228,40 @@ async def test_external_proactive_snapshot_queues_description_without_raw_event(
 
 
 @pytest.mark.asyncio
+async def test_external_proactive_failure_retires_only_the_failed_snapshot():
+    """A terminally empty analysis is not retried forever on the same frame."""
+    client = _make_qwen_client()
+    client.set_visual_delivery_mode(VisualDeliveryMode.EXTERNAL_DESCRIPTION)
+    client._ai_recent_activity_time = 0
+    client._user_recent_activity_time = 0
+    client._client_vad_active = False
+    client._client_vad_last_speech_time = 0
+    client._analyze_image_with_vision_model = AsyncMock(return_value="")
+
+    async def inject_text(_text, **kwargs):
+        kwargs["on_completed"]()
+        return SimpleNamespace()
+
+    client.inject_text_and_request_response = AsyncMock(side_effect=inject_text)
+    await client.stream_image(
+        DUMMY_IMAGE_B64,
+        source="screen",
+        request_id="failed-proactive-screen",
+    )
+    failed_generation = client._latest_image_generation
+
+    assert await client.prompt_ephemeral("第一次主动看看屏幕") is True
+    assert client._proactive_image_consumed is True
+    assert client._latest_image_generation == failed_generation
+    assert await client.prompt_ephemeral("第二次主动看看屏幕") is True
+    client._analyze_image_with_vision_model.assert_awaited_once_with(
+        DUMMY_IMAGE_B64,
+        update_turn_state=False,
+    )
+    await client.close()
+
+
+@pytest.mark.asyncio
 async def test_external_proactive_description_registers_exact_rejection_event():
     client = _make_qwen_client()
     client.set_visual_delivery_mode(VisualDeliveryMode.EXTERNAL_DESCRIPTION)
@@ -529,6 +563,43 @@ async def test_new_external_turn_cancels_superseded_transcript_before_enqueue():
     await asyncio.sleep(0)
 
     await client.prepare_external_voice_turn(turn_id="new-turn")
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(old_submit, timeout=0.2)
+    assert sent == []
+    client.abandon_external_voice_turn("new-turn")
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_new_external_turn_cancels_resolved_turn_while_ticket_enqueue_returns():
+    """A resolved visual turn stays cancellable until its transcript ticket is owned."""
+    client = _make_qwen_client()
+    client.set_visual_delivery_mode(VisualDeliveryMode.EXTERNAL_DESCRIPTION)
+    client.handle_interruption = AsyncMock()
+    client._analyze_image_with_vision_model = AsyncMock(return_value="旧画面")
+    sent = _wire_completed_response_transport(client)
+    arbiter = client._response_arbiter
+    real_enqueue = arbiter.enqueue
+    old_ticket_queued = asyncio.Event()
+    release_enqueue_return = asyncio.Event()
+
+    async def _enqueue_then_pause_return(*args, **kwargs):
+        ticket = await real_enqueue(*args, **kwargs)
+        old_ticket_queued.set()
+        await release_enqueue_return.wait()
+        return ticket
+
+    arbiter.enqueue = _enqueue_then_pause_return
+    await client.prepare_external_voice_turn(turn_id="resolved-old-turn")
+    await client.stream_image(DUMMY_IMAGE_B64, source="screen", request_id="old")
+    old_submit = asyncio.create_task(
+        client.submit_external_text_turn("旧转写", turn_id="resolved-old-turn")
+    )
+    await old_ticket_queued.wait()
+
+    await client.prepare_external_voice_turn(turn_id="new-turn")
+    release_enqueue_return.set()
 
     with pytest.raises(asyncio.CancelledError):
         await asyncio.wait_for(old_submit, timeout=0.2)

@@ -445,6 +445,63 @@ async def test_external_callback_rechecks_user_activity_after_visual_analysis():
     assert cb.get("_voice_delivery_committed") is None
 
 
+async def test_external_callback_rechecks_independent_asr_turn_after_visual_analysis():
+    """Independent-ASR onset must preempt callback injection after vision awaits."""
+    sess = _make_voice_sess()
+    sess._inject_rejection_handlers = {}
+    mgr = _make_mgr(session=sess)
+    independent_turn_active = False
+    mgr._independent_asr_user_turn_active = lambda: independent_turn_active
+
+    async def _stream_image(
+        _image_b64,
+        *,
+        bypass_rate_limit=False,
+        cache_latest=True,
+        source=None,
+        request_id=None,
+        on_rejected=None,
+    ):
+        nonlocal independent_turn_active
+        assert bypass_rate_limit is True
+        assert cache_latest is False
+        assert source == "callback"
+        assert request_id == "id-independent-asr-during-vision"
+        assert on_rejected is not None
+        await asyncio.sleep(0)
+        independent_turn_active = True
+        return SimpleNamespace(
+            accepted=True,
+            mode="external_description",
+            description="画面里有一只猫。",
+        )
+
+    async def _expire(_event_id, _timeout):
+        return None
+
+    def _fire_task(coro):
+        coro.close()
+
+    sess.stream_image = _stream_image
+    sess._expire_inject_rejection_handler = _expire
+    sess._fire_task = _fire_task
+    cb = {
+        "_callback_delivery_id": "id-independent-asr-during-vision",
+        "status": "completed",
+        "summary": "defer this visual callback",
+        "media_images": ["callback-image"],
+    }
+    mgr.pending_agent_callbacks = [cb]
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+
+    assert delivered is False
+    assert sess.inject_calls == 0
+    assert sess._inject_rejection_handlers == {}
+    assert mgr.pending_agent_callbacks == [cb]
+    assert cb.get("_voice_delivery_committed") is None
+
+
 async def test_voice_mode_sid_rotation_failure_arms_callback_retry():
     sess = _make_voice_sess()
     sess.on_sid_rotate = AsyncMock(side_effect=RuntimeError("rotate failed"))

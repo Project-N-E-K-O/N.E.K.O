@@ -234,6 +234,9 @@ class _ResponseMixin:
         if not stable_turn_id:
             raise ValueError("external ASR turn_id must not be empty")
 
+        visual_record = getattr(self, "_external_visual_turns", {}).get(
+            stable_turn_id
+        )
         visual_description = await self._resolve_external_visual_turn(
             stable_turn_id
         )
@@ -275,15 +278,32 @@ class _ResponseMixin:
             text_hash,
         )
         arbiter = self._ensure_response_arbiter()
-        ticket = await arbiter.enqueue(
-            source="external_asr",
-            events_before_response=(item_event,),
-            response_event=response_event,
-            ack_expected=True,
-            expected_item_id=expected_item_id,
-            expected_item_role="user",
-            priority=0,
-        )
+        try:
+            ticket = await arbiter.enqueue(
+                source="external_asr",
+                events_before_response=(item_event,),
+                response_event=response_event,
+                ack_expected=True,
+                expected_item_id=expected_item_id,
+                expected_item_role="user",
+                priority=0,
+            )
+        except BaseException:
+            if (
+                visual_record is not None
+                and self._external_visual_turns.get(stable_turn_id)
+                is visual_record
+            ):
+                self._external_visual_turns.pop(stable_turn_id, None)
+            raise
+        if visual_record is not None:
+            if (
+                self._external_visual_turns.get(stable_turn_id)
+                is not visual_record
+            ):
+                await arbiter.cancel_ticket(ticket)
+                raise asyncio.CancelledError
+            visual_record["ticket"] = ticket
         # Speech-start pauses dispatch. Resume only after this priority-0 user
         # turn is present, so queued proactive work cannot win the race. An
         # older completed turn may still be ahead of a newer paused turn in
@@ -298,6 +318,9 @@ class _ResponseMixin:
         arbiter.resume_dispatch()
         try:
             await ticket.sent
+        except asyncio.CancelledError:
+            await arbiter.cancel_ticket(ticket)
+            raise
         finally:
             # Re-arm the newer turn's pause on the failure path too: a
             # transport error (or a newer prepare's cancel_current) can fail
@@ -311,6 +334,12 @@ class _ResponseMixin:
                 == active_pause_id
             ):
                 arbiter.pause_dispatch()
+            if (
+                visual_record is not None
+                and self._external_visual_turns.get(stable_turn_id)
+                is visual_record
+            ):
+                self._external_visual_turns.pop(stable_turn_id, None)
         return ticket
 
     async def prepare_external_voice_turn(self, *, turn_id: str) -> None:
@@ -1204,6 +1233,11 @@ class _ResponseMixin:
                     visual_event["event_id"] = visual_event_id
                 events_before_text = (visual_event,)
             else:
+                # The selected generation reached a terminal empty/error
+                # analysis result. Retire that exact snapshot so a proactive
+                # retry cannot repeatedly spend vision calls on the same stale
+                # frame; the generation fence preserves any newer arrival.
+                _mark_snapshot_consumed_if_current()
                 has_vision = False
         elif (
             has_vision

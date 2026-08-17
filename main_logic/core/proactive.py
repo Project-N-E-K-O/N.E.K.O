@@ -960,9 +960,18 @@ class ProactiveMixin:
                 # start while the rotation callback is suspended, and that
                 # user turn must keep priority over this proactive callback.
                 def _voice_activity_since(started_at: float) -> bool:
+                    independent_asr_active = getattr(
+                        self,
+                        "_independent_asr_user_turn_active",
+                        None,
+                    )
                     return bool(
                         voice_sess.is_active_response()
                         or getattr(voice_sess, "_client_vad_active", False)
+                        or (
+                            callable(independent_asr_active)
+                            and independent_asr_active()
+                        )
                         or getattr(
                             voice_sess,
                             "_user_recent_activity_time",

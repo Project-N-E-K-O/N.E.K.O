@@ -24,6 +24,7 @@ from main_logic.asr_client.runtime import (
     IndependentAsrRuntime,
     SpeakerShadowFactory,
 )
+from main_logic.asr_client.lifecycle import VoiceLifecycleState
 from main_logic.voice_input import (
     BuiltinVoiceInputConsumer,
     VoiceInputConsumerCapabilities,
@@ -2396,6 +2397,19 @@ class AsrRuntimeMixin:
             reason="asr_turn_abandoned",
         )
         await self._voice_input_registry.wait_idle()
+
+    def _independent_asr_user_turn_active(self) -> bool:
+        """Expose a provider-neutral user-turn gate to Core collaborators."""
+        if getattr(self, "_asr_route_mode", "blocked") != "independent":
+            return False
+        runtime = getattr(self, "_asr_runtime", None)
+        lifecycle = getattr(runtime, "_asr_lifecycle", None)
+        state = getattr(getattr(lifecycle, "snapshot", None), "state", None)
+        return state in {
+            VoiceLifecycleState.PREWARMING,
+            VoiceLifecycleState.ACTIVE,
+            VoiceLifecycleState.DRAINING,
+        }
 
     async def _prepare_voice_input_turn(self, token: VoiceTurnToken) -> bool:
         self._ensure_asr_runtime_state()
