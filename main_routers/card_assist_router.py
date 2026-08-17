@@ -1487,7 +1487,7 @@ _CHAT_EN_TRAILING_SAFE_SUFFIX_RE = re.compile(
 )
 _CHAT_SENTENCE_FINAL_QUESTION_PATTERN = (
     r"[吗嗎呢]\s*[？?]?\s*"
-    r"(?:(?:[,，。；;、]\s*)?(?:谢谢[你您]?|謝謝[你您]?|感谢[你您]?|感謝[你您]?|麻烦了|麻煩了|"
+    r"(?:(?:[,，。；;、]\s*)?(?:谢谢[你您]?|謝謝[你您]?|感谢[你您]?|感謝[你您]?|多谢|多謝|麻烦了|麻煩了|"
     r"辛苦了|thanks|thank\s+you)\s*[。.!！]?\s*)?$"
 )
 _CHAT_SCOPED_SENTENCE_FINAL_QUESTION_RE = re.compile(
@@ -1536,6 +1536,9 @@ _CHAT_SCOPED_CANCELLATION_RE = re.compile(
     r"(?:上述|以上|前述|这些|這些|该|該)?\s*"
     r"(?:修改|操作|指令|命令|要求|内容|內容)"
 )
+_CHAT_SCOPED_SCOPE_REPLACEMENT_RE = re.compile(
+    r"(?:改为|改為|改成|更正为|更正為|调整为|調整為)\s*(?:只|仅|僅)"
+)
 _CHAT_SCOPED_SIGNAL_BRIDGE_RE = re.compile(
     rf"\s*(?:(?:一遍|一次|一下|下|一回)\s*|(?i:the)\s*|{_WHOLE_CARD_ADVERB_RUN})*"
 )
@@ -1577,6 +1580,14 @@ def _chat_scoped_suffix_has_governing_guard(
     if _CHAT_SCOPED_DISCLAIMER_RE.search(readable_suffix):
         return True
     if _CHAT_SCOPED_CANCELLATION_RE.search(readable_suffix):
+        return True
+    replacement = _CHAT_SCOPED_SCOPE_REPLACEMENT_RE.search(readable_suffix)
+    if (
+        replacement is not None
+        and not _chat_text_requests_full_rewrite_core(
+            readable_suffix[replacement.start():]
+        )
+    ):
         return True
     readable = _chat_clause_without_free_choice(readable_suffix)
     question = _CHAT_QUESTION_CLAUSE_RE.search(readable)
@@ -1751,7 +1762,7 @@ def _chat_clause_without_quoted_prohibitions(clause: str) -> str:
     这里补上之后两处对「引号里的疑问式」口径一致。
     """  # noqa: DOCSTRING_CJK
     return _CHAT_QUOTED_SPAN_RE.sub(
-        lambda m: " " if (
+        lambda m: " " * len(m.group(0)) if (
             _chat_span_carries_a_prohibition(m.group(0))
             or _chat_span_carries_a_question(m.group(0))
         ) else m.group(0),

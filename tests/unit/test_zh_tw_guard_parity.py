@@ -2882,6 +2882,7 @@ def test_a_completed_rewrite_survives_secondary_content(text):
         "重写所有字段并保留头像吗，谢谢您",
         "重写所有字段并保留头像吗谢谢",
         "重写所有字段并保留头像吗 谢谢",
+        "重写所有字段并保留头像吗，多谢",
         'Rewrite the catchphrase as "all fields" if possible',
         "是否修改名字不过用户可能会重写所有字段",
         "请修改名字。系统将会重写所有字段并保留是否会员标签",
@@ -3010,6 +3011,24 @@ def test_scoped_recovery_preserves_a_trailing_cancellation():
     assert router._chat_text_requests_full_rewrite(
         "重写所有字段并保留是否会员标签，取消上述修改"
     ) is False
+
+
+def test_scoped_recovery_honors_a_narrowing_scope_replacement():
+    """次要字段值后的范围更正必须替换原整卡请求。"""  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    assert router._chat_text_requests_full_rewrite(
+        "重写所有字段并保留是否会员，改为只重写名字"
+    ) is False
+
+
+def test_scoped_recovery_keeps_offsets_after_masking_a_quoted_question():
+    """等长遮蔽引用后，后续整卡命令的闭合位置仍须对应原句。"""  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    assert router._chat_text_requests_full_rewrite(
+        "请把“好不好”记在备注里然后重写所有字段并保留是否会员"
+    ) is True
 
 
 @pytest.mark.parametrize(
