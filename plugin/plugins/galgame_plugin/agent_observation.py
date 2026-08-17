@@ -29,10 +29,21 @@ class AgentObservationMixin:
         current_game_id = self._normalized_identity_text(
             current_fingerprint.get("active_game_id")
         )
+        previous_data_source = str(
+            self._observed_session_fingerprint.get("active_data_source") or ""
+        )
+        current_data_source = str(current_fingerprint.get("active_data_source") or "")
         game_identity_changed = bool(previous_game_id and current_game_id) and (
             previous_game_id != current_game_id
         )
-        if session_id != self._observed_session_id or game_identity_changed:
+        data_source_changed = bool(previous_data_source and current_data_source) and (
+            previous_data_source != current_data_source
+        )
+        if (
+            session_id != self._observed_session_id
+            or game_identity_changed
+            or data_source_changed
+        ):
             transition_type, transition_reason, transition_fields = self._classify_session_transition(
                 self._observed_session_fingerprint,
                 current_fingerprint,

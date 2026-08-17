@@ -1064,6 +1064,9 @@ class AgentSummaryMixin:
         for occurrence_id in list(source_aliases):
             if occurrence_id not in active_occurrence_ids:
                 source_aliases.pop(occurrence_id, None)
+        for occurrence_id in list(source_scopes):
+            if occurrence_id not in active_occurrence_ids:
+                source_scopes.pop(occurrence_id, None)
         return [*event_occurrences, *fallback_occurrences]
 
     def _scene_capsule_choice_occurrences(
@@ -1555,6 +1558,62 @@ class AgentSummaryMixin:
                         source_scopes.pop(occurrence_id, None)
         return occurrences
 
+    @staticmethod
+    def _scene_timeline_occurrences_after_save_boundary(
+        shared: dict[str, Any],
+        *,
+        snapshot: dict[str, Any],
+        line_occurrences: list[dict[str, Any]],
+        choice_occurrences: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], bool]:
+        save_context = snapshot.get("save_context")
+        save_obj = save_context if isinstance(save_context, dict) else {}
+        save_kind = str(save_obj.get("kind") or "").strip().lower()
+        if save_kind not in {"load", "rollback"}:
+            return line_occurrences, choice_occurrences, False
+
+        boundary_index: int | None = None
+        for event_index, event in reversed(
+            list(enumerate(list(shared.get("history_events") or [])))
+        ):
+            if (
+                not isinstance(event, dict)
+                or str(event.get("type") or "") != "save_loaded"
+            ):
+                continue
+            payload = event.get("payload")
+            payload_obj = payload if isinstance(payload, dict) else {}
+            event_save_context = payload_obj.get("save_context")
+            event_save_obj = (
+                event_save_context if isinstance(event_save_context, dict) else {}
+            )
+            event_kind = str(
+                event_save_obj.get("kind") or payload_obj.get("reason") or ""
+            ).strip().lower()
+            if event_kind and event_kind != save_kind:
+                continue
+            boundary_index = event_index
+            break
+        if boundary_index is None:
+            return line_occurrences, choice_occurrences, False
+
+        def _is_after_boundary(occurrence: dict[str, Any]) -> bool:
+            try:
+                event_index = int(occurrence.get("history_event_index"))
+            except (TypeError, ValueError):
+                return False
+            return event_index > boundary_index
+
+        return (
+            [item for item in line_occurrences if _is_after_boundary(item)],
+            [
+                item
+                for item in choice_occurrences
+                if bool(item.get("snapshot_fallback")) or _is_after_boundary(item)
+            ],
+            True,
+        )
+
     def _note_scene_summary_suppressed(
         self,
         *,
@@ -1753,35 +1812,40 @@ class AgentSummaryMixin:
         def _finish(done: asyncio.Task[bool]) -> None:
             self._summary_tasks.discard(done)
             done_meta = self._summary_task_meta.pop(done, None) or task_meta
+            restore_schedule_on_failure = bool(
+                done_meta.get("restore_schedule_on_failure", True)
+            )
             if repeat_reservation_key:
                 self._scene_summary_repeat_reservations.discard(
                     repeat_reservation_key
                 )
             delivery_key = str(done_meta.get("summary_delivery_key") or "")
             if done.cancelled():
-                self._restore_failed_summary_schedule(
-                    scene_id=scene_id,
-                    route_id=route_id,
-                    scheduled_seq=scheduled_seq,
-                    scheduled_line_count=scheduled_line_count,
-                    reason="task_cancelled",
-                    delivery_key=delivery_key,
-                    merged_schedule_restore=merged_schedule_restore,
-                )
+                if restore_schedule_on_failure:
+                    self._restore_failed_summary_schedule(
+                        scene_id=scene_id,
+                        route_id=route_id,
+                        scheduled_seq=scheduled_seq,
+                        scheduled_line_count=scheduled_line_count,
+                        reason="task_cancelled",
+                        delivery_key=delivery_key,
+                        merged_schedule_restore=merged_schedule_restore,
+                    )
                 self._record_summary_task_event("cancelled", done_meta)
                 return
             try:
                 delivered = bool(done.result())
             except Exception as exc:
-                self._restore_failed_summary_schedule(
-                    scene_id=scene_id,
-                    route_id=route_id,
-                    scheduled_seq=scheduled_seq,
-                    scheduled_line_count=scheduled_line_count,
-                    reason="task_exception",
-                    delivery_key=delivery_key,
-                    merged_schedule_restore=merged_schedule_restore,
-                )
+                if restore_schedule_on_failure:
+                    self._restore_failed_summary_schedule(
+                        scene_id=scene_id,
+                        route_id=route_id,
+                        scheduled_seq=scheduled_seq,
+                        scheduled_line_count=scheduled_line_count,
+                        reason="task_exception",
+                        delivery_key=delivery_key,
+                        merged_schedule_restore=merged_schedule_restore,
+                    )
                 self._record_summary_task_event(
                     "exception",
                     {**done_meta, "error": str(exc)},
@@ -1789,15 +1853,16 @@ class AgentSummaryMixin:
                 self._logger.warning("galgame scene summary task failed: {}", exc)
                 return
             if not delivered:
-                self._restore_failed_summary_schedule(
-                    scene_id=scene_id,
-                    route_id=route_id,
-                    scheduled_seq=scheduled_seq,
-                    scheduled_line_count=scheduled_line_count,
-                    reason="task_returned_false",
-                    delivery_key=delivery_key,
-                    merged_schedule_restore=merged_schedule_restore,
-                )
+                if restore_schedule_on_failure:
+                    self._restore_failed_summary_schedule(
+                        scene_id=scene_id,
+                        route_id=route_id,
+                        scheduled_seq=scheduled_seq,
+                        scheduled_line_count=scheduled_line_count,
+                        reason="task_returned_false",
+                        delivery_key=delivery_key,
+                        merged_schedule_restore=merged_schedule_restore,
+                    )
                 self._record_summary_task_event("returned_false", done_meta)
                 return
             self._record_summary_task_event("finished", {**done_meta, "delivered": True})
@@ -2920,11 +2985,6 @@ class AgentSummaryMixin:
                 scene_id == self._observed_scene_id
                 and route_id == self._observed_route_id
             ):
-                self._scene_tracker.mark_scene_summary_scheduled(
-                    scene_id,
-                    route_id=route_id,
-                    seq=scheduled_seq,
-                )
                 self._scene_tracker.mark_scene_summary_delivered(
                     scene_id,
                     route_id=route_id,
@@ -3037,6 +3097,16 @@ class AgentSummaryMixin:
         choice_occurrences = self._scene_capsule_choice_occurrences(
             shared,
             snapshot=snapshot,
+        )
+        (
+            line_occurrences,
+            choice_occurrences,
+            timeline_boundary_active,
+        ) = self._scene_timeline_occurrences_after_save_boundary(
+            shared,
+            snapshot=snapshot,
+            line_occurrences=line_occurrences,
+            choice_occurrences=choice_occurrences,
         )
         self._maybe_schedule_scene_capsule(
             shared,
@@ -3305,7 +3375,12 @@ class AgentSummaryMixin:
             ]
             scope_history_choices: list[dict[str, Any]] = []
             scope_choice_identities: set[tuple[str, str, str]] = set()
-            for raw_choice in list(shared.get("history_choices") or []):
+            raw_history_choices = (
+                []
+                if timeline_boundary_active
+                else list(shared.get("history_choices") or [])
+            )
+            for raw_choice in raw_history_choices:
                 if not isinstance(raw_choice, dict):
                     continue
                 if str(raw_choice.get("action") or "").strip().lower() != "selected":
@@ -3367,12 +3442,85 @@ class AgentSummaryMixin:
                 scope_history_choices.append(choice_record)
                 scope_choice_identities.add(identity)
             scope_shared["history_choices"] = scope_history_choices
+            scheduled_line_count = int(state.get("lines_since_push") or 0)
+            scheduled_seq = int(state.get("last_line_seq") or max_processed_seq or 0)
+            previous_scheduled_seq = int(state.get("last_scheduled_seq") or 0)
+            seen_line_key_order = list(state.get("seen_line_key_order") or [])
+            scheduled_line_keys = set(
+                seen_line_key_order[-scheduled_line_count:]
+                if scheduled_line_count > 0
+                else []
+            )
+            has_previous_line_batch = len(seen_line_key_order) > scheduled_line_count
+            previous_batch_last_key = (
+                str(seen_line_key_order[-scheduled_line_count - 1])
+                if has_previous_line_batch and scheduled_line_count > 0
+                else ""
+            )
+            line_event_indices = {
+                str(occurrence.get("event_key") or ""): int(
+                    occurrence.get("history_event_index")
+                )
+                for occurrence in line_occurrences
+                if str(occurrence.get("event_key") or "")
+                and occurrence.get("history_event_index") is not None
+            }
+            previous_batch_event_index = line_event_indices.get(
+                previous_batch_last_key
+            )
+            scheduled_event_indices = [
+                line_event_indices[key]
+                for key in scheduled_line_keys
+                if key in line_event_indices
+            ]
+            scheduled_batch_event_index = (
+                max(scheduled_event_indices) if scheduled_event_indices else None
+            )
             context = build_summarize_context(
                 scope_shared,
                 scene_id=scene_id,
                 merge_from_scene_ids=merge_ids,
                 config=self._context_config,
             )
+            context["new_stable_lines"] = [
+                dict(line)
+                for occurrence in line_occurrences
+                if str(occurrence.get("event_key") or "") in scheduled_line_keys
+                and isinstance(line := occurrence.get("line"), dict)
+                and (
+                    str(line.get("scene_id") or ""),
+                    str(line.get("route_id") or ""),
+                )
+                in allowed_scene_routes
+            ]
+            if not has_previous_line_batch:
+                context["new_choices"] = json_copy(
+                    list(context.get("recent_choices") or [])
+                )
+            else:
+                context["new_choices"] = [
+                    dict(choice)
+                    for occurrence in choice_occurrences
+                    if (
+                        previous_batch_event_index is not None
+                        and scheduled_batch_event_index is not None
+                        and previous_batch_event_index
+                        < int(occurrence.get("history_event_index") or -1)
+                        <= scheduled_batch_event_index
+                        or previous_scheduled_seq > 0
+                        and previous_scheduled_seq
+                        < int(occurrence.get("seq") or 0)
+                        <= scheduled_seq
+                    )
+                    and isinstance(choice := occurrence.get("choice"), dict)
+                    and str(choice.get("choice_state") or "").strip().lower()
+                    == "selected"
+                    and (
+                        str(choice.get("scene_id") or ""),
+                        str(choice.get("route_id") or ""),
+                    )
+                    in allowed_scene_routes
+                ]
             if previous_scene_summary:
                 # Keep the prior LLM archive explicit even in rolling context
                 # mode, where scene_summary_seed intentionally remains local.
@@ -3392,9 +3540,6 @@ class AgentSummaryMixin:
                 }
                 continue
 
-            scheduled_line_count = int(state.get("lines_since_push") or 0)
-            scheduled_seq = int(state.get("last_line_seq") or max_processed_seq or 0)
-            seen_line_key_order = list(state.get("seen_line_key_order") or [])
             last_line_occurrence_key = (
                 str(seen_line_key_order[-1]) if seen_line_key_order else ""
             )

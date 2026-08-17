@@ -4569,3 +4569,421 @@ async def test_aliased_archive_seed_uses_latest_same_second_commit(
     assert gateway.summarize_calls[-1]["previous_scene_summary"] == (
         "latest memory-reader archive"
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_completed_archive_keeps_lines_arriving_while_task_runs(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    gateway = _BlockingSummaryGateway()
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(
+            _Ctx(plugin_dir, _make_effective_config(bridge_root))
+        ),
+        logger=_Logger(),
+        llm_gateway=gateway,
+        host_adapter=_FakeHostAdapter(),
+    )
+    lines = [_summary_test_line("scene-a", index) for index in range(1, 9)]
+    shared = _capsule_shared(
+        events=[
+            _summary_test_line_event("scene-a", index, seq=index)
+            for index in range(1, 9)
+        ],
+        lines=lines,
+    )
+
+    await agent.tick(shared)
+    await agent.tick(shared)
+    await asyncio.wait_for(gateway.summary_started.wait(), timeout=0.5)
+    assert agent._scene_tracker.remember_scene_line(
+        "scene-a",
+        "line-arrived-during-archive",
+        seq=9,
+        ts="2026-04-21T08:35:09Z",
+        now_monotonic=20.0,
+    )
+    gateway.release_summary.set()
+    await agent.drain_summary_tasks(timeout=1.0)
+
+    assert agent._scene_tracker.current_scene_lines_since_push("scene-a") == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_permanent_memory_task_cancel_does_not_restore_abandoned_batch(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(
+            _Ctx(plugin_dir, _make_effective_config(bridge_root))
+        ),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    for index in range(8):
+        agent._scene_tracker.remember_scene_line(
+            "scene-a",
+            f"line-{index}",
+            seq=index + 1,
+            ts=f"2026-04-21T08:35:{index + 1:02d}Z",
+        )
+    agent._scene_tracker.mark_scene_summary_scheduled("scene-a", seq=8)
+    blocker = asyncio.Event()
+
+    async def _pending() -> bool:
+        await blocker.wait()
+        return True
+
+    task = asyncio.create_task(_pending())
+    agent._track_summary_task(
+        task,
+        scene_id="scene-a",
+        scheduled_seq=8,
+        scheduled_line_count=8,
+        meta={"summary_delivery_key": "scene-a:8"},
+    )
+    await asyncio.sleep(0)
+
+    agent._cancel_scene_memory_tasks(reason="scene_memory_timeline_boundary")
+    await asyncio.gather(task, return_exceptions=True)
+    await asyncio.sleep(0)
+
+    assert agent._scene_tracker.current_scene_lines_since_push("scene-a") == 0
+    assert "last_task_restored_schedule" not in agent._summary_debug
+
+
+@pytest.mark.plugin_unit
+def test_fallback_line_scope_metadata_follows_bounded_history_window(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(
+            _Ctx(plugin_dir, _make_effective_config(bridge_root))
+        ),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    first_line = {
+        "line_id": "legacy-1",
+        "speaker": "Yukino",
+        "text": "first bounded line",
+        "scene_id": "",
+        "route_id": "",
+        "stability": "stable",
+        "ts": "2026-04-21T08:35:01Z",
+    }
+    first_snapshot = _session_state(scene_id="scene-a", route_id="route-a")
+    first_shared = _shared_state(
+        session_id="sess-a",
+        snapshot=first_snapshot,
+        history_lines=[first_line],
+    )
+    agent._scene_capsule_line_occurrences(first_shared, snapshot=first_snapshot)
+    source_key = f"{agent._current_input_source(first_shared)}|sess-a|history_line"
+    assert len(agent._scene_capsule_fallback_occurrences[source_key]["scopes"]) == 1
+
+    second_line = {
+        **first_line,
+        "line_id": "legacy-2",
+        "text": "replacement bounded line",
+        "ts": "2026-04-21T08:35:02Z",
+    }
+    second_snapshot = _session_state(scene_id="scene-b", route_id="route-b")
+    second_shared = _shared_state(
+        session_id="sess-a",
+        snapshot=second_snapshot,
+        history_lines=[second_line],
+    )
+
+    agent._scene_capsule_line_occurrences(second_shared, snapshot=second_snapshot)
+    scopes = agent._scene_capsule_fallback_occurrences[source_key]["scopes"]
+
+    assert len(scopes) == 1
+    assert next(iter(scopes.values())) == {
+        "scene_id": "scene-b",
+        "route_id": "",
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_same_game_and_session_source_switch_enters_transition_branch(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(
+            _Ctx(plugin_dir, _make_effective_config(bridge_root))
+        ),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    memory_shared = _shared_state(
+        game_id="demo.alpha",
+        session_id="shared-session",
+        active_data_source=DATA_SOURCE_MEMORY_READER,
+        snapshot=_session_state(scene_id="scene-a"),
+    )
+    memory_shared["active_session_meta"] = {
+        "metadata": {
+            "game_process_name": "game.exe",
+            "game_pid": 4242,
+            "window_title": "Demo Game",
+            "target_hwnd": 100,
+        }
+    }
+    await agent.tick(memory_shared)
+    agent._scene_capsule_marker_event_state["line_changed"] = {
+        "type": "line_changed",
+        "seq": 1,
+        "semantic": "memory-digest",
+    }
+    ocr_shared = _shared_state(
+        game_id="demo.alpha",
+        session_id="shared-session",
+        active_data_source=DATA_SOURCE_OCR_READER,
+        ocr_reader_runtime={
+            "effective_process_name": "GAME.EXE",
+            "effective_window_title": "Demo Game",
+            "pid": 4242,
+            "target_hwnd": 100,
+            "target_window_visible": True,
+        },
+        snapshot=_session_state(scene_id="scene-a"),
+    )
+
+    await agent.tick(ocr_shared)
+
+    assert agent._last_session_transition_fields["previous_data_source"] == (
+        DATA_SOURCE_MEMORY_READER
+    )
+    assert agent._last_session_transition_fields["current_data_source"] == (
+        DATA_SOURCE_OCR_READER
+    )
+    assert agent._scene_capsule_marker_event_state == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+@pytest.mark.parametrize("sequenceful", [False, True])
+async def test_line_count_archive_context_marks_only_the_new_batch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    sequenceful: bool,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(
+            _Ctx(plugin_dir, _make_effective_config(bridge_root))
+        ),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    old_choice_event = _event(
+        seq=1 if sequenceful else 0,
+        event_type="choice_selected",
+        session_id="sess-a",
+        game_id="demo.alpha",
+        ts="2026-04-21T08:35:00Z",
+        payload={
+            "scene_id": "scene-a",
+            "choice": {"choice_id": "choice-old", "text": "take the old route"},
+        },
+    )
+    first_events = [
+        _summary_test_line_event(
+            "scene-a",
+            index,
+            seq=index + 1 if sequenceful else 0,
+        )
+        for index in range(1, 9)
+    ]
+    choice_event = _event(
+        seq=10 if sequenceful else 0,
+        event_type="choice_selected",
+        session_id="sess-a",
+        game_id="demo.alpha",
+        ts="2026-04-21T08:35:09Z",
+        payload={
+            "scene_id": "scene-a",
+            "choice": {"choice_id": "choice-new", "text": "take the new route"},
+        },
+    )
+    second_events = [
+        _summary_test_line_event(
+            "scene-a",
+            index,
+            seq=index + 2 if sequenceful else 0,
+        )
+        for index in range(9, 17)
+    ]
+    lines = [_summary_test_line("scene-a", index) for index in range(1, 17)]
+    shared = _capsule_shared(
+        events=[old_choice_event, *first_events, choice_event, *second_events],
+        lines=lines,
+    )
+    snapshot = shared["latest_snapshot"]
+    assert isinstance(snapshot, dict)
+    occurrences = agent._scene_capsule_line_occurrences(shared, snapshot=snapshot)
+    for occurrence in occurrences[:8]:
+        line = occurrence["line"]
+        agent._scene_tracker.remember_scene_line(
+            "scene-a",
+            str(occurrence["event_key"]),
+            seq=int(occurrence["seq"]),
+            ts=str(line.get("ts") or ""),
+        )
+    first_scheduled_seq = int(occurrences[7]["seq"])
+    agent._scene_tracker.mark_scene_summary_scheduled(
+        "scene-a",
+        seq=first_scheduled_seq,
+    )
+    agent._scene_tracker.mark_scene_summary_delivered(
+        "scene-a",
+        seq=first_scheduled_seq,
+    )
+    captured: list[dict[str, Any]] = []
+    monkeypatch.setattr(agent, "_maybe_schedule_scene_capsule", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        agent,
+        "_schedule_scene_summary_task",
+        lambda **kwargs: captured.append(kwargs),
+    )
+
+    await agent._maybe_push_periodic_scene_summary(shared, snapshot=snapshot)
+
+    assert len(captured) == 1
+    context = captured[0]["context"]
+    assert [line["text"] for line in context["new_stable_lines"]] == [
+        line["text"] for line in lines[8:]
+    ]
+    assert [choice["text"] for choice in context["new_choices"]] == [
+        "take the new route"
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_load_boundary_archive_excludes_retained_preload_history(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(
+            _Ctx(plugin_dir, _make_effective_config(bridge_root))
+        ),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    old_lines = [_summary_test_line("scene-a", index) for index in range(1, 3)]
+    old_events = [
+        _summary_test_line_event("scene-a", index, seq=index)
+        for index in range(1, 3)
+    ]
+    old_choice = {"choice_id": "old-choice", "text": "abandoned future"}
+    old_choice_event = _event(
+        seq=3,
+        event_type="choice_selected",
+        session_id="sess-a",
+        game_id="demo.alpha",
+        ts="2026-04-21T08:35:03Z",
+        payload={"scene_id": "scene-a", "choice": old_choice},
+    )
+    first_shared = _capsule_shared(
+        events=[*old_events, old_choice_event],
+        lines=old_lines,
+    )
+    first_snapshot = first_shared["latest_snapshot"]
+    assert isinstance(first_snapshot, dict)
+    await agent._maybe_push_periodic_scene_summary(
+        first_shared,
+        snapshot=first_snapshot,
+    )
+
+    save_context = {
+        "kind": "load",
+        "slot_id": "slot-1",
+        "checkpoint_id": "checkpoint-a",
+    }
+    load_event = _event(
+        seq=4,
+        event_type="save_loaded",
+        session_id="sess-a",
+        game_id="demo.alpha",
+        ts="2026-04-21T08:35:04Z",
+        payload={
+            "reason": "load",
+            "scene_id": "scene-a",
+            "save_context": save_context,
+        },
+    )
+    new_choice = {"choice_id": "new-choice", "text": "restored path"}
+    new_choice_event = _event(
+        seq=5,
+        event_type="choice_selected",
+        session_id="sess-a",
+        game_id="demo.alpha",
+        ts="2026-04-21T08:35:05Z",
+        payload={"scene_id": "scene-a", "choice": new_choice},
+    )
+    new_lines = [_summary_test_line("scene-a", index) for index in range(3, 11)]
+    new_events = [
+        _summary_test_line_event("scene-a", index, seq=index + 3)
+        for index in range(3, 11)
+    ]
+    load_snapshot = _session_state(
+        scene_id="scene-a",
+        text=str(new_lines[-1]["text"]),
+        line_id=str(new_lines[-1]["line_id"]),
+    )
+    load_snapshot["save_context"] = save_context
+    load_shared = _shared_state(
+        mode="companion",
+        push_notifications=False,
+        session_id="sess-a",
+        last_seq=13,
+        snapshot=load_snapshot,
+        history_events=[
+            *old_events,
+            old_choice_event,
+            load_event,
+            new_choice_event,
+            *new_events,
+        ],
+        history_lines=[*old_lines, *new_lines],
+        history_choices=[
+            {**old_choice, "action": "selected", "scene_id": "scene-a"},
+            {**new_choice, "action": "selected", "scene_id": "scene-a"},
+        ],
+    )
+    captured: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        agent,
+        "_schedule_scene_summary_task",
+        lambda **kwargs: captured.append(kwargs),
+    )
+
+    await agent._maybe_push_periodic_scene_summary(
+        load_shared,
+        snapshot=load_snapshot,
+    )
+
+    assert len(captured) == 1
+    context = captured[0]["context"]
+    assert [line["text"] for line in context["stable_lines"]] == [
+        line["text"] for line in new_lines
+    ]
+    assert [choice["text"] for choice in context["recent_choices"]] == [
+        "restored path"
+    ]

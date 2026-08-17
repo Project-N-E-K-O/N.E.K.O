@@ -503,6 +503,12 @@ class AgentLifecycleMixin:
         pending = [task for task in tasks if not task.done()]
         self._summary_generation += 1
         self._scene_summary_repeat_reservations.clear()
+        for task in tasks:
+            task_meta = self._summary_task_meta.get(task)
+            if not isinstance(task_meta, dict):
+                continue
+            task_meta["restore_schedule_on_failure"] = False
+            task_meta["permanent_cancellation_reason"] = str(reason or "")
         for task in pending:
             task.cancel()
         self._summary_tasks.clear()
