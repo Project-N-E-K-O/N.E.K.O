@@ -630,8 +630,12 @@ class StreamingMixin:
                                     getattr(stage_result, "accepted", False)
                                 )
                             else:
-                                await self.session.stream_image(image_b64)
-                                image_accepted = True
+                                logger.info(
+                                    "[%s] one-shot image kept out of realtime "
+                                    "visual staging: input_type=%s",
+                                    self.lanlan_name,
+                                    input_type,
+                                )
                         if (
                             image_accepted
                             and image_arrival_time is not None

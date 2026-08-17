@@ -744,6 +744,40 @@ async def test_voice_live_vision_input_preserves_source_and_request_identity(
 @pytest.mark.unit
 @pytest.mark.asyncio
 @pytest.mark.parametrize("input_type", ["avatar_drop_image", "user_image"])
+async def test_voice_session_does_not_stage_one_shot_user_images(
+    monkeypatch,
+    input_type,
+):
+    """Attachments stay on the text/offline path, never the ambient voice cache."""
+    mgr = _make_manager()
+    mgr.session = object.__new__(core_module.OmniRealtimeClient)
+    mgr.session.ws = object()
+    mgr.session.stream_image = AsyncMock()
+    mgr.is_active = True
+    mgr._starting_session_count = 0
+    mgr._session_start_circuit_open = False
+    mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=False)
+    monkeypatch.setattr(
+        core_module,
+        "process_screen_data",
+        AsyncMock(return_value="img-b64"),
+    )
+
+    await core_module.LLMSessionManager._process_stream_data_internal(
+        mgr,
+        {
+            "input_type": input_type,
+            "data": "raw-image",
+            "request_id": "req-one-shot",
+        },
+    )
+
+    mgr.session.stream_image.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("input_type", ["avatar_drop_image", "user_image"])
 async def test_one_shot_user_image_records_engagement(
     monkeypatch,
     input_type,

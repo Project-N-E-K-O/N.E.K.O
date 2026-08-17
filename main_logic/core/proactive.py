@@ -959,6 +959,24 @@ class ProactiveMixin:
                 # callback media, then re-check activity: a server-VAD turn can
                 # start while the rotation callback is suspended, and that
                 # user turn must keep priority over this proactive callback.
+                def _voice_activity_since(started_at: float) -> bool:
+                    return bool(
+                        voice_sess.is_active_response()
+                        or getattr(voice_sess, "_client_vad_active", False)
+                        or getattr(
+                            voice_sess,
+                            "_user_recent_activity_time",
+                            0.0,
+                        )
+                        > started_at
+                        or getattr(
+                            voice_sess,
+                            "_ai_recent_activity_time",
+                            0.0,
+                        )
+                        > started_at
+                    )
+
                 rotation_started_at = time.time()
                 if voice_sess.on_sid_rotate is not None:
                     try:
@@ -977,14 +995,7 @@ class ProactiveMixin:
                             self.proactive_manager.min_gap_s
                         )
                         return False
-                if (
-                    voice_sess.is_active_response()
-                    or getattr(voice_sess, "_client_vad_active", False)
-                    or getattr(voice_sess, "_user_recent_activity_time", 0.0)
-                    > rotation_started_at
-                    or getattr(voice_sess, "_ai_recent_activity_time", 0.0)
-                    > rotation_started_at
-                ):
+                if _voice_activity_since(rotation_started_at):
                     logger.info(
                         "[%s] trigger_agent_callbacks: activity started during SID rotation; deferring callback delivery",
                         self.lanlan_name,
@@ -1004,6 +1015,7 @@ class ProactiveMixin:
                 self._mark_voice_delivery_committed(voice_snapshot)
                 voice_commit_snapshot = tuple(voice_snapshot)
                 voice_media_events: list[tuple[dict, dict]] = []
+                media_started_at = time.time()
                 try:
                     media_ok = await self._stream_cb_media(
                         voice_snapshot,
@@ -1031,6 +1043,24 @@ class ProactiveMixin:
                         self.lanlan_name, len(voice_snapshot),
                     )
                     self._schedule_proactive_retry(self.proactive_manager.min_gap_s)
+                    return False
+                # External descriptions are still local at this point; unlike
+                # native images, nothing has been persisted to the provider.
+                # If a user turn won the slow vision-model await, discard the
+                # unsent description events and let that user turn keep
+                # priority. The callback remains queued for a later retry.
+                if voice_media_events and _voice_activity_since(media_started_at):
+                    self._clear_voice_delivery_committed(voice_commit_snapshot)
+                    for _owner_cb, event in voice_media_events:
+                        voice_sess._inject_rejection_handlers.pop(
+                            event.get("event_id"),
+                            None,
+                        )
+                    logger.info(
+                        "[%s] trigger_agent_callbacks: activity started during "
+                        "external visual analysis; deferring callback delivery",
+                        self.lanlan_name,
+                    )
                     return False
                 if _reject_state["rejected"]:
                     self._clear_voice_delivery_committed(voice_commit_snapshot)

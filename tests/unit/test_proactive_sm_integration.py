@@ -389,6 +389,62 @@ async def test_voice_mode_sid_rotation_rechecks_user_activity_before_media():
     assert cb.get("_voice_delivery_committed") is None
 
 
+async def test_external_callback_rechecks_user_activity_after_visual_analysis():
+    """A user turn that wins the vision await must preempt proactive injection."""
+    sess = _make_voice_sess()
+    sess._inject_rejection_handlers = {}
+
+    async def _stream_image(
+        _image_b64,
+        *,
+        bypass_rate_limit=False,
+        cache_latest=True,
+        source=None,
+        request_id=None,
+        on_rejected=None,
+    ):
+        assert bypass_rate_limit is True
+        assert cache_latest is False
+        assert source == "callback"
+        assert request_id == "id-vad-during-vision"
+        assert on_rejected is not None
+        await asyncio.sleep(0)
+        sess._client_vad_active = True
+        return SimpleNamespace(
+            accepted=True,
+            mode="external_description",
+            description="画面里有一只猫。",
+        )
+
+    async def _expire(_event_id, _timeout):
+        return None
+
+    def _fire_task(coro):
+        coro.close()
+
+    sess.stream_image = _stream_image
+    sess._expire_inject_rejection_handler = _expire
+    sess._fire_task = _fire_task
+    mgr = _make_mgr(session=sess)
+    cb = {
+        "_callback_delivery_id": "id-vad-during-vision",
+        "status": "completed",
+        "summary": "defer this visual callback",
+        "media_images": ["callback-image"],
+    }
+    mgr.pending_agent_callbacks = [cb]
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(
+        mgr
+    )
+
+    assert delivered is False
+    assert sess.inject_calls == 0
+    assert sess._inject_rejection_handlers == {}
+    assert mgr.pending_agent_callbacks == [cb]
+    assert cb.get("_voice_delivery_committed") is None
+
+
 async def test_voice_mode_sid_rotation_failure_arms_callback_retry():
     sess = _make_voice_sess()
     sess.on_sid_rotate = AsyncMock(side_effect=RuntimeError("rotate failed"))
