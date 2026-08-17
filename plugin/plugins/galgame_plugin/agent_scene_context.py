@@ -431,12 +431,36 @@ class AgentSceneContextMixin:
                 parts.append("最近确认的选项：" + "；".join(choices))
         return " ".join(parts)
 
-    def _latest_scene_summary_text(self, snapshot: dict[str, Any]) -> str:
+    def _latest_scene_summary_text(
+        self,
+        snapshot: dict[str, Any],
+        *,
+        shared: dict[str, Any] | None = None,
+    ) -> str:
         scene_id = str((snapshot or {}).get("scene_id") or "")
         route_id = str((snapshot or {}).get("route_id") or "")
+        scene_ids = {scene_id}
+        if scene_id and isinstance(shared, dict):
+            session_id = str(shared.get("active_session_id") or "")
+            boundary_key = self._scene_capsule_boundary_key(
+                shared,
+                session_id=session_id,
+            )
+            ledger = self._scene_capsule_delivery_ledger.get(boundary_key) or {}
+            scene_aliases = dict(
+                ledger.get("memory_handoff_scene_aliases") or {}
+            )
+            aliased_scene_id = str(
+                scene_aliases.get(
+                    self._scene_tracker.summary_scope_key(scene_id, route_id)
+                )
+                or ""
+            )
+            if aliased_scene_id:
+                scene_ids.add(aliased_scene_id)
         for entry in reversed(self._scene_memory or []):
             if (
-                str(entry.get("scene_id") or "") == scene_id
+                str(entry.get("scene_id") or "") in scene_ids
                 and str(entry.get("route_id") or "") == route_id
             ):
                 return str(entry.get("summary") or "")

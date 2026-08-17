@@ -1019,6 +1019,7 @@ class AgentSummaryMixin:
         session_id = str(shared.get("active_session_id") or "")
         scene_id = str(snapshot.get("scene_id") or "")
         occurrences: list[dict[str, Any]] = []
+        visible_event_menu_signatures: set[str] = set()
         history_events = list(shared.get("history_events") or [])
         event_scene_ids, last_explicit_scene_index = (
             self._scene_capsule_event_scene_ids(history_events)
@@ -1174,6 +1175,22 @@ class AgentSummaryMixin:
                 )
                 or ""
             )
+            if event_type == "choices_shown":
+                visible_event_menu_signatures.add(
+                    json.dumps(
+                        {
+                            "scene_id": event_scene_id,
+                            "route_id": event_route_id,
+                            "choices": [
+                                str(choice.get("text") or "").strip()
+                                for _choice_index, choice, _normalized_index in valid_choices
+                            ],
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                )
             event_group_signature = json.dumps(
                 {
                     "type": event_type,
@@ -1256,18 +1273,17 @@ class AgentSummaryMixin:
                     }
                 )
 
-        if occurrences:
-            return occurrences
         selected_history_choices = [
             item
             for item in list(shared.get("history_choices") or [])
             if not isinstance(item, dict)
             or str(item.get("action") or "selected").strip().lower() == "selected"
         ]
-        for choice_state, items in (
-            ("selected", selected_history_choices),
-            ("visible", list(snapshot.get("choices") or [])),
-        ):
+        fallback_choice_sources: list[tuple[str, list[Any]]] = []
+        if not occurrences:
+            fallback_choice_sources.append(("selected", selected_history_choices))
+        fallback_choice_sources.append(("visible", list(snapshot.get("choices") or [])))
+        for choice_state, items in fallback_choice_sources:
             fallback_choices: list[tuple[dict[str, Any], str, str]] = []
             for item in items:
                 if not isinstance(item, dict):
@@ -1309,6 +1325,22 @@ class AgentSummaryMixin:
                     separators=(",", ":"),
                 )
                 fallback_choices.append((choice, choice_scene_id, semantic))
+            if choice_state == "visible" and fallback_choices:
+                visible_menu_signature = json.dumps(
+                    {
+                        "scene_id": str(snapshot.get("scene_id") or ""),
+                        "route_id": str(snapshot.get("route_id") or ""),
+                        "choices": [
+                            str(choice.get("text") or "").strip()
+                            for choice, _scene, _semantic in fallback_choices
+                        ],
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                if visible_menu_signature in visible_event_menu_signatures:
+                    continue
             fallback_ids = self._scene_capsule_fallback_occurrence_ids(
                 source_key=(
                     f"{data_source}|{session_id}|history_choice:{choice_state}"
@@ -2287,15 +2319,21 @@ class AgentSummaryMixin:
     ) -> None:
         if not scene_id or not summary:
             return
-        for item in reversed(self._scene_memory):
+        for index in range(len(self._scene_memory) - 1, -1, -1):
+            item = self._scene_memory[index]
             if not isinstance(item, dict):
                 continue
             if str(item.get("scene_id") or "") != scene_id:
                 continue
             if str(item.get("route_id") or "") != route_id:
                 continue
-            item["summary"] = summary
-            item["ts"] = self._utc_now_iso()
+            updated = {
+                **item,
+                "summary": summary,
+                "ts": self._utc_now_iso(),
+            }
+            self._scene_memory.pop(index)
+            self._append_bounded(self._scene_memory, updated, limit=32)
             return
         self._append_bounded(
             self._scene_memory,

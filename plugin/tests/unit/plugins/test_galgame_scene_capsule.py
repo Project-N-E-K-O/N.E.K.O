@@ -549,6 +549,69 @@ def test_latest_scene_summary_text_matches_exact_route(tmp_path: Path) -> None:
 
 
 @pytest.mark.plugin_unit
+def test_latest_scene_summary_text_uses_trusted_alias_on_exact_route(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(
+            _Ctx(plugin_dir, _make_effective_config(bridge_root))
+        ),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    shared = _shared_state(
+        mode="companion",
+        game_id="demo.alpha",
+        session_id="ocr-session",
+        active_data_source=DATA_SOURCE_OCR_READER,
+        snapshot=_session_state(scene_id="ocr-scene", route_id="route-a"),
+    )
+    boundary_key = agent._scene_capsule_boundary_key(
+        shared,
+        session_id="ocr-session",
+    )
+    agent._scene_capsule_delivery_ledger[boundary_key] = {
+        "memory_handoff_scene_aliases": {
+            agent._scene_tracker.summary_scope_key(
+                "ocr-scene",
+                "route-a",
+            ): "memory-scene"
+        }
+    }
+    agent._scene_memory.extend(
+        [
+            {
+                "scene_id": "memory-scene",
+                "route_id": "route-a",
+                "summary": "trusted aliased route A memory",
+            },
+            {
+                "scene_id": "memory-scene",
+                "route_id": "route-b",
+                "summary": "route B memory must not leak",
+            },
+        ]
+    )
+
+    assert (
+        agent._latest_scene_summary_text(
+            {"scene_id": "ocr-scene", "route_id": "route-a"},
+            shared=shared,
+        )
+        == "trusted aliased route A memory"
+    )
+    assert (
+        agent._latest_scene_summary_text(
+            {"scene_id": "ocr-scene", "route_id": "route-b"},
+            shared=shared,
+        )
+        == ""
+    )
+
+
+@pytest.mark.plugin_unit
 def test_choice_history_fallback_does_not_treat_shown_as_selected(tmp_path: Path) -> None:
     plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
     agent = GameLLMAgent(
@@ -586,6 +649,83 @@ def test_choice_history_fallback_does_not_treat_shown_as_selected(tmp_path: Path
     assert [(item["text"], item["choice_state"]) for item in choices] == [
         ("留在原地", "selected")
     ]
+
+
+@pytest.mark.plugin_unit
+def test_snapshot_choice_menu_is_merged_with_older_event_occurrences(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(
+            _Ctx(plugin_dir, _make_effective_config(bridge_root))
+        ),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    old_choices = [
+        {"choice_id": "old-a", "text": "old option A", "index": 0},
+        {"choice_id": "old-b", "text": "old option B", "index": 1},
+    ]
+    current_choices = [
+        {"choice_id": "new-a", "text": "current option A", "index": 0},
+        {"choice_id": "new-b", "text": "current option B", "index": 1},
+    ]
+    old_event = _event(
+        seq=1,
+        event_type="choices_shown",
+        session_id="sess-a",
+        game_id="demo.alpha",
+        ts="2026-04-21T08:35:01Z",
+        payload={
+            "scene_id": "scene-a",
+            "route_id": "route-a",
+            "choices": old_choices,
+        },
+    )
+    snapshot = _session_state(
+        scene_id="scene-a",
+        route_id="route-a",
+        choices=current_choices,
+    )
+    shared = _shared_state(
+        mode="companion",
+        session_id="sess-a",
+        snapshot=snapshot,
+        history_events=[old_event],
+    )
+
+    occurrences = agent._scene_capsule_choice_occurrences(
+        shared,
+        snapshot=snapshot,
+    )
+
+    assert {
+        str((occurrence.get("choice") or {}).get("text") or "")
+        for occurrence in occurrences
+    } == {
+        "old option A",
+        "old option B",
+        "current option A",
+        "current option B",
+    }
+    assert sum(bool(item.get("snapshot_fallback")) for item in occurrences) == 2
+
+    same_snapshot = _session_state(
+        scene_id="scene-a",
+        route_id="route-a",
+        choices=old_choices,
+    )
+    same_occurrences = agent._scene_capsule_choice_occurrences(
+        {
+            **shared,
+            "latest_snapshot": same_snapshot,
+        },
+        snapshot=same_snapshot,
+    )
+    assert len(same_occurrences) == 2
+    assert not any(item.get("snapshot_fallback") for item in same_occurrences)
 
 
 @pytest.mark.plugin_unit
@@ -3867,4 +4007,77 @@ async def test_aliased_archive_seed_uses_newest_committed_summary(
 
     assert gateway.summarize_calls[-1]["previous_scene_summary"] == (
         "newer OCR cumulative archive"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_aliased_archive_seed_uses_latest_same_second_commit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    gateway = _FakeLLMGateway()
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(
+            _Ctx(plugin_dir, _make_effective_config(bridge_root))
+        ),
+        logger=_Logger(),
+        llm_gateway=gateway,
+        host_adapter=_FakeHostAdapter(),
+    )
+    line = _summary_test_line("memory-scene", 1)
+    shared = _shared_state(
+        mode="companion",
+        push_notifications=False,
+        game_id="demo.alpha",
+        session_id="memory-session",
+        active_data_source=DATA_SOURCE_MEMORY_READER,
+        snapshot=_session_state(scene_id="memory-scene"),
+        history_lines=[line],
+    )
+    await agent.tick(shared)
+    agent._scene_memory.clear()
+    monkeypatch.setattr(
+        agent,
+        "_utc_now_iso",
+        lambda: "2026-04-21T08:36:01Z",
+    )
+    agent._replace_scene_memory_summary(
+        scene_id="memory-scene",
+        route_id="",
+        summary="stale memory-reader archive",
+    )
+    agent._replace_scene_memory_summary(
+        scene_id="ocr-scene",
+        route_id="",
+        summary="OCR archive",
+    )
+    agent._replace_scene_memory_summary(
+        scene_id="memory-scene",
+        route_id="",
+        summary="latest memory-reader archive",
+    )
+    context = build_summarize_context(
+        shared,
+        scene_id="memory-scene",
+        config=agent._context_config,
+    )
+    agent._schedule_scene_summary_task(
+        shared=shared,
+        session_id="memory-session",
+        scene_id="memory-scene",
+        route_id="",
+        snapshot=shared["latest_snapshot"],
+        context=context,
+        trigger="line_count",
+        metadata={
+            "scheduled_from_event_seq": 1,
+            "memory_scene_alias_ids": ["ocr-scene"],
+        },
+    )
+    await agent.drain_summary_tasks(timeout=1.0)
+
+    assert gateway.summarize_calls[-1]["previous_scene_summary"] == (
+        "latest memory-reader archive"
     )
