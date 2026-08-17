@@ -3003,6 +3003,15 @@ def test_scoped_recovery_preserves_governing_context(text):
     assert router._chat_text_requests_full_rewrite(text) is False, text
 
 
+def test_scoped_recovery_preserves_a_trailing_cancellation():
+    """尾部取消语支配前面的整卡修改，不能在恢复时被丢弃。"""  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    assert router._chat_text_requests_full_rewrite(
+        "重写所有字段并保留是否会员标签，取消上述修改"
+    ) is False
+
+
 @pytest.mark.parametrize(
     "text",
     [

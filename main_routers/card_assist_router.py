@@ -1531,6 +1531,11 @@ _CHAT_SCOPED_DISCLAIMER_RE = re.compile(
     r"(?:示例|例子|范例|範例)"
     r"|(?:仅|僅|只)(?:供|作)(?:参考|參考)"
 )
+_CHAT_SCOPED_CANCELLATION_RE = re.compile(
+    r"(?:取消|撤销|撤銷|作废|作廢|忽略|无视|無視)\s*"
+    r"(?:上述|以上|前述|这些|這些|该|該)?\s*"
+    r"(?:修改|操作|指令|命令|要求|内容|內容)"
+)
 _CHAT_SCOPED_SIGNAL_BRIDGE_RE = re.compile(
     rf"\s*(?:(?:一遍|一次|一下|下|一回)\s*|(?i:the)\s*|{_WHOLE_CARD_ADVERB_RUN})*"
 )
@@ -1570,6 +1575,8 @@ def _chat_scoped_suffix_has_governing_guard(
     if _CHAT_SCOPED_SENTENCE_FINAL_QUESTION_RE.search(readable_suffix):
         return True
     if _CHAT_SCOPED_DISCLAIMER_RE.search(readable_suffix):
+        return True
+    if _CHAT_SCOPED_CANCELLATION_RE.search(readable_suffix):
         return True
     readable = _chat_clause_without_free_choice(readable_suffix)
     question = _CHAT_QUESTION_CLAUSE_RE.search(readable)
