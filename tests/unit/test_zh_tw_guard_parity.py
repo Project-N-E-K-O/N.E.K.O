@@ -3891,6 +3891,23 @@ def test_a_postposed_execution_question_governs_all_recovered_list_items():
     assert router._chat_text_requests_full_rewrite(text) is False
 
 
+@pytest.mark.parametrize('modal', ['应该', '應該', '需要', '可以'])
+def test_a_modal_execution_question_governs_all_recovered_list_items(modal):
+    import main_routers.card_assist_router as router
+
+    text = f'{modal}执行以下修改吗：先重写名字，然后请重写所有字段并保留是否会员'
+    assert router._chat_text_requests_full_rewrite_core(text) is False
+    assert router._chat_text_requests_full_rewrite(text) is False
+
+
+@pytest.mark.parametrize('modal', ['应该', '需要', '可以'])
+def test_a_modal_execution_statement_without_a_question_remains_executable(modal):
+    import main_routers.card_assist_router as router
+
+    text = f'{modal}执行以下修改：先重写名字，然后请重写所有字段并保留是否会员'
+    assert router._chat_text_requests_full_rewrite(text) is True
+
+
 def test_an_english_command_after_a_field_assignment_remains_visible():
     import main_routers.card_assist_router as router
 
