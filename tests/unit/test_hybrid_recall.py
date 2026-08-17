@@ -1438,6 +1438,34 @@ class TestVectorDecodeCache(unittest.IsolatedAsyncioTestCase):
             del missing_stamps["embedding_text_sha256"]
             self.assertEqual(await _cosine_rank("博士", [missing_stamps]), [])
 
+    async def test_oversized_pool_bypasses_cache_instead_of_thrashing(self):
+        """Pool > cap must bypass ``_VEC_CACHE`` entirely (codex P2): a plain
+        LRU under full sequential scans self-destructs (each scan evicts the
+        previous scan's tail before iteration reaches it), so admitting
+        misses would make every query pay admission overhead for zero hits —
+        strictly worse than no cache. Bypass = exactly the pre-cache path."""
+        import memory.embeddings as emb
+        from memory.hybrid_recall import _VEC_CACHE, _cosine_rank
+
+        pool = [
+            self._doc(f"p{i}", f"第{i}条记忆", [1.0, float(i), 0.0, 0.0])
+            for i in range(3)
+        ]
+        service = self._service([1.0, 0.0, 0.0, 0.0])
+
+        with patch("memory.hybrid_recall.HYBRID_RECALL_VEC_CACHE_MAX_ENTRIES", 2), \
+             patch.object(emb, "get_embedding_service", MagicMock(return_value=service)):
+            first = await _cosine_rank("记忆", pool)
+            self.assertEqual(len(_VEC_CACHE), 0)  # nothing admitted
+
+            second = await _cosine_rank("记忆", pool)
+            self.assertEqual(len(_VEC_CACHE), 0)
+
+        self.assertEqual(
+            [(d["id"], round(s, 6)) for d, s in first],
+            [(d["id"], round(s, 6)) for d, s in second],
+        )
+
     async def test_cache_is_lru_capped(self):
         """The entry cap bounds resident memory — overflow evicts LRU-first."""
         from memory.hybrid_recall import (

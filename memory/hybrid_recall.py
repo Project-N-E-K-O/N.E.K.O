@@ -403,6 +403,7 @@ async def _cosine_rank(
         return []
 
     from memory.embeddings import (
+        decode_valid_cached_embedding,
         get_embedding_service,
         parse_dim_from_model_id,
     )
@@ -440,11 +441,23 @@ async def _cosine_rank(
         # 改成 decode 循环只攒 (doc, vec)，最后 vstack 成 (n, dim) 矩阵、一次
         # axis=1 norm、一次 matmul，同样的语义（cnorm<=0 跳过、维度不匹配
         # 跳过）。
+        # 池子装不下缓存时就整个绕过它（codex review P2：scan thrashing）。
+        # 朴素 LRU 在「全量顺序扫描 × 池子 > 上限」下的稳态是自毁的：每轮
+        # 扫描先把上一轮刚缓存的尾部淘汰掉，迭代走到那里时又是 miss——
+        # 命中率归零，每次查询却照付 admission 的 dict/sha 开销，比没有
+        # 缓存还差。装得下的池子（正常场景，embedding 池只含活跃 facts +
+        # reflections）走缓存；装不下的直接退回直连校验路径，零额外成本，
+        # 语义与缓存出现之前完全一致。
+        use_cache = len(pool) <= HYBRID_RECALL_VEC_CACHE_MAX_ENTRIES
+
         rows: list[dict] = []
         vecs: list = []
         for doc in pool:
             text = doc.get('text', '') or ''
-            cvec = _cached_doc_vector(doc, text, model_id)
+            if use_cache:
+                cvec = _cached_doc_vector(doc, text, model_id)
+            else:
+                cvec = decode_valid_cached_embedding(doc, text, model_id)
             if cvec is None or cvec.size != target_dim:
                 continue
             rows.append(doc)
