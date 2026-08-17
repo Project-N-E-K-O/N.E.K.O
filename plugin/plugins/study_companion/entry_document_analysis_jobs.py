@@ -5,7 +5,11 @@ from contextlib import nullcontext
 
 from .constants import LLM_OPERATION_DOCUMENT_ANALYZE
 from ._general_narration import prepare_general_narration_content
-from .document_analysis import DocumentValidationError, validate_document
+from .document_analysis import (
+    DOCUMENT_ANALYSIS_KINDS,
+    DocumentValidationError,
+    validate_document,
+)
 from .document_analysis_jobs import DocumentAnalysisJobError, DocumentAnalysisJobManager
 from .document_chunking import (
     DOCUMENT_DIRECT_MAX_TOKENS,
@@ -136,16 +140,7 @@ class _DocumentAnalysisJobsEntriesMixin:
                 },
                 "analysis_kind": {
                     "type": "string",
-                    "enum": [
-                        "auto",
-                        "literary_book",
-                        "nonfiction_book",
-                        "design_document",
-                        "academic_paper",
-                        "exam",
-                        "course_material",
-                        "general_notes",
-                    ],
+                    "enum": list(DOCUMENT_ANALYSIS_KINDS),
                     "default": "auto",
                 },
                 "locale": {"type": "string", "maxLength": 16},
@@ -469,9 +464,12 @@ class _DocumentAnalysisJobsEntriesMixin:
     @ui.action()
     @plugin_entry(
         id="study_document_analysis_status",
-        name=tr("entries.analyze_document.name", default="Document Analysis Status"),
+        name=tr(
+            "entries.document_analysis_status.name",
+            default="Document Analysis Status",
+        ),
         description=tr(
-            "entries.analyze_document.description",
+            "entries.document_analysis_status.description",
             default="Read document analysis progress.",
         ),
         input_schema={
@@ -495,10 +493,13 @@ class _DocumentAnalysisJobsEntriesMixin:
     @ui.action()
     @plugin_entry(
         id="study_active_document_analysis",
-        name=tr("entries.analyze_document.name", default="Active Document Analysis"),
+        name=tr(
+            "entries.active_document_analysis.name",
+            default="Recover Document Analysis",
+        ),
         description=tr(
-            "entries.analyze_document.description",
-            default="Read the active document analysis job.",
+            "entries.active_document_analysis.description",
+            default="Recover the latest retained document analysis job.",
         ),
         input_schema={"type": "object", "properties": {}},
         timeout=_STATUS_ENTRY_TIMEOUT_SECONDS,
@@ -513,9 +514,13 @@ class _DocumentAnalysisJobsEntriesMixin:
     @ui.action()
     @plugin_entry(
         id="study_cancel_document_analysis",
-        name=tr("entries.analyze_document.name", default="Cancel Document Analysis"),
+        name=tr(
+            "entries.cancel_document_analysis.name",
+            default="Cancel Document Analysis",
+        ),
         description=tr(
-            "entries.analyze_document.description", default="Cancel document analysis."
+            "entries.cancel_document_analysis.description",
+            default="Cancel document analysis.",
         ),
         input_schema={
             "type": "object",

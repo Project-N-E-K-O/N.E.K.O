@@ -8,9 +8,10 @@ from fastapi.testclient import TestClient
 from pypdf import PdfWriter
 from starlette.datastructures import Headers, UploadFile
 
-import main_routers.document_upload as document_upload
+import utils.document_upload as document_upload
 from main_routers.avatar_drop_router import router as avatar_drop_router
-from main_routers.documents_router import router as documents_router
+from plugin.server.routes.documents import router as documents_router
+from plugin.server.http_app import build_plugin_server_app
 from tests.unit.test_document_parser import (
     _blank_pdf_bytes,
     _docx_bytes,
@@ -35,6 +36,20 @@ def _encrypted_pdf_bytes() -> bytes:
     writer.encrypt("secret")
     writer.write(buffer)
     return buffer.getvalue()
+
+
+@pytest.mark.unit
+def test_plugin_server_registers_hosted_document_parse_route():
+    app = build_plugin_server_app()
+
+    matching = [
+        route
+        for route in app.routes
+        if getattr(route, "path", "") == "/api/documents/parse"
+    ]
+
+    assert len(matching) == 1
+    assert "POST" in matching[0].methods
 
 
 @pytest.mark.unit

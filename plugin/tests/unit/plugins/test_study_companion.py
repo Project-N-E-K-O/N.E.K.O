@@ -8648,6 +8648,7 @@ async def test_study_evaluate_answer_persists_knowledge_tracking(
     result = await plugin.startup()
     assert isinstance(result, Ok)
     plugin._agent = _TrackingTutorAgent()
+    plugin._knowledge_guidance_topics_cache = {"all:5000": [{"id": "stale"}]}
 
     try:
         async with plugin._lock:
@@ -8684,8 +8685,83 @@ async def test_study_evaluate_answer_persists_knowledge_tracking(
         assert "anonymous_knowledge_stats_summary" in status.value
         assert status.value["weak_topics"]
         assert status.value["mastery_overview"]
+        assert plugin._knowledge_guidance_topics_cache == {}
     finally:
         await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_failed_document_job_shutdown_does_not_stop_remaining_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+
+    class _FailingDocumentJobs:
+        async def shutdown(self) -> None:
+            raise RuntimeError("document jobs shutdown failed")
+
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "en", "auto_open_ui": False},
+            "study_companion": {"communication": {"enabled": True}},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+    started = await plugin.startup()
+    assert isinstance(started, Ok)
+    bus = plugin._event_bus
+    assert bus is not None
+    plugin.logger = ctx.logger
+    plugin._document_jobs = _FailingDocumentJobs()
+
+    shutdown_result = await plugin.shutdown()
+
+    assert isinstance(shutdown_result, Ok)
+    assert bus._worker_task is None
+    assert any(
+        "study shutdown document jobs cleanup failed" in str(args[0])
+        for args, _kwargs in ctx.logger.warnings
+    )
+
+
+@pytest.mark.asyncio
+async def test_failed_document_job_shutdown_does_not_stop_startup_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+
+    class _FailingDocumentJobs:
+        async def shutdown(self) -> None:
+            raise RuntimeError("document jobs shutdown failed")
+
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "en", "auto_open_ui": False},
+            "study_companion": {"communication": {"enabled": True}},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+    started = await plugin.startup()
+    assert isinstance(started, Ok)
+    bus = plugin._event_bus
+    assert bus is not None
+    plugin.logger = ctx.logger
+    plugin._document_jobs = _FailingDocumentJobs()
+
+    await plugin._cleanup_after_failed_startup()
+
+    assert plugin._event_bus is None
+    assert bus._worker_task is None
+    assert any(
+        "study startup cleanup document jobs failed" in str(args[0])
+        for args, _kwargs in ctx.logger.warnings
+    )
 
 
 @pytest.mark.asyncio

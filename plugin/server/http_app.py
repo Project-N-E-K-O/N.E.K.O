@@ -23,6 +23,7 @@ from plugin.server.lifecycle import shutdown as lifecycle_shutdown
 from plugin.server.lifecycle import startup as lifecycle_startup
 from plugin.server.routes import (
     config_router,
+    documents_router,
     frontend_router,
     health_router,
     llm_tools_router,
@@ -227,6 +228,7 @@ def build_plugin_server_app(title: str = "N.E.K.O User Plugin Server") -> FastAP
         return response
 
     app.include_router(health_router)
+    app.include_router(documents_router)
     app.include_router(plugins_router)
     app.include_router(runs_router)
     app.include_router(messages_router)

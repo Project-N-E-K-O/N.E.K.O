@@ -13,6 +13,14 @@ _REQUIRED_DIAGNOSTIC_KEYS = {
     "ui.error.document_analysis_invalid_endpoint",
     "ui.error.document_analysis_invalid_request",
 }
+_DOCUMENT_ENTRY_KEYS = {
+    "entries.document_analysis_status.name",
+    "entries.document_analysis_status.description",
+    "entries.active_document_analysis.name",
+    "entries.active_document_analysis.description",
+    "entries.cancel_document_analysis.name",
+    "entries.cancel_document_analysis.description",
+}
 
 
 def test_document_diagnostic_i18n_keys_are_complete_and_consistent() -> None:
@@ -25,10 +33,17 @@ def test_document_diagnostic_i18n_keys_are_complete_and_consistent() -> None:
     }
     baseline_keys = set(bundles["en"])
 
-    assert _REQUIRED_DIAGNOSTIC_KEYS <= baseline_keys
+    assert _REQUIRED_DIAGNOSTIC_KEYS | _DOCUMENT_ENTRY_KEYS <= baseline_keys
     for locale, bundle in bundles.items():
         assert set(bundle) == baseline_keys, f"{locale} locale keys differ from en"
-        for key in _REQUIRED_DIAGNOSTIC_KEYS:
+        for key in _REQUIRED_DIAGNOSTIC_KEYS | _DOCUMENT_ENTRY_KEYS:
             assert isinstance(bundle[key], str) and bundle[key].strip(), (
                 f"{locale} is missing a non-empty translation for {key}"
             )
+        entry_names = {
+            bundle["entries.analyze_document.name"],
+            bundle["entries.document_analysis_status.name"],
+            bundle["entries.active_document_analysis.name"],
+            bundle["entries.cancel_document_analysis.name"],
+        }
+        assert len(entry_names) == 4, f"{locale} document entry names collide"

@@ -388,7 +388,14 @@ class StudyCompanionPlugin(
     async def _cleanup_after_failed_startup(self) -> None:
         document_jobs = getattr(self, "_document_jobs", None)
         if document_jobs is not None:
-            await document_jobs.shutdown()
+            try:
+                await document_jobs.shutdown()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self.logger.warning(
+                    "study startup cleanup document jobs failed: {}", exc
+                )
         self.stop_awareness_loop()
         await self._await_awareness_stop()
         await self._unsubscribe_neko_commands()
@@ -448,7 +455,14 @@ class StudyCompanionPlugin(
     async def shutdown(self, **_):
         document_jobs = getattr(self, "_document_jobs", None)
         if document_jobs is not None:
-            await document_jobs.shutdown()
+            try:
+                await document_jobs.shutdown()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self.logger.warning(
+                    "study shutdown document jobs cleanup failed: {}", exc
+                )
         self.stop_awareness_loop()
         await self._await_awareness_stop()
         await self._unsubscribe_neko_commands()

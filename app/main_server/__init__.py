@@ -635,7 +635,6 @@ from .web_app import (  # noqa: F401
     characters_router,
     cloudsave_router,
     config_router,
-    documents_router,
     cookies_login_router,
     debug_router,
     galgame_router,

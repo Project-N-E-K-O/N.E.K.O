@@ -26,7 +26,6 @@ from . import capture_router
 from . import characters_router
 from . import cloudsave_router
 from . import config_router
-from . import documents_router
 from . import jukebox_router
 from . import live2d_router
 from . import memory_router
@@ -46,7 +45,6 @@ __all__ = [
     'characters_router',
     'cloudsave_router',
     'config_router',
-    'documents_router',
     'jukebox_router',
     'live2d_router',
     'memory_router',

@@ -157,8 +157,12 @@ class _PomodoroEntriesMixin:
     async def study_pomodoro_pause(self, **_):
         try:
             _, _, timer, _ = self._require_habit_components()
+            transition: dict[str, Any] | None = None
             async with self._pomodoro_runtime_lock():
-                status = await asyncio.to_thread(timer.pause)
+                status, transition = await self._tick_pomodoro_timer_locked()
+                if str(status.get("state") or "") == "focusing":
+                    status = await asyncio.to_thread(timer.pause)
+            await self._emit_pomodoro_transition(transition)
             self._wake_pomodoro_watcher()
             return Ok(build_pomodoro_status_payload(status))
         except Exception as exc:

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
 
-from .document_upload import parse_uploaded_document
+from utils.document_upload import parse_uploaded_document
 
 
 router = APIRouter(prefix="/api/documents", tags=["documents"])

@@ -35,6 +35,7 @@ class _DeadlineTimer:
     def __init__(self) -> None:
         self.state = "focusing"
         self.tick_count = 0
+        self.pause_count = 0
 
     def status(self) -> dict[str, object]:
         return {
@@ -49,6 +50,11 @@ class _DeadlineTimer:
             self.state = "short_break"
         elif self.state == "short_break":
             self.state = "completed"
+        return self.status()
+
+    def pause(self) -> dict[str, object]:
+        self.pause_count += 1
+        self.state = "paused"
         return self.status()
 
 
@@ -132,6 +138,22 @@ async def test_deadline_transition_runs_when_communication_is_disabled() -> None
     assert status["state"] == "short_break"
     assert timer.tick_count == 1
     assert delivered is False
+
+
+@pytest.mark.asyncio
+async def test_pause_completes_expired_focus_before_pausing() -> None:
+    timer = _DeadlineTimer()
+    bus = _EventBus()
+    plugin = _plugin(timer, event_bus=bus)
+
+    result = await plugin.study_pomodoro_pause()
+
+    assert isinstance(result, Ok)
+    assert result.value["state"] == "short_break"
+    assert timer.tick_count == 1
+    assert timer.pause_count == 0
+    assert [event.name for event in bus.events] == ["pomodoro_focus_completed"]
+    assert plugin._supervision.focus_end_count == 1
 
 
 class _ManualTimer:

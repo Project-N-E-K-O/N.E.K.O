@@ -9,8 +9,7 @@ import asyncio
 from fastapi import APIRouter, File, UploadFile
 
 from utils.document_parser import parse_document
-
-from .document_upload import parse_uploaded_document
+from utils.document_upload import parse_uploaded_document
 
 
 router = APIRouter(prefix="/api/avatar-drop", tags=["avatar-drop"])

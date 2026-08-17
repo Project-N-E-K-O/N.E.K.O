@@ -781,6 +781,7 @@ class _TutorContextSupportMixin:
         except Exception as exc:
             self.logger.warning("study knowledge tracker persistence failed: {}", exc)
             return {}
+        self._invalidate_knowledge_guidance_cache()
         tracked_topic = str(tracking_result.get("topic_id") or topic).strip()
         mastery_after: float | None = None
         if tracked_topic:

@@ -136,21 +136,28 @@ class DocumentAnalysisJobManager:
     async def active(self, *, owner_id: str = "") -> dict[str, Any]:
         async with self._lock:
             self._reap_locked()
+            normalized_owner_id = str(owner_id or "").strip()
             job = self._jobs.get(self._active_job_id)
             if (
-                job is None
-                or job.status != "running"
-                or job.owner_id != str(owner_id or "").strip()
+                job is not None
+                and job.status == "running"
+                and job.owner_id == normalized_owner_id
             ):
-                return {
-                    "job_id": "",
-                    "status": "idle",
-                    "stage": "idle",
-                    "degraded": False,
-                    "diagnostic": "",
-                    "cancellation_source": "",
-                }
-            return job.public_payload()
+                return job.public_payload()
+            for candidate in reversed(tuple(self._jobs.values())):
+                if (
+                    candidate.status != "running"
+                    and candidate.owner_id == normalized_owner_id
+                ):
+                    return candidate.public_payload()
+            return {
+                "job_id": "",
+                "status": "idle",
+                "stage": "idle",
+                "degraded": False,
+                "diagnostic": "",
+                "cancellation_source": "",
+            }
 
     async def cancel(
         self,

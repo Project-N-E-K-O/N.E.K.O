@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 
 import pytest
 
@@ -11,10 +12,12 @@ from plugin.plugins.study_companion.constants import (
     LLM_OPERATION_DOCUMENT_MERGE,
 )
 from plugin.plugins.study_companion.document_analysis import (
+    DOCUMENT_ANALYSIS_KINDS,
     DOCUMENT_MAX_TOKENS,
     ValidatedDocument,
 )
 from plugin.plugins.study_companion import document_analysis as document_module
+from plugin.plugins.study_companion import entry_document_analysis_jobs as document_entries_module
 from plugin.plugins.study_companion.document_analysis import (
     DocumentValidationError,
     validate_document,
@@ -83,6 +86,23 @@ def test_start_entry_marks_source_sensitive() -> None:
         "writeOnly": True,
         "x-sensitive": True,
     }
+
+
+def test_start_entry_uses_canonical_analysis_kinds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    extended_kinds = (*DOCUMENT_ANALYSIS_KINDS, "new_contract_kind")
+    with monkeypatch.context() as patch:
+        patch.setattr(document_module, "DOCUMENT_ANALYSIS_KINDS", extended_kinds)
+        reloaded = importlib.reload(document_entries_module)
+        meta = getattr(
+            reloaded._DocumentAnalysisJobsEntriesMixin.study_start_document_analysis,
+            EVENT_META_ATTR,
+        )
+        assert meta.input_schema["properties"]["analysis_kind"]["enum"] == list(
+            extended_kinds
+        )
+    importlib.reload(document_entries_module)
 
 
 def test_superseded_direct_document_entry_is_not_registered() -> None:
@@ -221,6 +241,49 @@ async def test_job_status_never_exposes_runner_source() -> None:
         await asyncio.sleep(0)
     assert status["status"] == "completed"
     assert source not in repr(status)
+    await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_active_recovers_owner_most_recent_retained_terminal_job() -> None:
+    manager = DocumentAnalysisJobManager()
+
+    async def completed_runner(_update):
+        return {"reply": "completed summary"}
+
+    first = await manager.start(
+        owner_id="alice",
+        analysis_mode="direct",
+        document={"name": "first.txt"},
+        total_chunks=1,
+        runner=completed_runner,
+    )
+    for _ in range(20):
+        first_status = await manager.status(first["job_id"], owner_id="alice")
+        if first_status["status"] == "completed":
+            break
+        await asyncio.sleep(0)
+
+    second = await manager.start(
+        owner_id="alice",
+        analysis_mode="direct",
+        document={"name": "second.txt"},
+        total_chunks=1,
+        runner=completed_runner,
+    )
+    for _ in range(20):
+        second_status = await manager.status(second["job_id"], owner_id="alice")
+        if second_status["status"] == "completed":
+            break
+        await asyncio.sleep(0)
+
+    recovered = await manager.active(owner_id="alice")
+    other_owner = await manager.active(owner_id="bob")
+
+    assert recovered["job_id"] == second["job_id"]
+    assert recovered["status"] == "completed"
+    assert recovered["reply"] == "completed summary"
+    assert other_owner["status"] == "idle"
     await manager.shutdown()
 
 
