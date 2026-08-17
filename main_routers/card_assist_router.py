@@ -902,8 +902,6 @@ _WHOLE_CARD_BARE_ADVERBS = (
     # 用户说「别改」却把整张卡改了并 autosave。为了一个 base 从来没成立过的说法
     # 去松动否定守卫，方向反了。
     "均", "依序", "一概", "悉数", "悉數", "分开", "分開",
-    # 常用方式/紧迫副词。只收明确产品用语，不把开放的方式副词槽改成任意文本。
-    "快速", "尽快", "儘快", "赶紧", "趕緊", "马上", "馬上", "立刻", "迅速",
 )
 # ⚠️ 轻动词「进行」占的是**跟副词同一个槽**（目标 + X + 重写动词）：
 # `请对所有字段进行重写` / `请将所有字段全部进行重写` base 都是 True，上一版的收尾
@@ -1474,12 +1472,15 @@ _CHAT_SCOPED_RECOVERY_BOUNDARY_RE = re.compile(
     r"|(?P<trailing_en>(?<![A-Za-z])(?:if|when)(?![A-Za-z]))"
     # `但是否…` 必须按裸 `但` 切，让后件保留完整的疑问标记 `是否`。
     # 左界同时排除添加关系的 `不但/非但`，它们不能把前面的疑问守卫切掉。
-    r"|(?P<contrast>(?<![不非])(?:但是(?!否)|但)|可是|不过|不過|"
-    r"(?<![A-Za-z])but(?![A-Za-z]))",
+    r"|(?P<contrast>(?<![不非])(?:但是(?!否)|但)|可是|不过|不過)",
     re.IGNORECASE,
 )
 _CHAT_EN_TRAILING_COMMAND_RE = re.compile(
     r"^\s*(?:please\s+)?(?:rewrite|revise|regenerate|redo|refresh)(?![A-Za-z0-9_])",
+    re.IGNORECASE,
+)
+_CHAT_EN_TRAILING_SAFE_SUFFIX_RE = re.compile(
+    r"^\s*(?:you\s+can|possible|done|ready)\s*[.!]?\s*$",
     re.IGNORECASE,
 )
 _CHAT_SCOPED_SENTENCE_FINAL_QUESTION_RE = re.compile(r"[吗嗎呢]\s*[？?]?\s*$")
@@ -1756,24 +1757,31 @@ def _chat_text_requests_full_rewrite_from_scoped_segments(text: str) -> bool:
     if not text:
         return False
     masked = _chat_mask_quoted_spans(text)
+    segment_start = 0
     for index, match in enumerate(_CHAT_SCOPED_RECOVERY_BOUNDARY_RE.finditer(masked)):
         if index >= _CHAT_SCOPED_RECOVERY_MAX_BOUNDARIES:
             break
         if match.group("contrast") is not None:
-            if len(text) - match.end() > _CHAT_SCOPED_RECOVERY_WINDOW_CHARS:
-                continue
-            candidate = text[match.end():]
+            if len(text) - match.end() <= _CHAT_SCOPED_RECOVERY_WINDOW_CHARS:
+                candidate = text[match.end():]
+                if _chat_text_requests_full_rewrite_core(candidate):
+                    return True
+            segment_start = match.end()
+            continue
         else:
             # Never truncate unseen governing context on either side of a recovery boundary.
             if (
-                match.start() > _CHAT_SCOPED_RECOVERY_WINDOW_CHARS
+                match.start() - segment_start > _CHAT_SCOPED_RECOVERY_WINDOW_CHARS
                 or len(text) - match.end() > _CHAT_SCOPED_RECOVERY_WINDOW_CHARS
             ):
                 continue
-            candidate = text[:match.start()]
+            candidate = text[segment_start:match.start()]
             if (
                 match.group("trailing_en") is not None
-                and not _CHAT_EN_TRAILING_COMMAND_RE.search(candidate)
+                and (
+                    not _CHAT_EN_TRAILING_COMMAND_RE.search(candidate)
+                    or not _CHAT_EN_TRAILING_SAFE_SUFFIX_RE.search(masked[match.end():])
+                )
             ):
                 continue
             if (

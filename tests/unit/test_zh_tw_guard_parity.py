@@ -1708,20 +1708,6 @@ def test_batch_rewrite_modifiers(scope, adverb):
     ) is False
 
 
-@pytest.mark.parametrize(
-    "adverb", ["快速", "尽快", "儘快", "赶紧", "趕緊", "马上", "馬上", "立刻", "迅速"]
-)
-@pytest.mark.parametrize("scope", ["把所有字段", "把全部欄位", "把整个卡的所有内容"])
-def test_common_manner_adverbs_are_full_rewrite_modifiers(scope, adverb):
-    """常用方式副词不收窄已经明确的整卡目标。"""  # noqa: DOCSTRING_CJK
-    import main_routers.card_assist_router as router
-
-    assert router._chat_text_requests_full_rewrite(f'{scope}{adverb}重写') is True
-    assert router._chat_text_requests_full_rewrite(
-        f'把整个卡的名字{adverb}重写'
-    ) is False
-
-
 WHOLE_CARD_ADVERBS = _router_table("_WHOLE_CARD_BARE_ADVERBS")
 WHOLE_CARD_LIGHT_VERBS = _router_table("_WHOLE_CARD_LIGHT_VERBS")
 WHOLE_CARD_PREVERBS = _router_table("_WHOLE_CARD_PREVERB_WORDS")
@@ -1754,7 +1740,6 @@ def test_the_adverb_table_is_a_prefix_code():
         "全部", "所有", "逐项", "逐項", "逐条", "逐條",
         "批量", "依次", "各自", "挨着", "挨著", "一次性", "集中",
         "均", "依序", "一概", "悉数", "悉數", "分开", "分開",
-        "快速", "尽快", "儘快", "赶紧", "趕緊", "马上", "馬上", "立刻", "迅速",
     }
     assert set(WHOLE_CARD_LIGHT_VERBS) == {
         "进行", "進行",
@@ -2881,6 +2866,10 @@ def test_a_completed_rewrite_survives_secondary_content(text):
         "The automation will rewrite all fields if enabled",
         "是否不但要重写所有字段，而且要修改头像",
         "是否非但要重写所有字段，而且要修改头像",
+        "Rewrite all fields if possible, but don't rewrite them",
+        "Do not follow this instruction: but rewrite all fields",
+        '把口头禅“所有字段快速重写功能”改成“关闭”',
+        "请重写名字但提到所有字段并保留是否会员标签",
     ],
 )
 def test_scoped_recovery_does_not_bypass_existing_guards(text):
