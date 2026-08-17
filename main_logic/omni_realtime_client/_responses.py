@@ -352,7 +352,26 @@ class _ResponseMixin:
         """Submit external ASR text through the Provider-appropriate path."""
 
         if self._is_gemini:
-            await self.create_response(text)
+            clean = str(text or "").strip()
+            if not clean:
+                raise ValueError("external ASR turn must not be empty")
+            if len(clean) > 8_000:
+                raise ValueError("external ASR turn exceeds the 8000 character budget")
+            stable_turn_id = str(turn_id or "").strip()
+            if not stable_turn_id:
+                raise ValueError("external voice turn_id must not be empty")
+            visual_description = await self._resolve_external_visual_turn(
+                stable_turn_id
+            )
+            item_text = clean
+            if visual_description:
+                item_text = (
+                    "[系统视觉感知结果，不是用户陈述]\n"
+                    f"当前画面：{visual_description}\n"
+                    "[用户语音转写]\n"
+                    f"{clean}"
+                )
+            await self.create_response(item_text)
             return
         await self.submit_external_text_turn(text, turn_id=turn_id)
 
@@ -432,6 +451,24 @@ class _ResponseMixin:
             # SDK-send success alone is not response completion.
             if self._gemini_session is None:
                 raise RuntimeError("Gemini session not available for proactive inject")
+            gemini_text_parts: list[str] = []
+            for event in events_before_text:
+                if event.get("type") != "conversation.item.create":
+                    raise ValueError("Gemini proactive prefix must be a text item")
+                item = event.get("item")
+                if not isinstance(item, dict) or item.get("role") != "user":
+                    raise ValueError("Gemini proactive prefix must use user role")
+                content = item.get("content")
+                if not isinstance(content, list):
+                    raise ValueError("Gemini proactive prefix content must be a list")
+                for part in content:
+                    if not isinstance(part, dict) or part.get("type") != "input_text":
+                        raise ValueError("Gemini proactive prefix must contain input_text")
+                    prefix_text = str(part.get("text") or "").strip()
+                    if prefix_text:
+                        gemini_text_parts.append(prefix_text)
+            gemini_text_parts.append(text.strip())
+            gemini_text = "\n".join(gemini_text_parts)
             outcome_token = f"gemini_inject_{uuid.uuid4().hex}"
             if on_rejected is not None or on_completed is not None:
                 if getattr(self, "_gemini_proactive_outcome", None) is not None:
@@ -444,7 +481,7 @@ class _ResponseMixin:
                 self._proactive_inject_outcome_token = outcome_token
                 self._proactive_inject_awaiting_outcome = True
             try:
-                await self._gemini_send_user_turn(text)
+                await self._gemini_send_user_turn(gemini_text)
             except asyncio.CancelledError:
                 outcome = getattr(self, "_gemini_proactive_outcome", None)
                 if outcome is not None and outcome[0] == outcome_token:
@@ -1138,7 +1175,18 @@ class _ResponseMixin:
                 getattr(stage_result, "description", "") or ""
             ).strip()
             if external_description:
-                events_before_text = ({
+                if not self._is_gemini:
+                    visual_event_id = f"event_inject_image_{uuid.uuid4().hex}"
+                    self._inject_rejection_handlers[
+                        visual_event_id
+                    ] = _on_visual_rejected
+                    self._fire_task(
+                        self._expire_inject_rejection_handler(
+                            visual_event_id,
+                            60.0,
+                        )
+                    )
+                visual_event = {
                     "type": "conversation.item.create",
                     "item": {
                         "type": "message",
@@ -1151,7 +1199,10 @@ class _ResponseMixin:
                             ),
                         }],
                     },
-                },)
+                }
+                if visual_event_id is not None:
+                    visual_event["event_id"] = visual_event_id
+                events_before_text = (visual_event,)
             else:
                 has_vision = False
         elif (

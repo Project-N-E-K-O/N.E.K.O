@@ -852,8 +852,11 @@ class _TransportMixin:
             if not task.cancelled():
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
-                raise
-            description = ""
+            # A newer external turn cancels this exact task via
+            # _abandon_external_visual_turn(). Propagate that cancellation so
+            # the superseded transcript cannot enqueue after the new turn has
+            # paused dispatch.
+            raise
         finally:
             if self._external_visual_turns.get(turn_id) is record:
                 self._external_visual_turns.pop(turn_id, None)
@@ -946,6 +949,12 @@ class _TransportMixin:
                         accepted=False,
                         mode=delivery_mode.value,
                         generation=getattr(self, "_latest_image_generation", 0),
+                        rejection_reason=(
+                            "payload_too_large"
+                            if isinstance(image_b64, str)
+                            and len(image_b64) > MAX_BASE64_SIZE
+                            else "invalid_payload"
+                        ),
                     )
                 if not cache_latest:
                     description = await self._analyze_image_with_vision_model(
@@ -1155,6 +1164,7 @@ class _TransportMixin:
                 else:
                     # Model does not support video streaming, use VISION_MODEL to analyze
                     # Only recognize one image per conversation turn
+                    description_sent = False
                     async with self._image_lock:
                         if not self._image_recognized_this_turn:
                             if not self._image_being_analyzed:
@@ -1174,6 +1184,7 @@ class _TransportMixin:
                                 }
                                 logger.info("Sending image description before recognition.")
                                 await self.send_event(text_event)
+                                description_sent = True
                                 await self._analyze_image_with_vision_model(image_b64)
                         elif not self._image_sent_this_turn:
                             self._image_sent_this_turn = True
@@ -1189,11 +1200,12 @@ class _TransportMixin:
                                             }
                                         ]
                                     }
-                                }
+                            }
                             logger.info("Sending image description after recognition.")
                             await self.send_event(text_event)
+                            description_sent = True
                     return ImageStageResult(
-                        accepted=True,
+                        accepted=description_sent,
                         mode=VisualDeliveryMode.EXTERNAL_DESCRIPTION.value,
                         generation=getattr(self, "_latest_image_generation", 0),
                         description=(

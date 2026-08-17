@@ -129,6 +129,7 @@ async def test_external_description_rejects_oversized_callback_before_analysis()
         accepted=False,
         mode="external_description",
         generation=0,
+        rejection_reason="payload_too_large",
     )
     client._analyze_image_with_vision_model.assert_not_awaited()
     client.ws.send.assert_not_awaited()
@@ -224,6 +225,83 @@ async def test_external_proactive_snapshot_queues_description_without_raw_event(
     )
     client.ws.send.assert_not_awaited()
     await client.close()
+
+
+@pytest.mark.asyncio
+async def test_external_proactive_description_registers_exact_rejection_event():
+    client = _make_qwen_client()
+    client.set_visual_delivery_mode(VisualDeliveryMode.EXTERNAL_DESCRIPTION)
+    client._ai_recent_activity_time = 0
+    client._user_recent_activity_time = 0
+    client._client_vad_active = False
+    client._client_vad_last_speech_time = 0
+    client._analyze_image_with_vision_model = AsyncMock(return_value="屏幕描述")
+    observed: dict[str, object] = {}
+
+    async def inject_text(_text, **kwargs):
+        visual_event = kwargs["events_before_text"][0]
+        event_id = visual_event.get("event_id")
+        observed["event_id"] = event_id
+        observed["handler"] = client._inject_rejection_handlers.get(event_id)
+        kwargs["on_completed"]()
+        return SimpleNamespace()
+
+    client.inject_text_and_request_response = AsyncMock(side_effect=inject_text)
+    await client.stream_image(DUMMY_IMAGE_B64, source="screen", request_id="screen")
+
+    assert await client.prompt_ephemeral("看屏幕") is True
+    assert isinstance(observed["event_id"], str)
+    assert callable(observed["handler"])
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_gemini_external_voice_turn_includes_visual_description():
+    client = _make_qwen_client()
+    client._is_gemini = True
+    client._gemini_session = object()
+    client.set_visual_delivery_mode(VisualDeliveryMode.EXTERNAL_DESCRIPTION)
+    client.handle_interruption = AsyncMock()
+    client.create_response = AsyncMock()
+    client._analyze_image_with_vision_model = AsyncMock(return_value="桌上有一只白杯子")
+
+    await client.prepare_external_voice_turn(turn_id="gemini-turn")
+    await client.stream_image(DUMMY_IMAGE_B64, source="camera", request_id="camera")
+    await client.submit_external_voice_turn("这是什么", turn_id="gemini-turn")
+
+    client.create_response.assert_awaited_once_with(
+        f"{VISUAL_CONTEXT_PREFIX}\n当前画面：桌上有一只白杯子\n"
+        f"{ASR_TRANSCRIPT_PREFIX}\n这是什么"
+    )
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_gemini_proactive_inject_folds_external_description_into_user_turn():
+    client = OmniRealtimeClient.__new__(OmniRealtimeClient)
+    client._fatal_error_occurred = False
+    client._is_gemini = True
+    client._gemini_session = object()
+    client._gemini_send_user_turn = AsyncMock()
+    visual_text = f"{VISUAL_CONTEXT_PREFIX}\n当前画面：番茄钟结束"
+    visual_event = {
+        "type": "conversation.item.create",
+        "item": {
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": visual_text}],
+        },
+    }
+
+    await OmniRealtimeClient.inject_text_and_request_response(
+        client,
+        "主动提醒用户",
+        events_before_text=(visual_event,),
+    )
+
+    client._gemini_send_user_turn.assert_awaited_once_with(
+        f"{visual_text}\n主动提醒用户"
+    )
 
 
 @pytest.mark.asyncio
@@ -425,6 +503,37 @@ async def test_cancelled_visual_join_cancels_background_analysis_task():
 
     assert analysis_cancelled.is_set()
     assert "turn-cancel-join" not in client._external_visual_turns
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_new_external_turn_cancels_superseded_transcript_before_enqueue():
+    client = _make_qwen_client()
+    client.set_visual_delivery_mode(VisualDeliveryMode.EXTERNAL_DESCRIPTION)
+    client.handle_interruption = AsyncMock()
+    analysis_started = asyncio.Event()
+
+    async def analyze(_image_b64, *, update_turn_state=False):
+        assert update_turn_state is False
+        analysis_started.set()
+        await asyncio.Event().wait()
+
+    client._analyze_image_with_vision_model = AsyncMock(side_effect=analyze)
+    sent = _wire_completed_response_transport(client)
+    await client.prepare_external_voice_turn(turn_id="old-turn")
+    await client.stream_image(DUMMY_IMAGE_B64, source="screen", request_id="old")
+    await analysis_started.wait()
+    old_submit = asyncio.create_task(
+        client.submit_external_text_turn("旧转写", turn_id="old-turn")
+    )
+    await asyncio.sleep(0)
+
+    await client.prepare_external_voice_turn(turn_id="new-turn")
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(old_submit, timeout=0.2)
+    assert sent == []
+    client.abandon_external_voice_turn("new-turn")
     await client.close()
 
 

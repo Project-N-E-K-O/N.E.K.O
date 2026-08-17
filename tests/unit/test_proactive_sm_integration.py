@@ -1280,7 +1280,7 @@ async def test_voice_mode_callback_image_rejection_before_inject_keeps_cb():
 
 
 async def test_voice_mode_drops_permanently_oversized_image_and_delivers_text():
-    from main_logic.omni_realtime_client import RealtimeImagePayloadTooLargeError
+    from main_logic.omni_realtime_client import ImageStageResult
 
     sess = _make_voice_sess()
     streamed = []
@@ -1297,7 +1297,12 @@ async def test_voice_mode_drops_permanently_oversized_image_and_delivers_text():
         assert on_rejected is not None
         streamed.append(image_b64)
         if image_b64 == "oversized-image":
-            raise RealtimeImagePayloadTooLargeError("permanent oversize")
+            return ImageStageResult(
+                accepted=False,
+                mode="external_description",
+                rejection_reason="payload_too_large",
+            )
+        return ImageStageResult(accepted=True, mode="native")
 
     sess.stream_image = _stream_image
     mgr = _make_mgr(session=sess)

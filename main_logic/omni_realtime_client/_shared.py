@@ -106,6 +106,7 @@ class ImageStageResult:
     mode: str
     generation: int | None = None
     description: str | None = None
+    rejection_reason: str | None = None
 
 
 # Opt-in escape hatch for the response arbiter's escalation policy (issue

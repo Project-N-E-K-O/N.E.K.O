@@ -1968,6 +1968,15 @@ class ProactiveMixin:
                             stage_result if isinstance(stage_result, str) else None
                         )
                     if not accepted:
+                        rejection_reason = getattr(
+                            stage_result,
+                            "rejection_reason",
+                            None,
+                        )
+                        if rejection_reason == "payload_too_large":
+                            raise RealtimeImagePayloadTooLargeError(
+                                "callback image exceeds the external visual payload limit"
+                            )
                         raise RuntimeError("callback image was not accepted")
                     if delivery_mode == "external_description":
                         if not isinstance(description, str) or not description.strip():

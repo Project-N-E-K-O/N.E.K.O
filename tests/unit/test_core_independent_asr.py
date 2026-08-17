@@ -5295,6 +5295,37 @@ async def test_same_core_session_promotion_resyncs_visual_delivery_mode(
     runtime._start_independent_asr_if_enabled.assert_not_awaited()
 
 
+async def test_blocked_replacement_session_preserves_external_visual_policy_and_fence() -> None:
+    runtime = _Runtime()
+    runtime._set_microphone_route("independent")
+    runtime._set_microphone_route("blocked")
+    replacement_session = type("ReplacementOmni", (), {})()
+    replacement_session.set_visual_delivery_mode = MagicMock()
+    replacement_session.block_raw_visual_delivery = MagicMock()
+    runtime.session = replacement_session
+
+    runtime._set_microphone_route("blocked")
+
+    replacement_session.set_visual_delivery_mode.assert_called_once_with(
+        "external_description"
+    )
+    replacement_session.block_raw_visual_delivery.assert_called()
+
+
+async def test_native_to_blocked_fences_raw_frames_during_route_reconciliation() -> None:
+    runtime = _Runtime()
+    runtime._set_microphone_route("native")
+    replacement_session = type("ReplacementOmni", (), {})()
+    replacement_session.set_visual_delivery_mode = MagicMock()
+    replacement_session.block_raw_visual_delivery = MagicMock()
+    runtime.session = replacement_session
+
+    runtime._set_microphone_route("blocked")
+
+    replacement_session.set_visual_delivery_mode.assert_called_once_with("native")
+    replacement_session.block_raw_visual_delivery.assert_called_once_with()
+
+
 async def test_disabled_native_route_key_prevents_same_core_reconcile(
     monkeypatch,
 ) -> None:

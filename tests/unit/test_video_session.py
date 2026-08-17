@@ -300,6 +300,35 @@ async def test_completed_non_native_annotation_pins_its_unconsumed_frame():
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    ("recognized", "being_analyzed", "sent"),
+    [
+        (False, True, False),
+        (True, False, True),
+    ],
+)
+async def test_non_native_fallback_noop_is_not_reported_as_accepted(
+    recognized: bool,
+    being_analyzed: bool,
+    sent: bool,
+):
+    client = _make_client("legacy-realtime", supports_native_image=False)
+    client._image_description = "已有视觉状态"
+    client._image_recognized_this_turn = recognized
+    client._image_being_analyzed = being_analyzed
+    client._image_sent_this_turn = sent
+    client.send_event = AsyncMock()
+    client._analyze_image_with_vision_model = AsyncMock()
+
+    result = await client.stream_image(DUMMY_IMAGE_B64)
+
+    assert result.accepted is False
+    client.send_event.assert_not_awaited()
+    client._analyze_image_with_vision_model.assert_not_awaited()
+    await client.close()
+
+
+@pytest.mark.unit
 async def test_non_native_failed_vision_clears_cached_frame(monkeypatch):
     client = _make_client("step-realtime", supports_native_image=False)
     client._image_description = "实时屏幕截图或相机画面正在分析中"

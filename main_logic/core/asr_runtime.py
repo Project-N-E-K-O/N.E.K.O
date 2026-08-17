@@ -245,6 +245,7 @@ class AsrRuntimeMixin:
         self._hot_swap_sequence_progress.set()
         self._omni_mic_audio_bytes = 0
         self._asr_route_mode = "blocked"
+        self._visual_route_mode: Literal["native", "independent"] = "native"
         self._microphone_route_generation = 0
         self._asr_route_operation_generation = 0
         self._asr_notification_lock = asyncio.Lock()
@@ -335,6 +336,12 @@ class AsrRuntimeMixin:
         self._init_voice_input_registry()
         if not hasattr(self, "_asr_route_operation_generation"):
             self._asr_route_operation_generation = 0
+        if not hasattr(self, "_visual_route_mode"):
+            self._visual_route_mode = (
+                "independent"
+                if getattr(self, "_asr_route_mode", "blocked") == "independent"
+                else "native"
+            )
         if not hasattr(self, "_asr_notification_lock"):
             self._asr_notification_lock = asyncio.Lock()
         if not hasattr(self, "_core_voice_session_swap_lock"):
@@ -389,7 +396,6 @@ class AsrRuntimeMixin:
     ) -> None:
         if mode not in {"native", "independent", "blocked"}:
             raise ValueError("MICROPHONE_ROUTE_INVALID")
-        previous_mode = self._asr_route_mode
         if mode != self._asr_route_mode:
             self._microphone_route_generation += 1
         if mode != "blocked":
@@ -399,8 +405,33 @@ class AsrRuntimeMixin:
             self._voice_lease_resync_suppressed = False
         self._asr_route_mode = mode
 
-        visual_route_mode = previous_mode if mode == "blocked" else mode
+        if mode != "blocked":
+            self._visual_route_mode = mode
+        visual_route_mode = self._visual_route_mode
         self._sync_realtime_visual_delivery_mode(visual_route_mode)
+        if mode == "blocked" and visual_route_mode != "independent":
+            # A blocked route is unresolved, not permission to fall back to raw
+            # provider vision. Native mode clears the session fence, so re-arm
+            # it after restoring the remembered policy on a replacement session.
+            self._block_realtime_raw_visual_delivery()
+
+    def _block_realtime_raw_visual_delivery(self) -> None:
+        session = getattr(self, "session", None)
+        block_raw_visual_delivery = getattr(
+            session,
+            "block_raw_visual_delivery",
+            None,
+        )
+        if not callable(block_raw_visual_delivery):
+            return
+        try:
+            block_raw_visual_delivery()
+        except Exception as exc:
+            logger.warning(
+                "[%s] raw visual delivery fence failed: %s",
+                self.lanlan_name,
+                exc,
+            )
 
     def _sync_realtime_visual_delivery_mode(
         self,
@@ -431,13 +462,7 @@ class AsrRuntimeMixin:
             return
         try:
             if route_mode == "independent":
-                block_raw_visual_delivery = getattr(
-                    session,
-                    "block_raw_visual_delivery",
-                    None,
-                )
-                if callable(block_raw_visual_delivery):
-                    block_raw_visual_delivery()
+                self._block_realtime_raw_visual_delivery()
             set_visual_delivery_mode(visual_mode)
         except Exception as exc:
             # This setter only updates local session policy. A broken or stale
