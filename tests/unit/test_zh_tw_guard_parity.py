@@ -3740,6 +3740,17 @@ def test_guards_after_a_contrast_block_an_earlier_completed_command(tail):
     assert router._chat_text_requests_full_rewrite(text) is False
 
 
+@pytest.mark.parametrize(
+    'text',
+    ['重写所有字段并保留头像吗，多谢您', '重寫所有欄位並保留頭像嗎，多謝您'],
+)
+def test_duo_xie_nin_keeps_the_sentence_final_question_guard(text):
+    import main_routers.card_assist_router as router
+
+    assert router._chat_text_requests_full_rewrite_core(text) is False
+    assert router._chat_text_requests_full_rewrite(text) is False
+
+
 def test_a_condition_directly_governing_rewrite_blocks_recovery():
     import main_routers.card_assist_router as router
 

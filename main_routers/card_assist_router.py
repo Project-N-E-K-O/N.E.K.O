@@ -1488,7 +1488,7 @@ _CHAT_EN_TRAILING_SAFE_SUFFIX_RE = re.compile(
 )
 _CHAT_SENTENCE_FINAL_QUESTION_PATTERN = (
     r"[吗嗎呢]\s*[？?]?\s*"
-    r"(?:(?:[,，。；;、]\s*)?(?:谢谢[你您]?|謝謝[你您]?|感谢[你您]?|感謝[你您]?|多谢|多謝|麻烦了|麻煩了|"
+    r"(?:(?:[,，。；;、]\s*)?(?:谢谢[你您]?|謝謝[你您]?|感谢[你您]?|感謝[你您]?|多谢[你您]?|多謝[你您]?|麻烦了|麻煩了|"
     r"辛苦了|thanks|thank\s+you)\s*[。.!！]?\s*)?$"
 )
 _CHAT_SCOPED_SENTENCE_FINAL_QUESTION_RE = re.compile(
