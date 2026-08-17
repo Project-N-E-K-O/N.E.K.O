@@ -2061,6 +2061,11 @@ def _chat_text_requests_full_rewrite_from_scoped_segments(text: str) -> bool:
         _CHAT_GOVERNING_INSTRUCTION_PROHIBITION_RE.finditer(prohibition_masked)
     )
     if governing_prohibitions:
+        if any(
+            _CHAT_GOVERNING_FOLLOWING_LIST_MARKER_RE.search(prohibition.group(0))
+            for prohibition in governing_prohibitions
+        ):
+            return False
         governing_prohibition = governing_prohibitions[-1]
         sentence_end = _CHAT_GOVERNING_PROHIBITION_SENTENCE_END_RE.search(
             prohibition_masked,
@@ -2069,10 +2074,6 @@ def _chat_text_requests_full_rewrite_from_scoped_segments(text: str) -> bool:
         if sentence_end is None:
             return False
         independent_suffix = text[sentence_end.end():]
-        if _CHAT_GOVERNING_FOLLOWING_LIST_MARKER_RE.search(
-            governing_prohibition.group(0)
-        ):
-            return False
         return (
             _chat_text_requests_full_rewrite_core(independent_suffix)
             or _chat_text_requests_full_rewrite_from_scoped_segments(
