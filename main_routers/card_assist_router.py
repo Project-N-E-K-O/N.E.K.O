@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections import deque
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict
@@ -1485,6 +1486,13 @@ _CHAT_EN_TRAILING_SAFE_SUFFIX_RE = re.compile(
     re.IGNORECASE,
 )
 _CHAT_SCOPED_SENTENCE_FINAL_QUESTION_RE = re.compile(r"[吗嗎呢]\s*[？?]?\s*$")
+_CHAT_SCOPED_VALUE_ASSIGNMENT_RE = re.compile(
+    r"(?:(?:把|将|將)\s*)?[^。，、！？,.!?;；]{1,24}?"
+    r"(?:设为|設為|改成|写成|寫成)"
+)
+_CHAT_SCOPED_COMPLETED_COMMAND_TAIL_RE = re.compile(
+    r"\s*(?:一遍|一次|一下|下|一回)?\s*(?:吧|好|即可|就行)?\s*$"
+)
 
 
 def _chat_mask_quoted_spans(text: str) -> str:
@@ -1520,6 +1528,30 @@ def _chat_scoped_suffix_has_governing_guard(
     # `是否会员` / `为什么` / `好不好` can be the secondary value itself. A question
     # marker after leading object text governs the proposed operation, so recovery must fail.
     return question is not None and bool(readable[:question.start()].strip())
+
+
+def _chat_scoped_candidate_is_completed_command(candidate: str) -> bool:
+    """Reject a rewrite phrase that is still part of a field value or compound word."""
+    clauses = _chat_clauses(candidate)
+    if not clauses:
+        return False
+    clause = clauses[-1]
+    assignments = tuple(_CHAT_SCOPED_VALUE_ASSIGNMENT_RE.finditer(clause))
+    if assignments and _chat_text_requests_full_rewrite_core(
+        clause[assignments[-1].end():]
+    ):
+        return False
+    signal_ends = [
+        match.end()
+        for pattern in (_CHAT_FULL_REWRITE_RE, _CHAT_REWRITE_VERB_RE)
+        for match in pattern.finditer(clause)
+    ]
+    return bool(
+        signal_ends
+        and _CHAT_SCOPED_COMPLETED_COMMAND_TAIL_RE.fullmatch(
+            clause[max(signal_ends):]
+        )
+    )
 
 
 def _chat_span_carries_a_question(span: str) -> bool:
@@ -1770,14 +1802,22 @@ def _chat_text_requests_full_rewrite_from_scoped_segments(text: str) -> bool:
     if not text:
         return False
     masked = _chat_mask_quoted_spans(text)
+    recent_boundaries = deque(
+        _CHAT_SCOPED_RECOVERY_BOUNDARY_RE.finditer(masked),
+        maxlen=_CHAT_SCOPED_RECOVERY_MAX_BOUNDARIES + 1,
+    )
     segment_start = 0
-    for index, match in enumerate(_CHAT_SCOPED_RECOVERY_BOUNDARY_RE.finditer(masked)):
-        if index >= _CHAT_SCOPED_RECOVERY_MAX_BOUNDARIES:
-            break
+    if len(recent_boundaries) > _CHAT_SCOPED_RECOVERY_MAX_BOUNDARIES:
+        segment_start = recent_boundaries.popleft().end()
+    for match in recent_boundaries:
         if match.group("contrast") is not None:
             if len(text) - match.end() <= _CHAT_SCOPED_RECOVERY_WINDOW_CHARS:
                 candidate = text[match.end():]
-                if _chat_text_requests_full_rewrite_core(candidate):
+                governing_segment = text[segment_start:]
+                if (
+                    not _CHAT_NEGATED_REWRITE_RE.search(governing_segment)
+                    and _chat_text_requests_full_rewrite_core(candidate)
+                ):
                     return True
             segment_start = match.end()
             continue
@@ -1801,9 +1841,12 @@ def _chat_text_requests_full_rewrite_from_scoped_segments(text: str) -> bool:
                 continue
             if (
                 match.group("secondary") is not None
-                and _chat_scoped_suffix_has_governing_guard(
-                    text[match.end():],
-                    masked[match.end():],
+                and (
+                    not _chat_scoped_candidate_is_completed_command(candidate)
+                    or _chat_scoped_suffix_has_governing_guard(
+                        text[match.end():],
+                        masked[match.end():],
+                    )
                 )
             ):
                 continue

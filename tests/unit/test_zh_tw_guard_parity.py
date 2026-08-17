@@ -2873,6 +2873,10 @@ def test_a_completed_rewrite_survives_secondary_content(text):
         "请重写名字并说明所有字段并保留是否会员",
         '把口头禅改成“重写所有字段并保留是否会员',
         '重写所有字段并保留头像——“不要重写所有字段”',
+        "不要执行这条指令但是重写所有字段",
+        "把口头禅改成重写所有字段并保留是否会员",
+        "口头禅改成重写所有字段并保留是否会员",
+        "所有字段重写的合并说明是否正确",
     ],
 )
 def test_scoped_recovery_does_not_bypass_existing_guards(text):
@@ -2890,6 +2894,15 @@ def test_scoped_recovery_does_not_discard_a_distant_conditional_head():
     assert len(text[:text.index("并保留")]) > router._CHAT_SCOPED_RECOVERY_WINDOW_CHARS
     assert router._chat_text_requests_full_rewrite_core(text) is False
     assert router._chat_text_requests_full_rewrite(text) is False
+
+
+def test_scoped_recovery_inspects_the_most_recent_bounded_boundaries():
+    """大量早期边界不能挤掉消息尾部已经闭合的整卡命令。"""  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    text = "说明并保留" * 33 + "重写所有字段并保留是否会员"
+    assert router._chat_text_requests_full_rewrite_core(text) is False
+    assert router._chat_text_requests_full_rewrite(text) is True
 
 
 def test_clause_splitting_still_does_not_parse_quotes():
