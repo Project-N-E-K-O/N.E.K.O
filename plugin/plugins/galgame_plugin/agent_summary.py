@@ -2513,7 +2513,11 @@ class AgentSummaryMixin:
             try:
                 await asyncio.shield(predecessor)
             except asyncio.CancelledError:
-                raise
+                if current_task is None or current_task.cancelling():
+                    raise
+                # A cancelled predecessor surfaces through shield as
+                # CancelledError without cancelling this successor task.
+                # Continue from the latest committed archive in that case.
             except Exception:
                 # The predecessor's tracker restores its schedule.  A newer
                 # archive may still proceed from the last committed memory.

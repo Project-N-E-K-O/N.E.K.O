@@ -3357,6 +3357,102 @@ async def test_trusted_handoff_serializes_pending_aliased_archives(
     )
 
 
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_cancelled_scene_memory_predecessor_does_not_cancel_successor(
+    tmp_path: Path,
+) -> None:
+    class _CancelledPredecessorGateway(_FakeLLMGateway):
+        def __init__(self) -> None:
+            super().__init__()
+            self.first_started = asyncio.Event()
+            self.second_started = asyncio.Event()
+            self.release_first = asyncio.Event()
+
+        async def summarize_scene(self, context):
+            self.summarize_calls.append(dict(context))
+            if len(self.summarize_calls) == 1:
+                self.first_started.set()
+                await self.release_first.wait()
+                summary = "cancelled predecessor archive"
+            else:
+                self.second_started.set()
+                summary = "successor archive"
+            return {
+                "degraded": False,
+                "summary": summary,
+                "key_points": [],
+                "diagnostic": "",
+            }
+
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    gateway = _CancelledPredecessorGateway()
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(
+            _Ctx(plugin_dir, _make_effective_config(bridge_root))
+        ),
+        logger=_Logger(),
+        llm_gateway=gateway,
+        host_adapter=_FakeHostAdapter(),
+    )
+    line = _summary_test_line("scene-a", 1)
+    shared = _shared_state(
+        mode="companion",
+        push_notifications=False,
+        session_id="sess-a",
+        snapshot=_session_state(
+            text=str(line["text"]),
+            scene_id="scene-a",
+            line_id=str(line["line_id"]),
+        ),
+        history_lines=[line],
+    )
+    await agent.tick(shared)
+    context = build_summarize_context(
+        shared,
+        scene_id="scene-a",
+        config=agent._context_config,
+    )
+    agent._schedule_scene_summary_task(
+        shared=shared,
+        session_id="sess-a",
+        scene_id="scene-a",
+        route_id="",
+        snapshot=shared["latest_snapshot"],
+        context=context,
+        trigger="line_count",
+        metadata={"scheduled_from_event_seq": 1},
+    )
+    await asyncio.wait_for(gateway.first_started.wait(), timeout=0.5)
+    predecessor = next(iter(agent._summary_tasks))
+    agent._schedule_scene_summary_task(
+        shared=shared,
+        session_id="sess-a",
+        scene_id="scene-a",
+        route_id="",
+        snapshot=shared["latest_snapshot"],
+        context=context,
+        trigger="line_count",
+        metadata={"scheduled_from_event_seq": 2},
+    )
+    await asyncio.sleep(0)
+
+    try:
+        predecessor.cancel()
+        await asyncio.gather(predecessor, return_exceptions=True)
+        await asyncio.wait_for(gateway.second_started.wait(), timeout=0.5)
+        await agent.drain_summary_tasks(timeout=1.0)
+
+        assert len(gateway.summarize_calls) == 2
+        assert agent._scene_memory[-1]["summary"] == "successor archive"
+    finally:
+        pending = list(agent._summary_tasks)
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+
+
 @pytest.mark.plugin_unit
 def test_fallback_occurrences_advance_for_same_content_at_new_timestamp(
     tmp_path: Path,

@@ -48,6 +48,19 @@ from plugin.plugins.galgame_plugin.reader import (
     snapshot_events_boundary as read_events_boundary,
 )
 
+
+def _append_event(events_path: Path, event: dict[str, object]) -> None:
+    with events_path.open("ab") as handle:
+        handle.write(
+            json.dumps(
+                event,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            + b"\n"
+        )
+
+
 @pytest.mark.asyncio
 async def test_install_progress_callback_uses_supported_run_update_fields() -> None:
     class _ProgressPlugin:
@@ -1985,15 +1998,7 @@ async def test_preexisting_boundary_keeps_event_appended_after_candidate_snapsho
             nonlocal boundary_calls
             boundary_calls += 1
             if boundary_calls == 1:
-                with events_path.open("ab") as handle:
-                    handle.write(
-                        json.dumps(
-                            new_line,
-                            ensure_ascii=False,
-                            separators=(",", ":"),
-                        ).encode("utf-8")
-                        + b"\n"
-                    )
+                _append_event(events_path, new_line)
             return read_events_boundary(path, **kwargs)
 
         monkeypatch.setattr(
@@ -2323,28 +2328,23 @@ async def test_stale_then_new_event_recovers_to_active(tmp_path: Path) -> None:
     assert isinstance(stale_status, Ok)
     assert stale_status.value["connection_state"] == "stale"
 
-    with (game_dir / "events.jsonl").open("ab") as handle:
-        handle.write(
-            json.dumps(
-                _event(
-                    seq=2,
-                    event_type="line_changed",
-                    session_id=session_id,
-                    game_id=game_id,
-                    payload={
-                        "speaker": "雪乃",
-                        "text": "新台词",
-                        "line_id": "line-2",
-                        "scene_id": "scene-a",
-                        "route_id": "",
-                    },
-                    ts="2026-04-21T08:30:06Z",
-                ),
-                ensure_ascii=False,
-                separators=(",", ":"),
-            ).encode("utf-8")
-            + b"\n"
-        )
+    _append_event(
+        game_dir / "events.jsonl",
+        _event(
+            seq=2,
+            event_type="line_changed",
+            session_id=session_id,
+            game_id=game_id,
+            payload={
+                "speaker": "雪乃",
+                "text": "新台词",
+                "line_id": "line-2",
+                "scene_id": "scene-a",
+                "route_id": "",
+            },
+            ts="2026-04-21T08:30:06Z",
+        ),
+    )
     _write_session(
         game_dir / "session.json",
         _session(
@@ -2528,15 +2528,7 @@ async def test_preexisting_session_resumes_saved_cursor_after_reattach(
                 "route_id": "",
             },
         )
-        with (alpha_dir / "events.jsonl").open("ab") as handle:
-            handle.write(
-                json.dumps(
-                    alpha_new,
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                ).encode("utf-8")
-                + b"\n"
-            )
+        _append_event(alpha_dir / "events.jsonl", alpha_new)
         _write_session(
             alpha_dir / "session.json",
             _session(
@@ -2559,6 +2551,8 @@ async def test_preexisting_session_resumes_saved_cursor_after_reattach(
         resumed = plugin._snapshot_state()
         history = await plugin.galgame_get_history(limit=20, include_events=True)
         assert resumed["events_byte_offset"] > alpha_boundary
+        assert resumed["active_session_id"] == "sess-alpha"
+        assert resumed["last_seq"] == 2
         assert isinstance(history, Ok)
         assert [event["seq"] for event in history.value["events"]] == [2]
         assert [line["line_id"] for line in history.value["stable_lines"]] == [
