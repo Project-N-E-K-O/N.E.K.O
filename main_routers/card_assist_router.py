@@ -1482,7 +1482,7 @@ _CHAT_EN_TRAILING_COMMAND_RE = re.compile(
     re.IGNORECASE,
 )
 _CHAT_EN_TRAILING_SAFE_SUFFIX_RE = re.compile(
-    r"^\s*(?:you\s+can|possible|done|ready)\s*[.!]?\s*$",
+    r"^\s*(?:you\s+can|possible|done|ready)\s*[.!?]?\s*$",
     re.IGNORECASE,
 )
 _CHAT_SENTENCE_FINAL_QUESTION_PATTERN = (

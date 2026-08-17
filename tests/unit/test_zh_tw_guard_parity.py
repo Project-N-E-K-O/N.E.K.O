@@ -3164,6 +3164,7 @@ def test_english_question_and_conditional_heads_are_not_commands(head):
         "Please rewrite all fields if you can",
         "Rewrite all fields when done",
         "Regenerate the whole card if possible",
+        "Rewrite all fields if possible?",
     ],
 )
 def test_english_trailing_conditions_keep_a_completed_command(text):
