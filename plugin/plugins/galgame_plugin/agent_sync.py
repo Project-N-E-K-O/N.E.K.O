@@ -399,17 +399,20 @@ class AgentSyncMixin:
         delivered = False
 
         def _require_submitted(receipt: object) -> None:
-            if isinstance(receipt, Mapping) and receipt.get("submitted") is True:
+            # Older supported SDKs return None after a successful synchronous
+            # submission.  Only the modern explicit rejection receipt is a
+            # retry signal; treating an absent receipt as failure duplicates an
+            # already-submitted proactive message.
+            if not isinstance(receipt, Mapping) or receipt.get("submitted") is not False:
                 return
             reason = "transport_error"
-            if isinstance(receipt, Mapping) and receipt.get("submitted") is False:
-                raw_reason = receipt.get("reason")
-                if isinstance(raw_reason, str) and raw_reason in {
-                    "backpressure",
-                    "transport_error",
-                    "transport_unavailable",
-                }:
-                    reason = str(raw_reason)
+            raw_reason = receipt.get("reason")
+            if isinstance(raw_reason, str) and raw_reason in {
+                "backpressure",
+                "transport_error",
+                "transport_unavailable",
+            }:
+                reason = str(raw_reason)
             raise RuntimeError(f"local message submission rejected: {reason}")
 
         try:

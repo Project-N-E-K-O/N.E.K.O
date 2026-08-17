@@ -829,6 +829,7 @@ class AgentSummaryMixin:
             )
 
         event_routes_by_line_signature: dict[str, list[str]] = {}
+        event_scopes_by_line_identity: dict[str, list[tuple[str, str]]] = {}
         for occurrence in event_occurrences:
             event_line = occurrence.get("line") or {}
             if not isinstance(event_line, dict):
@@ -847,10 +848,30 @@ class AgentSummaryMixin:
                 route_agnostic_signature,
                 [],
             ).append(str(event_line.get("route_id") or ""))
+            scope_agnostic_identity = json.dumps(
+                {
+                    "line_id": str(event_line.get("line_id") or ""),
+                    "speaker": str(event_line.get("speaker") or ""),
+                    "text": str(event_line.get("text") or ""),
+                    "ts": str(event_line.get("ts") or ""),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+            event_scopes_by_line_identity.setdefault(
+                scope_agnostic_identity,
+                [],
+            ).append(
+                (
+                    str(event_line.get("scene_id") or ""),
+                    str(event_line.get("route_id") or ""),
+                )
+            )
 
         fallback_occurrences: list[dict[str, Any]] = []
         history_records: list[tuple[dict[str, Any], str]] = []
         consumed_event_routes: dict[str, int] = {}
+        consumed_event_scopes: dict[str, int] = {}
         for item in list(shared.get("history_lines") or []):
             if not isinstance(item, dict):
                 continue
@@ -862,27 +883,63 @@ class AgentSummaryMixin:
                 continue
             line = dict(item)
             line["text"] = text
-            line.setdefault("scene_id", str(snapshot.get("scene_id") or ""))
-            if not str(line.get("route_id") or "").strip():
-                route_agnostic_signature = json.dumps(
+            matched_event_scope: tuple[str, str] | None = None
+            if not str(line.get("scene_id") or "").strip():
+                scope_agnostic_identity = json.dumps(
                     {
                         "line_id": str(line.get("line_id") or ""),
                         "speaker": str(line.get("speaker") or ""),
                         "text": text,
-                        "scene_id": str(line.get("scene_id") or ""),
+                        "ts": str(line.get("ts") or ""),
                     },
                     ensure_ascii=False,
                     sort_keys=True,
                 )
-                consumed = consumed_event_routes.get(route_agnostic_signature, 0)
-                matching_routes = event_routes_by_line_signature.get(
-                    route_agnostic_signature
+                consumed_scope_count = consumed_event_scopes.get(
+                    scope_agnostic_identity,
+                    0,
+                )
+                matching_scopes = event_scopes_by_line_identity.get(
+                    scope_agnostic_identity
                 ) or []
-                if consumed < len(matching_routes):
-                    line["route_id"] = matching_routes[consumed]
-                    consumed_event_routes[route_agnostic_signature] = consumed + 1
+                if consumed_scope_count < len(matching_scopes):
+                    matched_event_scope = matching_scopes[consumed_scope_count]
+                    consumed_event_scopes[scope_agnostic_identity] = (
+                        consumed_scope_count + 1
+                    )
+                line["scene_id"] = str(
+                    (matched_event_scope or ("", ""))[0]
+                    or snapshot.get("scene_id")
+                    or ""
+                )
+            else:
+                line["scene_id"] = str(line.get("scene_id") or "")
+            if not str(line.get("route_id") or "").strip():
+                if matched_event_scope is not None:
+                    line["route_id"] = matched_event_scope[1]
                 else:
-                    line["route_id"] = ""
+                    route_agnostic_signature = json.dumps(
+                        {
+                            "line_id": str(line.get("line_id") or ""),
+                            "speaker": str(line.get("speaker") or ""),
+                            "text": text,
+                            "scene_id": str(line.get("scene_id") or ""),
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    )
+                    consumed = consumed_event_routes.get(
+                        route_agnostic_signature,
+                        0,
+                    )
+                    matching_routes = event_routes_by_line_signature.get(
+                        route_agnostic_signature
+                    ) or []
+                    if consumed < len(matching_routes):
+                        line["route_id"] = matching_routes[consumed]
+                        consumed_event_routes[route_agnostic_signature] = consumed + 1
+                    else:
+                        line["route_id"] = ""
             else:
                 line["route_id"] = str(line.get("route_id") or "")
             line.setdefault("stability", "stable")
@@ -1300,6 +1357,7 @@ class AgentSummaryMixin:
                         "event_group_key": group_key,
                         "handoff_group_signature": group_signature,
                         "seq": 0,
+                        "snapshot_fallback": choice_state == "visible",
                         "ts": str(
                             choice.get("ts")
                             or (snapshot.get("ts") if choice_state == "visible" else "")
@@ -1908,29 +1966,34 @@ class AgentSummaryMixin:
                 previous_observed_scene_id = str(
                     ledger.get("observed_scene_id") or ""
                 )
-                if previous_observed_scene_id and previous_observed_scene_id != scene_id:
-                    scene_aliases = dict(
-                        ledger.get("memory_handoff_scene_aliases") or {}
-                    )
-                    current_scope_key = self._scene_tracker.summary_scope_key(
-                        scene_id,
-                        route_id,
-                    )
-                    scene_aliases.pop(current_scope_key, None)
-                    scene_aliases[current_scope_key] = previous_observed_scene_id
-                    while len(scene_aliases) > 8:
-                        scene_aliases.pop(next(iter(scene_aliases)), None)
-                    ledger["memory_handoff_scene_aliases"] = scene_aliases
+                scene_aliases = dict(
+                    ledger.get("memory_handoff_scene_aliases") or {}
+                )
+                current_scope_key = self._scene_tracker.summary_scope_key(
+                    scene_id,
+                    route_id,
+                )
                 observed_overlap_end = self._scene_capsule_handoff_overlap_end(
                     [str(item) for item in list(ledger.get("observed_tail") or [])],
                     current_texts,
                 )
                 if observed_overlap_end:
+                    if (
+                        previous_observed_scene_id
+                        and previous_observed_scene_id != scene_id
+                    ):
+                        scene_aliases.pop(current_scope_key, None)
+                        scene_aliases[current_scope_key] = previous_observed_scene_id
+                        while len(scene_aliases) > 8:
+                            scene_aliases.pop(next(iter(scene_aliases)), None)
                     ledger["memory_handoff_overlap_event_keys"] = [
                         str(item.get("event_key") or "")
                         for item in current_lines[:observed_overlap_end]
                         if str(item.get("event_key") or "")
                     ]
+                else:
+                    scene_aliases.pop(current_scope_key, None)
+                ledger["memory_handoff_scene_aliases"] = scene_aliases
         ledger["observed_source_identity"] = source_identity
         ledger["observed_tail"] = list(current_texts[-4:])
         ledger["observed_scene_id"] = scene_id
@@ -2059,7 +2122,15 @@ class AgentSummaryMixin:
                 )
             )
         else:
-            candidates.sort(key=lambda item: (item[0], item[1], item[2], item[3]))
+            candidates.sort(
+                key=lambda item: (
+                    int(bool(item[5].get("snapshot_fallback"))),
+                    item[0],
+                    item[1],
+                    item[2],
+                    item[3],
+                )
+            )
         _has_seq, _seq, _ts, _index, target_kind, target = candidates[-1]
         # Only the newest candidate is rendered.  Earlier candidates observed in
         # the same tick are deliberately consumed as superseded so they cannot
@@ -2449,16 +2520,25 @@ class AgentSummaryMixin:
                 pass
         if generation != self._summary_generation:
             return False
-        previous_scene_summary = next(
-            (
-                str(item.get("summary") or "").strip()
-                for memory_scene_id in [scene_id, *memory_scene_alias_ids]
-                for item in reversed(self._scene_memory)
-                if isinstance(item, dict)
-                and str(item.get("scene_id") or "") == memory_scene_id
-                and str(item.get("route_id") or "") == route_id
-            ),
-            "",
+        memory_scene_id_set = {scene_id, *memory_scene_alias_ids}
+        previous_scene_candidates = [
+            (str(item.get("ts") or ""), index, item)
+            for index, item in enumerate(self._scene_memory)
+            if isinstance(item, dict)
+            and str(item.get("scene_id") or "") in memory_scene_id_set
+            and str(item.get("route_id") or "") == route_id
+            and str(item.get("summary") or "").strip()
+        ]
+        previous_scene_summary = (
+            str(
+                max(
+                    previous_scene_candidates,
+                    key=lambda candidate: (candidate[0], candidate[1]),
+                )[2].get("summary")
+                or ""
+            ).strip()
+            if previous_scene_candidates
+            else ""
         )
         if previous_scene_summary:
             context = {

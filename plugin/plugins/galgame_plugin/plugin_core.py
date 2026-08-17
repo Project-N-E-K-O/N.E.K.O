@@ -319,6 +319,10 @@ class GalgamePlugin(
         self._state_lock = threading.Lock()
         self._plugin_run_started_at = 0.0
         self._startup_existing_session_ids: set[tuple[str, str, str]] | None = None
+        self._startup_preexisting_session_states: dict[
+            tuple[str, str, str],
+            dict[str, Any],
+        ] = {}
         self._poll_bridge_locks: dict[int, asyncio.Lock] = {}
         self._poll_bridge_thread_lock = threading.Lock()
         self._bridge_poll_task_lock = threading.RLock()
@@ -3164,6 +3168,7 @@ class GalgamePlugin(
     async def startup(self, **_):
         self._plugin_run_started_at = time.time()
         self._startup_existing_session_ids = None
+        self._startup_preexisting_session_states.clear()
         try:
             await self._load_config()
         except Exception as exc:
@@ -4011,6 +4016,11 @@ class GalgamePlugin(
         session_id = str(session.get("session_id") or "")
         session_state = session.get("state")
         session_state_obj = session_state if isinstance(session_state, dict) else {}
+        candidate_session_identity = session_identity_key(
+            data_source=candidate.data_source,
+            game_id=candidate.game_id,
+            session_id=session_id,
+        )
         preexisting_snapshot_identity = {
             "scene_id": str(session_state_obj.get("scene_id") or ""),
             "route_id": str(session_state_obj.get("route_id") or ""),
@@ -4020,6 +4030,42 @@ class GalgamePlugin(
             candidate.game_id != local["active_game_id"]
             or session_id != local["active_session_id"]
         )
+        previous_session_id = str(local.get("active_session_id") or "")
+        if session_changed and previous_session_id:
+            previous_session_identity = session_identity_key(
+                data_source=str(local.get("active_data_source") or ""),
+                game_id=str(local.get("active_game_id") or ""),
+                session_id=previous_session_id,
+            )
+            if (
+                self._startup_existing_session_ids
+                and previous_session_identity in self._startup_existing_session_ids
+            ):
+                self._startup_preexisting_session_states[
+                    previous_session_identity
+                ] = {
+                    "history_events": json_copy(local.get("history_events") or []),
+                    "history_lines": json_copy(local.get("history_lines") or []),
+                    "history_observed_lines": json_copy(
+                        local.get("history_observed_lines") or []
+                    ),
+                    "history_choices": json_copy(local.get("history_choices") or []),
+                    "dedupe_window": json_copy(local.get("dedupe_window") or []),
+                    "latest_snapshot": json_copy(local.get("latest_snapshot") or {}),
+                    "events_byte_offset": int(local.get("events_byte_offset") or 0),
+                    "events_file_size": int(local.get("events_file_size") or 0),
+                    "last_seq": int(local.get("last_seq") or 0),
+                    "line_buffer": bytes(local.get("line_buffer") or b""),
+                    "stream_reset_pending": bool(
+                        local.get("stream_reset_pending")
+                    ),
+                    "warmup_session_id": str(
+                        local.get("warmup_session_id") or previous_session_id
+                    ),
+                    "last_seen_data_monotonic": float(
+                        local.get("last_seen_data_monotonic") or 0.0
+                    ),
+                }
         restore_cursor = (
             not session_changed
             and local["events_byte_offset"] > 0
@@ -4041,12 +4087,50 @@ class GalgamePlugin(
             startup_existing_session_ids=self._startup_existing_session_ids,
         )
         preexisting_session = session_origin == SESSION_ORIGIN_PREEXISTING
+        saved_preexisting_state = (
+            self._startup_preexisting_session_states.get(
+                candidate_session_identity
+            )
+            if session_changed and preexisting_session
+            else None
+        )
+        resume_preexisting_session = isinstance(saved_preexisting_state, dict)
 
         local["active_game_id"] = candidate.game_id
         local["active_session_id"] = session_id
         local["active_session_meta"] = build_active_session_meta(candidate)
         local["active_data_source"] = candidate.data_source
-        if not preexisting_session:
+        if resume_preexisting_session:
+            assert saved_preexisting_state is not None
+            for field in (
+                "history_events",
+                "history_lines",
+                "history_observed_lines",
+                "history_choices",
+                "dedupe_window",
+            ):
+                local[field] = json_copy(saved_preexisting_state.get(field) or [])
+            local["latest_snapshot"] = json_copy(
+                saved_preexisting_state.get("latest_snapshot") or {}
+            )
+            local["events_byte_offset"] = int(
+                saved_preexisting_state.get("events_byte_offset") or 0
+            )
+            local["events_file_size"] = int(
+                saved_preexisting_state.get("events_file_size") or 0
+            )
+            local["last_seq"] = int(saved_preexisting_state.get("last_seq") or 0)
+            local["line_buffer"] = bytes(
+                saved_preexisting_state.get("line_buffer") or b""
+            )
+            local["stream_reset_pending"] = bool(
+                saved_preexisting_state.get("stream_reset_pending")
+            )
+            local["warmup_session_id"] = session_id
+            local["last_seen_data_monotonic"] = float(
+                saved_preexisting_state.get("last_seen_data_monotonic") or 0.0
+            )
+        elif not preexisting_session:
             local["latest_snapshot"] = json_copy(session_state_obj)
         elif warmup_needed:
             local["latest_snapshot"] = {}
@@ -4059,7 +4143,7 @@ class GalgamePlugin(
                 candidate.game_id,
             )
 
-        if warmup_needed and preexisting_session:
+        if warmup_needed and preexisting_session and not resume_preexisting_session:
             local["history_events"] = []
             local["history_lines"] = []
             local["history_observed_lines"] = []
@@ -4081,7 +4165,7 @@ class GalgamePlugin(
             local["stream_reset_pending"] = False
             local["warmup_session_id"] = session_id
 
-        elif warmup_needed:
+        elif warmup_needed and not preexisting_session:
             end_offset = int(local["events_byte_offset"]) if restore_cursor else None
             warmup_events = await asyncio.to_thread(
                 warmup_replay_events,

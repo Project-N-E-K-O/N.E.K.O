@@ -1014,6 +1014,7 @@ async def test_trusted_handoff_uses_previous_native_scene_summary_as_seed(
         host_adapter=_FakeHostAdapter(),
     )
     memory_line = _summary_test_line("memory-scene", 1)
+    memory_line["text"] = str(_summary_test_line("ocr-scene", 1)["text"])
     memory_shared = _shared_state(
         mode="companion",
         game_id="demo.alpha",
@@ -1035,10 +1036,10 @@ async def test_trusted_handoff_uses_previous_native_scene_summary_as_seed(
         }
     )
 
-    ocr_lines = [_summary_test_line("ocr-scene", index) for index in range(1, 9)]
+    ocr_lines = [_summary_test_line("ocr-scene", index) for index in range(1, 10)]
     ocr_events = [
         _summary_test_line_event("ocr-scene", index, seq=index)
-        for index in range(1, 9)
+        for index in range(1, 10)
     ]
     latest_line = ocr_lines[-1]
     ocr_shared = _shared_state(
@@ -3291,6 +3292,7 @@ async def test_trusted_handoff_serializes_pending_aliased_archives(
         host_adapter=_FakeHostAdapter(),
     )
     memory_line = _summary_test_line("memory-scene", 1)
+    memory_line["text"] = str(_summary_test_line("ocr-scene", 1)["text"])
     memory_shared = _shared_state(
         mode="companion",
         push_notifications=False,
@@ -3324,7 +3326,7 @@ async def test_trusted_handoff_serializes_pending_aliased_archives(
     )
     await asyncio.wait_for(gateway.first_started.wait(), timeout=0.5)
 
-    ocr_lines = [_summary_test_line("ocr-scene", index) for index in range(1, 9)]
+    ocr_lines = [_summary_test_line("ocr-scene", index) for index in range(1, 10)]
     ocr_shared = _shared_state(
         mode="companion",
         push_notifications=False,
@@ -3511,4 +3513,262 @@ def test_summary_scene_setter_preserves_current_route_scope(tmp_path: Path) -> N
     assert agent._scene_tracker.summary_route_id == "route-a"
     assert agent._scene_tracker.summary_scene_scope_key == (
         agent._scene_tracker.summary_scope_key("scene-b", "route-a")
+    )
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.parametrize("has_matching_event", [False, True])
+def test_empty_fallback_scene_inherits_event_or_snapshot_scope(
+    tmp_path: Path,
+    has_matching_event: bool,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(
+            _Ctx(plugin_dir, _make_effective_config(bridge_root))
+        ),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    fallback_line = {
+        "line_id": "legacy-line",
+        "speaker": "Yukino",
+        "text": "legacy reconstructed line",
+        "scene_id": "",
+        "route_id": "",
+        "stability": "stable",
+        "ts": "2026-04-21T08:35:01Z",
+    }
+    history_events = []
+    expected_scope = ("snapshot-scene", "")
+    if has_matching_event:
+        history_events = [
+            _event(
+                seq=1,
+                event_type="line_changed",
+                session_id="sess-a",
+                game_id="demo.alpha",
+                ts="2026-04-21T08:35:01Z",
+                payload={
+                    **fallback_line,
+                    "scene_id": "event-scene",
+                    "route_id": "event-route",
+                },
+            )
+        ]
+        expected_scope = ("event-scene", "event-route")
+    snapshot = _session_state(scene_id="snapshot-scene", route_id="snapshot-route")
+    shared = _shared_state(
+        session_id="sess-a",
+        last_seq=1 if has_matching_event else 0,
+        snapshot=snapshot,
+        history_events=history_events,
+        history_lines=[fallback_line],
+    )
+
+    occurrences = agent._scene_capsule_line_occurrences(
+        shared,
+        snapshot=snapshot,
+    )
+
+    assert {
+        (
+            str((item.get("line") or {}).get("scene_id") or ""),
+            str((item.get("line") or {}).get("route_id") or ""),
+        )
+        for item in occurrences
+    } == {expected_scope}
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_current_snapshot_menu_outranks_older_sequenced_line(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(ctx),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    old_line = _summary_test_line("scene-a", 1)
+    choices = [
+        {"choice_id": "choice-a", "text": "open the door", "index": 0},
+        {"choice_id": "choice-b", "text": "wait outside", "index": 1},
+    ]
+    shared = _shared_state(
+        mode="companion",
+        session_id="sess-a",
+        last_seq=1,
+        snapshot=_session_state(
+            scene_id="scene-a",
+            line_id=str(old_line["line_id"]),
+            choices=choices,
+            is_menu_open=True,
+            ts="2026-04-21T08:35:02Z",
+        ),
+        history_events=[_summary_test_line_event("scene-a", 1, seq=1)],
+        history_lines=[old_line],
+    )
+
+    await agent.tick(shared)
+    await agent.drain_summary_tasks(timeout=1.0)
+
+    assert len(ctx.pushed_messages) == 1
+    assert ctx.pushed_messages[0]["metadata"]["new_stable_line_count"] == 0
+    assert ctx.pushed_messages[0]["metadata"]["new_choice_count"] == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_handoff_alias_requires_overlapping_scene_evidence(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(
+            _Ctx(plugin_dir, _make_effective_config(bridge_root))
+        ),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    memory_line = {
+        **_summary_test_line("memory-scene", 1),
+        "text": "old logical scene",
+    }
+    memory_shared = _shared_state(
+        mode="companion",
+        push_notifications=False,
+        game_id="demo.alpha",
+        session_id="memory-session",
+        active_data_source=DATA_SOURCE_MEMORY_READER,
+        snapshot=_session_state(scene_id="memory-scene", text="old logical scene"),
+        history_events=[
+            _event(
+                seq=1,
+                event_type="line_changed",
+                session_id="memory-session",
+                game_id="demo.alpha",
+                ts=str(memory_line["ts"]),
+                payload={**memory_line, "stability": "stable"},
+            )
+        ],
+        history_lines=[memory_line],
+    )
+    memory_shared["active_session_meta"] = {
+        "metadata": {"game_process_name": "demo.exe", "window_title": "Demo"}
+    }
+    await agent.tick(memory_shared)
+    for ledger in agent._scene_capsule_delivery_ledger.values():
+        ledger["memory_handoff_scene_aliases"] = {
+            agent._scene_tracker.summary_scope_key("ocr-scene", ""): "memory-scene"
+        }
+
+    ocr_line = {
+        **_summary_test_line("ocr-scene", 1),
+        "line_id": "ocr-line-1",
+        "text": "genuinely different scene",
+    }
+    ocr_shared = _shared_state(
+        mode="companion",
+        push_notifications=False,
+        game_id="demo.alpha",
+        session_id="ocr-session",
+        active_data_source=DATA_SOURCE_OCR_READER,
+        ocr_reader_runtime={
+            "effective_process_name": "demo.exe",
+            "effective_window_title": "Demo",
+            "target_hwnd": 100,
+            "target_window_visible": True,
+        },
+        snapshot=_session_state(scene_id="ocr-scene", text="genuinely different scene"),
+        history_events=[
+            _event(
+                seq=1,
+                event_type="line_changed",
+                session_id="ocr-session",
+                game_id="demo.alpha",
+                ts=str(ocr_line["ts"]),
+                payload={**ocr_line, "stability": "stable"},
+            )
+        ],
+        history_lines=[ocr_line],
+    )
+    await agent.tick(ocr_shared)
+
+    assert all(
+        not dict(ledger.get("memory_handoff_scene_aliases") or {})
+        for ledger in agent._scene_capsule_delivery_ledger.values()
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_aliased_archive_seed_uses_newest_committed_summary(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    gateway = _FakeLLMGateway()
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(
+            _Ctx(plugin_dir, _make_effective_config(bridge_root))
+        ),
+        logger=_Logger(),
+        llm_gateway=gateway,
+        host_adapter=_FakeHostAdapter(),
+    )
+    line = _summary_test_line("memory-scene", 1)
+    shared = _shared_state(
+        mode="companion",
+        push_notifications=False,
+        game_id="demo.alpha",
+        session_id="memory-session",
+        active_data_source=DATA_SOURCE_MEMORY_READER,
+        snapshot=_session_state(scene_id="memory-scene"),
+        history_lines=[line],
+    )
+    await agent.tick(shared)
+    agent._scene_memory.clear()
+    agent._scene_memory.extend(
+        [
+        {
+            "scene_id": "memory-scene",
+            "route_id": "",
+            "summary": "stale memory-reader archive",
+            "ts": "2026-04-21T08:35:01Z",
+        },
+        {
+            "scene_id": "ocr-scene",
+            "route_id": "",
+            "summary": "newer OCR cumulative archive",
+            "ts": "2026-04-21T08:36:01Z",
+        },
+        ]
+    )
+    context = build_summarize_context(
+        shared,
+        scene_id="memory-scene",
+        config=agent._context_config,
+    )
+    agent._schedule_scene_summary_task(
+        shared=shared,
+        session_id="memory-session",
+        scene_id="memory-scene",
+        route_id="",
+        snapshot=shared["latest_snapshot"],
+        context=context,
+        trigger="line_count",
+        metadata={
+            "scheduled_from_event_seq": 1,
+            "memory_scene_alias_ids": ["ocr-scene"],
+        },
+    )
+    await agent.drain_summary_tasks(timeout=1.0)
+
+    assert gateway.summarize_calls[-1]["previous_scene_summary"] == (
+        "newer OCR cumulative archive"
     )

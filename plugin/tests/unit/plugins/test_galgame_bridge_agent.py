@@ -8170,3 +8170,40 @@ async def test_game_llm_agent_shutdown_clears_last_push_timestamp(
     await agent.shutdown()
 
     assert agent._last_push_ts == 0.0
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_legacy_none_push_receipt_is_accepted_without_retry(
+    tmp_path: Path,
+) -> None:
+    class _LegacyReceiptCtx(_Ctx):
+        def __init__(self, plugin_dir: Path, effective_config: dict[str, object]) -> None:
+            super().__init__(plugin_dir, effective_config)
+            self.attempt_count = 0
+
+        def push_message(self, **kwargs):
+            self.attempt_count += 1
+            self.pushed_messages.append(dict(kwargs))
+            return None
+
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _LegacyReceiptCtx(plugin_dir, _make_effective_config(bridge_root))
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(ctx),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+
+    delivered = await agent._push_agent_message(
+        _shared_state(mode="companion", session_id="sess-a"),
+        kind="scene_delta",
+        content="legacy SDK submission",
+        scene_id="scene-a",
+        route_id="",
+    )
+
+    assert delivered is True
+    assert ctx.attempt_count == 1
+    assert agent._outbound_messages[-1]["status"] == "delivered"
