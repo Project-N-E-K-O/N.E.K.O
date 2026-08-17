@@ -1549,6 +1549,10 @@ _CHAT_GOVERNING_INSTRUCTION_PROHIBITION_RE = re.compile(
 )
 _CHAT_GOVERNING_PROHIBITION_SENTENCE_END_RE = re.compile(r"[。！？.!?;；]+")
 _CHAT_GOVERNING_FOLLOWING_LIST_MARKER_RE = re.compile(r"(?:以下|下面|下列)")
+_CHAT_DISTINCT_REQUEST_TOPIC_RE = re.compile(
+    r"^\s*(?:另一个|另一個|另外一个|另外一個)\s*"
+    r"(?:请求|請求|要求|任务|任務)"
+)
 _CHAT_SCOPED_DISCLAIMER_RE = re.compile(
     r"(?:以上|上述|前述|这些|這些|这|這)?\s*(?:只|仅|僅)(?:是|为|為)\s*"
     r"(?:示例|例子|范例|範例)"
@@ -2139,8 +2143,32 @@ def _chat_text_requests_full_rewrite_from_scoped_segments(text: str) -> bool:
         )
         if sentence_end is None:
             return False
+        preceding_sentence_ends = list(
+            _CHAT_GOVERNING_PROHIBITION_SENTENCE_END_RE.finditer(
+                prohibition_masked, 0, governing_prohibition.start()
+            )
+        )
+        prohibition_sentence_start = (
+            preceding_sentence_ends[-1].end() if preceding_sentence_ends else 0
+        )
+        independent_prefix = text[:prohibition_sentence_start]
         independent_suffix = text[sentence_end.end():]
         return (
+            (
+                _CHAT_DISTINCT_REQUEST_TOPIC_RE.search(
+                    prohibition_masked[
+                        prohibition_sentence_start:governing_prohibition.start()
+                    ]
+                )
+                is not None
+                and (
+                    _chat_text_requests_full_rewrite_core(independent_prefix)
+                    or _chat_text_requests_full_rewrite_from_scoped_segments(
+                        independent_prefix
+                    )
+                )
+            )
+            or
             _chat_text_requests_full_rewrite_core(independent_suffix)
             or _chat_text_requests_full_rewrite_from_scoped_segments(
                 independent_suffix

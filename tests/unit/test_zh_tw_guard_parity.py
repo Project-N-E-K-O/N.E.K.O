@@ -3280,6 +3280,26 @@ def test_scoped_recovery_work_is_bounded_on_repeated_boundaries():
     assert time.perf_counter() - started < 3.0
 
 
+def test_a_distinct_later_request_does_not_discard_an_independent_command():
+    import main_routers.card_assist_router as router
+
+    text = '请重写所有字段并保留是否会员。另一个请求不要执行修改。'
+    assert router._chat_text_requests_full_rewrite_core(text) is False
+    assert router._chat_text_requests_full_rewrite(text) is True
+
+
+@pytest.mark.parametrize(
+    'prohibition', ['不要执行修改', '不要执行上述修改']
+)
+def test_a_later_prohibition_without_a_distinct_request_still_cancels(
+    prohibition,
+):
+    import main_routers.card_assist_router as router
+
+    text = f'请重写所有字段并保留是否会员。{prohibition}。'
+    assert router._chat_text_requests_full_rewrite(text) is False
+
+
 def test_repeated_rewrite_signals_use_a_linear_bridge_scan(monkeypatch):
     import main_routers.card_assist_router as router
 
