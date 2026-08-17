@@ -2056,7 +2056,8 @@ def _chat_text_requests_full_rewrite_from_scoped_segments(text: str) -> bool:
     segment_start = 0
     if len(recent_boundaries) > _CHAT_SCOPED_RECOVERY_MAX_BOUNDARIES:
         segment_start = recent_boundaries.popleft().end()
-    for match in recent_boundaries:
+    boundaries = list(recent_boundaries)
+    for index, match in enumerate(boundaries):
         if match.group("contrast") is not None:
             reporting_prefix = text[segment_start:match.start()]
             if _CHAT_SCOPED_REPORTED_SPEECH_RE.search(reporting_prefix):
@@ -2096,8 +2097,16 @@ def _chat_text_requests_full_rewrite_from_scoped_segments(text: str) -> bool:
                     not _chat_scoped_candidate_is_command(candidate)
                     or not _chat_scoped_candidate_is_completed_command(candidate)
                     or _chat_scoped_suffix_has_governing_guard(
-                        text[match.end():],
-                        masked[match.end():],
+                        text[
+                            match.end():boundaries[index + 1].start()
+                            if index + 1 < len(boundaries)
+                            else len(text)
+                        ],
+                        masked[
+                            match.end():boundaries[index + 1].start()
+                            if index + 1 < len(boundaries)
+                            else len(masked)
+                        ],
                     )
                 )
             ):
