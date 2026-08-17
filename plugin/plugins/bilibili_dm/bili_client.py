@@ -23,6 +23,8 @@ from bilibili_api.video import Video as BiliVideo
 class BiliDMClient:
     """B站私信与评论通知客户端。"""
 
+    NOTIFICATION_BACKLOG_LIMIT = 500
+
     def __init__(
         self,
         sesdata: str,
@@ -55,7 +57,10 @@ class BiliDMClient:
         self._notification_bootstrap_done = {"reply": False, "at": False}
         self._notification_seen: list[str] = []
         self._notification_seen_set: set[str] = set()
+        self._notification_feed_seen = {"reply": [], "at": []}
+        self._notification_feed_seen_set = {"reply": set(), "at": set()}
         self._notification_pending: deque[tuple[str, Dict[str, Any]]] = deque()
+        self._notification_backlog_limit = self.NOTIFICATION_BACKLOG_LIMIT
         self._current_uid = str(dedeuserid or "").strip()
         self._video_info_cache: Dict[int, Dict[str, str]] = {}
         self._user_info_cache: Dict[int, Dict[str, Any]] = {}
@@ -289,11 +294,39 @@ class BiliDMClient:
                 self.logger.warning(f"获取 B站视频信息失败 aid={aid}: {exc}")
             return None
 
-    def _mark_notification_seen(self, source: str, item: Dict[str, Any]) -> bool:
+    @staticmethod
+    def _notification_identity(item: Dict[str, Any]) -> str:
+        """返回跨 reply/@ 消息流稳定的底层评论身份。"""
+        details = item.get("item") or {}
+        if isinstance(details, dict):
+            business_id = str(details.get("business_id") or "").strip()
+            subject_id = str(details.get("subject_id") or "").strip()
+            source_id = str(details.get("source_id") or "").strip()
+            if business_id and subject_id and source_id:
+                return f"comment:{business_id}:{subject_id}:{source_id}"
+
         notification_id = str(item.get("id") or "").strip()
-        if not notification_id:
+        return f"notification:{notification_id}" if notification_id else ""
+
+    @classmethod
+    def _notification_feed_identity(cls, item: Dict[str, Any]) -> str:
+        """返回单一消息流内稳定的事件身份，用作分页停止边界。"""
+        notification_id = str(item.get("id") or "").strip()
+        return notification_id or cls._notification_identity(item)
+
+    def _mark_notification_seen(self, source: str, item: Dict[str, Any]) -> bool:
+        feed_key = self._notification_feed_identity(item)
+        if feed_key and feed_key not in self._notification_feed_seen_set[source]:
+            self._notification_feed_seen[source].append(feed_key)
+            self._notification_feed_seen_set[source].add(feed_key)
+            if len(self._notification_feed_seen[source]) > 500:
+                expired = self._notification_feed_seen[source].pop(0)
+                self._notification_feed_seen_set[source].discard(expired)
+
+        # reply 与 @ 流中的同一底层评论必须共享业务去重身份。
+        key = self._notification_identity(item)
+        if not key:
             return False
-        key = f"{source}:{notification_id}"
         if key in self._notification_seen_set:
             return False
         self._notification_seen.append(key)
@@ -334,7 +367,9 @@ class BiliDMClient:
         async with httpx.AsyncClient(timeout=20.0) as client:
             try:
                 reply_items = await self._get_notification_items(
-                    client, "https://api.bilibili.com/x/msgfeed/reply"
+                    client,
+                    "https://api.bilibili.com/x/msgfeed/reply",
+                    paginate=self._notification_bootstrap_done["reply"],
                 )
                 reply_succeeded = True
             except Exception as exc:
@@ -343,14 +378,18 @@ class BiliDMClient:
                     self.logger.warning(f"获取 B站回复通知失败: {exc}")
             try:
                 at_items = await self._get_notification_items(
-                    client, "https://api.bilibili.com/x/msgfeed/at"
+                    client,
+                    "https://api.bilibili.com/x/msgfeed/at",
+                    paginate=self._notification_bootstrap_done["at"],
                 )
                 at_succeeded = True
             except Exception as exc:
                 at_items = []
                 try:
                     at_items = await self._get_notification_items(
-                        client, "https://api.vc.bilibili.com/x/im/web/msgfeed/at"
+                        client,
+                        "https://api.vc.bilibili.com/x/im/web/msgfeed/at",
+                        paginate=self._notification_bootstrap_done["at"],
                     )
                     at_succeeded = True
                 except Exception as fallback_exc:
@@ -359,6 +398,7 @@ class BiliDMClient:
                             f"获取 B站 @ 通知失败: {exc}; 备用接口失败: {fallback_exc}"
                         )
 
+        dropped_from_pending = 0
         for source, items, succeeded in (
             ("reply", reply_items, reply_succeeded),
             ("at", at_items, at_succeeded),
@@ -377,7 +417,17 @@ class BiliDMClient:
                     continue
                 if source == "at" and not self._is_at_current_user(item):
                     continue
+                if len(self._notification_pending) >= self._notification_backlog_limit:
+                    self._notification_pending.popleft()
+                    dropped_from_pending += 1
                 self._notification_pending.append((source, item))
+
+        if dropped_from_pending and self.logger:
+            self.logger.warning(
+                "B站通知积压达到上限，已丢弃最旧待处理项: "
+                f"dropped={dropped_from_pending}, "
+                f"limit={self._notification_backlog_limit}"
+            )
 
         processed = 0
         while self._notification_pending and processed < self._notification_max_items:
@@ -386,27 +436,86 @@ class BiliDMClient:
             processed += 1
 
     async def _get_notification_items(
-        self, client: httpx.AsyncClient, url: str
+        self,
+        client: httpx.AsyncClient,
+        url: str,
+        *,
+        paginate: bool = False,
     ) -> List[Dict[str, Any]]:
-        response = await client.get(
-            url,
-            params={"build": 0, "mobi_app": "web"},
-            cookies=self._cookies(),
-            headers={
-                "Referer": "https://message.bilibili.com/",
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36",
-            },
-        )
-        response.raise_for_status()
-        payload = response.json()
-        if not isinstance(payload, dict):
-            raise RuntimeError("B站通知接口返回了无效数据")
-        if payload.get("code") not in (None, 0):
-            raise RuntimeError(
-                f"B站通知接口错误: {payload.get('message') or payload.get('msg') or payload.get('code')}"
+        params: Dict[str, Any] = {"build": 0, "mobi_app": "web"}
+        source = "reply" if url.rstrip("/").endswith("/reply") else "at"
+        time_param = "reply_time" if source == "reply" else "at_time"
+        retained: List[Dict[str, Any]] = []
+        skipped_for_capacity = 0
+        visited_cursors: set[tuple[str, str]] = set()
+
+        while True:
+            response = await client.get(
+                url,
+                params=params,
+                cookies=self._cookies(),
+                headers={
+                    "Referer": "https://message.bilibili.com/",
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36",
+                },
             )
-        items = (payload.get("data") or {}).get("items") or []
-        return [item for item in items if isinstance(item, dict)]
+            response.raise_for_status()
+            payload = response.json()
+            if not isinstance(payload, dict):
+                raise RuntimeError("B站通知接口返回了无效数据")
+            if payload.get("code") not in (None, 0):
+                raise RuntimeError(
+                    f"B站通知接口错误: {payload.get('message') or payload.get('msg') or payload.get('code')}"
+                )
+
+            data = payload.get("data") or {}
+            if not isinstance(data, dict):
+                raise RuntimeError("B站通知接口 data 字段无效")
+            page_items = [
+                item for item in (data.get("items") or []) if isinstance(item, dict)
+            ]
+            reached_seen = False
+            for item in page_items:
+                feed_identity = self._notification_feed_identity(item)
+                if (
+                    paginate
+                    and feed_identity
+                    and feed_identity in self._notification_feed_seen_set[source]
+                ):
+                    reached_seen = True
+                    break
+                if len(retained) < self._notification_backlog_limit:
+                    retained.append(item)
+                else:
+                    skipped_for_capacity += 1
+
+            if not paginate or reached_seen:
+                break
+            cursor = data.get("cursor") or {}
+            if not isinstance(cursor, dict) or cursor.get("is_end"):
+                break
+            cursor_id = str(cursor.get("id") or "").strip()
+            cursor_time = str(cursor.get("time") or "").strip()
+            cursor_key = (cursor_id, cursor_time)
+            if not cursor_id or not cursor_time or cursor_key in visited_cursors:
+                if self.logger:
+                    self.logger.warning(f"B站通知分页游标无效或重复: url={url}")
+                break
+            visited_cursors.add(cursor_key)
+            params = {
+                "build": 0,
+                "mobi_app": "web",
+                "id": cursor_id,
+                time_param: cursor_time,
+            }
+
+        if skipped_for_capacity and self.logger:
+            self.logger.warning(
+                "B站新通知超过积压上限，已保留最新通知并跳过较旧项: "
+                f"url={url}, skipped={skipped_for_capacity}, "
+                f"limit={self._notification_backlog_limit}"
+            )
+        return retained
 
     async def _enqueue_comment_notification(
         self, item: Dict[str, Any], source: str

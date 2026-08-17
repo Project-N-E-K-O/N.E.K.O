@@ -122,9 +122,12 @@ def test_comment_notification_target_and_deduplication():
     client = object.__new__(BiliDMClient)
     client._notification_seen = []
     client._notification_seen_set = set()
+    client._notification_feed_seen = {"reply": [], "at": []}
+    client._notification_feed_seen_set = {"reply": set(), "at": set()}
     assert client._mark_notification_seen("reply", notification) is True
     assert client._mark_notification_seen("reply", notification) is False
-    assert client._mark_notification_seen("at", notification) is True
+    duplicate_from_at = {**notification, "id": 202}
+    assert client._mark_notification_seen("at", duplicate_from_at) is False
 
 
 def test_comment_and_private_messages_use_separate_sessions():
@@ -169,7 +172,10 @@ async def test_notification_bootstrap_waits_for_each_feed_and_preserves_tail():
     client._notification_bootstrap_done = {"reply": False, "at": False}
     client._notification_seen = []
     client._notification_seen_set = set()
+    client._notification_feed_seen = {"reply": [], "at": []}
+    client._notification_feed_seen_set = {"reply": set(), "at": set()}
     client._notification_pending = deque()
+    client._notification_backlog_limit = 500
     client._notification_max_items = 1
     client._current_uid = "999"
     client._enqueue_comment_notification = AsyncMock()
@@ -182,7 +188,8 @@ async def test_notification_bootstrap_waits_for_each_feed_and_preserves_tail():
     at_newer = {"id": "at-newer"}
     calls = {"reply": 0, "at": 0}
 
-    async def get_items(_http_client, url):
+    async def get_items(_http_client, url, *, paginate=False):
+        del paginate
         source = "reply" if url.endswith("/reply") else "at"
         call = calls[source]
         calls[source] += 1
@@ -213,6 +220,133 @@ async def test_notification_bootstrap_waits_for_each_feed_and_preserves_tail():
     assert client._enqueue_comment_notification.await_count == 3
     client._enqueue_comment_notification.assert_awaited_with(at_newer, "at")
     assert not client._notification_pending
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("url", "time_param"),
+    (
+        ("https://api.bilibili.com/x/msgfeed/reply", "reply_time"),
+        ("https://api.bilibili.com/x/msgfeed/at", "at_time"),
+    ),
+)
+async def test_notification_feed_pages_until_seen_item(url, time_param):
+    def item(event_id, source_id):
+        return {
+            "id": event_id,
+            "item": {
+                "business_id": 1,
+                "subject_id": 99,
+                "source_id": source_id,
+            },
+        }
+
+    newest = item("event-newest", 303)
+    newer = item("event-newer", 302)
+    seen = item("event-seen", 301)
+    seen_only_in_other_feed = item("event-cross-feed", 304)
+
+    class FakeResponse:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    class FakeHttpClient:
+        def __init__(self):
+            self.params = []
+            self.responses = deque(
+                [
+                    FakeResponse(
+                        {
+                            "code": 0,
+                            "data": {
+                                "items": [newest, seen_only_in_other_feed],
+                                "cursor": {"is_end": False, "id": 10, "time": 20},
+                            },
+                        }
+                    ),
+                    FakeResponse(
+                        {
+                            "code": 0,
+                            "data": {
+                                "items": [newer, seen],
+                                "cursor": {"is_end": True, "id": 9, "time": 19},
+                            },
+                        }
+                    ),
+                ]
+            )
+
+        async def get(self, _url, *, params, **_kwargs):
+            self.params.append(dict(params))
+            return self.responses.popleft()
+
+    client = object.__new__(BiliDMClient)
+    client._credential = SimpleNamespace(
+        sessdata="", bili_jct="", buvid3="", dedeuserid=""
+    )
+    client.logger = SimpleNamespace(warning=lambda *_: None)
+    client._notification_backlog_limit = 500
+    client._notification_seen_set = {
+        client._notification_identity(seen),
+        client._notification_identity(seen_only_in_other_feed),
+    }
+    source = "reply" if url.endswith("/reply") else "at"
+    feed_key = client._notification_feed_identity(seen)
+    client._notification_feed_seen = {"reply": [], "at": []}
+    client._notification_feed_seen[source] = [feed_key]
+    client._notification_feed_seen_set = {"reply": set(), "at": set()}
+    client._notification_feed_seen_set[source] = {feed_key}
+    http_client = FakeHttpClient()
+
+    result = await client._get_notification_items(http_client, url, paginate=True)
+
+    assert result == [newest, seen_only_in_other_feed, newer]
+    assert len(http_client.params) == 2
+    assert http_client.params[1] == {
+        "build": 0,
+        "mobi_app": "web",
+        "id": "10",
+        time_param: "20",
+    }
+
+
+@pytest.mark.asyncio
+async def test_notification_backlog_is_bounded_and_drops_oldest():
+    client = object.__new__(BiliDMClient)
+    warnings = []
+    client.logger = SimpleNamespace(warning=warnings.append)
+    client._notification_bootstrap_done = {"reply": True, "at": True}
+    client._notification_seen = []
+    client._notification_seen_set = set()
+    client._notification_feed_seen = {"reply": [], "at": []}
+    client._notification_feed_seen_set = {"reply": set(), "at": set()}
+    client._notification_pending = deque()
+    client._notification_backlog_limit = 2
+    client._notification_max_items = 1
+    client._current_uid = "999"
+    client._enqueue_comment_notification = AsyncMock()
+    client._is_at_current_user = lambda _: True
+    notifications = [{"id": f"new-{index}"} for index in range(3, 0, -1)]
+
+    async def get_items(_http_client, url, *, paginate=False):
+        del paginate
+        return notifications if url.endswith("/reply") else []
+
+    client._get_notification_items = get_items
+
+    await client._poll_comment_notifications()
+
+    client._enqueue_comment_notification.assert_awaited_once_with(
+        notifications[1], "reply"
+    )
+    assert list(client._notification_pending) == [("reply", notifications[0])]
+    assert warnings
 
 
 @pytest.mark.asyncio
