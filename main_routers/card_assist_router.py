@@ -1589,7 +1589,8 @@ _CHAT_GOVERNING_EXECUTION_QUESTION_RE = re.compile(
 )
 _CHAT_GOVERNING_LIST_DISCLAIMER_RE = re.compile(
     r"^\s*(?:以下|以上|上述|前述|这些|這些|这|這)?\s*"
-    r"(?:(?:只|仅|僅)(?:是|为|為)\s*(?:示例|例子|范例|範例)"
+    r"(?:(?:只|仅|僅)?(?:是|为|為)\s*(?:示例|例子|范例|範例)"
+    r"|(?:是|为|為)\s*(?:参考|參考)"
     r"|(?:仅|僅|只)(?:供|作)(?:参考|參考))\s*[：:]"
 )
 _CHAT_SCOPED_GOVERNING_CONDITION_RE = re.compile(

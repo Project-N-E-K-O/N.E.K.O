@@ -3914,12 +3914,28 @@ def test_a_polite_execution_question_governs_all_recovered_list_items(prefix):
     assert router._chat_text_requests_full_rewrite(text) is False
 
 
-def test_a_leading_list_disclaimer_governs_all_recovered_items():
+@pytest.mark.parametrize(
+    'prefix', ['以下只是示例', '这是示例', '這是範例', '以下为例子', '这是参考']
+)
+def test_a_leading_list_disclaimer_governs_all_recovered_items(prefix):
     import main_routers.card_assist_router as router
 
-    text = '以下只是示例：先重写名字并保留头像，然后请重写所有字段并保留是否会员标签'
+    text = f'{prefix}：但是请重写所有字段并保留是否会员标签'
     assert router._chat_text_requests_full_rewrite_core(text) is False
     assert router._chat_text_requests_full_rewrite(text) is False
+
+
+@pytest.mark.parametrize(
+    'text',
+    [
+        '这是示例。但是请重写所有字段并保留是否会员',
+        '示例字段保持不变，但是请重写所有字段并保留是否会员',
+    ],
+)
+def test_a_completed_example_context_does_not_govern_a_later_command(text):
+    import main_routers.card_assist_router as router
+
+    assert router._chat_text_requests_full_rewrite(text) is True
 
 
 @pytest.mark.parametrize(('prefix', 'length'), [('把', 25), ('', 13)])
