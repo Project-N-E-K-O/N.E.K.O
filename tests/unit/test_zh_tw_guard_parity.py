@@ -2881,6 +2881,8 @@ def test_a_completed_rewrite_survives_secondary_content(text):
         "重写所有字段并保留头像吗，谢谢",
         'Rewrite the catchphrase as "all fields" if possible',
         "是否修改名字不过用户可能会重写所有字段",
+        "请修改名字。系统将会重写所有字段并保留是否会员标签",
+        "不要执行以下修改：先重写名字并保留头像，然后重写所有字段并保留是否会员",
     ],
 )
 def test_scoped_recovery_does_not_bypass_existing_guards(text):
@@ -2913,6 +2915,7 @@ def test_scoped_recovery_inspects_the_most_recent_bounded_boundaries():
     "text",
     [
         "把口头禅改成重写所有字段并保留会员标签",
+        "把口头禅换成重写所有字段并保留是否会员",
         "口头禅改成重写所有字段并保留会员标签",
         'Rewrite the catchphrase as "all fields"',
     ],
@@ -2923,6 +2926,15 @@ def test_single_field_assignment_values_are_not_full_rewrite_commands(text):
 
     assert router._chat_text_requests_full_rewrite_core(text) is False
     assert router._chat_text_requests_full_rewrite(text) is False
+
+
+def test_full_rewrite_after_a_field_assignment_remains_a_command():
+    """字段赋值之后由连接词引出的独立整卡命令仍须进入补全路径。"""  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    text = "把名字改成小明并把所有字段重写"
+    assert router._chat_text_requests_full_rewrite_core(text) is True
+    assert router._chat_text_requests_full_rewrite(text) is True
 
 
 def test_clause_splitting_still_does_not_parse_quotes():

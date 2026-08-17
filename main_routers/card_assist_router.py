@@ -1493,7 +1493,8 @@ _CHAT_SCOPED_SENTENCE_FINAL_QUESTION_RE = re.compile(
 )
 _CHAT_SCOPED_VALUE_ASSIGNMENT_RE = re.compile(
     r"(?:(?:(?:把|将|將)\s*[^。，、！？,.!?;；把将將并並]{1,24}?|"
-    r"^[^。，、！？,.!?;；]{1,12}?)(?:设为|設為|改成|写成|寫成)"
+    r"^[^。，、！？,.!?;；]{1,12}?)(?:设为|設為|设置为|設定為|改成|修改成|"
+    r"换成|換成|调整为|調整為|写成|寫成)"
     r"|(?i:(?:rewrite|revise|regenerate|redo|refresh)\s+"
     r"(?!(?:all\s+fields|all\s+visible\s+fields|full\s+card|whole\s+card|"
     r"entire\s+card)\b)[^,.!?;]{1,40}?\s+as\s+))"
@@ -1501,10 +1502,16 @@ _CHAT_SCOPED_VALUE_ASSIGNMENT_RE = re.compile(
 _CHAT_SCOPED_COMPLETED_COMMAND_TAIL_RE = re.compile(
     r"\s*(?:一遍|一次|一下|下|一回)?\s*(?:吧|好|即可|就行)?\s*$"
 )
-_CHAT_ZH_CONTRAST_COMMAND_RE = re.compile(
-    r"^\s*(?:(?:请|請|麻烦|麻煩|帮我|幫我|替我|给我|給我|务必|務必|"
+_CHAT_ZH_COMMAND_HEAD = (
+    r"(?:(?:请|請|麻烦|麻煩|帮我|幫我|替我|给我|給我|务必|務必|"
     r"直接|现在|現在|马上|馬上|继续|繼續|再|然后|然後)\s*)*"
     r"(?:把|将|將|重写|重寫|重新写|重新寫|改写|改寫|重做|重生|梳理|完善)"
+)
+_CHAT_ZH_CONTRAST_COMMAND_RE = re.compile(r"^\s*" + _CHAT_ZH_COMMAND_HEAD)
+_CHAT_SCOPED_NEXT_COMMAND_RE = re.compile(
+    r"(?:并|並|然后|然後|接着|接著|随后|隨後|再)\s*(?="
+    + _CHAT_ZH_COMMAND_HEAD
+    + r"|(?i:(?:please\s+)?(?:rewrite|revise|regenerate|redo|refresh)\b))"
 )
 
 
@@ -1796,10 +1803,17 @@ def _chat_text_requests_full_rewrite_core(text: str) -> bool:
         )
         if _CHAT_QUESTION_CLAUSE_RE.search(readable_question):
             continue
-        readable = _chat_clause_without_quoted_prohibitions(clause)
-        assignment = _CHAT_SCOPED_VALUE_ASSIGNMENT_RE.search(readable)
+        assignment = _CHAT_SCOPED_VALUE_ASSIGNMENT_RE.search(clause)
         if assignment is not None:
-            readable = readable[:assignment.start()]
+            parts = [clause[:assignment.start()]]
+            value_tail = clause[assignment.end():]
+            next_command = _CHAT_SCOPED_NEXT_COMMAND_RE.search(value_tail)
+            if next_command is not None:
+                parts.append(value_tail[next_command.end():])
+            if any(_chat_text_requests_full_rewrite_core(part) for part in parts):
+                return True
+            continue
+        readable = _chat_clause_without_quoted_prohibitions(clause)
         if (
             _CHAT_FULL_REWRITE_RE.search(readable)
             and _CHAT_REWRITE_VERB_RE.search(readable)
@@ -1816,6 +1830,8 @@ def _chat_text_requests_full_rewrite_from_scoped_segments(text: str) -> bool:
     Balanced quoted content is masked solely while locating those boundaries.
     """
     if not text:
+        return False
+    if _CHAT_NEGATED_REWRITE_RE.search(text):
         return False
     masked = _chat_mask_quoted_spans(text)
     recent_boundaries = deque(
@@ -1861,7 +1877,11 @@ def _chat_text_requests_full_rewrite_from_scoped_segments(text: str) -> bool:
             if (
                 match.group("secondary") is not None
                 and (
-                    not _chat_scoped_candidate_is_completed_command(candidate)
+                    not (
+                        _CHAT_ZH_CONTRAST_COMMAND_RE.search(candidate)
+                        or _CHAT_EN_TRAILING_COMMAND_RE.search(candidate)
+                    )
+                    or not _chat_scoped_candidate_is_completed_command(candidate)
                     or _chat_scoped_suffix_has_governing_guard(
                         text[match.end():],
                         masked[match.end():],
