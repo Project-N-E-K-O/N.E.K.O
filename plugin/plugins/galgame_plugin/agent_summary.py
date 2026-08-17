@@ -641,7 +641,8 @@ class AgentSummaryMixin:
             source_key,
             None,
         )
-        if not isinstance(state, dict):
+        had_previous_state = isinstance(state, dict)
+        if not had_previous_state:
             state = {"signatures": [], "occurrence_ids": [], "next_id": 1}
         self._scene_capsule_fallback_occurrences[source_key] = state
         while len(self._scene_capsule_fallback_occurrences) > 32:
@@ -652,6 +653,12 @@ class AgentSummaryMixin:
             str(item) for item in list(state.get("signatures") or [])
         ]
         previous_ids = [int(item) for item in list(state.get("occurrence_ids") or [])]
+        previous_next_id = max(1, int(state.get("next_id") or 1))
+        state["previous_observation_had_state"] = had_previous_state
+        state["previous_observation_high_water"] = max(
+            [*previous_ids, previous_next_id - 1],
+            default=0,
+        )
         overlap_count = 0
         for candidate in range(
             min(len(previous_signatures), len(signatures)),
@@ -662,7 +669,7 @@ class AgentSummaryMixin:
                 overlap_count = candidate
                 break
         occurrence_ids = previous_ids[-overlap_count:] if overlap_count else []
-        next_id = max(1, int(state.get("next_id") or 1))
+        next_id = previous_next_id
         for _ in signatures[overlap_count:]:
             occurrence_ids.append(next_id)
             next_id += 1
@@ -1600,57 +1607,115 @@ class AgentSummaryMixin:
             boundary_index = event_index
             boundary_event = event
             break
-        if boundary_index is None:
-            return line_occurrences, choice_occurrences, False
-
-        boundary_occurrence = {
-            "seq": int(boundary_event.get("seq") or 0),
-            "ts": str(boundary_event.get("ts") or ""),
-        }
-        if not boundary_occurrence["seq"] and not boundary_occurrence["ts"]:
-            boundary_occurrence["index"] = boundary_index
-        boundary_marker = self._scene_capsule_semantic_digest(
-            {"kind": save_kind, "occurrence": boundary_occurrence}
-        )
         data_source = self._current_input_source(shared)
         session_id = str(shared.get("active_session_id") or "")
+        boundary_scope_key = f"{data_source}|{session_id}"
+        save_identity = self._scene_capsule_semantic_digest(save_obj)
         fallback_source_keys = {
             f"{data_source}|{session_id}|history_line",
             f"{data_source}|{session_id}|history_choice:selected",
         }
-        for source_key in fallback_source_keys:
-            state = self._scene_capsule_fallback_occurrences.get(source_key)
-            if not isinstance(state, dict):
-                continue
-            if str(state.get("timeline_boundary_marker") or "") == boundary_marker:
-                continue
-            state["timeline_boundary_marker"] = boundary_marker
-            state["timeline_boundary_occurrence_floor"] = max(
-                [int(item) for item in list(state.get("occurrence_ids") or [])],
-                default=0,
+        boundary_state = self._scene_timeline_boundaries.pop(
+            boundary_scope_key,
+            None,
+        )
+        if boundary_index is not None:
+            boundary_occurrence = {
+                "seq": int(boundary_event.get("seq") or 0),
+                "ts": str(boundary_event.get("ts") or ""),
+            }
+            if not boundary_occurrence["seq"] and not boundary_occurrence["ts"]:
+                boundary_occurrence["index"] = boundary_index
+            boundary_marker = self._scene_capsule_semantic_digest(
+                {"kind": save_kind, "occurrence": boundary_occurrence}
             )
+            if (
+                not isinstance(boundary_state, dict)
+                or str(boundary_state.get("marker") or "") != boundary_marker
+            ):
+                fallback_floors: dict[str, int] = {}
+                for source_key in fallback_source_keys:
+                    fallback_state = self._scene_capsule_fallback_occurrences.get(
+                        source_key
+                    )
+                    if not isinstance(fallback_state, dict):
+                        fallback_floors[source_key] = 0
+                        continue
+                    current_high_water = max(
+                        [
+                            int(item)
+                            for item in list(
+                                fallback_state.get("occurrence_ids") or []
+                            )
+                        ],
+                        default=0,
+                    )
+                    # A prior observation provides a provable pre-boundary floor.
+                    # On the first-ever observation, ordering inside the tick is
+                    # ambiguous, so retain the conservative current high-water.
+                    previous_high_water = int(
+                        fallback_state.get("previous_observation_high_water") or 0
+                    )
+                    fallback_floors[source_key] = (
+                        previous_high_water
+                        if bool(
+                            fallback_state.get("previous_observation_had_state")
+                        )
+                        and previous_high_water > 0
+                        else current_high_water
+                    )
+                pre_boundary_event_keys = {
+                    str(item.get("event_key") or "")
+                    for item in [*line_occurrences, *choice_occurrences]
+                    if (
+                        str(item.get("event_key") or "")
+                        and isinstance(item.get("history_event_index"), int)
+                        and int(item.get("history_event_index") or 0)
+                        <= boundary_index
+                    )
+                }
+                boundary_state = {
+                    "marker": boundary_marker,
+                    "kind": save_kind,
+                    "save_identity": save_identity,
+                    "seq": int(boundary_event.get("seq") or 0),
+                    "ts": str(boundary_event.get("ts") or ""),
+                    "fallback_floors": fallback_floors,
+                    "pre_boundary_event_keys": pre_boundary_event_keys,
+                }
+        elif (
+            not isinstance(boundary_state, dict)
+            or str(boundary_state.get("kind") or "") != save_kind
+            or str(boundary_state.get("save_identity") or "") != save_identity
+        ):
+            return line_occurrences, choice_occurrences, False
+
+        self._scene_timeline_boundaries[boundary_scope_key] = boundary_state
+        while len(self._scene_timeline_boundaries) > 32:
+            oldest_scope_key = next(iter(self._scene_timeline_boundaries))
+            self._scene_timeline_boundaries.pop(oldest_scope_key, None)
+        fallback_floors = dict(boundary_state.get("fallback_floors") or {})
+        pre_boundary_event_keys = set(
+            str(item)
+            for item in list(boundary_state.get("pre_boundary_event_keys") or [])
+            if str(item)
+        )
 
         def _is_after_boundary(occurrence: dict[str, Any]) -> bool:
             try:
                 event_index = int(occurrence.get("history_event_index"))
             except (TypeError, ValueError):
                 source_key = str(occurrence.get("fallback_source_key") or "")
-                state = self._scene_capsule_fallback_occurrences.get(source_key)
-                if (
-                    source_key not in fallback_source_keys
-                    or not isinstance(state, dict)
-                    or str(state.get("timeline_boundary_marker") or "")
-                    != boundary_marker
-                ):
+                if source_key not in fallback_source_keys:
                     return False
                 try:
                     occurrence_id = int(occurrence.get("fallback_occurrence_id"))
                 except (TypeError, ValueError):
                     return False
-                return occurrence_id > int(
-                    state.get("timeline_boundary_occurrence_floor") or 0
-                )
-            return event_index > boundary_index
+                return occurrence_id > int(fallback_floors.get(source_key) or 0)
+            if boundary_index is not None:
+                return event_index > boundary_index
+            return str(occurrence.get("event_key") or "") not in pre_boundary_event_keys
 
         return (
             [item for item in line_occurrences if _is_after_boundary(item)],
@@ -1790,6 +1855,7 @@ class AgentSummaryMixin:
         scene_id: str,
         route_id: str = "",
         scheduled_seq: int,
+        scheduled_owner_token: int,
         scheduled_line_count: int,
         reason: str = "",
         delivery_key: str = "",
@@ -1805,6 +1871,7 @@ class AgentSummaryMixin:
                 route_id=route_id,
                 seq=scheduled_seq,
                 lines_since_push=scheduled_line_count,
+                owner_token=scheduled_owner_token,
             )
         for item in merged_schedule_restore:
             merged_scene_id = str(item.get("scene_id") or "")
@@ -1818,6 +1885,7 @@ class AgentSummaryMixin:
                 route_id=merged_route_id,
                 seq=merged_seq,
                 lines_since_push=merged_line_count,
+                owner_token=int(item.get("scheduled_owner_token") or 0),
             )
             restored_item = {
                 "scene_id": merged_scene_id,
@@ -1834,6 +1902,7 @@ class AgentSummaryMixin:
                 "scene_id": scene_id,
                 "route_id": route_id,
                 "scheduled_seq": scheduled_seq,
+                "scheduled_owner_token": scheduled_owner_token,
                 "scheduled_line_count": scheduled_line_count,
                 "summary_delivery_key": delivery_key,
                 "merged_scenes": json_copy(restored_merged),
@@ -1847,6 +1916,7 @@ class AgentSummaryMixin:
         scene_id: str = "",
         route_id: str = "",
         scheduled_seq: int = 0,
+        scheduled_owner_token: int = 0,
         scheduled_line_count: int = 0,
         merged_schedule_restore: list[dict[str, Any]] | None = None,
         repeat_reservation_key: str = "",
@@ -1862,6 +1932,7 @@ class AgentSummaryMixin:
                 scene_id=scene_id,
                 route_id=route_id,
                 scheduled_seq=scheduled_seq,
+                scheduled_owner_token=scheduled_owner_token,
                 merged_schedule_restore=merged_schedule_restore,
                 delivered=False,
             )
@@ -1883,6 +1954,7 @@ class AgentSummaryMixin:
                         scene_id=scene_id,
                         route_id=route_id,
                         scheduled_seq=scheduled_seq,
+                        scheduled_owner_token=scheduled_owner_token,
                         scheduled_line_count=scheduled_line_count,
                         reason="task_cancelled",
                         delivery_key=delivery_key,
@@ -1900,6 +1972,7 @@ class AgentSummaryMixin:
                         scene_id=scene_id,
                         route_id=route_id,
                         scheduled_seq=scheduled_seq,
+                        scheduled_owner_token=scheduled_owner_token,
                         scheduled_line_count=scheduled_line_count,
                         reason="task_exception",
                         delivery_key=delivery_key,
@@ -1919,6 +1992,7 @@ class AgentSummaryMixin:
                         scene_id=scene_id,
                         route_id=route_id,
                         scheduled_seq=scheduled_seq,
+                        scheduled_owner_token=scheduled_owner_token,
                         scheduled_line_count=scheduled_line_count,
                         reason="task_returned_false",
                         delivery_key=delivery_key,
@@ -1932,6 +2006,7 @@ class AgentSummaryMixin:
                 scene_id=scene_id,
                 route_id=route_id,
                 scheduled_seq=scheduled_seq,
+                scheduled_owner_token=scheduled_owner_token,
                 merged_schedule_restore=merged_schedule_restore,
                 delivered=True,
             )
@@ -1945,6 +2020,7 @@ class AgentSummaryMixin:
         scene_id: str,
         route_id: str,
         scheduled_seq: int,
+        scheduled_owner_token: int,
         merged_schedule_restore: list[dict[str, Any]] | None,
         delivered: bool,
     ) -> None:
@@ -1953,7 +2029,12 @@ class AgentSummaryMixin:
             if delivered
             else self._scene_tracker.discard_scene_summary_schedule
         )
-        finalize(scene_id, route_id=route_id, seq=scheduled_seq)
+        finalize(
+            scene_id,
+            route_id=route_id,
+            seq=scheduled_seq,
+            owner_token=scheduled_owner_token,
+        )
         for item in list(merged_schedule_restore or []):
             merged_scene_id = str(item.get("scene_id") or "")
             if not merged_scene_id:
@@ -1962,6 +2043,7 @@ class AgentSummaryMixin:
                 merged_scene_id,
                 route_id=str(item.get("route_id") or ""),
                 seq=int(item.get("scheduled_seq") or 0),
+                owner_token=int(item.get("scheduled_owner_token") or 0),
             )
 
     def _track_scene_capsule_task(
@@ -2751,6 +2833,7 @@ class AgentSummaryMixin:
         context: dict[str, Any],
         trigger: str,
         metadata: dict[str, Any],
+        scheduled_owner_token: int = 0,
         scheduled_line_count: int = 0,
         merged_schedule_restore: list[dict[str, Any]] | None = None,
     ) -> None:
@@ -2855,12 +2938,14 @@ class AgentSummaryMixin:
             scene_id=scene_id,
             route_id=route_id,
             scheduled_seq=scheduled_seq,
+            scheduled_owner_token=scheduled_owner_token,
             scheduled_line_count=scheduled_line_count,
             merged_schedule_restore=merged_schedule_restore,
             meta={
                 "scene_id": scene_id,
                 "route_id": route_id,
                 "scheduled_seq": scheduled_seq,
+                "scheduled_owner_token": scheduled_owner_token,
                 "scheduled_line_count": scheduled_line_count,
                 "merged_schedule_restore": json_copy(merged_schedule_restore or []),
                 "stable_line_count": stable_line_count,
@@ -3636,7 +3721,7 @@ class AgentSummaryMixin:
                     "summary_delivery_key": delivery_key,
                 }
                 continue
-            self._scene_tracker.mark_scene_summary_scheduled(
+            scheduled_owner_token = self._scene_tracker.mark_scene_summary_scheduled(
                 scene_id,
                 route_id=route_id,
                 seq=scheduled_seq,
@@ -3657,6 +3742,7 @@ class AgentSummaryMixin:
                         "scene_id": merged_scene_id,
                         "route_id": merged_route_id,
                         "scheduled_seq": 0,
+                        "scheduled_owner_token": 0,
                         "lines_since_push": (
                             self._scene_tracker.current_scene_lines_since_push(
                                 merged_scene_id,
@@ -3665,10 +3751,12 @@ class AgentSummaryMixin:
                         ),
                     }
                 )
-                self._scene_tracker.mark_scene_summary_scheduled(
-                    merged_scene_id,
-                    route_id=merged_route_id,
-                    seq=0,
+                merged_schedule_restore[-1]["scheduled_owner_token"] = (
+                    self._scene_tracker.mark_scene_summary_scheduled(
+                        merged_scene_id,
+                        route_id=merged_route_id,
+                        seq=0,
+                    )
                 )
             metadata = {
                 "context_type": "galgame_scene_context",
@@ -3699,6 +3787,7 @@ class AgentSummaryMixin:
                 context=context,
                 trigger="line_count",
                 metadata=metadata,
+                scheduled_owner_token=scheduled_owner_token,
                 scheduled_line_count=scheduled_line_count,
                 merged_schedule_restore=merged_schedule_restore,
             )

@@ -19,6 +19,7 @@ class AgentSceneTracker:
         self.summary_scene_states: dict[str, dict[str, Any]] = {}
         self.summary_last_processed_event_seq = 0
         self._seen_line_limit = max(1, int(seen_line_limit))
+        self._summary_schedule_owner_counter = 0
 
     def reset(self, *, scene_id: str = "") -> None:
         self.scene_memory.clear()
@@ -74,6 +75,8 @@ class AgentSceneTracker:
                 "last_line_seq": 0,
                 "last_line_ts": "",
                 "last_scheduled_seq": 0,
+                "last_schedule_owner_token": 0,
+                "active_schedule_owner_tokens": set(),
                 "scheduled_in_flight_count": 0,
                 "pending_since_monotonic": 0.0,
             }
@@ -128,17 +131,21 @@ class AgentSceneTracker:
         *,
         route_id: str = "",
         seq: int,
-    ) -> None:
+    ) -> int:
         state = self.state_for_scene(scene_id, route_id=route_id)
+        self._summary_schedule_owner_counter += 1
+        owner_token = self._summary_schedule_owner_counter
+        active_owner_tokens = self._active_scene_summary_schedule_owners(state)
+        active_owner_tokens.add(owner_token)
         state["lines_since_push"] = 0
         state["last_scheduled_seq"] = int(seq or 0)
-        state["scheduled_in_flight_count"] = (
-            int(state.get("scheduled_in_flight_count") or 0) + 1
-        )
+        state["last_schedule_owner_token"] = owner_token
+        state["scheduled_in_flight_count"] = len(active_owner_tokens)
         self.sync_current_scene_summary_mirror(
             self.summary_scene_id,
             route_id=self.summary_route_id,
         )
+        return owner_token
 
     def mark_scene_summary_delivered(
         self,
@@ -146,20 +153,22 @@ class AgentSceneTracker:
         *,
         route_id: str = "",
         seq: int,
+        owner_token: int,
     ) -> None:
         state = self.summary_scene_states.get(
             self.summary_scope_key(scene_id, route_id)
         )
         if not isinstance(state, dict):
             return
-        self._release_scene_summary_schedule(state)
-        scheduled_seq = int(seq or 0)
-        if scheduled_seq and int(state.get("last_scheduled_seq") or 0) != scheduled_seq:
+        if not self._release_scene_summary_schedule(state, owner_token=owner_token):
+            return
+        if int(state.get("last_schedule_owner_token") or 0) != int(owner_token or 0):
             self.sync_current_scene_summary_mirror(
                 self.summary_scene_id,
                 route_id=self.summary_route_id,
             )
             return
+        scheduled_seq = int(seq or 0)
         state["last_scheduled_seq"] = int(seq or 0)
         if int(state.get("lines_since_push") or 0) <= 0:
             state["pending_since_monotonic"] = 0.0
@@ -175,15 +184,16 @@ class AgentSceneTracker:
         route_id: str = "",
         seq: int,
         lines_since_push: int,
+        owner_token: int,
     ) -> None:
         state = self.summary_scene_states.get(
             self.summary_scope_key(scene_id, route_id)
         )
         if not isinstance(state, dict):
             return
-        self._release_scene_summary_schedule(state)
-        scheduled_seq = int(seq or 0)
-        if scheduled_seq and int(state.get("last_scheduled_seq") or 0) != scheduled_seq:
+        if not self._release_scene_summary_schedule(state, owner_token=owner_token):
+            return
+        if int(state.get("last_schedule_owner_token") or 0) != int(owner_token or 0):
             self.sync_current_scene_summary_mirror(
                 self.summary_scene_id,
                 route_id=self.summary_route_id,
@@ -205,15 +215,16 @@ class AgentSceneTracker:
         *,
         route_id: str = "",
         seq: int,
+        owner_token: int,
     ) -> None:
         state = self.summary_scene_states.get(
             self.summary_scope_key(scene_id, route_id)
         )
         if not isinstance(state, dict):
             return
-        self._release_scene_summary_schedule(state)
-        scheduled_seq = int(seq or 0)
-        if not scheduled_seq or int(state.get("last_scheduled_seq") or 0) == scheduled_seq:
+        if not self._release_scene_summary_schedule(state, owner_token=owner_token):
+            return
+        if int(state.get("last_schedule_owner_token") or 0) == int(owner_token or 0):
             state["last_scheduled_seq"] = 0
         if int(state.get("lines_since_push") or 0) <= 0:
             state["pending_since_monotonic"] = 0.0
@@ -223,11 +234,31 @@ class AgentSceneTracker:
         )
 
     @staticmethod
-    def _release_scene_summary_schedule(state: dict[str, Any]) -> None:
-        state["scheduled_in_flight_count"] = max(
-            0,
-            int(state.get("scheduled_in_flight_count") or 0) - 1,
-        )
+    def _active_scene_summary_schedule_owners(state: dict[str, Any]) -> set[int]:
+        active_owner_tokens = state.get("active_schedule_owner_tokens")
+        if not isinstance(active_owner_tokens, set):
+            active_owner_tokens = {
+                int(item)
+                for item in list(active_owner_tokens or [])
+                if int(item or 0) > 0
+            }
+            state["active_schedule_owner_tokens"] = active_owner_tokens
+        return active_owner_tokens
+
+    @classmethod
+    def _release_scene_summary_schedule(
+        cls,
+        state: dict[str, Any],
+        *,
+        owner_token: int,
+    ) -> bool:
+        normalized_owner_token = int(owner_token or 0)
+        active_owner_tokens = cls._active_scene_summary_schedule_owners(state)
+        if normalized_owner_token <= 0 or normalized_owner_token not in active_owner_tokens:
+            return False
+        active_owner_tokens.remove(normalized_owner_token)
+        state["scheduled_in_flight_count"] = len(active_owner_tokens)
+        return True
 
     def current_scene_lines_since_push(
         self,

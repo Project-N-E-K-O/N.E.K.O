@@ -4689,17 +4689,27 @@ def test_game_llm_agent_restores_merged_scene_summary_schedule(tmp_path: Path) -
     )
     agent._scene_tracker.state_for_scene("scene-a")["lines_since_push"] = 8
     agent._scene_tracker.state_for_scene("scene-b")["lines_since_push"] = 3
-    agent._scene_tracker.mark_scene_summary_scheduled("scene-a", seq=8)
-    agent._scene_tracker.mark_scene_summary_scheduled("scene-b", seq=0)
+    scene_a_owner_token = agent._scene_tracker.mark_scene_summary_scheduled(
+        "scene-a", seq=8
+    )
+    scene_b_owner_token = agent._scene_tracker.mark_scene_summary_scheduled(
+        "scene-b", seq=0
+    )
 
     agent._restore_failed_summary_schedule(
         scene_id="scene-a",
         scheduled_seq=8,
+        scheduled_owner_token=scene_a_owner_token,
         scheduled_line_count=8,
         reason="task_returned_false",
         delivery_key="scene-a:8",
         merged_schedule_restore=[
-            {"scene_id": "scene-b", "scheduled_seq": 0, "lines_since_push": 3}
+            {
+                "scene_id": "scene-b",
+                "scheduled_seq": 0,
+                "scheduled_owner_token": scene_b_owner_token,
+                "lines_since_push": 3,
+            }
         ],
     )
 

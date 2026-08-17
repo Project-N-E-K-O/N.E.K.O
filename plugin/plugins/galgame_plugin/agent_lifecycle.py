@@ -151,6 +151,7 @@ class AgentLifecycleMixin:
         self._scene_capsule_delivery_ledger: dict[str, dict[str, Any]] = {}
         self._scene_capsule_source_aliases: dict[str, str] = {}
         self._scene_capsule_fallback_occurrences: dict[str, dict[str, Any]] = {}
+        self._scene_timeline_boundaries: dict[str, dict[str, Any]] = {}
         self._scene_summary_suppressed_count = 0
         self._scene_summary_last_success_at = 0.0
         self._failure_memory: list[dict[str, Any]] = []
@@ -320,6 +321,7 @@ class AgentLifecycleMixin:
         self._scene_capsule_delivery_ledger.clear()
         self._scene_capsule_source_aliases.clear()
         self._scene_capsule_fallback_occurrences.clear()
+        self._scene_timeline_boundaries.clear()
         self._scene_summary_suppressed_count = 0
         self._scene_summary_last_success_at = 0.0
 
