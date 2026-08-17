@@ -6,7 +6,7 @@ from collections import deque
 from pathlib import Path
 from types import SimpleNamespace
 import tomllib
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -129,6 +129,39 @@ def test_comment_notification_target_and_deduplication():
     assert client._mark_notification_seen("reply", notification) is False
     duplicate_from_at = {**notification, "id": 202}
     assert client._mark_notification_seen("at", duplicate_from_at) is False
+
+
+def test_notification_is_completed_only_after_delivery_ack():
+    client = BiliDMClient(sesdata="sess", bili_jct="csrf")
+    notification = {
+        "id": 101,
+        "item": {
+            "business_id": 1,
+            "subject_id": 987654,
+            "source_id": 12,
+        },
+    }
+    identity = client._notification_identity(notification)
+
+    assert client._mark_notification_seen("reply", notification) is True
+    assert identity in client._notification_inflight
+    assert identity not in client._notification_seen_set
+
+    client.retry_comment_notification(
+        {
+            "notification_identity": identity,
+            "notification_attempt": 0,
+            "sender_uid": "42",
+        }
+    )
+    client._notification_retries[identity]["ready_at"] = 0
+    assert client._drain_notification_retries() == 1
+    assert client._message_queue.get_nowait()["notification_attempt"] == 1
+    assert identity not in client._notification_seen_set
+
+    client.complete_comment_notification(identity)
+    assert identity not in client._notification_inflight
+    assert identity in client._notification_seen_set
 
 
 def test_comment_and_private_messages_use_separate_sessions():
@@ -302,7 +335,11 @@ async def test_notification_feed_pages_until_seen_item(url, time_param):
                             "code": 0,
                             "data": {
                                 "items": [newest, seen_only_in_other_feed],
-                                "cursor": {"is_end": False, "id": 10, "time": 20},
+                                "cursor": {
+                                    "is_end": False,
+                                    "id": 10,
+                                    time_param: 20,
+                                },
                             },
                         }
                     ),
@@ -350,6 +387,25 @@ async def test_notification_feed_pages_until_seen_item(url, time_param):
         "id": "10",
         time_param: "20",
     }
+
+
+@pytest.mark.asyncio
+async def test_force_uid_resolution_revalidates_configured_dedeuserid(monkeypatch):
+    client = object.__new__(BiliDMClient)
+    client._current_uid = "old-account"
+    client._credential = SimpleNamespace(dedeuserid="old-account")
+    client.logger = SimpleNamespace(warning=lambda *_: None)
+    get_self_info = AsyncMock(return_value={"mid": 456})
+    monkeypatch.setattr(
+        "plugin.plugins.bilibili_dm.bili_client.get_self_info", get_self_info
+    )
+
+    resolved = await client._resolve_current_uid(force=True)
+
+    assert resolved is True
+    assert client._current_uid == "456"
+    assert client._credential.dedeuserid == "456"
+    get_self_info.assert_awaited_once_with(client._credential)
 
 
 @pytest.mark.asyncio
@@ -637,6 +693,93 @@ async def test_unlisted_users_get_effective_trusted_role(tmp_path, permission_mo
     )
 
     assert plugin._generate_reply.await_args.kwargs["permission_level"] == "trusted"
+
+
+@pytest.mark.asyncio
+async def test_failed_comment_generation_schedules_notification_retry(tmp_path):
+    plugin = make_plugin(tmp_path)
+    plugin._running = True
+    plugin.permission_mgr.add_user("42", "trusted")
+    plugin._generate_reply = AsyncMock(return_value=None)
+    plugin.bili_client = SimpleNamespace(
+        retry_comment_notification=MagicMock(),
+        complete_comment_notification=MagicMock(),
+    )
+    message = {
+        "sender_uid": "42",
+        "sender_nickname": "tester",
+        "content": "hello",
+        "conversation_key": "comment:1:2:3",
+        "reply_target": {"type": 1, "oid": 2, "root": 3, "parent": 3},
+        "notification_identity": "comment:1:2:3",
+    }
+
+    await plugin._run_message_handler(message)
+
+    plugin.bili_client.retry_comment_notification.assert_called_once_with(message)
+    plugin.bili_client.complete_comment_notification.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_comment_retry_checks_existing_reply_before_resending(tmp_path):
+    plugin = make_plugin(tmp_path)
+    plugin.permission_mgr.add_user("42", "trusted")
+    plugin.bili_client = SimpleNamespace(
+        comment_reply_exists=AsyncMock(return_value=True),
+        send_comment_reply=AsyncMock(),
+    )
+    target = {"type": 1, "oid": 2, "root": 3, "parent": 3}
+    message = {
+        "sender_uid": "42",
+        "sender_nickname": "tester",
+        "content": "hello",
+        "conversation_key": "comment:1:2:3",
+        "reply_target": target,
+        "notification_identity": "comment:1:2:3",
+        "notification_attempt": 1,
+        "generated_comment_reply": "cached reply",
+        "comment_send_started_at": 100,
+    }
+
+    completed = await plugin._handle_message(message)
+
+    assert completed is True
+    plugin.bili_client.comment_reply_exists.assert_awaited_once_with(
+        target, "cached reply", sent_after=100
+    )
+    plugin.bili_client.send_comment_reply.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_comment_reply_idempotency_check_matches_parent_and_send_time(
+    monkeypatch,
+):
+    from bilibili_api.comment import Comment
+
+    get_sub_comments = AsyncMock(
+        return_value={
+            "replies": [
+                {
+                    "mid": 999,
+                    "parent": 3,
+                    "ctime": 101,
+                    "content": {"message": "cached reply"},
+                }
+            ],
+            "page": {"num": 1, "size": 20, "count": 1},
+        }
+    )
+    monkeypatch.setattr(Comment, "get_sub_comments", get_sub_comments)
+    client = BiliDMClient(sesdata="sess", bili_jct="csrf", dedeuserid="999")
+
+    exists = await client.comment_reply_exists(
+        {"type": 1, "oid": 2, "root": 3, "parent": 3},
+        "cached reply",
+        sent_after=100,
+    )
+
+    assert exists is True
+    get_sub_comments.assert_awaited_once_with(page_index=1, page_size=20)
 
 
 @pytest.mark.asyncio

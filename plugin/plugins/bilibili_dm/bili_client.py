@@ -57,6 +57,8 @@ class BiliDMClient:
         self._notification_bootstrap_done = {"reply": False, "at": False}
         self._notification_seen: list[str] = []
         self._notification_seen_set: set[str] = set()
+        self._notification_inflight: set[str] = set()
+        self._notification_retries: dict[str, Dict[str, Any]] = {}
         self._notification_feed_seen = {"reply": [], "at": []}
         self._notification_feed_seen_set = {"reply": set(), "at": set()}
         self._notification_pending: deque[tuple[str, Dict[str, Any]]] = deque()
@@ -81,7 +83,9 @@ class BiliDMClient:
             )
 
         try:
-            await self._resolve_current_uid()
+            # DedeUserID 是可选提示，不能当作当前 SESSDATA 所属账号的权威值。
+            # 每次连接都向 B站重新确认，避免替换 Cookie 后沿用旧账号 UID。
+            await self._resolve_current_uid(force=True)
 
             self._session = Session(self._credential, debug=False)
 
@@ -163,10 +167,13 @@ class BiliDMClient:
             cookies["DedeUserID"] = self._credential.dedeuserid
         return cookies
 
-    async def _resolve_current_uid(self) -> bool:
+    async def _resolve_current_uid(self, *, force: bool = False) -> bool:
         """解析当前登录账号 UID；通知处理依赖它来排除账号自身。"""
-        if self._current_uid:
+        if self._current_uid and not force:
             return True
+        if force:
+            self._current_uid = ""
+            self._credential.dedeuserid = ""
         try:
             self_info = await get_self_info(self._credential)
             self._current_uid = str(self_info.get("mid") or "").strip()
@@ -315,6 +322,8 @@ class BiliDMClient:
         return notification_id or cls._notification_identity(item)
 
     def _mark_notification_seen(self, source: str, item: Dict[str, Any]) -> bool:
+        """Claim a notification while keeping feed and delivery state separate."""
+        self._ensure_notification_delivery_state()
         feed_key = self._notification_feed_identity(item)
         if feed_key and feed_key not in self._notification_feed_seen_set[source]:
             self._notification_feed_seen[source].append(feed_key)
@@ -323,17 +332,79 @@ class BiliDMClient:
                 expired = self._notification_feed_seen[source].pop(0)
                 self._notification_feed_seen_set[source].discard(expired)
 
-        # reply 与 @ 流中的同一底层评论必须共享业务去重身份。
+        # reply 与 @ 流中的同一底层评论必须共享业务去重身份。只有发送成功
+        # 或明确无需回复后才进入 seen；处理中和等待重试的项目留在 inflight。
         key = self._notification_identity(item)
         if not key:
             return False
-        if key in self._notification_seen_set:
+        if key in self._notification_seen_set or key in self._notification_inflight:
             return False
+        self._notification_inflight.add(key)
+        return True
+
+    def _ensure_notification_delivery_state(self) -> None:
+        # 兼容测试和热重载时由旧版本构造的客户端实例。
+        if not hasattr(self, "_notification_inflight"):
+            self._notification_inflight = set()
+        if not hasattr(self, "_notification_retries"):
+            self._notification_retries = {}
+
+    def complete_comment_notification(self, identity: str) -> None:
+        """Mark a claimed notification terminal after delivery or intentional skip."""
+        self._ensure_notification_delivery_state()
+        key = str(identity or "").strip()
+        if not key:
+            return
+        self._notification_inflight.discard(key)
+        self._notification_retries.pop(key, None)
+        if key in self._notification_seen_set:
+            return
         self._notification_seen.append(key)
         self._notification_seen_set.add(key)
         if len(self._notification_seen) > 500:
             self._notification_seen_set.discard(self._notification_seen.pop(0))
-        return True
+
+    def retry_comment_notification(self, message: Dict[str, Any]) -> None:
+        """Schedule a failed notification with capped exponential backoff."""
+        self._ensure_notification_delivery_state()
+        identity = str(message.get("notification_identity") or "").strip()
+        if not identity or identity not in self._notification_inflight:
+            return
+        retry_message = dict(message)
+        attempt = int(retry_message.get("notification_attempt") or 0) + 1
+        retry_message["notification_attempt"] = attempt
+        delay = min(5 * (2 ** min(attempt - 1, 6)), 300)
+        self._notification_retries[identity] = {
+            "message": retry_message,
+            "ready_at": time.monotonic() + delay,
+        }
+        if self.logger:
+            self.logger.warning(
+                "B站评论通知将在稍后重试: "
+                f"identity={identity}, attempt={attempt}, delay={delay}s"
+            )
+
+    def _drain_notification_retries(self) -> int:
+        """Move due retries back to the consumer queue without duplicating claims."""
+        self._ensure_notification_delivery_state()
+        now = time.monotonic()
+        ready = sorted(
+            (
+                (identity, retry)
+                for identity, retry in self._notification_retries.items()
+                if float(retry.get("ready_at") or 0) <= now
+            ),
+            key=lambda entry: float(entry[1].get("ready_at") or 0),
+        )
+        enqueued = 0
+        for identity, retry in ready:
+            try:
+                self._message_queue.put_nowait(retry["message"])
+            except asyncio.QueueFull:
+                break
+            self._notification_retries.pop(identity, None)
+            enqueued += 1
+        return enqueued
 
     def _is_at_current_user(self, item: Dict[str, Any]) -> bool:
         current_uid = self._current_uid
@@ -362,6 +433,7 @@ class BiliDMClient:
             await asyncio.sleep(self._notification_poll_interval_seconds)
 
     async def _poll_comment_notifications(self) -> None:
+        self._drain_notification_retries()
         reply_succeeded = False
         at_succeeded = False
         async with httpx.AsyncClient(timeout=20.0) as client:
@@ -409,7 +481,10 @@ class BiliDMClient:
                 continue
             if not self._notification_bootstrap_done[source]:
                 for item in items:
-                    self._mark_notification_seen(source, item)
+                    if self._mark_notification_seen(source, item):
+                        self.complete_comment_notification(
+                            self._notification_identity(item)
+                        )
                 self._notification_bootstrap_done[source] = True
                 continue
 
@@ -419,6 +494,9 @@ class BiliDMClient:
                 if not self._mark_notification_seen(source, item):
                     continue
                 if source == "at" and not self._is_at_current_user(item):
+                    self.complete_comment_notification(
+                        self._notification_identity(item)
+                    )
                     continue
                 event_time = self._notification_event_time(source, item)
                 new_notifications.append((event_time, sequence, source, item))
@@ -442,7 +520,9 @@ class BiliDMClient:
         processed = 0
         while self._notification_pending and processed < self._notification_max_items:
             source, item = self._notification_pending.popleft()
-            await self._enqueue_comment_notification(item, source)
+            enqueued = await self._enqueue_comment_notification(item, source)
+            if not enqueued:
+                self.complete_comment_notification(self._notification_identity(item))
             processed += 1
 
     @staticmethod
@@ -518,7 +598,9 @@ class BiliDMClient:
             if not isinstance(cursor, dict) or cursor.get("is_end"):
                 break
             cursor_id = str(cursor.get("id") or "").strip()
-            cursor_time = str(cursor.get("time") or "").strip()
+            cursor_time = str(
+                cursor.get(time_param) or cursor.get("time") or ""
+            ).strip()
             cursor_key = (cursor_id, cursor_time)
             if not cursor_id or not cursor_time or cursor_key in visited_cursors:
                 if self.logger:
@@ -542,22 +624,27 @@ class BiliDMClient:
 
     async def _enqueue_comment_notification(
         self, item: Dict[str, Any], source: str
-    ) -> None:
+    ) -> bool:
         user = item.get("user") or {}
         if not isinstance(user, dict):
-            return
+            return False
         sender_uid = str(user.get("mid") or "").strip()
         content = self._notification_content(item)
         reply_target = self._comment_reply_target(item)
         if not self._current_uid or not sender_uid or not content or not reply_target:
-            return
+            return False
         if sender_uid == self._current_uid:
-            return
+            return False
+        notification_identity = self._notification_identity(item)
+        if not notification_identity:
+            return False
         message = {
             "sender_uid": sender_uid,
             "sender_nickname": str(user.get("nickname") or sender_uid),
             "msg_kind": "comment_at" if source == "at" else "comment_reply",
             "notification_source": source,
+            "notification_identity": notification_identity,
+            "notification_attempt": 0,
             "msg_key": str(item.get("id") or ""),
             "timestamp": int(item.get("reply_time") or time.time()),
             "content": content,
@@ -573,8 +660,68 @@ class BiliDMClient:
         try:
             self._message_queue.put_nowait(message)
         except asyncio.QueueFull:
-            _ = self._message_queue.get_nowait()
-            self._message_queue.put_nowait(message)
+            # 不挤掉队列中的旧消息；保留 claim 并走同一退避重试路径。
+            self.retry_comment_notification(message)
+        return True
+
+    async def comment_reply_exists(
+        self, target: Dict[str, int], text: str, *, sent_after: int = 0
+    ) -> Optional[bool]:
+        """Check for our exact reply before retrying an ambiguous failed POST.
+
+        ``None`` means the check itself failed, in which case callers should defer
+        the retry instead of risking a duplicate comment.
+        """
+        try:
+            from bilibili_api.comment import Comment, CommentResourceType
+
+            current_uid = str(self._current_uid or "").strip()
+            root = int(target.get("root") or target.get("parent") or 0)
+            if not current_uid or not root:
+                return None
+            resource_type = CommentResourceType(int(target["type"]))
+            comment = Comment(
+                oid=int(target["oid"]),
+                type_=resource_type,
+                rpid=root,
+                credential=self._credential,
+            )
+            for page_index in range(1, 4):
+                data = await comment.get_sub_comments(
+                    page_index=page_index, page_size=20
+                )
+                replies = data.get("replies") or [] if isinstance(data, dict) else []
+                if not isinstance(replies, list):
+                    return None
+                for reply in replies:
+                    if not isinstance(reply, dict):
+                        continue
+                    content = reply.get("content") or {}
+                    expected_parent = int(
+                        target.get("parent") or target.get("root") or 0
+                    )
+                    reply_parent = int(reply.get("parent") or 0)
+                    reply_ctime = int(reply.get("ctime") or 0)
+                    if (
+                        str(reply.get("mid") or "") == current_uid
+                        and isinstance(content, dict)
+                        and str(content.get("message") or "") == text
+                        and (not expected_parent or reply_parent == expected_parent)
+                        and (not sent_after or reply_ctime >= sent_after)
+                    ):
+                        return True
+                page = data.get("page") or {}
+                if not replies or (
+                    isinstance(page, dict)
+                    and int(page.get("num") or 0) * int(page.get("size") or 20)
+                    >= int(page.get("count") or 0)
+                ):
+                    break
+            return False
+        except Exception as exc:
+            if self.logger:
+                self.logger.warning(f"检查 B站评论重试幂等状态失败: {exc}")
+            return None
 
     async def send_comment_reply(
         self, target: Dict[str, int], text: str

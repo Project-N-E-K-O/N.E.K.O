@@ -328,18 +328,34 @@ class BiliDMPlugin(NekoPluginBase):
     async def _run_message_handler(self, message: Dict[str, Any]) -> None:
         if not self._running:
             return
+        notification_identity = str(message.get("notification_identity") or "").strip()
         session_key = self._build_session_key(
             message["sender_uid"], str(message.get("conversation_key") or "dm")
         )
-        async with self._message_concurrency:
-            session_lock = await self._get_session_lock(session_key)
-            try:
-                async with session_lock:
-                    if not self._running:
-                        return
-                    await self._handle_message(message)
-            finally:
-                await self._release_session_lock(session_key, session_lock)
+        try:
+            async with self._message_concurrency:
+                session_lock = await self._get_session_lock(session_key)
+                try:
+                    async with session_lock:
+                        if not self._running:
+                            return
+                        completed = await self._handle_message(message)
+                finally:
+                    await self._release_session_lock(session_key, session_lock)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            if notification_identity and self.bili_client:
+                self.bili_client.retry_comment_notification(message)
+            raise
+        else:
+            if notification_identity and self.bili_client:
+                if completed:
+                    self.bili_client.complete_comment_notification(
+                        notification_identity
+                    )
+                else:
+                    self.bili_client.retry_comment_notification(message)
 
     async def _wait_session_response_complete(
         self, session: Any, timeout: float = 30.0
@@ -1023,7 +1039,7 @@ class BiliDMPlugin(NekoPluginBase):
                 self.logger.error(f"处理消息时出错: {e}")
                 await asyncio.sleep(1)
 
-    async def _handle_message(self, message: Dict[str, Any]):
+    async def _handle_message(self, message: Dict[str, Any]) -> bool:
         """处理单条 B站入站消息。"""
         sender_uid = message["sender_uid"]
         # bili_client 已通过 User.get_user_info() 获取真实 B站昵称
@@ -1038,7 +1054,7 @@ class BiliDMPlugin(NekoPluginBase):
         # 检查权限
         if not self.permission_mgr.should_process(sender_uid, self._permission_mode):
             self.logger.debug(f"忽略来自 {sender_uid} 的 B站消息（不在权限范围内）")
-            return
+            return True
 
         permission_level = self.permission_mgr.get_permission_level(sender_uid)
         if permission_level == "none" and self._permission_mode in (
@@ -1048,6 +1064,8 @@ class BiliDMPlugin(NekoPluginBase):
             # 开放/黑名单模式允许未列出的用户；按普通可信用户生成回复，但不
             # 授予管理员专属的记忆能力。
             permission_level = "trusted"
+        if permission_level not in ("admin", "trusted"):
+            return True
 
         self.logger.info(
             f"收到 B站集成消息 [{msg_kind}] from {sender_uid} ({bili_nickname}), "
@@ -1071,7 +1089,7 @@ class BiliDMPlugin(NekoPluginBase):
             message_text = content
 
         if not message_text.strip():
-            return
+            return True
 
         # 在消息文本前附加发送者信息，让 AI 知道是谁在说话
         source_label = {
@@ -1120,20 +1138,43 @@ class BiliDMPlugin(NekoPluginBase):
                     f"更新用户 {sender_uid} 的 B站昵称: {old_nickname} -> {bili_nickname}"
                 )
 
-        # 生成 AI 回复
-        reply_text = await self._generate_reply(
-            message=message_with_context,
-            permission_level=permission_level,
-            sender_uid=sender_uid,
-            conversation_key=conversation_key,
-            channel_kind=channel_kind,
-            user_nickname=bili_nickname,
-            pending_image_b64=pending_image_b64,
-        )
+        # 评论重试复用第一次生成的文本，避免再次请求模型后内容漂移。
+        reply_text = str(message.get("generated_comment_reply") or "").strip()
+        if not reply_text:
+            reply_text = await self._generate_reply(
+                message=message_with_context,
+                permission_level=permission_level,
+                sender_uid=sender_uid,
+                conversation_key=conversation_key,
+                channel_kind=channel_kind,
+                user_nickname=bili_nickname,
+                pending_image_b64=pending_image_b64,
+            )
+            if reply_target and reply_text:
+                message["generated_comment_reply"] = reply_text
 
         if reply_text:
             try:
                 if reply_target:
+                    send_started_at = int(message.get("comment_send_started_at") or 0)
+                    if (
+                        int(message.get("notification_attempt") or 0) > 0
+                        and send_started_at
+                    ):
+                        already_exists = await self.bili_client.comment_reply_exists(
+                            reply_target,
+                            reply_text,
+                            sent_after=send_started_at,
+                        )
+                        if already_exists is True:
+                            self.logger.info(
+                                "B站评论重试检测到已发送内容，跳过重复提交: "
+                                f"identity={message.get('notification_identity')}"
+                            )
+                            return True
+                        if already_exists is None:
+                            return False
+                    message.setdefault("comment_send_started_at", int(time.time()) - 2)
                     response = await self.bili_client.send_comment_reply(
                         reply_target, reply_text
                     )
@@ -1157,8 +1198,11 @@ class BiliDMPlugin(NekoPluginBase):
                     self.logger.info(
                         f"已回复 B站私信 {sender_uid} ({bili_nickname}): {reply_text[:100]}"
                     )
+                return True
             except Exception as e:
                 self.logger.error(f"发送回复给 {sender_uid} 失败: {e}")
+                return False if reply_target else True
+        return False if reply_target else True
 
     # ===== AI Conversation =====
 
