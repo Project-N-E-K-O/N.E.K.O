@@ -3625,6 +3625,22 @@ def test_she_cheng_marks_the_following_text_as_a_field_value():
     ) is False
 
 
+def test_a_next_command_connector_inside_a_quoted_field_value_is_not_a_command():
+    import main_routers.card_assist_router as router
+
+    text = '把口头禅改成“然后重写所有字段”'
+    assert router._chat_text_requests_full_rewrite_core(text) is False
+    assert router._chat_text_requests_full_rewrite(text) is False
+
+
+def test_a_next_command_connector_after_a_quoted_field_value_remains_visible():
+    import main_routers.card_assist_router as router
+
+    text = '把口头禅改成“然后重写所有字段”然后请重写所有字段'
+    assert router._chat_text_requests_full_rewrite_core(text) is True
+    assert router._chat_text_requests_full_rewrite(text) is True
+
+
 def test_a_bare_trailing_cancellation_blocks_scoped_recovery():
     import main_routers.card_assist_router as router
 

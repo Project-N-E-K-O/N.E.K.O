@@ -1662,7 +1662,9 @@ def _chat_scoped_candidate_is_completed_command(candidate: str) -> bool:
             return True
         parts = [clause[:assignment.start()]]
         value_tail = clause[assignment.end():]
-        next_command = _CHAT_SCOPED_NEXT_COMMAND_RE.search(value_tail)
+        next_command = _CHAT_SCOPED_NEXT_COMMAND_RE.search(
+            _chat_mask_quoted_spans(value_tail)
+        )
         if next_command is not None:
             parts.append(value_tail[next_command.end():])
         return any(
@@ -1951,7 +1953,9 @@ def _chat_text_requests_full_rewrite_core(text: str) -> bool:
                 return True
             parts = [clause[:assignment.start()]]
             value_tail = clause[assignment.end():]
-            next_command = _CHAT_SCOPED_NEXT_COMMAND_RE.search(value_tail)
+            next_command = _CHAT_SCOPED_NEXT_COMMAND_RE.search(
+                _chat_mask_quoted_spans(value_tail)
+            )
             if next_command is not None:
                 parts.append(value_tail[next_command.end():])
             if any(_chat_text_requests_full_rewrite_core(part) for part in parts):
