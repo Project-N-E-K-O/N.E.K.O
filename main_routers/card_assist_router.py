@@ -1695,7 +1695,8 @@ def _chat_remaining_secondary_segments_have_governing_guard(
 
 def _chat_scoped_has_reporting_context(prefix: str) -> bool:
     """Keep speaker attribution until a strong sentence boundary resets it."""
-    current_sentence = _CHAT_REPORTING_CONTEXT_RESET_RE.split(prefix)[-1]
+    bounded_prefix = prefix[-_CHAT_SCOPED_RECOVERY_WINDOW_CHARS:]
+    current_sentence = _CHAT_REPORTING_CONTEXT_RESET_RE.split(bounded_prefix)[-1]
     return any(
         _CHAT_SCOPED_REPORTED_SPEECH_RE.search(clause)
         for clause in _chat_clauses(current_sentence)
