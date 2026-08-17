@@ -144,14 +144,11 @@ class _MemoryCardEntriesMixin:
         try:
             target_lanlan = self._resolve_study_target_lanlan(kwargs)
             topic_key = str(topic_id or "").strip()
-            due_before = await asyncio.to_thread(
-                self._count_total_due_reviews
-            )
             exact_item = await asyncio.to_thread(
                 self._memory_deck_store.get_item, topic_key
             )
             if exact_item is not None:
-                payload = await asyncio.to_thread(
+                payload, review_completed = await self._run_serialized_review_transition(
                     self._memory_deck_store.review_item,
                     item_id=topic_key,
                     rating=rating,
@@ -162,11 +159,13 @@ class _MemoryCardEntriesMixin:
                     deck_type="custom",
                 )
                 try:
-                    payload = await asyncio.to_thread(
-                        self._memory_deck_store.review_item,
-                        item_id=topic_key,
-                        rating=rating,
-                        deck_id=str(default_deck.get("id") or ""),
+                    payload, review_completed = (
+                        await self._run_serialized_review_transition(
+                            self._memory_deck_store.review_item,
+                            item_id=topic_key,
+                            rating=rating,
+                            deck_id=str(default_deck.get("id") or ""),
+                        )
                     )
                 except MemoryItemNotFoundError:
                     # Not a memory/custom item: a knowledge-graph topic card surfaced
@@ -174,25 +173,23 @@ class _MemoryCardEntriesMixin:
                     # the topic FSRS backend instead. Metadata fallback is intentionally
                     # limited to the default deck; arbitrary custom decks use the stable
                     # item_id contract exposed by study_memory_review_item.
-                    knowledge_payload = await asyncio.to_thread(
-                        self._knowledge_tracker.review_memory_card,
-                        topic_id=topic_key,
-                        rating=rating,
-                        answer=answer,
+                    knowledge_payload, review_completed = (
+                        await self._run_serialized_review_transition(
+                            self._knowledge_tracker.review_memory_card,
+                            topic_id=topic_key,
+                            rating=rating,
+                            answer=answer,
+                        )
                     )
                     try:
-                        if due_before > 0:
-                            due_after = await asyncio.to_thread(
-                                self._count_total_due_reviews
+                        if review_completed:
+                            card = knowledge_payload.get("card") or {}
+                            topic = card.get("topic") or {}
+                            await self._emit_review_session_completed_event(
+                                reviewed_count=1,
+                                deck_name=str(topic.get("name") or ""),
+                                target_lanlan=target_lanlan,
                             )
-                            if due_after == 0:
-                                card = knowledge_payload.get("card") or {}
-                                topic = card.get("topic") or {}
-                                await self._emit_review_session_completed_event(
-                                    reviewed_count=1,
-                                    deck_name=str(topic.get("name") or ""),
-                                    target_lanlan=target_lanlan,
-                                )
                     except Exception as emit_exc:
                         self.logger.warning(
                             "knowledge card review event emission degraded: {}",
@@ -204,20 +201,16 @@ class _MemoryCardEntriesMixin:
                 await self._emit_memory_review_answer_event(
                     payload, target_lanlan=target_lanlan
                 )
-                if due_before > 0:
-                    due_after = await asyncio.to_thread(
-                        self._count_total_due_reviews
+                if review_completed:
+                    reviewed_deck = await asyncio.to_thread(
+                        self._memory_deck_store.get_deck,
+                        str(item.get("deck_id") or ""),
                     )
-                    if due_after == 0:
-                        reviewed_deck = await asyncio.to_thread(
-                            self._memory_deck_store.get_deck,
-                            str(item.get("deck_id") or ""),
-                        )
-                        await self._emit_review_session_completed_event(
-                            reviewed_count=1,
-                            deck_name=str((reviewed_deck or {}).get("name") or ""),
-                            target_lanlan=target_lanlan,
-                        )
+                    await self._emit_review_session_completed_event(
+                        reviewed_count=1,
+                        deck_name=str((reviewed_deck or {}).get("name") or ""),
+                        target_lanlan=target_lanlan,
+                    )
             except Exception as emit_exc:
                 self.logger.warning(
                     "memory card review event emission degraded: {}", emit_exc

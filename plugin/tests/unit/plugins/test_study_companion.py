@@ -1056,6 +1056,73 @@ def test_scoped_question_candidates_are_filtered_before_limits() -> None:
     assert params["weak_topics"][0]["topic_id"] == "inside-topic"
 
 
+def test_focused_scoped_preview_keeps_candidate_queries_scoped() -> None:
+    eligible = {"inside-topic"}
+
+    class _ScopedStore:
+        def list_topics(self, *_args, **_kwargs):
+            return [{"id": "inside-topic", "name": "Inside"}]
+
+        def list_latest_mastery_for_topics(self, _topic_ids):
+            return []
+
+        def list_wrong_questions(self, **_kwargs):
+            return []
+
+        def get_topic(self, topic_id):
+            return {"id": topic_id, "name": "Inside"}
+
+    class _ScopedTracker:
+        def __init__(self) -> None:
+            self.store = _ScopedStore()
+            self.preview_options: list[dict[str, Any]] = []
+
+        def preview_next_question_params(self, topic_id, **kwargs):
+            self.preview_options.append(dict(kwargs))
+            return {
+                "target_topic_id": topic_id,
+                "target_topic": {"id": topic_id, "name": "Inside"},
+                "retry_wrong_question": {},
+                "due_reviews": [
+                    {
+                        "topic_id": "inside-topic",
+                        "topic": {"id": "inside-topic", "name": "Inside"},
+                    }
+                ],
+                "weak_topics": [],
+                "candidate_evidence": [],
+                "suggested_difficulty": 2,
+            }
+
+    scope = SimpleNamespace(
+        eligible_topic_ids=list(eligible),
+        subject="math",
+        stage="high_school",
+        chapter="",
+        unit="",
+        course_family="",
+        topic_id="",
+        mode="explicit_scope",
+        scope_key="scope-key",
+        scope_revision=1,
+        to_public_dict=lambda: {"scope_key": "scope-key"},
+    )
+    plugin = StudyCompanionPlugin.__new__(StudyCompanionPlugin)
+    tracker = _ScopedTracker()
+    plugin._knowledge_tracker = tracker
+    plugin._resolve_active_practice_scope = lambda: scope  # type: ignore[method-assign]
+
+    context = plugin._build_targeted_question_context()
+
+    assert context["selected_topic_id"] == "inside-topic"
+    assert len(tracker.preview_options) == 2
+    assert tracker.preview_options[1]["candidate_topic_ids"] == eligible
+    assert tracker.preview_options[1]["candidate_limit"] == 5000
+    assert tracker.preview_options[1]["candidate_topics_by_id"] == {
+        "inside-topic": {"id": "inside-topic", "name": "Inside"}
+    }
+
+
 @pytest.mark.asyncio
 async def test_study_settings_entry_persists_and_updates_runtime(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -10854,6 +10921,49 @@ async def test_knowledge_card_review_emits_completion_for_total_queue_transition
                 "target_lanlan": "active-character",
             }
         ]
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_final_reviews_emit_one_completion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(tmp_path, {"study": {"language": "en", "auto_open_ui": False}})
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    completed: list[dict[str, object]] = []
+
+    async def _capture_completion(**kwargs) -> bool:
+        completed.append(dict(kwargs))
+        return True
+
+    try:
+        assert isinstance(result, Ok)
+        plugin._emit_review_session_completed_event = (  # type: ignore[method-assign]
+            _capture_completion
+        )
+        deck = plugin._memory_deck_store.create_deck(
+            name="Concurrent Reviews", deck_type="word"
+        )
+        first = plugin._memory_deck_store.add_word(
+            deck_id=deck["id"], word="one", meaning="1"
+        )["item"]
+        second = plugin._memory_deck_store.add_word(
+            deck_id=deck["id"], word="two", meaning="2"
+        )["item"]
+
+        reviews = await asyncio.gather(
+            plugin.study_memory_review_item(item_id=first["id"], rating="good"),
+            plugin.study_memory_review_item(item_id=second["id"], rating="good"),
+        )
+
+        assert all(isinstance(review, Ok) for review in reviews)
+        assert len(completed) == 1
+        assert completed[0]["deck_name"] == "Concurrent Reviews"
     finally:
         await plugin.shutdown()
 

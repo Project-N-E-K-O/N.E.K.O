@@ -127,6 +127,30 @@ async def test_paused_timer_is_not_ticked_by_watcher() -> None:
 
 
 @pytest.mark.asyncio
+async def test_wakeup_restarts_watcher_after_failed_tick() -> None:
+    timer = _DeadlineTimer()
+    timer.state = "paused"
+    plugin = _plugin(timer, event_bus=_EventBus())
+
+    async def _failed_tick() -> None:
+        raise RuntimeError("transient tick failure")
+
+    failed_task = asyncio.create_task(_failed_tick())
+    plugin._pomodoro_watcher_task = failed_task
+    failed_task.add_done_callback(plugin._on_pomodoro_watcher_done)
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+    assert plugin._pomodoro_watcher_task is None
+    plugin._wake_pomodoro_watcher()
+    restarted_task = plugin._pomodoro_watcher_task
+
+    assert restarted_task is not None
+    assert not restarted_task.done()
+    await plugin._cancel_pomodoro_watcher()
+
+
+@pytest.mark.asyncio
 async def test_deadline_transition_runs_when_communication_is_disabled() -> None:
     timer = _DeadlineTimer()
     plugin = _plugin(timer, event_bus=None)

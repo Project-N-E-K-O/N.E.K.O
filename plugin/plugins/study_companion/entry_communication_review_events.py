@@ -9,6 +9,25 @@ from .entry_common import (
 
 
 class _CommunicationReviewEventsMixin:
+    def _memory_review_transition_lock(self) -> asyncio.Lock:
+        lock = getattr(self, "_memory_review_completion_lock", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._memory_review_completion_lock = lock
+        return lock
+
+    async def _run_serialized_review_transition(
+        self, operation, /, *args, **kwargs
+    ) -> tuple[Any, bool]:
+        async with self._memory_review_transition_lock():
+            due_before = await asyncio.to_thread(self._count_total_due_reviews)
+            payload = await asyncio.to_thread(operation, *args, **kwargs)
+            completed = False
+            if due_before > 0:
+                due_after = await asyncio.to_thread(self._count_total_due_reviews)
+                completed = due_after == 0
+        return payload, completed
+
     def _resolve_study_target_lanlan(
         self, kwargs: dict[str, Any] | None = None
     ) -> str | None:

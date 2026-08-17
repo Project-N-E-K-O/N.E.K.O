@@ -381,9 +381,25 @@ class _TutorQuestionEntriesMixin:
         if scope is not None:
             selected_topic_id = str(selection.get("selected_topic_id") or "").strip()
             if selected_topic_id:
+                scoped_topics_by_id: dict[str, dict[str, Any]] = {}
+                for candidate in params.get("due_reviews") or []:
+                    candidate_topic_id = str(candidate.get("topic_id") or "").strip()
+                    if candidate_topic_id:
+                        scoped_topics_by_id[candidate_topic_id] = dict(
+                            candidate.get("topic") or {}
+                        )
+                for candidate in params.get("weak_topics") or []:
+                    candidate_topic_id = str(
+                        candidate.get("topic_id") or candidate.get("id") or ""
+                    ).strip()
+                    if candidate_topic_id:
+                        scoped_topics_by_id[candidate_topic_id] = dict(candidate)
                 focused_params = filter_question_params_to_scope(
                     self._knowledge_tracker.preview_next_question_params(
-                        selected_topic_id
+                        selected_topic_id,
+                        candidate_topic_ids=set(scope.eligible_topic_ids),
+                        candidate_limit=5000,
+                        candidate_topics_by_id=scoped_topics_by_id,
                     ),
                     set(scope.eligible_topic_ids),
                 )

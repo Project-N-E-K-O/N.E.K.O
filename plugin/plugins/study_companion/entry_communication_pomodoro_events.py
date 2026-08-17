@@ -26,6 +26,9 @@ class _CommunicationPomodoroEventsMixin:
 
     def _wake_pomodoro_watcher(self) -> None:
         self._pomodoro_runtime_wakeup().set()
+        task = getattr(self, "_pomodoro_watcher_task", None)
+        if task is None or task.done():
+            self._start_pomodoro_watcher()
 
     def _resolve_pomodoro_target_lanlan(
         self, kwargs: dict[str, Any] | None = None
