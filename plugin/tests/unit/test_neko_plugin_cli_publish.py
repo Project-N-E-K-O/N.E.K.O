@@ -531,6 +531,7 @@ def test_publish_rejects_multiple_origin_urls_before_tagging(
     expected_url = "https://github.com/neko/n.e.k.o_plugin_publish_demo"
     _run_git(plugin_dir, "remote", "set-url", "origin", other_url)
     _run_git(plugin_dir, "remote", "set-url", "--add", "origin", expected_url)
+    _run_git(plugin_dir, "remote", "set-url", "--push", "origin", expected_url)
     client = _RecordingClient(
         _ready_release(
             "https://github.com/neko/"
@@ -548,7 +549,7 @@ def test_publish_rejects_multiple_origin_urls_before_tagging(
     assert _run_git(origin_remote, "tag", "--list") == ""
     assert _run_git(other_remote, "tag", "--list") == ""
     assert client.requests == []
-    assert "exactly one push URL" in capsys.readouterr().err
+    assert "exactly one fetch URL" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("rewrite_key", ["insteadOf", "pushInsteadOf"])
@@ -778,6 +779,41 @@ def test_publish_github_rechecks_worktree_after_release_preflight(
     assert _run_git(remote, "tag", "--list") == ""
     assert client.requests == []
     assert "git working tree has uncommitted changes" in capsys.readouterr().err
+
+
+def test_publish_stops_before_release_check_when_clean_sync_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    plugin_dir, remote = _make_publish_repo(tmp_path, monkeypatch)
+    calls: list[str] = []
+
+    def fail_clean_sync(args: object) -> int:
+        assert getattr(args, "plugin") == str(plugin_dir)
+        assert getattr(args, "clean") is True
+        calls.append("sync")
+        return 1
+
+    def unexpected_release_check(_: object) -> int:
+        calls.append("release-check")
+        return 0
+
+    monkeypatch.setattr(publish_cmd.deps_cmd, "handle_sync", fail_clean_sync)
+    monkeypatch.setattr(
+        publish_cmd.release_cmd,
+        "handle_release_check",
+        unexpected_release_check,
+    )
+
+    exit_code = neko_plugin_cli.main(
+        ["publish", "github", str(plugin_dir)]
+    )
+
+    assert exit_code == 1
+    assert calls == ["sync"]
+    assert _run_git(remote, "tag", "--list") == ""
+    assert "dependency sync did not pass" in capsys.readouterr().err
 
 
 def test_publish_stops_before_tag_when_ruff_fails(

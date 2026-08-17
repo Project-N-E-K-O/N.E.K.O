@@ -18,7 +18,7 @@ from ..core.plugin_source import load_plugin_source
 from ..paths import CliDefaults
 from ..repo_action_migration import ActionFileStatus, migrate_github_actions
 from ..templates.generator import PluginSpec
-from . import release_cmd
+from . import deps_cmd, release_cmd
 from ._resolve import parse_github_repository_remote, resolve_plugin_dir_candidate
 
 _MARKET_PUBLICATION_URL = (
@@ -255,6 +255,21 @@ def _publish_github(
     repository = _github_repository(plugin_dir)
     tag = f"v{source.version}"
 
+    sync_args = argparse.Namespace(
+        _defaults=defaults,
+        plugin=str(plugin_dir),
+        python=sys.executable,
+        clean=True,
+    )
+    if deps_cmd.handle_sync(sync_args) != 0:
+        raise RuntimeError(
+            _tri(
+                "dependency sync did not pass",
+                "依赖同步未通过",
+                "依存関係の同期に失敗しました",
+            )
+        )
+
     with tempfile.TemporaryDirectory(prefix="neko-plugin-publish-") as target_dir:
         check_args = argparse.Namespace(
             _defaults=defaults,
@@ -426,7 +441,16 @@ def _ensure_release_ruff_passes(plugin_dir: Path) -> None:
 
 
 def _github_repository(plugin_dir: Path) -> str:
-    origin = _git(plugin_dir, "config", "--get", "remote.origin.url")
+    fetch_urls = _git_config_values(plugin_dir, "remote.origin.url")
+    if len(fetch_urls) != 1:
+        raise RuntimeError(
+            _tri(
+                "git remote 'origin' must have exactly one fetch URL for publishing",
+                "发布时 Git 远程 'origin' 必须恰好配置一个 fetch URL",
+                "公開時、Git リモート 'origin' の fetch URL はちょうど 1 つ必要です",
+            )
+        )
+    origin = fetch_urls[0]
     repository = parse_github_repository_remote(origin)
     if repository is None:
         raise RuntimeError(
