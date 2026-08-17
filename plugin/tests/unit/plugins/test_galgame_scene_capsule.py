@@ -4162,6 +4162,63 @@ def test_delivered_archive_preserves_lines_arriving_after_schedule(tmp_path: Pat
 
 
 @pytest.mark.plugin_unit
+def test_inflight_archive_scope_survives_pruning_until_failure_restore(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(_Ctx(plugin_dir, _make_effective_config(bridge_root))),
+        logger=_Logger(), llm_gateway=_FakeLLMGateway(), host_adapter=_FakeHostAdapter(),
+    )
+    tracker = agent._scene_tracker
+    tracker.remember_scene_line(
+        "scene-inflight",
+        "line-1",
+        seq=1,
+        ts="2026-04-21T08:35:01Z",
+    )
+    tracker.mark_scene_summary_scheduled("scene-inflight", seq=1)
+
+    for index in range(tracker._SUMMARY_SCENE_STATE_LIMIT + 2):
+        tracker.state_for_scene(f"empty-scene-{index}")
+
+    scope_key = tracker.summary_scope_key("scene-inflight")
+    assert scope_key in tracker.summary_scene_states
+    assert tracker.summary_scene_states[scope_key]["scheduled_in_flight_count"] == 1
+
+    tracker.restore_scene_summary_schedule(
+        "scene-inflight",
+        seq=1,
+        lines_since_push=1,
+    )
+
+    state = tracker.summary_scene_states[scope_key]
+    assert state["scheduled_in_flight_count"] == 0
+    assert state["lines_since_push"] == 1
+
+
+@pytest.mark.plugin_unit
+def test_overlapping_archive_owners_release_inflight_scope_independently(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(_Ctx(plugin_dir, _make_effective_config(bridge_root))),
+        logger=_Logger(), llm_gateway=_FakeLLMGateway(), host_adapter=_FakeHostAdapter(),
+    )
+    tracker = agent._scene_tracker
+    tracker.mark_scene_summary_scheduled("scene-a", seq=0)
+    tracker.mark_scene_summary_scheduled("scene-a", seq=0)
+
+    tracker.mark_scene_summary_delivered("scene-a", seq=0)
+    state = tracker.state_for_scene("scene-a")
+    assert state["scheduled_in_flight_count"] == 1
+
+    tracker.discard_scene_summary_schedule("scene-a", seq=0)
+    assert state["scheduled_in_flight_count"] == 0
+
+
+@pytest.mark.plugin_unit
 def test_reloading_same_checkpoint_occurrence_resets_cumulative_memory(tmp_path: Path) -> None:
     plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
     agent = GameLLMAgent(
@@ -4986,4 +5043,134 @@ async def test_load_boundary_archive_excludes_retained_preload_history(
     ]
     assert [choice["text"] for choice in context["recent_choices"]] == [
         "restored path"
+    ]
+
+
+@pytest.mark.plugin_unit
+def test_load_boundary_retains_fallback_only_occurrences_added_after_boundary(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(_Ctx(plugin_dir, _make_effective_config(bridge_root))),
+        logger=_Logger(), llm_gateway=_FakeLLMGateway(), host_adapter=_FakeHostAdapter(),
+    )
+    save_context = {
+        "kind": "load",
+        "slot_id": "slot-1",
+        "checkpoint_id": "checkpoint-a",
+    }
+    snapshot = _session_state(scene_id="scene-a", route_id="route-a")
+    snapshot["save_context"] = save_context
+    load_event = _event(
+        seq=10,
+        event_type="save_loaded",
+        session_id="sess-a",
+        game_id="demo.alpha",
+        ts="2026-04-21T08:35:10Z",
+        payload={
+            "reason": "load",
+            "scene_id": "scene-a",
+            "route_id": "route-a",
+            "save_context": save_context,
+        },
+    )
+    preload_event = _event(
+        seq=9,
+        event_type="scene_changed",
+        session_id="sess-a",
+        game_id="demo.alpha",
+        ts="2026-04-21T08:35:09Z",
+        payload={"scene_id": "scene-a", "route_id": "route-a"},
+    )
+    old_line = {
+        "line_id": "old-line",
+        "text": "abandoned future",
+        "scene_id": "scene-a",
+        "route_id": "route-a",
+        "stability": "stable",
+    }
+    old_choice = {
+        "choice_id": "old-choice",
+        "text": "old decision",
+        "action": "selected",
+        "scene_id": "scene-a",
+        "route_id": "route-a",
+    }
+    first_shared = _shared_state(
+        session_id="sess-a",
+        last_seq=10,
+        snapshot=snapshot,
+        history_events=[preload_event, load_event],
+        history_lines=[old_line],
+        history_choices=[old_choice],
+    )
+    first_lines = agent._scene_capsule_line_occurrences(
+        first_shared,
+        snapshot=snapshot,
+    )
+    first_choices = agent._scene_capsule_choice_occurrences(
+        first_shared,
+        snapshot=snapshot,
+    )
+
+    filtered_lines, filtered_choices, boundary_active = (
+        agent._scene_timeline_occurrences_after_save_boundary(
+            first_shared,
+            snapshot=snapshot,
+            line_occurrences=first_lines,
+            choice_occurrences=first_choices,
+        )
+    )
+
+    assert boundary_active is True
+    assert filtered_lines == []
+    assert filtered_choices == []
+
+    new_line = {
+        "line_id": "new-line",
+        "text": "restored timeline",
+        "scene_id": "scene-a",
+        "route_id": "route-a",
+        "stability": "stable",
+    }
+    new_choice = {
+        "choice_id": "new-choice",
+        "text": "new decision",
+        "action": "selected",
+        "scene_id": "scene-a",
+        "route_id": "route-a",
+    }
+    second_shared = _shared_state(
+        session_id="sess-a",
+        last_seq=10,
+        snapshot=snapshot,
+        history_events=[load_event],
+        history_lines=[old_line, new_line],
+        history_choices=[old_choice, new_choice],
+    )
+    second_lines = agent._scene_capsule_line_occurrences(
+        second_shared,
+        snapshot=snapshot,
+    )
+    second_choices = agent._scene_capsule_choice_occurrences(
+        second_shared,
+        snapshot=snapshot,
+    )
+
+    filtered_lines, filtered_choices, boundary_active = (
+        agent._scene_timeline_occurrences_after_save_boundary(
+            second_shared,
+            snapshot=snapshot,
+            line_occurrences=second_lines,
+            choice_occurrences=second_choices,
+        )
+    )
+
+    assert boundary_active is True
+    assert [item["line"]["text"] for item in filtered_lines] == [
+        "restored timeline"
+    ]
+    assert [item["choice"]["text"] for item in filtered_choices] == [
+        "new decision"
     ]

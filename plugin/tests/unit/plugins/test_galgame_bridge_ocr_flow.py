@@ -83,6 +83,8 @@ async def test_same_game_session_id_source_switch_starts_fresh_cursor(tmp_path: 
     assert local["history_events"] == []
     assert local["history_lines"] == []
     assert local["events_byte_offset"] == 0
+    assert local["events_file_size"] == 0
+    assert local["last_seq"] == 0
 
 
 @pytest.mark.asyncio

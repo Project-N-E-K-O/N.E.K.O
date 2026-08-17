@@ -74,6 +74,7 @@ class AgentSceneTracker:
                 "last_line_seq": 0,
                 "last_line_ts": "",
                 "last_scheduled_seq": 0,
+                "scheduled_in_flight_count": 0,
                 "pending_since_monotonic": 0.0,
             }
             self.summary_scene_states[scope_key] = state
@@ -131,6 +132,9 @@ class AgentSceneTracker:
         state = self.state_for_scene(scene_id, route_id=route_id)
         state["lines_since_push"] = 0
         state["last_scheduled_seq"] = int(seq or 0)
+        state["scheduled_in_flight_count"] = (
+            int(state.get("scheduled_in_flight_count") or 0) + 1
+        )
         self.sync_current_scene_summary_mirror(
             self.summary_scene_id,
             route_id=self.summary_route_id,
@@ -143,9 +147,18 @@ class AgentSceneTracker:
         route_id: str = "",
         seq: int,
     ) -> None:
-        state = self.state_for_scene(scene_id, route_id=route_id)
+        state = self.summary_scene_states.get(
+            self.summary_scope_key(scene_id, route_id)
+        )
+        if not isinstance(state, dict):
+            return
+        self._release_scene_summary_schedule(state)
         scheduled_seq = int(seq or 0)
         if scheduled_seq and int(state.get("last_scheduled_seq") or 0) != scheduled_seq:
+            self.sync_current_scene_summary_mirror(
+                self.summary_scene_id,
+                route_id=self.summary_route_id,
+            )
             return
         state["last_scheduled_seq"] = int(seq or 0)
         if int(state.get("lines_since_push") or 0) <= 0:
@@ -168,8 +181,13 @@ class AgentSceneTracker:
         )
         if not isinstance(state, dict):
             return
+        self._release_scene_summary_schedule(state)
         scheduled_seq = int(seq or 0)
         if scheduled_seq and int(state.get("last_scheduled_seq") or 0) != scheduled_seq:
+            self.sync_current_scene_summary_mirror(
+                self.summary_scene_id,
+                route_id=self.summary_route_id,
+            )
             return
         state["lines_since_push"] = (
             int(state.get("lines_since_push") or 0)
@@ -179,6 +197,36 @@ class AgentSceneTracker:
         self.sync_current_scene_summary_mirror(
             self.summary_scene_id,
             route_id=self.summary_route_id,
+        )
+
+    def discard_scene_summary_schedule(
+        self,
+        scene_id: str,
+        *,
+        route_id: str = "",
+        seq: int,
+    ) -> None:
+        state = self.summary_scene_states.get(
+            self.summary_scope_key(scene_id, route_id)
+        )
+        if not isinstance(state, dict):
+            return
+        self._release_scene_summary_schedule(state)
+        scheduled_seq = int(seq or 0)
+        if not scheduled_seq or int(state.get("last_scheduled_seq") or 0) == scheduled_seq:
+            state["last_scheduled_seq"] = 0
+        if int(state.get("lines_since_push") or 0) <= 0:
+            state["pending_since_monotonic"] = 0.0
+        self.sync_current_scene_summary_mirror(
+            self.summary_scene_id,
+            route_id=self.summary_route_id,
+        )
+
+    @staticmethod
+    def _release_scene_summary_schedule(state: dict[str, Any]) -> None:
+        state["scheduled_in_flight_count"] = max(
+            0,
+            int(state.get("scheduled_in_flight_count") or 0) - 1,
         )
 
     def current_scene_lines_since_push(
@@ -253,6 +301,9 @@ class AgentSceneTracker:
                     "last_line_seq": int(state.get("last_line_seq") or 0),
                     "last_line_ts": str(state.get("last_line_ts") or ""),
                     "last_scheduled_seq": int(state.get("last_scheduled_seq") or 0),
+                    "scheduled_in_flight_count": int(
+                        state.get("scheduled_in_flight_count") or 0
+                    ),
                 }
             )
         return items[-self._SUMMARY_SCENE_STATE_LIMIT :]
@@ -266,7 +317,10 @@ class AgentSceneTracker:
                     str(preserve_scope_key or ""),
                 }:
                     continue
-                if int(state.get("lines_since_push") or 0) <= 0:
+                if (
+                    int(state.get("lines_since_push") or 0) <= 0
+                    and int(state.get("scheduled_in_flight_count") or 0) <= 0
+                ):
                     removable_scope_key = scope_key
                     break
             if not removable_scope_key:

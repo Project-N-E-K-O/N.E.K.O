@@ -1056,6 +1056,8 @@ class AgentSummaryMixin:
                         )
                     ),
                     "seq": 0,
+                    "fallback_source_key": fallback_source_key,
+                    "fallback_occurrence_id": occurrence_id,
                     "line": line,
                     "signature": signature,
                 }
@@ -1539,6 +1541,8 @@ class AgentSummaryMixin:
                         "event_group_key": group_key,
                         "handoff_group_signature": group_signature,
                         "seq": 0,
+                        "fallback_source_key": fallback_source_key,
+                        "fallback_occurrence_id": occurrence_id,
                         "snapshot_fallback": choice_state == "visible",
                         "ts": str(
                             choice.get("ts")
@@ -1558,8 +1562,8 @@ class AgentSummaryMixin:
                         source_scopes.pop(occurrence_id, None)
         return occurrences
 
-    @staticmethod
     def _scene_timeline_occurrences_after_save_boundary(
+        self,
         shared: dict[str, Any],
         *,
         snapshot: dict[str, Any],
@@ -1573,6 +1577,7 @@ class AgentSummaryMixin:
             return line_occurrences, choice_occurrences, False
 
         boundary_index: int | None = None
+        boundary_event: dict[str, Any] = {}
         for event_index, event in reversed(
             list(enumerate(list(shared.get("history_events") or [])))
         ):
@@ -1593,15 +1598,58 @@ class AgentSummaryMixin:
             if event_kind and event_kind != save_kind:
                 continue
             boundary_index = event_index
+            boundary_event = event
             break
         if boundary_index is None:
             return line_occurrences, choice_occurrences, False
+
+        boundary_occurrence = {
+            "seq": int(boundary_event.get("seq") or 0),
+            "ts": str(boundary_event.get("ts") or ""),
+        }
+        if not boundary_occurrence["seq"] and not boundary_occurrence["ts"]:
+            boundary_occurrence["index"] = boundary_index
+        boundary_marker = self._scene_capsule_semantic_digest(
+            {"kind": save_kind, "occurrence": boundary_occurrence}
+        )
+        data_source = self._current_input_source(shared)
+        session_id = str(shared.get("active_session_id") or "")
+        fallback_source_keys = {
+            f"{data_source}|{session_id}|history_line",
+            f"{data_source}|{session_id}|history_choice:selected",
+        }
+        for source_key in fallback_source_keys:
+            state = self._scene_capsule_fallback_occurrences.get(source_key)
+            if not isinstance(state, dict):
+                continue
+            if str(state.get("timeline_boundary_marker") or "") == boundary_marker:
+                continue
+            state["timeline_boundary_marker"] = boundary_marker
+            state["timeline_boundary_occurrence_floor"] = max(
+                [int(item) for item in list(state.get("occurrence_ids") or [])],
+                default=0,
+            )
 
         def _is_after_boundary(occurrence: dict[str, Any]) -> bool:
             try:
                 event_index = int(occurrence.get("history_event_index"))
             except (TypeError, ValueError):
-                return False
+                source_key = str(occurrence.get("fallback_source_key") or "")
+                state = self._scene_capsule_fallback_occurrences.get(source_key)
+                if (
+                    source_key not in fallback_source_keys
+                    or not isinstance(state, dict)
+                    or str(state.get("timeline_boundary_marker") or "")
+                    != boundary_marker
+                ):
+                    return False
+                try:
+                    occurrence_id = int(occurrence.get("fallback_occurrence_id"))
+                except (TypeError, ValueError):
+                    return False
+                return occurrence_id > int(
+                    state.get("timeline_boundary_occurrence_floor") or 0
+                )
             return event_index > boundary_index
 
         return (
@@ -1809,6 +1857,15 @@ class AgentSummaryMixin:
         self._summary_task_meta[task] = task_meta
         self._record_summary_task_event("scheduled", task_meta)
 
+        def _finalize_without_restore() -> None:
+            self._finalize_summary_schedules(
+                scene_id=scene_id,
+                route_id=route_id,
+                scheduled_seq=scheduled_seq,
+                merged_schedule_restore=merged_schedule_restore,
+                delivered=False,
+            )
+
         def _finish(done: asyncio.Task[bool]) -> None:
             self._summary_tasks.discard(done)
             done_meta = self._summary_task_meta.pop(done, None) or task_meta
@@ -1831,6 +1888,8 @@ class AgentSummaryMixin:
                         delivery_key=delivery_key,
                         merged_schedule_restore=merged_schedule_restore,
                     )
+                else:
+                    _finalize_without_restore()
                 self._record_summary_task_event("cancelled", done_meta)
                 return
             try:
@@ -1846,6 +1905,8 @@ class AgentSummaryMixin:
                         delivery_key=delivery_key,
                         merged_schedule_restore=merged_schedule_restore,
                     )
+                else:
+                    _finalize_without_restore()
                 self._record_summary_task_event(
                     "exception",
                     {**done_meta, "error": str(exc)},
@@ -1863,11 +1924,45 @@ class AgentSummaryMixin:
                         delivery_key=delivery_key,
                         merged_schedule_restore=merged_schedule_restore,
                     )
+                else:
+                    _finalize_without_restore()
                 self._record_summary_task_event("returned_false", done_meta)
                 return
+            self._finalize_summary_schedules(
+                scene_id=scene_id,
+                route_id=route_id,
+                scheduled_seq=scheduled_seq,
+                merged_schedule_restore=merged_schedule_restore,
+                delivered=True,
+            )
             self._record_summary_task_event("finished", {**done_meta, "delivered": True})
 
         task.add_done_callback(_finish)
+
+    def _finalize_summary_schedules(
+        self,
+        *,
+        scene_id: str,
+        route_id: str,
+        scheduled_seq: int,
+        merged_schedule_restore: list[dict[str, Any]] | None,
+        delivered: bool,
+    ) -> None:
+        finalize = (
+            self._scene_tracker.mark_scene_summary_delivered
+            if delivered
+            else self._scene_tracker.discard_scene_summary_schedule
+        )
+        finalize(scene_id, route_id=route_id, seq=scheduled_seq)
+        for item in list(merged_schedule_restore or []):
+            merged_scene_id = str(item.get("scene_id") or "")
+            if not merged_scene_id:
+                continue
+            finalize(
+                merged_scene_id,
+                route_id=str(item.get("route_id") or ""),
+                seq=int(item.get("scheduled_seq") or 0),
+            )
 
     def _track_scene_capsule_task(
         self,
@@ -2936,15 +3031,6 @@ class AgentSummaryMixin:
                 }
                 return True
             if delivery_key and delivery_key == self._last_delivered_summary_key:
-                if (
-                    scene_id == self._observed_scene_id
-                    and route_id == self._observed_route_id
-                ):
-                    self._scene_tracker.mark_scene_summary_delivered(
-                        scene_id,
-                        route_id=route_id,
-                        seq=scheduled_seq,
-                    )
                 return True
 
             # Claim the order before either memory sink is called.  A partial
@@ -2981,15 +3067,6 @@ class AgentSummaryMixin:
             self._last_delivered_summary_key = delivery_key
             self._last_delivered_summary_seq = scheduled_seq
             self._last_delivered_summary_scene_id = scene_id
-            if (
-                scene_id == self._observed_scene_id
-                and route_id == self._observed_route_id
-            ):
-                self._scene_tracker.mark_scene_summary_delivered(
-                    scene_id,
-                    route_id=route_id,
-                    seq=scheduled_seq,
-                )
             self._last_push_ts = time.monotonic()
             self._record_summary_task_event(
                 "memory_finished",
@@ -3558,11 +3635,6 @@ class AgentSummaryMixin:
                     "scheduled_from_event_seq": scheduled_seq,
                     "summary_delivery_key": delivery_key,
                 }
-                self._scene_tracker.mark_scene_summary_delivered(
-                    scene_id,
-                    route_id=route_id,
-                    seq=scheduled_seq,
-                )
                 continue
             self._scene_tracker.mark_scene_summary_scheduled(
                 scene_id,
