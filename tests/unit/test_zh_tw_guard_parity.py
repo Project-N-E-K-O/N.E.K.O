@@ -2883,7 +2883,9 @@ def test_a_completed_rewrite_survives_secondary_content(text):
         'Rewrite the catchphrase as "all fields" if possible',
         "是否修改名字不过用户可能会重写所有字段",
         "请修改名字。系统将会重写所有字段并保留是否会员标签",
+        "重写名字。系统将重写所有字段并保留是否会员标签",
         "不要执行以下修改：先重写名字并保留头像，然后重写所有字段并保留是否会员",
+        "重写所有字段并保留“头像”是不是更好",
     ],
 )
 def test_scoped_recovery_does_not_bypass_existing_guards(text):
@@ -2917,6 +2919,7 @@ def test_scoped_recovery_inspects_the_most_recent_bounded_boundaries():
     [
         "把口头禅改成重写所有字段并保留会员标签",
         "把口头禅换成重写所有字段并保留是否会员",
+        "把口头禅变为重写所有字段并保留是否会员",
         "口头禅改成重写所有字段并保留会员标签",
         'Rewrite the catchphrase as "all fields"',
     ],
@@ -2950,6 +2953,21 @@ def test_later_independent_full_rewrite_commands_remain_visible(text):
     """前面的赋值或局部否定不能压掉转折后的独立整卡命令。"""  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
+    assert router._chat_text_requests_full_rewrite(text) is True
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "把所有字段改写成新的版本",
+        "把所有字段重写成新版",
+    ],
+)
+def test_full_card_targets_in_assignment_form_remain_commands(text):
+    """赋值式表面结构的宾语若就是所有字段，仍然是整卡命令。"""  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    assert router._chat_text_requests_full_rewrite_core(text) is True
     assert router._chat_text_requests_full_rewrite(text) is True
 
 

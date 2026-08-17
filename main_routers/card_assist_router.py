@@ -1494,7 +1494,7 @@ _CHAT_SCOPED_SENTENCE_FINAL_QUESTION_RE = re.compile(
 _CHAT_SCOPED_VALUE_ASSIGNMENT_RE = re.compile(
     r"(?:(?:(?:把|将|將)\s*[^。，、！？,.!?;；把将將并並]{1,24}?|"
     r"^[^。，、！？,.!?;；]{1,12}?)(?:设为|設為|设置为|設定為|改成|修改成|"
-    r"换成|換成|调整为|調整為|写成|寫成)"
+    r"换成|換成|变成|變成|变为|變為|调整为|調整為|写成|寫成)"
     r"|(?i:(?:rewrite|revise|regenerate|redo|refresh)\s+"
     r"(?!(?:all\s+fields|all\s+visible\s+fields|full\s+card|whole\s+card|"
     r"entire\s+card)\b)[^,.!?;]{1,40}?\s+as\s+))"
@@ -1553,7 +1553,7 @@ def _chat_scoped_suffix_has_governing_guard(
     question = _CHAT_QUESTION_CLAUSE_RE.search(readable)
     # `是否会员` / `为什么` / `好不好` can be the secondary value itself. A question
     # marker after leading object text governs the proposed operation, so recovery must fail.
-    return question is not None and bool(readable[:question.start()].strip())
+    return question is not None and bool(suffix[:question.start()].strip())
 
 
 def _chat_scoped_candidate_is_completed_command(candidate: str) -> bool:
@@ -1577,6 +1577,18 @@ def _chat_scoped_candidate_is_completed_command(candidate: str) -> bool:
         and _CHAT_SCOPED_COMPLETED_COMMAND_TAIL_RE.fullmatch(
             clause[max(signal_ends):]
         )
+    )
+
+
+def _chat_scoped_candidate_is_command(candidate: str) -> bool:
+    """Require the command head and full-rewrite signals to share the final clause."""
+    clauses = _chat_clauses(candidate)
+    if not clauses:
+        return False
+    clause = clauses[-1]
+    return bool(
+        _CHAT_ZH_CONTRAST_COMMAND_RE.search(clause)
+        or _CHAT_EN_TRAILING_COMMAND_RE.search(clause)
     )
 
 
@@ -1657,7 +1669,10 @@ _CHAT_FREE_CHOICE_SPAN_RE = re.compile(
 
 def _chat_clause_without_free_choice(clause: str) -> str:
     """把「任指框架 … 关联词」整段换成空格，只用于疑问守卫。"""  # noqa: DOCSTRING_CJK
-    return _CHAT_FREE_CHOICE_SPAN_RE.sub(" ", clause)
+    return _CHAT_FREE_CHOICE_SPAN_RE.sub(
+        lambda match: " " * len(match.group(0)),
+        clause,
+    )
 
 
 def _chat_clause_without_quotes(clause: str) -> str:
@@ -1811,6 +1826,14 @@ def _chat_text_requests_full_rewrite_core(text: str) -> bool:
             continue
         assignment = _CHAT_SCOPED_VALUE_ASSIGNMENT_RE.search(clause)
         if assignment is not None:
+            assignment_head = _chat_clause_without_quoted_prohibitions(
+                clause[:assignment.end()]
+            )
+            if (
+                _CHAT_FULL_REWRITE_RE.search(assignment_head)
+                and _CHAT_REWRITE_VERB_RE.search(assignment_head)
+            ):
+                return True
             parts = [clause[:assignment.start()]]
             value_tail = clause[assignment.end():]
             next_command = _CHAT_SCOPED_NEXT_COMMAND_RE.search(value_tail)
@@ -1852,7 +1875,7 @@ def _chat_text_requests_full_rewrite_from_scoped_segments(text: str) -> bool:
             if len(text) - match.end() <= _CHAT_SCOPED_RECOVERY_WINDOW_CHARS:
                 candidate = text[match.end():]
                 if (
-                    _CHAT_ZH_CONTRAST_COMMAND_RE.search(candidate)
+                    _chat_scoped_candidate_is_command(candidate)
                     and _chat_scoped_candidate_is_completed_command(candidate)
                     and _chat_text_requests_full_rewrite_core(candidate)
                 ):
@@ -1872,7 +1895,7 @@ def _chat_text_requests_full_rewrite_from_scoped_segments(text: str) -> bool:
             if (
                 match.group("trailing_en") is not None
                 and (
-                    not _CHAT_EN_TRAILING_COMMAND_RE.search(candidate)
+                    not _chat_scoped_candidate_is_command(candidate)
                     or not _chat_scoped_candidate_is_completed_command(candidate)
                     or not _CHAT_EN_TRAILING_SAFE_SUFFIX_RE.search(masked[match.end():])
                 )
@@ -1881,10 +1904,7 @@ def _chat_text_requests_full_rewrite_from_scoped_segments(text: str) -> bool:
             if (
                 match.group("secondary") is not None
                 and (
-                    not (
-                        _CHAT_ZH_CONTRAST_COMMAND_RE.search(candidate)
-                        or _CHAT_EN_TRAILING_COMMAND_RE.search(candidate)
-                    )
+                    not _chat_scoped_candidate_is_command(candidate)
                     or not _chat_scoped_candidate_is_completed_command(candidate)
                     or _chat_scoped_suffix_has_governing_guard(
                         text[match.end():],
