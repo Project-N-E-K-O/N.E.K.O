@@ -64,14 +64,19 @@ def test_plugin_server_registers_hosted_document_parse_route():
 def test_documents_parse_rejects_untrusted_browser_origin_before_parsing(
     browser_header,
 ):
-    with TestClient(
+    # Route-level coverage must not start plugin hosts, whose process-wide
+    # storage-root export would leak into unrelated unit tests.
+    client = TestClient(
         build_plugin_server_app(), base_url="http://127.0.0.1:48916"
-    ) as client:
+    )
+    try:
         response = client.post(
             "/api/documents/parse",
             headers=browser_header,
             files={"file": ("attack.pdf", _blank_pdf_bytes(), "application/pdf")},
         )
+    finally:
+        client.close()
 
     assert response.status_code == 403
     assert response.json()["detail"] == {"code": "untrusted_origin"}
@@ -79,9 +84,11 @@ def test_documents_parse_rejects_untrusted_browser_origin_before_parsing(
 
 @pytest.mark.unit
 def test_documents_parse_allows_loopback_browser_origin():
-    with TestClient(
+    # Keep this at route level for the same storage-root isolation guarantee.
+    client = TestClient(
         build_plugin_server_app(), base_url="http://127.0.0.1:48916"
-    ) as client:
+    )
+    try:
         response = client.post(
             "/api/documents/parse",
             headers={"Origin": "http://localhost:48911"},
@@ -93,6 +100,8 @@ def test_documents_parse_allows_loopback_browser_origin():
                 )
             },
         )
+    finally:
+        client.close()
 
     assert response.status_code == 200
     assert "Loopback endpoint" in response.json()["document"]["content"]
