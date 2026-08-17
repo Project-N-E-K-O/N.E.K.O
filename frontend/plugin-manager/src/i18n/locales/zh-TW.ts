@@ -383,7 +383,7 @@ export default {
     dangerDialog: {
       title: '危險操作確認',
       warningTitle: '不可逆操作',
-      deleteMessage: '刪除外掛「{pluginName}」後，外掛目錄也會被移除，列表會立即更新。',
+      deleteMessage: '刪除外掛「{pluginName}」後，外掛目錄及關聯的外掛設定 profile 也會被移除，列表會立即更新。',
       hint: '為避免誤觸，請長按下方按鈕完成確認。',
       holdIdle: '長按以確認刪除',
       holdActive: '繼續長按以完成確認…',

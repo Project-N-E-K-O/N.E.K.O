@@ -383,7 +383,7 @@ export default {
     dangerDialog: {
       title: 'Confirmar acción destructiva',
       warningTitle: 'Esta acción no se puede deshacer',
-      deleteMessage: 'Al eliminar "{pluginName}" se borrará su directorio de plugin y la lista se actualizará inmediatamente.',
+      deleteMessage: 'Al eliminar "{pluginName}" se borrarán su directorio de plugin y el perfil de configuración del paquete asociado. La lista se actualizará inmediatamente.',
       hint: 'Para evitar pulsaciones accidentales, mantén pulsado el botón siguiente para continuar.',
       holdIdle: 'Mantén pulsado para eliminar',
       holdActive: 'Sigue pulsando para confirmar…',

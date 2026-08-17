@@ -383,7 +383,7 @@ export default {
     dangerDialog: {
       title: 'Confirmar ação destrutiva',
       warningTitle: 'Esta ação não pode ser desfeita',
-      deleteMessage: 'Excluir "{pluginName}" removerá o diretório do plugin e a lista será atualizada imediatamente.',
+      deleteMessage: 'Excluir "{pluginName}" removerá o diretório do plugin e o perfil de configuração de pacote associado. A lista será atualizada imediatamente.',
       hint: 'Para evitar cliques acidentais, mantenha o botão abaixo pressionado para continuar.',
       holdIdle: 'Mantenha pressionado para excluir',
       holdActive: 'Continue pressionando para confirmar…',

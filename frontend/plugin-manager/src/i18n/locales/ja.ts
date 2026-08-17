@@ -383,7 +383,7 @@ export default {
     dangerDialog: {
       title: '危険な操作の確認',
       warningTitle: '元に戻せない操作',
-      deleteMessage: '「{pluginName}」を削除すると、プラグインディレクトリも消去され、一覧がすぐに更新されます。',
+      deleteMessage: '「{pluginName}」を削除すると、プラグインディレクトリと関連するパッケージ設定プロファイルも消去され、一覧がすぐに更新されます。',
       hint: '誤操作を避けるため、下のボタンを長押しして確定してください。',
       holdIdle: '長押しして削除',
       holdActive: 'そのまま長押しして確定…',

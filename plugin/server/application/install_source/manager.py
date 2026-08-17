@@ -1896,8 +1896,17 @@ class InstallSourceManager:
                     },
                 ) from exc
 
-    def package_id_for_directory(self, directory_path: Path) -> str:
-        """Return the recorded profile key for an installed plugin directory."""
+    def package_id_for_directory(
+        self,
+        directory_path: Path,
+        *,
+        include_removed: bool = False,
+    ) -> str:
+        """Return the recorded profile key for a plugin directory.
+
+        ``include_removed`` lets deletion cleanup retry an earlier failed
+        profile removal after the lock entry has already been soft-deleted.
+        """
 
         root_id, directory_name = classify_plugin_path(
             directory_path,
@@ -1905,7 +1914,7 @@ class InstallSourceManager:
             user_root=self.user_root,
         )
         entry = self._find_entry(self._current, root_id, directory_name)
-        if entry is None or entry.removed:
+        if entry is None or (entry.removed and not include_removed):
             return ""
         return entry.package_id
 

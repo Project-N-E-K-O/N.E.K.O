@@ -383,7 +383,7 @@ export default {
     dangerDialog: {
       title: 'Confirm Destructive Action',
       warningTitle: 'This action cannot be undone',
-      deleteMessage: 'Deleting "{pluginName}" will remove its plugin directory and refresh the list immediately.',
+      deleteMessage: 'Deleting "{pluginName}" will remove its plugin directory and related package configuration profile. The list will refresh immediately.',
       hint: 'To avoid accidental clicks, press and hold the button below to continue.',
       holdIdle: 'Press and hold to delete',
       holdActive: 'Keep holding to confirm…',

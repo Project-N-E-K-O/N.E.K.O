@@ -383,7 +383,7 @@ export default {
     dangerDialog: {
       title: '위험 작업 확인',
       warningTitle: '되돌릴 수 없는 작업',
-      deleteMessage: '"{pluginName}"을 삭제하면 플러그인 디렉터리가 제거되고 목록도 즉시 새로고침됩니다.',
+      deleteMessage: '"{pluginName}"을 삭제하면 플러그인 디렉터리와 연결된 패키지 설정 프로필이 제거되고 목록도 즉시 새로고침됩니다.',
       hint: '오작동을 막기 위해 아래 버튼을 길게 눌러 확인해 주세요.',
       holdIdle: '길게 눌러 삭제',
       holdActive: '계속 누르면 확인됩니다…',

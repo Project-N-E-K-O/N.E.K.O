@@ -388,8 +388,13 @@ def _remove_install_source_and_orphaned_profile_sync(plugin_dir: Path) -> Path |
         return None
 
     try:
-        package_id = manager.package_id_for_directory(plugin_dir)
+        package_id = manager.package_id_for_directory(
+            plugin_dir,
+            include_removed=True,
+        ) or plugin_dir.name
         manager.mark_removed(directory_path=plugin_dir)
+        if any(entry.package_id == package_id for entry in manager.list_entries()):
+            return None
     except InstallSourceError as exc:
         logger.warning(
             "delete_plugin: failed to update install source for plugin_dir={}: {}",
@@ -405,11 +410,17 @@ def _remove_install_source_and_orphaned_profile_sync(plugin_dir: Path) -> Path |
         )
         return None
 
-    if not package_id or any(entry.package_id == package_id for entry in manager.list_entries()):
+    try:
+        profiles_root = get_user_package_profiles_root().resolve()
+        profile_dir = (profiles_root / package_id).resolve()
+    except Exception as exc:
+        logger.warning(
+            "delete_plugin: failed to resolve package profile for plugin_dir={}: {}",
+            plugin_dir,
+            exc,
+        )
         return None
 
-    profiles_root = get_user_package_profiles_root().resolve()
-    profile_dir = (profiles_root / package_id).resolve()
     if profile_dir.parent != profiles_root:
         logger.warning(
             "delete_plugin: refusing to remove unsafe package profile path: {}",
@@ -422,12 +433,12 @@ def _remove_install_source_and_orphaned_profile_sync(plugin_dir: Path) -> Path |
     except FileNotFoundError:
         return None
     except OSError as exc:
-        logger.warning(
+        logger.error(
             "delete_plugin: failed to remove package profile {}: {}",
             profile_dir,
             exc,
         )
-        return None
+        raise
     return profile_dir
 
 

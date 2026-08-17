@@ -383,7 +383,7 @@ export default {
     dangerDialog: {
       title: '危险操作确认',
       warningTitle: '不可逆操作',
-      deleteMessage: '删除插件“{pluginName}”后，其目录会被移除，当前列表也会立即刷新。',
+      deleteMessage: '删除插件“{pluginName}”后，其目录及关联的插件配置 profile 会被移除，当前列表也会立即刷新。',
       hint: '为避免误触，请按住下方按钮完成确认。',
       holdIdle: '按住以确认删除',
       holdActive: '继续按住，正在确认…',

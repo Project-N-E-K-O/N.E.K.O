@@ -195,6 +195,7 @@ def test_mark_removed_flips_and_preserves_audit(tmp_path: Path) -> None:
         directory_path=target,
         package_filename="p.neko-plugin",
         package_sha256="f" * 64,
+        package_id="deleted-package",
     )
     before = mgr.list_entries()[0]
     mgr.mark_removed(directory_path=target)
@@ -209,6 +210,8 @@ def test_mark_removed_flips_and_preserves_audit(tmp_path: Path) -> None:
     assert after.channel == "imported"
     assert mgr.list_entries() == []
     assert len(mgr.list_entries(include_removed=True)) == 1
+    assert mgr.package_id_for_directory(target) == ""
+    assert mgr.package_id_for_directory(target, include_removed=True) == "deleted-package"
 
 
 def test_mark_removed_idempotent_and_builtin_locked(tmp_path: Path) -> None:
