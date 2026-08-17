@@ -18,7 +18,11 @@ from .entry_common import (
     LLM_OPERATION_QUESTION_GENERATE,
 )
 from .models import public_current_question_payload
-from .practice_scope import filter_question_params_to_scope, ordered_scope_topics
+from .practice_scope import (
+    filter_question_params_to_scope,
+    ordered_scope_topics,
+    practice_scope_matches_topic,
+)
 
 
 IMAGE_ONLY_QUESTION_PROMPT_EN = "Generate a study question from the pasted image."
@@ -293,18 +297,27 @@ class _TutorQuestionEntriesMixin:
 
     def _scoped_question_params(self, scope) -> dict[str, Any]:
         eligible = set(scope.eligible_topic_ids)
-        topics = [
-            topic
-            for topic in self._knowledge_tracker.store.list_topics(
-                5000,
-                scope.subject or None,
-                scope.stage or None,
-                chapter=scope.chapter or None,
-                unit=scope.unit or None,
-                course_family=scope.course_family or None,
+        if scope.mode == "explicit_topic":
+            topic = self._knowledge_tracker.store.get_topic(scope.topic_id)
+            topics = (
+                [topic]
+                if topic is not None
+                and practice_scope_matches_topic(scope.to_public_dict(), topic)
+                else []
             )
-            if str(topic.get("id") or "") in eligible
-        ]
+        else:
+            topics = [
+                topic
+                for topic in self._knowledge_tracker.store.list_topics(
+                    5000,
+                    scope.subject or None,
+                    scope.stage or None,
+                    chapter=scope.chapter or None,
+                    unit=scope.unit or None,
+                    course_family=scope.course_family or None,
+                )
+                if str(topic.get("id") or "") in eligible
+            ]
         mastery_overview = self._knowledge_tracker.store.list_latest_mastery_for_topics(
             eligible
         )

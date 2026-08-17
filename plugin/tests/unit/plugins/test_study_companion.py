@@ -1056,6 +1056,65 @@ def test_scoped_question_candidates_are_filtered_before_limits() -> None:
     assert params["weak_topics"][0]["topic_id"] == "inside-topic"
 
 
+def test_explicit_topic_question_selection_loads_topic_by_id_before_scope_cap() -> None:
+    topic = {
+        "id": "late-topic",
+        "name": "Late topic",
+        "stage": "high_school",
+        "subject": "math",
+        "course_family": "",
+        "chapter": "Algebra",
+        "unit": "Functions",
+    }
+
+    class _ScopedStore:
+        def list_topics(self, *_args, **_kwargs):
+            return []
+
+        def get_topic(self, topic_id):
+            return dict(topic) if topic_id == "late-topic" else None
+
+        def list_latest_mastery_for_topics(self, _topic_ids):
+            return []
+
+        def list_wrong_questions(self, **_kwargs):
+            return []
+
+    class _ScopedTracker:
+        def __init__(self) -> None:
+            self.store = _ScopedStore()
+            self.preview_options: dict[str, Any] = {}
+
+        def preview_next_question_params(self, topic_id, **kwargs):
+            self.preview_options = dict(kwargs)
+            return {"target_topic_id": topic_id, "target_topic": dict(topic)}
+
+    scope_fields = {
+        "mode": "explicit_topic",
+        "stage": "high_school",
+        "subject": "math",
+        "course_family": "",
+        "chapter": "Algebra",
+        "unit": "Functions",
+        "topic_id": "late-topic",
+    }
+    scope = SimpleNamespace(
+        **scope_fields,
+        eligible_topic_ids=["late-topic"],
+        to_public_dict=lambda: dict(scope_fields),
+    )
+    plugin = StudyCompanionPlugin.__new__(StudyCompanionPlugin)
+    tracker = _ScopedTracker()
+    plugin._knowledge_tracker = tracker
+
+    params = plugin._scoped_question_params(scope)
+
+    assert params["target_topic_id"] == "late-topic"
+    assert tracker.preview_options["candidate_topics_by_id"] == {
+        "late-topic": topic
+    }
+
+
 def test_focused_scoped_preview_keeps_candidate_queries_scoped() -> None:
     eligible = {"inside-topic"}
 
