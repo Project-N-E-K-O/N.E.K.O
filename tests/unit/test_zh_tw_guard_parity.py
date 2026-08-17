@@ -4024,7 +4024,17 @@ def test_a_polite_execution_question_governs_all_recovered_list_items(prefix):
 
 
 @pytest.mark.parametrize(
-    'prefix', ['以下只是示例', '这是示例', '這是範例', '以下为例子', '这是参考']
+    'prefix',
+    [
+        '以下只是示例',
+        '这是示例',
+        '這是範例',
+        '以下为例子',
+        '这是参考',
+        '下面的内容只是示例',
+        '以下内容仅供参考',
+        '下面的內容只是範例',
+    ],
 )
 def test_a_leading_list_disclaimer_governs_all_recovered_items(prefix):
     import main_routers.card_assist_router as router
@@ -4038,6 +4048,8 @@ def test_a_leading_list_disclaimer_governs_all_recovered_items(prefix):
     'text',
     [
         '这是示例。但是请重写所有字段并保留是否会员',
+        '下面的内容只是示例。但是请重写所有字段并保留是否会员',
+        '以下内容仅供参考。现在请重写所有字段并保留是否会员',
         '示例字段保持不变，但是请重写所有字段并保留是否会员',
     ],
 )
