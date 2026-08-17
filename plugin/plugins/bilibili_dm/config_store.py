@@ -37,6 +37,9 @@ class BiliDMConfigStore:
             "dedeuserid": "",
             "ac_time_value": "",
             "permission_mode": "allow_list",
+            "enable_comment_notifications": True,
+            "notification_poll_interval_seconds": 20,
+            "notification_max_items": 20,
             "max_concurrent_messages": 3,
             "ai_connect_timeout_seconds": 10.0,
             "ai_turn_timeout_seconds": 60.0,
@@ -77,6 +80,15 @@ class BiliDMConfigStore:
             normalized[field] = str(raw.get(field) or "").strip()
         normalized["permission_mode"] = self._permission_mode(
             raw.get("permission_mode")
+        )
+        normalized["enable_comment_notifications"] = bool(
+            raw.get("enable_comment_notifications", True)
+        )
+        normalized["notification_poll_interval_seconds"] = self._bounded_int(
+            raw.get("notification_poll_interval_seconds"), 20, 5, 300
+        )
+        normalized["notification_max_items"] = self._bounded_int(
+            raw.get("notification_max_items"), 20, 1, 50
         )
         normalized["max_concurrent_messages"] = self._bounded_int(
             raw.get("max_concurrent_messages"), 3, 1, 20

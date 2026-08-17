@@ -1,5 +1,5 @@
 {
-  "plugin.name": "B站私訊",
+  "plugin.name": "B站整合",
   "plugin.description": "接入 B站私訊，實現與使用者的 AI 自動對話。支援文字、圖片、分享影片等訊息類型。",
   "plugin.short_description": "B站私訊自動回覆，透過 bilibili_api 監聽私訊並自動回覆。",
   "account.already_logged_in": "已經登錄",

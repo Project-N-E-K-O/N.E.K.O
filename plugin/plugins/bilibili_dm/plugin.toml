@@ -1,10 +1,10 @@
 [plugin]
-name = "B站私信"
-description = "接入 B站私信，实现与用户的 AI 自动对话。支持文本、图片、分享视频等消息类型。"
-short_description = "B站私信自动回复，通过 bilibili_api 监听私信并自动回复。"
-keywords = ["bilibili", "b站", "私信", "dm"]
+name = "B站集成"
+description = "接入 B站私信、评论回复与 @ 通知，并自动生成对应回复。"
+short_description = "B站私信与评论通知自动回复，支持白名单。"
+keywords = ["bilibili", "b站", "私信", "评论", "@", "dm"]
 passive = true
-version = "1.1.12"
+version = "1.2.0"
 id = "bilibili_dm"
 type = "plugin"
 entry = "plugin.plugins.bilibili_dm:BiliDMPlugin"
@@ -28,7 +28,7 @@ enabled = true
 
 [[plugin.ui.panel]]
 id = "main"
-title = "B站私信"
+title = "B站集成"
 entry = "static/index.html"
 context = "bilibili_dm"
 permissions = ["state:read", "action:call"]

@@ -9,6 +9,7 @@ import tomllib
 import pytest
 
 from plugin.plugins.bilibili_dm import BiliDMPlugin
+from plugin.plugins.bilibili_dm.bili_client import BiliDMClient
 from plugin.plugins.bilibili_dm.config_store import BiliDMConfigStore
 from plugin.plugins.bilibili_dm.permission import PermissionManager
 from plugin.sdk.plugin import Err, Ok
@@ -64,12 +65,60 @@ async def test_config_store_persists_credentials_in_runtime_data_file(tmp_path):
     assert saved["sesdata"] == "sess-secret"
     assert saved["permission_mode"] == "open"
     assert saved["max_concurrent_messages"] == 20
+    assert saved["enable_comment_notifications"] is True
+    assert saved["notification_poll_interval_seconds"] == 20
     assert "unknown" not in saved
 
     raw = json.loads(store.path.read_text(encoding="utf-8"))
     assert raw["sesdata"] == "sess-secret"
     assert raw["bili_jct"] == "csrf-secret"
     assert await store.load() == saved
+
+
+@pytest.mark.asyncio
+async def test_config_store_normalizes_comment_notification_settings(tmp_path):
+    store = BiliDMConfigStore(tmp_path)
+
+    saved = await store.save(
+        {
+            "enable_comment_notifications": False,
+            "notification_poll_interval_seconds": 1,
+            "notification_max_items": 999,
+        }
+    )
+
+    assert saved["enable_comment_notifications"] is False
+    assert saved["notification_poll_interval_seconds"] == 5
+    assert saved["notification_max_items"] == 50
+
+
+def test_comment_notification_target_and_deduplication():
+    notification = {
+        "id": 101,
+        "item": {
+            "business_id": "1",
+            "subject_id": "987654",
+            "root_id": "11",
+            "source_id": "12",
+            "target_id": "13",
+            "source_content": "新评论",
+        },
+    }
+    target = BiliDMClient._comment_reply_target(notification)
+
+    assert target == {"type": 1, "oid": 987654, "root": 11, "parent": 12}
+    assert BiliDMClient._notification_content(notification) == "新评论"
+    assert BiliDMClient._video_aid_from_notification(notification) == 987654
+    notification["item"]["business_id"] = "17"
+    assert BiliDMClient._video_aid_from_notification(notification) is None
+    notification["item"]["business_id"] = "1"
+
+    client = object.__new__(BiliDMClient)
+    client._notification_seen = []
+    client._notification_seen_set = set()
+    assert client._mark_notification_seen("reply", notification) is True
+    assert client._mark_notification_seen("reply", notification) is False
+    assert client._mark_notification_seen("at", notification) is True
 
 
 @pytest.mark.asyncio
@@ -270,10 +319,10 @@ def test_static_ui_assets_are_versioned_and_not_cached():
     )
 
     assert 'cache_control="no-cache, no-store, must-revalidate"' in plugin_source
-    assert 'UI_ASSET_VERSION = "1.1.12"' in plugin_source
-    assert 'style.css?v=1.1.12' in page
-    assert 'i18n.js?v=1.1.12' in page
-    assert 'script.js?v=1.1.12' in page
+    assert 'UI_ASSET_VERSION = "1.2.0"' in plugin_source
+    assert 'style.css?v=1.2.0' in page
+    assert 'i18n.js?v=1.2.0' in page
+    assert 'script.js?v=1.2.0' in page
 
 
 def test_qr_login_panel_can_be_cancelled_and_auto_closes_after_success():

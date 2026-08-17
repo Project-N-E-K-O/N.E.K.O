@@ -1,9 +1,4 @@
-"""
-B站私信 N.E.K.O 插件
-
-通过 bilibili_api 监听 B站私信，使用 AI 自动回复。
-支持文本、图片、分享视频等消息类型。
-"""
+"""B站集成 N.E.K.O 插件：私信、评论回复与 @ 通知。"""
 
 from __future__ import annotations
 
@@ -30,7 +25,7 @@ from .permission import PermissionManager
 from .qr_login import BiliDMQrLogin
 
 
-UI_ASSET_VERSION = "1.1.12"
+UI_ASSET_VERSION = "1.2.0"
 
 
 def build_open_ui_payload(*, plugin_id: str, available: bool) -> dict[str, Any]:
@@ -45,11 +40,7 @@ def build_open_ui_payload(*, plugin_id: str, available: bool) -> dict[str, Any]:
 
 @neko_plugin
 class BiliDMPlugin(NekoPluginBase):
-    """B站私信 N.E.K.O 插件
-
-    通过 bilibili_api 监听 B站私信，使用 AI 自动回复。
-    支持文本、图片、分享视频等消息类型。
-    """
+    """B站集成：监听私信、评论回复和 @ 通知，并自动回复。"""
 
     SESSION_IDLE_TIMEOUT_SECONDS = 300
     SESSION_SWEEP_INTERVAL_SECONDS = 30
@@ -83,6 +74,9 @@ class BiliDMPlugin(NekoPluginBase):
         self._ai_connect_timeout_seconds = 10.0
         self._ai_turn_timeout_seconds = 60.0
         self._handler_shutdown_timeout_seconds = 10.0
+        self._enable_comment_notifications = True
+        self._notification_poll_interval_seconds = 20
+        self._notification_max_items = 20
 
         # 权限模式（从插件数据目录的业务配置加载）
         self._permission_mode: str = "allow_list"
@@ -128,6 +122,15 @@ class BiliDMPlugin(NekoPluginBase):
         self._handler_shutdown_timeout_seconds = max(
             1.0, float(settings.get("handler_shutdown_timeout_seconds") or 10.0)
         )
+        self._enable_comment_notifications = bool(
+            settings.get("enable_comment_notifications", True)
+        )
+        self._notification_poll_interval_seconds = max(
+            5, int(settings.get("notification_poll_interval_seconds") or 20)
+        )
+        self._notification_max_items = max(
+            1, int(settings.get("notification_max_items") or 20)
+        )
 
     def _create_bili_client(self) -> None:
         self.bili_client = BiliDMClient(
@@ -136,6 +139,9 @@ class BiliDMPlugin(NekoPluginBase):
             buvid3=str(self._settings.get("buvid3") or ""),
             dedeuserid=str(self._settings.get("dedeuserid") or ""),
             ac_time_value=str(self._settings.get("ac_time_value") or ""),
+            enable_comment_notifications=self._enable_comment_notifications,
+            notification_poll_interval_seconds=self._notification_poll_interval_seconds,
+            notification_max_items=self._notification_max_items,
             logger=self.logger,
         )
 
@@ -210,6 +216,21 @@ class BiliDMPlugin(NekoPluginBase):
                 "ai_connect_timeout_seconds": self._ai_connect_timeout_seconds,
                 "ai_turn_timeout_seconds": self._ai_turn_timeout_seconds,
                 "handler_shutdown_timeout_seconds": self._handler_shutdown_timeout_seconds,
+                "enable_comment_notifications": getattr(
+                    self,
+                    "_enable_comment_notifications",
+                    bool(self._settings.get("enable_comment_notifications", True)),
+                ),
+                "notification_poll_interval_seconds": getattr(
+                    self,
+                    "_notification_poll_interval_seconds",
+                    int(self._settings.get("notification_poll_interval_seconds") or 20),
+                ),
+                "notification_max_items": getattr(
+                    self,
+                    "_notification_max_items",
+                    int(self._settings.get("notification_max_items") or 20),
+                ),
                 "show_onboarding": bool(self._settings.get("show_onboarding", True)),
             },
             "trusted_users": trusted_users,
@@ -229,8 +250,8 @@ class BiliDMPlugin(NekoPluginBase):
                     return
 
     @staticmethod
-    def _build_session_key(sender_uid: str) -> str:
-        return f"bili_dm:{sender_uid}"
+    def _build_session_key(sender_uid: str, conversation_key: str = "dm") -> str:
+        return f"bili:{conversation_key}:{sender_uid}"
 
     async def _get_session_lock(self, session_key: str) -> asyncio.Lock:
         async with self._session_locks_guard:
@@ -256,7 +277,9 @@ class BiliDMPlugin(NekoPluginBase):
     async def _run_message_handler(self, message: Dict[str, Any]) -> None:
         if not self._running:
             return
-        session_key = self._build_session_key(message["sender_uid"])
+        session_key = self._build_session_key(
+            message["sender_uid"], str(message.get("conversation_key") or "dm")
+        )
         async with self._message_concurrency:
             session_lock = await self._get_session_lock(session_key)
             async with session_lock:
@@ -352,7 +375,7 @@ class BiliDMPlugin(NekoPluginBase):
 
     @plugin_entry(
         id="get_dashboard_state",
-        name=tr("panel.status.title", default="获取 B站私信插件状态"),
+        name=tr("panel.status.title", default="获取 B站集成插件状态"),
         description=tr("panel.status.title", default="获取凭证、监听和信任用户状态"),
         input_schema={
             "type": "object",
@@ -452,7 +475,7 @@ class BiliDMPlugin(NekoPluginBase):
     )
     @plugin_entry(
         id="save_settings",
-        name=tr("entries.save_settings.name", default="保存 B站私信设置"),
+        name=tr("entries.save_settings.name", default="保存 B站集成设置"),
         description=tr(
             "entries.save_settings.description",
             default="保存 B站 Cookie 和监听参数到插件数据目录",
@@ -473,6 +496,9 @@ class BiliDMPlugin(NekoPluginBase):
                 "ai_connect_timeout_seconds": {"type": "number"},
                 "ai_turn_timeout_seconds": {"type": "number"},
                 "handler_shutdown_timeout_seconds": {"type": "number"},
+                "enable_comment_notifications": {"type": "boolean"},
+                "notification_poll_interval_seconds": {"type": "integer"},
+                "notification_max_items": {"type": "integer"},
                 "show_onboarding": {"type": "boolean"},
             },
             "additionalProperties": False,
@@ -494,6 +520,9 @@ class BiliDMPlugin(NekoPluginBase):
         ai_connect_timeout_seconds: Optional[float] = None,
         ai_turn_timeout_seconds: Optional[float] = None,
         handler_shutdown_timeout_seconds: Optional[float] = None,
+        enable_comment_notifications: Optional[bool] = None,
+        notification_poll_interval_seconds: Optional[int] = None,
+        notification_max_items: Optional[int] = None,
         show_onboarding: Optional[bool] = None,
         **_,
     ):
@@ -514,6 +543,9 @@ class BiliDMPlugin(NekoPluginBase):
             "ai_connect_timeout_seconds": ai_connect_timeout_seconds,
             "ai_turn_timeout_seconds": ai_turn_timeout_seconds,
             "handler_shutdown_timeout_seconds": handler_shutdown_timeout_seconds,
+            "enable_comment_notifications": enable_comment_notifications,
+            "notification_poll_interval_seconds": notification_poll_interval_seconds,
+            "notification_max_items": notification_max_items,
             "show_onboarding": show_onboarding,
         }
         next_settings = dict(self._settings)
@@ -523,7 +555,7 @@ class BiliDMPlugin(NekoPluginBase):
         self._settings = await self.config_store.save(next_settings)
         self._apply_runtime_settings()
         self._create_bili_client()
-        self.logger.info("B站私信面板配置已保存")
+        self.logger.info("B站集成面板配置已保存")
         payload = self._build_dashboard_state()
         payload["persisted"] = True
         return Ok(payload)
@@ -926,7 +958,7 @@ class BiliDMPlugin(NekoPluginBase):
     # ===== Message Processing =====
 
     async def _process_messages(self):
-        """处理接收到的 B站私信"""
+        """处理接收到的 B站私信、评论回复和 @ 通知。"""
         while self._running:
             try:
                 message = await self.bili_client.receive_message(timeout=1.0)
@@ -940,23 +972,25 @@ class BiliDMPlugin(NekoPluginBase):
                 await asyncio.sleep(1)
 
     async def _handle_message(self, message: Dict[str, Any]):
-        """处理单条 B站私信"""
+        """处理单条 B站入站消息。"""
         sender_uid = message["sender_uid"]
         # bili_client 已通过 User.get_user_info() 获取真实 B站昵称
         bili_nickname = message.get("sender_nickname", sender_uid)
         content = message.get("content", "")
         content_type = message.get("content_type", "text")
         msg_kind = message.get("msg_kind", "text")
+        reply_target = message.get("reply_target")
+        conversation_key = str(message.get("conversation_key") or "dm")
 
         # 检查权限
         if not self.permission_mgr.should_process(sender_uid, self._permission_mode):
-            self.logger.debug(f"忽略来自 {sender_uid} 的消息（权限不足）")
+            self.logger.debug(f"忽略来自 {sender_uid} 的 B站消息（不在权限范围内）")
             return
 
         permission_level = self.permission_mgr.get_permission_level(sender_uid)
 
         self.logger.info(
-            f"收到 B站私信 [{msg_kind}] from {sender_uid} ({bili_nickname}), "
+            f"收到 B站集成消息 [{msg_kind}] from {sender_uid} ({bili_nickname}), "
             f"权限: {permission_level}, 内容长度: {len(content)}"
         )
 
@@ -980,11 +1014,37 @@ class BiliDMPlugin(NekoPluginBase):
             return
 
         # 在消息文本前附加发送者信息，让 AI 知道是谁在说话
-        sender_context = f"[来自 B站用户 {bili_nickname}（UID: {sender_uid}）的消息] "
-        message_with_context = sender_context + message_text
+        source_label = {
+            "comment_reply": "评论回复通知",
+            "comment_at": "评论 @ 通知",
+        }.get(msg_kind, "私信")
+        sender_context = (
+            f"[来自 B站用户 {bili_nickname}（UID: {sender_uid}）的{source_label}] "
+        )
+        video_context = None
+        video_aid = message.get("video_aid")
+        if video_aid and self.bili_client:
+            try:
+                video_context = await self.bili_client.get_video_context(int(video_aid))
+            except (TypeError, ValueError):
+                video_context = None
+        video_context_text = ""
+        if video_context:
+            details = [
+                f"标题：{video_context.get('title') or '未知'}",
+                f"链接：{video_context.get('url') or '未知'}",
+            ]
+            if video_context.get("bvid"):
+                details.insert(1, f"BV号：{video_context['bvid']}")
+            if video_context.get("owner_name"):
+                details.append(f"UP主：{video_context['owner_name']}")
+            if video_context.get("description"):
+                details.append(f"简介：{video_context['description']}")
+            video_context_text = "\n[评论所在视频：" + "；".join(details) + "]"
+        message_with_context = sender_context + message_text + video_context_text
 
         # 如果已有会话，更新 B站昵称缓存
-        session_key = self._build_session_key(sender_uid)
+        session_key = self._build_session_key(sender_uid, conversation_key)
         if session_key in self._user_sessions:
             user_data = self._user_sessions[session_key]
             old_nickname = user_data.get("bili_nickname", "")
@@ -1009,10 +1069,16 @@ class BiliDMPlugin(NekoPluginBase):
 
         if reply_text:
             try:
-                await self.bili_client.send_text(sender_uid, reply_text)
-                self.logger.info(
-                    f"已回复 {sender_uid} ({bili_nickname}): {reply_text[:100]}"
-                )
+                if reply_target:
+                    await self.bili_client.send_comment_reply(reply_target, reply_text)
+                    self.logger.info(
+                        f"已回复 B站评论 {sender_uid} ({bili_nickname}): {reply_text[:100]}"
+                    )
+                else:
+                    await self.bili_client.send_text(sender_uid, reply_text)
+                    self.logger.info(
+                        f"已回复 B站私信 {sender_uid} ({bili_nickname}): {reply_text[:100]}"
+                    )
             except Exception as e:
                 self.logger.error(f"发送回复给 {sender_uid} 失败: {e}")
 
