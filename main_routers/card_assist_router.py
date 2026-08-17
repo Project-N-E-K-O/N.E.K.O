@@ -1666,6 +1666,32 @@ def _chat_scoped_suffix_has_governing_guard(
     )
 
 
+def _chat_remaining_secondary_segments_have_governing_guard(
+    text: str,
+    masked: str,
+    boundaries: list,
+    start_index: int,
+) -> bool:
+    """Inspect each remaining secondary value without merging adjacent fields."""
+    for index in range(start_index, len(boundaries)):
+        boundary = boundaries[index]
+        if boundary.group("contrast") is not None:
+            break
+        if boundary.group("secondary") is None:
+            continue
+        segment_end = (
+            boundaries[index + 1].start()
+            if index + 1 < len(boundaries)
+            else len(text)
+        )
+        if _chat_scoped_suffix_has_governing_guard(
+            text[boundary.end():segment_end],
+            masked[boundary.end():segment_end],
+        ):
+            return True
+    return False
+
+
 def _chat_scoped_governed_full_rewrite_end(clause: str) -> int | None:
     """Return the last signal end when a rewrite verb directly governs a full-card target."""
     readable = _chat_clause_without_quoted_prohibitions(clause)
@@ -2096,17 +2122,11 @@ def _chat_text_requests_full_rewrite_from_scoped_segments(text: str) -> bool:
                 and (
                     not _chat_scoped_candidate_is_command(candidate)
                     or not _chat_scoped_candidate_is_completed_command(candidate)
-                    or _chat_scoped_suffix_has_governing_guard(
-                        text[
-                            match.end():boundaries[index + 1].start()
-                            if index + 1 < len(boundaries)
-                            else len(text)
-                        ],
-                        masked[
-                            match.end():boundaries[index + 1].start()
-                            if index + 1 < len(boundaries)
-                            else len(masked)
-                        ],
+                    or _chat_remaining_secondary_segments_have_governing_guard(
+                        text,
+                        masked,
+                        boundaries,
+                        index,
                     )
                 )
             ):

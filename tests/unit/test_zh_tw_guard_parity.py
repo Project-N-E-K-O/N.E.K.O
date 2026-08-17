@@ -3714,6 +3714,15 @@ def test_multiple_secondary_fields_keep_a_completed_command():
     assert router._chat_text_requests_full_rewrite(text) is True
 
 
+@pytest.mark.parametrize('tail', ['吗', '，算了'])
+def test_later_secondary_guards_block_a_completed_command(tail):
+    import main_routers.card_assist_router as router
+
+    text = f'重写所有字段并保留头像并保留是否会员{tail}'
+    assert router._chat_text_requests_full_rewrite_core(text) is False
+    assert router._chat_text_requests_full_rewrite(text) is False
+
+
 def test_a_condition_directly_governing_rewrite_blocks_recovery():
     import main_routers.card_assist_router as router
 
