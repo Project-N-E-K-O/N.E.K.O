@@ -2874,6 +2874,13 @@ def test_a_completed_rewrite_survives_secondary_content(text):
         "If you rewrite all fields, keep the tone",
         "不是必要但是否要重写所有字段",
         "把所有字段重写并不是必要的",
+        "重写所有字段并保留是否会员这个标签吗",
+        "把所有字段重写并保留会员标签并不是必要的",
+        "重写所有字段并保留头像是不是更好",
+        "重写所有字段并保留头像不是必须的",
+        "The automation will rewrite all fields if enabled",
+        "是否不但要重写所有字段，而且要修改头像",
+        "是否非但要重写所有字段，而且要修改头像",
     ],
 )
 def test_scoped_recovery_does_not_bypass_existing_guards(text):
@@ -2881,6 +2888,16 @@ def test_scoped_recovery_does_not_bypass_existing_guards(text):
     import main_routers.card_assist_router as router
 
     assert router._chat_text_requests_full_rewrite(text) is False, text
+
+
+def test_scoped_recovery_does_not_discard_a_distant_conditional_head():
+    """候选前缀超过窗口时不能截掉更早的条件头再恢复命令。"""  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    text = "If " + "this is long context " * 20 + "rewrite all fields并保留头像"
+    assert len(text[:text.index("并保留")]) > router._CHAT_SCOPED_RECOVERY_WINDOW_CHARS
+    assert router._chat_text_requests_full_rewrite_core(text) is False
+    assert router._chat_text_requests_full_rewrite(text) is False
 
 
 def test_clause_splitting_still_does_not_parse_quotes():
@@ -3033,13 +3050,13 @@ def test_the_card_frame_table_covers_all_four_groups(correlative, frame):
     "modifier",
     ["没有填", "沒有填", "未填", "未填写", "未填寫", "空着", "空著", "缺失", "漏掉", "为空", "為空"],
 )
-def test_common_missing_value_modifiers_keep_a_whole_card_scope(modifier):
-    """有限的缺失值修饰词可以修饰整卡级中心语，但不能放开单字段名。"""  # noqa: DOCSTRING_CJK
+def test_missing_value_scope_is_not_a_full_card_rewrite(modifier):
+    """只修改缺失内容不能进入会补全所有字段的整卡重写路径。"""  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
     assert router._chat_text_requests_full_rewrite(
         f'把整个卡的所有{modifier}的内容重写一遍'
-    ) is True
+    ) is False
     assert router._chat_text_requests_full_rewrite(
         f'把整个卡的所有{modifier}的名字重写一遍'
     ) is False

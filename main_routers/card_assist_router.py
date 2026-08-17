@@ -825,16 +825,8 @@ _WHOLE_CARD_BARE_QUANTIFIERS = tuple(
     word for word in _WHOLE_CARD_QUANTIFIERS
     if not word.startswith(("每", "各", "逐"))
 )
-_WHOLE_CARD_SCOPE_MODIFIERS = (
-    "可见", "可見", "现有", "現有", "已有", "既有", "当前", "當前",
-    # 缺失值类修饰词。保持有限词表：后面仍必须跟整卡级中心语，不能直接修饰字段名。
-    "没有填", "沒有填", "未填写", "未填寫", "未填",
-    "空着", "空著", "缺失", "漏掉", "为空", "為空",
-)
 _WHOLE_CARD_SCOPE_MODIFIER = (
-    r"(?:(?:"
-    + "|".join(sorted(_WHOLE_CARD_SCOPE_MODIFIERS, key=len, reverse=True))
-    + r")的?)?"
+    r"(?:(?:可见|可見|现有|現有|已有|既有|当前|當前)的?)?"
 )
 # ⚠️⚠️ 整卡级名词是**前缀匹配**，必须要求右边界，否则 `字段名` 会被当成 `字段`：
 # `把整个卡的所有字段名重写` 说的是「把所有字段**名**改掉」，却会触发
@@ -1481,9 +1473,16 @@ _CHAT_SCOPED_RECOVERY_BOUNDARY_RE = re.compile(
     r")"
     r"|(?P<trailing_en>(?<![A-Za-z])(?:if|when)(?![A-Za-z]))"
     # `但是否…` 必须按裸 `但` 切，让后件保留完整的疑问标记 `是否`。
-    r"|(?P<contrast>但是(?!否)|可是|不过|不過|但|(?<![A-Za-z])but(?![A-Za-z]))",
+    # 左界同时排除添加关系的 `不但/非但`，它们不能把前面的疑问守卫切掉。
+    r"|(?P<contrast>(?<![不非])(?:但是(?!否)|但)|可是|不过|不過|"
+    r"(?<![A-Za-z])but(?![A-Za-z]))",
     re.IGNORECASE,
 )
+_CHAT_EN_TRAILING_COMMAND_RE = re.compile(
+    r"^\s*(?:please\s+)?(?:rewrite|revise|regenerate|redo|refresh)(?![A-Za-z0-9_])",
+    re.IGNORECASE,
+)
+_CHAT_SCOPED_SENTENCE_FINAL_QUESTION_RE = re.compile(r"[吗嗎呢]\s*[？?]?\s*$")
 
 
 def _chat_mask_quoted_spans(text: str) -> str:
@@ -1492,6 +1491,21 @@ def _chat_mask_quoted_spans(text: str) -> str:
         lambda match: " " * len(match.group(0)),
         text,
     )
+
+
+def _chat_scoped_suffix_has_governing_guard(suffix: str) -> bool:
+    """Return whether a discarded secondary suffix still governs the command."""
+    if _CHAT_POSTPOSED_NEGATION_RE.search(suffix):
+        return True
+    if _CHAT_NEGATED_REWRITE_RE.search(suffix):
+        return True
+    if _CHAT_SCOPED_SENTENCE_FINAL_QUESTION_RE.search(suffix):
+        return True
+    readable = _chat_clause_without_free_choice(suffix)
+    question = _CHAT_QUESTION_CLAUSE_RE.search(readable)
+    # `是否会员` / `为什么` / `好不好` can be the secondary value itself. A question
+    # marker after leading object text governs the proposed operation, so recovery must fail.
+    return question is not None and bool(readable[:question.start()].strip())
 
 
 def _chat_span_carries_a_question(span: str) -> bool:
@@ -1745,14 +1759,28 @@ def _chat_text_requests_full_rewrite_from_scoped_segments(text: str) -> bool:
     for index, match in enumerate(_CHAT_SCOPED_RECOVERY_BOUNDARY_RE.finditer(masked)):
         if index >= _CHAT_SCOPED_RECOVERY_MAX_BOUNDARIES:
             break
-        if match.lastgroup == "contrast":
-            candidate = text[
-                match.end():match.end() + _CHAT_SCOPED_RECOVERY_WINDOW_CHARS
-            ]
+        if match.group("contrast") is not None:
+            if len(text) - match.end() > _CHAT_SCOPED_RECOVERY_WINDOW_CHARS:
+                continue
+            candidate = text[match.end():]
         else:
-            candidate = text[
-                max(0, match.start() - _CHAT_SCOPED_RECOVERY_WINDOW_CHARS):match.start()
-            ]
+            # Never truncate unseen governing context on either side of a recovery boundary.
+            if (
+                match.start() > _CHAT_SCOPED_RECOVERY_WINDOW_CHARS
+                or len(text) - match.end() > _CHAT_SCOPED_RECOVERY_WINDOW_CHARS
+            ):
+                continue
+            candidate = text[:match.start()]
+            if (
+                match.group("trailing_en") is not None
+                and not _CHAT_EN_TRAILING_COMMAND_RE.search(candidate)
+            ):
+                continue
+            if (
+                match.group("secondary") is not None
+                and _chat_scoped_suffix_has_governing_guard(masked[match.end():])
+            ):
+                continue
         if _chat_text_requests_full_rewrite_core(candidate):
             return True
     return False
