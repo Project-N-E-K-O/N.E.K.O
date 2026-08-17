@@ -1784,7 +1784,26 @@ def _chat_sentence_has_third_party_reporting_context(sentence: str) -> bool:
     )
 
 
-def _chat_reporting_contexts_for_boundaries(text: str, boundaries: list) -> list[bool]:
+def _chat_contrast_starts_explicit_first_person_request(
+    masked: str, boundary
+) -> bool:
+    return bool(
+        boundary.group("contrast") is not None
+        and _CHAT_FIRST_PERSON_REQUEST_HEAD_RE.search(masked[boundary.end():])
+    )
+
+
+def _chat_explicit_request_suffix_after_report(sentence: str) -> str | None:
+    masked = _chat_mask_quoted_spans(sentence)
+    for boundary in _CHAT_SCOPED_RECOVERY_BOUNDARY_RE.finditer(masked):
+        if _chat_contrast_starts_explicit_first_person_request(masked, boundary):
+            return sentence[boundary.end():]
+    return None
+
+
+def _chat_reporting_contexts_for_boundaries(
+    text: str, masked: str, boundaries: list
+) -> list[bool]:
     """Carry reporting state across boundaries in one linear pass."""
     contexts = []
     reported = False
@@ -1801,6 +1820,11 @@ def _chat_reporting_contexts_for_boundaries(text: str, boundaries: list) -> list
             candidate = pending + chunk
             reported = _chat_sentence_has_third_party_reporting_context(candidate)
             pending = candidate[-128:]
+        if reported and _chat_contrast_starts_explicit_first_person_request(
+            masked, boundary
+        ):
+            reported = False
+            pending = ""
         contexts.append(reported)
         scan_start = boundary.end()
     return contexts
@@ -2087,7 +2111,10 @@ def _chat_text_requests_full_rewrite_core(text: str) -> bool:
         text = text[:unmatched_assignment_start]
     for sentence in _CHAT_REPORTING_CONTEXT_RESET_RE.split(text):
         if _chat_sentence_has_third_party_reporting_context(sentence):
-            continue
+            explicit_request = _chat_explicit_request_suffix_after_report(sentence)
+            if explicit_request is None:
+                continue
+            sentence = explicit_request
         for clause in _chat_clauses(sentence):
         # ⚠️ 三条谓词读的必须是**同一份文本**：抹掉的那段引用对否定和正向信号
         # 一视同仁。上一版只从否定守卫里抹，正向信号照读原文，于是引号里的
@@ -2242,7 +2269,9 @@ def _chat_text_requests_full_rewrite_from_scoped_segments(text: str) -> bool:
     if len(recent_boundaries) > _CHAT_SCOPED_RECOVERY_MAX_BOUNDARIES:
         segment_start = recent_boundaries.popleft().end()
     boundaries = list(recent_boundaries)
-    reporting_contexts = _chat_reporting_contexts_for_boundaries(text, boundaries)
+    reporting_contexts = _chat_reporting_contexts_for_boundaries(
+        text, masked, boundaries
+    )
     for index, match in enumerate(boundaries):
         if reporting_contexts[index]:
             continue

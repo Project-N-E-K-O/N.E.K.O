@@ -3992,6 +3992,33 @@ def test_reported_context_is_retained_before_a_contrast_candidate():
     ) is True
 
 
+def test_an_explicit_first_person_request_resets_reported_speech_context():
+    import main_routers.card_assist_router as router
+
+    direct = '小明说：重写名字，但我要求：请重写所有字段'
+    assert router._chat_text_requests_full_rewrite_core(direct) is True
+    assert router._chat_text_requests_full_rewrite(direct) is True
+
+    recovered = '小明说：重写名字，但我要求：先重写名字并保留头像，然后请重写所有字段并保留是否会员'
+    assert router._chat_text_requests_full_rewrite_core(recovered) is False
+    assert router._chat_text_requests_full_rewrite(recovered) is True
+
+
+@pytest.mark.parametrize(
+    'text',
+    [
+        '小明说：“重写名字，但我要求：请重写所有字段”',
+        '小明说：重写名字，但他要求：请重写所有字段',
+        '小明说：重写名字，但是请重写所有字段',
+        '小明说：重写名字，但我觉得请重写所有字段',
+    ],
+)
+def test_only_an_unquoted_explicit_first_person_request_resets_reporting(text):
+    import main_routers.card_assist_router as router
+
+    assert router._chat_text_requests_full_rewrite(text) is False
+
+
 def test_reported_context_is_retained_across_secondary_list_items():
     import main_routers.card_assist_router as router
 
