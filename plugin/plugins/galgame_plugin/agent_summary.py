@@ -1283,8 +1283,6 @@ class AgentSummaryMixin:
                                 ),
                                 "text": text,
                                 "state": choice["choice_state"],
-                                "scene_id": str(choice.get("scene_id") or ""),
-                                "route_id": str(choice.get("route_id") or ""),
                                 "ts": str(
                                     choice.get("ts")
                                     or event.get("ts")
@@ -1296,6 +1294,10 @@ class AgentSummaryMixin:
                             sort_keys=True,
                             separators=(",", ":"),
                         ),
+                        "fallback_scope": {
+                            "scene_id": str(choice.get("scene_id") or ""),
+                            "route_id": str(choice.get("route_id") or ""),
+                        },
                         "choice": choice,
                     }
                 )
@@ -1338,15 +1340,19 @@ class AgentSummaryMixin:
                     if choice_state == "selected"
                     else ""
                 )
+                semantic_payload = {
+                    "choice_id": str(
+                        choice.get("choice_id") or choice.get("option_id") or ""
+                    ),
+                    "text": text,
+                    "state": choice_state,
+                    "ts": occurrence_ts,
+                }
+                if choice_state == "visible":
+                    semantic_payload["scene_id"] = choice_scene_id
+                    semantic_payload["route_id"] = choice_route_id
                 semantic = json.dumps(
-                    {
-                        "choice_id": str(choice.get("choice_id") or choice.get("option_id") or ""),
-                        "text": text,
-                        "state": choice_state,
-                        "scene_id": choice_scene_id,
-                        "route_id": choice_route_id,
-                        "ts": occurrence_ts,
-                    },
+                    semantic_payload,
                     ensure_ascii=False,
                     sort_keys=True,
                     separators=(",", ":"),
@@ -1376,7 +1382,11 @@ class AgentSummaryMixin:
                 signatures=[semantic for _choice, _scene, semantic in fallback_choices],
             )
             source_aliases: dict[int, str] = {}
-            event_keys_by_signature: dict[str, list[str]] = {}
+            source_scopes: dict[int, dict[str, str]] = {}
+            event_occurrences_by_signature: dict[
+                str,
+                list[dict[str, Any]],
+            ] = {}
             consumed_event_signatures: dict[str, int] = {}
             if choice_state == "selected":
                 fallback_aliases = self._scene_capsule_line_fallback_aliases
@@ -1384,11 +1394,21 @@ class AgentSummaryMixin:
                     fallback_source_key,
                     {},
                 )
+                fallback_state = self._scene_capsule_fallback_occurrences.get(
+                    fallback_source_key
+                )
+                if isinstance(fallback_state, dict):
+                    raw_scopes = fallback_state.setdefault("scopes", {})
+                    if isinstance(raw_scopes, dict):
+                        source_scopes = raw_scopes
                 for occurrence in occurrences:
                     signature = str(occurrence.get("fallback_signature") or "")
                     if signature:
-                        event_keys_by_signature.setdefault(signature, []).append(
-                            str(occurrence.get("event_key") or "")
+                        event_occurrences_by_signature.setdefault(
+                            signature,
+                            [],
+                        ).append(
+                            occurrence
                         )
             visible_group_signature = ""
             if choice_state == "visible" and fallback_choices:
@@ -1406,12 +1426,35 @@ class AgentSummaryMixin:
                 fallback_ids,
                 strict=False,
             ):
-                matching_event_keys = event_keys_by_signature.get(semantic) or []
+                matching_events = event_occurrences_by_signature.get(semantic) or []
                 consumed = consumed_event_signatures.get(semantic, 0)
-                if consumed < len(matching_event_keys):
-                    source_aliases[occurrence_id] = matching_event_keys[consumed]
+                if consumed < len(matching_events):
+                    matched_event = matching_events[consumed]
+                    source_aliases[occurrence_id] = str(
+                        matched_event.get("event_key") or ""
+                    )
+                    matched_scope = matched_event.get("fallback_scope")
+                    if isinstance(matched_scope, dict):
+                        source_scopes[occurrence_id] = {
+                            "scene_id": str(matched_scope.get("scene_id") or ""),
+                            "route_id": str(matched_scope.get("route_id") or ""),
+                        }
                     consumed_event_signatures[semantic] = consumed + 1
                     continue
+                if choice_state == "selected":
+                    saved_scope = source_scopes.get(occurrence_id)
+                    if not isinstance(saved_scope, dict):
+                        saved_scope = {
+                            "scene_id": choice_scene_id or scene_id,
+                            "route_id": (
+                                str(choice.get("route_id") or "")
+                                or str(snapshot.get("route_id") or "")
+                            ),
+                        }
+                        source_scopes[occurrence_id] = saved_scope
+                    choice_scene_id = str(saved_scope.get("scene_id") or "")
+                    choice["scene_id"] = choice_scene_id
+                    choice["route_id"] = str(saved_scope.get("route_id") or "")
                 group_signature = visible_group_signature or (
                     self._scene_capsule_choice_handoff_signature(
                         event_type=f"history_choice:{choice_state}",
@@ -1455,6 +1498,9 @@ class AgentSummaryMixin:
                 for occurrence_id in list(source_aliases):
                     if occurrence_id not in active_occurrence_ids:
                         source_aliases.pop(occurrence_id, None)
+                for occurrence_id in list(source_scopes):
+                    if occurrence_id not in active_occurrence_ids:
+                        source_scopes.pop(occurrence_id, None)
         return occurrences
 
     def _note_scene_summary_suppressed(
@@ -2073,48 +2119,53 @@ class AgentSummaryMixin:
         previous_observed_source = str(
             ledger.get("observed_source_identity") or ""
         )
-        if previous_observed_source and previous_observed_source != source_identity:
-            ledger["memory_handoff_overlap_event_keys"] = []
-            if str(ledger.get("observed_route_id") or "") == route_id:
-                previous_observed_scene_id = str(
-                    ledger.get("observed_scene_id") or ""
-                )
-                scene_aliases = dict(
-                    ledger.get("memory_handoff_scene_aliases") or {}
-                )
-                current_scope_key = self._scene_tracker.summary_scope_key(
-                    scene_id,
-                    route_id,
-                )
-                observed_overlap_end = self._scene_capsule_handoff_overlap_end(
-                    [str(item) for item in list(ledger.get("observed_tail") or [])],
-                    current_texts,
-                )
-                if observed_overlap_end:
-                    if (
-                        previous_observed_scene_id
-                        and previous_observed_scene_id != scene_id
-                    ):
+        if current_texts:
+            if previous_observed_source and previous_observed_source != source_identity:
+                ledger["memory_handoff_overlap_event_keys"] = []
+                if str(ledger.get("observed_route_id") or "") == route_id:
+                    previous_observed_scene_id = str(
+                        ledger.get("observed_scene_id") or ""
+                    )
+                    scene_aliases = dict(
+                        ledger.get("memory_handoff_scene_aliases") or {}
+                    )
+                    current_scope_key = self._scene_tracker.summary_scope_key(
+                        scene_id,
+                        route_id,
+                    )
+                    observed_overlap_end = self._scene_capsule_handoff_overlap_end(
+                        [
+                            str(item)
+                            for item in list(ledger.get("observed_tail") or [])
+                        ],
+                        current_texts,
+                    )
+                    if observed_overlap_end:
+                        if (
+                            previous_observed_scene_id
+                            and previous_observed_scene_id != scene_id
+                        ):
+                            scene_aliases.pop(current_scope_key, None)
+                            scene_aliases[current_scope_key] = previous_observed_scene_id
+                            while len(scene_aliases) > 8:
+                                scene_aliases.pop(next(iter(scene_aliases)), None)
+                        ledger["memory_handoff_overlap_event_keys"] = [
+                            str(item.get("event_key") or "")
+                            for item in current_lines[:observed_overlap_end]
+                            if str(item.get("event_key") or "")
+                        ]
+                    else:
                         scene_aliases.pop(current_scope_key, None)
-                        scene_aliases[current_scope_key] = previous_observed_scene_id
-                        while len(scene_aliases) > 8:
-                            scene_aliases.pop(next(iter(scene_aliases)), None)
-                    ledger["memory_handoff_overlap_event_keys"] = [
-                        str(item.get("event_key") or "")
-                        for item in current_lines[:observed_overlap_end]
-                        if str(item.get("event_key") or "")
-                    ]
-                else:
-                    scene_aliases.pop(current_scope_key, None)
-                ledger["memory_handoff_scene_aliases"] = scene_aliases
-        ledger["observed_source_identity"] = source_identity
-        ledger["observed_tail"] = list(current_texts[-4:])
-        ledger["observed_scene_id"] = scene_id
-        ledger["observed_route_id"] = route_id
+                    ledger["memory_handoff_scene_aliases"] = scene_aliases
+            ledger["observed_source_identity"] = source_identity
+            ledger["observed_tail"] = list(current_texts[-4:])
+            ledger["observed_scene_id"] = scene_id
+            ledger["observed_route_id"] = route_id
         if (
             self._scene_summary_repeat_guard_enabled
             and previous_source_identity
             and previous_source_identity != source_identity
+            and (current_texts or current_choice_group_signatures)
         ):
             if str(ledger.get("route_id") or "") == route_id:
                 previous_tail = [

@@ -760,6 +760,73 @@ def test_selected_choice_fallback_keeps_event_identity_after_event_eviction(
 
 
 @pytest.mark.plugin_unit
+def test_selected_choice_without_scene_keeps_event_time_scope_after_scene_change(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(_Ctx(plugin_dir, _make_effective_config(bridge_root))),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    selected_choice = {
+        "choice_id": "choice-a",
+        "text": "follow her",
+        "route_id": "route-a",
+        "action": "selected",
+        "ts": "2026-04-21T08:35:02Z",
+    }
+    choice_event = _event(
+        seq=2,
+        event_type="choice_selected",
+        session_id="sess-a",
+        game_id="demo.alpha",
+        ts="2026-04-21T08:35:02Z",
+        payload={
+            "route_id": "route-a",
+            "choice": {"choice_id": "choice-a", "text": "follow her"},
+        },
+    )
+    scene_event = _event(
+        seq=1,
+        event_type="line_changed",
+        session_id="sess-a",
+        game_id="demo.alpha",
+        ts="2026-04-21T08:35:01Z",
+        payload={"scene_id": "scene-a", "route_id": "route-a", "text": "choose"},
+    )
+    scene_a_snapshot = _session_state(scene_id="scene-a", route_id="route-a")
+    with_event = _shared_state(
+        session_id="sess-a",
+        snapshot=scene_a_snapshot,
+        history_events=[scene_event, choice_event],
+        history_choices=[selected_choice],
+    )
+
+    original = agent._scene_capsule_choice_occurrences(
+        with_event,
+        snapshot=scene_a_snapshot,
+    )
+    original_key = next(item["event_key"] for item in original if item["seq"] == 2)
+    scene_b_snapshot = _session_state(scene_id="scene-b", route_id="route-a")
+    after_scene_change = agent._scene_capsule_choice_occurrences(
+        {
+            **with_event,
+            "latest_snapshot": scene_b_snapshot,
+            "history_events": [],
+        },
+        snapshot=scene_b_snapshot,
+    )
+
+    assert [item["event_key"] for item in after_scene_change] == [original_key]
+    assert [
+        str((item.get("choice") or {}).get("scene_id") or "")
+        for item in after_scene_change
+    ] == ["scene-a"]
+
+
+@pytest.mark.plugin_unit
 def test_snapshot_choice_menu_is_merged_with_older_event_occurrences(
     tmp_path: Path,
 ) -> None:
@@ -4048,6 +4115,88 @@ async def test_handoff_alias_requires_overlapping_scene_evidence(
         not dict(ledger.get("memory_handoff_scene_aliases") or {})
         for ledger in agent._scene_capsule_delivery_ledger.values()
     )
+
+
+@pytest.mark.plugin_unit
+def test_handoff_waits_for_first_stable_line_before_deciding_scene_alias(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(_Ctx(plugin_dir, _make_effective_config(bridge_root))),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    memory_snapshot = _session_state(scene_id="memory-scene", route_id="route-a")
+    memory_shared = _shared_state(
+        game_id="demo.alpha",
+        session_id="memory-session",
+        active_data_source=DATA_SOURCE_MEMORY_READER,
+        snapshot=memory_snapshot,
+    )
+    memory_occurrence = {
+        "event_key": "memory-line",
+        "line": {
+            "scene_id": "memory-scene",
+            "route_id": "route-a",
+            "text": "overlapping line",
+        },
+    }
+    agent._maybe_schedule_scene_capsule(
+        memory_shared,
+        snapshot=memory_snapshot,
+        line_occurrences=[memory_occurrence],
+        all_choice_occurrences=[],
+        allow_delivery=False,
+    )
+    ocr_snapshot = _session_state(scene_id="ocr-scene", route_id="route-a")
+    ocr_shared = _shared_state(
+        game_id="demo.alpha",
+        session_id="ocr-session",
+        active_data_source=DATA_SOURCE_OCR_READER,
+        snapshot=ocr_snapshot,
+    )
+    agent._remember_trusted_scene_source_handoff(
+        agent._session_fingerprint(memory_shared),
+        agent._session_fingerprint(ocr_shared),
+    )
+
+    agent._maybe_schedule_scene_capsule(
+        ocr_shared,
+        snapshot=ocr_snapshot,
+        line_occurrences=[],
+        all_choice_occurrences=[],
+        allow_delivery=False,
+    )
+    agent._maybe_schedule_scene_capsule(
+        ocr_shared,
+        snapshot=ocr_snapshot,
+        line_occurrences=[
+            {
+                "event_key": "ocr-line",
+                "line": {
+                    "scene_id": "ocr-scene",
+                    "route_id": "route-a",
+                    "text": "overlapping line",
+                },
+            }
+        ],
+        all_choice_occurrences=[],
+        allow_delivery=False,
+    )
+
+    boundary = agent._scene_capsule_boundary_key(
+        ocr_shared,
+        session_id="ocr-session",
+    )
+    ledger = agent._scene_capsule_delivery_ledger[boundary]
+    assert ledger["memory_handoff_scene_aliases"] == {
+        agent._scene_tracker.summary_scope_key(
+            "ocr-scene",
+            "route-a",
+        ): "memory-scene"
+    }
 
 
 @pytest.mark.asyncio
