@@ -328,7 +328,9 @@ class MarketInstallRequest(BaseModel):
             "不一致会拒绝并回滚"
         ),
     )
-    on_conflict: str = Field(default="fail", pattern=r"^(rename|fail)$")
+    # Keep Market installs aligned with imported packages: an existing plugin
+    # directory is a conflict, never a request to create ``plugin_1``.
+    on_conflict: str = Field(default="fail", pattern=r"^fail$")
     require_confirm: bool = Field(default=True, description="是否需要用户确认（预留）")
 
     @field_validator("package_sha256", mode="before")

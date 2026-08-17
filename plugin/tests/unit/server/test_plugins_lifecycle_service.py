@@ -73,6 +73,22 @@ class _CaptureLogger:
         self.errors.append(rendered)
 
 
+class _FakeInstallSourceManager:
+    def __init__(self, *, package_id: str, active_package_ids: tuple[str, ...] = ()) -> None:
+        self.package_id = package_id
+        self.active_package_ids = active_package_ids
+        self.marked_removed: list[Path] = []
+
+    def package_id_for_directory(self, _directory_path: Path) -> str:
+        return self.package_id
+
+    def mark_removed(self, *, directory_path: Path) -> None:
+        self.marked_removed.append(directory_path)
+
+    def list_entries(self) -> list[SimpleNamespace]:
+        return [SimpleNamespace(package_id=package_id) for package_id in self.active_package_ids]
+
+
 @pytest.mark.plugin_unit
 def test_get_plugin_config_path_returns_existing_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     root = tmp_path / "plugins"
@@ -1999,6 +2015,11 @@ async def test_delete_plugin_removes_directory_and_metadata(
     cache_backup = copy.deepcopy(module.state._snapshot_cache)
     refresh_calls: list[str] = []
     events: list[dict[str, object]] = []
+    profiles_root = tmp_path / "profiles"
+    profile_dir = profiles_root / "demo_package"
+    profile_dir.mkdir(parents=True)
+    (profile_dir / "default.toml").write_text("[profile]\n", encoding="utf-8")
+    install_source_manager = _FakeInstallSourceManager(package_id="demo_package")
 
     try:
         with module.state.acquire_plugins_write_lock():
@@ -2023,6 +2044,8 @@ async def test_delete_plugin_removes_directory_and_metadata(
         monkeypatch.setattr(module, "PLUGIN_CONFIG_ROOTS", (tmp_path,))
         monkeypatch.setattr(module.plugin_registry_service, "refresh_registry", _refresh_registry)
         monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: events.append(dict(event)))
+        monkeypatch.setattr(module, "get_install_source_manager", lambda: install_source_manager)
+        monkeypatch.setattr(module, "get_user_package_profiles_root", lambda: profiles_root)
 
         service = module.PluginLifecycleService()
         response = await service.delete_plugin("demo_plugin")
@@ -2032,6 +2055,8 @@ async def test_delete_plugin_removes_directory_and_metadata(
         assert response["deleted_from_disk"] is True
         assert refresh_calls == ["refresh"]
         assert plugin_dir.exists() is False
+        assert profile_dir.exists() is False
+        assert install_source_manager.marked_removed == [plugin_dir]
         with module.state.acquire_plugins_read_lock():
             assert "demo_plugin" not in module.state.plugins
         with module.state.acquire_event_handlers_read_lock():
@@ -2049,6 +2074,30 @@ async def test_delete_plugin_removes_directory_and_metadata(
             module.state.event_handlers.update(handlers_backup)
         with module.state._snapshot_cache_lock:
             module.state._snapshot_cache = cache_backup
+
+
+@pytest.mark.plugin_unit
+def test_delete_keeps_profile_shared_by_another_bundle_plugin(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    plugin_dir = tmp_path / "first_bundle_plugin"
+    profiles_root = tmp_path / "profiles"
+    profile_dir = profiles_root / "shared_bundle"
+    profile_dir.mkdir(parents=True)
+    (profile_dir / "default.toml").write_text("[profile]\n", encoding="utf-8")
+    install_source_manager = _FakeInstallSourceManager(
+        package_id="shared_bundle",
+        active_package_ids=("shared_bundle",),
+    )
+    monkeypatch.setattr(module, "get_install_source_manager", lambda: install_source_manager)
+    monkeypatch.setattr(module, "get_user_package_profiles_root", lambda: profiles_root)
+
+    deleted_profile = module._remove_install_source_and_orphaned_profile_sync(plugin_dir)
+
+    assert deleted_profile is None
+    assert profile_dir.is_dir()
+    assert install_source_manager.marked_removed == [plugin_dir]
 
 
 @pytest.mark.plugin_unit

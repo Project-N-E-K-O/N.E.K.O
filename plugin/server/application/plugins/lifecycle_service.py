@@ -39,6 +39,10 @@ from plugin.logging_config import get_logger
 from plugin.server.domain import IO_RUNTIME_ERRORS, RUNTIME_ERRORS
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.application.plugins.registry_service import PluginRegistryService
+from plugin.server.application.install_source import (
+    InstallSourceError,
+    get_install_source_manager,
+)
 from plugin.server.infrastructure.config_resolver import resolve_plugin_config_from_path
 from plugin.server.infrastructure.runtime_overrides import (
     RuntimeOverridePersistenceError,
@@ -58,6 +62,7 @@ from plugin.settings import (
     PLUGIN_SHUTDOWN_TIMEOUT,
     PLUGIN_STARTUP_TIMEOUT,
     PLUGIN_SYNC_AUTO_START_ON_TOGGLE,
+    get_user_package_profiles_root,
 )
 from plugin.utils import parse_bool_config
 
@@ -364,6 +369,66 @@ def _delete_plugin_directory_sync(plugin_dir: Path) -> bool:
         return False
     shutil.rmtree(plugin_dir)
     return True
+
+
+def _remove_install_source_and_orphaned_profile_sync(plugin_dir: Path) -> Path | None:
+    """Mark a deleted user plugin removed and clean up its unshared profile.
+
+    Package profiles are keyed by package ID, rather than plugin directory.
+    A bundle can therefore have several plugin directories sharing one profile.
+    Only remove the profile after the source record has been marked removed and
+    no active record still refers to that package ID.
+
+    Install-source bookkeeping is best-effort during deletion: a lock-file
+    issue must not turn a successfully removed plugin directory into a failed
+    delete operation.
+    """
+    manager = get_install_source_manager()
+    if manager is None:
+        return None
+
+    try:
+        package_id = manager.package_id_for_directory(plugin_dir)
+        manager.mark_removed(directory_path=plugin_dir)
+    except InstallSourceError as exc:
+        logger.warning(
+            "delete_plugin: failed to update install source for plugin_dir={}: {}",
+            plugin_dir,
+            exc,
+        )
+        return None
+    except Exception as exc:
+        logger.warning(
+            "delete_plugin: unexpected install-source cleanup failure for plugin_dir={}: {}",
+            plugin_dir,
+            exc,
+        )
+        return None
+
+    if not package_id or any(entry.package_id == package_id for entry in manager.list_entries()):
+        return None
+
+    profiles_root = get_user_package_profiles_root().resolve()
+    profile_dir = (profiles_root / package_id).resolve()
+    if profile_dir.parent != profiles_root:
+        logger.warning(
+            "delete_plugin: refusing to remove unsafe package profile path: {}",
+            profile_dir,
+        )
+        return None
+
+    try:
+        shutil.rmtree(profile_dir)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        logger.warning(
+            "delete_plugin: failed to remove package profile {}: {}",
+            profile_dir,
+            exc,
+        )
+        return None
+    return profile_dir
 
 
 def _register_or_replace_host_sync(plugin_id: str, host: PluginHostContract) -> int:
@@ -1260,6 +1325,10 @@ class PluginLifecycleService:
 
         try:
             deleted_from_disk = await asyncio.to_thread(_delete_plugin_directory_sync, plugin_dir)
+            deleted_profile_dir = await asyncio.to_thread(
+                _remove_install_source_and_orphaned_profile_sync,
+                plugin_dir,
+            )
             await asyncio.to_thread(_pop_plugin_host_sync, plugin_id)
             await asyncio.to_thread(_remove_event_handlers_sync, plugin_id)
             await asyncio.to_thread(_remove_plugin_metadata_sync, plugin_id)
@@ -1289,6 +1358,7 @@ class PluginLifecycleService:
             data={
                 "plugin_dir": str(plugin_dir),
                 "deleted_from_disk": deleted_from_disk,
+                "deleted_profile_dir": str(deleted_profile_dir) if deleted_profile_dir else None,
             },
         )
         response: dict[str, object] = {

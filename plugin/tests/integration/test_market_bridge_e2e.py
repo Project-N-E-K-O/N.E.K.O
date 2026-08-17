@@ -532,7 +532,7 @@ async def test_install_happy_path_writes_v2_lock_entry(
                 "channel": "stable",
                 "published_at": "2026-05-16T08:00:00.000000Z",
                 "mode": "install",
-                "on_conflict": "rename",
+                "on_conflict": "fail",
             },
         )
         assert resp.status_code == 200, resp.text
@@ -615,7 +615,7 @@ async def test_installed_endpoint_projects_latest_install_source(
                 "channel": "beta",
                 "published_at": "2026-05-16T09:00:00.000000Z",
                 "mode": "install",
-                "on_conflict": "rename",
+                "on_conflict": "fail",
             },
         )
         task_id = resp.json()["task_id"]
@@ -688,7 +688,7 @@ async def test_built_market_package_install_surfaces_in_plugin_list(
                 "channel": "stable",
                 "published_at": "2026-05-21T08:00:00.000000Z",
                 "mode": "install",
-                "on_conflict": "rename",
+                "on_conflict": "fail",
             },
         )
         assert resp.status_code == 200, resp.text
@@ -847,7 +847,7 @@ async def test_authenticated_market_install_reports_usage(
                 "channel": "stable",
                 "published_at": "2026-05-21T08:30:00.000000Z",
                 "mode": "install",
-                "on_conflict": "rename",
+                "on_conflict": "fail",
             },
         )
         assert resp.status_code == 200, resp.text
@@ -3730,7 +3730,7 @@ async def test_install_identity_mismatch_warns_but_succeeds(
 async def test_install_conflict_fails_without_renaming_executable_directory(
     bridge_e2e_env: dict[str, Any],
 ) -> None:
-    """Even a legacy rename request must not create an executable plugin copy."""
+    """Market rejects the legacy rename strategy instead of creating a copy."""
 
     plugin_id = "e2e_rename_identity"
     version = "1.0.0"
@@ -3768,20 +3768,8 @@ async def test_install_conflict_fails_without_renaming_executable_directory(
                 "on_conflict": "rename",
             },
         )
-        task_id = resp.json()["task_id"]
+        assert resp.status_code == 422, resp.text
 
-        deadline = time.monotonic() + 30
-        final_status: dict[str, Any] | None = None
-        while time.monotonic() < deadline:
-            poll = await client.get(f"/market/tasks/{task_id}?token={token}")
-            body = poll.json()
-            if body["status"] in ("completed", "failed"):
-                final_status = body
-                break
-            await asyncio.sleep(0.05)
-
-    assert final_status is not None
-    assert final_status["status"] == "failed", final_status
     assert not (user_root / f"{plugin_id}_1").exists()
 
     active_entries = []
@@ -3838,7 +3826,7 @@ async def test_upgrade_happy_path_replaces_lock_entry(
                     "version": version,
                     "channel": "stable",
                     "mode": mode,
-                    "on_conflict": "rename" if mode == "install" else "fail",
+                    "on_conflict": "fail",
                 },
             )
             assert resp.status_code == 200, resp.text
