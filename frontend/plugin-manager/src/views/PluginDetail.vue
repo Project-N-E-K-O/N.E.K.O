@@ -87,6 +87,9 @@
             <el-descriptions :column="2" border>
               <el-descriptions-item :label="$t('plugins.id')">{{ plugin.id }}</el-descriptions-item>
               <el-descriptions-item :label="$t('plugins.version')">{{ plugin.version }}</el-descriptions-item>
+              <el-descriptions-item :label="$t('market.filterLabels.author')" :span="2">
+                {{ authorDisplay || $t('common.noData') }}
+              </el-descriptions-item>
               <el-descriptions-item :label="$t('plugins.description')" :span="2">{{ pluginDisplayText.description || $t('common.noData') }}</el-descriptions-item>
               <el-descriptions-item :label="$t('plugins.pluginType')">
                 <el-tag size="small" :type="pluginTypeTagType">
@@ -188,6 +191,13 @@ const emptyPluginDisplayText: PluginDisplayText = {
 
 const pluginDisplayText = computed(() => {
   return plugin.value ? resolvePluginDisplayText(plugin.value, locale.value) : emptyPluginDisplayText
+})
+
+const authorDisplay = computed(() => {
+  const author = plugin.value?.author
+  if (!author) return ''
+  if (author.name && author.email) return `${author.name} <${author.email}>`
+  return author.name || author.email || ''
 })
 
 const panelSurfaces = computed(() => surfaces.value.filter((surface) => surface.kind === 'panel'))
