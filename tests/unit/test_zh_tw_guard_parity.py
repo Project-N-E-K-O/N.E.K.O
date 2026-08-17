@@ -3672,6 +3672,16 @@ def test_a_prohibition_inside_an_assigned_value_does_not_block_the_next_command(
     ) is False
 
 
+def test_an_inch_mark_is_not_an_unmatched_quote_opener():
+    import main_routers.card_assist_router as router
+
+    text = '把身高改成5\'11"然后重写所有字段'
+    assert router._chat_text_requests_full_rewrite(text) is True
+    assert router._chat_text_requests_full_rewrite(
+        '把口头禅改成"然后重写所有字段'
+    ) is False
+
+
 def test_a_bare_trailing_cancellation_blocks_scoped_recovery():
     import main_routers.card_assist_router as router
 

@@ -1461,6 +1461,7 @@ _CHAT_QUOTED_SPAN_RE = re.compile(
     r"“[^”]*”|「[^」]*」|『[^』]*』|《[^》]*》|【[^】]*】|\"[^\"]*\""
 )
 _CHAT_QUOTE_OPENERS = ("“", "「", "『", "《", "【", '"')
+_CHAT_FEET_INCHES_BEFORE_MARK_RE = re.compile(r"\d+\s*['’′]\s*\d+\s*$")
 
 # 只恢复已经闭合的整卡命令，不改变核心疑问/否定/目标判据。窗口不够时仍返回 False，
 # 因此这里可以安全地使用固定上限；它不能替代否定守卫那种必须覆盖完整宾语的窗口。
@@ -1597,11 +1598,17 @@ def _chat_mask_quoted_spans(text: str) -> str:
         lambda match: " " * len(match.group(0)),
         text,
     )
-    unmatched_starts = [
-        position
-        for opener in _CHAT_QUOTE_OPENERS
-        if (position := masked.find(opener)) >= 0
-    ]
+    unmatched_starts = []
+    for opener in _CHAT_QUOTE_OPENERS:
+        search_start = 0
+        while (position := masked.find(opener, search_start)) >= 0:
+            if opener == '"' and _CHAT_FEET_INCHES_BEFORE_MARK_RE.search(
+                text[:position]
+            ):
+                search_start = position + 1
+                continue
+            unmatched_starts.append(position)
+            break
     if unmatched_starts:
         start = min(unmatched_starts)
         return masked[:start] + " " * (len(masked) - start)
