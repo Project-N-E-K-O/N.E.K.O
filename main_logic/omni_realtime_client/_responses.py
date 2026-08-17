@@ -19,6 +19,7 @@ from ._shared import (
     Callable,
     Dict,
     Optional,
+    VisualDeliveryMode,
     asyncio,
     logger,
     response_arbiter_fail_open_enabled,
@@ -233,16 +234,31 @@ class _ResponseMixin:
         if not stable_turn_id:
             raise ValueError("external ASR turn_id must not be empty")
 
+        visual_description = await self._resolve_external_visual_turn(
+            stable_turn_id
+        )
+
         event_suffix = uuid.uuid4().hex
         item_id = f"item_neko_{uuid.uuid4().hex}"
         expected_item_id = item_id
+        item_text = clean
+        if visual_description:
+            # Persist the observation and its owning transcript atomically. A
+            # barge-in can now keep both or neither, never an orphaned visual
+            # item that leaks into the next voice turn.
+            item_text = (
+                "[系统视觉感知结果，不是用户陈述]\n"
+                f"当前画面：{visual_description}\n"
+                "[用户语音转写]\n"
+                f"{clean}"
+            )
         item_event = {
             "type": "conversation.item.create",
             "event_id": f"event_asr_item_{event_suffix}",
             "item": {
                 "type": "message",
                 "role": "user",
-                "content": [{"type": "input_text", "text": clean}],
+                "content": [{"type": "input_text", "text": item_text}],
             },
         }
         if expected_item_id is not None:
@@ -303,6 +319,7 @@ class _ResponseMixin:
         stable_turn_id = str(turn_id or "").strip()
         if not stable_turn_id:
             raise ValueError("external voice turn_id must not be empty")
+        self._begin_external_visual_turn(stable_turn_id)
         try:
             if not self._is_gemini:
                 arbiter = self._ensure_response_arbiter()
@@ -317,6 +334,7 @@ class _ResponseMixin:
     def abandon_external_voice_turn(self, turn_id: str | None = None) -> None:
         """Release an external-ASR dispatch pause, optionally by turn key."""
 
+        self._abandon_external_visual_turn(turn_id)
         if self._is_gemini:
             return
         current_turn_id = getattr(self, "_external_voice_turn_pause_id", None)
@@ -928,6 +946,11 @@ class _ResponseMixin:
         rejection_message = ""
         visual_event_id: str | None = None
         events_before_text: tuple[Dict[str, Any], ...] = ()
+        external_visual_delivery = getattr(
+            self,
+            "_visual_delivery_mode",
+            VisualDeliveryMode.NATIVE,
+        ) == VisualDeliveryMode.EXTERNAL_DESCRIPTION
 
         def _on_rejected(error_msg: str) -> None:
             nonlocal delivery_rejected, rejection_message
@@ -978,6 +1001,7 @@ class _ResponseMixin:
         )
         if (
             has_pending_frame
+            and not external_visual_delivery
             and not self._supports_native_image
             and not self._image_recognized_this_turn
         ):
@@ -986,7 +1010,8 @@ class _ResponseMixin:
             )
             return False
         has_vision = self._image_recognized_this_turn or (
-            self._supports_native_image and has_pending_frame
+            (self._supports_native_image or external_visual_delivery)
+            and has_pending_frame
         )
         # Snapshot the current image so concurrent stream_image() calls don't
         # cause us to mark a newer frame as consumed.
@@ -1039,6 +1064,7 @@ class _ResponseMixin:
         if (
             has_vision
             and not self._is_gemini
+            and not external_visual_delivery
             and (
                 (self._supports_native_image and snapshot_image_b64)
                 or (
@@ -1059,7 +1085,12 @@ class _ResponseMixin:
                 self._expire_inject_rejection_handler(visual_event_id, 60.0)
             )
 
-        if has_vision and self._supports_native_image and snapshot_image_b64:
+        if (
+            has_vision
+            and not external_visual_delivery
+            and self._supports_native_image
+            and snapshot_image_b64
+        ):
             # ``bypass_rate_limit`` identifies this as one deliberate cue image.
             # stream_image also owns the provider-specific wire event, including
             # the dedicated free-service input_image_buffer.append route.
@@ -1086,6 +1117,43 @@ class _ResponseMixin:
                     "prompt_ephemeral: native image rejected before proactive text inject"
                 )
                 return False
+        elif has_vision and external_visual_delivery and snapshot_image_b64:
+            try:
+                stage_result = await self.stream_image(
+                    snapshot_image_b64,
+                    source="proactive",
+                    request_id=f"proactive-{snapshot_image_generation}",
+                    bypass_rate_limit=True,
+                    cache_latest=False,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning(
+                    "prompt_ephemeral: external visual analysis failed: %s",
+                    exc,
+                )
+                stage_result = None
+            external_description = str(
+                getattr(stage_result, "description", "") or ""
+            ).strip()
+            if external_description:
+                events_before_text = ({
+                    "type": "conversation.item.create",
+                    "item": {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{
+                            "type": "input_text",
+                            "text": (
+                                "[系统视觉感知结果，不是用户陈述]\n"
+                                f"当前画面：{external_description}"
+                            ),
+                        }],
+                    },
+                },)
+            else:
+                has_vision = False
         elif (
             has_vision
             and self._image_recognized_this_turn
@@ -1112,7 +1180,12 @@ class _ResponseMixin:
             or self._user_recent_activity_time > _now
             or self._ai_recent_activity_time > _now
         ):
-            if has_vision and self._supports_native_image and snapshot_image_b64:
+            if (
+                has_vision
+                and not external_visual_delivery
+                and self._supports_native_image
+                and snapshot_image_b64
+            ):
                 # The raw frame is already persistent provider context and may
                 # be consumed by the turn that won this race. Account for it
                 # now to avoid resending duplicate/stale visual context. Keep

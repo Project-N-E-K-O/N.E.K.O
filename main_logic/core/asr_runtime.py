@@ -389,6 +389,7 @@ class AsrRuntimeMixin:
     ) -> None:
         if mode not in {"native", "independent", "blocked"}:
             raise ValueError("MICROPHONE_ROUTE_INVALID")
+        previous_mode = self._asr_route_mode
         if mode != self._asr_route_mode:
             self._microphone_route_generation += 1
         if mode != "blocked":
@@ -397,6 +398,55 @@ class AsrRuntimeMixin:
             self._blocked_text_mode_microphone_signalled = False
             self._voice_lease_resync_suppressed = False
         self._asr_route_mode = mode
+
+        visual_route_mode = previous_mode if mode == "blocked" else mode
+        self._sync_realtime_visual_delivery_mode(visual_route_mode)
+
+    def _sync_realtime_visual_delivery_mode(
+        self,
+        route_mode: Literal["native", "independent", "blocked"],
+    ) -> None:
+        """Apply the ASR strategy to the session's provider-neutral visual policy."""
+
+        # Keep microphone ownership and visual delivery as separate contracts.
+        # Independent ASR never authorizes raw frames to ride the Realtime
+        # provider connection. Native audio keeps the session's established
+        # capability routing (raw native vision or its legacy fallback).
+        session = getattr(self, "session", None)
+        set_visual_delivery_mode = getattr(
+            session,
+            "set_visual_delivery_mode",
+            None,
+        )
+        if not callable(set_visual_delivery_mode):
+            return
+        visual_mode: str | None
+        if route_mode == "independent":
+            visual_mode = "external_description"
+        elif route_mode == "native":
+            visual_mode = "native"
+        else:
+            visual_mode = None
+        if visual_mode is None:
+            return
+        try:
+            if route_mode == "independent":
+                block_raw_visual_delivery = getattr(
+                    session,
+                    "block_raw_visual_delivery",
+                    None,
+                )
+                if callable(block_raw_visual_delivery):
+                    block_raw_visual_delivery()
+            set_visual_delivery_mode(visual_mode)
+        except Exception as exc:
+            # This setter only updates local session policy. A broken or stale
+            # session must not take the independent-ASR microphone route down.
+            logger.warning(
+                "[%s] visual delivery mode sync failed: %s",
+                self.lanlan_name,
+                exc,
+            )
 
     def _capture_ingress_token(self, _lifecycle=None) -> VoiceIngressToken:
         return self._asr_runtime.capture_ingress_token(
@@ -663,6 +713,10 @@ class AsrRuntimeMixin:
                     )
                 )
                 return
+            # The persisted choice cannot be read, but the handshake still
+            # requires independent ASR. Fail closed for raw visual delivery
+            # before any later failure handling or callback can run.
+            self._sync_realtime_visual_delivery_mode("independent")
             await self._fail_closed_voice_route(
                 "asr_settings_unreadable",
                 operation_generation=operation_generation,
@@ -750,6 +804,10 @@ class AsrRuntimeMixin:
                 )
             )
             return
+        # Close the raw-image path as soon as the independent-ASR choice is
+        # authoritative. Provider connection may take seconds or fail; neither
+        # window may let screen/camera or callback images reach Realtime raw.
+        self._sync_realtime_visual_delivery_mode("independent")
         if (
             connect_budget_seconds is not None
             and connect_budget_seconds < ASR_CONNECT_TOTAL_BUDGET_SECONDS
@@ -1104,6 +1162,11 @@ class AsrRuntimeMixin:
         self._ensure_asr_runtime_state()
         core_type = str(getattr(self, "core_api_type", "") or "").strip().lower()
         if core_type == self._independent_asr_route_key:
+            # A same-provider hot swap can promote a fresh Realtime session
+            # while the microphone route key remains unchanged. Reapply the
+            # current abstract route so the replacement inherits the visual
+            # delivery policy without restarting ASR or touching PCM routing.
+            self._set_microphone_route(self._asr_route_mode)
             return
         await self._start_independent_asr_if_enabled(
             str(getattr(self, "input_mode", "audio") or "audio"),

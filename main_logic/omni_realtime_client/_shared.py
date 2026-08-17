@@ -48,6 +48,8 @@ from typing import Optional, Callable, Dict, Any, Awaitable, List  # noqa: F401
 
 from enum import Enum
 
+from dataclasses import dataclass
+
 from main_logic.tool_calling import (  # noqa: F401
     OnToolCallCallback,
     ToolCall,
@@ -87,6 +89,23 @@ _IMAGE_ANALYSIS_PENDING_DESCRIPTION = "[实时屏幕截图或相机画面正在�
 class TurnDetectionMode(Enum):
     SERVER_VAD = "server_vad"
     MANUAL = "manual"
+
+
+class VisualDeliveryMode(str, Enum):
+    """How ambient images are delivered to the active realtime session."""
+
+    NATIVE = "native"
+    EXTERNAL_DESCRIPTION = "external_description"
+
+
+@dataclass(frozen=True, slots=True)
+class ImageStageResult:
+    """Observable result of staging or delivering one image."""
+
+    accepted: bool
+    mode: str
+    generation: int | None = None
+    description: str | None = None
 
 
 # Opt-in escape hatch for the response arbiter's escalation policy (issue

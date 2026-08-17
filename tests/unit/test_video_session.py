@@ -223,13 +223,15 @@ async def test_non_native_callback_analysis_does_not_replace_ambient_snapshot():
 
     client._analyze_image_with_vision_model = analyze_callback
 
-    description = await client.stream_image(
+    result = await client.stream_image(
         DUMMY_IMAGE_B64,
         bypass_rate_limit=True,
         cache_latest=False,
     )
 
-    assert description == "callback description"
+    assert result.accepted is True
+    assert result.mode == "external_description"
+    assert result.description == "callback description"
     assert client._latest_image_b64 == "ambient-frame"
     assert client._proactive_image_consumed is False
     assert client._image_description == "ambient description"
@@ -257,13 +259,16 @@ async def test_concurrent_non_native_frame_does_not_replace_analyzed_snapshot():
     first_task = asyncio.create_task(client.stream_image(first_frame))
     await analysis_started.wait()
 
-    await client.stream_image(second_frame)
+    second_result = await client.stream_image(second_frame)
 
     assert client._latest_image_b64 == first_frame
     assert client._latest_image_generation == generation + 1
     assert analyzed == [first_frame]
+    assert second_result.accepted is False
     release_analysis.set()
-    assert await first_task is None
+    first_result = await first_task
+    assert first_result.accepted is False
+    assert first_result.mode == "external_description"
     await client.close()
 
 

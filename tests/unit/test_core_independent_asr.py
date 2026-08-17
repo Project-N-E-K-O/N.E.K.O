@@ -4971,8 +4971,17 @@ async def test_qwen_core_starts_independent_asr_with_external_turn_support(
 
     runtime = _Runtime()
     runtime.core_api_type = core_type
+    runtime.session.set_visual_delivery_mode = MagicMock()
     asr = type("Asr", (), {})()
-    asr.connect = AsyncMock()
+
+    async def connect_after_visual_fail_closed() -> None:
+        delivered_modes = [
+            getattr(call.args[0], "value", call.args[0])
+            for call in runtime.session.set_visual_delivery_mode.call_args_list
+        ]
+        assert delivered_modes[-1:] == ["external_description"]
+
+    asr.connect = AsyncMock(side_effect=connect_after_visual_fail_closed)
     asr.close = AsyncMock()
     factory = MagicMock(return_value=asr)
     monkeypatch.setattr(
@@ -5252,6 +5261,37 @@ async def test_hot_swap_does_not_retry_failed_same_core_route() -> None:
 
     await runtime._reconcile_independent_asr_after_core_change()
 
+    runtime._start_independent_asr_if_enabled.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("route_mode", "expected_visual_mode"),
+    [
+        ("independent", "external_description"),
+        ("native", "native"),
+    ],
+)
+async def test_same_core_session_promotion_resyncs_visual_delivery_mode(
+    route_mode: str,
+    expected_visual_mode: str,
+) -> None:
+    """A promoted session inherits the live route even when provider key is unchanged."""
+    runtime = _Runtime()
+    runtime.core_api_type = "qwen"
+    runtime.input_mode = "audio"
+    runtime._asr_route_mode = route_mode
+    runtime._independent_asr_route_key = "qwen"
+    runtime._start_independent_asr_if_enabled = AsyncMock()
+    replacement_session = type("ReplacementOmni", (), {})()
+    replacement_session._supports_native_image = True
+    replacement_session.set_visual_delivery_mode = MagicMock()
+    runtime.session = replacement_session
+
+    await runtime._reconcile_independent_asr_after_core_change()
+
+    replacement_session.set_visual_delivery_mode.assert_called_once()
+    delivered_mode = replacement_session.set_visual_delivery_mode.call_args.args[0]
+    assert getattr(delivered_mode, "value", delivered_mode) == expected_visual_mode
     runtime._start_independent_asr_if_enabled.assert_not_awaited()
 
 
@@ -8880,3 +8920,59 @@ async def test_speaker_shadow_abba_cannot_change_provider_authority(
     assert disabled_a["provider_connect_count"] == 1
     assert disabled_a["provider_close_count"] == 1
     assert len(disabled_a["finals"]) == 1
+
+
+@pytest.mark.unit
+async def test_microphone_route_syncs_provider_neutral_visual_delivery_mode() -> None:
+    """Independent ASR must fail closed for raw vision during every route state."""
+    runtime = _Runtime()
+    runtime.session._supports_native_image = True
+    runtime.session.set_visual_delivery_mode = MagicMock()
+
+    runtime._set_microphone_route("independent")
+    runtime._set_microphone_route("blocked")
+    runtime._set_microphone_route("native")
+
+    delivered_modes = [
+        getattr(item.args[0], "value", item.args[0])
+        for item in runtime.session.set_visual_delivery_mode.call_args_list
+    ]
+    assert delivered_modes == [
+        "external_description",
+        "external_description",
+        "native",
+    ]
+
+
+@pytest.mark.unit
+async def test_native_route_leaves_provider_capability_routing_inside_session() -> None:
+    """Core selects the ASR strategy, while session capability keeps legacy behavior."""
+    runtime = _Runtime()
+    runtime.session._supports_native_image = False
+    runtime.session.set_visual_delivery_mode = MagicMock()
+
+    runtime._set_microphone_route("native")
+
+    delivered_mode = runtime.session.set_visual_delivery_mode.call_args.args[0]
+    assert getattr(delivered_mode, "value", delivered_mode) == "native"
+
+
+@pytest.mark.unit
+async def test_independent_visual_sync_failure_blocks_raw_images_without_stopping_asr() -> None:
+    runtime = _Runtime()
+    call_order: list[str] = []
+
+    def block_raw_visual_delivery() -> None:
+        call_order.append("block")
+
+    def fail_visual_mode_sync(_mode: str) -> None:
+        call_order.append("sync")
+        raise RuntimeError("stale realtime session")
+
+    runtime.session.block_raw_visual_delivery = block_raw_visual_delivery
+    runtime.session.set_visual_delivery_mode = fail_visual_mode_sync
+
+    runtime._set_microphone_route("independent")
+
+    assert runtime._asr_route_mode == "independent"
+    assert call_order == ["block", "sync"]

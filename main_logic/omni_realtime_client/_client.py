@@ -25,6 +25,7 @@ from ._shared import (
     Optional,
     ToolDefinition,
     TurnDetectionMode,
+    VisualDeliveryMode,
     _IMAGE_ANALYSIS_PENDING_DESCRIPTION,
     asyncio,
     response_arbiter_fail_open_enabled,
@@ -117,6 +118,8 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         tool_definitions: Optional[List[ToolDefinition]] = None,
         livestream_mode: bool = False,
         noise_reduction_enabled: bool = True,
+        external_visual_join_timeout: float = 0.75,
+        external_visual_frame_ttl: float = 5.0,
     ):
         self.base_url = base_url
         self.api_key = api_key
@@ -246,7 +249,25 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         self._image_description = _IMAGE_ANALYSIS_PENDING_DESCRIPTION
         self._latest_image_b64 = None  # Cached latest screenshot for proactive injection
         self._latest_image_generation = 0  # Distinguishes identical consecutive frames
+        self._latest_image_captured_at = 0.0
+        self._latest_image_source = "unknown"
+        self._latest_image_request_id = None
         self._proactive_image_consumed = True  # Whether the cached image has been used by a proactive nudge
+        # Native is the backwards-compatible session default. Independent ASR
+        # explicitly switches this to EXTERNAL_DESCRIPTION through the neutral
+        # session API; provider capability remains a separate concern.
+        self._visual_delivery_mode = VisualDeliveryMode.NATIVE
+        self._raw_visual_delivery_blocked = False
+        self._visual_delivery_epoch = 0
+        self._external_visual_turns: Dict[str, Dict[str, Any]] = {}
+        self._external_visual_frame_ttl = max(
+            0.0,
+            float(external_visual_frame_ttl),
+        )
+        self._external_visual_join_timeout = max(
+            0.01,
+            float(external_visual_join_timeout),
+        )
 
         # Silence detection for auto-closing inactive sessions
         # 只在 GLM 和 free API 时启用90秒静默超时，Qwen 和 Step 放行

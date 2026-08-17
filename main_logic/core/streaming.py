@@ -613,9 +613,25 @@ class StreamingMixin:
                                 logger.error("💥 Stream: Session websocket not available")
                                 return
 
-                            # 语音模式直接发送图片
-                            await self.session.stream_image(image_b64)
-                            image_accepted = True
+                            # screen/camera are live environmental frames. The
+                            # Realtime session owns whether they are delivered
+                            # natively or staged for external vision, and needs
+                            # their source/request identity to bind a fixed
+                            # generation to the matching independent-ASR turn.
+                            # One-shot avatar/chat attachments retain the
+                            # pre-existing text/offline contract above.
+                            if input_type in _LIVE_VISION_STREAM_INPUT_TYPES:
+                                stage_result = await self.session.stream_image(
+                                    image_b64,
+                                    source=input_type,
+                                    request_id=message.get("request_id"),
+                                )
+                                image_accepted = bool(
+                                    getattr(stage_result, "accepted", False)
+                                )
+                            else:
+                                await self.session.stream_image(image_b64)
+                                image_accepted = True
                         if (
                             image_accepted
                             and image_arrival_time is not None

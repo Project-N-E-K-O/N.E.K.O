@@ -699,6 +699,50 @@ async def test_text_mode_live_vision_input_is_mirrored_without_engagement(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+@pytest.mark.parametrize("input_type", ["screen", "camera"])
+async def test_voice_live_vision_input_preserves_source_and_request_identity(
+    monkeypatch,
+    input_type,
+):
+    """Realtime staging must keep enough metadata to bind a frame to its owner."""
+    mgr = _make_manager()
+    mgr.session = object.__new__(core_module.OmniRealtimeClient)
+    mgr.session.ws = object()
+    mgr.session.stream_image = AsyncMock(
+        return_value=MagicMock(
+            accepted=True,
+            mode="external_description",
+            generation=17,
+        )
+    )
+    mgr.is_active = True
+    mgr._starting_session_count = 0
+    mgr._session_start_circuit_open = False
+    mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=False)
+    monkeypatch.setattr(
+        core_module,
+        "process_screen_data",
+        AsyncMock(return_value="img-b64"),
+    )
+
+    await core_module.LLMSessionManager._process_stream_data_internal(
+        mgr,
+        {
+            "input_type": input_type,
+            "data": "raw-image",
+            "request_id": "req-vision-17",
+        },
+    )
+
+    mgr.session.stream_image.assert_awaited_once_with(
+        "img-b64",
+        source=input_type,
+        request_id="req-vision-17",
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 @pytest.mark.parametrize("input_type", ["avatar_drop_image", "user_image"])
 async def test_one_shot_user_image_records_engagement(
     monkeypatch,

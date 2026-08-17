@@ -1924,13 +1924,52 @@ class ProactiveMixin:
                     # Deliberate cue image: bypass the native-vision frame-rate
                     # throttle so it isn't silently dropped behind a recent
                     # high-frequency screen/camera frame (Codex P2).
-                    description = await si(
-                        b64,
-                        bypass_rate_limit=True,
-                        cache_latest=False,
-                        on_rejected=on_rejected,
-                    )
-                    if not getattr(session, "_supports_native_image", True):
+                    try:
+                        stage_result = await si(
+                            b64,
+                            bypass_rate_limit=True,
+                            cache_latest=False,
+                            source="callback",
+                            request_id=cb.get("_callback_delivery_id"),
+                            on_rejected=on_rejected,
+                        )
+                    except TypeError as exc:
+                        # Compatibility for older session doubles/clients that
+                        # predate source metadata. The current Realtime client
+                        # accepts both fields, so production never takes this
+                        # fallback after the contract lands.
+                        if "unexpected keyword argument" not in str(exc):
+                            raise
+                        stage_result = await si(
+                            b64,
+                            bypass_rate_limit=True,
+                            cache_latest=False,
+                            on_rejected=on_rejected,
+                        )
+                    # New Realtime sessions return a structured staging result.
+                    # Keep the legacy string/None interpretation temporarily so
+                    # native provider behavior and older test doubles remain
+                    # unchanged while routing decisions move away from provider
+                    # capability checks.
+                    structured_result = hasattr(stage_result, "accepted")
+                    if structured_result:
+                        accepted = bool(stage_result.accepted)
+                        raw_mode = getattr(stage_result, "mode", None)
+                        delivery_mode = getattr(raw_mode, "value", raw_mode)
+                        description = getattr(stage_result, "description", None)
+                    else:
+                        accepted = True
+                        delivery_mode = (
+                            "external_description"
+                            if isinstance(stage_result, str)
+                            else "native"
+                        )
+                        description = (
+                            stage_result if isinstance(stage_result, str) else None
+                        )
+                    if not accepted:
+                        raise RuntimeError("callback image was not accepted")
+                    if delivery_mode == "external_description":
                         if not isinstance(description, str) or not description.strip():
                             raise RuntimeError(
                                 "callback image analysis produced no description"
@@ -1966,8 +2005,13 @@ class ProactiveMixin:
                                     "content": [{
                                         "type": "input_text",
                                         "text": (
-                                            "[实时屏幕截图或相机画面]: "
-                                            f"{description.strip()}"
+                                            (
+                                                "[系统视觉感知结果，不是用户陈述]\n"
+                                                "当前画面："
+                                                if structured_result
+                                                else "[实时屏幕截图或相机画面]: "
+                                            )
+                                            + description.strip()
                                         ),
                                     }],
                                 },

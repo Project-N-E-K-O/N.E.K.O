@@ -19,6 +19,7 @@ import os
 import re
 import sys
 import time
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
@@ -1366,6 +1367,109 @@ async def test_standard_step_callback_image_description_shares_inject_ticket():
     }]
     assert description_event["event_id"] in sess._inject_rejection_handlers
     assert expired == [description_event["event_id"]]
+
+
+async def test_external_visual_callback_uses_description_even_for_native_capable_provider():
+    """Delivery mode, not provider capability, decides whether raw callback media is legal."""
+    sess = _make_voice_sess()
+    sess._supports_native_image = True
+    sess._inject_rejection_handlers = {}
+    expired = []
+
+    async def _stream_image(
+        _image_b64,
+        *,
+        bypass_rate_limit=False,
+        cache_latest=True,
+        source=None,
+        request_id=None,
+        on_rejected=None,
+    ):
+        assert bypass_rate_limit is True
+        assert cache_latest is False
+        assert source == "callback"
+        assert request_id == "id-external-image"
+        assert on_rejected is not None
+        return SimpleNamespace(
+            accepted=True,
+            mode="external_description",
+            generation=23,
+            description="画面里有一只猫。",
+        )
+
+    async def _expire(event_id, _timeout):
+        expired.append(event_id)
+
+    def _fire_task(coro):
+        asyncio.create_task(coro)
+
+    sess.stream_image = _stream_image
+    sess._expire_inject_rejection_handler = _expire
+    sess._fire_task = _fire_task
+    mgr = _make_mgr(session=sess)
+    cb = {
+        "_callback_delivery_id": "id-external-image",
+        "status": "completed",
+        "summary": "inspect this image",
+        "media_images": ["image-b64"],
+    }
+    mgr.pending_agent_callbacks = [cb]
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+    await asyncio.sleep(0)
+
+    assert delivered is True
+    assert len(sess.injected_events) == 1
+    description_event = sess.injected_events[0][0]
+    description_text = description_event["item"]["content"][0]["text"]
+    assert description_text.startswith("[系统视觉感知结果，不是用户陈述]")
+    assert "当前画面" in description_text
+    assert "画面里有一只猫。" in description_text
+    assert expired == [description_event["event_id"]]
+
+
+async def test_external_visual_callback_analysis_failure_defers_text_delivery():
+    """A false structured staging result cannot be reported as callback success."""
+    sess = _make_voice_sess()
+    staged = []
+
+    async def _stream_image(
+        _image_b64,
+        *,
+        bypass_rate_limit=False,
+        cache_latest=True,
+        source=None,
+        request_id=None,
+        on_rejected=None,
+    ):
+        staged.append((source, request_id))
+        return SimpleNamespace(
+            accepted=False,
+            mode="external_description",
+            generation=24,
+            description=None,
+        )
+
+    sess.stream_image = _stream_image
+    mgr = _make_mgr(session=sess)
+    cb = {
+        "_callback_delivery_id": "id-external-failed",
+        "status": "completed",
+        "summary": "inspect this image",
+        "media_images": ["image-b64"],
+    }
+    mgr.pending_agent_callbacks = [cb]
+    mgr._schedule_proactive_retry = MagicMock()
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+
+    assert delivered is False
+    assert staged == [("callback", "id-external-failed")]
+    assert sess.inject_calls == 0
+    assert mgr.pending_agent_callbacks == [cb]
+    mgr._schedule_proactive_retry.assert_called_once_with(
+        mgr.proactive_manager.min_gap_s
+    )
 
 
 async def test_voice_mode_callback_image_rejection_after_inject_rearms_retry():

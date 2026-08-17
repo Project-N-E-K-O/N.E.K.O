@@ -18,6 +18,7 @@ from ._shared import (
     Callable,
     Dict,
     IMAGE_IDLE_RATE_MULTIPLIER,
+    ImageStageResult,
     List,
     NATIVE_IMAGE_MIN_INTERVAL,
     OMNI_WS_FRAME_LIMIT_BYTES,
@@ -25,6 +26,7 @@ from ._shared import (
     ToolCall,
     ToolResult,
     TurnDetectionMode,
+    VisualDeliveryMode,
     VISION_ANALYSIS_MAX_TOKENS,
     _IMAGE_ANALYSIS_PENDING_DESCRIPTION,
     asyncio,
@@ -728,15 +730,167 @@ class _TransportMixin:
             if update_turn_state:
                 self._image_being_analyzed = False
 
+    def block_raw_visual_delivery(self) -> None:
+        """Fail closed for raw frames without changing the microphone route."""
+
+        self._raw_visual_delivery_blocked = True
+
+    def set_visual_delivery_mode(
+        self,
+        mode: VisualDeliveryMode | str,
+    ) -> None:
+        """Switch image delivery without changing provider capability flags."""
+
+        selected = VisualDeliveryMode(mode)
+        if selected == VisualDeliveryMode.EXTERNAL_DESCRIPTION:
+            # Arm the raw-frame fence before turn/cache cleanup. Independent
+            # ASR can keep its microphone route even if that cleanup fails.
+            self.block_raw_visual_delivery()
+        if selected == getattr(
+            self,
+            "_visual_delivery_mode",
+            VisualDeliveryMode.NATIVE,
+        ):
+            if selected == VisualDeliveryMode.NATIVE:
+                self._raw_visual_delivery_blocked = False
+            return
+        self._visual_delivery_mode = selected
+        self._visual_delivery_epoch = getattr(self, "_visual_delivery_epoch", 0) + 1
+        self._abandon_external_visual_turn()
+        # A cached frame from the old routing contract must never cross the
+        # mode boundary and later appear as context for a different ASR turn.
+        self._latest_image_b64 = None
+        self._latest_image_captured_at = 0.0
+        self._latest_image_source = "unknown"
+        self._latest_image_request_id = None
+        self._proactive_image_consumed = True
+        if selected == VisualDeliveryMode.NATIVE:
+            self._raw_visual_delivery_blocked = False
+
+    def _begin_external_visual_turn(self, turn_id: str) -> None:
+        if getattr(self, "_visual_delivery_mode", VisualDeliveryMode.NATIVE) != (
+            VisualDeliveryMode.EXTERNAL_DESCRIPTION
+        ):
+            return
+        self._abandon_external_visual_turn()
+        self._external_visual_turns[turn_id] = {
+            "turn_id": turn_id,
+            "epoch": self._visual_delivery_epoch,
+            "start_generation": self._latest_image_generation,
+            "generation": None,
+            "source": None,
+            "request_id": None,
+            "task": None,
+        }
+
+    def _bind_external_visual_frame(
+        self,
+        record: Dict[str, Any],
+        *,
+        image_b64: str,
+        generation: int,
+        source: str,
+        request_id: str | None,
+    ) -> None:
+        if record.get("task") is not None or record.get("generation") is not None:
+            return
+        if record.get("epoch") != self._visual_delivery_epoch:
+            return
+        record["generation"] = generation
+        record["source"] = source
+        record["request_id"] = request_id
+        record["task"] = self._fire_task(
+            self._analyze_image_with_vision_model(
+                image_b64,
+                update_turn_state=False,
+            )
+        )
+
+    async def _resolve_external_visual_turn(
+        self,
+        turn_id: str,
+    ) -> str | None:
+        if getattr(self, "_visual_delivery_mode", VisualDeliveryMode.NATIVE) != (
+            VisualDeliveryMode.EXTERNAL_DESCRIPTION
+        ):
+            return None
+        record = self._external_visual_turns.get(turn_id)
+        if record is None or record.get("epoch") != self._visual_delivery_epoch:
+            return None
+
+        if record.get("task") is None:
+            frame_age = time.monotonic() - getattr(
+                self,
+                "_latest_image_captured_at",
+                0.0,
+            )
+            if (
+                self._latest_image_b64 is not None
+                and frame_age <= self._external_visual_frame_ttl
+            ):
+                self._bind_external_visual_frame(
+                    record,
+                    image_b64=self._latest_image_b64,
+                    generation=self._latest_image_generation,
+                    source=self._latest_image_source,
+                    request_id=self._latest_image_request_id,
+                )
+
+        task = record.get("task")
+        if task is None:
+            self._external_visual_turns.pop(turn_id, None)
+            return None
+        try:
+            description = await asyncio.wait_for(
+                asyncio.shield(task),
+                timeout=self._external_visual_join_timeout,
+            )
+        except asyncio.TimeoutError:
+            task.cancel()
+            description = ""
+        except asyncio.CancelledError:
+            if not task.cancelled():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+                raise
+            description = ""
+        finally:
+            if self._external_visual_turns.get(turn_id) is record:
+                self._external_visual_turns.pop(turn_id, None)
+
+        if (
+            not description
+            or record.get("epoch") != self._visual_delivery_epoch
+            or getattr(self, "_visual_delivery_mode", VisualDeliveryMode.NATIVE)
+            != VisualDeliveryMode.EXTERNAL_DESCRIPTION
+        ):
+            return None
+        return str(description).strip() or None
+
+    def _abandon_external_visual_turn(self, turn_id: str | None = None) -> None:
+        turns = getattr(self, "_external_visual_turns", None)
+        if not turns:
+            return
+        keys = [turn_id] if turn_id is not None else list(turns)
+        for key in keys:
+            record = turns.pop(key, None)
+            if record is None:
+                continue
+            task = record.get("task")
+            if task is not None and not task.done():
+                task.cancel()
+
     async def stream_image(
         self,
         image_b64: str,
         *,
+        source: str = "unknown",
+        request_id: str | None = None,
         bypass_rate_limit: bool = False,
         cache_latest: bool = True,
         event_id: str | None = None,
         on_rejected: Optional[Callable[[str], None]] = None,
-    ) -> str | None:
+    ) -> ImageStageResult | str | None:
         """Stream raw image data to the API.
 
         ``bypass_rate_limit=True`` skips the native-vision frame-rate throttle
@@ -752,15 +906,95 @@ class _TransportMixin:
 
         ``cache_latest=False`` sends an already-cached proactive snapshot
         without treating that resend as a newly captured frame generation.
-        For a non-native callback image it returns the callback-owned
-        VISION_MODEL description instead, without changing ambient frame state.
+        For a non-native callback image it returns a structured result carrying
+        the callback-owned VISION_MODEL description, without changing ambient
+        frame state.
         """
         rejection_event_id: str | None = None
         try:
+            delivery_mode = getattr(
+                self,
+                "_visual_delivery_mode",
+                VisualDeliveryMode.NATIVE,
+            )
+            if (
+                getattr(self, "_raw_visual_delivery_blocked", False)
+                and delivery_mode != VisualDeliveryMode.EXTERNAL_DESCRIPTION
+            ):
+                return ImageStageResult(
+                    accepted=False,
+                    mode=VisualDeliveryMode.EXTERNAL_DESCRIPTION.value,
+                    generation=getattr(self, "_latest_image_generation", 0),
+                )
+            if delivery_mode == VisualDeliveryMode.EXTERNAL_DESCRIPTION:
+                stable_source = str(source or "unknown").strip() or "unknown"
+                stable_request_id = (
+                    str(request_id).strip() if request_id is not None else None
+                )
+                from utils.screenshot_utils import MAX_BASE64_SIZE
+
+                if (
+                    not isinstance(image_b64, str)
+                    or not image_b64
+                    or len(image_b64) > MAX_BASE64_SIZE
+                ):
+                    logger.warning(
+                        "external visual image rejected by size/type guard source=%s",
+                        stable_source,
+                    )
+                    return ImageStageResult(
+                        accepted=False,
+                        mode=delivery_mode.value,
+                        generation=getattr(self, "_latest_image_generation", 0),
+                    )
+                if not cache_latest:
+                    description = await self._analyze_image_with_vision_model(
+                        image_b64,
+                        update_turn_state=False,
+                    )
+                    clean_description = str(description or "").strip()
+                    return ImageStageResult(
+                        accepted=bool(clean_description),
+                        mode=delivery_mode.value,
+                        generation=getattr(self, "_latest_image_generation", 0),
+                        description=clean_description or None,
+                    )
+
+                self._latest_image_generation = (
+                    getattr(self, "_latest_image_generation", 0) + 1
+                )
+                generation = self._latest_image_generation
+                self._latest_image_b64 = image_b64
+                self._latest_image_captured_at = time.monotonic()
+                self._latest_image_source = stable_source
+                self._latest_image_request_id = stable_request_id
+                self._proactive_image_consumed = False
+                for record in tuple(self._external_visual_turns.values()):
+                    if generation > record["start_generation"]:
+                        self._bind_external_visual_frame(
+                            record,
+                            image_b64=image_b64,
+                            generation=generation,
+                            source=stable_source,
+                            request_id=stable_request_id,
+                        )
+                return ImageStageResult(
+                    accepted=True,
+                    mode=delivery_mode.value,
+                    generation=generation,
+                )
+
             if not self._supports_native_image and not cache_latest:
-                return await self._analyze_image_with_vision_model(
+                description = await self._analyze_image_with_vision_model(
                     image_b64,
                     update_turn_state=False,
+                )
+                clean_description = str(description or "").strip()
+                return ImageStageResult(
+                    accepted=bool(clean_description),
+                    mode=VisualDeliveryMode.EXTERNAL_DESCRIPTION.value,
+                    generation=getattr(self, "_latest_image_generation", 0),
+                    description=clean_description or None,
                 )
 
             # Standard StepFun is the only realtime provider without native
@@ -769,7 +1003,11 @@ class _TransportMixin:
                 # 非原生视觉后端只需要本轮第一帧做分析；后续高频帧直接丢弃，避免并发刷爆 VISION_MODEL。
                 async with self._image_lock:
                     if self._image_recognized_this_turn or self._image_being_analyzed:
-                        return
+                        return ImageStageResult(
+                            accepted=False,
+                            mode=VisualDeliveryMode.EXTERNAL_DESCRIPTION.value,
+                            generation=getattr(self, "_latest_image_generation", 0),
+                        )
                     self._image_being_analyzed = True
                 if cache_latest:
                     # Bind the cached generation to the frame that actually
@@ -780,9 +1018,18 @@ class _TransportMixin:
                         getattr(self, "_latest_image_generation", 0) + 1
                     )
                     self._latest_image_b64 = image_b64
+                    self._latest_image_captured_at = time.monotonic()
+                    self._latest_image_source = str(source or "unknown")
+                    self._latest_image_request_id = request_id
                     self._proactive_image_consumed = False
-                await self._analyze_image_with_vision_model(image_b64)
-                return
+                description = await self._analyze_image_with_vision_model(image_b64)
+                clean_description = str(description or "").strip()
+                return ImageStageResult(
+                    accepted=bool(clean_description),
+                    mode=VisualDeliveryMode.EXTERNAL_DESCRIPTION.value,
+                    generation=getattr(self, "_latest_image_generation", 0),
+                    description=clean_description or None,
+                )
 
             preserve_cached_step_frame = (
                 cache_latest
@@ -804,6 +1051,9 @@ class _TransportMixin:
                     getattr(self, "_latest_image_generation", 0) + 1
                 )
                 self._latest_image_b64 = image_b64
+                self._latest_image_captured_at = time.monotonic()
+                self._latest_image_source = str(source or "unknown")
+                self._latest_image_request_id = request_id
                 self._proactive_image_consumed = False
 
             # Rate limiting for native image input (with VAD-based throttling).
@@ -818,7 +1068,11 @@ class _TransportMixin:
                         min_interval *= IMAGE_IDLE_RATE_MULTIPLIER
                     if elapsed < min_interval:
                         # Skip this image frame due to rate limiting
-                        return
+                        return ImageStageResult(
+                            accepted=False,
+                            mode=VisualDeliveryMode.NATIVE.value,
+                            generation=getattr(self, "_latest_image_generation", 0),
+                        )
                 # Stamp even on the bypass path: a frame WAS sent to the server,
                 # so it must count toward the throttle window — this keeps
                 # back-to-back bypassed cue images from flooding native vision.
@@ -837,7 +1091,16 @@ class _TransportMixin:
                         if "closed" in str(e).lower():
                             self._fatal_error_occurred = True
                         raise
-                return
+                    return ImageStageResult(
+                        accepted=True,
+                        mode=VisualDeliveryMode.NATIVE.value,
+                        generation=getattr(self, "_latest_image_generation", 0),
+                    )
+                return ImageStageResult(
+                    accepted=False,
+                    mode=VisualDeliveryMode.NATIVE.value,
+                    generation=getattr(self, "_latest_image_generation", 0),
+                )
 
             if on_rejected is not None and self._supports_native_image:
                 event_id = event_id or f"event_callback_image_{uuid.uuid4().hex}"
@@ -858,7 +1121,11 @@ class _TransportMixin:
                     append_event,
                     raise_on_oversize=bypass_rate_limit,
                 )
-                return
+                return ImageStageResult(
+                    accepted=True,
+                    mode=VisualDeliveryMode.NATIVE.value,
+                    generation=getattr(self, "_latest_image_generation", 0),
+                )
 
             if self._audio_in_buffer or bypass_rate_limit:
                 if "qwen" in self._model_lower:
@@ -925,7 +1192,15 @@ class _TransportMixin:
                                 }
                             logger.info("Sending image description after recognition.")
                             await self.send_event(text_event)
-                    return
+                    return ImageStageResult(
+                        accepted=True,
+                        mode=VisualDeliveryMode.EXTERNAL_DESCRIPTION.value,
+                        generation=getattr(self, "_latest_image_generation", 0),
+                        description=(
+                            str(getattr(self, "_image_description", "") or "").strip()
+                            or None
+                        ),
+                    )
 
                 if event_id is not None:
                     append_event["event_id"] = event_id
@@ -933,7 +1208,16 @@ class _TransportMixin:
                     append_event,
                     raise_on_oversize=bypass_rate_limit,
                 )
-            return None
+                return ImageStageResult(
+                    accepted=True,
+                    mode=VisualDeliveryMode.NATIVE.value,
+                    generation=getattr(self, "_latest_image_generation", 0),
+                )
+            return ImageStageResult(
+                accepted=False,
+                mode=VisualDeliveryMode.NATIVE.value,
+                generation=getattr(self, "_latest_image_generation", 0),
+            )
         except asyncio.CancelledError:
             if rejection_event_id is not None:
                 self._inject_rejection_handlers.pop(rejection_event_id, None)
