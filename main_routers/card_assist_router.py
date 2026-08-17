@@ -1583,7 +1583,7 @@ _CHAT_SCOPED_GOVERNING_CONDITION_RE = re.compile(
 )
 _CHAT_SCOPED_POST_REWRITE_ASSIGNMENT_RE = re.compile(
     r"\s*(?:并|並)\s*(?:设为|設為|设成|設成|设置为|設定為|设置成|設定成|"
-    r"改为|改為|改成|修改成|换成|換成|"
+    r"改为|改為|改成|修改成|更新为|更新為|换成|換成|"
     r"变成|變成|变为|變為|调整为|調整為|写成|寫成|填为|填為|填写为|"
     r"填寫為|填成|填写成|填寫成)\s*$"
 )

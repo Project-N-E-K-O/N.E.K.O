@@ -3745,6 +3745,14 @@ def test_geng_xin_wei_marks_the_following_text_as_a_field_value(verb):
     assert router._chat_text_requests_full_rewrite(text) is False
 
 
+@pytest.mark.parametrize('verb', ['更新为', '更新為'])
+def test_geng_xin_wei_can_follow_a_completed_full_rewrite(verb):
+    import main_routers.card_assist_router as router
+
+    text = f'重写所有字段并{verb}新版'
+    assert router._chat_text_requests_full_rewrite(text) is True
+
+
 @pytest.mark.parametrize('prefix', ['请问', '請問', '你觉得', '你覺得', '我想知道'])
 def test_a_polite_execution_question_governs_all_recovered_list_items(prefix):
     import main_routers.card_assist_router as router
