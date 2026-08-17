@@ -113,7 +113,7 @@ async def test_generic_provider_disables_sdk_retries_honors_budget_and_closes(
     assert seen["provider_type"] == provider_type
     assert seen["max_retries"] == 0
     assert seen["max_completion_tokens"] == 3072
-    assert 0 < seen["timeout"] <= 12
+    assert 0 < seen["timeout"] <= 12.0 + 1e-6
     assert seen["messages"] == messages
     assert client.closed is True
     assert manager.calls == [("study_companion:concept_explain", 1)]

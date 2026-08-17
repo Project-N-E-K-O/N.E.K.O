@@ -41,7 +41,6 @@ const STUDY_SURFACE_INCOMING_MESSAGE_TYPES = new Set([
   STUDY_SURFACE_MESSAGE_TYPES.refreshSummary,
   STUDY_SURFACE_MESSAGE_TYPES.memoryDeckUpdated,
 ]);
-const PLUGIN_CONTEXT_INVALIDATED_MESSAGE = 'neko-plugin-context-invalidated';
 const outcomeFormatters = window.StudyOutcomeFormatters;
 if (!outcomeFormatters) {
   throw new Error('StudyOutcomeFormatters failed to load');
@@ -1807,7 +1806,7 @@ async function saveSettingsConfig(statusTarget = settingsConfigStatus) {
     settingsCommunicationStatus = cloneConfig(payload.communication_status || {});
     applySettingsConfig(settingsConfig);
     setSettingsConfigStatus('ui.status.config_saved', 'Saved', statusTarget);
-    window.parent.postMessage({ type: PLUGIN_CONTEXT_INVALIDATED_MESSAGE }, window.location.origin);
+    window.parent.postMessage({type: 'neko-plugin-context-invalidated'}, window.location.origin);
     if (surfaceDrawer?.dataset.open === 'true' && surfaceDrawer.dataset.surfaceId === 'note-exporter') {
       openSurfaceDrawer('note-exporter');
     }
