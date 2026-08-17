@@ -3769,6 +3769,30 @@ def test_a_prohibition_inside_an_assigned_value_does_not_block_the_next_command(
     ) is False
 
 
+@pytest.mark.parametrize(
+    'prohibition',
+    [
+        '以下修改不要执行',
+        '不要执行接下来的修改',
+        '接下來的修改請勿執行',
+    ],
+)
+def test_a_governing_list_prohibition_blocks_all_recovered_items(prohibition):
+    import main_routers.card_assist_router as router
+
+    for separator in ('：', '：先重写名字。然后'):
+        text = f'{prohibition}{separator}请重写所有字段并保留是否会员'
+        assert router._chat_text_requests_full_rewrite_core(text) is False
+        assert router._chat_text_requests_full_rewrite(text) is False
+
+
+def test_a_completed_prohibition_does_not_block_a_new_explicit_command():
+    import main_routers.card_assist_router as router
+
+    text = '不要执行上述修改。现在请重写所有字段并保留是否会员'
+    assert router._chat_text_requests_full_rewrite(text) is True
+
+
 def test_an_inch_mark_is_not_an_unmatched_quote_opener():
     import main_routers.card_assist_router as router
 

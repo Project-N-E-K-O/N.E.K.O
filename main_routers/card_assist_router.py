@@ -1539,18 +1539,25 @@ _CHAT_SCOPED_NEXT_COMMAND_RE = re.compile(
     + r"|(?i:(?:please\s+)?(?:rewrite|revise|regenerate|redo|refresh)\b))"
 )
 _CHAT_GOVERNING_INSTRUCTION_PROHIBITION_RE = re.compile(
-    r"(?:不要|别|別|请勿|請勿|禁止|不能|不可)\s*"
+    r"(?:(?:不要|别|別|请勿|請勿|禁止|不能|不可)\s*"
     r"(?:(?:执行|執行|遵循|照做|做|采用|採用|应用|應用|重写|重寫)\s*"
-    r"(?:这|這|以下|上述|上面)?\s*(?:条|條|个|個)?\s*"
+    r"(?:这|這|以下|下面|下列|上述|上面|接下来的?|接下來的?)?\s*"
+    r"(?:条|條|个|個)?\s*"
     r"(?:指令|命令|修改|要求|内容|內容)"
     r"|(?:按照|依照|根据|根據|照)\s*(?:下面|以下|上述|上面)?\s*的?\s*"
     r"(?:文字|内容|內容|指令|命令)?\s*(?:操作|执行|執行|照做|做)"
     r"|(?:把|将|將)\s*(?:下面|以下|上述|上面)?\s*"
     r"(?:内容|內容|文字|指令|命令)\s*(?:当作|當作|视为|視為|作为|作為)\s*"
     r"(?:指令|命令|要求))"
+    r"|(?:以下|下面|下列|接下来的?|接下來的?)\s*"
+    r"(?:修改|操作|指令|命令|要求|内容|內容)\s*"
+    r"(?:不要|别|別|请勿|請勿|禁止|不能|不可)\s*"
+    r"(?:执行|執行|遵循|照做|做|采用|採用|应用|應用))"
 )
 _CHAT_GOVERNING_PROHIBITION_SENTENCE_END_RE = re.compile(r"[。！？.!?;；]+")
-_CHAT_GOVERNING_FOLLOWING_LIST_MARKER_RE = re.compile(r"(?:以下|下面|下列)")
+_CHAT_GOVERNING_FOLLOWING_LIST_MARKER_RE = re.compile(
+    r"(?:以下|下面|下列|接下来|接下來)"
+)
 _CHAT_DISTINCT_REQUEST_TOPIC_RE = re.compile(
     r"^\s*(?:另一个|另一個|另外一个|另外一個)\s*"
     r"(?:请求|請求|要求|任务|任務)"
