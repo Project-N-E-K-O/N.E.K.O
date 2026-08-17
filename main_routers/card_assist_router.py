@@ -1516,8 +1516,9 @@ _CHAT_ZH_COMMAND_HEAD = (
 )
 _CHAT_ZH_CONTRAST_COMMAND_RE = re.compile(r"^\s*" + _CHAT_ZH_COMMAND_HEAD)
 _CHAT_SCOPED_REPORTED_SPEECH_RE = re.compile(
-    r"[^。，、！？,.!?;；]{1,64}?\s*"
-    r"(?:说|說|表示|提到|写道|寫道|回复|回覆|要求)(?:过|過)?\s*$"
+    r"(?:[^。，、！？,.!?;；]{1,64}?\s*"
+    r"(?:说|說|表示|提到|写道|寫道|回复|回覆|要求)(?:过|過)?"
+    r"|[^。，、！？,.!?;；]{1,64}?(?:原话|原話|原文))\s*[：:]?\s*$"
 )
 _CHAT_SCOPED_NEXT_COMMAND_RE = re.compile(
     r"(?:(?:并|並|然后|然後|接着|接著|随后|隨後|同时|同時|以及|还要|還要|再)"
@@ -2057,6 +2058,10 @@ def _chat_text_requests_full_rewrite_from_scoped_segments(text: str) -> bool:
         segment_start = recent_boundaries.popleft().end()
     for match in recent_boundaries:
         if match.group("contrast") is not None:
+            reporting_prefix = text[segment_start:match.start()]
+            if _CHAT_SCOPED_REPORTED_SPEECH_RE.search(reporting_prefix):
+                segment_start = match.end()
+                continue
             if len(text) - match.end() <= _CHAT_SCOPED_RECOVERY_WINDOW_CHARS:
                 candidate = text[match.end():]
                 if (
