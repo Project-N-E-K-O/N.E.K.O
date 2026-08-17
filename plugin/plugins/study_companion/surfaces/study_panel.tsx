@@ -117,6 +117,22 @@ type DocumentJobPayload = {
 
 const DOCUMENT_JOB_STORAGE_KEY = 'study_companion.document_analysis_job_id';
 const PENDING_DOCUMENT_JOB_ID = '__pending__';
+const PENDING_DOCUMENT_JOB_PREFIX = `${PENDING_DOCUMENT_JOB_ID}:`;
+
+function createDocumentStartToken() {
+  if (typeof window.crypto?.randomUUID === 'function') return window.crypto.randomUUID();
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
+function isPendingDocumentJobId(jobId: string) {
+  return jobId === PENDING_DOCUMENT_JOB_ID || jobId.startsWith(PENDING_DOCUMENT_JOB_PREFIX);
+}
+
+function pendingDocumentStartToken(jobId: string) {
+  return jobId.startsWith(PENDING_DOCUMENT_JOB_PREFIX)
+    ? jobId.slice(PENDING_DOCUMENT_JOB_PREFIX.length)
+    : '';
+}
 
 type SolutionNarrationOutcome = {
   diagnostic?: string;
@@ -1366,9 +1382,12 @@ export default function StudyPanel(props: PluginSurfaceProps) {
     }
   }
 
-  function rememberPendingDocumentJob() {
+  function rememberPendingDocumentJob(startToken: string) {
     try {
-      window.sessionStorage.setItem(DOCUMENT_JOB_STORAGE_KEY, PENDING_DOCUMENT_JOB_ID);
+      window.sessionStorage.setItem(
+        DOCUMENT_JOB_STORAGE_KEY,
+        `${PENDING_DOCUMENT_JOB_PREFIX}${startToken}`,
+      );
     } catch {
       // Storage may be unavailable in a restricted hosted surface.
     }
@@ -1400,9 +1419,10 @@ export default function StudyPanel(props: PluginSurfaceProps) {
   }
 
   function recoveringDocumentJob(jobId: string): DocumentJobState {
+    const pendingStart = isPendingDocumentJobId(jobId);
     return {
-      jobId: jobId === PENDING_DOCUMENT_JOB_ID ? '' : jobId,
-      status: jobId === PENDING_DOCUMENT_JOB_ID ? 'starting' : 'running',
+      jobId: pendingStart ? '' : jobId,
+      status: pendingStart ? 'starting' : 'running',
       stage: 'validating',
       analysisMode: '',
       completedChunks: 0,
@@ -1476,11 +1496,15 @@ export default function StudyPanel(props: PluginSurfaceProps) {
     }
   }
 
-  async function resumeDocumentJob(signal: AbortSignal) {
+  async function resumeDocumentJob(signal: AbortSignal, pendingStartTokenOverride = '') {
     let recoveryFailures = 0;
     while (!signal.aborted && mountedRef.current) {
-      const savedJobId = savedDocumentJobId();
-      const hasSavedJobId = Boolean(savedJobId && savedJobId !== PENDING_DOCUMENT_JOB_ID);
+      const savedJobId = savedDocumentJobId() || (pendingStartTokenOverride
+        ? `${PENDING_DOCUMENT_JOB_PREFIX}${pendingStartTokenOverride}`
+        : '');
+      const pendingStart = isPendingDocumentJobId(savedJobId);
+      const hasSavedJobId = Boolean(savedJobId && !pendingStart);
+      const startToken = pendingDocumentStartToken(savedJobId);
       let data: DocumentJobPayload | null = null;
       let savedJobNotFound = false;
       let lookupFailed = false;
@@ -1510,11 +1534,13 @@ export default function StudyPanel(props: PluginSurfaceProps) {
 
       if (!data && !lookupFailed) {
         try {
+          const activeArgs: Record<string, unknown> = pendingStart ? { pending_start: true } : {};
+          if (startToken) activeArgs.start_token = startToken;
           data = await callStudyPlugin<DocumentJobPayload>(
             props.api,
             'study_active_document_analysis',
             props.locale,
-            {},
+            activeArgs,
             signal,
           );
         } catch (error) {
@@ -1670,7 +1696,8 @@ export default function StudyPanel(props: PluginSurfaceProps) {
     setDocumentError('');
     setReply(t('ui.document.status.analyzing', 'Analyzing document...'));
     scrollReplyIntoView();
-    rememberPendingDocumentJob();
+    const startToken = createDocumentStartToken();
+    rememberPendingDocumentJob(startToken);
     try {
       const data = await callStudyPlugin<DocumentJobPayload>(props.api, 'study_start_document_analysis', props.locale, {
         document_name: currentDocument.name,
@@ -1679,6 +1706,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
         analysis_kind: documentKind,
         analysis_instruction: documentInstruction.trim(),
         locale: String(props.locale || '').trim(),
+        start_token: startToken,
       });
       if (!mountedRef.current) {
         if (data.job_id) rememberDocumentJobId(String(data.job_id));
@@ -1705,7 +1733,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
         setReply(error instanceof Error && /plugin call timed out|plugin_call_timeout/i.test(error.message)
           ? t('ui.document.error.timeout', 'Document analysis timed out. Please retry shortly.')
           : formatPluginError(error));
-        await resumeDocumentJob(controller.signal);
+        await resumeDocumentJob(controller.signal, startToken);
       }
     } finally {
       if (documentJobControllerRef.current === controller && !documentJobIdRef.current) {

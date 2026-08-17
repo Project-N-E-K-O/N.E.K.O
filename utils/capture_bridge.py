@@ -191,8 +191,8 @@ def unmark_capture_client(lanlan_name: str, *, expected_websocket: Any | None = 
 
 
 def has_capture_client() -> bool:
-    """True iff at least one Electron renderer is registered and ready."""
-    return bool(_clients)
+    """True iff at least one renderer can serve background window capture."""
+    return any(_supports_window_capture(client) for client in _clients.values())
 
 
 def has_region_capture_client(lanlan_name: str | None = None) -> bool:
@@ -215,6 +215,18 @@ def _pick_client(lanlan_name: str | None = None) -> _CaptureClient | None:
         return None
     # newest registration wins (single-renderer assumption)
     return max(_clients.values(), key=lambda c: c.registered_at)
+
+
+def _supports_window_capture(client: _CaptureClient) -> bool:
+    capabilities = client.capabilities
+    return bool(capabilities.get_sources and capabilities.capture_source_as_data_url)
+
+
+def _pick_window_capture_client() -> _CaptureClient | None:
+    candidates = [client for client in _clients.values() if _supports_window_capture(client)]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda client: client.registered_at)
 
 
 def _validate_target_id(target_id: Any) -> str:
@@ -279,12 +291,8 @@ async def request_capture_screenshot(
     async with _capture_semaphore:
         if _interactive_capture_active:
             raise CaptureBridgeError("interactive_capture_busy")
-        client = _pick_client()
-        if (
-            client is None
-            or not client.capabilities.get_sources
-            or not client.capabilities.capture_source_as_data_url
-        ):
+        client = _pick_window_capture_client()
+        if client is None:
             raise CaptureBridgeError("no renderer available")
 
         request_id = uuid.uuid4().hex

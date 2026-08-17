@@ -48,6 +48,12 @@
     const listeners = [];
     const documentJobStorageKey = 'study_companion.document_analysis_job_id';
     const pendingDocumentJobId = '__pending__';
+    const pendingDocumentJobPrefix = `${pendingDocumentJobId}:`;
+
+    function createDocumentStartToken() {
+      if (typeof window.crypto?.randomUUID === 'function') return window.crypto.randomUUID();
+      return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+    }
 
     function listen(target, type, listener, options) {
       if (!target) return;
@@ -130,9 +136,11 @@
       currentId: '',
       cancelRequested: false,
       pendingStart: false,
+      pendingStartToken: '',
       remember(jobId) {
         this.currentId = String(jobId || '');
         this.pendingStart = false;
+        this.pendingStartToken = '';
         try {
           if (this.currentId) window.sessionStorage.setItem(documentJobStorageKey, this.currentId);
           else window.sessionStorage.removeItem(documentJobStorageKey);
@@ -143,16 +151,20 @@
       savedId() {
         try {
           return String(window.sessionStorage.getItem(documentJobStorageKey) || '')
-            || (this.pendingStart ? pendingDocumentJobId : '');
+            || (this.pendingStart ? `${pendingDocumentJobPrefix}${this.pendingStartToken}` : '');
         } catch (_error) {
-          return this.pendingStart ? pendingDocumentJobId : '';
+          return this.pendingStart ? `${pendingDocumentJobPrefix}${this.pendingStartToken}` : '';
         }
       },
-      markPending() {
+      markPending(startToken) {
         this.currentId = '';
         this.pendingStart = true;
+        this.pendingStartToken = String(startToken || '');
         try {
-          window.sessionStorage.setItem(documentJobStorageKey, pendingDocumentJobId);
+          window.sessionStorage.setItem(
+            documentJobStorageKey,
+            `${pendingDocumentJobPrefix}${this.pendingStartToken}`,
+          );
         } catch (_error) {
           // Storage may be unavailable in a restricted webview.
         }
@@ -219,10 +231,15 @@
       },
       async run(args, signal, update) {
         this.cancelRequested = false;
-        this.markPending();
+        const startToken = createDocumentStartToken();
+        this.markPending(startToken);
         let data;
         try {
-          data = await callPlugin('study_start_document_analysis', args, signal);
+          data = await callPlugin(
+            'study_start_document_analysis',
+            { ...args, start_token: startToken },
+            signal,
+          );
         } catch (error) {
           if (!signal.aborted) {
             const recovered = await this.resume(signal, update);
@@ -291,7 +308,12 @@
         while (!signal.aborted) {
           const savedId = this.savedId();
           if (!savedId) return null;
-          const hasSavedJobId = Boolean(savedId && savedId !== pendingDocumentJobId);
+          const isPendingStart = savedId === pendingDocumentJobId
+            || savedId.startsWith(pendingDocumentJobPrefix);
+          const hasSavedJobId = Boolean(savedId && !isPendingStart);
+          const startToken = savedId.startsWith(pendingDocumentJobPrefix)
+            ? savedId.slice(pendingDocumentJobPrefix.length)
+            : '';
           let data = null;
           let savedJobNotFound = false;
           let lookupFailed = false;
@@ -317,7 +339,9 @@
           }
           if (!data && !lookupFailed) {
             try {
-              data = await callPlugin('study_active_document_analysis', {}, signal);
+              const activeArgs = isPendingStart ? { pending_start: true } : {};
+              if (startToken) activeArgs.start_token = startToken;
+              data = await callPlugin('study_active_document_analysis', activeArgs, signal);
             } catch (error) {
               if (signal.aborted) break;
               lookupFailed = true;

@@ -23,6 +23,17 @@ CompletionCallback = Callable[[dict[str, Any]], None]
 _logger = logging.getLogger(__name__)
 
 
+def _idle_payload() -> dict[str, Any]:
+    return {
+        "job_id": "",
+        "status": "idle",
+        "stage": "idle",
+        "degraded": False,
+        "diagnostic": "",
+        "cancellation_source": "",
+    }
+
+
 class DocumentAnalysisJobError(RuntimeError):
     def __init__(self, message: str, *, diagnostic: str) -> None:
         super().__init__(message)
@@ -44,6 +55,7 @@ class _Job:
     analysis_mode: str
     document: dict[str, object]
     total_chunks: int
+    start_token: str = ""
     status: str = "running"
     stage: str = "validating"
     completed_chunks: int = 0
@@ -94,6 +106,7 @@ class DocumentAnalysisJobManager:
         self,
         *,
         owner_id: str = "",
+        start_token: str = "",
         analysis_mode: str,
         document: dict[str, object],
         total_chunks: int,
@@ -115,6 +128,7 @@ class DocumentAnalysisJobManager:
                 analysis_mode=analysis_mode,
                 document=dict(document),
                 total_chunks=max(1, int(total_chunks)),
+                start_token=str(start_token or "").strip(),
                 stage="analyzing_chunks" if analysis_mode == "chunked" else "analyzing",
             )
             self._jobs[job_id] = job
@@ -133,10 +147,25 @@ class DocumentAnalysisJobManager:
                 )
             return job.public_payload()
 
-    async def active(self, *, owner_id: str = "") -> dict[str, Any]:
+    async def active(
+        self,
+        *,
+        owner_id: str = "",
+        start_token: str = "",
+        pending_start: bool = False,
+    ) -> dict[str, Any]:
         async with self._lock:
             self._reap_locked()
             normalized_owner_id = str(owner_id or "").strip()
+            normalized_start_token = str(start_token or "").strip()
+            if normalized_start_token:
+                for candidate in reversed(tuple(self._jobs.values())):
+                    if (
+                        candidate.owner_id == normalized_owner_id
+                        and candidate.start_token == normalized_start_token
+                    ):
+                        return candidate.public_payload()
+                return _idle_payload()
             job = self._jobs.get(self._active_job_id)
             if (
                 job is not None
@@ -144,20 +173,15 @@ class DocumentAnalysisJobManager:
                 and job.owner_id == normalized_owner_id
             ):
                 return job.public_payload()
+            if pending_start:
+                return _idle_payload()
             for candidate in reversed(tuple(self._jobs.values())):
                 if (
                     candidate.status != "running"
                     and candidate.owner_id == normalized_owner_id
                 ):
                     return candidate.public_payload()
-            return {
-                "job_id": "",
-                "status": "idle",
-                "stage": "idle",
-                "degraded": False,
-                "diagnostic": "",
-                "cancellation_source": "",
-            }
+            return _idle_payload()
 
     async def cancel(
         self,

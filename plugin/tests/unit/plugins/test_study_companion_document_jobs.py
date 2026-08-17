@@ -288,6 +288,41 @@ async def test_active_recovers_owner_most_recent_retained_terminal_job() -> None
 
 
 @pytest.mark.asyncio
+async def test_pending_start_recovery_never_returns_an_unrelated_terminal_job() -> None:
+    manager = DocumentAnalysisJobManager()
+
+    async def completed_runner(_update):
+        return {"reply": "completed summary"}
+
+    old = await manager.start(
+        owner_id="alice",
+        start_token="old-start",
+        analysis_mode="direct",
+        document={"name": "old.txt"},
+        total_chunks=1,
+        runner=completed_runner,
+    )
+    for _ in range(20):
+        old_status = await manager.status(old["job_id"], owner_id="alice")
+        if old_status["status"] == "completed":
+            break
+        await asyncio.sleep(0)
+
+    unrelated = await manager.active(
+        owner_id="alice", start_token="new-start", pending_start=True
+    )
+    legacy_pending = await manager.active(owner_id="alice", pending_start=True)
+    matched = await manager.active(
+        owner_id="alice", start_token="old-start", pending_start=True
+    )
+
+    assert unrelated["status"] == "idle"
+    assert legacy_pending["status"] == "idle"
+    assert matched["job_id"] == old["job_id"]
+    await manager.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_terminal_job_is_removed_after_result_ttl(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

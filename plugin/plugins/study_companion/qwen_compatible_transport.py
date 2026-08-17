@@ -17,6 +17,14 @@ _ALLOWED_HOSTS = frozenset(
     }
 )
 _COMPATIBLE_PATH = "/compatible-mode/v1"
+_CONTEXT_LIMIT_MARKERS = (
+    "context length",
+    "context_length",
+    "context window",
+    "maximum context",
+    "prompt is too long",
+    "too many tokens",
+)
 
 
 class QwenCompatibleTransportError(RuntimeError):
@@ -126,6 +134,8 @@ def _error_diagnostic(status_code: int, payload: object) -> str:
         return "authentication_failed"
     if status_code == HTTPStatus.TOO_MANY_REQUESTS or "rate" in combined:
         return "rate_limited"
+    if any(marker in combined for marker in _CONTEXT_LIMIT_MARKERS):
+        return "context_limit_exceeded"
     if normalized_code in {
         "invalidmodel",
         "modelaccessdenied",

@@ -71,12 +71,48 @@ async def test_region_only_renderer_does_not_accept_window_capture_requests():
     payload["capabilities"]["captureSourceAsDataUrl"] = False
     capture_bridge.mark_capture_client("neko", sock, payload)
 
+    assert capture_bridge.has_capture_client() is False
     assert capture_bridge.has_region_capture_client() is True
     with pytest.raises(capture_bridge.CaptureBridgeError, match="no renderer available"):
         await capture_bridge.request_capture_screenshot(
             {"target_id": "1", "pid": 100, "title": "t"}, timeout=0.1
         )
     assert sock.sent == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_region_only_newest_renderer_does_not_shadow_window_capture_client():
+    window_sock = _Sock()
+    region_sock = _Sock()
+    capture_bridge.mark_capture_client("window", window_sock, _payload(True))
+    region_payload = _payload(True)
+    region_payload["capabilities"]["getSources"] = False
+    region_payload["capabilities"]["captureSourceAsDataUrl"] = False
+    capture_bridge.mark_capture_client("region", region_sock, region_payload)
+
+    async def _replier():
+        await window_sock.send_event.wait()
+        import json
+
+        request = json.loads(window_sock.sent[-1])
+        capture_bridge.resolve_capture_response(
+            "window",
+            {
+                "request_id": request["request_id"],
+                "success": True,
+                "image": "data:image/jpeg;base64,YQ==",
+            },
+        )
+
+    reply_task = asyncio.create_task(_replier())
+    result = await capture_bridge.request_capture_screenshot(
+        {"target_id": "1", "pid": 100, "title": "t"}, timeout=1.0
+    )
+    await reply_task
+
+    assert result["success"] is True
+    assert region_sock.sent == []
 
 
 @pytest.mark.unit

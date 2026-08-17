@@ -542,8 +542,20 @@ await waitFor(
   'ambiguous start did not retry active-job reconciliation',
 );
 assert(
-  ambiguous.window.sessionStorage.getItem('study_companion.document_analysis_job_id') === '__pending__',
+  ambiguous.window.sessionStorage.getItem('study_companion.document_analysis_job_id').startsWith('__pending__:'),
   'ambiguous start discarded the pending recovery marker',
+);
+const ambiguousStart = ambiguousCalls.find((call) => call.entryId === 'study_start_document_analysis');
+const ambiguousActiveCalls = ambiguousCalls.filter(
+  (call) => call.entryId === 'study_active_document_analysis',
+);
+assert(Boolean(ambiguousStart.args.start_token), 'ambiguous start omitted its correlation token');
+assert(
+  ambiguousActiveCalls.every((call) => (
+    call.args.pending_start === true
+    && call.args.start_token === ambiguousStart.args.start_token
+  )),
+  'ambiguous recovery was not scoped to its pending start',
 );
 assert(
   ambiguous.document.getElementById('studyDocumentAnalyzeBtn').disabled,

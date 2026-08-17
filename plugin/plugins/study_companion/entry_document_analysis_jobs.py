@@ -149,6 +149,7 @@ class _DocumentAnalysisJobsEntriesMixin:
                     "default": "auto",
                 },
                 "locale": {"type": "string", "maxLength": 16},
+                "start_token": {"type": "string", "maxLength": 128},
             },
             "required": ["document_name", "document_type", "document_text", "locale"],
         },
@@ -177,6 +178,7 @@ class _DocumentAnalysisJobsEntriesMixin:
         analysis_instruction: str = "",
         analysis_kind: str = "auto",
         locale: str = "zh-CN",
+        start_token: str = "",
         **_,
     ):
         if self._agent is None:
@@ -444,6 +446,7 @@ class _DocumentAnalysisJobsEntriesMixin:
             with runtime_context:
                 payload = await self._document_job_manager().start(
                     owner_id=job_owner,
+                    start_token=start_token,
                     analysis_mode=analysis_mode,
                     document=document.public_metadata(),
                     total_chunks=total_chunks,
@@ -506,13 +509,23 @@ class _DocumentAnalysisJobsEntriesMixin:
             "entries.active_document_analysis.description",
             default="Recover the latest retained document analysis job.",
         ),
-        input_schema={"type": "object", "properties": {}},
+        input_schema={
+            "type": "object",
+            "properties": {
+                "start_token": {"type": "string", "maxLength": 128},
+                "pending_start": {"type": "boolean", "default": False},
+            },
+        },
         timeout=_STATUS_ENTRY_TIMEOUT_SECONDS,
     )
-    async def study_active_document_analysis(self, **kwargs):
+    async def study_active_document_analysis(
+        self, start_token: str = "", pending_start: bool = False, **kwargs
+    ):
         return Ok(
             await self._document_job_manager().active(
-                owner_id=_document_job_owner(self, kwargs)
+                owner_id=_document_job_owner(self, kwargs),
+                start_token=start_token,
+                pending_start=pending_start,
             )
         )
 

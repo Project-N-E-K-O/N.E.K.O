@@ -106,6 +106,11 @@ async def test_request_contract_disables_thinking_omits_temperature_and_parses_t
             "model_not_supported",
         ),
         (400, {"error": {"message": "bad request"}}, "invalid_request"),
+        (
+            400,
+            {"error": {"message": "maximum context length exceeded"}},
+            "context_limit_exceeded",
+        ),
         (503, {"error": {"message": "down"}}, "provider_unavailable"),
         (422, {"error": {"message": "bad input"}}, "llm_call_failed"),
     ],

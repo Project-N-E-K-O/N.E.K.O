@@ -185,8 +185,12 @@ def test_hosted_document_job_recovery_survives_opaque_storage_and_transient_fail
     resume_end = hosted.index("async function cancelDocumentJob", resume_start)
     resume = hosted[resume_start:resume_end]
     assert "if (!savedJobId) return;" not in resume
-    assert "savedJobId && savedJobId !== PENDING_DOCUMENT_JOB_ID" in resume
+    assert "const pendingStart = isPendingDocumentJobId(savedJobId);" in resume
+    assert "savedJobId && !pendingStart" in resume
     assert "study_active_document_analysis" in resume
+    assert "pendingStart ? { pending_start: true } : {}" in resume
+    assert "activeArgs.start_token = startToken" in resume
+    assert "pendingStartTokenOverride" in resume
     assert ".catch(() => null)" not in resume
     assert "if (lookupFailed)" in resume
     assert "await waitForDocumentPoll(retryDelayMs, signal);" in resume
@@ -225,7 +229,7 @@ def test_hosted_document_job_ambiguous_start_and_cancel_failures_keep_recovery()
     analyze_catch_start = analyze.index("} catch (error) {")
     analyze_catch = analyze[analyze_catch_start:]
     assert "rememberDocumentJobId('');" not in analyze_catch
-    assert "await resumeDocumentJob(controller.signal);" in analyze_catch
+    assert "await resumeDocumentJob(controller.signal, startToken);" in analyze_catch
 
 
 def test_static_document_job_storage_recovers_valid_and_clears_stale_ids() -> None:
