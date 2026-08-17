@@ -2060,7 +2060,6 @@ def _chat_text_requests_full_rewrite_from_scoped_segments(text: str) -> bool:
         if match.group("contrast") is not None:
             reporting_prefix = text[segment_start:match.start()]
             if _CHAT_SCOPED_REPORTED_SPEECH_RE.search(reporting_prefix):
-                segment_start = match.end()
                 continue
             if len(text) - match.end() <= _CHAT_SCOPED_RECOVERY_WINDOW_CHARS:
                 candidate = text[match.end():]
