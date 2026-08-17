@@ -600,7 +600,7 @@ async def test_out_of_scope_adaptive_candidates_never_override_explicit_scope(
     monkeypatch.setattr(
         plugin._knowledge_tracker,
         "preview_next_question_params",
-        lambda _topic_id="": dict(params),
+        lambda _topic_id="", **_kwargs: dict(params),
     )
     try:
         selected = await plugin.study_set_practice_scope(

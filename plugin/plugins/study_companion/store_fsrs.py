@@ -178,8 +178,50 @@ def upsert_fsrs_card(
         conn.commit()
 
 
-def list_fsrs_cards(self, limit: int | None = 100) -> list[dict[str, Any]]:
-    if limit is None:
+def list_fsrs_cards(
+    self,
+    limit: int | None = 100,
+    *,
+    topic_ids: list[str] | set[str] | tuple[str, ...] | None = None,
+) -> list[dict[str, Any]]:
+    topic_keys = list(
+        dict.fromkeys(str(topic_id or "").strip() for topic_id in (topic_ids or ()))
+    )
+    topic_keys = [topic_id for topic_id in topic_keys if topic_id]
+    if topic_ids is not None and not topic_keys:
+        return []
+    if topic_ids is not None:
+        topic_ids_json = self._json_dumps(topic_keys)
+        if limit is None:
+            rows = (
+                self._require_read_conn()
+                .execute(
+                    """
+                    SELECT *
+                    FROM fsrs_cards
+                    WHERE topic_id IN (SELECT value FROM json_each(?))
+                    ORDER BY updated_at DESC, id DESC
+                    """,
+                    (topic_ids_json,),
+                )
+                .fetchall()
+            )
+        else:
+            rows = (
+                self._require_read_conn()
+                .execute(
+                    """
+                    SELECT *
+                    FROM fsrs_cards
+                    WHERE topic_id IN (SELECT value FROM json_each(?))
+                    ORDER BY updated_at DESC, id DESC
+                    LIMIT ?
+                    """,
+                    (topic_ids_json, max(1, int(limit))),
+                )
+                .fetchall()
+            )
+    elif limit is None:
         rows = (
             self._require_read_conn()
             .execute(

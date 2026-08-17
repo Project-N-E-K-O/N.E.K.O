@@ -912,11 +912,24 @@ class KnowledgeTracker:
         }
 
     def get_next_question_params(
-        self, topic_id: str = "", *, record_prompt_usage: bool = True
+        self,
+        topic_id: str = "",
+        *,
+        record_prompt_usage: bool = True,
+        candidate_topic_ids: list[str] | set[str] | tuple[str, ...] | None = None,
+        candidate_limit: int = 5,
+        candidate_topics_by_id: dict[str, dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         resolved = self._resolve_topic_id(topic_id)
-        weak_topics = self.get_weak_topics(limit=5)
-        review_queue = self.get_review_queue(limit=5)
+        weak_topics = self.get_weak_topics(
+            limit=candidate_limit,
+            topic_ids=candidate_topic_ids,
+        )
+        review_queue = self.get_review_queue(
+            limit=candidate_limit,
+            topic_ids=candidate_topic_ids,
+            topics_by_id=candidate_topics_by_id,
+        )
         topic = self.store.get_topic(resolved) if resolved else None
         latest = self.store.get_latest_mastery(resolved) if resolved else None
         mastery_value = float((latest or {}).get("mastery") or 0.0)
@@ -950,8 +963,21 @@ class KnowledgeTracker:
             ),
         }
 
-    def preview_next_question_params(self, topic_id: str = "") -> dict[str, Any]:
-        return self.get_next_question_params(topic_id, record_prompt_usage=False)
+    def preview_next_question_params(
+        self,
+        topic_id: str = "",
+        *,
+        candidate_topic_ids: list[str] | set[str] | tuple[str, ...] | None = None,
+        candidate_limit: int = 5,
+        candidate_topics_by_id: dict[str, dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        return self.get_next_question_params(
+            topic_id,
+            record_prompt_usage=False,
+            candidate_topic_ids=candidate_topic_ids,
+            candidate_limit=candidate_limit,
+            candidate_topics_by_id=candidate_topics_by_id,
+        )
 
     def record_prompt_usage_for_question_params(
         self, params: dict[str, Any] | None
@@ -1134,25 +1160,23 @@ class KnowledgeTracker:
         limit: int = 10,
         *,
         topic_ids: list[str] | set[str] | tuple[str, ...] | None = None,
+        topics_by_id: dict[str, dict[str, Any]] | None = None,
     ) -> list[dict[str, Any]]:
-        rows = self.store.list_fsrs_cards(limit=None)
-        if topic_ids is not None:
-            eligible = {
-                str(topic_id or "").strip()
-                for topic_id in topic_ids
-                if str(topic_id or "").strip()
-            }
-            rows = [
-                row
-                for row in rows
-                if str(row.get("topic_id") or "").strip() in eligible
-            ]
+        rows = self.store.list_fsrs_cards(limit=None, topic_ids=topic_ids)
         reviews = self.fsrs.get_due_reviews([row["card"] for row in rows])
+        topic_lookup = dict(topics_by_id or {})
         result: list[dict[str, Any]] = []
         for item in reviews[: max(1, int(limit))]:
-            topic = self.store.get_topic(str(item.get("topic_id") or "")) or {}
+            topic_id = str(item.get("topic_id") or "")
+            topic = topic_lookup.get(topic_id)
+            if topic is None and topics_by_id is None:
+                topic = self.store.get_topic(topic_id)
             result.append(
-                {**item, **self._card_metadata(item.get("card") or {}), "topic": topic}
+                {
+                    **item,
+                    **self._card_metadata(item.get("card") or {}),
+                    "topic": topic or {},
+                }
             )
         return result
 

@@ -1018,19 +1018,15 @@ def test_scoped_question_candidates_are_filtered_before_limits() -> None:
     class _ScopedTracker:
         def __init__(self) -> None:
             self.store = _ScopedStore()
-            self.review_topic_ids: set[str] | None = None
-            self.weak_topic_ids: set[str] | None = None
+            self.preview_options: dict[str, Any] = {}
 
-        def preview_next_question_params(self, topic_id):
-            return {"target_topic_id": topic_id}
-
-        def get_review_queue(self, *, topic_ids=None, **_kwargs):
-            self.review_topic_ids = set(topic_ids) if topic_ids is not None else None
-            return [{"topic_id": "inside-topic"}]
-
-        def get_weak_topics(self, *, topic_ids=None, **_kwargs):
-            self.weak_topic_ids = set(topic_ids) if topic_ids is not None else None
-            return [{"topic_id": "inside-topic", "mastery": 0.2}]
+        def preview_next_question_params(self, topic_id, **kwargs):
+            self.preview_options = dict(kwargs)
+            return {
+                "target_topic_id": topic_id,
+                "due_reviews": [{"topic_id": "inside-topic"}],
+                "weak_topics": [{"topic_id": "inside-topic", "mastery": 0.2}],
+            }
 
     plugin = StudyCompanionPlugin.__new__(StudyCompanionPlugin)
     tracker = _ScopedTracker()
@@ -1050,8 +1046,11 @@ def test_scoped_question_candidates_are_filtered_before_limits() -> None:
     )
 
     assert tracker.store.requested_topic_ids == [eligible]
-    assert tracker.review_topic_ids == eligible
-    assert tracker.weak_topic_ids == eligible
+    assert tracker.preview_options["candidate_topic_ids"] == eligible
+    assert tracker.preview_options["candidate_limit"] == 5000
+    assert tracker.preview_options["candidate_topics_by_id"] == {
+        "inside-topic": {"id": "inside-topic", "name": "Inside"}
+    }
     assert params["retry_wrong_questions"][0]["topic_id"] == "inside-topic"
     assert params["due_reviews"][0]["topic_id"] == "inside-topic"
     assert params["weak_topics"][0]["topic_id"] == "inside-topic"
