@@ -1514,6 +1514,10 @@ _CHAT_ZH_COMMAND_HEAD = (
     r"(?:把|将|將|重写|重寫|重新写|重新寫|改写|改寫|重做|重生|梳理|完善)"
 )
 _CHAT_ZH_CONTRAST_COMMAND_RE = re.compile(r"^\s*" + _CHAT_ZH_COMMAND_HEAD)
+_CHAT_SCOPED_REPORTED_SPEECH_RE = re.compile(
+    r"(?:他|她|它|他们|她们|它们|對方|对方|用户|用戶|别人|別人|有人|某人)\s*"
+    r"(?:说|說|表示|提到|写道|寫道|回复|回覆|要求)(?:过|過)?\s*$"
+)
 _CHAT_SCOPED_NEXT_COMMAND_RE = re.compile(
     r"(?:(?:并|並|然后|然後|接着|接著|随后|隨後|同时|同時|以及|还要|還要|再)"
     r"|(?i:\b(?:and|then)\b))\s*(?="
@@ -1660,6 +1664,8 @@ def _chat_scoped_candidate_is_completed_command(candidate: str) -> bool:
     """Reject a rewrite phrase that is still part of a field value or compound word."""
     clauses = _chat_clauses(candidate)
     if not clauses:
+        return False
+    if len(clauses) > 1 and _CHAT_SCOPED_REPORTED_SPEECH_RE.search(clauses[-2]):
         return False
     clause = clauses[-1]
     assignment = _CHAT_SCOPED_VALUE_ASSIGNMENT_RE.search(clause)

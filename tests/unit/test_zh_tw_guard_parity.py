@@ -3701,6 +3701,17 @@ def test_an_english_command_after_a_field_assignment_remains_visible():
     assert router._chat_text_requests_full_rewrite(text) is True
 
 
+def test_an_unquoted_reported_command_is_not_a_user_command():
+    import main_routers.card_assist_router as router
+
+    text = '他说，请重写所有字段并保留是否会员'
+    assert router._chat_text_requests_full_rewrite_core(text) is False
+    assert router._chat_text_requests_full_rewrite(text) is False
+    assert router._chat_text_requests_full_rewrite(
+        '前情说明，请重写所有字段并保留是否会员'
+    ) is True
+
+
 @pytest.mark.parametrize('verb', ['设置成', '設定成'])
 def test_she_zhi_cheng_marks_the_following_text_as_a_field_value(verb):
     import main_routers.card_assist_router as router
