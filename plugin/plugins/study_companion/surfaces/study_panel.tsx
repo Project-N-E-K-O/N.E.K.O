@@ -1431,6 +1431,14 @@ export default function StudyPanel(props: PluginSurfaceProps) {
     };
   }
 
+  async function refreshAfterDocumentCompletion(signal: AbortSignal) {
+    try {
+      await refresh(signal, { updateReply: false });
+    } catch {
+      // The analysis result is terminal; a status refresh is best-effort only.
+    }
+  }
+
   async function pollDocumentJob(jobId: string, controller: AbortController) {
     let pollDelayMs = 1000;
     let consecutiveFailures = 0;
@@ -1471,7 +1479,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
           setReply(data.degraded
             ? formatTutorDiagnostic(data.diagnostic, true)
             : formatDocumentCompletion(data));
-          await refresh(controller.signal, { updateReply: false });
+          await refreshAfterDocumentCompletion(controller.signal);
           return;
         }
         if (['failed', 'canceled', 'timeout'].includes(nextJob.status)) {

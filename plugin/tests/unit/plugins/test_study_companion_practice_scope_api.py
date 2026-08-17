@@ -376,6 +376,54 @@ async def test_scope_context_queries_topics_before_applying_the_global_limit(
 
 
 @pytest.mark.asyncio
+async def test_scope_context_queries_mastery_for_eligible_topics_before_global_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plugin = await _start_plugin(tmp_path, monkeypatch)
+    topics = plugin._store.list_topics(5000)
+    groups: dict[tuple[str, ...], list[dict[str, Any]]] = {}
+    for topic in topics:
+        key = tuple(
+            str(topic.get(field) or "")
+            for field in ("stage", "subject", "course_family", "chapter", "unit")
+        )
+        groups.setdefault(key, []).append(topic)
+    scope_topics = next(items for items in groups.values() if len(items) >= 2)
+    tracked_topic = scope_topics[0]
+    plugin._store.append_mastery_snapshot(
+        {
+            "topic_id": tracked_topic["id"],
+            "mastery": 0.75,
+            "accuracy": 0.8,
+            "recency": 0.7,
+            "consistency": 0.6,
+            "confidence": 0.9,
+            "level": "learning",
+            "attempts": 3,
+            "flags": [],
+        }
+    )
+    monkeypatch.setattr(
+        plugin._store,
+        "list_mastery_overview",
+        lambda limit=20: [{"topic_id": "globally-earlier-topic", "mastery": 0.1}],
+    )
+    try:
+        selected = await plugin.study_set_practice_scope(
+            scope=_scope_request(tracked_topic)
+        )
+        scope = plugin._resolve_active_practice_scope()
+        assert scope is not None
+        params = plugin._scoped_question_params(scope)
+
+        assert isinstance(selected, Ok)
+        mastery = params["mastery_overview"]
+        assert {str(item["topic_id"]) for item in mastery} == {str(tracked_topic["id"])}
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_all_broad_course_modules_cold_start_without_history_or_text(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

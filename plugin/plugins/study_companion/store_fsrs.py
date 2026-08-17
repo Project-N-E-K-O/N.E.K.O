@@ -95,6 +95,52 @@ def list_mastery_overview(self, limit: int = 20) -> list[dict[str, Any]]:
     ]
 
 
+def list_latest_mastery_for_topics(
+    self, topic_ids: list[str] | set[str] | tuple[str, ...]
+) -> list[dict[str, Any]]:
+    topic_keys = list(
+        dict.fromkeys(str(topic_id or "").strip() for topic_id in topic_ids)
+    )
+    topic_keys = [topic_id for topic_id in topic_keys if topic_id]
+    if not topic_keys:
+        return []
+
+    rows = []
+    conn = self._require_read_conn()
+    for start in range(0, len(topic_keys), 500):
+        chunk = topic_keys[start : start + 500]
+        placeholders = ", ".join("?" for _ in chunk)
+        rows.extend(
+            conn.execute(
+                f"""
+                SELECT ms.*, t.name AS topic_name, t.chapter AS chapter, t.subject AS subject
+                FROM mastery_snapshots ms
+                JOIN (
+                    SELECT topic_id, MAX(id) AS max_id
+                    FROM mastery_snapshots
+                    WHERE topic_id IN ({placeholders})
+                    GROUP BY topic_id
+                ) latest ON latest.max_id = ms.id
+                LEFT JOIN topics t ON t.id = ms.topic_id
+                """,
+                chunk,
+            ).fetchall()
+        )
+    mastery = [
+        item
+        for item in (self._mastery_from_row(row) for row in rows)
+        if item is not None
+    ]
+    mastery.sort(
+        key=lambda item: (
+            str(item.get("updated_at") or ""),
+            int(item.get("id") or 0),
+        ),
+        reverse=True,
+    )
+    return mastery
+
+
 def get_fsrs_card(self, topic_id: str) -> dict[str, Any] | None:
     row = (
         self._require_read_conn()

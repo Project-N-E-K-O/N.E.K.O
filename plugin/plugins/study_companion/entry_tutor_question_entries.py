@@ -305,8 +305,8 @@ class _TutorQuestionEntriesMixin:
             )
             if str(topic.get("id") or "") in eligible
         ]
-        mastery_overview = self._knowledge_tracker.store.list_mastery_overview(
-            limit=5000
+        mastery_overview = self._knowledge_tracker.store.list_latest_mastery_for_topics(
+            eligible
         )
         mastery_by_topic = {
             str(item.get("topic_id") or ""): dict(item)

@@ -580,6 +580,14 @@
       }
     }
 
+    async function refreshAfterAnalysisComplete() {
+      try {
+        await onAnalysisComplete({ updateReply: false });
+      } catch (_error) {
+        // A completed analysis must remain visible when the status refresh fails.
+      }
+    }
+
     function acceptDocumentFiles(files) {
       if (documentBusy) return undefined;
       const list = Array.from(files || []);
@@ -638,7 +646,7 @@
         setStatus(failed ? t('ui.status.error', 'Error') : t('ui.status.document_complete'));
         setReply(failed ? formatDocumentDiagnostic(data.diagnostic) : completedReply);
         studyDocumentState.textContent = failed ? formatDocumentDiagnostic(data.diagnostic) : t('ui.status.document_complete');
-        await onAnalysisComplete({ updateReply: false });
+        await refreshAfterAnalysisComplete();
       } catch (error) {
         if (controller.signal.aborted) return;
         setStatus(t('ui.status.error', 'Error'));
@@ -669,12 +677,14 @@
         setStatus(failed ? t('ui.status.error', 'Error') : t('ui.status.document_complete'));
         setReply(failed ? formatDocumentDiagnostic(data.diagnostic) : completedReply);
         studyDocumentState.textContent = failed ? formatDocumentDiagnostic(data.diagnostic) : t('ui.status.document_complete');
-        if (!failed) await onAnalysisComplete({ updateReply: false });
+        if (!failed) await refreshAfterAnalysisComplete();
       } catch (error) {
         if (!controller.signal.aborted) setReply(formatPluginError(error));
       } finally {
-        if (documentRequestController === controller) documentRequestController = null;
-        setDocumentBusy(false);
+        if (documentRequestController === controller) {
+          documentRequestController = null;
+          setDocumentBusy(false);
+        }
       }
     }
 

@@ -388,6 +388,76 @@ assert(
 assert(analysis.replies.at(-1) === 'analysis complete', 'analysis reply was not rendered');
 analysis.controller.dispose();
 
+const refreshFailure = createEnvironment(async () => ({
+  status: 'completed',
+  reply: 'analysis survives refresh failure',
+}), async () => {
+  throw new Error('status refresh offline');
+});
+await importAndWait(
+  refreshFailure,
+  fileFromBytes(bytesForText('refresh failure document')),
+  'refresh failure document',
+);
+refreshFailure.document.getElementById('studyDocumentAnalyzeBtn').click();
+await waitFor(
+  () => !refreshFailure.document.getElementById('studyDocumentAnalyzeBtn').disabled,
+  'refresh failure did not finish analysis cleanup',
+);
+assert(
+  refreshFailure.replies.at(-1) === 'analysis survives refresh failure',
+  'status refresh failure replaced the completed analysis',
+);
+refreshFailure.controller.dispose();
+
+let staleResumeSignal;
+let resolveReplacementImport;
+const staleResume = createEnvironment(async (entryId, _args, signal) => {
+  if (entryId === 'study_document_analysis_status') {
+    staleResumeSignal = signal;
+    return new Promise((_resolve, reject) => {
+      signal.addEventListener(
+        'abort',
+        () => reject(new staleResume.window.DOMException('Aborted', 'AbortError')),
+        { once: true },
+      );
+    });
+  }
+  throw new Error(`unexpected stale resume entry: ${entryId}`);
+}, async () => {}, (window) => {
+  window.sessionStorage.setItem('study_companion.document_analysis_job_id', 'job-stale-resume');
+});
+await waitFor(() => staleResumeSignal, 'saved job recovery did not start');
+pasteFile(staleResume, {
+  name: 'replacement.txt',
+  type: 'text/plain',
+  size: 16,
+  async arrayBuffer() {
+    return new Promise((resolve) => {
+      resolveReplacementImport = resolve;
+    });
+  },
+});
+await waitFor(() => staleResumeSignal.aborted, 'replacement import did not abort stale recovery');
+await Promise.resolve();
+assert(
+  staleResume.document.getElementById('studyDocumentCard').dataset.busy === 'true',
+  'stale recovery released the replacement import busy state',
+);
+const replacementBytes = bytesForText('replacement text');
+resolveReplacementImport(
+  replacementBytes.buffer.slice(
+    replacementBytes.byteOffset,
+    replacementBytes.byteOffset + replacementBytes.byteLength,
+  ),
+);
+await waitFor(
+  () => staleResume.document.getElementById('studyDocumentText').value === 'replacement text'
+    && !staleResume.document.getElementById('studyDocumentAnalyzeBtn').disabled,
+  'replacement import did not complete',
+);
+staleResume.controller.dispose();
+
 const transientCalls = [];
 const transientPollDelays = [];
 let transientRefreshes = 0;

@@ -638,6 +638,24 @@ def test_memory_deck_surface_refetches_items_when_reopened() -> None:
     assert ": 0;" in loader
 
 
+def test_hosted_document_completion_refresh_is_best_effort() -> None:
+    source = _read("study_panel.tsx")
+    helper_start = source.index("async function refreshAfterDocumentCompletion")
+    helper_end = source.index("async function pollDocumentJob", helper_start)
+    helper = source[helper_start:helper_end]
+    completed_start = source.index("if (['completed', 'succeeded'].includes")
+    completed_end = source.index(
+        "if (['failed', 'canceled', 'timeout'].includes", completed_start
+    )
+    completed = source[completed_start:completed_end]
+
+    assert "try {" in helper
+    assert "await refresh(signal, { updateReply: false });" in helper
+    assert "catch" in helper
+    assert "setReply" not in helper
+    assert "await refreshAfterDocumentCompletion(controller.signal);" in completed
+
+
 def test_knowledge_map_graph_and_dialog_regressions_are_guarded() -> None:
     hosted = _read("knowledge_map.tsx")
     fallback = (PLUGIN_DIR / "static" / "knowledge-map.js").read_text(encoding="utf-8")

@@ -1470,6 +1470,7 @@ from .store_fsrs import (
     get_fsrs_card,
     get_latest_mastery,
     list_fsrs_cards,
+    list_latest_mastery_for_topics,
     list_mastery_overview,
     list_review_log,
     upsert_fsrs_card,
@@ -1518,6 +1519,7 @@ StudyStore.mark_wrong_question_resolved = mark_wrong_question_resolved  # type: 
 StudyStore.record_wrong_question_correct = record_wrong_question_correct  # type: ignore[method-assign]
 StudyStore.append_mastery_snapshot = append_mastery_snapshot  # type: ignore[method-assign]
 StudyStore.get_latest_mastery = get_latest_mastery  # type: ignore[method-assign]
+StudyStore.list_latest_mastery_for_topics = list_latest_mastery_for_topics  # type: ignore[method-assign]
 StudyStore.list_mastery_overview = list_mastery_overview  # type: ignore[method-assign]
 StudyStore.get_fsrs_card = get_fsrs_card  # type: ignore[method-assign]
 StudyStore.upsert_fsrs_card = upsert_fsrs_card  # type: ignore[method-assign]
