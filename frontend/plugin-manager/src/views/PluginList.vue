@@ -143,18 +143,11 @@
                 class="header-btn header-btn--accent"
                 :disabled="importing"
                 data-yui-guide-id="plugin-list-import"
-                @click="triggerImportFile"
+                @click="openImportDialog"
               >
                 <el-icon><Upload /></el-icon>
                 <span>{{ importing ? $t('plugins.importing') : $t('plugins.import') }}</span>
               </button>
-              <input
-                ref="importFileInputRef"
-                type="file"
-                accept=".neko-plugin,.neko-bundle"
-                class="import-file-input"
-                @change="handleImportFileChange"
-              />
               <button
                 class="header-btn"
                 :class="{ 'header-btn--active': packagePanelVisible }"
@@ -393,6 +386,57 @@
       @close="closeDangerDialog"
       @confirm="handleDangerActionConfirm"
     />
+
+    <el-dialog
+      v-model="importDialogVisible"
+      class="plugin-import-dialog"
+      :title="t('plugins.importDialogTitle')"
+      width="min(520px, calc(100vw - 32px))"
+      :close-on-click-modal="!importing"
+      :close-on-press-escape="!importing"
+      :show-close="!importing"
+      @closed="clearSelectedImportFile"
+    >
+      <div
+        class="plugin-import-dropzone"
+        :class="{ 'plugin-import-dropzone--active': importDropActive, 'plugin-import-dropzone--selected': selectedImportFile }"
+        role="button"
+        tabindex="0"
+        @click="triggerImportFile"
+        @keydown.enter.prevent="triggerImportFile"
+        @keydown.space.prevent="triggerImportFile"
+        @dragenter.prevent="importDropActive = true"
+        @dragover.prevent="importDropActive = true"
+        @dragleave.prevent="importDropActive = false"
+        @drop.prevent="handleImportDrop"
+      >
+        <el-icon class="plugin-import-dropzone__icon"><Upload /></el-icon>
+        <template v-if="selectedImportFile">
+          <strong class="plugin-import-dropzone__filename">{{ selectedImportFile.name }}</strong>
+          <span>{{ formatImportFileSize(selectedImportFile.size) }}</span>
+        </template>
+        <template v-else>
+          <strong>{{ t('plugins.importDropHint') }}</strong>
+          <span>{{ t('plugins.importDropSubHint') }}</span>
+        </template>
+      </div>
+      <input
+        ref="importFileInputRef"
+        type="file"
+        accept=".neko-plugin,.neko-bundle"
+        class="import-file-input"
+        @change="handleImportFileChange"
+      />
+      <p class="plugin-import-dialog__limit">{{ t('plugins.importFileLimit') }}</p>
+
+      <template #footer>
+        <el-button :disabled="importing" @click="importDialogVisible = false">{{ t('common.cancel') }}</el-button>
+        <el-button :disabled="importing" @click="triggerImportFile">{{ t('plugins.importChooseFile') }}</el-button>
+        <el-button type="primary" :disabled="!selectedImportFile" :loading="importing" @click="importSelectedPluginPackage">
+          {{ importing ? t('plugins.importing') : t('plugins.import') }}
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -446,6 +490,9 @@ const reloadingAll = ref(false)
 const batchBusy = ref(false)
 const importing = ref(false)
 const importFileInputRef = ref<HTMLInputElement | null>(null)
+const importDialogVisible = ref(false)
+const selectedImportFile = ref<File | null>(null)
+const importDropActive = ref(false)
 const packagePanelVisible = ref(false)
 const packagePanelEverOpened = ref(false)
 const marketPanelVisible = ref(false)
@@ -907,17 +954,60 @@ const runningPlugins = computed(() => {
 
 // ── Import (upload + install) ─────────────────────────────────────────
 
+const PLUGIN_PACKAGE_MAX_BYTES = 200 * 1024 * 1024
+const PLUGIN_PACKAGE_SUFFIXES = ['.neko-plugin', '.neko-bundle']
+
+function openImportDialog() {
+  clearSelectedImportFile()
+  importDialogVisible.value = true
+}
+
 function triggerImportFile() {
   importFileInputRef.value?.click()
 }
 
-async function handleImportFileChange(event: Event) {
+function clearSelectedImportFile() {
+  selectedImportFile.value = null
+  importDropActive.value = false
+}
+
+function formatImportFileSize(size: number): string {
+  const sizeInMiB = size / 1024 / 1024
+  return `${Number.isInteger(sizeInMiB) ? sizeInMiB : sizeInMiB.toFixed(size >= 10 * 1024 * 1024 ? 1 : 2)} MiB`
+}
+
+function selectImportFile(file: File) {
+  const filename = file.name.toLowerCase()
+  if (!PLUGIN_PACKAGE_SUFFIXES.some((suffix) => filename.endsWith(suffix))) {
+    selectedImportFile.value = null
+    ElMessage.error(t('plugins.importUnsupportedFile'))
+    return
+  }
+  if (file.size > PLUGIN_PACKAGE_MAX_BYTES) {
+    selectedImportFile.value = null
+    ElMessage.error(t('plugins.importFileTooLarge', { limit: formatImportFileSize(PLUGIN_PACKAGE_MAX_BYTES) }))
+    return
+  }
+  selectedImportFile.value = file
+}
+
+function handleImportFileChange(event: Event) {
   const input = event.target as HTMLInputElement
   const file = input.files?.[0]
-  if (!file) return
-
   // Reset input so the same file can be re-selected
   input.value = ''
+  if (file) selectImportFile(file)
+}
+
+function handleImportDrop(event: DragEvent) {
+  importDropActive.value = false
+  const file = event.dataTransfer?.files?.[0]
+  if (file) selectImportFile(file)
+}
+
+async function importSelectedPluginPackage() {
+  const file = selectedImportFile.value
+  if (!file) return
 
   importing.value = true
   try {
@@ -926,6 +1016,7 @@ async function handleImportFileChange(event: Event) {
     if (!result) return
     const count = result.installed_plugin_count ?? 0
     ElMessage.success(t('plugins.importSuccess', { name: file.name, count }))
+    importDialogVisible.value = false
     await refreshAfterPluginChange()
   } catch (error: any) {
     console.error('Failed to import plugin package:', error)
@@ -1518,6 +1609,59 @@ onUnmounted(() => {
 
 .import-file-input {
   display: none;
+}
+
+.plugin-import-dropzone {
+  display: flex;
+  min-height: 190px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 24px;
+  border: 1.5px dashed color-mix(in srgb, var(--el-color-primary) 46%, var(--el-border-color));
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--el-color-primary) 4%, var(--el-bg-color));
+  color: var(--el-text-color-secondary);
+  cursor: pointer;
+  text-align: center;
+  transition: border-color 0.18s ease, background-color 0.18s ease, transform 0.18s ease;
+}
+
+.plugin-import-dropzone:hover,
+.plugin-import-dropzone--active {
+  border-color: var(--el-color-primary);
+  background: color-mix(in srgb, var(--el-color-primary) 10%, var(--el-bg-color));
+  transform: translateY(-1px);
+}
+
+.plugin-import-dropzone--selected {
+  border-style: solid;
+  border-color: color-mix(in srgb, var(--el-color-success) 62%, var(--el-border-color));
+  background: color-mix(in srgb, var(--el-color-success) 7%, var(--el-bg-color));
+}
+
+.plugin-import-dropzone strong {
+  color: var(--el-text-color-primary);
+}
+
+.plugin-import-dropzone__icon {
+  font-size: 34px;
+  color: var(--el-color-primary);
+}
+
+.plugin-import-dropzone__filename {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.plugin-import-dialog__limit {
+  margin: 12px 2px 0;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  text-align: center;
 }
 
 /* ── Export button in batch row ── */
