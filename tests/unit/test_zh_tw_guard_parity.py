@@ -2880,6 +2880,8 @@ def test_a_completed_rewrite_survives_secondary_content(text):
         "所有字段重写的合并说明是否正确",
         "重写所有字段并保留头像吗，谢谢",
         "重写所有字段并保留头像吗，谢谢您",
+        "重写所有字段并保留头像吗谢谢",
+        "重写所有字段并保留头像吗 谢谢",
         'Rewrite the catchphrase as "all fields" if possible',
         "是否修改名字不过用户可能会重写所有字段",
         "请修改名字。系统将会重写所有字段并保留是否会员标签",

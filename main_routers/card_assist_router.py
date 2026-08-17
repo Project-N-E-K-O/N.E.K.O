@@ -1485,10 +1485,13 @@ _CHAT_EN_TRAILING_SAFE_SUFFIX_RE = re.compile(
     r"^\s*(?:you\s+can|possible|done|ready)\s*[.!]?\s*$",
     re.IGNORECASE,
 )
-_CHAT_SCOPED_SENTENCE_FINAL_QUESTION_RE = re.compile(
+_CHAT_SENTENCE_FINAL_QUESTION_PATTERN = (
     r"[吗嗎呢]\s*[？?]?\s*"
-    r"(?:[,，。；;、]\s*(?:谢谢[你您]?|謝謝[你您]?|感谢[你您]?|感謝[你您]?|麻烦了|麻煩了|"
-    r"辛苦了|thanks|thank\s+you)\s*[。.!！]?\s*)?$",
+    r"(?:(?:[,，。；;、]\s*)?(?:谢谢[你您]?|謝謝[你您]?|感谢[你您]?|感謝[你您]?|麻烦了|麻煩了|"
+    r"辛苦了|thanks|thank\s+you)\s*[。.!！]?\s*)?$"
+)
+_CHAT_SCOPED_SENTENCE_FINAL_QUESTION_RE = re.compile(
+    _CHAT_SENTENCE_FINAL_QUESTION_PATTERN,
     re.IGNORECASE,
 )
 _CHAT_SCOPED_VALUE_ASSIGNMENT_RE = re.compile(
@@ -1729,7 +1732,7 @@ def _chat_clause_without_quoted_prohibitions(clause: str) -> str:
 from main_logic.text_patterns import zh_a_not_a_forms  # noqa: E402
 
 _CHAT_QUESTION_CLAUSE_RE = re.compile(
-    r"(?:[吗嗎呢]\s*[？?]?\s*$"
+    rf"(?:{_CHAT_SENTENCE_FINAL_QUESTION_PATTERN}"
     # ⚠️ `有没有` 要挡左界：`把整个卡的所有没有填的内容重写一遍` 里它是
     # `所有` + `没有`，不是极性标记（base 是 True，第六十三轮）。
     # 这是这个 PR 里第九个「白名单词是更长词子串」入口。
