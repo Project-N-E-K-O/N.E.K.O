@@ -113,6 +113,7 @@ from .session_lifecycle import (
     SESSION_ORIGIN_PREEXISTING,
     classify_session_origin,
     event_releases_empty_snapshot_gate,
+    session_identity_key,
 )
 from .service import (
     apply_event_to_histories,
@@ -317,7 +318,7 @@ class GalgamePlugin(
         self.logger = self.file_logger
         self._state_lock = threading.Lock()
         self._plugin_run_started_at = 0.0
-        self._startup_existing_session_ids: set[str] | None = None
+        self._startup_existing_session_ids: set[tuple[str, str, str]] | None = None
         self._poll_bridge_locks: dict[int, asyncio.Lock] = {}
         self._poll_bridge_thread_lock = threading.Lock()
         self._bridge_poll_task_lock = threading.RLock()
@@ -4020,6 +4021,7 @@ class GalgamePlugin(
         warmup_needed = session_id != local["warmup_session_id"] or session_changed
         session_origin = classify_session_origin(
             data_source=candidate.data_source,
+            game_id=candidate.game_id,
             session_id=session_id,
             started_at=str(session.get("started_at") or ""),
             plugin_run_started_at=self._plugin_run_started_at,
@@ -4280,11 +4282,16 @@ class GalgamePlugin(
 
         if self._startup_existing_session_ids is None:
             self._startup_existing_session_ids = {
-                normalized_session_id
+                session_identity_key(
+                    data_source=candidate.data_source,
+                    game_id=candidate.game_id,
+                    session_id=normalized_session_id,
+                )
                 for candidate in raw_candidates.values()
                 if (normalized_session_id := str(candidate.session_id or "").strip())
                 and classify_session_origin(
                     data_source=candidate.data_source,
+                    game_id=candidate.game_id,
                     session_id=normalized_session_id,
                     started_at=str(candidate.session.get("started_at") or ""),
                     plugin_run_started_at=self._plugin_run_started_at,

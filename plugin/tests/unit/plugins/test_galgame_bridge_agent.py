@@ -4380,6 +4380,65 @@ async def test_merge_fallback_archives_each_scene_scope_independently(
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
+async def test_cross_scene_fallback_archives_each_pending_scope(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    gateway = _FakeLLMGateway(
+        summarize_payload={
+            "degraded": False,
+            "summary": "cross-scene scope archive",
+            "key_points": [],
+            "diagnostic": "",
+        }
+    )
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(ctx),
+        logger=_Logger(),
+        llm_gateway=gateway,
+        host_adapter=_FakeHostAdapter(),
+        config=SimpleNamespace(
+            scene_summary_push_line_interval=8,
+            scene_merge_total_threshold=99,
+            scene_cross_scene_total_threshold=6,
+        ),
+    )
+    await agent.tick(
+        _shared_state(
+            mode="companion",
+            push_notifications=False,
+            snapshot=_session_state(scene_id="scene-b"),
+        )
+    )
+    lines = [
+        *[_summary_test_line("scene-a", index) for index in range(1, 4)],
+        *[_summary_test_line("scene-b", index) for index in range(1, 4)],
+    ]
+    shared = _shared_state(
+        mode="companion",
+        push_notifications=False,
+        snapshot=_session_state(
+            text=str(lines[-1]["text"]),
+            scene_id="scene-b",
+            line_id=str(lines[-1]["line_id"]),
+        ),
+        history_lines=lines,
+    )
+
+    await agent.tick(shared)
+    await agent.tick(shared)
+    await _drain_agent_summary_tasks(agent)
+
+    assert len(gateway.summarize_calls) == 2
+    assert {str(call["scene_id"]) for call in gateway.summarize_calls} == {
+        "scene-a",
+        "scene-b",
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
 async def test_game_llm_agent_delivers_line_count_summary_after_scene_change(
     tmp_path: Path,
 ) -> None:

@@ -1944,7 +1944,9 @@ async def test_startup_session_id_normalization_preserves_preexisting_boundary(
     await plugin.startup()
     try:
         await plugin._poll_bridge(force=True)
-        assert plugin._startup_existing_session_ids == {"sess-spaced"}
+        assert plugin._startup_existing_session_ids == {
+            ("bridge_sdk", game_id, "sess-spaced")
+        }
         assert plugin._snapshot_state()["latest_snapshot"] == {}
 
         _write_session(

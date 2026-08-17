@@ -71,6 +71,44 @@ def test_startup_scan_set_allows_outside_session_started_after_run() -> None:
 
 
 @pytest.mark.plugin_unit
+def test_startup_session_identity_is_scoped_by_source_and_game() -> None:
+    startup_existing_session_ids = {
+        ("bridge_sdk", "game-a", "shared-session"),
+    }
+    common = {
+        "session_id": "shared-session",
+        "started_at": "2099-01-01T00:00:00Z",
+        "plugin_run_started_at": 1_800_000_000.0,
+        "startup_existing_session_ids": startup_existing_session_ids,
+    }
+
+    assert (
+        classify_session_origin(
+            data_source="bridge_sdk",
+            game_id="game-a",
+            **common,
+        )
+        == SESSION_ORIGIN_PREEXISTING
+    )
+    assert (
+        classify_session_origin(
+            data_source="bridge_sdk",
+            game_id="game-b",
+            **common,
+        )
+        == SESSION_ORIGIN_CURRENT_RUN
+    )
+    assert (
+        classify_session_origin(
+            data_source="memory_reader",
+            game_id="game-a",
+            **common,
+        )
+        == SESSION_ORIGIN_CURRENT_RUN
+    )
+
+
+@pytest.mark.plugin_unit
 @pytest.mark.parametrize(
     ("started_at", "expected"),
     [

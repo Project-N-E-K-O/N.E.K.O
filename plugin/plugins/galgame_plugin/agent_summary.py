@@ -867,7 +867,7 @@ class AgentSummaryMixin:
             line = dict(item)
             line["text"] = text
             line.setdefault("scene_id", str(snapshot.get("scene_id") or ""))
-            if "route_id" not in line:
+            if not str(line.get("route_id") or "").strip():
                 route_agnostic_signature = json.dumps(
                     {
                         "line_id": str(line.get("line_id") or ""),
@@ -2729,7 +2729,9 @@ class AgentSummaryMixin:
                     )
                     ready_scene_scope_keys.update(merge_fallback_scope_keys)
 
-        # E: 跨 scene 累计回退
+        # E: 跨 scene 累计回退。和 merge fallback 一样，每个 scope
+        # 独立归档，避免总阈值达成后只清空 primary 而遗留其他短 scope。
+        cross_scene_fallback_scope_keys: set[str] = set()
         if not ready_scene_scope_keys:
             total_lines = sum(
                 int(s.get("lines_since_push") or 0)
@@ -2748,8 +2750,11 @@ class AgentSummaryMixin:
                     reverse=True,
                 )
                 if sorted_scenes:
-                    self._pending_cross_scene_primary = sorted_scenes[0][0]
-                    ready_scene_scope_keys.add(self._pending_cross_scene_primary)
+                    self._pending_cross_scene_primary = ""
+                    cross_scene_fallback_scope_keys.update(
+                        scope_key for scope_key, _state in sorted_scenes
+                    )
+                    ready_scene_scope_keys.update(cross_scene_fallback_scope_keys)
 
         if not ready_scene_scope_keys:
             total_lines = sum(
@@ -2779,6 +2784,7 @@ class AgentSummaryMixin:
             is_fallback = (
                 scene_scope_key in time_fallback_scope_keys
                 or scene_scope_key in merge_fallback_scope_keys
+                or scene_scope_key in cross_scene_fallback_scope_keys
                 or scene_scope_key == self._pending_merge_primary
                 or scene_scope_key == self._pending_cross_scene_primary
             )

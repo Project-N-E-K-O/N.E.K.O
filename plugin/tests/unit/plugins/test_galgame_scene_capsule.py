@@ -464,7 +464,8 @@ async def test_route_less_line_event_inherits_current_route_for_capsule(
         _summary_test_line_event("scene-a", 2, seq=3),
     ]
     for item in [old_line, line]:
-        item.pop("route_id", None)
+        assert "route_id" in item
+        item["route_id"] = ""
     for event in events:
         event_payload = event.get("payload")
         assert isinstance(event_payload, dict)
