@@ -375,7 +375,6 @@ const ENTRY_TIMEOUT_MS: Record<string, number> = {
   study_ocr_snapshot: 60000,
   study_set_mode: 15000,
   study_explain_text: 120000,
-  study_analyze_document: 105000,
   study_start_document_analysis: 30000,
   study_document_analysis_status: 15000,
   study_cancel_document_analysis: 15000,

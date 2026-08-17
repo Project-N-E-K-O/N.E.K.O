@@ -33,7 +33,7 @@ from plugin.plugins.study_companion.qwen_native_client import (
     operation_timeout_seconds,
 )
 from plugin.plugins.study_companion.tutor_llm_agent import TutorLLMAgent
-from plugin.plugins.study_companion.tutor_llm_agent_document_chunked import (
+from plugin.plugins.study_companion.tutor_llm_agent_document import (
     DocumentChunkAnalysisError,
     build_document_chunk_messages,
     build_document_merge_messages,
@@ -80,6 +80,10 @@ def test_start_entry_marks_source_sensitive() -> None:
         "writeOnly": True,
         "x-sensitive": True,
     }
+
+
+def test_superseded_direct_document_entry_is_not_registered() -> None:
+    assert not hasattr(StudyCompanionPlugin, "study_analyze_document")
 
 
 def test_direct_and_chunked_token_boundaries_are_exact(

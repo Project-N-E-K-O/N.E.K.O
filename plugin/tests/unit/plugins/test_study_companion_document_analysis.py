@@ -10,7 +10,6 @@ from plugin.plugins.study_companion import document_analysis as document_module
 from plugin.plugins.study_companion.constants import LLM_OPERATION_DOCUMENT_ANALYZE
 from plugin.plugins.study_companion.document_analysis import (
     DOCUMENT_ANALYSIS_KINDS,
-    DOCUMENT_ENTRY_TIMEOUT_SECONDS,
     DOCUMENT_MAX_BYTES,
     DOCUMENT_MAX_TOKENS,
     DocumentValidationError,
@@ -27,7 +26,6 @@ from plugin.plugins.study_companion.qwen_native_client import (
 )
 from plugin.plugins.study_companion.tutor_llm_agent import TutorLLMAgent
 from plugin.plugins.study_companion.state import build_initial_state
-from plugin.sdk.plugin import Ok
 from plugin.sdk.shared.constants import EVENT_META_ATTR
 from plugin.server.runs import trigger_service
 
@@ -208,12 +206,11 @@ def test_document_operation_has_output_budget_and_long_form_timeout() -> None:
     ) == 75.0
 
 
-def test_document_entry_schema_is_sensitive_and_redacts_run_events(
+def test_document_job_entry_schema_is_sensitive_and_redacts_run_events(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    meta = getattr(StudyCompanionPlugin.study_analyze_document, EVENT_META_ATTR)
+    meta = getattr(StudyCompanionPlugin.study_start_document_analysis, EVENT_META_ATTR)
     schema = meta.input_schema
-    assert meta.timeout == DOCUMENT_ENTRY_TIMEOUT_SECONDS
     assert schema["properties"]["document_text"] == {
         "type": "string",
         "writeOnly": True,
@@ -226,7 +223,7 @@ def test_document_entry_schema_is_sensitive_and_redacts_run_events(
     monkeypatch.setattr(
         trigger_service.state,
         "get_event_handlers_snapshot_cached",
-        lambda timeout=1.0: {"study_companion.study_analyze_document": handler},
+        lambda timeout=1.0: {"study_companion.study_start_document_analysis": handler},
     )
     execution_args = {
         "document_name": "chapter.md",
@@ -236,7 +233,7 @@ def test_document_entry_schema_is_sensitive_and_redacts_run_events(
     }
     redacted = trigger_service._redact_trigger_args(
         plugin_id="study_companion",
-        entry_id="study_analyze_document",
+        entry_id="study_start_document_analysis",
         args=execution_args,
     )
     assert redacted["document_text"] == "<redacted>"
@@ -255,7 +252,7 @@ def test_document_text_redaction_is_safe_when_entry_metadata_is_unavailable(
     execution_args = {"document_text": "private source", "document_name": "chapter.md"}
     redacted = trigger_service._redact_trigger_args(
         plugin_id="study_companion",
-        entry_id="study_analyze_document",
+        entry_id="study_start_document_analysis",
         args=execution_args,
     )
     assert redacted == {"document_text": "<redacted>", "document_name": "chapter.md"}
@@ -381,137 +378,6 @@ async def test_agent_rejects_reply_made_mostly_from_part_of_long_source(
     reply = await agent.document_analyze(_document(document_text=source, locale="zh-CN"))
     assert reply.degraded is True
     assert reply.diagnostic == "unsafe_model_output"
-
-
-@pytest.mark.asyncio
-async def test_entry_validates_off_loop_and_persists_only_descriptor(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    source = "private source"
-    calls: dict[str, object] = {}
-
-    class Agent:
-        async def document_analyze(self, document):
-            calls["document"] = document
-            return TutorReply(
-                operation=LLM_OPERATION_DOCUMENT_ANALYZE,
-                input_text=document.descriptor,
-                reply="# Safe analysis",
-                payload={"document": document.public_metadata()},
-            )
-
-    class Owner:
-        _agent = Agent()
-
-        async def _finalize_tutor_call(self, operation, reply, **kwargs):
-            calls.update(operation=operation, reply=reply, finalize=kwargs)
-            return {
-                "operation": operation,
-                "input_text": reply.input_text,
-                "reply": reply.reply,
-                **kwargs["public_payload"],
-                "degraded": reply.degraded,
-                "diagnostic": reply.diagnostic,
-            }
-
-    real_to_thread = asyncio.to_thread
-
-    async def tracked_to_thread(func, /, *args, **kwargs):
-        calls["to_thread"] = func
-        return await real_to_thread(func, *args, **kwargs)
-
-    monkeypatch.setattr(asyncio, "to_thread", tracked_to_thread)
-    result = await StudyCompanionPlugin.study_analyze_document(
-        Owner(),
-        document_name="chapter.md",
-        document_type="text/markdown",
-        document_text=source,
-        analysis_kind="academic_paper",
-        locale="zh-CN",
-    )
-
-    assert isinstance(result, Ok)
-    payload = result.value
-    assert calls["to_thread"] is validate_document
-    assert source not in repr(payload)
-    assert source not in calls["reply"].input_text
-    assert source not in repr(calls["finalize"])
-    assert calls["finalize"]["metadata"]["source_retained"] is False
-    assert payload["document"]["requested_kind"] == "academic_paper"
-
-
-@pytest.mark.asyncio
-async def test_degraded_entry_does_not_require_persistence_and_hides_descriptor() -> None:
-    source = "private source"
-    calls: dict[str, object] = {}
-
-    class Agent:
-        async def document_analyze(self, document):
-            return TutorReply(
-                operation=LLM_OPERATION_DOCUMENT_ANALYZE,
-                input_text=document.descriptor,
-                reply="文档分析失败，请稍后重试。",
-                payload={"document": document.public_metadata()},
-                degraded=True,
-                diagnostic="timeout",
-            )
-
-    class Owner:
-        _agent = Agent()
-
-        async def _finalize_tutor_call(self, operation, reply, **kwargs):
-            calls["finalized"] = True
-            # Mirrors the real degraded path: no store/event calls, only a public payload.
-            return {
-                "operation": operation,
-                "input_text": reply.input_text,
-                "reply": reply.reply,
-                "degraded": True,
-                "diagnostic": reply.diagnostic,
-                **kwargs["public_payload"],
-            }
-
-    result = await StudyCompanionPlugin.study_analyze_document(
-        Owner(),
-        document_name="chapter.md",
-        document_type="text/markdown",
-        document_text=source,
-        locale="zh-CN",
-    )
-    assert isinstance(result, Ok)
-    assert result.value["diagnostic"] == "timeout"
-    assert "input_text" not in result.value
-    assert source not in repr(result.value)
-    assert calls["finalized"] is True
-
-
-@pytest.mark.asyncio
-async def test_validation_failure_exposes_diagnostic_without_calling_agent() -> None:
-    calls: list[str] = []
-
-    class Agent:
-        async def document_analyze(self, _document):
-            calls.append("agent")
-
-    owner = SimpleNamespace(_agent=Agent())
-    result = await StudyCompanionPlugin.study_analyze_document(
-        owner,
-        document_name="chapter.md",
-        document_type="text/markdown",
-        document_text=" ",
-        locale="zh-CN",
-    )
-
-    assert isinstance(result, Ok)
-    assert result.value == {
-        "operation": LLM_OPERATION_DOCUMENT_ANALYZE,
-        "reply": "",
-        "summary": "",
-        "document": None,
-        "degraded": True,
-        "diagnostic": "empty_document",
-    }
-    assert calls == []
 
 
 @pytest.mark.asyncio

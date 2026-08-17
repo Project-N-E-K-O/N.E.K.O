@@ -15,8 +15,8 @@ from .document_chunking import (
 from .entry_common import asyncio, Ok, SdkError, StudyEvent, plugin_entry, tr, ui
 from .models import TutorReply, utc_now_iso
 from .study_model_gateway import StudyModelError
-from .tutor_llm_agent_document import _DocumentModelResult
-from .tutor_llm_agent_document_chunked import (
+from .tutor_llm_agent_document import (
+    _DocumentModelResult,
     _analyze_document_chunk_result,
     _merge_document_chunks_result,
 )

@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import pytest
 
-from plugin.plugins.study_companion._solution_narration import (
+from plugin.plugins.study_companion._solution_structure import (
     extract_solution_narration_sections,
+    parse_solution_structure,
 )
-from plugin.plugins.study_companion._solution_structure import parse_solution_structure
 from plugin.plugins.study_companion.entry_tutor_explain_entries import (
     _image_only_explain_prompt,
 )

@@ -5,6 +5,8 @@ import re
 
 
 _SECTION_ORDER = ("analysis", "process", "answer", "transfer")
+_NARRATION_SECTION_ORDER = ("analysis", "answer", "transfer")
+SOLUTION_NARRATION_MAX_CHARS = 1800
 _SECTION_ALIASES = {
     "解析": "analysis",
     "题目解析": "analysis",
@@ -24,6 +26,7 @@ _SECTION_ALIASES = {
 }
 _MARKDOWN_HEADING_RE = re.compile(r"^#{1,4}\s+")
 _BOLD_HEADING_RE = re.compile(r"^\*\*(.+?)\*\*$")
+_SENTENCE_END_RE = re.compile(r"[。！？.!?](?:[”’\"']|\))?")
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,6 +85,67 @@ def is_solution_structure_candidate(structure: SolutionStructure) -> bool:
     return len(present) >= 2 and bool(present.intersection({"process", "answer"}))
 
 
+def _fair_narration_budgets(sections: dict[str, str]) -> dict[str, int]:
+    remaining = SOLUTION_NARRATION_MAX_CHARS
+    pending = list(_NARRATION_SECTION_ORDER)
+    budgets: dict[str, int] = {}
+    while pending:
+        share, remainder = divmod(remaining, len(pending))
+        fitting = [key for key in pending if len(sections[key]) <= share]
+        if not fitting:
+            for index, key in enumerate(pending):
+                budgets[key] = share + (1 if index < remainder else 0)
+            break
+        for key in fitting:
+            budget = len(sections[key])
+            budgets[key] = budget
+            remaining -= budget
+            pending.remove(key)
+    return budgets
+
+
+def _truncate_narration_at_boundary(text: str, limit: int) -> str:
+    normalized = str(text or "").strip()
+    if len(normalized) <= limit:
+        return normalized
+    candidate = normalized[:limit].rstrip()
+    minimum_boundary = max(1, limit // 2)
+
+    paragraph_end = candidate.rfind("\n\n")
+    if paragraph_end >= minimum_boundary:
+        return candidate[:paragraph_end].rstrip()
+
+    sentence_end = 0
+    for match in _SENTENCE_END_RE.finditer(candidate):
+        sentence_end = match.end()
+    if sentence_end >= minimum_boundary:
+        return candidate[:sentence_end].rstrip()
+    return candidate
+
+
+def extract_solution_narration_sections(reply: str) -> dict[str, str] | None:
+    """Project a complete solution onto the sections safe for narration."""
+
+    structure = parse_solution_structure(reply)
+    sections = {
+        key: str(getattr(structure, key, "") or "").strip()
+        for key in _NARRATION_SECTION_ORDER
+    }
+    if any(not sections[key] for key in _NARRATION_SECTION_ORDER):
+        return None
+    if sum(len(value) for value in sections.values()) <= SOLUTION_NARRATION_MAX_CHARS:
+        return sections
+
+    budgets = _fair_narration_budgets(sections)
+    bounded = {
+        key: _truncate_narration_at_boundary(sections[key], budgets[key])
+        for key in _NARRATION_SECTION_ORDER
+    }
+    if any(not bounded[key] for key in _NARRATION_SECTION_ORDER):
+        return None
+    return bounded
+
+
 def structure_from_mapping(payload: object) -> SolutionStructure:
     values = dict(payload) if isinstance(payload, dict) else {}
     sections = {
@@ -127,7 +191,9 @@ def render_solution_structure(
 
 
 __all__ = [
+    "SOLUTION_NARRATION_MAX_CHARS",
     "SolutionStructure",
+    "extract_solution_narration_sections",
     "is_solution_structure_candidate",
     "parse_solution_structure",
     "render_solution_structure",

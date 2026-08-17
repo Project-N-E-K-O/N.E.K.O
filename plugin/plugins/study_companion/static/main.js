@@ -17,7 +17,6 @@ const ENTRY_TIMEOUT_MS = {
   study_ocr_snapshot: 100000,
   study_set_mode: 15000,
   study_explain_text: 120000,
-  study_analyze_document: 105000,
   study_generate_question: 70000,
   study_question_context: 30000,
   study_generate_targeted_question: 55000,

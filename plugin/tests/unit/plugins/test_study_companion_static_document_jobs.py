@@ -38,7 +38,7 @@ def test_static_document_analysis_uses_cancellable_long_job_contract() -> None:
     assert "study_start_document_analysis" not in surface_panels
     assert "StudyDocumentController.create" in main
     assert "documentController.bind()" in main
-    assert "study_analyze_document', {" not in main
+    assert "study_analyze_document" not in main
     assert "StudyDocumentJobs" not in main
     assert "studyDocument" not in main
 

@@ -174,7 +174,6 @@ from .entry_tutor_explain_entries import _TutorExplainEntriesMixin
 from .entry_tutor_question_entries import _TutorQuestionEntriesMixin
 from .entry_tutor_answer_entries import _TutorAnswerEntriesMixin
 from .entry_tutor_summary_entries import _TutorSummaryEntriesMixin
-from .entry_document_analysis import _DocumentAnalysisEntriesMixin
 from .entry_document_analysis_jobs import _DocumentAnalysisJobsEntriesMixin
 from .entry_ocr_entries import _OcrEntriesMixin
 from .entry_neko_commands import (
@@ -214,7 +213,6 @@ class StudyCompanionPlugin(
     _TutorAnswerEntriesMixin,
     _TutorSummaryEntriesMixin,
     _DocumentAnalysisJobsEntriesMixin,
-    _DocumentAnalysisEntriesMixin,
     _OcrEntriesMixin,
     _NotebookEntriesMixin,
     _NekoCommandsMixin,

@@ -4,8 +4,8 @@ import asyncio
 from time import monotonic
 
 from ._general_narration import prepare_general_narration_content
-from ._solution_narration import extract_solution_narration_sections
 from ._solution_structure import (
+    extract_solution_narration_sections,
     is_solution_structure_candidate,
     parse_solution_structure,
     render_solution_structure,

@@ -420,10 +420,10 @@ from .tutor_llm_agent_notebook import expand_note, summarize_to_note
 TutorLLMAgent.expand_note = expand_note  # type: ignore[method-assign]
 TutorLLMAgent.summarize_to_note = summarize_to_note  # type: ignore[method-assign]
 
-from .tutor_llm_agent_document import document_analyze
-from .tutor_llm_agent_document_chunked import (
+from .tutor_llm_agent_document import (
     analyze_document_chunk,
     build_document_merge_messages,
+    document_analyze,
     merge_document_chunks,
 )
 

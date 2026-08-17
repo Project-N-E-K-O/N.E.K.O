@@ -9,11 +9,9 @@ from typing import Any
 import pytest
 import plugin.plugins.study_companion.entry_tutor_explain_entries as explain_entries
 
-from plugin.plugins.study_companion._solution_narration import (
+from plugin.plugins.study_companion._solution_structure import (
     SOLUTION_NARRATION_MAX_CHARS,
     extract_solution_narration_sections,
-)
-from plugin.plugins.study_companion._solution_structure import (
     is_solution_structure_candidate,
     parse_solution_structure,
 )

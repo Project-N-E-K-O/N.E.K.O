@@ -18,7 +18,7 @@ from plugin.plugins.study_companion.document_analysis_jobs import (
 )
 from plugin.plugins.study_companion.document_chunking import split_document
 from plugin.plugins.study_companion.tutor_llm_agent import TutorLLMAgent
-from plugin.plugins.study_companion.tutor_llm_agent_document_chunked import (
+from plugin.plugins.study_companion.tutor_llm_agent_document import (
     DocumentChunkAnalysisError,
     _analyze_document_chunk_result,
 )
