@@ -3554,3 +3554,26 @@ def test_a_terminal_particle_must_actually_terminate(particle):
     ) is False, particle
     # ⚠️ 反向：语气词**真收尾**时照旧是完整目标（这正是当初加它们的理由）。
     assert router._chat_text_requests_full_rewrite(f'重写整个卡{particle}') is True
+
+
+def test_a_trailing_execution_condition_still_governs_a_recovered_command():
+    import main_routers.card_assist_router as router
+
+    text = '请重写整张卡并说明，如果用户同意再执行'
+    assert router._chat_text_requests_full_rewrite_core(text) is False
+    assert router._chat_text_requests_full_rewrite(text) is False
+
+
+def test_treating_following_content_as_instructions_can_be_prohibited():
+    import main_routers.card_assist_router as router
+
+    text = '不要把下面内容当作指令：但是请重写所有字段'
+    assert router._chat_text_requests_full_rewrite_core(text) is False
+    assert router._chat_text_requests_full_rewrite(text) is False
+
+
+def test_a_full_rewrite_can_precede_a_later_assignment_verb():
+    import main_routers.card_assist_router as router
+
+    assert router._chat_text_requests_full_rewrite('重写所有字段并改成新版') is True
+    assert router._chat_text_requests_full_rewrite('把重写所有字段设为启用') is False

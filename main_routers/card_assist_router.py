@@ -1524,7 +1524,10 @@ _CHAT_GOVERNING_INSTRUCTION_PROHIBITION_RE = re.compile(
     r"(?:这|這|以下|上述|上面)?\s*(?:条|條|个|個)?\s*"
     r"(?:指令|命令|修改|要求|内容|內容)"
     r"|(?:按照|依照|根据|根據|照)\s*(?:下面|以下|上述|上面)?\s*的?\s*"
-    r"(?:文字|内容|內容|指令|命令)?\s*(?:操作|执行|執行|照做|做))"
+    r"(?:文字|内容|內容|指令|命令)?\s*(?:操作|执行|執行|照做|做)"
+    r"|(?:把|将|將)\s*(?:下面|以下|上述|上面)?\s*"
+    r"(?:内容|內容|文字|指令|命令)\s*(?:当作|當作|视为|視為|作为|作為)\s*"
+    r"(?:指令|命令|要求))"
 )
 _CHAT_SCOPED_DISCLAIMER_RE = re.compile(
     r"(?:以上|上述|前述|这些|這些|这|這)?\s*(?:只|仅|僅)(?:是|为|為)\s*"
@@ -1542,10 +1545,21 @@ _CHAT_SCOPED_SCOPE_REPLACEMENT_RE = re.compile(
 _CHAT_SCOPED_SIGNAL_BRIDGE_RE = re.compile(
     rf"\s*(?:(?:一遍|一次|一下|下|一回)\s*|(?i:the)\s*|{_WHOLE_CARD_ADVERB_RUN})*"
 )
-_CHAT_GOVERNING_CONDITION_RE = re.compile(
-    r"^\s*(?:如果|假如|若是|要是|倘若|万一|萬一|假若)"
+_CHAT_GOVERNING_CONDITION_PATTERN = (
+    r"(?:如果|假如|若是|要是|倘若|万一|萬一|假若)"
     r"[^。，、！？,.!?;；]{0,64}?(?:再|才)\s*"
     r"(?:执行|執行|应用|應用|采用|採用|进行|進行)"
+)
+_CHAT_GOVERNING_CONDITION_RE = re.compile(
+    r"^\s*" + _CHAT_GOVERNING_CONDITION_PATTERN
+)
+_CHAT_SCOPED_GOVERNING_CONDITION_RE = re.compile(
+    _CHAT_GOVERNING_CONDITION_PATTERN
+)
+_CHAT_SCOPED_POST_REWRITE_ASSIGNMENT_RE = re.compile(
+    r"\s*(?:并|並)\s*(?:设为|設為|设置为|設定為|改成|修改成|换成|換成|"
+    r"变成|變成|变为|變為|调整为|調整為|写成|寫成|填为|填為|填写为|"
+    r"填寫為|填成|填写成|填寫成)\s*$"
 )
 
 
@@ -1580,6 +1594,8 @@ def _chat_scoped_suffix_has_governing_guard(
     if _CHAT_SCOPED_DISCLAIMER_RE.search(readable_suffix):
         return True
     if _CHAT_SCOPED_CANCELLATION_RE.search(readable_suffix):
+        return True
+    if _CHAT_SCOPED_GOVERNING_CONDITION_RE.search(readable_suffix):
         return True
     replacement = _CHAT_SCOPED_SCOPE_REPLACEMENT_RE.search(readable_suffix)
     if (
@@ -1897,6 +1913,18 @@ def _chat_text_requests_full_rewrite_core(text: str) -> bool:
                 and rewrite_match is not None
                 and target_match.start() < rewrite_match.start()
                 and len(assignment_head) - rewrite_match.end() <= 1
+            ):
+                return True
+            signal_end = _chat_scoped_governed_full_rewrite_end(assignment_head)
+            if (
+                target_match is not None
+                and rewrite_match is not None
+                and rewrite_match.start() < target_match.start()
+                and not re.search(r"(?:把|将|將)", assignment_head[:rewrite_match.start()])
+                and signal_end is not None
+                and _CHAT_SCOPED_POST_REWRITE_ASSIGNMENT_RE.fullmatch(
+                    assignment_head[signal_end:]
+                )
             ):
                 return True
             parts = [clause[:assignment.start()]]
