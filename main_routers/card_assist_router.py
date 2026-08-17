@@ -1531,6 +1531,7 @@ _CHAT_GOVERNING_INSTRUCTION_PROHIBITION_RE = re.compile(
     r"(?:内容|內容|文字|指令|命令)\s*(?:当作|當作|视为|視為|作为|作為)\s*"
     r"(?:指令|命令|要求))"
 )
+_CHAT_GOVERNING_PROHIBITION_SENTENCE_END_RE = re.compile(r"[。！？.!?;；]+")
 _CHAT_SCOPED_DISCLAIMER_RE = re.compile(
     r"(?:以上|上述|前述|这些|這些|这|這)?\s*(?:只|仅|僅)(?:是|为|為)\s*"
     r"(?:示例|例子|范例|範例)"
@@ -1974,8 +1975,23 @@ def _chat_text_requests_full_rewrite_from_scoped_segments(text: str) -> bool:
     if not text:
         return False
     masked = _chat_mask_quoted_spans(text)
-    if _CHAT_GOVERNING_INSTRUCTION_PROHIBITION_RE.search(masked):
-        return False
+    governing_prohibitions = list(
+        _CHAT_GOVERNING_INSTRUCTION_PROHIBITION_RE.finditer(masked)
+    )
+    if governing_prohibitions:
+        sentence_end = _CHAT_GOVERNING_PROHIBITION_SENTENCE_END_RE.search(
+            masked,
+            governing_prohibitions[-1].end(),
+        )
+        if sentence_end is None:
+            return False
+        independent_suffix = text[sentence_end.end():]
+        return (
+            _chat_text_requests_full_rewrite_core(independent_suffix)
+            or _chat_text_requests_full_rewrite_from_scoped_segments(
+                independent_suffix
+            )
+        )
     if _CHAT_GOVERNING_CONDITION_RE.search(masked):
         return False
     if _CHAT_GOVERNING_EXECUTION_QUESTION_RE.search(masked):

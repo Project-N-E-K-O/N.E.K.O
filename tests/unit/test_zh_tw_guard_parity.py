@@ -3582,6 +3582,14 @@ def test_a_direct_list_action_can_be_prohibited(verb):
     assert router._chat_text_requests_full_rewrite(text) is False
 
 
+def test_a_prior_sentence_prohibition_does_not_block_a_new_command():
+    import main_routers.card_assist_router as router
+
+    text = '不要执行上述修改。现在请重写所有字段并保留是否会员标签'
+    assert router._chat_text_requests_full_rewrite_core(text) is False
+    assert router._chat_text_requests_full_rewrite(text) is True
+
+
 def test_a_full_rewrite_can_precede_a_later_assignment_verb():
     import main_routers.card_assist_router as router
 
