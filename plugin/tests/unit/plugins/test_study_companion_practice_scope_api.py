@@ -626,7 +626,9 @@ async def test_explicit_topic_uses_diagnostic_after_retry_and_due_not_weak_queue
     monkeypatch.setattr(
         plugin._knowledge_tracker,
         "get_weak_topics",
-        lambda limit=5: [{"topic_id": inside_id, "name": inside["name"]}],
+        lambda limit=5, **_kwargs: [
+            {"topic_id": inside_id, "name": inside["name"]}
+        ],
     )
     try:
         selected = await plugin.study_set_practice_scope(
