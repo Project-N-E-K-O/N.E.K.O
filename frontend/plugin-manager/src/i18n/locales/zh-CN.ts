@@ -351,7 +351,7 @@ export default {
     importDropHint: '将插件包拖到这里',
     importDropSubHint: '或点击此处选择文件',
     importChooseFile: '选择文件',
-    importFileLimit: '支持 .neko-plugin 和 .neko-bundle，最大 200 MiB',
+    importFileLimit: '支持 .neko-plugin 和 .neko-bundle，最大 500 MiB',
     importUnsupportedFile: '请选择 .neko-plugin 或 .neko-bundle 文件',
     importFileTooLarge: '文件超过 {limit} 的导入上限',
     export: '导出',

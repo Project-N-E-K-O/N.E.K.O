@@ -52,8 +52,8 @@ _TARGET_ROOT = USER_PLUGIN_PACKAGES_ROOT
 
 # Allowed extensions for uploaded plugin packages
 _ALLOWED_UPLOAD_SUFFIXES = frozenset({".neko-plugin", ".neko-bundle"})
-# Maximum upload size (200 MB)
-_UPLOAD_MAX_BYTES = 200 * 1024 * 1024
+# Maximum upload size (500 MiB)
+_UPLOAD_MAX_BYTES = 500 * 1024 * 1024
 
 logger = get_logger("server.application.plugin_cli")
 

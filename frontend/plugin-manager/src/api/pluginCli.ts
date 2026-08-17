@@ -276,7 +276,7 @@ export function uploadPluginPackage(file: File): Promise<PluginCliUploadResult> 
   const formData = new FormData()
   formData.append('file', file)
   return post('/plugin-cli/upload', formData, {
-    timeout: 120_000,
+    timeout: 600_000,
   })
 }
 
@@ -296,7 +296,7 @@ export function uploadAndInstallPlugin(
   const query = params.toString()
   const url = `/plugin-cli/upload-and-install${query ? `?${query}` : ''}`
   return post(url, formData, {
-    timeout: 120_000,
+    timeout: 600_000,
   })
 }
 

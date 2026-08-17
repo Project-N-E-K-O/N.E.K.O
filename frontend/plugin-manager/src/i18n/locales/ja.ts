@@ -351,7 +351,7 @@ export default {
     importDropHint: 'プラグインパッケージをここにドロップ',
     importDropSubHint: 'またはクリックしてファイルを選択',
     importChooseFile: 'ファイルを選択',
-    importFileLimit: '.neko-plugin と .neko-bundle に対応、最大 200 MiB',
+    importFileLimit: '.neko-plugin と .neko-bundle に対応、最大 500 MiB',
     importUnsupportedFile: '.neko-plugin または .neko-bundle ファイルを選択してください',
     importFileTooLarge: 'ファイルが {limit} のインポート上限を超えています',
     export: 'エクスポート',

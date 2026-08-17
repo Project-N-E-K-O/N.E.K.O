@@ -954,7 +954,7 @@ const runningPlugins = computed(() => {
 
 // ── Import (upload + install) ─────────────────────────────────────────
 
-const PLUGIN_PACKAGE_MAX_BYTES = 200 * 1024 * 1024
+const PLUGIN_PACKAGE_MAX_BYTES = 500 * 1024 * 1024
 const PLUGIN_PACKAGE_SUFFIXES = ['.neko-plugin', '.neko-bundle']
 
 function openImportDialog() {
