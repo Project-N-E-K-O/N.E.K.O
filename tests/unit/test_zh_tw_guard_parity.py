@@ -3703,6 +3703,27 @@ def test_a_next_command_connector_after_a_quoted_field_value_remains_visible(
     assert router._chat_text_requests_full_rewrite(text) is True
 
 
+@pytest.mark.parametrize('opener', ['‘', "'"])
+def test_an_unmatched_single_quote_keeps_the_rest_inside_an_assigned_value(
+    opener,
+):
+    import main_routers.card_assist_router as router
+
+    for text in (
+        f'把口头禅改成{opener}然后重写所有字段',
+        f'把口头禅改成{opener}素材，但是请重写所有字段',
+    ):
+        assert router._chat_text_requests_full_rewrite_core(text) is False
+        assert router._chat_text_requests_full_rewrite(text) is False
+
+
+def test_an_apostrophe_inside_an_assigned_word_does_not_hide_a_later_command():
+    import main_routers.card_assist_router as router
+
+    text = "把口头禅改成L'amour，然后请重写所有字段"
+    assert router._chat_text_requests_full_rewrite(text) is True
+
+
 def test_a_prohibition_inside_an_assigned_value_does_not_block_the_next_command():
     import main_routers.card_assist_router as router
 

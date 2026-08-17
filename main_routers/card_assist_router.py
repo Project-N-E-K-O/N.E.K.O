@@ -1608,13 +1608,42 @@ _CHAT_SCOPED_POST_REWRITE_ASSIGNMENT_RE = re.compile(
 )
 
 
-def _chat_mask_quoted_spans(text: str) -> str:
+def _chat_unmatched_assignment_single_quote_start(
+    text: str, *, starts_with_assignment_value: bool = False
+) -> int | None:
+    """Locate an unmatched single quote only when it opens an assigned value."""
+    assignment_value_starts = [
+        assignment.end()
+        for assignment in _CHAT_SCOPED_VALUE_ASSIGNMENT_RE.finditer(text)
+    ]
+    if starts_with_assignment_value:
+        assignment_value_starts.append(0)
+    for value_start in assignment_value_starts:
+        while value_start < len(text) and text[value_start].isspace():
+            value_start += 1
+        if (
+            value_start < len(text)
+            and text[value_start] in ("‘", "'")
+            and _CHAT_QUOTED_SPAN_RE.match(text, value_start) is None
+        ):
+            return value_start
+    return None
+
+
+def _chat_mask_quoted_spans(
+    text: str, *, starts_with_assignment_value: bool = False
+) -> str:
     """Mask balanced quoted spans while preserving offsets."""
     masked = _CHAT_QUOTED_SPAN_RE.sub(
         lambda match: " " * len(match.group(0)),
         text,
     )
     unmatched_starts = []
+    unmatched_assignment_start = _chat_unmatched_assignment_single_quote_start(
+        text, starts_with_assignment_value=starts_with_assignment_value
+    )
+    if unmatched_assignment_start is not None:
+        unmatched_starts.append(unmatched_assignment_start)
     for opener in _CHAT_QUOTE_OPENERS:
         search_start = 0
         while (position := masked.find(opener, search_start)) >= 0:
@@ -1798,7 +1827,9 @@ def _chat_scoped_candidate_is_completed_command(candidate: str) -> bool:
         parts = [clause[:assignment.start()]]
         value_tail = clause[assignment.end():]
         next_command = _CHAT_SCOPED_NEXT_COMMAND_RE.search(
-            _chat_mask_quoted_spans(value_tail)
+            _chat_mask_quoted_spans(
+                value_tail, starts_with_assignment_value=True
+            )
         )
         if next_command is not None:
             parts.append(value_tail[next_command.end():])
@@ -2033,6 +2064,9 @@ def _chat_text_requests_full_rewrite_core(text: str) -> bool:
     """  # noqa: DOCSTRING_CJK
     if not text:
         return False
+    unmatched_assignment_start = _chat_unmatched_assignment_single_quote_start(text)
+    if unmatched_assignment_start is not None:
+        text = text[:unmatched_assignment_start]
     for sentence in _CHAT_REPORTING_CONTEXT_RESET_RE.split(text):
         if _chat_sentence_has_third_party_reporting_context(sentence):
             continue
@@ -2100,7 +2134,9 @@ def _chat_text_requests_full_rewrite_core(text: str) -> bool:
                 parts = [clause[:assignment.start()]]
                 value_tail = clause[assignment.end():]
                 next_command = _CHAT_SCOPED_NEXT_COMMAND_RE.search(
-                    _chat_mask_quoted_spans(value_tail)
+                    _chat_mask_quoted_spans(
+                        value_tail, starts_with_assignment_value=True
+                    )
                 )
                 if next_command is not None:
                     parts.append(value_tail[next_command.end():])
