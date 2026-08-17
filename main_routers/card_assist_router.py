@@ -1497,7 +1497,7 @@ _CHAT_SCOPED_SENTENCE_FINAL_QUESTION_RE = re.compile(
 _CHAT_SCOPED_VALUE_ASSIGNMENT_RE = re.compile(
     r"(?:(?:(?:把|将|將)\s*[^。，、！？,.!?;；把将將并並]+?|"
     r"^[^。，、！？,.!?;；]+?)(?:设为|設為|设成|設成|设置为|設定為|"
-    r"设置成|設定成|改成|修改成|"
+    r"设置成|設定成|改为|改為|改成|修改成|"
     r"换成|換成|变成|變成|变为|變為|调整为|調整為|写成|寫成|"
     r"填为|填為|填写为|填寫為|填成|填写成|填寫成)"
     r"|(?i:(?:rewrite|revise|regenerate|redo|refresh)\s+"
@@ -1550,7 +1550,7 @@ _CHAT_SCOPED_SIGNAL_BRIDGE_RE = re.compile(
 )
 _CHAT_GOVERNING_CONDITION_PATTERN = (
     r"(?:如果|假如|若是|要是|倘若|万一|萬一|假若)"
-    r"[^。，、！？,.!?;；]{0,64}?(?:再|才)\s*"
+    r"[^。，、！？,.!?;；]{0,64}?(?:再|才|就)\s*"
     r"(?:执行|執行|应用|應用|采用|採用|进行|進行)"
 )
 _CHAT_GOVERNING_CONDITION_RE = re.compile(
@@ -1558,9 +1558,14 @@ _CHAT_GOVERNING_CONDITION_RE = re.compile(
 )
 _CHAT_GOVERNING_EXECUTION_QUESTION_RE = re.compile(
     r"^\s*(?:(?:请问|請問|你觉得|你覺得|我想知道)\s*)?"
+    r"(?:"
     r"(?:是否|能否|可否|要不要|该不该|該不該|需不需要|应不应该|應不應該)\s*"
     r"(?:执行|執行|应用|應用|采用|採用|进行|進行)\s*"
     r"(?:以下|下面|上述|上面|这些|這些)?\s*(?:修改|操作|指令|命令|要求|内容|內容)?"
+    r"|(?:要\s*)?(?:执行|執行|应用|應用|采用|採用|进行|進行)\s*"
+    r"(?:以下|下面|上述|上面|这些|這些)?\s*(?:修改|操作|指令|命令|要求|内容|內容)?\s*"
+    r"[吗嗎呢]\s*[？?]?\s*[：:]"
+    r")"
 )
 _CHAT_GOVERNING_LIST_DISCLAIMER_RE = re.compile(
     r"^\s*(?:以下|以上|上述|前述|这些|這些|这|這)?\s*"
@@ -1572,7 +1577,7 @@ _CHAT_SCOPED_GOVERNING_CONDITION_RE = re.compile(
 )
 _CHAT_SCOPED_POST_REWRITE_ASSIGNMENT_RE = re.compile(
     r"\s*(?:并|並)\s*(?:设为|設為|设成|設成|设置为|設定為|设置成|設定成|"
-    r"改成|修改成|换成|換成|"
+    r"改为|改為|改成|修改成|换成|換成|"
     r"变成|變成|变为|變為|调整为|調整為|写成|寫成|填为|填為|填写为|"
     r"填寫為|填成|填写成|填寫成)\s*$"
 )

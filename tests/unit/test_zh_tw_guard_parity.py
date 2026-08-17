@@ -3556,10 +3556,11 @@ def test_a_terminal_particle_must_actually_terminate(particle):
     assert router._chat_text_requests_full_rewrite(f'重写整个卡{particle}') is True
 
 
-def test_a_trailing_execution_condition_still_governs_a_recovered_command():
+@pytest.mark.parametrize('connector', ['再', '才', '就'])
+def test_a_trailing_execution_condition_still_governs_a_recovered_command(connector):
     import main_routers.card_assist_router as router
 
-    text = '请重写整张卡并说明，如果用户同意再执行'
+    text = f'请重写整张卡并说明，如果用户同意{connector}执行'
     assert router._chat_text_requests_full_rewrite_core(text) is False
     assert router._chat_text_requests_full_rewrite(text) is False
 
@@ -3603,6 +3604,14 @@ def test_a_leading_execution_question_governs_all_recovered_list_items():
     assert router._chat_text_requests_full_rewrite(text) is False
 
 
+def test_a_postposed_execution_question_governs_all_recovered_list_items():
+    import main_routers.card_assist_router as router
+
+    text = '要执行以下修改吗：先重写名字并保留头像，然后请重写所有字段并保留是否会员标签'
+    assert router._chat_text_requests_full_rewrite_core(text) is False
+    assert router._chat_text_requests_full_rewrite(text) is False
+
+
 def test_an_english_command_after_a_field_assignment_remains_visible():
     import main_routers.card_assist_router as router
 
@@ -3613,6 +3622,14 @@ def test_an_english_command_after_a_field_assignment_remains_visible():
 
 @pytest.mark.parametrize('verb', ['设置成', '設定成'])
 def test_she_zhi_cheng_marks_the_following_text_as_a_field_value(verb):
+    import main_routers.card_assist_router as router
+
+    text = f'把口头禅{verb}重写所有字段并保留是否会员'
+    assert router._chat_text_requests_full_rewrite(text) is False
+
+
+@pytest.mark.parametrize('verb', ['改为', '改為'])
+def test_gai_wei_marks_the_following_text_as_a_field_value(verb):
     import main_routers.card_assist_router as router
 
     text = f'把口头禅{verb}重写所有字段并保留是否会员'
