@@ -720,9 +720,6 @@ class AgentSummaryMixin:
                 continue
             valid_line_event_candidates.append((event_index, event, payload, text))
 
-        latest_valid_line_event_index = (
-            valid_line_event_candidates[-1][0] if valid_line_event_candidates else -1
-        )
         sequence_less_line_event_indices: list[int] = []
         sequence_less_line_event_signatures: list[str] = []
         for event_index, event, payload, text in valid_line_event_candidates:
@@ -771,8 +768,7 @@ class AgentSummaryMixin:
                     or event_scene_ids[event_index]
                     or (
                         snapshot.get("scene_id")
-                        if event_index == latest_valid_line_event_index
-                        and last_explicit_scene_index < event_index
+                        if last_explicit_scene_index < event_index
                         else ""
                     )
                     or ""
@@ -783,8 +779,7 @@ class AgentSummaryMixin:
                     or event_route_ids[event_index]
                     or (
                         snapshot.get("route_id")
-                        if event_index == latest_valid_line_event_index
-                        and last_explicit_route_index < event_index
+                        if last_explicit_route_index < event_index
                         else ""
                     )
                     or ""
@@ -799,6 +794,7 @@ class AgentSummaryMixin:
                     "text": line["text"],
                     "scene_id": line["scene_id"],
                     "route_id": line["route_id"],
+                    "ts": line["ts"],
                 },
                 ensure_ascii=False,
                 sort_keys=True,
@@ -897,6 +893,7 @@ class AgentSummaryMixin:
                     "text": text,
                     "scene_id": str(line.get("scene_id") or ""),
                     "route_id": str(line.get("route_id") or ""),
+                    "ts": str(line.get("ts") or ""),
                 },
                 ensure_ascii=False,
                 sort_keys=True,
@@ -1030,11 +1027,6 @@ class AgentSummaryMixin:
                 (event_index, event, event_type, payload, valid_choices)
             )
 
-        latest_valid_choice_event_index = (
-            valid_choice_event_candidates[-1][0]
-            if valid_choice_event_candidates
-            else -1
-        )
         sequence_less_choice_event_indices: list[int] = []
         sequence_less_choice_event_signatures: list[str] = []
         for (
@@ -1109,8 +1101,7 @@ class AgentSummaryMixin:
                 or event_route_ids[event_index]
                 or (
                     snapshot.get("route_id")
-                    if event_index == latest_valid_choice_event_index
-                    and last_explicit_route_index < event_index
+                    if last_explicit_route_index < event_index
                     else ""
                 )
                 or ""
@@ -1121,8 +1112,7 @@ class AgentSummaryMixin:
                 or event_scene_ids[event_index]
                 or (
                     snapshot.get("scene_id")
-                    if event_index == latest_valid_choice_event_index
-                    and last_explicit_scene_index < event_index
+                    if last_explicit_scene_index < event_index
                     else ""
                 )
                 or ""
@@ -1168,10 +1158,11 @@ class AgentSummaryMixin:
                 choice["choice_state"] = (
                     "visible" if event_type == "choices_shown" else "selected"
                 )
-                choice.setdefault("scene_id", event_scene_id)
-                choice.setdefault(
-                    "route_id",
-                    event_route_id,
+                choice["scene_id"] = str(
+                    choice.get("scene_id") or event_scene_id
+                )
+                choice["route_id"] = str(
+                    choice.get("route_id") or event_route_id
                 )
                 semantic_version = hashlib.sha256(
                     json.dumps(
@@ -1242,6 +1233,11 @@ class AgentSummaryMixin:
                 )
                 choice["scene_id"] = choice_scene_id
                 choice["route_id"] = choice_route_id
+                occurrence_ts = (
+                    str(choice.get("ts") or "")
+                    if choice_state == "selected"
+                    else ""
+                )
                 semantic = json.dumps(
                     {
                         "choice_id": str(choice.get("choice_id") or choice.get("option_id") or ""),
@@ -1249,6 +1245,7 @@ class AgentSummaryMixin:
                         "state": choice_state,
                         "scene_id": choice_scene_id,
                         "route_id": choice_route_id,
+                        "ts": occurrence_ts,
                     },
                     ensure_ascii=False,
                     sort_keys=True,
@@ -1729,6 +1726,7 @@ class AgentSummaryMixin:
         *,
         snapshot: dict[str, Any],
         line_occurrences: list[dict[str, Any]],
+        all_choice_occurrences: list[dict[str, Any]],
         allow_delivery: bool = True,
     ) -> None:
         session_id = str(shared.get("active_session_id") or "")
@@ -1821,10 +1819,6 @@ class AgentSummaryMixin:
             if str((item.get("line") or {}).get("scene_id") or "") == scene_id
             and str((item.get("line") or {}).get("route_id") or "") == route_id
         ]
-        all_choice_occurrences = self._scene_capsule_choice_occurrences(
-            shared,
-            snapshot=snapshot,
-        )
         choice_occurrences = [
             item
             for item in all_choice_occurrences
@@ -2275,8 +2269,31 @@ class AgentSummaryMixin:
             scene_id=scene_id,
             route_id=route_id,
         )
+        memory_scene_alias_ids = [
+            str(item)
+            for item in list(metadata_payload.get("memory_scene_alias_ids") or [])
+            if str(item) and str(item) != scene_id
+        ]
+        memory_predecessor_scope_keys = list(
+            dict.fromkeys(
+                [
+                    memory_scope_key,
+                    *[
+                        self._scene_route_scope_key(
+                            scene_id=alias_scene_id,
+                            route_id=route_id,
+                        )
+                        for alias_scene_id in memory_scene_alias_ids
+                    ],
+                ]
+            )
+        )
         metadata_payload["_memory_schedule_order"] = memory_order
         metadata_payload["_memory_scope_key"] = memory_scope_key
+        metadata_payload["_memory_scene_alias_ids"] = memory_scene_alias_ids
+        metadata_payload["_memory_predecessor_scope_keys"] = (
+            memory_predecessor_scope_keys
+        )
         metadata_payload["_memory_boundary_key"] = self._scene_capsule_boundary_key(
             shared_payload,
             session_id=session_id,
@@ -2335,6 +2352,7 @@ class AgentSummaryMixin:
                 "trusted_history_token": self._trusted_history_token(shared),
                 "memory_order": memory_order,
                 "memory_scope_key": memory_scope_key,
+                "memory_predecessor_scope_keys": memory_predecessor_scope_keys,
             },
         )
 
@@ -2364,6 +2382,17 @@ class AgentSummaryMixin:
         memory_order = int(metadata.get("_memory_schedule_order") or 0)
         memory_boundary_key = str(metadata.get("_memory_boundary_key") or "")
         memory_scope_key = str(metadata.get("_memory_scope_key") or "")
+        memory_scene_alias_ids = [
+            str(item)
+            for item in list(metadata.get("_memory_scene_alias_ids") or [])
+            if str(item) and str(item) != scene_id
+        ]
+        memory_predecessor_scope_keys = {
+            str(item)
+            for item in list(metadata.get("_memory_predecessor_scope_keys") or [])
+            if str(item)
+        }
+        memory_predecessor_scope_keys.add(memory_scope_key)
         expected_memory_scope_key = self._scene_route_scope_key(
             scene_id=scene_id,
             route_id=route_id,
@@ -2385,7 +2414,10 @@ class AgentSummaryMixin:
             if pending_task is current_task or pending_task.done():
                 continue
             pending_meta = self._summary_task_meta.get(pending_task) or {}
-            if str(pending_meta.get("memory_scope_key") or "") != memory_scope_key:
+            if (
+                str(pending_meta.get("memory_scope_key") or "")
+                not in memory_predecessor_scope_keys
+            ):
                 continue
             pending_order = int(pending_meta.get("memory_order") or 0)
             if 0 < pending_order < memory_order:
@@ -2405,9 +2437,10 @@ class AgentSummaryMixin:
         previous_scene_summary = next(
             (
                 str(item.get("summary") or "").strip()
+                for memory_scene_id in [scene_id, *memory_scene_alias_ids]
                 for item in reversed(self._scene_memory)
                 if isinstance(item, dict)
-                and str(item.get("scene_id") or "") == scene_id
+                and str(item.get("scene_id") or "") == memory_scene_id
                 and str(item.get("route_id") or "") == route_id
             ),
             "",
@@ -2625,10 +2658,15 @@ class AgentSummaryMixin:
             shared,
             snapshot=snapshot,
         )
+        choice_occurrences = self._scene_capsule_choice_occurrences(
+            shared,
+            snapshot=snapshot,
+        )
         self._maybe_schedule_scene_capsule(
             shared,
             snapshot=snapshot,
             line_occurrences=line_occurrences,
+            all_choice_occurrences=choice_occurrences,
             allow_delivery=allow_capsule_delivery,
         )
 
@@ -2886,16 +2924,70 @@ class AgentSummaryMixin:
                 )
                 in allowed_scene_routes
             ]
-            scope_shared["history_choices"] = [
-                dict(choice)
-                for choice in list(shared.get("history_choices") or [])
-                if isinstance(choice, dict)
-                and (
+            scope_history_choices: list[dict[str, Any]] = []
+            scope_choice_identities: set[tuple[str, str, str]] = set()
+            for raw_choice in list(shared.get("history_choices") or []):
+                if not isinstance(raw_choice, dict):
+                    continue
+                if str(raw_choice.get("action") or "").strip().lower() != "selected":
+                    continue
+                if (
+                    str(raw_choice.get("scene_id") or ""),
+                    str(raw_choice.get("route_id") or ""),
+                ) not in allowed_scene_routes:
+                    continue
+                choice_record = dict(raw_choice)
+                identity = (
+                    str(
+                        choice_record.get("choice_id")
+                        or choice_record.get("option_id")
+                        or ""
+                    ),
+                    str(
+                        choice_record.get("text")
+                        or choice_record.get("label")
+                        or ""
+                    ),
+                    str(choice_record.get("ts") or ""),
+                )
+                scope_history_choices.append(choice_record)
+                scope_choice_identities.add(identity)
+            for occurrence in choice_occurrences:
+                choice = occurrence.get("choice")
+                if not isinstance(choice, dict):
+                    continue
+                if str(choice.get("choice_state") or "").strip().lower() != "selected":
+                    continue
+                if (
                     str(choice.get("scene_id") or ""),
                     str(choice.get("route_id") or ""),
+                ) not in allowed_scene_routes:
+                    continue
+                choice_record = {
+                    **dict(choice),
+                    "action": "selected",
+                    "ts": str(
+                        choice.get("ts") or occurrence.get("ts") or ""
+                    ),
+                }
+                identity = (
+                    str(
+                        choice_record.get("choice_id")
+                        or choice_record.get("option_id")
+                        or ""
+                    ),
+                    str(
+                        choice_record.get("text")
+                        or choice_record.get("label")
+                        or ""
+                    ),
+                    str(choice_record.get("ts") or ""),
                 )
-                in allowed_scene_routes
-            ]
+                if identity in scope_choice_identities:
+                    continue
+                scope_history_choices.append(choice_record)
+                scope_choice_identities.add(identity)
+            scope_shared["history_choices"] = scope_history_choices
             context = build_summarize_context(
                 scope_shared,
                 scene_id=scene_id,
@@ -2992,6 +3084,7 @@ class AgentSummaryMixin:
                 "last_line_occurrence_key": last_line_occurrence_key,
                 "summary_delivery_key": delivery_key,
                 "current_scene_id_at_schedule": current_scene_id,
+                "memory_scene_alias_ids": memory_scene_ids[1:],
                 "merged_schedule_restore": json_copy(merged_schedule_restore),
             }
             if scheduled_line_count >= self._scene_summary_push_line_interval:

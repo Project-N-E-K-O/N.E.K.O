@@ -3031,6 +3031,351 @@ async def test_live_event_versions_are_not_evicted_before_tentative_cancellation
 
 
 @pytest.mark.plugin_unit
+def test_trailing_implicit_events_inherit_snapshot_scope_for_full_retained_run(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(
+            _Ctx(plugin_dir, _make_effective_config(bridge_root))
+        ),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    line_events = [
+        _event(
+            seq=index,
+            event_type="line_changed",
+            session_id="sess-a",
+            game_id="demo.alpha",
+            ts=f"2026-04-21T08:35:{index:02d}Z",
+            payload={
+                "speaker": "Yukino",
+                "text": f"implicit line {index}",
+                "line_id": f"line-{index}",
+            },
+        )
+        for index in range(1, 4)
+    ]
+    choice_events = [
+        _event(
+            seq=index + 3,
+            event_type="choices_shown",
+            session_id="sess-a",
+            game_id="demo.alpha",
+            ts=f"2026-04-21T08:35:{index + 3:02d}Z",
+            payload={
+                "choices": [
+                    {"choice_id": f"choice-{index}", "text": f"option {index}"}
+                ]
+            },
+        )
+        for index in range(1, 3)
+    ]
+    snapshot = _session_state(scene_id="scene-a", route_id="route-a")
+    shared = _shared_state(
+        session_id="sess-a",
+        last_seq=5,
+        snapshot=snapshot,
+        history_events=[*line_events, *choice_events],
+    )
+
+    line_occurrences = agent._scene_capsule_line_occurrences(
+        shared,
+        snapshot=snapshot,
+    )
+    choice_occurrences = agent._scene_capsule_choice_occurrences(
+        shared,
+        snapshot=snapshot,
+    )
+
+    assert len(line_occurrences) == 3
+    assert len(choice_occurrences) == 2
+    assert {
+        (
+            str((item.get("line") or {}).get("scene_id") or ""),
+            str((item.get("line") or {}).get("route_id") or ""),
+        )
+        for item in line_occurrences
+    } == {("scene-a", "route-a")}
+    assert {
+        (
+            str((item.get("choice") or {}).get("scene_id") or ""),
+            str((item.get("choice") or {}).get("route_id") or ""),
+        )
+        for item in choice_occurrences
+    } == {("scene-a", "route-a")}
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_selected_choice_with_implicit_scope_reaches_memory_archive(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    gateway = _FakeLLMGateway()
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(
+            _Ctx(plugin_dir, _make_effective_config(bridge_root))
+        ),
+        logger=_Logger(),
+        llm_gateway=gateway,
+        host_adapter=_FakeHostAdapter(),
+    )
+    lines = [_summary_test_line("scene-a", index) for index in range(1, 9)]
+    for line in lines:
+        line["route_id"] = "route-a"
+    selected_event = _event(
+        seq=9,
+        event_type="choice_selected",
+        session_id="sess-a",
+        game_id="demo.alpha",
+        ts="2026-04-21T08:36:09Z",
+        payload={
+            "choice_id": "choice-a",
+            "choice_text": "follow her",
+            "choice_index": 0,
+        },
+    )
+    shared = _shared_state(
+        mode="companion",
+        push_notifications=False,
+        session_id="sess-a",
+        last_seq=9,
+        snapshot=_session_state(scene_id="scene-a", route_id="route-a"),
+        history_events=[selected_event],
+        history_lines=lines,
+        history_choices=[
+            {
+                "action": "selected",
+                "choice_id": "choice-old",
+                "text": "wait here",
+                "scene_id": "scene-a",
+                "route_id": "route-a",
+                "ts": "2026-04-21T08:34:00Z",
+            },
+            {
+                "action": "selected",
+                "choice_id": "choice-a",
+                "text": "follow her",
+                "scene_id": "",
+                "route_id": "",
+                "ts": "2026-04-21T08:36:09Z",
+            }
+        ],
+    )
+
+    await agent.tick(shared)
+    await agent.drain_summary_tasks(timeout=1.0)
+
+    assert len(gateway.summarize_calls) == 1
+    assert gateway.summarize_calls[0]["recent_choices"] == [
+        {
+            "action": "selected",
+            "choice_id": "choice-old",
+            "text": "wait here",
+            "scene_id": "scene-a",
+            "route_id": "route-a",
+            "ts": "2026-04-21T08:34:00Z",
+        },
+        {
+            "choice_id": "choice-a",
+            "text": "follow her",
+            "index": 0,
+            "choice_state": "selected",
+            "scene_id": "scene-a",
+            "route_id": "route-a",
+            "ts": "2026-04-21T08:36:09Z",
+            "action": "selected",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_trusted_handoff_serializes_pending_aliased_archives(
+    tmp_path: Path,
+) -> None:
+    class _AliasedArchiveGateway(_FakeLLMGateway):
+        def __init__(self) -> None:
+            super().__init__()
+            self.first_started = asyncio.Event()
+            self.second_started = asyncio.Event()
+            self.release_first = asyncio.Event()
+
+        async def summarize_scene(self, context):
+            self.summarize_calls.append(dict(context))
+            if len(self.summarize_calls) == 1:
+                self.first_started.set()
+                await self.release_first.wait()
+                summary = "memory-reader cumulative archive"
+            else:
+                self.second_started.set()
+                summary = "ocr cumulative archive"
+            return {
+                "degraded": False,
+                "summary": summary,
+                "key_points": [],
+                "diagnostic": "",
+            }
+
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    gateway = _AliasedArchiveGateway()
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(ctx),
+        logger=_Logger(),
+        llm_gateway=gateway,
+        host_adapter=_FakeHostAdapter(),
+    )
+    memory_line = _summary_test_line("memory-scene", 1)
+    memory_shared = _shared_state(
+        mode="companion",
+        push_notifications=False,
+        game_id="mem-0123456789abcdef",
+        session_id="memory-session",
+        active_data_source=DATA_SOURCE_MEMORY_READER,
+        snapshot=_session_state(scene_id="memory-scene"),
+        history_lines=[memory_line],
+    )
+    memory_shared["active_session_meta"] = {
+        "metadata": {
+            "game_process_name": "demo.exe",
+            "window_title": "Demo",
+        }
+    }
+    await agent.tick(memory_shared)
+    memory_context = build_summarize_context(
+        memory_shared,
+        scene_id="memory-scene",
+        config=agent._context_config,
+    )
+    agent._schedule_scene_summary_task(
+        shared=memory_shared,
+        session_id="memory-session",
+        scene_id="memory-scene",
+        route_id="",
+        snapshot=memory_shared["latest_snapshot"],
+        context=memory_context,
+        trigger="line_count",
+        metadata={"scheduled_from_event_seq": 1},
+    )
+    await asyncio.wait_for(gateway.first_started.wait(), timeout=0.5)
+
+    ocr_lines = [_summary_test_line("ocr-scene", index) for index in range(1, 9)]
+    ocr_shared = _shared_state(
+        mode="companion",
+        push_notifications=False,
+        game_id="ocr-0123456789ab",
+        session_id="ocr-session",
+        active_data_source=DATA_SOURCE_OCR_READER,
+        ocr_reader_runtime={
+            "effective_process_name": "demo.exe",
+            "effective_window_title": "Demo",
+            "target_hwnd": 100,
+            "target_window_visible": True,
+        },
+        snapshot=_session_state(scene_id="ocr-scene"),
+        history_lines=ocr_lines,
+    )
+    await agent.tick(ocr_shared)
+    await asyncio.sleep(0)
+
+    assert not gateway.second_started.is_set()
+    gateway.release_first.set()
+    await agent.drain_summary_tasks(timeout=1.0)
+
+    assert gateway.second_started.is_set()
+    assert len(gateway.summarize_calls) == 2
+    assert (
+        gateway.summarize_calls[1]["previous_scene_summary"]
+        == "memory-reader cumulative archive"
+    )
+
+
+@pytest.mark.plugin_unit
+def test_fallback_occurrences_advance_for_same_content_at_new_timestamp(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(
+            _Ctx(plugin_dir, _make_effective_config(bridge_root))
+        ),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    snapshot = _session_state(scene_id="scene-a", route_id="route-a")
+
+    def line(ts: str) -> dict[str, object]:
+        return {
+            "speaker": "Yukino",
+            "text": "same repeated line",
+            "scene_id": "scene-a",
+            "route_id": "route-a",
+            "ts": ts,
+            "stability": "stable",
+        }
+
+    def choice(ts: str) -> dict[str, object]:
+        return {
+            "action": "selected",
+            "text": "same repeated choice",
+            "scene_id": "scene-a",
+            "route_id": "route-a",
+            "ts": ts,
+        }
+
+    first_shared = _shared_state(
+        session_id="sess-a",
+        snapshot=snapshot,
+        history_lines=[line("2026-04-21T08:35:01Z"), line("2026-04-21T08:35:02Z")],
+        history_choices=[
+            choice("2026-04-21T08:35:01Z"),
+            choice("2026-04-21T08:35:02Z"),
+        ],
+    )
+    first_lines = agent._scene_capsule_line_occurrences(
+        first_shared,
+        snapshot=snapshot,
+    )
+    first_choices = agent._scene_capsule_choice_occurrences(
+        first_shared,
+        snapshot=snapshot,
+    )
+    shifted_shared = {
+        **first_shared,
+        "history_lines": [
+            line("2026-04-21T08:35:02Z"),
+            line("2026-04-21T08:35:03Z"),
+        ],
+        "history_choices": [
+            choice("2026-04-21T08:35:02Z"),
+            choice("2026-04-21T08:35:03Z"),
+        ],
+    }
+    shifted_lines = agent._scene_capsule_line_occurrences(
+        shifted_shared,
+        snapshot=snapshot,
+    )
+    shifted_choices = agent._scene_capsule_choice_occurrences(
+        shifted_shared,
+        snapshot=snapshot,
+    )
+
+    assert shifted_lines[0]["event_key"] == first_lines[1]["event_key"]
+    assert shifted_lines[1]["event_key"] not in {
+        item["event_key"] for item in first_lines
+    }
+    assert shifted_choices[0]["event_key"] == first_choices[1]["event_key"]
+    assert shifted_choices[1]["event_key"] not in {
+        item["event_key"] for item in first_choices
+    }
+
+
+@pytest.mark.plugin_unit
 def test_scene_summary_tracker_isolates_same_scene_across_routes(
     tmp_path: Path,
 ) -> None:
