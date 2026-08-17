@@ -8965,6 +8965,70 @@ async def test_degraded_answer_clears_pending_without_updating_learning_state(
 
 
 @pytest.mark.asyncio
+async def test_cancelled_answer_clears_pending_and_allows_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _BlockingTutorAgent(_FakeTutorAgent):
+        def __init__(self) -> None:
+            self.started = asyncio.Event()
+
+        async def answer_evaluate(self, **_kwargs) -> TutorReply:
+            self.started.set()
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "runtime"))
+    plugin = StudyCompanionPlugin(
+        _Ctx(
+            tmp_path,
+            {
+                "study": {
+                    "language": "en",
+                    "default_mode": MODE_COMPANION,
+                    "auto_open_ui": False,
+                }
+            },
+        )
+    )
+    assert isinstance(await plugin.startup(), Ok)
+    blocking_agent = _BlockingTutorAgent()
+    plugin._agent = blocking_agent
+
+    try:
+        async with plugin._lock:
+            plugin._state.current_question = {
+                "question": "What is d(x^2)/dx?",
+                "answer": "2x",
+                "topic": "derivatives",
+                "question_id": "q-canceled",
+                "attempt_id": "a-canceled",
+            }
+
+        evaluation = asyncio.create_task(
+            plugin.study_evaluate_answer(
+                answer="x",
+                question_id="q-canceled",
+                attempt_id="a-canceled",
+            )
+        )
+        await blocking_agent.started.wait()
+        evaluation.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await evaluation
+
+        assert "attempt_evaluation_pending" not in plugin._state.current_question
+        plugin._agent = _FakeTutorAgent()
+        retried = await plugin.study_evaluate_answer(
+            answer="2x",
+            question_id="q-canceled",
+            attempt_id="a-canceled",
+        )
+        assert isinstance(retried, Ok)
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_tutor_agent_prompt_and_reply_contract(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

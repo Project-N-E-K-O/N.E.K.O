@@ -16,6 +16,13 @@ from .models import public_current_question_payload
 
 
 class _TutorAnswerEntriesMixin:
+    async def _clear_attempt_evaluation_reservation(self, attempt_id: str) -> None:
+        if not attempt_id:
+            return
+        async with self._lock:
+            if str(self._state.current_question.get("attempt_id") or "") == attempt_id:
+                self._state.current_question.pop("attempt_evaluation_pending", None)
+
     @ui.action()
     @plugin_entry(
         id="study_evaluate_answer",
@@ -244,14 +251,7 @@ class _TutorAnswerEntriesMixin:
             )
             if reply.degraded:
                 if reserved_attempt:
-                    async with self._lock:
-                        if (
-                            str(self._state.current_question.get("attempt_id") or "")
-                            == state_attempt_id
-                        ):
-                            self._state.current_question.pop(
-                                "attempt_evaluation_pending", None
-                            )
+                    await self._clear_attempt_evaluation_reservation(state_attempt_id)
                     await self._persist_state()
                 return Ok(payload)
             payload["question"] = resolved_question
@@ -340,16 +340,13 @@ class _TutorAnswerEntriesMixin:
                         )
                 await self._persist_state()
             return Ok(payload)
+        except asyncio.CancelledError:
+            if reserved_attempt:
+                await self._clear_attempt_evaluation_reservation(state_attempt_id)
+            raise
         except Exception as exc:
             if reserved_attempt:
-                async with self._lock:
-                    if (
-                        str(self._state.current_question.get("attempt_id") or "")
-                        == state_attempt_id
-                    ):
-                        self._state.current_question.pop(
-                            "attempt_evaluation_pending", None
-                        )
+                await self._clear_attempt_evaluation_reservation(state_attempt_id)
             return _entry_exception_error(
                 self, exc, operation="study_evaluate_answer"
             )
