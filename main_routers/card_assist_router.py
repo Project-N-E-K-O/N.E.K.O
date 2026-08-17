@@ -825,8 +825,16 @@ _WHOLE_CARD_BARE_QUANTIFIERS = tuple(
     word for word in _WHOLE_CARD_QUANTIFIERS
     if not word.startswith(("每", "各", "逐"))
 )
+_WHOLE_CARD_SCOPE_MODIFIERS = (
+    "可见", "可見", "现有", "現有", "已有", "既有", "当前", "當前",
+    # 缺失值类修饰词。保持有限词表：后面仍必须跟整卡级中心语，不能直接修饰字段名。
+    "没有填", "沒有填", "未填写", "未填寫", "未填",
+    "空着", "空著", "缺失", "漏掉", "为空", "為空",
+)
 _WHOLE_CARD_SCOPE_MODIFIER = (
-    r"(?:(?:可见|可見|现有|現有|已有|既有|当前|當前)的?)?"
+    r"(?:(?:"
+    + "|".join(sorted(_WHOLE_CARD_SCOPE_MODIFIERS, key=len, reverse=True))
+    + r")的?)?"
 )
 # ⚠️⚠️ 整卡级名词是**前缀匹配**，必须要求右边界，否则 `字段名` 会被当成 `字段`：
 # `把整个卡的所有字段名重写` 说的是「把所有字段**名**改掉」，却会触发
@@ -902,6 +910,8 @@ _WHOLE_CARD_BARE_ADVERBS = (
     # 用户说「别改」却把整张卡改了并 autosave。为了一个 base 从来没成立过的说法
     # 去松动否定守卫，方向反了。
     "均", "依序", "一概", "悉数", "悉數", "分开", "分開",
+    # 常用方式/紧迫副词。只收明确产品用语，不把开放的方式副词槽改成任意文本。
+    "快速", "尽快", "儘快", "赶紧", "趕緊", "马上", "馬上", "立刻", "迅速",
 )
 # ⚠️ 轻动词「进行」占的是**跟副词同一个槽**（目标 + X + 重写动词）：
 # `请对所有字段进行重写` / `请将所有字段全部进行重写` base 都是 True，上一版的收尾
@@ -1420,9 +1430,9 @@ def _chat_clauses(text: str) -> list[str]:
 
     ⚠️⚠️ **这里曾经改成「跳过引用跨度里的句读」，又退了回来。别再改第三次。**
 
-    当初改它是为了 `重写所有字段并把口头禅设为“好不好，随便”`——引号里的逗号
-    把跨度劈成两半、`好不好` 裸露出来被疑问守卫当成提问，整条命令丢掉。
-    那个现象是真的，但方向是**少补几个字段**，用户再说一遍就行。
+    当初改它是为了 `重写所有字段并把口头禅设为“好不好，随便”`。现在这条由
+    `_chat_text_requests_full_rewrite_from_scoped_segments` 在已经闭合的命令前缀上恢复，
+    不再要求底层切分器理解引用跨度。
 
     代价是它一口气造出**两条数据覆盖方向**的缺陷，都是不可逆的那一侧：
       · 引号里的逗号不再切分，原本分属两个子句的整卡目标和重写动词并回同一句，
@@ -1433,10 +1443,9 @@ def _chat_clauses(text: str) -> list[str]:
         整张卡照样被覆盖。下面 `_CHAT_CLAUSE_SPLIT_RE` 那行注释写的「两处必须同源」
         就是这个意思，当初只改了一处。
 
-    为一条「少做一件事」的缺陷去换两条「多做一件不可逆的事」的缺陷，方向反了。
-    退回之后那两条自动消失，第六十三轮为了补它而加的整套配对守卫也一起删掉了。
-    留下的代价写成了 by-design 用例，见
-    `test_a_separator_inside_a_quoted_value_still_splits_the_clause`。
+    所以这里仍保持按句读切分；恢复逻辑必须在外层完成，并继续让上面两条危险反例
+    返回 False。对应测试见
+    `test_a_completed_rewrite_survives_a_separator_inside_a_quoted_value`。
     """  # noqa: DOCSTRING_CJK
     return [c for c in _CHAT_CLAUSE_SPLIT_RE.split(text or "") if c.strip()]
 
@@ -1460,6 +1469,29 @@ _CHAT_POSTPOSED_NEGATION_RE = re.compile(
 _CHAT_QUOTED_SPAN_RE = re.compile(
     r"“[^”]*”|「[^」]*」|『[^』]*』|《[^》]*》|【[^】]*】|\"[^\"]*\""
 )
+
+# 只恢复已经闭合的整卡命令，不改变核心疑问/否定/目标判据。窗口不够时仍返回 False，
+# 因此这里可以安全地使用固定上限；它不能替代否定守卫那种必须覆盖完整宾语的窗口。
+_CHAT_SCOPED_RECOVERY_WINDOW_CHARS = 256
+_CHAT_SCOPED_RECOVERY_MAX_BOUNDARIES = 32
+_CHAT_SCOPED_RECOVERY_BOUNDARY_RE = re.compile(
+    r"(?P<secondary>"
+    r"(?:并|並)\s*(?:保留|写清楚|寫清楚|说明|說明|"
+    r"(?:把|将|將)[^。，、！？,.!?;；]{0,24}?(?:设为|設為|改成|写成|寫成))"
+    r")"
+    r"|(?P<trailing_en>(?<![A-Za-z])(?:if|when)(?![A-Za-z]))"
+    # `但是否…` 必须按裸 `但` 切，让后件保留完整的疑问标记 `是否`。
+    r"|(?P<contrast>但是(?!否)|可是|不过|不過|但|(?<![A-Za-z])but(?![A-Za-z]))",
+    re.IGNORECASE,
+)
+
+
+def _chat_mask_quoted_spans(text: str) -> str:
+    """Mask balanced quoted spans while preserving offsets."""
+    return _CHAT_QUOTED_SPAN_RE.sub(
+        lambda match: " " * len(match.group(0)),
+        text,
+    )
 
 
 def _chat_span_carries_a_question(span: str) -> bool:
@@ -1641,7 +1673,7 @@ _CHAT_QUESTION_CLAUSE_RE = re.compile(
 )
 
 
-def _chat_text_requests_full_rewrite(text: str) -> bool:
+def _chat_text_requests_full_rewrite_core(text: str) -> bool:
     """整卡重写判据——三条谓词必须落在**同一个子句**里。
 
     ⚠️ 上一版对整段文本分别 search 整卡目标 / 重写动词 / 否定守卫再组合。
@@ -1698,6 +1730,40 @@ def _chat_text_requests_full_rewrite(text: str) -> bool:
         ):
             return True
     return False
+
+
+def _chat_text_requests_full_rewrite_from_scoped_segments(text: str) -> bool:
+    """Recover a completed command next to a bounded secondary segment.
+
+    The core detector remains authoritative. This helper only gives it a short prefix before
+    field-value/explanation/trailing-condition boundaries, or a short suffix after contrast.
+    Balanced quoted content is masked solely while locating those boundaries.
+    """
+    if not text:
+        return False
+    masked = _chat_mask_quoted_spans(text)
+    for index, match in enumerate(_CHAT_SCOPED_RECOVERY_BOUNDARY_RE.finditer(masked)):
+        if index >= _CHAT_SCOPED_RECOVERY_MAX_BOUNDARIES:
+            break
+        if match.lastgroup == "contrast":
+            candidate = text[
+                match.end():match.end() + _CHAT_SCOPED_RECOVERY_WINDOW_CHARS
+            ]
+        else:
+            candidate = text[
+                max(0, match.start() - _CHAT_SCOPED_RECOVERY_WINDOW_CHARS):match.start()
+            ]
+        if _chat_text_requests_full_rewrite_core(candidate):
+            return True
+    return False
+
+
+def _chat_text_requests_full_rewrite(text: str) -> bool:
+    """Return whether text contains a high-confidence full-card rewrite command."""
+    return (
+        _chat_text_requests_full_rewrite_core(text)
+        or _chat_text_requests_full_rewrite_from_scoped_segments(text)
+    )
 
 def _chat_text_requests_advice_only(text: str) -> bool:
     if not text:

@@ -1708,6 +1708,20 @@ def test_batch_rewrite_modifiers(scope, adverb):
     ) is False
 
 
+@pytest.mark.parametrize(
+    "adverb", ["快速", "尽快", "儘快", "赶紧", "趕緊", "马上", "馬上", "立刻", "迅速"]
+)
+@pytest.mark.parametrize("scope", ["把所有字段", "把全部欄位", "把整个卡的所有内容"])
+def test_common_manner_adverbs_are_full_rewrite_modifiers(scope, adverb):
+    """常用方式副词不收窄已经明确的整卡目标。"""  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    assert router._chat_text_requests_full_rewrite(f'{scope}{adverb}重写') is True
+    assert router._chat_text_requests_full_rewrite(
+        f'把整个卡的名字{adverb}重写'
+    ) is False
+
+
 WHOLE_CARD_ADVERBS = _router_table("_WHOLE_CARD_BARE_ADVERBS")
 WHOLE_CARD_LIGHT_VERBS = _router_table("_WHOLE_CARD_LIGHT_VERBS")
 WHOLE_CARD_PREVERBS = _router_table("_WHOLE_CARD_PREVERB_WORDS")
@@ -1740,6 +1754,7 @@ def test_the_adverb_table_is_a_prefix_code():
         "全部", "所有", "逐项", "逐項", "逐条", "逐條",
         "批量", "依次", "各自", "挨着", "挨著", "一次性", "集中",
         "均", "依序", "一概", "悉数", "悉數", "分开", "分開",
+        "快速", "尽快", "儘快", "赶紧", "趕緊", "马上", "馬上", "立刻", "迅速",
     }
     assert set(WHOLE_CARD_LIGHT_VERBS) == {
         "进行", "進行",
@@ -2818,34 +2833,57 @@ def test_a_correlative_without_a_frame_word_is_still_a_question(
 
 @pytest.mark.parametrize(("opener", "closer"), [("“", "”"), ("「", "」"), ("《", "》")])
 @pytest.mark.parametrize("separator", ["，", ",", "；", ";", "、"])
-def test_a_separator_inside_a_quoted_value_still_splits_the_clause(
+def test_a_completed_rewrite_survives_a_separator_inside_a_quoted_value(
     separator, opener, closer
 ):
-    """⚠️⚠️ **这条是 by-design 的代价，不是缺陷。别再去"修"它。**
+    """已闭合的整卡命令不应被后续引用值里的疑问词和句读撤销。
 
-    `重写所有字段并把口头禅设为“好不好，随便”` base 是 True、现在是 False——
-    引号里那个逗号照样切子句，`好不好` 裸露出来被疑问守卫当成提问。
-
-    我确实改过 `_chat_clauses` 让它跳过引用跨度，那条现象当场就好了。但那个改动
-    一口气造出两条**数据覆盖方向**的缺陷（都不可逆）：
-      · `先展示“整个卡，姓名”然后重写名字` 走进整卡补全并 autosave；
-      · `不要把“整个卡，包括头像”重写`——否定守卫那段窗口是这张标点表的**补集**，
-        它没跟着改，`不要` 够不到 `重写`，用户明说了禁止照样被覆盖。
-
-    为一条「少补几个字段」去换两条「多改一整张卡」，方向反了，所以退回。
-    这条用例把退回后的行为钉住，免得下一轮又被当成缺陷捡起来。
+    底层 `_chat_clauses` 仍按原方式切分；这里只允许有界恢复路径重新检查
+    `并把…设为` 之前已经完整成立的命令。
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
     text = f'重写所有字段并把口头禅设为{opener}好不好{separator}随便{closer}'
-    assert router._chat_text_requests_full_rewrite(text) is False, text
-    # ⚠️ 但**没有分隔符**的那一半仍然成立（第五十九轮修的），别一起退掉。
+    assert router._chat_text_requests_full_rewrite(text) is True, text
     assert router._chat_text_requests_full_rewrite(
         f'重写所有字段并把口头禅设为{opener}好不好{closer}'
     ) is True
 
 
-def test_clause_splitting_ignores_quotes_by_design():
+@pytest.mark.parametrize(
+    "text",
+    [
+        "把所有字段重写并保留是否会员这个标签",
+        "重写所有字段并把口头禅设为好不好",
+        "请重写所有字段并写清楚是否原创",
+        "请重写所有字段并说明为什么",
+    ],
+)
+def test_a_completed_rewrite_survives_secondary_content(text):
+    """后续字段值或说明里的疑问标记不管辖已经闭合的整卡命令。"""  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    assert router._chat_text_requests_full_rewrite(text) is True, text
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "是否要重写所有字段并保留是否会员标签",
+        "不要重写所有字段并把口头禅设为好不好",
+        "If you rewrite all fields, keep the tone",
+        "不是必要但是否要重写所有字段",
+        "把所有字段重写并不是必要的",
+    ],
+)
+def test_scoped_recovery_does_not_bypass_existing_guards(text):
+    """恢复路径不能把疑问、禁止或真正的后置否定放成命令。"""  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    assert router._chat_text_requests_full_rewrite(text) is False, text
+
+
+def test_clause_splitting_still_does_not_parse_quotes():
     """⚠️ 切分**不看引号**——见上一条为什么退回。这里直接钉住切分函数本身。"""  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -2926,6 +2964,21 @@ def test_english_question_and_conditional_heads_are_not_commands(head):
     assert router._chat_text_requests_full_rewrite(text.capitalize()) is False
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Please rewrite all fields if you can",
+        "Rewrite all fields when done",
+        "Regenerate the whole card if possible",
+    ],
+)
+def test_english_trailing_conditions_keep_a_completed_command(text):
+    """尾随礼貌条件不应撤销已经闭合的英文整卡命令。"""  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    assert router._chat_text_requests_full_rewrite(text) is True, text
+
+
 def test_english_commands_still_go_through():
     """⚠️ 反向：英文命令本身不能被这道守卫误伤。
 
@@ -2976,20 +3029,20 @@ def test_the_card_frame_table_covers_all_four_groups(correlative, frame):
     assert router._chat_text_requests_full_rewrite(text) is True, text
 
 
-def test_a_scope_modifier_slot_is_still_an_open_set():
-    """⚠️ **这条是明确不修的**，写成用例免得下一轮又被当成缺陷捡起来。
-
-    `把整个卡的所有没有填的内容重写一遍` base 是 True、现在是 False。根因不在
-    疑问守卫（`所有没有` 那个子串已经在第六十三轮挡掉了），而在**修饰语槽**
-    不认「没有填的」。那一侧是开集形容词——没填的/空着的/缺失的/漏掉的/为空的…
-    补不干净，而方向是轻的那一侧（少补几个字段，用户再说一遍）。
-    """  # noqa: DOCSTRING_CJK
+@pytest.mark.parametrize(
+    "modifier",
+    ["没有填", "沒有填", "未填", "未填写", "未填寫", "空着", "空著", "缺失", "漏掉", "为空", "為空"],
+)
+def test_common_missing_value_modifiers_keep_a_whole_card_scope(modifier):
+    """有限的缺失值修饰词可以修饰整卡级中心语，但不能放开单字段名。"""  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
     assert router._chat_text_requests_full_rewrite(
-        '把整个卡的所有没有填的内容重写一遍'
+        f'把整个卡的所有{modifier}的内容重写一遍'
+    ) is True
+    assert router._chat_text_requests_full_rewrite(
+        f'把整个卡的所有{modifier}的名字重写一遍'
     ) is False
-    # ⚠️ 但 `所有没有` 不再被当成极性标记——这半边是修好的，别一起退回去。
     assert router._CHAT_QUESTION_CLAUSE_RE.search('所有没有填的内容') is None
     assert router._CHAT_QUESTION_CLAUSE_RE.search('有没有填') is not None
 
@@ -3009,6 +3062,18 @@ def test_clause_splitting_stays_roughly_linear_in_input_length():
     text = '重写所有字段' + '并设为“好不好，随便”' * 30000
     started = time.perf_counter()
     router._chat_text_requests_full_rewrite(text)
+    assert time.perf_counter() - started < 3.0
+
+
+def test_scoped_recovery_work_is_bounded_on_repeated_boundaries():
+    """大量恢复边界不能让每个位置重新扫描完整输入。"""  # noqa: DOCSTRING_CJK
+    import time
+
+    import main_routers.card_assist_router as router
+
+    text = '无关内容并保留是否会员' * 30000
+    started = time.perf_counter()
+    assert router._chat_text_requests_full_rewrite(text) is False
     assert time.perf_counter() - started < 3.0
 
 
@@ -3118,6 +3183,20 @@ def test_a_postposed_negated_assertion_is_not_a_command(tail):
 
     text = f'把整个卡的每一项内容都重写{tail}'
     assert router._chat_text_requests_full_rewrite(text) is False, text
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "不是必要但请重写所有字段",
+        '把所有字段重写并保留"不是必要"这个口头禅',
+    ],
+)
+def test_postposed_negation_only_governs_its_own_segment(text):
+    """前置无关断言或次级字段值不能否决另一个完整命令。"""  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    assert router._chat_text_requests_full_rewrite(text) is True, text
 
 
 @pytest.mark.parametrize("negator", ["没有必要", "沒有必要", "没必要", "不必要", "无必要"])
