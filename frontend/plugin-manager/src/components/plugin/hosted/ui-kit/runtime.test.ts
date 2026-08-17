@@ -154,6 +154,44 @@ describe('hosted ui runtime', () => {
     vi.useRealTimers()
   })
 
+  it('cancels the matching host request when parseDocument is aborted', async () => {
+    vi.useFakeTimers()
+    const messages: any[] = []
+    Object.defineProperty(window, 'parent', {
+      value: { postMessage: (message: any) => messages.push(message) },
+      configurable: true,
+    })
+    const controller = new AbortController()
+    const promise = ui.api.parseDocument(
+      new File(['pdf'], 'notes.pdf', { type: 'application/pdf' }),
+      { timeoutMs: 100, signal: controller.signal },
+    )
+    const requestId = messages[0]?.requestId
+
+    controller.abort()
+    const rejection = expect(promise).rejects.toMatchObject({ name: 'AbortError' })
+    await vi.advanceTimersByTimeAsync(100)
+    await rejection
+
+    expect(messages).toContainEqual({
+      type: 'neko-hosted-surface-cancel',
+      requestId,
+    })
+    vi.useRealTimers()
+  })
+
+  it('applies a host-pushed context update without remounting the runtime', () => {
+    const refreshHostedPayload = vi.fn()
+    ;(window as any).__NekoRefreshHostedPayload = refreshHostedPayload
+    const context = { entries: [{ id: 'study_export_notes' }] }
+
+    window.dispatchEvent(new MessageEvent('message', {
+      data: { type: 'neko-hosted-surface-context', context },
+    }))
+
+    expect(refreshHostedPayload).toHaveBeenCalledWith(context)
+  })
+
   it('does not attribute a later automatic call to an earlier iframe interaction', () => {
     const requestMessages: any[] = []
     Object.defineProperty(window, 'parent', {

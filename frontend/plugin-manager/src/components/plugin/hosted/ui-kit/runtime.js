@@ -1952,28 +1952,55 @@ function refreshHostedPayload(context) {
 const __pendingRequests = new Map();
 window.addEventListener('message', (event) => {
   const data = event.data;
-  if (!data || typeof data !== 'object' || data.type !== 'neko-hosted-surface-response') return;
+  if (!data || typeof data !== 'object') return;
+  if (data.type === 'neko-hosted-surface-context') {
+    refreshHostedPayload(data.context);
+    return;
+  }
+  if (data.type !== 'neko-hosted-surface-response') return;
   const pending = __pendingRequests.get(data.requestId);
   if (!pending) return;
   __pendingRequests.delete(data.requestId);
+  pending.cleanup();
   if (data.ok) pending.resolve(data.result);
   else pending.reject(createHostedBridgeError(data));
 });
+function createHostedAbortError() {
+  const error = new Error('Hosted surface request was aborted');
+  error.name = 'AbortError';
+  return error;
+}
 function requestHost(method, payload, options) {
   const requestId = Math.random().toString(36).slice(2) + Date.now().toString(36);
   const requestedTimeoutMs = Number(options && options.timeoutMs);
   const timeoutMs = Number.isFinite(requestedTimeoutMs) && requestedTimeoutMs > 0 ? requestedTimeoutMs : 30000;
+  const signal = options && options.signal;
+  if (signal && signal.aborted) return Promise.reject(createHostedAbortError());
   return new Promise((resolve, reject) => {
-    __pendingRequests.set(requestId, { resolve, reject });
-    const userInitiated = (method === 'call' || method === 'parseDocument') && options && options.userInitiated === true;
-    parent.postMessage({ type: 'neko-hosted-surface-request', requestId, method, payload, timeoutMs, userInitiated }, hostedTargetOrigin());
-    window.setTimeout(() => {
+    let timeoutId;
+    const cleanup = () => {
+      if (timeoutId !== undefined) window.clearTimeout(timeoutId);
+      if (signal) signal.removeEventListener('abort', handleAbort);
+    };
+    const handleAbort = () => {
       if (!__pendingRequests.has(requestId)) return;
       __pendingRequests.delete(requestId);
+      cleanup();
+      parent.postMessage({ type: 'neko-hosted-surface-cancel', requestId }, hostedTargetOrigin());
+      reject(createHostedAbortError());
+    };
+    __pendingRequests.set(requestId, { resolve, reject, cleanup });
+    if (signal) signal.addEventListener('abort', handleAbort, { once: true });
+    const userInitiated = (method === 'call' || method === 'parseDocument') && options && options.userInitiated === true;
+    timeoutId = window.setTimeout(() => {
+      if (!__pendingRequests.has(requestId)) return;
+      __pendingRequests.delete(requestId);
+      cleanup();
       const error = new Error(method === 'parseDocument' ? 'Document parsing timed out' : 'Hosted surface request timed out');
       if (method === 'parseDocument') error.code = 'document_parse_timeout';
       reject(error);
     }, timeoutMs);
+    parent.postMessage({ type: 'neko-hosted-surface-request', requestId, method, payload, timeoutMs, userInitiated }, hostedTargetOrigin());
   });
 }
 const api = {
@@ -1998,6 +2025,7 @@ const api = {
     const confirmedUserAction = consumeHostedConfirmedAction();
     return requestHost('parseDocument', { file }, {
       timeoutMs: requestOptions.timeoutMs,
+      signal: requestOptions.signal,
       userInitiated: __hostedUserActionDepth > 0 || confirmedUserAction,
     });
   },

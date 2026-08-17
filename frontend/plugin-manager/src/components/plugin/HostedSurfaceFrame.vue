@@ -96,7 +96,7 @@ const runtimeErrorFatal = ref(false)
 let currentLoadId = 0
 let hostedRequestGeneration = 0
 let componentMounted = false
-const hostedDocumentControllers = new Set<AbortController>()
+const hostedDocumentControllers = new Map<string, AbortController>()
 
 const HOST_STARTUP_RETRY_DELAYS_MS = [100, 200, 400, 800, 1600] as const
 const MAX_HOSTED_DOCUMENT_BYTES = 16 * 1024 * 1024
@@ -539,6 +539,11 @@ function handleMessage(event: MessageEvent) {
     if (path) openLocalPath(path)
     return
   }
+  if (data && typeof data === 'object' && data.type === 'neko-hosted-surface-cancel') {
+    const requestId = typeof data.requestId === 'string' ? data.requestId : ''
+    hostedDocumentControllers.get(requestId)?.abort('client-cancelled')
+    return
+  }
   if (data && typeof data === 'object' && data.type === 'neko-hosted-surface-request') {
     handleHostedRequest(data)
     return
@@ -654,7 +659,7 @@ async function handleHostedRequest(data: any) {
       const requestedTimeoutMs = Number(data.timeoutMs)
       const timeoutMs = Number.isFinite(requestedTimeoutMs) && requestedTimeoutMs > 0 ? requestedTimeoutMs : 30000
       const controller = new AbortController()
-      hostedDocumentControllers.add(controller)
+      hostedDocumentControllers.set(requestId, controller)
       const timeoutId = window.setTimeout(() => controller.abort('timeout'), timeoutMs)
       try {
         const parsed = await parseHostedDocument(file, { timeoutMs, signal: controller.signal })
@@ -665,10 +670,13 @@ async function handleHostedRequest(data: any) {
           respond({ ok: false, error: 'Document parsing timed out.', code: 'document_parse_timeout' })
           return
         }
+        if (controller.signal.aborted) return
         throw caught
       } finally {
         window.clearTimeout(timeoutId)
-        hostedDocumentControllers.delete(controller)
+        if (hostedDocumentControllers.get(requestId) === controller) {
+          hostedDocumentControllers.delete(requestId)
+        }
       }
       return
     }
@@ -690,6 +698,22 @@ async function handleHostedRequest(data: any) {
   }
 }
 
+async function refreshContext() {
+  if (props.surface.mode !== 'hosted-tsx' || !componentMounted) return
+  const requestGeneration = hostedRequestGeneration
+  const context = await getPluginHostedSurfaceContext(props.pluginId, {
+    kind: props.surface.kind,
+    id: props.surface.id,
+    locale: String(locale.value),
+  })
+  if (!componentMounted || requestGeneration !== hostedRequestGeneration) return
+  const targetOrigin = trustedIframeOrigin.value === 'null' ? '*' : trustedIframeOrigin.value
+  iframeRef.value?.contentWindow?.postMessage({
+    type: 'neko-hosted-surface-context',
+    context,
+  }, targetOrigin)
+}
+
 onMounted(() => {
   componentMounted = true
   window.addEventListener('message', handleMessage)
@@ -699,7 +723,7 @@ onMounted(() => {
 onUnmounted(() => {
   componentMounted = false
   hostedRequestGeneration += 1
-  for (const controller of hostedDocumentControllers) controller.abort('surface-disposed')
+  for (const controller of hostedDocumentControllers.values()) controller.abort('surface-disposed')
   hostedDocumentControllers.clear()
   window.removeEventListener('message', handleMessage)
 })
@@ -718,7 +742,7 @@ watch(
   () => [props.pluginId, props.surface.kind, props.surface.id, props.surface.mode, props.surface.entry, props.surface.available, surfaceUrl.value, locale.value],
   () => {
     hostedRequestGeneration += 1
-    for (const controller of hostedDocumentControllers) controller.abort('surface-changed')
+    for (const controller of hostedDocumentControllers.values()) controller.abort('surface-changed')
     hostedDocumentControllers.clear()
     if (props.surface.mode === 'static') return
     loadHostedTsx()
@@ -732,6 +756,7 @@ watch(
 
 defineExpose({
   sendSurfaceMessage,
+  refreshContext,
 })
 </script>
 

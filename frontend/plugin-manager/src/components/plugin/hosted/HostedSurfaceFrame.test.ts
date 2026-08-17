@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { createApp, defineComponent, h, nextTick, reactive } from 'vue'
+import { createApp, defineComponent, h, nextTick, reactive, ref } from 'vue'
 import HostedSurfaceFrame from '../HostedSurfaceFrame.vue'
 import type { PluginUiSurface } from '@/types/api'
 
@@ -35,6 +35,7 @@ type MountedFrame = {
   setActivationRevision: (revision: number) => Promise<void>
   setSurface: (surface: PluginUiSurface) => Promise<void>
   setSurfaceUrl: (url: string) => Promise<void>
+  refreshContext: () => Promise<void>
   unmount: () => void
 }
 
@@ -91,18 +92,20 @@ async function flushPromises() {
   await nextTick()
 }
 
-async function mountFrame(): Promise<MountedFrame> {
+async function mountFrame(initialSurface = makeSurface()): Promise<MountedFrame> {
   const state = reactive({
     pluginId: 'study_companion',
-    surface: makeSurface(),
+    surface: initialSurface,
     active: false,
     activationRevision: 0,
   })
   const container = document.createElement('div')
   document.body.appendChild(container)
+  const frameRef = ref<{ refreshContext: () => Promise<void> } | null>(null)
   const app = createApp(defineComponent({
     setup() {
       return () => h(HostedSurfaceFrame, {
+        ref: frameRef,
         pluginId: state.pluginId,
         surface: state.surface,
         active: state.active,
@@ -116,6 +119,7 @@ async function mountFrame(): Promise<MountedFrame> {
   app.component('el-tag', elementStub)
   app.mount(container)
   await nextTick()
+  await flushPromises()
 
   const iframe = container.querySelector('iframe') as HTMLIFrameElement | null
   if (!iframe?.contentWindow) throw new Error('Hosted surface iframe was not mounted')
@@ -151,6 +155,9 @@ async function mountFrame(): Promise<MountedFrame> {
     async setSurfaceUrl(url) {
       state.surface.url = url
       await nextTick()
+    },
+    async refreshContext() {
+      await frameRef.value?.refreshContext()
     },
     unmount() {
       if (!active) return
@@ -598,5 +605,56 @@ describe('HostedSurfaceFrame automatic startup retry', () => {
 
     expect(signal?.aborted).toBe(true)
     expect(frame.postMessage).not.toHaveBeenCalled()
+  })
+
+  it('aborts only the document request named by a child cancellation message', async () => {
+    const signals = new Map<string, AbortSignal>()
+    apiMocks.parseHostedDocument.mockImplementation((file: File, options: { signal: AbortSignal }) => {
+      signals.set(file.name, options.signal)
+      return new Promise((_resolve, reject) => options.signal.addEventListener('abort', () => reject(new Error('canceled'))))
+    })
+    const frame = await mountFrame()
+    await frame.setSurface(makeDocumentSurface())
+
+    frame.dispatchRequest(parseDocumentRequest(
+      new File(['first'], 'first.pdf', { type: 'application/pdf' }),
+      { requestId: 'parse-first', userInitiated: true },
+    ))
+    frame.dispatchRequest(parseDocumentRequest(
+      new File(['second'], 'second.pdf', { type: 'application/pdf' }),
+      { requestId: 'parse-second', userInitiated: true },
+    ))
+    await flushPromises()
+    frame.dispatchRequest({ type: 'neko-hosted-surface-cancel', requestId: 'parse-first' })
+    await flushPromises()
+
+    expect(signals.get('first.pdf')?.aborted).toBe(true)
+    expect(signals.get('second.pdf')?.aborted).toBe(false)
+    expect(frame.postMessage).not.toHaveBeenCalled()
+  })
+
+  it('pushes fresh hosted context into a mounted TSX iframe', async () => {
+    const initialContext = { entries: [] }
+    const nextContext = { entries: [{ id: 'study_export_notes' }] }
+    apiMocks.getPluginHostedSurfaceSource.mockResolvedValue({
+      source: 'export default function Panel() { return null }',
+      dependencies: [],
+    })
+    apiMocks.getPluginHostedSurfaceContext
+      .mockResolvedValueOnce(initialContext)
+      .mockResolvedValueOnce(nextContext)
+    const frame = await mountFrame({ ...makeSurface('note-exporter'), mode: 'hosted-tsx', url: undefined })
+    await flushPromises()
+    if (frame.iframe()?.contentWindow) {
+      frame.iframe()!.contentWindow!.postMessage = frame.postMessage as unknown as Window['postMessage']
+    }
+    frame.postMessage.mockClear()
+
+    await frame.refreshContext()
+
+    expect(frame.postMessage).toHaveBeenCalledWith({
+      type: 'neko-hosted-surface-context',
+      context: nextContext,
+    }, '*')
   })
 })

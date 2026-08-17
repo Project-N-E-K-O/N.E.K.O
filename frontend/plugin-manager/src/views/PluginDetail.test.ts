@@ -18,6 +18,7 @@ const routerMocks = vi.hoisted(() => ({
   replace: vi.fn(),
   route: { params: { id: 'study_companion' }, query: {} as Record<string, string> },
 }))
+const hostedFrameMocks = vi.hoisted(() => ({ refreshContext: vi.fn() }))
 
 vi.mock('@/api/plugins', () => ({
   getPluginUiSurfaceInfo: apiMocks.getPluginUiSurfaceInfo,
@@ -43,7 +44,11 @@ vi.mock('@/components/plugin/HostedSurfaceFrame.vue', async () => {
     default: defineComponent({
       props: { surface: Object, active: Boolean, activationRevision: Number },
       emits: ['message'],
-      setup(props, { emit }) {
+      setup(props, { emit, expose }) {
+        expose({
+          sendSurfaceMessage: vi.fn(),
+          refreshContext: () => hostedFrameMocks.refreshContext((props.surface as PluginUiSurface)?.id),
+        })
         return () => h('button', {
           'data-surface-id': (props.surface as PluginUiSurface)?.id,
           'data-active': String(props.active),
@@ -65,6 +70,7 @@ vi.mock('@/components/plugin/HostedSurfaceFrame.vue', async () => {
               prompt: 'do not forward this free text',
             },
           }),
+          onContextmenu: () => emit('message', { type: 'neko-plugin-context-invalidated' }),
         })
       },
     }),
@@ -175,6 +181,7 @@ describe('PluginDetail surface selection', () => {
     apiMocks.getPluginStatus.mockReset()
     routerMocks.push.mockReset()
     routerMocks.replace.mockReset()
+    hostedFrameMocks.refreshContext.mockReset()
   })
 
   it('keeps legacy compatibility main without adding a duplicate static UI tab when hosted panels exist', async () => {
@@ -229,6 +236,21 @@ describe('PluginDetail surface selection', () => {
 
     expect(mounted.container.querySelector('[data-surface-id="practice"]')?.getAttribute('data-active')).toBe('true')
     expect(mounted.container.querySelector('[data-surface-id="practice"]')?.getAttribute('data-activation-revision')).toBe('0')
+    mounted.unmount()
+  })
+
+  it('refreshes every mounted panel context when a static UI invalidates plugin context', async () => {
+    const mounted = await mountDetail([
+      surface({ id: 'legacy-main', mode: 'static' }),
+      surface({ id: 'note-exporter' }),
+    ])
+
+    mounted.container.querySelector<HTMLButtonElement>('[data-surface-id="legacy-main"]')
+      ?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true }))
+    await nextTick()
+
+    expect(hostedFrameMocks.refreshContext).toHaveBeenCalledWith('legacy-main')
+    expect(hostedFrameMocks.refreshContext).toHaveBeenCalledWith('note-exporter')
     mounted.unmount()
   })
 })

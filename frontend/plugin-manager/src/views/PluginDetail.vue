@@ -206,6 +206,7 @@ const activePanelSurfaceId = ref('')
 const activeGuideSurfaceId = ref('')
 type SurfaceMessageReceiver = {
   sendSurfaceMessage: (data: unknown) => void
+  refreshContext: () => Promise<void>
 }
 const panelSurfaceFrameRefs = new Map<string, SurfaceMessageReceiver>()
 const surfaceActivationRevisions = ref<Record<string, number>>({})
@@ -418,6 +419,10 @@ function setPanelSurfaceFrameRef(surfaceId: string, instance: unknown) {
 function relayHostedSurfaceMessageToStaticUi(data: unknown) {
   if (isLegacyOpenSurfaceMessage(data)) {
     openHostedSurfaceFromStaticUi(data.payload)
+    return
+  }
+  if (data && typeof data === 'object' && (data as { type?: unknown }).type === 'neko-plugin-context-invalidated') {
+    void Promise.allSettled(Array.from(panelSurfaceFrameRefs.values(), (frame) => frame.refreshContext()))
     return
   }
   // Hosted surface messages have already been source/origin checked by the

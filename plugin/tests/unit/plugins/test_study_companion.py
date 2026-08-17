@@ -5994,6 +5994,9 @@ await waitFor(
   () => document.getElementById('settingsConfigStatus').textContent.includes('Saved'),
   'settings saved status',
 );
+if (!parentMessages.some((message) => message?.type === 'neko-plugin-context-invalidated')) {
+  throw new Error(`settings save did not invalidate hosted context: ${JSON.stringify(parentMessages)}`);
+}
 
 const memoryTab = document.getElementById('tab-memory');
 memoryTab.click();
@@ -6233,6 +6236,7 @@ def test_study_companion_hosted_panel_uses_long_running_entry_poll_budget() -> N
     assert "callPlugin as callHostedPlugin" in source
     assert "{ ...args, locale: String(locale || '').trim() }" in source
     assert "{ signal, timeoutMs: timeoutForEntry(entryId) }" in source
+    assert "{ timeoutMs: STUDY_DOCUMENT_PARSE_TIMEOUT_MS, signal: controller.signal }" in source
     assert "fetch('/runs'" not in source
     assert "fetch(`/runs/" not in source
     assert "for (let i = 0; i < 40; i += 1)" not in source

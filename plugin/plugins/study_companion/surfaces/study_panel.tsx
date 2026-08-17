@@ -1270,7 +1270,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
       let loaded;
       if (isParsedStudyDocumentFile(file)) {
         assertParsedStudyDocumentFile(file);
-        const response = await props.api.parseDocument(file, { timeoutMs: STUDY_DOCUMENT_PARSE_TIMEOUT_MS });
+        const response = await props.api.parseDocument(file, { timeoutMs: STUDY_DOCUMENT_PARSE_TIMEOUT_MS, signal: controller.signal });
         if (controller.signal.aborted) return;
         const raw = response && typeof response === 'object' ? response as Record<string, unknown> : {};
         const payload = raw.document && typeof raw.document === 'object'
