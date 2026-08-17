@@ -1047,6 +1047,35 @@ async def test_study_explain_text_respects_both_communication_switches(
 
 
 @pytest.mark.asyncio
+async def test_study_explain_text_rechecks_solution_toggle_after_finalize() -> None:
+    bus = _EventBus()
+    plugin = _ExplainHarness(event_bus=bus)
+    original_finalize = plugin._finalize_tutor_call
+
+    async def _finalize_and_disable(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        payload = await original_finalize(*args, **kwargs)
+        plugin._cfg = SimpleNamespace(
+            language="zh-CN",
+            llm_vision_enabled=True,
+            communication=SimpleNamespace(
+                enabled=True,
+                solution_narration_enabled=False,
+                general_narration_enabled=True,
+            ),
+        )
+        return payload
+
+    plugin._finalize_tutor_call = _finalize_and_disable  # type: ignore[method-assign]
+
+    result = await plugin.study_explain_text(text="在持久化期间关闭讲题语音")
+
+    assert isinstance(result, Ok)
+    assert result.value["solution_narration_scheduled"] is False
+    assert result.value["solution_narration_status"] == "disabled"
+    assert bus.events == []
+
+
+@pytest.mark.asyncio
 async def test_study_explain_text_keeps_page_reply_when_target_section_is_missing() -> (
     None
 ):

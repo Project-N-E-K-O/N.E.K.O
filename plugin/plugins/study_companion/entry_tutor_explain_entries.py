@@ -436,11 +436,21 @@ class _TutorExplainEntriesMixin:
             narration_scheduled = False
             narration_status = "disabled"
             narration_reason = ""
+            live_solution_communication = getattr(self._cfg, "communication", None)
+            live_solution_narration_requested = bool(
+                getattr(live_solution_communication, "enabled", False)
+            ) and bool(
+                getattr(
+                    live_solution_communication,
+                    "solution_narration_enabled",
+                    True,
+                )
+            )
             if not solution_contract_required:
                 narration_status = "not_applicable"
             elif reply.degraded:
                 narration_status = "degraded"
-            elif not narration_requested:
+            elif not live_solution_narration_requested:
                 narration_status = "disabled"
             elif not (solution_candidate or truncated_problem_solution):
                 narration_status = "not_applicable"
@@ -499,8 +509,12 @@ class _TutorExplainEntriesMixin:
             general_mode_allowed = bool(
                 general_response_mode != "unknown" and not solution_contract_required
             )
+            live_general_communication = getattr(self._cfg, "communication", None)
+            live_general_communication_enabled = bool(
+                getattr(live_general_communication, "enabled", False)
+            )
             general_narration_enabled = bool(
-                getattr(communication, "general_narration_enabled", True)
+                getattr(live_general_communication, "general_narration_enabled", True)
             )
             prepared_general_content = (
                 prepare_general_narration_content(str(payload.get("reply") or ""))
@@ -511,7 +525,7 @@ class _TutorExplainEntriesMixin:
                 if reply.degraded:
                     general_narration_status = "degraded"
                     general_narration_reason = "degraded_reply"
-                elif not bool(getattr(communication, "enabled", False)):
+                elif not live_general_communication_enabled:
                     general_narration_status = "disabled"
                     general_narration_reason = "communication_disabled"
                 elif not general_narration_enabled:

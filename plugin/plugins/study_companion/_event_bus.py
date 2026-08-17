@@ -105,6 +105,10 @@ class StudyEventBus:
         self._scheduled_emit_count = 0
         self._dropped_emit_count = 0
         self._emit_semaphore = asyncio.Semaphore(self._MAX_IN_FLIGHT_EMITS)
+        self._closed = False
+        self._in_flight_emit_count = 0
+        self._emit_idle = asyncio.Event()
+        self._emit_idle.set()
         self._queue: asyncio.Queue[StudyEvent] = asyncio.Queue(
             maxsize=self._MAX_QUEUE_SIZE
         )
@@ -134,6 +138,13 @@ class StudyEventBus:
         return self._dropped_emit_count
 
     def schedule_emit(self, event: StudyEvent) -> asyncio.Task[None] | None:
+        if self._closed:
+            self._dropped_emit_count += 1
+            _logger.warning(
+                "StudyEventBus.schedule_emit() ignored event after close: %s",
+                event.name,
+            )
+            return None
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -180,10 +191,13 @@ class StudyEventBus:
                 self._worker_task = None
 
     async def close(self) -> None:
-        """Finish an in-flight emit, discard the backlog, and stop the worker."""
+        """Close admission, finish in-flight emits, discard backlog, and stop."""
 
+        async with self._lock:
+            self._closed = True
         self._drop_queued_events_after_worker_stop()
         await self._queue.join()
+        await self._emit_idle.wait()
         await self.stop_worker()
 
     async def _consume_queue(self) -> None:
@@ -263,6 +277,20 @@ class StudyEventBus:
         )
 
     async def emit(self, event: StudyEvent) -> None:
+        async with self._lock:
+            if self._closed:
+                raise RuntimeError("study event bus is closed")
+            self._in_flight_emit_count += 1
+            self._emit_idle.clear()
+        try:
+            await self._emit_open(event)
+        finally:
+            async with self._lock:
+                self._in_flight_emit_count = max(0, self._in_flight_emit_count - 1)
+                if self._in_flight_emit_count == 0:
+                    self._emit_idle.set()
+
+    async def _emit_open(self, event: StudyEvent) -> None:
         async with self._lock:
             now = time.monotonic()
             self._prune_throttle(now)

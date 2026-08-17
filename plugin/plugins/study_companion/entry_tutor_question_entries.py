@@ -344,10 +344,18 @@ class _TutorQuestionEntriesMixin:
         target_topic_id = scope.topic_id or str(fallback_topic.get("id") or "")
         params = self._knowledge_tracker.preview_next_question_params(target_topic_id)
         params["retry_wrong_questions"] = self._knowledge_tracker.store.list_wrong_questions(
-            limit=5000, statuses=("active", "retrying")
+            limit=5000,
+            topic_ids=eligible,
+            statuses=("active", "retrying"),
         )
-        params["due_reviews"] = self._knowledge_tracker.get_review_queue(limit=5000)
-        params["weak_topics"] = self._knowledge_tracker.get_weak_topics(limit=5000)
+        params["due_reviews"] = self._knowledge_tracker.get_review_queue(
+            limit=5000,
+            topic_ids=eligible,
+        )
+        params["weak_topics"] = self._knowledge_tracker.get_weak_topics(
+            limit=5000,
+            topic_ids=eligible,
+        )
         params = filter_question_params_to_scope(params, eligible)
         if scope.mode == "explicit_topic":
             params["weak_topics"] = []

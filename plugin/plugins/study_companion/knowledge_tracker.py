@@ -1129,8 +1129,24 @@ class KnowledgeTracker:
             "card": self._memory_card_payload(saved),
         }
 
-    def get_review_queue(self, limit: int = 10) -> list[dict[str, Any]]:
+    def get_review_queue(
+        self,
+        limit: int = 10,
+        *,
+        topic_ids: list[str] | set[str] | tuple[str, ...] | None = None,
+    ) -> list[dict[str, Any]]:
         rows = self.store.list_fsrs_cards(limit=None)
+        if topic_ids is not None:
+            eligible = {
+                str(topic_id or "").strip()
+                for topic_id in topic_ids
+                if str(topic_id or "").strip()
+            }
+            rows = [
+                row
+                for row in rows
+                if str(row.get("topic_id") or "").strip() in eligible
+            ]
         reviews = self.fsrs.get_due_reviews([row["card"] for row in rows])
         result: list[dict[str, Any]] = []
         for item in reviews[: max(1, int(limit))]:
@@ -1144,8 +1160,17 @@ class KnowledgeTracker:
         rows = self.store.list_fsrs_cards(limit=None)
         return len(self.fsrs.get_due_reviews([row["card"] for row in rows]))
 
-    def get_weak_topics(self, limit: int = 5) -> list[dict[str, Any]]:
-        overview = self.store.list_mastery_overview(limit=1000)
+    def get_weak_topics(
+        self,
+        limit: int = 5,
+        *,
+        topic_ids: list[str] | set[str] | tuple[str, ...] | None = None,
+    ) -> list[dict[str, Any]]:
+        overview = (
+            self.store.list_latest_mastery_for_topics(topic_ids)
+            if topic_ids is not None
+            else self.store.list_mastery_overview(limit=1000)
+        )
         weak = [
             item
             for item in overview

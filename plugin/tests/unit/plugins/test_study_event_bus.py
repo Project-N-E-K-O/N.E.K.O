@@ -898,6 +898,56 @@ async def test_close_finishes_in_flight_emit_and_drops_queued_events() -> None:
 
 
 @pytest.mark.asyncio
+async def test_close_waits_for_direct_emit_and_rejects_late_delivery() -> None:
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    class _SlowCtx(_Ctx):
+        async def push_message(self, **kwargs):
+            entered.set()
+            await release.wait()
+            self.messages.append(dict(kwargs))
+            return {"ok": True}
+
+    ctx = _SlowCtx()
+    bus = StudyEventBus(plugin_ctx=ctx)
+    emit_task = asyncio.create_task(
+        bus.emit(
+            StudyEvent(
+                name="review_session_completed",
+                payload={"reviewed_count": 1},
+            )
+        )
+    )
+
+    await asyncio.wait_for(entered.wait(), timeout=1.0)
+    close_task = asyncio.create_task(bus.close())
+    await asyncio.sleep(0)
+
+    assert not close_task.done()
+
+    release.set()
+    await asyncio.wait_for(emit_task, timeout=1.0)
+    await asyncio.wait_for(close_task, timeout=1.0)
+
+    assert len(ctx.messages) == 1
+    with pytest.raises(RuntimeError, match="event bus is closed"):
+        await bus.emit(
+            StudyEvent(
+                name="review_session_completed",
+                payload={"reviewed_count": 2},
+            )
+        )
+    assert bus.schedule_emit(
+        StudyEvent(
+            name="session_summarized",
+            payload={"duration_minutes": 1, "questions_attempted": 1},
+        )
+    ) is None
+    assert len(ctx.messages) == 1
+
+
+@pytest.mark.asyncio
 async def test_close_is_idempotent_without_a_worker() -> None:
     bus = StudyEventBus(plugin_ctx=_Ctx())
 

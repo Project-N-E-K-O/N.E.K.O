@@ -994,6 +994,69 @@ def test_reviewed_entry_context_contracts_remain_session_local() -> None:
     assert 'code="PRACTICE_SCOPE_INVALIDATED"' in questions
 
 
+def test_scoped_question_candidates_are_filtered_before_limits() -> None:
+    eligible = {"inside-topic"}
+
+    class _ScopedStore:
+        def __init__(self) -> None:
+            self.requested_topic_ids: list[set[str] | None] = []
+
+        def list_topics(self, *_args, **_kwargs):
+            return [{"id": "inside-topic", "name": "Inside"}]
+
+        def list_latest_mastery_for_topics(self, _topic_ids):
+            return []
+
+        def list_wrong_questions(self, *, topic_ids=None, **_kwargs):
+            requested = set(topic_ids) if topic_ids is not None else None
+            self.requested_topic_ids.append(requested)
+            return [{"id": "wrong-inside", "topic_id": "inside-topic"}]
+
+        def get_topic(self, topic_id):
+            return {"id": topic_id, "name": "Inside"}
+
+    class _ScopedTracker:
+        def __init__(self) -> None:
+            self.store = _ScopedStore()
+            self.review_topic_ids: set[str] | None = None
+            self.weak_topic_ids: set[str] | None = None
+
+        def preview_next_question_params(self, topic_id):
+            return {"target_topic_id": topic_id}
+
+        def get_review_queue(self, *, topic_ids=None, **_kwargs):
+            self.review_topic_ids = set(topic_ids) if topic_ids is not None else None
+            return [{"topic_id": "inside-topic"}]
+
+        def get_weak_topics(self, *, topic_ids=None, **_kwargs):
+            self.weak_topic_ids = set(topic_ids) if topic_ids is not None else None
+            return [{"topic_id": "inside-topic", "mastery": 0.2}]
+
+    plugin = StudyCompanionPlugin.__new__(StudyCompanionPlugin)
+    tracker = _ScopedTracker()
+    plugin._knowledge_tracker = tracker
+
+    params = plugin._scoped_question_params(
+        SimpleNamespace(
+            eligible_topic_ids=list(eligible),
+            subject="math",
+            stage="high_school",
+            chapter="",
+            unit="",
+            course_family="",
+            topic_id="",
+            mode="explicit_scope",
+        )
+    )
+
+    assert tracker.store.requested_topic_ids == [eligible]
+    assert tracker.review_topic_ids == eligible
+    assert tracker.weak_topic_ids == eligible
+    assert params["retry_wrong_questions"][0]["topic_id"] == "inside-topic"
+    assert params["due_reviews"][0]["topic_id"] == "inside-topic"
+    assert params["weak_topics"][0]["topic_id"] == "inside-topic"
+
+
 @pytest.mark.asyncio
 async def test_study_settings_entry_persists_and_updates_runtime(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

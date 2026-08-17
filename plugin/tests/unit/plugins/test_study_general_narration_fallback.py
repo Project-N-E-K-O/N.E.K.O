@@ -176,6 +176,36 @@ async def test_routing_unavailable_unknown_schedules_one_general_fallback(
 
 
 @pytest.mark.asyncio
+async def test_general_fallback_rechecks_toggle_after_finalize() -> None:
+    bus = _EventBus()
+    plugin = _ExplainHarness(event_bus=bus)
+    original_finalize = plugin._finalize_tutor_call
+
+    async def _finalize_and_disable(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        payload = await original_finalize(*args, **kwargs)
+        plugin._cfg = SimpleNamespace(
+            language="en",
+            llm_vision_enabled=True,
+            communication=SimpleNamespace(
+                enabled=True,
+                solution_narration_enabled=True,
+                general_narration_enabled=False,
+            ),
+        )
+        return payload
+
+    plugin._finalize_tutor_call = _finalize_and_disable  # type: ignore[method-assign]
+
+    result = await plugin.study_explain_text(text="Disable narration while finalizing")
+
+    assert isinstance(result, Ok)
+    assert result.value["general_narration_scheduled"] is False
+    assert result.value["general_narration_status"] == "disabled"
+    assert result.value["general_narration_reason"] == "general_narration_disabled"
+    assert bus.events == []
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("semantic_status", ["available", "low_confidence"])
 async def test_other_unknown_sources_do_not_use_general_fallback(
     semantic_status: str,
