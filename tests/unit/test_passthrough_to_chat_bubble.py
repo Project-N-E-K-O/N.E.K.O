@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import os
 import sys
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -375,6 +376,120 @@ async def test_main_server_proactive_chat_respond_does_not_invoke_passthrough(mo
     # And NOT the old direct path — guards against a future double-dispatch
     # regression (manager + direct enqueue both firing).
     fake_mgr.enqueue_agent_callback.assert_not_called()
+
+
+@pytest.mark.unit
+async def test_image_only_respond_defers_callback_owned_media(monkeypatch):
+    from app import main_server
+
+    fake_mgr = MagicMock()
+    fake_mgr.session = MagicMock()
+    fake_mgr.session.stream_image = AsyncMock()
+    fake_mgr.enqueue_agent_callback = MagicMock()
+    fake_mgr.submit_proactive_callback = MagicMock()
+    fake_mgr.websocket = None
+    fake_mgr._pending_agent_callback_task = None
+    monkeypatch.setattr(
+        "app.main_server.character_runtime._get_session_manager",
+        lambda _name: fake_mgr,
+    )
+    monkeypatch.setattr(
+        "app.main_server.character_runtime._is_websocket_connected",
+        lambda _ws: False,
+    )
+
+    await main_server._handle_agent_event(
+        {
+            "event_type": "proactive_message",
+            "lanlan_name": "Test",
+            "text": "",
+            "channel": "plugin:camera",
+            "task_id": "image-only-respond",
+            "delivery_mode": "proactive",
+            "ai_behavior": "respond",
+            "visibility": [],
+            "source_kind": "plugin",
+            "source_name": "camera",
+            "media_parts": [
+                {
+                    "type": "image",
+                    "binary_base64": "respond-image-b64",
+                    "mime": "image/png",
+                }
+            ],
+        }
+    )
+
+    fake_mgr.session.stream_image.assert_not_awaited()
+    fake_mgr.submit_proactive_callback.assert_called_once()
+    callback = fake_mgr.submit_proactive_callback.call_args.args[0]
+    assert callback["media_images"] == ["respond-image-b64"]
+    fake_mgr.enqueue_agent_callback.assert_not_called()
+
+
+@pytest.mark.unit
+async def test_read_image_uses_one_shot_description_without_ambient_cache(
+    monkeypatch,
+):
+    from app import main_server
+
+    fake_mgr = MagicMock()
+    fake_mgr.session = MagicMock()
+    fake_mgr.session.stream_image = AsyncMock(
+        return_value=SimpleNamespace(
+            accepted=True,
+            mode="external_description",
+            description="桌面上有一本打开的书。",
+        )
+    )
+    fake_mgr.enqueue_agent_callback = MagicMock()
+    fake_mgr.submit_proactive_callback = MagicMock()
+    fake_mgr.websocket = None
+    fake_mgr._pending_agent_callback_task = None
+    monkeypatch.setattr(
+        "app.main_server.character_runtime._get_session_manager",
+        lambda _name: fake_mgr,
+    )
+    monkeypatch.setattr(
+        "app.main_server.character_runtime._is_websocket_connected",
+        lambda _ws: False,
+    )
+
+    await main_server._handle_agent_event(
+        {
+            "event_type": "proactive_message",
+            "lanlan_name": "Test",
+            "text": "学习状态更新",
+            "channel": "plugin:study",
+            "task_id": "passive-image-read",
+            "delivery_mode": "passive",
+            "ai_behavior": "read",
+            "visibility": [],
+            "source_kind": "plugin",
+            "source_name": "study",
+            "media_parts": [
+                {
+                    "type": "image",
+                    "binary_base64": "read-image-b64",
+                    "mime": "image/png",
+                }
+            ],
+        }
+    )
+
+    fake_mgr.session.stream_image.assert_awaited_once_with(
+        "read-image-b64",
+        bypass_rate_limit=True,
+        cache_latest=False,
+        source="callback",
+        request_id="passive-image-read",
+    )
+    fake_mgr.enqueue_agent_callback.assert_called_once()
+    callback = fake_mgr.enqueue_agent_callback.call_args.args[0]
+    assert callback["media_images"] == []
+    assert "[系统视觉感知结果，不是用户陈述]" in callback["detail"]
+    assert "桌面上有一本打开的书。" in callback["detail"]
+    fake_mgr.submit_proactive_callback.assert_not_called()
 
 
 @pytest.mark.unit

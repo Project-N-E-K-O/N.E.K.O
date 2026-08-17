@@ -575,6 +575,7 @@ async def _handle_agent_event(event: dict):
             # by the manager — the eventual proactive response would then lack
             # its matching visual context.
             deferred_proactive_images: list[str] = []
+            direct_visual_descriptions: list[str] = []
             if media_parts and ai_behavior_v2 in ("respond", "read"):
                 sess = getattr(mgr, "session", None)
                 stream_image = getattr(sess, "stream_image", None) if sess else None
@@ -597,17 +598,17 @@ async def _handle_agent_event(event: dict):
                         )
                         continue
                     if isinstance(b64, str) and b64:
-                        if ai_behavior_v2 == "respond" and text:
+                        if ai_behavior_v2 == "respond":
                             # Defer: stream when the manager releases this cue so
                             # the image shares the proactive response's context.
-                            # (Only when there's text — the callback that carries
-                            # these images is built in the ``if text:`` block.)
+                            # Image-only respond is still a real proactive turn;
+                            # the callback's source header supplies the text cue.
                             deferred_proactive_images.append(b64)
                             continue
-                        # read (passive), OR image-only respond with no text to
-                        # carry it through the pacing manager: inject now so it
-                        # isn't lost (image-only respond has no text cue to drive
-                        # a proactive turn anyway).
+                        # Passive/read images are context-only: analyze or send
+                        # them once without entering the ambient screen/camera
+                        # cache, then bind any external-vision description to the
+                        # passive callback drained on the next natural user turn.
                         if stream_image is None:
                             logger.debug(
                                 "[EventBus] image media_part dropped: session=%s has no stream_image",
@@ -616,7 +617,47 @@ async def _handle_agent_event(event: dict):
                             continue
                         # ``stream_image`` takes a base64 STRING (not bytes); pass through
                         try:
-                            await stream_image(b64)
+                            try:
+                                stage_result = await stream_image(
+                                    b64,
+                                    bypass_rate_limit=True,
+                                    cache_latest=False,
+                                    source="callback",
+                                    request_id=event.get("task_id") or None,
+                                )
+                            except TypeError as exc:
+                                if "unexpected keyword argument" not in str(exc):
+                                    raise
+                                # Offline and legacy sessions predate callback
+                                # metadata; retain their existing pending-image
+                                # staging contract without weakening Realtime.
+                                try:
+                                    stage_result = await stream_image(
+                                        b64,
+                                        bypass_rate_limit=True,
+                                    )
+                                except TypeError as fallback_exc:
+                                    if "unexpected keyword argument" not in str(fallback_exc):
+                                        raise
+                                    stage_result = await stream_image(b64)
+                            structured_result = hasattr(stage_result, "accepted")
+                            accepted = (
+                                bool(stage_result.accepted)
+                                if structured_result
+                                else True
+                            )
+                            if not accepted:
+                                logger.warning(
+                                    "[EventBus] callback image was not accepted (mime=%s)",
+                                    mime,
+                                )
+                                continue
+                            description = getattr(stage_result, "description", None)
+                            if isinstance(description, str) and description.strip():
+                                direct_visual_descriptions.append(
+                                    "[系统视觉感知结果，不是用户陈述]\n"
+                                    f"当前画面：{description.strip()}"
+                                )
                             logger.debug(
                                 "[EventBus] image media_part injected (base64 len=%d, mime=%s)",
                                 len(b64),
@@ -637,8 +678,8 @@ async def _handle_agent_event(event: dict):
                         )
                     # else: malformed part, silently skip
 
-            if text:
-                if event.get("direct_reply"):
+            if text or deferred_proactive_images or direct_visual_descriptions:
+                if text and event.get("direct_reply"):
                     detail_text = (event.get("detail") or text).strip()
                     # Plugin-supplied direct_reply text bypasses the LLM and
                     # speaks/types verbatim. Plugin authors may write
@@ -748,6 +789,16 @@ async def _handle_agent_event(event: dict):
                 cb_coalesce_key = event.get("coalesce_key")
                 if not isinstance(cb_coalesce_key, str):
                     cb_coalesce_key = ""
+                callback_summary = event.get("summary") or text
+                callback_detail = event.get("detail") or text
+                if direct_visual_descriptions:
+                    visual_context = "\n\n".join(direct_visual_descriptions)
+                    callback_summary = callback_summary or visual_context
+                    callback_detail = "\n\n".join(
+                        part
+                        for part in (callback_detail, visual_context)
+                        if part
+                    )
                 callback = {
                     "event": "agent_task_callback",
                     "origin": origin,
@@ -755,16 +806,16 @@ async def _handle_agent_event(event: dict):
                     "channel": _channel,
                     "status": cb_status,
                     "success": bool(event.get("success", True)),
-                    "summary": event.get("summary") or text,
-                    "detail": event.get("detail") or text,
+                    "summary": callback_summary,
+                    "detail": callback_detail,
                     "error_message": event.get("error_message") or "",
                     "source_kind": source_kind,
                     "source_name": source_name,
                     "delivery_mode": delivery_mode,
                     "priority": cb_priority,
                     "coalesce_key": cb_coalesce_key,
-                    # Images to stream at manager-release time (respond only;
-                    # empty for read, which already streamed above).
+                    # Respond images stream at manager-release time. Read images
+                    # already took the explicit one-shot path above.
                     "media_images": deferred_proactive_images,
                     "timestamp": event.get("timestamp") or "",
                     "metadata": event_metadata,

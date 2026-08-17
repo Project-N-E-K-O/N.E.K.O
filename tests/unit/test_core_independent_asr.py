@@ -5070,6 +5070,60 @@ async def test_qwen_core_starts_independent_asr_with_external_turn_support(
     assert runtime._asr_provider == "qwen"
 
 
+async def test_stale_settings_failure_cannot_refence_replacement_session(
+    monkeypatch,
+) -> None:
+    runtime = _Runtime()
+    runtime.core_api_type = "qwen"
+    settings_read_started = asyncio.Event()
+    release_stale_read = asyncio.Event()
+    read_count = 0
+
+    async def load_settings(*, strict: bool = False) -> dict:
+        nonlocal read_count
+        assert strict is True
+        read_count += 1
+        if read_count == 1:
+            settings_read_started.set()
+            await release_stale_read.wait()
+            raise OSError("stale settings read failed")
+        return {"independentAsrEnabled": False}
+
+    monkeypatch.setattr(
+        core_module,
+        "aload_global_conversation_settings",
+        load_settings,
+    )
+    stale_start = asyncio.create_task(
+        runtime._start_independent_asr_if_enabled(
+            "audio",
+            handshake_override=True,
+        )
+    )
+    await settings_read_started.wait()
+
+    replacement_session = MagicMock()
+    replacement_session.set_visual_delivery_mode = MagicMock()
+    replacement_session.block_raw_visual_delivery = MagicMock()
+    runtime.session = replacement_session
+    runtime.core_api_type = "gemini"
+    await runtime._start_independent_asr_if_enabled(
+        "audio",
+        handshake_override=False,
+    )
+    assert runtime._asr_route_mode == "native"
+
+    release_stale_read.set()
+    await stale_start
+
+    delivered_modes = [
+        getattr(call.args[0], "value", call.args[0])
+        for call in replacement_session.set_visual_delivery_mode.call_args_list
+    ]
+    assert delivered_modes
+    assert set(delivered_modes) == {"native"}
+
+
 async def test_websocket_core_submits_one_external_turn_after_local_history() -> None:
     runtime = _Runtime()
     runtime.core_api_type = "qwen"
