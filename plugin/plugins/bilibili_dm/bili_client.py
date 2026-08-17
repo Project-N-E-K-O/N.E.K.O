@@ -1,8 +1,8 @@
 """
-B站私信客户端封装（基于 bilibili_api）
+B站集成客户端封装（基于 bilibili_api）
 
 使用 bilibili_api.session.Session 监听私信事件，
-通过 send_msg 发送文本、图片、表情等消息。
+并轮询评论回复与 @ 通知。
 """
 
 import asyncio
@@ -10,17 +10,18 @@ import base64
 import json
 import os
 import time
+from collections import deque
 from typing import Any, Callable, Dict, List, Optional
 
 import httpx
 from bilibili_api import Credential
 from bilibili_api.session import Session, EventType, Event
-from bilibili_api.user import User as BiliUser
+from bilibili_api.user import User as BiliUser, get_self_info
 from bilibili_api.video import Video as BiliVideo
 
 
 class BiliDMClient:
-    """B站私信客户端"""
+    """B站私信与评论通知客户端。"""
 
     def __init__(
         self,
@@ -51,9 +52,11 @@ class BiliDMClient:
         self._enable_comment_notifications = enable_comment_notifications
         self._notification_poll_interval_seconds = notification_poll_interval_seconds
         self._notification_max_items = notification_max_items
-        self._notification_bootstrap_done = False
+        self._notification_bootstrap_done = {"reply": False, "at": False}
         self._notification_seen: list[str] = []
         self._notification_seen_set: set[str] = set()
+        self._notification_pending: deque[tuple[str, Dict[str, Any]]] = deque()
+        self._current_uid = str(dedeuserid or "").strip()
         self._video_info_cache: Dict[int, Dict[str, str]] = {}
         self._user_info_cache: Dict[int, Dict[str, Any]] = {}
         self._message_queue: asyncio.Queue = asyncio.Queue(maxsize=1000)
@@ -63,14 +66,28 @@ class BiliDMClient:
         return self._running
 
     async def connect(self):
-        """启动 B站私信监听"""
+        """启动 B站私信与评论通知监听。"""
         if self._running:
             return
 
         if not self._credential.sessdata or not self._credential.bili_jct:
-            raise RuntimeError("B站 Cookie（SESSDATA 和 bili_jct）未完整配置，请在插件前端面板中填写")
+            raise RuntimeError(
+                "B站 Cookie（SESSDATA 和 bili_jct）未完整配置，请在插件前端面板中填写"
+            )
 
         try:
+            if not self._current_uid:
+                try:
+                    self_info = await get_self_info(self._credential)
+                    self._current_uid = str(self_info.get("mid") or "").strip()
+                    if self._current_uid:
+                        self._credential.dedeuserid = self._current_uid
+                except Exception as exc:
+                    if self.logger:
+                        self.logger.warning(
+                            f"无法解析当前 B站账号 UID，@ 通知将按账号消息流处理: {exc}"
+                        )
+
             self._session = Session(self._credential, debug=False)
 
             @self._session.on(EventType.TEXT)
@@ -109,20 +126,14 @@ class BiliDMClient:
         except asyncio.CancelledError:
             pass
         except Exception as e:
-            self._running = False
             if self.logger:
-                self.logger.error(f"B站 Session 轮询异常退出: {e}")
+                self.logger.error(
+                    f"B站私信 Session 轮询异常退出，评论通知继续运行: {e}"
+                )
 
     async def disconnect(self):
-        """停止 B站私信监听"""
+        """停止 B站私信与评论通知监听。"""
         self._running = False
-        if self._notification_task:
-            self._notification_task.cancel()
-            try:
-                await self._notification_task
-            except asyncio.CancelledError:
-                pass
-            self._notification_task = None
         if self._session:
             try:
                 self._session.close()
@@ -131,6 +142,19 @@ class BiliDMClient:
             except Exception as e:
                 if self.logger:
                     self.logger.error(f"停止 B站私信监听失败: {e}")
+            self._session = None
+
+        tasks = [
+            task
+            for task in (self._session_task, self._notification_task)
+            if task is not None
+        ]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._session_task = None
+        self._notification_task = None
 
     def _cookies(self) -> Dict[str, str]:
         cookies: Dict[str, str] = {}
@@ -149,13 +173,22 @@ class BiliDMClient:
         details = item.get("item") or {}
         if not isinstance(details, dict):
             return ""
-        return str(
-            details.get("source_content")
-            or details.get("target_reply_content")
-            or details.get("root_reply_content")
-            or details.get("title")
-            or ""
+        source = str(
+            details.get("source_content") or details.get("title") or ""
         ).strip()
+        target = str(details.get("target_reply_content") or "").strip()
+        root = str(details.get("root_reply_content") or "").strip()
+        if not source:
+            source = target or root
+        if not source:
+            return ""
+
+        parts = [source]
+        if target and target != source:
+            parts.append(f"[被回复评论] {target}")
+        if root and root not in (source, target):
+            parts.append(f"[根评论] {root}")
+        return "\n".join(parts)
 
     @staticmethod
     def _comment_reply_target(item: Dict[str, Any]) -> Optional[Dict[str, int]]:
@@ -263,12 +296,15 @@ class BiliDMClient:
         return True
 
     def _is_at_current_user(self, item: Dict[str, Any]) -> bool:
-        current_uid = str(self._credential.dedeuserid or "").strip()
+        current_uid = self._current_uid
         if not current_uid:
-            return False
+            # @ 消息流属于当前登录账号；UID 无法解析时不能将整条消息流误删。
+            return True
         details = item.get("item") or {}
         at_details = details.get("at_details") if isinstance(details, dict) else None
-        return isinstance(at_details, list) and any(
+        if not isinstance(at_details, list) or not at_details:
+            return True
+        return any(
             isinstance(detail, dict) and str(detail.get("mid") or "") == current_uid
             for detail in at_details
         )
@@ -286,11 +322,14 @@ class BiliDMClient:
             await asyncio.sleep(self._notification_poll_interval_seconds)
 
     async def _poll_comment_notifications(self) -> None:
+        reply_succeeded = False
+        at_succeeded = False
         async with httpx.AsyncClient(timeout=20.0) as client:
             try:
                 reply_items = await self._get_notification_items(
                     client, "https://api.bilibili.com/x/msgfeed/reply"
                 )
+                reply_succeeded = True
             except Exception as exc:
                 reply_items = []
                 if self.logger:
@@ -299,31 +338,45 @@ class BiliDMClient:
                 at_items = await self._get_notification_items(
                     client, "https://api.bilibili.com/x/msgfeed/at"
                 )
+                at_succeeded = True
             except Exception as exc:
                 at_items = []
                 try:
                     at_items = await self._get_notification_items(
                         client, "https://api.vc.bilibili.com/x/im/web/msgfeed/at"
                     )
-                except Exception:
+                    at_succeeded = True
+                except Exception as fallback_exc:
                     if self.logger:
-                        self.logger.warning(f"获取 B站 @ 通知失败: {exc}")
+                        self.logger.warning(
+                            f"获取 B站 @ 通知失败: {exc}; 备用接口失败: {fallback_exc}"
+                        )
 
-        if not self._notification_bootstrap_done:
-            for item in reply_items:
-                self._mark_notification_seen("reply", item)
-            for item in at_items:
-                self._mark_notification_seen("at", item)
-            self._notification_bootstrap_done = True
-            return
+        for source, items, succeeded in (
+            ("reply", reply_items, reply_succeeded),
+            ("at", at_items, at_succeeded),
+        ):
+            if not succeeded:
+                continue
+            if not self._notification_bootstrap_done[source]:
+                for item in items:
+                    self._mark_notification_seen(source, item)
+                self._notification_bootstrap_done[source] = True
+                continue
 
-        for source, items in (("reply", reply_items), ("at", at_items)):
-            for item in items:
+            # 消息中心通常按新到旧返回；反转后按发生顺序入队。
+            for item in reversed(items):
                 if not self._mark_notification_seen(source, item):
                     continue
                 if source == "at" and not self._is_at_current_user(item):
                     continue
-                await self._enqueue_comment_notification(item, source)
+                self._notification_pending.append((source, item))
+
+        processed = 0
+        while self._notification_pending and processed < self._notification_max_items:
+            source, item = self._notification_pending.popleft()
+            await self._enqueue_comment_notification(item, source)
+            processed += 1
 
     async def _get_notification_items(
         self, client: httpx.AsyncClient, url: str
@@ -346,9 +399,7 @@ class BiliDMClient:
                 f"B站通知接口错误: {payload.get('message') or payload.get('msg') or payload.get('code')}"
             )
         items = (payload.get("data") or {}).get("items") or []
-        return [item for item in items if isinstance(item, dict)][
-            : self._notification_max_items
-        ]
+        return [item for item in items if isinstance(item, dict)]
 
     async def _enqueue_comment_notification(
         self, item: Dict[str, Any], source: str
@@ -374,7 +425,10 @@ class BiliDMClient:
             "content_type": "text",
             "reply_target": reply_target,
             "video_aid": self._video_aid_from_notification(item),
-            "conversation_key": f"comment:{reply_target['type']}:{reply_target['oid']}",
+            "conversation_key": (
+                f"comment:{reply_target['type']}:{reply_target['oid']}:"
+                f"{reply_target.get('root') or reply_target.get('parent') or item.get('id')}"
+            ),
             "raw_event": item,
         }
         try:
@@ -454,9 +508,7 @@ class BiliDMClient:
             raise RuntimeError(f"B站评论回复失败: {message}")
         data = result.get("data") or {}
         rpid = (
-            data.get("rpid") or data.get("rpid_str")
-            if isinstance(data, dict)
-            else None
+            data.get("rpid") or data.get("rpid_str") if isinstance(data, dict) else None
         )
         if not rpid:
             raise RuntimeError(
@@ -478,7 +530,9 @@ class BiliDMClient:
                 "sender_nickname": nickname,
                 "msg_kind": msg_kind,
                 "msg_key": str(event.msg_key),
-                "timestamp": int(event.timestamp) if event.timestamp else int(time.time()),
+                "timestamp": int(event.timestamp)
+                if event.timestamp
+                else int(time.time()),
                 "raw_event": event,
             }
 
@@ -514,10 +568,13 @@ class BiliDMClient:
                         bvid = getattr(content, "bvid", "")
                         message["content"] = (
                             f"[分享视频] https://www.bilibili.com/video/{bvid}"
-                            if bvid else "[分享视频]"
+                            if bvid
+                            else "[分享视频]"
                         )
                 elif hasattr(content, "bvid") and content.bvid:
-                    message["content"] = f"[分享视频] https://www.bilibili.com/video/{content.bvid}"
+                    message["content"] = (
+                        f"[分享视频] https://www.bilibili.com/video/{content.bvid}"
+                    )
                 else:
                     message["content"] = "[分享视频]"
                 message["content_type"] = "text"
@@ -531,7 +588,9 @@ class BiliDMClient:
                 self._message_queue.put_nowait(message)
 
             if self.logger:
-                self.logger.info(f"收到 B站私信 [{msg_kind}] from {sender_uid} ({nickname})")
+                self.logger.info(
+                    f"收到 B站私信 [{msg_kind}] from {sender_uid} ({nickname})"
+                )
 
         except Exception as e:
             if self.logger:
@@ -563,21 +622,11 @@ class BiliDMClient:
 
     async def download_image_as_base64(self, url: str) -> Optional[str]:
         """下载 B站图片并转为 base64 data URL（需 Cookie 鉴权）"""
-        cookies = {}
-        if self._credential.sessdata:
-            cookies["SESSDATA"] = self._credential.sessdata
-        if self._credential.bili_jct:
-            cookies["bili_jct"] = self._credential.bili_jct
-        if self._credential.buvid3:
-            cookies["buvid3"] = self._credential.buvid3
-        if self._credential.dedeuserid:
-            cookies["DedeUserID"] = self._credential.dedeuserid
-
         try:
             async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
                 resp = await client.get(
                     url,
-                    cookies=cookies,
+                    cookies=self._cookies(),
                     headers={
                         "Referer": "https://www.bilibili.com",
                         "User-Agent": (

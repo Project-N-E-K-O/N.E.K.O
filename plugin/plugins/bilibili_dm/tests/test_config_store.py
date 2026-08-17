@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections import deque
 from pathlib import Path
 from types import SimpleNamespace
 import tomllib
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -102,12 +104,16 @@ def test_comment_notification_target_and_deduplication():
             "source_id": "12",
             "target_id": "13",
             "source_content": "新评论",
+            "target_reply_content": "被回复内容",
+            "root_reply_content": "根评论内容",
         },
     }
     target = BiliDMClient._comment_reply_target(notification)
 
     assert target == {"type": 1, "oid": 987654, "root": 11, "parent": 12}
-    assert BiliDMClient._notification_content(notification) == "新评论"
+    assert BiliDMClient._notification_content(notification) == (
+        "新评论\n[被回复评论] 被回复内容\n[根评论] 根评论内容"
+    )
     assert BiliDMClient._video_aid_from_notification(notification) == 987654
     notification["item"]["business_id"] = "17"
     assert BiliDMClient._video_aid_from_notification(notification) is None
@@ -124,9 +130,89 @@ def test_comment_notification_target_and_deduplication():
 def test_comment_and_private_messages_use_separate_sessions():
     assert BiliDMPlugin._build_session_key("42") == "bili:dm:42"
     assert (
-        BiliDMPlugin._build_session_key("42", "comment:1:987654")
-        == "bili:comment:1:987654:42"
+        BiliDMPlugin._build_session_key("42", "comment:1:987654:11")
+        == "bili:comment:1:987654:11:42"
     )
+    assert BiliDMPlugin._build_session_key(
+        "42", "comment:1:987654:11"
+    ) != BiliDMPlugin._build_session_key("42", "comment:1:987654:22")
+
+
+@pytest.mark.asyncio
+async def test_comment_notification_uses_root_comment_as_conversation():
+    client = object.__new__(BiliDMClient)
+    client._credential = SimpleNamespace(dedeuserid="999")
+    client._current_uid = "999"
+    client._message_queue = asyncio.Queue()
+    notification = {
+        "id": 101,
+        "user": {"mid": 42, "nickname": "tester"},
+        "item": {
+            "business_id": 1,
+            "subject_id": 987654,
+            "root_id": 11,
+            "source_id": 12,
+            "source_content": "新评论",
+        },
+    }
+
+    await client._enqueue_comment_notification(notification, "reply")
+    message = client._message_queue.get_nowait()
+
+    assert message["conversation_key"] == "comment:1:987654:11"
+
+
+@pytest.mark.asyncio
+async def test_notification_bootstrap_waits_for_each_feed_and_preserves_tail():
+    client = object.__new__(BiliDMClient)
+    client.logger = SimpleNamespace(warning=lambda *_: None)
+    client._notification_bootstrap_done = {"reply": False, "at": False}
+    client._notification_seen = []
+    client._notification_seen_set = set()
+    client._notification_pending = deque()
+    client._notification_max_items = 1
+    client._current_uid = "999"
+    client._enqueue_comment_notification = AsyncMock()
+    client._is_at_current_user = lambda _: True
+
+    reply_old = {"id": "reply-old"}
+    reply_new = {"id": "reply-new"}
+    at_old = {"id": "at-old"}
+    at_new = {"id": "at-new"}
+    at_newer = {"id": "at-newer"}
+    calls = {"reply": 0, "at": 0}
+
+    async def get_items(_http_client, url):
+        source = "reply" if url.endswith("/reply") else "at"
+        call = calls[source]
+        calls[source] += 1
+        if source == "reply":
+            if call == 0:
+                raise RuntimeError("temporary reply failure")
+            return [reply_new, reply_old] if call >= 2 else [reply_old]
+        if call >= 2:
+            return [at_newer, at_new, at_old]
+        return [at_new, at_old] if call == 1 else [at_old]
+
+    client._get_notification_items = get_items
+
+    await client._poll_comment_notifications()
+    assert client._notification_bootstrap_done == {"reply": False, "at": True}
+    client._enqueue_comment_notification.assert_not_awaited()
+
+    await client._poll_comment_notifications()
+    assert client._notification_bootstrap_done == {"reply": True, "at": True}
+    client._enqueue_comment_notification.assert_awaited_once_with(at_new, "at")
+
+    await client._poll_comment_notifications()
+    assert client._enqueue_comment_notification.await_count == 2
+    client._enqueue_comment_notification.assert_awaited_with(reply_new, "reply")
+    assert list(client._notification_pending) == [("at", at_newer)]
+
+    await client._poll_comment_notifications()
+    assert client._enqueue_comment_notification.await_count == 3
+    client._enqueue_comment_notification.assert_awaited_with(at_newer, "at")
+    assert not client._notification_pending
 
 
 @pytest.mark.asyncio
@@ -198,7 +284,172 @@ async def test_comment_reply_uses_signed_bili_request_and_logs_response(monkeypa
     }
     assert captured["api_kwargs"]["wbi"] is True
     assert captured["api_kwargs"]["dm"] is True
-    assert any("HTTP 200" in message and '"rpid":778899' in message for message in messages)
+    assert any(
+        "HTTP 200" in message and '"rpid":778899' in message for message in messages
+    )
+
+
+@pytest.mark.asyncio
+async def test_comment_reply_rejects_success_response_without_rpid(monkeypatch):
+    from bilibili_api.utils import network as bili_network
+    from bilibili_api.utils import utils as bili_utils
+
+    class FakeResponse:
+        code = 200
+
+        @staticmethod
+        def utf8_text():
+            return '{"code":0,"message":"OK","data":{}}'
+
+    class FakeApi:
+        def __init__(self, **_kwargs):
+            pass
+
+        def update_data(self, **_data):
+            return self
+
+        async def request(self, **_kwargs):
+            return FakeResponse()
+
+    monkeypatch.setattr(bili_network, "Api", FakeApi)
+    monkeypatch.setattr(
+        bili_utils,
+        "get_api",
+        lambda _: {"comment": {"send": {"url": "test", "method": "POST"}}},
+    )
+    client = object.__new__(BiliDMClient)
+    client._credential = object()
+    client.logger = None
+
+    with pytest.raises(RuntimeError, match="缺少 rpid"):
+        await client.send_comment_reply({"type": 1, "oid": 987654}, "测试回复")
+
+
+@pytest.mark.asyncio
+async def test_disconnect_cancels_all_background_tasks():
+    client = object.__new__(BiliDMClient)
+    client._running = True
+    client.logger = None
+    client._session = SimpleNamespace(close=lambda: None)
+    client._session_task = asyncio.create_task(asyncio.sleep(60))
+    client._notification_task = asyncio.create_task(asyncio.sleep(60))
+    tasks = (client._session_task, client._notification_task)
+
+    await client.disconnect()
+
+    assert all(task.done() for task in tasks)
+    assert client._session_task is None
+    assert client._notification_task is None
+
+
+@pytest.mark.asyncio
+async def test_dm_failure_does_not_stop_comment_notifications():
+    client = object.__new__(BiliDMClient)
+    client._running = True
+    client.logger = SimpleNamespace(error=lambda *_: None)
+    client._session = SimpleNamespace(
+        start=AsyncMock(side_effect=RuntimeError("dm failed"))
+    )
+
+    await client._run_session()
+
+    assert client._running is True
+
+
+def test_at_feed_is_trusted_when_current_uid_cannot_be_resolved():
+    client = object.__new__(BiliDMClient)
+    client._current_uid = ""
+
+    assert client._is_at_current_user({"item": {"at_details": []}}) is True
+
+
+def test_at_feed_without_at_details_is_not_discarded():
+    client = object.__new__(BiliDMClient)
+    client._current_uid = "999"
+
+    assert client._is_at_current_user({"item": {}}) is True
+
+
+@pytest.mark.asyncio
+async def test_permission_change_invalidates_all_user_sessions(tmp_path):
+    plugin = make_plugin(tmp_path)
+    dm_session = SimpleNamespace(close=AsyncMock())
+    comment_session = SimpleNamespace(close=AsyncMock())
+    other_session = SimpleNamespace(close=AsyncMock())
+    plugin._user_sessions = {
+        "bili:dm:42": {"sender_uid": "42", "session": dm_session},
+        "bili:comment:1:9:10:42": {
+            "sender_uid": "42",
+            "session": comment_session,
+        },
+        "bili:dm:7": {"sender_uid": "7", "session": other_session},
+    }
+
+    await plugin._invalidate_user_sessions("42")
+
+    assert set(plugin._user_sessions) == {"bili:dm:7"}
+    dm_session.close.assert_awaited_once()
+    comment_session.close.assert_awaited_once()
+    other_session.close.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_private_and_comment_prompts_are_separate(tmp_path, monkeypatch):
+    plugin = make_plugin(tmp_path)
+    monkeypatch.setattr(
+        "utils.language_utils.get_global_language_full", lambda: "zh-CN"
+    )
+    args = {
+        "her_name": "Neko",
+        "master_name": "Master",
+        "character_prompt": "character prompt",
+        "character_card_fields": {},
+        "permission_level": "trusted",
+        "sender_uid": "42",
+        "user_title": "Tester",
+    }
+
+    dm_prompt = await plugin._build_session_instructions(**args, channel_kind="dm")
+    comment_prompt = await plugin._build_session_instructions(
+        **args, channel_kind="comment"
+    )
+
+    assert "B站私聊环境" in dm_prompt
+    assert "B站公开评论环境" not in dm_prompt
+    assert "B站公开评论环境" in comment_prompt
+    assert "不是私信对话" in comment_prompt
+    assert "B站私聊环境" not in comment_prompt
+
+
+@pytest.mark.asyncio
+async def test_public_comment_generation_failure_has_no_context_fallback(
+    tmp_path, monkeypatch
+):
+    plugin = make_plugin(tmp_path)
+
+    def fail_config():
+        raise RuntimeError("config unavailable")
+
+    monkeypatch.setattr("utils.config_manager.get_config_manager", fail_config)
+    internal_message = "[来自 B站用户 Tester（UID: 42）的评论] 内部上下文"
+
+    comment_reply = await plugin._generate_reply(
+        message=internal_message,
+        permission_level="trusted",
+        sender_uid="42",
+        conversation_key="comment:1:2:3",
+        channel_kind="comment",
+    )
+    dm_reply = await plugin._generate_reply(
+        message=internal_message,
+        permission_level="trusted",
+        sender_uid="42",
+        channel_kind="dm",
+    )
+
+    assert comment_reply is None
+    assert dm_reply == "收到你的消息了"
+    assert internal_message not in dm_reply
 
 
 @pytest.mark.asyncio
@@ -400,9 +651,9 @@ def test_static_ui_assets_are_versioned_and_not_cached():
 
     assert 'cache_control="no-cache, no-store, must-revalidate"' in plugin_source
     assert 'UI_ASSET_VERSION = "1.2.0"' in plugin_source
-    assert 'style.css?v=1.2.0' in page
-    assert 'i18n.js?v=1.2.0' in page
-    assert 'script.js?v=1.2.0' in page
+    assert "style.css?v=1.2.0" in page
+    assert "i18n.js?v=1.2.0" in page
+    assert "script.js?v=1.2.0" in page
 
 
 def test_qr_login_panel_can_be_cancelled_and_auto_closes_after_success():
@@ -422,7 +673,9 @@ def test_qr_login_panel_can_be_cancelled_and_auto_closes_after_success():
     assert "qrClientId" in script
     assert "request_generation: generation" in script
     assert "await callPlugin('cancel_qr_login', { session_id: sessionId })" in script
-    assert "await callPlugin('poll_qr_login', { session_id: qrLogin.sessionId })" in script
+    assert (
+        "await callPlugin('poll_qr_login', { session_id: qrLogin.sessionId })" in script
+    )
     assert "closeTimer: null" in script
     assert "if (qrLogin.closeTimer) clearTimeout(qrLogin.closeTimer);" in script
     assert "qrLogin.closeTimer = setTimeout" in script
