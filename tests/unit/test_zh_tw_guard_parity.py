@@ -3557,10 +3557,13 @@ def test_a_terminal_particle_must_actually_terminate(particle):
 
 
 @pytest.mark.parametrize('connector', ['再', '才', '就'])
-def test_a_trailing_execution_condition_still_governs_a_recovered_command(connector):
+@pytest.mark.parametrize('separator', ['', '，', ','])
+def test_a_trailing_execution_condition_still_governs_a_recovered_command(
+    connector, separator
+):
     import main_routers.card_assist_router as router
 
-    text = f'请重写整张卡并说明，如果用户同意{connector}执行'
+    text = f'请重写整张卡并说明，如果用户同意{separator}{connector}执行'
     assert router._chat_text_requests_full_rewrite_core(text) is False
     assert router._chat_text_requests_full_rewrite(text) is False
 
