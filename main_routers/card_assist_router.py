@@ -1487,7 +1487,7 @@ _CHAT_EN_TRAILING_SAFE_SUFFIX_RE = re.compile(
 )
 _CHAT_SCOPED_SENTENCE_FINAL_QUESTION_RE = re.compile(
     r"[吗嗎呢]\s*[？?]?\s*"
-    r"(?:[,，。；;、]\s*(?:谢谢你?|謝謝你?|感谢你?|感謝你?|麻烦了|麻煩了|"
+    r"(?:[,，。；;、]\s*(?:谢谢[你您]?|謝謝[你您]?|感谢[你您]?|感謝[你您]?|麻烦了|麻煩了|"
     r"辛苦了|thanks|thank\s+you)\s*[。.!！]?\s*)?$",
     re.IGNORECASE,
 )
@@ -1509,9 +1509,15 @@ _CHAT_ZH_COMMAND_HEAD = (
 )
 _CHAT_ZH_CONTRAST_COMMAND_RE = re.compile(r"^\s*" + _CHAT_ZH_COMMAND_HEAD)
 _CHAT_SCOPED_NEXT_COMMAND_RE = re.compile(
-    r"(?:并|並|然后|然後|接着|接著|随后|隨後|再)\s*(?="
+    r"(?:并|並|然后|然後|接着|接著|随后|隨後|同时|同時|再)\s*(?="
     + _CHAT_ZH_COMMAND_HEAD
     + r"|(?i:(?:please\s+)?(?:rewrite|revise|regenerate|redo|refresh)\b))"
+)
+_CHAT_GOVERNING_INSTRUCTION_PROHIBITION_RE = re.compile(
+    r"(?:不要|别|別|请勿|請勿|禁止|不能|不可)\s*"
+    r"(?:执行|執行|遵循|照做|采用|採用|应用|應用)\s*"
+    r"(?:这|這|以下|上述|上面)?\s*(?:条|條|个|個)?\s*"
+    r"(?:指令|命令|修改|要求|内容|內容)"
 )
 
 
@@ -1831,7 +1837,7 @@ def _chat_text_requests_full_rewrite_from_scoped_segments(text: str) -> bool:
     """
     if not text:
         return False
-    if _CHAT_NEGATED_REWRITE_RE.search(text):
+    if _CHAT_GOVERNING_INSTRUCTION_PROHIBITION_RE.search(text):
         return False
     masked = _chat_mask_quoted_spans(text)
     recent_boundaries = deque(
@@ -1845,10 +1851,8 @@ def _chat_text_requests_full_rewrite_from_scoped_segments(text: str) -> bool:
         if match.group("contrast") is not None:
             if len(text) - match.end() <= _CHAT_SCOPED_RECOVERY_WINDOW_CHARS:
                 candidate = text[match.end():]
-                governing_segment = text[segment_start:]
                 if (
-                    not _CHAT_NEGATED_REWRITE_RE.search(governing_segment)
-                    and _CHAT_ZH_CONTRAST_COMMAND_RE.search(candidate)
+                    _CHAT_ZH_CONTRAST_COMMAND_RE.search(candidate)
                     and _chat_scoped_candidate_is_completed_command(candidate)
                     and _chat_text_requests_full_rewrite_core(candidate)
                 ):

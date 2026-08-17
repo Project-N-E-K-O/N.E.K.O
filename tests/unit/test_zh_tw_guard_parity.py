@@ -2879,6 +2879,7 @@ def test_a_completed_rewrite_survives_secondary_content(text):
         "口头禅改成重写所有字段并保留是否会员",
         "所有字段重写的合并说明是否正确",
         "重写所有字段并保留头像吗，谢谢",
+        "重写所有字段并保留头像吗，谢谢您",
         'Rewrite the catchphrase as "all fields" if possible',
         "是否修改名字不过用户可能会重写所有字段",
         "请修改名字。系统将会重写所有字段并保留是否会员标签",
@@ -2934,6 +2935,21 @@ def test_full_rewrite_after_a_field_assignment_remains_a_command():
 
     text = "把名字改成小明并把所有字段重写"
     assert router._chat_text_requests_full_rewrite_core(text) is True
+    assert router._chat_text_requests_full_rewrite(text) is True
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "把名字改成小明同时重写所有字段",
+        "不要重写名字，但是请重写所有字段并保留是否会员标签",
+        "旧示例不用重写但是请重写所有字段并保留是否会员标签",
+    ],
+)
+def test_later_independent_full_rewrite_commands_remain_visible(text):
+    """前面的赋值或局部否定不能压掉转折后的独立整卡命令。"""  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
     assert router._chat_text_requests_full_rewrite(text) is True
 
 
