@@ -1677,7 +1677,15 @@ def _chat_remaining_secondary_segments_have_governing_guard(
     for index in range(start_index, len(boundaries)):
         boundary = boundaries[index]
         if boundary.group("contrast") is not None:
-            break
+            contrast_suffix = text[boundary.end():]
+            readable_contrast_suffix = masked[boundary.end():]
+            return bool(
+                _CHAT_QUESTION_CLAUSE_RE.search(readable_contrast_suffix)
+                or _chat_scoped_suffix_has_governing_guard(
+                    contrast_suffix,
+                    readable_contrast_suffix,
+                )
+            )
         if boundary.group("secondary") is None:
             continue
         segment_end = (
