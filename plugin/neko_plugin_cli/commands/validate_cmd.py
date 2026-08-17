@@ -31,7 +31,12 @@ from ..core.toml_utils import load_toml
 _PLUGIN_RUNTIME_TIMEOUT_MAX = 300.0
 
 
-def validate_plugin_dir(plugin_dir: Path, *, strict: bool = False) -> list[tuple[str, str]]:
+def validate_plugin_dir(
+    plugin_dir: Path,
+    *,
+    strict: bool = False,
+    require_matching_directory_name: bool = False,
+) -> list[tuple[str, str]]:
     issues: list[tuple[str, str]] = []
     config_example_path = plugin_dir / "config.example.toml"
     config_example: dict[str, object] | None = None
@@ -64,6 +69,15 @@ def validate_plugin_dir(plugin_dir: Path, *, strict: bool = False) -> list[tuple
         return issues
     plugin_table = source.plugin_table
     _check_plugin_toml_schema(plugin_dir, source.plugin_toml, source.plugin_id, issues)
+    if require_matching_directory_name and source.plugin_id != plugin_dir.name:
+        issues.append(
+            (
+                "warning",
+                f"plugin.id '{source.plugin_id}' does not match directory name '{plugin_dir.name}' / "
+                f"plugin.id '{source.plugin_id}' 与目录名 '{plugin_dir.name}' 不一致 / "
+                f"plugin.id '{source.plugin_id}' がディレクトリ名 '{plugin_dir.name}' と一致しません",
+            )
+        )
     if config_example is not None:
         _check_config_example_schema(config_example, issues)
     elif "plugin_runtime" in source.plugin_toml or source.plugin_id in source.plugin_toml:

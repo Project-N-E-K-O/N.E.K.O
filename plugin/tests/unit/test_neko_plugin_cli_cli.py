@@ -277,6 +277,57 @@ def test_cli_help_only_lists_supported_package_commands(
     assert "verify" not in help_text
 
 
+def test_check_warns_when_builtin_source_directory_does_not_match_plugin_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    plugin_root = tmp_path / "plugin"
+    plugins_root = plugin_root / "plugins"
+    plugin_dir = _make_plugin_dir(plugins_root, "right_id")
+    wrong_dir = plugins_root / "wrong_dir"
+    plugin_dir.rename(wrong_dir)
+    defaults = CliDefaults(
+        plugin_root=plugin_root,
+        target_dir=plugin_root / "neko_plugin_cli" / "target",
+        plugins_root=plugins_root,
+        profiles_root=plugin_root / ".neko-package-profiles",
+    )
+    monkeypatch.setattr(neko_plugin_cli, "resolve_default_paths", lambda: defaults)
+
+    exit_code = neko_plugin_cli.main(["check", "wrong_dir"])
+
+    assert exit_code == 0
+    output = capsys.readouterr().out
+    assert "plugin.id 'right_id' does not match directory name 'wrong_dir'" in output
+    assert "plugin.id 'right_id' 与目录名 'wrong_dir' 不一致" in output
+    assert "plugin.id 'right_id' がディレクトリ名 'wrong_dir' と一致しません" in output
+    assert "将目录重命名为与插件 ID 相同的名称" in output
+
+
+def test_check_allows_standalone_source_directory_name_to_differ_from_plugin_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path, "right_id")
+    standalone_dir = tmp_path / "standalone_source"
+    plugin_dir.rename(standalone_dir)
+    plugin_root = tmp_path / "neko" / "plugin"
+    defaults = CliDefaults(
+        plugin_root=plugin_root,
+        target_dir=plugin_root / "neko_plugin_cli" / "target",
+        plugins_root=plugin_root / "plugins",
+        profiles_root=plugin_root / ".neko-package-profiles",
+    )
+    monkeypatch.setattr(neko_plugin_cli, "resolve_default_paths", lambda: defaults)
+
+    exit_code = neko_plugin_cli.main(["check", str(standalone_dir)])
+
+    assert exit_code == 0
+    assert "does not match directory name" not in capsys.readouterr().out
+
+
 def test_validate_plugin_dir_reports_invalid_toml_without_crashing(tmp_path: Path) -> None:
     plugin_dir = tmp_path / "bad_toml"
     plugin_dir.mkdir()

@@ -33,7 +33,14 @@ def handle_check(args: argparse.Namespace) -> int:
         defaults = _defaults_from_args(args, defaults=args._defaults)
         plugin_dir = resolve_plugin_dir_candidate(args.plugin, defaults=defaults)
         source = load_plugin_source(plugin_dir)
-        issues = validate_plugin_dir(plugin_dir, strict=args.strict)
+        issues = validate_plugin_dir(
+            plugin_dir,
+            strict=args.strict,
+            require_matching_directory_name=_is_builtin_source_plugin_dir(
+                plugin_dir,
+                defaults,
+            ),
+        )
         issues.extend(_diagnose_repository(plugin_dir))
     except Exception as exc:
         print(f"[FAIL] {command_label}: {exc}", file=sys.stderr)
@@ -58,7 +65,14 @@ def handle_release_check(args: argparse.Namespace) -> int:
         defaults = _defaults_from_args(args, defaults=args._defaults)
         plugin_dir = resolve_plugin_dir_candidate(args.plugin, defaults=defaults)
         source = load_plugin_source(plugin_dir)
-        issues = validate_plugin_dir(plugin_dir, strict=True)
+        issues = validate_plugin_dir(
+            plugin_dir,
+            strict=True,
+            require_matching_directory_name=_is_builtin_source_plugin_dir(
+                plugin_dir,
+                defaults,
+            ),
+        )
         if getattr(args, "market_release", False):
             issues.extend(
                 _diagnose_market_release(
@@ -110,6 +124,14 @@ def _defaults_from_args(args: argparse.Namespace, *, defaults: CliDefaults) -> C
         target_dir=defaults.target_dir,
         plugins_root=Path(plugins_root).expanduser().resolve(),
         profiles_root=defaults.profiles_root,
+    )
+
+
+def _is_builtin_source_plugin_dir(plugin_dir: Path, defaults: CliDefaults) -> bool:
+    built_in_plugins_root = (defaults.plugin_root / "plugins").resolve()
+    return (
+        defaults.plugins_root.resolve() == built_in_plugins_root
+        and plugin_dir.parent.resolve() == built_in_plugins_root
     )
 
 
@@ -305,7 +327,11 @@ def _suggest_fix(message: str, *, plugin_id: str, plugin_dir: Path | None) -> st
     if message.startswith("plugin.entry should usually start with"):
         return "check plugin.toml [plugin].entry and make sure it points at the plugin entry class"
     if message.startswith("plugin.id ") and "does not match directory name" in message:
-        return "rename the directory to the plugin id, or to n.e.k.o_plugin_<plugin_id> for a market repository"
+        return _tri(
+            "rename the directory to match the plugin id",
+            "将目录重命名为与插件 ID 相同的名称",
+            "ディレクトリ名をプラグイン ID と同じ名前に変更してください",
+        )
     if message.startswith(".gitignore should include "):
         pattern = message.removeprefix(".gitignore should include ")
         return f"add {pattern} to .gitignore"
