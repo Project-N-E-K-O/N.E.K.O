@@ -4009,6 +4009,13 @@ class GalgamePlugin(
 
         session = candidate.session
         session_id = str(session.get("session_id") or "")
+        session_state = session.get("state")
+        session_state_obj = session_state if isinstance(session_state, dict) else {}
+        preexisting_snapshot_identity = {
+            "scene_id": str(session_state_obj.get("scene_id") or ""),
+            "route_id": str(session_state_obj.get("route_id") or ""),
+            "line_id": str(session_state_obj.get("line_id") or ""),
+        }
         session_changed = (
             candidate.game_id != local["active_game_id"]
             or session_id != local["active_session_id"]
@@ -4040,7 +4047,7 @@ class GalgamePlugin(
         local["active_session_meta"] = build_active_session_meta(candidate)
         local["active_data_source"] = candidate.data_source
         if not preexisting_session:
-            local["latest_snapshot"] = json_copy(session.get("state", {}))
+            local["latest_snapshot"] = json_copy(session_state_obj)
         elif warmup_needed:
             local["latest_snapshot"] = {}
         if self._context_snapshot_needs_reload(
@@ -4188,8 +4195,16 @@ class GalgamePlugin(
                 game_id=candidate.game_id,
             )
             if local["latest_snapshot"] or event_releases_empty_snapshot_gate(event):
+                snapshot_baseline = local["latest_snapshot"]
+                if not snapshot_baseline and preexisting_session:
+                    # A pre-start snapshot is not publishable content, but its
+                    # source-owned identity remains the inheritance boundary
+                    # for the first post-start state event.  Deliberately omit
+                    # speaker/text/choices so old gameplay never crosses the
+                    # empty-snapshot gate.
+                    snapshot_baseline = preexisting_snapshot_identity
                 local["latest_snapshot"] = apply_event_to_snapshot(
-                    local["latest_snapshot"], event
+                    snapshot_baseline, event
                 )
             local["last_seq"] = seq
             local["last_seen_data_monotonic"] = now_monotonic

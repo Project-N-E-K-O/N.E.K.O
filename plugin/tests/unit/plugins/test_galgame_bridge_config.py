@@ -1706,6 +1706,122 @@ async def test_preexisting_empty_event_stream_processes_first_appended_line(
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
+@pytest.mark.parametrize("event_type", ["line_changed", "choices_shown"])
+async def test_preexisting_first_event_inherits_only_hidden_snapshot_identity(
+    tmp_path: Path,
+    event_type: str,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    game_id = "demo.hidden-baseline"
+    session_id = "sess-hidden-baseline"
+    old_state = _session_state(
+        speaker="旧角色",
+        text="不得暴露的启动前台词",
+        choices=[{"choice_id": "old-choice", "text": "旧选项", "index": 0}],
+        line_id="line-old",
+        scene_id="scene-a",
+        route_id="route-a",
+        is_menu_open=True,
+        ts="2000-01-01T00:00:00Z",
+    )
+    game_dir = _create_game_dir(
+        bridge_root,
+        game_id=game_id,
+        session_payload=_session(
+            game_id=game_id,
+            session_id=session_id,
+            last_seq=0,
+            started_at="2000-01-01T00:00:00Z",
+            state=old_state,
+        ),
+        events=[],
+    )
+    events_path = game_dir / "events.jsonl"
+    plugin = GalgameBridgePlugin(_Ctx(plugin_dir, _make_effective_config(bridge_root)))
+    await plugin.startup()
+    try:
+        await plugin._poll_bridge(force=True)
+        assert plugin._snapshot_state()["latest_snapshot"] == {}
+
+        new_choices = [
+            {
+                "choice_id": "new-choice",
+                "text": "新选项",
+                "index": 0,
+                "enabled": True,
+            }
+        ]
+        payload = (
+            {
+                "speaker": "雪乃",
+                "text": "启动后的第一句",
+                "line_id": "line-new",
+            }
+            if event_type == "line_changed"
+            else {"choices": new_choices}
+        )
+        first_event = _event(
+            seq=1,
+            event_type=event_type,
+            session_id=session_id,
+            game_id=game_id,
+            payload=payload,
+            ts="2026-04-21T08:30:01Z",
+        )
+        await asyncio.to_thread(_write_events, events_path, [first_event])
+        current_state = (
+            _session_state(
+                speaker="雪乃",
+                text="启动后的第一句",
+                line_id="line-new",
+                scene_id="scene-a",
+                route_id="route-a",
+                ts="2026-04-21T08:30:01Z",
+            )
+            if event_type == "line_changed"
+            else _session_state(
+                speaker="旧角色",
+                text="不得暴露的启动前台词",
+                choices=new_choices,
+                line_id="line-old",
+                scene_id="scene-a",
+                route_id="route-a",
+                is_menu_open=True,
+                ts="2026-04-21T08:30:01Z",
+            )
+        )
+        await asyncio.to_thread(
+            _write_session,
+            game_dir / "session.json",
+            _session(
+                game_id=game_id,
+                session_id=session_id,
+                last_seq=1,
+                started_at="2000-01-01T00:00:00Z",
+                state=current_state,
+            ),
+        )
+
+        await plugin._poll_bridge(force=True)
+
+        snapshot = plugin._snapshot_state()["latest_snapshot"]
+        assert snapshot["scene_id"] == "scene-a"
+        assert snapshot["route_id"] == "route-a"
+        assert snapshot["text"] != "不得暴露的启动前台词"
+        if event_type == "line_changed":
+            assert snapshot["text"] == "启动后的第一句"
+            assert snapshot["line_id"] == "line-new"
+            assert snapshot["choices"] == []
+        else:
+            assert snapshot["text"] == ""
+            assert snapshot["line_id"] == "line-old"
+            assert snapshot["choices"] == new_choices
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
 @pytest.mark.parametrize("started_at", ["2000-01-01T00:00:00Z", "invalid"])
 async def test_session_appearing_after_empty_startup_scan_still_baselines_old_data(
     tmp_path: Path,
