@@ -1496,7 +1496,7 @@ _CHAT_SCOPED_SENTENCE_FINAL_QUESTION_RE = re.compile(
 )
 _CHAT_SCOPED_VALUE_ASSIGNMENT_RE = re.compile(
     r"(?:(?:(?:把|将|將)\s*[^。，、！？,.!?;；把将將并並]{1,24}?|"
-    r"^[^。，、！？,.!?;；]{1,12}?)(?:设为|設為|设置为|設定為|改成|修改成|"
+    r"^[^。，、！？,.!?;；]{1,12}?)(?:设为|設為|设成|設成|设置为|設定為|改成|修改成|"
     r"换成|換成|变成|變成|变为|變為|调整为|調整為|写成|寫成|"
     r"填为|填為|填写为|填寫為|填成|填写成|填寫成)"
     r"|(?i:(?:rewrite|revise|regenerate|redo|refresh)\s+"
@@ -1514,7 +1514,8 @@ _CHAT_ZH_COMMAND_HEAD = (
 )
 _CHAT_ZH_CONTRAST_COMMAND_RE = re.compile(r"^\s*" + _CHAT_ZH_COMMAND_HEAD)
 _CHAT_SCOPED_NEXT_COMMAND_RE = re.compile(
-    r"(?:并|並|然后|然後|接着|接著|随后|隨後|同时|同時|以及|还要|還要|再)\s*(?="
+    r"(?:(?:并|並|然后|然後|接着|接著|随后|隨後|同时|同時|以及|还要|還要|再)"
+    r"|(?i:\b(?:and|then)\b))\s*(?="
     + _CHAT_ZH_COMMAND_HEAD
     + r"|(?i:(?:please\s+)?(?:rewrite|revise|regenerate|redo|refresh)\b))"
 )
@@ -1538,6 +1539,7 @@ _CHAT_SCOPED_CANCELLATION_RE = re.compile(
     r"(?:取消|撤销|撤銷|作废|作廢|忽略|无视|無視)\s*"
     r"(?:上述|以上|前述|这些|這些|该|該)?\s*"
     r"(?:修改|操作|指令|命令|要求|内容|內容)"
+    r"|(?:算了|算啦|罢了|罷了)(?:吧)?"
 )
 _CHAT_SCOPED_SCOPE_REPLACEMENT_RE = re.compile(
     r"(?:改为|改為|改成|更正为|更正為|调整为|調整為)\s*(?:只|仅|僅)"
@@ -1553,11 +1555,16 @@ _CHAT_GOVERNING_CONDITION_PATTERN = (
 _CHAT_GOVERNING_CONDITION_RE = re.compile(
     r"^\s*" + _CHAT_GOVERNING_CONDITION_PATTERN
 )
+_CHAT_GOVERNING_EXECUTION_QUESTION_RE = re.compile(
+    r"^\s*(?:是否|能否|可否|要不要|该不该|該不該|需不需要|应不应该|應不應該)\s*"
+    r"(?:执行|執行|应用|應用|采用|採用|进行|進行)\s*"
+    r"(?:以下|下面|上述|上面|这些|這些)?\s*(?:修改|操作|指令|命令|要求|内容|內容)?"
+)
 _CHAT_SCOPED_GOVERNING_CONDITION_RE = re.compile(
     _CHAT_GOVERNING_CONDITION_PATTERN
 )
 _CHAT_SCOPED_POST_REWRITE_ASSIGNMENT_RE = re.compile(
-    r"\s*(?:并|並)\s*(?:设为|設為|设置为|設定為|改成|修改成|换成|換成|"
+    r"\s*(?:并|並)\s*(?:设为|設為|设成|設成|设置为|設定為|改成|修改成|换成|換成|"
     r"变成|變成|变为|變為|调整为|調整為|写成|寫成|填为|填為|填写为|"
     r"填寫為|填成|填写成|填寫成)\s*$"
 )
@@ -1957,6 +1964,8 @@ def _chat_text_requests_full_rewrite_from_scoped_segments(text: str) -> bool:
     if _CHAT_GOVERNING_INSTRUCTION_PROHIBITION_RE.search(masked):
         return False
     if _CHAT_GOVERNING_CONDITION_RE.search(masked):
+        return False
+    if _CHAT_GOVERNING_EXECUTION_QUESTION_RE.search(masked):
         return False
     recent_boundaries = deque(
         _CHAT_SCOPED_RECOVERY_BOUNDARY_RE.finditer(masked),

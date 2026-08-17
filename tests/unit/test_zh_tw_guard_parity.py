@@ -3577,3 +3577,35 @@ def test_a_full_rewrite_can_precede_a_later_assignment_verb():
 
     assert router._chat_text_requests_full_rewrite('重写所有字段并改成新版') is True
     assert router._chat_text_requests_full_rewrite('把重写所有字段设为启用') is False
+
+
+def test_she_cheng_marks_the_following_text_as_a_field_value():
+    import main_routers.card_assist_router as router
+
+    assert router._chat_text_requests_full_rewrite(
+        '把口头禅设成重写所有字段并保留是否会员'
+    ) is False
+
+
+def test_a_bare_trailing_cancellation_blocks_scoped_recovery():
+    import main_routers.card_assist_router as router
+
+    assert router._chat_text_requests_full_rewrite(
+        '重写所有字段并保留是否会员，算了'
+    ) is False
+
+
+def test_a_leading_execution_question_governs_all_recovered_list_items():
+    import main_routers.card_assist_router as router
+
+    text = '是否执行以下修改：先重写名字并保留头像，然后请重写所有字段并保留是否会员标签'
+    assert router._chat_text_requests_full_rewrite_core(text) is False
+    assert router._chat_text_requests_full_rewrite(text) is False
+
+
+def test_an_english_command_after_a_field_assignment_remains_visible():
+    import main_routers.card_assist_router as router
+
+    text = 'Rewrite the name as Bob and rewrite all fields'
+    assert router._chat_text_requests_full_rewrite_core(text) is True
+    assert router._chat_text_requests_full_rewrite(text) is True
