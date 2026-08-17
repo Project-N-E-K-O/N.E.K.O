@@ -253,16 +253,24 @@ class AgentObservationMixin:
                 route_id=current_route_id,
                 snapshot=snapshot,
             )
-            self._append_bounded(
-                self._scene_memory,
-                {
-                    "scene_id": current_scene_id,
-                    "route_id": current_route_id,
-                    "summary": summary,
-                    "ts": str(snapshot.get("ts") or ""),
-                },
-                limit=32,
+            existing_scene_memory = any(
+                isinstance(item, dict)
+                and str(item.get("scene_id") or "") == current_scene_id
+                and str(item.get("route_id") or "") == current_route_id
+                and str(item.get("summary") or "").strip()
+                for item in self._scene_memory
             )
+            if not existing_scene_memory:
+                self._append_bounded(
+                    self._scene_memory,
+                    {
+                        "scene_id": current_scene_id,
+                        "route_id": current_route_id,
+                        "summary": summary,
+                        "ts": str(snapshot.get("ts") or ""),
+                    },
+                    limit=32,
+                )
             self._observed_scene_id = current_scene_id
             self._observed_route_id = current_route_id
             self._scene_tracker.reset_summary(scene_id=current_scene_id)

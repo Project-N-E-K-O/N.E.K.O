@@ -2062,6 +2062,125 @@ async def test_session_appearing_after_empty_startup_scan_still_baselines_old_da
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
+async def test_late_discovered_preexisting_session_resumes_after_candidate_gap(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    plugin = GalgameBridgePlugin(_Ctx(plugin_dir, _make_effective_config(bridge_root)))
+    await plugin.startup()
+    try:
+        await plugin._poll_bridge(force=True)
+        assert plugin._startup_existing_session_ids == set()
+        session_id = "late-preexisting"
+        game_id = "demo.alpha"
+        game_dir = _create_game_dir(
+            bridge_root,
+            game_id=game_id,
+            session_payload=_session(
+                game_id=game_id,
+                session_id=session_id,
+                last_seq=1,
+                started_at="2000-01-01T00:00:00Z",
+                state=_session_state(
+                    text="old line",
+                    line_id="line-old",
+                    scene_id="scene-a",
+                ),
+            ),
+            events=[
+                _event(
+                    seq=1,
+                    event_type="line_changed",
+                    session_id=session_id,
+                    game_id=game_id,
+                    ts="2000-01-01T00:00:01Z",
+                    payload={
+                        "text": "old line",
+                        "line_id": "line-old",
+                        "scene_id": "scene-a",
+                    },
+                )
+            ],
+        )
+        session_path = game_dir / "session.json"
+        events_path = game_dir / "events.jsonl"
+
+        await plugin._poll_bridge(force=True)
+        _append_event(
+            events_path,
+            _event(
+                seq=2,
+                event_type="line_changed",
+                session_id=session_id,
+                game_id=game_id,
+                ts="2026-04-21T08:35:02Z",
+                payload={
+                    "text": "before gap",
+                    "line_id": "line-before-gap",
+                    "scene_id": "scene-a",
+                },
+            ),
+        )
+        _write_session(
+            session_path,
+            _session(
+                game_id=game_id,
+                session_id=session_id,
+                last_seq=2,
+                started_at="2000-01-01T00:00:00Z",
+                state=_session_state(
+                    text="before gap",
+                    line_id="line-before-gap",
+                    scene_id="scene-a",
+                ),
+            ),
+        )
+        await plugin._poll_bridge(force=True)
+
+        session_path.unlink()
+        await plugin._poll_bridge(force=True)
+        assert plugin._snapshot_state()["last_seq"] == 2
+
+        _append_event(
+            events_path,
+            _event(
+                seq=3,
+                event_type="line_changed",
+                session_id=session_id,
+                game_id=game_id,
+                ts="2026-04-21T08:35:03Z",
+                payload={
+                    "text": "during gap",
+                    "line_id": "line-during-gap",
+                    "scene_id": "scene-a",
+                },
+            ),
+        )
+        _write_session(
+            session_path,
+            _session(
+                game_id=game_id,
+                session_id=session_id,
+                last_seq=3,
+                started_at="2000-01-01T00:00:00Z",
+                state=_session_state(
+                    text="during gap",
+                    line_id="line-during-gap",
+                    scene_id="scene-a",
+                ),
+            ),
+        )
+        await plugin._poll_bridge(force=True)
+
+        history = await plugin.galgame_get_history(limit=20, include_events=True)
+        assert isinstance(history, Ok)
+        assert [event["seq"] for event in history.value["events"]] == [2, 3]
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
 async def test_preexisting_boundary_keeps_event_appended_after_candidate_snapshot(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

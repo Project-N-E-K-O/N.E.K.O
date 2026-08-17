@@ -7035,6 +7035,140 @@ async def test_game_llm_agent_pushes_context_summary_when_save_context_changes_w
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
+async def test_load_boundary_clears_abandoned_cumulative_memory(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    agent = GameLLMAgent(
+        plugin=plugin,
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    base = _shared_state(
+        mode="companion",
+        push_notifications=False,
+        snapshot=_session_state(scene_id="scene-a", line_id="", text=""),
+    )
+    await agent.tick(base)
+    agent._scene_memory[:] = [
+        {"scene_id": "future", "route_id": "", "summary": "abandoned future"}
+    ]
+    agent._choice_memory[:] = [{"scene_id": "future", "text": "bad ending"}]
+    pending = agent._scene_tracker.state_for_scene("future")
+    pending["lines_since_push"] = 5
+    pending["pending_since_monotonic"] = 10.0
+    agent._pending_merge_primary = "future"
+    agent._pending_merge_scene_ids = ["future"]
+    agent._pending_cross_scene_primary = "future"
+    agent._last_push_ts = 20.0
+    plugin._story_so_far = "abandoned future"
+    plugin._story_last_updated_seq = 8
+    load_snapshot = _session_state(scene_id="scene-a", line_id="", text="")
+    load_snapshot["save_context"] = {"kind": "load", "slot_id": "slot-1"}
+
+    await agent.tick({**base, "latest_snapshot": load_snapshot})
+    story_available = plugin._refresh_story_so_far_from_scene_summaries()
+
+    assert agent._scene_memory == []
+    assert agent._choice_memory == []
+    assert agent._scene_tracker.summary_scene_states == {}
+    assert agent._pending_merge_primary == ""
+    assert agent._pending_merge_scene_ids is None
+    assert agent._pending_cross_scene_primary == ""
+    assert agent._last_push_ts == 0.0
+    assert story_available is False
+    assert plugin._story_so_far == ""
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_revisited_scene_preserves_committed_archive_seed(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(_Ctx(plugin_dir, _make_effective_config(bridge_root))),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    base = {
+        "mode": "companion",
+        "push_notifications": False,
+        "history_lines": [],
+    }
+    await agent.tick(
+        _shared_state(**base, snapshot=_session_state(scene_id="scene-a"))
+    )
+    agent._replace_scene_memory_summary(
+        scene_id="scene-a",
+        route_id="",
+        summary="committed cumulative archive",
+    )
+    await agent.tick(
+        _shared_state(**base, snapshot=_session_state(scene_id="scene-b"))
+    )
+    await agent.tick(
+        _shared_state(**base, snapshot=_session_state(scene_id="scene-a"))
+    )
+
+    revisited = [
+        item
+        for item in agent._scene_memory
+        if item.get("scene_id") == "scene-a" and item.get("route_id") == ""
+    ]
+    assert len(revisited) == 1
+    assert revisited[0]["summary"] == "committed cumulative archive"
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_first_pending_scene_uses_its_own_time_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    gateway = _FakeLLMGateway()
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(_Ctx(plugin_dir, _make_effective_config(bridge_root))),
+        logger=_Logger(),
+        llm_gateway=gateway,
+        host_adapter=_FakeHostAdapter(),
+    )
+    agent._scene_summary_push_line_interval = 8
+    agent._scene_summary_push_half_threshold = 4
+    agent._scene_push_time_fallback_seconds = 30.0
+    clock = [100.0]
+    patch_module_clock(
+        monkeypatch,
+        game_llm_agent_module,
+        monotonic=lambda: clock[0],
+    )
+    lines = [_summary_test_line("scene-a", index) for index in range(1, 5)]
+    shared = _shared_state(
+        mode="companion",
+        push_notifications=False,
+        snapshot=_session_state(scene_id="scene-a"),
+        history_lines=lines,
+    )
+
+    await agent.tick(shared)
+    await _drain_agent_summary_tasks(agent)
+    assert gateway.summarize_calls == []
+    assert agent._last_push_ts == 0.0
+
+    clock[0] = 131.0
+    await agent.tick(shared)
+    await _drain_agent_summary_tasks(agent)
+
+    assert len(gateway.summarize_calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
 async def test_game_llm_agent_observed_lines_do_not_trigger_line_count_scene_summary(
     tmp_path: Path,
 ) -> None:

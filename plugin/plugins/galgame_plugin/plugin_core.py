@@ -4090,6 +4090,10 @@ class GalgamePlugin(
             startup_existing_session_ids=self._startup_existing_session_ids,
         )
         preexisting_session = session_origin == SESSION_ORIGIN_PREEXISTING
+        if preexisting_session:
+            if self._startup_existing_session_ids is None:
+                self._startup_existing_session_ids = set()
+            self._startup_existing_session_ids.add(candidate_session_identity)
         saved_preexisting_state = (
             self._startup_preexisting_session_states.get(
                 candidate_session_identity

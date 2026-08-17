@@ -652,6 +652,63 @@ def test_choice_history_fallback_does_not_treat_shown_as_selected(tmp_path: Path
 
 
 @pytest.mark.plugin_unit
+def test_selected_choice_fallback_keeps_event_identity_after_event_eviction(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(_Ctx(plugin_dir, _make_effective_config(bridge_root))),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    selected_choice = {
+        "choice_id": "choice-a",
+        "text": "追上去",
+        "scene_id": "scene-a",
+        "route_id": "route-a",
+        "action": "selected",
+        "ts": "2026-04-21T08:35:02Z",
+    }
+    choice_event = _event(
+        seq=2,
+        event_type="choice_selected",
+        session_id="sess-a",
+        game_id="demo.alpha",
+        ts="2026-04-21T08:35:02Z",
+        payload={
+            "scene_id": "scene-a",
+            "route_id": "route-a",
+            "choice": {**selected_choice, "index": 0},
+        },
+    )
+    snapshot = _session_state(scene_id="scene-a", route_id="route-a", choices=[])
+    with_event = _shared_state(
+        mode="companion",
+        session_id="sess-a",
+        snapshot=snapshot,
+        history_events=[choice_event],
+        history_choices=[selected_choice],
+    )
+
+    original = agent._scene_capsule_choice_occurrences(
+        with_event,
+        snapshot=snapshot,
+    )
+    original_key = next(
+        item["event_key"]
+        for item in original
+        if int(item.get("seq") or 0) == 2
+    )
+    after_eviction = agent._scene_capsule_choice_occurrences(
+        {**with_event, "history_events": []},
+        snapshot=snapshot,
+    )
+
+    assert [item["event_key"] for item in after_eviction] == [original_key]
+
+
+@pytest.mark.plugin_unit
 def test_snapshot_choice_menu_is_merged_with_older_event_occurrences(
     tmp_path: Path,
 ) -> None:

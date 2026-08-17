@@ -1269,6 +1269,28 @@ class AgentSummaryMixin:
                         "seq": seq,
                         "history_event_index": event_index,
                         "ts": str(event.get("ts") or payload.get("ts") or ""),
+                        "fallback_signature": json.dumps(
+                            {
+                                "choice_id": str(
+                                    choice.get("choice_id")
+                                    or choice.get("option_id")
+                                    or ""
+                                ),
+                                "text": text,
+                                "state": choice["choice_state"],
+                                "scene_id": str(choice.get("scene_id") or ""),
+                                "route_id": str(choice.get("route_id") or ""),
+                                "ts": str(
+                                    choice.get("ts")
+                                    or event.get("ts")
+                                    or payload.get("ts")
+                                    or ""
+                                ),
+                            },
+                            ensure_ascii=False,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ),
                         "choice": choice,
                     }
                 )
@@ -1279,9 +1301,9 @@ class AgentSummaryMixin:
             if not isinstance(item, dict)
             or str(item.get("action") or "selected").strip().lower() == "selected"
         ]
-        fallback_choice_sources: list[tuple[str, list[Any]]] = []
-        if not occurrences:
-            fallback_choice_sources.append(("selected", selected_history_choices))
+        fallback_choice_sources: list[tuple[str, list[Any]]] = [
+            ("selected", selected_history_choices)
+        ]
         fallback_choice_sources.append(("visible", list(snapshot.get("choices") or [])))
         for choice_state, items in fallback_choice_sources:
             fallback_choices: list[tuple[dict[str, Any], str, str]] = []
@@ -1341,12 +1363,28 @@ class AgentSummaryMixin:
                 )
                 if visible_menu_signature in visible_event_menu_signatures:
                     continue
+            fallback_source_key = (
+                f"{data_source}|{session_id}|history_choice:{choice_state}"
+            )
             fallback_ids = self._scene_capsule_fallback_occurrence_ids(
-                source_key=(
-                    f"{data_source}|{session_id}|history_choice:{choice_state}"
-                ),
+                source_key=fallback_source_key,
                 signatures=[semantic for _choice, _scene, semantic in fallback_choices],
             )
+            source_aliases: dict[int, str] = {}
+            event_keys_by_signature: dict[str, list[str]] = {}
+            consumed_event_signatures: dict[str, int] = {}
+            if choice_state == "selected":
+                fallback_aliases = self._scene_capsule_line_fallback_aliases
+                source_aliases = fallback_aliases.setdefault(
+                    fallback_source_key,
+                    {},
+                )
+                for occurrence in occurrences:
+                    signature = str(occurrence.get("fallback_signature") or "")
+                    if signature:
+                        event_keys_by_signature.setdefault(signature, []).append(
+                            str(occurrence.get("event_key") or "")
+                        )
             visible_group_signature = ""
             if choice_state == "visible" and fallback_choices:
                 visible_group_signature = (
@@ -1363,6 +1401,12 @@ class AgentSummaryMixin:
                 fallback_ids,
                 strict=False,
             ):
+                matching_event_keys = event_keys_by_signature.get(semantic) or []
+                consumed = consumed_event_signatures.get(semantic, 0)
+                if consumed < len(matching_event_keys):
+                    source_aliases[occurrence_id] = matching_event_keys[consumed]
+                    consumed_event_signatures[semantic] = consumed + 1
+                    continue
                 group_signature = visible_group_signature or (
                     self._scene_capsule_choice_handoff_signature(
                         event_type=f"history_choice:{choice_state}",
@@ -1378,13 +1422,16 @@ class AgentSummaryMixin:
                 )
                 occurrences.append(
                     {
-                        "event_key": self._scene_capsule_event_key(
-                            data_source,
-                            session_id,
-                            f"history_choice:{choice_state}",
-                            choice_scene_id,
-                            str(choice.get("route_id") or ""),
-                            occurrence_id,
+                        "event_key": (
+                            str(source_aliases.get(occurrence_id) or "")
+                            or self._scene_capsule_event_key(
+                                data_source,
+                                session_id,
+                                f"history_choice:{choice_state}",
+                                choice_scene_id,
+                                str(choice.get("route_id") or ""),
+                                occurrence_id,
+                            )
                         ),
                         "event_group_key": group_key,
                         "handoff_group_signature": group_signature,
@@ -1398,6 +1445,11 @@ class AgentSummaryMixin:
                         "choice": choice,
                     }
                 )
+            if choice_state == "selected":
+                active_occurrence_ids = set(fallback_ids)
+                for occurrence_id in list(source_aliases):
+                    if occurrence_id not in active_occurrence_ids:
+                        source_aliases.pop(occurrence_id, None)
         return occurrences
 
     def _note_scene_summary_suppressed(
@@ -1888,6 +1940,28 @@ class AgentSummaryMixin:
                 and save_boundary_marker != previous_save_boundary_marker
             ):
                 event_version_state.clear()
+                self._cancel_scene_memory_tasks(
+                    reason="scene_memory_timeline_boundary",
+                )
+                self._scene_tracker.reset(scene_id=scene_id)
+                self._scene_tracker.sync_current_scene_summary_mirror(
+                    scene_id,
+                    route_id=route_id,
+                )
+                self._scene_summary_repeat_deliveries.clear()
+                self._scene_summary_latest_scene_content.clear()
+                self._scene_summary_latest_memory_order_by_scene.clear()
+                self._scene_summary_schedule_order_counter = 0
+                self._scene_summary_latest_observed_order = 0
+                self._scene_summary_latest_submitted_order = 0
+                self._pending_merge_primary = ""
+                self._pending_merge_scene_ids = None
+                self._pending_cross_scene_primary = ""
+                self._last_delivered_summary_key = ""
+                self._last_delivered_summary_seq = 0
+                self._last_delivered_summary_scene_id = ""
+                self._last_push_ts = 0.0
+                self._scene_summary_last_success_at = 0.0
         self._scene_capsule_save_boundary_marker = save_boundary_marker
         observation_epoch = self._scene_capsule_observation_epoch
         self._scene_capsule_source_aliases[source_identity] = boundary_key
@@ -2824,6 +2898,7 @@ class AgentSummaryMixin:
             if str(item)
         )
         changed_scene_scope_keys: set[str] = set()
+        now_ts = time.monotonic()
         for occurrence in line_occurrences:
             line = occurrence.get("line")
             if not isinstance(line, dict):
@@ -2845,6 +2920,7 @@ class AgentSummaryMixin:
                 route_id=line_route_id,
                 seq=seq,
                 ts=str(line.get("ts") or ""),
+                now_monotonic=now_ts,
             ):
                 changed_scene_scope_keys.add(
                     self._scene_tracker.summary_scope_key(
@@ -2864,17 +2940,18 @@ class AgentSummaryMixin:
 
         # D: 时间回退
         time_fallback_scope_keys: set[str] = set()
-        now_ts = time.monotonic()
-        if self._last_push_ts > 0 and (
-            now_ts - self._last_push_ts
-        ) > self._scene_push_time_fallback_seconds:
-            for scope_key, st in self._scene_tracker.summary_scene_states.items():
-                if not isinstance(st, dict):
-                    continue
-                lsp = int(st.get("lines_since_push") or 0)
-                if lsp >= self._scene_push_half_threshold:
-                    ready_scene_scope_keys.add(scope_key)
-                    time_fallback_scope_keys.add(scope_key)
+        for scope_key, st in self._scene_tracker.summary_scene_states.items():
+            if not isinstance(st, dict):
+                continue
+            lsp = int(st.get("lines_since_push") or 0)
+            pending_since = float(st.get("pending_since_monotonic") or 0.0)
+            if (
+                lsp >= self._scene_push_half_threshold
+                and pending_since > 0.0
+                and now_ts - pending_since > self._scene_push_time_fallback_seconds
+            ):
+                ready_scene_scope_keys.add(scope_key)
+                time_fallback_scope_keys.add(scope_key)
 
         # C: 多场景累计回退。每个 scene/route 必须独立归档；把多个
         # scene 合并进 primary context 会将事实写入错误的单场景 memory。

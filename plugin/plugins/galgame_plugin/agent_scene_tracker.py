@@ -74,6 +74,7 @@ class AgentSceneTracker:
                 "last_line_seq": 0,
                 "last_line_ts": "",
                 "last_scheduled_seq": 0,
+                "pending_since_monotonic": 0.0,
             }
             self.summary_scene_states[scope_key] = state
             self._trim_scene_states(preserve_scope_key=scope_key)
@@ -87,6 +88,7 @@ class AgentSceneTracker:
         route_id: str = "",
         seq: int,
         ts: str,
+        now_monotonic: float = 0.0,
     ) -> bool:
         if not scene_id or not key:
             return False
@@ -106,7 +108,13 @@ class AgentSceneTracker:
         seen_line_keys.add(key)
         seen_line_key_order.append(key)
         self._trim_seen_line_window(seen_line_keys, seen_line_key_order)
-        state["lines_since_push"] = int(state.get("lines_since_push") or 0) + 1
+        lines_since_push = int(state.get("lines_since_push") or 0)
+        if (
+            lines_since_push <= 0
+            and float(state.get("pending_since_monotonic") or 0.0) <= 0.0
+        ):
+            state["pending_since_monotonic"] = float(now_monotonic or 0.0)
+        state["lines_since_push"] = lines_since_push + 1
         state["last_line_seq"] = max(int(state.get("last_line_seq") or 0), int(seq or 0))
         state["last_line_ts"] = str(ts or "")
         self.sync_current_scene_summary_mirror(
@@ -141,6 +149,7 @@ class AgentSceneTracker:
         state = self.state_for_scene(scene_id, route_id=route_id)
         state["lines_since_push"] = 0
         state["last_scheduled_seq"] = int(seq or 0)
+        state["pending_since_monotonic"] = 0.0
         self.sync_current_scene_summary_mirror(
             self.summary_scene_id,
             route_id=self.summary_route_id,
