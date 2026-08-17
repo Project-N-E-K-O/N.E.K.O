@@ -22,8 +22,9 @@ def test_static_knowledge_map_builds_server_authoritative_scopes() -> None:
     assert "mode: 'explicit_scope'" in source
     assert "topic_id:" in source
     assert "course_family:" in source
-    assert "chapter:" in source
+    assert source.count("\n    chapter,") >= 2
     assert "unit:" in source
+    assert source.count("\n    unit: chapter ?") >= 2
     assert "eligible_topic_ids" not in source
 
 

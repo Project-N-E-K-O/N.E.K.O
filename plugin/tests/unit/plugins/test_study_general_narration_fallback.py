@@ -6,6 +6,9 @@ from typing import Any
 
 import pytest
 
+from plugin.plugins.study_companion.entry_communication_review_events import (
+    _CommunicationReviewEventsMixin,
+)
 from plugin.plugins.study_companion.entry_communication_tutor_events import (
     _CommunicationTutorEventsMixin,
 )
@@ -67,7 +70,11 @@ class _TutorAgent:
         )
 
 
-class _ExplainHarness(_TutorExplainEntriesMixin, _CommunicationTutorEventsMixin):
+class _ExplainHarness(
+    _CommunicationReviewEventsMixin,
+    _TutorExplainEntriesMixin,
+    _CommunicationTutorEventsMixin,
+):
     def __init__(
         self,
         *,

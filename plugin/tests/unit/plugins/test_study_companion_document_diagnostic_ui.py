@@ -30,8 +30,10 @@ def test_static_document_diagnostics_map_invalid_endpoint_and_request() -> None:
     end = source.index("async function analyzeDocument", start)
     formatter = source[start:end]
 
-    assert "invalid_endpoint invalid_request" in formatter
-    assert "`analysis_${code}`" in formatter
+    assert "'invalid_endpoint'" in formatter
+    assert "'invalid_request'" in formatter
+    assert "analysisErrors.has(code)" in formatter
+    assert "`analysis_${analysisCode}`" in formatter
 
 
 def test_document_surfaces_warn_when_completed_output_is_truncated() -> None:

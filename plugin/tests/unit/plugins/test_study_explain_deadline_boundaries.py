@@ -11,6 +11,9 @@ from plugin.plugins.study_companion.constants import (
     MODE_COMPANION,
     MODE_CONCEPT_EXPLAIN,
 )
+from plugin.plugins.study_companion.entry_communication_review_events import (
+    _CommunicationReviewEventsMixin,
+)
 from plugin.plugins.study_companion.entry_communication_tutor_events import (
     _CommunicationTutorEventsMixin,
 )
@@ -75,7 +78,11 @@ class _Agent:
         )
 
 
-class _Harness(_TutorExplainEntriesMixin, _CommunicationTutorEventsMixin):
+class _Harness(
+    _CommunicationReviewEventsMixin,
+    _TutorExplainEntriesMixin,
+    _CommunicationTutorEventsMixin,
+):
     def __init__(
         self,
         *,
