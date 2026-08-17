@@ -117,6 +117,7 @@ async def test_save_uploaded_file_streams_and_accepts_uppercase_suffix(
     saved_path = Path(str(result["path"]))
     assert saved_path.name == "DEMO.NEKO-PLUGIN"
     assert saved_path.read_bytes() == b"package-bytes"
+    assert PluginCliService()._resolve_package_path(str(saved_path)) == saved_path
 
 
 @pytest.mark.asyncio

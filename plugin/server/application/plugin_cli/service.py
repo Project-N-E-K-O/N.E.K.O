@@ -932,9 +932,8 @@ class PluginCliService:
             items: list[dict[str, object]] = []
             package_paths = [
                 path
-                for suffix in _ALLOWED_UPLOAD_SUFFIXES
-                for path in target_root.glob(f"*{suffix}")
-                if path.is_file()
+                for path in target_root.glob("*")
+                if path.is_file() and self._has_allowed_upload_suffix(path.name)
             ]
             for path in sorted(
                 package_paths,
@@ -1313,6 +1312,10 @@ class PluginCliService:
             raise self._domain_error_from_exception(exc, action="analyze") from exc
 
     @staticmethod
+    def _has_allowed_upload_suffix(filename: str) -> bool:
+        return filename.lower().endswith(tuple(_ALLOWED_UPLOAD_SUFFIXES))
+
+    @staticmethod
     def _upload_filename_parts(filename: str) -> tuple[str, str, str]:
         safe_name = Path(filename).name
         if not safe_name:
@@ -1489,9 +1492,7 @@ class PluginCliService:
         target_root = self._path_policy().package_artifacts_root
 
         def _accept(path: Path) -> bool:
-            return path.is_file() and any(
-                path.name.endswith(suffix) for suffix in _ALLOWED_UPLOAD_SUFFIXES
-            )
+            return path.is_file() and self._has_allowed_upload_suffix(path.name)
 
         candidate = Path(raw).expanduser()
         if candidate.exists():
