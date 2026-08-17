@@ -3992,6 +3992,135 @@ def test_empty_fallback_scene_inherits_event_or_snapshot_scope(
     } == {expected_scope}
 
 
+@pytest.mark.plugin_unit
+def test_empty_fallback_line_keeps_first_reconciled_scope_after_event_eviction(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(_Ctx(plugin_dir, _make_effective_config(bridge_root))),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    fallback_line = {
+        "line_id": "legacy-line", "speaker": "Yukino",
+        "text": "legacy reconstructed line", "scene_id": "", "route_id": "",
+        "stability": "stable", "ts": "2026-04-21T08:35:01Z",
+    }
+    event = _event(
+        seq=1, event_type="line_changed", session_id="sess-a", game_id="demo.alpha",
+        ts=str(fallback_line["ts"]),
+        payload={**fallback_line, "scene_id": "event-scene", "route_id": "event-route"},
+    )
+    first_snapshot = _session_state(scene_id="event-scene", route_id="event-route")
+    first_shared = _shared_state(
+        session_id="sess-a", last_seq=1, snapshot=first_snapshot,
+        history_events=[event], history_lines=[fallback_line],
+    )
+    agent._scene_capsule_line_occurrences(first_shared, snapshot=first_snapshot)
+    moved_snapshot = _session_state(scene_id="new-scene", route_id="new-route")
+    moved_shared = _shared_state(
+        session_id="sess-a", last_seq=2, snapshot=moved_snapshot,
+        history_events=[], history_lines=[fallback_line],
+    )
+
+    occurrences = agent._scene_capsule_line_occurrences(moved_shared, snapshot=moved_snapshot)
+    fallback = next(
+        item for item in occurrences
+        if str((item.get("line") or {}).get("line_id") or "") == "legacy-line"
+    )
+
+    assert (fallback["line"]["scene_id"], fallback["line"]["route_id"]) == (
+        "event-scene", "event-route",
+    )
+
+
+@pytest.mark.plugin_unit
+def test_delivered_archive_preserves_lines_arriving_after_schedule(tmp_path: Path) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(_Ctx(plugin_dir, _make_effective_config(bridge_root))),
+        logger=_Logger(), llm_gateway=_FakeLLMGateway(), host_adapter=_FakeHostAdapter(),
+    )
+    tracker = agent._scene_tracker
+    tracker.remember_scene_line(
+        "scene-a", "line-1", seq=1, ts="2026-04-21T08:35:01Z", now_monotonic=10.0,
+    )
+    tracker.mark_scene_summary_scheduled("scene-a", seq=1)
+    tracker.remember_scene_line(
+        "scene-a", "line-2", seq=2, ts="2026-04-21T08:35:02Z", now_monotonic=20.0,
+    )
+
+    tracker.mark_scene_summary_delivered("scene-a", seq=1)
+    state = tracker.state_for_scene("scene-a")
+
+    assert state["lines_since_push"] == 1
+    assert state["pending_since_monotonic"] == 20.0
+
+
+@pytest.mark.plugin_unit
+def test_reloading_same_checkpoint_occurrence_resets_cumulative_memory(tmp_path: Path) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(_Ctx(plugin_dir, _make_effective_config(bridge_root))),
+        logger=_Logger(), llm_gateway=_FakeLLMGateway(), host_adapter=_FakeHostAdapter(),
+    )
+    snapshot = _session_state(scene_id="scene-a", route_id="route-a")
+    snapshot["save_context"] = {
+        "kind": "load", "slot_id": "slot-1", "checkpoint_id": "checkpoint-a",
+    }
+
+    def load_event(seq: int, ts: str) -> dict[str, Any]:
+        return _event(
+            seq=seq, event_type="save_loaded", session_id="sess-a", game_id="demo.alpha",
+            ts=ts,
+            payload={
+                "reason": "load", "scene_id": "scene-a", "route_id": "route-a",
+                "save_context": dict(snapshot["save_context"]),
+            },
+        )
+
+    first_shared = _shared_state(
+        session_id="sess-a", last_seq=1, snapshot=snapshot,
+        history_events=[load_event(1, "2026-04-21T08:35:01Z")],
+    )
+    agent._maybe_schedule_scene_capsule(
+        first_shared, snapshot=snapshot, line_occurrences=[],
+        all_choice_occurrences=[], allow_delivery=False,
+    )
+    agent._scene_memory.append(
+        {"scene_id": "scene-a", "route_id": "route-a", "summary": "future timeline"}
+    )
+    second_shared = _shared_state(
+        session_id="sess-a", last_seq=2, snapshot=snapshot,
+        history_events=[
+            load_event(1, "2026-04-21T08:35:01Z"),
+            load_event(2, "2026-04-21T08:36:01Z"),
+        ],
+    )
+
+    agent._maybe_schedule_scene_capsule(
+        second_shared, snapshot=snapshot, line_occurrences=[],
+        all_choice_occurrences=[], allow_delivery=False,
+    )
+
+    assert agent._scene_memory == []
+    agent._scene_memory.append(
+        {"scene_id": "scene-a", "route_id": "route-a", "summary": "new timeline"}
+    )
+    event_evicted_shared = _shared_state(
+        session_id="sess-a", last_seq=3, snapshot=snapshot, history_events=[],
+    )
+
+    agent._maybe_schedule_scene_capsule(
+        event_evicted_shared, snapshot=snapshot, line_occurrences=[],
+        all_choice_occurrences=[], allow_delivery=False,
+    )
+
+    assert agent._scene_memory[-1]["summary"] == "new timeline"
+
+
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
 async def test_current_snapshot_menu_outranks_older_sequenced_line(

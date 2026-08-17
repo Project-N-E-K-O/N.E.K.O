@@ -3,6 +3,7 @@ from __future__ import annotations
 from _galgame_test_support import *
 
 from plugin.plugins.galgame_plugin import plugin_core as galgame_plugin_core
+from plugin.plugins.galgame_plugin.models import SessionCandidate
 from tests.fake_clock import patch_module_clock
 
 @pytest.mark.asyncio
@@ -43,6 +44,45 @@ async def test_background_bridge_poll_continues_for_subsecond_ocr_interval(
         plugin._bridge_poll_thread_stop.clear()
 
     assert poll_calls == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_same_game_session_id_source_switch_starts_fresh_cursor(tmp_path: Path) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    cfg = _make_effective_config(bridge_root)
+    plugin = GalgameBridgePlugin(_Ctx(plugin_dir, cfg))
+    plugin._cfg = build_config(cfg)
+    local = plugin._snapshot_state(fresh=True)
+    local.update({
+        "active_data_source": DATA_SOURCE_MEMORY_READER,
+        "active_game_id": "demo.alpha", "active_session_id": "shared-session",
+        "warmup_session_id": "shared-session",
+        "history_events": [{"seq": 1, "type": "line_changed"}],
+        "history_lines": [{"text": "old source line"}],
+        "events_byte_offset": 5, "events_file_size": 5, "last_seq": 1,
+        "line_buffer": b"", "stream_reset_pending": False,
+    })
+    events_path = tmp_path / "events.jsonl"
+    events_path.write_text("", encoding="utf-8")
+    candidate = SessionCandidate(
+        game_id="demo.alpha", session_path=tmp_path / "session.json",
+        events_path=events_path, data_source=DATA_SOURCE_OCR_READER,
+        session={
+            "session_id": "shared-session", "started_at": "2099-04-21T08:35:00Z",
+            "last_seq": 0,
+            "state": _session_state(scene_id="ocr-scene", line_id="", text=""),
+        },
+    )
+
+    await plugin._apply_bridge_candidate_session(
+        local=local, candidate=candidate, warnings=[], now_monotonic=100.0,
+    )
+
+    assert local["active_data_source"] == DATA_SOURCE_OCR_READER
+    assert local["history_events"] == []
+    assert local["history_lines"] == []
+    assert local["events_byte_offset"] == 0
 
 
 @pytest.mark.asyncio

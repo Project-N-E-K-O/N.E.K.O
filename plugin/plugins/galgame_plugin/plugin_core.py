@@ -4057,15 +4057,17 @@ class GalgamePlugin(
             game_id=candidate.game_id,
             session_id=session_id,
         )
+        active_session_identity = session_identity_key(
+            data_source=str(local.get("active_data_source") or ""),
+            game_id=str(local.get("active_game_id") or ""),
+            session_id=str(local.get("active_session_id") or ""),
+        )
         preexisting_snapshot_identity = {
             "scene_id": str(session_state_obj.get("scene_id") or ""),
             "route_id": str(session_state_obj.get("route_id") or ""),
             "line_id": str(session_state_obj.get("line_id") or ""),
         }
-        session_changed = (
-            candidate.game_id != local["active_game_id"]
-            or session_id != local["active_session_id"]
-        )
+        session_changed = candidate_session_identity != active_session_identity
         previous_session_id = str(local.get("active_session_id") or "")
         if session_changed and previous_session_id:
             self._remember_active_preexisting_session_state(local)
