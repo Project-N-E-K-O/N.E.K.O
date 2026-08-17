@@ -1640,13 +1640,19 @@ def _chat_scoped_governed_full_rewrite_end(clause: str) -> int | None:
     targets = list(_CHAT_FULL_REWRITE_RE.finditer(readable))
     rewrites = list(_CHAT_REWRITE_VERB_RE.finditer(readable))
     governed_ends = []
-    for target in targets:
-        for rewrite in rewrites:
-            left, right = sorted((target, rewrite), key=lambda match: match.start())
-            if _CHAT_SCOPED_SIGNAL_BRIDGE_RE.fullmatch(
+    signals = sorted(
+        [(match, "target") for match in targets]
+        + [(match, "rewrite") for match in rewrites],
+        key=lambda item: (item[0].start(), item[0].end()),
+    )
+    for (left, left_kind), (right, right_kind) in zip(signals, signals[1:]):
+        if (
+            left_kind != right_kind
+            and _CHAT_SCOPED_SIGNAL_BRIDGE_RE.fullmatch(
                 readable[left.end():right.start()]
-            ):
-                governed_ends.append(max(target.end(), rewrite.end()))
+            )
+        ):
+            governed_ends.append(max(left.end(), right.end()))
     return max(governed_ends, default=None)
 
 

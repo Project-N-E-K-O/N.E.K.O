@@ -3272,6 +3272,26 @@ def test_scoped_recovery_work_is_bounded_on_repeated_boundaries():
     assert time.perf_counter() - started < 3.0
 
 
+def test_repeated_rewrite_signals_use_a_linear_bridge_scan(monkeypatch):
+    import main_routers.card_assist_router as router
+
+    original = router._CHAT_SCOPED_SIGNAL_BRIDGE_RE
+
+    class CountingBridge:
+        calls = 0
+
+        def fullmatch(self, value):
+            self.calls += 1
+            return original.fullmatch(value)
+
+    bridge = CountingBridge()
+    monkeypatch.setattr(router, '_CHAT_SCOPED_SIGNAL_BRIDGE_RE', bridge)
+    text = '重写全卡' * 390
+
+    assert router._chat_scoped_governed_full_rewrite_end(text) == len(text)
+    assert bridge.calls < len(text)
+
+
 @pytest.mark.parametrize(("opener", "closer"),
                          [("“", "”"), ("「", "」"), ("『", "』"), ("《", "》"), ("【", "】")])
 @pytest.mark.parametrize("target", ["整个卡", "整张卡", "所有字段", "全部欄位"])
