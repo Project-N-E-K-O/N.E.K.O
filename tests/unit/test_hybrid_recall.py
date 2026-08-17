@@ -1410,6 +1410,34 @@ class TestVectorDecodeCache(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(round(scored_a[0][1], 6), 1.0)
         self.assertEqual(round(scored_b[0][1], 6), 0.0)
 
+    async def test_corrupted_row_stamps_invalidate_cached_vector(self):
+        """Row-local stamps are part of the verdict: a reloaded row carrying
+        the same id / text / embedding bytes but a mismatched or missing
+        ``embedding_model_id`` / ``embedding_text_sha256`` stamp must be
+        skipped — exactly what the uncached validator would do."""
+        import memory.embeddings as emb
+        from memory.hybrid_recall import _cosine_rank
+
+        doc = self._doc("a", "博士喜欢猫", [1.0, 0.0, 0.0, 0.0])
+        service = self._service([1.0, 0.0, 0.0, 0.0])
+
+        with patch.object(emb, "get_embedding_service", MagicMock(return_value=service)):
+            scored = await _cosine_rank("博士", [doc])
+            self.assertEqual(len(scored), 1)  # valid row → cached
+
+            bad_model_stamp = dict(doc)
+            bad_model_stamp["embedding_model_id"] = "someone-elses-model-4d-int8"
+            self.assertEqual(await _cosine_rank("博士", [bad_model_stamp]), [])
+
+            bad_text_stamp = dict(doc)
+            bad_text_stamp["embedding_text_sha256"] = "0" * 64
+            self.assertEqual(await _cosine_rank("博士", [bad_text_stamp]), [])
+
+            missing_stamps = dict(doc)
+            del missing_stamps["embedding_model_id"]
+            del missing_stamps["embedding_text_sha256"]
+            self.assertEqual(await _cosine_rank("博士", [missing_stamps]), [])
+
     async def test_cache_is_lru_capped(self):
         """The entry cap bounds resident memory — overflow evicts LRU-first."""
         from memory.hybrid_recall import (

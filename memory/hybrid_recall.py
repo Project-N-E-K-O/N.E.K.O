@@ -305,7 +305,7 @@ def _bm25_rank(
 #
 # So: decode once per (doc, model, text, embedding-bytes), keep the fp32
 # vector. Validation is content-based, mirroring ``decode_valid_cached_embedding``
-# itself — a cached hit is only served when **all three** fingerprints still
+# itself — a cached hit is only served when **all** of the following still
 # match the row in front of us:
 #
 #   1. ``model_id``        — embedding space changed (dim/quantization/profile)
@@ -314,6 +314,14 @@ def _bm25_rank(
 #                           requantize); compared by equality, and pool rows
 #                           come from ``_POOL_CACHE`` so the identical str
 #                           object short-circuits the memcmp
+#   4. row stamps          — the row's own ``embedding_model_id`` /
+#                           ``embedding_text_sha256`` fields are re-checked
+#                           against the runtime model and freshly computed
+#                           hash. A reloaded row can carry identical id /
+#                           text / embedding bytes with corrupted or missing
+#                           stamps (hand edit, migration, cross-pool id
+#                           collision) — the full validator rejects those,
+#                           so the cache hit must reject them too.
 #
 # Any mismatch falls through to the full ``decode_valid_cached_embedding``
 # path, which applies the exact same checks plus the dimension/finite guards —
@@ -351,6 +359,15 @@ def _cached_doc_vector(doc: dict, text, model_id: str):
             and cached[0] == model_id
             and cached[1] == embedding_text_sha256(text)
             and cached[2] == emb
+            # 行内戳记也要复核：池文件重载 / 手改 / 迁移后，同一 id、text、
+            # embedding 字节的行可能带着失配或缺失的 embedding_model_id /
+            # embedding_text_sha256——完整校验路径会拒掉这种行（戳记不是
+            # 这条向量写给这个模型/这段文本的自述），缓存命中必须同样拒，
+            # 否则违反「verdict 与 decode_valid_cached_embedding 直连一致」
+            # 的不变量。cached[1] 已要求等于现算哈希，所以第二个比较等价于
+            # 校验路径的「行内戳记 == 现算哈希」。
+            and doc.get('embedding_model_id') == model_id
+            and doc.get('embedding_text_sha256') == cached[1]
         ):
             _VEC_CACHE.move_to_end(did)
             return cached[3]
