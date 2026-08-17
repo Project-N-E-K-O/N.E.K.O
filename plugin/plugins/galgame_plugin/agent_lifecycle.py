@@ -95,8 +95,18 @@ class AgentLifecycleMixin:
         self._last_focus_attempt_at = 0.0
         self._focus_failure_count = 0
         self._ocr_choice_fallback_attempts = 0
+        configured_live_line_limit = max(
+            0,
+            int(getattr(config, "history_events_limit", 0) or 0),
+        ) + max(
+            0,
+            int(getattr(config, "history_lines_limit", 0) or 0),
+        )
         self._scene_tracker = AgentSceneTracker(
-            seen_line_limit=self._SUMMARY_SEEN_LINE_KEYS_LIMIT,
+            seen_line_limit=max(
+                self._SUMMARY_SEEN_LINE_KEYS_LIMIT,
+                configured_live_line_limit,
+            ),
         )
         self._message_router = AgentMessageRouter(now_factory=self._utc_now_iso)
         self._last_interruption = {}

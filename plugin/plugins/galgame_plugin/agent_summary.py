@@ -888,7 +888,9 @@ class AgentSummaryMixin:
                 continue
             line = dict(item)
             line["text"] = text
-            scope_was_missing = not str(line.get("scene_id") or "").strip()
+            scene_was_missing = not str(line.get("scene_id") or "").strip()
+            route_was_missing = not str(line.get("route_id") or "").strip()
+            scope_was_incomplete = scene_was_missing or route_was_missing
             matched_event_scope: tuple[str, str] | None = None
             if not str(line.get("scene_id") or "").strip():
                 scope_agnostic_identity = json.dumps(
@@ -969,18 +971,20 @@ class AgentSummaryMixin:
                     "ts": str(line.get("ts") or ""),
                     **(
                         {}
-                        if scope_was_missing
-                        else {
-                            "scene_id": str(line.get("scene_id") or ""),
-                            "route_id": str(line.get("route_id") or ""),
-                        }
+                        if scene_was_missing
+                        else {"scene_id": str(line.get("scene_id") or "")}
+                    ),
+                    **(
+                        {}
+                        if route_was_missing
+                        else {"route_id": str(line.get("route_id") or "")}
                     ),
                 },
                 ensure_ascii=False,
                 sort_keys=True,
             )
             history_records.append(
-                (line, signature, fallback_identity, scope_was_missing)
+                (line, signature, fallback_identity, scope_was_incomplete)
             )
         fallback_source_key = f"{data_source}|{session_id}|history_line"
         fallback_ids = self._scene_capsule_fallback_occurrence_ids(
@@ -1014,20 +1018,20 @@ class AgentSummaryMixin:
             line,
             signature,
             _fallback_identity,
-            scope_was_missing,
+            scope_was_incomplete,
         ), occurrence_id in zip(history_records, fallback_ids, strict=False):
             consumed = consumed_event_signatures.get(signature, 0)
             matching_event_keys = event_keys_by_signature.get(signature) or []
             if consumed < len(matching_event_keys):
                 source_aliases[occurrence_id] = matching_event_keys[consumed]
-                if scope_was_missing:
+                if scope_was_incomplete:
                     source_scopes[occurrence_id] = {
                         "scene_id": str(line.get("scene_id") or ""),
                         "route_id": str(line.get("route_id") or ""),
                     }
                 consumed_event_signatures[signature] = consumed + 1
                 continue
-            if scope_was_missing:
+            if scope_was_incomplete:
                 saved_scope = source_scopes.get(occurrence_id)
                 if not isinstance(saved_scope, dict):
                     saved_scope = {

@@ -4037,6 +4037,108 @@ def test_empty_fallback_line_keeps_first_reconciled_scope_after_event_eviction(
 
 
 @pytest.mark.plugin_unit
+def test_route_only_fallback_line_keeps_event_time_route_after_event_eviction(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(_Ctx(plugin_dir, _make_effective_config(bridge_root))),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    fallback_line = {
+        "line_id": "legacy-line",
+        "speaker": "Yukino",
+        "text": "route reconstructed line",
+        "scene_id": "scene-a",
+        "route_id": "",
+        "stability": "stable",
+        "ts": "2026-04-21T08:35:01Z",
+    }
+    event = _event(
+        seq=1,
+        event_type="line_changed",
+        session_id="sess-a",
+        game_id="demo.alpha",
+        ts=str(fallback_line["ts"]),
+        payload={**fallback_line, "route_id": "event-route"},
+    )
+    first_snapshot = _session_state(scene_id="scene-a", route_id="event-route")
+    first_shared = _shared_state(
+        session_id="sess-a",
+        last_seq=1,
+        snapshot=first_snapshot,
+        history_events=[event],
+        history_lines=[fallback_line],
+    )
+    agent._scene_capsule_line_occurrences(first_shared, snapshot=first_snapshot)
+    moved_snapshot = _session_state(scene_id="scene-a", route_id="new-route")
+    moved_shared = _shared_state(
+        session_id="sess-a",
+        last_seq=2,
+        snapshot=moved_snapshot,
+        history_events=[],
+        history_lines=[fallback_line],
+    )
+
+    occurrences = agent._scene_capsule_line_occurrences(
+        moved_shared,
+        snapshot=moved_snapshot,
+    )
+    fallback = next(
+        item
+        for item in occurrences
+        if str((item.get("line") or {}).get("line_id") or "") == "legacy-line"
+    )
+
+    assert (fallback["line"]["scene_id"], fallback["line"]["route_id"]) == (
+        "scene-a",
+        "event-route",
+    )
+
+
+@pytest.mark.plugin_unit
+def test_scene_tracker_retains_configured_live_line_occurrence_window(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    config = build_config(
+        _make_effective_config(
+            bridge_root,
+            galgame={"history_events_limit": 600, "history_lines_limit": 20},
+        )
+    )
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(_Ctx(plugin_dir, _make_effective_config(bridge_root))),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+        config=config,
+    )
+    tracker = agent._scene_tracker
+    occurrence_count = config.history_events_limit + config.history_lines_limit
+
+    for index in range(occurrence_count):
+        assert tracker.remember_scene_line(
+            "scene-a",
+            f"line-{index}",
+            seq=index + 1,
+            ts=f"2026-04-21T08:{index // 60:02d}:{index % 60:02d}Z",
+        )
+
+    assert all(
+        not tracker.remember_scene_line(
+            "scene-a",
+            f"line-{index}",
+            seq=index + 1,
+            ts=f"2026-04-21T08:{index // 60:02d}:{index % 60:02d}Z",
+        )
+        for index in range(occurrence_count)
+    )
+
+
+@pytest.mark.plugin_unit
 def test_delivered_archive_preserves_lines_arriving_after_schedule(tmp_path: Path) -> None:
     plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
     agent = GameLLMAgent(
