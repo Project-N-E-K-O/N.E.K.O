@@ -2544,6 +2544,9 @@ def _chat_text_requests_full_rewrite_from_scoped_segments(text: str) -> bool:
 
 def _chat_text_requests_full_rewrite(text: str) -> bool:
     """Return whether text contains a high-confidence full-card rewrite command."""
+    active_start = _chat_active_request_start(text)
+    if active_start:
+        text = text[active_start:]
     return (
         _chat_text_requests_full_rewrite_core(text)
         or _chat_text_requests_full_rewrite_from_scoped_segments(text)

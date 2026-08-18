@@ -5084,6 +5084,14 @@ def test_consent_condition_with_standalone_edit_verb_governs_rewrite():
     assert router._chat_text_requests_full_rewrite(text) is False
 
 
+def test_new_request_boundary_discards_prior_full_rewrite_intent():
+    import main_routers.card_assist_router as router
+
+    text = 'Rewrite all fields except avatar. New request: change name'
+
+    assert router._chat_text_requests_full_rewrite(text) is False
+
+
 @pytest.mark.parametrize(
     'text',
     [
