@@ -246,6 +246,29 @@ async def test_ocr_entry_routes_interactive_capture_to_requesting_lanlan(
 
 
 @pytest.mark.asyncio
+async def test_ocr_entry_ui_capture_ignores_cached_lanlan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_lanlans: list[str | None] = []
+    harness = _entry_harness(_Pipeline())
+    harness._resolve_study_target_lanlan = lambda _kwargs: "stale-character"
+
+    async def _capture(*, lanlan_name=None):
+        captured_lanlans.append(lanlan_name)
+        return SimpleNamespace(image=object(), canceled=False)
+
+    monkeypatch.setattr(entry_ocr_entries, "capture_interactive_region", _capture)
+
+    result = await _OcrEntriesMixin.study_ocr_snapshot(
+        harness,
+        capture_mode="interactive",
+    )
+
+    assert isinstance(result, Ok)
+    assert captured_lanlans == [None]
+
+
+@pytest.mark.asyncio
 async def test_ocr_entry_cancel_preserves_all_study_state(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

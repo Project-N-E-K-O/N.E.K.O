@@ -20,10 +20,7 @@ from .interactive_screenshot import (
 from .models import OcrSnapshot
 
 
-def _ocr_request_lanlan(owner, kwargs: dict[str, object]) -> str | None:
-    resolver = getattr(owner, "_resolve_study_target_lanlan", None)
-    if callable(resolver):
-        return str(resolver(kwargs) or "").strip() or None
+def _ocr_request_lanlan(kwargs: dict[str, object]) -> str | None:
     context = kwargs.get("_ctx")
     if isinstance(context, dict):
         return str(context.get("lanlan_name") or "").strip() or None
@@ -76,7 +73,7 @@ class _OcrEntriesMixin:
         if capture_mode == "interactive":
             try:
                 capture = await capture_interactive_region(
-                    lanlan_name=_ocr_request_lanlan(self, kwargs)
+                    lanlan_name=_ocr_request_lanlan(kwargs)
                 )
             except InteractiveCaptureError as exc:
                 return _entry_exception_error(
