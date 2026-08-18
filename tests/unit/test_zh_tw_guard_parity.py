@@ -4140,3 +4140,53 @@ def test_assignment_isolation_does_not_cap_custom_field_names(prefix, length):
     assignment = router._CHAT_SCOPED_VALUE_ASSIGNMENT_RE.search(text)
     assert assignment is not None
     assert router._chat_text_requests_full_rewrite(text) is False
+
+
+@pytest.mark.parametrize('prohibition', ['不要执行', '别执行', '不执行了'])
+def test_a_bare_execution_prohibition_cancels_scoped_recovery(prohibition):
+    import main_routers.card_assist_router as router
+
+    text = f'请重写所有字段并保留是否会员，但{prohibition}'
+    assert router._chat_text_requests_full_rewrite_core(text) is False
+    assert router._chat_text_requests_full_rewrite(text) is False
+
+
+@pytest.mark.parametrize('request_head', ['我想要求', '我想说'])
+def test_first_person_intent_framing_is_not_reported_speech(request_head):
+    import main_routers.card_assist_router as router
+
+    text = f'{request_head}：请重写所有字段并保留是否会员'
+    assert router._chat_text_requests_full_rewrite(text) is True
+
+
+def test_a_discourse_prefix_preserves_a_governing_condition():
+    import main_routers.card_assist_router as router
+
+    text = '请注意，如果用户确认后再执行以下修改：先重写名字，然后请重写所有字段并保留是否会员'
+    assert router._chat_text_requests_full_rewrite_core(text) is False
+    assert router._chat_text_requests_full_rewrite(text) is False
+
+
+def test_a_standalone_inch_mark_does_not_mask_a_following_command():
+    import main_routers.card_assist_router as router
+
+    text = '把屏幕尺寸改成27"然后请重写所有字段'
+    assert router._chat_text_requests_full_rewrite(text) is True
+
+
+@pytest.mark.parametrize('version', ['1.0', 'e.g.'])
+def test_decimal_and_abbreviation_periods_do_not_reset_reported_speech(version):
+    import main_routers.card_assist_router as router
+
+    text = f'小明说：版本是{version}，然后请重写所有字段并保留是否会员'
+    assert router._chat_text_requests_full_rewrite_core(text) is False
+    assert router._chat_text_requests_full_rewrite(text) is False
+
+
+@pytest.mark.parametrize('quantifier', ['只', '仅', '僅'])
+def test_a_contrastive_bare_narrowing_replaces_the_full_rewrite(quantifier):
+    import main_routers.card_assist_router as router
+
+    text = f'重写所有字段并保留是否会员，但是{quantifier}重写名字'
+    assert router._chat_text_requests_full_rewrite_core(text) is False
+    assert router._chat_text_requests_full_rewrite(text) is False

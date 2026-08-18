@@ -1462,7 +1462,9 @@ _CHAT_QUOTED_SPAN_RE = re.compile(
     r"(?<![A-Za-z0-9_])'[^'\r\n]*'(?![A-Za-z0-9_])"
 )
 _CHAT_QUOTE_OPENERS = ("“", "「", "『", "《", "【", '"')
-_CHAT_FEET_INCHES_BEFORE_MARK_RE = re.compile(r"\d+\s*['’′]\s*\d+\s*$")
+_CHAT_FEET_INCHES_BEFORE_MARK_RE = re.compile(
+    r"(?:\d+\s*['’′]\s*)?\d+(?:\.\d+)?\s*$"
+)
 
 # 只恢复已经闭合的整卡命令，不改变核心疑问/否定/目标判据。窗口不够时仍返回 False，
 # 因此这里可以安全地使用固定上限；它不能替代否定守卫那种必须覆盖完整宾语的窗口。
@@ -1525,13 +1527,17 @@ _CHAT_SCOPED_REPORTED_SPEECH_RE = re.compile(
 )
 _CHAT_FIRST_PERSON_REPORTING_RE = re.compile(
     r"^\s*(?:我|我们|我們|咱们|咱們|俺|我的|我们的|我們的)\s*"
+    r"(?:(?:想|想要|要|希望|打算|准备|準備)\s*)?"
     r"(?:说|說|表示|提到|写道|寫道|回复|回覆|要求|原话|原話|原文)"
 )
 _CHAT_FIRST_PERSON_REQUEST_HEAD_RE = re.compile(
-    r"^\s*(?:(?:我|我们|我們|咱们|咱們)\s*要求|"
+    r"^\s*(?:(?:我|我们|我們|咱们|咱們)\s*"
+    r"(?:(?:想|想要|要|希望|打算|准备|準備)\s*)?(?:要求|说|說)|"
     r"(?:我的|我们的|我們的)\s*要求)\s*[：:,，]\s*"
 )
-_CHAT_REPORTING_CONTEXT_RESET_RE = re.compile(r"[。！？.!?]+")
+_CHAT_REPORTING_CONTEXT_RESET_RE = re.compile(
+    r"[。！？!?]+|(?<![A-Za-z]\.[A-Za-z])(?<!\d)\.(?![A-Za-z0-9])"
+)
 _CHAT_SCOPED_NEXT_COMMAND_RE = re.compile(
     r"(?:(?:并|並|然后|然後|接着|接著|随后|隨後|同时|同時|以及|还要|還要|再)"
     r"|(?i:\b(?:and|then)\b))\s*(?="
@@ -1572,7 +1578,7 @@ _CHAT_SCOPED_CANCELLATION_RE = re.compile(
     r"(?:上述|以上|前述|这些|這些|该|該)?\s*"
     r"(?:修改|操作|指令|命令|要求|内容|內容)"
     r"|(?:算了|算啦|罢了|罷了|不用(?:了|啦))(?:吧)?"
-    r"|(?:先|暂时|暫時)\s*(?:不要|别|別)\s*"
+    r"|(?:(?:先|暂时|暫時)\s*)?(?:不要|别|別|不)\s*"
     r"(?:执行|執行|应用|應用|采用|採用|进行|進行)(?:了|啦|吧)?\s*$"
 )
 _CHAT_SCOPED_SCOPE_REPLACEMENT_RE = re.compile(
@@ -1581,6 +1587,7 @@ _CHAT_SCOPED_SCOPE_REPLACEMENT_RE = re.compile(
     r"|(?:后来|後來)\s*我?\s*(?:改|改变|改變)主意了?\s*[，,]?\s*(?:只|仅|僅)"
     r"|(?:我|我们|我們|咱们|咱們)\s*(?:只|仅|僅)\s*(?:想|要|需要)?"
 )
+_CHAT_SCOPED_BARE_CONTRAST_NARROWING_RE = re.compile(r"^\s*(?:只|仅|僅)")
 _CHAT_SCOPED_SIGNAL_BRIDGE_RE = re.compile(
     rf"\s*(?:(?:一遍|一次|一下|下|一回)\s*|(?i:the)\s*|{_WHOLE_CARD_ADVERB_RUN})*"
 )
@@ -1595,7 +1602,8 @@ _CHAT_GOVERNING_CONDITION_PATTERN = (
     + r")"
 )
 _CHAT_GOVERNING_CONDITION_RE = re.compile(
-    r"^\s*" + _CHAT_GOVERNING_CONDITION_PATTERN
+    r"^\s*(?:(?:请注意|請注意|注意|提醒一下|需要注意(?:的是)?)\s*[，,:：]\s*)?"
+    + _CHAT_GOVERNING_CONDITION_PATTERN
 )
 _CHAT_GOVERNING_EXECUTION_QUESTION_RE = re.compile(
     r"^\s*(?:(?:请问|請問|你觉得|你覺得|我想知道)\s*)?"
@@ -1741,7 +1749,10 @@ def _chat_remaining_secondary_segments_have_governing_guard(
             contrast_suffix = text[boundary.end():]
             readable_contrast_suffix = masked[boundary.end():]
             return bool(
-                _CHAT_QUESTION_CLAUSE_RE.search(readable_contrast_suffix)
+                _CHAT_SCOPED_BARE_CONTRAST_NARROWING_RE.search(
+                    readable_contrast_suffix
+                )
+                or _CHAT_QUESTION_CLAUSE_RE.search(readable_contrast_suffix)
                 or _chat_scoped_suffix_has_governing_guard(
                     contrast_suffix,
                     readable_contrast_suffix,
