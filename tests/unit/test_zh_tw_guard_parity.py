@@ -4470,6 +4470,21 @@ def test_exception_clauses_resolve_exact_overlapping_keys():
     assert router._chat_preserved_target_keys(text, ['年龄', '心理年龄']) == {'心理年龄'}
 
 
+def test_exception_clauses_inside_questions_do_not_preserve_targets():
+    import main_routers.card_assist_router as router
+
+    text = 'Should I rewrite all fields except avatar? Now rewrite all fields.'
+    assert router._chat_preserved_target_keys(text, ['avatar']) == set()
+    assert router._chat_text_requests_full_rewrite(text) is True
+
+
+def test_preserve_all_except_inverts_exception_targets():
+    import main_routers.card_assist_router as router
+
+    text = 'Rewrite all fields, but preserve everything except avatar'
+    assert router._chat_preserved_target_keys(text, ['name', 'avatar']) == {'name'}
+
+
 def test_quoted_field_keys_in_direct_preservation_requests_still_work():
     import main_routers.card_assist_router as router
 
@@ -4657,6 +4672,16 @@ def test_unchanged_targets_before_later_constraints_are_preserved():
 
     text = 'Rewrite all fields and keep avatar unchanged and name short'
     assert router._chat_preserved_target_keys(text, ['name', 'avatar']) == {'avatar'}
+
+
+def test_chinese_conjoined_targets_share_unchanged_tail():
+    import main_routers.card_assist_router as router
+
+    text = '请重写所有字段，但保持年龄和性别不变'
+    assert router._chat_preserved_target_keys(text, ['年龄', '性别']) == {
+        '年龄',
+        '性别',
+    }
 
 
 @pytest.mark.parametrize(

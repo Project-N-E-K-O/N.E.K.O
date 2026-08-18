@@ -1655,6 +1655,13 @@ _CHAT_PRESERVATION_ZH_CONDITION_RE = re.compile(
 _CHAT_PRESERVATION_EN_QUESTION_HEAD_RE = re.compile(
     r"^\s*(?i:(?:should|could|would|can|do|does|did|why|how|what|which|are|is)\b)"
 )
+_CHAT_PRESERVATION_ALL_BUT_RE = re.compile(
+    r"(?i:(?:\b(?:but|however)\s+)?\b(?:preserve|keep)\s+"
+    r"(?:everything|all(?:\s+fields)?)\s*$)"
+)
+_CHAT_PRESERVATION_TARGET_CONJUNCTION_RE = re.compile(
+    r"^\s*(?:和|与|與|及|跟|(?i:\band\b))\s*$"
+)
 _CHAT_GOVERNING_EXECUTION_QUESTION_RE = re.compile(
     r"^\s*(?:(?:请问|請問|你觉得|你覺得|我想知道)\s*)?"
     r"(?:"
@@ -2934,15 +2941,31 @@ def _chat_preserved_target_keys(
             instruction or "", except_match.start()
         ):
             continue
+        if _chat_preservation_sentence_has_governing_guard(
+            instruction or "", except_match.start()
+        ):
+            continue
         except_keys = (
             except_match.group("keys_zh") or except_match.group("keys_en") or ""
         )
         except_start = except_match.start(
             "keys_zh" if except_match.group("keys_zh") is not None else "keys_en"
         )
-        candidates.extend(
-            _chat_target_key_matches(except_keys, target_keys, except_start)
+        except_targets = _chat_target_key_matches(
+            except_keys, target_keys, except_start
         )
+        prefix = _CHAT_CLAUSE_SPLIT_RE.split(
+            (instruction or "")[:except_match.start()]
+        )[-1]
+        if _CHAT_PRESERVATION_ALL_BUT_RE.search(prefix):
+            except_lookup = {key.casefold() for key, _, _ in except_targets}
+            candidates.extend(
+                (key, except_match.start(), except_match.start())
+                for key in target_keys
+                if key.casefold() not in except_lookup
+            )
+        else:
+            candidates.extend(except_targets)
     for clause_match in _CHAT_PRESERVATION_CLAUSE_RE.finditer(instruction or ""):
         if clause_match.start() < active_start:
             continue
@@ -2977,6 +3000,14 @@ def _chat_preserved_target_keys(
             r"不(?:变|變)", clause
         ):
             continue
+        except_in_clause = _CHAT_PRESERVATION_EXCEPT_RE.search(clause)
+        if (
+            except_in_clause is not None
+            and _CHAT_PRESERVATION_ALL_BUT_RE.search(
+                clause[: except_in_clause.start()]
+            )
+        ):
+            continue
         target_matches = sorted(
             _chat_target_key_matches(
                 clause, target_keys, clause_match.start()
@@ -2990,12 +3021,24 @@ def _chat_preserved_target_keys(
                 else len(clause)
             )
             remaining = clause[end - clause_match.start():next_target_start]
-            predicate_end = re.search(r"(?i:\band\b)|[，,、]", remaining)
-            segment_end = (
-                end - clause_match.start() + predicate_end.start()
-                if predicate_end is not None
-                else next_target_start
-            )
+            if (
+                _CHAT_PRESERVATION_TARGET_CONJUNCTION_RE.fullmatch(remaining)
+                and re.search(
+                    r"(?:不(?:变|變)|原样|原樣|(?i:unchanged|as\s+is))\s*$",
+                    clause,
+                )
+            ):
+                segment_end = len(clause)
+            else:
+                predicate_end = re.search(
+                    r"(?i:\band\b)|(?:和|与|與|及|跟)|[，,、]",
+                    remaining,
+                )
+                segment_end = (
+                    end - clause_match.start() + predicate_end.start()
+                    if predicate_end is not None
+                    else next_target_start
+                )
             key_segment = clause[:segment_end]
             if _chat_preservation_match_is_constraint(
                 key_segment,
