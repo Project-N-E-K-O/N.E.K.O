@@ -1517,6 +1517,9 @@ _CHAT_SCOPED_VALUE_ASSIGNMENT_RE = re.compile(
     + r"|(?i:(?:rewrite|revise|regenerate|redo|refresh)\s+"
     r"(?!(?:all\s+fields|all\s+visible\s+fields|full\s+card|whole\s+card|"
     r"entire\s+card)\b)[^,.!?;]{1,40}?\s+as\s+))"
+    r"|(?i:(?:set|change|update)\s+"
+    r"(?!(?:all\s+fields|all\s+visible\s+fields|full\s+card|whole\s+card|"
+    r"entire\s+card)\b)[^,.!?;]{1,40}?\s+to\s+)"
 )
 _CHAT_SCOPED_COMPLETED_COMMAND_TAIL_RE = re.compile(
     r"\s*(?:一遍|一次|一下|下|一回)?\s*"
@@ -1622,12 +1625,12 @@ _CHAT_SCOPED_NEW_REQUEST_RE = re.compile(
 _CHAT_SCOPED_META_REQUEST_RE = re.compile(
     r"^\s*(?:(?:请|請|帮我|幫我)\s*)?"
     r"(?:"
-    r"(?:翻译|翻譯|解释|解釋|分析|说明|說明|总结|總結|评估|評估|校对|校對|复述|復述)\s*"
+    r"(?:翻译|翻譯|解释|解釋|分析|说明|說明|总结|總結|评估|評估|校对|校對|复述|復述|引用|逐字读|逐字讀)\s*"
     r"(?:一下\s*)?(?:以下|下面|此)?\s*"
     r"(?:这段|這段|这句话|這句話)?\s*"
     r"(?:内容|內容|文字|句子|指令|命令|要求|修改)?\s*[：:,，]"
     r"|(?i:(?:please\s+)?(?:translate|explain|analy[sz]e|summari[sz]e|"
-    r"evaluate|proofread|repeat)\s+"
+    r"evaluate|proofread|repeat|quote|read\s+(?:back|verbatim))\s+"
     r"(?:(?:the\s+)?following(?:\s+(?:text|content|sentence|instruction|command|request|change)s?)?"
     r"|(?:the\s+)?(?:text|content|sentence|instruction|command|request|change)s?)\s*[:：])"
     r")",
@@ -1652,7 +1655,8 @@ _CHAT_GOVERNING_CONDITION_RE = re.compile(
     + _CHAT_GOVERNING_CONDITION_PATTERN
 )
 _CHAT_GOVERNING_EN_CONDITION_RE = re.compile(
-    r"^\s*(?i:(?:if|when|unless)\b|only\s+after\s+(?:the\s+)?user\s+approves\b)"
+    r"^\s*(?i:(?:if|when|unless)\b|(?:only\s+)?after\s+(?:the\s+)?user\s+approves\b|"
+    r"once\s+(?:the\s+)?user\s+approves\b|upon\s+approval\b)"
 )
 _CHAT_PRESERVATION_ZH_CONDITION_RE = re.compile(
     r"^\s*(?:如果|假如|若是|要是|倘若|万一|萬一|假若)[^。，、！？,.!?;；]*[，,]"
@@ -2547,10 +2551,30 @@ def _chat_text_requests_full_rewrite_from_scoped_segments(text: str) -> bool:
 def _chat_text_requests_full_rewrite(text: str) -> bool:
     """Return whether text contains a high-confidence full-card rewrite command."""
     masked = _chat_mask_quoted_spans(text)
+    meta_request = _CHAT_SCOPED_META_REQUEST_RE.search(masked)
+    if meta_request is not None:
+        sentence_end = _CHAT_GOVERNING_PROHIBITION_SENTENCE_END_RE.search(
+            masked, meta_request.end()
+        )
+        if sentence_end is None:
+            return False
+        text = text[sentence_end.end():]
+        masked = _chat_mask_quoted_spans(text)
     marker_text = _chat_mask_assignment_value_before_next_command(text, masked)
+    assignment = _CHAT_SCOPED_VALUE_ASSIGNMENT_RE.search(text)
+    new_request = _CHAT_SCOPED_NEW_REQUEST_RE.search(masked)
+    marker_in_assignment_value = bool(
+        assignment is not None
+        and new_request is not None
+        and assignment.end() <= new_request.start()
+        and not _CHAT_REPORTING_CONTEXT_RESET_RE.search(
+            text, assignment.end(), new_request.start()
+        )
+    )
     active_start = 0
     if not (
         _CHAT_GOVERNING_INSTRUCTION_PROHIBITION_RE.search(marker_text)
+        or marker_in_assignment_value
         or re.search(
             r"(?i:\b[A-Za-z][A-Za-z0-9_-]{0,40}\s+is\s+new\s+request\s*:)",
             masked,
@@ -2709,7 +2733,8 @@ def _chat_instruction_explicitly_removes_field(
     removal_re = re.compile(
         rf"(?:删除|刪除|移除)\s*{key}(?![A-Za-z0-9_])"
         rf"|(?:把|将|將)\s*{key}\s*(?:删除|刪除|移除)"
-        rf"|\b(?:delete|remove)\b\s+{key}(?![A-Za-z0-9_])",
+        rf"|\b(?:delete|remove)\b\s+(?:the\s+)?{key}(?![A-Za-z0-9_])"
+        r"(?:\s+field)?",
         re.IGNORECASE,
     )
     for match in removal_re.finditer(instruction):
@@ -2845,7 +2870,9 @@ _CHAT_FIELD_EDIT_PROHIBITION_RE = re.compile(
     r"(?P<keys_zh_after>[^。，、！？,.!?;；\r\n]+?)"
     + rf"|(?i:(?:do\s+not|do\s*n[o{_EN_APOSTROPHE_CHARS}]t|never)\s+"
     r"(?:change|update|edit|modify|rewrite|revise|regenerate|redo|refresh)\s+"
-    r"(?P<keys_after>[^。，、！？,.!?;；\r\n]+?))"
+    r"(?P<keys_after>[^。，、！？,.!?;；\r\n]+?)"
+    r"|\bwithout\s+(?:changing|updating|editing|modifying|rewriting)\s+"
+    r"(?P<keys_without>[^。，、！？,.!?;；\r\n]+?))"
     r")"
     r"(?=(?:但|但是|可是|不过|不過)\s*[^。，、！？,.!?;；\r\n]{0,24}?"
     + _CHAT_ZH_EDIT_BOUNDARY_VERB_PATTERN
@@ -3060,6 +3087,8 @@ def _chat_preservation_match_is_constraint(
     clause: str, verb: str, match_end: int
 ) -> bool:
     """Return whether a keep-style clause describes a rewrite constraint."""
+    if re.search(r"(?i:\b(?:meaning|tone|details)\s+of\s+)", clause):
+        return True
     if verb.lower() not in {"保持", "keep", "leave"}:
         return False
     if re.search(_CHAT_UNCHANGED_PREDICATE_PATTERN + r"\s*$", clause):
@@ -3088,11 +3117,11 @@ def _chat_instruction_explicitly_updates_field(
     if not instruction or not field_key:
         return False
     key = re.escape(field_key)
-    key_tail = r"(?![A-Za-z0-9_])" if _CHAT_IDENTIFIER_KEY_RE.search(field_key) else ""
+    key_tail = r"(?![A-Za-z0-9_\u4e00-\u9fff])"
     update_re = re.compile(
-        rf"(?:(?i:\b(?:but|however)\s+"
+        rf"(?:(?i:\b(?:but|however|(?:and\s+)?then)\s+"
         rf"(?:change|update|edit|modify|rewrite|revise|regenerate|redo|refresh|set)\s+"
-        rf"{key}(?![A-Za-z0-9_]))"
+        rf"{key}{key_tail})"
         rf"|(?:但|但是|可是|不过|不過|然后|然後)\s*"
         rf"(?:改|修改|更改|重写|重寫|改写|改寫|调整|調整)\s*{key}{key_tail})",
         re.IGNORECASE,
@@ -3132,12 +3161,20 @@ def _chat_preservation_is_but_not_revoked(
         if sentence_end_match is not None
         else len(instruction or "")
     )
-    return bool(
-        re.search(
-            rf"(?i:\bbut\s+not\s+{re.escape(field_key)}(?![A-Za-z0-9_]))",
-            (instruction or "")[sentence_start:sentence_end],
-        )
+    pattern = re.compile(
+        rf"(?i:\bbut\s+not\s+{re.escape(field_key)}(?![A-Za-z0-9_]))"
     )
+    for match in pattern.finditer((instruction or "")[sentence_start:sentence_end]):
+        start = sentence_start + match.start()
+        end = sentence_start + match.end()
+        if (
+            _chat_span_is_quoted(instruction or "", start, end)
+            or _chat_preservation_clause_is_meta_request_text(instruction or "", start)
+            or _chat_preservation_clause_is_reported(instruction or "", start)
+        ):
+            continue
+        return True
+    return False
 
 
 def _chat_preserved_target_keys(
@@ -3359,6 +3396,9 @@ def _chat_preserved_target_keys(
         elif clause_match.group("keys_zh_after") is not None:
             keys_text = clause_match.group("keys_zh_after")
             keys_start = clause_match.start("keys_zh_after")
+        elif clause_match.group("keys_without") is not None:
+            keys_text = clause_match.group("keys_without")
+            keys_start = clause_match.start("keys_without")
         else:
             keys_text = clause_match.group("keys_after") or ""
             keys_start = clause_match.start("keys_after")

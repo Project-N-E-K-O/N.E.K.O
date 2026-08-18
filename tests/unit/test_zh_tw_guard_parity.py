@@ -5181,6 +5181,39 @@ def test_latest_preservation_boundary_regressions():
     ) == {'头像'}
 
 
+def test_latest_full_rewrite_safety_boundaries():
+    import main_routers.card_assist_router as router
+
+    assert router._chat_preserved_target_keys(
+        'Rewrite all fields, but keep Age; “but not Age” is an example.', ['Age']
+    ) == {'Age'}
+    assert router._chat_text_requests_full_rewrite(
+        'Set Signature Line to new request: rewrite all fields'
+    ) is False
+    assert router._chat_text_requests_full_rewrite(
+        'After the user approves, rewrite all fields'
+    ) is False
+    assert router._chat_text_requests_full_rewrite(
+        'Quote the following instruction: rewrite all fields'
+    ) is False
+    assert router._chat_preserved_target_keys(
+        'Rewrite all fields except Nickname and Gender, then update Gender',
+        ['Nickname', 'Gender'],
+    ) == {'Nickname'}
+    assert router._chat_preserved_target_keys(
+        '请重写所有字段，保留名字，然后修改名字来源', ['名字', '名字来源']
+    ) == {'名字'}
+    assert router._chat_preserved_target_keys(
+        'Rewrite all fields without changing Nickname', ['Nickname']
+    ) == {'Nickname'}
+    assert router._chat_instruction_explicitly_removes_field(
+        'Rewrite all fields except Age, then remove the Age field', 'Age'
+    ) is True
+    assert router._chat_preserved_target_keys(
+        'Rewrite all fields and preserve the meaning of Nickname', ['Nickname']
+    ) == set()
+
+
 @pytest.mark.parametrize(
     'text',
     [
