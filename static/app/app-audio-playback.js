@@ -19,6 +19,7 @@
     const SELECTED_SPEAKER_STORAGE_KEY = 'neko_selected_speaker';
     let audioPlayerContextSetupPromise = null;
     let speakerTransitionPromise = Promise.resolve();
+    let localSpeakerPreferenceRevision = 0;
 
     function normalizeSpeakerDeviceId(deviceId) {
         return typeof deviceId === 'string' && deviceId.length > 0
@@ -192,6 +193,7 @@
                 }
 
                 persistSelectedSpeaker(normalized);
+                localSpeakerPreferenceRevision += 1;
                 notifySpeakerDeviceChanged('selection');
                 return true;
             } catch (error) {
@@ -315,9 +317,28 @@
 
     window.addEventListener('storage', function (event) {
         if (event.key !== SELECTED_SPEAKER_STORAGE_KEY) return;
-        var deviceId = normalizeSpeakerDeviceId(event.newValue);
+        var eventDeviceId = normalizeSpeakerDeviceId(event.newValue);
+        var localRevisionAtArrival = localSpeakerPreferenceRevision;
         Promise.resolve(audioPlayerContextSetupPromise).then(function () {
             return enqueueSpeakerTransition(async function () {
+                // A local selection that completed after this event arrived is
+                // authoritative for this window. It will not receive a storage
+                // event for its own write, so an older queued event must not
+                // route back over it.
+                if (localRevisionAtArrival !== localSpeakerPreferenceRevision) {
+                    return;
+                }
+                var deviceId = eventDeviceId;
+                try {
+                    // Storage events may be delivered after newer writes. Read
+                    // the value at transaction time instead of trusting the
+                    // event snapshot captured before queued routes completed.
+                    deviceId = normalizeSpeakerDeviceId(
+                        localStorage.getItem(SELECTED_SPEAKER_STORAGE_KEY)
+                    );
+                } catch (error) {
+                    console.warn('[Audio] 读取跨窗口播放设备设置失败:', error);
+                }
                 S.selectedSpeakerId = deviceId;
                 S.selectedSpeakerAvailable = deviceId === DEFAULT_SPEAKER_DEVICE_ID
                     ? true
@@ -1666,6 +1687,9 @@
         }
 
         await ensureAudioPlayerContext();
+        if (expectedEpoch !== S.incomingAudioEpoch) {
+            return;
+        }
 
         if (S.audioPlayerContext.state === 'suspended') {
             await S.audioPlayerContext.resume();

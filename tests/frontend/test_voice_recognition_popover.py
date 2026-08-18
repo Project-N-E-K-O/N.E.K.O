@@ -41,6 +41,13 @@ def _voice_popover_sources() -> tuple[str, str]:
     return permission_source, render_expression[:-1]
 
 
+def _device_change_source() -> str:
+    source = APP_AUDIO_CAPTURE.read_text(encoding="utf-8")
+    start = source.index("// 监听设备变化")
+    end = source.index("/** 为浮动弹出框渲染麦克风列表 */", start)
+    return source[start:end].strip()
+
+
 def _install_voice_popover_harness(
     page: Page, *, deferred_permission: bool
 ) -> None:
@@ -158,8 +165,14 @@ def _install_voice_popover_harness(
     window.appSettings = { saveSettings: () => { window.__saveCalls += 1; } };
     window.__saveCalls = 0;
     window.__speakerSelections = [];
+    window.__speakerSelectionResult = true;
+    window.__statusToasts = [];
+    window.showStatusToast = (...args) => {
+        window.__statusToasts.push(args);
+    };
     window.selectSpeakerDevice = async (deviceId) => {
         window.__speakerSelections.push(deviceId);
+        if (window.__speakerSelectionResult === false) return false;
         S.selectedSpeakerId = deviceId;
         S.effectiveSpeakerId = deviceId;
         S.selectedSpeakerAvailable = true;
@@ -227,6 +240,9 @@ def _install_voice_popover_harness(
         listenerBalance,
         setCachedSpeakerDevices(devices) {
             cachedSpeakerDevices = devices;
+        },
+        setSpeakerSelectionResult(result) {
+            window.__speakerSelectionResult = result;
         },
         resolvePermissions() {
             while (mediaResolvers.length) {
@@ -788,6 +804,113 @@ def test_playback_device_event_refreshes_open_option_selection(
         {"deviceId": "speaker-a", "selected": False, "pressed": "false"},
         {"deviceId": "speaker-b", "selected": True, "pressed": "true"},
     ]
+
+
+@pytest.mark.frontend
+def test_playback_device_false_result_shows_switch_failure(
+    page: Page,
+) -> None:
+    _install_voice_popover_harness(page, deferred_permission=False)
+
+    result = page.evaluate(
+        """async () => {
+            const test = window.__voicePopoverTest;
+            await window.renderFloatingMicList(test.popup());
+            test.action('speaker-device').click();
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            test.setSpeakerSelectionResult(false);
+            test.panel('speaker-device').querySelector(
+                '.speaker-option[data-device-id="speaker-b"]'
+            ).click();
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            return {
+                selected: test.state.selectedSpeakerId,
+                toasts: window.__statusToasts.map((args) => args[0]),
+            };
+        }"""
+    )
+
+    assert result == {
+        "selected": "default",
+        "toasts": ["speaker.switchFailed"],
+    }
+
+
+@pytest.mark.frontend
+def test_devicechange_discards_an_older_out_of_order_enumeration(
+    page: Page,
+) -> None:
+    device_change_source = _device_change_source()
+    page.set_content("<main>devicechange generation harness</main>")
+    page.add_script_tag(
+        content=(
+            r"""
+            (() => {
+                const pendingEnumerations = [];
+                const reconcileCalls = [];
+                let deviceChangeListener = null;
+                Object.defineProperty(navigator, 'mediaDevices', {
+                    configurable: true,
+                    value: {
+                        enumerateDevices() {
+                            return new Promise((resolve) => {
+                                pendingEnumerations.push(resolve);
+                            });
+                        },
+                        addEventListener(type, listener) {
+                            if (type === 'devicechange') deviceChangeListener = listener;
+                        },
+                    },
+                });
+                var cachedMicDevices = null;
+                var cachedSpeakerDevices = null;
+                var mediaDeviceChangeGeneration = 0;
+                window.reconcileSelectedSpeakerDevices = async (devices) => {
+                    reconcileCalls.push(devices.map((device) => device.deviceId));
+                };
+                window.renderFloatingMicList = async () => true;
+                __DEVICE_CHANGE_SOURCE__
+                window.__deviceChangeTest = {
+                    emit: () => deviceChangeListener(),
+                    resolve(index, devices) {
+                        pendingEnumerations[index](devices);
+                    },
+                    result: () => ({
+                        speakers: (cachedSpeakerDevices || []).map(
+                            (device) => device.deviceId
+                        ),
+                        reconcileCalls: reconcileCalls.slice(),
+                    }),
+                };
+            })();
+            """.replace("__DEVICE_CHANGE_SOURCE__", device_change_source)
+        )
+    )
+
+    result = page.evaluate(
+        """async () => {
+            const test = window.__deviceChangeTest;
+            const older = test.emit();
+            const newer = test.emit();
+            test.resolve(1, [
+                { kind: 'audioinput', deviceId: 'mic-new' },
+                { kind: 'audiooutput', deviceId: 'default' },
+                { kind: 'audiooutput', deviceId: 'preferred-speaker' },
+            ]);
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            test.resolve(0, [
+                { kind: 'audioinput', deviceId: 'mic-old' },
+                { kind: 'audiooutput', deviceId: 'default' },
+            ]);
+            await Promise.all([older, newer]);
+            return test.result();
+        }"""
+    )
+
+    assert result == {
+        "speakers": ["default", "preferred-speaker"],
+        "reconcileCalls": [["mic-new", "default", "preferred-speaker"]],
+    }
 
 
 @pytest.mark.frontend

@@ -2641,6 +2641,7 @@
     var micPermissionGranted = false;
     var cachedMicDevices = null;
     var cachedSpeakerDevices = null;
+    var mediaDeviceChangeGeneration = 0;
     var disposeVoiceRecognitionPopover = null;
     var voiceRecognitionPopoverRenderGeneration = 0;
 
@@ -2744,14 +2745,17 @@
     // 监听设备变化，更新缓存
     if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
         navigator.mediaDevices.addEventListener('devicechange', async function () {
+            var deviceChangeGeneration = ++mediaDeviceChangeGeneration;
             console.log('检测到设备变化，刷新麦克风列表...');
             try {
                 var devices = await navigator.mediaDevices.enumerateDevices();
+                if (deviceChangeGeneration !== mediaDeviceChangeGeneration) return;
                 cachedMicDevices = devices.filter(function (d) { return d.kind === 'audioinput'; });
                 cachedSpeakerDevices = devices.filter(function (d) { return d.kind === 'audiooutput'; });
                 if (typeof window.reconcileSelectedSpeakerDevices === 'function') {
                     await window.reconcileSelectedSpeakerDevices(devices);
                 }
+                if (deviceChangeGeneration !== mediaDeviceChangeGeneration) return;
                 var micPopup = document.getElementById('live2d-popup-mic') || document.getElementById('vrm-popup-mic') || document.getElementById('mmd-popup-mic');
                 if (micPopup && micPopup.style.display === 'flex') {
                     await window.renderFloatingMicList();
@@ -3962,7 +3966,9 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                             throw new Error('Speaker device selection is unavailable');
                         }
                         var applied = await window.selectSpeakerDevice(deviceId);
-                        if (applied === false) return;
+                        if (applied === false) {
+                            throw new Error('Speaker device selection was not applied');
+                        }
                         updateSpeakerOptionSelection();
                         document.querySelectorAll('[data-neko-mic-main-action="speaker-device"] .neko-mic-action-sub-label').forEach(function (labelEl) {
                             labelEl.textContent = label;

@@ -470,3 +470,82 @@ def test_failed_default_fallback_keeps_the_observed_effective_sink(
         "sinkId": "preferred-speaker",
         "calls": ["preferred-speaker", "default"],
     }
+
+
+@pytest.mark.frontend
+def test_stale_storage_event_cannot_override_a_pending_local_selection(
+    page: Page, running_server: str
+) -> None:
+    _install_controllable_speaker_harness(page, running_server)
+
+    result = page.evaluate(
+        """async () => {
+            const context = await window.ensureAudioPlayerContext();
+            window.__delayedSpeakerIds.add('local-speaker');
+            const localSelection = window.selectSpeakerDevice('local-speaker');
+            while (!window.__pendingSpeakerRoutes.length) {
+                await new Promise((resolve) => setTimeout(resolve, 0));
+            }
+            localStorage.setItem('neko_selected_speaker', 'older-speaker');
+            window.dispatchEvent(new StorageEvent('storage', {
+                key: 'neko_selected_speaker',
+                newValue: 'older-speaker',
+            }));
+            window.__settleSpeakerRoute('local-speaker', true);
+            await localSelection;
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            return {
+                selected: window.appState.selectedSpeakerId,
+                effective: window.appState.effectiveSpeakerId,
+                stored: localStorage.getItem('neko_selected_speaker'),
+                sinkId: context.sinkId,
+                calls: context.setSinkIdCalls.slice(),
+            };
+        }"""
+    )
+
+    assert result == {
+        "selected": "local-speaker",
+        "effective": "local-speaker",
+        "stored": "local-speaker",
+        "sinkId": "local-speaker",
+        "calls": ["local-speaker"],
+    }
+
+
+@pytest.mark.frontend
+def test_stale_audio_epoch_stops_before_stateful_ogg_decode_after_sink_setup(
+    page: Page, running_server: str
+) -> None:
+    _install_controllable_speaker_harness(page, running_server)
+
+    result = page.evaluate(
+        """async () => {
+            const state = window.appState;
+            state.selectedSpeakerId = 'epoch-speaker';
+            state.selectedSpeakerAvailable = true;
+            window.__delayedSpeakerIds.add('epoch-speaker');
+            window.__oggDecodeCalls = 0;
+            window.decodeOggOpusChunk = async () => {
+                window.__oggDecodeCalls += 1;
+                return null;
+            };
+            const expectedEpoch = state.incomingAudioEpoch;
+            const pending = window.handleAudioBlob(
+                new Blob([new Uint8Array([0x4f, 0x67, 0x67, 0x53])]),
+                expectedEpoch
+            );
+            while (!window.__pendingSpeakerRoutes.length) {
+                await new Promise((resolve) => setTimeout(resolve, 0));
+            }
+            state.incomingAudioEpoch += 1;
+            window.__settleSpeakerRoute('epoch-speaker', true);
+            await pending;
+            return {
+                decodeCalls: window.__oggDecodeCalls,
+                sinkCalls: state.audioPlayerContext.setSinkIdCalls.slice(),
+            };
+        }"""
+    )
+
+    assert result == {"decodeCalls": 0, "sinkCalls": ["epoch-speaker"]}
