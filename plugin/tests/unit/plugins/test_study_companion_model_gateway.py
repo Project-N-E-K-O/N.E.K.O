@@ -52,15 +52,23 @@ def _runtime(
 
 
 class _QuotaManager:
-    def __init__(self, *, allowed: bool = True) -> None:
+    def __init__(self, *, allowed: bool = True, reserved: int = 2) -> None:
         self.allowed = allowed
+        self.reserved = reserved
         self.calls: list[tuple[str, int]] = []
+        self.reserve_calls: list[tuple[str, int, int]] = []
 
     async def aconsume_agent_daily_quota(
         self, source: str = "", units: int = 1
     ) -> tuple[bool, dict[str, object]]:
         self.calls.append((source, units))
         return self.allowed, {}
+
+    async def areserve_agent_daily_quota(
+        self, source: str = "", units: int = 1, minimum_units: int = 1
+    ) -> tuple[int, dict[str, object]]:
+        self.reserve_calls.append((source, units, minimum_units))
+        return self.reserved, {"remaining": 0}
 
 
 def _install_manager(monkeypatch: pytest.MonkeyPatch, manager: object) -> None:
@@ -327,6 +335,49 @@ async def test_quota_denial_prevents_actual_agent_request(
     assert raised.value.diagnostic == "agent_quota_exceeded"
     assert manager.calls == [("study_companion:question_generate", 1)]
     assert calls == 0
+
+
+@pytest.mark.asyncio
+async def test_optional_agent_reservation_preserves_last_credit_for_primary_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from plugin.plugins.study_companion import study_model_gateway as module
+
+    class Client:
+        async def ainvoke(self, _messages: object) -> object:
+            return SimpleNamespace(
+                content="primary answer",
+                response_metadata={"finish_reason": "stop"},
+            )
+
+        async def aclose(self) -> None:
+            return None
+
+    async def factory(**_kwargs: Any) -> Client:
+        return Client()
+
+    manager = _QuotaManager(reserved=1)
+    _install_manager(monkeypatch, manager)
+    monkeypatch.setattr(module, "create_chat_llm_async", factory)
+    gateway = StudyModelGateway(logger=_Logger())
+
+    optional_allowed, reservation = await gateway.reserve_optional_agent_call(
+        "knowledge_semantic_route"
+    )
+    result = await gateway.call(
+        [{"role": "user", "content": "explain"}],
+        operation="concept_explain",
+        deadline=time.monotonic() + 10,
+        runtime=_runtime(),
+        quota_reservation=reservation,
+    )
+
+    assert optional_allowed is False
+    assert result.text == "primary answer"
+    assert manager.reserve_calls == [
+        ("study_companion:knowledge_semantic_route", 2, 1)
+    ]
+    assert manager.calls == []
 
 
 def test_runtime_description_and_repr_never_expose_secret_or_endpoint() -> None:

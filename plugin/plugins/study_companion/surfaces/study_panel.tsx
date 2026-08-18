@@ -2111,7 +2111,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
         if (controller.signal.aborted) {
           return;
         }
-        setReply(formatPluginError(error));
+        setReply((current) => current || formatPluginError(error));
       });
     return () => {
       mountedRef.current = false;

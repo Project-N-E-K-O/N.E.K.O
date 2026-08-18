@@ -33,6 +33,7 @@ from .qwen_native_client import (
     new_operation_deadline,
 )
 from .study_model_gateway import (
+    AgentQuotaReservation,
     StudyModelGateway,
     StudyModelResult,
     StudyModelRuntimeSnapshot,
@@ -67,6 +68,11 @@ class TutorLLMAgent:
 
     async def describe_model_runtimes(self) -> dict[str, dict[str, object]]:
         return await self._model_gateway.describe_runtimes()
+
+    async def reserve_optional_agent_call(
+        self, operation: str
+    ) -> tuple[bool, AgentQuotaReservation | None]:
+        return await self._model_gateway.reserve_optional_agent_call(operation)
 
     @contextmanager
     def bind_model_runtime(self, runtime: StudyModelRuntimeSnapshot):
@@ -334,12 +340,15 @@ class TutorLLMAgent:
         *,
         operation: str = LLM_OPERATION_CONCEPT_EXPLAIN,
         deadline: float | None = None,
+        quota_reservation: AgentQuotaReservation | None = None,
     ) -> str:
-        result = await self._call_model_result(
-            messages,
-            operation=operation,
-            deadline=deadline,
-        )
+        call_kwargs: dict[str, Any] = {
+            "operation": operation,
+            "deadline": deadline,
+        }
+        if quota_reservation is not None:
+            call_kwargs["quota_reservation"] = quota_reservation
+        result = await self._call_model_result(messages, **call_kwargs)
         return result.text
 
     async def _call_model_result(
@@ -349,6 +358,7 @@ class TutorLLMAgent:
         operation: str = LLM_OPERATION_CONCEPT_EXPLAIN,
         deadline: float | None = None,
         runtime: StudyModelRuntimeSnapshot | None = None,
+        quota_reservation: AgentQuotaReservation | None = None,
     ) -> StudyModelResult | QwenNativeResult:
         effective_deadline = deadline or self._new_operation_deadline(
             operation, messages
@@ -362,12 +372,14 @@ class TutorLLMAgent:
                 deadline=effective_deadline,
             )
         runtime = runtime or _bound_model_runtime.get()
-        return await self._model_gateway.call(
-            messages,
-            operation=operation,
-            deadline=effective_deadline,
-            runtime=runtime,
-        )
+        call_kwargs: dict[str, Any] = {
+            "operation": operation,
+            "deadline": effective_deadline,
+            "runtime": runtime,
+        }
+        if quota_reservation is not None:
+            call_kwargs["quota_reservation"] = quota_reservation
+        return await self._model_gateway.call(messages, **call_kwargs)
 
     def _new_operation_deadline(
         self, operation: str, messages: list[dict[str, Any]]

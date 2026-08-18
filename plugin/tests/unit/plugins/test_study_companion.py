@@ -8472,6 +8472,43 @@ async def test_semantic_route_failure_keeps_explanation_without_graph_injection(
 
 
 @pytest.mark.asyncio
+async def test_semantic_route_reserves_last_agent_credit_for_primary_explanation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "zh-CN", "default_mode": MODE_COMPANION, "auto_open_ui": False},
+            "ocr_reader": {"enabled": True},
+            "rapidocr": {"lang_type": "ch"},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    assert isinstance(result, Ok)
+    fake_agent = _FakeTutorAgent()
+    reservation = object()
+
+    async def reserve_optional_agent_call(_operation: str):
+        return False, reservation
+
+    fake_agent.reserve_optional_agent_call = reserve_optional_agent_call  # type: ignore[attr-defined]
+    plugin._agent = fake_agent
+
+    try:
+        explained = await plugin.study_explain_text("谈谈一部文学作品的主题")
+
+        assert isinstance(explained, Ok)
+        assert fake_agent.semantic_routing_calls == []
+        assert fake_agent.inputs[-1][1]["_agent_quota_reservation"] is reservation
+        assert explained.value["study_semantic_reason"] == "primary_quota_reserved"
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_semantic_route_timeout_is_short_and_does_not_block_explanation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

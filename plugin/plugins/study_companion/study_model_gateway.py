@@ -88,6 +88,17 @@ class StudyModelResult:
     termination_unknown: bool = True
 
 
+@dataclass(slots=True)
+class AgentQuotaReservation:
+    remaining_calls: int
+
+    def consume(self) -> bool:
+        if self.remaining_calls <= 0:
+            return False
+        self.remaining_calls -= 1
+        return True
+
+
 class StudyModelError(RuntimeError):
     def __init__(
         self,
@@ -288,6 +299,7 @@ class StudyModelGateway:
         operation: str,
         deadline: float,
         runtime: StudyModelRuntimeSnapshot | None = None,
+        quota_reservation: AgentQuotaReservation | None = None,
     ) -> StudyModelResult:
         has_image = messages_have_image(messages)
         expected_group = "vision" if has_image else "agent"
@@ -324,7 +336,7 @@ class StudyModelGateway:
                 operation=operation,
             )
         if expected_group == "agent":
-            await self._reserve_agent_quota(operation)
+            await self._reserve_agent_quota(operation, quota_reservation)
         if runtime.transport == "dashscope_native":
             return await self._call_native(
                 messages, operation=operation, deadline=deadline, runtime=runtime
@@ -333,7 +345,42 @@ class StudyModelGateway:
             messages, operation=operation, deadline=deadline, runtime=runtime
         )
 
-    async def _reserve_agent_quota(self, operation: str) -> None:
+    async def reserve_optional_agent_call(
+        self, operation: str
+    ) -> tuple[bool, AgentQuotaReservation | None]:
+        get_config_manager = getattr(_config_manager_module, "get_config_manager", None)
+        if not callable(get_config_manager):
+            raise StudyModelError(
+                "configuration manager is unavailable",
+                diagnostic="provider_unavailable",
+                operation=operation,
+            )
+        manager = get_config_manager()
+        reserve = getattr(manager, "areserve_agent_daily_quota", None)
+        if callable(reserve):
+            reserved, _info = await reserve(
+                source=f"study_companion:{operation}",
+                units=2,
+                minimum_units=1,
+            )
+        else:
+            reserved, _info = await asyncio.to_thread(
+                manager.reserve_agent_daily_quota,
+                f"study_companion:{operation}",
+                2,
+                1,
+            )
+        count = max(0, int(reserved or 0))
+        reservation = AgentQuotaReservation(count) if count else None
+        return count >= 2, reservation
+
+    async def _reserve_agent_quota(
+        self,
+        operation: str,
+        quota_reservation: AgentQuotaReservation | None = None,
+    ) -> None:
+        if quota_reservation is not None and quota_reservation.consume():
+            return
         get_config_manager = getattr(_config_manager_module, "get_config_manager", None)
         if not callable(get_config_manager):
             raise StudyModelError(
@@ -518,6 +565,7 @@ class StudyModelGateway:
 
 
 __all__ = [
+    "AgentQuotaReservation",
     "StudyModelError",
     "StudyModelGateway",
     "StudyModelResult",

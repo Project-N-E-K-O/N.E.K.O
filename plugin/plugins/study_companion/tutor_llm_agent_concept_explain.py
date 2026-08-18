@@ -251,11 +251,14 @@ async def concept_explain(
             self._new_operation_deadline(MODE_CONCEPT_EXPLAIN, messages),
             context,
         )
-        model_result = await self._call_model_result(
-            messages,
-            operation=MODE_CONCEPT_EXPLAIN,
-            deadline=deadline,
-        )
+        model_call_kwargs: dict[str, Any] = {
+            "operation": MODE_CONCEPT_EXPLAIN,
+            "deadline": deadline,
+        }
+        quota_reservation = (context or {}).get("_agent_quota_reservation")
+        if quota_reservation is not None:
+            model_call_kwargs["quota_reservation"] = quota_reservation
+        model_result = await self._call_model_result(messages, **model_call_kwargs)
         content = model_result.text
         reply = content.strip()
         if not reply:

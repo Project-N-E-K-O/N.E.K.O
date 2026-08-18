@@ -11,6 +11,7 @@ from ._solution_structure import (
     render_solution_structure,
 )
 from .tutor_llm_agent_concept_explain import repair_solution_structure
+from .entry_tutor_context_support import _TutorFinalizeProgress
 from .entry_common import (
     Any,
     Err,
@@ -91,9 +92,11 @@ _SOLUTION_REPAIR_MIN_REMAINING_SECONDS = 10.0
 _FINALIZE_TIMEOUT_SECONDS = 5.0
 
 
-def _build_finalize_failure_payload(reply: Any, *, diagnostic: str) -> dict[str, Any]:
+def _build_finalize_failure_payload(
+    reply: Any, *, diagnostic: str, history_persisted: bool = False
+) -> dict[str, Any]:
     payload = build_tutor_payload(reply)
-    payload["history_persisted"] = False
+    payload["history_persisted"] = history_persisted
     payload["diagnostic"] = diagnostic
     return payload
 
@@ -404,6 +407,7 @@ class _TutorExplainEntriesMixin:
                                     repaired_structure,
                                     language=self._cfg.language,
                                 )
+            finalize_progress = _TutorFinalizeProgress()
             try:
                 payload = await asyncio.wait_for(
                     self._finalize_tutor_call(
@@ -420,13 +424,16 @@ class _TutorExplainEntriesMixin:
                             or {},
                         },
                         extra_context=tutor_context,
+                        finalize_progress=finalize_progress,
                     ),
                     timeout=_FINALIZE_TIMEOUT_SECONDS,
                 )
             except asyncio.TimeoutError:
                 self.logger.warning("study explanation history persistence timed out")
                 payload = _build_finalize_failure_payload(
-                    reply, diagnostic="history_persist_timeout"
+                    reply,
+                    diagnostic="history_persist_timeout",
+                    history_persisted=finalize_progress.history_persisted.is_set(),
                 )
             except Exception:
                 self.logger.warning("study explanation history persistence failed")

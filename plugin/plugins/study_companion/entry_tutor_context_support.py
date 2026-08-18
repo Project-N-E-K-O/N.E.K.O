@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from dataclasses import dataclass, field
+import threading
+
 from .entry_common import (
     Any,
     asyncio,
@@ -30,6 +33,60 @@ from ._semantic_routing import (
 _SEMANTIC_ROUTE_OPERATION = "knowledge_semantic_route"
 _SEMANTIC_ROUTE_MIN_CONFIDENCE = 0.6
 _SEMANTIC_ROUTE_TIMEOUT_SECONDS = 12.0
+
+
+@dataclass(slots=True)
+class _TutorFinalizeProgress:
+    cancel_requested: threading.Event = field(default_factory=threading.Event)
+    worker_started: threading.Event = field(default_factory=threading.Event)
+    commit_started: threading.Event = field(default_factory=threading.Event)
+    history_persisted: threading.Event = field(default_factory=threading.Event)
+    finished: threading.Event = field(default_factory=threading.Event)
+
+
+async def _append_interaction_cancel_safe(
+    store: Any,
+    *,
+    progress: _TutorFinalizeProgress,
+    kind: str,
+    input_text: str,
+    output_text: str,
+    metadata: dict[str, Any],
+    history_limit: int,
+) -> None:
+    try:
+        persisted = await asyncio.to_thread(
+            store.append_interaction,
+            kind=kind,
+            input_text=input_text,
+            output_text=output_text,
+            metadata=metadata,
+            history_limit=history_limit,
+            cancel_event=progress.cancel_requested,
+            worker_started_event=progress.worker_started,
+            commit_started_event=progress.commit_started,
+            committed_event=progress.history_persisted,
+            finished_event=progress.finished,
+        )
+    except asyncio.CancelledError:
+        progress.cancel_requested.set()
+        if progress.commit_started.is_set():
+            await asyncio.shield(asyncio.to_thread(progress.finished.wait))
+        raise
+    if persisted is False:
+        raise asyncio.CancelledError
+
+
+async def _await_completion_on_cancel(awaitable: Any) -> Any:
+    task = asyncio.create_task(awaitable)
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        try:
+            await asyncio.shield(task)
+        except Exception:
+            pass
+        raise
 
 
 def _warn(logger: Any, message: str, *args: Any) -> None:
@@ -271,6 +328,10 @@ class _TutorContextSupportMixin:
             semantics, route_status, route_reason = await self._route_study_input_semantics(
                 query, context=seed
             )
+            if "_agent_quota_reservation" in seed and context is not None:
+                context["_agent_quota_reservation"] = seed[
+                    "_agent_quota_reservation"
+                ]
             if semantics is None:
                 return {}, _knowledge_guidance_outcome(
                     status=route_status,
@@ -362,6 +423,22 @@ class _TutorContextSupportMixin:
             if not callable(attach_image):
                 return None, "routing_unavailable", "model_unavailable"
             messages = attach_image(messages, image)
+        quota_reservation = None
+        if not image:
+            reserve_optional = getattr(agent, "reserve_optional_agent_call", None)
+            if callable(reserve_optional):
+                try:
+                    optional_allowed, quota_reservation = await reserve_optional(
+                        _SEMANTIC_ROUTE_OPERATION
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    return None, "routing_unavailable", "quota_reservation_failed"
+                if quota_reservation is not None:
+                    context["_agent_quota_reservation"] = quota_reservation
+                if not optional_allowed:
+                    return None, "routing_unavailable", "primary_quota_reserved"
         new_deadline = getattr(agent, "_new_operation_deadline", None)
         route_deadline = time.monotonic() + _SEMANTIC_ROUTE_TIMEOUT_SECONDS
         deadline = (
@@ -381,12 +458,14 @@ class _TutorContextSupportMixin:
         if remaining_seconds <= 0:
             return None, "routing_unavailable", "timeout"
         try:
+            call_kwargs: dict[str, Any] = {
+                "operation": _SEMANTIC_ROUTE_OPERATION,
+                "deadline": deadline,
+            }
+            if quota_reservation is not None:
+                call_kwargs["quota_reservation"] = quota_reservation
             raw = await asyncio.wait_for(
-                call_model(
-                    messages,
-                    operation=_SEMANTIC_ROUTE_OPERATION,
-                    deadline=deadline,
-                ),
+                call_model(messages, **call_kwargs),
                 timeout=remaining_seconds,
             )
         except asyncio.CancelledError:
@@ -616,6 +695,7 @@ class _TutorContextSupportMixin:
         metadata: dict[str, Any],
         extra_context: dict[str, Any] | None = None,
         public_payload: dict[str, Any] | None = None,
+        finalize_progress: _TutorFinalizeProgress | None = None,
     ) -> dict[str, Any]:
         diagnostic = str(reply.diagnostic or "")
         if reply.degraded:
@@ -637,8 +717,10 @@ class _TutorContextSupportMixin:
             return build_tutor_payload(reply)
 
         await self._record_tutor_result(operation, reply, extra=extra_context)
-        await asyncio.to_thread(
-            self._store.append_interaction,
+        progress = finalize_progress or _TutorFinalizeProgress()
+        await _append_interaction_cancel_safe(
+            self._store,
+            progress=progress,
             kind=history_kind,
             input_text=reply.input_text,
             output_text=reply.reply,
@@ -653,7 +735,7 @@ class _TutorContextSupportMixin:
                 extra_context=extra_context,
                 public_payload=public_payload,
             )
-        await self._persist_state()
+        await _await_completion_on_cancel(self._persist_state())
         if public_payload is not None:
             payload = {
                 "operation": reply.operation,

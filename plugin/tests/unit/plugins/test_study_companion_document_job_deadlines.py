@@ -217,6 +217,11 @@ def test_hosted_document_job_recovery_is_independent_of_status_initialization() 
     assert "void resumeDocumentJob(controller.signal).catch" in initialization
     assert ".then(() => resumeDocumentJob(controller.signal))" not in initialization
     assert initialization.index("resumeDocumentJob") < initialization.index("refresh(controller.signal)")
+    status_initialization = initialization[initialization.index("refresh(controller.signal)") :]
+    assert (
+        "setReply((current) => current || formatPluginError(error));"
+        in status_initialization
+    )
 
 
 def test_hosted_document_job_ambiguous_start_and_cancel_failures_keep_recovery() -> None:

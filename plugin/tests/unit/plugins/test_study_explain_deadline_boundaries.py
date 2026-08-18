@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
+import threading
 from types import SimpleNamespace
 from typing import Any
 
@@ -20,7 +22,13 @@ from plugin.plugins.study_companion.entry_communication_tutor_events import (
 from plugin.plugins.study_companion.entry_tutor_explain_entries import (
     _TutorExplainEntriesMixin,
 )
+from plugin.plugins.study_companion.entry_tutor_context_support import (
+    _TutorFinalizeProgress,
+    _append_interaction_cancel_safe,
+    _await_completion_on_cancel,
+)
 from plugin.plugins.study_companion.models import TutorReply
+from plugin.plugins.study_companion.store import StudyStore
 from plugin.sdk.plugin import Err, Ok
 
 
@@ -130,9 +138,12 @@ class _Harness(
         }
 
     async def _finalize_tutor_call(
-        self, _operation: str, reply: TutorReply, **_kwargs: Any
+        self, _operation: str, reply: TutorReply, **kwargs: Any
     ) -> dict[str, Any]:
         if self._finalize_behavior == "block":
+            await asyncio.Event().wait()
+        if self._finalize_behavior == "persist_then_block":
+            kwargs["finalize_progress"].history_persisted.set()
             await asyncio.Event().wait()
         if self._finalize_behavior == "error":
             raise RuntimeError("history store unavailable")
@@ -268,6 +279,82 @@ async def test_finalize_timeout_returns_compatible_visible_reply(
     assert result.value["history_persisted"] is False
     assert result.value["diagnostic"] == "history_persist_timeout"
     assert plugin.logger.warnings
+
+
+@pytest.mark.asyncio
+async def test_cancelled_finalize_does_not_commit_interaction_after_timeout(
+    tmp_path: Path,
+) -> None:
+    store = StudyStore(tmp_path / "study.db", tmp_path / "seed.json", _Logger())
+    store.open()
+    progress = _TutorFinalizeProgress()
+    store._lock.acquire()
+    try:
+        write = asyncio.create_task(
+            _append_interaction_cancel_safe(
+                store,
+                progress=progress,
+                kind=MODE_CONCEPT_EXPLAIN,
+                input_text="late input",
+                output_text="late output",
+                metadata={},
+                history_limit=50,
+            )
+        )
+        assert await asyncio.to_thread(progress.worker_started.wait, 1.0)
+        write.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await write
+    finally:
+        store._lock.release()
+
+    assert await asyncio.to_thread(progress.finished.wait, 1.0)
+    assert progress.history_persisted.is_set() is False
+    assert store.list_interactions() == []
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_finalize_awaits_started_state_persistence() -> None:
+    started = threading.Event()
+    release = threading.Event()
+    committed = threading.Event()
+
+    async def persist_state() -> None:
+        def write_state() -> None:
+            started.set()
+            release.wait()
+            committed.set()
+
+        await asyncio.to_thread(write_state)
+
+    persistence = asyncio.create_task(
+        _await_completion_on_cancel(persist_state())
+    )
+    assert await asyncio.to_thread(started.wait, 1.0)
+    persistence.cancel()
+    await asyncio.sleep(0)
+    assert persistence.done() is False
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await persistence
+    assert committed.is_set() is True
+
+
+@pytest.mark.asyncio
+async def test_finalize_timeout_reports_history_already_committed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin = _Harness(finalize_behavior="persist_then_block")
+    monkeypatch.setattr(
+        explain_entries, "_FINALIZE_TIMEOUT_SECONDS", 0.01, raising=False
+    )
+
+    result = await plugin.study_explain_text(text="历史已保存，后续状态写入超时")
+
+    assert isinstance(result, Ok)
+    assert result.value["history_persisted"] is True
+    assert result.value["diagnostic"] == "history_persist_timeout"
 
 
 @pytest.mark.asyncio
