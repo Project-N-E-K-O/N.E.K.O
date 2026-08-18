@@ -755,6 +755,8 @@ async function playbackSetupCancellationAvoidsMicrophoneOpenCase() {
          'a cancelled playback setup must not open or prompt for the microphone');
   assert(env.streams.length === 0,
          'no microphone stream may be created after playback-setup cancellation');
+  assert(env.micButtonStates[env.micButtonStates.length - 1] === false,
+         'playback-setup cancellation must restore the microphone UI');
 }
 
 async function entryTeardownReconcilesIsRecordingCase() {

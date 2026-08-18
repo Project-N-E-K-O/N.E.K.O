@@ -1955,10 +1955,7 @@
                 micStartToken !== micStartGeneration
                 || S.voiceInputRouteBlocked === true
             ) {
-                // Stop/teardown already restored the UI. A newer start may be
-                // waiting on this same setup, so this stale attempt must not
-                // repaint shared controls before that successor can commit.
-                return hasLiveCommittedMicrophonePipeline();
+                return finishCancelledMicStart(_mic);
             }
 
             if (S.audioPlayerContext.state === 'suspended') {
@@ -1967,7 +1964,7 @@
                     micStartToken !== micStartGeneration
                     || S.voiceInputRouteBlocked === true
                 ) {
-                    return hasLiveCommittedMicrophonePipeline();
+                    return finishCancelledMicStart(_mic);
                 }
             }
 
@@ -2642,6 +2639,8 @@
     var cachedMicDevices = null;
     var cachedSpeakerDevices = null;
     var mediaDeviceChangeGeneration = 0;
+    var mediaDeviceEnumerationGeneration = 0;
+    var latestMediaDeviceEnumerationPromise = Promise.resolve(null);
     var disposeVoiceRecognitionPopover = null;
     var voiceRecognitionPopoverRenderGeneration = 0;
 
@@ -2714,6 +2713,30 @@
         };
     }
 
+    async function enumerateAndCacheMediaDevices() {
+        var enumerationGeneration = ++mediaDeviceEnumerationGeneration;
+        var ownEnumerationPromise = navigator.mediaDevices.enumerateDevices().then(function (devices) {
+            if (enumerationGeneration !== mediaDeviceEnumerationGeneration) {
+                return null;
+            }
+            cachedMicDevices = devices.filter(function (device) { return device.kind === 'audioinput'; });
+            cachedSpeakerDevices = devices.filter(function (device) { return device.kind === 'audiooutput'; });
+            return {
+                devices: devices,
+                generation: enumerationGeneration
+            };
+        });
+        var committedEnumerationPromise = ownEnumerationPromise.then(function (result) {
+            if (result) return result;
+            // A generation can become stale only after a newer invocation has
+            // synchronously replaced this scalar. Reuse that committed result
+            // so callers never reconcile or render an older device snapshot.
+            return latestMediaDeviceEnumerationPromise;
+        });
+        latestMediaDeviceEnumerationPromise = committedEnumerationPromise;
+        return committedEnumerationPromise;
+    }
+
     /** 请求麦克风权限并缓存设备列表 */
     async function ensureMicrophonePermission() {
         if (micPermissionGranted && cachedMicDevices && cachedMicDevices.length > 0) {
@@ -2724,17 +2747,13 @@
             tempStream.getTracks().forEach(function (track) { track.stop(); });
             micPermissionGranted = true;
             console.log('麦克风权限已获取');
-            var devices = await navigator.mediaDevices.enumerateDevices();
-            cachedMicDevices = devices.filter(function (d) { return d.kind === 'audioinput'; });
-            cachedSpeakerDevices = devices.filter(function (d) { return d.kind === 'audiooutput'; });
-            return cachedMicDevices;
+            await enumerateAndCacheMediaDevices();
+            return cachedMicDevices || [];
         } catch (error) {
             console.warn('请求麦克风权限失败:', error);
             try {
-                var devices2 = await navigator.mediaDevices.enumerateDevices();
-                cachedMicDevices = devices2.filter(function (d) { return d.kind === 'audioinput'; });
-                cachedSpeakerDevices = devices2.filter(function (d) { return d.kind === 'audiooutput'; });
-                return cachedMicDevices;
+                await enumerateAndCacheMediaDevices();
+                return cachedMicDevices || [];
             } catch (enumError) {
                 console.error('获取设备列表失败:', enumError);
                 return [];
@@ -2748,14 +2767,16 @@
             var deviceChangeGeneration = ++mediaDeviceChangeGeneration;
             console.log('检测到设备变化，刷新麦克风列表...');
             try {
-                var devices = await navigator.mediaDevices.enumerateDevices();
+                var enumerationResult = await enumerateAndCacheMediaDevices();
                 if (deviceChangeGeneration !== mediaDeviceChangeGeneration) return;
-                cachedMicDevices = devices.filter(function (d) { return d.kind === 'audioinput'; });
-                cachedSpeakerDevices = devices.filter(function (d) { return d.kind === 'audiooutput'; });
+                var devices = enumerationResult.devices;
                 if (typeof window.reconcileSelectedSpeakerDevices === 'function') {
                     await window.reconcileSelectedSpeakerDevices(devices);
                 }
-                if (deviceChangeGeneration !== mediaDeviceChangeGeneration) return;
+                if (
+                    deviceChangeGeneration !== mediaDeviceChangeGeneration
+                    || enumerationResult.generation !== mediaDeviceEnumerationGeneration
+                ) return;
                 var micPopup = document.getElementById('live2d-popup-mic') || document.getElementById('vrm-popup-mic') || document.getElementById('mmd-popup-mic');
                 if (micPopup && micPopup.style.display === 'flex') {
                     await window.renderFloatingMicList();
@@ -2809,10 +2830,8 @@
             }
             var allMediaDevices = null;
             if (!cachedSpeakerDevices) {
-                allMediaDevices = await navigator.mediaDevices.enumerateDevices();
-                cachedSpeakerDevices = allMediaDevices.filter(function (device) {
-                    return device.kind === 'audiooutput';
-                });
+                var enumerationResult = await enumerateAndCacheMediaDevices();
+                allMediaDevices = enumerationResult.devices;
             }
             if (typeof window.reconcileSelectedSpeakerDevices === 'function') {
                 await window.reconcileSelectedSpeakerDevices(

@@ -25,7 +25,7 @@ VOICE_POPOVER_GLOBAL_LISTENERS = (
 def _voice_popover_sources() -> tuple[str, str]:
     source = APP_AUDIO_CAPTURE.read_text(encoding="utf-8")
 
-    permission_start = source.index("async function ensureMicrophonePermission()")
+    permission_start = source.index("async function enumerateAndCacheMediaDevices()")
     permission_end = source.index("// 监听设备变化", permission_start)
     permission_source = source[permission_start:permission_end].strip()
 
@@ -43,7 +43,7 @@ def _voice_popover_sources() -> tuple[str, str]:
 
 def _device_change_source() -> str:
     source = APP_AUDIO_CAPTURE.read_text(encoding="utf-8")
-    start = source.index("// 监听设备变化")
+    start = source.index("async function enumerateAndCacheMediaDevices()")
     end = source.index("/** 为浮动弹出框渲染麦克风列表 */", start)
     return source[start:end].strip()
 
@@ -235,6 +235,8 @@ def _install_voice_popover_harness(
     let micPermissionGranted = false;
     let cachedMicDevices = null;
     let cachedSpeakerDevices = null;
+    let mediaDeviceEnumerationGeneration = 0;
+    let latestMediaDeviceEnumerationPromise = Promise.resolve(null);
     let disposeVoiceRecognitionPopover = null;
     let voiceRecognitionPopoverRenderGeneration = 0;
 
@@ -904,6 +906,8 @@ def test_devicechange_discards_an_older_out_of_order_enumeration(
                 var cachedMicDevices = null;
                 var cachedSpeakerDevices = null;
                 var mediaDeviceChangeGeneration = 0;
+                var mediaDeviceEnumerationGeneration = 0;
+                var latestMediaDeviceEnumerationPromise = Promise.resolve(null);
                 window.reconcileSelectedSpeakerDevices = async (devices) => {
                     reconcileCalls.push(devices.map((device) => device.deviceId));
                 };
@@ -947,6 +951,110 @@ def test_devicechange_discards_an_older_out_of_order_enumeration(
     )
 
     assert result == {
+        "speakers": ["default", "preferred-speaker"],
+        "reconcileCalls": [["mic-new", "default", "preferred-speaker"]],
+    }
+
+
+@pytest.mark.frontend
+def test_permission_enumeration_cannot_overwrite_a_newer_devicechange_result(
+    page: Page,
+) -> None:
+    device_change_source = _device_change_source()
+    page.set_content("<main>shared media enumeration generation harness</main>")
+    page.add_script_tag(
+        content=(
+            r"""
+            (() => {
+                const pendingEnumerations = [];
+                const reconcileCalls = [];
+                let deviceChangeListener = null;
+                Object.defineProperty(navigator, 'mediaDevices', {
+                    configurable: true,
+                    value: {
+                        async getUserMedia() {
+                            return { getTracks: () => [{ stop() {} }] };
+                        },
+                        enumerateDevices() {
+                            return new Promise((resolve) => {
+                                pendingEnumerations.push(resolve);
+                            });
+                        },
+                        addEventListener(type, listener) {
+                            if (type === 'devicechange') deviceChangeListener = listener;
+                        },
+                    },
+                });
+                var micPermissionGranted = false;
+                var cachedMicDevices = null;
+                var cachedSpeakerDevices = null;
+                var mediaDeviceChangeGeneration = 0;
+                var mediaDeviceEnumerationGeneration = 0;
+                var latestMediaDeviceEnumerationPromise = Promise.resolve(null);
+                window.reconcileSelectedSpeakerDevices = async (devices) => {
+                    reconcileCalls.push(devices.map((device) => device.deviceId));
+                };
+                window.renderFloatingMicList = async () => true;
+                __DEVICE_CHANGE_SOURCE__
+                window.__mediaEnumerationTest = {
+                    startPermission: () => ensureMicrophonePermission(),
+                    emitDeviceChange: () => deviceChangeListener(),
+                    pendingCount: () => pendingEnumerations.length,
+                    resolve(index, devices) {
+                        pendingEnumerations[index](devices);
+                    },
+                    result: () => ({
+                        microphones: (cachedMicDevices || []).map(
+                            (device) => device.deviceId
+                        ),
+                        speakers: (cachedSpeakerDevices || []).map(
+                            (device) => device.deviceId
+                        ),
+                        reconcileCalls: reconcileCalls.slice(),
+                    }),
+                };
+            })();
+            """.replace("__DEVICE_CHANGE_SOURCE__", device_change_source)
+        )
+    )
+
+    result = page.evaluate(
+        """async () => {
+            const test = window.__mediaEnumerationTest;
+            const waitForPendingCount = async (expected) => {
+                for (let attempt = 0; attempt < 1000; attempt += 1) {
+                    if (test.pendingCount() >= expected) return;
+                    await new Promise((resolve) => setTimeout(resolve, 0));
+                }
+                throw new Error('expected media enumeration was not observed');
+            };
+            const permission = test.startPermission();
+            await waitForPendingCount(1);
+            const deviceChange = test.emitDeviceChange();
+            await waitForPendingCount(2);
+            test.resolve(1, [
+                { kind: 'audioinput', deviceId: 'mic-new' },
+                { kind: 'audiooutput', deviceId: 'default' },
+                { kind: 'audiooutput', deviceId: 'preferred-speaker' },
+            ]);
+            await deviceChange;
+            test.resolve(0, [
+                { kind: 'audioinput', deviceId: 'mic-old' },
+                { kind: 'audiooutput', deviceId: 'default' },
+            ]);
+            const permissionDevices = await permission;
+            return {
+                permissionDevices: permissionDevices.map(
+                    (device) => device.deviceId
+                ),
+                ...test.result(),
+            };
+        }"""
+    )
+
+    assert result == {
+        "permissionDevices": ["mic-new"],
+        "microphones": ["mic-new"],
         "speakers": ["default", "preferred-speaker"],
         "reconcileCalls": [["mic-new", "default", "preferred-speaker"]],
     }

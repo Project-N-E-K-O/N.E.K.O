@@ -6416,7 +6416,7 @@ def test_microphone_switch_requires_a_live_committed_replacement():
     finish_cancelled = _code_only(
         _block_after(capture_source, "function finishCancelledMicStart(micElement) {")
     )
-    assert start_fn.count("return finishCancelledMicStart(_mic);") == 2
+    assert start_fn.count("return finishCancelledMicStart(_mic);") == 4
     assert "if (hasLiveCommittedMicrophonePipeline()) {" in finish_cancelled
     assert "S.isRecording = false;" in finish_cancelled
     assert "window.isRecording = false;" in finish_cancelled
