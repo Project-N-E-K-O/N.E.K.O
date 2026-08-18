@@ -80,11 +80,13 @@ class _FakeInstallSourceManager:
         package_id: str,
         profile_dir: str = "",
         active_package_ids: tuple[str, ...] = (),
+        active_profile_dirs: tuple[str, ...] = (),
         list_entries_error: Exception | None = None,
     ) -> None:
         self.package_id = package_id
         self.profile_dir = profile_dir
         self.active_package_ids = active_package_ids
+        self.active_profile_dirs = active_profile_dirs
         self.list_entries_error = list_entries_error
         self.marked_removed: list[Path] = []
 
@@ -112,7 +114,14 @@ class _FakeInstallSourceManager:
     def list_entries(self) -> list[SimpleNamespace]:
         if self.list_entries_error is not None:
             raise self.list_entries_error
-        return [SimpleNamespace(package_id=package_id) for package_id in self.active_package_ids]
+        return [
+            SimpleNamespace(
+                package_id=package_id,
+                profile_dir=(self.active_profile_dirs[index] if index < len(self.active_profile_dirs) else ""),
+                directory_name=f"other_{index}",
+            )
+            for index, package_id in enumerate(self.active_package_ids)
+        ]
 
 
 @pytest.mark.plugin_unit
@@ -2119,11 +2128,11 @@ def test_delete_keeps_profile_shared_by_another_bundle_plugin(
     monkeypatch.setattr(module, "get_install_source_manager", lambda: install_source_manager)
     monkeypatch.setattr(module, "get_user_package_profiles_root", lambda: profiles_root)
 
-    deleted_profile = module._remove_install_source_and_orphaned_profile_sync(plugin_dir)
+    deleted_profile = module._remove_orphaned_package_profile_sync(plugin_dir)
 
     assert deleted_profile is None
     assert profile_dir.is_dir()
-    assert install_source_manager.marked_removed == [plugin_dir]
+    assert install_source_manager.marked_removed == []
 
 
 @pytest.mark.plugin_unit
@@ -2139,7 +2148,7 @@ def test_delete_uses_plugin_directory_name_for_legacy_empty_package_id(
     monkeypatch.setattr(module, "get_install_source_manager", lambda: install_source_manager)
     monkeypatch.setattr(module, "get_user_package_profiles_root", lambda: profiles_root)
 
-    deleted_profile = module._remove_install_source_and_orphaned_profile_sync(plugin_dir)
+    deleted_profile = module._remove_orphaned_package_profile_sync(plugin_dir)
 
     assert deleted_profile == profile_dir
     assert profile_dir.exists() is False
@@ -2161,10 +2170,37 @@ def test_delete_removes_profile_from_recorded_custom_root(
     monkeypatch.setattr(module, "get_install_source_manager", lambda: install_source_manager)
     monkeypatch.setattr(module, "get_user_package_profiles_root", lambda: profiles_root)
 
-    deleted_profile = module._remove_install_source_and_orphaned_profile_sync(plugin_dir)
+    deleted_profile = module._remove_orphaned_package_profile_sync(plugin_dir)
 
     assert deleted_profile == profile_dir
     assert profile_dir.exists() is False
+
+
+@pytest.mark.plugin_unit
+def test_delete_removes_profile_not_shared_at_a_different_custom_root(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    plugin_dir = tmp_path / "first_plugin"
+    profiles_root = tmp_path / "profiles"
+    profile_dir = profiles_root / "first" / "shared_package"
+    other_profile_dir = profiles_root / "second" / "shared_package"
+    profile_dir.mkdir(parents=True)
+    other_profile_dir.mkdir(parents=True)
+    install_source_manager = _FakeInstallSourceManager(
+        package_id="shared_package",
+        profile_dir=str(profile_dir),
+        active_package_ids=("shared_package",),
+        active_profile_dirs=(str(other_profile_dir),),
+    )
+    monkeypatch.setattr(module, "get_install_source_manager", lambda: install_source_manager)
+    monkeypatch.setattr(module, "get_user_package_profiles_root", lambda: profiles_root)
+
+    deleted_profile = module._remove_orphaned_package_profile_sync(plugin_dir)
+
+    assert deleted_profile == profile_dir
+    assert profile_dir.exists() is False
+    assert other_profile_dir.is_dir()
 
 
 @pytest.mark.plugin_unit
@@ -2183,11 +2219,11 @@ def test_delete_ignores_install_source_listing_failure(
     monkeypatch.setattr(module, "get_install_source_manager", lambda: install_source_manager)
     monkeypatch.setattr(module, "get_user_package_profiles_root", lambda: profiles_root)
 
-    deleted_profile = module._remove_install_source_and_orphaned_profile_sync(plugin_dir)
+    deleted_profile = module._remove_orphaned_package_profile_sync(plugin_dir)
 
     assert deleted_profile is None
     assert profile_dir.is_dir()
-    assert install_source_manager.marked_removed == [plugin_dir]
+    assert install_source_manager.marked_removed == []
 
 
 @pytest.mark.plugin_unit
@@ -2210,9 +2246,9 @@ def test_delete_propagates_profile_removal_failure_for_retry(
     monkeypatch.setattr(module.shutil, "rmtree", _fail_to_remove)
 
     with pytest.raises(PermissionError, match="profile is in use"):
-        module._remove_install_source_and_orphaned_profile_sync(plugin_dir)
+        module._remove_orphaned_package_profile_sync(plugin_dir)
 
-    assert install_source_manager.marked_removed == [plugin_dir]
+    assert install_source_manager.marked_removed == []
     assert profile_dir.is_dir()
 
 

@@ -673,6 +673,7 @@ async def test_built_market_package_install_surfaces_in_plugin_list(
     client: AsyncClient = bridge_e2e_env["client"]
     token: str = bridge_e2e_env["token"]
     user_root: Path = bridge_e2e_env["user_root"]
+    profiles_root: Path = bridge_e2e_env["profiles_root"]
 
     with _serve_bytes(
         filename=f"{plugin_id}-{version}.neko-plugin", content=package_bytes,
@@ -709,6 +710,9 @@ async def test_built_market_package_install_surfaces_in_plugin_list(
     assert final_status["status"] == "completed", final_status
     installed_toml = user_root / plugin_id / "plugin.toml"
     assert installed_toml.is_file()
+    manager: InstallSourceManager = bridge_e2e_env["manager"]
+    [entry] = [entry for entry in manager.snapshot().entries if entry.plugin_id == plugin_id]
+    assert Path(entry.profile_dir) == profiles_root / plugin_id
 
     from plugin.server.application.plugins import query_service as query_module
 

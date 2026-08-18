@@ -609,6 +609,7 @@ class PluginCliService:
                     plugin_id=package_plugin_id,
                     market_detail=market_detail,
                     package_id=str(unpack_result.get("package_id") or ""),
+                    profile_dir=str(unpack_result.get("profile_dir") or ""),
                 )
             else:
                 entry, ism_warnings = mgr.record_market_install(
@@ -617,6 +618,7 @@ class PluginCliService:
                     plugin_id=package_plugin_id,
                     market_detail=market_detail,
                     package_id=str(unpack_result.get("package_id") or ""),
+                    profile_dir=str(unpack_result.get("profile_dir") or ""),
                 )
             warnings.extend(ism_warnings)
 

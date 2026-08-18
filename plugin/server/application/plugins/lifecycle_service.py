@@ -371,17 +371,33 @@ def _delete_plugin_directory_sync(plugin_dir: Path) -> bool:
     return True
 
 
-def _remove_install_source_and_orphaned_profile_sync(plugin_dir: Path) -> Path | None:
-    """Mark a deleted user plugin removed and clean up its unshared profile.
+def _profile_path_from_entry_sync(entry: object, profiles_root: Path) -> Path | None:
+    package_id = str(getattr(entry, "package_id", "") or getattr(entry, "plugin_id", ""))
+    if not package_id:
+        return None
+    raw_profile_dir = str(getattr(entry, "profile_dir", "") or "")
+    try:
+        profile_dir = (
+            Path(raw_profile_dir).expanduser().resolve()
+            if raw_profile_dir
+            else (profiles_root / package_id).resolve()
+        )
+    except Exception:
+        return None
+    if (
+        profile_dir.name != package_id
+        or (profile_dir != profiles_root and profiles_root not in profile_dir.parents)
+    ):
+        return None
+    return profile_dir
 
-    Package profiles are keyed by package ID, rather than plugin directory.
-    A bundle can therefore have several plugin directories sharing one profile.
-    Only remove the profile after the source record has been marked removed and
-    no active record still refers to that package ID.
 
-    Install-source bookkeeping is best-effort during deletion: a lock-file
-    issue must not turn a successfully removed plugin directory into a failed
-    delete operation.
+def _remove_orphaned_package_profile_sync(plugin_dir: Path) -> Path | None:
+    """Remove the unshared package profile before deleting the plugin directory.
+
+    The profile must be removed before the executable directory and lock entry
+    are mutated. If filesystem cleanup fails, deletion remains retryable even
+    after a server restart.
     """
     manager = get_install_source_manager()
     if manager is None:
@@ -390,18 +406,16 @@ def _remove_install_source_and_orphaned_profile_sync(plugin_dir: Path) -> Path |
     try:
         package_id = manager.package_id_for_directory(
             plugin_dir,
-            include_removed=True,
+            include_removed=False,
         ) or plugin_dir.name
         recorded_profile_dir = manager.profile_dir_for_directory(
             plugin_dir,
-            include_removed=True,
+            include_removed=False,
         )
-        manager.mark_removed(directory_path=plugin_dir)
-        if any(entry.package_id == package_id for entry in manager.list_entries()):
-            return None
+        active_entries = manager.list_entries()
     except InstallSourceError as exc:
         logger.warning(
-            "delete_plugin: failed to update install source for plugin_dir={}: {}",
+            "delete_plugin: failed to inspect install source for plugin_dir={}: {}",
             plugin_dir,
             exc,
         )
@@ -416,7 +430,7 @@ def _remove_install_source_and_orphaned_profile_sync(plugin_dir: Path) -> Path |
 
     try:
         profiles_root = get_user_package_profiles_root().resolve()
-        profile_dir = (
+        current_profile_dir = (
             Path(recorded_profile_dir).expanduser().resolve()
             if recorded_profile_dir
             else (profiles_root / package_id).resolve()
@@ -430,27 +444,54 @@ def _remove_install_source_and_orphaned_profile_sync(plugin_dir: Path) -> Path |
         return None
 
     if (
-        profile_dir.name != package_id
-        or (profile_dir != profiles_root and profiles_root not in profile_dir.parents)
+        current_profile_dir.name != package_id
+        or (current_profile_dir != profiles_root and profiles_root not in current_profile_dir.parents)
     ):
         logger.warning(
             "delete_plugin: refusing to remove unsafe package profile path: {}",
-            profile_dir,
+            current_profile_dir,
         )
         return None
 
+    for entry in active_entries:
+        if getattr(entry, "directory_name", "") == plugin_dir.name:
+            continue
+        if _profile_path_from_entry_sync(entry, profiles_root) == current_profile_dir:
+            return None
+
     try:
-        shutil.rmtree(profile_dir)
+        shutil.rmtree(current_profile_dir)
     except FileNotFoundError:
         return None
     except OSError as exc:
         logger.error(
             "delete_plugin: failed to remove package profile {}: {}",
-            profile_dir,
+            current_profile_dir,
             exc,
         )
         raise
-    return profile_dir
+    return current_profile_dir
+
+
+def _mark_install_source_removed_sync(plugin_dir: Path) -> None:
+    """Soft-delete the source record without blocking lifecycle cleanup."""
+    manager = get_install_source_manager()
+    if manager is None:
+        return
+    try:
+        manager.mark_removed(directory_path=plugin_dir)
+    except InstallSourceError as exc:
+        logger.warning(
+            "delete_plugin: failed to update install source for plugin_dir={}: {}",
+            plugin_dir,
+            exc,
+        )
+    except Exception as exc:
+        logger.warning(
+            "delete_plugin: unexpected install-source update failure for plugin_dir={}: {}",
+            plugin_dir,
+            exc,
+        )
 
 
 def _register_or_replace_host_sync(plugin_id: str, host: PluginHostContract) -> int:
@@ -1346,11 +1387,12 @@ class PluginLifecycleService:
             await self.stop_plugin(plugin_id)
 
         try:
-            deleted_from_disk = await asyncio.to_thread(_delete_plugin_directory_sync, plugin_dir)
             deleted_profile_dir = await asyncio.to_thread(
-                _remove_install_source_and_orphaned_profile_sync,
+                _remove_orphaned_package_profile_sync,
                 plugin_dir,
             )
+            deleted_from_disk = await asyncio.to_thread(_delete_plugin_directory_sync, plugin_dir)
+            await asyncio.to_thread(_mark_install_source_removed_sync, plugin_dir)
             await asyncio.to_thread(_pop_plugin_host_sync, plugin_id)
             await asyncio.to_thread(_remove_event_handlers_sync, plugin_id)
             await asyncio.to_thread(_remove_plugin_metadata_sync, plugin_id)
