@@ -6479,9 +6479,9 @@ def test_study_companion_hosted_panel_uses_long_running_entry_poll_budget() -> N
     assert "ENTRY_TIMEOUT_MS" in source
     assert "study_set_mode: 15000" in source
     assert "study_explain_text: 120000" in source
-    assert "study_generate_question: 70000" in source
-    assert "study_generate_targeted_question: 55000" in source
-    assert "study_evaluate_answer: 70000" in source
+    assert "study_generate_question: 75000" in source
+    assert "study_generate_targeted_question: 60000" in source
+    assert "study_evaluate_answer: 75000" in source
     assert "study_summarize_session: 90000" in source
     assert "callPlugin as callHostedPlugin" in source
     assert "{ ...args, locale: String(locale || '').trim() }" in source
@@ -6700,11 +6700,11 @@ def test_study_companion_explain_timeouts_cover_vision_solving() -> None:
     llm_timeout = float(plugin_config["llm"]["llm_call_timeout_seconds"])
 
     assert "study_explain_text: 120000" in static_source
-    assert "study_generate_question: 70000" in static_source
-    assert "study_evaluate_answer: 70000" in static_source
+    assert "study_generate_question: 75000" in static_source
+    assert "study_evaluate_answer: 75000" in static_source
     assert "study_explain_text: 120000" in hosted_source
-    assert "study_generate_question: 70000" in hosted_source
-    assert "study_evaluate_answer: 70000" in hosted_source
+    assert "study_generate_question: 75000" in hosted_source
+    assert "study_evaluate_answer: 75000" in hosted_source
     assert "timeout=105.0" in explain_source
     assert "timeout=70.0" in question_source
     assert "timeout=70.0" in answer_source

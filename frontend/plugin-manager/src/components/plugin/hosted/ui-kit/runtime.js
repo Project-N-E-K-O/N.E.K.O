@@ -1950,10 +1950,19 @@ function refreshHostedPayload(context) {
 }
 
 const __pendingRequests = new Map();
+const __hostedContextParent = parent;
+const __hostedContextOrigin = (() => {
+  try {
+    return new URL(hostedTargetOrigin(), window.location.href).origin;
+  } catch (_) {
+    return window.location.origin;
+  }
+})();
 window.addEventListener('message', (event) => {
   const data = event.data;
   if (!data || typeof data !== 'object') return;
   if (data.type === 'neko-hosted-surface-context') {
+    if (event.source !== __hostedContextParent || event.origin !== __hostedContextOrigin) return;
     refreshHostedPayload(data.context);
     return;
   }

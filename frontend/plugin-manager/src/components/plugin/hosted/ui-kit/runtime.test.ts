@@ -21,6 +21,7 @@ function installRuntime() {
   })
   window.__NEKO_PAYLOAD = {
     locale: 'en',
+    host: { origin: 'https://host.example' },
     i18n: {
       locale: 'en',
       default_locale: 'en',
@@ -181,13 +182,29 @@ describe('hosted ui runtime', () => {
     vi.useRealTimers()
   })
 
-  it('applies a host-pushed context update without remounting the runtime', () => {
+  it('accepts context updates only from the initial parent and host origin', () => {
     const refreshHostedPayload = vi.fn()
     ;(window as any).__NekoRefreshHostedPayload = refreshHostedPayload
     const context = { entries: [{ id: 'study_export_notes' }] }
+    const trustedParent = window.parent
+
+    window.dispatchEvent(new MessageEvent('message', {
+      data: { type: 'neko-hosted-surface-context', context: { host: { origin: 'https://attacker.example' } } },
+      origin: 'https://host.example',
+      source: {} as Window,
+    }))
+    window.dispatchEvent(new MessageEvent('message', {
+      data: { type: 'neko-hosted-surface-context', context: { host: { origin: 'https://attacker.example' } } },
+      origin: 'https://attacker.example',
+      source: trustedParent,
+    }))
+
+    expect(refreshHostedPayload).not.toHaveBeenCalled()
 
     window.dispatchEvent(new MessageEvent('message', {
       data: { type: 'neko-hosted-surface-context', context },
+      origin: 'https://host.example',
+      source: trustedParent,
     }))
 
     expect(refreshHostedPayload).toHaveBeenCalledWith(context)

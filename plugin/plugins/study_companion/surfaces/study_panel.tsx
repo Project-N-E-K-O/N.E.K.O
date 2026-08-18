@@ -394,10 +394,10 @@ const ENTRY_TIMEOUT_MS: Record<string, number> = {
   study_start_document_analysis: 30000,
   study_document_analysis_status: 15000,
   study_cancel_document_analysis: 15000,
-  study_generate_question: 70000,
+  study_generate_question: 75000,
   study_question_context: 30000,
-  study_generate_targeted_question: 55000,
-  study_evaluate_answer: 70000,
+  study_generate_targeted_question: 60000,
+  study_evaluate_answer: 75000,
   study_summarize_session: 90000,
 };
 

@@ -4,14 +4,17 @@ import asyncio
 import io
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
 from pypdf import PdfWriter
 from starlette.datastructures import Headers, UploadFile
 
 import utils.document_upload as document_upload
 from main_routers.avatar_drop_router import router as avatar_drop_router
-from plugin.server.routes.documents import router as documents_router
+from plugin.server.routes.documents import (
+    parse_document_upload,
+    router as documents_router,
+)
 from plugin.server.http_app import build_plugin_server_app
 from tests.unit.test_document_parser import (
     _blank_pdf_bytes,
@@ -80,6 +83,46 @@ def test_documents_parse_rejects_untrusted_browser_origin_before_parsing(
 
     assert response.status_code == 403
     assert response.json()["detail"] == {"code": "untrusted_origin"}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_documents_parse_rejects_untrusted_origin_before_reading_multipart_body():
+    route = next(
+        route
+        for route in documents_router.routes
+        if getattr(route, "path", "") == "/api/documents/parse"
+    )
+    assert route.dependant.body_params == []
+
+    body_read = False
+
+    async def receive():
+        nonlocal body_read
+        body_read = True
+        raise AssertionError("untrusted request body must not be read")
+
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/api/documents/parse",
+            "headers": [(b"origin", b"https://attacker.example")],
+            "scheme": "http",
+            "server": ("127.0.0.1", 48916),
+            "client": ("127.0.0.1", 12345),
+            "root_path": "",
+            "query_string": b"",
+        },
+        receive,
+    )
+
+    with pytest.raises(HTTPException) as raised:
+        await parse_document_upload(request)
+
+    assert raised.value.status_code == 403
+    assert raised.value.detail == {"code": "untrusted_origin"}
+    assert body_read is False
 
 
 @pytest.mark.unit

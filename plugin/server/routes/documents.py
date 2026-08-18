@@ -6,7 +6,8 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, HTTPException, Request
+from starlette.datastructures import UploadFile
 
 from utils.document_upload import parse_uploaded_document
 from utils.host_origin_guard import is_http_browser_origin_allowed
@@ -34,20 +35,26 @@ _PUBLIC_PARSE_ERROR_CODES = frozenset({
 
 
 @router.post("/parse")
-async def parse_document_upload(request: Request, file: UploadFile = File(...)):
+async def parse_document_upload(request: Request):
     if not is_http_browser_origin_allowed(request.scope):
         raise HTTPException(status_code=403, detail={"code": "untrusted_origin"})
-    try:
-        parsed = await parse_uploaded_document(
-            file,
-            allowed_document_types=_STUDY_DOCUMENT_TYPES,
-        )
-    except HTTPException as exc:
-        detail = exc.detail if isinstance(exc.detail, dict) else {}
-        code = str(detail.get("code") or "document_parse_failed")
-        if code not in _PUBLIC_PARSE_ERROR_CODES:
-            code = "document_parse_failed"
-        raise HTTPException(status_code=exc.status_code, detail={"code": code}) from exc
+    async with request.form(max_files=1, max_fields=0) as form:
+        file = form.get("file")
+        if not isinstance(file, UploadFile):
+            raise HTTPException(status_code=422, detail={"code": "missing_file"})
+        try:
+            parsed = await parse_uploaded_document(
+                file,
+                allowed_document_types=_STUDY_DOCUMENT_TYPES,
+            )
+        except HTTPException as exc:
+            detail = exc.detail if isinstance(exc.detail, dict) else {}
+            code = str(detail.get("code") or "document_parse_failed")
+            if code not in _PUBLIC_PARSE_ERROR_CODES:
+                code = "document_parse_failed"
+            raise HTTPException(
+                status_code=exc.status_code, detail={"code": code}
+            ) from exc
     return {
         "ok": True,
         "document": {

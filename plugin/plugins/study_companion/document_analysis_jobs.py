@@ -122,7 +122,11 @@ class DocumentAnalysisJobManager:
                 )
             self._reap_locked()
             active = self._jobs.get(self._active_job_id)
-            if active is not None and active.status == "running":
+            if (
+                active is not None
+                and active.task is not None
+                and not active.task.done()
+            ):
                 raise DocumentAnalysisJobError(
                     "a document analysis job is already running",
                     diagnostic="document_job_busy",
@@ -215,8 +219,6 @@ class DocumentAnalysisJobManager:
                     job.cancellation_source,
                 )
                 job.finished_at = time.monotonic()
-                if self._active_job_id == job.job_id:
-                    self._active_job_id = ""
                 task = job.task
                 if task is not None:
                     task.cancel()
