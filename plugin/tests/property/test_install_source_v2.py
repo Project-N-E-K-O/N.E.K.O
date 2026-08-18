@@ -575,3 +575,67 @@ def test_property_3_missing_sha256_emits_warning(
     assert isinstance(entry.source_detail, SourceDetailMarket)
     assert entry.source_detail.package_sha256 == ""
     assert any("package_sha256" in w for w in warnings)
+
+
+def test_corrupt_profile_installed_is_treated_as_not_owned() -> None:
+    raw = json.dumps(
+        {
+            "schema_version": 2,
+            "updated_at": "2026-01-01T00:00:00.000000Z",
+            "entries": [
+                {
+                    "root_id": "user",
+                    "directory_name": "corrupt-profile",
+                    "plugin_id": "corrupt-profile",
+                    "channel": "imported",
+                    "reason": "user_requested",
+                    "installed_at": "2026-01-01T00:00:00.000000Z",
+                    "updated_at": "2026-01-01T00:00:00.000000Z",
+                    "last_seen_at": "2026-01-01T00:00:00.000000Z",
+                    "removed": False,
+                    "source_detail": None,
+                    "profile_installed": "false",
+                }
+            ],
+        }
+    ).encode("utf-8")
+
+    entry = _parse_lock(raw).entries[0]
+
+    assert entry.profile_installed is False
+
+
+def test_market_upgrade_preserves_owned_profile_when_new_package_has_none(
+    manager: InstallSourceManager,
+    tmp_path: Path,
+) -> None:
+    profile_dir = tmp_path / "profiles" / "preserved-package"
+    market_detail = {
+        "plugin_market_id": "preserved-plugin",
+        "version": "1.0.0",
+        "package_url": "https://example.com/v1.neko-plugin",
+        "channel": "stable",
+        "package_sha256": "a" * 64,
+        "payload_hash": None,
+        "published_at": "2026-01-01T00:00:00.000000Z",
+    }
+    manager.record_market_install(
+        root_id="user",
+        directory_name="preserved-plugin",
+        plugin_id="preserved-plugin",
+        market_detail=market_detail,
+        package_id="preserved-package",
+        profile_dir=str(profile_dir),
+    )
+
+    upgraded, _ = manager.record_market_upgrade(
+        root_id="user",
+        directory_name="preserved-plugin",
+        plugin_id="preserved-plugin",
+        market_detail={**market_detail, "version": "2.0.0"},
+        package_id="preserved-package",
+        profile_dir="",
+    )
+
+    assert upgraded.profile_installed is True
+    assert upgraded.profile_dir == str(profile_dir)

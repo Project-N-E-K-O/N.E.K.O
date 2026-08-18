@@ -2375,6 +2375,35 @@ def test_delete_removes_profile_from_recorded_custom_root(
 
 
 @pytest.mark.plugin_unit
+def test_delete_removes_recorded_profile_after_profile_root_changes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    plugin_dir = tmp_path / "root_changed_plugin"
+    old_profiles_root = tmp_path / "old_profiles"
+    current_profiles_root = tmp_path / "current_profiles"
+    profile_dir = old_profiles_root / "root_changed_package"
+    profile_dir.mkdir(parents=True)
+    install_source_manager = _FakeInstallSourceManager(
+        package_id="root_changed_package",
+        profile_dir=str(profile_dir),
+        profile_installed=True,
+    )
+    monkeypatch.setattr(module, "get_install_source_manager", lambda: install_source_manager)
+    monkeypatch.setattr(
+        module,
+        "get_user_package_profiles_root",
+        lambda: current_profiles_root,
+    )
+
+    staged_profile = module._stage_orphaned_package_profile_sync(plugin_dir)
+
+    assert staged_profile is not None
+    assert module._finalize_staged_package_profile_sync(staged_profile) == profile_dir
+    assert profile_dir.exists() is False
+
+
+@pytest.mark.plugin_unit
 def test_delete_removes_profile_not_shared_at_a_different_custom_root(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

@@ -30,6 +30,7 @@ from plugin.server.application.install_source import (
 from plugin.server.application.plugin_cli.paths import PluginCliPathPolicy
 from plugin.server.application.plugin_cli.install_plan import PluginInstallPlan, build_install_plan
 from plugin.server.application.plugins import upgrade_support
+from plugin.server.application.plugins.operation_lock import serialized_plugin_operation
 from plugin.server.application.plugin_cli.source_resolver import (
     PluginSourceResolver,
     ResolvedPluginSource,
@@ -138,6 +139,7 @@ class PluginCliService:
             profiles_root=profiles_root,
         )
 
+    @serialized_plugin_operation
     async def install(
         self,
         *,
@@ -347,6 +349,7 @@ class PluginCliService:
         """
         return await asyncio.to_thread(self._save_uploaded_package_sync, filename=filename, content=content)
 
+    @serialized_plugin_operation
     async def upload_and_install(
         self,
         *,

@@ -642,9 +642,17 @@ def _parse_entry(  # noqa: C901 — 10-step flow is intentionally explicit
     raw_profile_dir = raw.get("profile_dir", "")
     profile_dir = raw_profile_dir.strip() if isinstance(raw_profile_dir, str) else ""
     raw_profile_installed = raw.get("profile_installed")
-    profile_installed = (
-        raw_profile_installed if isinstance(raw_profile_installed, bool) else None
-    )
+    if "profile_installed" not in raw:
+        profile_installed = None
+    elif isinstance(raw_profile_installed, bool):
+        profile_installed = raw_profile_installed
+    else:
+        logger.warning(
+            "install_source: illegal profile_installed key=%s value=%r, treating as false",
+            key,
+            raw_profile_installed,
+        )
+        profile_installed = False
 
     # —— Timestamps ——
     installed_at = _normalize_ts(raw.get("installed_at"), now=now)
@@ -1468,8 +1476,13 @@ class InstallSourceManager:
                     removed=False,
                     removed_at=None,
                     package_id=package_id or existing.package_id,
-                    profile_dir=profile_dir,
-                    profile_installed=bool(profile_dir),
+                    profile_dir=profile_dir or (
+                        existing.profile_dir
+                        if existing.profile_installed is True
+                        else ""
+                    ),
+                    profile_installed=bool(profile_dir)
+                    or existing.profile_installed is True,
                 )
 
             new_lock = self._replace_entry(
@@ -1781,8 +1794,19 @@ class InstallSourceManager:
                 removed_at=None,
                 source_detail=detail,
                 package_id=package_id or (existing.package_id if existing is not None else ""),
-                profile_dir=profile_dir,
-                profile_installed=bool(profile_dir),
+                profile_dir=profile_dir or (
+                    existing.profile_dir
+                    if is_upgrade
+                    and existing is not None
+                    and existing.profile_installed is True
+                    else ""
+                ),
+                profile_installed=bool(profile_dir)
+                or (
+                    is_upgrade
+                    and existing is not None
+                    and existing.profile_installed is True
+                ),
             )
 
             try:

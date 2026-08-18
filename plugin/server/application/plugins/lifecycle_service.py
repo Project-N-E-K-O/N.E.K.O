@@ -39,6 +39,7 @@ from plugin.core.state import state
 from plugin.logging_config import get_logger
 from plugin.server.domain import IO_RUNTIME_ERRORS, RUNTIME_ERRORS
 from plugin.server.domain.errors import ServerDomainError
+from plugin.server.application.plugins.operation_lock import serialized_plugin_operation
 from plugin.server.application.plugins.registry_service import PluginRegistryService
 from plugin.server.application.install_source import (
     InstallSourceError,
@@ -74,9 +75,6 @@ plugin_registry_service = PluginRegistryService()
 # The profile sharing decision and install-source soft-removal must form one
 # operation.  Serializing deletions prevents two members of the same package
 # from both observing the other as active and orphaning the shared profile.
-_PLUGIN_DELETE_LOCK = asyncio.Lock()
-
-
 def _persist_user_runtime_intent(
     plugin_id: str,
     enabled: bool,
@@ -391,9 +389,12 @@ def _profile_path_from_entry_sync(entry: object, profiles_root: Path) -> Path | 
         )
     except Exception:
         return None
-    if (
-        profile_dir.name != package_id
-        or (profile_dir != profiles_root and profiles_root not in profile_dir.parents)
+    if profile_dir.name != package_id:
+        return None
+    # A recorded profile location remains valid after the configured profile
+    # root changes. Legacy fallback paths are still constrained to that root.
+    if not raw_profile_dir and (
+        profile_dir != profiles_root and profiles_root not in profile_dir.parents
     ):
         return None
     return profile_dir
@@ -468,9 +469,12 @@ def _stage_orphaned_package_profile_sync(plugin_dir: Path) -> _StagedPackageProf
         )
         return None
 
-    if (
-        current_profile_dir.name != package_id
-        or (current_profile_dir != profiles_root and profiles_root not in current_profile_dir.parents)
+    if current_profile_dir.name != package_id or (
+        not recorded_profile_dir
+        and (
+            current_profile_dir != profiles_root
+            and profiles_root not in current_profile_dir.parents
+        )
     ):
         logger.warning(
             "delete_plugin: refusing to remove unsafe package profile path: {}",
@@ -1405,10 +1409,10 @@ class PluginLifecycleService:
             "message": message,
         }
 
+    @serialized_plugin_operation
     async def delete_plugin(self, plugin_id: str) -> dict[str, object]:
-        """Delete one plugin while serializing package-profile ownership changes."""
-        async with _PLUGIN_DELETE_LOCK:
-            return await self._delete_plugin_unlocked(plugin_id)
+        """Delete one plugin without racing package installation transactions."""
+        return await self._delete_plugin_unlocked(plugin_id)
 
     async def _delete_plugin_unlocked(self, plugin_id: str) -> dict[str, object]:
         plugin_meta = await asyncio.to_thread(_get_plugin_meta_sync, plugin_id)
