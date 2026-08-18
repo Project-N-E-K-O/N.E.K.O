@@ -4281,3 +4281,27 @@ def test_meta_requests_do_not_activate_contrast_recovery(prefix):
     text = f'{prefix}但是请重写所有字段并保留是否会员'
     assert router._chat_text_requests_full_rewrite_core(text) is False
     assert router._chat_text_requests_full_rewrite(text) is False
+
+
+def test_trailing_save_cancellation_blocks_recovered_rewrite():
+    import main_routers.card_assist_router as router
+
+    text = '重写所有字段并保留是否会员，但先不要保存'
+    assert router._chat_text_requests_full_rewrite_core(text) is False
+    assert router._chat_text_requests_full_rewrite(text) is False
+
+
+def test_contrast_at_assignment_value_start_is_not_a_command_boundary():
+    import main_routers.card_assist_router as router
+
+    text = '把口头禅设为但是请重写所有字段并保留是否会员'
+    assert router._chat_text_requests_full_rewrite_core(text) is False
+    assert router._chat_text_requests_full_rewrite(text) is False
+
+
+def test_explicit_new_request_can_resume_after_a_prohibited_list():
+    import main_routers.card_assist_router as router
+
+    text = '不要执行以下修改：改名字。以上是旧请求。新请求：请重写所有字段并保留是否会员'
+    assert router._chat_text_requests_full_rewrite_core(text) is False
+    assert router._chat_text_requests_full_rewrite(text) is True

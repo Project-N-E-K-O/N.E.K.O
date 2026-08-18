@@ -1590,7 +1590,8 @@ _CHAT_SCOPED_CANCELLATION_RE = re.compile(
     r"(?:修改|操作|指令|命令|要求|内容|內容)"
     r"|(?:算了|算啦|罢了|罷了|不用(?:了|啦))(?:吧)?"
     r"|(?:(?:先|暂时|暫時)\s*)?(?:不要|别|別|不)\s*"
-    r"(?:执行|執行|应用|應用|采用|採用|进行|進行)(?:了|啦|吧)?\s*$"
+    r"(?:执行|執行|应用|應用|采用|採用|进行|進行|保存|儲存|存档|存檔|"
+    r"提交|送出|写入|寫入|(?i:save|submit|commit))(?:了|啦|吧)?\s*$"
 )
 _CHAT_SCOPED_SCOPE_REPLACEMENT_RE = re.compile(
     r"(?:改为|改為|改成|更正为|更正為|调整为|調整為)\s*(?:只|仅|僅)"
@@ -1599,6 +1600,9 @@ _CHAT_SCOPED_SCOPE_REPLACEMENT_RE = re.compile(
     r"|(?:我|我们|我們|咱们|咱們)\s*(?:只|仅|僅)\s*(?:想|要|需要)?"
 )
 _CHAT_SCOPED_BARE_CONTRAST_NARROWING_RE = re.compile(r"^\s*(?:只|仅|僅)")
+_CHAT_SCOPED_NEW_REQUEST_RE = re.compile(
+    r"(?:新请求|新請求|新的请求|新的請求|另一个请求|另一個請求)\s*[：:]",
+)
 _CHAT_SCOPED_META_REQUEST_RE = re.compile(
     r"^\s*(?:(?:请|請|帮我|幫我)\s*)?"
     r"(?:翻译|翻譯|解释|解釋|分析|说明|說明|总结|總結|评估|評估)\s*"
@@ -1731,6 +1735,20 @@ def _chat_next_command_after_assignments(text: str, masked: str, assignment):
     if not text[latest_assignment.end():next_command.start()].strip():
         return None
     return next_command
+
+
+def _chat_boundary_is_assignment_value(text: str, boundary_start: int) -> bool:
+    """Return whether a contrast boundary is still inside an assignment value."""
+    assignment = _CHAT_SCOPED_VALUE_ASSIGNMENT_RE.search(text)
+    if assignment is None or assignment.end() > boundary_start:
+        return False
+    latest_assignment = assignment
+    for later_assignment in _CHAT_SCOPED_VALUE_ASSIGNMENT_RE.finditer(
+        text, assignment.end(), boundary_start
+    ):
+        latest_assignment = later_assignment
+    value_prefix = text[latest_assignment.end():boundary_start]
+    return not re.search(r"[。，、！？,.!?;；]", value_prefix)
 
 
 def _chat_scoped_suffix_has_governing_guard(
@@ -2285,6 +2303,18 @@ def _chat_text_requests_full_rewrite_from_scoped_segments(text: str) -> bool:
             _CHAT_GOVERNING_FOLLOWING_LIST_MARKER_RE.search(prohibition.group(0))
             for prohibition in governing_prohibitions
         ):
+            new_request = _CHAT_SCOPED_NEW_REQUEST_RE.search(
+                text,
+                governing_prohibitions[-1].end(),
+            )
+            if new_request is not None:
+                new_request_suffix = text[new_request.end():]
+                return (
+                    _chat_text_requests_full_rewrite_core(new_request_suffix)
+                    or _chat_text_requests_full_rewrite_from_scoped_segments(
+                        new_request_suffix
+                    )
+                )
             return False
         governing_prohibition = governing_prohibitions[-1]
         sentence_end = _CHAT_GOVERNING_PROHIBITION_SENTENCE_END_RE.search(
@@ -2345,6 +2375,8 @@ def _chat_text_requests_full_rewrite_from_scoped_segments(text: str) -> bool:
         if reporting_contexts[index]:
             continue
         if match.group("contrast") is not None:
+            if _chat_boundary_is_assignment_value(text, match.start()):
+                return False
             if _CHAT_SCOPED_META_REQUEST_RE.search(masked[:match.start()]):
                 segment_start = match.end()
                 continue
@@ -2546,6 +2578,12 @@ async def _complete_full_rewrite_actions(
     target_keys: list[str],
 ) -> list[dict]:
     preserved = _chat_preserved_target_keys(user_instruction, target_keys)
+    if preserved:
+        actions = [
+            action
+            for action in actions
+            if str(action.get("field_key") or "").strip() not in preserved
+        ]
     present = {
         str(a.get("field_key") or "").strip()
         for a in actions
