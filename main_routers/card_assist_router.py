@@ -1611,7 +1611,8 @@ _CHAT_SCOPED_BARE_CONTRAST_NARROWING_RE = re.compile(
     r"^\s*(?:只|仅|僅|(?i:only\s+(?:change|rewrite|revise|regenerate|redo|refresh)\b))"
 )
 _CHAT_SCOPED_NEW_REQUEST_RE = re.compile(
-    r"(?:新请求|新請求|新的请求|新的請求|另一个请求|另一個請求)\s*[：:]",
+    r"(?:新请求|新請求|新的请求|新的請求|另一个请求|另一個請求"
+    r"|(?i:\b(?:new|another)\s+request))\s*[：:]",
 )
 _CHAT_SCOPED_META_REQUEST_RE = re.compile(
     r"^\s*(?:(?:请|請|帮我|幫我)\s*)?"
@@ -2694,9 +2695,21 @@ _CHAT_PRESERVATION_CLAUSE_RE = re.compile(
     r"|[。，、！？,.!?;；]|$)"
 )
 _CHAT_FIELD_BEFORE_PRESERVATION_RE = re.compile(
-    r"[^。，、！？,.!?;；]*?"
+    r"(?:^|[。，、！？,.!?;；]|(?:但|但是|可是|不过|不過)\s*)"
+    r"(?P<keys>[^。，、！？,.!?;；但]*?)"
     r"(?P<verb>保持|维持|維持|(?i:\bkeep\b))\s*"
     r"(?:不(?:变|變)|原样|原樣|(?i:unchanged|as\s+is))"
+)
+_CHAT_FIELD_EDIT_PROHIBITION_RE = re.compile(
+    r"(?:"
+    r"(?P<keys_before>[^。，、！？,.!?;；]*?)\s*"
+    r"(?:不要|别|別|不必|不用|无需|無需)\s*(?:再|继续|繼續)?\s*"
+    r"(?:改|修改|更改|重写|重寫|改写|改寫|调整|調整)"
+    r"|(?i:(?:do\s+not|don't|never)\s+"
+    r"(?:change|rewrite|revise|regenerate|redo|refresh)\s+"
+    r"(?P<keys_after>[^。，、！？,.!?;；]+?))"
+    r")"
+    r"(?=[。，、！？,.!?;；]|$)"
 )
 _CHAT_PRESERVATION_EXCEPT_RE = re.compile(
     r"(?:"
@@ -2708,7 +2721,9 @@ _CHAT_PRESERVATION_EXCEPT_RE = re.compile(
 )
 _CHAT_PRESERVATION_NEGATION_RE = re.compile(
     r"(?:(?:不要|别|別|不需要|不須要|不|无需|無需|不必|请勿|請勿)\s*"
-    r"(?:再|继续|繼續)?|(?i:\b(?:do\s+not(?:\s+need\s+to)?|don't(?:\s+need\s+to)?|never|not)))\s*$"
+    r"(?:再|继续|繼續)?|(?:不想|不打算|不准备|不準備)\s*"
+    r"|(?i:\b(?:do\s+not(?:\s+need\s+to)?|don't(?:\s+need\s+to)?|never|not"
+    r"|(?:do\s+not|don't)\s+(?:want|plan|intend)\s+to)))\s*$"
 )
 _CHAT_IDENTIFIER_KEY_RE = re.compile(r"[A-Za-z0-9_]")
 
@@ -2796,6 +2811,23 @@ def _chat_active_request_start(instruction: str) -> int:
     return active_start
 
 
+def _chat_preservation_sentence_has_governing_guard(
+    instruction: str, clause_start: int
+) -> bool:
+    """Return whether a preservation phrase is inside a question or condition."""
+    sentence_end = _CHAT_GOVERNING_PROHIBITION_SENTENCE_END_RE.search(
+        instruction or "", clause_start
+    )
+    sentence = (instruction or "")[
+        clause_start:sentence_end.end() if sentence_end else len(instruction or "")
+    ]
+    readable = _chat_clause_without_free_choice(_chat_clause_without_quotes(sentence))
+    return bool(
+        re.search(r"[？?]\s*$", readable)
+        or _CHAT_QUESTION_CLAUSE_RE.search(readable)
+    )
+
+
 def _chat_preservation_match_is_constraint(
     clause: str, verb: str, match_end: int
 ) -> bool:
@@ -2818,6 +2850,7 @@ def _chat_preserved_target_keys(
 ) -> set[str]:
     """Return target keys explicitly named in a preservation clause."""
     candidates: list[tuple[str, int, int]] = []
+    revocations: list[tuple[str, int, int]] = []
     active_start = _chat_active_request_start(instruction or "")
     for except_match in _CHAT_PRESERVATION_EXCEPT_RE.finditer(instruction or ""):
         if except_match.start() < active_start:
@@ -2862,6 +2895,11 @@ def _chat_preserved_target_keys(
             (instruction or "")[:clause_match.start()]
         )[-1]
         if _CHAT_PRESERVATION_NEGATION_RE.search(prefix):
+            revocations.extend(
+                _chat_target_key_matches(
+                    clause_match.group(0), target_keys, clause_match.start()
+                )
+            )
             continue
         clause = clause_match.group(0)
         if clause_match.group("verb") in {"维持", "維持"} and not re.search(
@@ -2895,6 +2933,10 @@ def _chat_preserved_target_keys(
             instruction or "", clause_match.start()
         ):
             continue
+        if _chat_preservation_sentence_has_governing_guard(
+            instruction or "", clause_match.start()
+        ):
+            continue
         prefix = _CHAT_CLAUSE_SPLIT_RE.split(
             (instruction or "")[:clause_match.start()]
         )[-1]
@@ -2902,12 +2944,46 @@ def _chat_preserved_target_keys(
             continue
         candidates.extend(
             _chat_target_key_matches(
-                clause_match.group(0), target_keys, clause_match.start()
+                clause_match.group("keys"),
+                target_keys,
+                clause_match.start("keys"),
+            )
+        )
+    for clause_match in _CHAT_FIELD_EDIT_PROHIBITION_RE.finditer(instruction or ""):
+        if clause_match.start() < active_start:
+            continue
+        if _chat_span_is_quoted(
+            instruction or "", clause_match.start(), clause_match.end()
+        ):
+            continue
+        if _chat_preservation_clause_is_meta_request_text(
+            instruction or "", clause_match.start()
+        ):
+            continue
+        if _chat_preservation_clause_is_reported(
+            instruction or "", clause_match.start()
+        ):
+            continue
+        if clause_match.group("keys_before") is not None:
+            keys_text = clause_match.group("keys_before")
+            keys_start = clause_match.start("keys_before")
+        else:
+            keys_text = clause_match.group("keys_after") or ""
+            keys_start = clause_match.start("keys_after")
+        candidates.extend(
+            _chat_target_key_matches(
+                keys_text,
+                target_keys,
+                keys_start,
             )
         )
     return {
         key
         for key, start, end in candidates
+        if not any(
+            revoked_key == key and revoked_start > start
+            for revoked_key, revoked_start, _ in revocations
+        )
         if not any(
             other_start <= start
             and end <= other_end

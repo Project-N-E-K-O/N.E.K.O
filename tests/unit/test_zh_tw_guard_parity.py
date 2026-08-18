@@ -4468,6 +4468,14 @@ def test_preservation_state_is_discarded_after_new_request_markers():
     assert router._chat_preserved_target_keys(text, ['头像']) == set()
 
 
+def test_english_new_request_marker_discards_previous_preservation():
+    import main_routers.card_assist_router as router
+
+    text = 'Keep avatar. New request: rewrite all fields'
+    assert router._chat_preserved_target_keys(text, ['avatar']) == set()
+    assert router._chat_text_requests_full_rewrite(text) is True
+
+
 @pytest.mark.parametrize(
     ('text', 'expected'),
     [
@@ -4548,11 +4556,71 @@ def test_preservation_clause_accepts_chinese_comma_terminators():
     assert router._chat_preserved_target_keys(text, ['头像', '名字']) == {'头像'}
 
 
+@pytest.mark.parametrize(
+    ('text', 'targets', 'expected'),
+    [
+        ('请重写所有字段，但头像不要改', ['头像', '名字'], {'头像'}),
+        ('rewrite all fields, but do not change avatar', ['avatar', 'name'], {'avatar'}),
+    ],
+)
+def test_field_specific_edit_prohibitions_preserve_targets(text, targets, expected):
+    import main_routers.card_assist_router as router
+
+    assert router._chat_preserved_target_keys(text, targets) == expected
+
+
 def test_field_before_preservation_verb_preserves_target():
     import main_routers.card_assist_router as router
 
     text = '请重写所有字段，但头像保持不变'
     assert router._chat_preserved_target_keys(text, ['头像', '名字']) == {'头像'}
+
+
+@pytest.mark.parametrize(
+    'text',
+    [
+        'Age keep unchanged? Please rewrite all fields.',
+        'Age keep unchanged if needed; rewrite all fields.',
+    ],
+)
+def test_field_before_preservation_questions_do_not_preserve_targets(text):
+    import main_routers.card_assist_router as router
+
+    assert router._chat_preserved_target_keys(text, ['Age']) == set()
+    assert router._chat_text_requests_full_rewrite(text) is True
+
+
+def test_field_before_preservation_is_bound_to_nearest_target():
+    import main_routers.card_assist_router as router
+
+    text = '请重写所有字段，名字重写但头像保持不变'
+    assert router._chat_preserved_target_keys(text, ['名字', '头像']) == {'头像'}
+
+
+@pytest.mark.parametrize(
+    'text',
+    [
+        '我不想保留头像，请重写所有字段',
+        "I don't want to keep avatar; rewrite all fields",
+    ],
+)
+def test_modal_negations_do_not_preserve_targets(text):
+    import main_routers.card_assist_router as router
+
+    assert router._chat_preserved_target_keys(text, ['头像', 'avatar']) == set()
+
+
+@pytest.mark.parametrize(
+    ('text', 'targets'),
+    [
+        ('请保留头像。不要保留头像，请重写所有字段', ['头像']),
+        ('Keep avatar. Do not keep avatar; rewrite all fields', ['avatar']),
+    ],
+)
+def test_later_negations_revoke_previous_preservation(text, targets):
+    import main_routers.card_assist_router as router
+
+    assert router._chat_preserved_target_keys(text, targets) == set()
 
 
 def test_full_rewrite_before_sequential_assignment_remains_active():
