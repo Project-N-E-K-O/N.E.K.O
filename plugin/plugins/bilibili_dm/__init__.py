@@ -1185,7 +1185,13 @@ class BiliDMPlugin(NekoPluginBase):
         if reply_text:
             try:
                 if reply_target:
-                    send_started_at = int(message.get("comment_send_started_at") or 0)
+                    # B站通知的 timestamp 由服务端产生，不能用本机发起时间，
+                    # 否则时钟快于 B站时会把已成功的回复误判为不存在。
+                    send_started_at = int(
+                        message.get("comment_send_started_at")
+                        or message.get("timestamp")
+                        or 0
+                    )
                     if (
                         int(message.get("notification_attempt") or 0) > 0
                         and send_started_at
@@ -1203,7 +1209,10 @@ class BiliDMPlugin(NekoPluginBase):
                             return True
                         if already_exists is None:
                             return False
-                    message.setdefault("comment_send_started_at", int(time.time()) - 2)
+                    message.setdefault(
+                        "comment_send_started_at",
+                        int(message.get("timestamp") or 0),
+                    )
                     response = await self.bili_client.send_comment_reply(
                         reply_target, reply_text
                     )
@@ -1250,6 +1259,7 @@ class BiliDMPlugin(NekoPluginBase):
         if permission_level not in ("admin", "trusted"):
             return None
 
+        session_key: Optional[str] = None
         try:
             from main_logic.omni_offline_client import OmniOfflineClient
             from utils.config_manager import get_config_manager
@@ -1444,6 +1454,16 @@ class BiliDMPlugin(NekoPluginBase):
             return None
         except Exception as e:
             self.logger.exception(f"AI 生成回复失败: {e}")
+            if channel_kind == "comment" and session_key:
+                user_data = self._user_sessions.pop(session_key, None)
+                session = user_data.get("session") if user_data else None
+                if session:
+                    try:
+                        await session.close()
+                    except Exception as close_exc:
+                        self.logger.warning(
+                            f"关闭失败的公开评论会话失败 {session_key}: {close_exc}"
+                        )
             return None if channel_kind == "comment" else "收到你的消息了"
 
     async def _build_session_instructions(

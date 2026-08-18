@@ -726,7 +726,9 @@ class BiliDMClient:
             "notification_identity": notification_identity,
             "notification_attempt": 0,
             "msg_key": str(item.get("id") or ""),
-            "timestamp": int(item.get("reply_time") or time.time()),
+            # reply_time / at_time 都来自 B站消息流。缺失时保留 0，后续重试
+            # 不得把本机时钟作为已发评论的去重边界。
+            "timestamp": self._notification_event_time(source, item),
             "content": content,
             "content_type": "text",
             "reply_target": reply_target,

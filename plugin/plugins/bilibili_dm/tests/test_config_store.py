@@ -909,6 +909,73 @@ async def test_comment_retry_checks_existing_reply_before_resending(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_comment_retry_uses_bilibili_notification_time_as_cutoff(tmp_path):
+    plugin = make_plugin(tmp_path)
+    plugin.permission_mgr.add_user("42", "trusted")
+    plugin._generate_reply = AsyncMock(return_value="generated reply")
+    plugin.bili_client = SimpleNamespace(
+        comment_reply_exists=AsyncMock(return_value=False),
+        send_comment_reply=AsyncMock(return_value={"data": {"rpid": 4}}),
+    )
+    message = {
+        "sender_uid": "42",
+        "sender_nickname": "tester",
+        "content": "hello",
+        "conversation_key": "comment:1:2:3",
+        "reply_target": {"type": 1, "oid": 2, "root": 3, "parent": 3},
+        "notification_identity": "comment:1:2:3",
+        "timestamp": 100,
+    }
+
+    assert await plugin._handle_message(message) is True
+    assert message["comment_send_started_at"] == 100
+
+
+@pytest.mark.asyncio
+async def test_failed_comment_session_is_discarded_before_retry(tmp_path, monkeypatch):
+    plugin = make_plugin(tmp_path)
+    session_key = BiliDMPlugin._build_session_key("42", "comment:1:2:3")
+    session = SimpleNamespace(
+        stream_text=AsyncMock(side_effect=RuntimeError("transport failed")),
+        close=AsyncMock(),
+    )
+    plugin._user_sessions[session_key] = {
+        "session": session,
+        "reply_chunks": [],
+        "lock": asyncio.Lock(),
+    }
+    config_manager = SimpleNamespace(
+        get_character_data=lambda: (
+            "Master",
+            "Neko",
+            None,
+            {},
+            None,
+            {},
+            None,
+            None,
+            None,
+        ),
+        get_model_api_config=lambda _kind: {},
+    )
+    monkeypatch.setattr(
+        "utils.config_manager.get_config_manager", lambda: config_manager
+    )
+
+    reply = await plugin._generate_reply(
+        message="hello",
+        permission_level="trusted",
+        sender_uid="42",
+        conversation_key="comment:1:2:3",
+        channel_kind="comment",
+    )
+
+    assert reply is None
+    assert session_key not in plugin._user_sessions
+    session.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_comment_reply_idempotency_check_matches_parent_and_send_time(
     monkeypatch,
 ):
@@ -1002,10 +1069,11 @@ def test_video_context_cache_is_bounded_and_keeps_recent_entries():
 
     client._cache_video_context(1, {"title": "oldest"})
     client._cache_video_context(2, {"title": "middle"})
-    assert client._video_info_cache[1]["title"] == "oldest"
+    client._cache_video_context(1, {"title": "refreshed"})
     client._cache_video_context(3, {"title": "newest"})
 
-    assert list(client._video_info_cache) == [2, 3]
+    assert list(client._video_info_cache) == [1, 3]
+    assert client._video_info_cache[1]["title"] == "refreshed"
 
 
 @pytest.mark.asyncio
