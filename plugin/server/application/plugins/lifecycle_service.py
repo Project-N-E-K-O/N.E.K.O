@@ -392,6 +392,10 @@ def _remove_install_source_and_orphaned_profile_sync(plugin_dir: Path) -> Path |
             plugin_dir,
             include_removed=True,
         ) or plugin_dir.name
+        recorded_profile_dir = manager.profile_dir_for_directory(
+            plugin_dir,
+            include_removed=True,
+        )
         manager.mark_removed(directory_path=plugin_dir)
         if any(entry.package_id == package_id for entry in manager.list_entries()):
             return None
@@ -412,7 +416,11 @@ def _remove_install_source_and_orphaned_profile_sync(plugin_dir: Path) -> Path |
 
     try:
         profiles_root = get_user_package_profiles_root().resolve()
-        profile_dir = (profiles_root / package_id).resolve()
+        profile_dir = (
+            Path(recorded_profile_dir).expanduser().resolve()
+            if recorded_profile_dir
+            else (profiles_root / package_id).resolve()
+        )
     except Exception as exc:
         logger.warning(
             "delete_plugin: failed to resolve package profile for plugin_dir={}: {}",
@@ -421,7 +429,10 @@ def _remove_install_source_and_orphaned_profile_sync(plugin_dir: Path) -> Path |
         )
         return None
 
-    if profile_dir.parent != profiles_root:
+    if (
+        profile_dir.name != package_id
+        or (profile_dir != profiles_root and profiles_root not in profile_dir.parents)
+    ):
         logger.warning(
             "delete_plugin: refusing to remove unsafe package profile path: {}",
             profile_dir,

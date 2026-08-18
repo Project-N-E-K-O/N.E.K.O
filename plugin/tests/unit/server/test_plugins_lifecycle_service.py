@@ -78,10 +78,12 @@ class _FakeInstallSourceManager:
         self,
         *,
         package_id: str,
+        profile_dir: str = "",
         active_package_ids: tuple[str, ...] = (),
         list_entries_error: Exception | None = None,
     ) -> None:
         self.package_id = package_id
+        self.profile_dir = profile_dir
         self.active_package_ids = active_package_ids
         self.list_entries_error = list_entries_error
         self.marked_removed: list[Path] = []
@@ -97,6 +99,15 @@ class _FakeInstallSourceManager:
 
     def mark_removed(self, *, directory_path: Path) -> None:
         self.marked_removed.append(directory_path)
+
+    def profile_dir_for_directory(
+        self,
+        _directory_path: Path,
+        *,
+        include_removed: bool = False,
+    ) -> str:
+        del include_removed
+        return self.profile_dir
 
     def list_entries(self) -> list[SimpleNamespace]:
         if self.list_entries_error is not None:
@@ -2125,6 +2136,28 @@ def test_delete_uses_plugin_directory_name_for_legacy_empty_package_id(
     profile_dir = profiles_root / plugin_dir.name
     profile_dir.mkdir(parents=True)
     install_source_manager = _FakeInstallSourceManager(package_id="")
+    monkeypatch.setattr(module, "get_install_source_manager", lambda: install_source_manager)
+    monkeypatch.setattr(module, "get_user_package_profiles_root", lambda: profiles_root)
+
+    deleted_profile = module._remove_install_source_and_orphaned_profile_sync(plugin_dir)
+
+    assert deleted_profile == profile_dir
+    assert profile_dir.exists() is False
+
+
+@pytest.mark.plugin_unit
+def test_delete_removes_profile_from_recorded_custom_root(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    plugin_dir = tmp_path / "custom_profile_plugin"
+    profiles_root = tmp_path / "profiles"
+    profile_dir = profiles_root / "custom" / "custom_package"
+    profile_dir.mkdir(parents=True)
+    install_source_manager = _FakeInstallSourceManager(
+        package_id="custom_package",
+        profile_dir=str(profile_dir),
+    )
     monkeypatch.setattr(module, "get_install_source_manager", lambda: install_source_manager)
     monkeypatch.setattr(module, "get_user_package_profiles_root", lambda: profiles_root)
 

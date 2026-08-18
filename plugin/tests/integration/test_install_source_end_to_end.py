@@ -86,6 +86,7 @@ def test_upload_and_install_records_source(tmp_path: Path) -> None:
         package_filename="uploaded_plugin.neko-plugin",
         package_sha256="d" * 64,
         package_id="uploaded-package",
+        profile_dir=str(tmp_path / "profiles" / "custom" / "uploaded-package"),
     )
     lf = _parse_lock(mgr.lock_path.read_bytes())
     assert len(lf.entries) == 1
@@ -94,7 +95,9 @@ def test_upload_and_install_records_source(tmp_path: Path) -> None:
     assert e.reason == "user_requested"
     assert e.plugin_id == "uploaded_plugin"
     assert e.package_id == "uploaded-package"
+    assert Path(e.profile_dir) == (tmp_path / "profiles" / "custom" / "uploaded-package")
     assert mgr.package_id_for_directory(target) == "uploaded-package"
+    assert mgr.profile_dir_for_directory(target) == e.profile_dir
     assert isinstance(e.source_detail, SourceDetailImported)
     assert e.source_detail.package_sha256 == "d" * 64
 

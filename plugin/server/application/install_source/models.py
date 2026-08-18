@@ -93,6 +93,9 @@ class LockEntry:
     # Package-profile directory key. Empty on legacy rows that predate
     # package identity tracking; callers may then fall back to plugin_id.
     package_id: str = ""
+    # Absolute profile location selected at install time. Empty on legacy
+    # rows, which use the default profile root and package_id fallback.
+    profile_dir: str = ""
 
     @property
     def primary_key(self) -> tuple[str, str]:

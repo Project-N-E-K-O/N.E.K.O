@@ -1597,6 +1597,7 @@ def _record_install_source_for_install_result(
 
     installed_plugins = install_result.get("installed_plugins", [])
     package_id = str(install_result.get("package_id") or "")
+    profile_dir = str(install_result.get("profile_dir") or "")
     for installed in installed_plugins:
         target_dir = Path(installed["target_dir"])
         if override is None:
@@ -1605,6 +1606,7 @@ def _record_install_source_for_install_result(
                 package_filename=package_filename,
                 package_sha256=package_sha256,
                 package_id=package_id,
+                profile_dir=profile_dir,
             )
         elif override.get("channel") == "market":
             detail = override.get("market_detail", {})
@@ -1614,6 +1616,7 @@ def _record_install_source_for_install_result(
                 version=detail.get("version", ""),
                 package_url=detail.get("package_url", ""),
                 package_id=package_id,
+                profile_dir=profile_dir,
             )
         else:
             raise InstallSourceError(
