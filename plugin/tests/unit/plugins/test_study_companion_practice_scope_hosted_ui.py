@@ -60,6 +60,19 @@ def test_hosted_knowledge_map_restores_and_clears_persisted_scope() -> None:
     assert "setSelectedNode(null);\n        setCanonicalScope(null);" not in load
 
 
+def test_hosted_knowledge_map_keeps_map_available_when_scope_recovery_fails() -> None:
+    source = _source("knowledge_map.tsx")
+    load_start = source.index("useEffect(() =>")
+    load_end = source.index("}, [props.api]);", load_start)
+    load = source[load_start:load_end]
+
+    assert "Promise.all([" not in load
+    assert "setScopeRecoveryFailed(true);" in load
+    assert "study_knowledge_map" in load
+    assert "study_get_practice_scope" in load
+    assert "canonicalScope?.display_path?.length || scopeRecoveryFailed" in source
+
+
 def test_hosted_topic_scope_derives_its_identity_from_the_selected_node() -> None:
     source = _source("knowledge_map.tsx")
     activation_start = source.index("async function activatePracticeScope")

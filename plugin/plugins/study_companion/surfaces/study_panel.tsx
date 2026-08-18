@@ -2098,10 +2098,15 @@ export default function StudyPanel(props: PluginSurfaceProps) {
   useEffect(() => {
     mountedRef.current = true;
     const controller = beginStudyRequest();
+    void resumeDocumentJob(controller.signal).catch((error) => {
+      if (controller.signal.aborted) {
+        return;
+      }
+      setReply(formatPluginError(error));
+    });
     refresh(controller.signal)
       .then(() => refreshModelRuntime(controller.signal))
       .then(() => loadPracticeScope(controller.signal))
-      .then(() => resumeDocumentJob(controller.signal))
       .catch((error) => {
         if (controller.signal.aborted) {
           return;

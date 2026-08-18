@@ -206,6 +206,19 @@ def test_hosted_document_job_recovery_survives_opaque_storage_and_transient_fail
     assert "continue;" in poll
 
 
+def test_hosted_document_job_recovery_is_independent_of_status_initialization() -> None:
+    plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
+    hosted = (plugin_dir / "surfaces" / "study_panel.tsx").read_text(encoding="utf-8")
+    mounted_start = hosted.index("mountedRef.current = true;")
+    init_start = hosted.rfind("useEffect(() => {", 0, mounted_start)
+    init_end = hosted.index("}, [props.locale]);", init_start)
+    initialization = hosted[init_start:init_end]
+
+    assert "void resumeDocumentJob(controller.signal).catch" in initialization
+    assert ".then(() => resumeDocumentJob(controller.signal))" not in initialization
+    assert initialization.index("resumeDocumentJob") < initialization.index("refresh(controller.signal)")
+
+
 def test_hosted_document_job_ambiguous_start_and_cancel_failures_keep_recovery() -> None:
     plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
     hosted = (plugin_dir / "surfaces" / "study_panel.tsx").read_text(encoding="utf-8")

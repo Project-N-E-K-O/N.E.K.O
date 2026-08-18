@@ -333,11 +333,14 @@ class _StatusEntriesMixin:
         describe_model_runtimes = getattr(
             self._agent, "describe_model_runtimes", None
         )
-        model_runtime = (
-            await describe_model_runtimes()
-            if callable(describe_model_runtimes)
-            else {}
-        )
+        model_runtime = {}
+        if callable(describe_model_runtimes):
+            try:
+                model_runtime = await describe_model_runtimes()
+            except Exception as exc:
+                self.logger.warning(
+                    "study model runtime diagnostics unavailable: {}", exc
+                )
         return Ok(
             {
                 "config": _settings_config_payload(self._cfg),

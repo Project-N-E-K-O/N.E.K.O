@@ -156,6 +156,24 @@ async def test_settings_read_and_status_report_configured_and_runtime_state() ->
 
 
 @pytest.mark.asyncio
+async def test_settings_remain_readable_when_model_runtime_diagnostics_fail() -> None:
+    owner = _RuntimeOwner(enabled=False)
+
+    async def fail_model_runtime() -> dict:
+        raise RuntimeError("model config unavailable")
+
+    owner._agent = SimpleNamespace(describe_model_runtimes=fail_model_runtime)
+
+    settings = await owner.study_get_settings_config()
+
+    assert isinstance(settings, Ok)
+    assert settings.value["config"] == entry_status_entries._settings_config_payload(
+        owner._cfg
+    )
+    assert settings.value["model_runtime"] == {}
+
+
+@pytest.mark.asyncio
 async def test_enabling_communication_starts_runtime_once_and_persists() -> None:
     owner = _RuntimeOwner(enabled=False)
 
