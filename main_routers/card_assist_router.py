@@ -1663,7 +1663,7 @@ _CHAT_PRESERVATION_TARGET_CONJUNCTION_RE = re.compile(
     r"^\s*(?:和|与|與|及|跟|(?i:\band\b))\s*$"
 )
 _CHAT_PRESERVATION_CONTRAST_SPLIT_RE = re.compile(
-    r"(?:但是|可是|不过|不過|但|(?i:\b(?:but|however)\b))"
+    r"(?:(?<![不非])(?:但是|但)|可是|不过|不過|(?i:\b(?:but|however)\b))"
 )
 _CHAT_GOVERNING_EXECUTION_QUESTION_RE = re.compile(
     r"^\s*(?:(?:请问|請問|你觉得|你覺得|我想知道)\s*)?"
@@ -2741,7 +2741,7 @@ _CHAT_EN_EDIT_BOUNDARY_VERB_PATTERN = (
     r"(?i:\b(?:change|update|edit|modify|rewrite|revise|regenerate|redo|refresh)\b)"
 )
 _CHAT_PRESERVATION_ALL_TARGET_RE = re.compile(
-    r"(?i:\b(?:everything|all(?:\s+fields)?)\b)|(?:所有|全部|全[部个個]?)字段"
+    r"(?i:\b(?:everything|all(?:\s+fields)?)\b)|(?:所有|全部|全[部个個]?)(?:字段|欄位|栏位)"
 )
 _CHAT_PRESERVATION_CLAUSE_RE = re.compile(
     r"(?P<verb>保留|保持|维持|維持|(?i:\b(?:preserve|keep)\b))"

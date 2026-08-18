@@ -4753,6 +4753,26 @@ def test_collective_preservation_targets_expand_to_all_fields(
 
 @pytest.mark.parametrize(
     'text',
+    ['请重写所有欄位，但保留所有欄位', '請重寫所有欄位，但保留所有欄位'],
+)
+def test_collective_traditional_field_preservation_expands_to_all_fields(text):
+    import main_routers.card_assist_router as router
+
+    assert router._chat_preserved_target_keys(text, ['头像', '名字']) == {
+        '头像',
+        '名字',
+    }
+
+
+def test_progressive_but_does_not_reset_preservation_negation_scope():
+    import main_routers.card_assist_router as router
+
+    text = '不但不要保留头像，而且保留名字不变；请重写所有字段'
+    assert router._chat_preserved_target_keys(text, ['头像', '名字']) == {'名字'}
+
+
+@pytest.mark.parametrize(
+    'text',
     [
         '我不想保留头像，请重写所有字段',
         "I don't want to keep avatar; rewrite all fields",
