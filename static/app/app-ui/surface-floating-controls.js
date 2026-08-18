@@ -342,6 +342,12 @@
 
         if (!window.__nekoSocialThemeBridgeInstalled) {
             window.__nekoSocialThemeBridgeInstalled = true;
+            window.addEventListener('neko-theme-changed', (event) => {
+                const requestedTheme = event.detail && event.detail.darkMode;
+                publishSocialTheme(
+                    typeof requestedTheme === 'boolean' ? requestedTheme : isResolvedDarkTheme()
+                );
+            });
             const themeObserver = new MutationObserver(() => {
                 publishSocialTheme(isResolvedDarkTheme());
             });

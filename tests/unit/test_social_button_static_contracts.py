@@ -98,6 +98,8 @@ def test_social_open_request_is_deduped_before_fetching_config():
     assert "popupRoot.style.colorScheme = popupDark ? 'dark' : 'light'" in listener
     assert "popupRoot.style.backgroundColor = popupDark ? '#070c13' : '#edf8ff'" in listener
     assert "function registerSocialThemeTarget(targetWindow, targetUrl)" in source
+    assert "window.addEventListener('neko-theme-changed', (event) => {" in source
+    assert "typeof requestedTheme === 'boolean' ? requestedTheme : isResolvedDarkTheme()" in source
     assert "const themeObserver = new MutationObserver" in source
     assert "attributeFilter: ['data-theme']" in source
     assert "target.targetWindow.postMessage({" in source
