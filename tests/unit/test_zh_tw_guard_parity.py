@@ -5157,6 +5157,30 @@ def test_update_and_example_preservation_boundaries():
     ) == {'avatar'}
 
 
+def test_latest_preservation_boundary_regressions():
+    import main_routers.card_assist_router as router
+
+    assert router._chat_instruction_explicitly_updates_field(
+        'Rewrite all fields except avatar and name, but set name to John',
+        'name',
+        after_offset=0,
+    ) is True
+    assert router._chat_preserved_target_keys(
+        'Rewrite all fields except avatar and name, but set name to John',
+        ['avatar', 'name'],
+    ) == {'avatar'}
+    assert router._chat_preserved_target_keys(
+        'Change avatar but not name. Rewrite all fields; preserve name',
+        ['avatar', 'name'],
+    ) == {'name'}
+    assert router._chat_text_requests_full_rewrite(
+        'voice_tag is new request: rewrite all fields'
+    ) is False
+    assert router._chat_preserved_target_keys(
+        '请重写所有字段；修改名字并让头像保持不变', ['头像', '名字']
+    ) == {'头像'}
+
+
 @pytest.mark.parametrize(
     'text',
     [

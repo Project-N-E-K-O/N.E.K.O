@@ -2552,7 +2552,7 @@ def _chat_text_requests_full_rewrite(text: str) -> bool:
     if not (
         _CHAT_GOVERNING_INSTRUCTION_PROHIBITION_RE.search(marker_text)
         or re.search(
-            r"(?i:\b[a-z][a-z ]{0,40}\s+is\s+new\s+request\s*:)",
+            r"(?i:\b[A-Za-z][A-Za-z0-9_-]{0,40}\s+is\s+new\s+request\s*:)",
             masked,
         )
     ):
@@ -2706,7 +2706,6 @@ def _chat_instruction_explicitly_removes_field(
     if active_start:
         instruction = instruction[active_start:]
     key = re.escape(field_key)
-    key_tail = r"(?![A-Za-z0-9_])" if _CHAT_IDENTIFIER_KEY_RE.search(field_key) else ""
     removal_re = re.compile(
         rf"(?:删除|刪除|移除)\s*{key}(?![A-Za-z0-9_])"
         rf"|(?:把|将|將)\s*{key}\s*(?:删除|刪除|移除)"
@@ -3092,7 +3091,7 @@ def _chat_instruction_explicitly_updates_field(
     key_tail = r"(?![A-Za-z0-9_])" if _CHAT_IDENTIFIER_KEY_RE.search(field_key) else ""
     update_re = re.compile(
         rf"(?:(?i:\b(?:but|however)\s+"
-        rf"(?:change|update|edit|modify|rewrite|revise|regenerate|redo|refresh)\s+"
+        rf"(?:change|update|edit|modify|rewrite|revise|regenerate|redo|refresh|set)\s+"
         rf"{key}(?![A-Za-z0-9_]))"
         rf"|(?:但|但是|可是|不过|不過|然后|然後)\s*"
         rf"(?:改|修改|更改|重写|重寫|改写|改寫|调整|調整)\s*{key}{key_tail})",
@@ -3114,6 +3113,31 @@ def _chat_instruction_explicitly_updates_field(
             continue
         return True
     return False
+
+
+def _chat_preservation_is_but_not_revoked(
+    instruction: str, field_key: str, *, candidate_start: int
+) -> bool:
+    """Return whether the candidate's sentence explicitly excludes its field."""
+    sentence_start = 0
+    for reset in _CHAT_REPORTING_CONTEXT_RESET_RE.finditer(
+        instruction or "", 0, candidate_start
+    ):
+        sentence_start = reset.end()
+    sentence_end_match = _CHAT_REPORTING_CONTEXT_RESET_RE.search(
+        instruction or "", candidate_start
+    )
+    sentence_end = (
+        sentence_end_match.start()
+        if sentence_end_match is not None
+        else len(instruction or "")
+    )
+    return bool(
+        re.search(
+            rf"(?i:\bbut\s+not\s+{re.escape(field_key)}(?![A-Za-z0-9_]))",
+            (instruction or "")[sentence_start:sentence_end],
+        )
+    )
 
 
 def _chat_preserved_target_keys(
@@ -3301,13 +3325,15 @@ def _chat_preserved_target_keys(
         )
         if _CHAT_PRESERVATION_NEGATION_RE.search(prefix):
             continue
-        candidates.extend(
-            _chat_target_key_matches(
-                clause_match.group("keys"),
-                target_keys,
-                clause_match.start("keys"),
-            )
+        keys_text = clause_match.group("keys")
+        keys_start = clause_match.start("keys")
+        sequential_subject = list(
+            re.finditer(r"(?:并|並|然后|然後)\s*(?:让|讓|使)\s*", keys_text)
         )
+        if sequential_subject:
+            keys_start += sequential_subject[-1].end()
+            keys_text = keys_text[sequential_subject[-1].end() :]
+        candidates.extend(_chat_target_key_matches(keys_text, target_keys, keys_start))
     for clause_match in _CHAT_FIELD_EDIT_PROHIBITION_RE.finditer(instruction or ""):
         if clause_match.start() < active_start:
             continue
@@ -3361,9 +3387,8 @@ def _chat_preserved_target_keys(
         key
         for key, start, end in candidates
         if key in preserved
-        and not re.search(
-            rf"(?i:\bbut\s+not\s+{re.escape(key)}(?![A-Za-z0-9_]))",
-            instruction or "",
+        and not _chat_preservation_is_but_not_revoked(
+            instruction or "", key, candidate_start=start
         )
         and not _chat_instruction_explicitly_updates_field(
             instruction or "", key, after_offset=end
