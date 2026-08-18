@@ -195,8 +195,14 @@ async def test_repair_does_not_call_model_after_entry_deadline() -> None:
 @pytest.mark.asyncio
 async def test_semantic_route_uses_entry_deadline_and_skips_expired_call() -> None:
     calls: list[float] = []
+    reservations: list[str] = []
 
     class _Agent:
+        @staticmethod
+        async def reserve_optional_agent_call(operation: str):
+            reservations.append(operation)
+            return True, None
+
         @staticmethod
         def _new_operation_deadline(
             _operation: str, _messages: list[dict[str, Any]]
@@ -235,4 +241,5 @@ async def test_semantic_route_uses_entry_deadline_and_skips_expired_call() -> No
     assert semantics is not None
     assert (status, reason) == ("available", "")
     assert calls == [request_deadline]
+    assert reservations == ["knowledge_semantic_route"]
     assert expired == (None, "routing_unavailable", "timeout")

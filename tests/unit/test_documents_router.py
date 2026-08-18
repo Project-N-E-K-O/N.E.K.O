@@ -107,7 +107,10 @@ async def test_documents_parse_rejects_untrusted_origin_before_reading_multipart
             "type": "http",
             "method": "POST",
             "path": "/api/documents/parse",
-            "headers": [(b"origin", b"https://attacker.example")],
+            "headers": [
+                (b"host", b"127.0.0.1:48916"),
+                (b"origin", b"https://attacker.example"),
+            ],
             "scheme": "http",
             "server": ("127.0.0.1", 48916),
             "client": ("127.0.0.1", 12345),

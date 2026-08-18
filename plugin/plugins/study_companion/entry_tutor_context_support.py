@@ -455,6 +455,18 @@ class _TutorContextSupportMixin:
             if not callable(attach_image):
                 return None, "routing_unavailable", "model_unavailable"
             messages = attach_image(messages, image)
+        request_deadline = context.get("deadline_monotonic")
+        parsed_request_deadline = 0.0
+        if not isinstance(request_deadline, bool):
+            try:
+                parsed_request_deadline = float(request_deadline)
+            except (TypeError, ValueError):
+                pass
+        if (
+            parsed_request_deadline > 0
+            and parsed_request_deadline <= time.monotonic()
+        ):
+            return None, "routing_unavailable", "timeout"
         quota_reservation = None
         if not image:
             reserve_optional = getattr(agent, "reserve_optional_agent_call", None)
@@ -478,14 +490,8 @@ class _TutorContextSupportMixin:
             if callable(new_deadline)
             else route_deadline
         )
-        request_deadline = context.get("deadline_monotonic")
-        if not isinstance(request_deadline, bool):
-            try:
-                parsed_request_deadline = float(request_deadline)
-            except (TypeError, ValueError):
-                parsed_request_deadline = 0.0
-            if parsed_request_deadline > 0:
-                deadline = min(deadline, parsed_request_deadline)
+        if parsed_request_deadline > 0:
+            deadline = min(deadline, parsed_request_deadline)
         remaining_seconds = deadline - time.monotonic()
         if remaining_seconds <= 0:
             return None, "routing_unavailable", "timeout"
