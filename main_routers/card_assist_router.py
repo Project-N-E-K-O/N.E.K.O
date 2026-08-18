@@ -1470,11 +1470,19 @@ _CHAT_FEET_INCHES_BEFORE_MARK_RE = re.compile(
 # 因此这里可以安全地使用固定上限；它不能替代否定守卫那种必须覆盖完整宾语的窗口。
 _CHAT_SCOPED_RECOVERY_WINDOW_CHARS = 256
 _CHAT_SCOPED_RECOVERY_MAX_BOUNDARIES = 32
+_CHAT_SCOPED_ASSIGNMENT_VERB_PATTERN = (
+    r"(?:设为|設為|设成|設成|设置为|設定為|设置成|設定成|"
+    r"改为|改為|改成|修改成|更新为|更新為|换成|換成|"
+    r"变成|變成|变为|變為|调整为|調整為|写成|寫成|"
+    r"填为|填為|填写为|填寫為|填成|填写成|填寫成|"
+    r"定为|定為|设定为|取名为|取名為)"
+)
 _CHAT_SCOPED_RECOVERY_BOUNDARY_RE = re.compile(
     r"(?P<secondary>"
     r"(?:(?:并|並)\s*(?:保留|写清楚|寫清楚|说明|說明|"
-    r"(?:把|将|將)[^。，、！？,.!?;；]{0,24}?(?:设为|設為|改成|写成|寫成|"
-    r"定为|定為|设定为|取名为|取名為))"
+    r"(?:把|将|將)[^。，、！？,.!?;；]{0,24}?"
+    + _CHAT_SCOPED_ASSIGNMENT_VERB_PATTERN
+    + r")"
     r"|(?P<preservation_en>"
     r"(?i:(?<![A-Za-z])and\s+(?:preserve|keep)(?![A-Za-z])))"
     r")"
@@ -1504,12 +1512,9 @@ _CHAT_SCOPED_SENTENCE_FINAL_QUESTION_RE = re.compile(
 )
 _CHAT_SCOPED_VALUE_ASSIGNMENT_RE = re.compile(
     r"(?:(?:(?:把|将|將)\s*[^。，、！？,.!?;；把将將并並]+?|"
-    r"^[^。，、！？,.!?;；]+?)(?:设为|設為|设成|設成|设置为|設定為|"
-    r"设置成|設定成|改为|改為|改成|修改成|更新为|更新為|"
-    r"换成|換成|变成|變成|变为|變為|调整为|調整為|写成|寫成|"
-    r"填为|填為|填写为|填寫為|填成|填写成|填寫成|"
-    r"定为|定為|设定为|取名为|取名為)"
-    r"|(?i:(?:rewrite|revise|regenerate|redo|refresh)\s+"
+    r"^[^。，、！？,.!?;；]+?)"
+    + _CHAT_SCOPED_ASSIGNMENT_VERB_PATTERN
+    + r"|(?i:(?:rewrite|revise|regenerate|redo|refresh)\s+"
     r"(?!(?:all\s+fields|all\s+visible\s+fields|full\s+card|whole\s+card|"
     r"entire\s+card)\b)[^,.!?;]{1,40}?\s+as\s+))"
 )
@@ -1526,13 +1531,15 @@ _CHAT_ZH_COMMAND_HEAD = (
 _CHAT_ZH_CONTRAST_COMMAND_RE = re.compile(r"^\s*" + _CHAT_ZH_COMMAND_HEAD)
 _CHAT_SCOPED_REPORTED_SPEECH_RE = re.compile(
     r"^\s*(?:[^。，、！？,.!?;；]+?\s*"
-    r"(?:说|說|表示|提到|写道|寫道|写着|寫著|记载|記載|注明|回复|回覆|要求)(?:过|過)?"
+    r"(?:(?:说|說|表示|提到|写道|寫道|写着|寫著|记载|記載|注明|回复|回覆|要求)(?:过|過)?"
+    r"|(?i:(?<![A-Za-z])(?:said|says)(?![A-Za-z])))"
     r"|[^。，、！？,.!?;；]+?(?:原话|原話|原文))\s*[：:]?\s*$"
 )
 _CHAT_FIRST_PERSON_REPORTING_RE = re.compile(
-    r"^\s*(?:我|我们|我們|咱们|咱們|俺|我的|我们的|我們的)\s*"
+    r"^\s*(?:(?:我|我们|我們|咱们|咱們|俺|我的|我们的|我們的)\s*"
     r"(?:(?:想|想要|要|希望|打算|准备|準備)\s*)?"
     r"(?:说|說|表示|提到|写道|寫道|写着|寫著|记载|記載|注明|回复|回覆|要求|原话|原話|原文)"
+    r"|(?i:(?:I|we)\s+(?:said|say)(?![A-Za-z])))"
 )
 _CHAT_FIRST_PERSON_REQUEST_HEAD_RE = re.compile(
     r"^\s*(?:(?:我|我们|我們|咱们|咱們)\s*"
@@ -1633,10 +1640,7 @@ _CHAT_SCOPED_GOVERNING_CONDITION_RE = re.compile(
     _CHAT_GOVERNING_CONDITION_PATTERN
 )
 _CHAT_SCOPED_POST_REWRITE_ASSIGNMENT_RE = re.compile(
-    r"\s*(?:并|並)\s*(?:设为|設為|设成|設成|设置为|設定為|设置成|設定成|"
-    r"改为|改為|改成|修改成|更新为|更新為|换成|換成|"
-    r"变成|變成|变为|變為|调整为|調整為|写成|寫成|填为|填為|填写为|"
-    r"填寫為|填成|填写成|填寫成|定为|定為|设定为|取名为|取名為)\s*$"
+    r"\s*(?:并|並)\s*" + _CHAT_SCOPED_ASSIGNMENT_VERB_PATTERN + r"\s*$"
 )
 
 
@@ -1822,10 +1826,21 @@ def _chat_clause_has_third_party_reporting_context(clause: str) -> bool:
 
 
 def _chat_sentence_has_third_party_reporting_context(sentence: str) -> bool:
-    return any(
-        _chat_clause_has_third_party_reporting_context(clause)
-        for clause in _chat_clauses(sentence)
-    )
+    return _chat_third_party_reporting_start(sentence) is not None
+
+
+def _chat_third_party_reporting_start(sentence: str) -> int | None:
+    """Return the start of the first clause attributed to a third party."""
+    clause_start = 0
+    for separator in _CHAT_CLAUSE_SPLIT_RE.finditer(sentence):
+        if _chat_clause_has_third_party_reporting_context(
+            sentence[clause_start:separator.start()]
+        ):
+            return clause_start
+        clause_start = separator.end()
+    if _chat_clause_has_third_party_reporting_context(sentence[clause_start:]):
+        return clause_start
+    return None
 
 
 def _chat_contrast_starts_explicit_first_person_request(
@@ -2153,7 +2168,10 @@ def _chat_text_requests_full_rewrite_core(text: str) -> bool:
     if unmatched_assignment_start is not None:
         text = text[:unmatched_assignment_start]
     for sentence in _CHAT_REPORTING_CONTEXT_RESET_RE.split(text):
-        if _chat_sentence_has_third_party_reporting_context(sentence):
+        reporting_start = _chat_third_party_reporting_start(sentence)
+        if reporting_start is not None:
+            if _chat_text_requests_full_rewrite_core(sentence[:reporting_start]):
+                return True
             explicit_request = _chat_explicit_request_suffix_after_report(sentence)
             if explicit_request is None:
                 continue

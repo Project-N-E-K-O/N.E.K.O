@@ -4246,3 +4246,29 @@ def test_an_english_preservation_clause_is_a_secondary_boundary(verb):
     text = f'Please rewrite all fields and {verb} whether the character is a member'
     assert router._chat_text_requests_full_rewrite_core(text) is False
     assert router._chat_text_requests_full_rewrite(text) is True
+
+
+def test_a_direct_command_before_reported_speech_remains_active():
+    import main_routers.card_assist_router as router
+
+    text = '请重写所有字段，然后小明说：可以了'
+    assert router._chat_text_requests_full_rewrite_core(text) is True
+    assert router._chat_text_requests_full_rewrite(text) is True
+
+
+@pytest.mark.parametrize('verb', ['设置为', '更新为', '换成', '调整为', '填写为'])
+def test_secondary_assignment_boundaries_share_the_assignment_verbs(verb):
+    import main_routers.card_assist_router as router
+
+    text = f'重写所有字段并把名字{verb}小明'
+    assert router._chat_text_requests_full_rewrite_core(text) is False
+    assert router._chat_text_requests_full_rewrite(text) is True
+
+
+@pytest.mark.parametrize('verb', ['said', 'says'])
+def test_english_attribution_keeps_a_mixed_language_command_reported(verb):
+    import main_routers.card_assist_router as router
+
+    text = f'John {verb}: 修改名字，但是请重写所有字段并保留是否会员'
+    assert router._chat_text_requests_full_rewrite_core(text) is False
+    assert router._chat_text_requests_full_rewrite(text) is False
