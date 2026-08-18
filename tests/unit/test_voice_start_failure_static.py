@@ -222,6 +222,9 @@ global.localStorage = {{
   getItem() {{ return this.value; }},
   setItem(_key, value) {{ this.value = String(value); }},
 }};
+global.document = {{ documentElement: {{}} }};
+global.MutationObserver = class {{ observe() {{}} }};
+global.setInterval = () => 1;
 
 global.window = {{
   appState: {{
