@@ -1549,6 +1549,10 @@ _CHAT_FIRST_PERSON_REQUEST_HEAD_RE = re.compile(
     r"(?:(?:想|想要|要|希望|打算|准备|準備)\s*)?(?:要求|说|說)|"
     r"(?:我的|我们的|我們的)\s*要求)\s*[：:,，]\s*"
 )
+_CHAT_FIRST_PERSON_REQUEST_BOUNDARY_RE = re.compile(
+    r"(?:我|我们|我們|咱们|咱們)\s*(?:(?:想|想要)\s*)?"
+    r"(?:要求|说|說)\s*[：:,，]"
+)
 _CHAT_REPORTING_CONTEXT_RESET_RE = re.compile(
     r"[。！？!?]+|(?<![A-Za-z]\.[A-Za-z])(?<!\d)\.(?![A-Za-z0-9])"
 )
@@ -2683,18 +2687,29 @@ def _chat_instruction_explicitly_removes_field(
     if not instruction or not field_key:
         return False
     key = re.escape(field_key)
-    return bool(
-        re.search(
-            rf"(?:删除|刪除|移除)\s*{key}(?![A-Za-z0-9_])",
-            instruction,
-            re.IGNORECASE,
-        )
-        or re.search(
-            rf"\b(?:delete|remove)\b\s+{key}(?![A-Za-z0-9_])",
-            instruction,
-            re.IGNORECASE,
-        )
+    removal_re = re.compile(
+        rf"(?:删除|刪除|移除)\s*{key}(?![A-Za-z0-9_])"
+        rf"|\b(?:delete|remove)\b\s+{key}(?![A-Za-z0-9_])",
+        re.IGNORECASE,
     )
+    for match in removal_re.finditer(instruction):
+        if _chat_span_is_quoted(instruction, match.start(), match.end()):
+            continue
+        if _chat_preservation_clause_is_reported(instruction, match.start()):
+            continue
+        prefix = instruction[:match.start()]
+        if re.search(
+            rf"(?:不要|别|別|不必|不用|无需|無需|请勿|請勿|do\s+not|do\s*n[o{_EN_APOSTROPHE_CHARS}]t|never)\s*$",
+            prefix,
+            re.IGNORECASE,
+        ):
+            continue
+        if _chat_preservation_sentence_has_governing_guard(
+            instruction, match.start(), scope_end=match.end()
+        ):
+            continue
+        return True
+    return False
 
 
 async def _complete_full_rewrite_actions(
@@ -2804,7 +2819,7 @@ _CHAT_FIELD_EDIT_PROHIBITION_RE = re.compile(
     r"(?:再|继续|繼續)?\s*"
     r"(?:改|修改|更改|重写|重寫|改写|改寫|调整|調整)\s*"
     r"(?P<keys_zh_after>[^。，、！？,.!?;；\r\n]+?)"
-    r"|(?i:(?:do\s+not|don't|never)\s+"
+    + rf"|(?i:(?:do\s+not|do\s*n[o{_EN_APOSTROPHE_CHARS}]t|never)\s+"
     r"(?:change|update|edit|modify|rewrite|revise|regenerate|redo|refresh)\s+"
     r"(?P<keys_after>[^。，、！？,.!?;；\r\n]+?))"
     r")"
@@ -2848,6 +2863,13 @@ def _chat_preservation_clause_is_reported(
         sentence_start = reset.end()
     sentence = instruction[sentence_start:]
     reporting_start = _chat_third_party_reporting_start(sentence)
+    if reporting_start is not None:
+        relative_clause_start = clause_start - sentence_start
+        first_person_request = _CHAT_FIRST_PERSON_REQUEST_BOUNDARY_RE.search(
+            sentence[reporting_start:relative_clause_start]
+        )
+        if first_person_request is not None:
+            return False
     return (
         reporting_start is not None
         and clause_start - sentence_start >= reporting_start
@@ -2968,14 +2990,22 @@ def _chat_preservation_sentence_has_governing_guard(
         sentence_start:sentence_limit
     ]
     readable = _chat_clause_without_free_choice(_chat_clause_without_quotes(sentence))
-    if re.search(
-        r"(?:保留|保持|维持|維持|(?i:\b(?:preserve|keep)\b))"
-        r"[^。，、！？,.!?;；]*?"
+    unchanged = re.search(
+        r"(?:保留|保持|维持|維持|(?i:\b(?:preserve|keep|leave)\b))"
+        r"[^。，、！？,.!?;；\r\n]*?"
         + _CHAT_UNCHANGED_PREDICATE_PATTERN
         + r"\s*$",
         readable,
-    ):
-        return False
+    )
+    if unchanged:
+        governing_prefix = readable[: unchanged.start()]
+        return bool(
+            re.search(r"[？?]\s*$", readable)
+            or _CHAT_QUESTION_CLAUSE_RE.search(governing_prefix)
+            or _CHAT_GOVERNING_CONDITION_RE.search(governing_prefix)
+            or _CHAT_GOVERNING_EN_CONDITION_RE.search(governing_prefix)
+            or _CHAT_PRESERVATION_ZH_CONDITION_RE.search(governing_prefix)
+        )
     return bool(
         re.search(r"[？?]\s*$", readable)
         or _CHAT_QUESTION_CLAUSE_RE.search(readable)

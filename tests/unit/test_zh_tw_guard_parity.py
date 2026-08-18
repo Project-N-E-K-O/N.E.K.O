@@ -4758,6 +4758,46 @@ def test_conditional_english_prohibition_does_not_preserve_target():
     assert router._chat_preserved_target_keys(text, ['avatar']) == set()
 
 
+@pytest.mark.parametrize(
+    'text',
+    [
+        'Rewrite all fields except avatar; do not delete avatar',
+        'Rewrite all fields except avatar; should not delete avatar',
+    ],
+)
+def test_negated_removal_does_not_override_preservation(text):
+    import main_routers.card_assist_router as router
+
+    assert router._chat_instruction_explicitly_removes_field(text, 'avatar') is False
+
+
+@pytest.mark.parametrize(
+    'text',
+    [
+        'Should I keep avatar unchanged? Rewrite all fields',
+        'If approved, keep avatar unchanged. Rewrite all fields',
+    ],
+)
+def test_guarded_unchanged_clauses_do_not_preserve_targets(text):
+    import main_routers.card_assist_router as router
+
+    assert router._chat_preserved_target_keys(text, ['avatar']) == set()
+
+
+def test_first_person_request_resets_reported_speech_scope():
+    import main_routers.card_assist_router as router
+
+    text = '小明说：保留头像，但我要求：保留名字。重写所有字段。'
+    assert router._chat_preserved_target_keys(text, ['头像', '名字']) == {'名字'}
+
+
+def test_typographic_english_apostrophe_preserves_target():
+    import main_routers.card_assist_router as router
+
+    text = 'Rewrite all fields, but don’t change avatar'
+    assert router._chat_preserved_target_keys(text, ['avatar']) == {'avatar'}
+
+
 def test_later_positive_preservation_survives_earlier_revocation():
     import main_routers.card_assist_router as router
 
