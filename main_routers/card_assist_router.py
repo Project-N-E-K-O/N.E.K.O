@@ -2549,7 +2549,10 @@ async def _complete_full_rewrite_actions(
     present = {
         str(a.get("field_key") or "").strip()
         for a in actions
-        if str(a.get("type") or "").strip() in {"refine_field", "add_field"}
+        if (
+            str(a.get("type") or "").strip()
+            in {"refine_field", "add_field", "remove_field"}
+        )
     }
     missing = [
         k for k in target_keys

@@ -211,6 +211,28 @@ async def test_full_rewrite_completion_excludes_explicitly_preserved_fields(monk
     assert [action["field_key"] for action in actions] == ["名字"]
 
 
+@pytest.mark.asyncio
+async def test_full_rewrite_completion_counts_removed_fields_as_handled(monkeypatch):
+    async def fail_refine(_prompt):
+        raise AssertionError("removed fields must not be regenerated")
+
+    monkeypatch.setattr(car, "_invoke_assist", fail_refine)
+    actions = await car._complete_full_rewrite_actions(
+        lang="zh",
+        locale_code="zh-CN",
+        actions=[
+            {"type": "refine_field", "field_key": "名字", "value": "小明"},
+            {"type": "remove_field", "field_key": "年龄"},
+        ],
+        user_instruction="重写所有字段并删除年龄",
+        current_card={"名字": "旧名字", "年龄": "18"},
+        current_card_text='{"名字":"旧名字","年龄":"18"}',
+        target_keys=["名字", "年龄"],
+    )
+
+    assert [action["type"] for action in actions] == ["refine_field", "remove_field"]
+
+
 @pytest.mark.parametrize(
     ('instruction', 'target_keys', 'expected'),
     [
