@@ -109,14 +109,12 @@ def test_social_open_request_is_deduped_before_fetching_config():
     assert "postSocialTheme(target, isResolvedDarkTheme())" in source
     assert "state.targets.push({ targetWindow, targetOrigin: parsed.origin })" in source
     assert "state.targets = state.targets.filter" in source
-    assert "let keepThemeReplyChannel = false" in listener
-    assert "if (!keepThemeReplyChannel)" in listener
     assert "attachResolvedTheme(parsedTarget)" in listener
     assert "currentPopup.location.replace(navigationTarget)" in listener
-    assert "const restoreBrowserThemeReplyChannel = async () =>" in listener
-    assert "currentPopup.location.replace('about:blank')" in listener
-    assert "currentPopup.opener = window" in listener
-    assert "await restoreBrowserThemeReplyChannel();" in listener
+    assert "window.__nekoSocialThemeHeartbeat = setInterval" in source
+    assert "publishSocialTheme(isResolvedDarkTheme())" in source
+    assert "currentPopup.opener = null" in listener
+    assert "currentPopup.opener = window" not in listener
     assert "const resolvedTargetUrl = attachResolvedTheme(" in listener
     assert "resolvedTargetUrl.toString()" in listener
     assert "registerSocialThemeTarget(socialWin, resolvedTargetUrl)" in listener

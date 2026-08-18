@@ -332,6 +332,9 @@
                 attributeFilter: ['data-theme']
             });
             window.__nekoSocialThemeObserver = themeObserver;
+            window.__nekoSocialThemeHeartbeat = setInterval(() => {
+                publishSocialTheme(isResolvedDarkTheme());
+            }, 2000);
             window.addEventListener('message', (event) => {
                 const state = getSocialThemeBridgeState();
                 const target = state.targets.find((candidate) => (
@@ -378,19 +381,17 @@
                 }
                 const currentPopup = popupRef;
                 let navigationTarget = targetUrl;
-                let keepThemeReplyChannel = false;
                 try {
                     const parsedTarget = new URL(String(targetUrl), window.location.href);
                     if (parsedTarget.searchParams.get('neko_source_origin') === window.location.origin) {
                         attachResolvedTheme(parsedTarget);
                         navigationTarget = parsedTarget.toString();
                         registerSocialThemeTarget(currentPopup, parsedTarget);
-                        keepThemeReplyChannel = true;
                     }
                 } catch (_) { /* non-community navigation */ }
-                if (!keepThemeReplyChannel) {
-                    try { currentPopup.opener = null; } catch (_) { /* ignore */ }
-                }
+                // The external page receives theme-only messages but never a reference
+                // that could navigate or otherwise control the local N.E.K.O page.
+                try { currentPopup.opener = null; } catch (_) { /* ignore */ }
                 let navigated = true;
                 try {
                     currentPopup.location.replace(navigationTarget);
@@ -408,34 +409,6 @@
                     popupRef = null;
                 }
                 return navigated;
-            };
-            const restoreBrowserThemeReplyChannel = async () => {
-                if (!popupRef) return false;
-                const currentPopup = popupRef;
-                try {
-                    currentPopup.location.replace('about:blank');
-                } catch (_) {
-                    try {
-                        currentPopup.location = 'about:blank';
-                    } catch (_) {
-                        return false;
-                    }
-                }
-                const deadline = Date.now() + 3000;
-                while (Date.now() < deadline) {
-                    try {
-                        if (currentPopup.closed) return false;
-                        const popupRoot = currentPopup.document.documentElement;
-                        const popupDark = isResolvedDarkTheme();
-                        popupRoot.style.colorScheme = popupDark ? 'dark' : 'light';
-                        popupRoot.style.backgroundColor = popupDark ? '#070c13' : '#edf8ff';
-                        currentPopup.opener = window;
-                        return currentPopup.opener === window;
-                    } catch (_) {
-                        await new Promise((resolve) => setTimeout(resolve, 50));
-                    }
-                }
-                return false;
             };
             const waitForOAuthCompletion = async (timeoutMs, requirePopup) => {
                 const deadline = Date.now() + timeoutMs;
@@ -765,8 +738,9 @@
                                         console.warn('[social] failed to refresh Electron community window after OAuth');
                                     }
                                 } else if (popupRef) {
-                                    await restoreBrowserThemeReplyChannel();
-                                    navigateBrowserPopup(refreshedTargetUrl.toString());
+                                    if (!navigateBrowserPopup(refreshedTargetUrl.toString())) {
+                                        throw new Error('failed to navigate browser community window');
+                                    }
                                 }
                             }
                         } else {
