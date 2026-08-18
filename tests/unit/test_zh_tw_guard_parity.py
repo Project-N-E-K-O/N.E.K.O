@@ -5067,6 +5067,14 @@ def test_first_person_possessive_request_resets_reported_preservation_context():
     assert router._chat_preserved_target_keys(text, ['Age', 'Name']) == {'Age'}
 
 
+def test_meta_request_example_does_not_explicitly_remove_preserved_field():
+    import main_routers.card_assist_router as router
+
+    text = 'Please translate the following: delete Age. Now rewrite all fields except Age.'
+
+    assert router._chat_instruction_explicitly_removes_field(text, 'Age') is False
+
+
 @pytest.mark.parametrize(
     'text',
     [

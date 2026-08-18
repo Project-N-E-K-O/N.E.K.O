@@ -2696,6 +2696,10 @@ def _chat_instruction_explicitly_removes_field(
     for match in removal_re.finditer(instruction):
         if _chat_span_is_quoted(instruction, match.start(), match.end()):
             continue
+        if _chat_preservation_clause_is_meta_request_text(
+            instruction, match.start()
+        ):
+            continue
         if _chat_preservation_clause_is_reported(instruction, match.start()):
             continue
         prefix = instruction[:match.start()]
