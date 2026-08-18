@@ -263,6 +263,51 @@ async def test_document_job_entries_hide_jobs_from_other_roles() -> None:
 
 
 @pytest.mark.asyncio
+async def test_ui_document_jobs_ignore_mutable_cached_character_context() -> None:
+    manager = DocumentAnalysisJobManager()
+    started = asyncio.Event()
+
+    async def runner(_update):
+        started.set()
+        await asyncio.Future()
+
+    class Context:
+        _current_lanlan = "alice"
+
+    class Owner:
+        ctx = Context()
+        _document_jobs = manager
+        _document_job_manager = StudyCompanionPlugin._document_job_manager
+        _resolve_study_target_lanlan = (
+            StudyCompanionPlugin._resolve_study_target_lanlan
+        )
+
+    owner = Owner()
+    job = await manager.start(
+        owner_id=document_entries_module._document_job_owner(owner, {}),
+        analysis_mode="direct",
+        document={"name": "stable.txt", "source_retained": False},
+        total_chunks=1,
+        runner=runner,
+    )
+    await started.wait()
+    owner.ctx._current_lanlan = "bob"
+
+    active = await StudyCompanionPlugin.study_active_document_analysis(owner)
+    status = await StudyCompanionPlugin.study_document_analysis_status(
+        owner, job_id=job["job_id"]
+    )
+    canceled = await StudyCompanionPlugin.study_cancel_document_analysis(
+        owner, job_id=job["job_id"]
+    )
+
+    assert active.value["job_id"] == job["job_id"]
+    assert status.value["job_id"] == job["job_id"]
+    assert canceled.value["status"] == "canceled"
+    await manager.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_job_status_never_exposes_runner_source() -> None:
     manager = DocumentAnalysisJobManager()
     source = "PRIVATE LONG DOCUMENT SOURCE"

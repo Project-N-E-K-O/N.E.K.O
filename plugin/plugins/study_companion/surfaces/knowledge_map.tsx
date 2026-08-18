@@ -269,8 +269,11 @@ export default function KnowledgeMap(props: PluginSurfaceProps) {
     ensureBrandCSS();
     let mounted = true;
     setIsLoading(true);
-    callPlugin(props.api, 'study_knowledge_map', { limit: 1000 })
-      .then((payload: any) => {
+    Promise.all([
+      callPlugin(props.api, 'study_knowledge_map', { limit: 1000 }),
+      callPlugin(props.api, 'study_get_practice_scope'),
+    ])
+      .then(([payload, scopePayload]: any[]) => {
         if (!mounted) {
           return;
         }
@@ -279,7 +282,10 @@ export default function KnowledgeMap(props: PluginSurfaceProps) {
         setEdges(Array.isArray(payload.edges) ? payload.edges : []);
         setSummary(payload.summary || {});
         setSelectedNode(null);
-        setCanonicalScope(null);
+        const nextScope = scopePayload?.scope && typeof scopePayload.scope === 'object'
+          ? scopePayload.scope as PracticeScope
+          : null;
+        setCanonicalScope(nextScope?.display_path?.length ? nextScope : null);
         setError('');
       })
       .catch((err) => mounted && setError(err instanceof Error ? err.message : String(err)))
@@ -377,6 +383,20 @@ export default function KnowledgeMap(props: PluginSurfaceProps) {
           activationRevision,
         },
       }, props.host?.origin);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setScopeBusy(false);
+    }
+  }
+
+  async function clearPracticeScope() {
+    if (scopeBusy) return;
+    setScopeBusy(true);
+    try {
+      await callPlugin(props.api, 'study_clear_practice_scope');
+      setCanonicalScope(null);
+      setError('');
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -491,6 +511,9 @@ export default function KnowledgeMap(props: PluginSurfaceProps) {
             <span>{text(props, 'ui.practice.scope_label', 'Practice scope')}</span>
             <strong>{canonicalScope.display_path.join(' / ')}</strong>
           </div>
+          <button type="button" disabled={scopeBusy} onClick={() => void clearPracticeScope()}>
+            {text(props, 'ui.button.clear_practice_scope', 'Clear scope')}
+          </button>
         </section>
       ) : null}
       <section className="knowledge-stage-selector">

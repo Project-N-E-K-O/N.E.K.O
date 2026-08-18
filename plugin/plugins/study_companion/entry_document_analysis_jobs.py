@@ -32,17 +32,15 @@ _DOCUMENT_CONCURRENCY = 2
 
 
 def _document_job_owner(owner, kwargs: dict[str, object] | None = None) -> str:
-    resolver = getattr(owner, "_resolve_study_target_lanlan", None)
-    if callable(resolver):
-        return str(resolver(kwargs) or "").strip()
     context = kwargs.get("_ctx") if isinstance(kwargs, dict) else None
     if isinstance(context, dict):
         target = str(context.get("lanlan_name") or "").strip()
         if target:
             return target
-    return str(
-        getattr(getattr(owner, "ctx", None), "_current_lanlan", "") or ""
-    ).strip()
+    # Hosted/static UI calls do not carry an Entry context. Keep those jobs on
+    # the manager's stable default owner instead of binding them to mutable
+    # cached character state that may change between start/status/cancel.
+    return ""
 
 
 def _failed_payload(diagnostic: str) -> dict[str, object]:

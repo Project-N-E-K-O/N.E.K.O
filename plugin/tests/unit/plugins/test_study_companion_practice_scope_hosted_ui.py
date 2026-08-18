@@ -43,6 +43,23 @@ def test_hosted_knowledge_map_sets_canonical_scope_before_opening_study_panel() 
     assert set_scope < open_surface
 
 
+def test_hosted_knowledge_map_restores_and_clears_persisted_scope() -> None:
+    source = _source("knowledge_map.tsx")
+
+    assert "study_get_practice_scope" in source
+    assert "study_clear_practice_scope" in source
+    assert "async function clearPracticeScope()" in source
+    assert "setCanonicalScope(nextScope?.display_path?.length ? nextScope : null);" in source
+    assert "setCanonicalScope(null);" in source
+    assert "ui.button.clear_practice_scope" in source
+
+    load_start = source.index("useEffect(() =>")
+    load_end = source.index("}, [props.api]);", load_start)
+    load = source[load_start:load_end]
+    assert "study_get_practice_scope" in load
+    assert "setSelectedNode(null);\n        setCanonicalScope(null);" not in load
+
+
 def test_hosted_topic_scope_derives_its_identity_from_the_selected_node() -> None:
     source = _source("knowledge_map.tsx")
     activation_start = source.index("async function activatePracticeScope")

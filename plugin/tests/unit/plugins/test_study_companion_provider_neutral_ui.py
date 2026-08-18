@@ -125,3 +125,14 @@ def test_model_runtime_ui_does_not_render_credentials_or_endpoint() -> None:
         sanitized_hosted = hosted_region.replace("/api_key", "")
         assert "api_key" not in sanitized_hosted.casefold()
         assert "base_url" not in hosted_region.casefold()
+
+
+def test_hosted_model_settings_link_uses_the_host_external_bridge() -> None:
+    hosted_source = (PLUGIN_DIR / "surfaces" / "study_panel.tsx").read_text(
+        encoding="utf-8"
+    )
+
+    assert "neko-hosted-surface-open-external" in hosted_source
+    assert "payload: { url }" in hosted_source
+    assert "openHostedExternalUrl('/api_key')" in hosted_source
+    assert '<a href="/api_key"' not in hosted_source

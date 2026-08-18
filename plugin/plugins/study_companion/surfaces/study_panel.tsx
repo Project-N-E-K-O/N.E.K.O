@@ -955,6 +955,17 @@ function callStudyPlugin<T = Record<string, unknown>>(
   );
 }
 
+function openHostedExternalUrl(url: string): void {
+  if (window.parent && window.parent !== window) {
+    window.parent.postMessage(
+      { type: 'neko-hosted-surface-open-external', payload: { url } },
+      '*',
+    );
+    return;
+  }
+  window.open(url, '_blank', 'noopener,noreferrer');
+}
+
 export default function StudyPanel(props: PluginSurfaceProps) {
   const documentKeyAliases: Record<string, string> = {
     'ui.document.import': 'ui.button.import_document',
@@ -2308,9 +2319,9 @@ export default function StudyPanel(props: PluginSurfaceProps) {
           <button type="button" disabled={modelRuntimeLoading} onClick={() => void refreshModelRuntime()}>
             {t('ui.button.refresh_model_status', 'Refresh model status')}
           </button>
-          <a href="/api_key" target="_blank" rel="noopener noreferrer">
+          <button type="button" onClick={() => openHostedExternalUrl('/api_key')}>
             {t('ui.button.open_model_settings', 'Open N.E.K.O model settings')}
-          </a>
+          </button>
         </div>
       </section>
       <section className="study-panel__state">
