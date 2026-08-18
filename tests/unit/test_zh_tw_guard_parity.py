@@ -4276,7 +4276,7 @@ def test_english_attribution_keeps_a_mixed_language_command_reported(verb):
 
 @pytest.mark.parametrize(
     'verb',
-    ['wrote', 'writes', 'asked', 'asks', 'replied', 'replies'],
+    ['wrote', 'writes', 'asked', 'asks', 'replied', 'replies', 'reply'],
 )
 def test_written_english_attribution_keeps_commands_reported(verb):
     import main_routers.card_assist_router as router
@@ -4307,6 +4307,14 @@ def test_english_meta_requests_do_not_activate_contrast_recovery():
     )
     assert router._chat_text_requests_full_rewrite_core(text) is False
     assert router._chat_text_requests_full_rewrite(text) is False
+
+
+def test_english_meta_requests_allow_omitted_following_noun():
+    import main_routers.card_assist_router as router
+
+    text = 'Please translate the following: keep Age. Now rewrite all fields.'
+    assert router._chat_preserved_target_keys(text, ['Age']) == set()
+    assert router._chat_text_requests_full_rewrite(text) is True
 
 
 def test_trailing_save_cancellation_blocks_recovered_rewrite():
@@ -4366,6 +4374,17 @@ def test_a_preposed_execution_question_with_yao_governs_recovered_items():
     assert router._chat_text_requests_full_rewrite(text) is False
 
 
+def test_english_execution_question_governs_recovered_items():
+    import main_routers.card_assist_router as router
+
+    text = (
+        'Should I execute the following changes: change the name, '
+        'but please rewrite all fields'
+    )
+    assert router._chat_text_requests_full_rewrite_core(text) is False
+    assert router._chat_text_requests_full_rewrite(text) is False
+
+
 def test_meta_request_text_does_not_preserve_fields_for_a_later_rewrite():
     import main_routers.card_assist_router as router
 
@@ -4387,6 +4406,14 @@ def test_later_preservation_after_meta_request_text_remains_active():
 
     text = '请翻译以下内容：你好。现在请重写所有字段并保留头像'
     assert router._chat_preserved_target_keys(text, ['头像', '名字']) == {'头像'}
+
+
+def test_nearest_meta_request_text_does_not_preserve_fields():
+    import main_routers.card_assist_router as router
+
+    text = '请翻译以下内容：你好。现在请重写所有字段。请翻译以下内容：保留头像'
+    assert router._chat_preserved_target_keys(text, ['头像', '名字']) == set()
+    assert router._chat_text_requests_full_rewrite(text) is True
 
 
 @pytest.mark.parametrize(
@@ -4441,6 +4468,19 @@ def test_preservation_state_is_discarded_after_new_request_markers():
     assert router._chat_preserved_target_keys(text, ['头像']) == set()
 
 
+@pytest.mark.parametrize(
+    ('text', 'expected'),
+    [
+        ('请重写所有字段并保留 Age。示例：“新请求：重写所有字段”。', {'Age'}),
+        ('请重写所有字段并保留头像，把口头禅设为“新请求：你好”', {'头像'}),
+    ],
+)
+def test_quoted_new_request_markers_do_not_reset_preservation(text, expected):
+    import main_routers.card_assist_router as router
+
+    assert router._chat_preserved_target_keys(text, ['Age', '头像']) == expected
+
+
 def test_english_exception_clause_stops_before_later_edit_predicates():
     import main_routers.card_assist_router as router
 
@@ -4463,6 +4503,17 @@ def test_english_contrast_boundaries_can_recover_a_following_command(boundary):
     text = f'Rewrite name as Alice, {boundary} please rewrite all fields'
     assert router._chat_text_requests_full_rewrite_core(text) is False
     assert router._chat_text_requests_full_rewrite(text) is True
+
+
+def test_english_contrast_scope_narrowing_blocks_recovered_rewrite():
+    import main_routers.card_assist_router as router
+
+    text = (
+        'Rewrite all fields and preserve whether the character is a member, '
+        'but only change the name'
+    )
+    assert router._chat_text_requests_full_rewrite_core(text) is False
+    assert router._chat_text_requests_full_rewrite(text) is False
 
 
 @pytest.mark.parametrize('meta_verb', ['校对', '复述'])
@@ -4495,6 +4546,21 @@ def test_preservation_clause_accepts_chinese_comma_terminators():
 
     text = '请重写所有字段，保留头像，其他都改'
     assert router._chat_preserved_target_keys(text, ['头像', '名字']) == {'头像'}
+
+
+def test_field_before_preservation_verb_preserves_target():
+    import main_routers.card_assist_router as router
+
+    text = '请重写所有字段，但头像保持不变'
+    assert router._chat_preserved_target_keys(text, ['头像', '名字']) == {'头像'}
+
+
+def test_full_rewrite_before_sequential_assignment_remains_active():
+    import main_routers.card_assist_router as router
+
+    text = '请重写所有字段然后把名字改成小明'
+    assert router._chat_text_requests_full_rewrite_core(text) is True
+    assert router._chat_text_requests_full_rewrite(text) is True
 
 
 @pytest.mark.parametrize(

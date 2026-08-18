@@ -1532,7 +1532,7 @@ _CHAT_ZH_CONTRAST_COMMAND_RE = re.compile(r"^\s*" + _CHAT_ZH_COMMAND_HEAD)
 _CHAT_SCOPED_REPORTED_SPEECH_RE = re.compile(
     r"^\s*(?:[^。，、！？,.!?;；]+?\s*"
     r"(?:(?:说|說|表示|提到|写道|寫道|写着|寫著|记载|記載|注明|回复|回覆|要求)(?:过|過)?"
-    r"|(?i:(?<![A-Za-z])(?:said|says|wrote|writes|asked|asks|replied|replies)(?![A-Za-z])))"
+    r"|(?i:(?<![A-Za-z])(?:said|says|wrote|writes|asked|asks|replied|replies|reply)(?![A-Za-z])))"
     r"|[^。，、！？,.!?;；]+?(?:原话|原話|原文))\s*[：:]?\s*$"
 )
 _CHAT_REQUIREMENT_PHRASE_RE = re.compile(
@@ -1607,7 +1607,9 @@ _CHAT_SCOPED_SCOPE_REPLACEMENT_RE = re.compile(
     r"|(?:后来|後來)\s*我?\s*(?:改|改变|改變)主意了?\s*[，,]?\s*(?:只|仅|僅)"
     r"|(?:我|我们|我們|咱们|咱們)\s*(?:只|仅|僅)\s*(?:想|要|需要)?"
 )
-_CHAT_SCOPED_BARE_CONTRAST_NARROWING_RE = re.compile(r"^\s*(?:只|仅|僅)")
+_CHAT_SCOPED_BARE_CONTRAST_NARROWING_RE = re.compile(
+    r"^\s*(?:只|仅|僅|(?i:only\s+(?:change|rewrite|revise|regenerate|redo|refresh)\b))"
+)
 _CHAT_SCOPED_NEW_REQUEST_RE = re.compile(
     r"(?:新请求|新請求|新的请求|新的請求|另一个请求|另一個請求)\s*[：:]",
 )
@@ -1619,8 +1621,9 @@ _CHAT_SCOPED_META_REQUEST_RE = re.compile(
     r"(?:这段|這段|这句话|這句話)?\s*"
     r"(?:内容|內容|文字|句子|指令|命令|要求|修改)?\s*[：:,，]"
     r"|(?i:(?:please\s+)?(?:translate|explain|analy[sz]e|summari[sz]e|"
-    r"evaluate|proofread|repeat)\s+(?:the\s+)?(?:following\s+)?"
-    r"(?:text|content|sentence|instruction|command|request|change)s?\s*[:：])"
+    r"evaluate|proofread|repeat)\s+"
+    r"(?:(?:the\s+)?following(?:\s+(?:text|content|sentence|instruction|command|request|change)s?)?"
+    r"|(?:the\s+)?(?:text|content|sentence|instruction|command|request|change)s?)\s*[:：])"
     r")",
 )
 _CHAT_SCOPED_SIGNAL_BRIDGE_RE = re.compile(
@@ -1651,6 +1654,10 @@ _CHAT_GOVERNING_EXECUTION_QUESTION_RE = re.compile(
     r"|(?:(?:要|应该|應該|需要|可以)\s*)?(?:执行|執行|应用|應用|采用|採用|进行|進行)\s*"
     r"(?:以下|下面|上述|上面|这些|這些)?\s*(?:修改|操作|指令|命令|要求|内容|內容)?\s*"
     r"[吗嗎呢]\s*[？?]?\s*[：:]"
+    r"|(?i:(?:should\s+(?:i|we)|can\s+i|may\s+i)\s+"
+    r"(?:execute|apply|use|make|perform)\s+"
+    r"(?:(?:the|these|those)\s+)?(?:following\s+)?"
+    r"(?:change|changes|edit|edits|modification|modifications|instruction|instructions)?\s*[:：])"
     r")"
 )
 _CHAT_GOVERNING_LIST_DISCLAIMER_RE = re.compile(
@@ -1664,7 +1671,10 @@ _CHAT_SCOPED_GOVERNING_CONDITION_RE = re.compile(
     _CHAT_GOVERNING_CONDITION_PATTERN
 )
 _CHAT_SCOPED_POST_REWRITE_ASSIGNMENT_RE = re.compile(
-    r"\s*(?:并|並)\s*" + _CHAT_SCOPED_ASSIGNMENT_VERB_PATTERN + r"\s*$"
+    r"\s*(?:并|並|然后|然後)\s*"
+    r"(?:(?:把|将|將)[^。，、！？,.!?;；]{0,24}?)?"
+    + _CHAT_SCOPED_ASSIGNMENT_VERB_PATTERN
+    + r"\s*$"
 )
 
 
@@ -2206,6 +2216,16 @@ def _chat_text_requests_full_rewrite_core(text: str) -> bool:
     unmatched_assignment_start = _chat_unmatched_assignment_single_quote_start(text)
     if unmatched_assignment_start is not None:
         text = text[:unmatched_assignment_start]
+    masked = _chat_mask_quoted_spans(text)
+    execution_question = _CHAT_GOVERNING_EXECUTION_QUESTION_RE.search(masked)
+    if execution_question:
+        sentence_end = _CHAT_GOVERNING_PROHIBITION_SENTENCE_END_RE.search(
+            masked,
+            execution_question.end(),
+        )
+        if sentence_end is not None:
+            return _chat_text_requests_full_rewrite_core(text[sentence_end.end():])
+        return False
     for sentence in _CHAT_REPORTING_CONTEXT_RESET_RE.split(text):
         reporting_start = _chat_third_party_reporting_start(sentence)
         if reporting_start is not None:
@@ -2673,6 +2693,11 @@ _CHAT_PRESERVATION_CLAUSE_RE = re.compile(
     r"|(?i:\b(?:but|however)\s*(?:rewrite|revise|regenerate|redo|refresh)\b)"
     r"|[。，、！？,.!?;；]|$)"
 )
+_CHAT_FIELD_BEFORE_PRESERVATION_RE = re.compile(
+    r"[^。，、！？,.!?;；]*?"
+    r"(?P<verb>保持|维持|維持|(?i:\bkeep\b))\s*"
+    r"(?:不(?:变|變)|原样|原樣|(?i:unchanged|as\s+is))"
+)
 _CHAT_PRESERVATION_EXCEPT_RE = re.compile(
     r"(?:"
     r"(?:除|除了)\s*(?P<keys_zh>[^，。！？；;]+?)\s*(?:以外|之外)"
@@ -2709,10 +2734,18 @@ def _chat_preservation_clause_is_meta_request_text(
     instruction: str, clause_start: int
 ) -> bool:
     """Return whether a preservation clause is the quoted text of a meta request."""
-    meta_request = _CHAT_SCOPED_META_REQUEST_RE.search(instruction or "")
-    if meta_request is None or clause_start < meta_request.end():
+    sentence_start = 0
+    for reset in _CHAT_REPORTING_CONTEXT_RESET_RE.finditer(
+        instruction, 0, clause_start
+    ):
+        sentence_start = reset.end()
+    meta_request = _CHAT_SCOPED_META_REQUEST_RE.search(
+        (instruction or "")[sentence_start:clause_start]
+    )
+    if meta_request is None:
         return False
-    reset = _CHAT_REPORTING_CONTEXT_RESET_RE.search(instruction, meta_request.end())
+    meta_end = sentence_start + meta_request.end()
+    reset = _CHAT_REPORTING_CONTEXT_RESET_RE.search(instruction, meta_end)
     return reset is None or clause_start < reset.end()
 
 
@@ -2751,6 +2784,14 @@ def _chat_active_request_start(instruction: str) -> int:
     """Return the start offset after the latest explicit new-request marker."""
     active_start = 0
     for match in _CHAT_SCOPED_NEW_REQUEST_RE.finditer(instruction or ""):
+        if (
+            _chat_span_is_quoted(instruction, match.start(), match.end())
+            or _chat_preservation_clause_is_meta_request_text(
+                instruction, match.start()
+            )
+            or _chat_preservation_clause_is_reported(instruction, match.start())
+        ):
+            continue
         active_start = match.end()
     return active_start
 
@@ -2837,6 +2878,33 @@ def _chat_preserved_target_keys(
             ):
                 continue
             candidates.append((raw_key, start, end))
+    for clause_match in _CHAT_FIELD_BEFORE_PRESERVATION_RE.finditer(
+        instruction or ""
+    ):
+        if clause_match.start() < active_start:
+            continue
+        if _chat_span_is_quoted(
+            instruction or "", clause_match.start(), clause_match.end()
+        ):
+            continue
+        if _chat_preservation_clause_is_meta_request_text(
+            instruction or "", clause_match.start()
+        ):
+            continue
+        if _chat_preservation_clause_is_reported(
+            instruction or "", clause_match.start()
+        ):
+            continue
+        prefix = _CHAT_CLAUSE_SPLIT_RE.split(
+            (instruction or "")[:clause_match.start()]
+        )[-1]
+        if _CHAT_PRESERVATION_NEGATION_RE.search(prefix):
+            continue
+        candidates.extend(
+            _chat_target_key_matches(
+                clause_match.group(0), target_keys, clause_match.start()
+            )
+        )
     return {
         key
         for key, start, end in candidates
