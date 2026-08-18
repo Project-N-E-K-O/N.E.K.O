@@ -2049,3 +2049,292 @@ def test_manual_picker_fallback_discards_late_stream_after_source_change(
         "pickerInstalled": False,
         "pickerTrackStoppedBeforeCleanup": True,
     }
+
+
+@pytest.mark.frontend
+def test_cached_acquisition_without_trusted_title_does_not_widen_to_screen(
+    page: Page,
+) -> None:
+    _install_screen_source_harness(
+        page,
+        initial_storage={
+            "screenSourceTitleMatchEnabled": "true",
+            "selectedScreenSourceId": "window:stale",
+        },
+    )
+
+    result = page.evaluate(
+        """async () => {
+            window.__desktopProvider.getSources = async () => [
+                { id: 'screen:1', name: 'Entire Screen', display_id: '1' },
+            ];
+            const captureCalls = [];
+            const track = {
+                readyState: 'live',
+                stopped: false,
+                stop() { this.stopped = true; this.readyState = 'ended'; },
+                addEventListener() {},
+            };
+            const screenStream = {
+                active: true,
+                getVideoTracks() { return [track]; },
+                getTracks() { return [track]; },
+            };
+            Object.defineProperty(navigator, 'mediaDevices', {
+                configurable: true,
+                value: {
+                    async getUserMedia(constraints) {
+                        captureCalls.push(
+                            constraints.video.mandatory.chromeMediaSourceId
+                        );
+                        return screenStream;
+                    },
+                },
+            });
+
+            const acquired = await window.appScreen.acquireOrReuseCachedStream({
+                allowPrompt: false,
+            });
+            const state = {
+                captureCalls,
+                selectedId: window.appState.selectedScreenSourceId,
+                returnedNull: acquired === null,
+                screenStreamInstalled:
+                    window.appState.screenCaptureStream === screenStream,
+                trackStoppedBeforeCleanup: track.stopped,
+            };
+            if (acquired) acquired.getTracks().forEach((item) => item.stop());
+            window.appState.screenCaptureStream = null;
+            return state;
+        }"""
+    )
+
+    assert result == {
+        "captureCalls": [],
+        "selectedId": None,
+        "returnedNull": True,
+        "screenStreamInstalled": False,
+        "trackStoppedBeforeCleanup": False,
+    }
+
+
+@pytest.mark.frontend
+def test_manual_remembered_source_enumeration_is_bounded(page: Page) -> None:
+    _install_screen_source_harness(
+        page,
+        initial_storage={
+            "screenSourceTitleMatchEnabled": "true",
+            "selectedScreenWindowTitle": "Editor",
+            "selectedScreenSourceId": "window:old",
+        },
+    )
+
+    result = page.evaluate(
+        """async () => {
+            document.body.insertAdjacentHTML('beforeend', `
+                <div id="live2d-container"></div>
+                <button id="micButton"></button><button id="muteButton"></button>
+                <button id="screenButton"></button><button id="stopButton" disabled></button>
+                <button id="resetSessionButton"></button>
+            `);
+            window.appState.isRecording = true;
+            window.appState.voiceChatActive = true;
+            window.appState.audioPlayerContext = { state: 'running' };
+            let resolveSources;
+            window.__desktopProvider.getSources = () => new Promise((resolve) => {
+                resolveSources = resolve;
+            });
+
+            const startPromise = window.startScreenSharing();
+            const outcome = await Promise.race([
+                startPromise.then(() => ({
+                    hung: false,
+                    pending: window.isScreenSharingStartPending(),
+                })),
+                new Promise((resolve) => {
+                    setTimeout(() => resolve({
+                        hung: true,
+                        pending: window.isScreenSharingStartPending(),
+                    }), 3500);
+                }),
+            ]);
+            if (outcome.hung) {
+                window.appScreen.cancelPendingScreenSharingStart();
+                resolveSources([
+                    { id: 'window:old', name: 'Editor', display_id: '' },
+                ]);
+                await startPromise;
+            }
+            return outcome;
+        }"""
+    )
+
+    assert result == {
+        "hung": False,
+        "pending": False,
+    }
+
+
+@pytest.mark.frontend
+def test_manual_share_revalidates_cached_stream_before_transmission(
+    page: Page,
+) -> None:
+    _install_screen_source_harness(
+        page,
+        initial_storage={
+            "screenSourceTitleMatchEnabled": "true",
+            "selectedScreenWindowTitle": "Editor",
+            "selectedScreenSourceId": "window:old",
+        },
+    )
+
+    result = page.evaluate(
+        """async () => {
+            document.body.insertAdjacentHTML('beforeend', `
+                <div id="live2d-container"></div>
+                <button id="micButton"></button><button id="muteButton"></button>
+                <button id="screenButton"></button><button id="stopButton" disabled></button>
+                <button id="resetSessionButton"></button>
+            `);
+            window.appState.isRecording = true;
+            window.appState.voiceChatActive = true;
+            window.appState.audioPlayerContext = { state: 'running' };
+            const oldTrack = {
+                readyState: 'live',
+                stopped: false,
+                stop() { this.stopped = true; this.readyState = 'ended'; },
+                addEventListener() {},
+            };
+            const oldStream = {
+                active: true,
+                getVideoTracks() { return [oldTrack]; },
+                getTracks() { return [oldTrack]; },
+            };
+            const replacementTrack = {
+                readyState: 'live',
+                stopped: false,
+                stop() { this.stopped = true; this.readyState = 'ended'; },
+                addEventListener() {},
+            };
+            const replacementStream = {
+                active: true,
+                getVideoTracks() { return [replacementTrack]; },
+                getTracks() { return [replacementTrack]; },
+            };
+            window.appState.screenCaptureStream = oldStream;
+            let enumerationCalls = 0;
+            const captureCalls = [];
+            window.__desktopProvider.getSources = async () => {
+                enumerationCalls += 1;
+                return [
+                    { id: 'window:old', name: 'Unrelated Browser', display_id: '' },
+                    { id: 'window:new', name: 'Editor', display_id: '' },
+                ];
+            };
+            Object.defineProperty(navigator, 'mediaDevices', {
+                configurable: true,
+                value: {
+                    async getUserMedia(constraints) {
+                        captureCalls.push(
+                            constraints.video.mandatory.chromeMediaSourceId
+                        );
+                        return replacementStream;
+                    },
+                },
+            });
+
+            await window.startScreenSharing();
+            const state = {
+                enumerated: enumerationCalls > 0,
+                captureCalls,
+                selectedId: window.appState.selectedScreenSourceId,
+                oldStreamInstalled:
+                    window.appState.screenCaptureStream === oldStream,
+                oldTrackStoppedBeforeCleanup: oldTrack.stopped,
+            };
+            await window.stopScreenSharing(true);
+            if (!oldTrack.stopped) oldTrack.stop();
+            if (!replacementTrack.stopped) replacementTrack.stop();
+            return state;
+        }"""
+    )
+
+    assert result == {
+        "enumerated": True,
+        "captureCalls": ["window:new"],
+        "selectedId": "window:new",
+        "oldStreamInstalled": False,
+        "oldTrackStoppedBeforeCleanup": True,
+    }
+
+
+@pytest.mark.frontend
+def test_manual_share_does_not_widen_after_rejecting_untrusted_restored_window(
+    page: Page,
+) -> None:
+    _install_screen_source_harness(
+        page,
+        initial_storage={
+            "screenSourceTitleMatchEnabled": "true",
+            "selectedScreenSourceId": "window:reused",
+        },
+    )
+
+    result = page.evaluate(
+        """async () => {
+            document.body.insertAdjacentHTML('beforeend', `
+                <div id="live2d-container"></div>
+                <button id="micButton"></button><button id="muteButton"></button>
+                <button id="screenButton"></button><button id="stopButton" disabled></button>
+                <button id="resetSessionButton"></button>
+            `);
+            window.appState.isRecording = true;
+            window.appState.voiceChatActive = true;
+            window.appState.audioPlayerContext = { state: 'running' };
+            window.__desktopProvider.getSources = async () => [
+                { id: 'window:reused', name: 'Unrelated Browser', display_id: '' },
+                { id: 'screen:1', name: 'Entire Screen', display_id: '1' },
+            ];
+            const captureCalls = [];
+            const track = {
+                readyState: 'live',
+                stopped: false,
+                stop() { this.stopped = true; this.readyState = 'ended'; },
+                addEventListener() {},
+            };
+            const screenStream = {
+                active: true,
+                getVideoTracks() { return [track]; },
+                getTracks() { return [track]; },
+            };
+            Object.defineProperty(navigator, 'mediaDevices', {
+                configurable: true,
+                value: {
+                    async getUserMedia(constraints) {
+                        captureCalls.push(
+                            constraints.video.mandatory.chromeMediaSourceId
+                        );
+                        return screenStream;
+                    },
+                },
+            });
+
+            await window.startScreenSharing();
+            const state = {
+                captureCalls,
+                selectedId: window.appState.selectedScreenSourceId,
+                screenStreamInstalled:
+                    window.appState.screenCaptureStream === screenStream,
+                trackStoppedBeforeCleanup: track.stopped,
+            };
+            await window.stopScreenSharing(true);
+            return state;
+        }"""
+    )
+
+    assert result == {
+        "captureCalls": [],
+        "selectedId": None,
+        "screenStreamInstalled": False,
+        "trackStoppedBeforeCleanup": False,
+    }

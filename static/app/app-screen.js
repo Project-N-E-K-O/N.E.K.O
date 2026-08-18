@@ -834,6 +834,10 @@
                                 // 直接捕获 "Source not found") 和 Priority 2 的 Electron
                                 // getUserMedia（会跑到 500ms 超时），整条失败链路每次重放。
                                 clearSelectedScreenSource('getSources 未找到该源');
+                                if (rememberedCaptureRequired) {
+                                    console.warn('[acquireStream] 记忆窗口已失效，停止全屏源回退');
+                                    return null;
+                                }
                                 acquisitionGeneration = screenSourceSelectionGeneration;
                                 acquisitionSelectionId = S.selectedScreenSourceId;
                                 var screenSources = currentSources.filter(function (s) { return s.id.startsWith('screen:'); });
@@ -1670,6 +1674,44 @@
                 if (discardCancelledScreenSharingStart(attempt)) return;
             }
 
+            // A stream retained by proactive vision belongs to the source identity
+            // that acquired it. Validate that remembered-window identity before a
+            // manual share adopts the stream and starts its sender lifecycle.
+            if (captureStream && !isMobile()) {
+                var initialRememberedCapture = await prepareRememberedWindowCapture();
+                if (discardCancelledScreenSharingStart(attempt)) return;
+                if (initialRememberedCapture.required) {
+                    var initialCaptureIsCurrent = typeof initialRememberedCapture.isCurrent !== 'function'
+                        || initialRememberedCapture.isCurrent();
+                    var initialStreamStillOwned = S.screenCaptureStream === captureStream;
+                    if (!initialRememberedCapture.allowed
+                        || !initialCaptureIsCurrent
+                        || !initialStreamStillOwned) {
+                        if (initialStreamStillOwned) {
+                            releaseActiveScreenCaptureForSourceChange();
+                        } else {
+                            try {
+                                captureStream.getTracks().forEach(function (track) {
+                                    try { track.stop(); } catch (_) { }
+                                });
+                            } catch (_) { }
+                        }
+                        attempt.initialStream = null;
+                        captureStream = null;
+                        if (!initialRememberedCapture.allowed || !initialCaptureIsCurrent) {
+                            window.showStatusToast(
+                                safeT(
+                                    'app.screenSource.rememberedWindowUnavailable',
+                                    '无法唯一找到记住的窗口，请重新选择屏幕来源'
+                                ),
+                                4000
+                            );
+                            return;
+                        }
+                    }
+                }
+            }
+
             if (captureStream == null) {
                 if (isMobile()) {
                     // 移动端使用摄像头
@@ -1707,6 +1749,10 @@
 
                     var hasRememberedWindowTitle = isScreenSourceTitleMatchEnabled()
                         && !!normalizeScreenSourceTitle(readRememberedWindowTitle());
+                    var rememberedWindowWasBounded = isScreenSourceTitleMatchEnabled()
+                        && (hasRememberedWindowTitle
+                            || (typeof selectedSourceId === 'string'
+                                && selectedSourceId.startsWith('window:')));
                     if ((selectedSourceId || hasRememberedWindowTitle)
                         && desktopProvider && !sourceEnumerationMayPrompt
                         && typeof desktopProvider.getSources === 'function') {
@@ -1718,10 +1764,14 @@
                                 readRememberedWindowTitle()
                             );
                             var manualResolutionEnabled = isScreenSourceTitleMatchEnabled();
-                            var currentSources = await desktopProvider.getSources({
-                                types: ['window', 'screen'],
-                                thumbnailSize: { width: 0, height: 0 }
-                            });
+                            var currentSources = await window.invokeDesktopCaptureWithTimeout(
+                                desktopProvider,
+                                'getSources',
+                                [{
+                                    types: ['window', 'screen'],
+                                    thumbnailSize: { width: 0, height: 0 }
+                                }]
+                            );
                             if (manualResolutionGeneration !== screenSourceSelectionGeneration
                                 || manualResolutionSourceId !== S.selectedScreenSourceId
                                 || manualResolutionTitle !== normalizeScreenSourceTitle(
@@ -1742,6 +1792,11 @@
                             var sourceStillExists = currentSources.some(function (s) { return s.id === selectedSourceId; });
                             var rememberedWindowNeedsPicker = titleResolution.hadRememberedTitle
                                 && titleResolution.status !== 'matched';
+                            if (rememberedWindowWasBounded
+                                && titleResolution.status !== 'matched'
+                                && titleResolution.status !== 'adopted-current-window') {
+                                rememberedWindowNeedsPicker = true;
+                            }
 
                             if (!sourceStillExists && !rememberedWindowNeedsPicker) {
                                 console.warn('[屏幕源] 选中的源已不可用 (ID:', selectedSourceId, ')，自动回退到全屏');
