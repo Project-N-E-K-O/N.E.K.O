@@ -5092,6 +5092,14 @@ def test_new_request_boundary_discards_prior_full_rewrite_intent():
     assert router._chat_text_requests_full_rewrite(text) is False
 
 
+def test_later_explicit_update_revokes_excepted_field_preservation():
+    import main_routers.card_assist_router as router
+
+    text = 'Rewrite all fields except avatar and name, but update name'
+
+    assert router._chat_preserved_target_keys(text, ['avatar', 'name']) == {'avatar'}
+
+
 @pytest.mark.parametrize(
     'text',
     [

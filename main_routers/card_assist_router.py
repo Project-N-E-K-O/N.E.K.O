@@ -2544,7 +2544,11 @@ def _chat_text_requests_full_rewrite_from_scoped_segments(text: str) -> bool:
 
 def _chat_text_requests_full_rewrite(text: str) -> bool:
     """Return whether text contains a high-confidence full-card rewrite command."""
-    active_start = _chat_active_request_start(text)
+    masked = _chat_mask_quoted_spans(text)
+    marker_text = _chat_mask_assignment_value_before_next_command(text, masked)
+    active_start = 0
+    if not _CHAT_GOVERNING_INSTRUCTION_PROHIBITION_RE.search(marker_text):
+        active_start = _chat_active_request_start(text, marker_text=marker_text)
     if active_start:
         text = text[active_start:]
     return (
@@ -2934,10 +2938,12 @@ def _chat_span_is_quoted(instruction: str, start: int, end: int) -> bool:
     )
 
 
-def _chat_active_request_start(instruction: str) -> int:
+def _chat_active_request_start(
+    instruction: str, *, marker_text: str | None = None
+) -> int:
     """Return the start offset after the latest explicit new-request marker."""
     active_start = 0
-    for match in _CHAT_SCOPED_NEW_REQUEST_RE.finditer(instruction or ""):
+    for match in _CHAT_SCOPED_NEW_REQUEST_RE.finditer(marker_text or instruction or ""):
         if (
             _chat_span_is_quoted(instruction, match.start(), match.end())
             or _chat_preservation_clause_is_meta_request_text(
@@ -3061,6 +3067,33 @@ def _chat_preservation_local_prefix(instruction: str, clause_start: int) -> str:
         (instruction or "")[:clause_start]
     )[-1]
     return _CHAT_PRESERVATION_CONTRAST_SPLIT_RE.split(sentence_prefix)[-1]
+
+
+def _chat_instruction_explicitly_updates_field(
+    instruction: str, field_key: str
+) -> bool:
+    """Return whether a later English contrast explicitly updates a field."""
+    if not instruction or not field_key:
+        return False
+    key = re.escape(field_key)
+    update_re = re.compile(
+        rf"(?i:\b(?:but|however)\s+"
+        rf"(?:change|update|edit|modify|rewrite|revise|regenerate|redo|refresh)\s+"
+        rf"{key}(?![A-Za-z0-9_]))"
+    )
+    for match in update_re.finditer(instruction):
+        if _chat_span_is_quoted(instruction, match.start(), match.end()):
+            continue
+        if _chat_preservation_clause_is_meta_request_text(instruction, match.start()):
+            continue
+        if _chat_preservation_clause_is_reported(instruction, match.start()):
+            continue
+        if _chat_preservation_sentence_has_governing_guard(
+            instruction, match.start(), scope_end=match.end()
+        ):
+            continue
+        return True
+    return False
 
 
 def _chat_preserved_target_keys(
@@ -3279,7 +3312,7 @@ def _chat_preserved_target_keys(
                 keys_start,
             )
         )
-    return {
+    preserved = {
         key
         for key, start, end in candidates
         if not any(
@@ -3292,6 +3325,11 @@ def _chat_preserved_target_keys(
             and (other_start, other_end) != (start, end)
             for _, other_start, other_end in candidates
         )
+    }
+    return {
+        key
+        for key in preserved
+        if not _chat_instruction_explicitly_updates_field(instruction or "", key)
     }
 
 
