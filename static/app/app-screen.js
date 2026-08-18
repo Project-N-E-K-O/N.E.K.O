@@ -29,7 +29,7 @@
     }
 
     function normalizeScreenSourceTitle(value) {
-        return String(value || '').trim().replace(/\s+/g, ' ').toLowerCase();
+        return String(value || '').normalize('NFC').trim().replace(/\s+/g, ' ').toLowerCase();
     }
 
     function isScreenSourceTitleMatchEnabled() {
@@ -1506,6 +1506,11 @@
                                 return;
                             }
                             var titleResolution = reconcileRememberedWindowSource(currentSources);
+                            if (titleResolution.status === 'adopted-current-window') {
+                                hasRememberedWindowTitle = !!normalizeScreenSourceTitle(
+                                    readRememberedWindowTitle()
+                                );
+                            }
                             selectedSourceId = S.selectedScreenSourceId;
                             var sourceStillExists = currentSources.some(function (s) { return s.id === selectedSourceId; });
                             var rememberedWindowNeedsPicker = titleResolution.hadRememberedTitle
@@ -1538,7 +1543,22 @@
                                 console.warn('[屏幕源] 记住的窗口标题无法唯一匹配，停止本次启动并等待用户重新选择');
                             }
                         } catch (validateErr) {
-                            console.warn('[屏幕源] 验证源可用性失败，继续尝试使用保存的源:', validateErr);
+                            if (manualResolutionGeneration !== screenSourceSelectionGeneration
+                                || manualResolutionSourceId !== S.selectedScreenSourceId
+                                || manualResolutionTitle !== normalizeScreenSourceTitle(
+                                    readRememberedWindowTitle()
+                                )
+                                || manualResolutionEnabled !== isScreenSourceTitleMatchEnabled()) {
+                                console.warn('[屏幕源] 来源选择已变化，停止过期的屏幕分享启动');
+                                return;
+                            }
+                            if (hasRememberedWindowTitle) {
+                                selectedSourceId = null;
+                                rememberedWindowNeedsSelection = true;
+                                console.warn('[屏幕源] 记忆窗口来源验证失败，停止本次启动:', validateErr);
+                            } else {
+                                console.warn('[屏幕源] 验证源可用性失败，继续尝试使用保存的源:', validateErr);
+                            }
                         }
                         if (discardCancelledScreenSharingStart(attempt)) return;
                     }
