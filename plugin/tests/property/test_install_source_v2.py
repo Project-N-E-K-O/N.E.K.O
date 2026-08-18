@@ -605,6 +605,39 @@ def test_corrupt_profile_installed_is_treated_as_not_owned() -> None:
     assert entry.profile_installed is False
 
 
+def test_import_reinstall_clears_profile_ownership_from_removed_entry(
+    manager: InstallSourceManager,
+) -> None:
+    target = manager.user_root / "profileless-reinstall"
+    target.mkdir(parents=True)
+    (target / "plugin.toml").write_text(
+        '[plugin]\nid = "profileless-reinstall"\n',
+        encoding="utf-8",
+    )
+    profile_dir = manager.user_root.parent / "profiles" / "profileless-package"
+
+    manager.record_import(
+        directory_path=target,
+        package_filename="first.neko-plugin",
+        package_sha256="a" * 64,
+        package_id="profileless-package",
+        profile_dir=str(profile_dir),
+    )
+    manager.mark_removed(directory_path=target)
+    manager.record_import(
+        directory_path=target,
+        package_filename="second.neko-plugin",
+        package_sha256="b" * 64,
+        package_id="profileless-package",
+        profile_dir="",
+    )
+
+    entry = manager.entry_for_directory(target, include_removed=False)
+    assert entry is not None
+    assert entry.profile_dir == ""
+    assert entry.profile_installed is False
+
+
 def test_market_upgrade_preserves_owned_profile_when_new_package_has_none(
     manager: InstallSourceManager,
     tmp_path: Path,

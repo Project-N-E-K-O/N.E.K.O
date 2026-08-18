@@ -1478,11 +1478,11 @@ class InstallSourceManager:
                     package_id=package_id or existing.package_id,
                     profile_dir=profile_dir or (
                         existing.profile_dir
-                        if existing.profile_installed is True
+                        if not existing.removed and existing.profile_installed is True
                         else ""
                     ),
                     profile_installed=bool(profile_dir)
-                    or existing.profile_installed is True,
+                    or (not existing.removed and existing.profile_installed is True),
                 )
 
             new_lock = self._replace_entry(

@@ -290,6 +290,44 @@ async def test_market_upgrade_preserves_profile_at_recorded_custom_location(
 
 
 @pytest.mark.asyncio
+async def test_market_upgrade_rejects_symlinked_recorded_profile_ancestor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugins_root = tmp_path / "plugins"
+    profiles_root = tmp_path / "profiles"
+    plugin_dir = plugins_root / "demo"
+    symlinked_ancestor = tmp_path / "recorded_profiles"
+    profile_dir = symlinked_ancestor / "demo"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "plugin.toml").write_text("id = 'demo'\n", encoding="utf-8")
+    package_path = tmp_path / "demo.neko-plugin"
+    package_path.write_bytes(b"package")
+    entry = _entry("demo", "demo", profile_dir=str(profile_dir))
+
+    _configure_paths(
+        monkeypatch,
+        plugins_root=plugins_root,
+        profiles_root=profiles_root,
+        entry=entry,
+    )
+    monkeypatch.setattr(market_bridge, "_download_package", lambda _url, _task: _async_value(package_path))
+    monkeypatch.setattr(market_bridge, "_verify_sha256_file", lambda *args, **kwargs: "passed")
+    monkeypatch.setattr(market_bridge, "_cleanup_download_file", lambda _path: None)
+    original_is_symlink = Path.is_symlink
+
+    def _is_symlink(path: Path) -> bool:
+        return path == symlinked_ancestor or original_is_symlink(path)
+
+    monkeypatch.setattr(Path, "is_symlink", _is_symlink)
+
+    with pytest.raises(market_bridge._TaskError) as exc_info:
+        await market_bridge._do_upgrade({}, _payload(), {})
+
+    assert exc_info.value.code == "unsafe_profile_path"
+
+
+@pytest.mark.asyncio
 async def test_market_upgrade_rejects_stale_lock_snapshot(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

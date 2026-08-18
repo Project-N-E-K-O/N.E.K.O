@@ -2968,11 +2968,28 @@ async def _do_upgrade(
                 ),
             )
         recorded_profile_dir = str(getattr(entry, "profile_dir", "") or "")
-        profile_dir = (
-            Path(recorded_profile_dir).expanduser().resolve()
+        profile_candidate = (
+            Path(recorded_profile_dir).expanduser()
             if recorded_profile_dir
-            else (path_policy.package_profiles_root / package_id).resolve()
+            else path_policy.package_profiles_root / package_id
         )
+        if any(path.is_symlink() for path in (profile_candidate, *profile_candidate.parents)):
+            raise _TaskError(
+                code="unsafe_profile_path",
+                message=f"recorded package profile path contains a symlink: {profile_candidate}",
+            )
+        try:
+            profile_dir = profile_candidate.resolve()
+        except OSError as exc:
+            raise _TaskError(
+                code="unsafe_profile_path",
+                message=f"cannot resolve recorded package profile path: {profile_candidate}",
+            ) from exc
+        if profile_dir.name != package_id:
+            raise _TaskError(
+                code="unsafe_profile_path",
+                message=f"recorded package profile path does not match package id: {profile_dir}",
+            )
         market_override = _build_market_override(
             payload,
             mode="reinstall" if record_as_reinstall else "upgrade",

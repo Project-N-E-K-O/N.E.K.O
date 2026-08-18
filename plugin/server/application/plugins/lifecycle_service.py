@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import math
+import os
 import re
 import shutil
 import time as time_module
@@ -64,6 +66,7 @@ from plugin.settings import (
     PLUGIN_SHUTDOWN_TIMEOUT,
     PLUGIN_STARTUP_TIMEOUT,
     PLUGIN_SYNC_AUTO_START_ON_TOGGLE,
+    get_user_plugin_config_root,
     get_user_package_profiles_root,
 )
 from plugin.utils import parse_bool_config
@@ -71,6 +74,10 @@ from plugin.utils import parse_bool_config
 logger = get_logger("server.application.plugins.lifecycle")
 _PLUGIN_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
 _PLUGIN_STARTUP_TIMEOUT_MAX = 300.0
+_DEFERRED_PROFILE_CLEANUP_FILENAME = "package_profile_cleanup.json"
+_DEFERRED_PROFILE_STAGING_NAME_PATTERN = re.compile(
+    r"^\.[a-zA-Z0-9_-]+\.deleting-[0-9a-f]{32}$"
+)
 plugin_registry_service = PluginRegistryService()
 # The profile sharing decision and install-source soft-removal must form one
 # operation.  Serializing deletions prevents two members of the same package
@@ -414,6 +421,126 @@ def _path_has_symlink_ancestor(path: Path) -> bool:
 class _StagedPackageProfile:
     original_dir: Path
     staged_dir: Path
+
+
+def _deferred_profile_cleanup_record_path_sync() -> Path:
+    return (
+        get_user_plugin_config_root().expanduser().resolve().parent
+        / _DEFERRED_PROFILE_CLEANUP_FILENAME
+    )
+
+
+def _load_deferred_profile_cleanup_paths_sync(record_path: Path) -> list[str]:
+    try:
+        raw = json.loads(record_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return []
+    except (OSError, ValueError, TypeError) as exc:
+        logger.error(
+            "delete_plugin: failed to read deferred profile cleanup record {}: {}",
+            record_path,
+            exc,
+        )
+        return []
+    if not isinstance(raw, dict) or not isinstance(raw.get("staged_paths"), list):
+        logger.error(
+            "delete_plugin: invalid deferred profile cleanup record: {}",
+            record_path,
+        )
+        return []
+    return [path for path in raw["staged_paths"] if isinstance(path, str) and path]
+
+
+def _save_deferred_profile_cleanup_paths_sync(record_path: Path, paths: list[str]) -> None:
+    if not paths:
+        try:
+            record_path.unlink()
+        except FileNotFoundError:
+            pass
+        return
+    record_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = record_path.with_name(
+        f".{record_path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+    )
+    try:
+        temporary_path.write_text(
+            json.dumps({"schema_version": 1, "staged_paths": paths}),
+            encoding="utf-8",
+        )
+        temporary_path.replace(record_path)
+    finally:
+        try:
+            temporary_path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _record_deferred_profile_cleanup_sync(staged_profile: _StagedPackageProfile) -> bool:
+    try:
+        record_path = _deferred_profile_cleanup_record_path_sync()
+        paths = _load_deferred_profile_cleanup_paths_sync(record_path)
+        staged_path = str(staged_profile.staged_dir)
+        if staged_path not in paths:
+            paths.append(staged_path)
+        _save_deferred_profile_cleanup_paths_sync(record_path, paths)
+        return True
+    except OSError as exc:
+        logger.error(
+            "delete_plugin: failed to persist deferred profile cleanup for {}: {}",
+            staged_profile.staged_dir,
+            exc,
+        )
+        return False
+
+
+def _is_safe_deferred_profile_cleanup_path(path: Path) -> bool:
+    return (
+        path.is_absolute()
+        and _DEFERRED_PROFILE_STAGING_NAME_PATTERN.fullmatch(path.name) is not None
+        and not _path_has_symlink_ancestor(path)
+    )
+
+
+def _retry_deferred_profile_cleanup_sync() -> int:
+    """Retry profile cleanup jobs persisted after transient deletion failures."""
+    record_path = _deferred_profile_cleanup_record_path_sync()
+    paths = _load_deferred_profile_cleanup_paths_sync(record_path)
+    if not paths:
+        return 0
+
+    remaining_paths: list[str] = []
+    cleaned = 0
+    for raw_path in paths:
+        staged_path = Path(raw_path).expanduser()
+        if not _is_safe_deferred_profile_cleanup_path(staged_path):
+            logger.error(
+                "delete_plugin: refusing unsafe deferred profile cleanup path: {}",
+                staged_path,
+            )
+            remaining_paths.append(raw_path)
+            continue
+        try:
+            shutil.rmtree(staged_path)
+        except FileNotFoundError:
+            cleaned += 1
+        except OSError as exc:
+            logger.warning(
+                "delete_plugin: deferred profile cleanup still pending for {}: {}",
+                staged_path,
+                exc,
+            )
+            remaining_paths.append(raw_path)
+        else:
+            cleaned += 1
+    try:
+        _save_deferred_profile_cleanup_paths_sync(record_path, remaining_paths)
+    except OSError as exc:
+        logger.error(
+            "delete_plugin: failed to update deferred profile cleanup record {}: {}",
+            record_path,
+            exc,
+        )
+    return cleaned
 
 
 def _stage_orphaned_package_profile_sync(plugin_dir: Path) -> _StagedPackageProfile | None:
@@ -1484,10 +1611,15 @@ class PluginLifecycleService:
                     # The executable is already gone, but the profile is in a
                     # non-conflicting staging location. Do not turn a completed
                     # plugin deletion into a reinstall-blocking partial state.
+                    deferred_cleanup_recorded = await asyncio.to_thread(
+                        _record_deferred_profile_cleanup_sync,
+                        staged_profile,
+                    )
                     logger.warning(
-                        "delete_plugin: deferred cleanup of staged package profile {}: {}",
+                        "delete_plugin: deferred cleanup of staged package profile {}: {}; persisted={}",
                         staged_profile.staged_dir,
                         exc,
+                        deferred_cleanup_recorded,
                     )
             await asyncio.to_thread(_mark_install_source_removed_sync, plugin_dir)
             await asyncio.to_thread(_pop_plugin_host_sync, plugin_id)
@@ -1549,6 +1681,10 @@ class PluginLifecycleService:
             "message": "Plugin deleted successfully",
         }
         return response
+
+    async def retry_deferred_profile_cleanup(self) -> int:
+        """Retry persisted profile cleanup jobs during server startup."""
+        return await asyncio.to_thread(_retry_deferred_profile_cleanup_sync)
 
     async def _safe_stop_for_reload(self, plugin_id: str) -> _ReloadOutcome:
         try:

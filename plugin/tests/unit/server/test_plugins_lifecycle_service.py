@@ -2566,6 +2566,32 @@ def test_delete_propagates_profile_staging_failure_for_retry(
 
 
 @pytest.mark.plugin_unit
+def test_deferred_profile_cleanup_is_persisted_and_retried(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    record_path = tmp_path / "package_profile_cleanup.json"
+    staged_dir = tmp_path / "profiles" / ".demo_package.deleting-0123456789abcdef0123456789abcdef"
+    staged_dir.mkdir(parents=True)
+    (staged_dir / "config.toml").write_text("value = true\n", encoding="utf-8")
+    staged_profile = module._StagedPackageProfile(
+        original_dir=tmp_path / "profiles" / "demo_package",
+        staged_dir=staged_dir,
+    )
+    monkeypatch.setattr(
+        module,
+        "_deferred_profile_cleanup_record_path_sync",
+        lambda: record_path,
+    )
+
+    assert module._record_deferred_profile_cleanup_sync(staged_profile) is True
+    assert record_path.is_file()
+    assert module._retry_deferred_profile_cleanup_sync() == 1
+    assert staged_dir.exists() is False
+    assert record_path.exists() is False
+
+
+@pytest.mark.plugin_unit
 @pytest.mark.asyncio
 async def test_delete_plugin_stops_running_host_before_removing(
     monkeypatch: pytest.MonkeyPatch,
