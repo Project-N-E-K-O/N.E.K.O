@@ -762,6 +762,7 @@ const normalizeNativeCaptureDataUrlForStream = async (dataUrl) => dataUrl;
 const buildStreamDataMessage = (_dataUrl, _inputType, sourceId) => ({ source_id: sourceId });
 const safeT = (_key, fallback) => fallback;
 const stopScreenSharing = async () => {};
+const resetScreenSharingControls = () => { results.controlsReset = true; };
 function stopScreening() {
   nativeCaptureGeneration += 1;
   activeNativeCaptureSourceId = null;
@@ -774,6 +775,10 @@ function clearSelectedScreenSource() {
 }
 __START_NATIVE__
 __RESTART_NATIVE__
+__RELEASE_CAPTURE__
+__IS_CAPTURE_ACTIVE__
+__RESTART_CAPTURE__
+__STOP_REJECTED_CAPTURE__
 __RECONCILE__
 (async () => {
   await startNativeScreenStreaming(provider, 'window:old', 'screen');
@@ -781,7 +786,11 @@ __RECONCILE__
   await Promise.resolve();
   await Promise.resolve();
   if (scheduled) await scheduled();
-  results.selected = S.selectedScreenSourceId;
+  results.selectedAfterRemap = S.selectedScreenSourceId;
+  results.capturedAfterRemap = results.captured.slice();
+  reconcileRememberedWindowSource([]);
+  if (scheduled) await scheduled();
+  results.selectedAfterReject = S.selectedScreenSourceId;
   console.log(JSON.stringify(results));
 })();
 """
@@ -792,14 +801,272 @@ __RECONCILE__
             "__RESTART_NATIVE__",
             _fn(screen_src, "restartActiveNativeCaptureForSourceRemap"),
         )
+        .replace(
+            "__RELEASE_CAPTURE__",
+            _fn(screen_src, "releaseActiveScreenCaptureForSourceChange"),
+        )
+        .replace(
+            "__IS_CAPTURE_ACTIVE__",
+            _fn(screen_src, "isScreenSharingActiveForSourceChange"),
+        )
+        .replace(
+            "__RESTART_CAPTURE__",
+            _fn(screen_src, "restartActiveCaptureForSourceRemap"),
+        )
+        .replace(
+            "__STOP_REJECTED_CAPTURE__",
+            _fn(screen_src, "stopActiveCaptureForRememberedSourceRejection"),
+        )
         .replace("__RECONCILE__", _fn(screen_src, "reconcileRememberedWindowSource"))
     )
 
     out = _run(script)
 
+    assert out["selectedAfterRemap"] == "window:new"
+    assert out["capturedAfterRemap"][:2] == ["window:old", "window:new"]
+    assert "window:old" not in out["capturedAfterRemap"][1:]
+    assert out["selectedAfterReject"] is None
+    assert out["captured"] == out["capturedAfterRemap"]
+
+
+def _run_active_media_stream_reconciliation(
+    sources: list[dict[str, str]],
+    *,
+    play_pending: bool = False,
+) -> dict:
+    screen_src = _screen_src()
+    script = """
+const results = { sent: [], stopped: false, intervalCleared: false };
+const WebSocket = { OPEN: 1 };
+const C = { MAX_SCREENSHOT_WIDTH: 1280, MAX_SCREENSHOT_HEIGHT: 720 };
+let senderTick = null;
+let resolvePlay = null;
+const playPromise = __PLAY_PROMISE__;
+const track = { readyState: 'live', stop() { results.stopped = true; } };
+const stream = {
+  active: true,
+  getVideoTracks: () => [track],
+  getTracks: () => [track]
+};
+const S = {
+  selectedScreenSourceId: 'window:old',
+  screenCaptureStream: stream,
+  screenCaptureStreamLastUsed: null,
+  screenCaptureStreamIdleTimer: null,
+  socket: { readyState: 1, send(payload) { results.sent.push(JSON.parse(payload)); } },
+  videoSenderInterval: null,
+  videoTrack: null,
+  isRecording: true
+};
+let nativeCaptureGeneration = 0;
+let activeNativeCaptureSourceId = null;
+const document = {
+  createElement: () => ({
+    srcObject: null,
+    autoplay: false,
+    muted: false,
+    videoWidth: 100,
+    videoHeight: 100,
+    play: () => playPromise
+  })
+};
+const setInterval = (callback) => { senderTick = callback; return callback; };
+const clearInterval = () => { results.intervalCleared = true; };
+const clearTimeout = () => {};
+const setTimeout = (callback) => callback;
+const localStorage = { setItem() {}, removeItem() {} };
+const window = { showStatusToast: () => {} };
+const normalizeScreenSourceTitle = (value) => String(value || '').trim();
+const isScreenSourceTitleMatchEnabled = () => true;
+const readRememberedWindowTitle = () => 'Editor';
+const markScreenSourceSelectionChanged = () => {};
+const pushSelectedSourceToMain = () => {};
+const updateScreenSourceListSelection = () => {};
+const storeRememberedWindowTitle = () => {};
+const clearRememberedWindowTitle = () => {};
+const resolveDesktopCaptureProvider = () => null;
+const isNativeFrameProvider = () => false;
+const stopLiveVisionStreamIfBlocked = async () => false;
+const captureCanvasFrame = () => ({ dataUrl: 'data:image/jpeg;base64,OLD' });
+const buildStreamDataMessage = (dataUrl) => ({ dataUrl });
+const scheduleScreenCaptureIdleCheck = () => {};
+const safeT = (_key, fallback) => fallback;
+const resetScreenSharingControls = () => { results.controlsReset = true; };
+const stopButton = () => ({ disabled: false });
+const screenButton = () => ({ classList: { contains: () => true } });
+const cancelPendingScreenSharingStart = () => false;
+const startScreenSharing = async () => { results.restarted = true; };
+function stopScreening() {
+  nativeCaptureGeneration += 1;
+  activeNativeCaptureSourceId = null;
+  if (S.videoSenderInterval) clearInterval(S.videoSenderInterval);
+  S.videoSenderInterval = null;
+}
+function clearSelectedScreenSource() {
+  S.selectedScreenSourceId = null;
+  markScreenSourceSelectionChanged();
+}
+__START_STREAM__
+__RESTART_NATIVE__
+__RELEASE_CAPTURE__
+__IS_CAPTURE_ACTIVE__
+__RESTART_CAPTURE__
+__STOP_REJECTED_CAPTURE__
+__RECONCILE__
+(async () => {
+  startScreenVideoStreaming(stream, 'screen');
+  __RECONCILE_SEQUENCE__
+  await Promise.resolve();
+  await Promise.resolve();
+  if (senderTick) await senderTick();
+  results.selected = S.selectedScreenSourceId;
+  console.log(JSON.stringify(results));
+})();
+"""
+    script = (
+        script
+        .replace("__START_STREAM__", _fn(screen_src, "startScreenVideoStreaming"))
+        .replace(
+            "__RESTART_NATIVE__",
+            _fn(screen_src, "restartActiveNativeCaptureForSourceRemap"),
+        )
+        .replace(
+            "__RELEASE_CAPTURE__",
+            _fn(screen_src, "releaseActiveScreenCaptureForSourceChange"),
+        )
+        .replace(
+            "__IS_CAPTURE_ACTIVE__",
+            _fn(screen_src, "isScreenSharingActiveForSourceChange"),
+        )
+        .replace(
+            "__RESTART_CAPTURE__",
+            _fn(screen_src, "restartActiveCaptureForSourceRemap"),
+        )
+        .replace(
+            "__STOP_REJECTED_CAPTURE__",
+            _fn(screen_src, "stopActiveCaptureForRememberedSourceRejection"),
+        )
+        .replace("__RECONCILE__", _fn(screen_src, "reconcileRememberedWindowSource"))
+        .replace("__SOURCES__", json.dumps(sources))
+        .replace(
+            "__PLAY_PROMISE__",
+            (
+                "new Promise((resolve) => { resolvePlay = resolve; })"
+                if play_pending
+                else "Promise.resolve()"
+            ),
+        )
+        .replace(
+            "__RECONCILE_SEQUENCE__",
+            (
+                "reconcileRememberedWindowSource(__SOURCES__); resolvePlay();"
+                if play_pending
+                else (
+                    "await Promise.resolve(); await Promise.resolve(); "
+                    "reconcileRememberedWindowSource(__SOURCES__);"
+                )
+            ).replace("__SOURCES__", json.dumps(sources)),
+        )
+    )
+    return _run(script)
+
+
+@pytest.mark.unit
+def test_title_remap_stops_active_media_stream_before_it_sends_the_old_source():
+    out = _run_active_media_stream_reconciliation([
+        {"id": "window:new", "name": "Editor"},
+    ])
+
     assert out["selected"] == "window:new"
-    assert out["captured"][:2] == ["window:old", "window:new"]
-    assert "window:old" not in out["captured"][1:]
+    assert out["stopped"] is True
+    assert out["sent"] == []
+
+
+@pytest.mark.unit
+def test_title_remap_invalidates_media_stream_while_video_play_is_pending():
+    out = _run_active_media_stream_reconciliation(
+        [{"id": "window:new", "name": "Editor"}],
+        play_pending=True,
+    )
+
+    assert out["selected"] == "window:new"
+    assert out["stopped"] is True
+    assert out["sent"] == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("sources", "expected_status"),
+    [
+        ([], "missing"),
+        (
+            [
+                {"id": "window:new-a", "name": "Editor"},
+                {"id": "window:new-b", "name": "Editor"},
+            ],
+            "ambiguous",
+        ),
+    ],
+)
+def test_rejected_remembered_window_stops_active_media_stream(
+    sources: list[dict[str, str]],
+    expected_status: str,
+):
+    out = _run_active_media_stream_reconciliation(sources)
+
+    assert out["selected"] is None, expected_status
+    assert out["stopped"] is True, expected_status
+    assert out["sent"] == [], expected_status
+
+
+@pytest.mark.unit
+def test_hide_neko_recapture_restores_hidden_ui_when_identity_expires_during_delay():
+    buttons_src = APP_BUTTONS_PATH.read_text(encoding="utf-8")
+    script = """
+const results = { domHidden: false, satellitesHidden: false, satellitesRestored: false };
+let current = true;
+class MediaStream {}
+const S = { selectedScreenSourceId: 'window:old', screenCaptureStream: null };
+const setTimeout = (callback) => { current = false; callback(); };
+const window = {
+  captureDesktopSourceWithTimeout: async () => null,
+  acquireOrReuseCachedStream: async () => null,
+  captureFrameFromStream: async () => null,
+  fetchBackendScreenshot: async () => null,
+  maybeClearSourceOnNotFound: () => {},
+  showStatusToast: () => {},
+  t: (key) => key
+};
+const desktopProvider = {
+  async hideNekoWindows() {
+    results.satellitesHidden = true;
+    return { hiddenIds: [7] };
+  },
+  async restoreNekoWindows(ids) {
+    results.satellitesRestored = ids.length === 1 && ids[0] === 7;
+    results.satellitesHidden = false;
+  }
+};
+const getDesktopProvider = () => desktopProvider;
+const hideNekoUI = () => { results.domHidden = true; return { saved: true }; };
+const restoreNekoUI = () => { results.domHidden = false; };
+__RECAPTURE__
+recaptureWithoutNeko({
+  required: true,
+  allowed: true,
+  isCurrent: () => current
+}).then((data) => {
+  results.data = data;
+  console.log(JSON.stringify(results));
+});
+""".replace("__RECAPTURE__", _fn(buttons_src, "recaptureWithoutNeko"))
+
+    out = _run(script)
+
+    assert out.get("data") is None
+    assert out["domHidden"] is False
+    assert out["satellitesHidden"] is False
+    assert out["satellitesRestored"] is True
 
 
 _PROACTIVE_REMEMBERED_TMPL = """

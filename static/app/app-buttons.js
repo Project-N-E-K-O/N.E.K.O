@@ -3675,20 +3675,20 @@
             // MediaStream 抓帧（getDisplayMedia）会把卫星窗口也拍进去，CSS 隐藏覆盖不到它们。
             var saved = hideNekoUI();
             var fallbackHiddenIds = null;
-            if (desktopProvider
-                && typeof desktopProvider.hideNekoWindows === 'function') {
-                try {
-                    var hideRes = await desktopProvider.hideNekoWindows();
-                    if (hideRes && Array.isArray(hideRes.hiddenIds)) {
-                        fallbackHiddenIds = hideRes.hiddenIds;
-                    }
-                } catch (e) {
-                    console.warn('[隐藏NEKO][fallback] hide 卫星窗口失败:', e);
-                }
-            }
-            await new Promise(function (r) { setTimeout(r, 300); });
-            if (!rememberedWindowCaptureIsCurrent()) return null;
             try {
+                if (desktopProvider
+                    && typeof desktopProvider.hideNekoWindows === 'function') {
+                    try {
+                        var hideRes = await desktopProvider.hideNekoWindows();
+                        if (hideRes && Array.isArray(hideRes.hiddenIds)) {
+                            fallbackHiddenIds = hideRes.hiddenIds;
+                        }
+                    } catch (e) {
+                        console.warn('[隐藏NEKO][fallback] hide 卫星窗口失败:', e);
+                    }
+                }
+                await new Promise(function (r) { setTimeout(r, 300); });
+                if (!rememberedWindowCaptureIsCurrent()) return null;
                 // Priority 1: Electron direct capture (不隐藏卫星窗口版本，仅为向后兼容兜底)
                 // 读当前的 S.selectedScreenSourceId —— Priority 0 若刚命中 'Source not found'
                 // 已经通过 maybeClearSourceOnNotFound 把它清空，此时 selectedSourceId 这个本地

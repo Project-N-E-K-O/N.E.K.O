@@ -248,11 +248,12 @@
                     markScreenSourceSelectionChanged();
                     try { localStorage.setItem('selectedScreenSourceId', titleMatches[0].id); } catch (_) { }
                     pushSelectedSourceToMain(titleMatches[0].id);
-                    restartActiveNativeCaptureForSourceRemap(previousSourceId, titleMatches[0].id);
+                    restartActiveCaptureForSourceRemap(previousSourceId, titleMatches[0].id);
                     console.log('[屏幕源] 已通过唯一窗口标题恢复来源:', rememberedTitle);
                 }
                 result.status = 'matched';
             } else {
+                stopActiveCaptureForRememberedSourceRejection();
                 if (S.selectedScreenSourceId != null) {
                     clearSelectedScreenSource(
                         titleMatches.length > 1 ? '窗口标题存在多个匹配' : '窗口标题未匹配到来源'
@@ -1384,6 +1385,63 @@
                     5000
                 );
             });
+    }
+
+    function releaseActiveScreenCaptureForSourceChange() {
+        stopScreening();
+        if (S.screenCaptureStream) {
+            try {
+                if (typeof S.screenCaptureStream.getTracks === 'function') {
+                    S.screenCaptureStream.getTracks().forEach(function (track) {
+                        try { track.stop(); } catch (_) { }
+                    });
+                }
+            } catch (_) { }
+        }
+        S.screenCaptureStream = null;
+        S.screenCaptureStreamLastUsed = null;
+        if (S.screenCaptureStreamIdleTimer) {
+            clearTimeout(S.screenCaptureStreamIdleTimer);
+            S.screenCaptureStreamIdleTimer = null;
+        }
+        resetScreenSharingControls();
+    }
+
+    function isScreenSharingActiveForSourceChange() {
+        if (activeNativeCaptureSourceId || S.videoSenderInterval) return true;
+        var stop = stopButton();
+        if (stop && !stop.disabled) return true;
+        var screen = screenButton();
+        return !!(screen && screen.classList && screen.classList.contains('active'));
+    }
+
+    function restartActiveCaptureForSourceRemap(previousSourceId, nextSourceId) {
+        if (!previousSourceId || !nextSourceId || previousSourceId === nextSourceId) return;
+
+        if (activeNativeCaptureSourceId === previousSourceId) {
+            restartActiveNativeCaptureForSourceRemap(previousSourceId, nextSourceId);
+            return;
+        }
+
+        if (!S.screenCaptureStream) return;
+        var shouldRestart = isScreenSharingActiveForSourceChange();
+        releaseActiveScreenCaptureForSourceChange();
+        if (!shouldRestart) return;
+        Promise.resolve(startScreenSharing()).catch(function (error) {
+            console.warn('[屏幕源] 标题恢复后重启流捕获失败:', error);
+            window.showStatusToast(
+                safeT(
+                    'app.screenSource.captureFailed',
+                    '屏幕捕获已停止，请检查系统权限或重新选择来源'
+                ),
+                5000
+            );
+        });
+    }
+
+    function stopActiveCaptureForRememberedSourceRejection() {
+        if (!isScreenSharingActiveForSourceChange()) return;
+        releaseActiveScreenCaptureForSourceChange();
     }
 
     // ======================== getMobileCameraStream ========================
