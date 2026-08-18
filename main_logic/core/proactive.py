@@ -1442,6 +1442,11 @@ class ProactiveMixin:
             for _cb in active_callbacks:
                 if isinstance(_cb, dict):
                     _proactive_images.extend(_cb.get("media_images") or [])
+            # NOTE: chat-visible proactive media (visibility=["chat"]) does
+            # NOT ride this path — character_runtime sends the WS
+            # ``proactive_media`` frame directly at event ingestion, decoupled
+            # from LLM delivery, so every delivery mode (and requeue retry)
+            # sees exactly one frame. See send_proactive_media / notify.py.
             # Preserve the full language code until callback rendering.
             _lang = normalize_language_code(self.user_language, format='full')
             instruction = _build_callback_instruction(

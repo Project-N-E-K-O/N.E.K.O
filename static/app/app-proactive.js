@@ -1544,27 +1544,36 @@
     // ======================== attachment buffering ========================
 
     /**
-     * 统一 flush 对应 turn_id 的主动搭话附件（表情包、来源卡片）
+     * 统一 flush 对应 turn_id 的主动搭话附件（表情包、主动消息图片、来源卡片）
      */
     function _flushProactiveAttachments(turnId) {
         if (!window._proactiveAttachmentBuffer || !window._proactiveAttachmentBuffer[turnId]) {
             return; // 没有待展示的附件
         }
-        
+
         var attachments = window._proactiveAttachmentBuffer[turnId];
-        
-        if (attachments.memes && attachments.memes.length > 0) {
-            _showMemeBubbles(attachments.memes, turnId);
+
+        // try/finally：任一渲染分支抛错也必须清掉 entry——该 turn_id 不会再
+        // 有第二次 flush 机会（proactive_media 帧的 id 是一次性的，回复文本
+        // 也不带它），泄漏的 entry 会永远留在 window 上且图片静默丢失。
+        try {
+            if (attachments.memes && attachments.memes.length > 0) {
+                _showMemeBubbles(attachments.memes, turnId);
+            }
+
+            if (attachments.images && attachments.images.length > 0) {
+                _showProactiveImageBubbles(attachments.images, turnId);
+            }
+
+            if (attachments.links && attachments.links.length > 0) {
+                setTimeout(function () {
+                    _showProactiveSourceCards(attachments.links, turnId);
+                }, 3000);
+            }
+        } finally {
+            // flush 后清理 buffer
+            delete window._proactiveAttachmentBuffer[turnId];
         }
-        
-        if (attachments.links && attachments.links.length > 0) {
-            setTimeout(function () {
-                _showProactiveSourceCards(attachments.links, turnId);
-            }, 3000);
-        }
-        
-        // flush 后清理 buffer
-        delete window._proactiveAttachmentBuffer[turnId];
     }
     mod._flushProactiveAttachments = _flushProactiveAttachments;
 
@@ -1707,6 +1716,122 @@
         }
     }
 
+    /**
+     * 向 React 聊天窗追加一条 assistant 图片气泡（meme 与主动消息可见媒体共用）。
+     *
+     * 调用方差异只在 url 来源与文案：meme 走 /api/meme/proxy-image 代理
+     * 外链，proactive media 直用宿主同源静态 URL——消息构造、头像解析、
+     * 镜像广播（__nekoMirrorChatAppend 同步到 chat.html 等 follower 窗口，
+     * 见 music_ui.js）与兜底路径完全一致，抽在这里避免两份漂移的拷贝。
+     * 已知边界（与后端 send_* 的 display-plane 约束一致，见 notify.py）：
+     * WS 帧只送达最新连接的窗口，镜像广播经 BroadcastChannel、不跨
+     * Electron partition——隔离 partition 内的窗口（如宠物窗）看不到该
+     * 气泡，属既有限制而非本通路引入。
+     * 返回 false 表示 React host 未就绪，调用方走旧 DOM 兜底。
+     */
+    function _appendReactImageBubble(url, alt, turnId, idPrefix, logTag, logDetail) {
+        var host = window.reactChatWindowHost;
+        if (!host || typeof host.appendMessage !== 'function') {
+            return false;
+        }
+        var mirrorAppend = window.__nekoMirrorChatAppend;
+        var now = new Date();
+        var timeStr = now.getHours().toString().padStart(2, '0') + ':' +
+            now.getMinutes().toString().padStart(2, '0');
+        var assistantName = '';
+        if (window.lanlan_config && window.lanlan_config.lanlan_name) assistantName = window.lanlan_config.lanlan_name;
+        else if (window._currentCatgirl) assistantName = window._currentCatgirl;
+        else if (window.currentCatgirl) assistantName = window.currentCatgirl;
+        assistantName = assistantName || 'Neko';
+        var avatarUrl = '';
+        if (window.appChatAvatar && typeof window.appChatAvatar.getCurrentAvatarDataUrl === 'function') {
+            avatarUrl = window.appChatAvatar.getCurrentAvatarDataUrl() || '';
+        }
+        var msg = {
+            id: idPrefix + Date.now() + '-' + Math.random().toString(36).slice(2, 8),
+            role: 'assistant',
+            author: assistantName,
+            time: timeStr,
+            createdAt: Date.now(),
+            turnId: turnId,
+            avatarLabel: assistantName.trim().slice(0, 1).toUpperCase(),
+            avatarUrl: avatarUrl || undefined,
+            blocks: [{ type: 'image', url: url, alt: alt }],
+            status: 'sent'
+        };
+        if (typeof mirrorAppend === 'function') {
+            mirrorAppend(host, msg);
+        } else {
+            // 兜底：music_ui.js 未就绪时退化为只在本窗口显示
+            host.appendMessage(msg);
+        }
+        console.log(logTag, logDetail);
+        return true;
+    }
+    mod._appendReactImageBubble = _appendReactImageBubble;
+
+    /**
+     * 构建旧 DOM 聊天窗的图片气泡脚手架（meme 与主动消息可见媒体共用）。
+     *
+     * 两处 DOM 兜底的气泡结构（message/gemini/attachment 容器、时间戳+🎀
+     * 头部、居中图片容器、currentTurnGeminiAttachments 登记、追加后滚动
+     * 到底）完全同构，抽在这里防止两份拷贝各自漂移（此前 proactive 侧
+     * 的兜底时间戳已漂移成 HH:MM）。返回 { bubble, img }，调用方在 img
+     * 上挂各自差异化的 click/error 行为（meme 的外链重试+失败贴纸 vs
+     * proactive 的降透明留痕）。容器存在但不可见（React 聊天窗为主显
+     * 示时旧容器 display:none）时大声警告——否则"渲染成功"日志会制造
+     * 假安全网。容器缺失返回 null，由调用方决定如何提示。
+     */
+    function _createLegacyImageBubble(chatContainer, imgSrc, altText, maxHeight) {
+        // 与上方 docstring 及调用方的 `if (!parts)` 守卫对齐：容器缺失时
+        // 返回 null（调用方决定如何提示），而不是无条件建气泡。
+        if (!chatContainer) {
+            return null;
+        }
+        var imgBubble = document.createElement('div');
+        imgBubble.classList.add('message', 'gemini', 'attachment');
+        imgBubble.style.padding = '12px';
+        imgBubble.style.textAlign = 'left';
+
+        // 复刻 createGeminiBubble 的头部（与 meme 兜底同一来源）
+        var now = new Date();
+        var timestamp = now.getHours().toString().padStart(2, '0') + ':' +
+            now.getMinutes().toString().padStart(2, '0') + ':' +
+            now.getSeconds().toString().padStart(2, '0');
+        var headerSpan = document.createElement('span');
+        headerSpan.textContent = "[" + (window.appChat ? window.appChat.getCurrentTimeString() : timestamp) + "] \uD83C\uDF80 ";
+        imgBubble.appendChild(headerSpan);
+
+        var imgOuter = document.createElement('div');
+        imgOuter.style.marginTop = '8px';
+        imgOuter.style.textAlign = 'center';
+
+        var img = document.createElement('img');
+        img.src = imgSrc;
+        img.alt = altText;
+        img.style.cssText = 'max-width: 100%; max-height: ' + maxHeight + 'px; border-radius: 8px; cursor: pointer; display: inline-block;';
+        img.addEventListener('load', function () {
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+        });
+
+        imgOuter.appendChild(img);
+        imgBubble.appendChild(imgOuter);
+        chatContainer.appendChild(imgBubble);
+
+        if (window.currentTurnGeminiAttachments) {
+            window.currentTurnGeminiAttachments.push(imgBubble);
+        }
+
+        chatContainer.scrollTop = chatContainer.scrollHeight;
+
+        if (!chatContainer.offsetParent) {
+            console.warn('[LegacyChat] 旧 DOM 聊天容器当前不可见（React 聊天窗为主显示），图片气泡将不可见:', imgSrc);
+        }
+
+        return { bubble: imgBubble, img: img };
+    }
+    mod._createLegacyImageBubble = _createLegacyImageBubble;
+
     function _showMemeBubbles(memeLinks, targetTurnId) {
         if (window.realisticGeminiCurrentTurnId !== targetTurnId) return;
         // [优化] 不再此处手动 addToHistory，因为正向的对话流(response_text) 已经由 finish_proactive_delivery 记录。
@@ -1724,50 +1849,19 @@
             ? String(targetTurnId) : undefined;
 
         // 优先通过 React 聊天窗口 API 显示表情包
+        // （PR #780 之后 proactive 只在 leader 触发，meme 只会暂存在 leader
+        // 的 _proactiveAttachmentBuffer 里；镜像广播由 _appendReactImageBubble
+        // 内部的 __nekoMirrorChatAppend 同步到所有窗口。）
         var host = window.reactChatWindowHost;
         if (host && typeof host.appendMessage === 'function') {
-            // PR #780 之后 proactive 只在 leader 触发，meme 只会暂存在 leader 的
-            // _proactiveAttachmentBuffer 里，flush 到 host.appendMessage 也只写
-            // 进 leader 的 React chat。用 music_ui 暴露的镜像 helper 同步到
-            // 所有窗口，保证 chat.html（follower）也能看到表情包气泡。
-            var mirrorAppend = window.__nekoMirrorChatAppend;
             for (var i = 0; i < memeLinks.length; i++) {
-                (function (meme) {
-                    if (!meme || !meme.safeUrl) return;
-                    var proxyUrl = '/api/meme/proxy-image?url=' + encodeURIComponent(meme.safeUrl);
-                    var now = new Date();
-                    var timeStr = now.getHours().toString().padStart(2, '0') + ':' +
-                        now.getMinutes().toString().padStart(2, '0');
-                    var assistantName = '';
-                    if (window.lanlan_config && window.lanlan_config.lanlan_name) assistantName = window.lanlan_config.lanlan_name;
-                    else if (window._currentCatgirl) assistantName = window._currentCatgirl;
-                    else if (window.currentCatgirl) assistantName = window.currentCatgirl;
-                    assistantName = assistantName || 'Neko';
-                    var avatarUrl = '';
-                    if (window.appChatAvatar && typeof window.appChatAvatar.getCurrentAvatarDataUrl === 'function') {
-                        avatarUrl = window.appChatAvatar.getCurrentAvatarDataUrl() || '';
-                    }
-                    var msg = {
-                        id: 'meme-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8),
-                        role: 'assistant',
-                        author: assistantName,
-                        time: timeStr,
-                        createdAt: Date.now(),
-                        turnId: memeTurnId,
-                        avatarLabel: assistantName.trim().slice(0, 1).toUpperCase(),
-                        avatarUrl: avatarUrl || undefined,
-                        blocks: [{ type: 'image', url: proxyUrl, alt: meme.title || 'Meme' }],
-                        status: 'sent'
-                    };
-                    if (typeof mirrorAppend === 'function') {
-                        // 本地 append + 广播镜像（music_ui.js 已装好监听器）
-                        mirrorAppend(host, msg);
-                    } else {
-                        // 兜底：music_ui.js 未就绪时退化为只在本窗口显示
-                        host.appendMessage(msg);
-                    }
-                    console.log('[Meme] 已展示图片气泡 (React):', meme.title);
-                })(memeLinks[i]);
+                var meme = memeLinks[i];
+                if (!meme || !meme.safeUrl) continue;
+                var proxyUrl = '/api/meme/proxy-image?url=' + encodeURIComponent(meme.safeUrl);
+                _appendReactImageBubble(
+                    proxyUrl, meme.title || 'Meme', memeTurnId, 'meme-',
+                    '[Meme] 已展示图片气泡 (React):', meme.title
+                );
             }
             return;
         }
@@ -1783,40 +1877,15 @@
             (function (meme) {
                 if (!meme || !meme.safeUrl) return;
 
-                // 创建包含时间戳、表情和图片的统一气泡
-                var imgBubble = document.createElement('div');
-                imgBubble.classList.add('message', 'gemini', 'attachment');
-                imgBubble.style.padding = '12px';
-                imgBubble.style.textAlign = 'left';
-
-                // 添加时间戳和 🎀 (复刻 createGeminiBubble 的头部)
-                var now = new Date();
-                var timestamp = now.getHours().toString().padStart(2, '0') + ':' +
-                    now.getMinutes().toString().padStart(2, '0') + ':' +
-                    now.getSeconds().toString().padStart(2, '0');
-
-                var headerSpan = document.createElement('span');
-                headerSpan.textContent = "[" + (window.appChat ? window.appChat.getCurrentTimeString() : timestamp) + "] \uD83C\uDF80 ";
-                imgBubble.appendChild(headerSpan);
-
-                // 添加图片容器（为了间距）
-                var imgOuter = document.createElement('div');
-                imgOuter.style.marginTop = '8px';
-                imgOuter.style.textAlign = 'center';
-
                 var proxyUrl = '/api/meme/proxy-image?url=' + encodeURIComponent(meme.safeUrl);
-                var img = document.createElement('img');
-                img.src = proxyUrl;
-                img.alt = meme.title || 'Meme';
-                img.style.cssText = 'max-width: 100%; max-height: 350px; border-radius: 8px; cursor: pointer; display: inline-block;';
+                var parts = _createLegacyImageBubble(chatContainer, proxyUrl, meme.title || 'Meme', 350);
+                if (!parts) return;
+                var img = parts.img;
 
                 // 【修复】添加重试机制，最多重试 2 次
                 var retryCount = 0;
                 var maxRetries = 2;
 
-                img.addEventListener('load', function () {
-                    chatContainer.scrollTop = chatContainer.scrollHeight;
-                });
                 img.addEventListener('click', function (e) {
                     if (img.dataset.failed === 'true') return;
                     e.preventDefault();
@@ -1856,20 +1925,106 @@
                     }
                 });
 
-                imgOuter.appendChild(img);
-                imgBubble.appendChild(imgOuter);
-                chatContainer.appendChild(imgBubble);
-
-                if (window.currentTurnGeminiAttachments) {
-                    window.currentTurnGeminiAttachments.push(imgBubble);
-                }
-
-                chatContainer.scrollTop = chatContainer.scrollHeight;
                 console.log('[Meme] 已展示图片气泡:', meme.title);
             })(memeLinks[i]);
         }
     }
     mod._showMemeBubbles = _showMemeBubbles;
+
+    /**
+     * 展示主动消息可见媒体图片气泡（宿主 /user_proactive_media 同源 URL，
+     * 不走 meme proxy）
+     *
+     * 与 _showMemeBubbles 同构的 React 渲染路径 + 旧 DOM 兜底（脚手架见
+     * _createLegacyImageBubble），差异点：
+     * - url 直用宿主同源静态 URL，但入口仍做 /user_proactive_media/ 前缀
+     *   白名单（渲染 sink 自我把关，与 app-websocket.js 分支同规则——
+     *   WS 内容不可信，非白名单 URL 不进 <img>.src / openExternal）；
+     * - id 前缀 proactive-media-（区别于 meme-，便于样式/调试定位）；
+     * - 不设数量上限（单次主动消息通常只带 1 张成图，后端已按事件封顶）。
+     */
+    function _showProactiveImageBubbles(imageUrls, targetTurnId) {
+        // 主动消息可见图片（visibility=["chat"]）是"这次事件的结果图"，
+        // 即时展示，不做 turn 绑定——帧的 turn_id 是宿主生成的一次性 id，
+        // 与后续回复文本不保证一致，此处若强制匹配会让图片气泡永不出现。
+        // turnId 仍随消息记录（React 消息内嵌），只是不阻塞展示。通路是
+        // 宿主框架级的，不绑定事件源。
+        if (!imageUrls || !Array.isArray(imageUrls) || imageUrls.length === 0) {
+            return;
+        }
+
+        var safeUrls = [];
+        for (var wi = 0; wi < imageUrls.length; wi++) {
+            var rawUrl = String(imageUrls[wi] || '');
+            // 与 app-websocket.js 的 WS 分支、notify.py 的
+            // _HOST_PROACTIVE_MEDIA_URL_RE 同规则：完整形状匹配，前缀匹配
+            // 挡不住 "../" 穿越串（new URL 规范化后可达任意同源路径，见下方
+            // DOM 兜底的 openExternal sink）。
+            if (/^\/user_proactive_media\/[0-9a-f]{32}\.(png|jpg|gif|webp)$/.test(rawUrl)) {
+                safeUrls.push(rawUrl);
+            } else {
+                console.warn('[ProactiveMedia] dropped non-host image url:', rawUrl.slice(0, 80));
+            }
+        }
+        if (safeUrls.length === 0) {
+            return;
+        }
+
+        var turnId = (targetTurnId !== undefined && targetTurnId !== null
+            && targetTurnId !== '' && targetTurnId !== 'fallback')
+            ? String(targetTurnId) : undefined;
+
+        var host = window.reactChatWindowHost;
+        if (host && typeof host.appendMessage === 'function') {
+            for (var i = 0; i < safeUrls.length; i++) {
+                _appendReactImageBubble(
+                    safeUrls[i], 'Image', turnId, 'proactive-media-',
+                    '[ProactiveMedia] 已展示主动消息图片气泡:', safeUrls[i]
+                );
+            }
+            return;
+        }
+
+        // 回退：旧 DOM 方式（与 _showMemeBubbles 兜底同构）
+        var chatContainer = S.dom.chatContainer || document.getElementById('chatContainer');
+        if (!chatContainer) {
+            console.warn('[ProactiveMedia] chatContainer not found, cannot show proactive image bubbles');
+            return;
+        }
+
+        for (var j = 0; j < safeUrls.length; j++) {
+            (function (imgUrl) {
+                var parts = _createLegacyImageBubble(chatContainer, imgUrl, 'Image', 420);
+                if (!parts) return;
+                var imgBubble = parts.bubble;
+                var img = parts.img;
+
+                // 同源静态文件理论不太会 404（清理任务删档除外）：失败时降透明
+                // 度留痕即可，不做 meme 那套外链重试。
+                img.addEventListener('error', function () {
+                    console.warn('[ProactiveMedia] image failed to load:', imgUrl);
+                    imgBubble.style.opacity = '0.5';
+                });
+                img.addEventListener('click', function (e) {
+                    e.preventDefault();
+                    // openExternal/window.open 都需要绝对 URL；宿主同源相对
+                    // 路径先展开。window.open 补 noopener,noreferrer（与 meme
+                    // 链接同一纪律）。
+                    var absUrl;
+                    try { absUrl = new URL(imgUrl, window.location.origin).href; }
+                    catch (err) { absUrl = imgUrl; }
+                    if (window.electronShell && typeof window.electronShell.openExternal === 'function') {
+                        window.electronShell.openExternal(absUrl);
+                    } else {
+                        window.open(absUrl, '_blank', 'noopener,noreferrer');
+                    }
+                });
+
+                console.log('[ProactiveMedia] 已展示主动消息图片气泡(dom):', imgUrl);
+            })(safeUrls[j]);
+        }
+    }
+    mod._showProactiveImageBubbles = _showProactiveImageBubbles;
 
     // ======================== backoff reset ========================
 

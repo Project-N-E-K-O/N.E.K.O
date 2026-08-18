@@ -17,12 +17,16 @@
 
 import asyncio
 import atexit
+import base64
 import logging
+import re
 import sys
+import threading
 import time
 import traceback
 from dataclasses import dataclass
 from typing import Any, Optional
+from uuid import uuid4
 
 from config import MONITOR_SERVER_PORT, USER_NOTIFICATION_ERROR_MAX_CHARS
 from main_logic import core, cross_server
@@ -35,6 +39,152 @@ from ._shared import runtime
 _IS_MAIN_PROCESS = runtime.is_main_process
 _config_manager = runtime.config_manager
 logger = runtime.logger
+
+# 主动消息可见媒体（visibility=["chat"]）落盘的 MIME→扩展名白名单。
+# 与 plugin server plugin_ui 的 _get_mime_type 图片表对齐（对齐的是当前
+# 唯一的事件生产者，通路本身不绑定事件源）；未知类型按魔数嗅探兜底。
+_PROACTIVE_MEDIA_MIME_EXT = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/gif": ".gif",
+    "image/webp": ".webp",
+}
+
+# Persist guardrails for the host-managed channel: a runaway event source must
+# not turn it into a disk hazard. Per-image cap ~10MB decoded (estimated from
+# b64 length × 3/4 — an O(1) check, no decode on the event loop); per-event
+# cap keeps a misbehaving source from spraying endless files per push.
+_PROACTIVE_MEDIA_MAX_IMAGE_BYTES = 10 * 1024 * 1024
+_PROACTIVE_MEDIA_MAX_PER_EVENT = 4
+
+# 写路径配额兜底：256MB 总量帽若只在启动 + 每日定时剪裁时执行，失控的
+# 事件源在两次剪裁之间仍可无上限写盘。每成功落盘一张图就累计字节数，
+# 累计超过该阈值时在写入线程（本就 off-loop）就地补一次剪裁。与每日
+# worker 并发跑同一剪裁是安全的：walk 阶段逐文件 continue，unlink 走
+# missing_ok=True（见 storage_roots.prune_proactive_media）。
+_PROACTIVE_MEDIA_WRITE_TRIP_BYTES = 64 * 1024 * 1024
+_proactive_media_unpruned_bytes = 0
+_proactive_media_prune_lock = threading.Lock()
+
+
+def _maybe_prune_proactive_media_blocking(nbytes: int) -> None:
+    """Write-path quota backstop: prune in-thread once accumulated writes trip.
+
+    Complements the startup/daily pruning scheduled in web_app so a runaway
+    producer cannot get unbounded disk between two scheduled runs. Runs
+    inside the persist worker thread, keeping the blocking directory walk
+    off the shared event loop.
+    """
+    global _proactive_media_unpruned_bytes
+    with _proactive_media_prune_lock:
+        _proactive_media_unpruned_bytes += nbytes
+        if _proactive_media_unpruned_bytes < _PROACTIVE_MEDIA_WRITE_TRIP_BYTES:
+            return
+        _proactive_media_unpruned_bytes = 0
+    try:
+        from utils.config_manager import get_config_manager
+
+        get_config_manager().prune_proactive_media()
+    except Exception as e:
+        logger.warning("[EventBus] opportunistic proactive media prune failed: %s", e)
+
+
+def _persist_proactive_media_image_blocking(b64: str, mime: str) -> Optional[str]:
+    """Blocking worker: decode + write the image, runs via asyncio.to_thread.
+
+    Same contract as :func:`_persist_proactive_media_image`; keep every
+    blocking operation (full b64decode, mkdir, write_bytes) inside this
+    worker so the shared event loop never touches disk directly.
+    """
+    # 契约：本函数对畸形输入只 warning + return None，绝不向上抛——异常
+    # 一旦穿透 to_thread，事件入口的外层 catch 会把整个事件（文本交付、
+    # LLM 回调、HUD 通知）一起丢弃，代价远超丢一张图。非字符串的
+    # mime/b64（如事件源给 JSON number）在这里归一/拒绝。
+    if not isinstance(mime, str):
+        mime = ""
+    if not isinstance(b64, str):
+        logger.warning(
+            "[EventBus] chat-visible media_part binary_base64 is not a string; not persisted"
+        )
+        return None
+    # b64decode 默认 validate=False 会静默丢弃字母表之外的字符：urlsafe
+    # 编码（-/_）的载荷会"成功"解出损坏字节并落成坏图片文件。先去掉
+    # MIME 折行空白，再用 validate=True 把它变成硬失败（走既有的
+    # "不可持久化 → None" 路径）。尺寸上限同样按去空白后的长度估算——
+    # 帽约束的是解码落盘的字节数，折行空白不该让近上限的合法图片被
+    # 误拒；'=' 填充字符也要从估算中扣掉，否则"恰好等于上限"的标准
+    # 编码图片会被多估 1-2 字节而误拒。
+    b64_clean = re.sub(r"\s+", "", b64)
+    _b64_pad = len(b64_clean) - len(b64_clean.rstrip("="))
+    estimated_bytes = len(b64_clean) * 3 // 4 - _b64_pad
+    if estimated_bytes > _PROACTIVE_MEDIA_MAX_IMAGE_BYTES:
+        logger.warning(
+            "[EventBus] chat-visible media_part dropped: ~%.1fMB exceeds the %dMB persist cap",
+            estimated_bytes / (1024 * 1024),
+            _PROACTIVE_MEDIA_MAX_IMAGE_BYTES // (1024 * 1024),
+        )
+        return None
+    media_type = (mime or "").split(";")[0].strip().lower()
+    ext = _PROACTIVE_MEDIA_MIME_EXT.get(media_type)
+    if ext is None:
+        # mime 缺失/未知：按魔数嗅探常见图片格式，仍不认识则放弃（不落
+        # .bin —— 聊天窗 <img> 加载无意义还占磁盘）。
+        try:
+            head = base64.b64decode(b64_clean[:24], validate=True)
+        except Exception:
+            head = b""
+        if head.startswith(b"\x89PNG"):
+            ext = ".png"
+        elif head.startswith(b"\xff\xd8"):
+            ext = ".jpg"
+        elif head.startswith(b"GIF8"):
+            ext = ".gif"
+        elif head.startswith(b"RIFF") and head[8:12] == b"WEBP":
+            ext = ".webp"
+        else:
+            logger.warning(
+                "[EventBus] chat-visible media_part mime=%s unrecognized; not persisted",
+                mime,
+            )
+            return None
+    try:
+        from utils.config_manager import get_config_manager
+
+        media_dir = get_config_manager().proactive_media_dir
+        media_dir.mkdir(parents=True, exist_ok=True)
+        fname = f"{uuid4().hex}{ext}"
+        data = base64.b64decode(b64_clean, validate=True)
+        (media_dir / fname).write_bytes(data)
+        _maybe_prune_proactive_media_blocking(len(data))
+        return f"/user_proactive_media/{fname}"
+    except Exception as e:
+        logger.warning("[EventBus] persist proactive media failed: %s", e)
+        return None
+
+
+async def _persist_proactive_media_image(b64: str, mime: str) -> Optional[str]:
+    """Persist an event-carried image media_part into the host media dir.
+
+    Host-framework proactive media channel (the visibility=["chat"] half of
+    the v2 contract), not bound to any event source — the plugin EventBus
+    bridge is merely the current producer; any future source entering
+    ``_handle_agent_event`` gains the same capability. Follows the official
+    media-dir conventions (peer of live2d/vrm/pngtuber + /user_* mounts):
+    - filenames are uuid4 hex + whitelisted extension only — no
+      source-controlled path components, so traversal/overwrite is
+      impossible;
+    - purely additive: on failure log a warning and return None, never
+      disturb the existing AI-vision injection (stream_image) or the text
+      delivery path;
+    - returns a same-origin relative URL (/user_proactive_media/xxx.jpg)
+      reachable from both the desktop webview and remote browsers.
+
+    The blocking worker runs off-loop via ``asyncio.to_thread`` (single
+    process + zero event-loop blocking contract).
+    """
+    return await asyncio.to_thread(
+        _persist_proactive_media_image_blocking, b64, mime
+    )
 
 
 def _resolve_callback_origin(event_type: str, event: dict, channel: str) -> str:
@@ -575,7 +725,24 @@ async def _handle_agent_event(event: dict):
             # by the manager — the eventual proactive response would then lack
             # its matching visual context.
             deferred_proactive_images: list[str] = []
-            if media_parts and ai_behavior_v2 in ("respond", "read"):
+            # v2 契约 visibility=["chat"] 的补齐：事件携带的图片除进 AI 视觉
+            # 上下文外，额外落盘宿主媒体目录，并在事件入口【直接】发 WS
+            # proactive_media 帧由前端渲染成图片气泡（此前 "chat" 对 media
+            # 仅是文档承诺，无渲染通路）。展示面投递刻意与 LLM 投递解耦
+            # ——图片是事件自身的可见结果，与 silent 模式仍发 HUD 通知、
+            # blind 文本走 passthrough_to_chat_bubble 同属一类：不挂在
+            # callback/交付点上，voice/passive/silent/direct_reply/image-only/
+            # blind 全部路径都能看到图片，且帧只发一次、不随 callback 重试
+            # 重发（此前由 proactive 交付点代发，五条路径静默丢图 + requeue
+            # 双发）。通路不绑定事件源（当前生产者是插件 EventBus 桥）。
+            _vis_raw = event.get("visibility")
+            _vis_present = isinstance(_vis_raw, list)
+            _vis = _vis_raw if _vis_present else []
+            _chat_visible = "chat" in _vis
+            _inject_media_to_llm = ai_behavior_v2 in ("respond", "read")
+            proactive_media_urls: list[str] = []
+            _proactive_media_persist_tried = 0
+            if media_parts:
                 sess = getattr(mgr, "session", None)
                 stream_image = getattr(sess, "stream_image", None) if sess else None
                 for mp in media_parts:
@@ -597,34 +764,62 @@ async def _handle_agent_event(event: dict):
                         )
                         continue
                     if isinstance(b64, str) and b64:
-                        if ai_behavior_v2 == "respond" and text:
-                            # Defer: stream when the manager releases this cue so
-                            # the image shares the proactive response's context.
-                            # (Only when there's text — the callback that carries
-                            # these images is built in the ``if text:`` block.)
-                            deferred_proactive_images.append(b64)
-                            continue
-                        # read (passive), OR image-only respond with no text to
-                        # carry it through the pacing manager: inject now so it
-                        # isn't lost (image-only respond has no text cue to drive
-                        # a proactive turn anyway).
-                        if stream_image is None:
+                        if _chat_visible:
+                            # 按尝试计数封顶：一个全部失败的恶意事件源同样
+                            # 不能刷无限次 to_thread + warning（只数成功会被
+                            # "永远失败"的流绕过）。
+                            _proactive_media_persist_tried += 1
+                            if (
+                                _proactive_media_persist_tried
+                                <= _PROACTIVE_MEDIA_MAX_PER_EVENT
+                            ):
+                                _media_url = await _persist_proactive_media_image(
+                                    b64, mime
+                                )
+                                if _media_url:
+                                    proactive_media_urls.append(_media_url)
+                            else:
+                                logger.warning(
+                                    "[EventBus] chat-visible media_part dropped: per-event persist cap (%d) reached",
+                                    _PROACTIVE_MEDIA_MAX_PER_EVENT,
+                                )
+                        if _inject_media_to_llm:
+                            if ai_behavior_v2 == "respond" and text:
+                                # Defer: stream when the manager releases this cue so
+                                # the image shares the proactive response's context.
+                                # (Only when there's text — the callback that carries
+                                # these images is built in the ``if text:`` block.)
+                                deferred_proactive_images.append(b64)
+                                continue
+                            # read (passive), OR image-only respond with no text to
+                            # carry it through the pacing manager: inject now so it
+                            # isn't lost (image-only respond has no text cue to drive
+                            # a proactive turn anyway).
+                            if stream_image is None:
+                                logger.debug(
+                                    "[EventBus] image media_part dropped: session=%s has no stream_image",
+                                    type(sess).__name__ if sess else "None",
+                                )
+                                continue
+                            # ``stream_image`` takes a base64 STRING (not bytes); pass through
+                            try:
+                                await stream_image(b64)
+                                logger.debug(
+                                    "[EventBus] image media_part injected (base64 len=%d, mime=%s)",
+                                    len(b64),
+                                    mime,
+                                )
+                            except Exception as e:
+                                logger.warning(
+                                    "[EventBus] image media_part stream_image failed: %s", e
+                                )
+                        elif not _chat_visible:
+                            # 既不进 LLM（blind 等不注入）又无可渲染 sink
+                            # （visibility 不含 "chat"）：按契约丢弃，留一条
+                            # debug 便于插件作者排查。
                             logger.debug(
-                                "[EventBus] image media_part dropped: session=%s has no stream_image",
-                                type(sess).__name__ if sess else "None",
-                            )
-                            continue
-                        # ``stream_image`` takes a base64 STRING (not bytes); pass through
-                        try:
-                            await stream_image(b64)
-                            logger.debug(
-                                "[EventBus] image media_part injected (base64 len=%d, mime=%s)",
-                                len(b64),
-                                mime,
-                            )
-                        except Exception as e:
-                            logger.warning(
-                                "[EventBus] image media_part stream_image failed: %s", e
+                                "[EventBus] media_part dropped: ai_behavior=%r skips LLM injection and visibility lacks \"chat\"",
+                                ai_behavior_v2,
                             )
                     elif isinstance(url, str) and url:
                         # TODO(v0.9): fetch URL → bytes → base64 → stream_image.
@@ -636,6 +831,36 @@ async def _handle_agent_event(event: dict):
                             url[:80],
                         )
                     # else: malformed part, silently skip
+
+            # 展示面直发：图片属于事件自身的可见结果，入口即送达（时机与
+            # silent 模式的 HUD 通知一致），不等待也不依赖 LLM 交付。用
+            # fresh turn_id——不会与回复文本的 turn 冲突，也不会撞上按
+            # result.turn_id 暂存的 meme/link 附件 buffer。
+            if proactive_media_urls:
+                _media_turn_id = uuid4().hex
+                _media_frame_sent = False
+                if hasattr(mgr, "send_proactive_media"):
+                    try:
+                        _media_frame_sent = bool(
+                            await mgr.send_proactive_media(
+                                turn_id=_media_turn_id,
+                                images=proactive_media_urls,
+                            )
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "[EventBus] send_proactive_media failed: %s", e
+                        )
+                else:
+                    logger.warning(
+                        "[EventBus] session manager lacks send_proactive_media; %d chat-visible image(s) persisted but undelivered",
+                        len(proactive_media_urls),
+                    )
+                if not _media_frame_sent:
+                    logger.warning(
+                        "[EventBus] proactive media frame not delivered (display websocket disconnected?); %d image(s) persisted but not rendered",
+                        len(proactive_media_urls),
+                    )
 
             if text:
                 if event.get("direct_reply"):
@@ -815,9 +1040,6 @@ async def _handle_agent_event(event: dict):
                 # because non-blind ai_behavior already enqueues the LLM
                 # callback above and the AI's own response is what the
                 # user should see in the chat bubble.
-                _vis_raw = event.get("visibility")
-                _vis_present = isinstance(_vis_raw, list)
-                _vis = _vis_raw if _vis_present else []
                 _ai_behavior = (event.get("ai_behavior") or "").strip()
                 if (
                     "chat" in _vis

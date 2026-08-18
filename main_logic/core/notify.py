@@ -71,7 +71,7 @@ from config.prompts.prompts_sys import (
     AGENT_TASKS_NOTICE,
 )
 from utils.language_utils import normalize_language_code, is_supported_language_code
-from ._shared import logger
+from ._shared import logger, HOST_PROACTIVE_MEDIA_URL_RE
 
 
 class NotifyMixin:
@@ -463,6 +463,22 @@ class NotifyMixin:
         except Exception as e:
             logger.error(f"💥 WS Send Status Error: {e}")
     
+    def _ws_connected(self) -> bool:
+        """Return whether the display-plane websocket is open for sending.
+
+        ``self.websocket`` is reassigned to every newly accepted socket — it
+        always means "the newest window for this character" (the display
+        plane, see the NotifyMixin note above). Shared by the pure frontend
+        display senders (topic hint / proactive media) instead of yet
+        another verbatim copy of the inline guard (neko-guide dedup rule).
+        """
+        ws = self.websocket
+        return bool(
+            ws
+            and hasattr(ws, "client_state")
+            and ws.client_state == ws.client_state.CONNECTED
+        )
+
     async def send_topic_hint(self, *, turn_id: Optional[str] = None) -> bool:
         """Show a frontend-only teaser bubble right before she opens a deep-topic hook.
 
@@ -472,11 +488,7 @@ class NotifyMixin:
         same isolation as :meth:`passthrough_to_chat_bubble`. The frontend
         renders the localized copy itself; we only hand it the character name.
         """
-        if not (
-            self.websocket
-            and hasattr(self.websocket, 'client_state')
-            and self.websocket.client_state == self.websocket.client_state.CONNECTED
-        ):
+        if not self._ws_connected():
             return False
         try:
             await self.websocket.send_json({
@@ -491,6 +503,72 @@ class NotifyMixin:
             logger.warning("[%s] send_topic_hint failed: %s", self.lanlan_name, e)
             return False
 
+    async def send_proactive_media(
+        self, *, turn_id: str, images: list
+    ) -> bool:
+        """Announce chat-visible proactive media images as a display-plane frame.
+
+        Host-framework delivery frame for chat-visible proactive media (the
+        visibility=["chat"] half of the v2 contract), not bound to any event
+        source — the plugin EventBus bridge is merely the current producer.
+        Same isolation contract as :meth:`send_topic_hint`: a pure frontend
+        display signal that never enters ``sync_message_queue`` / chat
+        memory.
+
+        Sent at event INGESTION (character_runtime._handle_agent_event),
+        deliberately decoupled from prompt_ephemeral and every LLM delivery
+        path: the image is the event's own visible result, so it renders on
+        all delivery modes (respond/read/blind × proactive/passive/silent,
+        voice or text session) exactly once — no requeue re-send. The
+        frontend buffers by ``turn_id`` (a fresh host-generated id) then
+        renders immediately; it must not wait for a text turn match (see
+        app-websocket.js).
+
+        ``images`` must be host-generated media URLs (the exact shape
+        /user_proactive_media/<32-hex>.<png|jpg|gif|webp>, matched by full
+        regex — a mere prefix match would let "../" traversal strings
+        through, persisted by character_runtime); anything else is dropped
+        with a warning so a buggy caller cannot smuggle arbitrary schemes
+        into frontend ``img.src`` / ``openExternal`` sinks (WS content is
+        not trusted).
+
+        Display-plane limitation, inherited from ``self.websocket``: the
+        frame reaches the NEWEST connected window; same-partition peers get
+        it via the frontend chat mirror broadcast, isolated Electron
+        partitions do not (same constraint as every other send_* here).
+        Failure only returns False — the image bubble is an enhancement
+        channel and must never interrupt the main delivery line.
+        """
+        safe_images = [
+            u
+            for u in images
+            if isinstance(u, str) and HOST_PROACTIVE_MEDIA_URL_RE.match(u)
+        ]
+        if len(safe_images) != len(images):
+            for u in images:
+                if not (isinstance(u, str) and HOST_PROACTIVE_MEDIA_URL_RE.match(u)):
+                    logger.warning(
+                        "[%s] send_proactive_media dropped non-host image url: %r",
+                        self.lanlan_name,
+                        str(u)[:80],
+                    )
+        if not safe_images:
+            return False
+        if not self._ws_connected():
+            return False
+        try:
+            await self.websocket.send_json({
+                "type": "proactive_media",
+                "turn_id": str(turn_id or ''),
+                "images": safe_images,
+            })
+            return True
+        except WebSocketDisconnect:
+            return False
+        except Exception as e:
+            logger.warning("[%s] send_proactive_media failed: %s", self.lanlan_name, e)
+            return False
+
     async def send_cancel_topic_hint(self, *, turn_id: Optional[str] = None) -> bool:
         """Retract a previously sent topic-hint teaser (matched by ``turn_id``).
 
@@ -498,11 +576,7 @@ class NotifyMixin:
         removes the dangling teaser instead of leaving an orphan bubble. Like
         :meth:`send_topic_hint`, this stays off ``sync_message_queue`` entirely.
         """
-        if not (
-            self.websocket
-            and hasattr(self.websocket, 'client_state')
-            and self.websocket.client_state == self.websocket.client_state.CONNECTED
-        ):
+        if not self._ws_connected():
             return False
         try:
             await self.websocket.send_json({

@@ -2368,6 +2368,78 @@
                         }
                     }
 
+                // -------- proactive_media --------
+                // 宿主托管的主动消息可见媒体（/user_proactive_media/...，
+                // agent 事件携带的 visibility=["chat"] 图片落盘而来，通路
+                // 不绑定事件源）。帧由后端在事件入口直发（不与 LLM 投递
+                // 耦合），turn_id 是宿主生成的一次性 id，不保证与后续回复
+                // 文本的 turn_id 一致——按 turn_id 暂存进 attachment buffer
+                // 后立即 flush 渲染，等待文本匹配会让图片气泡永不出现；
+                // _flushProactiveAttachments 幂等（flush 后清 buffer）。
+                } else if (response.type === 'proactive_media') {
+                    // turn_id 在这里只是 attachment buffer 的 key（实现细节），
+                    // 不是渲染前置条件——渲染层对空 turnId 照常处理。协议允许
+                    // 空串（notify.py: str(turn_id or '')），缺失时兜一个本地
+                    // 一次性 key，别让整帧图片静默消失。
+                    var mkLocalMediaKey = function () {
+                        return 'proactive-media-local-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+                    };
+                    var mediaTurnKey = response.turn_id || mkLocalMediaKey();
+                    if (!response.turn_id) {
+                        console.warn('[ProactiveMedia] frame carried no turn_id; using local buffer key', mediaTurnKey);
+                    }
+                    // 原型链键防护：WS 帧不可信，turn_id='__proto__' 时
+                    // buffer[key] 会命中 Object.prototype（真值）→ 跳过初始化
+                    // 分支、把 images 写到继承对象上，污染所有普通对象。
+                    // 这类键一律换成本地一次性 key。
+                    if (mediaTurnKey === '__proto__' || mediaTurnKey === 'constructor' || mediaTurnKey === 'prototype') {
+                        console.warn('[ProactiveMedia] unsafe turn_id rejected; using local buffer key');
+                        mediaTurnKey = mkLocalMediaKey();
+                    }
+                    if (Array.isArray(response.images) && response.images.length > 0) {
+                        // URL 白名单：只接受宿主生成的媒体 URL 完整形状
+                        // （/user_proactive_media/{32位hex}.{png|jpg|gif|webp}，
+                        // 与 notify.py 的 _HOST_PROACTIVE_MEDIA_URL_RE 同规则）。
+                        // 完整匹配而非前缀：前缀挡不住 "../" 穿越串，规范化后
+                        // 可达任意同源路径。WS 帧内容不可信（劣化/恶意事件源、
+                        // 明文 ws 上的中间人篡改），非白名单 URL 不允许进入
+                        // <img>.src / openExternal 这类 sink（与 meme 链接的
+                        // http(s) 校验同一纪律，见 _processProactiveLinks）。
+                        var safeMediaImages = [];
+                        for (var pmi = 0; pmi < response.images.length; pmi++) {
+                            var mediaUrl = String(response.images[pmi] || '');
+                            if (/^\/user_proactive_media\/[0-9a-f]{32}\.(png|jpg|gif|webp)$/.test(mediaUrl)) {
+                                safeMediaImages.push(mediaUrl);
+                            } else {
+                                console.warn('[ProactiveMedia] dropped non-host image url:', mediaUrl.slice(0, 80));
+                            }
+                        }
+                        if (safeMediaImages.length > 0) {
+                            if (!window._proactiveAttachmentBuffer) {
+                                window._proactiveAttachmentBuffer = {};
+                            }
+                            if (!window._proactiveAttachmentBuffer[mediaTurnKey]) {
+                                window._proactiveAttachmentBuffer[mediaTurnKey] = { memes: [], links: [] };
+                            }
+                            var mediaBuf = window._proactiveAttachmentBuffer[mediaTurnKey];
+                            if (!Array.isArray(mediaBuf.images)) {
+                                mediaBuf.images = [];
+                            }
+                            for (var psi = 0; psi < safeMediaImages.length; psi++) {
+                                mediaBuf.images.push(safeMediaImages[psi]);
+                            }
+                            if (window.appProactive && typeof window.appProactive._flushProactiveAttachments === 'function') {
+                                window.appProactive._flushProactiveAttachments(mediaTurnKey);
+                            } else {
+                                // appProactive 未就绪：帧不会重发（turn_id 是一次性
+                                // id，没有后续文本会再带它），留着 entry 只会永久泄
+                                // 漏 buffer——清掉并留痕，避免静默丢图。
+                                console.warn('[ProactiveMedia] appProactive not ready; dropping buffered images for turn', mediaTurnKey);
+                                delete window._proactiveAttachmentBuffer[mediaTurnKey];
+                            }
+                        }
+                    }
+
                 // -------- response_discarded --------
                 } else if (response.type === 'response_discarded') {
                     clearPendingUserActivityCancel();
