@@ -5143,6 +5143,20 @@ def test_additional_preservation_and_recovery_boundaries():
     ) is False
 
 
+def test_update_and_example_preservation_boundaries():
+    import main_routers.card_assist_router as router
+
+    assert router._chat_preserved_target_keys(
+        '重写所有字段，除了 Age 以外，但更新 AgeGroup', ['Age']
+    ) == {'Age'}
+    assert router._chat_text_requests_full_rewrite(
+        'For example, rewrite all fields if possible'
+    ) is False
+    assert router._chat_preserved_target_keys(
+        'Rewrite all fields; preserve avatar but not name', ['avatar', 'name']
+    ) == {'avatar'}
+
+
 @pytest.mark.parametrize(
     'text',
     [

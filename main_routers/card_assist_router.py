@@ -2368,6 +2368,8 @@ def _chat_text_requests_full_rewrite_from_scoped_segments(text: str) -> bool:
     """
     if not text:
         return False
+    if re.match(r"^\s*(?i:(?:for\s+example|as\s+an\s+example|for\s+instance)\b)", text):
+        return False
     masked = _chat_mask_quoted_spans(text)
     meta_request = _CHAT_SCOPED_META_REQUEST_RE.search(masked)
     if meta_request:
@@ -2704,6 +2706,7 @@ def _chat_instruction_explicitly_removes_field(
     if active_start:
         instruction = instruction[active_start:]
     key = re.escape(field_key)
+    key_tail = r"(?![A-Za-z0-9_])" if _CHAT_IDENTIFIER_KEY_RE.search(field_key) else ""
     removal_re = re.compile(
         rf"(?:删除|刪除|移除)\s*{key}(?![A-Za-z0-9_])"
         rf"|(?:把|将|將)\s*{key}\s*(?:删除|刪除|移除)"
@@ -3086,12 +3089,14 @@ def _chat_instruction_explicitly_updates_field(
     if not instruction or not field_key:
         return False
     key = re.escape(field_key)
+    key_tail = r"(?![A-Za-z0-9_])" if _CHAT_IDENTIFIER_KEY_RE.search(field_key) else ""
     update_re = re.compile(
         rf"(?:(?i:\b(?:but|however)\s+"
         rf"(?:change|update|edit|modify|rewrite|revise|regenerate|redo|refresh)\s+"
         rf"{key}(?![A-Za-z0-9_]))"
         rf"|(?:但|但是|可是|不过|不過|然后|然後)\s*"
-        rf"(?:改|修改|更改|重写|重寫|改写|改寫|调整|調整)\s*{key})"
+        rf"(?:改|修改|更改|重写|重寫|改写|改寫|调整|調整)\s*{key}{key_tail})",
+        re.IGNORECASE,
     )
     active_start = _chat_active_request_start(instruction)
     for match in update_re.finditer(instruction):
@@ -3356,6 +3361,10 @@ def _chat_preserved_target_keys(
         key
         for key, start, end in candidates
         if key in preserved
+        and not re.search(
+            rf"(?i:\bbut\s+not\s+{re.escape(key)}(?![A-Za-z0-9_]))",
+            instruction or "",
+        )
         and not _chat_instruction_explicitly_updates_field(
             instruction or "", key, after_offset=end
         )
