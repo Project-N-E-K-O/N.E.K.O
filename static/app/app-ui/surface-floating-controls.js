@@ -278,7 +278,10 @@
 
         function getSocialThemeBridgeState() {
             if (!window.__nekoSocialThemeBridgeState || typeof window.__nekoSocialThemeBridgeState !== 'object') {
-                window.__nekoSocialThemeBridgeState = { targetWindow: null, targetOrigin: '' };
+                window.__nekoSocialThemeBridgeState = { targets: [] };
+            }
+            if (!Array.isArray(window.__nekoSocialThemeBridgeState.targets)) {
+                window.__nekoSocialThemeBridgeState.targets = [];
             }
             return window.__nekoSocialThemeBridgeState;
         }
@@ -289,43 +292,57 @@
                 const parsed = new URL(String(targetUrl), window.location.href);
                 if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return;
                 const state = getSocialThemeBridgeState();
-                state.targetWindow = targetWindow;
-                state.targetOrigin = parsed.origin;
+                const existing = state.targets.find((target) => target.targetWindow === targetWindow);
+                if (existing) {
+                    existing.targetOrigin = parsed.origin;
+                } else {
+                    state.targets.push({ targetWindow, targetOrigin: parsed.origin });
+                }
             } catch (_) { /* invalid target URL */ }
+        }
+
+        function postSocialTheme(target, darkMode) {
+            target.targetWindow.postMessage({
+                source: 'neko-desktop',
+                type: 'theme-change',
+                theme: darkMode ? 'dark' : 'light'
+            }, target.targetOrigin);
         }
 
         function publishSocialTheme(darkMode) {
             const state = getSocialThemeBridgeState();
-            if (!state.targetWindow || !state.targetOrigin) return;
-            try {
-                if (state.targetWindow.closed) {
-                    state.targetWindow = null;
-                    state.targetOrigin = '';
-                    return;
+            state.targets = state.targets.filter((target) => {
+                try {
+                    if (target.targetWindow.closed) return false;
+                    postSocialTheme(target, darkMode);
+                    return true;
+                } catch (_) {
+                    return false;
                 }
-                state.targetWindow.postMessage({
-                    source: 'neko-desktop',
-                    type: 'theme-change',
-                    theme: darkMode ? 'dark' : 'light'
-                }, state.targetOrigin);
-            } catch (_) { /* community window may be navigating or closing */ }
+            });
         }
 
         if (!window.__nekoSocialThemeBridgeInstalled) {
             window.__nekoSocialThemeBridgeInstalled = true;
-            window.addEventListener('neko-theme-changed', (event) => {
-                const darkMode = event.detail && typeof event.detail.darkMode === 'boolean'
-                    ? event.detail.darkMode
-                    : isResolvedDarkTheme();
-                publishSocialTheme(darkMode);
+            const themeObserver = new MutationObserver(() => {
+                publishSocialTheme(isResolvedDarkTheme());
             });
+            themeObserver.observe(document.documentElement, {
+                attributes: true,
+                attributeFilter: ['data-theme']
+            });
+            window.__nekoSocialThemeObserver = themeObserver;
             window.addEventListener('message', (event) => {
                 const state = getSocialThemeBridgeState();
-                if (!state.targetWindow || !state.targetOrigin) return;
-                if (event.source !== state.targetWindow || event.origin !== state.targetOrigin) return;
+                const target = state.targets.find((candidate) => (
+                    event.source === candidate.targetWindow && event.origin === candidate.targetOrigin
+                ));
+                if (!target) return;
                 const data = event.data;
                 if (!data || data.source !== 'neko-community' || data.type !== 'theme-ready') return;
-                publishSocialTheme(isResolvedDarkTheme());
+                try {
+                    postSocialTheme(target, isResolvedDarkTheme());
+                } catch (_) { /* requesting community window may have closed */ }
             });
         }
 
@@ -360,21 +377,28 @@
                     return false;
                 }
                 const currentPopup = popupRef;
+                let navigationTarget = targetUrl;
+                let keepThemeReplyChannel = false;
                 try {
                     const parsedTarget = new URL(String(targetUrl), window.location.href);
                     if (parsedTarget.searchParams.get('neko_source_origin') === window.location.origin) {
+                        attachResolvedTheme(parsedTarget);
+                        navigationTarget = parsedTarget.toString();
                         registerSocialThemeTarget(currentPopup, parsedTarget);
+                        keepThemeReplyChannel = true;
                     }
                 } catch (_) { /* non-community navigation */ }
-                try { currentPopup.opener = null; } catch (_) { /* ignore */ }
+                if (!keepThemeReplyChannel) {
+                    try { currentPopup.opener = null; } catch (_) { /* ignore */ }
+                }
                 let navigated = true;
                 try {
-                    currentPopup.location.replace(targetUrl);
+                    currentPopup.location.replace(navigationTarget);
                 } catch (_) {
                     // Once OAuth has moved the popup cross-origin, Location methods may
                     // be inaccessible even though assigning a new URL is still allowed.
                     try {
-                        currentPopup.location = targetUrl;
+                        currentPopup.location = navigationTarget;
                     } catch (_) {
                         navigated = false;
                     }
@@ -425,15 +449,18 @@
                 // frameName=neko-social：NEKO-PC setWindowOpenHandler 靠名字识别社区窗，
                 // 强制 frame/thickFrame + 原生最小/最大/关（尤其 Windows 右上角）。
                 // features 为兜底提示；最终以主进程 overrideBrowserWindowOptions 为准。
+                const resolvedTargetUrl = attachResolvedTheme(
+                    new URL(String(targetUrl), window.location.href)
+                );
                 const socialWin = window.open(
-                    String(targetUrl),
+                    resolvedTargetUrl.toString(),
                     'neko-social',
                     'popup=yes,width=1200,height=800,resizable=yes'
                 );
                 if (!socialWin) {
                     return false;
                 }
-                registerSocialThemeTarget(socialWin, targetUrl);
+                registerSocialThemeTarget(socialWin, resolvedTargetUrl);
                 try { socialWin.focus && socialWin.focus(); } catch (_) { /* ignore */ }
                 return true;
             };

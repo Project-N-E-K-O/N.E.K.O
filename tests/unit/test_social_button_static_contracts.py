@@ -70,7 +70,7 @@ def test_social_open_request_is_deduped_before_fetching_config():
     helper_end = listener.index("const fetchNativeSyncTicket = async () => {", helper_start)
     electron_helper = listener[helper_start:helper_end]
     assert re.search(
-        r"window\.open\(\s*String\(targetUrl\),\s*"
+        r"window\.open\(\s*resolvedTargetUrl\.toString\(\),\s*"
         r"'neko-social',\s*"
         r"'popup=yes,width=1200,height=800,resizable=yes'\s*\)",
         electron_helper,
@@ -98,14 +98,24 @@ def test_social_open_request_is_deduped_before_fetching_config():
     assert "popupRoot.style.colorScheme = popupDark ? 'dark' : 'light'" in listener
     assert "popupRoot.style.backgroundColor = popupDark ? '#070c13' : '#edf8ff'" in listener
     assert "function registerSocialThemeTarget(targetWindow, targetUrl)" in source
-    assert "window.addEventListener('neko-theme-changed'" in source
-    assert "state.targetWindow.postMessage({" in source
+    assert "const themeObserver = new MutationObserver" in source
+    assert "attributeFilter: ['data-theme']" in source
+    assert "target.targetWindow.postMessage({" in source
     assert "source: 'neko-desktop'" in source
     assert "type: 'theme-change'" in source
-    assert "event.source !== state.targetWindow || event.origin !== state.targetOrigin" in source
+    assert "state.targets.find((candidate)" in source
+    assert "event.source === candidate.targetWindow && event.origin === candidate.targetOrigin" in source
     assert "data.source !== 'neko-community' || data.type !== 'theme-ready'" in source
-    assert "publishSocialTheme(isResolvedDarkTheme())" in source
-    assert "registerSocialThemeTarget(socialWin, targetUrl)" in listener
+    assert "postSocialTheme(target, isResolvedDarkTheme())" in source
+    assert "state.targets.push({ targetWindow, targetOrigin: parsed.origin })" in source
+    assert "state.targets = state.targets.filter" in source
+    assert "let keepThemeReplyChannel = false" in listener
+    assert "if (!keepThemeReplyChannel)" in listener
+    assert "attachResolvedTheme(parsedTarget)" in listener
+    assert "currentPopup.location.replace(navigationTarget)" in listener
+    assert "const resolvedTargetUrl = attachResolvedTheme(" in listener
+    assert "resolvedTargetUrl.toString()" in listener
+    assert "registerSocialThemeTarget(socialWin, resolvedTargetUrl)" in listener
     assert "social_base_url" in listener
     assert "/feed" in listener
     # Feed first; Desktop OAuth only after open when not logged in.
@@ -180,7 +190,7 @@ def test_social_browser_fallback_preopens_popup_before_async_fetches():
     assert "const navigateBrowserPopup = (targetUrl, options = {}) => {" in listener
     assert listener.count("window.open('about:blank', '_blank')") == 1
     assert "currentPopup.opener = null;" in listener
-    assert "currentPopup.location.replace(targetUrl);" in listener
+    assert "currentPopup.location.replace(navigationTarget);" in listener
     assert "if (navigated && !options.keepReference)" in listener
     assert "const waitForOAuthCompletion = async (timeoutMs, requirePopup) => {" in listener
     assert "if (requirePopup)" in listener
