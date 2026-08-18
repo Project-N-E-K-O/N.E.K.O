@@ -3783,6 +3783,7 @@
             var isCachedStream = false;
             var captureType = null;
             var screenshotCaptureSessionActive = false;
+            var rememberedWindowCapture = { required: false, allowed: true };
 
             if (!U.isMobile()) {
                 screenshotCaptureSessionActive = true;
@@ -3814,6 +3815,15 @@
                         }
                     }
                 } else {
+                    if (typeof window.prepareRememberedWindowCapture === 'function') {
+                        rememberedWindowCapture = await window.prepareRememberedWindowCapture();
+                        if (rememberedWindowCapture && rememberedWindowCapture.required
+                            && !rememberedWindowCapture.allowed) {
+                            console.warn('[截图] 记忆窗口无法唯一确认，停止本次截图');
+                            return null;
+                        }
+                    }
+
                     // Electron 桌面端优先交给 PC 壳的独立截图编辑窗口。它覆盖当前显示器，
                     // 不改变聊天框/Pet 窗口尺寸，也不会把冻结画面塞进聊天窗口内裁剪。
                     var desktopRegionResult = await captureDesktopRegionDirectly();
@@ -3910,7 +3920,7 @@
                         }
                     }
 
-                    if (!dataUrl) {
+                    if (!dataUrl && !(rememberedWindowCapture && rememberedWindowCapture.required)) {
                         try {
                             var backendResult = await window.fetchBackendScreenshot();
                             if (backendResult && backendResult.dataUrl) {

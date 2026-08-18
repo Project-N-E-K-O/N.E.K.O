@@ -34,6 +34,7 @@ from tests.node_harness import run_node_stdin
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 APP_SCREEN_PATH = PROJECT_ROOT / "static" / "app" / "app-screen.js"
 APP_PROACTIVE_PATH = PROJECT_ROOT / "static" / "app" / "app-proactive.js"
+APP_BUTTONS_PATH = PROJECT_ROOT / "static" / "app" / "app-buttons.js"
 
 
 def _node() -> str:
@@ -383,6 +384,187 @@ def test_helper_marks_backend_fallback_as_full_screen():
     assert out["via"] == "backend"
     assert out["captureType"] == "screen"
     assert out["data"].endswith("BACKEND")
+
+
+_SCREENSHOT_ENTRY_TMPL = """
+const results = { calls: [] };
+class MediaStream {}
+const S = {
+  selectedScreenSourceId: __SOURCE_ID__,
+  screenCaptureStream: null,
+  screenCaptureStreamLastUsed: null
+};
+const U = { isMobile: () => false };
+const window = {
+  t: () => 'ok',
+  appCrop: null,
+  fetchBackendInteractiveScreenshot: async () => null,
+  prepareRememberedWindowCapture: async () => __PREPARE__,
+  acquireOrReuseCachedStream: async () => {
+    results.calls.push('coordinate-remembered-window');
+    S.selectedScreenSourceId = 'window:correct';
+    return null;
+  },
+  fetchBackendScreenshot: async () => {
+    results.calls.push('backend-desktop');
+    return { dataUrl: 'data:image/jpeg;base64,BACKEND' };
+  }
+};
+const getDesktopProvider = () => ({});
+const setScreenshotCaptureSessionActive = () => {};
+const captureDesktopRegionDirectly = async () => __DIRECT__;
+const recaptureWithoutNeko = async () => null;
+let _captureScreenshotDataUrlBusy = false;
+__CAPTURE__
+captureScreenshotDataUrl().then((shot) => {
+  results.data = shot && shot.dataUrl;
+  results.selected = S.selectedScreenSourceId;
+  console.log(JSON.stringify(results));
+}).catch((error) => {
+  results.error = error && error.message;
+  results.selected = S.selectedScreenSourceId;
+  console.log(JSON.stringify(results));
+});
+"""
+
+
+def _screenshot_entry_script(*, source_id: str, direct: str, prepare: str) -> str:
+    buttons_src = APP_BUTTONS_PATH.read_text(encoding="utf-8")
+    return (
+        _SCREENSHOT_ENTRY_TMPL
+        .replace("__SOURCE_ID__", source_id)
+        .replace("__DIRECT__", direct)
+        .replace("__PREPARE__", prepare)
+        .replace("__CAPTURE__", _fn(buttons_src, "captureScreenshotDataUrl"))
+    )
+
+
+@pytest.mark.unit
+def test_manual_screenshot_coordinates_remembered_title_before_direct_frame():
+    out = _run(_screenshot_entry_script(
+        source_id="'window:reused'",
+        prepare="(results.calls.push('coordinate-remembered-window'),"
+        " S.selectedScreenSourceId = 'window:correct',"
+        " { required: true, allowed: true })",
+        direct="(results.calls.push(`direct:${S.selectedScreenSourceId}`), {"
+        " dataUrl: 'data:image/png;base64,WRONG', originalDataUrl:"
+        " 'data:image/png;base64,WRONG' })",
+    ))
+
+    assert out == {
+        "calls": ["coordinate-remembered-window", "direct:window:correct"],
+        "data": "data:image/png;base64,WRONG",
+        "selected": "window:correct",
+    }
+
+
+@pytest.mark.unit
+def test_manual_screenshot_does_not_widen_blocked_capture_to_backend_desktop():
+    out = _run(_screenshot_entry_script(
+        source_id="null",
+        direct="null",
+        prepare="(results.calls.push('coordinate-remembered-window'),"
+        " { required: true, allowed: false })",
+    ))
+
+    assert out == {
+        "calls": ["coordinate-remembered-window"],
+        "data": None,
+        "selected": None,
+    }
+
+
+_PROACTIVE_REMEMBERED_TMPL = """
+const results = { calls: [] };
+const S = {
+  selectedScreenSourceId: __SOURCE_ID__,
+  screenCaptureStream: null,
+  screenCaptureStreamLastUsed: null
+};
+const window = {
+  detectScreenshotCaptureType: () => null,
+  captureDesktopSourceWithTimeout: async (_provider, _method, sourceId) => {
+    results.calls.push(`direct:${sourceId}`);
+    return __NATIVE__;
+  },
+  maybeClearSourceOnNotFound: () => {},
+  prepareRememberedWindowCapture: async () => __PREPARE__
+};
+const getDesktopProvider = () => __PROVIDER__;
+const acquireOrReuseCachedStream = async () => {
+  results.calls.push('coordinate-remembered-window');
+  S.selectedScreenSourceId = 'window:correct';
+  return null;
+};
+const captureFrameFromStream = async () => null;
+const fetchBackendScreenshot = async () => {
+  results.calls.push('backend-desktop');
+  return { dataUrl: 'data:image/jpeg;base64,BACKEND' };
+};
+__RESOLVE__
+__HELPER__
+captureProactiveChatScreenshotWithSource().then((shot) => {
+  results.data = shot && shot.dataUrl;
+  results.via = shot && shot.via;
+  results.selected = S.selectedScreenSourceId;
+  console.log(JSON.stringify(results));
+});
+"""
+
+
+def _proactive_remembered_script(
+    *, source_id: str, provider: str, native: str, prepare: str
+) -> str:
+    proactive_src = APP_PROACTIVE_PATH.read_text(encoding="utf-8")
+    return (
+        _PROACTIVE_REMEMBERED_TMPL
+        .replace("__SOURCE_ID__", source_id)
+        .replace("__PROVIDER__", provider)
+        .replace("__NATIVE__", native)
+        .replace("__PREPARE__", prepare)
+        .replace("__RESOLVE__", _fn(proactive_src, "resolveCaptureTypeFor"))
+        .replace(
+            "__HELPER__",
+            _fn(proactive_src, "captureProactiveChatScreenshotWithSource"),
+        )
+    )
+
+
+@pytest.mark.unit
+def test_proactive_screenshot_coordinates_remembered_title_before_direct_frame():
+    out = _run(_proactive_remembered_script(
+        source_id="'window:reused'",
+        provider="({ captureSourceAsDataUrl() {} })",
+        native="({ success: true, dataUrl: 'data:image/png;base64,WRONG' })",
+        prepare="(results.calls.push('coordinate-remembered-window'),"
+        " S.selectedScreenSourceId = 'window:correct',"
+        " { required: true, allowed: true })",
+    ))
+
+    assert out == {
+        "calls": ["coordinate-remembered-window", "direct:window:correct"],
+        "data": "data:image/png;base64,WRONG",
+        "via": "native",
+        "selected": "window:correct",
+    }
+
+
+@pytest.mark.unit
+def test_proactive_screenshot_does_not_widen_blocked_capture_to_backend_desktop():
+    out = _run(_proactive_remembered_script(
+        source_id="null",
+        provider="({})",
+        native="null",
+        prepare="(results.calls.push('coordinate-remembered-window'),"
+        " { required: true, allowed: false })",
+    ))
+
+    assert out == {
+        "calls": ["coordinate-remembered-window"],
+        "data": None,
+        "via": None,
+        "selected": None,
+    }
 
 
 # The source is cleared mid-capture (what maybeClearSourceOnNotFound does) while

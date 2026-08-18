@@ -2164,6 +2164,16 @@
     }
 
     async function captureProactiveChatScreenshotWithSource() {
+        var rememberedWindowCapture = { required: false, allowed: true };
+        if (typeof window.prepareRememberedWindowCapture === 'function') {
+            rememberedWindowCapture = await window.prepareRememberedWindowCapture();
+            if (rememberedWindowCapture && rememberedWindowCapture.required
+                && !rememberedWindowCapture.allowed) {
+                console.warn('[主动搭话截图] 记忆窗口无法唯一确认，停止本次截图');
+                return { dataUrl: null, via: null, captureType: null };
+            }
+        }
+
         // 策略 0a: 复用有效缓存流（避免打扰正在进行的屏幕共享）
         if (S.screenCaptureStream && S.screenCaptureStream.active) {
             try {
@@ -2255,6 +2265,13 @@
                     S.screenCaptureStreamLastUsed = null;
                 }
             }
+        }
+
+        // Remember-window is a fail-closed boundary. A validated window whose
+        // direct/stream capture failed must not widen to a desktop screenshot.
+        if (rememberedWindowCapture && rememberedWindowCapture.required) {
+            console.warn('[主动搭话截图] 记忆窗口捕获失败，停止整桌面兜底');
+            return { dataUrl: null, via: null, captureType: null };
         }
 
         // 策略2: 后端 pyautogui 兜底

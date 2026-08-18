@@ -281,6 +281,59 @@
     }
     mod.reconcileRememberedWindowSource = reconcileRememberedWindowSource;
 
+    async function prepareRememberedWindowCapture() {
+        var rememberedTitle = normalizeScreenSourceTitle(readRememberedWindowTitle());
+        var required = isScreenSourceTitleMatchEnabled() && !!rememberedTitle;
+        if (!required) {
+            return { required: false, allowed: true, sourceId: S.selectedScreenSourceId };
+        }
+
+        var provider = resolveDesktopCaptureProvider();
+        if (!provider || desktopSourceEnumerationMayPrompt(provider)
+            || typeof provider.getSources !== 'function') {
+            // Portal-style providers cannot be silently enumerated without opening
+            // another OS picker. Preserve their explicit user-selected source path.
+            return { required: true, allowed: true, sourceId: S.selectedScreenSourceId };
+        }
+
+        var resolutionGeneration = screenSourceSelectionGeneration;
+        var resolutionSourceId = S.selectedScreenSourceId;
+        try {
+            var sources = await provider.getSources({
+                types: ['window', 'screen'],
+                thumbnailSize: { width: 0, height: 0 }
+            });
+            if (resolutionGeneration !== screenSourceSelectionGeneration
+                || resolutionSourceId !== S.selectedScreenSourceId
+                || rememberedTitle !== normalizeScreenSourceTitle(readRememberedWindowTitle())
+                || !isScreenSourceTitleMatchEnabled()) {
+                return { required: true, allowed: false, sourceId: null };
+            }
+
+            var selectedBeforeReconcile = S.selectedScreenSourceId;
+            var resolution = reconcileRememberedWindowSource(sources);
+            if (selectedBeforeReconcile !== S.selectedScreenSourceId && S.screenCaptureStream) {
+                try {
+                    S.screenCaptureStream.getTracks().forEach(function (track) {
+                        try { track.stop(); } catch (_) { }
+                    });
+                } catch (_) { }
+                S.screenCaptureStream = null;
+                S.screenCaptureStreamLastUsed = null;
+            }
+            return {
+                required: true,
+                allowed: resolution.status === 'matched',
+                sourceId: S.selectedScreenSourceId,
+                status: resolution.status
+            };
+        } catch (error) {
+            console.warn('[屏幕源] 无法确认记忆窗口，停止本次截图:', error);
+            return { required: true, allowed: false, sourceId: null };
+        }
+    }
+    mod.prepareRememberedWindowCapture = prepareRememberedWindowCapture;
+
     // ======================== maybeClearSourceOnNotFound ========================
     /**
      * 通用兜底：主进程 captureSourceAsDataUrl 返回 { error: 'Source not found' }
@@ -1507,9 +1560,10 @@
                             }
                             var titleResolution = reconcileRememberedWindowSource(currentSources);
                             if (titleResolution.status === 'adopted-current-window') {
-                                hasRememberedWindowTitle = !!normalizeScreenSourceTitle(
-                                    readRememberedWindowTitle()
-                                );
+                                // This attempt is already constrained to the explicitly
+                                // selected window even if persisting its title failed.
+                                // Never widen its acquisition fallback to a monitor/picker.
+                                hasRememberedWindowTitle = true;
                             }
                             selectedSourceId = S.selectedScreenSourceId;
                             var sourceStillExists = currentSources.some(function (s) { return s.id === selectedSourceId; });
@@ -2717,6 +2771,7 @@
     window.getScreenSourceDisplayName = getScreenSourceDisplayName;
     window.captureCanvasFrame = captureCanvasFrame;
     window.captureFrameFromStream = captureFrameFromStream;
+    window.prepareRememberedWindowCapture = prepareRememberedWindowCapture;
     window.acquireOrReuseCachedStream = acquireOrReuseCachedStream;
     window.fetchBackendScreenshot = fetchBackendScreenshot;
     window.fetchBackendInteractiveScreenshot = fetchBackendInteractiveScreenshot;

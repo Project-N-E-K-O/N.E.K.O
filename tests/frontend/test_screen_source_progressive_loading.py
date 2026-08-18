@@ -679,6 +679,84 @@ def test_missing_remembered_window_does_not_fall_back_to_entire_screen(
 
 
 @pytest.mark.frontend
+def test_screenshot_preflight_remaps_reused_source_id_by_remembered_title(
+    page: Page,
+) -> None:
+    _install_screen_source_harness(
+        page,
+        initial_storage={
+            "screenSourceTitleMatchEnabled": "true",
+            "selectedScreenWindowTitle": "Editor",
+            "selectedScreenSourceId": "window:reused",
+        },
+    )
+
+    result = page.evaluate(
+        """async () => {
+            window.__desktopProvider.getSources = async () => [
+                { id: 'window:reused', name: 'Unrelated Browser', display_id: '' },
+                { id: 'window:correct', name: 'Editor', display_id: '' },
+            ];
+            const prepared = await window.appScreen.prepareRememberedWindowCapture();
+            return {
+                required: prepared.required,
+                allowed: prepared.allowed,
+                sourceId: prepared.sourceId,
+                selectedId: window.appState.selectedScreenSourceId,
+                storedId: window.__storedValues.get('selectedScreenSourceId') ?? null,
+            };
+        }"""
+    )
+
+    assert result == {
+        "required": True,
+        "allowed": True,
+        "sourceId": "window:correct",
+        "selectedId": "window:correct",
+        "storedId": "window:correct",
+    }
+
+
+@pytest.mark.frontend
+def test_screenshot_preflight_blocks_missing_remembered_title(
+    page: Page,
+) -> None:
+    _install_screen_source_harness(
+        page,
+        initial_storage={
+            "screenSourceTitleMatchEnabled": "true",
+            "selectedScreenWindowTitle": "Editor",
+            "selectedScreenSourceId": "window:reused",
+        },
+    )
+
+    result = page.evaluate(
+        """async () => {
+            window.__desktopProvider.getSources = async () => [
+                { id: 'screen:1', name: 'Entire Screen', display_id: '1' },
+                { id: 'window:reused', name: 'Unrelated Browser', display_id: '' },
+            ];
+            const prepared = await window.appScreen.prepareRememberedWindowCapture();
+            return {
+                required: prepared.required,
+                allowed: prepared.allowed,
+                sourceId: prepared.sourceId,
+                selectedId: window.appState.selectedScreenSourceId,
+                hasStoredId: window.__storedValues.has('selectedScreenSourceId'),
+            };
+        }"""
+    )
+
+    assert result == {
+        "required": True,
+        "allowed": False,
+        "sourceId": None,
+        "selectedId": None,
+        "hasStoredId": False,
+    }
+
+
+@pytest.mark.frontend
 def test_late_stream_for_old_selection_is_discarded_after_source_change(
     page: Page,
 ) -> None:
@@ -1122,6 +1200,93 @@ def test_adopted_remembered_window_capture_failure_does_not_fallback_to_screen(
     assert result == {
         "calls": ["window:old"],
         "rememberedTitle": "Editor",
+        "screenStreamInstalled": False,
+    }
+
+
+@pytest.mark.frontend
+def test_failed_adopted_title_storage_does_not_widen_capture_to_screen(
+    page: Page,
+) -> None:
+    _install_screen_source_harness(
+        page,
+        initial_storage={
+            "screenSourceTitleMatchEnabled": "true",
+            "selectedScreenSourceId": "window:old",
+        },
+    )
+
+    result = page.evaluate(
+        """async () => {
+            document.body.insertAdjacentHTML('beforeend', `
+                <div id="live2d-container"></div>
+                <button id="micButton"></button><button id="muteButton"></button>
+                <button id="screenButton"></button><button id="stopButton" disabled></button>
+                <button id="resetSessionButton"></button>
+            `);
+            window.appState.isRecording = true;
+            window.appState.voiceChatActive = true;
+            window.appState.audioPlayerContext = { state: 'running' };
+            const originalSetItem = window.localStorage.setItem.bind(window.localStorage);
+            window.localStorage.setItem = (key, value) => {
+                if (key === 'selectedScreenWindowTitle') {
+                    throw new Error('simulated title storage failure');
+                }
+                originalSetItem(key, value);
+            };
+            const calls = [];
+            const track = {
+                readyState: 'live',
+                stopped: false,
+                stop() { this.stopped = true; this.readyState = 'ended'; },
+                addEventListener() {},
+            };
+            const screenStream = {
+                active: true,
+                getVideoTracks() { return [track]; },
+                getTracks() { return [track]; },
+            };
+            window.__desktopProvider.getSources = async (options) => {
+                if (options.types.length === 1 && options.types[0] === 'screen') {
+                    return [{ id: 'screen:1', name: 'Entire Screen', display_id: '1' }];
+                }
+                return [
+                    { id: 'screen:1', name: 'Entire Screen', display_id: '1' },
+                    { id: 'window:old', name: 'Editor', display_id: '' },
+                ];
+            };
+            Object.defineProperty(navigator, 'mediaDevices', {
+                configurable: true,
+                value: {
+                    async getUserMedia(constraints) {
+                        const sourceId = constraints.video.mandatory.chromeMediaSourceId;
+                        calls.push(sourceId);
+                        if (sourceId === 'window:old') {
+                            throw new Error('window acquisition failed');
+                        }
+                        return screenStream;
+                    },
+                    async getDisplayMedia() {
+                        calls.push('getDisplayMedia');
+                        return screenStream;
+                    },
+                },
+            });
+            await window.startScreenSharing();
+            const state = {
+                calls,
+                rememberedTitle:
+                    window.__storedValues.get('selectedScreenWindowTitle') ?? null,
+                screenStreamInstalled: window.appState.screenCaptureStream === screenStream,
+            };
+            await window.stopScreenSharing(true);
+            return state;
+        }"""
+    )
+
+    assert result == {
+        "calls": ["window:old"],
+        "rememberedTitle": None,
         "screenStreamInstalled": False,
     }
 
