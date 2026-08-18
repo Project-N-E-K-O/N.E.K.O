@@ -4190,3 +4190,17 @@ def test_a_contrastive_bare_narrowing_replaces_the_full_rewrite(quantifier):
     text = f'重写所有字段并保留是否会员，但是{quantifier}重写名字'
     assert router._chat_text_requests_full_rewrite_core(text) is False
     assert router._chat_text_requests_full_rewrite(text) is False
+
+
+def test_scoped_signal_bridge_rejects_repeated_adverbs_without_backtracking():
+    import time
+
+    import main_routers.card_assist_router as router
+
+    started = time.perf_counter()
+    match = router._CHAT_SCOPED_SIGNAL_BRIDGE_RE.fullmatch('再' * 22 + 'Z')
+    elapsed = time.perf_counter() - started
+
+    assert match is None
+    assert elapsed < 0.5
+    assert router._CHAT_SCOPED_SIGNAL_BRIDGE_RE.fullmatch('一遍the再再')

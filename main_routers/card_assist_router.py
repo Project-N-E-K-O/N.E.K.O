@@ -1589,7 +1589,8 @@ _CHAT_SCOPED_SCOPE_REPLACEMENT_RE = re.compile(
 )
 _CHAT_SCOPED_BARE_CONTRAST_NARROWING_RE = re.compile(r"^\s*(?:只|仅|僅)")
 _CHAT_SCOPED_SIGNAL_BRIDGE_RE = re.compile(
-    rf"\s*(?:(?:一遍|一次|一下|下|一回)\s*|(?i:the)\s*|{_WHOLE_CARD_ADVERB_RUN})*"
+    rf"\s*(?:(?:一遍|一次|一下|下|一回)\s*|(?i:the)\s*|"
+    rf"{_WHOLE_CARD_BARE_ADVERB}地?\s*)*"
 )
 _CHAT_GOVERNING_CONDITION_PATTERN = (
     r"(?:(?:如果|假如|若是|要是|倘若|万一|萬一|假若)"
