@@ -1552,7 +1552,7 @@
     }
 
     function stopActiveCaptureForRememberedSourceRejection() {
-        if (!isScreenSharingActiveForSourceChange()) return;
+        if (!isScreenSharingActiveForSourceChange() && !S.screenCaptureStream) return;
         releaseActiveScreenCaptureForSourceChange();
     }
 
@@ -1808,6 +1808,24 @@
                         && (hasRememberedWindowTitle
                             || (typeof selectedSourceId === 'string'
                                 && selectedSourceId.startsWith('window:')));
+                    if (rememberedWindowWasBounded && sourceEnumerationMayPrompt) {
+                        var promptedRememberedCapture = await prepareRememberedWindowCapture();
+                        if (discardCancelledScreenSharingStart(attempt)) return;
+                        var promptedCaptureIsCurrent = typeof promptedRememberedCapture.isCurrent !== 'function'
+                            || promptedRememberedCapture.isCurrent();
+                        if (promptedRememberedCapture.required
+                            && (!promptedRememberedCapture.allowed || !promptedCaptureIsCurrent)) {
+                            window.showStatusToast(
+                                safeT(
+                                    'app.screenSource.rememberedWindowUnavailable',
+                                    '无法确认之前选择的窗口，请重新选择屏幕来源'
+                                ),
+                                5000
+                            );
+                            return;
+                        }
+                        selectedSourceId = S.selectedScreenSourceId;
+                    }
                     if ((selectedSourceId || hasRememberedWindowTitle)
                         && desktopProvider && !sourceEnumerationMayPrompt
                         && typeof desktopProvider.getSources === 'function') {

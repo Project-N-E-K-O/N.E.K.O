@@ -1893,6 +1893,136 @@ def test_prompting_provider_keeps_current_renderer_explicit_window(page: Page) -
 
 
 @pytest.mark.frontend
+def test_manual_share_rejects_unowned_restored_window_on_prompting_provider(
+    page: Page,
+) -> None:
+    _install_screen_source_harness(
+        page,
+        source_enumeration_may_prompt=True,
+        initial_storage={
+            "screenSourceTitleMatchEnabled": "true",
+            "selectedScreenWindowTitle": "Editor",
+            "selectedScreenSourceId": "window:reused",
+        },
+    )
+
+    result = page.evaluate(
+        """async () => {
+            document.body.insertAdjacentHTML('beforeend', `
+                <div id="live2d-container"></div>
+                <button id="micButton"></button><button id="muteButton"></button>
+                <button id="screenButton"></button><button id="stopButton" disabled></button>
+                <button id="resetSessionButton"></button>
+            `);
+            window.appState.isRecording = true;
+            window.appState.voiceChatActive = true;
+            window.appState.audioPlayerContext = { state: 'running' };
+            const captureCalls = [];
+            const track = {
+                readyState: 'live',
+                stopped: false,
+                stop() { this.stopped = true; this.readyState = 'ended'; },
+                addEventListener() {},
+            };
+            const unrelatedStream = {
+                active: true,
+                getVideoTracks() { return [track]; },
+                getTracks() { return [track]; },
+            };
+            Object.defineProperty(navigator, 'mediaDevices', {
+                configurable: true,
+                value: {
+                    async getUserMedia(constraints) {
+                        captureCalls.push(
+                            constraints.video.mandatory.chromeMediaSourceId
+                        );
+                        return unrelatedStream;
+                    },
+                },
+            });
+
+            await window.startScreenSharing();
+            const state = {
+                captureCalls,
+                selectedId: window.appState.selectedScreenSourceId,
+                unrelatedStreamInstalled:
+                    window.appState.screenCaptureStream === unrelatedStream,
+                trackStoppedBeforeCleanup: track.stopped,
+            };
+            await window.stopScreenSharing(true);
+            return state;
+        }"""
+    )
+
+    assert result == {
+        "captureCalls": [],
+        "selectedId": "window:reused",
+        "unrelatedStreamInstalled": False,
+        "trackStoppedBeforeCleanup": False,
+    }
+
+
+@pytest.mark.frontend
+def test_remembered_source_rejection_releases_proactive_cached_stream(
+    page: Page,
+) -> None:
+    _install_screen_source_harness(
+        page,
+        initial_storage={
+            "screenSourceTitleMatchEnabled": "true",
+            "selectedScreenWindowTitle": "Editor",
+            "selectedScreenSourceId": "window:stale",
+        },
+    )
+
+    result = page.evaluate(
+        """async () => {
+            const track = {
+                readyState: 'live',
+                stopped: false,
+                stop() { this.stopped = true; this.readyState = 'ended'; },
+                addEventListener() {},
+            };
+            const proactiveStream = {
+                active: true,
+                getVideoTracks() { return [track]; },
+                getTracks() { return [track]; },
+            };
+            window.appState.proactiveVisionEnabled = true;
+            window.appState.isRecording = true;
+            window.appState.screenCaptureStream = proactiveStream;
+            window.appState.screenCaptureStreamLastUsed = Date.now();
+            window.__metadataSources = [
+                {
+                    id: 'screen:1',
+                    name: 'Entire Screen',
+                    display_id: '1',
+                    thumbnail: null,
+                },
+            ];
+
+            await window.renderFloatingScreenSourceList(
+                document.getElementById('live2d-popup-screen')
+            );
+            return {
+                selectedId: window.appState.selectedScreenSourceId,
+                streamRetained:
+                    window.appState.screenCaptureStream === proactiveStream,
+                trackStopped: track.stopped,
+                lastUsed: window.appState.screenCaptureStreamLastUsed,
+            };
+        }"""
+    )
+
+    assert result == {
+        "selectedId": None,
+        "streamRetained": False,
+        "trackStopped": True,
+        "lastUsed": None,
+    }
+
+
+@pytest.mark.frontend
 def test_remembered_cached_reenumeration_is_bounded(page: Page) -> None:
     _install_screen_source_harness(
         page,
