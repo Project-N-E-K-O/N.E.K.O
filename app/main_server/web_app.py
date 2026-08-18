@@ -16,6 +16,7 @@
 """Mount static assets and register main-server routers and local endpoints."""
 
 import asyncio
+import contextlib
 import os
 import secrets
 from urllib.parse import parse_qsl
@@ -67,12 +68,56 @@ static_dir = os.path.join(_get_app_root(), "static")
 app.mount("/static", CustomStaticFiles(directory=static_dir), name="static")
 
 # 挂载用户文档下的live2d目录（只在主进程中执行，子进程不提供HTTP服务）
+_proactive_media_prune_task: asyncio.Task | None = None
+_PROACTIVE_MEDIA_PRUNE_INTERVAL_S = 24 * 3600
+
+
+async def _proactive_media_prune_worker() -> None:
+    """Daily best-effort prune of the append-only proactive media dir.
+
+    The startup prune only covers process start; a desktop companion runs
+    for days, and at the channel's own caps (4 × 10MB per event) an active
+    producer would grow the dir unbounded between restarts. All disk work
+    stays inside ``asyncio.to_thread`` (single process + zero event-loop
+    blocking contract); failures are logged and retried next cycle.
+    """
+    while True:
+        await asyncio.sleep(_PROACTIVE_MEDIA_PRUNE_INTERVAL_S)
+        try:
+            await asyncio.to_thread(_config_manager.prune_proactive_media)
+        except Exception as e:
+            logger.warning(f"proactive_media periodic prune failed: {e}")
+
+
 if _IS_MAIN_PROCESS:
     _config_manager.ensure_live2d_directory()
     _config_manager.ensure_vrm_directory()
     _config_manager.ensure_mmd_directory()
     _config_manager.ensure_pngtuber_directory()
     _config_manager.ensure_chara_directory()
+    _config_manager.ensure_proactive_media_directory()
+    # 主动消息媒体目录是只增通道：启动时做一次尽力清理（超龄/超量，见
+    # prune_proactive_media），随后由每日后台任务维持上限（见
+    # _proactive_media_prune_worker）。启动期同步 IO 属于既定允许范围。
+    _config_manager.prune_proactive_media()
+
+    @app.on_event("startup")
+    async def _start_proactive_media_prune_worker() -> None:
+        global _proactive_media_prune_task
+        if _proactive_media_prune_task is None or _proactive_media_prune_task.done():
+            _proactive_media_prune_task = asyncio.create_task(
+                _proactive_media_prune_worker()
+            )
+
+    @app.on_event("shutdown")
+    async def _stop_proactive_media_prune_worker() -> None:
+        global _proactive_media_prune_task
+        task, _proactive_media_prune_task = _proactive_media_prune_task, None
+        if task is not None:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
 
     # CFA (反勒索防护) 感知挂载：
     # 优先从原始 Documents 目录（可读）提供模型文件，
@@ -156,6 +201,19 @@ if _IS_MAIN_PROCESS:
             name="user_pngtuber",
         )
         logger.info(f"已挂载PNGTuber目录: {user_pngtuber_path}")
+
+    # 挂载主动消息媒体目录（宿主托管的 visibility=["chat"] 图片落盘处，
+    # 前端聊天窗气泡经同源 URL /user_proactive_media/{file} 加载，桌面与
+    # 远程 web 访问一致可达）。
+    if os.path.exists(str(_config_manager.proactive_media_dir)):
+        app.mount(
+            "/user_proactive_media",
+            CustomStaticFiles(directory=str(_config_manager.proactive_media_dir)),
+            name="user_proactive_media",
+        )
+        logger.info(
+            f"已挂载主动消息媒体目录: {_config_manager.proactive_media_dir}"
+        )
 
     # 挂载项目目录下的static/mmd（作为备用）
     project_mmd_path = os.path.join(static_dir, "mmd")

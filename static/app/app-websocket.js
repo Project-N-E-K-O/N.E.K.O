@@ -2368,6 +2368,56 @@
                         }
                     }
 
+                // -------- proactive_media --------
+                // 宿主托管的主动消息可见媒体（/user_proactive_media/...，
+                // agent 事件携带的 visibility=["chat"] 图片落盘而来，通路
+                // 不绑定事件源）。帧由后端在事件入口直发（不与 LLM 投递
+                // 耦合），turn_id 是宿主生成的一次性 id，不保证与后续回复
+                // 文本的 turn_id 一致——按 turn_id 暂存进 attachment buffer
+                // 后立即 flush 渲染，等待文本匹配会让图片气泡永不出现；
+                // _flushProactiveAttachments 幂等（flush 后清 buffer）。
+                } else if (response.type === 'proactive_media') {
+                    if (response.turn_id && Array.isArray(response.images) && response.images.length > 0) {
+                        // URL 白名单：只接受宿主同源 /user_proactive_media/ 前缀。
+                        // WS 帧内容不可信（劣化/恶意事件源、明文 ws 上的中间人
+                        // 篡改），非白名单 URL 不允许进入 <img>.src /
+                        // openExternal 这类 sink（与 meme 链接的 http(s) 校验
+                        // 同一纪律，见 _processProactiveLinks）。
+                        var safeMediaImages = [];
+                        for (var pmi = 0; pmi < response.images.length; pmi++) {
+                            var mediaUrl = String(response.images[pmi] || '');
+                            if (mediaUrl.indexOf('/user_proactive_media/') === 0) {
+                                safeMediaImages.push(mediaUrl);
+                            } else {
+                                console.warn('[ProactiveMedia] dropped non-host image url:', mediaUrl.slice(0, 80));
+                            }
+                        }
+                        if (safeMediaImages.length > 0) {
+                            if (!window._proactiveAttachmentBuffer) {
+                                window._proactiveAttachmentBuffer = {};
+                            }
+                            if (!window._proactiveAttachmentBuffer[response.turn_id]) {
+                                window._proactiveAttachmentBuffer[response.turn_id] = { memes: [], links: [] };
+                            }
+                            var mediaBuf = window._proactiveAttachmentBuffer[response.turn_id];
+                            if (!Array.isArray(mediaBuf.images)) {
+                                mediaBuf.images = [];
+                            }
+                            for (var psi = 0; psi < safeMediaImages.length; psi++) {
+                                mediaBuf.images.push(safeMediaImages[psi]);
+                            }
+                            if (window.appProactive && typeof window.appProactive._flushProactiveAttachments === 'function') {
+                                window.appProactive._flushProactiveAttachments(response.turn_id);
+                            } else {
+                                // appProactive 未就绪：帧不会重发（turn_id 是一次性
+                                // id，没有后续文本会再带它），留着 entry 只会永久泄
+                                // 漏 buffer——清掉并留痕，避免静默丢图。
+                                console.warn('[ProactiveMedia] appProactive not ready; dropping buffered images for turn', response.turn_id);
+                                delete window._proactiveAttachmentBuffer[response.turn_id];
+                            }
+                        }
+                    }
+
                 // -------- response_discarded --------
                 } else if (response.type === 'response_discarded') {
                     clearPendingUserActivityCancel();

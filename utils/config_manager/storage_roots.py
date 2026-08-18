@@ -24,6 +24,7 @@ import os
 import secrets
 import sys
 import threading
+import time
 import uuid
 from copy import deepcopy
 from pathlib import Path
@@ -168,6 +169,12 @@ class StorageRootsMixin:
         self.mmd_dir = self.app_docs_dir / "mmd"
         self.mmd_animation_dir = self.mmd_dir / "animation"  # VMD动画文件目录
         self.pngtuber_dir = self.app_docs_dir / "pngtuber"
+        # 主动消息媒体托管目录：宿主把 agent 事件携带的
+        # visibility=["chat"] 图片落盘到这里（{uuid}.{ext}），并经 main
+        # server 的 /user_proactive_media 静态挂载暴露给前端聊天窗（桌面
+        # 与远程 web 同源可达）。与 live2d/vrm/mmd/pngtuber 同级的宿主托管
+        # 媒体目录，不绑定事件源。
+        self.proactive_media_dir = self.app_docs_dir / "proactive_media"
         self.workshop_dir = self.app_docs_dir / "workshop"
         self._steam_workshop_path = None
         self._user_workshop_folder_persisted = False
@@ -771,7 +778,79 @@ class StorageRootsMixin:
         except Exception as e:
             print(f"Warning: Failed to create pngtuber directory: {e}", file=sys.stderr)
             return False
-        
+
+    def ensure_proactive_media_directory(self):
+        """Ensure the host-managed proactive media directory exists.
+
+        Structured like ensure_pngtuber_directory: proactive_media is the
+        host-managed proactive media dir (visibility=["chat"] image
+        persistence + /user_proactive_media static exposure) serving the
+        host framework's proactive channel rather than any single event
+        source's private sandbox — hence a first-level app_docs_dir entry
+        alongside live2d/pngtuber.
+        """
+        try:
+            if not self._ensure_app_docs_directory():
+                return False
+            self.proactive_media_dir.mkdir(parents=True, exist_ok=True)
+            return True
+        except Exception as e:
+            print(f"Warning: Failed to create proactive_media directory: {e}", file=sys.stderr)
+            return False
+
+    def prune_proactive_media(
+        self,
+        *,
+        max_age_days: float = 14.0,
+        max_total_bytes: int = 256 * 1024 * 1024,
+    ) -> None:
+        """Best-effort housekeeping for the host-managed proactive media dir.
+
+        The channel is append-only by design, so without pruning it grows
+        forever. Two levers, applied oldest-first: files older than
+        ``max_age_days`` are dropped outright, then the total is capped at
+        ``max_total_bytes`` by deleting the oldest survivors until it fits.
+        Failures are logged and swallowed — housekeeping must never block
+        the caller. Invoked once synchronously from web_app at startup
+        (startup-phase sync-IO allowance) and then daily by the web_app
+        background worker via ``asyncio.to_thread`` — a desktop companion
+        runs for days, so the caps must hold for the process lifetime, not
+        just at boot.
+        """
+        try:
+            media_dir = self.proactive_media_dir
+            if not media_dir.exists():
+                return
+            now = time.time()
+            kept: list[tuple[float, int, Path]] = []
+            for path in media_dir.iterdir():
+                try:
+                    if not path.is_file():
+                        continue
+                    stat = path.stat()
+                    if (now - stat.st_mtime) / 86400.0 > max_age_days:
+                        path.unlink(missing_ok=True)
+                    else:
+                        kept.append((stat.st_mtime, stat.st_size, path))
+                except OSError:
+                    continue
+            total = sum(size for _, size, _ in kept)
+            if total > max_total_bytes:
+                for _, size, path in sorted(kept):
+                    if total <= max_total_bytes:
+                        break
+                    try:
+                        path.unlink(missing_ok=True)
+                        total -= size
+                    except OSError:
+                        # 典型场景：Windows 上最旧的文件仍被查看器占用。
+                        # 继续删更新的文件只会让"刚落盘、前端还没取走"的
+                        # 图片先死，而占用的旧文件也不会因此让出空间——
+                        # 接受本轮暂时超帽，等下一轮清理再收敛。
+                        break
+        except Exception as e:
+            print(f"Warning: proactive_media prune failed: {e}", file=sys.stderr)
+
     def ensure_chara_directory(self):
         """Ensure the character_cards directory under Documents exists"""
         try:
