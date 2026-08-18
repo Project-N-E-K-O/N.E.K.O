@@ -216,6 +216,8 @@ async def test_full_rewrite_completion_excludes_explicitly_preserved_fields(monk
     [
         ('Please rewrite all fields and keep the cage clean', ['Age'], set()),
         ('Please rewrite all fields and preserve the embrace', ['Race'], set()),
+        ('不需要保留 Age，请重写所有字段', ['Age'], set()),
+        ("You don't need to keep Age; rewrite all fields.", ['Age'], set()),
         ('重寫所有欄位並維持頭像不變', ['頭像'], {'頭像'}),
         ('不要保留头像，重写所有字段', ['头像'], set()),
         ('重写所有字段并保留心理年龄', ['年龄', '心理年龄'], {'心理年龄'}),

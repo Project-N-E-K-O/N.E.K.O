@@ -4272,3 +4272,12 @@ def test_english_attribution_keeps_a_mixed_language_command_reported(verb):
     text = f'John {verb}: 修改名字，但是请重写所有字段并保留是否会员'
     assert router._chat_text_requests_full_rewrite_core(text) is False
     assert router._chat_text_requests_full_rewrite(text) is False
+
+
+@pytest.mark.parametrize('prefix', ['请翻译以下内容：', '请解释以下内容：', '请分析下面这句话：'])
+def test_meta_requests_do_not_activate_contrast_recovery(prefix):
+    import main_routers.card_assist_router as router
+
+    text = f'{prefix}但是请重写所有字段并保留是否会员'
+    assert router._chat_text_requests_full_rewrite_core(text) is False
+    assert router._chat_text_requests_full_rewrite(text) is False

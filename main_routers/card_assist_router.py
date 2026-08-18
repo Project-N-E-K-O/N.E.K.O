@@ -1599,6 +1599,13 @@ _CHAT_SCOPED_SCOPE_REPLACEMENT_RE = re.compile(
     r"|(?:我|我们|我們|咱们|咱們)\s*(?:只|仅|僅)\s*(?:想|要|需要)?"
 )
 _CHAT_SCOPED_BARE_CONTRAST_NARROWING_RE = re.compile(r"^\s*(?:只|仅|僅)")
+_CHAT_SCOPED_META_REQUEST_RE = re.compile(
+    r"^\s*(?:(?:请|請|帮我|幫我)\s*)?"
+    r"(?:翻译|翻譯|解释|解釋|分析|说明|說明|总结|總結|评估|評估)\s*"
+    r"(?:一下\s*)?(?:以下|下面|此)?\s*"
+    r"(?:这段|這段|这句话|這句話)?\s*"
+    r"(?:内容|內容|文字|句子|指令|命令|要求|修改)?\s*[：:,，]",
+)
 _CHAT_SCOPED_SIGNAL_BRIDGE_RE = re.compile(
     rf"\s*(?:(?:一遍|一次|一下|下|一回)\s*|(?i:the)\s*|"
     rf"{_WHOLE_CARD_BARE_ADVERB}地?\s*)*"
@@ -2267,6 +2274,8 @@ def _chat_text_requests_full_rewrite_from_scoped_segments(text: str) -> bool:
     if not text:
         return False
     masked = _chat_mask_quoted_spans(text)
+    if _CHAT_SCOPED_META_REQUEST_RE.search(masked):
+        return False
     prohibition_masked = _chat_mask_assignment_value_before_next_command(text, masked)
     governing_prohibitions = list(
         _CHAT_GOVERNING_INSTRUCTION_PROHIBITION_RE.finditer(prohibition_masked)
@@ -2336,6 +2345,9 @@ def _chat_text_requests_full_rewrite_from_scoped_segments(text: str) -> bool:
         if reporting_contexts[index]:
             continue
         if match.group("contrast") is not None:
+            if _CHAT_SCOPED_META_REQUEST_RE.search(masked[:match.start()]):
+                segment_start = match.end()
+                continue
             if len(text) - match.end() <= _CHAT_SCOPED_RECOVERY_WINDOW_CHARS:
                 candidate = text[match.end():]
                 if (
@@ -2572,8 +2584,8 @@ _CHAT_PRESERVATION_CLAUSE_RE = re.compile(
     r"[^。，、！？,.!?;；]*"
 )
 _CHAT_PRESERVATION_NEGATION_RE = re.compile(
-    r"(?:(?:不要|别|別|不|无需|無需|不必|请勿|請勿)\s*"
-    r"(?:再|继续|繼續)?|(?i:\b(?:do\s+not|don't|never|not)))\s*$"
+    r"(?:(?:不要|别|別|不需要|不須要|不|无需|無需|不必|请勿|請勿)\s*"
+    r"(?:再|继续|繼續)?|(?i:\b(?:do\s+not(?:\s+need\s+to)?|don't(?:\s+need\s+to)?|never|not)))\s*$"
 )
 _CHAT_IDENTIFIER_KEY_RE = re.compile(r"[A-Za-z0-9_]")
 
