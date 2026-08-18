@@ -100,8 +100,6 @@ def test_social_open_request_is_deduped_before_fetching_config():
     assert "function registerSocialThemeTarget(targetWindow, targetUrl)" in source
     assert "window.addEventListener('neko-theme-changed', (event) => {" in source
     assert "typeof requestedTheme === 'boolean' ? requestedTheme : isResolvedDarkTheme()" in source
-    assert "const themeObserver = new MutationObserver" in source
-    assert "attributeFilter: ['data-theme']" in source
     assert "target.targetWindow.postMessage({" in source
     assert "source: 'neko-desktop'" in source
     assert "type: 'theme-change'" in source
@@ -109,7 +107,7 @@ def test_social_open_request_is_deduped_before_fetching_config():
     assert "event.source === candidate.targetWindow && event.origin === candidate.targetOrigin" in source
     assert "data.source !== 'neko-community' || data.type !== 'theme-ready'" in source
     assert "postSocialTheme(target, isResolvedDarkTheme())" in source
-    assert "state.targets.push(target)" in source
+    assert "state.targets = [target]" in source
     assert "state.targets = state.targets.filter" in source
     assert "function queueSocialThemeSync(target)" in source
     assert "[0, 100, 300, 1000].forEach" in source
@@ -117,8 +115,7 @@ def test_social_open_request_is_deduped_before_fetching_config():
     assert "currentPopup.location.replace(navigationTarget)" in listener
     assert "themeTarget = registerSocialThemeTarget(currentPopup, parsedTarget)" in listener
     assert "if (navigated) queueSocialThemeSync(themeTarget)" in listener
-    assert "window.__nekoSocialThemeHeartbeat = setInterval" in source
-    assert "publishSocialTheme(isResolvedDarkTheme())" in source
+    assert "if (target.targetWindow.closed)" not in source
     assert "currentPopup.opener = null" in listener
     assert "currentPopup.opener = window" not in listener
     assert "throw new Error('failed to navigate browser community window')" not in listener

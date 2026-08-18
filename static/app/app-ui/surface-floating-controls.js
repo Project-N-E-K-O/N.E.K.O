@@ -298,7 +298,7 @@
                     return existing;
                 } else {
                     const target = { targetWindow, targetOrigin: parsed.origin };
-                    state.targets.push(target);
+                    state.targets = [target];
                     return target;
                 }
             } catch (_) {
@@ -318,7 +318,6 @@
             const state = getSocialThemeBridgeState();
             state.targets = state.targets.filter((target) => {
                 try {
-                    if (target.targetWindow.closed) return false;
                     postSocialTheme(target, darkMode);
                     return true;
                 } catch (_) {
@@ -332,9 +331,7 @@
             [0, 100, 300, 1000].forEach((delayMs) => {
                 setTimeout(() => {
                     try {
-                        if (!target.targetWindow.closed) {
-                            postSocialTheme(target, isResolvedDarkTheme());
-                        }
+                        postSocialTheme(target, isResolvedDarkTheme());
                     } catch (_) { /* target may still be navigating or already closed */ }
                 }, delayMs);
             });
@@ -348,17 +345,6 @@
                     typeof requestedTheme === 'boolean' ? requestedTheme : isResolvedDarkTheme()
                 );
             });
-            const themeObserver = new MutationObserver(() => {
-                publishSocialTheme(isResolvedDarkTheme());
-            });
-            themeObserver.observe(document.documentElement, {
-                attributes: true,
-                attributeFilter: ['data-theme']
-            });
-            window.__nekoSocialThemeObserver = themeObserver;
-            window.__nekoSocialThemeHeartbeat = setInterval(() => {
-                publishSocialTheme(isResolvedDarkTheme());
-            }, 2000);
             window.addEventListener('message', (event) => {
                 const state = getSocialThemeBridgeState();
                 const target = state.targets.find((candidate) => (
