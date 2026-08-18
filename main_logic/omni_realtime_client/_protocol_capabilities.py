@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from typing import Any
 
 from utils.tts.native_voice_registry import (
     is_free_lanlan_app_route,
@@ -34,6 +35,21 @@ ID_BEARING_RESPONSE_CONTENT_EVENT_TYPES = frozenset(
         "response.function_call_arguments.done",
     }
 )
+
+
+def _response_id_text(value: Any) -> str | None:
+    """Return one canonical reading of whether a value names a response.
+
+    ``None`` and the empty string name nothing. Numeric zero remains a valid
+    identity, because a provider may number its first response from zero. All
+    response lifecycle paths share this normalization so ownership, stale
+    filtering, and terminal matching cannot disagree about the same frame.
+    """
+
+    if value is None:
+        return None
+    text = str(value)
+    return text or None
 
 
 class ResponseStartEvidence(str, Enum):
@@ -79,9 +95,13 @@ LANLAN_TECH_REALTIME_PROTOCOL_CAPABILITIES = RealtimeProtocolCapabilities(
 def resolve_realtime_protocol_capabilities(
     api_type: str | None,
     realtime_base_url: str | None,
+    *,
+    livestream_mode: bool = False,
 ) -> RealtimeProtocolCapabilities:
     """Return the verified lifecycle profile for a concrete route."""
 
+    if str(api_type or "").lower() == "free" and livestream_mode:
+        return LANLAN_APP_REALTIME_PROTOCOL_CAPABILITIES
     if is_free_lanlan_app_route(api_type, realtime_base_url):
         return LANLAN_APP_REALTIME_PROTOCOL_CAPABILITIES
     if is_free_lanlan_tech_route(api_type, realtime_base_url):

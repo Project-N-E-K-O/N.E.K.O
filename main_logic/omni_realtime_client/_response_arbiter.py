@@ -21,6 +21,7 @@ from ._protocol_capabilities import (
     ID_BEARING_RESPONSE_CONTENT_EVENT_TYPES,
     RealtimeProtocolCapabilities,
     STRICT_REALTIME_PROTOCOL_CAPABILITIES,
+    _response_id_text,
 )
 
 
@@ -545,30 +546,11 @@ class RealtimeResponseArbiter:
         response = (event or {}).get("response")
         if not isinstance(response, dict):
             return None
-        response_id = response.get("id")
-        # Presence, not truthiness. A provider numbering its responses from
-        # zero would have had its FIRST response read as unidentified, which
-        # among other things makes ``_cannot_keep_the_connection`` report "no
-        # id to attribute later events by" and tear the transport down in
-        # spite of the escape hatch. No configured provider numbers this way —
-        # this is a trap, not a live failure — but "0 is not an id" is the
-        # kind of thing that is free to get right and expensive to discover.
-        #
-        # An empty string still normalizes to None on purpose: it names
-        # nothing, and admitting it would collapse every unidentified response
-        # onto one shared identity.
-        if response_id is None:
-            return None
-        text = str(response_id)
-        return text or None
+        return _response_id_text(response.get("id"))
 
     @staticmethod
     def _content_event_response_id(event: dict[str, Any] | None) -> str | None:
-        response_id = (event or {}).get("response_id")
-        if response_id is None:
-            return None
-        text = str(response_id)
-        return text or None
+        return _response_id_text((event or {}).get("response_id"))
 
     def _remember_server_response_id(self, response_id: str) -> None:
         self._server_response_ids.pop(response_id, None)
@@ -880,6 +862,8 @@ class RealtimeResponseArbiter:
     def notify_response_created(self, event: dict[str, Any]) -> bool:
         """Attribute an announcement and report whether transport may expose it."""
 
+        owner = self._response_owner
+        response_id = self._event_response_id(event)
         self._server_response_active = True
         self._idle.clear()
         retired_created_live = self._retired_created_window_live()
@@ -895,7 +879,6 @@ class RealtimeResponseArbiter:
             # second retirement window here would swallow a legitimate id-less
             # successor, recreating the ownership failure in the other direction.
             self._retired_created_deadline = None
-            response_id = self._event_response_id(event)
             self._remember_seen_response_id(response_id)
             logger.info(
                 "ignored late response.created %s from a retired owner",
@@ -906,7 +889,6 @@ class RealtimeResponseArbiter:
         if self._server_vad_response_pending:
             self._cancel_server_vad_pending_timer()
             self._server_vad_response_pending = False
-            response_id = self._event_response_id(event)
             self._remember_seen_response_id(response_id)
             if response_id is not None:
                 self._remember_server_response_id(response_id)
@@ -917,13 +899,24 @@ class RealtimeResponseArbiter:
             # automatic response, so it is the last thing a queued request
             # should be allowed to claim.
             return True
-        owner = self._response_owner
+        if self.response_created_confirms_started_owner(event):
+            # A capability-approved route may deliver real content before its
+            # announcement. The content already started this exact owner; the
+            # later created frame confirms it rather than naming a second,
+            # server-initiated response that would hold the lane after the
+            # owner's terminal arrives.
+            self._remember_seen_response_id(response_id)
+            logger.info(
+                "late response.created confirmed content-started owner (%s)",
+                owner.source,
+            )
+            return False
         if owner is not None and not owner.ticket.started.done():
             # The first response.created after the owner's response.create is
             # credited to the owner. Remember its response id (when the
             # provider supplies one) so only that response's terminal event
             # can release the lane.
-            owner.response_id = self._event_response_id(event)
+            owner.response_id = response_id
             self._remember_seen_response_id(owner.response_id)
             owner.ticket.started.set_result(None)
             return True
@@ -932,7 +925,6 @@ class RealtimeResponseArbiter:
         # server-initiated response. Remember its id so its terminal event is
         # recognized as an orphan even when the owner's own response.created
         # carried no id.
-        response_id = self._event_response_id(event)
         self._remember_seen_response_id(response_id)
         if response_id is not None:
             self._remember_server_response_id(response_id)
@@ -946,6 +938,23 @@ class RealtimeResponseArbiter:
         # dispatching request captured for itself.
         self._note_unowned_announcement(response_id)
         return True
+
+    def response_created_confirms_started_owner(
+        self,
+        event: dict[str, Any],
+    ) -> bool:
+        """Whether a delayed announcement only confirms the current owner."""
+
+        if self._retired_created_window_live() or self._server_vad_response_pending:
+            return False
+        owner = self._response_owner
+        response_id = self._event_response_id(event)
+        return bool(
+            owner is not None
+            and owner.ticket.started.done()
+            and owner.response_id is not None
+            and response_id == owner.response_id
+        )
 
     def notify_response_content(self, event: dict[str, Any]) -> bool:
         """Use verified, id-bearing content as an owned response's start.

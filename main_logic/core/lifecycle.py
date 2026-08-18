@@ -261,7 +261,10 @@ class LifecycleMixin:
                     and failure_generation != current_generation
                 ):
                     logger.info(
-                        "⏭️ handle_connection_error: connection generation stale, skipping"
+                        "⏭️ handle_connection_error: connection generation stale "
+                        "(failure=%s current=%s), skipping",
+                        failure_generation,
+                        current_generation,
                     )
                     return
             # Only flag the manager-level flag for main session errors (or unguarded calls).

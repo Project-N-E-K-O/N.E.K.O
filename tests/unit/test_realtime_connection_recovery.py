@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 import websockets
+from websockets.frames import Close
 
 from main_logic.core import LLMSessionManager
 from main_logic.omni_realtime_client import OmniRealtimeClient, TurnDetectionMode
@@ -69,10 +70,25 @@ async def _start_receiver(client: OmniRealtimeClient, ws: _ControlledWs):
 
 
 async def _settle_background_tasks(client: OmniRealtimeClient) -> None:
-    for _ in range(10):
-        if not client._bg_tasks:
-            return
-        await asyncio.sleep(0)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + 2.0
+    while client._bg_tasks:
+        pending = set(client._bg_tasks)
+        await asyncio.wait_for(
+            asyncio.gather(*pending),
+            timeout=max(0.0, deadline - loop.time()),
+        )
+
+
+def _make_manager(session=None) -> LLMSessionManager:
+    manager = object.__new__(LLMSessionManager)
+    manager.lock = asyncio.Lock()
+    manager.session = session if session is not None else object()
+    manager.pending_session = None
+    manager.session_closed_by_server = False
+    manager.send_status = AsyncMock()
+    manager.disconnected_by_server = AsyncMock()
+    return manager
 
 
 @pytest.mark.asyncio
@@ -132,10 +148,38 @@ async def test_retired_receive_loop_cannot_condemn_or_report_the_replacement():
     client._on_connection_attached()
     retired.finish_from_peer()
     await asyncio.wait_for(receiver, timeout=2)
+    await _settle_background_tasks(client)
 
     assert client.ws is replacement
     assert client._fatal_error_occurred is False
     failures.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_peer_policy_close_preserves_existing_1008_classification():
+    failures = AsyncMock()
+    client = _make_client(on_connection_error=failures)
+    ws = _ControlledWs()
+    receiver = await _start_receiver(client, ws)
+
+    ws.fail_from_peer(
+        websockets.exceptions.ConnectionClosedError(
+            Close(1008, "provider-controlled reason"),
+            None,
+        )
+    )
+    await asyncio.wait_for(receiver, timeout=2)
+    await _settle_background_tasks(client)
+
+    payload = json.loads(failures.await_args.args[0])
+    assert payload == {
+        "code": "API_1008_FALLBACK",
+        "details": {
+            "msg": "WebSocket close code 1008",
+            "connection_generation": 0,
+        },
+    }
+    assert "provider-controlled reason" not in failures.await_args.args[0]
 
 
 @pytest.mark.asyncio
@@ -193,13 +237,7 @@ async def test_connect_uses_two_second_close_handshake_timeout():
 
 @pytest.mark.asyncio
 async def test_peer_disconnect_marker_is_not_shown_twice_before_recovery():
-    manager = object.__new__(LLMSessionManager)
-    manager.lock = asyncio.Lock()
-    manager.session = object()
-    manager.pending_session = None
-    manager.session_closed_by_server = False
-    manager.send_status = AsyncMock()
-    manager.disconnected_by_server = AsyncMock()
+    manager = _make_manager()
 
     marker = json.dumps({"code": "CHARACTER_DISCONNECTED"})
     await manager.handle_connection_error(marker, expected_session=manager.session)
@@ -212,13 +250,7 @@ async def test_peer_disconnect_marker_is_not_shown_twice_before_recovery():
 
 @pytest.mark.asyncio
 async def test_preclassified_timeout_is_forwarded_before_existing_recovery():
-    manager = object.__new__(LLMSessionManager)
-    manager.lock = asyncio.Lock()
-    manager.session = object()
-    manager.pending_session = None
-    manager.session_closed_by_server = False
-    manager.send_status = AsyncMock()
-    manager.disconnected_by_server = AsyncMock()
+    manager = _make_manager()
 
     status = json.dumps({"code": "CONNECTION_TIMEOUT"})
     await manager.handle_connection_error(status, expected_session=manager.session)
@@ -231,13 +263,9 @@ async def test_preclassified_timeout_is_forwarded_before_existing_recovery():
 
 @pytest.mark.asyncio
 async def test_late_failure_from_a_retired_generation_cannot_recover_the_successor():
-    manager = object.__new__(LLMSessionManager)
-    manager.lock = asyncio.Lock()
-    manager.session = type("Session", (), {"_connection_generation": 2})()
-    manager.pending_session = None
-    manager.session_closed_by_server = False
-    manager.send_status = AsyncMock()
-    manager.disconnected_by_server = AsyncMock()
+    manager = _make_manager(
+        type("Session", (), {"_connection_generation": 2})()
+    )
 
     await manager.handle_connection_error(
         _failure_status("CHARACTER_DISCONNECTED", generation=1),

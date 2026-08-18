@@ -39,29 +39,10 @@ from ._shared import (
     uuid,
     websockets,
 )
-from ._protocol_capabilities import ID_BEARING_RESPONSE_CONTENT_EVENT_TYPES
-
-
-def _response_id_text(value: Any) -> str | None:
-    """One reading of "does this name a response", used by both id sources.
-
-    Absent is ``None`` or the empty string — neither names anything, and
-    admitting the empty one would collapse every unidentified response onto a
-    shared identity. Zero is PRESENT: a provider numbering from zero names its
-    first response perfectly well.
-
-    Both halves matter and I got each wrong once. The original truthiness test
-    dropped `0`; replacing it with a bare ``is None`` check then stopped an
-    empty top-level ``response_id`` from falling back to the nested
-    ``response.id``, so a late terminal of that shape skipped the stale filter
-    and finalized whatever turn was current. Reading it in one place is what
-    keeps the two sources from disagreeing again.
-    """
-
-    if value is None:
-        return None
-    text = str(value)
-    return text or None
+from ._protocol_capabilities import (
+    ID_BEARING_RESPONSE_CONTENT_EVENT_TYPES,
+    _response_id_text,
+)
 
 
 _ATTACHED_TRANSPORT = object()
@@ -1964,14 +1945,28 @@ class _TransportMixin:
                     self._reset_per_turn_output_state()
                     await self._notify_turn_finished()
                 elif event_type == "response.created":
+                    confirms_started_owner = (
+                        self._response_arbiter.response_created_confirms_started_owner(
+                            event
+                        )
+                    )
                     expose_response = self._response_arbiter.notify_response_created(event)
                     self._response_created_total += 1
                     self._last_response_created_time = time.time()
                     if not expose_response:
+                        # A delayed announcement for a content-started owner is
+                        # consumed without beginning host lifecycle twice, but
+                        # still proves that this connection announces.
+                        if confirms_started_owner:
+                            self._announces_responses = True
                         continue
                     self._announces_responses = True
                     self._begin_response_lifecycle(
-                        event.get("response", {}).get("id")
+                        _response_id_text(
+                            (event.get("response") or {}).get("id")
+                            if isinstance(event.get("response"), dict)
+                            else None
+                        )
                     )
                 elif event_type == "response.output_item.added":
                     self._current_item_id = event.get("item", {}).get("id")
@@ -2136,11 +2131,22 @@ class _TransportMixin:
         except websockets.exceptions.ConnectionClosedError as e:
             received_code = getattr(getattr(e, "rcvd", None), "code", None)
             sent_code = getattr(getattr(e, "sent", None), "code", None)
+            status_code = (
+                "API_1008_FALLBACK"
+                if received_code == 1008
+                else "CHARACTER_DISCONNECTED"
+            )
+            status_details = (
+                {"msg": "WebSocket close code 1008"}
+                if received_code == 1008
+                else None
+            )
             recovered = await self._recover_receive_loop_disconnect(
                 message_ws,
                 message_generation,
                 "realtime connection closed unexpectedly",
-                status_code="CHARACTER_DISCONNECTED",
+                status_code=status_code,
+                status_details=status_details,
             )
             if recovered:
                 logger.warning(
@@ -2219,6 +2225,7 @@ class _TransportMixin:
         reason: str,
         *,
         status_code: str,
+        status_details: dict[str, Any] | None = None,
     ) -> bool:
         """Retire a peer-failed connection and request the existing recovery.
 
@@ -2239,10 +2246,20 @@ class _TransportMixin:
         await self._close_failed_transport(reason)
         if not self._still_owns_connection(generation):
             return False
-        self._schedule_connection_error(status_code, generation)
+        self._schedule_connection_error(
+            status_code,
+            generation,
+            status_details=status_details,
+        )
         return True
 
-    def _schedule_connection_error(self, status_code: str, generation) -> None:
+    def _schedule_connection_error(
+        self,
+        status_code: str,
+        generation,
+        *,
+        status_details: dict[str, Any] | None = None,
+    ) -> None:
         """Run manager recovery outside the receive loop that it must cancel."""
 
         callback = self.on_connection_error
@@ -2253,11 +2270,13 @@ class _TransportMixin:
             if not self._still_owns_connection(generation):
                 return
             try:
+                details = dict(status_details or {})
+                details["connection_generation"] = generation
                 await callback(
                     json.dumps(
                         {
                             "code": status_code,
-                            "details": {"connection_generation": generation},
+                            "details": details,
                         }
                     )
                 )
