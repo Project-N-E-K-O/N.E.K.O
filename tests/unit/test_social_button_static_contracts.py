@@ -107,14 +107,19 @@ def test_social_open_request_is_deduped_before_fetching_config():
     assert "event.source === candidate.targetWindow && event.origin === candidate.targetOrigin" in source
     assert "data.source !== 'neko-community' || data.type !== 'theme-ready'" in source
     assert "postSocialTheme(target, isResolvedDarkTheme())" in source
-    assert "state.targets.push({ targetWindow, targetOrigin: parsed.origin })" in source
+    assert "state.targets.push(target)" in source
     assert "state.targets = state.targets.filter" in source
+    assert "function queueSocialThemeSync(target)" in source
+    assert "[0, 100, 300, 1000].forEach" in source
     assert "attachResolvedTheme(parsedTarget)" in listener
     assert "currentPopup.location.replace(navigationTarget)" in listener
+    assert "themeTarget = registerSocialThemeTarget(currentPopup, parsedTarget)" in listener
+    assert "if (navigated) queueSocialThemeSync(themeTarget)" in listener
     assert "window.__nekoSocialThemeHeartbeat = setInterval" in source
     assert "publishSocialTheme(isResolvedDarkTheme())" in source
     assert "currentPopup.opener = null" in listener
     assert "currentPopup.opener = window" not in listener
+    assert "throw new Error('failed to navigate browser community window')" not in listener
     assert "const resolvedTargetUrl = attachResolvedTheme(" in listener
     assert "resolvedTargetUrl.toString()" in listener
     assert "registerSocialThemeTarget(socialWin, resolvedTargetUrl)" in listener

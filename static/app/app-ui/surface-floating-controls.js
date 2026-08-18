@@ -287,18 +287,23 @@
         }
 
         function registerSocialThemeTarget(targetWindow, targetUrl) {
-            if (!targetWindow) return;
+            if (!targetWindow) return null;
             try {
                 const parsed = new URL(String(targetUrl), window.location.href);
-                if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return;
+                if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
                 const state = getSocialThemeBridgeState();
                 const existing = state.targets.find((target) => target.targetWindow === targetWindow);
                 if (existing) {
                     existing.targetOrigin = parsed.origin;
+                    return existing;
                 } else {
-                    state.targets.push({ targetWindow, targetOrigin: parsed.origin });
+                    const target = { targetWindow, targetOrigin: parsed.origin };
+                    state.targets.push(target);
+                    return target;
                 }
-            } catch (_) { /* invalid target URL */ }
+            } catch (_) {
+                return null;
+            }
         }
 
         function postSocialTheme(target, darkMode) {
@@ -319,6 +324,19 @@
                 } catch (_) {
                     return false;
                 }
+            });
+        }
+
+        function queueSocialThemeSync(target) {
+            if (!target) return;
+            [0, 100, 300, 1000].forEach((delayMs) => {
+                setTimeout(() => {
+                    try {
+                        if (!target.targetWindow.closed) {
+                            postSocialTheme(target, isResolvedDarkTheme());
+                        }
+                    } catch (_) { /* target may still be navigating or already closed */ }
+                }, delayMs);
             });
         }
 
@@ -381,12 +399,13 @@
                 }
                 const currentPopup = popupRef;
                 let navigationTarget = targetUrl;
+                let themeTarget = null;
                 try {
                     const parsedTarget = new URL(String(targetUrl), window.location.href);
                     if (parsedTarget.searchParams.get('neko_source_origin') === window.location.origin) {
                         attachResolvedTheme(parsedTarget);
                         navigationTarget = parsedTarget.toString();
-                        registerSocialThemeTarget(currentPopup, parsedTarget);
+                        themeTarget = registerSocialThemeTarget(currentPopup, parsedTarget);
                     }
                 } catch (_) { /* non-community navigation */ }
                 // The external page receives theme-only messages but never a reference
@@ -405,6 +424,7 @@
                     }
                 }
                 try { currentPopup.focus && currentPopup.focus(); } catch (_) { /* ignore */ }
+                if (navigated) queueSocialThemeSync(themeTarget);
                 if (navigated && !options.keepReference) {
                     popupRef = null;
                 }
@@ -739,7 +759,15 @@
                                     }
                                 } else if (popupRef) {
                                     if (!navigateBrowserPopup(refreshedTargetUrl.toString())) {
-                                        throw new Error('failed to navigate browser community window');
+                                        console.warn('[social] failed to navigate browser community window after OAuth');
+                                        closePopup();
+                                        if (typeof window.showStatusToast === 'function') {
+                                            window.showStatusToast(
+                                                (window.t && window.t('app.socialOpenFailed', { error: 'community navigation failed' }))
+                                                    || '社交窗口打开失败：community navigation failed',
+                                                4000
+                                            );
+                                        }
                                     }
                                 }
                             }
