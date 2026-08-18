@@ -1652,7 +1652,7 @@ _CHAT_GOVERNING_CONDITION_RE = re.compile(
     + _CHAT_GOVERNING_CONDITION_PATTERN
 )
 _CHAT_GOVERNING_EN_CONDITION_RE = re.compile(
-    r"^\s*(?i:(?:if|when|unless)\b)"
+    r"^\s*(?i:(?:if|when|unless)\b|only\s+after\s+(?:the\s+)?user\s+approves\b)"
 )
 _CHAT_PRESERVATION_ZH_CONDITION_RE = re.compile(
     r"^\s*(?:如果|假如|若是|要是|倘若|万一|萬一|假若)[^。，、！？,.!?;；]*[，,]"
@@ -2547,7 +2547,13 @@ def _chat_text_requests_full_rewrite(text: str) -> bool:
     masked = _chat_mask_quoted_spans(text)
     marker_text = _chat_mask_assignment_value_before_next_command(text, masked)
     active_start = 0
-    if not _CHAT_GOVERNING_INSTRUCTION_PROHIBITION_RE.search(marker_text):
+    if not (
+        _CHAT_GOVERNING_INSTRUCTION_PROHIBITION_RE.search(marker_text)
+        or re.search(
+            r"(?i:\b[a-z][a-z ]{0,40}\s+is\s+new\s+request\s*:)",
+            masked,
+        )
+    ):
         active_start = _chat_active_request_start(text, marker_text=marker_text)
     if active_start:
         text = text[active_start:]
@@ -2700,6 +2706,7 @@ def _chat_instruction_explicitly_removes_field(
     key = re.escape(field_key)
     removal_re = re.compile(
         rf"(?:删除|刪除|移除)\s*{key}(?![A-Za-z0-9_])"
+        rf"|(?:把|将|將)\s*{key}\s*(?:删除|刪除|移除)"
         rf"|\b(?:delete|remove)\b\s+{key}(?![A-Za-z0-9_])",
         re.IGNORECASE,
     )
@@ -2847,7 +2854,7 @@ _CHAT_FIELD_EDIT_PROHIBITION_RE = re.compile(
 )
 _CHAT_PRESERVATION_EXCEPT_RE = re.compile(
     r"(?:"
-    r"(?:除|除了)\s*(?P<keys_zh>[^，。！？；;\r\n]+?)\s*(?:以外|之外)"
+    r"(?:除|除了)\s*(?P<keys_zh>[^，。！？；;\r\n]+?)\s*(?:(?:以外|之外)|(?=[，。！？；;\r\n]|$))"
     r"|(?i:\bexcept(?:\s+for)?\s+)(?P<keys_en>[^，。！？；,.!?;\r\n“”‘’\"']+?)"
     r"(?=(?i:\b(?:but|however)\s*(?:change|update|edit|modify|rewrite|revise|regenerate|redo|refresh|delete)\b)"
     r"|[，。！？；,.!?;“”‘’\"']|$)"
@@ -3073,18 +3080,23 @@ def _chat_preservation_local_prefix(instruction: str, clause_start: int) -> str:
 
 
 def _chat_instruction_explicitly_updates_field(
-    instruction: str, field_key: str
+    instruction: str, field_key: str, *, after_offset: int
 ) -> bool:
     """Return whether a later English contrast explicitly updates a field."""
     if not instruction or not field_key:
         return False
     key = re.escape(field_key)
     update_re = re.compile(
-        rf"(?i:\b(?:but|however)\s+"
+        rf"(?:(?i:\b(?:but|however)\s+"
         rf"(?:change|update|edit|modify|rewrite|revise|regenerate|redo|refresh)\s+"
         rf"{key}(?![A-Za-z0-9_]))"
+        rf"|(?:但|但是|可是|不过|不過|然后|然後)\s*"
+        rf"(?:改|修改|更改|重写|重寫|改写|改寫|调整|調整)\s*{key})"
     )
+    active_start = _chat_active_request_start(instruction)
     for match in update_re.finditer(instruction):
+        if match.start() < max(active_start, after_offset):
+            continue
         if _chat_span_is_quoted(instruction, match.start(), match.end()):
             continue
         if _chat_preservation_clause_is_meta_request_text(instruction, match.start()):
@@ -3194,7 +3206,7 @@ def _chat_preserved_target_keys(
             continue
         clause = clause_match.group(0)
         if clause_match.group("verb") in {"维持", "維持"} and not re.search(
-            r"不(?:变|變)", clause
+            _CHAT_UNCHANGED_PREDICATE_PATTERN, clause
         ):
             continue
         except_in_clause = _CHAT_PRESERVATION_EXCEPT_RE.search(clause)
@@ -3342,8 +3354,11 @@ def _chat_preserved_target_keys(
     }
     return {
         key
-        for key in preserved
-        if not _chat_instruction_explicitly_updates_field(instruction or "", key)
+        for key, start, end in candidates
+        if key in preserved
+        and not _chat_instruction_explicitly_updates_field(
+            instruction or "", key, after_offset=end
+        )
     }
 
 

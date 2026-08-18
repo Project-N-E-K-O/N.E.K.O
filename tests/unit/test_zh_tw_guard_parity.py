@@ -5116,6 +5116,33 @@ def test_old_removal_does_not_override_active_request_preservation():
     assert router._chat_instruction_explicitly_removes_field(text, 'avatar') is False
 
 
+def test_additional_preservation_and_recovery_boundaries():
+    import main_routers.card_assist_router as router
+
+    assert router._chat_preserved_target_keys(
+        'Rewrite all fields except avatar, but update avatar. New request: rewrite all fields except avatar',
+        ['avatar'],
+    ) == {'avatar'}
+    assert router._chat_preserved_target_keys(
+        '请重写所有字段，维持头像原样', ['头像']
+    ) == {'头像'}
+    assert router._chat_preserved_target_keys(
+        '请重写除头像和名字以外的所有字段，然后修改名字', ['头像', '名字']
+    ) == {'头像'}
+    assert router._chat_instruction_explicitly_removes_field(
+        '请重写除头像以外的所有字段，然后把头像删除', '头像'
+    ) is True
+    assert router._chat_text_requests_full_rewrite(
+        'The catchphrase is new request: rewrite all fields'
+    ) is False
+    assert router._chat_preserved_target_keys(
+        '请重写所有字段，除了头像', ['头像']
+    ) == {'头像'}
+    assert router._chat_text_requests_full_rewrite(
+        'Only after the user approves, rewrite all fields if possible'
+    ) is False
+
+
 @pytest.mark.parametrize(
     'text',
     [
