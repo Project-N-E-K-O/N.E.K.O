@@ -2430,6 +2430,31 @@ def test_delete_refuses_symlinked_recorded_profile(
 
 
 @pytest.mark.plugin_unit
+def test_delete_refuses_recorded_profile_below_symlinked_ancestor(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    plugin_dir = tmp_path / "symlinked_ancestor_plugin"
+    profiles_root = tmp_path / "profiles"
+    symlinked_ancestor = tmp_path / "old_profiles"
+    profile_dir = symlinked_ancestor / "symlinked_package"
+    install_source_manager = _FakeInstallSourceManager(
+        package_id="symlinked_package",
+        profile_dir=str(profile_dir),
+        profile_installed=True,
+    )
+    original_is_symlink = Path.is_symlink
+
+    def _is_symlink(path: Path) -> bool:
+        return path == symlinked_ancestor or original_is_symlink(path)
+
+    monkeypatch.setattr(Path, "is_symlink", _is_symlink)
+    monkeypatch.setattr(module, "get_install_source_manager", lambda: install_source_manager)
+    monkeypatch.setattr(module, "get_user_package_profiles_root", lambda: profiles_root)
+
+    assert module._stage_orphaned_package_profile_sync(plugin_dir) is None
+    assert install_source_manager.marked_removed == []
+@pytest.mark.plugin_unit
 def test_delete_removes_profile_not_shared_at_a_different_custom_root(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

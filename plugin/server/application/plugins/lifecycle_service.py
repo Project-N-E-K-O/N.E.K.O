@@ -386,7 +386,7 @@ def _profile_path_from_entry_sync(entry: object, profiles_root: Path) -> Path | 
         if raw_profile_dir
         else profiles_root / package_id
     )
-    if candidate.is_symlink():
+    if _path_has_symlink_ancestor(candidate):
         return None
     try:
         profile_dir = candidate.resolve()
@@ -401,6 +401,11 @@ def _profile_path_from_entry_sync(entry: object, profiles_root: Path) -> Path | 
     ):
         return None
     return profile_dir
+
+
+def _path_has_symlink_ancestor(path: Path) -> bool:
+    """Reject a path when resolving it would traverse a symlink."""
+    return any(candidate.is_symlink() for candidate in (path, *path.parents))
 
 
 @dataclass(frozen=True)
@@ -464,7 +469,7 @@ def _stage_orphaned_package_profile_sync(plugin_dir: Path) -> _StagedPackageProf
             if recorded_profile_dir
             else profiles_root / package_id
         )
-        if profile_candidate.is_symlink():
+        if _path_has_symlink_ancestor(profile_candidate):
             logger.warning(
                 "delete_plugin: refusing to remove symlinked package profile path: {}",
                 profile_candidate,

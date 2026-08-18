@@ -2827,6 +2827,7 @@ async def _replace_market_plugin_transaction(
     manager: Any,
     expected_plugin_id: str,
     original_entry: LockEntry,
+    original_entry_fingerprint: tuple[object, ...],
     installed_package_id: str,
     replace_kwargs: dict[str, Any],
 ) -> Any:
@@ -2837,6 +2838,7 @@ async def _replace_market_plugin_transaction(
         or active_entry.directory_name != original_entry.directory_name
         or (getattr(active_entry, "package_id", "") or active_entry.plugin_id)
         != installed_package_id
+        or _market_entry_fingerprint(active_entry) != original_entry_fingerprint
     ):
         raise _TaskError(
             code="plugin_upgrade_plan_changed",
@@ -2844,6 +2846,21 @@ async def _replace_market_plugin_transaction(
             http_status=409,
         )
     return await replace_plugin(**replace_kwargs)
+
+
+def _market_entry_fingerprint(entry: object) -> tuple[object, ...]:
+    """Identify the exact lock snapshot an upgrade was planned against."""
+    source_detail = getattr(entry, "source_detail", None)
+    return (
+        getattr(entry, "root_id", ""),
+        getattr(entry, "directory_name", ""),
+        getattr(entry, "plugin_id", ""),
+        getattr(entry, "package_id", ""),
+        getattr(entry, "installed_at", ""),
+        getattr(entry, "updated_at", ""),
+        getattr(source_detail, "version", ""),
+        getattr(source_detail, "package_sha256", ""),
+    )
 
 
 async def _do_upgrade(
@@ -2880,6 +2897,7 @@ async def _do_upgrade(
             http_status=400,
         )
     installed_plugin_id = entry.plugin_id
+    entry_fingerprint = _market_entry_fingerprint(entry)
 
     path_policy = PluginCliPathPolicy.from_settings()
     plugin_dir = (path_policy.user_plugins_root / entry.directory_name).resolve()
@@ -2943,7 +2961,12 @@ async def _do_upgrade(
                     f"installed={installed_package_id!r} incoming={package_id!r}"
                 ),
             )
-        profile_dir = (path_policy.package_profiles_root / package_id).resolve()
+        recorded_profile_dir = str(getattr(entry, "profile_dir", "") or "")
+        profile_dir = (
+            Path(recorded_profile_dir).expanduser().resolve()
+            if recorded_profile_dir
+            else (path_policy.package_profiles_root / package_id).resolve()
+        )
         market_override = _build_market_override(
             payload,
             mode="reinstall" if record_as_reinstall else "upgrade",
@@ -3004,6 +3027,7 @@ async def _do_upgrade(
                 manager=mgr,
                 expected_plugin_id=expected_plugin_id,
                 original_entry=entry,
+                original_entry_fingerprint=entry_fingerprint,
                 installed_package_id=installed_package_id,
                 replace_kwargs={
                     "layout": resolve_plugin_layout(installed_plugin_id, plugin_dir),
