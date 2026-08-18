@@ -1634,10 +1634,10 @@ _CHAT_SCOPED_SIGNAL_BRIDGE_RE = re.compile(
 _CHAT_GOVERNING_CONDITION_PATTERN = (
     r"(?:(?:如果|假如|若是|要是|倘若|万一|萬一|假若)"
     r"[^。，、！？,.!?;；]*?(?:[，,]\s*)?(?:再|才|就)"
-    r"|只有\s*在?\s*(?:用户|用戶)\s*(?:确认|確認)后\s*才(?:能|可)?"
-    r"|等\s*(?:用户|用戶)\s*(?:确认|確認)后\s*再"
-    r"|(?:用户|用戶)\s*(?:确认|確認)后\s*才(?:能|可)?"
-    r"|(?:用户|用戶)\s*(?:确认|確認)后\s*方可)\s*"
+    r"|只有\s*在?\s*(?:用户|用戶)\s*(?:确认|確認|同意)后\s*才(?:能|可)?"
+    r"|等\s*(?:用户|用戶)\s*(?:确认|確認|同意)后\s*再"
+    r"|(?:用户|用戶)\s*(?:确认|確認|同意)后\s*(?:再|才(?:能|可)?)"
+    r"|(?:用户|用戶)\s*(?:确认|確認|同意)后\s*方可)\s*"
     r"(?:执行|執行|应用|應用|采用|採用|进行|進行|"
     + _CHAT_ZH_COMMAND_HEAD
     + r")"
@@ -1648,6 +1648,12 @@ _CHAT_GOVERNING_CONDITION_RE = re.compile(
 )
 _CHAT_GOVERNING_EN_CONDITION_RE = re.compile(
     r"^\s*(?i:(?:if|when|unless)\b)"
+)
+_CHAT_PRESERVATION_ZH_CONDITION_RE = re.compile(
+    r"^\s*(?:如果|假如|若是|要是|倘若|万一|萬一|假若)[^。，、！？,.!?;；]*[，,]"
+)
+_CHAT_PRESERVATION_EN_QUESTION_HEAD_RE = re.compile(
+    r"^\s*(?i:(?:should|could|would|can|do|does|did|why|how|what|which|are|is)\b)"
 )
 _CHAT_GOVERNING_EXECUTION_QUESTION_RE = re.compile(
     r"^\s*(?:(?:请问|請問|你觉得|你覺得|我想知道)\s*)?"
@@ -2239,6 +2245,15 @@ def _chat_text_requests_full_rewrite_core(text: str) -> bool:
         if sentence_end is not None:
             return _chat_text_requests_full_rewrite_core(text[sentence_end.end():])
         return False
+    governing_condition = _CHAT_SCOPED_GOVERNING_CONDITION_RE.search(masked)
+    if governing_condition:
+        sentence_end = _CHAT_GOVERNING_PROHIBITION_SENTENCE_END_RE.search(
+            masked,
+            governing_condition.end(),
+        )
+        if sentence_end is not None:
+            return _chat_text_requests_full_rewrite_core(text[sentence_end.end():])
+        return False
     for sentence in _CHAT_REPORTING_CONTEXT_RESET_RE.split(text):
         reporting_start = _chat_third_party_reporting_start(sentence)
         if reporting_start is not None:
@@ -2663,10 +2678,12 @@ async def _complete_full_rewrite_actions(
 ) -> list[dict]:
     preserved = _chat_preserved_target_keys(user_instruction, target_keys)
     if preserved:
+        preserved_lookup = {key.casefold() for key in preserved}
         actions = [
             action
             for action in actions
-            if str(action.get("field_key") or "").strip() not in preserved
+            if str(action.get("field_key") or "").strip().casefold()
+            not in preserved_lookup
         ]
     present = {
         str(a.get("field_key") or "").strip()
@@ -2857,7 +2874,25 @@ def _chat_preservation_sentence_has_governing_guard(
     return bool(
         re.search(r"[？?]\s*$", readable)
         or _CHAT_QUESTION_CLAUSE_RE.search(readable)
+        or _CHAT_GOVERNING_CONDITION_RE.search(readable)
+        or _CHAT_GOVERNING_EN_CONDITION_RE.search(readable)
+        or _CHAT_PRESERVATION_ZH_CONDITION_RE.search(readable)
     )
+
+
+def _chat_preservation_sentence_starts_with_english_question(
+    instruction: str, clause_start: int
+) -> bool:
+    """Return whether the containing sentence starts as an English question."""
+    sentence_start = 0
+    for reset in _CHAT_REPORTING_CONTEXT_RESET_RE.finditer(
+        instruction or "", 0, clause_start
+    ):
+        sentence_start = reset.end()
+    readable_prefix = _chat_clause_without_quotes(
+        (instruction or "")[sentence_start:clause_start]
+    )
+    return bool(_CHAT_PRESERVATION_EN_QUESTION_HEAD_RE.search(readable_prefix))
 
 
 def _chat_preservation_match_is_constraint(
@@ -2949,10 +2984,17 @@ def _chat_preserved_target_keys(
             key=lambda item: (item[1], item[2]),
         )
         for index, (raw_key, start, end) in enumerate(target_matches):
-            segment_end = (
+            next_target_start = (
                 target_matches[index + 1][1] - clause_match.start()
                 if index + 1 < len(target_matches)
                 else len(clause)
+            )
+            remaining = clause[end - clause_match.start():next_target_start]
+            predicate_end = re.search(r"(?i:\band\b)|[，,、]", remaining)
+            segment_end = (
+                end - clause_match.start() + predicate_end.start()
+                if predicate_end is not None
+                else next_target_start
             )
             key_segment = clause[:segment_end]
             if _chat_preservation_match_is_constraint(
@@ -3011,9 +3053,14 @@ def _chat_preserved_target_keys(
         ):
             continue
         if (
-            clause_match.group("keys_after") is None
-            and _chat_preservation_sentence_has_governing_guard(
+            _chat_preservation_sentence_has_governing_guard(
                 instruction or "", clause_match.start()
+            )
+            and (
+                clause_match.group("keys_after") is None
+                or _chat_preservation_sentence_starts_with_english_question(
+                    instruction or "", clause_match.start()
+                )
             )
         ):
             continue

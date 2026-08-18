@@ -4393,6 +4393,14 @@ def test_leading_english_condition_governs_scoped_recovery():
     assert router._chat_text_requests_full_rewrite(text) is False
 
 
+def test_bare_user_consent_condition_governs_scoped_recovery():
+    import main_routers.card_assist_router as router
+
+    text = '请重写整张卡并说明，用户同意后再执行'
+    assert router._chat_text_requests_full_rewrite_core(text) is False
+    assert router._chat_text_requests_full_rewrite(text) is False
+
+
 def test_meta_request_text_does_not_preserve_fields_for_a_later_rewrite():
     import main_routers.card_assist_router as router
 
@@ -4622,6 +4630,14 @@ def test_leading_conditions_do_not_preserve_targets():
     assert router._chat_text_requests_full_rewrite(text) is True
 
 
+def test_chinese_conditions_do_not_preserve_targets():
+    import main_routers.card_assist_router as router
+
+    text = '如果用户确认，请保留头像。现在请重写所有字段'
+    assert router._chat_preserved_target_keys(text, ['头像']) == set()
+    assert router._chat_text_requests_full_rewrite(text) is True
+
+
 def test_field_before_preservation_is_bound_to_nearest_target():
     import main_routers.card_assist_router as router
 
@@ -4633,6 +4649,13 @@ def test_mixed_preservation_constraints_are_evaluated_per_target():
     import main_routers.card_assist_router as router
 
     text = 'Rewrite all fields and keep name short and avatar unchanged'
+    assert router._chat_preserved_target_keys(text, ['name', 'avatar']) == {'avatar'}
+
+
+def test_unchanged_targets_before_later_constraints_are_preserved():
+    import main_routers.card_assist_router as router
+
+    text = 'Rewrite all fields and keep avatar unchanged and name short'
     assert router._chat_preserved_target_keys(text, ['name', 'avatar']) == {'avatar'}
 
 
@@ -4668,6 +4691,42 @@ def test_field_edit_prohibition_questions_do_not_preserve_targets():
     text = '不要改头像吗？现在请重写所有字段'
     assert router._chat_preserved_target_keys(text, ['头像']) == set()
     assert router._chat_text_requests_full_rewrite(text) is True
+
+
+def test_english_field_edit_prohibition_questions_do_not_preserve_targets():
+    import main_routers.card_assist_router as router
+
+    text = 'Should I never change avatar? Rewrite all fields'
+    assert router._chat_preserved_target_keys(text, ['avatar']) == set()
+    assert router._chat_text_requests_full_rewrite(text) is True
+
+
+@pytest.mark.asyncio
+async def test_preserved_actions_are_filtered_case_insensitively(monkeypatch):
+    import main_routers.card_assist_router as router
+
+    async def fail_complete_missing_fields(**kwargs):
+        raise AssertionError('preserved fields must not be completed')
+
+    monkeypatch.setattr(
+        router,
+        '_complete_missing_fields_by_refine',
+        fail_complete_missing_fields,
+    )
+    actions = await router._complete_full_rewrite_actions(
+        lang='en',
+        locale_code='en-US',
+        actions=[{
+            'type': 'refine_field',
+            'field_key': 'nickname',
+            'value': 'new',
+        }],
+        user_instruction='Rewrite all fields and preserve nickname',
+        current_card={'Nickname': 'old'},
+        current_card_text='Nickname: old',
+        target_keys=['Nickname'],
+    )
+    assert actions == []
 
 
 def test_full_rewrite_before_sequential_assignment_remains_active():
