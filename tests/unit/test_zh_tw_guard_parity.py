@@ -4713,6 +4713,36 @@ def test_english_edit_prohibitions_preserve_targets(verb):
     assert router._chat_preserved_target_keys(text, ['avatar']) == {'avatar'}
 
 
+def test_leave_unchanged_preserves_target():
+    import main_routers.card_assist_router as router
+
+    text = 'Rewrite all fields, but leave avatar unchanged'
+    assert router._chat_preserved_target_keys(text, ['avatar']) == {'avatar'}
+
+
+def test_multiline_preservation_clauses_do_not_cross_directives():
+    import main_routers.card_assist_router as router
+
+    text = 'Rewrite all fields\nKeep avatar unchanged\nChange name'
+    assert router._chat_preserved_target_keys(text, ['avatar', 'name']) == {
+        'avatar',
+    }
+
+
+def test_except_after_constraint_is_not_preservation_scope():
+    import main_routers.card_assist_router as router
+
+    text = 'Rewrite all fields, make everything concise except avatar'
+    assert router._chat_preserved_target_keys(text, ['avatar']) == set()
+
+
+def test_conditional_english_prohibition_does_not_preserve_target():
+    import main_routers.card_assist_router as router
+
+    text = 'If approved, do not change avatar. Rewrite all fields'
+    assert router._chat_preserved_target_keys(text, ['avatar']) == set()
+
+
 def test_later_positive_preservation_survives_earlier_revocation():
     import main_routers.card_assist_router as router
 
@@ -4881,6 +4911,39 @@ async def test_later_remove_action_revokes_preservation_for_same_field(monkeypat
         target_keys=['avatar'],
     )
     assert actions == [{'type': 'remove_field', 'field_key': 'avatar'}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ('instruction', 'field_key'),
+    [
+        ('Rewrite all fields except age, but delete age', 'Age'),
+        ('重写所有字段，除了age以外，但删除age', 'Age'),
+    ],
+)
+async def test_explicit_removal_matches_field_keys_case_insensitively(
+    instruction, field_key, monkeypatch
+):
+    import main_routers.card_assist_router as router
+
+    async def fail_complete_missing_fields(**kwargs):
+        raise AssertionError('explicit removal should satisfy the target')
+
+    monkeypatch.setattr(
+        router,
+        '_complete_missing_fields_by_refine',
+        fail_complete_missing_fields,
+    )
+    actions = await router._complete_full_rewrite_actions(
+        lang='en',
+        locale_code='en-US',
+        actions=[{'type': 'remove_field', 'field_key': 'Age'}],
+        user_instruction=instruction,
+        current_card={'Age': 'old'},
+        current_card_text='Age: old',
+        target_keys=['Age'],
+    )
+    assert actions == [{'type': 'remove_field', 'field_key': 'Age'}]
 
 
 @pytest.mark.asyncio
