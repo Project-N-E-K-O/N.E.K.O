@@ -943,6 +943,7 @@ async def test_failed_comment_session_is_discarded_before_retry(tmp_path, monkey
         "session": session,
         "reply_chunks": [],
         "lock": asyncio.Lock(),
+        "permission_level": "trusted",
     }
     config_manager = SimpleNamespace(
         get_character_data=lambda: (
@@ -973,6 +974,65 @@ async def test_failed_comment_session_is_discarded_before_retry(tmp_path, monkey
     assert reply is None
     assert session_key not in plugin._user_sessions
     session.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_reused_session_is_rebuilt_after_permission_change(tmp_path, monkeypatch):
+    plugin = make_plugin(tmp_path)
+    session_key = BiliDMPlugin._build_session_key("42")
+    stale_session = SimpleNamespace(close=AsyncMock())
+    plugin._user_sessions[session_key] = {
+        "session": stale_session,
+        "reply_chunks": [],
+        "lock": asyncio.Lock(),
+        "permission_level": "admin",
+        "memory_enabled": True,
+    }
+    config_manager = SimpleNamespace(
+        aensure_region_resolved=AsyncMock(),
+        get_character_data=lambda: (
+            "Master",
+            "Neko",
+            None,
+            {},
+            None,
+            {},
+            None,
+            None,
+            None,
+        ),
+        get_model_api_config=lambda _kind: {},
+    )
+    monkeypatch.setattr(
+        "utils.config_manager.get_config_manager", lambda: config_manager
+    )
+
+    class FreshSession:
+        def __init__(self, *, on_text_delta, **_kwargs):
+            self._on_text_delta = on_text_delta
+
+        async def connect(self, **_kwargs):
+            return None
+
+        async def stream_text(self, _message):
+            await self._on_text_delta("fresh reply", True)
+
+        async def close(self):
+            return None
+
+    monkeypatch.setattr("main_logic.omni_offline_client.OmniOfflineClient", FreshSession)
+    plugin._wait_session_response_complete = AsyncMock(return_value=True)
+
+    reply = await plugin._generate_reply(
+        message="hello",
+        permission_level="trusted",
+        sender_uid="42",
+    )
+
+    assert reply == "fresh reply"
+    stale_session.close.assert_awaited_once()
+    assert plugin._user_sessions[session_key]["permission_level"] == "trusted"
+    assert plugin._user_sessions[session_key]["memory_enabled"] is False
 
 
 @pytest.mark.asyncio

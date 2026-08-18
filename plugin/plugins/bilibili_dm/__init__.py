@@ -1342,6 +1342,25 @@ class BiliDMPlugin(NekoPluginBase):
             )
 
             # 会话管理（session_key 已在上面为区域落定判断算过）
+            cached_user_data = self._user_sessions.get(session_key)
+            if (
+                cached_user_data
+                and cached_user_data.get("permission_level") != permission_level
+            ):
+                # 权限变更可能排在同一用户已等待的处理任务之后。该任务拿到锁
+                # 时必须拒绝复用旧角色会话，避免降权后继续带着管理员提示词或记忆。
+                stale_user_data = self._user_sessions.pop(session_key, None)
+                stale_session = (
+                    stale_user_data.get("session") if stale_user_data else None
+                )
+                if stale_session:
+                    try:
+                        await stale_session.close()
+                    except Exception as close_exc:
+                        self.logger.warning(
+                            f"关闭权限已变更的旧会话失败 {session_key}: {close_exc}"
+                        )
+
             if session_key not in self._user_sessions:
                 self.logger.info(f"为 B站用户 {sender_uid} 创建新的 AI 会话")
 
