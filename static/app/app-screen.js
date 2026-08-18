@@ -283,7 +283,30 @@
 
     async function prepareRememberedWindowCapture() {
         var rememberedTitle = normalizeScreenSourceTitle(readRememberedWindowTitle());
-        var required = isScreenSourceTitleMatchEnabled() && !!rememberedTitle;
+        var titleMatchEnabled = isScreenSourceTitleMatchEnabled();
+        var selectedWindowIsBounded = typeof S.selectedScreenSourceId === 'string'
+            && S.selectedScreenSourceId.startsWith('window:');
+        var required = titleMatchEnabled && (!!rememberedTitle || selectedWindowIsBounded);
+
+        function buildCaptureResult(allowed, status) {
+            var expectedGeneration = screenSourceSelectionGeneration;
+            var expectedSourceId = S.selectedScreenSourceId;
+            var expectedTitle = normalizeScreenSourceTitle(readRememberedWindowTitle());
+            var expectedEnabled = isScreenSourceTitleMatchEnabled();
+            return {
+                required: required,
+                allowed: allowed,
+                sourceId: expectedSourceId,
+                status: status,
+                isCurrent: function () {
+                    return expectedGeneration === screenSourceSelectionGeneration
+                        && expectedSourceId === S.selectedScreenSourceId
+                        && expectedTitle === normalizeScreenSourceTitle(readRememberedWindowTitle())
+                        && expectedEnabled === isScreenSourceTitleMatchEnabled();
+                }
+            };
+        }
+
         if (!required) {
             return { required: false, allowed: true, sourceId: S.selectedScreenSourceId };
         }
@@ -293,21 +316,25 @@
             || typeof provider.getSources !== 'function') {
             // Portal-style providers cannot be silently enumerated without opening
             // another OS picker. Preserve their explicit user-selected source path.
-            return { required: true, allowed: true, sourceId: S.selectedScreenSourceId };
+            return buildCaptureResult(true, 'prompt-required');
         }
 
         var resolutionGeneration = screenSourceSelectionGeneration;
         var resolutionSourceId = S.selectedScreenSourceId;
         try {
-            var sources = await provider.getSources({
-                types: ['window', 'screen'],
-                thumbnailSize: { width: 0, height: 0 }
-            });
+            var sources = await window.invokeDesktopCaptureWithTimeout(
+                provider,
+                'getSources',
+                [{
+                    types: ['window', 'screen'],
+                    thumbnailSize: { width: 0, height: 0 }
+                }]
+            );
             if (resolutionGeneration !== screenSourceSelectionGeneration
                 || resolutionSourceId !== S.selectedScreenSourceId
                 || rememberedTitle !== normalizeScreenSourceTitle(readRememberedWindowTitle())
                 || !isScreenSourceTitleMatchEnabled()) {
-                return { required: true, allowed: false, sourceId: null };
+                return buildCaptureResult(false, 'superseded');
             }
 
             var selectedBeforeReconcile = S.selectedScreenSourceId;
@@ -321,15 +348,14 @@
                 S.screenCaptureStream = null;
                 S.screenCaptureStreamLastUsed = null;
             }
-            return {
-                required: true,
-                allowed: resolution.status === 'matched',
-                sourceId: S.selectedScreenSourceId,
-                status: resolution.status
-            };
+            return buildCaptureResult(
+                resolution.status === 'matched'
+                    || resolution.status === 'adopted-current-window',
+                resolution.status
+            );
         } catch (error) {
             console.warn('[屏幕源] 无法确认记忆窗口，停止本次截图:', error);
-            return { required: true, allowed: false, sourceId: null };
+            return buildCaptureResult(false, 'enumeration-failed');
         }
     }
     mod.prepareRememberedWindowCapture = prepareRememberedWindowCapture;

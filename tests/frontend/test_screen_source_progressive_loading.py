@@ -757,6 +757,84 @@ def test_screenshot_preflight_blocks_missing_remembered_title(
 
 
 @pytest.mark.frontend
+def test_screenshot_preflight_keeps_selected_window_bounded_when_title_store_fails(
+    page: Page,
+) -> None:
+    _install_screen_source_harness(
+        page,
+        initial_storage={
+            "screenSourceTitleMatchEnabled": "true",
+            "selectedScreenSourceId": "window:2",
+        },
+    )
+
+    result = page.evaluate(
+        """async () => {
+            const originalSetItem = window.localStorage.setItem.bind(window.localStorage);
+            window.localStorage.setItem = (key, value) => {
+                if (key === 'selectedScreenWindowTitle') {
+                    throw new Error('simulated title storage failure');
+                }
+                originalSetItem(key, value);
+            };
+            window.__desktopProvider.getSources = async () => [
+                { id: 'screen:1', name: 'Entire Screen', display_id: '1' },
+                { id: 'window:2', name: 'Editor', display_id: '' },
+            ];
+            const prepared = await window.appScreen.prepareRememberedWindowCapture();
+            return {
+                required: prepared.required,
+                allowed: prepared.allowed,
+                status: prepared.status ?? null,
+                sourceId: prepared.sourceId,
+                rememberedTitle:
+                    window.__storedValues.get('selectedScreenWindowTitle') ?? null,
+            };
+        }"""
+    )
+
+    assert result == {
+        "required": True,
+        "allowed": True,
+        "status": "adopted-current-window",
+        "sourceId": "window:2",
+        "rememberedTitle": None,
+    }
+
+
+@pytest.mark.frontend
+def test_screenshot_preflight_bounds_a_stalled_source_enumeration(page: Page) -> None:
+    _install_screen_source_harness(
+        page,
+        initial_storage={
+            "screenSourceTitleMatchEnabled": "true",
+            "selectedScreenWindowTitle": "Editor",
+            "selectedScreenSourceId": "window:2",
+        },
+    )
+
+    result = page.evaluate(
+        """async () => {
+            window.__desktopProvider.getSources = () => new Promise(() => {});
+            return Promise.race([
+                window.appScreen.prepareRememberedWindowCapture().then((prepared) => ({
+                    hung: false,
+                    required: prepared.required,
+                    allowed: prepared.allowed,
+                })),
+                new Promise((resolve) => setTimeout(() => resolve({ hung: true }), 3500)),
+            ]);
+        }"""
+    )
+
+    assert result == {
+        "hung": False,
+        "required": True,
+        "allowed": False,
+    }
+
+
+@pytest.mark.frontend
 def test_late_stream_for_old_selection_is_discarded_after_source_change(
     page: Page,
 ) -> None:

@@ -467,11 +467,172 @@ def test_manual_screenshot_does_not_widen_blocked_capture_to_backend_desktop():
         " { required: true, allowed: false })",
     ))
 
-    assert out == {
-        "calls": ["coordinate-remembered-window"],
-        "data": None,
-        "selected": None,
-    }
+    assert out["calls"] == ["coordinate-remembered-window"]
+    assert out.get("data") is None
+    assert out["selected"] is None
+
+
+_REMEMBERED_SCREENSHOT_RACE_TMPL = """
+const results = { calls: [], toasts: [] };
+class MediaStream {}
+let current = true;
+const S = {
+  selectedScreenSourceId: 'window:old',
+  screenCaptureStream: null,
+  screenCaptureStreamLastUsed: null
+};
+const U = { isMobile: () => false };
+const window = {
+  t: (key) => key,
+  showStatusToast: (message) => results.toasts.push(message),
+  appCrop: null,
+  prepareRememberedWindowCapture: async () => ({
+    required: true,
+    allowed: __ALLOWED__,
+    sourceId: S.selectedScreenSourceId,
+    isCurrent: () => current
+  }),
+  fetchBackendInteractiveScreenshot: async () => {
+    results.calls.push('interactive-desktop');
+    return __INTERACTIVE__;
+  },
+  captureDesktopSourceWithTimeout: async () => {
+    results.calls.push('direct-window');
+    return __DIRECT__;
+  },
+  maybeClearSourceOnNotFound: () => {},
+  acquireOrReuseCachedStream: async () => {
+    results.calls.push('stream');
+    return __STREAM__;
+  },
+  captureFrameFromStream: async () => {
+    results.calls.push('stream-frame');
+    return __FRAME__;
+  },
+  fetchBackendScreenshot: async () => {
+    results.calls.push('backend-desktop');
+    return { dataUrl: 'data:image/jpeg;base64,BACKEND' };
+  },
+  detectScreenshotCaptureType: () => null,
+  scheduleScreenCaptureIdleCheck: () => {}
+};
+const getDesktopProvider = () => __PROVIDER__;
+const setScreenshotCaptureSessionActive = () => {};
+const captureDesktopRegionDirectly = async () => {
+  results.calls.push('region');
+  return __REGION__;
+};
+const recaptureWithoutNeko = async () => null;
+let _captureScreenshotDataUrlBusy = false;
+__CAPTURE__
+const mod = { captureScreenshotDataUrl };
+mod.enqueueCapturedScreenshotResult = async () => {
+  results.calls.push('enqueue');
+};
+const screenshotButton = { disabled: false };
+const isHomeTutorialInteractionLocked = () => false;
+const showHomeTutorialLockedToast = () => {};
+const refreshHomeTutorialLockedElement = () => {};
+__OUTER__
+__RUN__
+"""
+
+
+def _remembered_screenshot_race_script(
+    *,
+    allowed: str = "true",
+    provider: str = "({ captureSourceAsDataUrl() {} })",
+    region: str = "null",
+    interactive: str = "null",
+    direct: str = "null",
+    stream: str = "null",
+    frame: str = "null",
+    run_outer: bool = False,
+) -> str:
+    buttons_src = APP_BUTTONS_PATH.read_text(encoding="utf-8")
+    if run_outer:
+        outer = _fn(buttons_src, "captureScreenshotToPendingList")
+        run = """mod.captureScreenshotToPendingList = captureScreenshotToPendingList;
+mod.captureScreenshotToPendingList().then(() => {
+  console.log(JSON.stringify(results));
+}).catch((error) => {
+  results.error = error && error.message;
+  console.log(JSON.stringify(results));
+});"""
+    else:
+        outer = ""
+        run = """captureScreenshotDataUrl().then((shot) => {
+  results.data = shot && shot.dataUrl;
+  results.unavailable = !!(shot && shot.rememberedWindowUnavailable);
+  console.log(JSON.stringify(results));
+}).catch((error) => {
+  results.error = error && error.message;
+  console.log(JSON.stringify(results));
+});"""
+    return (
+        _REMEMBERED_SCREENSHOT_RACE_TMPL
+        .replace("__ALLOWED__", allowed)
+        .replace("__PROVIDER__", provider)
+        .replace("__REGION__", region)
+        .replace("__INTERACTIVE__", interactive)
+        .replace("__DIRECT__", direct)
+        .replace("__STREAM__", stream)
+        .replace("__FRAME__", frame)
+        .replace("__CAPTURE__", _fn(buttons_src, "captureScreenshotDataUrl"))
+        .replace("__OUTER__", outer)
+        .replace("__RUN__", run)
+    )
+
+
+@pytest.mark.unit
+def test_manual_screenshot_discards_direct_frame_after_remembered_source_change():
+    out = _run(_remembered_screenshot_race_script(
+        direct="(current = false, S.selectedScreenSourceId = 'window:new', {"
+        " success: true, dataUrl: 'data:image/png;base64,OLD' })",
+    ))
+
+    assert out.get("data") is None
+    assert out["unavailable"] is True
+
+
+@pytest.mark.unit
+def test_manual_screenshot_discards_stream_frame_after_remembered_source_change():
+    out = _run(_remembered_screenshot_race_script(
+        provider="({})",
+        stream="({ getTracks: () => [] })",
+        frame="(current = false, S.selectedScreenSourceId = 'window:new', {"
+        " dataUrl: 'data:image/jpeg;base64,OLD', width: 640, height: 360 })",
+    ))
+
+    assert out.get("data") is None
+    assert out["unavailable"] is True
+
+
+@pytest.mark.unit
+def test_manual_screenshot_skips_interactive_desktop_for_remembered_window():
+    out = _run(_remembered_screenshot_race_script(
+        provider="({})",
+        interactive="({ dataUrl: 'data:image/png;base64,DESKTOP' })",
+    ))
+
+    assert "interactive-desktop" not in out["calls"]
+    assert out.get("data") is None
+    assert out["unavailable"] is True
+
+
+@pytest.mark.unit
+def test_manual_screenshot_reports_remembered_rejection_instead_of_cancellation():
+    out = _run(_remembered_screenshot_race_script(
+        allowed="false",
+        provider="({})",
+        run_outer=True,
+    ))
+
+    assert out["calls"] == []
+    assert out["toasts"] == [
+        "app.capturing",
+        "app.screenSource.rememberedWindowUnavailable",
+    ]
 
 
 _PROACTIVE_REMEMBERED_TMPL = """

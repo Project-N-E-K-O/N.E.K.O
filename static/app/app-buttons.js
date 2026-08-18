@@ -3785,6 +3785,16 @@
             var screenshotCaptureSessionActive = false;
             var rememberedWindowCapture = { required: false, allowed: true };
 
+            function rememberedWindowUnavailableResult() {
+                return { rememberedWindowUnavailable: true };
+            }
+
+            function rememberedWindowCaptureIsCurrent() {
+                return !(rememberedWindowCapture && rememberedWindowCapture.required)
+                    || typeof rememberedWindowCapture.isCurrent !== 'function'
+                    || rememberedWindowCapture.isCurrent();
+            }
+
             if (!U.isMobile()) {
                 screenshotCaptureSessionActive = true;
                 setScreenshotCaptureSessionActive(true);
@@ -3820,7 +3830,7 @@
                         if (rememberedWindowCapture && rememberedWindowCapture.required
                             && !rememberedWindowCapture.allowed) {
                             console.warn('[截图] 记忆窗口无法唯一确认，停止本次截图');
-                            return null;
+                            return rememberedWindowUnavailableResult();
                         }
                     }
 
@@ -3845,7 +3855,8 @@
                     }
 
                     // 浏览器/旧版 PC 壳没有独立编辑窗口时，macOS 仍可退回系统交互截图。
-                    if (typeof window.fetchBackendInteractiveScreenshot === 'function') {
+                    if (!(rememberedWindowCapture && rememberedWindowCapture.required)
+                        && typeof window.fetchBackendInteractiveScreenshot === 'function') {
                         var interactiveBackendResult = await window.fetchBackendInteractiveScreenshot();
                         if (interactiveBackendResult && interactiveBackendResult.canceled) {
                             return null;
@@ -3869,6 +3880,10 @@
                                 'captureSourceAsDataUrl',
                                 selectedSourceId
                             );
+                            if (!rememberedWindowCaptureIsCurrent()) {
+                                console.warn('[截图] 记忆窗口已在直接捕获期间变化，丢弃旧帧');
+                                return rememberedWindowUnavailableResult();
+                            }
                             if (direct && direct.success && direct.dataUrl) {
                                 dataUrl = direct.dataUrl;
                                 width = direct.width || 0;
@@ -3897,13 +3912,26 @@
                             acquiredStream = null;
                         }
 
+                        if (!rememberedWindowCaptureIsCurrent()) {
+                            console.warn('[截图] 记忆窗口已在流获取期间变化，丢弃旧流');
+                            return rememberedWindowUnavailableResult();
+                        }
+
                         if (acquiredStream) {
                             isCachedStream = (acquiredStream === S.screenCaptureStream);
                             var frame = await window.captureFrameFromStream(acquiredStream, 0.8, true);
+                            if (!rememberedWindowCaptureIsCurrent()) {
+                                console.warn('[截图] 记忆窗口已在流抓帧期间变化，丢弃旧帧');
+                                return rememberedWindowUnavailableResult();
+                            }
                             if (!frame) {
                                 // 全分辨率编码可能在超大/虚拟显示器上失败；用同一条流退回 720p 再试，
                                 // 保住正确的窗口内容（优于后端 pyautogui 抓整屏的兜底）。
                                 frame = await window.captureFrameFromStream(acquiredStream, 0.8, false);
+                                if (!rememberedWindowCaptureIsCurrent()) {
+                                    console.warn('[截图] 记忆窗口已在降级抓帧期间变化，丢弃旧帧');
+                                    return rememberedWindowUnavailableResult();
+                                }
                             }
                             if (frame) {
                                 dataUrl = frame.dataUrl;
@@ -3932,6 +3960,10 @@
                             console.warn('[截图] 后端兜底失败:', beErr);
                         }
                     }
+                }
+
+                if (!dataUrl && rememberedWindowCapture && rememberedWindowCapture.required) {
+                    return rememberedWindowUnavailableResult();
                 }
 
                 if (!dataUrl) {
@@ -4017,6 +4049,15 @@
                 window.showStatusToast(window.t ? window.t('app.capturing') : '\u6B63\u5728\u622A\u56FE...', 2000);
 
                 var result = await mod.captureScreenshotDataUrl();
+                if (result && result.rememberedWindowUnavailable) {
+                    window.showStatusToast(
+                        window.t
+                            ? window.t('app.screenSource.rememberedWindowUnavailable')
+                            : '\u65E0\u6CD5\u552F\u4E00\u627E\u5230\u8BB0\u4F4F\u7684\u7A97\u53E3\uFF0C\u8BF7\u91CD\u65B0\u9009\u62E9\u5C4F\u5E55\u6765\u6E90',
+                        4000
+                    );
+                    return;
+                }
                 if (result && result.pinned) {
                     return;
                 }
