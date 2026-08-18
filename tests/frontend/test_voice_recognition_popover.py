@@ -167,11 +167,18 @@ def _install_voice_popover_harness(
     window.__speakerSelections = [];
     window.__speakerSelectionResult = true;
     window.__statusToasts = [];
+    window.__unhandledRejectionCount = 0;
+    window.addEventListener('unhandledrejection', () => {
+        window.__unhandledRejectionCount += 1;
+    });
     window.showStatusToast = (...args) => {
         window.__statusToasts.push(args);
     };
     window.selectSpeakerDevice = async (deviceId) => {
         window.__speakerSelections.push(deviceId);
+        if (window.__speakerSelectionResult === 'throw') {
+            throw new DOMException('device unavailable', 'NotFoundError');
+        }
         if (window.__speakerSelectionResult === false) return false;
         S.selectedSpeakerId = deviceId;
         S.effectiveSpeakerId = deviceId;
@@ -833,6 +840,38 @@ def test_playback_device_false_result_shows_switch_failure(
     assert result == {
         "selected": "default",
         "toasts": ["speaker.switchFailed"],
+    }
+
+
+@pytest.mark.frontend
+def test_playback_device_exception_shows_switch_failure(
+    page: Page,
+) -> None:
+    _install_voice_popover_harness(page, deferred_permission=False)
+
+    result = page.evaluate(
+        """async () => {
+            const test = window.__voicePopoverTest;
+            await window.renderFloatingMicList(test.popup());
+            test.action('speaker-device').click();
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            test.setSpeakerSelectionResult('throw');
+            test.panel('speaker-device').querySelector(
+                '.speaker-option[data-device-id="speaker-b"]'
+            ).click();
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            return {
+                selected: test.state.selectedSpeakerId,
+                toasts: window.__statusToasts.map((args) => args[0]),
+                unhandledRejections: window.__unhandledRejectionCount,
+            };
+        }"""
+    )
+
+    assert result == {
+        "selected": "default",
+        "toasts": ["speaker.switchFailed"],
+        "unhandledRejections": 0,
     }
 
 

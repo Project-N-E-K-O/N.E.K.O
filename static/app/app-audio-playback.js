@@ -125,6 +125,7 @@
             if (audioPlayerContextSetupPromise) {
                 await audioPlayerContextSetupPromise;
             }
+            await speakerTransitionPromise;
             return S.audioPlayerContext;
         }
 

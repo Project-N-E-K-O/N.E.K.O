@@ -270,6 +270,13 @@ def _install_controllable_speaker_harness(
                 if (succeed) route.resolve();
                 else route.reject(new DOMException('device unavailable', 'NotFoundError'));
             };
+            window.__waitForPendingSpeakerRoute = async () => {
+                for (let attempt = 0; attempt < 1000; attempt += 1) {
+                    if (window.__pendingSpeakerRoutes.length) return;
+                    await new Promise((resolve) => setTimeout(resolve, 0));
+                }
+                throw new Error('expected speaker route was not observed');
+            };
             window.AudioContext = ControlledAudioContext;
             window.webkitAudioContext = ControlledAudioContext;
         })();
@@ -299,6 +306,46 @@ def test_implicit_default_sink_does_not_require_set_sink_id(
 
 
 @pytest.mark.frontend
+def test_existing_context_waits_for_an_in_flight_speaker_transition(
+    page: Page, running_server: str
+) -> None:
+    _install_controllable_speaker_harness(page, running_server)
+
+    result = page.evaluate(
+        """async () => {
+            const context = await window.ensureAudioPlayerContext();
+            window.__delayedSpeakerIds.add('new-speaker');
+            const selection = window.selectSpeakerDevice('new-speaker');
+            await window.__waitForPendingSpeakerRoute();
+            let ensureResolved = false;
+            const ensured = window.ensureAudioPlayerContext().then((current) => {
+                ensureResolved = true;
+                return current.sinkId;
+            });
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const resolvedBeforeSwitch = ensureResolved;
+            window.__settleSpeakerRoute('new-speaker', true);
+            const [applied, ensuredSink] = await Promise.all([selection, ensured]);
+            return {
+                resolvedBeforeSwitch,
+                applied,
+                ensuredSink,
+                sinkId: context.sinkId,
+                calls: context.setSinkIdCalls.slice(),
+            };
+        }"""
+    )
+
+    assert result == {
+        "resolvedBeforeSwitch": False,
+        "applied": True,
+        "ensuredSink": "new-speaker",
+        "sinkId": "new-speaker",
+        "calls": ["new-speaker"],
+    }
+
+
+@pytest.mark.frontend
 def test_failed_older_selection_cannot_roll_back_a_newer_selection(
     page: Page, running_server: str
 ) -> None:
@@ -312,9 +359,7 @@ def test_failed_older_selection_cannot_roll_back_a_newer_selection(
                 () => 'resolved',
                 () => 'rejected'
             );
-            while (!window.__pendingSpeakerRoutes.length) {
-                await new Promise((resolve) => setTimeout(resolve, 0));
-            }
+            await window.__waitForPendingSpeakerRoute();
             const second = window.selectSpeakerDevice('second-speaker');
             window.__settleSpeakerRoute('first-speaker', false);
             const outcomes = await Promise.all([first, second]);
@@ -360,9 +405,7 @@ def test_overlapping_disconnect_and_reconnect_restore_the_preferred_sink(
             const disconnect = window.reconcileSelectedSpeakerDevices(
                 withoutPreferred
             );
-            while (!window.__pendingSpeakerRoutes.length) {
-                await new Promise((resolve) => setTimeout(resolve, 0));
-            }
+            await window.__waitForPendingSpeakerRoute();
             const reconnect = window.reconcileSelectedSpeakerDevices(withPreferred);
             window.__settleSpeakerRoute('default', true);
             const outcomes = await Promise.all([disconnect, reconnect]);
@@ -483,9 +526,7 @@ def test_stale_storage_event_cannot_override_a_pending_local_selection(
             const context = await window.ensureAudioPlayerContext();
             window.__delayedSpeakerIds.add('local-speaker');
             const localSelection = window.selectSpeakerDevice('local-speaker');
-            while (!window.__pendingSpeakerRoutes.length) {
-                await new Promise((resolve) => setTimeout(resolve, 0));
-            }
+            await window.__waitForPendingSpeakerRoute();
             localStorage.setItem('neko_selected_speaker', 'older-speaker');
             window.dispatchEvent(new StorageEvent('storage', {
                 key: 'neko_selected_speaker',
@@ -535,9 +576,7 @@ def test_stale_audio_epoch_stops_before_stateful_ogg_decode_after_sink_setup(
                 new Blob([new Uint8Array([0x4f, 0x67, 0x67, 0x53])]),
                 expectedEpoch
             );
-            while (!window.__pendingSpeakerRoutes.length) {
-                await new Promise((resolve) => setTimeout(resolve, 0));
-            }
+            await window.__waitForPendingSpeakerRoute();
             state.incomingAudioEpoch += 1;
             window.__settleSpeakerRoute('epoch-speaker', true);
             await pending;
