@@ -767,10 +767,19 @@ def test_playback_device_summary_uses_the_latest_cached_devices(
             ]);
             test.state.selectedSpeakerAvailable = true;
             window.dispatchEvent(new CustomEvent('neko:speaker-device-changed'));
+            const afterRestore = summary.textContent;
+            test.state.selectedSpeakerId = 'default';
+            test.state.effectiveSpeakerId = 'restored-speaker';
+            window.dispatchEvent(new CustomEvent('neko:speaker-device-changed'));
+            const failedDefaultRoute = summary.textContent;
+            test.state.effectiveSpeakerId = 'default';
+            window.dispatchEvent(new CustomEvent('neko:speaker-device-changed'));
             return {
                 beforeRestore,
                 failedFallback,
-                afterRestore: summary.textContent,
+                afterRestore,
+                failedDefaultRoute,
+                successfulDefaultRoute: summary.textContent,
             };
         }"""
     )
@@ -779,6 +788,8 @@ def test_playback_device_summary_uses_the_latest_cached_devices(
         "beforeRestore": "speaker.unavailableFallback",
         "failedFallback": "speaker.unavailableFallbackFailed",
         "afterRestore": "Restored Speaker",
+        "failedDefaultRoute": "speaker.unavailableFallbackFailed",
+        "successfulDefaultRoute": "speaker.defaultDevice",
     }
 
 
