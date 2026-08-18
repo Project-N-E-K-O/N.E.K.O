@@ -89,6 +89,53 @@ def _error_classification_text(error: Any) -> str:
     return str(error or "")
 
 
+_PEER_CLOSE_SAFETY_KEYWORDS = (
+    "safety",
+    "content_filter",
+    "content filter",
+    "policy violation",
+    "policy_violation",
+    "blocklist",
+    "prohibited",
+    "prohibited_content",
+    "recitation",
+    "spii",
+    "language",
+    "image_safety",
+    "image_prohibited_content",
+    "image_recitation",
+    "responsibleaipolicyviolation",
+    "responsible ai policy",
+)
+
+
+def _classify_peer_close(received_code, received_reason) -> tuple[str, dict[str, str] | None]:
+    """Map a peer close to existing stable UI codes without exposing its reason."""
+
+    reason_text = str(received_reason or "")
+    reason_lower = reason_text.lower()
+    if "欠费" in reason_text or "standing" in reason_lower:
+        return "API_ARREARS", None
+    if "quota" in reason_lower or "time limit" in reason_lower:
+        return "API_QUOTA_TIME", None
+    if "429" in reason_lower or "too many" in reason_lower:
+        return "API_RATE_LIMIT", None
+    if (
+        "401" in reason_lower
+        or "unauthorized" in reason_lower
+        or "authentication" in reason_lower
+        or "incorrect api key" in reason_lower
+        or "invalid_api_key" in reason_lower
+        or ("invalid" in reason_lower and "key" in reason_lower)
+    ):
+        return "API_KEY_REJECTED", None
+    if any(keyword in reason_lower for keyword in _PEER_CLOSE_SAFETY_KEYWORDS):
+        return "API_POLICY_VIOLATION", None
+    if received_code == 1008:
+        return "API_1008_FALLBACK", {"msg": "WebSocket close code 1008"}
+    return "CHARACTER_DISCONNECTED", None
+
+
 class RealtimeImagePayloadTooLargeError(RuntimeError):
     """A callback image cannot fit the provider's WebSocket frame limit."""
 
@@ -1670,6 +1717,14 @@ class _TransportMixin:
                 return
 
             async for message in message_ws:
+                if (
+                    not self._still_owns_connection(message_generation)
+                    or self.ws is not message_ws
+                ):
+                    logger.info(
+                        "Ignoring a frame from a retired realtime connection"
+                    )
+                    return
                 event = json.loads(message)
                 event_type = event.get("type")
 
@@ -2130,16 +2185,11 @@ class _TransportMixin:
                 logger.info("Realtime connection was closed by the peer")
         except websockets.exceptions.ConnectionClosedError as e:
             received_code = getattr(getattr(e, "rcvd", None), "code", None)
+            received_reason = getattr(getattr(e, "rcvd", None), "reason", None)
             sent_code = getattr(getattr(e, "sent", None), "code", None)
-            status_code = (
-                "API_1008_FALLBACK"
-                if received_code == 1008
-                else "CHARACTER_DISCONNECTED"
-            )
-            status_details = (
-                {"msg": "WebSocket close code 1008"}
-                if received_code == 1008
-                else None
+            status_code, status_details = _classify_peer_close(
+                received_code,
+                received_reason,
             )
             recovered = await self._recover_receive_loop_disconnect(
                 message_ws,
@@ -2163,6 +2213,15 @@ class _TransportMixin:
                 status_code="CONNECTION_TIMEOUT",
             )
         except Exception as e:
+            if (
+                not self._still_owns_connection(message_generation)
+                or self.ws is not message_ws
+            ):
+                logger.info(
+                    "Retired realtime receive loop failed after replacement; "
+                    "ignoring its handler exception"
+                )
+                return
             await self._close_failed_transport(
                 f"realtime message handling failed: {type(e).__name__}"
             )

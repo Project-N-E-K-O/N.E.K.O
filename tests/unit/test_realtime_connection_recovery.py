@@ -156,6 +156,54 @@ async def test_retired_receive_loop_cannot_condemn_or_report_the_replacement():
 
 
 @pytest.mark.asyncio
+async def test_retired_receive_loop_drops_buffered_frame_before_dispatch():
+    failures = AsyncMock()
+    event_handler = AsyncMock()
+    client = _make_client(on_connection_error=failures)
+    client.extra_event_handlers["test.buffered"] = event_handler
+    retired = _ControlledWs()
+    receiver = await _start_receiver(client, retired)
+
+    replacement = _ControlledWs()
+    client.ws = replacement
+    client._on_connection_attached()
+    retired._events.put_nowait(json.dumps({"type": "test.buffered"}))
+    await asyncio.wait_for(receiver, timeout=2)
+    await _settle_background_tasks(client)
+
+    assert client.ws is replacement
+    assert client._fatal_error_occurred is False
+    event_handler.assert_not_awaited()
+    failures.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_retired_handler_exception_cannot_close_the_replacement():
+    failures = AsyncMock()
+    client = _make_client(on_connection_error=failures)
+    retired = _ControlledWs()
+    replacement = _ControlledWs()
+
+    async def attach_replacement_then_fail(_event) -> None:
+        client.ws = replacement
+        client._on_connection_attached()
+        raise RuntimeError("retired handler failed")
+
+    client.extra_event_handlers["test.replace_then_fail"] = (
+        attach_replacement_then_fail
+    )
+    receiver = await _start_receiver(client, retired)
+    retired._events.put_nowait(json.dumps({"type": "test.replace_then_fail"}))
+    await asyncio.wait_for(receiver, timeout=2)
+    await _settle_background_tasks(client)
+
+    assert client.ws is replacement
+    assert replacement.close_calls == 0
+    assert client._fatal_error_occurred is False
+    failures.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_peer_policy_close_preserves_existing_1008_classification():
     failures = AsyncMock()
     client = _make_client(on_connection_error=failures)
@@ -180,6 +228,43 @@ async def test_peer_policy_close_preserves_existing_1008_classification():
         },
     }
     assert "provider-controlled reason" not in failures.await_args.args[0]
+
+
+@pytest.mark.parametrize(
+    ("reason", "expected_code"),
+    (
+        ("insufficient standing", "API_ARREARS"),
+        ("quota exceeded", "API_QUOTA_TIME"),
+        ("too many requests", "API_RATE_LIMIT"),
+        ("unauthorized", "API_KEY_REJECTED"),
+        ("safety policy violation", "API_POLICY_VIOLATION"),
+        ("unclassified provider close", "CHARACTER_DISCONNECTED"),
+    ),
+)
+@pytest.mark.asyncio
+async def test_application_close_reason_preserves_existing_classification(
+    reason: str,
+    expected_code: str,
+):
+    failures = AsyncMock()
+    client = _make_client(on_connection_error=failures)
+    ws = _ControlledWs()
+    receiver = await _start_receiver(client, ws)
+
+    ws.fail_from_peer(
+        websockets.exceptions.ConnectionClosedError(
+            Close(4000, reason),
+            None,
+        )
+    )
+    await asyncio.wait_for(receiver, timeout=2)
+    await _settle_background_tasks(client)
+
+    assert json.loads(failures.await_args.args[0]) == {
+        "code": expected_code,
+        "details": {"connection_generation": 0},
+    }
+    assert reason not in failures.await_args.args[0]
 
 
 @pytest.mark.asyncio
