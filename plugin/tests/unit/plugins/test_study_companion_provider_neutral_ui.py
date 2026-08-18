@@ -147,3 +147,13 @@ def test_hosted_model_settings_link_uses_the_host_external_bridge() -> None:
     assert "payload: { url }" in hosted_source
     assert "openHostedExternalUrl('/api_key')" in hosted_source
     assert '<a href="/api_key"' not in hosted_source
+
+
+def test_plugin_manager_vite_proxies_exact_model_settings_route() -> None:
+    repo_root = Path(__file__).resolve().parents[4]
+    vite_source = (
+        repo_root / "frontend" / "plugin-manager" / "vite.config.ts"
+    ).read_text(encoding="utf-8")
+
+    assert "'^/api_key(?:\\\\?.*)?$'" in vite_source
+    assert "target: BACKEND_TARGET" in vite_source

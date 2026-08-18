@@ -748,7 +748,6 @@ class _TutorContextSupportMixin:
                 return payload
             return build_tutor_payload(reply)
 
-        await self._record_tutor_result(operation, reply, extra=extra_context)
         progress = finalize_progress or _TutorFinalizeProgress()
         await _append_interaction_cancel_safe(
             self._store,
@@ -759,6 +758,7 @@ class _TutorContextSupportMixin:
             metadata=metadata,
             history_limit=self._cfg.history_limit,
         )
+        await self._record_tutor_result(operation, reply, extra=extra_context)
         tracking_enrichment: dict[str, Any] = {}
         if operation != LLM_OPERATION_SUMMARIZE_SESSION:
             tracking_enrichment = await self._track_learning(

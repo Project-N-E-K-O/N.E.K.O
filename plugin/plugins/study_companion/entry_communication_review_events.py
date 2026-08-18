@@ -6,6 +6,19 @@ from .entry_common import (
     StudyEvent,
     StudyEventBus,
 )
+from .fsrs_bridge import REVIEW_IS_DUE_AFTER_KEY, REVIEW_WAS_DUE_BEFORE_KEY
+
+
+def _consume_review_due_transition(payload: Any) -> tuple[bool, bool]:
+    if not isinstance(payload, dict):
+        return False, False
+    marker_payload = payload
+    nested_review = payload.get("review")
+    if isinstance(nested_review, dict) and REVIEW_WAS_DUE_BEFORE_KEY in nested_review:
+        marker_payload = nested_review
+    was_due_before = bool(marker_payload.pop(REVIEW_WAS_DUE_BEFORE_KEY, False))
+    is_due_after = bool(marker_payload.pop(REVIEW_IS_DUE_AFTER_KEY, False))
+    return was_due_before, is_due_after
 
 
 class _CommunicationReviewEventsMixin:
@@ -20,10 +33,10 @@ class _CommunicationReviewEventsMixin:
         self, operation, /, *args, **kwargs
     ) -> tuple[Any, bool]:
         async with self._memory_review_transition_lock():
-            due_before = await asyncio.to_thread(self._count_total_due_reviews)
             payload = await asyncio.to_thread(operation, *args, **kwargs)
+            was_due_before, is_due_after = _consume_review_due_transition(payload)
             completed = False
-            if due_before > 0:
+            if was_due_before and not is_due_after:
                 due_after = await asyncio.to_thread(self._count_total_due_reviews)
                 completed = due_after == 0
         return payload, completed

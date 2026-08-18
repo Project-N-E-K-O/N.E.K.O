@@ -11,6 +11,8 @@ from typing import Any, Callable
 
 from .fsrs_bridge import (
     FSRSBridge,
+    REVIEW_IS_DUE_AFTER_KEY,
+    REVIEW_WAS_DUE_BEFORE_KEY,
     StudyFsrsCard,
     StudyFsrsRating,
     create_card,
@@ -1133,7 +1135,9 @@ class KnowledgeTracker:
         if card_row is None:
             raise ValueError("memory card not found")
         selected = self._rating_from_review(rating)
+        was_due_before = bool(self.fsrs.get_due_reviews([card_row["card"]]))
         updated_card, schedule = rate_answer(card_row["card"], selected)
+        is_due_after = bool(self.fsrs.get_due_reviews([updated_card]))
         self.store.upsert_fsrs_card(
             topic_id=resolved, card=updated_card.to_dict(), last_rating=int(selected)
         )
@@ -1153,6 +1157,8 @@ class KnowledgeTracker:
             "answer": str(answer or ""),
             "schedule": schedule,
             "card": self._memory_card_payload(saved),
+            REVIEW_WAS_DUE_BEFORE_KEY: was_due_before,
+            REVIEW_IS_DUE_AFTER_KEY: is_due_after,
         }
 
     def get_review_queue(

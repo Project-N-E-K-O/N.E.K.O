@@ -24,6 +24,7 @@ from plugin.plugins.study_companion.entry_tutor_explain_entries import (
     _TutorExplainEntriesMixin,
 )
 from plugin.plugins.study_companion.entry_tutor_context_support import (
+    _TutorContextSupportMixin,
     _TutorFinalizeProgress,
     _append_interaction_cancel_safe,
     _await_completion_on_cancel,
@@ -316,6 +317,118 @@ async def test_cancelled_finalize_does_not_commit_interaction_after_timeout(
     assert progress.history_persisted.is_set() is False
     assert store.list_interactions() == []
     store.close()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_finalize_does_not_record_live_state_before_history_commit() -> None:
+    worker_started = threading.Event()
+    worker_finished = threading.Event()
+    recorded: list[str] = []
+
+    class BlockingStore:
+        def append_interaction(self, **kwargs: Any) -> bool:
+            kwargs["worker_started_event"].set()
+            worker_started.set()
+            kwargs["cancel_event"].wait(1.0)
+            kwargs["finished_event"].set()
+            worker_finished.set()
+            return False
+
+    class FinalizeHarness(_TutorContextSupportMixin):
+        def __init__(self) -> None:
+            self._store = BlockingStore()
+            self._cfg = SimpleNamespace(history_limit=50)
+            self.logger = _Logger()
+
+        async def _record_tutor_result(
+            self,
+            _operation: str,
+            _reply: TutorReply,
+            *,
+            extra: dict[str, Any] | None = None,
+        ) -> None:
+            recorded.append(str((extra or {}).get("marker") or "recorded"))
+
+    plugin = FinalizeHarness()
+    progress = _TutorFinalizeProgress()
+    finalize = asyncio.create_task(
+        plugin._finalize_tutor_call(
+            MODE_CONCEPT_EXPLAIN,
+            TutorReply(
+                operation=MODE_CONCEPT_EXPLAIN,
+                input_text="blocked history",
+                reply="visible reply",
+            ),
+            history_kind=MODE_CONCEPT_EXPLAIN,
+            metadata={},
+            extra_context={"marker": "live-state"},
+            finalize_progress=progress,
+        )
+    )
+
+    assert await asyncio.to_thread(worker_started.wait, 1.0)
+    finalize.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await finalize
+    assert await asyncio.to_thread(worker_finished.wait, 1.0)
+    assert recorded == []
+
+
+@pytest.mark.asyncio
+async def test_review_completion_uses_one_total_due_scan_and_hides_transition_markers() -> None:
+    class ReviewHarness(_CommunicationReviewEventsMixin):
+        def __init__(self) -> None:
+            self.count_calls = 0
+
+        def _count_total_due_reviews(self) -> int:
+            self.count_calls += 1
+            return 0 if self.count_calls == 1 else 99
+
+    plugin = ReviewHarness()
+
+    def complete_review() -> dict[str, Any]:
+        return {
+            "item": {"id": "final-card"},
+            "_review_was_due_before": True,
+            "_review_is_due_after": False,
+        }
+
+    payload, completed = await plugin._run_serialized_review_transition(complete_review)
+
+    assert completed is True
+    assert plugin.count_calls == 1
+    assert "_review_was_due_before" not in payload
+    assert "_review_is_due_after" not in payload
+
+
+@pytest.mark.asyncio
+async def test_non_due_review_skips_total_due_scan() -> None:
+    class ReviewHarness(_CommunicationReviewEventsMixin):
+        def __init__(self) -> None:
+            self.count_calls = 0
+
+        def _count_total_due_reviews(self) -> int:
+            self.count_calls += 1
+            return 0
+
+    plugin = ReviewHarness()
+
+    def review_not_in_due_queue() -> dict[str, Any]:
+        return {
+            "review": {
+                "_review_was_due_before": False,
+                "_review_is_due_after": False,
+            }
+        }
+
+    payload, completed = await plugin._run_serialized_review_transition(
+        review_not_in_due_queue
+    )
+
+    assert completed is False
+    assert plugin.count_calls == 0
+    assert "_review_was_due_before" not in payload["review"]
+    assert "_review_is_due_after" not in payload["review"]
 
 
 @pytest.mark.asyncio

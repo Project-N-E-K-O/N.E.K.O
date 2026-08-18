@@ -5,7 +5,14 @@ import json
 import uuid
 from typing import Any
 
-from .fsrs_bridge import FSRSBridge, StudyFsrsRating, create_card, rate_answer
+from .fsrs_bridge import (
+    FSRSBridge,
+    REVIEW_IS_DUE_AFTER_KEY,
+    REVIEW_WAS_DUE_BEFORE_KEY,
+    StudyFsrsRating,
+    create_card,
+    rate_answer,
+)
 from .memory_candidates import upsert_memory_candidate
 from .memory_compat import compat_card_payload as build_compat_card_payload
 from .memory_imports import import_word_rows, normalize_csv_fieldnames
@@ -550,9 +557,10 @@ class MemoryDeckStore:
             else:
                 card_data = str(card_row["card_data"])
                 card_id = int(card_row["id"])
-            updated, schedule = rate_answer(
-                self.store._json_loads(card_data, {}), selected
-            )
+            previous_card = self.store._json_loads(card_data, {})
+            was_due_before = bool(self.fsrs.get_due_reviews([previous_card]))
+            updated, schedule = rate_answer(previous_card, selected)
+            is_due_after = bool(self.fsrs.get_due_reviews([updated]))
             conn.execute(
                 """
                 UPDATE memory_fsrs_cards
@@ -611,6 +619,8 @@ class MemoryDeckStore:
             "rating": int(selected),
             "schedule": schedule,
             "review_record": self.get_review_record(review_id),
+            REVIEW_WAS_DUE_BEFORE_KEY: was_due_before,
+            REVIEW_IS_DUE_AFTER_KEY: is_due_after,
         }
 
     def add_recitation_attempt(
