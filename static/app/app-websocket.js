@@ -2381,10 +2381,20 @@
                     // 不是渲染前置条件——渲染层对空 turnId 照常处理。协议允许
                     // 空串（notify.py: str(turn_id or '')），缺失时兜一个本地
                     // 一次性 key，别让整帧图片静默消失。
-                    var mediaTurnKey = response.turn_id
-                        || ('proactive-media-local-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8));
+                    var mkLocalMediaKey = function () {
+                        return 'proactive-media-local-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+                    };
+                    var mediaTurnKey = response.turn_id || mkLocalMediaKey();
                     if (!response.turn_id) {
                         console.warn('[ProactiveMedia] frame carried no turn_id; using local buffer key', mediaTurnKey);
+                    }
+                    // 原型链键防护：WS 帧不可信，turn_id='__proto__' 时
+                    // buffer[key] 会命中 Object.prototype（真值）→ 跳过初始化
+                    // 分支、把 images 写到继承对象上，污染所有普通对象。
+                    // 这类键一律换成本地一次性 key。
+                    if (mediaTurnKey === '__proto__' || mediaTurnKey === 'constructor' || mediaTurnKey === 'prototype') {
+                        console.warn('[ProactiveMedia] unsafe turn_id rejected; using local buffer key');
+                        mediaTurnKey = mkLocalMediaKey();
                     }
                     if (Array.isArray(response.images) && response.images.length > 0) {
                         // URL 白名单：只接受宿主生成的媒体 URL 完整形状

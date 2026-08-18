@@ -54,6 +54,11 @@ test('proactive_media branch whitelists host URLs, buffers, and flushes immediat
     // the whole frame (CodeRabbit #2905).
     assert.ok(proactiveMediaBranch.includes('var mediaTurnKey'),
         'missing turn_id must get a local fallback buffer key');
+    // Prototype-key hardening: '__proto__'/'constructor'/'prototype' as
+    // turn_id would resolve the inherited Object.prototype (truthy), skip
+    // the init branch, and write `images` onto every ordinary object.
+    assert.ok(proactiveMediaBranch.includes("mediaTurnKey === '__proto__'"),
+        'unsafe prototype keys must be rejected before indexing the buffer');
     // No appProactive → the one-shot buffer entry must be cleaned up, not leaked.
     assert.ok(proactiveMediaBranch.includes('delete window._proactiveAttachmentBuffer[mediaTurnKey]'),
         'missing appProactive must delete the buffered entry');
@@ -87,9 +92,16 @@ test('compact surface overlay recognizes proactive-media- bubbles alongside meme
     // messages living in the folded history and must share the overlay.
     const scanStart = APP_TSX.indexOf('const compactMemeOverlay = useMemo');
     assert.notEqual(scanStart, -1, 'missing compactMemeOverlay');
-    const scanEnd = APP_TSX.indexOf('if (memeIdx < 0) return null;', scanStart);
-    const scan = APP_TSX.slice(scanStart, scanEnd > scanStart ? scanEnd : scanStart + 1200);
+    // Cover the scan AND the dismissal loop (up to the blocks extraction).
+    const scanEnd = APP_TSX.indexOf('for (const block of meme.blocks', scanStart);
+    const scan = APP_TSX.slice(scanStart, scanEnd > scanStart ? scanEnd : scanStart + 2400);
     assert.ok(scan.includes("'meme-'"), 'overlay scan must still match meme-');
     assert.ok(scan.includes("'proactive-media-'"),
         'overlay scan must also match proactive-media- (compact visibility)');
+    // Codex round 2: the media frame's turnId is a fresh host id that never
+    // matches the reply text's turnId, so the different-turn dismissal rule
+    // must NOT apply to proactive-media overlays — otherwise the reply text
+    // of the same event immediately evicts its own image.
+    assert.ok(scan.includes('!isProactiveMediaOverlay'),
+        'rule-2 dismissal must be exempted for proactive-media overlays');
 });

@@ -200,6 +200,27 @@ async def test_persist_normalizes_non_string_inputs(monkeypatch, tmp_path):
 
 
 @pytest.mark.unit
+async def test_persist_accepts_image_exactly_at_cap(monkeypatch, tmp_path):
+    """Greptile round 2: '=' padding must not inflate the estimate — an image
+    decoding to exactly the ~10MB cap is accepted; one byte over is dropped."""
+    from app.main_server.character_runtime import _persist_proactive_media_image
+
+    _patch_media_dir(monkeypatch, tmp_path)
+
+    exact = base64.b64encode(
+        _PNG_MAGIC + b"x" * (10 * 1024 * 1024 - len(_PNG_MAGIC))
+    ).decode()
+    assert len(base64.b64decode(exact)) == 10 * 1024 * 1024
+    url = await _persist_proactive_media_image(exact, "image/png")
+    assert url is not None and url.endswith(".png")
+
+    over = base64.b64encode(
+        _PNG_MAGIC + b"x" * (10 * 1024 * 1024 - len(_PNG_MAGIC) + 1)
+    ).decode()
+    assert await _persist_proactive_media_image(over, "image/png") is None
+
+
+@pytest.mark.unit
 async def test_write_path_trips_opportunistic_prune(monkeypatch, tmp_path):
     """Codex #2905 P1: the 256MB total cap must not wait for the daily
     worker — once accumulated writes trip the threshold, the persist worker
@@ -768,6 +789,41 @@ def test_prune_enforces_total_size_cap_oldest_first(tmp_path):
 
     assert not oldest.exists()  # 超总量时从最旧开始删
     assert middle.exists()
+    assert newest.exists()
+
+
+@pytest.mark.unit
+def test_prune_cap_pass_continues_past_locked_oldest(tmp_path, monkeypatch):
+    """Codex round 2: a locked oldest file (viewer holding it open on Windows)
+    must not stall the whole cap pass — pruning continues with the next-oldest
+    survivor, so one permanently-locked file cannot disable the cap forever."""
+    from pathlib import Path
+
+    stub = _make_roots_stub(tmp_path)
+    oldest = stub.proactive_media_dir / "z.png"
+    middle = stub.proactive_media_dir / "m.png"
+    newest = stub.proactive_media_dir / "a.png"
+    for path, age in ((oldest, 5000), (middle, 3000), (newest, 1000)):
+        path.write_bytes(b"x" * (1024 * 1024))
+        stamp = time.time() - age
+        os.utime(path, (stamp, stamp))
+
+    real_unlink = Path.unlink
+
+    def _locked_unlink(self, missing_ok=False):
+        if self.name == "z.png":
+            raise PermissionError("file is locked by an external viewer")
+        return real_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", _locked_unlink)
+
+    stub.prune_proactive_media(
+        max_age_days=14, max_total_bytes=int(2.5 * 1024 * 1024)
+    )
+
+    # 最旧的被占用：跳过它继续删下一个最旧（middle），帽子在有界超帽内收敛
+    assert oldest.exists()
+    assert not middle.exists()
     assert newest.exists()
 
 

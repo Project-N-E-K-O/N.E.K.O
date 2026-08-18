@@ -845,11 +845,13 @@ class StorageRootsMixin:
                         path.unlink(missing_ok=True)
                         total -= size
                     except OSError:
-                        # 典型场景：Windows 上最旧的文件仍被查看器占用。
-                        # 继续删更新的文件只会让"刚落盘、前端还没取走"的
-                        # 图片先死，而占用的旧文件也不会因此让出空间——
-                        # 接受本轮暂时超帽，等下一轮清理再收敛。
-                        break
+                        # 典型场景：Windows 上最旧的文件仍被查看器占用。跳过
+                        # 它继续删更旧的存活者：占用的文件反正删不掉，若在此
+                        # break，一个长期被占用的最旧文件会让此后每一轮剪裁
+                        # 都停在它身上，帽子永久失效、目录回到无上限增长。
+                        # 代价是超帽幅度 = 被占用文件的总大小（有界，占用解除
+                        # 后下一轮收敛）。
+                        continue
         except Exception as e:
             print(f"Warning: proactive_media prune failed: {e}", file=sys.stderr)
 

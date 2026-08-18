@@ -1710,6 +1710,11 @@ function CompactChatApp({
     // 同一轮紧随表情包落地的台词(assistant)与 meme 共享 turnId，不算换场、不收起——否则图会一瞬间
     // 被台词顶掉(#2031 回归)。turnId 缺失（meme 或后续消息任一方无 turnId，如纯音乐卡）时退化为只看
     // 规则 1，保持旧行为。下一张新表情包由上面「从尾部取最新 meme」自然替换。
+    // proactive-media-（事件携带可见图片）不走规则 2：媒体帧由 host 在事件入口直发，turnId 是
+    // 一次性 fresh id（见 character_runtime 直发块），与同事件回复文本的 turnId 必然不同——
+    // 规则 2 会让图片刚上 overlay 就被自己事件的台词顶掉。收起只靠规则 1 与「更新的图片自然替换」；
+    // 后续无关轮次的台词不顶掉（事件图片是事件自身的可见结果，不是会话轮次）。
+    const isProactiveMediaOverlay = typeof meme.id === 'string' && meme.id.startsWith('proactive-media-');
     const memeTurnId = typeof meme.turnId === 'string' && meme.turnId ? meme.turnId : null;
     for (let i = memeIdx + 1; i < messages.length; i += 1) {
       const later = messages[i];
@@ -1718,6 +1723,7 @@ function CompactChatApp({
       // 不参与收起（更新的表情包另由上面「从尾部取最新 meme」自然替换，不走这里）。
       if (
         later?.role === 'assistant'
+        && !isProactiveMediaOverlay
         && memeTurnId
         && typeof later.turnId === 'string'
         && later.turnId

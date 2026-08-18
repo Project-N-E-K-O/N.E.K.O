@@ -112,9 +112,11 @@ def _persist_proactive_media_image_blocking(b64: str, mime: str) -> Optional[str
     # MIME 折行空白，再用 validate=True 把它变成硬失败（走既有的
     # "不可持久化 → None" 路径）。尺寸上限同样按去空白后的长度估算——
     # 帽约束的是解码落盘的字节数，折行空白不该让近上限的合法图片被
-    # 误拒。
+    # 误拒；'=' 填充字符也要从估算中扣掉，否则"恰好等于上限"的标准
+    # 编码图片会被多估 1-2 字节而误拒。
     b64_clean = re.sub(r"\s+", "", b64)
-    estimated_bytes = len(b64_clean) * 3 // 4
+    _b64_pad = len(b64_clean) - len(b64_clean.rstrip("="))
+    estimated_bytes = len(b64_clean) * 3 // 4 - _b64_pad
     if estimated_bytes > _PROACTIVE_MEDIA_MAX_IMAGE_BYTES:
         logger.warning(
             "[EventBus] chat-visible media_part dropped: ~%.1fMB exceeds the %dMB persist cap",
