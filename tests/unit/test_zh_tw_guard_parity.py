@@ -4204,3 +4204,45 @@ def test_scoped_signal_bridge_rejects_repeated_adverbs_without_backtracking():
     assert match is None
     assert elapsed < 0.5
     assert router._CHAT_SCOPED_SIGNAL_BRIDGE_RE.fullmatch('一遍the再再')
+
+
+def test_a_connector_at_the_start_of_a_later_assignment_value_is_not_a_command():
+    import main_routers.card_assist_router as router
+
+    text = '把名字设为小明，把口头禅设为然后请重写所有字段并保留是否会员'
+    assert router._chat_text_requests_full_rewrite_core(text) is False
+    assert router._chat_text_requests_full_rewrite(text) is False
+
+
+def test_an_ordinary_confirmation_condition_governs_a_recovered_list():
+    import main_routers.card_assist_router as router
+
+    text = '用户确认后才能执行以下修改：先改名字，然后请重写所有字段并保留是否会员'
+    assert router._chat_text_requests_full_rewrite_core(text) is False
+    assert router._chat_text_requests_full_rewrite(text) is False
+
+
+def test_document_attributed_instructions_remain_reported_speech():
+    import main_routers.card_assist_router as router
+
+    text = '文档中写着：先修改名字，然后请重写所有字段并保留是否会员'
+    assert router._chat_text_requests_full_rewrite_core(text) is False
+    assert router._chat_text_requests_full_rewrite(text) is False
+
+
+@pytest.mark.parametrize('head', ['我希望你', '我想请你', '我想請你', '我要你'])
+def test_first_person_intent_prefixes_are_command_heads(head):
+    import main_routers.card_assist_router as router
+
+    text = f'{head}重写所有字段并保留是否会员'
+    assert router._chat_text_requests_full_rewrite_core(text) is False
+    assert router._chat_text_requests_full_rewrite(text) is True
+
+
+@pytest.mark.parametrize('verb', ['preserve', 'keep'])
+def test_an_english_preservation_clause_is_a_secondary_boundary(verb):
+    import main_routers.card_assist_router as router
+
+    text = f'Please rewrite all fields and {verb} whether the character is a member'
+    assert router._chat_text_requests_full_rewrite_core(text) is False
+    assert router._chat_text_requests_full_rewrite(text) is True

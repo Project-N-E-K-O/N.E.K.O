@@ -188,6 +188,29 @@ async def test_full_rewrite_completion_fills_missing_actions(monkeypatch):
     assert actions[1]["value"] == "在图书馆角落安静巡逻，遇到噪音会轻轻皱眉"
 
 
+@pytest.mark.asyncio
+async def test_full_rewrite_completion_excludes_explicitly_preserved_fields(monkeypatch):
+    async def fail_refine(_prompt):
+        raise AssertionError("preserved fields must not be regenerated")
+
+    monkeypatch.setattr(car, "_invoke_assist", fail_refine)
+    actions = await car._complete_full_rewrite_actions(
+        lang="zh",
+        locale_code="zh-CN",
+        actions=[{
+            "type": "refine_field",
+            "field_key": "名字",
+            "value": "小明",
+        }],
+        user_instruction="重写所有字段并保留是否会员",
+        current_card={"名字": "旧名字", "是否会员": "是"},
+        current_card_text='{"名字":"旧名字","是否会员":"是"}',
+        target_keys=["名字", "是否会员"],
+    )
+
+    assert [action["field_key"] for action in actions] == ["名字"]
+
+
 def test_chat_empty_actions_recovers_actions_without_replacing_reply(monkeypatch):
     monkeypatch.setattr(car, "_reject_untrusted_card_assist", lambda *_args, **_kwargs: None)
 

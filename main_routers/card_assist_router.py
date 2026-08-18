@@ -1472,9 +1472,12 @@ _CHAT_SCOPED_RECOVERY_WINDOW_CHARS = 256
 _CHAT_SCOPED_RECOVERY_MAX_BOUNDARIES = 32
 _CHAT_SCOPED_RECOVERY_BOUNDARY_RE = re.compile(
     r"(?P<secondary>"
-    r"(?:并|並)\s*(?:保留|写清楚|寫清楚|说明|說明|"
+    r"(?:(?:并|並)\s*(?:保留|写清楚|寫清楚|说明|說明|"
     r"(?:把|将|將)[^。，、！？,.!?;；]{0,24}?(?:设为|設為|改成|写成|寫成|"
     r"定为|定為|设定为|取名为|取名為))"
+    r"|(?P<preservation_en>"
+    r"(?i:(?<![A-Za-z])and\s+(?:preserve|keep)(?![A-Za-z])))"
+    r")"
     r")"
     r"|(?P<trailing_en>(?<![A-Za-z])(?:if|when)(?![A-Za-z]))"
     # `但是否…` 必须按裸 `但` 切，让后件保留完整的疑问标记 `是否`。
@@ -1515,6 +1518,7 @@ _CHAT_SCOPED_COMPLETED_COMMAND_TAIL_RE = re.compile(
     r"(?:吧|啊|呀|嘛|喔|哦|啦|喽|嘍|咯|嘞|咧|了|好|即可|就行)?\s*$"
 )
 _CHAT_ZH_COMMAND_HEAD = (
+    r"(?:(?:我希望你|我想请你|我想請你|我要你)\s*)?"
     r"(?:(?:请你|請你|麻烦你|麻煩你|请|請|麻烦|麻煩|帮我|幫我|替我|给我|給我|务必|務必|"
     r"直接|现在|現在|马上|馬上|继续|繼續|再|然后|然後)\s*)*"
     r"(?:把|将|將|重写|重寫|重新写|重新寫|改写|改寫|重做|重生|梳理|完善)"
@@ -1522,13 +1526,13 @@ _CHAT_ZH_COMMAND_HEAD = (
 _CHAT_ZH_CONTRAST_COMMAND_RE = re.compile(r"^\s*" + _CHAT_ZH_COMMAND_HEAD)
 _CHAT_SCOPED_REPORTED_SPEECH_RE = re.compile(
     r"^\s*(?:[^。，、！？,.!?;；]+?\s*"
-    r"(?:说|說|表示|提到|写道|寫道|回复|回覆|要求)(?:过|過)?"
+    r"(?:说|說|表示|提到|写道|寫道|写着|寫著|记载|記載|注明|回复|回覆|要求)(?:过|過)?"
     r"|[^。，、！？,.!?;；]+?(?:原话|原話|原文))\s*[：:]?\s*$"
 )
 _CHAT_FIRST_PERSON_REPORTING_RE = re.compile(
     r"^\s*(?:我|我们|我們|咱们|咱們|俺|我的|我们的|我們的)\s*"
     r"(?:(?:想|想要|要|希望|打算|准备|準備)\s*)?"
-    r"(?:说|說|表示|提到|写道|寫道|回复|回覆|要求|原话|原話|原文)"
+    r"(?:说|說|表示|提到|写道|寫道|写着|寫著|记载|記載|注明|回复|回覆|要求|原话|原話|原文)"
 )
 _CHAT_FIRST_PERSON_REQUEST_HEAD_RE = re.compile(
     r"^\s*(?:(?:我|我们|我們|咱们|咱們)\s*"
@@ -1597,6 +1601,7 @@ _CHAT_GOVERNING_CONDITION_PATTERN = (
     r"[^。，、！？,.!?;；]*?(?:[，,]\s*)?(?:再|才|就)"
     r"|只有\s*在?\s*(?:用户|用戶)\s*(?:确认|確認)后\s*才(?:能|可)?"
     r"|等\s*(?:用户|用戶)\s*(?:确认|確認)后\s*再"
+    r"|(?:用户|用戶)\s*(?:确认|確認)后\s*才(?:能|可)?"
     r"|(?:用户|用戶)\s*(?:确认|確認)后\s*方可)\s*"
     r"(?:执行|執行|应用|應用|采用|採用|进行|進行|"
     + _CHAT_ZH_COMMAND_HEAD
@@ -1692,7 +1697,7 @@ def _chat_mask_assignment_value_before_next_command(text: str, masked: str) -> s
     assignment = _CHAT_SCOPED_VALUE_ASSIGNMENT_RE.search(text)
     if assignment is None:
         return masked
-    next_command = _CHAT_SCOPED_NEXT_COMMAND_RE.search(masked, assignment.end())
+    next_command = _chat_next_command_after_assignments(text, masked, assignment)
     if next_command is None:
         return masked
     return (
@@ -1702,9 +1707,26 @@ def _chat_mask_assignment_value_before_next_command(text: str, masked: str) -> s
     )
 
 
+def _chat_next_command_after_assignments(text: str, masked: str, assignment):
+    """Return a connector only after the latest assignment has a real value."""
+    next_command = _CHAT_SCOPED_NEXT_COMMAND_RE.search(masked, assignment.end())
+    if next_command is None:
+        return None
+    latest_assignment = assignment
+    for later_assignment in _CHAT_SCOPED_VALUE_ASSIGNMENT_RE.finditer(
+        text, assignment.end(), next_command.start()
+    ):
+        latest_assignment = later_assignment
+    if not text[latest_assignment.end():next_command.start()].strip():
+        return None
+    return next_command
+
+
 def _chat_scoped_suffix_has_governing_guard(
     suffix: str,
     readable_suffix: str,
+    *,
+    leading_whether_is_value: bool = False,
 ) -> bool:
     """Return whether a discarded secondary suffix still governs the command."""
     if _CHAT_NEGATED_REWRITE_RE.search(suffix):
@@ -1728,6 +1750,13 @@ def _chat_scoped_suffix_has_governing_guard(
     ):
         return True
     readable = _chat_clause_without_free_choice(readable_suffix)
+    if leading_whether_is_value:
+        readable = re.sub(
+            r"(?i)^\s*whether\b[^,.;!?]*",
+            "",
+            readable,
+            count=1,
+        )
     # `是否会员` / `为什么` / `好不好` can be the secondary value itself. A question
     # marker after leading object text governs the proposed operation, so recovery must fail.
     # Keep scanning after an exempt leading field value: it can be followed by a real question.
@@ -1769,6 +1798,9 @@ def _chat_remaining_secondary_segments_have_governing_guard(
         if _chat_scoped_suffix_has_governing_guard(
             text[boundary.end():segment_end],
             masked[boundary.end():segment_end],
+            leading_whether_is_value=(
+                boundary.group("preservation_en") is not None
+            ),
         ):
             return True
     return False
@@ -1879,14 +1911,13 @@ def _chat_scoped_candidate_is_completed_command(candidate: str) -> bool:
         if _chat_text_requests_full_rewrite_core(clause[:assignment.end()]):
             return True
         parts = [clause[:assignment.start()]]
-        value_tail = clause[assignment.end():]
-        next_command = _CHAT_SCOPED_NEXT_COMMAND_RE.search(
-            _chat_mask_quoted_spans(
-                value_tail, starts_with_assignment_value=True
-            )
+        next_command = _chat_next_command_after_assignments(
+            clause,
+            _chat_mask_quoted_spans(clause),
+            assignment,
         )
         if next_command is not None:
-            parts.append(value_tail[next_command.end():])
+            parts.append(clause[next_command.end():])
         return any(
             _chat_text_requests_full_rewrite_core(part)
             and _chat_scoped_candidate_is_completed_command(part)
@@ -2189,14 +2220,13 @@ def _chat_text_requests_full_rewrite_core(text: str) -> bool:
                 ):
                     return True
                 parts = [clause[:assignment.start()]]
-                value_tail = clause[assignment.end():]
-                next_command = _CHAT_SCOPED_NEXT_COMMAND_RE.search(
-                    _chat_mask_quoted_spans(
-                        value_tail, starts_with_assignment_value=True
-                    )
+                next_command = _chat_next_command_after_assignments(
+                    clause,
+                    _chat_mask_quoted_spans(clause),
+                    assignment,
                 )
                 if next_command is not None:
-                    parts.append(value_tail[next_command.end():])
+                    parts.append(clause[next_command.end():])
                 if any(_chat_text_requests_full_rewrite_core(part) for part in parts):
                     return True
                 continue
@@ -2485,6 +2515,7 @@ async def _complete_full_rewrite_actions(
     current_card_text: str,
     target_keys: list[str],
 ) -> list[dict]:
+    preserved = _chat_preserved_target_keys(user_instruction, target_keys)
     present = {
         str(a.get("field_key") or "").strip()
         for a in actions
@@ -2492,7 +2523,7 @@ async def _complete_full_rewrite_actions(
     }
     missing = [
         k for k in target_keys
-        if k not in present and not _is_reserved_card_field(k)
+        if k not in present and k not in preserved and not _is_reserved_card_field(k)
     ]
     if missing:
         fields = await _complete_missing_fields_by_refine(
@@ -2516,6 +2547,21 @@ async def _complete_full_rewrite_actions(
             if len(actions) >= _CHAT_MAX_ACTIONS:
                 break
     return actions[:_CHAT_MAX_ACTIONS]
+
+
+def _chat_preserved_target_keys(
+    instruction: str, target_keys: list[str]
+) -> set[str]:
+    """Return target keys explicitly named in a preservation clause."""
+    clauses = re.findall(
+        r"(?:保留|保持|(?i:\b(?:preserve|keep)\b))[^。，、！？,.!?;；]*",
+        instruction or "",
+    )
+    return {
+        key
+        for key in target_keys
+        if any(str(key).casefold() in clause.casefold() for clause in clauses)
+    }
 
 
 def _normalize_chat_history(raw: Any) -> list[dict]:
