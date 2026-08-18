@@ -97,6 +97,14 @@ let currentLoadId = 0
 let hostedRequestGeneration = 0
 let componentMounted = false
 const hostedDocumentControllers = new Map<string, AbortController>()
+const hostedActionControllers = new Map<string, AbortController>()
+
+function abortAllHostedRequests(reason: string) {
+  for (const controller of hostedDocumentControllers.values()) controller.abort(reason)
+  hostedDocumentControllers.clear()
+  for (const controller of hostedActionControllers.values()) controller.abort(reason)
+  hostedActionControllers.clear()
+}
 
 const HOST_STARTUP_RETRY_DELAYS_MS = [100, 200, 400, 800, 1600] as const
 const MAX_HOSTED_DOCUMENT_BYTES = 16 * 1024 * 1024
@@ -542,6 +550,7 @@ function handleMessage(event: MessageEvent) {
   if (data && typeof data === 'object' && data.type === 'neko-hosted-surface-cancel') {
     const requestId = typeof data.requestId === 'string' ? data.requestId : ''
     hostedDocumentControllers.get(requestId)?.abort('client-cancelled')
+    hostedActionControllers.get(requestId)?.abort('client-cancelled')
     return
   }
   if (data && typeof data === 'object' && data.type === 'neko-hosted-surface-request') {
@@ -586,32 +595,43 @@ async function handleHostedRequest(data: any) {
       const surfaceKind = props.surface.kind
       const surfaceId = props.surface.id
       const requestLocale = String(locale.value)
-      for (let attempt = 0; ; attempt += 1) {
-        try {
-          const remainingTimeoutMs = requestDeadline === undefined
-            ? undefined
-            : Math.max(1, Math.ceil(requestDeadline - Date.now()))
-          const result = await callPluginHostedSurfaceAction(pluginId, actionId, args, {
-            kind: surfaceKind,
-            id: surfaceId,
-            locale: requestLocale,
-            timeoutMs: remainingTimeoutMs,
-            userInitiated,
-          })
-          respond({ ok: true, result })
-          return
-        } catch (caught: any) {
-          const bridgeError = normalizeHostedBridgeError(caught)
-          const retryDelayMs = HOST_STARTUP_RETRY_DELAYS_MS[attempt]
-          if (userInitiated || bridgeError.code !== 'PLUGIN_NOT_RUNNING' || retryDelayMs === undefined) {
-            throw caught
+      const controller = new AbortController()
+      hostedActionControllers.set(requestId, controller)
+      try {
+        for (let attempt = 0; ; attempt += 1) {
+          try {
+            const remainingTimeoutMs = requestDeadline === undefined
+              ? undefined
+              : Math.max(1, Math.ceil(requestDeadline - Date.now()))
+            const result = await callPluginHostedSurfaceAction(pluginId, actionId, args, {
+              kind: surfaceKind,
+              id: surfaceId,
+              locale: requestLocale,
+              timeoutMs: remainingTimeoutMs,
+              signal: controller.signal,
+              userInitiated,
+            })
+            if (controller.signal.aborted) return
+            respond({ ok: true, result })
+            return
+          } catch (caught: any) {
+            if (controller.signal.aborted) return
+            const bridgeError = normalizeHostedBridgeError(caught)
+            const retryDelayMs = HOST_STARTUP_RETRY_DELAYS_MS[attempt]
+            if (userInitiated || bridgeError.code !== 'PLUGIN_NOT_RUNNING' || retryDelayMs === undefined) {
+              throw caught
+            }
+            if (!isCurrentRequest()) return
+            if (requestDeadline !== undefined && retryDelayMs >= requestDeadline - Date.now()) {
+              throw caught
+            }
+            await new Promise<void>((resolve) => window.setTimeout(resolve, retryDelayMs))
+            if (controller.signal.aborted || !isCurrentRequest()) return
           }
-          if (!isCurrentRequest()) return
-          if (requestDeadline !== undefined && retryDelayMs >= requestDeadline - Date.now()) {
-            throw caught
-          }
-          await new Promise<void>((resolve) => window.setTimeout(resolve, retryDelayMs))
-          if (!isCurrentRequest()) return
+        }
+      } finally {
+        if (hostedActionControllers.get(requestId) === controller) {
+          hostedActionControllers.delete(requestId)
         }
       }
     }
@@ -723,8 +743,7 @@ onMounted(() => {
 onUnmounted(() => {
   componentMounted = false
   hostedRequestGeneration += 1
-  for (const controller of hostedDocumentControllers.values()) controller.abort('surface-disposed')
-  hostedDocumentControllers.clear()
+  abortAllHostedRequests('surface-disposed')
   window.removeEventListener('message', handleMessage)
 })
 
@@ -742,8 +761,7 @@ watch(
   () => [props.pluginId, props.surface.kind, props.surface.id, props.surface.mode, props.surface.entry, props.surface.available, surfaceUrl.value, locale.value],
   () => {
     hostedRequestGeneration += 1
-    for (const controller of hostedDocumentControllers.values()) controller.abort('surface-changed')
-    hostedDocumentControllers.clear()
+    abortAllHostedRequests('surface-changed')
     if (props.surface.mode === 'static') return
     loadHostedTsx()
   },

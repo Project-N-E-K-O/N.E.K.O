@@ -409,6 +409,51 @@ describe('HostedSurfaceFrame automatic startup retry', () => {
     expect(frame.postMessage).not.toHaveBeenCalled()
   })
 
+  it('aborts only the hosted action named by a child cancellation message', async () => {
+    const signals: AbortSignal[] = []
+    apiMocks.callPluginHostedSurfaceAction.mockImplementation(
+      (_pluginId, _actionId, _args, options) => {
+        signals.push(options.signal)
+        return new Promise((_resolve, reject) => {
+          options.signal?.addEventListener('abort', () => reject(new Error('canceled')))
+        })
+      },
+    )
+    const frame = await mountFrame()
+
+    frame.dispatchRequest(callRequest({ requestId: 'action-first' }))
+    frame.dispatchRequest(callRequest({ requestId: 'action-second' }))
+    await flushPromises()
+    frame.dispatchRequest({ type: 'neko-hosted-surface-cancel', requestId: 'action-first' })
+    await flushPromises()
+
+    expect(signals).toHaveLength(2)
+    expect(signals[0]?.aborted).toBe(true)
+    expect(signals[1]?.aborted).toBe(false)
+    expect(frame.postMessage).not.toHaveBeenCalled()
+  })
+
+  it('aborts an in-flight hosted action when the surface changes', async () => {
+    let signal: AbortSignal | undefined
+    apiMocks.callPluginHostedSurfaceAction.mockImplementation(
+      (_pluginId, _actionId, _args, options) => {
+        signal = options.signal
+        return new Promise((_resolve, reject) => {
+          options.signal?.addEventListener('abort', () => reject(new Error('canceled')))
+        })
+      },
+    )
+    const frame = await mountFrame()
+
+    frame.dispatchRequest(callRequest())
+    await flushPromises()
+    await frame.setSurface(makeSurface('secondary'))
+    await flushPromises()
+
+    expect(signal?.aborted).toBe(true)
+    expect(frame.postMessage).not.toHaveBeenCalled()
+  })
+
   it('does not continue retrying when the hosted surface changes during backoff', async () => {
     apiMocks.callPluginHostedSurfaceAction.mockRejectedValue(makeNotRunningError())
     const frame = await mountFrame()

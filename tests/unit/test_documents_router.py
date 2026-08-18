@@ -129,6 +129,63 @@ async def test_documents_parse_rejects_untrusted_origin_before_reading_multipart
 
 
 @pytest.mark.unit
+@pytest.mark.asyncio
+async def test_documents_parse_stops_streaming_when_file_part_exceeds_limit():
+    boundary = b"neko-document-boundary"
+    prefix = (
+        b"--"
+        + boundary
+        + b'\r\nContent-Disposition: form-data; name="file"; filename="large.pdf"'
+        + b"\r\nContent-Type: application/pdf\r\n\r\n"
+    )
+    file_at_limit = b"%PDF-" + b"x" * (MAX_DOCUMENT_BYTES - 5)
+    overflow = b"y" * 1024
+    suffix = b"\r\n--" + boundary + b"--\r\n"
+    messages = [
+        {"type": "http.request", "body": prefix, "more_body": True},
+        {"type": "http.request", "body": file_at_limit, "more_body": True},
+        {"type": "http.request", "body": overflow, "more_body": True},
+        {"type": "http.request", "body": suffix, "more_body": False},
+    ]
+    receive_count = 0
+
+    async def receive():
+        nonlocal receive_count
+        message = messages[receive_count]
+        receive_count += 1
+        return message
+
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/api/documents/parse",
+            "headers": [
+                (b"host", b"127.0.0.1:48916"),
+                (b"origin", b"http://127.0.0.1:48916"),
+                (
+                    b"content-type",
+                    b"multipart/form-data; boundary=" + boundary,
+                ),
+            ],
+            "scheme": "http",
+            "server": ("127.0.0.1", 48916),
+            "client": ("127.0.0.1", 12345),
+            "root_path": "",
+            "query_string": b"",
+        },
+        receive,
+    )
+
+    with pytest.raises(HTTPException) as raised:
+        await parse_document_upload(request)
+
+    assert raised.value.status_code == 400
+    assert raised.value.detail == {"code": "document_too_large"}
+    assert receive_count == 3
+
+
+@pytest.mark.unit
 def test_documents_parse_allows_loopback_browser_origin():
     # Keep this at route level for the same storage-root isolation guarantee.
     client = TestClient(

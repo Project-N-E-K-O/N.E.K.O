@@ -259,6 +259,7 @@ export function callPluginHostedSurfaceAction(pluginId: string, actionId: string
   id: string
   locale?: string
   timeoutMs?: number
+  signal?: AbortSignal
   /** True only when the request originates from a user action in the hosted iframe. */
   userInitiated?: boolean
 }): Promise<{
@@ -276,6 +277,7 @@ export function callPluginHostedSurfaceAction(pluginId: string, actionId: string
   const requestConfig = {
     suppressPluginNotRunningMessage: !surface?.userInitiated,
     ...(timeoutMs ? { timeout: timeoutMs } : {}),
+    ...(surface?.signal ? { signal: surface.signal } : {}),
   }
   return post(`/plugin/${safeId}/hosted-ui/action/${safeActionId}`, {
     args: args || {},
