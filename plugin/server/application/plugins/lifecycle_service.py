@@ -381,12 +381,15 @@ def _profile_path_from_entry_sync(entry: object, profiles_root: Path) -> Path | 
     if not package_id:
         return None
     raw_profile_dir = str(getattr(entry, "profile_dir", "") or "")
+    candidate = (
+        Path(raw_profile_dir).expanduser()
+        if raw_profile_dir
+        else profiles_root / package_id
+    )
+    if candidate.is_symlink():
+        return None
     try:
-        profile_dir = (
-            Path(raw_profile_dir).expanduser().resolve()
-            if raw_profile_dir
-            else (profiles_root / package_id).resolve()
-        )
+        profile_dir = candidate.resolve()
     except Exception:
         return None
     if profile_dir.name != package_id:
@@ -456,11 +459,18 @@ def _stage_orphaned_package_profile_sync(plugin_dir: Path) -> _StagedPackageProf
 
     try:
         profiles_root = get_user_package_profiles_root().resolve()
-        current_profile_dir = (
-            Path(recorded_profile_dir).expanduser().resolve()
+        profile_candidate = (
+            Path(recorded_profile_dir).expanduser()
             if recorded_profile_dir
-            else (profiles_root / package_id).resolve()
+            else profiles_root / package_id
         )
+        if profile_candidate.is_symlink():
+            logger.warning(
+                "delete_plugin: refusing to remove symlinked package profile path: {}",
+                profile_candidate,
+            )
+            return None
+        current_profile_dir = profile_candidate.resolve()
     except Exception as exc:
         logger.warning(
             "delete_plugin: failed to resolve package profile for plugin_dir={}: {}",

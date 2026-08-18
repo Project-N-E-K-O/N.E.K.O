@@ -3734,7 +3734,7 @@ async def test_install_identity_mismatch_warns_but_succeeds(
 async def test_install_conflict_fails_without_renaming_executable_directory(
     bridge_e2e_env: dict[str, Any],
 ) -> None:
-    """Market rejects the legacy rename strategy instead of creating a copy."""
+    """Legacy rename requests are accepted but still fail on directory conflict."""
 
     plugin_id = "e2e_rename_identity"
     version = "1.0.0"
@@ -3772,7 +3772,18 @@ async def test_install_conflict_fails_without_renaming_executable_directory(
                 "on_conflict": "rename",
             },
         )
-        assert resp.status_code == 422, resp.text
+        assert resp.status_code == 200, resp.text
+        task_id = resp.json()["task_id"]
+        for _ in range(100):
+            poll = await client.get(f"/market/tasks/{task_id}?token={token}")
+            assert poll.status_code == 200, poll.text
+            task = poll.json()
+            if task["status"] in {"completed", "failed", "cancelled"}:
+                break
+            await asyncio.sleep(0.01)
+        else:
+            pytest.fail("legacy rename install task did not finish")
+        assert task["status"] == "failed"
 
     assert not (user_root / f"{plugin_id}_1").exists()
 

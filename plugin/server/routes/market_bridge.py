@@ -330,14 +330,22 @@ class MarketInstallRequest(BaseModel):
         ),
     )
     # Keep Market installs aligned with imported packages: an existing plugin
-    # directory is a conflict, never a request to create ``plugin_1``.
-    on_conflict: str = Field(default="fail", pattern=r"^fail$")
+    # directory is a conflict, never a request to create ``plugin_1``.  Accept
+    # the legacy value so cached Market clients remain compatible, then
+    # normalise it to the non-renaming behaviour.
+    on_conflict: str = Field(default="fail", pattern=r"^(fail|rename)$")
     require_confirm: bool = Field(default=True, description="是否需要用户确认（预留）")
 
     @field_validator("package_sha256", mode="before")
     @classmethod
     def _validate_package_sha256(cls, value: object) -> str:
         return _normalize_required_sha256(str(value) if value is not None else None)
+
+    @field_validator("on_conflict")
+    @classmethod
+    def _normalize_on_conflict(cls, value: str) -> str:
+        del cls
+        return "fail" if value == "rename" else value
 
 
 class MarketInstallResponse(BaseModel):
@@ -2814,6 +2822,30 @@ async def _do_install(
 
 
 @serialized_plugin_operation
+async def _replace_market_plugin_transaction(
+    *,
+    manager: Any,
+    expected_plugin_id: str,
+    original_entry: LockEntry,
+    installed_package_id: str,
+    replace_kwargs: dict[str, Any],
+) -> Any:
+    """Revalidate and replace under the shared plugin filesystem lock."""
+    active_entry = manager.find_active_market_entry(expected_plugin_id)
+    if active_entry is None or (
+        active_entry.plugin_id != original_entry.plugin_id
+        or active_entry.directory_name != original_entry.directory_name
+        or (getattr(active_entry, "package_id", "") or active_entry.plugin_id)
+        != installed_package_id
+    ):
+        raise _TaskError(
+            code="plugin_upgrade_plan_changed",
+            message="plugin installation changed while the package was downloading",
+            http_status=409,
+        )
+    return await replace_plugin(**replace_kwargs)
+
+
 async def _do_upgrade(
     task: dict[str, Any],
     payload: MarketInstallRequest,
@@ -2968,17 +3000,23 @@ async def _do_upgrade(
         )
         task["rollback"] = {"prepared": True, "restored": False}
         try:
-            replacement = await replace_plugin(
-                layout=resolve_plugin_layout(installed_plugin_id, plugin_dir),
-                install_new=install_new,
-                validate_new=validate_new,
-                is_running=plugin_is_running,
-                stop=stop_plugin_for_upgrade,
-                start=start,
-                cleanup_backup=_async_remove_dir,
-                additional_targets=(profile_dir,),
-                preserve_targets=(profile_dir,),
-                on_rollback_start=mark_rollback_running,
+            replacement = await _replace_market_plugin_transaction(
+                manager=mgr,
+                expected_plugin_id=expected_plugin_id,
+                original_entry=entry,
+                installed_package_id=installed_package_id,
+                replace_kwargs={
+                    "layout": resolve_plugin_layout(installed_plugin_id, plugin_dir),
+                    "install_new": install_new,
+                    "validate_new": validate_new,
+                    "is_running": plugin_is_running,
+                    "stop": stop_plugin_for_upgrade,
+                    "start": start,
+                    "cleanup_backup": _async_remove_dir,
+                    "additional_targets": (profile_dir,),
+                    "preserve_targets": (profile_dir,),
+                    "on_rollback_start": mark_rollback_running,
+                },
             )
         except ReplacePluginError as exc:
             source_restored = True

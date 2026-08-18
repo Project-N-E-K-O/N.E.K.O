@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 from plugin.server.routes import market_bridge
+from plugin.server.application.plugins.operation_lock import serialized_plugin_operation
 
 
 pytestmark = pytest.mark.plugin_unit
@@ -34,6 +35,18 @@ def _entry(plugin_id: str = "demo", package_id: str = "") -> SimpleNamespace:
         source_detail=None,
         package_id=package_id,
     )
+
+
+def test_market_install_request_normalizes_legacy_rename_conflict_policy() -> None:
+    request = market_bridge.MarketInstallRequest(
+        plugin_id="demo",
+        version="1.0.0",
+        package_url="https://example.com/demo.neko-plugin",
+        package_sha256="a" * 64,
+        on_conflict="rename",
+    )
+
+    assert request.on_conflict == "fail"
 
 
 def _configure_paths(
@@ -153,6 +166,59 @@ async def test_market_upgrade_holds_operation_lock_for_entire_replacement(
     release.set()
     await asyncio.gather(first, second)
     assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_market_upgrade_does_not_hold_operation_lock_while_downloading(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugins_root = tmp_path / "plugins"
+    profiles_root = tmp_path / "profiles"
+    plugin_dir = plugins_root / "demo"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "plugin.toml").write_text("id = 'demo'\n", encoding="utf-8")
+    package_path = tmp_path / "demo.neko-plugin"
+    package_path.write_bytes(b"package")
+
+    _configure_paths(monkeypatch, plugins_root=plugins_root, profiles_root=profiles_root)
+    download_started = asyncio.Event()
+    release_download = asyncio.Event()
+
+    async def slow_download(_url: str, _task: dict[str, Any]) -> Path:
+        download_started.set()
+        await release_download.wait()
+        return package_path
+
+    monkeypatch.setattr(market_bridge, "_download_package", slow_download)
+    monkeypatch.setattr(market_bridge, "_verify_sha256_file", lambda *args, **kwargs: "passed")
+    monkeypatch.setattr(market_bridge, "_cleanup_download_file", lambda _path: None)
+    monkeypatch.setattr(
+        market_bridge,
+        "replace_plugin",
+        lambda **_kwargs: _async_value(
+            SimpleNamespace(
+                install_result={"operation": "upgrade"},
+                restarted=False,
+                rollback_status="not_needed",
+                backup_dir=tmp_path / "backup",
+            )
+        ),
+    )
+
+    observed: list[str] = []
+
+    @serialized_plugin_operation
+    async def unrelated_operation() -> None:
+        observed.append("ran")
+
+    upgrade_task = asyncio.create_task(market_bridge._do_upgrade({}, _payload(), {}))
+    await download_started.wait()
+    await unrelated_operation()
+    assert observed == ["ran"]
+
+    release_download.set()
+    await upgrade_task
 
 
 @pytest.mark.asyncio
