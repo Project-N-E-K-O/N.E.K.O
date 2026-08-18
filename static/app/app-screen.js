@@ -23,9 +23,27 @@
     const SCREEN_SOURCE_WINDOW_TITLE_KEY = 'selectedScreenWindowTitle';
     const MAX_REMEMBERED_WINDOW_TITLE_LENGTH = 512;
     var screenSourceSelectionGeneration = 0;
+    var explicitScreenSourceSelectionGeneration = null;
+    var explicitScreenSourceSelectionTitle = null;
 
     function markScreenSourceSelectionChanged() {
         screenSourceSelectionGeneration += 1;
+        explicitScreenSourceSelectionGeneration = null;
+        explicitScreenSourceSelectionTitle = null;
+    }
+
+    function markCurrentScreenSourceSelectionExplicit(sourceTitle) {
+        explicitScreenSourceSelectionGeneration = screenSourceSelectionGeneration;
+        explicitScreenSourceSelectionTitle = normalizeScreenSourceTitle(sourceTitle);
+    }
+
+    function isCurrentScreenSourceSelectionExplicit(source) {
+        var normalizedExplicitTitle = normalizeScreenSourceTitle(
+            explicitScreenSourceSelectionTitle
+        );
+        return explicitScreenSourceSelectionGeneration === screenSourceSelectionGeneration
+            && !!normalizedExplicitTitle
+            && normalizedExplicitTitle === normalizeScreenSourceTitle(source && source.name);
     }
 
     function normalizeScreenSourceTitle(value) {
@@ -267,6 +285,13 @@
 
         if (selectedSource) {
             if (selectedSource.id.startsWith('window:')) {
+                if (!isCurrentScreenSourceSelectionExplicit(selectedSource)) {
+                    stopActiveCaptureForRememberedSourceRejection();
+                    clearSelectedScreenSource('恢复的窗口来源缺少可信标题或本轮显式选择');
+                    result.status = 'untrusted-restored-window';
+                    result.sourceId = S.selectedScreenSourceId;
+                    return result;
+                }
                 storeRememberedWindowTitle(selectedSource.name || '');
                 result.status = 'adopted-current-window';
             } else {
@@ -1746,6 +1771,20 @@
                         console.log('[屏幕源] 使用原生帧捕获源:', selectedSourceId);
                     } else if (selectedSourceId && desktopProvider) {
                         // Electron uses the selected Chromium desktop source.
+                        var manualCaptureGeneration = screenSourceSelectionGeneration;
+                        var manualCaptureSourceId = S.selectedScreenSourceId;
+                        var manualCaptureTitle = normalizeScreenSourceTitle(
+                            readRememberedWindowTitle()
+                        );
+                        var manualCaptureEnabled = isScreenSourceTitleMatchEnabled();
+                        function manualCaptureIdentityIsCurrent() {
+                            return manualCaptureGeneration === screenSourceSelectionGeneration
+                                && manualCaptureSourceId === S.selectedScreenSourceId
+                                && manualCaptureTitle === normalizeScreenSourceTitle(
+                                    readRememberedWindowTitle()
+                                )
+                                && manualCaptureEnabled === isScreenSourceTitleMatchEnabled();
+                        }
                         try {
                             captureStream = rememberScreenSharingAttemptStream(attempt, await navigator.mediaDevices.getUserMedia({
                                 audio: false,
@@ -1757,8 +1796,18 @@
                                     }
                                 }
                             }));
+                            if (!manualCaptureIdentityIsCurrent()) {
+                                console.warn('[屏幕源] 来源选择已变化，释放晚到的屏幕分享流');
+                                attempt.cancelled = true;
+                                discardCancelledScreenSharingStart(attempt);
+                                return;
+                            }
                         } catch (captureErr) {
                             if (discardCancelledScreenSharingStart(attempt)) return;
+                            if (!manualCaptureIdentityIsCurrent()) {
+                                console.warn('[屏幕源] 来源选择已变化，忽略过期的屏幕分享失败');
+                                return;
+                            }
                             console.warn('[屏幕源] 指定源捕获失败:', captureErr);
                             var fallbackSucceeded = false;
 
@@ -2107,6 +2156,7 @@
         if (previousSourceId !== sourceId) {
             markScreenSourceSelectionChanged();
         }
+        markCurrentScreenSourceSelectionExplicit(sourceName || '');
 
         var resolvedSourceName = displayName || sourceName || sourceId;
 

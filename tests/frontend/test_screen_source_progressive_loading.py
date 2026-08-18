@@ -777,6 +777,7 @@ def test_screenshot_preflight_keeps_selected_window_bounded_when_title_store_fai
                 }
                 originalSetItem(key, value);
             };
+            await window.selectScreenSource('window:2', 'Editor', 'Editor');
             window.__desktopProvider.getSources = async () => [
                 { id: 'screen:1', name: 'Entire Screen', display_id: '1' },
                 { id: 'window:2', name: 'Editor', display_id: '' },
@@ -799,6 +800,86 @@ def test_screenshot_preflight_keeps_selected_window_bounded_when_title_store_fai
         "status": "adopted-current-window",
         "sourceId": "window:2",
         "rememberedTitle": None,
+    }
+
+
+@pytest.mark.frontend
+def test_restored_window_id_without_trusted_title_is_not_adopted(
+    page: Page,
+) -> None:
+    _install_screen_source_harness(
+        page,
+        initial_storage={
+            "screenSourceTitleMatchEnabled": "true",
+            "selectedScreenSourceId": "window:reused",
+        },
+    )
+
+    result = page.evaluate(
+        """async () => {
+            window.__desktopProvider.getSources = async () => [
+                { id: 'window:reused', name: 'Unrelated Browser', display_id: '' },
+            ];
+            const captureCalls = [];
+            const track = {
+                readyState: 'live',
+                stopped: false,
+                stop() { this.stopped = true; this.readyState = 'ended'; },
+                addEventListener() {},
+            };
+            const unrelatedStream = {
+                active: true,
+                getVideoTracks() { return [track]; },
+                getTracks() { return [track]; },
+            };
+            Object.defineProperty(navigator, 'mediaDevices', {
+                configurable: true,
+                value: {
+                    async getUserMedia(constraints) {
+                        captureCalls.push(
+                            constraints.video.mandatory.chromeMediaSourceId
+                        );
+                        return unrelatedStream;
+                    },
+                },
+            });
+
+            const prepared = await window.appScreen.prepareRememberedWindowCapture();
+            let acquired = null;
+            if (prepared.allowed) {
+                acquired = await window.appScreen.acquireOrReuseCachedStream({
+                    allowPrompt: false,
+                });
+            }
+            const state = {
+                required: prepared.required,
+                allowed: prepared.allowed,
+                status: prepared.status ?? null,
+                captureCalls,
+                selectedId: window.appState.selectedScreenSourceId,
+                storedId: window.__storedValues.get('selectedScreenSourceId') ?? null,
+                rememberedTitle:
+                    window.__storedValues.get('selectedScreenWindowTitle') ?? null,
+                unrelatedStreamInstalled:
+                    window.appState.screenCaptureStream === unrelatedStream,
+                trackStoppedBeforeCleanup: track.stopped,
+            };
+            if (acquired) acquired.getTracks().forEach((item) => item.stop());
+            window.appState.screenCaptureStream = null;
+            return state;
+        }"""
+    )
+
+    assert result == {
+        "required": True,
+        "allowed": False,
+        "status": "untrusted-restored-window",
+        "captureCalls": [],
+        "selectedId": None,
+        "storedId": None,
+        "rememberedTitle": None,
+        "unrelatedStreamInstalled": False,
+        "trackStoppedBeforeCleanup": False,
     }
 
 
@@ -1046,6 +1127,95 @@ def test_manual_share_stale_metadata_does_not_clear_a_newer_selection(
 
 
 @pytest.mark.frontend
+def test_manual_share_discards_late_stream_after_source_change(
+    page: Page,
+) -> None:
+    _install_screen_source_harness(
+        page,
+        initial_storage={
+            "screenSourceTitleMatchEnabled": "true",
+            "selectedScreenWindowTitle": "Editor",
+            "selectedScreenSourceId": "window:old",
+        },
+    )
+    page.evaluate(
+        """() => {
+            document.body.insertAdjacentHTML('beforeend', `
+                <div id="live2d-container"></div>
+                <button id="micButton"></button><button id="muteButton"></button>
+                <button id="screenButton"></button><button id="stopButton" disabled></button>
+                <button id="resetSessionButton"></button>
+            `);
+            window.appState.isRecording = true;
+            window.appState.voiceChatActive = true;
+            window.appState.audioPlayerContext = { state: 'running' };
+            window.__desktopProvider.getSources = async () => [
+                { id: 'window:old', name: 'Editor', display_id: '' },
+                { id: 'window:new', name: 'Browser', display_id: '' },
+            ];
+            window.__manualGetUserMediaStarted = false;
+            window.__manualCaptureCalls = [];
+            window.__oldTrack = {
+                readyState: 'live',
+                stopped: false,
+                stop() { this.stopped = true; this.readyState = 'ended'; },
+                addEventListener() {},
+            };
+            window.__oldStream = {
+                active: true,
+                getVideoTracks() { return [window.__oldTrack]; },
+                getTracks() { return [window.__oldTrack]; },
+            };
+            Object.defineProperty(navigator, 'mediaDevices', {
+                configurable: true,
+                value: {
+                    getUserMedia(constraints) {
+                        window.__manualCaptureCalls.push(
+                            constraints.video.mandatory.chromeMediaSourceId
+                        );
+                        window.__manualGetUserMediaStarted = true;
+                        return new Promise((resolve) => {
+                            window.__resolveManualGetUserMedia = resolve;
+                        });
+                    },
+                },
+            });
+            window.__manualStartPromise = window.startScreenSharing();
+        }"""
+    )
+    page.wait_for_function("window.__manualGetUserMediaStarted === true")
+
+    result = page.evaluate(
+        """async () => {
+            await window.selectScreenSource('window:new', 'Browser', 'Browser');
+            window.__resolveManualGetUserMedia(window.__oldStream);
+            await window.__manualStartPromise;
+            const state = {
+                captureCalls: window.__manualCaptureCalls,
+                selectedId: window.appState.selectedScreenSourceId,
+                storedId: window.__storedValues.get('selectedScreenSourceId') ?? null,
+                rememberedTitle:
+                    window.__storedValues.get('selectedScreenWindowTitle') ?? null,
+                oldStreamInstalled:
+                    window.appState.screenCaptureStream === window.__oldStream,
+                oldTrackStoppedBeforeCleanup: window.__oldTrack.stopped,
+            };
+            await window.stopScreenSharing(true);
+            return state;
+        }"""
+    )
+
+    assert result == {
+        "captureCalls": ["window:old"],
+        "selectedId": "window:new",
+        "storedId": "window:new",
+        "rememberedTitle": "Browser",
+        "oldStreamInstalled": False,
+        "oldTrackStoppedBeforeCleanup": True,
+    }
+
+
+@pytest.mark.frontend
 def test_manual_share_rejected_stale_metadata_does_not_capture_old_selection(
     page: Page,
 ) -> None:
@@ -1263,6 +1433,7 @@ def test_adopted_remembered_window_capture_failure_does_not_fallback_to_screen(
                     },
                 },
             });
+            await window.selectScreenSource('window:old', 'Editor', 'Editor');
             await window.startScreenSharing();
             const state = {
                 calls,
@@ -1312,6 +1483,7 @@ def test_failed_adopted_title_storage_does_not_widen_capture_to_screen(
                 }
                 originalSetItem(key, value);
             };
+            await window.selectScreenSource('window:old', 'Editor', 'Editor');
             const calls = [];
             const track = {
                 readyState: 'live',
