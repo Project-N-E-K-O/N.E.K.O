@@ -2198,6 +2198,19 @@
             }
         }
 
+        function rememberedCaptureStillCurrent() {
+            return !rememberedWindowCapture
+                || !rememberedWindowCapture.required
+                || typeof rememberedWindowCapture.isCurrent !== 'function'
+                || rememberedWindowCapture.isCurrent();
+        }
+
+        function discardSupersededRememberedFrame(path) {
+            if (rememberedCaptureStillCurrent()) return false;
+            console.warn('[主动搭话截图] ' + path + ' 完成时记忆窗口已变化，丢弃旧帧');
+            return true;
+        }
+
         // 策略 0a: 复用有效缓存流（避免打扰正在进行的屏幕共享）
         if (S.screenCaptureStream && S.screenCaptureStream.active) {
             try {
@@ -2207,6 +2220,9 @@
                 if (tracks.length > 0 && tracks.some(function (t) { return t.readyState === 'live'; })) {
                     var cachedFrame = await captureFrameFromStream(cachedStream, 0.85);
                     if (cachedFrame && cachedFrame.dataUrl) {
+                        if (discardSupersededRememberedFrame('缓存流截图')) {
+                            return { dataUrl: null, via: null, captureType: null };
+                        }
                         S.screenCaptureStreamLastUsed = Date.now();
                         if (window.scheduleScreenCaptureIdleCheck) window.scheduleScreenCaptureIdleCheck();
                         console.log('[主动搭话截图] 缓存流截图成功');
@@ -2233,6 +2249,9 @@
                     nativeSourceId
                 );
                 if (direct && direct.success && direct.dataUrl) {
+                    if (discardSupersededRememberedFrame('主进程直接捕获')) {
+                        return { dataUrl: null, via: null, captureType: null };
+                    }
                     console.log('[主动搭话截图] 主进程直接捕获成功:', nativeSourceId);
                     return {
                         dataUrl: direct.dataUrl,
@@ -2255,6 +2274,9 @@
             var streamSourceId = S.selectedScreenSourceId;
             var frame = await captureFrameFromStream(stream, 0.85);
             if (frame && frame.dataUrl) {
+                if (discardSupersededRememberedFrame('前端流截图')) {
+                    return { dataUrl: null, via: null, captureType: null };
+                }
                 console.log('[主动搭话截图] 前端截图成功');
                 return {
                     dataUrl: frame.dataUrl,
@@ -2275,6 +2297,9 @@
                 var retrySourceId = S.selectedScreenSourceId;
                 frame = await captureFrameFromStream(stream, 0.85);
                 if (frame && frame.dataUrl) {
+                    if (discardSupersededRememberedFrame('前端流重试截图')) {
+                        return { dataUrl: null, via: null, captureType: null };
+                    }
                     return {
                         dataUrl: frame.dataUrl,
                         via: 'stream',

@@ -272,6 +272,12 @@
                 return source.id.startsWith('window:')
                     && normalizeScreenSourceTitle(source.name) === normalizedRememberedTitle;
             });
+            var explicitSelectedTitleMatch = selectedSource
+                && selectedSource.id.startsWith('window:')
+                && titleMatches.some(function (source) {
+                    return source.id === selectedSource.id;
+                })
+                && isCurrentScreenSourceSelectionExplicit(selectedSource);
             if (titleMatches.length === 1) {
                 if (S.selectedScreenSourceId !== titleMatches[0].id) {
                     var previousSourceId = S.selectedScreenSourceId;
@@ -282,6 +288,8 @@
                     restartActiveCaptureForSourceRemap(previousSourceId, titleMatches[0].id);
                     console.log('[屏幕源] 已通过唯一窗口标题恢复来源:', rememberedTitle);
                 }
+                result.status = 'matched';
+            } else if (explicitSelectedTitleMatch) {
                 result.status = 'matched';
             } else {
                 stopActiveCaptureForRememberedSourceRejection();

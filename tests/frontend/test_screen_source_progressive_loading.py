@@ -406,6 +406,51 @@ def test_remembered_title_does_not_guess_between_duplicate_windows(
 
 
 @pytest.mark.frontend
+def test_current_explicit_selection_survives_duplicate_window_titles(
+    page: Page,
+) -> None:
+    _install_screen_source_harness(
+        page,
+        initial_storage={
+            "screenSourceTitleMatchEnabled": "true",
+            "selectedScreenWindowTitle": "Editor",
+        },
+    )
+    page.evaluate(
+        """() => {
+            window.__metadataSources.push({
+                id: 'window:3',
+                name: ' editor ',
+                display_id: '',
+                thumbnail: null,
+            });
+            window.selectScreenSource('window:2', 'Editor', 'Editor');
+        }"""
+    )
+
+    result = page.evaluate(
+        """async () => {
+            const reconciliation = await window.appScreen
+                .reconcileRememberedWindowSource(window.__metadataSources);
+            return {
+                status: reconciliation.status,
+                sourceId: reconciliation.sourceId,
+                selectedId: window.appState.selectedScreenSourceId,
+                storedId: window.__storedValues.get('selectedScreenSourceId'),
+                selectedSourceCalls: window.__selectedSourceCalls,
+            };
+        }"""
+    )
+    assert result == {
+        "status": "matched",
+        "sourceId": "window:2",
+        "selectedId": "window:2",
+        "storedId": "window:2",
+        "selectedSourceCalls": [None, "window:2"],
+    }
+
+
+@pytest.mark.frontend
 def test_remembered_title_wins_when_an_old_source_id_is_reused(page: Page) -> None:
     _install_screen_source_harness(
         page,

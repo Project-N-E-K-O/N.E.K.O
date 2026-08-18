@@ -386,6 +386,92 @@ def test_helper_marks_backend_fallback_as_full_screen():
     assert out["data"].endswith("BACKEND")
 
 
+@pytest.mark.parametrize("mode", ["cached", "native", "stream", "retry"])
+def test_proactive_chat_discards_frames_when_remembered_identity_changes(mode: str):
+    """Every successful async capture route must reject a superseded window frame."""
+    proactive_src = APP_PROACTIVE_PATH.read_text(encoding="utf-8")
+    script = """
+const mode = '__MODE__';
+const results = {};
+let current = true;
+function makeStream(label) {
+  const track = { readyState: 'live', stop() {} };
+  return {
+    label,
+    active: true,
+    getVideoTracks: () => [track],
+    getTracks: () => [track]
+  };
+}
+const cachedStream = makeStream('cached');
+const firstStream = makeStream('first');
+const retryStream = makeStream('retry');
+const S = {
+  selectedScreenSourceId: 'window:old',
+  screenCaptureStream: mode === 'cached' ? cachedStream : null,
+  screenCaptureStreamLastUsed: null
+};
+const window = {
+  prepareRememberedWindowCapture: async () => ({
+    required: true,
+    allowed: true,
+    isCurrent: () => current
+  }),
+  detectScreenshotCaptureType: () => null,
+  captureDesktopSourceWithTimeout: async () => {
+    if (mode === 'native') {
+      current = false;
+      return { success: true, dataUrl: 'data:image/png;base64,OLD' };
+    }
+    return { success: false, error: 'not used' };
+  },
+  maybeClearSourceOnNotFound: () => {},
+  scheduleScreenCaptureIdleCheck: () => {}
+};
+const getDesktopProvider = () => mode === 'native'
+  ? { captureSourceAsDataUrl() {} }
+  : {};
+let acquireCount = 0;
+const acquireOrReuseCachedStream = async () => {
+  acquireCount += 1;
+  if (mode === 'stream') return firstStream;
+  if (mode === 'retry') return acquireCount === 1 ? firstStream : retryStream;
+  return null;
+};
+let frameCount = 0;
+const captureFrameFromStream = async () => {
+  frameCount += 1;
+  if (mode === 'retry' && frameCount === 1) return null;
+  current = false;
+  return { dataUrl: 'data:image/jpeg;base64,OLD' };
+};
+const fetchBackendScreenshot = async () => ({
+  dataUrl: 'data:image/jpeg;base64,BACKEND'
+});
+__RESOLVE__
+__HELPER__
+captureProactiveChatScreenshotWithSource().then((shot) => {
+  results.data = shot && shot.dataUrl;
+  results.via = shot && shot.via;
+  console.log(JSON.stringify(results));
+});
+"""
+    script = (
+        script
+        .replace("__MODE__", mode)
+        .replace("__RESOLVE__", _fn(proactive_src, "resolveCaptureTypeFor"))
+        .replace(
+            "__HELPER__",
+            _fn(proactive_src, "captureProactiveChatScreenshotWithSource"),
+        )
+    )
+
+    out = _run(script)
+
+    assert out.get("data") is None
+    assert out.get("via") is None
+
+
 _SCREENSHOT_ENTRY_TMPL = """
 const results = { calls: [] };
 class MediaStream {}
