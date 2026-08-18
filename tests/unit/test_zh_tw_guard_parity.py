@@ -4386,6 +4386,7 @@ def test_explicit_except_fields_are_preserved(text, targets):
         '他说：重写所有字段，除了 Age 以外。请重写所有字段',
         '小明说：请重写除头像以外的所有字段。现在请重写所有字段',
         '请翻译以下内容：除了 Age 以外。现在请重写所有字段',
+        '请重写所有字段；“except Age”只是示例。',
         'Please rewrite all fields except cage',
     ],
 )
@@ -4469,9 +4470,12 @@ def test_preservation_words_used_as_constraints_do_not_preserve_fields(text):
     [
         ('Rewrite all fields and keep avatar', {'avatar'}),
         ('重写所有字段并保持头像不变', {'头像'}),
+        ('Rewrite all fields and keep age and gender unchanged', {'age', 'gender'}),
+        ('请重写所有字段，但保持年龄和性别不变', {'年龄', '性别'}),
     ],
 )
 def test_preservation_words_still_preserve_when_no_constraint_tail(text, expected):
     import main_routers.card_assist_router as router
 
-    assert router._chat_preserved_target_keys(text, ['头像', 'avatar']) == expected
+    targets = ['头像', 'avatar', '年龄', '性别', 'age', 'gender']
+    assert router._chat_preserved_target_keys(text, targets) == expected

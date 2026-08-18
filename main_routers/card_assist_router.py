@@ -2658,9 +2658,9 @@ _CHAT_PRESERVATION_CLAUSE_RE = re.compile(
 _CHAT_PRESERVATION_EXCEPT_RE = re.compile(
     r"(?:"
     r"(?:除|除了)\s*(?P<keys_zh>[^，。！？；;]+?)\s*(?:以外|之外)"
-    r"|(?i:\bexcept(?:\s+for)?\s+)(?P<keys_en>[^,.!?;]+?)"
+    r"|(?i:\bexcept(?:\s+for)?\s+)(?P<keys_en>[^，。！？；,.!?;“”‘’\"']+?)"
     r"(?=(?i:\b(?:but|however)\s*(?:rewrite|revise|regenerate|redo|refresh)\b)"
-    r"|[,.!?;]|$)"
+    r"|[，。！？；,.!?;“”‘’\"']|$)"
     r")"
 )
 _CHAT_PRESERVATION_NEGATION_RE = re.compile(
@@ -2721,11 +2721,21 @@ def _chat_target_key_matches(
     return matches
 
 
+def _chat_span_is_quoted(instruction: str, start: int, end: int) -> bool:
+    """Return whether a span is fully inside a balanced quote."""
+    return any(
+        quote.start() <= start and end <= quote.end()
+        for quote in _CHAT_QUOTED_SPAN_RE.finditer(instruction)
+    )
+
+
 def _chat_preservation_match_is_constraint(
     clause: str, verb: str, match_end: int
 ) -> bool:
-    """Return whether keep/保持 describes a rewrite constraint, not preservation."""
+    """Return whether a keep-style clause describes a rewrite constraint."""
     if verb.lower() not in {"保持", "keep"}:
+        return False
+    if re.search(r"(?:不(?:变|變)|原样|原樣|(?i:unchanged|as\s+is))\s*$", clause):
         return False
     suffix = clause[match_end:].strip()
     if not suffix:
@@ -2742,6 +2752,10 @@ def _chat_preserved_target_keys(
     """Return target keys explicitly named in a preservation clause."""
     candidates: list[tuple[str, int, int]] = []
     for except_match in _CHAT_PRESERVATION_EXCEPT_RE.finditer(instruction or ""):
+        if _chat_span_is_quoted(
+            instruction or "", except_match.start(), except_match.end()
+        ):
+            continue
         if _chat_preservation_clause_is_meta_request_text(
             instruction or "", except_match.start()
         ):
