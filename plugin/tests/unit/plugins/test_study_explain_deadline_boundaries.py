@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 import plugin.plugins.study_companion.entry_tutor_explain_entries as explain_entries
+import plugin.plugins.study_companion.entry_tutor_context_support as context_support
 from plugin.plugins.study_companion.constants import (
     MODE_COMPANION,
     MODE_CONCEPT_EXPLAIN,
@@ -145,6 +146,9 @@ class _Harness(
         if self._finalize_behavior == "persist_then_block":
             kwargs["finalize_progress"].history_persisted.set()
             await asyncio.Event().wait()
+        if self._finalize_behavior == "persist_then_error":
+            kwargs["finalize_progress"].history_persisted.set()
+            raise RuntimeError("state store unavailable")
         if self._finalize_behavior == "error":
             raise RuntimeError("history store unavailable")
         return {
@@ -333,12 +337,70 @@ async def test_cancelled_finalize_awaits_started_state_persistence() -> None:
     )
     assert await asyncio.to_thread(started.wait, 1.0)
     persistence.cancel()
-    await asyncio.sleep(0)
+    for _ in range(5):
+        await asyncio.sleep(0)
     assert persistence.done() is False
     release.set()
     with pytest.raises(asyncio.CancelledError):
         await persistence
     assert committed.is_set() is True
+
+
+@pytest.mark.asyncio
+async def test_cancelled_state_persistence_wait_is_bounded() -> None:
+    started = threading.Event()
+    release = threading.Event()
+
+    async def persist_state() -> None:
+        def write_state() -> None:
+            started.set()
+            release.wait()
+
+        await asyncio.to_thread(write_state)
+
+    persistence = asyncio.create_task(
+        _await_completion_on_cancel(persist_state(), timeout_seconds=0.01)
+    )
+    assert await asyncio.to_thread(started.wait, 1.0)
+    persistence.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(persistence, timeout=0.1)
+    release.set()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_interaction_drain_wait_is_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started = threading.Event()
+    release = threading.Event()
+
+    class BlockingStore:
+        def append_interaction(self, **kwargs: Any) -> bool:
+            kwargs["worker_started_event"].set()
+            kwargs["commit_started_event"].set()
+            started.set()
+            release.wait()
+            kwargs["finished_event"].set()
+            return True
+
+    monkeypatch.setattr(context_support, "_CANCEL_DRAIN_TIMEOUT_SECONDS", 0.01)
+    write = asyncio.create_task(
+        _append_interaction_cancel_safe(
+            BlockingStore(),
+            progress=_TutorFinalizeProgress(),
+            kind=MODE_CONCEPT_EXPLAIN,
+            input_text="input",
+            output_text="output",
+            metadata={},
+            history_limit=50,
+        )
+    )
+    assert await asyncio.to_thread(started.wait, 1.0)
+    write.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(write, timeout=0.1)
+    release.set()
 
 
 @pytest.mark.asyncio
@@ -366,6 +428,17 @@ async def test_finalize_failure_returns_compatible_visible_reply() -> None:
     assert isinstance(result, Ok)
     assert result.value["reply"] == "普通解释内容。"
     assert result.value["history_persisted"] is False
+    assert result.value["diagnostic"] == "history_persist_failed"
+
+
+@pytest.mark.asyncio
+async def test_finalize_failure_reports_history_already_committed() -> None:
+    plugin = _Harness(finalize_behavior="persist_then_error")
+
+    result = await plugin.study_explain_text(text="历史已保存，状态保存失败")
+
+    assert isinstance(result, Ok)
+    assert result.value["history_persisted"] is True
     assert result.value["diagnostic"] == "history_persist_failed"
 
 

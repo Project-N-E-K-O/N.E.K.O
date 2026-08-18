@@ -2881,6 +2881,45 @@ def test_study_store_append_interaction_trims_on_interval(tmp_path: Path) -> Non
         store.close()
 
 
+def test_study_store_append_interaction_rolls_back_failed_trim(tmp_path: Path) -> None:
+    store = StudyStore(tmp_path / "study.db", tmp_path / "seed.json", _Logger())
+    store.open()
+    try:
+        store.append_interaction(
+            kind="concept_explain",
+            input_text="first",
+            output_text="kept",
+            history_limit=50,
+        )
+        conn = store._require_conn()
+        conn.execute(
+            """
+            CREATE TRIGGER fail_interaction_trim
+            BEFORE DELETE ON interactions
+            BEGIN
+                SELECT RAISE(FAIL, 'trim failed');
+            END
+            """
+        )
+        conn.commit()
+        store._interaction_count = store._INTERACTION_TRIM_INTERVAL - 1
+
+        with pytest.raises(Exception, match="trim failed"):
+            store.append_interaction(
+                kind="concept_explain",
+                input_text="second",
+                output_text="must roll back",
+                history_limit=1,
+            )
+
+        conn.execute("DROP TRIGGER fail_interaction_trim")
+        conn.commit()
+        history = store.list_interactions(10)
+        assert [item["input_text"] for item in history] == ["first"]
+    finally:
+        store.close()
+
+
 def test_study_store_open_resets_interaction_trim_counter(tmp_path: Path) -> None:
     store = StudyStore(tmp_path / "study.db", tmp_path / "seed.json", _Logger())
     store.open()
@@ -8221,7 +8260,8 @@ async def test_learning_context_includes_knowledge_graph_guidance_for_explain(
         assert guidance["topic"]["id"] == "extrema"
         assert guidance["learning_path"][0]["from"] == "derivative"
         assert guidance["diagnosis_questions"] == []
-        assert context["study_response_mode"] == "unknown"
+        assert context["study_response_mode"] == "general_explanation"
+        assert context["study_semantic_status"] == "available"
     finally:
         await plugin.shutdown()
 
@@ -8588,6 +8628,8 @@ async def test_concept_guidance_explicit_topic_skips_semantic_model_call(
         assert fake_agent.semantic_routing_calls == []
         assert context["knowledge_guidance_status"] == "applied"
         assert context["knowledge_guidance_source"] == "selected_topic"
+        assert context["study_response_mode"] == "general_explanation"
+        assert context["study_semantic_status"] == "available"
         assert context["knowledge_guidance_focus_topic"]["id"] == (
             "college_stationary_points"
         )

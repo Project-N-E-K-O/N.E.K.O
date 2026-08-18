@@ -5,6 +5,9 @@ from pathlib import Path
 
 import pytest
 
+from plugin.plugins.study_companion.entry_status_entries import _StatusEntriesMixin
+from plugin.sdk.plugin.ui import UI_ACTION_META_ATTR
+
 
 pytestmark = pytest.mark.unit
 
@@ -100,6 +103,14 @@ def test_static_and_hosted_ui_use_same_provider_neutral_diagnostics() -> None:
 
     assert "model_runtime" in static_source
     assert "study_get_settings_config" in static_source
+
+
+def test_hosted_model_runtime_settings_entry_is_exposed_as_ui_action() -> None:
+    action_meta = getattr(
+        _StatusEntriesMixin.study_get_settings_config, UI_ACTION_META_ATTR, None
+    )
+
+    assert isinstance(action_meta, dict)
 
 
 def test_model_runtime_ui_does_not_render_credentials_or_endpoint() -> None:

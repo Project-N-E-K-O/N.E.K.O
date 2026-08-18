@@ -273,12 +273,15 @@ def test_memory_card_first_save_prompts_for_deck_and_supports_skip() -> None:
         "listAllMemoryDecks({ callPlugin });"
     )
     assert load_call in main_js
+    assert "async function loadDeckOptions()" in main_js
+    state_start = main_js.index("function setMemoryDeckState(")
+    state_end = main_js.index("\nfunction memoryDeckDisplayName", state_start)
+    assert "void loadDeckOptions().catch" in main_js[state_start:state_end]
     assert "async function chooseDeckForFirstCard()" in main_js
     choose_start = main_js.index("async function chooseDeckForFirstCard()")
     choose_end = main_js.index("\nfunction setStatusLine", choose_start)
     choose_source = main_js[choose_start:choose_end]
-    load_index = choose_source.index(load_call)
-    assert "if (memoryDecks.length)" not in choose_source[:load_index]
+    assert "await loadDeckOptions();" in choose_source
     assert "callPlugin('study_memory_create_deck'" in main_js
     assert "deck_type: deckType" in main_js
     assert "deck_id: deckId" in main_js

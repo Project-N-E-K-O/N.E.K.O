@@ -438,7 +438,9 @@ class _TutorExplainEntriesMixin:
             except Exception:
                 self.logger.warning("study explanation history persistence failed")
                 payload = _build_finalize_failure_payload(
-                    reply, diagnostic="history_persist_failed"
+                    reply,
+                    diagnostic="history_persist_failed",
+                    history_persisted=finalize_progress.history_persisted.is_set(),
                 )
             narration_scheduled = False
             narration_status = "disabled"

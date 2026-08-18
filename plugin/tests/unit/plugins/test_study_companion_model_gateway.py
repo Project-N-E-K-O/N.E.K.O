@@ -52,11 +52,26 @@ def _runtime(
 
 
 class _QuotaManager:
-    def __init__(self, *, allowed: bool = True, reserved: int = 2) -> None:
+    def __init__(
+        self,
+        *,
+        allowed: bool = True,
+        reserved: int = 2,
+        runtime_config: dict[str, object] | None = None,
+    ) -> None:
         self.allowed = allowed
         self.reserved = reserved
+        self.runtime_config = runtime_config or {
+            "model": "provider-model",
+            "provider_type": "openai_compatible",
+            "api_key": "private-key",
+            "base_url": "https://provider.example/v1",
+        }
         self.calls: list[tuple[str, int]] = []
         self.reserve_calls: list[tuple[str, int, int]] = []
+
+    async def aget_model_api_config(self, _group: str) -> dict[str, object]:
+        return dict(self.runtime_config)
 
     async def aconsume_agent_daily_quota(
         self, source: str = "", units: int = 1
@@ -378,6 +393,29 @@ async def test_optional_agent_reservation_preserves_last_credit_for_primary_call
         ("study_companion:knowledge_semantic_route", 2, 1)
     ]
     assert manager.calls == []
+
+
+@pytest.mark.asyncio
+async def test_optional_agent_reservation_validates_runtime_before_charging_quota(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = _QuotaManager(
+        runtime_config={
+            "model": "provider-model",
+            "provider_type": "openai_compatible",
+            "api_key": "",
+            "base_url": "https://provider.example/v1",
+        }
+    )
+    _install_manager(monkeypatch, manager)
+
+    with pytest.raises(StudyModelError) as raised:
+        await StudyModelGateway(logger=_Logger()).reserve_optional_agent_call(
+            "knowledge_semantic_route"
+        )
+
+    assert raised.value.diagnostic == "authentication_failed"
+    assert manager.reserve_calls == []
 
 
 def test_runtime_description_and_repr_never_expose_secret_or_endpoint() -> None:

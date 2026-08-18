@@ -604,41 +604,50 @@ class StudyStore:
                 if cancel_event is not None and cancel_event.is_set():
                     return False
                 conn = self._require_conn()
-                conn.execute(
-                    """
-                    INSERT INTO interactions (kind, input_text, output_text, metadata, created_at)
-                    VALUES (?, ?, ?, ?, ?)
-                    """,
-                    (
-                        kind,
-                        input_text,
-                        output_text,
-                        json.dumps(
-                            json_copy(metadata or {}), ensure_ascii=False, sort_keys=True
-                        ),
-                        time.time(),
-                    ),
-                )
-                next_interaction_count = self._interaction_count + 1
-                trim_history = next_interaction_count >= int(
-                    self._INTERACTION_TRIM_INTERVAL
-                )
-                if trim_history:
+                try:
                     conn.execute(
                         """
-                        DELETE FROM interactions
-                        WHERE id NOT IN (
-                            SELECT id FROM interactions ORDER BY id DESC LIMIT ?
-                        )
+                        INSERT INTO interactions (kind, input_text, output_text, metadata, created_at)
+                        VALUES (?, ?, ?, ?, ?)
                         """,
-                        (max(1, int(history_limit)),),
+                        (
+                            kind,
+                            input_text,
+                            output_text,
+                            json.dumps(
+                                json_copy(metadata or {}),
+                                ensure_ascii=False,
+                                sort_keys=True,
+                            ),
+                            time.time(),
+                        ),
                     )
-                if commit_started_event is not None:
-                    commit_started_event.set()
-                if cancel_event is not None and cancel_event.is_set():
-                    conn.rollback()
-                    return False
-                conn.commit()
+                    next_interaction_count = self._interaction_count + 1
+                    trim_history = next_interaction_count >= int(
+                        self._INTERACTION_TRIM_INTERVAL
+                    )
+                    if trim_history:
+                        conn.execute(
+                            """
+                            DELETE FROM interactions
+                            WHERE id NOT IN (
+                                SELECT id FROM interactions ORDER BY id DESC LIMIT ?
+                            )
+                            """,
+                            (max(1, int(history_limit)),),
+                        )
+                    if commit_started_event is not None:
+                        commit_started_event.set()
+                    if cancel_event is not None and cancel_event.is_set():
+                        conn.rollback()
+                        return False
+                    conn.commit()
+                except Exception:
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+                    raise
                 self._interaction_count = 0 if trim_history else next_interaction_count
                 if committed_event is not None:
                     committed_event.set()

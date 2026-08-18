@@ -8,7 +8,7 @@ const TARGET_DATA_URL_LENGTH = 1000000;
 const DEFAULT_VISION_MAX_IMAGE_PX = 768;
 const SUPPORTED_PASTE_IMAGE_TYPES = new Set(['image/png', 'image/jpeg']);
 const DEPENDENCY_KEYS = Object.freeze(['rapidocr', 'tesseract', 'dxcam']);
-// Legacy translation key retained for older static UI bundles: ui.settings.dependencies.ready_summary
+// ui.settings.dependencies.ready_summary
 const LEARNING_PROFILE_STORAGE_KEY = 'study_companion.learning_profile.v1';
 const LEARNING_STAGE_OPTIONS = ['primary', 'junior_high', 'senior_high', 'college', 'cross_stage', 'postgraduate', 'custom'];
 const KNOWLEDGE_SUBJECT_OPTIONS = ['math', 'english', 'chinese', 'physics', 'chemistry', 'biology', 'history', 'geography', 'politics', 'computer_science', 'economics'];
@@ -1146,6 +1146,7 @@ function setMemoryDeckState(deck = {}) {
     memoryDecks = deck.decks;
     renderMemoryDeckOptions();
   }
+  void loadDeckOptions().catch(() => {});
   currentMemoryCard = dueCards[0] || null;
   if (quickReviewCount) {
     quickReviewCount.textContent = String(dueCount);
@@ -1208,6 +1209,12 @@ function renderMemoryDeckOptions() {
     : String(memoryDecks[0]?.id || '');
 }
 
+async function loadDeckOptions() {
+  memoryDecks = await window.StudyCompanionSurfacePanels.listAllMemoryDecks({ callPlugin });
+  renderMemoryDeckOptions();
+  quickCardController?.decorateDeckOptions();
+}
+
 function finishMemoryDeckDialog(value) {
   const resolve = memoryDeckDialogResolve;
   memoryDeckDialogResolve = null;
@@ -1242,8 +1249,7 @@ const quickCardController = window.StudyQuickCardController?.create({
 });
 
 async function chooseDeckForFirstCard() {
-  memoryDecks = await window.StudyCompanionSurfacePanels.listAllMemoryDecks({ callPlugin });
-  renderMemoryDeckOptions();
+  await loadDeckOptions();
   if (memoryDecks.length) {
     return memoryDeckSelect?.value || String(memoryDecks[0]?.id || '');
   }

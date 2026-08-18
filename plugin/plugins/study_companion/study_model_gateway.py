@@ -348,6 +348,25 @@ class StudyModelGateway:
     async def reserve_optional_agent_call(
         self, operation: str
     ) -> tuple[bool, AgentQuotaReservation | None]:
+        runtime = await self.resolve_runtime("agent")
+        if not runtime.model or not runtime.base_url:
+            raise StudyModelError(
+                "configured agent model is incomplete",
+                diagnostic="model_unavailable",
+                operation=operation,
+            )
+        if not runtime.api_key:
+            raise StudyModelError(
+                "configured agent credential is missing",
+                diagnostic="authentication_failed",
+                operation=operation,
+            )
+        if runtime.transport == "unsupported":
+            raise StudyModelError(
+                "configured agent provider protocol is unsupported",
+                diagnostic="unsupported_provider",
+                operation=operation,
+            )
         get_config_manager = getattr(_config_manager_module, "get_config_manager", None)
         if not callable(get_config_manager):
             raise StudyModelError(

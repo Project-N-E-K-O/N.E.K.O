@@ -316,6 +316,7 @@ class _StatusEntriesMixin:
             )
         )
 
+    @ui.action()
     @plugin_entry(
         id="study_get_settings_config",
         name=tr(

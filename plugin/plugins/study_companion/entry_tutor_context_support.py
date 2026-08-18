@@ -33,6 +33,7 @@ from ._semantic_routing import (
 _SEMANTIC_ROUTE_OPERATION = "knowledge_semantic_route"
 _SEMANTIC_ROUTE_MIN_CONFIDENCE = 0.6
 _SEMANTIC_ROUTE_TIMEOUT_SECONDS = 12.0
+_CANCEL_DRAIN_TIMEOUT_SECONDS = 5.0
 
 
 @dataclass(slots=True)
@@ -71,21 +72,50 @@ async def _append_interaction_cancel_safe(
     except asyncio.CancelledError:
         progress.cancel_requested.set()
         if progress.commit_started.is_set():
-            await asyncio.shield(asyncio.to_thread(progress.finished.wait))
+            finished = await asyncio.shield(
+                asyncio.to_thread(
+                    progress.finished.wait, _CANCEL_DRAIN_TIMEOUT_SECONDS
+                )
+            )
+            if not finished:
+                _warn(
+                    getattr(store, "_logger", None),
+                    "study interaction cancellation drain timed out",
+                )
         raise
     if persisted is False:
         raise asyncio.CancelledError
 
 
-async def _await_completion_on_cancel(awaitable: Any) -> Any:
+def _consume_background_task(task: asyncio.Task[Any]) -> None:
+    try:
+        task.result()
+    except BaseException:
+        pass
+
+
+async def _await_completion_on_cancel(
+    awaitable: Any,
+    *,
+    timeout_seconds: float = _CANCEL_DRAIN_TIMEOUT_SECONDS,
+    logger: Any = None,
+) -> Any:
     task = asyncio.create_task(awaitable)
     try:
         return await asyncio.shield(task)
     except asyncio.CancelledError:
         try:
-            await asyncio.shield(task)
+            await asyncio.wait_for(
+                asyncio.shield(task), timeout=max(0.0, float(timeout_seconds))
+            )
+        except asyncio.TimeoutError:
+            _warn(logger, "study state persistence cancellation drain timed out")
+        except asyncio.CancelledError:
+            pass
         except Exception:
             pass
+        if not task.done():
+            task.add_done_callback(_consume_background_task)
         raise
 
 
@@ -281,11 +311,16 @@ class _TutorContextSupportMixin:
                         status="not_matched", source="selected_topic"
                     )
                 explicit_topic = explicit[0]
+                explicit_response_mode = (
+                    "general_explanation"
+                    if operation == LLM_OPERATION_CONCEPT_EXPLAIN
+                    else "problem_solving"
+                )
                 semantics = StudyInputSemantics(
                     subject=str(explicit_topic.get("subject") or "unknown"),
                     content_type="selected_topic",
                     intent="explicit_topic",
-                    response_mode="unknown",
+                    response_mode=explicit_response_mode,
                     entity=str(explicit_topic.get("label") or ""),
                     retrieval_concepts=(str(explicit_topic.get("label") or ""),),
                     confidence=1.0,
@@ -294,11 +329,7 @@ class _TutorContextSupportMixin:
                     topics=topic_items,
                     topic_id=topic_id,
                     query=query,
-                    response_mode=(
-                        semantics.response_mode
-                        if operation == LLM_OPERATION_CONCEPT_EXPLAIN
-                        else "problem_solving"
-                    ),
+                    response_mode=explicit_response_mode,
                     max_depth=3,
                     match_limit=5,
                 )
@@ -307,7 +338,8 @@ class _TutorContextSupportMixin:
                     semantics=semantics,
                     guidance=guidance,
                     source="selected_topic",
-                    semantic_status="not_applicable",
+                    semantic_status="available",
+                    response_mode=explicit_response_mode,
                 )
             if operation != LLM_OPERATION_CONCEPT_EXPLAIN:
                 guidance = build_knowledge_guidance_payload(
@@ -735,7 +767,9 @@ class _TutorContextSupportMixin:
                 extra_context=extra_context,
                 public_payload=public_payload,
             )
-        await _await_completion_on_cancel(self._persist_state())
+        await _await_completion_on_cancel(
+            self._persist_state(), logger=getattr(self, "logger", None)
+        )
         if public_payload is not None:
             payload = {
                 "operation": reply.operation,

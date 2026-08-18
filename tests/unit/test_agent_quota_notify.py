@@ -140,3 +140,7 @@ def test_reserve_agent_quota_atomically_keeps_required_final_unit(
     assert reserved == 1
     assert info["used"] == 2
     assert info["remaining"] == 0
+    persisted = json.loads(
+        (tmp_path / "agent_quota.json").read_text(encoding="utf-8")
+    )
+    assert persisted == {"date": date.today().isoformat(), "used": 2}
