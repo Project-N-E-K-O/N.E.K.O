@@ -917,10 +917,29 @@
             && !S.screenCaptureAutoPromptFailed &&
             navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia) {
             try {
+                var pickerGeneration = screenSourceSelectionGeneration;
+                var pickerSelectionId = S.selectedScreenSourceId;
+                var pickerRememberedTitle = normalizeScreenSourceTitle(
+                    readRememberedWindowTitle()
+                );
+                var pickerRememberedEnabled = isScreenSourceTitleMatchEnabled();
                 var displayStream = await navigator.mediaDevices.getDisplayMedia({
                     video: { cursor: 'always', frameRate: { max: 1 } },
                     audio: false,
                 });
+
+                if (pickerGeneration !== screenSourceSelectionGeneration
+                    || pickerSelectionId !== S.selectedScreenSourceId
+                    || pickerRememberedTitle !== normalizeScreenSourceTitle(
+                        readRememberedWindowTitle()
+                    )
+                    || pickerRememberedEnabled !== isScreenSourceTitleMatchEnabled()) {
+                    console.warn('[acquireStream] 来源选择已变化，释放晚到的 picker 流');
+                    displayStream.getTracks().forEach(function (track) {
+                        try { track.stop(); } catch (_) { }
+                    });
+                    return null;
+                }
 
                 S.screenCaptureStream = displayStream;
                 S.screenCaptureStreamLastUsed = Date.now();
@@ -1437,8 +1456,26 @@
         }
 
         var provider = resolveDesktopCaptureProvider();
+        var pendingStartWasActive = typeof isScreenSharingStartPending === 'function'
+            && isScreenSharingStartPending();
         stopScreening();
         if (!isNativeFrameProvider(provider)) return;
+
+        if (pendingStartWasActive) {
+            cancelPendingScreenSharingStart();
+            Promise.resolve(startScreenSharing()).catch(function (error) {
+                console.warn('[屏幕源] 标题恢复后重启原生捕获失败:', error);
+                stopScreenSharing(true);
+                window.showStatusToast(
+                    safeT(
+                        'app.screenSource.captureFailed',
+                        '屏幕捕获已停止，请检查系统权限或重新选择来源'
+                    ),
+                    5000
+                );
+            });
+            return;
+        }
 
         Promise.resolve(startNativeScreenStreaming(provider, nextSourceId, 'screen'))
             .catch(async function (error) {
@@ -1707,6 +1744,16 @@
                                 4000
                             );
                             return;
+                        }
+                        var replacementStream = S.screenCaptureStream;
+                        if (replacementStream && replacementStream.active) {
+                            var replacementTracks = replacementStream.getVideoTracks();
+                            if (replacementTracks.some(function (track) {
+                                return track.readyState === 'live';
+                            })) {
+                                attempt.initialStream = replacementStream;
+                                captureStream = replacementStream;
+                            }
                         }
                     }
                 }
