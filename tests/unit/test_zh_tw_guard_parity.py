@@ -5059,6 +5059,14 @@ def test_full_rewrite_before_sequential_assignment_remains_active():
     assert router._chat_text_requests_full_rewrite(text) is True
 
 
+def test_first_person_possessive_request_resets_reported_preservation_context():
+    import main_routers.card_assist_router as router
+
+    text = '他说：不要保留 Age，但我的要求：重写所有字段并保留 Age'
+
+    assert router._chat_preserved_target_keys(text, ['Age', 'Name']) == {'Age'}
+
+
 @pytest.mark.parametrize(
     'text',
     [

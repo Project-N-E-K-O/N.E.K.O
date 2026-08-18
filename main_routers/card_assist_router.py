@@ -1550,8 +1550,9 @@ _CHAT_FIRST_PERSON_REQUEST_HEAD_RE = re.compile(
     r"(?:我的|我们的|我們的)\s*要求)\s*[：:,，]\s*"
 )
 _CHAT_FIRST_PERSON_REQUEST_BOUNDARY_RE = re.compile(
-    r"(?:我|我们|我們|咱们|咱們)\s*(?:(?:想|想要)\s*)?"
-    r"(?:要求|说|說)\s*[：:,，]"
+    r"(?:(?:我|我们|我們|咱们|咱們)\s*"
+    r"(?:(?:想|想要|要|希望|打算|准备|準備)\s*)?(?:要求|说|說)"
+    r"|(?:我的|我们的|我們的)\s*要求)\s*[：:,，]"
 )
 _CHAT_REPORTING_CONTEXT_RESET_RE = re.compile(
     r"[。！？!?]+|(?<![A-Za-z]\.[A-Za-z])(?<!\d)\.(?![A-Za-z0-9])"
