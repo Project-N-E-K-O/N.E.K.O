@@ -22,6 +22,11 @@
     const SCREEN_SOURCE_TITLE_MATCH_ENABLED_KEY = 'screenSourceTitleMatchEnabled';
     const SCREEN_SOURCE_WINDOW_TITLE_KEY = 'selectedScreenWindowTitle';
     const MAX_REMEMBERED_WINDOW_TITLE_LENGTH = 512;
+    var screenSourceSelectionGeneration = 0;
+
+    function markScreenSourceSelectionChanged() {
+        screenSourceSelectionGeneration += 1;
+    }
 
     function normalizeScreenSourceTitle(value) {
         return String(value || '').trim().replace(/\s+/g, ' ').toLowerCase();
@@ -203,6 +208,7 @@
             console.log('[屏幕源] 清除失效的选中源' + (reason ? ' (' + reason + ')' : ''), S.selectedScreenSourceId);
         } catch (_) { }
         S.selectedScreenSourceId = null;
+        markScreenSourceSelectionChanged();
         try { localStorage.removeItem('selectedScreenSourceId'); } catch (_) { }
         pushSelectedSourceToMain(null);
         try {
@@ -238,6 +244,7 @@
             if (titleMatches.length === 1) {
                 if (S.selectedScreenSourceId !== titleMatches[0].id) {
                     S.selectedScreenSourceId = titleMatches[0].id;
+                    markScreenSourceSelectionChanged();
                     try { localStorage.setItem('selectedScreenSourceId', titleMatches[0].id); } catch (_) { }
                     pushSelectedSourceToMain(titleMatches[0].id);
                     console.log('[屏幕源] 已通过唯一窗口标题恢复来源:', rememberedTitle);
@@ -310,6 +317,7 @@
         if (S.selectedScreenSourceId === newId) return;
         var oldId = S.selectedScreenSourceId;
         S.selectedScreenSourceId = newId;
+        markScreenSourceSelectionChanged();
         try {
             if (typeof updateScreenSourceListSelection === 'function') {
                 updateScreenSourceListSelection();
@@ -591,6 +599,54 @@
     async function acquireOrReuseCachedStream(opts) {
         if (!opts) opts = {};
 
+        var desktopProvider = resolveDesktopCaptureProvider();
+        var rememberedTitleRequired = isScreenSourceTitleMatchEnabled()
+            && !!normalizeScreenSourceTitle(readRememberedWindowTitle());
+        var rememberedResolutionGeneration = screenSourceSelectionGeneration;
+        var rememberedResolutionSourceId = S.selectedScreenSourceId;
+        var rememberedResolutionTitle = normalizeScreenSourceTitle(
+            readRememberedWindowTitle()
+        );
+        var currentSources = null;
+
+        // Electron source IDs are enumeration snapshots and can later be reused for
+        // another window. On providers that can enumerate without prompting, resolve
+        // the remembered title before trusting either a cached stream or an ID.
+        if (rememberedTitleRequired && desktopProvider
+            && !desktopSourceEnumerationMayPrompt(desktopProvider)) {
+            try {
+                currentSources = await desktopProvider.getSources({
+                    types: ['window', 'screen'],
+                    thumbnailSize: { width: 0, height: 0 }
+                });
+                if (rememberedResolutionGeneration !== screenSourceSelectionGeneration
+                    || rememberedResolutionSourceId !== S.selectedScreenSourceId
+                    || rememberedResolutionTitle !== normalizeScreenSourceTitle(
+                        readRememberedWindowTitle()
+                    )
+                    || !isScreenSourceTitleMatchEnabled()) {
+                    return null;
+                }
+                var selectedBeforeReconcile = S.selectedScreenSourceId;
+                var rememberedResolution = reconcileRememberedWindowSource(currentSources);
+                if (selectedBeforeReconcile !== S.selectedScreenSourceId && S.screenCaptureStream) {
+                    try {
+                        S.screenCaptureStream.getTracks().forEach(function (track) {
+                            try { track.stop(); } catch (_) { }
+                        });
+                    } catch (_) { }
+                    S.screenCaptureStream = null;
+                    S.screenCaptureStreamLastUsed = null;
+                }
+                if (rememberedResolution.status !== 'matched') {
+                    return null;
+                }
+            } catch (error) {
+                console.warn('[acquireStream] 无法确认记忆窗口，停止本次捕获:', error);
+                return null;
+            }
+        }
+
         // 1. 缓存流有效且 tracks live → 直接返回（~0ms）
         if (S.screenCaptureStream && S.screenCaptureStream.active) {
             var tracks = S.screenCaptureStream.getVideoTracks();
@@ -610,10 +666,10 @@
         // Native-frame providers such as Tauri do not expose a MediaStream and
         // must skip this Chromium-only branch.
         var selectedSourceId = S.selectedScreenSourceId;
-        var desktopProvider = resolveDesktopCaptureProvider();
         if (selectedSourceId && desktopProvider && !isNativeFrameProvider(desktopProvider)) {
             try {
                 var timedOut = false;
+                var acquisitionGeneration = screenSourceSelectionGeneration;
                 var newStream = await Promise.race([
                     (async function () {
                         var captureSourceId = selectedSourceId;
@@ -622,10 +678,12 @@
                         // sharing dialog. Trust the source selected by the preceding
                         // user gesture and let getUserMedia report a stale id instead.
                         if (!desktopSourceEnumerationMayPrompt(desktopProvider)) {
-                            var currentSources = await desktopProvider.getSources({
-                                types: ['window', 'screen'],
-                                thumbnailSize: { width: 1, height: 1 }
-                            });
+                            if (!currentSources) {
+                                currentSources = await desktopProvider.getSources({
+                                    types: ['window', 'screen'],
+                                    thumbnailSize: { width: 1, height: 1 }
+                                });
+                            }
                             var sourceExists = currentSources.some(function (s) { return s.id === selectedSourceId; });
 
                             if (!sourceExists) {
@@ -657,6 +715,12 @@
                         // 超时后晚到的流需要立即释放，防止资源泄漏
                         if (timedOut) {
                             console.warn('[acquireStream] getUserMedia 在超时后返回，释放晚到的流');
+                            stream.getTracks().forEach(function (t) { t.stop(); });
+                            return null;
+                        }
+                        if (acquisitionGeneration !== screenSourceSelectionGeneration
+                            || S.selectedScreenSourceId !== captureSourceId) {
+                            console.warn('[acquireStream] 来源选择已变化，释放晚到的旧流');
                             stream.getTracks().forEach(function (t) { t.stop(); });
                             return null;
                         }
@@ -1831,7 +1895,11 @@
 
     // ======================== selectScreenSource ========================
     async function selectScreenSource(sourceId, sourceName, displayName) {
+        var previousSourceId = S.selectedScreenSourceId;
         S.selectedScreenSourceId = sourceId;
+        if (previousSourceId !== sourceId) {
+            markScreenSourceSelectionChanged();
+        }
 
         var resolvedSourceName = displayName || sourceName || sourceId;
 

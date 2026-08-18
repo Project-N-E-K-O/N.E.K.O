@@ -537,3 +537,282 @@ def test_screen_source_prompt_provider_skips_thumbnail_reenumeration(
         "loadingCount": 0,
         "fallbackCount": 2,
     }
+
+
+@pytest.mark.frontend
+def test_remembered_title_reconciles_reused_id_before_stream_capture(
+    page: Page,
+) -> None:
+    _install_screen_source_harness(
+        page,
+        initial_storage={
+            "screenSourceTitleMatchEnabled": "true",
+            "selectedScreenWindowTitle": "Editor",
+            "selectedScreenSourceId": "window:stale",
+        },
+    )
+
+    result = page.evaluate(
+        """async () => {
+            window.__metadataSources = [
+                { id: 'screen:1', name: 'Entire Screen', display_id: '1' },
+                { id: 'window:stale', name: 'Unrelated Browser', display_id: '' },
+                { id: 'window:new', name: 'Editor', display_id: '' },
+            ];
+            window.__desktopProvider.getSources = async () => window.__metadataSources;
+            const capturedSourceIds = [];
+            const track = {
+                readyState: 'live',
+                stopped: false,
+                stop() { this.stopped = true; this.readyState = 'ended'; },
+                addEventListener() {},
+            };
+            const stream = {
+                active: true,
+                getVideoTracks() { return [track]; },
+                getTracks() { return [track]; },
+            };
+            Object.defineProperty(navigator, 'mediaDevices', {
+                configurable: true,
+                value: {
+                    async getUserMedia(constraints) {
+                        capturedSourceIds.push(
+                            constraints.video.mandatory.chromeMediaSourceId
+                        );
+                        return stream;
+                    },
+                },
+            });
+
+            const acquired = await window.appScreen.acquireOrReuseCachedStream({
+                allowPrompt: false,
+            });
+            const state = {
+                capturedSourceIds,
+                selectedId: window.appState.selectedScreenSourceId,
+                storedId: window.__storedValues.get('selectedScreenSourceId'),
+                returnedExpectedStream: acquired === stream,
+            };
+            track.stop();
+            window.appState.screenCaptureStream = null;
+            return state;
+        }"""
+    )
+
+    assert result == {
+        "capturedSourceIds": ["window:new"],
+        "selectedId": "window:new",
+        "storedId": "window:new",
+        "returnedExpectedStream": True,
+    }
+
+
+@pytest.mark.frontend
+def test_missing_remembered_window_does_not_fall_back_to_entire_screen(
+    page: Page,
+) -> None:
+    _install_screen_source_harness(
+        page,
+        initial_storage={
+            "screenSourceTitleMatchEnabled": "true",
+            "selectedScreenWindowTitle": "Editor",
+            "selectedScreenSourceId": "window:stale",
+        },
+    )
+
+    result = page.evaluate(
+        """async () => {
+            window.__metadataSources = [
+                { id: 'screen:1', name: 'Entire Screen', display_id: '1' },
+                { id: 'window:other', name: 'Unrelated Browser', display_id: '' },
+            ];
+            window.__desktopProvider.getSources = async () => window.__metadataSources;
+            const capturedSourceIds = [];
+            const track = {
+                readyState: 'live',
+                stopped: false,
+                stop() { this.stopped = true; this.readyState = 'ended'; },
+                addEventListener() {},
+            };
+            const stream = {
+                active: true,
+                getVideoTracks() { return [track]; },
+                getTracks() { return [track]; },
+            };
+            Object.defineProperty(navigator, 'mediaDevices', {
+                configurable: true,
+                value: {
+                    async getUserMedia(constraints) {
+                        capturedSourceIds.push(
+                            constraints.video.mandatory.chromeMediaSourceId
+                        );
+                        return stream;
+                    },
+                },
+            });
+
+            const acquired = await window.appScreen.acquireOrReuseCachedStream({
+                allowPrompt: false,
+            });
+            const state = {
+                capturedSourceIds,
+                selectedId: window.appState.selectedScreenSourceId,
+                hasStoredId: window.__storedValues.has('selectedScreenSourceId'),
+                rememberedTitle: window.__storedValues.get(
+                    'selectedScreenWindowTitle'
+                ),
+                returnedNull: acquired === null,
+            };
+            if (acquired) acquired.getTracks().forEach((item) => item.stop());
+            window.appState.screenCaptureStream = null;
+            return state;
+        }"""
+    )
+
+    assert result == {
+        "capturedSourceIds": [],
+        "selectedId": None,
+        "hasStoredId": False,
+        "rememberedTitle": "Editor",
+        "returnedNull": True,
+    }
+
+
+@pytest.mark.frontend
+def test_late_stream_for_old_selection_is_discarded_after_source_change(
+    page: Page,
+) -> None:
+    _install_screen_source_harness(
+        page,
+        initial_storage={
+            "screenSourceTitleMatchEnabled": "true",
+            "selectedScreenWindowTitle": "Editor",
+            "selectedScreenSourceId": "window:old",
+        },
+    )
+
+    result = page.evaluate(
+        """async () => {
+            window.__metadataSources = [
+                { id: 'window:old', name: 'Editor', display_id: '' },
+                { id: 'window:new', name: 'Browser', display_id: '' },
+            ];
+            window.__desktopProvider.getSources = async () => window.__metadataSources;
+            let resolveGetUserMedia;
+            let getUserMediaStarted = false;
+            const track = {
+                readyState: 'live',
+                stopped: false,
+                stop() { this.stopped = true; this.readyState = 'ended'; },
+                addEventListener() {},
+            };
+            const oldStream = {
+                active: true,
+                getVideoTracks() { return [track]; },
+                getTracks() { return [track]; },
+            };
+            Object.defineProperty(navigator, 'mediaDevices', {
+                configurable: true,
+                value: {
+                    getUserMedia() {
+                        getUserMediaStarted = true;
+                        return new Promise((resolve) => {
+                            resolveGetUserMedia = resolve;
+                        });
+                    },
+                },
+            });
+
+            const acquisition = window.appScreen.acquireOrReuseCachedStream({
+                allowPrompt: false,
+            });
+            while (!getUserMediaStarted) {
+                await new Promise((resolve) => setTimeout(resolve, 0));
+            }
+            await window.selectScreenSource('window:new', 'Browser', 'Browser');
+            resolveGetUserMedia(oldStream);
+            const acquired = await acquisition;
+            const state = {
+                selectedId: window.appState.selectedScreenSourceId,
+                storedId: window.__storedValues.get('selectedScreenSourceId'),
+                returnedNull: acquired === null,
+                oldStreamStopped: track.stopped,
+                oldStreamInstalled: window.appState.screenCaptureStream === oldStream,
+            };
+            if (acquired) acquired.getTracks().forEach((item) => item.stop());
+            window.appState.screenCaptureStream = null;
+            return state;
+        }"""
+    )
+
+    assert result == {
+        "selectedId": "window:new",
+        "storedId": "window:new",
+        "returnedNull": True,
+        "oldStreamStopped": True,
+        "oldStreamInstalled": False,
+    }
+
+
+@pytest.mark.frontend
+def test_stale_title_enumeration_does_not_clear_a_newer_selection(
+    page: Page,
+) -> None:
+    _install_screen_source_harness(
+        page,
+        initial_storage={
+            "screenSourceTitleMatchEnabled": "true",
+            "selectedScreenWindowTitle": "Editor",
+            "selectedScreenSourceId": "window:old",
+        },
+    )
+
+    result = page.evaluate(
+        """async () => {
+            let resolveSources;
+            let enumerationStarted = false;
+            window.__desktopProvider.getSources = () => {
+                enumerationStarted = true;
+                return new Promise((resolve) => { resolveSources = resolve; });
+            };
+            let getUserMediaCalls = 0;
+            Object.defineProperty(navigator, 'mediaDevices', {
+                configurable: true,
+                value: {
+                    async getUserMedia() {
+                        getUserMediaCalls += 1;
+                        throw new Error('stale acquisition must not continue');
+                    },
+                },
+            });
+
+            const acquisition = window.appScreen.acquireOrReuseCachedStream({
+                allowPrompt: false,
+            });
+            while (!enumerationStarted) {
+                await new Promise((resolve) => setTimeout(resolve, 0));
+            }
+            await window.selectScreenSource('window:new', 'Browser', 'Browser');
+            resolveSources([
+                { id: 'window:old', name: 'Editor', display_id: '' },
+            ]);
+            const acquired = await acquisition;
+            return {
+                selectedId: window.appState.selectedScreenSourceId,
+                storedId: window.__storedValues.get('selectedScreenSourceId'),
+                rememberedTitle: window.__storedValues.get(
+                    'selectedScreenWindowTitle'
+                ),
+                returnedNull: acquired === null,
+                getUserMediaCalls,
+            };
+        }"""
+    )
+
+    assert result == {
+        "selectedId": "window:new",
+        "storedId": "window:new",
+        "rememberedTitle": "Browser",
+        "returnedNull": True,
+        "getUserMediaCalls": 0,
+    }
