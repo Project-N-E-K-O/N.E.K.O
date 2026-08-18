@@ -21,6 +21,7 @@ import base64
 import logging
 import re
 import sys
+import threading
 import time
 import traceback
 from dataclasses import dataclass
@@ -56,6 +57,37 @@ _PROACTIVE_MEDIA_MIME_EXT = {
 _PROACTIVE_MEDIA_MAX_IMAGE_BYTES = 10 * 1024 * 1024
 _PROACTIVE_MEDIA_MAX_PER_EVENT = 4
 
+# 写路径配额兜底：256MB 总量帽若只在启动 + 每日定时剪裁时执行，失控的
+# 事件源在两次剪裁之间仍可无上限写盘。每成功落盘一张图就累计字节数，
+# 累计超过该阈值时在写入线程（本就 off-loop）就地补一次剪裁。与每日
+# worker 并发跑同一剪裁是安全的：walk 阶段逐文件 continue，unlink 走
+# missing_ok=True（见 storage_roots.prune_proactive_media）。
+_PROACTIVE_MEDIA_WRITE_TRIP_BYTES = 64 * 1024 * 1024
+_proactive_media_unpruned_bytes = 0
+_proactive_media_prune_lock = threading.Lock()
+
+
+def _maybe_prune_proactive_media_blocking(nbytes: int) -> None:
+    """Write-path quota backstop: prune in-thread once accumulated writes trip.
+
+    Complements the startup/daily pruning scheduled in web_app so a runaway
+    producer cannot get unbounded disk between two scheduled runs. Runs
+    inside the persist worker thread, keeping the blocking directory walk
+    off the shared event loop.
+    """
+    global _proactive_media_unpruned_bytes
+    with _proactive_media_prune_lock:
+        _proactive_media_unpruned_bytes += nbytes
+        if _proactive_media_unpruned_bytes < _PROACTIVE_MEDIA_WRITE_TRIP_BYTES:
+            return
+        _proactive_media_unpruned_bytes = 0
+    try:
+        from utils.config_manager import get_config_manager
+
+        get_config_manager().prune_proactive_media()
+    except Exception as e:
+        logger.warning("[EventBus] opportunistic proactive media prune failed: %s", e)
+
 
 def _persist_proactive_media_image_blocking(b64: str, mime: str) -> Optional[str]:
     """Blocking worker: decode + write the image, runs via asyncio.to_thread.
@@ -64,7 +96,25 @@ def _persist_proactive_media_image_blocking(b64: str, mime: str) -> Optional[str
     blocking operation (full b64decode, mkdir, write_bytes) inside this
     worker so the shared event loop never touches disk directly.
     """
-    estimated_bytes = len(b64) * 3 // 4
+    # 契约：本函数对畸形输入只 warning + return None，绝不向上抛——异常
+    # 一旦穿透 to_thread，事件入口的外层 catch 会把整个事件（文本交付、
+    # LLM 回调、HUD 通知）一起丢弃，代价远超丢一张图。非字符串的
+    # mime/b64（如事件源给 JSON number）在这里归一/拒绝。
+    if not isinstance(mime, str):
+        mime = ""
+    if not isinstance(b64, str):
+        logger.warning(
+            "[EventBus] chat-visible media_part binary_base64 is not a string; not persisted"
+        )
+        return None
+    # b64decode 默认 validate=False 会静默丢弃字母表之外的字符：urlsafe
+    # 编码（-/_）的载荷会"成功"解出损坏字节并落成坏图片文件。先去掉
+    # MIME 折行空白，再用 validate=True 把它变成硬失败（走既有的
+    # "不可持久化 → None" 路径）。尺寸上限同样按去空白后的长度估算——
+    # 帽约束的是解码落盘的字节数，折行空白不该让近上限的合法图片被
+    # 误拒。
+    b64_clean = re.sub(r"\s+", "", b64)
+    estimated_bytes = len(b64_clean) * 3 // 4
     if estimated_bytes > _PROACTIVE_MEDIA_MAX_IMAGE_BYTES:
         logger.warning(
             "[EventBus] chat-visible media_part dropped: ~%.1fMB exceeds the %dMB persist cap",
@@ -72,12 +122,6 @@ def _persist_proactive_media_image_blocking(b64: str, mime: str) -> Optional[str
             _PROACTIVE_MEDIA_MAX_IMAGE_BYTES // (1024 * 1024),
         )
         return None
-    # b64decode 默认 validate=False 会静默丢弃字母表之外的字符：urlsafe
-    # 编码（-/_）的载荷会"成功"解出损坏字节并落成坏图片文件。先去掉
-    # MIME 折行空白，再用 validate=True 把它变成硬失败（走既有的
-    # "不可持久化 → None" 路径）。长度估算仍用原始串——空白只会高估，
-    # 方向安全。
-    b64_clean = re.sub(r"\s+", "", b64)
     media_type = (mime or "").split(";")[0].strip().lower()
     ext = _PROACTIVE_MEDIA_MIME_EXT.get(media_type)
     if ext is None:
@@ -107,7 +151,9 @@ def _persist_proactive_media_image_blocking(b64: str, mime: str) -> Optional[str
         media_dir = get_config_manager().proactive_media_dir
         media_dir.mkdir(parents=True, exist_ok=True)
         fname = f"{uuid4().hex}{ext}"
-        (media_dir / fname).write_bytes(base64.b64decode(b64_clean, validate=True))
+        data = base64.b64decode(b64_clean, validate=True)
+        (media_dir / fname).write_bytes(data)
+        _maybe_prune_proactive_media_blocking(len(data))
         return f"/user_proactive_media/{fname}"
     except Exception as e:
         logger.warning("[EventBus] persist proactive media failed: %s", e)

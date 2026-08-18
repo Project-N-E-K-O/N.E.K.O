@@ -1689,14 +1689,17 @@ function CompactChatApp({
   }, [compactExportSelectedIds, compactExportSelectableIds]);
   const surfaceModeClassName = `chat-surface-mode-${chatSurfaceMode}`;
   const compactMessagePreviewFromMessages = useMemo(() => getCompactMessagePreview(messages), [messages]);
-  // 主动分享的表情包是 image-only 消息（id 以 'meme-' 开头），原本只活在会折叠的历史里。把「最新一条
-  // 若是表情包」抽成一个独立 overlay 显示（仿音乐条），常显到「用户开口」或「新一轮助手发言」出现即收起
+  // 主动分享的表情包与事件携带的可见图片（visibility=["chat"]）都是 image-only 消息
+  // （id 分别以 'meme-' / 'proactive-media-' 开头，见 app-proactive.js `_showMemeBubbles` /
+  // `_showProactiveImageBubbles`），原本只活在会折叠的历史里。把「最新一条若是图片」抽成
+  // 一个独立 overlay 显示（仿音乐条），常显到「用户开口」或「新一轮助手发言」出现即收起
   // （换场规则详见下方 memo 注释）。
   const compactMemeOverlay = useMemo<{ id: string; url: string; alt: string } | null>(() => {
     if (!isCompactSurface) return null;
     let memeIdx = -1;
     for (let i = messages.length - 1; i >= 0; i -= 1) {
-      if (typeof messages[i]?.id === 'string' && messages[i].id.startsWith('meme-')) { memeIdx = i; break; }
+      const msgId = messages[i]?.id;
+      if (typeof msgId === 'string' && (msgId.startsWith('meme-') || msgId.startsWith('proactive-media-'))) { memeIdx = i; break; }
     }
     if (memeIdx < 0) return null;
     const meme = messages[memeIdx];

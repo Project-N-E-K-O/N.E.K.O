@@ -812,10 +812,12 @@ class StorageRootsMixin:
         ``max_total_bytes`` by deleting the oldest survivors until it fits.
         Failures are logged and swallowed — housekeeping must never block
         the caller. Invoked once synchronously from web_app at startup
-        (startup-phase sync-IO allowance) and then daily by the web_app
-        background worker via ``asyncio.to_thread`` — a desktop companion
-        runs for days, so the caps must hold for the process lifetime, not
-        just at boot.
+        (startup-phase sync-IO allowance), then daily by the web_app
+        background worker via ``asyncio.to_thread``, and opportunistically
+        by the character_runtime persist worker once accumulated writes
+        trip the write-path quota backstop — a desktop companion runs for
+        days, so the caps must hold for the process lifetime, not just at
+        boot.
         """
         try:
             media_dir = self.proactive_media_dir

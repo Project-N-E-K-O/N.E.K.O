@@ -54,11 +54,16 @@ _JPEG_B64 = base64.b64encode(_JPEG_MAGIC + b"fake-jpeg-body").decode()
 _GARBAGE_B64 = base64.b64encode(b"not an image at all").decode()
 
 _UUID_EXT_RE = re.compile(r"^/user_proactive_media/[0-9a-f]{32}\.(png|jpg|gif|webp)$")
+_GOOD_URL = f"/user_proactive_media/{'0' * 32}.png"
 
 
 class _FakeConfigManager:
     def __init__(self, media_dir):
         self.proactive_media_dir = media_dir
+        self.prune_calls = 0
+
+    def prune_proactive_media(self, **kwargs):
+        self.prune_calls += 1
 
 
 def _patch_media_dir(monkeypatch, tmp_path):
@@ -154,6 +159,73 @@ async def test_persist_tolerates_whitespace_wrapped_b64(monkeypatch, tmp_path):
     url = await _persist_proactive_media_image(wrapped, "image/png")
 
     assert url is not None and url.endswith(".png")
+
+
+@pytest.mark.unit
+async def test_persist_cap_measures_stripped_length_not_raw(monkeypatch, tmp_path):
+    """Greptile #2905: the ~10MB cap bounds decoded (on-disk) bytes, so MIME
+    folding whitespace must not push a near-limit payload over the cap — a
+    valid image whose raw string estimate exceeds the cap but whose stripped
+    estimate fits is persisted, not dropped."""
+    from app.main_server.character_runtime import _persist_proactive_media_image
+
+    _patch_media_dir(monkeypatch, tmp_path)
+
+    # ~14M 个折行空白：原始串估算 >10MB，去空白后只有几十字节
+    padded = _PNG_B64 + "\r\n" * 14_000_000
+    assert len(padded) * 3 // 4 > 10 * 1024 * 1024
+    url = await _persist_proactive_media_image(padded, "image/png")
+
+    assert url is not None and url.endswith(".png")
+    fname = url.rsplit("/", 1)[-1]
+    assert (tmp_path / "proactive_media" / fname).read_bytes() == (
+        _PNG_MAGIC + b"fake-png-body"
+    )
+
+
+@pytest.mark.unit
+async def test_persist_normalizes_non_string_inputs(monkeypatch, tmp_path):
+    """Codex #2905 P2: a non-string mime (e.g. JSON number) must degrade to
+    sniffing instead of raising through to_thread and aborting the whole
+    event; a non-string b64 is rejected without raising."""
+    from app.main_server.character_runtime import _persist_proactive_media_image
+
+    _patch_media_dir(monkeypatch, tmp_path)
+
+    # mime=123 → 归一为空 → 魔数嗅探落盘
+    url = await _persist_proactive_media_image(_PNG_B64, 123)
+    assert url is not None and url.endswith(".png")
+    # b64 非字符串：warning + None，不抛
+    assert await _persist_proactive_media_image(12345, "image/png") is None
+
+
+@pytest.mark.unit
+async def test_write_path_trips_opportunistic_prune(monkeypatch, tmp_path):
+    """Codex #2905 P1: the 256MB total cap must not wait for the daily
+    worker — once accumulated writes trip the threshold, the persist worker
+    prunes in-thread; below the threshold no prune runs."""
+    import app.main_server.character_runtime as cr_mod
+    from app.main_server.character_runtime import _persist_proactive_media_image
+
+    fake = _patch_media_dir(monkeypatch, tmp_path)
+
+    # 未到阈值：不触发
+    monkeypatch.setattr(cr_mod, "_proactive_media_unpruned_bytes", 0)
+    url = await _persist_proactive_media_image(_PNG_B64, "image/png")
+    assert url is not None
+    assert fake.prune_calls == 0
+    assert cr_mod._proactive_media_unpruned_bytes > 0
+
+    # 距阈值仅差 1 字节：本次写入必然跨过 → 就地剪裁一次并清零
+    monkeypatch.setattr(
+        cr_mod,
+        "_proactive_media_unpruned_bytes",
+        cr_mod._PROACTIVE_MEDIA_WRITE_TRIP_BYTES - 1,
+    )
+    url = await _persist_proactive_media_image(_PNG_B64, "image/png")
+    assert url is not None
+    assert fake.prune_calls == 1
+    assert cr_mod._proactive_media_unpruned_bytes == 0
 
 
 @pytest.mark.unit
@@ -327,6 +399,32 @@ async def test_chat_visible_image_persisted_and_frame_sent_at_ingestion(
     assert "media_image_urls" not in callback
     # 既有 AI 视觉通路不回归：deferred b64 照旧在 media_images
     assert callback["media_images"] == [_PNG_B64]
+
+
+@pytest.mark.unit
+async def test_non_string_mime_does_not_abort_event(monkeypatch, tmp_path):
+    """Codex #2905 P2 (event-level regression): a malformed mime drops only
+    the image — it must not abort the whole event's text delivery and
+    callback submission."""
+    from app import main_server
+
+    _patch_media_dir(monkeypatch, tmp_path)
+    fake_mgr = _make_fake_mgr()
+    _patch_event_env(monkeypatch, fake_mgr)
+
+    event = _make_event(
+        media_parts=[{"type": "image", "binary_base64": _PNG_B64, "mime": 123}]
+    )
+    await main_server._handle_agent_event(event)
+
+    # 文本照常走主动回复通路
+    fake_mgr.submit_proactive_callback.assert_called_once()
+    callback = fake_mgr.submit_proactive_callback.call_args.args[0]
+    assert callback["media_images"] == [_PNG_B64]
+    # mime 归一为空 → 魔数嗅探仍落盘，入口帧照发
+    urls = _sent_images(fake_mgr)
+    assert len(urls) == 1
+    assert _UUID_EXT_RE.match(urls[0]), urls
 
 
 @pytest.mark.unit
@@ -540,7 +638,7 @@ async def test_send_proactive_media_frame_structure():
     mgr = _make_mgr(websocket=ws)
 
     ok = await mgr.send_proactive_media(
-        turn_id="sid-1", images=["/user_proactive_media/a.png"]
+        turn_id="sid-1", images=[_GOOD_URL]
     )
 
     assert ok is True
@@ -548,12 +646,12 @@ async def test_send_proactive_media_frame_structure():
     payload = ws.send_json.await_args.args[0]
     assert payload["type"] == "proactive_media"
     assert payload["turn_id"] == "sid-1"
-    assert payload["images"] == ["/user_proactive_media/a.png"]
+    assert payload["images"] == [_GOOD_URL]
 
 
 @pytest.mark.unit
 async def test_send_proactive_media_filters_non_host_urls():
-    """Only /user_proactive_media/ URLs may reach the frontend img/openExternal
+    """Only host-generated media URLs may reach the frontend img/openExternal
     sinks — arbitrary schemes from a buggy caller are dropped with a warning."""
     ws = _FakeWebsocket(connected=True)
     mgr = _make_mgr(websocket=ws)
@@ -561,17 +659,23 @@ async def test_send_proactive_media_filters_non_host_urls():
     ok = await mgr.send_proactive_media(
         turn_id="sid-f",
         images=[
-            "/user_proactive_media/a.png",
+            _GOOD_URL,
             "http://evil.example/x.png",
             "file:///etc/passwd",
             "javascript:alert(1)",
             123,
+            # CodeRabbit #2905：前缀匹配挡不住的穿越/畸形变体——完整形状
+            # 匹配必须全部拒绝（new URL 规范化后穿越串可达任意同源路径）
+            "/user_proactive_media/../../../etc/passwd",
+            f"/user_proactive_media/{'A' * 32}.png",
+            f"/user_proactive_media/{'0' * 31}.png",
+            f"/user_proactive_media/{'0' * 32}.exe",
         ],
     )
 
     assert ok is True
     payload = ws.send_json.await_args.args[0]
-    assert payload["images"] == ["/user_proactive_media/a.png"]
+    assert payload["images"] == [_GOOD_URL]
 
 
 @pytest.mark.unit
@@ -591,7 +695,7 @@ async def test_send_proactive_media_disconnected_returns_false():
     mgr = _make_mgr(websocket=ws)
 
     ok = await mgr.send_proactive_media(
-        turn_id="sid-2", images=["/user_proactive_media/x.png"]
+        turn_id="sid-2", images=[_GOOD_URL]
     )
 
     assert ok is False
@@ -605,7 +709,7 @@ async def test_send_proactive_media_send_error_swallowed():
     mgr = _make_mgr(websocket=ws)
 
     ok = await mgr.send_proactive_media(
-        turn_id="sid-3", images=["/user_proactive_media/x.png"]
+        turn_id="sid-3", images=[_GOOD_URL]
     )
 
     assert ok is False

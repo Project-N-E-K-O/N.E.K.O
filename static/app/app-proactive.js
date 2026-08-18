@@ -1783,6 +1783,11 @@
      * 假安全网。容器缺失返回 null，由调用方决定如何提示。
      */
     function _createLegacyImageBubble(chatContainer, imgSrc, altText, maxHeight) {
+        // 与上方 docstring 及调用方的 `if (!parts)` 守卫对齐：容器缺失时
+        // 返回 null（调用方决定如何提示），而不是无条件建气泡。
+        if (!chatContainer) {
+            return null;
+        }
         var imgBubble = document.createElement('div');
         imgBubble.classList.add('message', 'gemini', 'attachment');
         imgBubble.style.padding = '12px';
@@ -1951,7 +1956,11 @@
         var safeUrls = [];
         for (var wi = 0; wi < imageUrls.length; wi++) {
             var rawUrl = String(imageUrls[wi] || '');
-            if (rawUrl.indexOf('/user_proactive_media/') === 0) {
+            // 与 app-websocket.js 的 WS 分支、notify.py 的
+            // _HOST_PROACTIVE_MEDIA_URL_RE 同规则：完整形状匹配，前缀匹配
+            // 挡不住 "../" 穿越串（new URL 规范化后可达任意同源路径，见下方
+            // DOM 兜底的 openExternal sink）。
+            if (/^\/user_proactive_media\/[0-9a-f]{32}\.(png|jpg|gif|webp)$/.test(rawUrl)) {
                 safeUrls.push(rawUrl);
             } else {
                 console.warn('[ProactiveMedia] dropped non-host image url:', rawUrl.slice(0, 80));

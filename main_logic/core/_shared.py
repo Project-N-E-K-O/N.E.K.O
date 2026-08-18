@@ -123,6 +123,17 @@ logger = get_module_logger("main_logic.core", "Main")
 # 周期检查间隔故意远小于阈值（粒度 ~1 min），避免静默 30:01 时还要再等
 # 一整轮。
 IDLE_SESSION_RESET_THRESHOLD_SECONDS = 1800
+
+# 宿主托管主动媒体 URL 的唯一合法形状：/user_proactive_media/{uuid4hex}.{ext}
+# （由 character_runtime._persist_proactive_media_image 生成，notify.py 的
+# send_proactive_media 用它过滤发往前端的 images）。用完整匹配而非前缀
+# 匹配：前缀挡不住 "../" 路径穿越串（前端 new URL 规范化后可达任意同源
+# 路径，进 img.src / openExternal sink）。与前端两处白名单
+# （app-websocket.js 的 WS 分支、app-proactive.js 的
+# _showProactiveImageBubbles）保持同一规则。
+HOST_PROACTIVE_MEDIA_URL_RE = re.compile(
+    r"^/user_proactive_media/[0-9a-f]{32}\.(?:png|jpg|gif|webp)$"
+)
 IDLE_SESSION_RESET_CHECK_INTERVAL_SECONDS = 60
 
 # 前端文本会话 start_session 等 session_started 的硬超时（static/app/app-buttons.js

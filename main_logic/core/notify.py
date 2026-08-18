@@ -71,7 +71,7 @@ from config.prompts.prompts_sys import (
     AGENT_TASKS_NOTICE,
 )
 from utils.language_utils import normalize_language_code, is_supported_language_code
-from ._shared import logger
+from ._shared import logger, HOST_PROACTIVE_MEDIA_URL_RE
 
 
 class NotifyMixin:
@@ -524,11 +524,13 @@ class NotifyMixin:
         renders immediately; it must not wait for a text turn match (see
         app-websocket.js).
 
-        ``images`` must be same-origin relative URLs inside the host-managed
-        media dir (/user_proactive_media/xxx.jpg, persisted by
-        character_runtime); anything else is dropped with a warning so a
-        buggy caller cannot smuggle arbitrary schemes into frontend
-        ``img.src`` / ``openExternal`` sinks (WS content is not trusted).
+        ``images`` must be host-generated media URLs (the exact shape
+        /user_proactive_media/<32-hex>.<png|jpg|gif|webp>, matched by full
+        regex — a mere prefix match would let "../" traversal strings
+        through, persisted by character_runtime); anything else is dropped
+        with a warning so a buggy caller cannot smuggle arbitrary schemes
+        into frontend ``img.src`` / ``openExternal`` sinks (WS content is
+        not trusted).
 
         Display-plane limitation, inherited from ``self.websocket``: the
         frame reaches the NEWEST connected window; same-partition peers get
@@ -540,11 +542,11 @@ class NotifyMixin:
         safe_images = [
             u
             for u in images
-            if isinstance(u, str) and u.startswith("/user_proactive_media/")
+            if isinstance(u, str) and HOST_PROACTIVE_MEDIA_URL_RE.match(u)
         ]
         if len(safe_images) != len(images):
             for u in images:
-                if not (isinstance(u, str) and u.startswith("/user_proactive_media/")):
+                if not (isinstance(u, str) and HOST_PROACTIVE_MEDIA_URL_RE.match(u)):
                     logger.warning(
                         "[%s] send_proactive_media dropped non-host image url: %r",
                         self.lanlan_name,
