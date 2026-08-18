@@ -4385,6 +4385,14 @@ def test_english_execution_question_governs_recovered_items():
     assert router._chat_text_requests_full_rewrite(text) is False
 
 
+def test_leading_english_condition_governs_scoped_recovery():
+    import main_routers.card_assist_router as router
+
+    text = 'If approved, rewrite all fields and preserve whether member'
+    assert router._chat_text_requests_full_rewrite_core(text) is False
+    assert router._chat_text_requests_full_rewrite(text) is False
+
+
 def test_meta_request_text_does_not_preserve_fields_for_a_later_rewrite():
     import main_routers.card_assist_router as router
 
@@ -4606,6 +4614,14 @@ def test_ordinary_preservation_questions_do_not_preserve_targets():
     assert router._chat_text_requests_full_rewrite(text) is True
 
 
+def test_leading_conditions_do_not_preserve_targets():
+    import main_routers.card_assist_router as router
+
+    text = 'If the user confirms, preserve avatar. Rewrite all fields'
+    assert router._chat_preserved_target_keys(text, ['avatar']) == set()
+    assert router._chat_text_requests_full_rewrite(text) is True
+
+
 def test_field_before_preservation_is_bound_to_nearest_target():
     import main_routers.card_assist_router as router
 
@@ -4644,6 +4660,14 @@ def test_later_negations_revoke_previous_preservation(text, targets):
     import main_routers.card_assist_router as router
 
     assert router._chat_preserved_target_keys(text, targets) == set()
+
+
+def test_field_edit_prohibition_questions_do_not_preserve_targets():
+    import main_routers.card_assist_router as router
+
+    text = '不要改头像吗？现在请重写所有字段'
+    assert router._chat_preserved_target_keys(text, ['头像']) == set()
+    assert router._chat_text_requests_full_rewrite(text) is True
 
 
 def test_full_rewrite_before_sequential_assignment_remains_active():

@@ -1646,6 +1646,9 @@ _CHAT_GOVERNING_CONDITION_RE = re.compile(
     r"^\s*(?:(?:请注意|請注意|注意|提醒一下|需要注意(?:的是)?)\s*[，,:：]\s*)?"
     + _CHAT_GOVERNING_CONDITION_PATTERN
 )
+_CHAT_GOVERNING_EN_CONDITION_RE = re.compile(
+    r"^\s*(?i:(?:if|when|unless)\b)"
+)
 _CHAT_GOVERNING_EXECUTION_QUESTION_RE = re.compile(
     r"^\s*(?:(?:请问|請問|你觉得|你覺得|我想知道)\s*)?"
     r"(?:"
@@ -2227,6 +2230,15 @@ def _chat_text_requests_full_rewrite_core(text: str) -> bool:
         if sentence_end is not None:
             return _chat_text_requests_full_rewrite_core(text[sentence_end.end():])
         return False
+    governing_en_condition = _CHAT_GOVERNING_EN_CONDITION_RE.search(masked)
+    if governing_en_condition:
+        sentence_end = _CHAT_GOVERNING_PROHIBITION_SENTENCE_END_RE.search(
+            masked,
+            governing_en_condition.end(),
+        )
+        if sentence_end is not None:
+            return _chat_text_requests_full_rewrite_core(text[sentence_end.end():])
+        return False
     for sentence in _CHAT_REPORTING_CONTEXT_RESET_RE.split(text):
         reporting_start = _chat_third_party_reporting_start(sentence)
         if reporting_start is not None:
@@ -2459,6 +2471,11 @@ def _chat_text_requests_full_rewrite_from_scoped_segments(text: str) -> bool:
             continue
         else:
             candidate_start = segment_start
+            if (
+                match.group("trailing_en") is not None
+                and not text[candidate_start:match.start()].strip()
+            ):
+                continue
             segment_start = match.end()
             # Never truncate unseen governing context on either side of a recovery boundary.
             if (
@@ -2825,11 +2842,16 @@ def _chat_preservation_sentence_has_governing_guard(
     instruction: str, clause_start: int
 ) -> bool:
     """Return whether a preservation phrase is inside a question or condition."""
+    sentence_start = 0
+    for reset in _CHAT_REPORTING_CONTEXT_RESET_RE.finditer(
+        instruction or "", 0, clause_start
+    ):
+        sentence_start = reset.end()
     sentence_end = _CHAT_GOVERNING_PROHIBITION_SENTENCE_END_RE.search(
         instruction or "", clause_start
     )
     sentence = (instruction or "")[
-        clause_start:sentence_end.end() if sentence_end else len(instruction or "")
+        sentence_start:sentence_end.end() if sentence_end else len(instruction or "")
     ]
     readable = _chat_clause_without_free_choice(_chat_clause_without_quotes(sentence))
     return bool(
@@ -2986,6 +3008,13 @@ def _chat_preserved_target_keys(
             continue
         if _chat_preservation_clause_is_reported(
             instruction or "", clause_match.start()
+        ):
+            continue
+        if (
+            clause_match.group("keys_after") is None
+            and _chat_preservation_sentence_has_governing_guard(
+                instruction or "", clause_match.start()
+            )
         ):
             continue
         if clause_match.group("keys_before") is not None:
