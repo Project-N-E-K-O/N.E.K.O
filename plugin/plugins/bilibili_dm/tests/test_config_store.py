@@ -195,6 +195,36 @@ def test_notification_retry_attempts_and_queue_are_bounded():
     assert "newest" in client._notification_seen_set
 
 
+def test_comment_retry_blocks_later_messages_in_the_same_thread():
+    client = BiliDMClient(sesdata="sess", bili_jct="csrf")
+    older = {
+        "notification_identity": "comment:old",
+        "notification_attempt": 0,
+        "conversation_key": "comment:1:2:3",
+    }
+    newer = {
+        "notification_identity": "comment:new",
+        "notification_attempt": 0,
+        "conversation_key": "comment:1:2:3",
+    }
+    client._notification_inflight.update(
+        {older["notification_identity"], newer["notification_identity"]}
+    )
+
+    client.retry_comment_notification(older)
+    older_ready_at = client._notification_retries["comment:old"]["ready_at"]
+
+    assert client.defer_comment_notification_behind_retry(newer) is True
+    assert client._notification_blocked_conversations == {
+        "comment:1:2:3": "comment:old"
+    }
+    assert client._notification_retries["comment:new"]["ready_at"] > older_ready_at
+
+    client.complete_comment_notification("comment:old")
+
+    assert client.defer_comment_notification_behind_retry(newer) is False
+
+
 def test_comment_and_private_messages_use_separate_sessions():
     assert BiliDMPlugin._build_session_key("42") == "bili:dm:42"
     assert (

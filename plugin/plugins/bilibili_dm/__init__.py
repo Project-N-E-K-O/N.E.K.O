@@ -344,6 +344,17 @@ class BiliDMPlugin(NekoPluginBase):
                     async with session_lock:
                         if not self._running:
                             return
+                        defer_notification = getattr(
+                            self.bili_client,
+                            "defer_comment_notification_behind_retry",
+                            None,
+                        )
+                        if (
+                            notification_identity
+                            and callable(defer_notification)
+                            and defer_notification(message)
+                        ):
+                            return
                         completed = await self._handle_message(message)
                 finally:
                     await self._release_session_lock(session_key, session_lock)
@@ -353,6 +364,17 @@ class BiliDMPlugin(NekoPluginBase):
                     try:
                         async with session_lock:
                             if not self._running:
+                                return
+                            defer_notification = getattr(
+                                self.bili_client,
+                                "defer_comment_notification_behind_retry",
+                                None,
+                            )
+                            if (
+                                notification_identity
+                                and callable(defer_notification)
+                                and defer_notification(message)
+                            ):
                                 return
                             completed = await self._handle_message(message)
                     finally:

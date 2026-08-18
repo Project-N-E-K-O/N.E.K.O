@@ -25,6 +25,7 @@ class BiliDMClient:
 
     NOTIFICATION_BACKLOG_LIMIT = 500
     NOTIFICATION_MAX_RETRY_ATTEMPTS = 5
+    NOTIFICATION_DEFER_DELAY_SECONDS = 0.5
     SESSION_RESTART_INITIAL_DELAY_SECONDS = 2
     SESSION_RESTART_MAX_DELAY_SECONDS = 60
     VIDEO_CONTEXT_CACHE_LIMIT = 200
@@ -64,6 +65,7 @@ class BiliDMClient:
         self._notification_seen_set: set[str] = set()
         self._notification_inflight: set[str] = set()
         self._notification_retries: dict[str, Dict[str, Any]] = {}
+        self._notification_blocked_conversations: dict[str, str] = {}
         self._notification_feed_seen = {"reply": [], "at": []}
         self._notification_feed_seen_set = {"reply": set(), "at": set()}
         self._notification_pending: deque[tuple[str, Dict[str, Any]]] = deque()
@@ -402,6 +404,8 @@ class BiliDMClient:
             self._notification_inflight = set()
         if not hasattr(self, "_notification_retries"):
             self._notification_retries = {}
+        if not hasattr(self, "_notification_blocked_conversations"):
+            self._notification_blocked_conversations = {}
 
     def complete_comment_notification(self, identity: str) -> None:
         """Mark a claimed notification terminal after delivery or intentional skip."""
@@ -411,6 +415,11 @@ class BiliDMClient:
             return
         self._notification_inflight.discard(key)
         self._notification_retries.pop(key, None)
+        for conversation_key, blocked_identity in list(
+            self._notification_blocked_conversations.items()
+        ):
+            if blocked_identity == key:
+                self._notification_blocked_conversations.pop(conversation_key, None)
         if key in self._notification_seen_set:
             return
         self._notification_seen.append(key)
@@ -449,6 +458,9 @@ class BiliDMClient:
                     f"limit={self._notification_backlog_limit}"
                 )
         delay = min(5 * (2 ** min(attempt - 1, 6)), 300)
+        conversation_key = str(retry_message.get("conversation_key") or "").strip()
+        if conversation_key:
+            self._notification_blocked_conversations[conversation_key] = identity
         self._notification_retries[identity] = {
             "message": retry_message,
             "ready_at": time.monotonic() + delay,
@@ -458,6 +470,37 @@ class BiliDMClient:
                 "B站评论通知将在稍后重试: "
                 f"identity={identity}, attempt={attempt}, delay={delay}s"
             )
+
+    def defer_comment_notification_behind_retry(self, message: Dict[str, Any]) -> bool:
+        """Delay a newer thread item until its failed predecessor is terminal."""
+        self._ensure_notification_delivery_state()
+        identity = str(message.get("notification_identity") or "").strip()
+        conversation_key = str(message.get("conversation_key") or "").strip()
+        if not identity or not conversation_key:
+            return False
+        blocked_identity = self._notification_blocked_conversations.get(
+            conversation_key
+        )
+        if not blocked_identity or blocked_identity == identity:
+            return False
+
+        retry_message = dict(message)
+        now = time.monotonic()
+        blocked_retry = self._notification_retries.get(blocked_identity) or {}
+        blocked_ready_at = float(blocked_retry.get("ready_at") or now)
+        ready_at = max(
+            now + self.NOTIFICATION_DEFER_DELAY_SECONDS,
+            blocked_ready_at + 0.001,
+        )
+        self._notification_retries.pop(identity, None)
+        if len(self._notification_retries) >= self._notification_backlog_limit:
+            expired_identity = next(iter(self._notification_retries))
+            self.complete_comment_notification(expired_identity)
+        self._notification_retries[identity] = {
+            "message": retry_message,
+            "ready_at": ready_at,
+        }
+        return True
 
     def _drain_notification_retries(self) -> int:
         """Move due retries back to the consumer queue without duplicating claims."""
