@@ -2707,6 +2707,10 @@ _CHAT_FIELD_EDIT_PROHIBITION_RE = re.compile(
     r"(?P<keys_before>[^。，、！？,.!?;；]*?)\s*"
     r"(?:不要|别|別|不必|不用|无需|無需)\s*(?:再|继续|繼續)?\s*"
     r"(?:改|修改|更改|重写|重寫|改写|改寫|调整|調整)"
+    r"|(?:不要|别|別|不必|不用|无需|無需|请勿|請勿)\s*"
+    r"(?:再|继续|繼續)?\s*"
+    r"(?:改|修改|更改|重写|重寫|改写|改寫|调整|調整)\s*"
+    r"(?P<keys_zh_after>[^。，、！？,.!?;；]+?)"
     r"|(?i:(?:do\s+not|don't|never)\s+"
     r"(?:change|rewrite|revise|regenerate|redo|refresh)\s+"
     r"(?P<keys_after>[^。，、！？,.!?;；]+?))"
@@ -2987,6 +2991,9 @@ def _chat_preserved_target_keys(
         if clause_match.group("keys_before") is not None:
             keys_text = clause_match.group("keys_before")
             keys_start = clause_match.start("keys_before")
+        elif clause_match.group("keys_zh_after") is not None:
+            keys_text = clause_match.group("keys_zh_after")
+            keys_start = clause_match.start("keys_zh_after")
         else:
             keys_text = clause_match.group("keys_after") or ""
             keys_start = clause_match.start("keys_after")

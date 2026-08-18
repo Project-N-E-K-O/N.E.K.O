@@ -4560,6 +4560,7 @@ def test_preservation_clause_accepts_chinese_comma_terminators():
     ('text', 'targets', 'expected'),
     [
         ('请重写所有字段，但头像不要改', ['头像', '名字'], {'头像'}),
+        ('请重写所有字段，但不要修改头像', ['头像', '名字'], {'头像'}),
         ('rewrite all fields, but do not change avatar', ['avatar', 'name'], {'avatar'}),
     ],
 )
