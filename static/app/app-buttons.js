@@ -3613,7 +3613,16 @@
             };
         }
 
-        async function recaptureWithoutNeko() {
+        async function recaptureWithoutNeko(rememberedWindowCapture) {
+            function rememberedWindowCaptureIsCurrent() {
+                return !(rememberedWindowCapture && rememberedWindowCapture.required)
+                    || (rememberedWindowCapture.allowed !== false
+                        && (typeof rememberedWindowCapture.isCurrent !== 'function'
+                            || rememberedWindowCapture.isCurrent()));
+            }
+
+            if (!rememberedWindowCaptureIsCurrent()) return null;
+
             // Priority 0 (Electron PC): 主进程原子化路径 — 一次 IPC 完成
             //   隐藏所有 NEKO 窗口 → 等合成 → desktopCapturer 抓图 → 恢复窗口。
             //   把 hide/等待/抓图/show 全放主进程是因为渲染器端 setTimeout 在 Pet 窗口
@@ -3633,6 +3642,7 @@
                         'captureSourceWithoutNeko',
                         selectedSourceId || null
                     );
+                    if (!rememberedWindowCaptureIsCurrent()) return null;
                     if (atomic && atomic.success && atomic.dataUrl) {
                         return atomic.dataUrl;
                     } else if (atomic && atomic.error) {
@@ -3677,6 +3687,7 @@
                 }
             }
             await new Promise(function (r) { setTimeout(r, 300); });
+            if (!rememberedWindowCaptureIsCurrent()) return null;
             try {
                 // Priority 1: Electron direct capture (不隐藏卫星窗口版本，仅为向后兼容兜底)
                 // 读当前的 S.selectedScreenSourceId —— Priority 0 若刚命中 'Source not found'
@@ -3692,6 +3703,7 @@
                             'captureSourceAsDataUrl',
                             currentSourceId
                         );
+                        if (!rememberedWindowCaptureIsCurrent()) return null;
                         if (direct && direct.success && direct.dataUrl) {
                             return direct.dataUrl;
                         } else if (typeof window.maybeClearSourceOnNotFound === 'function') {
@@ -3704,14 +3716,17 @@
                 if (typeof window.acquireOrReuseCachedStream === 'function') {
                     try {
                         var acqStream = await window.acquireOrReuseCachedStream({ allowPrompt: false });
+                        if (!rememberedWindowCaptureIsCurrent()) return null;
                         if (acqStream) {
                             var isCached = (acqStream === S.screenCaptureStream);
                             try {
                                 var frame = await window.captureFrameFromStream(acqStream, 0.8, true);
+                                if (!rememberedWindowCaptureIsCurrent()) return null;
                                 if (!frame) {
                                     // 全分辨率编码可能在超大/虚拟显示器上失败；用同一条流退回 720p 再试，
                                     // 保住正确的窗口内容（优于后端 pyautogui 抓整屏）。
                                     frame = await window.captureFrameFromStream(acqStream, 0.8, false);
+                                    if (!rememberedWindowCaptureIsCurrent()) return null;
                                 }
                                 if (frame && frame.dataUrl) return frame.dataUrl;
                             } finally {
@@ -3727,9 +3742,11 @@
                             var tracks = S.screenCaptureStream.getVideoTracks();
                             if (tracks.length > 0 && tracks.some(function (t) { return t.readyState === 'live'; })) {
                                 var cachedFrame = await window.captureFrameFromStream(S.screenCaptureStream, 0.8, true);
+                                if (!rememberedWindowCaptureIsCurrent()) return null;
                                 if (!cachedFrame) {
                                     // 同上：全分辨率失败时用同一条流退回 720p，保住正确窗口内容
                                     cachedFrame = await window.captureFrameFromStream(S.screenCaptureStream, 0.8, false);
+                                    if (!rememberedWindowCaptureIsCurrent()) return null;
                                 }
                                 if (cachedFrame && cachedFrame.dataUrl) return cachedFrame.dataUrl;
                             }
@@ -3737,7 +3754,11 @@
                     } catch (e) { /* fallback below */ }
                 }
 
-                // Priority 3: backend pyautogui
+                // Priority 3: backend pyautogui. A remembered-window recapture
+                // must not widen a failed window grab to the whole desktop.
+                if (rememberedWindowCapture && rememberedWindowCapture.required) {
+                    return null;
+                }
                 var result = await window.fetchBackendScreenshot();
                 if (result && result.dataUrl) {
                     return result.dataUrl || null;
@@ -3837,6 +3858,10 @@
                     // Electron 桌面端优先交给 PC 壳的独立截图编辑窗口。它覆盖当前显示器，
                     // 不改变聊天框/Pet 窗口尺寸，也不会把冻结画面塞进聊天窗口内裁剪。
                     var desktopRegionResult = await captureDesktopRegionDirectly();
+                    if (!rememberedWindowCaptureIsCurrent()) {
+                        console.warn('[截图] 记忆窗口已在桌面框选期间变化，丢弃旧帧');
+                        return rememberedWindowUnavailableResult();
+                    }
                     if (desktopRegionResult) {
                         if (desktopRegionResult.canceled) {
                             return null;
@@ -3912,13 +3937,14 @@
                             acquiredStream = null;
                         }
 
+                        isCachedStream = !!acquiredStream && (acquiredStream === S.screenCaptureStream);
+
                         if (!rememberedWindowCaptureIsCurrent()) {
                             console.warn('[截图] 记忆窗口已在流获取期间变化，丢弃旧流');
                             return rememberedWindowUnavailableResult();
                         }
 
                         if (acquiredStream) {
-                            isCachedStream = (acquiredStream === S.screenCaptureStream);
                             var frame = await window.captureFrameFromStream(acquiredStream, 0.8, true);
                             if (!rememberedWindowCaptureIsCurrent()) {
                                 console.warn('[截图] 记忆窗口已在流抓帧期间变化，丢弃旧帧');
@@ -4003,7 +4029,9 @@
                 try {
                     if (window.appCrop && typeof window.appCrop.cropImage === 'function') {
                         var croppedUrl = await window.appCrop.cropImage(dataUrl, {
-                            recaptureFn: function () { return recaptureWithoutNeko(); }
+                            recaptureFn: function () {
+                                return recaptureWithoutNeko(rememberedWindowCapture);
+                            }
                         });
                         if (!croppedUrl) {
                             return null;

@@ -243,10 +243,12 @@
             });
             if (titleMatches.length === 1) {
                 if (S.selectedScreenSourceId !== titleMatches[0].id) {
+                    var previousSourceId = S.selectedScreenSourceId;
                     S.selectedScreenSourceId = titleMatches[0].id;
                     markScreenSourceSelectionChanged();
                     try { localStorage.setItem('selectedScreenSourceId', titleMatches[0].id); } catch (_) { }
                     pushSelectedSourceToMain(titleMatches[0].id);
+                    restartActiveNativeCaptureForSourceRemap(previousSourceId, titleMatches[0].id);
                     console.log('[屏幕源] 已通过唯一窗口标题恢复来源:', rememberedTitle);
                 }
                 result.status = 'matched';
@@ -1359,6 +1361,30 @@
         return true;
     }
     mod.startNativeScreenStreaming = startNativeScreenStreaming;
+
+    function restartActiveNativeCaptureForSourceRemap(previousSourceId, nextSourceId) {
+        if (!previousSourceId || !nextSourceId || previousSourceId === nextSourceId
+            || activeNativeCaptureSourceId !== previousSourceId) {
+            return;
+        }
+
+        var provider = resolveDesktopCaptureProvider();
+        stopScreening();
+        if (!isNativeFrameProvider(provider)) return;
+
+        Promise.resolve(startNativeScreenStreaming(provider, nextSourceId, 'screen'))
+            .catch(async function (error) {
+                console.warn('[屏幕源] 标题恢复后重启原生捕获失败:', error);
+                await stopScreenSharing(true);
+                window.showStatusToast(
+                    safeT(
+                        'app.screenSource.captureFailed',
+                        '屏幕捕获已停止，请检查系统权限或重新选择来源'
+                    ),
+                    5000
+                );
+            });
+    }
 
     // ======================== getMobileCameraStream ========================
     async function getMobileCameraStream() {

@@ -609,6 +609,33 @@ def test_manual_screenshot_discards_stream_frame_after_remembered_source_change(
 
 
 @pytest.mark.unit
+def test_manual_screenshot_does_not_stop_shared_stream_when_identity_expires_after_acquire():
+    out = _run(_remembered_screenshot_race_script(
+        provider="({})",
+        stream="(S.screenCaptureStream = new MediaStream(),"
+        " S.screenCaptureStream.getTracks = () => [{"
+        " stop: () => { results.sharedStopped = true; }"
+        " }], current = false, S.screenCaptureStream)",
+    ))
+
+    assert out.get("data") is None
+    assert out["unavailable"] is True
+    assert out.get("sharedStopped") is not True
+
+
+@pytest.mark.unit
+def test_manual_screenshot_discards_desktop_region_after_remembered_source_change():
+    out = _run(_remembered_screenshot_race_script(
+        region="(current = false, S.selectedScreenSourceId = 'window:new', {"
+        " dataUrl: 'data:image/png;base64,OLD',"
+        " originalDataUrl: 'data:image/png;base64,OLD' })",
+    ))
+
+    assert out.get("data") is None
+    assert out["unavailable"] is True
+
+
+@pytest.mark.unit
 def test_manual_screenshot_skips_interactive_desktop_for_remembered_window():
     out = _run(_remembered_screenshot_race_script(
         provider="({})",
@@ -633,6 +660,146 @@ def test_manual_screenshot_reports_remembered_rejection_instead_of_cancellation(
         "app.capturing",
         "app.screenSource.rememberedWindowUnavailable",
     ]
+
+
+@pytest.mark.unit
+def test_hide_neko_recapture_does_not_widen_remembered_window_to_backend_desktop():
+    buttons_src = APP_BUTTONS_PATH.read_text(encoding="utf-8")
+    script = """
+const results = { calls: [] };
+class MediaStream {}
+const S = {
+  selectedScreenSourceId: 'window:old',
+  screenCaptureStream: null
+};
+const window = {
+  captureDesktopSourceWithTimeout: async () => {
+    results.calls.push('direct-window');
+    return null;
+  },
+  acquireOrReuseCachedStream: async () => {
+    results.calls.push('stream');
+    return null;
+  },
+  captureFrameFromStream: async () => null,
+  fetchBackendScreenshot: async () => {
+    results.calls.push('backend-desktop');
+    return { dataUrl: 'data:image/jpeg;base64,BACKEND' };
+  },
+  maybeClearSourceOnNotFound: () => {},
+  showStatusToast: () => {},
+  t: (key) => key
+};
+const getDesktopProvider = () => ({ captureSourceAsDataUrl() {} });
+const hideNekoUI = () => null;
+const restoreNekoUI = () => {};
+__RECAPTURE__
+recaptureWithoutNeko({
+  required: true,
+  allowed: true,
+  isCurrent: () => true
+}).then((data) => {
+  results.data = data;
+  console.log(JSON.stringify(results));
+});
+""".replace("__RECAPTURE__", _fn(buttons_src, "recaptureWithoutNeko"))
+
+    out = _run(script)
+
+    assert out.get("data") is None
+    assert "backend-desktop" not in out["calls"]
+
+
+@pytest.mark.unit
+def test_title_remap_restarts_active_native_sender_on_the_new_source():
+    screen_src = _screen_src()
+    script = """
+const results = { captured: [], sent: [] };
+const WebSocket = { OPEN: 1 };
+const C = { MAX_SCREENSHOT_WIDTH: 1280, MAX_SCREENSHOT_HEIGHT: 720 };
+const S = {
+  selectedScreenSourceId: 'window:old',
+  socket: {
+    readyState: 1,
+    send(payload) { results.sent.push(JSON.parse(payload).source_id); }
+  },
+  videoSenderInterval: null
+};
+let nativeCaptureGeneration = 0;
+let activeNativeCaptureSourceId = null;
+let scheduled = null;
+const setTimeout = (callback) => { scheduled = callback; return callback; };
+const clearTimeout = () => {};
+const clearInterval = () => {};
+const provider = {
+  nativeFrameCapture: true,
+  captureSourceAsDataUrl() {}
+};
+const window = {
+  captureDesktopSourceWithTimeout: async (_provider, _method, sourceId) => {
+    results.captured.push(sourceId);
+    return { success: true, dataUrl: 'data:image/jpeg;base64,FRAME' };
+  },
+  showStatusToast: () => {}
+};
+const localStorage = { setItem() {}, removeItem() {} };
+const normalizeScreenSourceTitle = (value) => String(value || '').trim();
+const isScreenSourceTitleMatchEnabled = () => true;
+const readRememberedWindowTitle = () => 'Editor';
+const markScreenSourceSelectionChanged = () => {};
+const pushSelectedSourceToMain = () => {};
+const updateScreenSourceListSelection = () => {};
+const storeRememberedWindowTitle = () => {};
+const clearRememberedWindowTitle = () => {};
+const resolveDesktopCaptureProvider = () => provider;
+const isNativeFrameProvider = (candidate) => !!(
+  candidate && candidate.nativeFrameCapture
+  && typeof candidate.captureSourceAsDataUrl === 'function'
+);
+const stopLiveVisionStreamIfBlocked = async () => false;
+const canSendLiveVisionStreamFrame = () => true;
+const normalizeNativeCaptureDataUrlForStream = async (dataUrl) => dataUrl;
+const buildStreamDataMessage = (_dataUrl, _inputType, sourceId) => ({ source_id: sourceId });
+const safeT = (_key, fallback) => fallback;
+const stopScreenSharing = async () => {};
+function stopScreening() {
+  nativeCaptureGeneration += 1;
+  activeNativeCaptureSourceId = null;
+  if (S.videoSenderInterval) clearTimeout(S.videoSenderInterval);
+  S.videoSenderInterval = null;
+}
+function clearSelectedScreenSource() {
+  S.selectedScreenSourceId = null;
+  markScreenSourceSelectionChanged();
+}
+__START_NATIVE__
+__RESTART_NATIVE__
+__RECONCILE__
+(async () => {
+  await startNativeScreenStreaming(provider, 'window:old', 'screen');
+  reconcileRememberedWindowSource([{ id: 'window:new', name: 'Editor' }]);
+  await Promise.resolve();
+  await Promise.resolve();
+  if (scheduled) await scheduled();
+  results.selected = S.selectedScreenSourceId;
+  console.log(JSON.stringify(results));
+})();
+"""
+    script = (
+        script
+        .replace("__START_NATIVE__", _fn(screen_src, "startNativeScreenStreaming"))
+        .replace(
+            "__RESTART_NATIVE__",
+            _fn(screen_src, "restartActiveNativeCaptureForSourceRemap"),
+        )
+        .replace("__RECONCILE__", _fn(screen_src, "reconcileRememberedWindowSource"))
+    )
+
+    out = _run(script)
+
+    assert out["selected"] == "window:new"
+    assert out["captured"][:2] == ["window:old", "window:new"]
+    assert "window:old" not in out["captured"][1:]
 
 
 _PROACTIVE_REMEMBERED_TMPL = """
