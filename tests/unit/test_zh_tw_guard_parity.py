@@ -5100,6 +5100,22 @@ def test_later_explicit_update_revokes_excepted_field_preservation():
     assert router._chat_preserved_target_keys(text, ['avatar', 'name']) == {'avatar'}
 
 
+def test_exception_before_full_card_target_preserves_field():
+    import main_routers.card_assist_router as router
+
+    assert router._chat_preserved_target_keys(
+        '请重写除头像以外的所有字段', ['头像', '名字']
+    ) == {'头像'}
+
+
+def test_old_removal_does_not_override_active_request_preservation():
+    import main_routers.card_assist_router as router
+
+    text = 'Delete avatar. New request: rewrite all fields except avatar'
+
+    assert router._chat_instruction_explicitly_removes_field(text, 'avatar') is False
+
+
 @pytest.mark.parametrize(
     'text',
     [

@@ -2694,6 +2694,9 @@ def _chat_instruction_explicitly_removes_field(
     """Return whether the user explicitly requests removal of this field."""
     if not instruction or not field_key:
         return False
+    active_start = _chat_active_request_start(instruction)
+    if active_start:
+        instruction = instruction[active_start:]
     key = re.escape(field_key)
     removal_re = re.compile(
         rf"(?:删除|刪除|移除)\s*{key}(?![A-Za-z0-9_])"
@@ -3142,10 +3145,21 @@ def _chat_preserved_target_keys(
                 for key in target_keys
                 if key.casefold() not in except_lookup
             )
-        elif _CHAT_FULL_REWRITE_RE.search(clause_prefix):
-            candidates.extend(except_targets)
         else:
-            continue
+            sentence_start = 0
+            for reset in _CHAT_REPORTING_CONTEXT_RESET_RE.finditer(
+                instruction or "", 0, except_match.start()
+            ):
+                sentence_start = reset.end()
+            sentence_end = _CHAT_GOVERNING_PROHIBITION_SENTENCE_END_RE.search(
+                instruction or "", except_match.end()
+            )
+            sentence = (instruction or "")[
+                sentence_start: sentence_end.start() if sentence_end else len(instruction or "")
+            ]
+            if not _CHAT_FULL_REWRITE_RE.search(sentence):
+                continue
+            candidates.extend(except_targets)
     for clause_match in _CHAT_PRESERVATION_CLAUSE_RE.finditer(instruction or ""):
         if clause_match.start() < active_start:
             continue
