@@ -3031,3 +3031,63 @@ def test_native_remap_during_first_frame_keeps_manual_controls_owned(page: Page)
         "stopDisabled": False,
         "screenActive": True,
     }
+
+
+@pytest.mark.frontend
+def test_native_manual_share_bounds_default_lookup_for_remembered_title(
+    page: Page,
+) -> None:
+    _install_screen_source_harness(
+        page,
+        initial_storage={
+            "screenSourceTitleMatchEnabled": "true",
+            "selectedScreenWindowTitle": "Editor",
+        },
+    )
+
+    result = page.evaluate(
+        """async () => {
+            document.body.insertAdjacentHTML('beforeend', `
+                <div id="live2d-container"></div>
+                <button id="micButton"></button><button id="muteButton"></button>
+                <button id="screenButton"></button><button id="stopButton" disabled></button>
+                <button id="resetSessionButton"></button>
+            `);
+            window.appState.isRecording = true;
+            window.appState.voiceChatActive = true;
+            window.appState.audioPlayerContext = { state: 'running' };
+            window.__desktopProvider.nativeFrameCapture = true;
+            window.__desktopProvider.captureSourceAsDataUrl = async () => ({
+                success: true,
+                dataUrl: 'data:image/jpeg;base64,AA==',
+            });
+            let defaultLookupStarted = false;
+            window.__desktopProvider.getSources = () => {
+                defaultLookupStarted = true;
+                return new Promise(() => {});
+            };
+            let boundedValidationCalls = 0;
+            window.invokeDesktopCaptureWithTimeout = async () => {
+                boundedValidationCalls += 1;
+                return [];
+            };
+            let settled = false;
+            window.startScreenSharing().finally(() => { settled = true; });
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            const state = {
+                defaultLookupStarted,
+                boundedValidationCalls,
+                settled,
+                pending: window.isScreenSharingStartPending(),
+            };
+            if (!settled) window.appScreen.cancelPendingScreenSharingStart();
+            return state;
+        }"""
+    )
+
+    assert result == {
+        "defaultLookupStarted": False,
+        "boundedValidationCalls": 1,
+        "settled": True,
+        "pending": False,
+    }

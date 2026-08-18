@@ -1787,10 +1787,13 @@
                     var desktopProvider = resolveDesktopCaptureProvider();
                     var sourceEnumerationMayPrompt = desktopSourceEnumerationMayPrompt(desktopProvider);
                     var rememberedWindowNeedsSelection = false;
+                    var hasRememberedWindowTitle = isScreenSourceTitleMatchEnabled()
+                        && !!normalizeScreenSourceTitle(readRememberedWindowTitle());
 
                     // Native-frame shells do not expose Chromium's picker.
                     // Default to the first monitor when no source is persisted.
-                    if (!selectedSourceId && isNativeFrameProvider(desktopProvider)) {
+                    if (!selectedSourceId && !hasRememberedWindowTitle
+                        && isNativeFrameProvider(desktopProvider)) {
                         try {
                             var initialScreens = await desktopProvider.getSources({ types: ['screen'] });
                             if (initialScreens && initialScreens.length > 0) {
@@ -1805,8 +1808,6 @@
                         if (discardCancelledScreenSharingStart(attempt)) return;
                     }
 
-                    var hasRememberedWindowTitle = isScreenSourceTitleMatchEnabled()
-                        && !!normalizeScreenSourceTitle(readRememberedWindowTitle());
                     var rememberedWindowWasBounded = isScreenSourceTitleMatchEnabled()
                         && (hasRememberedWindowTitle
                             || (typeof selectedSourceId === 'string'
