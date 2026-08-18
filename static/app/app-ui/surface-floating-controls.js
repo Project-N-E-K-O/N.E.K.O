@@ -270,6 +270,65 @@
             }, SOCIAL_OPEN_RELEASE_DELAY_MS);
         }
 
+        function isResolvedDarkTheme() {
+            return window.nekoTheme && typeof window.nekoTheme.isDark === 'function'
+                ? window.nekoTheme.isDark()
+                : document.documentElement.getAttribute('data-theme') === 'dark';
+        }
+
+        function getSocialThemeBridgeState() {
+            if (!window.__nekoSocialThemeBridgeState || typeof window.__nekoSocialThemeBridgeState !== 'object') {
+                window.__nekoSocialThemeBridgeState = { targetWindow: null, targetOrigin: '' };
+            }
+            return window.__nekoSocialThemeBridgeState;
+        }
+
+        function registerSocialThemeTarget(targetWindow, targetUrl) {
+            if (!targetWindow) return;
+            try {
+                const parsed = new URL(String(targetUrl), window.location.href);
+                if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return;
+                const state = getSocialThemeBridgeState();
+                state.targetWindow = targetWindow;
+                state.targetOrigin = parsed.origin;
+            } catch (_) { /* invalid target URL */ }
+        }
+
+        function publishSocialTheme(darkMode) {
+            const state = getSocialThemeBridgeState();
+            if (!state.targetWindow || !state.targetOrigin) return;
+            try {
+                if (state.targetWindow.closed) {
+                    state.targetWindow = null;
+                    state.targetOrigin = '';
+                    return;
+                }
+                state.targetWindow.postMessage({
+                    source: 'neko-desktop',
+                    type: 'theme-change',
+                    theme: darkMode ? 'dark' : 'light'
+                }, state.targetOrigin);
+            } catch (_) { /* community window may be navigating or closing */ }
+        }
+
+        if (!window.__nekoSocialThemeBridgeInstalled) {
+            window.__nekoSocialThemeBridgeInstalled = true;
+            window.addEventListener('neko-theme-changed', (event) => {
+                const darkMode = event.detail && typeof event.detail.darkMode === 'boolean'
+                    ? event.detail.darkMode
+                    : isResolvedDarkTheme();
+                publishSocialTheme(darkMode);
+            });
+            window.addEventListener('message', (event) => {
+                const state = getSocialThemeBridgeState();
+                if (!state.targetWindow || !state.targetOrigin) return;
+                if (event.source !== state.targetWindow || event.origin !== state.targetOrigin) return;
+                const data = event.data;
+                if (!data || data.source !== 'neko-community' || data.type !== 'theme-ready') return;
+                publishSocialTheme(isResolvedDarkTheme());
+            });
+        }
+
         // 喵宇宙（社交平台）按钮：占用原 screen 槽位。
         // 从 /api/system/social/config 拿云端 base URL，从 /api/system/client-id 拿 device 身份。
         // Electron：window.open → setWindowOpenHandler 识别 social feed，以带 OS chrome 的内置
@@ -301,6 +360,12 @@
                     return false;
                 }
                 const currentPopup = popupRef;
+                try {
+                    const parsedTarget = new URL(String(targetUrl), window.location.href);
+                    if (parsedTarget.searchParams.get('neko_source_origin') === window.location.origin) {
+                        registerSocialThemeTarget(currentPopup, parsedTarget);
+                    }
+                } catch (_) { /* non-community navigation */ }
                 try { currentPopup.opener = null; } catch (_) { /* ignore */ }
                 let navigated = true;
                 try {
@@ -368,8 +433,16 @@
                 if (!socialWin) {
                     return false;
                 }
+                registerSocialThemeTarget(socialWin, targetUrl);
                 try { socialWin.focus && socialWin.focus(); } catch (_) { /* ignore */ }
                 return true;
+            };
+            const attachResolvedTheme = (targetUrl) => {
+                targetUrl.searchParams.set('neko_theme', isResolvedDarkTheme() ? 'dark' : 'light');
+                if (window.location.protocol === 'http:' || window.location.protocol === 'https:') {
+                    targetUrl.searchParams.set('neko_source_origin', window.location.origin);
+                }
+                return targetUrl;
             };
             const fetchNativeSyncTicket = async () => {
                 const controller = new AbortController();
@@ -483,6 +556,12 @@
                         }
                         return;
                     }
+                    try {
+                        const popupRoot = popupRef.document.documentElement;
+                        const popupDark = isResolvedDarkTheme();
+                        popupRoot.style.colorScheme = popupDark ? 'dark' : 'light';
+                        popupRoot.style.backgroundColor = popupDark ? '#070c13' : '#edf8ff';
+                    } catch (_) { /* about:blank may already be leaving this origin */ }
                 }
                 const cfgRes = await fetch('/api/system/social/config');
                 if (!cfgRes.ok) {
@@ -516,6 +595,9 @@
                 if (targetUrl.protocol !== 'http:' && targetUrl.protocol !== 'https:') {
                     throw new Error('unsupported social URL protocol');
                 }
+                // 把本体已经解析后的明暗状态交给社区首帧，避免暗色模式打开时短暂闪白。
+                // 只传 dark/light，不改变社区独立保存的主题偏好。
+                attachResolvedTheme(targetUrl);
                 // 只有从本体按钮打开的页面才能拿到一次性同步票据。票据放 fragment，
                 // 不进入社区服务器 access log / Referer；社区页读取后会立即从地址栏移除。
                 await attachNativeSyncTicket(targetUrl);

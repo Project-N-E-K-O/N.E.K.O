@@ -90,6 +90,22 @@ def test_social_open_request_is_deduped_before_fetching_config():
     assert "native session sync ticket fetch failed: HTTP" in listener
     assert "native delegate fetch failed (non-fatal):" in listener
     assert "targetUrl.searchParams.set('cid', cidJson.client_id)" in listener
+    assert "const attachResolvedTheme = (targetUrl) => {" in listener
+    assert "function isResolvedDarkTheme()" in source
+    assert "window.nekoTheme.isDark()" in source
+    assert "targetUrl.searchParams.set('neko_theme', isResolvedDarkTheme() ? 'dark' : 'light')" in listener
+    assert "targetUrl.searchParams.set('neko_source_origin', window.location.origin)" in listener
+    assert "popupRoot.style.colorScheme = popupDark ? 'dark' : 'light'" in listener
+    assert "popupRoot.style.backgroundColor = popupDark ? '#070c13' : '#edf8ff'" in listener
+    assert "function registerSocialThemeTarget(targetWindow, targetUrl)" in source
+    assert "window.addEventListener('neko-theme-changed'" in source
+    assert "state.targetWindow.postMessage({" in source
+    assert "source: 'neko-desktop'" in source
+    assert "type: 'theme-change'" in source
+    assert "event.source !== state.targetWindow || event.origin !== state.targetOrigin" in source
+    assert "data.source !== 'neko-community' || data.type !== 'theme-ready'" in source
+    assert "publishSocialTheme(isResolvedDarkTheme())" in source
+    assert "registerSocialThemeTarget(socialWin, targetUrl)" in listener
     assert "social_base_url" in listener
     assert "/feed" in listener
     # Feed first; Desktop OAuth only after open when not logged in.
@@ -106,6 +122,10 @@ def test_social_open_request_is_deduped_before_fetching_config():
     protocol_guard = "targetUrl.protocol !== 'http:' && targetUrl.protocol !== 'https:'"
     assert protocol_guard in listener
     assert listener.index(protocol_guard) < listener.index(
+        "await attachNativeSyncTicket(targetUrl)"
+    )
+    assert listener.index(protocol_guard) < listener.index("attachResolvedTheme(targetUrl)")
+    assert listener.index("attachResolvedTheme(targetUrl)") < listener.index(
         "await attachNativeSyncTicket(targetUrl)"
     )
     # A slow delegate must not delay the initial Electron or browser Community navigation.
