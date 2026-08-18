@@ -4305,3 +4305,12 @@ def test_explicit_new_request_can_resume_after_a_prohibited_list():
     text = '不要执行以下修改：改名字。以上是旧请求。新请求：请重写所有字段并保留是否会员'
     assert router._chat_text_requests_full_rewrite_core(text) is False
     assert router._chat_text_requests_full_rewrite(text) is True
+
+
+@pytest.mark.parametrize('prefix', ['按照要求，', '根据要求，'])
+def test_requirement_nouns_do_not_mask_following_direct_commands(prefix):
+    import main_routers.card_assist_router as router
+
+    text = f'{prefix}请重写所有字段'
+    assert router._chat_text_requests_full_rewrite_core(text) is True
+    assert router._chat_text_requests_full_rewrite(text) is True

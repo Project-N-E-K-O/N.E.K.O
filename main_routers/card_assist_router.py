@@ -1535,6 +1535,9 @@ _CHAT_SCOPED_REPORTED_SPEECH_RE = re.compile(
     r"|(?i:(?<![A-Za-z])(?:said|says)(?![A-Za-z])))"
     r"|[^。，、！？,.!?;；]+?(?:原话|原話|原文))\s*[：:]?\s*$"
 )
+_CHAT_REQUIREMENT_PHRASE_RE = re.compile(
+    r"(?:按|按照|根据|依照|依据)\s*要求\s*[：:,，]?\s*$"
+)
 _CHAT_FIRST_PERSON_REPORTING_RE = re.compile(
     r"^\s*(?:(?:我|我们|我們|咱们|咱們|俺|我的|我们的|我們的)\s*"
     r"(?:(?:想|想要|要|希望|打算|准备|準備)\s*)?"
@@ -1845,6 +1848,7 @@ def _chat_clause_has_third_party_reporting_context(clause: str) -> bool:
     )
     return any(
         not _CHAT_FIRST_PERSON_REPORTING_RE.search(candidate)
+        and not _CHAT_REQUIREMENT_PHRASE_RE.search(candidate)
         and _CHAT_SCOPED_REPORTED_SPEECH_RE.search(candidate)
         for candidate in candidates
     )
@@ -2631,12 +2635,33 @@ _CHAT_PRESERVATION_NEGATION_RE = re.compile(
 _CHAT_IDENTIFIER_KEY_RE = re.compile(r"[A-Za-z0-9_]")
 
 
+def _chat_preservation_clause_is_reported(
+    instruction: str, clause_start: int
+) -> bool:
+    """Return whether a preservation clause belongs to third-party speech."""
+    sentence_start = 0
+    for reset in _CHAT_REPORTING_CONTEXT_RESET_RE.finditer(
+        instruction, 0, clause_start
+    ):
+        sentence_start = reset.end()
+    sentence = instruction[sentence_start:]
+    reporting_start = _chat_third_party_reporting_start(sentence)
+    return (
+        reporting_start is not None
+        and clause_start - sentence_start >= reporting_start
+    )
+
+
 def _chat_preserved_target_keys(
     instruction: str, target_keys: list[str]
 ) -> set[str]:
     """Return target keys explicitly named in a preservation clause."""
     candidates: list[tuple[str, int, int]] = []
     for clause_match in _CHAT_PRESERVATION_CLAUSE_RE.finditer(instruction or ""):
+        if _chat_preservation_clause_is_reported(
+            instruction or "", clause_match.start()
+        ):
+            continue
         prefix = _CHAT_CLAUSE_SPLIT_RE.split(
             (instruction or "")[:clause_match.start()]
         )[-1]
