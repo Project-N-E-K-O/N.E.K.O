@@ -409,6 +409,34 @@
                 }
                 return navigated;
             };
+            const restoreBrowserThemeReplyChannel = async () => {
+                if (!popupRef) return false;
+                const currentPopup = popupRef;
+                try {
+                    currentPopup.location.replace('about:blank');
+                } catch (_) {
+                    try {
+                        currentPopup.location = 'about:blank';
+                    } catch (_) {
+                        return false;
+                    }
+                }
+                const deadline = Date.now() + 3000;
+                while (Date.now() < deadline) {
+                    try {
+                        if (currentPopup.closed) return false;
+                        const popupRoot = currentPopup.document.documentElement;
+                        const popupDark = isResolvedDarkTheme();
+                        popupRoot.style.colorScheme = popupDark ? 'dark' : 'light';
+                        popupRoot.style.backgroundColor = popupDark ? '#070c13' : '#edf8ff';
+                        currentPopup.opener = window;
+                        return currentPopup.opener === window;
+                    } catch (_) {
+                        await new Promise((resolve) => setTimeout(resolve, 50));
+                    }
+                }
+                return false;
+            };
             const waitForOAuthCompletion = async (timeoutMs, requirePopup) => {
                 const deadline = Date.now() + timeoutMs;
                 let pollDelayMs = 1000;
@@ -737,6 +765,7 @@
                                         console.warn('[social] failed to refresh Electron community window after OAuth');
                                     }
                                 } else if (popupRef) {
+                                    await restoreBrowserThemeReplyChannel();
                                     navigateBrowserPopup(refreshedTargetUrl.toString());
                                 }
                             }
