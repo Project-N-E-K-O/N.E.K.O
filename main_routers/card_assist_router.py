@@ -2672,19 +2672,52 @@ def _chat_preservation_clause_is_meta_request_text(
     return reset is None or clause_start < reset.end()
 
 
+def _chat_target_key_matches(
+    text: str, target_keys: list[str], base_start: int
+) -> list[tuple[str, int, int]]:
+    """Return target key spans with identifier-safe matching."""
+    matches: list[tuple[str, int, int]] = []
+    for raw_key in target_keys:
+        key = str(raw_key)
+        if not key:
+            continue
+        if _CHAT_IDENTIFIER_KEY_RE.search(key):
+            key_pattern = re.compile(
+                rf"(?<![A-Za-z0-9_]){re.escape(key)}(?![A-Za-z0-9_])",
+                re.IGNORECASE,
+            )
+        else:
+            key_pattern = re.compile(re.escape(key))
+        matches.extend(
+            (raw_key, base_start + match.start(), base_start + match.end())
+            for match in key_pattern.finditer(text)
+        )
+    return matches
+
+
 def _chat_preserved_target_keys(
     instruction: str, target_keys: list[str]
 ) -> set[str]:
     """Return target keys explicitly named in a preservation clause."""
     candidates: list[tuple[str, int, int]] = []
     for except_match in _CHAT_PRESERVATION_EXCEPT_RE.finditer(instruction or ""):
+        if _chat_preservation_clause_is_meta_request_text(
+            instruction or "", except_match.start()
+        ):
+            continue
+        if _chat_preservation_clause_is_reported(
+            instruction or "", except_match.start()
+        ):
+            continue
         except_keys = (
             except_match.group("keys_zh") or except_match.group("keys_en") or ""
         )
-        for raw_key in target_keys:
-            key = str(raw_key)
-            if key and re.search(re.escape(key), except_keys, re.IGNORECASE):
-                candidates.append((raw_key, except_match.start(), except_match.end()))
+        except_start = except_match.start(
+            "keys_zh" if except_match.group("keys_zh") is not None else "keys_en"
+        )
+        candidates.extend(
+            _chat_target_key_matches(except_keys, target_keys, except_start)
+        )
     for clause_match in _CHAT_PRESERVATION_CLAUSE_RE.finditer(instruction or ""):
         if _chat_preservation_clause_is_meta_request_text(
             instruction or "", clause_match.start()
@@ -2704,22 +2737,9 @@ def _chat_preserved_target_keys(
             r"不(?:变|變)", clause
         ):
             continue
-        for raw_key in target_keys:
-            key = str(raw_key)
-            if not key:
-                continue
-            if _CHAT_IDENTIFIER_KEY_RE.search(key):
-                key_pattern = re.compile(
-                    rf"(?<![A-Za-z0-9_]){re.escape(key)}(?![A-Za-z0-9_])",
-                    re.IGNORECASE,
-                )
-            else:
-                key_pattern = re.compile(re.escape(key))
-            candidates.extend(
-                (raw_key, clause_match.start() + match.start(),
-                 clause_match.start() + match.end())
-                for match in key_pattern.finditer(clause)
-            )
+        candidates.extend(
+            _chat_target_key_matches(clause, target_keys, clause_match.start())
+        )
     return {
         key
         for key, start, end in candidates

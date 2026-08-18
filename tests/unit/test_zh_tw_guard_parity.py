@@ -4335,8 +4335,8 @@ def test_meta_request_text_does_not_preserve_fields_for_a_later_rewrite():
 def test_later_preservation_after_meta_request_text_remains_active():
     import main_routers.card_assist_router as router
 
-    text = '请翻译以下内容：保留头像。现在请重写所有字段并保留名字'
-    assert router._chat_preserved_target_keys(text, ['头像', '名字']) == {'名字'}
+    text = '请翻译以下内容：你好。现在请重写所有字段并保留头像'
+    assert router._chat_preserved_target_keys(text, ['头像', '名字']) == {'头像'}
 
 
 @pytest.mark.parametrize(
@@ -4350,6 +4350,27 @@ def test_explicit_except_fields_are_preserved(text, targets):
     import main_routers.card_assist_router as router
 
     assert router._chat_preserved_target_keys(text, targets) == {targets[0]}
+
+
+@pytest.mark.parametrize(
+    'text',
+    [
+        '他说：重写所有字段，除了 Age 以外。请重写所有字段',
+        '请翻译以下内容：除了 Age 以外。现在请重写所有字段',
+        'Please rewrite all fields except cage',
+    ],
+)
+def test_exception_clauses_reuse_preservation_context_and_key_boundaries(text):
+    import main_routers.card_assist_router as router
+
+    assert router._chat_preserved_target_keys(text, ['Age']) == set()
+
+
+def test_exception_clauses_resolve_exact_overlapping_keys():
+    import main_routers.card_assist_router as router
+
+    text = '请重写除心理年龄以外的所有字段'
+    assert router._chat_preserved_target_keys(text, ['年龄', '心理年龄']) == {'心理年龄'}
 
 
 def test_leading_persistence_prohibition_governs_recovered_list_items():
