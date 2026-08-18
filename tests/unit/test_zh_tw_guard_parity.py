@@ -4569,6 +4569,13 @@ def test_field_specific_edit_prohibitions_preserve_targets(text, targets, expect
     assert router._chat_preserved_target_keys(text, targets) == expected
 
 
+def test_field_edit_prohibitions_stop_before_contrastive_edits():
+    import main_routers.card_assist_router as router
+
+    text = '请重写所有字段，头像不要改但名字重写'
+    assert router._chat_preserved_target_keys(text, ['头像', '名字']) == {'头像'}
+
+
 def test_field_before_preservation_verb_preserves_target():
     import main_routers.card_assist_router as router
 
@@ -4590,11 +4597,26 @@ def test_field_before_preservation_questions_do_not_preserve_targets(text):
     assert router._chat_text_requests_full_rewrite(text) is True
 
 
+def test_ordinary_preservation_questions_do_not_preserve_targets():
+    import main_routers.card_assist_router as router
+
+    text = 'Should I keep avatar? Rewrite all fields'
+    assert router._chat_preserved_target_keys(text, ['avatar']) == set()
+    assert router._chat_text_requests_full_rewrite(text) is True
+
+
 def test_field_before_preservation_is_bound_to_nearest_target():
     import main_routers.card_assist_router as router
 
     text = '请重写所有字段，名字重写但头像保持不变'
     assert router._chat_preserved_target_keys(text, ['名字', '头像']) == {'头像'}
+
+
+def test_mixed_preservation_constraints_are_evaluated_per_target():
+    import main_routers.card_assist_router as router
+
+    text = 'Rewrite all fields and keep name short and avatar unchanged'
+    assert router._chat_preserved_target_keys(text, ['name', 'avatar']) == {'avatar'}
 
 
 @pytest.mark.parametrize(

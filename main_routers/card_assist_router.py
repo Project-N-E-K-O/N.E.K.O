@@ -2690,8 +2690,10 @@ async def _complete_full_rewrite_actions(
 _CHAT_PRESERVATION_CLAUSE_RE = re.compile(
     r"(?P<verb>保留|保持|维持|維持|(?i:\b(?:preserve|keep)\b))"
     r"[^。，、！？,.!?;；]*?"
-    r"(?=(?:但|但是|可是|不过|不過)\s*(?:重写|重寫|改写|改寫|修改)"
-    r"|(?i:\b(?:but|however)\s*(?:rewrite|revise|regenerate|redo|refresh)\b)"
+    r"(?=(?:但|但是|可是|不过|不過)\s*[^。，、！？,.!?;；]{0,24}?"
+    r"(?:重写|重寫|改写|改寫|修改)"
+    r"|(?i:\b(?:but|however)\s+[^,.!?;]{0,24}?"
+    r"(?:rewrite|revise|regenerate|redo|refresh)\b)"
     r"|[。，、！？,.!?;；]|$)"
 )
 _CHAT_FIELD_BEFORE_PRESERVATION_RE = re.compile(
@@ -2709,7 +2711,11 @@ _CHAT_FIELD_EDIT_PROHIBITION_RE = re.compile(
     r"(?:change|rewrite|revise|regenerate|redo|refresh)\s+"
     r"(?P<keys_after>[^。，、！？,.!?;；]+?))"
     r")"
-    r"(?=[。，、！？,.!?;；]|$)"
+    r"(?=(?:但|但是|可是|不过|不過)\s*[^。，、！？,.!?;；]{0,24}?"
+    r"(?:重写|重寫|改写|改寫|修改)"
+    r"|(?i:\b(?:but|however)\s+[^,.!?;]{0,24}?"
+    r"(?:rewrite|revise|regenerate|redo|refresh)\b)"
+    r"|[。，、！？,.!?;；]|$)"
 )
 _CHAT_PRESERVATION_EXCEPT_RE = re.compile(
     r"(?:"
@@ -2891,6 +2897,10 @@ def _chat_preserved_target_keys(
             instruction or "", clause_match.start()
         ):
             continue
+        if _chat_preservation_sentence_has_governing_guard(
+            instruction or "", clause_match.start()
+        ):
+            continue
         prefix = _CHAT_CLAUSE_SPLIT_RE.split(
             (instruction or "")[:clause_match.start()]
         )[-1]
@@ -2906,11 +2916,21 @@ def _chat_preserved_target_keys(
             r"不(?:变|變)", clause
         ):
             continue
-        for raw_key, start, end in _chat_target_key_matches(
-            clause, target_keys, clause_match.start()
-        ):
+        target_matches = sorted(
+            _chat_target_key_matches(
+                clause, target_keys, clause_match.start()
+            ),
+            key=lambda item: (item[1], item[2]),
+        )
+        for index, (raw_key, start, end) in enumerate(target_matches):
+            segment_end = (
+                target_matches[index + 1][1] - clause_match.start()
+                if index + 1 < len(target_matches)
+                else len(clause)
+            )
+            key_segment = clause[:segment_end]
             if _chat_preservation_match_is_constraint(
-                clause,
+                key_segment,
                 clause_match.group("verb"),
                 end - clause_match.start(),
             ):
