@@ -6250,6 +6250,10 @@ margin-top: 10px;
     z-index: 6;
 }
 
+.settings-form-layout.panel-tab-settings .field-row-wrapper:has(.voice-custom-select.active) {
+    z-index: 7;
+}
+
 .settings-form-layout.panel-tab-settings .personality-row .field-row {
     grid-column: 2;
 }
