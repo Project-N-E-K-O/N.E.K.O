@@ -1915,6 +1915,16 @@
             }
             if (!S.socket || S.socket.readyState !== WebSocket.OPEN) return;
 
+            var rememberedWindowCapture = { required: false, allowed: true };
+            if (typeof window.prepareRememberedWindowCapture === 'function') {
+                rememberedWindowCapture = await window.prepareRememberedWindowCapture();
+                if (rememberedWindowCapture && rememberedWindowCapture.required
+                    && !rememberedWindowCapture.allowed) {
+                    console.warn('[ProactiveVision] 记忆窗口无法确认，停止本次语音视觉帧');
+                    return;
+                }
+            }
+
             var dataUrl = null;
             // 这一帧来自哪种画面来源，决定 Avatar 坐标怎么映射到截图坐标系。
             // 三条来源判据各不相同且逐级回退，必须在取到画面的那一步就定下来——
@@ -1984,6 +1994,14 @@
                 }
             }
 
+            // Remember-window is a fail-closed boundary. A validated window whose
+            // stream/native capture failed must not widen to the full desktop.
+            if (!dataUrl && rememberedWindowCapture
+                && rememberedWindowCapture.required) {
+                console.warn('[ProactiveVision] 记忆窗口捕获失败，停止整桌面兜底');
+                return;
+            }
+
             // 后端 pyautogui 兜底
             if (!dataUrl) {
                 var backendResult = await fetchBackendScreenshot();
@@ -2006,6 +2024,12 @@
 
             if (!isProactiveVisionEnabledNow() || !S.isRecording) {
                 stopProactiveVisionDuringSpeech();
+                return;
+            }
+            if (rememberedWindowCapture && rememberedWindowCapture.required
+                && typeof rememberedWindowCapture.isCurrent === 'function'
+                && !rememberedWindowCapture.isCurrent()) {
+                console.warn('[ProactiveVision] 记忆窗口身份已变化，丢弃过期语音视觉帧');
                 return;
             }
             if (dataUrl && S.socket && S.socket.readyState === WebSocket.OPEN) {
@@ -2304,16 +2328,34 @@
      * 开启时：优先测试后端 pyautogui（静默无弹窗），不可用则通过前端流获取（用户手势上下文可弹 getDisplayMedia）
      */
     async function acquireProactiveVisionStream() {
-        // 策略1: 测试后端 pyautogui 是否可用（静默，无弹窗）
-        var backendResult = await fetchBackendScreenshot();
-        if (backendResult.dataUrl) {
-            console.log('[主动视觉] 后端 pyautogui 可用，无需前端流');
-            return true;
+        var rememberedWindowCapture = { required: false, allowed: true };
+        if (typeof window.prepareRememberedWindowCapture === 'function') {
+            rememberedWindowCapture = await window.prepareRememberedWindowCapture();
+            if (rememberedWindowCapture && rememberedWindowCapture.required
+                && !rememberedWindowCapture.allowed) {
+                console.warn('[主动视觉] 记忆窗口无法确认，停止启用');
+                return false;
+            }
+        }
+
+        // 策略1: 无记忆窗口约束时测试后端 pyautogui（静默，无弹窗）
+        if (!rememberedWindowCapture || !rememberedWindowCapture.required) {
+            var backendResult = await fetchBackendScreenshot();
+            if (backendResult.dataUrl) {
+                console.log('[主动视觉] 后端 pyautogui 可用，无需前端流');
+                return true;
+            }
         }
 
         // 策略2: 后端不可用，尝试前端流（用户手势上下文，可弹 getDisplayMedia）
         var stream = await acquireOrReuseCachedStream({ allowPrompt: true });
         if (stream) {
+            if (rememberedWindowCapture && rememberedWindowCapture.required
+                && typeof rememberedWindowCapture.isCurrent === 'function'
+                && !rememberedWindowCapture.isCurrent()) {
+                console.warn('[主动视觉] 记忆窗口身份已变化，忽略过期流');
+                return false;
+            }
             console.log('[主动视觉] 前端流获取/复用成功');
             return true;
         }

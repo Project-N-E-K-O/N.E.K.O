@@ -46,6 +46,19 @@
             && normalizedExplicitTitle === normalizeScreenSourceTitle(source && source.name);
     }
 
+    function currentExplicitScreenSourceSelectionMatches(expectedTitle) {
+        var normalizedExplicitTitle = normalizeScreenSourceTitle(
+            explicitScreenSourceSelectionTitle
+        );
+        var normalizedExpectedTitle = normalizeScreenSourceTitle(expectedTitle);
+        return explicitScreenSourceSelectionGeneration === screenSourceSelectionGeneration
+            && typeof S.selectedScreenSourceId === 'string'
+            && S.selectedScreenSourceId.startsWith('window:')
+            && !!normalizedExplicitTitle
+            && (!normalizedExpectedTitle
+                || normalizedExplicitTitle === normalizedExpectedTitle);
+    }
+
     function normalizeScreenSourceTitle(value) {
         return String(value || '').normalize('NFC').trim().replace(/\s+/g, ' ').toLowerCase();
     }
@@ -343,8 +356,16 @@
         if (!provider || desktopSourceEnumerationMayPrompt(provider)
             || typeof provider.getSources !== 'function') {
             // Portal-style providers cannot be silently enumerated without opening
-            // another OS picker. Preserve their explicit user-selected source path.
-            return buildCaptureResult(true, 'prompt-required');
+            // another OS picker. Only the current renderer's explicit selection is
+            // trustworthy here; a restored snapshot ID may already name another window.
+            var promptSelectionIsExplicit =
+                currentExplicitScreenSourceSelectionMatches(rememberedTitle);
+            return buildCaptureResult(
+                promptSelectionIsExplicit,
+                promptSelectionIsExplicit
+                    ? 'prompt-required'
+                    : 'untrusted-prompt-source'
+            );
         }
 
         var resolutionGeneration = screenSourceSelectionGeneration;
@@ -709,6 +730,10 @@
         var desktopProvider = resolveDesktopCaptureProvider();
         var rememberedTitleRequired = isScreenSourceTitleMatchEnabled()
             && !!normalizeScreenSourceTitle(readRememberedWindowTitle());
+        var rememberedCaptureRequired = isScreenSourceTitleMatchEnabled()
+            && (rememberedTitleRequired
+                || (typeof S.selectedScreenSourceId === 'string'
+                    && S.selectedScreenSourceId.startsWith('window:')));
         var rememberedResolutionGeneration = screenSourceSelectionGeneration;
         var rememberedResolutionSourceId = S.selectedScreenSourceId;
         var rememberedResolutionTitle = normalizeScreenSourceTitle(
@@ -722,10 +747,14 @@
         if (rememberedTitleRequired && desktopProvider
             && !desktopSourceEnumerationMayPrompt(desktopProvider)) {
             try {
-                currentSources = await desktopProvider.getSources({
-                    types: ['window', 'screen'],
-                    thumbnailSize: { width: 0, height: 0 }
-                });
+                currentSources = await window.invokeDesktopCaptureWithTimeout(
+                    desktopProvider,
+                    'getSources',
+                    [{
+                        types: ['window', 'screen'],
+                        thumbnailSize: { width: 0, height: 0 }
+                    }]
+                );
                 if (rememberedResolutionGeneration !== screenSourceSelectionGeneration
                     || rememberedResolutionSourceId !== S.selectedScreenSourceId
                     || rememberedResolutionTitle !== normalizeScreenSourceTitle(
@@ -787,10 +816,14 @@
                         // user gesture and let getUserMedia report a stale id instead.
                         if (!desktopSourceEnumerationMayPrompt(desktopProvider)) {
                             if (!currentSources) {
-                                currentSources = await desktopProvider.getSources({
-                                    types: ['window', 'screen'],
-                                    thumbnailSize: { width: 1, height: 1 }
-                                });
+                                currentSources = await window.invokeDesktopCaptureWithTimeout(
+                                    desktopProvider,
+                                    'getSources',
+                                    [{
+                                        types: ['window', 'screen'],
+                                        thumbnailSize: { width: 1, height: 1 }
+                                    }]
+                                );
                             }
                             var sourceExists = currentSources.some(function (s) { return s.id === selectedSourceId; });
 
@@ -868,6 +901,11 @@
             } catch (electronErr) {
                 console.warn('[acquireStream] Electron 源获取失败:', electronErr.message);
             }
+        }
+
+        if (rememberedCaptureRequired) {
+            console.warn('[acquireStream] 记忆窗口捕获失败，停止无约束 picker 回退');
+            return null;
         }
 
         // 3. getDisplayMedia（仅 web/Electron 流 provider；Tauri 原生帧不支持 Chromium picker）
@@ -1785,6 +1823,13 @@
                                 )
                                 && manualCaptureEnabled === isScreenSourceTitleMatchEnabled();
                         }
+                        function discardSupersededManualCapture() {
+                            if (manualCaptureIdentityIsCurrent()) return false;
+                            console.warn('[屏幕源] 来源选择已变化，释放晚到的屏幕分享流');
+                            attempt.cancelled = true;
+                            discardCancelledScreenSharingStart(attempt);
+                            return true;
+                        }
                         try {
                             captureStream = rememberScreenSharingAttemptStream(attempt, await navigator.mediaDevices.getUserMedia({
                                 audio: false,
@@ -1796,12 +1841,7 @@
                                     }
                                 }
                             }));
-                            if (!manualCaptureIdentityIsCurrent()) {
-                                console.warn('[屏幕源] 来源选择已变化，释放晚到的屏幕分享流');
-                                attempt.cancelled = true;
-                                discardCancelledScreenSharingStart(attempt);
-                                return;
-                            }
+                            if (discardSupersededManualCapture()) return;
                         } catch (captureErr) {
                             if (discardCancelledScreenSharingStart(attempt)) return;
                             if (!manualCaptureIdentityIsCurrent()) {
@@ -1826,6 +1866,7 @@
                                         thumbnailSize: { width: 1, height: 1 }
                                     });
                                     if (discardCancelledScreenSharingStart(attempt)) return;
+                                    if (!manualCaptureIdentityIsCurrent()) return;
                                     if (fallbackSources.length > 0) {
                                         captureStream = rememberScreenSharingAttemptStream(attempt, await navigator.mediaDevices.getUserMedia({
                                             audio: false,
@@ -1838,6 +1879,7 @@
                                             }
                                         }));
                                         if (discardCancelledScreenSharingStart(attempt)) return;
+                                        if (discardSupersededManualCapture()) return;
                                         S.selectedScreenSourceId = fallbackSources[0].id;
                                         try { localStorage.setItem('selectedScreenSourceId', fallbackSources[0].id); } catch (e) { }
                                         pushSelectedSourceToMain(fallbackSources[0].id);
@@ -1848,6 +1890,7 @@
                                         fallbackSucceeded = true;
                                     }
                                 } catch (fallback1Err) {
+                                    if (!manualCaptureIdentityIsCurrent()) return;
                                     console.warn('[屏幕源] chromeMediaSource 全屏回退也失败:', fallback1Err);
                                 }
                             }
@@ -1855,6 +1898,7 @@
                             // 回退策略2: chromeMediaSource 在该系统上完全不可用，降级到 getDisplayMedia
                             if (!hasRememberedWindowTitle && !fallbackSucceeded) {
                                 if (discardCancelledScreenSharingStart(attempt)) return;
+                                if (!manualCaptureIdentityIsCurrent()) return;
                                 try {
                                     console.log('[屏幕源] chromeMediaSource 不可用，降级到 getDisplayMedia');
                                     captureStream = rememberScreenSharingAttemptStream(attempt, await navigator.mediaDevices.getDisplayMedia({
@@ -1862,11 +1906,13 @@
                                         audio: false,
                                     }));
                                     if (discardCancelledScreenSharingStart(attempt)) return;
+                                    if (discardSupersededManualCapture()) return;
                                     S.selectedScreenSourceId = null;
                                     try { localStorage.removeItem('selectedScreenSourceId'); } catch (e) { }
                                     pushSelectedSourceToMain(null);
                                     fallbackSucceeded = true;
                                 } catch (fallback2Err) {
+                                    if (!manualCaptureIdentityIsCurrent()) return;
                                     console.warn('[屏幕源] getDisplayMedia 回退也失败:', fallback2Err);
                                 }
                             }

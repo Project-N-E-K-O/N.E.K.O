@@ -1198,6 +1198,7 @@ const results = { sent: [] };
 const window = {
   screen: { width: 1920, height: 1080, isExtended: false },
   appUtils: { isMobile: () => false },
+  prepareRememberedWindowCapture: async () => __PREPARE__,
   detectScreenshotCaptureType: (stream, sourceId) => {
     if (sourceId) return sourceId.indexOf('screen:') === 0 ? 'screen' : null;
     return stream ? 'screen' : null;
@@ -1232,7 +1233,15 @@ sendOneProactiveVisionFrame().then(() => {
 """
 
 
-def _frame_script(*, source_id: str, stream: str, native: str = _NATIVE_OK) -> str:
+def _frame_script(
+    *,
+    source_id: str,
+    stream: str,
+    native: str = _NATIVE_OK,
+    remembered_capture: str = (
+        "({ required: false, allowed: true, isCurrent: () => true })"
+    ),
+) -> str:
     screen_src = _screen_src()
     proactive_src = APP_PROACTIVE_PATH.read_text(encoding="utf-8")
     return (
@@ -1240,6 +1249,7 @@ def _frame_script(*, source_id: str, stream: str, native: str = _NATIVE_OK) -> s
         .replace("__SOURCE_ID__", source_id)
         .replace("__STREAM__", stream)
         .replace("__NATIVE__", native)
+        .replace("__PREPARE__", remembered_capture)
         .replace("__DETECT__", _fn(screen_src, "detectScreenshotCaptureType"))
         .replace("__BUILD__", _fn(screen_src, "buildStreamDataMessage"))
         .replace("__FRAME__", _fn(proactive_src, "sendOneProactiveVisionFrame"))
@@ -1261,6 +1271,59 @@ def test_backend_fallback_frame_carries_avatar_position():
     assert msg["input_type"] == "screen"
     assert msg["data"].endswith("BACKEND")
     assert msg["avatar_position"] is not None
+
+
+@pytest.mark.unit
+def test_speech_time_frame_does_not_widen_remembered_window_to_backend_desktop():
+    out = _run(
+        _frame_script(
+            source_id="'window:9'",
+            stream="null",
+            native=_NATIVE_FAIL,
+            remembered_capture=(
+                "({ required: true, allowed: true, isCurrent: () => true })"
+            ),
+        )
+    )
+
+    assert out["sent"] == []
+
+
+@pytest.mark.unit
+def test_proactive_vision_enable_does_not_accept_backend_for_remembered_window():
+    proactive_src = APP_PROACTIVE_PATH.read_text(encoding="utf-8")
+    script = """
+const results = { backendCalls: 0, streamCalls: 0 };
+const window = {
+  prepareRememberedWindowCapture: async () => ({
+    required: true,
+    allowed: true,
+    isCurrent: () => true,
+  }),
+};
+const fetchBackendScreenshot = async () => {
+  results.backendCalls += 1;
+  return { dataUrl: 'data:image/jpeg;base64,BACKEND' };
+};
+const acquireOrReuseCachedStream = async () => {
+  results.streamCalls += 1;
+  return null;
+};
+__ACQUIRE__
+(async () => {
+  results.acquired = await acquireProactiveVisionStream();
+  console.log(JSON.stringify(results));
+})();
+""".replace(
+        "__ACQUIRE__",
+        _fn(proactive_src, "acquireProactiveVisionStream"),
+    )
+
+    assert _run(script) == {
+        "backendCalls": 0,
+        "streamCalls": 1,
+        "acquired": False,
+    }
 
 
 @pytest.mark.unit

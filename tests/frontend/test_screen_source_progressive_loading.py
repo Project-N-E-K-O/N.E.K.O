@@ -1716,3 +1716,336 @@ def test_non_remembered_stale_source_can_fallback_to_the_first_screen(
         "returnedStream": True,
         "trackStopped": False,
     }
+
+
+@pytest.mark.frontend
+def test_remembered_cached_acquisition_failure_does_not_open_display_picker(
+    page: Page,
+) -> None:
+    _install_screen_source_harness(
+        page,
+        initial_storage={
+            "screenSourceTitleMatchEnabled": "true",
+            "selectedScreenWindowTitle": "Editor",
+            "selectedScreenSourceId": "window:old",
+        },
+    )
+
+    result = page.evaluate(
+        """async () => {
+            window.__desktopProvider.getSources = async () => [
+                { id: 'window:old', name: 'Editor', display_id: '' },
+            ];
+            const calls = [];
+            const track = {
+                readyState: 'live',
+                stopped: false,
+                stop() { this.stopped = true; this.readyState = 'ended'; },
+                addEventListener() {},
+            };
+            const pickerStream = {
+                active: true,
+                getVideoTracks() { return [track]; },
+                getTracks() { return [track]; },
+            };
+            Object.defineProperty(navigator, 'mediaDevices', {
+                configurable: true,
+                value: {
+                    async getUserMedia(constraints) {
+                        calls.push(constraints.video.mandatory.chromeMediaSourceId);
+                        throw new Error('bound window acquisition failed');
+                    },
+                    async getDisplayMedia() {
+                        calls.push('getDisplayMedia');
+                        return pickerStream;
+                    },
+                },
+            });
+
+            const acquired = await window.appScreen.acquireOrReuseCachedStream({
+                allowPrompt: true,
+            });
+            const state = {
+                calls,
+                returnedPickerStream: acquired === pickerStream,
+                pickerStreamInstalled:
+                    window.appState.screenCaptureStream === pickerStream,
+                pickerTrackStopped: track.stopped,
+            };
+            if (acquired) acquired.getTracks().forEach((item) => item.stop());
+            window.appState.screenCaptureStream = null;
+            return state;
+        }"""
+    )
+
+    assert result == {
+        "calls": ["window:old"],
+        "returnedPickerStream": False,
+        "pickerStreamInstalled": False,
+        "pickerTrackStopped": False,
+    }
+
+
+@pytest.mark.frontend
+def test_prompting_provider_rejects_unowned_restored_window_id(page: Page) -> None:
+    _install_screen_source_harness(
+        page,
+        source_enumeration_may_prompt=True,
+        initial_storage={
+            "screenSourceTitleMatchEnabled": "true",
+            "selectedScreenWindowTitle": "Editor",
+            "selectedScreenSourceId": "window:reused",
+        },
+    )
+
+    result = page.evaluate(
+        """async () => {
+            const prepared = await window.appScreen.prepareRememberedWindowCapture();
+            return {
+                required: prepared.required,
+                allowed: prepared.allowed,
+                status: prepared.status,
+                selectedId: window.appState.selectedScreenSourceId,
+            };
+        }"""
+    )
+
+    assert result == {
+        "required": True,
+        "allowed": False,
+        "status": "untrusted-prompt-source",
+        "selectedId": "window:reused",
+    }
+
+
+@pytest.mark.frontend
+def test_prompting_provider_keeps_current_renderer_explicit_window(page: Page) -> None:
+    _install_screen_source_harness(
+        page,
+        source_enumeration_may_prompt=True,
+        initial_storage={"screenSourceTitleMatchEnabled": "true"},
+    )
+
+    result = page.evaluate(
+        """async () => {
+            await window.selectScreenSource('window:2', 'Editor', 'Editor');
+            const prepared = await window.appScreen.prepareRememberedWindowCapture();
+            return {
+                required: prepared.required,
+                allowed: prepared.allowed,
+                status: prepared.status,
+                selectedId: window.appState.selectedScreenSourceId,
+            };
+        }"""
+    )
+
+    assert result == {
+        "required": True,
+        "allowed": True,
+        "status": "prompt-required",
+        "selectedId": "window:2",
+    }
+
+
+@pytest.mark.frontend
+def test_remembered_cached_reenumeration_is_bounded(page: Page) -> None:
+    _install_screen_source_harness(
+        page,
+        initial_storage={
+            "screenSourceTitleMatchEnabled": "true",
+            "selectedScreenWindowTitle": "Editor",
+            "selectedScreenSourceId": "window:old",
+        },
+    )
+
+    result = page.evaluate(
+        """async () => {
+            window.__desktopProvider.getSources = () => new Promise(() => {});
+            return Promise.race([
+                window.appScreen.acquireOrReuseCachedStream({ allowPrompt: false })
+                    .then((stream) => ({ hung: false, returnedStream: !!stream })),
+                new Promise((resolve) => {
+                    setTimeout(() => resolve({ hung: true }), 3500);
+                }),
+            ]);
+        }"""
+    )
+
+    assert result == {
+        "hung": False,
+        "returnedStream": False,
+    }
+
+
+@pytest.mark.frontend
+def test_manual_screen_fallback_discards_late_stream_after_source_change(
+    page: Page,
+) -> None:
+    _install_screen_source_harness(
+        page,
+        initial_storage={"selectedScreenSourceId": "window:old"},
+    )
+    page.evaluate(
+        """() => {
+            document.body.insertAdjacentHTML('beforeend', `
+                <div id="live2d-container"></div>
+                <button id="micButton"></button><button id="muteButton"></button>
+                <button id="screenButton"></button><button id="stopButton" disabled></button>
+                <button id="resetSessionButton"></button>
+            `);
+            window.appState.isRecording = true;
+            window.appState.voiceChatActive = true;
+            window.appState.audioPlayerContext = { state: 'running' };
+            window.__desktopProvider.getSources = async (options) => {
+                if (options.types.length === 1 && options.types[0] === 'screen') {
+                    return [{ id: 'screen:1', name: 'Entire Screen', display_id: '1' }];
+                }
+                return [
+                    { id: 'window:old', name: 'Editor', display_id: '' },
+                    { id: 'window:new', name: 'Browser', display_id: '' },
+                    { id: 'screen:1', name: 'Entire Screen', display_id: '1' },
+                ];
+            };
+            window.__fallbackStarted = false;
+            window.__captureCalls = [];
+            window.__fallbackTrack = {
+                readyState: 'live',
+                stopped: false,
+                stop() { this.stopped = true; this.readyState = 'ended'; },
+                addEventListener() {},
+            };
+            window.__fallbackStream = {
+                active: true,
+                getVideoTracks() { return [window.__fallbackTrack]; },
+                getTracks() { return [window.__fallbackTrack]; },
+            };
+            Object.defineProperty(navigator, 'mediaDevices', {
+                configurable: true,
+                value: {
+                    async getUserMedia(constraints) {
+                        const sourceId =
+                            constraints.video.mandatory.chromeMediaSourceId;
+                        window.__captureCalls.push(sourceId);
+                        if (sourceId === 'window:old') {
+                            throw new Error('selected source failed');
+                        }
+                        window.__fallbackStarted = true;
+                        return new Promise((resolve) => {
+                            window.__resolveFallback = resolve;
+                        });
+                    },
+                },
+            });
+            window.__manualStartPromise = window.startScreenSharing();
+        }"""
+    )
+    page.wait_for_function("window.__fallbackStarted === true")
+
+    result = page.evaluate(
+        """async () => {
+            await window.selectScreenSource('window:new', 'Browser', 'Browser');
+            window.__resolveFallback(window.__fallbackStream);
+            await window.__manualStartPromise;
+            const state = {
+                captureCalls: window.__captureCalls,
+                selectedId: window.appState.selectedScreenSourceId,
+                storedId: window.__storedValues.get('selectedScreenSourceId') ?? null,
+                fallbackInstalled:
+                    window.appState.screenCaptureStream === window.__fallbackStream,
+                fallbackTrackStoppedBeforeCleanup: window.__fallbackTrack.stopped,
+            };
+            await window.stopScreenSharing(true);
+            return state;
+        }"""
+    )
+
+    assert result == {
+        "captureCalls": ["window:old", "screen:1"],
+        "selectedId": "window:new",
+        "storedId": "window:new",
+        "fallbackInstalled": False,
+        "fallbackTrackStoppedBeforeCleanup": True,
+    }
+
+
+@pytest.mark.frontend
+def test_manual_picker_fallback_discards_late_stream_after_source_change(
+    page: Page,
+) -> None:
+    _install_screen_source_harness(
+        page,
+        source_enumeration_may_prompt=True,
+        initial_storage={"selectedScreenSourceId": "window:old"},
+    )
+    page.evaluate(
+        """() => {
+            document.body.insertAdjacentHTML('beforeend', `
+                <div id="live2d-container"></div>
+                <button id="micButton"></button><button id="muteButton"></button>
+                <button id="screenButton"></button><button id="stopButton" disabled></button>
+                <button id="resetSessionButton"></button>
+            `);
+            window.appState.isRecording = true;
+            window.appState.voiceChatActive = true;
+            window.appState.audioPlayerContext = { state: 'running' };
+            window.__pickerStarted = false;
+            window.__captureCalls = [];
+            window.__pickerTrack = {
+                readyState: 'live',
+                stopped: false,
+                stop() { this.stopped = true; this.readyState = 'ended'; },
+                addEventListener() {},
+            };
+            window.__pickerStream = {
+                active: true,
+                getVideoTracks() { return [window.__pickerTrack]; },
+                getTracks() { return [window.__pickerTrack]; },
+            };
+            Object.defineProperty(navigator, 'mediaDevices', {
+                configurable: true,
+                value: {
+                    async getUserMedia(constraints) {
+                        window.__captureCalls.push(
+                            constraints.video.mandatory.chromeMediaSourceId
+                        );
+                        throw new Error('selected source failed');
+                    },
+                    getDisplayMedia() {
+                        window.__captureCalls.push('getDisplayMedia');
+                        window.__pickerStarted = true;
+                        return new Promise((resolve) => {
+                            window.__resolvePicker = resolve;
+                        });
+                    },
+                },
+            });
+            window.__manualStartPromise = window.startScreenSharing();
+        }"""
+    )
+    page.wait_for_function("window.__pickerStarted === true")
+
+    result = page.evaluate(
+        """async () => {
+            await window.selectScreenSource('window:new', 'Browser', 'Browser');
+            window.__resolvePicker(window.__pickerStream);
+            await window.__manualStartPromise;
+            const state = {
+                captureCalls: window.__captureCalls,
+                selectedId: window.appState.selectedScreenSourceId,
+                storedId: window.__storedValues.get('selectedScreenSourceId') ?? null,
+                pickerInstalled:
+                    window.appState.screenCaptureStream === window.__pickerStream,
+                pickerTrackStoppedBeforeCleanup: window.__pickerTrack.stopped,
+            };
+            await window.stopScreenSharing(true);
+            return state;
+        }"""
+    )
+
+    assert result == {
+        "captureCalls": ["window:old", "getDisplayMedia"],
+        "selectedId": "window:new",
+        "storedId": "window:new",
+        "pickerInstalled": False,
+        "pickerTrackStoppedBeforeCleanup": True,
+    }
