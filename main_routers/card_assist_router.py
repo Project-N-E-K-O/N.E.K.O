@@ -1532,7 +1532,7 @@ _CHAT_ZH_CONTRAST_COMMAND_RE = re.compile(r"^\s*" + _CHAT_ZH_COMMAND_HEAD)
 _CHAT_SCOPED_REPORTED_SPEECH_RE = re.compile(
     r"^\s*(?:[^。，、！？,.!?;；]+?\s*"
     r"(?:(?:说|說|表示|提到|写道|寫道|写着|寫著|记载|記載|注明|回复|回覆|要求)(?:过|過)?"
-    r"|(?i:(?<![A-Za-z])(?:said|says)(?![A-Za-z])))"
+    r"|(?i:(?<![A-Za-z])(?:said|says|wrote|writes|asked|asks)(?![A-Za-z])))"
     r"|[^。，、！？,.!?;；]+?(?:原话|原話|原文))\s*[：:]?\s*$"
 )
 _CHAT_REQUIREMENT_PHRASE_RE = re.compile(
@@ -1542,7 +1542,7 @@ _CHAT_FIRST_PERSON_REPORTING_RE = re.compile(
     r"^\s*(?:(?:我|我们|我們|咱们|咱們|俺|我的|我们的|我們的)\s*"
     r"(?:(?:想|想要|要|希望|打算|准备|準備)\s*)?"
     r"(?:说|說|表示|提到|写道|寫道|写着|寫著|记载|記載|注明|回复|回覆|要求|原话|原話|原文)"
-    r"|(?i:(?:I|we)\s+(?:said|say)(?![A-Za-z])))"
+    r"|(?i:(?:I|we)\s+(?:said|say|wrote|write|asked|ask)(?![A-Za-z])))"
 )
 _CHAT_FIRST_PERSON_REQUEST_HEAD_RE = re.compile(
     r"^\s*(?:(?:我|我们|我們|咱们|咱們)\s*"
@@ -2312,13 +2312,19 @@ def _chat_text_requests_full_rewrite_from_scoped_segments(text: str) -> bool:
                 governing_prohibitions[-1].end(),
             )
             if new_request is not None:
-                new_request_suffix = text[new_request.end():]
-                return (
-                    _chat_text_requests_full_rewrite_core(new_request_suffix)
-                    or _chat_text_requests_full_rewrite_from_scoped_segments(
-                        new_request_suffix
-                    )
+                list_end = _CHAT_GOVERNING_PROHIBITION_SENTENCE_END_RE.search(
+                    prohibition_masked,
+                    governing_prohibitions[-1].end(),
+                    new_request.start(),
                 )
+                if list_end is not None:
+                    new_request_suffix = text[new_request.end():]
+                    return (
+                        _chat_text_requests_full_rewrite_core(new_request_suffix)
+                        or _chat_text_requests_full_rewrite_from_scoped_segments(
+                            new_request_suffix
+                        )
+                    )
             return False
         governing_prohibition = governing_prohibitions[-1]
         sentence_end = _CHAT_GOVERNING_PROHIBITION_SENTENCE_END_RE.search(
@@ -2358,7 +2364,20 @@ def _chat_text_requests_full_rewrite_from_scoped_segments(text: str) -> bool:
                 independent_suffix
             )
         )
-    if _CHAT_GOVERNING_CONDITION_RE.search(masked):
+    governing_condition = _CHAT_GOVERNING_CONDITION_RE.search(masked)
+    if governing_condition:
+        sentence_end = _CHAT_GOVERNING_PROHIBITION_SENTENCE_END_RE.search(
+            masked,
+            governing_condition.end(),
+        )
+        if sentence_end is not None:
+            independent_suffix = text[sentence_end.end():]
+            return (
+                _chat_text_requests_full_rewrite_core(independent_suffix)
+                or _chat_text_requests_full_rewrite_from_scoped_segments(
+                    independent_suffix
+                )
+            )
         return False
     if _CHAT_GOVERNING_EXECUTION_QUESTION_RE.search(masked):
         return False
@@ -2634,7 +2653,9 @@ _CHAT_PRESERVATION_CLAUSE_RE = re.compile(
 _CHAT_PRESERVATION_EXCEPT_RE = re.compile(
     r"(?:"
     r"(?:除|除了)\s*(?P<keys_zh>[^，。！？；;]+?)\s*(?:以外|之外)"
-    r"|(?i:\bexcept(?:\s+for)?\s+)(?P<keys_en>[^,.!?;]+)"
+    r"|(?i:\bexcept(?:\s+for)?\s+)(?P<keys_en>[^,.!?;]+?)"
+    r"(?=(?i:\b(?:but|however)\s*(?:rewrite|revise|regenerate|redo|refresh)\b)"
+    r"|[,.!?;]|$)"
     r")"
 )
 _CHAT_PRESERVATION_NEGATION_RE = re.compile(
@@ -2695,6 +2716,21 @@ def _chat_target_key_matches(
     return matches
 
 
+def _chat_preservation_match_is_constraint(
+    clause: str, verb: str, match_end: int
+) -> bool:
+    """Return whether keep/保持 describes a rewrite constraint, not preservation."""
+    if verb.lower() not in {"保持", "keep"}:
+        return False
+    suffix = clause[match_end:].strip()
+    if not suffix:
+        return False
+    return not re.match(
+        r"^(?:不(?:变|變)|原样|原樣|(?i:unchanged|as\s+is))\s*$",
+        suffix,
+    )
+
+
 def _chat_preserved_target_keys(
     instruction: str, target_keys: list[str]
 ) -> set[str]:
@@ -2737,9 +2773,16 @@ def _chat_preserved_target_keys(
             r"不(?:变|變)", clause
         ):
             continue
-        candidates.extend(
-            _chat_target_key_matches(clause, target_keys, clause_match.start())
-        )
+        for raw_key, start, end in _chat_target_key_matches(
+            clause, target_keys, clause_match.start()
+        ):
+            if _chat_preservation_match_is_constraint(
+                clause,
+                clause_match.group("verb"),
+                end - clause_match.start(),
+            ):
+                continue
+            candidates.append((raw_key, start, end))
     return {
         key
         for key, start, end in candidates

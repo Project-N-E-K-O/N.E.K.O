@@ -4274,6 +4274,18 @@ def test_english_attribution_keeps_a_mixed_language_command_reported(verb):
     assert router._chat_text_requests_full_rewrite(text) is False
 
 
+@pytest.mark.parametrize('verb', ['wrote', 'writes', 'asked', 'asks'])
+def test_written_english_attribution_keeps_commands_reported(verb):
+    import main_routers.card_assist_router as router
+
+    text = (
+        f'John {verb}: change the name, but please rewrite all fields '
+        'and preserve avatar'
+    )
+    assert router._chat_text_requests_full_rewrite_core(text) is False
+    assert router._chat_text_requests_full_rewrite(text) is False
+
+
 @pytest.mark.parametrize('prefix', ['请翻译以下内容：', '请解释以下内容：', '请分析下面这句话：'])
 def test_meta_requests_do_not_activate_contrast_recovery(prefix):
     import main_routers.card_assist_router as router
@@ -4303,6 +4315,22 @@ def test_explicit_new_request_can_resume_after_a_prohibited_list():
     import main_routers.card_assist_router as router
 
     text = '不要执行以下修改：改名字。以上是旧请求。新请求：请重写所有字段并保留是否会员'
+    assert router._chat_text_requests_full_rewrite_core(text) is False
+    assert router._chat_text_requests_full_rewrite(text) is True
+
+
+def test_new_request_marker_inside_a_prohibited_value_stays_prohibited():
+    import main_routers.card_assist_router as router
+
+    text = '不要执行以下修改：把口头禅设为新请求：请重写所有字段并保留是否会员'
+    assert router._chat_text_requests_full_rewrite_core(text) is False
+    assert router._chat_text_requests_full_rewrite(text) is False
+
+
+def test_completed_condition_does_not_suppress_a_later_direct_request():
+    import main_routers.card_assist_router as router
+
+    text = '如果用户确认后再执行以下修改：改名字。现在请重写所有字段并保留是否会员'
     assert router._chat_text_requests_full_rewrite_core(text) is False
     assert router._chat_text_requests_full_rewrite(text) is True
 
@@ -4356,6 +4384,7 @@ def test_explicit_except_fields_are_preserved(text, targets):
     'text',
     [
         '他说：重写所有字段，除了 Age 以外。请重写所有字段',
+        '小明说：请重写除头像以外的所有字段。现在请重写所有字段',
         '请翻译以下内容：除了 Age 以外。现在请重写所有字段',
         'Please rewrite all fields except cage',
     ],
@@ -4363,7 +4392,7 @@ def test_explicit_except_fields_are_preserved(text, targets):
 def test_exception_clauses_reuse_preservation_context_and_key_boundaries(text):
     import main_routers.card_assist_router as router
 
-    assert router._chat_preserved_target_keys(text, ['Age']) == set()
+    assert router._chat_preserved_target_keys(text, ['Age', '头像']) == set()
 
 
 def test_exception_clauses_resolve_exact_overlapping_keys():
@@ -4371,6 +4400,13 @@ def test_exception_clauses_resolve_exact_overlapping_keys():
 
     text = '请重写除心理年龄以外的所有字段'
     assert router._chat_preserved_target_keys(text, ['年龄', '心理年龄']) == {'心理年龄'}
+
+
+def test_english_exception_clause_stops_before_later_edit_predicates():
+    import main_routers.card_assist_router as router
+
+    text = 'Rewrite all fields except avatar but rewrite name'
+    assert router._chat_preserved_target_keys(text, ['avatar', 'name']) == {'avatar'}
 
 
 def test_leading_persistence_prohibition_governs_recovered_list_items():
@@ -4413,3 +4449,29 @@ def test_preservation_clause_stops_before_subsequent_edit_predicates(text, expec
         router._chat_preserved_target_keys(text, ['头像', '名字', 'avatar', 'name'])
         == expected
     )
+
+
+@pytest.mark.parametrize(
+    'text',
+    [
+        'Rewrite all fields and keep name under 20 characters',
+        '重写所有字段并保持名字简短',
+    ],
+)
+def test_preservation_words_used_as_constraints_do_not_preserve_fields(text):
+    import main_routers.card_assist_router as router
+
+    assert router._chat_preserved_target_keys(text, ['名字', 'name']) == set()
+
+
+@pytest.mark.parametrize(
+    ('text', 'expected'),
+    [
+        ('Rewrite all fields and keep avatar', {'avatar'}),
+        ('重写所有字段并保持头像不变', {'头像'}),
+    ],
+)
+def test_preservation_words_still_preserve_when_no_constraint_tail(text, expected):
+    import main_routers.card_assist_router as router
+
+    assert router._chat_preserved_target_keys(text, ['头像', 'avatar']) == expected
