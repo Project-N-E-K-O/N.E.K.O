@@ -670,6 +670,7 @@
             try {
                 var timedOut = false;
                 var acquisitionGeneration = screenSourceSelectionGeneration;
+                var acquisitionSelectionId = S.selectedScreenSourceId;
                 var newStream = await Promise.race([
                     (async function () {
                         var captureSourceId = selectedSourceId;
@@ -693,6 +694,8 @@
                                 // 直接捕获 "Source not found") 和 Priority 2 的 Electron
                                 // getUserMedia（会跑到 500ms 超时），整条失败链路每次重放。
                                 clearSelectedScreenSource('getSources 未找到该源');
+                                acquisitionGeneration = screenSourceSelectionGeneration;
+                                acquisitionSelectionId = S.selectedScreenSourceId;
                                 var screenSources = currentSources.filter(function (s) { return s.id.startsWith('screen:'); });
                                 if (screenSources.length > 0) {
                                     captureSourceId = screenSources[0].id;
@@ -719,7 +722,7 @@
                             return null;
                         }
                         if (acquisitionGeneration !== screenSourceSelectionGeneration
-                            || S.selectedScreenSourceId !== captureSourceId) {
+                            || S.selectedScreenSourceId !== acquisitionSelectionId) {
                             console.warn('[acquireStream] 来源选择已变化，释放晚到的旧流');
                             stream.getTracks().forEach(function (t) { t.stop(); });
                             return null;
@@ -1483,10 +1486,25 @@
                         && typeof desktopProvider.getSources === 'function') {
                         // 验证选中的源是否仍然存在（窗口可能已关闭）
                         try {
+                            var manualResolutionGeneration = screenSourceSelectionGeneration;
+                            var manualResolutionSourceId = S.selectedScreenSourceId;
+                            var manualResolutionTitle = normalizeScreenSourceTitle(
+                                readRememberedWindowTitle()
+                            );
+                            var manualResolutionEnabled = isScreenSourceTitleMatchEnabled();
                             var currentSources = await desktopProvider.getSources({
                                 types: ['window', 'screen'],
                                 thumbnailSize: { width: 0, height: 0 }
                             });
+                            if (manualResolutionGeneration !== screenSourceSelectionGeneration
+                                || manualResolutionSourceId !== S.selectedScreenSourceId
+                                || manualResolutionTitle !== normalizeScreenSourceTitle(
+                                    readRememberedWindowTitle()
+                                )
+                                || manualResolutionEnabled !== isScreenSourceTitleMatchEnabled()) {
+                                console.warn('[屏幕源] 来源选择已变化，停止过期的屏幕分享启动');
+                                return;
+                            }
                             var titleResolution = reconcileRememberedWindowSource(currentSources);
                             selectedSourceId = S.selectedScreenSourceId;
                             var sourceStillExists = currentSources.some(function (s) { return s.id === selectedSourceId; });
@@ -1557,13 +1575,18 @@
                             }));
                         } catch (captureErr) {
                             if (discardCancelledScreenSharingStart(attempt)) return;
-                            console.warn('[屏幕源] 指定源捕获失败，尝试回退:', captureErr);
+                            console.warn('[屏幕源] 指定源捕获失败:', captureErr);
                             var fallbackSucceeded = false;
 
-                            // 回退策略1: 非 Portal 平台可静默枚举其它全屏源。
-                            // Linux Portal 每次枚举都可能再次弹系统窗口，因此直接进入
-                            // 一次 getDisplayMedia，让用户重新选择来源。
-                            if (!sourceEnumerationMayPrompt) {
+                            // Remember-window is a fail-closed privacy boundary: once
+                            // the named window was resolved, an acquisition failure must
+                            // not silently widen capture to a monitor or unconstrained picker.
+                            if (hasRememberedWindowTitle) {
+                                console.warn('[屏幕源] 记忆窗口捕获失败，停止本次启动而不扩大捕获范围');
+                            } else if (!sourceEnumerationMayPrompt) {
+                                // 回退策略1: 非 Portal 平台可静默枚举其它全屏源。
+                                // Linux Portal 每次枚举都可能再次弹系统窗口，因此直接进入
+                                // 一次 getDisplayMedia，让用户重新选择来源。
                                 try {
                                     var fallbackSources = await desktopProvider.getSources({
                                         types: ['screen'],
@@ -1597,7 +1620,7 @@
                             }
 
                             // 回退策略2: chromeMediaSource 在该系统上完全不可用，降级到 getDisplayMedia
-                            if (!fallbackSucceeded) {
+                            if (!hasRememberedWindowTitle && !fallbackSucceeded) {
                                 if (discardCancelledScreenSharingStart(attempt)) return;
                                 try {
                                     console.log('[屏幕源] chromeMediaSource 不可用，降级到 getDisplayMedia');
