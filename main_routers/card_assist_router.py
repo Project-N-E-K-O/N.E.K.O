@@ -1532,7 +1532,7 @@ _CHAT_ZH_CONTRAST_COMMAND_RE = re.compile(r"^\s*" + _CHAT_ZH_COMMAND_HEAD)
 _CHAT_SCOPED_REPORTED_SPEECH_RE = re.compile(
     r"^\s*(?:[^。，、！？,.!?;；]+?\s*"
     r"(?:(?:说|說|表示|提到|写道|寫道|写着|寫著|记载|記載|注明|回复|回覆|要求)(?:过|過)?"
-    r"|(?i:(?<![A-Za-z])(?:said|says|wrote|writes|asked|asks)(?![A-Za-z])))"
+    r"|(?i:(?<![A-Za-z])(?:said|says|wrote|writes|asked|asks|replied|replies)(?![A-Za-z])))"
     r"|[^。，、！？,.!?;；]+?(?:原话|原話|原文))\s*[：:]?\s*$"
 )
 _CHAT_REQUIREMENT_PHRASE_RE = re.compile(
@@ -1542,7 +1542,7 @@ _CHAT_FIRST_PERSON_REPORTING_RE = re.compile(
     r"^\s*(?:(?:我|我们|我們|咱们|咱們|俺|我的|我们的|我們的)\s*"
     r"(?:(?:想|想要|要|希望|打算|准备|準備)\s*)?"
     r"(?:说|說|表示|提到|写道|寫道|写着|寫著|记载|記載|注明|回复|回覆|要求|原话|原話|原文)"
-    r"|(?i:(?:I|we)\s+(?:said|say|wrote|write|asked|ask)(?![A-Za-z])))"
+    r"|(?i:(?:I|we)\s+(?:said|say|wrote|write|asked|ask|replied|reply)(?![A-Za-z])))"
 )
 _CHAT_FIRST_PERSON_REQUEST_HEAD_RE = re.compile(
     r"^\s*(?:(?:我|我们|我們|咱们|咱們)\s*"
@@ -1613,10 +1613,15 @@ _CHAT_SCOPED_NEW_REQUEST_RE = re.compile(
 )
 _CHAT_SCOPED_META_REQUEST_RE = re.compile(
     r"^\s*(?:(?:请|請|帮我|幫我)\s*)?"
+    r"(?:"
     r"(?:翻译|翻譯|解释|解釋|分析|说明|說明|总结|總結|评估|評估|校对|校對|复述|復述)\s*"
     r"(?:一下\s*)?(?:以下|下面|此)?\s*"
     r"(?:这段|這段|这句话|這句話)?\s*"
-    r"(?:内容|內容|文字|句子|指令|命令|要求|修改)?\s*[：:,，]",
+    r"(?:内容|內容|文字|句子|指令|命令|要求|修改)?\s*[：:,，]"
+    r"|(?i:(?:please\s+)?(?:translate|explain|analy[sz]e|summari[sz]e|"
+    r"evaluate|proofread|repeat)\s+(?:the\s+)?(?:following\s+)?"
+    r"(?:text|content|sentence|instruction|command|request|change)s?\s*[:：])"
+    r")",
 )
 _CHAT_SCOPED_SIGNAL_BRIDGE_RE = re.compile(
     rf"\s*(?:(?:一遍|一次|一下|下|一回)\s*|(?i:the)\s*|"
@@ -2301,7 +2306,20 @@ def _chat_text_requests_full_rewrite_from_scoped_segments(text: str) -> bool:
     if not text:
         return False
     masked = _chat_mask_quoted_spans(text)
-    if _CHAT_SCOPED_META_REQUEST_RE.search(masked):
+    meta_request = _CHAT_SCOPED_META_REQUEST_RE.search(masked)
+    if meta_request:
+        sentence_end = _CHAT_GOVERNING_PROHIBITION_SENTENCE_END_RE.search(
+            masked,
+            meta_request.end(),
+        )
+        if sentence_end is not None:
+            independent_suffix = text[sentence_end.end():]
+            return (
+                _chat_text_requests_full_rewrite_core(independent_suffix)
+                or _chat_text_requests_full_rewrite_from_scoped_segments(
+                    independent_suffix
+                )
+            )
         return False
     prohibition_masked = _chat_mask_assignment_value_before_next_command(text, masked)
     governing_prohibitions = list(
@@ -2653,7 +2671,7 @@ _CHAT_PRESERVATION_CLAUSE_RE = re.compile(
     r"[^。，、！？,.!?;；]*?"
     r"(?=(?:但|但是|可是|不过|不過)\s*(?:重写|重寫|改写|改寫|修改)"
     r"|(?i:\b(?:but|however)\s*(?:rewrite|revise|regenerate|redo|refresh)\b)"
-    r"|[。！？,.!?;；]|$)"
+    r"|[。，、！？,.!?;；]|$)"
 )
 _CHAT_PRESERVATION_EXCEPT_RE = re.compile(
     r"(?:"
@@ -2729,6 +2747,14 @@ def _chat_span_is_quoted(instruction: str, start: int, end: int) -> bool:
     )
 
 
+def _chat_active_request_start(instruction: str) -> int:
+    """Return the start offset after the latest explicit new-request marker."""
+    active_start = 0
+    for match in _CHAT_SCOPED_NEW_REQUEST_RE.finditer(instruction or ""):
+        active_start = match.end()
+    return active_start
+
+
 def _chat_preservation_match_is_constraint(
     clause: str, verb: str, match_end: int
 ) -> bool:
@@ -2751,7 +2777,10 @@ def _chat_preserved_target_keys(
 ) -> set[str]:
     """Return target keys explicitly named in a preservation clause."""
     candidates: list[tuple[str, int, int]] = []
+    active_start = _chat_active_request_start(instruction or "")
     for except_match in _CHAT_PRESERVATION_EXCEPT_RE.finditer(instruction or ""):
+        if except_match.start() < active_start:
+            continue
         if _chat_span_is_quoted(
             instruction or "", except_match.start(), except_match.end()
         ):
@@ -2774,6 +2803,12 @@ def _chat_preserved_target_keys(
             _chat_target_key_matches(except_keys, target_keys, except_start)
         )
     for clause_match in _CHAT_PRESERVATION_CLAUSE_RE.finditer(instruction or ""):
+        if clause_match.start() < active_start:
+            continue
+        if _chat_span_is_quoted(
+            instruction or "", clause_match.start(), clause_match.start() + 1
+        ):
+            continue
         if _chat_preservation_clause_is_meta_request_text(
             instruction or "", clause_match.start()
         ):
