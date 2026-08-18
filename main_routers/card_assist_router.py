@@ -1572,7 +1572,12 @@ _CHAT_GOVERNING_INSTRUCTION_PROHIBITION_RE = re.compile(
     r"|(?:以下|下面|下列|接下来的?|接下來的?)\s*"
     r"(?:修改|操作|指令|命令|要求|内容|內容)\s*"
     r"(?:不要|别|別|请勿|請勿|禁止|不能|不可)\s*"
-    r"(?:执行|執行|遵循|照做|做|采用|採用|应用|應用|保存|儲存|存档|存檔|提交|送出|写入|寫入|(?i:save|submit|commit)))"
+    r"(?:执行|執行|遵循|照做|做|采用|採用|应用|應用|保存|儲存|存档|存檔|提交|送出|写入|寫入|(?i:save|submit|commit))"
+    r"|(?i:\b(?:do\s+not|don't|never)\s+"
+    r"(?:follow|execute|apply|use|adopt)\s+"
+    r"(?:(?:this|that|the|these|those|following)\s+)?"
+    r"(?:instruction|instructions|command|commands|request|requests|"
+    r"change|changes|text|content)))"
 )
 _CHAT_GOVERNING_PROHIBITION_SENTENCE_END_RE = re.compile(r"[。！？.!?;；]+")
 _CHAT_GOVERNING_FOLLOWING_LIST_MARKER_RE = re.compile(
