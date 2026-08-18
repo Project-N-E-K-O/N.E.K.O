@@ -208,7 +208,10 @@ async def test_full_rewrite_completion_excludes_explicitly_preserved_fields(monk
         target_keys=["名字", "是否会员"],
     )
 
-    assert [action["field_key"] for action in actions] == ["名字"]
+    assert [
+        (action["type"], action["field_key"], action.get("value"))
+        for action in actions
+    ] == [("refine_field", "名字", "小明")]
 
 
 @pytest.mark.asyncio
@@ -230,7 +233,13 @@ async def test_full_rewrite_completion_counts_removed_fields_as_handled(monkeypa
         target_keys=["名字", "年龄"],
     )
 
-    assert [action["type"] for action in actions] == ["refine_field", "remove_field"]
+    assert [
+        (action["type"], action["field_key"], action.get("value"))
+        for action in actions
+    ] == [
+        ("refine_field", "名字", "小明"),
+        ("remove_field", "年龄", None),
+    ]
 
 
 @pytest.mark.asyncio
@@ -252,7 +261,10 @@ async def test_full_rewrite_completion_drops_actions_for_preserved_fields(monkey
         target_keys=["名字", "头像"],
     )
 
-    assert [action["field_key"] for action in actions] == ["名字"]
+    assert [
+        (action["type"], action["field_key"], action.get("value"))
+        for action in actions
+    ] == [("refine_field", "名字", "小明")]
 
 
 @pytest.mark.parametrize(
