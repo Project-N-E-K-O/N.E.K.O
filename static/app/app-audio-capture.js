@@ -4119,7 +4119,8 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                     C.DEFAULT_SPEAKER_DEVICE_ID || 'default'
                 ));
 
-                if (!audioOutputs || audioOutputs.length === 0) {
+                var currentAudioOutputs = getCurrentSpeakerOutputs();
+                if (currentAudioOutputs.length === 0) {
                     var noSpeakerItem = document.createElement('div');
                     noSpeakerItem.textContent = window.t ? window.t('speaker.noDevices') : '没有检测到播放设备';
                     Object.assign(noSpeakerItem.style, { padding: '8px 12px', color: 'var(--neko-popup-text-sub)', fontSize: '13px' });
@@ -4132,7 +4133,7 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 Object.assign(sep.style, { height: '1px', backgroundColor: 'var(--neko-popup-separator)', margin: '5px 0' });
                 listBody.appendChild(sep);
 
-                audioOutputs.forEach(function (device, idx) {
+                currentAudioOutputs.forEach(function (device, idx) {
                     var label = device.label || (window.t ? window.t('speaker.deviceLabel', { index: idx + 1 }) : '播放设备 ' + (idx + 1));
                     listBody.appendChild(createSpeakerDeviceOption(label, device.deviceId));
                 });
@@ -4171,6 +4172,12 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 : (audioInputs.find(function (device) { return device.deviceId === S.selectedMicrophoneId; }) || {}).label || deviceButtonLabel;
             var screenButtonLabel = window.t ? window.t('buttons.screenShare') : 'Screen Share';
             var speakerButtonLabel = window.t ? window.t('speaker.title') : '选择播放设备';
+            function getCurrentSpeakerOutputs() {
+                return (cachedSpeakerDevices || audioOutputs || []).filter(function (device) {
+                    return device.deviceId !== 'default'
+                        && device.deviceId !== 'communications';
+                });
+            }
             function getCurrentSpeakerLabel() {
                 if (
                     S.selectedSpeakerId !== (C.DEFAULT_SPEAKER_DEVICE_ID || 'default')
@@ -4182,7 +4189,7 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 }
                 return S.selectedSpeakerId === (C.DEFAULT_SPEAKER_DEVICE_ID || 'default')
                     ? (window.t ? window.t('speaker.defaultDevice') : '系统默认播放设备')
-                    : (audioOutputs.find(function (device) { return device.deviceId === S.selectedSpeakerId; }) || {}).label || speakerButtonLabel;
+                    : (getCurrentSpeakerOutputs().find(function (device) { return device.deviceId === S.selectedSpeakerId; }) || {}).label || speakerButtonLabel;
             }
             var currentSpeakerLabel = getCurrentSpeakerLabel();
 

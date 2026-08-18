@@ -214,6 +214,7 @@ def _install_voice_popover_harness(
 
     let micPermissionGranted = false;
     let cachedMicDevices = null;
+    let cachedSpeakerDevices = null;
     let disposeVoiceRecognitionPopover = null;
     let voiceRecognitionPopoverRenderGeneration = 0;
 
@@ -224,6 +225,9 @@ def _install_voice_popover_harness(
         state: S,
         capturedErrors,
         listenerBalance,
+        setCachedSpeakerDevices(devices) {
+            cachedSpeakerDevices = devices;
+        },
         resolvePermissions() {
             while (mediaResolvers.length) {
                 mediaResolvers.shift().resolve(stream);
@@ -707,6 +711,45 @@ def test_playback_device_action_position_and_pseudo_device_filtering(
     assert result["selectedSpeakerId"] == "speaker-b"
     assert result["summary"] == "Speaker B"
     assert result["summaryLive"] == "polite"
+
+
+@pytest.mark.frontend
+def test_playback_device_summary_uses_the_latest_cached_devices(
+    page: Page,
+) -> None:
+    _install_voice_popover_harness(page, deferred_permission=False)
+
+    result = page.evaluate(
+        """async () => {
+            const test = window.__voicePopoverTest;
+            test.state.selectedSpeakerId = 'restored-speaker';
+            test.state.selectedSpeakerAvailable = false;
+            await window.renderFloatingMicList(test.popup());
+            const summary = test.action('speaker-device').querySelector(
+                '.neko-mic-action-sub-label'
+            );
+            const beforeRestore = summary.textContent;
+            test.setCachedSpeakerDevices([
+                { kind: 'audiooutput', deviceId: 'default', label: 'Default' },
+                {
+                    kind: 'audiooutput',
+                    deviceId: 'restored-speaker',
+                    label: 'Restored Speaker',
+                },
+            ]);
+            test.state.selectedSpeakerAvailable = true;
+            window.dispatchEvent(new CustomEvent('neko:speaker-device-changed'));
+            return {
+                beforeRestore,
+                afterRestore: summary.textContent,
+            };
+        }"""
+    )
+
+    assert result == {
+        "beforeRestore": "speaker.unavailableFallback",
+        "afterRestore": "Restored Speaker",
+    }
 
 
 @pytest.mark.frontend
