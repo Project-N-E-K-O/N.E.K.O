@@ -1662,6 +1662,9 @@ _CHAT_PRESERVATION_ALL_BUT_RE = re.compile(
 _CHAT_PRESERVATION_TARGET_CONJUNCTION_RE = re.compile(
     r"^\s*(?:和|与|與|及|跟|(?i:\band\b))\s*$"
 )
+_CHAT_PRESERVATION_CONTRAST_SPLIT_RE = re.compile(
+    r"(?:但是|可是|不过|不過|但|(?i:\b(?:but|however)\b))"
+)
 _CHAT_GOVERNING_EXECUTION_QUESTION_RE = re.compile(
     r"^\s*(?:(?:请问|請問|你觉得|你覺得|我想知道)\s*)?"
     r"(?:"
@@ -2728,20 +2731,37 @@ async def _complete_full_rewrite_actions(
     return actions[:_CHAT_MAX_ACTIONS]
 
 
+_CHAT_UNCHANGED_PREDICATE_PATTERN = (
+    r"(?:不(?:变|變)|原样|原樣|(?i:unchanged|as\s*-?\s*is|the\s+same|intact))"
+)
+_CHAT_ZH_EDIT_BOUNDARY_VERB_PATTERN = (
+    r"(?:改|修改|更改|重写|重寫|改写|改寫|调整|調整)"
+)
+_CHAT_EN_EDIT_BOUNDARY_VERB_PATTERN = (
+    r"(?i:\b(?:change|update|edit|modify|rewrite|revise|regenerate|redo|refresh)\b)"
+)
+_CHAT_PRESERVATION_ALL_TARGET_RE = re.compile(
+    r"(?i:\b(?:everything|all(?:\s+fields)?)\b)|(?:所有|全部|全[部个個]?)字段"
+)
 _CHAT_PRESERVATION_CLAUSE_RE = re.compile(
     r"(?P<verb>保留|保持|维持|維持|(?i:\b(?:preserve|keep)\b))"
     r"[^。，、！？,.!?;；]*?"
     r"(?=(?:但|但是|可是|不过|不過)\s*[^。，、！？,.!?;；]{0,24}?"
-    r"(?:重写|重寫|改写|改寫|修改)"
-    r"|(?i:\b(?:but|however)\s+[^,.!?;]{0,24}?"
-    r"(?:rewrite|revise|regenerate|redo|refresh)\b)"
-    r"|[。，、！？,.!?;；]|$)"
+    + _CHAT_ZH_EDIT_BOUNDARY_VERB_PATTERN
+    + r"|(?i:\b(?:but|however)\s+[^,.!?;]{0,24}?"
+    + _CHAT_EN_EDIT_BOUNDARY_VERB_PATTERN
+    + r")"
+    + r"|(?:但|但是|可是|不过|不過)\s*[^。，、！？,.!?;；]{0,24}?"
+    r"(?:保留|保持|维持|維持)"
+    + r"|(?i:\b(?:but|however)\s+[^,.!?;]{0,24}?"
+    r"(?:preserve|keep)\b)"
+    + r"|[。，、！？,.!?;；]|$)"
 )
 _CHAT_FIELD_BEFORE_PRESERVATION_RE = re.compile(
     r"(?:^|[。，、！？,.!?;；]|(?:但|但是|可是|不过|不過)\s*)"
     r"(?P<keys>[^。，、！？,.!?;；但]*?)"
     r"(?P<verb>保持|维持|維持|(?i:\bkeep\b))\s*"
-    r"(?:不(?:变|變)|原样|原樣|(?i:unchanged|as\s+is))"
+    + _CHAT_UNCHANGED_PREDICATE_PATTERN
 )
 _CHAT_FIELD_EDIT_PROHIBITION_RE = re.compile(
     r"(?:"
@@ -2757,10 +2777,11 @@ _CHAT_FIELD_EDIT_PROHIBITION_RE = re.compile(
     r"(?P<keys_after>[^。，、！？,.!?;；]+?))"
     r")"
     r"(?=(?:但|但是|可是|不过|不過)\s*[^。，、！？,.!?;；]{0,24}?"
-    r"(?:重写|重寫|改写|改寫|修改)"
-    r"|(?i:\b(?:but|however)\s+[^,.!?;]{0,24}?"
-    r"(?:rewrite|revise|regenerate|redo|refresh)\b)"
-    r"|[。，、！？,.!?;；]|$)"
+    + _CHAT_ZH_EDIT_BOUNDARY_VERB_PATTERN
+    + r"|(?i:\b(?:but|however)\s+[^,.!?;]{0,24}?"
+    + _CHAT_EN_EDIT_BOUNDARY_VERB_PATTERN
+    + r")"
+    + r"|[。，、！？,.!?;；]|$)"
 )
 _CHAT_PRESERVATION_EXCEPT_RE = re.compile(
     r"(?:"
@@ -2775,6 +2796,11 @@ _CHAT_PRESERVATION_NEGATION_RE = re.compile(
     r"(?:再|继续|繼續)?|(?:不想|不打算|不准备|不準備)\s*"
     r"|(?i:\b(?:do\s+not(?:\s+need\s+to)?|don't(?:\s+need\s+to)?|never|not"
     r"|(?:do\s+not|don't)\s+(?:want|plan|intend)\s+to)))\s*$"
+)
+_CHAT_NEGATED_PRESERVATION_DIRECTIVE_RE = re.compile(
+    r"(?:(?:不要|别|別|不必|不用|无需|無需|请勿|請勿)\s*"
+    r"(?:保留|保持|维持|維持)"
+    r"|(?i:\b(?:do\s+not|don't|never)\s+(?:preserve|keep)\b))"
 )
 _CHAT_IDENTIFIER_KEY_RE = re.compile(r"[A-Za-z0-9_]")
 
@@ -2863,7 +2889,10 @@ def _chat_active_request_start(instruction: str) -> int:
 
 
 def _chat_preservation_sentence_has_governing_guard(
-    instruction: str, clause_start: int
+    instruction: str,
+    clause_start: int,
+    *,
+    reset_after_preservation_negation: bool = False,
 ) -> bool:
     """Return whether a preservation phrase is inside a question or condition."""
     sentence_start = 0
@@ -2871,6 +2900,31 @@ def _chat_preservation_sentence_has_governing_guard(
         instruction or "", 0, clause_start
     ):
         sentence_start = reset.end()
+    if reset_after_preservation_negation:
+        sentence_prefix = (instruction or "")[sentence_start:clause_start]
+        contrast_matches = list(
+            _CHAT_PRESERVATION_CONTRAST_SPLIT_RE.finditer(sentence_prefix)
+        )
+        if contrast_matches:
+            contrast = contrast_matches[-1]
+            prior_prefix = sentence_prefix[: contrast.start()]
+            readable_prior = _chat_clause_without_free_choice(
+                _chat_clause_without_quotes(prior_prefix)
+            )
+            if (
+                _CHAT_NEGATED_PRESERVATION_DIRECTIVE_RE.search(prior_prefix)
+                or not (
+                    _CHAT_PRESERVATION_EN_QUESTION_HEAD_RE.search(readable_prior)
+                    or _CHAT_QUESTION_CLAUSE_RE.search(readable_prior)
+                    or _CHAT_GOVERNING_CONDITION_RE.search(readable_prior)
+                    or _CHAT_GOVERNING_EN_CONDITION_RE.search(readable_prior)
+                    or _CHAT_PRESERVATION_ZH_CONDITION_RE.search(readable_prior)
+                    or _CHAT_GOVERNING_INSTRUCTION_PROHIBITION_RE.search(
+                        readable_prior
+                    )
+                )
+            ):
+                sentence_start += contrast.end()
     sentence_end = _CHAT_GOVERNING_PROHIBITION_SENTENCE_END_RE.search(
         instruction or "", clause_start
     )
@@ -2878,6 +2932,14 @@ def _chat_preservation_sentence_has_governing_guard(
         sentence_start:sentence_end.end() if sentence_end else len(instruction or "")
     ]
     readable = _chat_clause_without_free_choice(_chat_clause_without_quotes(sentence))
+    if re.search(
+        r"(?:保留|保持|维持|維持|(?i:\b(?:preserve|keep)\b))"
+        r"[^。，、！？,.!?;；]*?"
+        + _CHAT_UNCHANGED_PREDICATE_PATTERN
+        + r"\s*$",
+        readable,
+    ):
+        return False
     return bool(
         re.search(r"[？?]\s*$", readable)
         or _CHAT_QUESTION_CLAUSE_RE.search(readable)
@@ -2908,15 +2970,23 @@ def _chat_preservation_match_is_constraint(
     """Return whether a keep-style clause describes a rewrite constraint."""
     if verb.lower() not in {"保持", "keep"}:
         return False
-    if re.search(r"(?:不(?:变|變)|原样|原樣|(?i:unchanged|as\s+is))\s*$", clause):
+    if re.search(_CHAT_UNCHANGED_PREDICATE_PATTERN + r"\s*$", clause):
         return False
     suffix = clause[match_end:].strip()
     if not suffix:
         return False
     return not re.match(
-        r"^(?:不(?:变|變)|原样|原樣|(?i:unchanged|as\s+is))\s*$",
+        r"^" + _CHAT_UNCHANGED_PREDICATE_PATTERN + r"\s*$",
         suffix,
     )
+
+
+def _chat_preservation_local_prefix(instruction: str, clause_start: int) -> str:
+    """Return the governing prefix for this preservation directive."""
+    sentence_prefix = _CHAT_CLAUSE_SPLIT_RE.split(
+        (instruction or "")[:clause_start]
+    )[-1]
+    return _CHAT_PRESERVATION_CONTRAST_SPLIT_RE.split(sentence_prefix)[-1]
 
 
 def _chat_preserved_target_keys(
@@ -2981,19 +3051,21 @@ def _chat_preserved_target_keys(
             instruction or "", clause_match.start()
         ):
             continue
-        if _chat_preservation_sentence_has_governing_guard(
+        prefix = _chat_preservation_local_prefix(
             instruction or "", clause_match.start()
-        ):
-            continue
-        prefix = _CHAT_CLAUSE_SPLIT_RE.split(
-            (instruction or "")[:clause_match.start()]
-        )[-1]
+        )
         if _CHAT_PRESERVATION_NEGATION_RE.search(prefix):
             revocations.extend(
                 _chat_target_key_matches(
                     clause_match.group(0), target_keys, clause_match.start()
                 )
             )
+            continue
+        if _chat_preservation_sentence_has_governing_guard(
+            instruction or "",
+            clause_match.start(),
+            reset_after_preservation_negation=True,
+        ):
             continue
         clause = clause_match.group(0)
         if clause_match.group("verb") in {"维持", "維持"} and not re.search(
@@ -3007,6 +3079,20 @@ def _chat_preserved_target_keys(
                 clause[: except_in_clause.start()]
             )
         ):
+            continue
+        all_target_match = _CHAT_PRESERVATION_ALL_TARGET_RE.search(clause)
+        if (
+            all_target_match is not None
+            and not _chat_preservation_match_is_constraint(
+                clause,
+                clause_match.group("verb"),
+                all_target_match.end(),
+            )
+        ):
+            candidates.extend(
+                (key, clause_match.start(), clause_match.end())
+                for key in target_keys
+            )
             continue
         target_matches = sorted(
             _chat_target_key_matches(
@@ -3024,7 +3110,7 @@ def _chat_preserved_target_keys(
             if (
                 _CHAT_PRESERVATION_TARGET_CONJUNCTION_RE.fullmatch(remaining)
                 and re.search(
-                    r"(?:不(?:变|變)|原样|原樣|(?i:unchanged|as\s+is))\s*$",
+                    _CHAT_UNCHANGED_PREDICATE_PATTERN + r"\s*$",
                     clause,
                 )
             ):
@@ -3068,9 +3154,9 @@ def _chat_preserved_target_keys(
             instruction or "", clause_match.start()
         ):
             continue
-        prefix = _CHAT_CLAUSE_SPLIT_RE.split(
-            (instruction or "")[:clause_match.start()]
-        )[-1]
+        prefix = _chat_preservation_local_prefix(
+            instruction or "", clause_match.start()
+        )
         if _CHAT_PRESERVATION_NEGATION_RE.search(prefix):
             continue
         candidates.extend(

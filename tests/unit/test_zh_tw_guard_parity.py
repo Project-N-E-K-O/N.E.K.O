@@ -4687,6 +4687,73 @@ def test_chinese_conjoined_targets_share_unchanged_tail():
 @pytest.mark.parametrize(
     'text',
     [
+        'Rewrite all fields, keep avatar but change name',
+        'Rewrite all fields, keep avatar but update name',
+        'Rewrite all fields, keep avatar but edit name',
+    ],
+)
+def test_preservation_stops_before_contrastive_edit_verbs(text):
+    import main_routers.card_assist_router as router
+
+    assert router._chat_preserved_target_keys(text, ['avatar', 'name']) == {'avatar'}
+
+
+def test_field_edit_prohibition_stops_before_contrastive_adjustment():
+    import main_routers.card_assist_router as router
+
+    text = '请重写所有字段，头像不要改但调整名字'
+    assert router._chat_preserved_target_keys(text, ['头像', '名字']) == {'头像'}
+
+
+def test_later_positive_preservation_survives_earlier_revocation():
+    import main_routers.card_assist_router as router
+
+    text = 'Do not preserve avatar but preserve name; rewrite all fields'
+    assert router._chat_preserved_target_keys(text, ['avatar', 'name']) == {'name'}
+
+
+@pytest.mark.parametrize(
+    'text',
+    [
+        'Rewrite all fields, but keep avatar the same',
+        'Rewrite all fields, but keep avatar intact',
+        'Rewrite all fields, but keep avatar as-is',
+    ],
+)
+def test_equivalent_english_unchanged_predicates_preserve_targets(text):
+    import main_routers.card_assist_router as router
+
+    assert router._chat_preserved_target_keys(text, ['avatar']) == {'avatar'}
+
+
+@pytest.mark.parametrize(
+    ('text', 'targets', 'expected'),
+    [
+        (
+            'Rewrite all fields, but preserve everything',
+            ['avatar', 'name'],
+            {'avatar', 'name'},
+        ),
+        (
+            '请重写所有字段，但保留所有字段',
+            ['头像', '名字'],
+            {'头像', '名字'},
+        ),
+    ],
+)
+def test_collective_preservation_targets_expand_to_all_fields(
+    text,
+    targets,
+    expected,
+):
+    import main_routers.card_assist_router as router
+
+    assert router._chat_preserved_target_keys(text, targets) == expected
+
+
+@pytest.mark.parametrize(
+    'text',
+    [
         '我不想保留头像，请重写所有字段',
         "I don't want to keep avatar; rewrite all fields",
     ],
