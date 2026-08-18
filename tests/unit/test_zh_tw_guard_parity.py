@@ -4314,3 +4314,81 @@ def test_requirement_nouns_do_not_mask_following_direct_commands(prefix):
     text = f'{prefix}请重写所有字段'
     assert router._chat_text_requests_full_rewrite_core(text) is True
     assert router._chat_text_requests_full_rewrite(text) is True
+
+
+def test_a_preposed_execution_question_with_yao_governs_recovered_items():
+    import main_routers.card_assist_router as router
+
+    text = '是否要执行以下修改：先重写名字，然后请重写所有字段并保留是否会员'
+    assert router._chat_text_requests_full_rewrite_core(text) is False
+    assert router._chat_text_requests_full_rewrite(text) is False
+
+
+def test_meta_request_text_does_not_preserve_fields_for_a_later_rewrite():
+    import main_routers.card_assist_router as router
+
+    text = '请翻译以下内容：保留头像。现在请重写所有字段'
+    assert router._chat_preserved_target_keys(text, ['头像', '名字']) == set()
+    assert router._chat_text_requests_full_rewrite(text) is True
+
+
+def test_later_preservation_after_meta_request_text_remains_active():
+    import main_routers.card_assist_router as router
+
+    text = '请翻译以下内容：保留头像。现在请重写所有字段并保留名字'
+    assert router._chat_preserved_target_keys(text, ['头像', '名字']) == {'名字'}
+
+
+@pytest.mark.parametrize(
+    ('text', 'targets'),
+    [
+        ('请重写除头像以外的所有字段', ['头像', '名字']),
+        ('Please rewrite all fields except avatar', ['avatar', 'name']),
+    ],
+)
+def test_explicit_except_fields_are_preserved(text, targets):
+    import main_routers.card_assist_router as router
+
+    assert router._chat_preserved_target_keys(text, targets) == {targets[0]}
+
+
+def test_leading_persistence_prohibition_governs_recovered_list_items():
+    import main_routers.card_assist_router as router
+
+    text = '请不要保存以下修改：先重写名字，然后请重写所有字段并保留是否会员'
+    assert router._chat_text_requests_full_rewrite_core(text) is False
+    assert router._chat_text_requests_full_rewrite(text) is False
+
+
+@pytest.mark.parametrize('boundary', ['but', 'however'])
+def test_english_contrast_boundaries_can_recover_a_following_command(boundary):
+    import main_routers.card_assist_router as router
+
+    text = f'Rewrite name as Alice, {boundary} please rewrite all fields'
+    assert router._chat_text_requests_full_rewrite_core(text) is False
+    assert router._chat_text_requests_full_rewrite(text) is True
+
+
+@pytest.mark.parametrize('meta_verb', ['校对', '复述'])
+def test_proofreading_meta_requests_do_not_activate_contrast_recovery(meta_verb):
+    import main_routers.card_assist_router as router
+
+    text = f'请{meta_verb}以下内容：但是请重写所有字段并保留是否会员'
+    assert router._chat_text_requests_full_rewrite_core(text) is False
+    assert router._chat_text_requests_full_rewrite(text) is False
+
+
+@pytest.mark.parametrize(
+    ('text', 'expected'),
+    [
+        ('请重写所有字段并保留头像但重写名字', {'头像'}),
+        ('Please rewrite all fields and keep avatar but rewrite name', {'avatar'}),
+    ],
+)
+def test_preservation_clause_stops_before_subsequent_edit_predicates(text, expected):
+    import main_routers.card_assist_router as router
+
+    assert (
+        router._chat_preserved_target_keys(text, ['头像', '名字', 'avatar', 'name'])
+        == expected
+    )

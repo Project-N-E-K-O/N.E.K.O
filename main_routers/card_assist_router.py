@@ -2627,10 +2627,15 @@ async def _complete_full_rewrite_actions(
 _CHAT_PRESERVATION_CLAUSE_RE = re.compile(
     r"(?P<verb>保留|保持|维持|維持|(?i:\b(?:preserve|keep)\b))"
     r"[^。，、！？,.!?;；]*?"
-    r"(?=(?:但|但是|可是|不过|不過)\s*(?:重写|重寫|改写|改寫|修改|rewrite|revise|regenerate|redo|refresh)\b|[。！？,.!?;；]|$)"
+    r"(?=(?:但|但是|可是|不过|不過)\s*(?:重写|重寫|改写|改寫|修改)"
+    r"|(?i:\b(?:but|however)\s*(?:rewrite|revise|regenerate|redo|refresh)\b)"
+    r"|[。！？,.!?;；]|$)"
 )
 _CHAT_PRESERVATION_EXCEPT_RE = re.compile(
-    r"(?:除|除了)\s*(?P<keys>[^，。！？；;]+?)\s*(?:以外|之外)"
+    r"(?:"
+    r"(?:除|除了)\s*(?P<keys_zh>[^，。！？；;]+?)\s*(?:以外|之外)"
+    r"|(?i:\bexcept(?:\s+for)?\s+)(?P<keys_en>[^,.!?;]+)"
+    r")"
 )
 _CHAT_PRESERVATION_NEGATION_RE = re.compile(
     r"(?:(?:不要|别|別|不需要|不須要|不|无需|無需|不必|请勿|請勿)\s*"
@@ -2656,19 +2661,34 @@ def _chat_preservation_clause_is_reported(
     )
 
 
+def _chat_preservation_clause_is_meta_request_text(
+    instruction: str, clause_start: int
+) -> bool:
+    """Return whether a preservation clause is the quoted text of a meta request."""
+    meta_request = _CHAT_SCOPED_META_REQUEST_RE.search(instruction or "")
+    if meta_request is None or clause_start < meta_request.end():
+        return False
+    reset = _CHAT_REPORTING_CONTEXT_RESET_RE.search(instruction, meta_request.end())
+    return reset is None or clause_start < reset.end()
+
+
 def _chat_preserved_target_keys(
     instruction: str, target_keys: list[str]
 ) -> set[str]:
     """Return target keys explicitly named in a preservation clause."""
     candidates: list[tuple[str, int, int]] = []
-    meta_request = _CHAT_SCOPED_META_REQUEST_RE.search(instruction or "")
     for except_match in _CHAT_PRESERVATION_EXCEPT_RE.finditer(instruction or ""):
+        except_keys = (
+            except_match.group("keys_zh") or except_match.group("keys_en") or ""
+        )
         for raw_key in target_keys:
             key = str(raw_key)
-            if key and re.search(re.escape(key), except_match.group("keys"), re.IGNORECASE):
+            if key and re.search(re.escape(key), except_keys, re.IGNORECASE):
                 candidates.append((raw_key, except_match.start(), except_match.end()))
     for clause_match in _CHAT_PRESERVATION_CLAUSE_RE.finditer(instruction or ""):
-        if meta_request and clause_match.start() >= meta_request.end():
+        if _chat_preservation_clause_is_meta_request_text(
+            instruction or "", clause_match.start()
+        ):
             continue
         if _chat_preservation_clause_is_reported(
             instruction or "", clause_match.start()
