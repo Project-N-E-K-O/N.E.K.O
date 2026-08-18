@@ -259,9 +259,11 @@ async def test_market_upgrade_preserves_profile_at_recorded_custom_location(
     monkeypatch.setattr(market_bridge, "_verify_sha256_file", lambda *args, **kwargs: "passed")
     monkeypatch.setattr(market_bridge, "_cleanup_download_file", lambda _path: None)
     calls: list[dict[str, Any]] = []
+    upload_calls: list[dict[str, Any]] = []
 
     async def fake_replace(**kwargs: Any) -> SimpleNamespace:
         calls.append(kwargs)
+        await kwargs["install_new"]()
         return SimpleNamespace(
             install_result={"operation": "upgrade"},
             restarted=False,
@@ -270,10 +272,21 @@ async def test_market_upgrade_preserves_profile_at_recorded_custom_location(
         )
 
     monkeypatch.setattr(market_bridge, "replace_plugin", fake_replace)
+    monkeypatch.setattr(
+        market_bridge,
+        "_cli_service",
+        SimpleNamespace(
+            upload_and_install=lambda **kwargs: (
+                upload_calls.append(kwargs) or _async_value({"operation": "upgrade"})
+            )
+        ),
+    )
     await market_bridge._do_upgrade({}, _payload(), {})
 
     assert calls[0]["additional_targets"] == (custom_profile_dir.resolve(),)
     assert calls[0]["preserve_targets"] == (custom_profile_dir.resolve(),)
+    assert upload_calls[0]["profiles_root"] == str(custom_profile_dir.parent)
+    assert upload_calls[0]["_allow_external_profiles_root"] is True
 
 
 @pytest.mark.asyncio

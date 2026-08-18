@@ -2830,6 +2830,7 @@ async def _replace_market_plugin_transaction(
     original_entry_fingerprint: tuple[object, ...],
     installed_package_id: str,
     replace_kwargs: dict[str, Any],
+    rollback_install_source: Any | None = None,
 ) -> Any:
     """Revalidate and replace under the shared plugin filesystem lock."""
     active_entry = manager.find_active_market_entry(expected_plugin_id)
@@ -2845,7 +2846,12 @@ async def _replace_market_plugin_transaction(
             message="plugin installation changed while the package was downloading",
             http_status=409,
         )
-    return await replace_plugin(**replace_kwargs)
+    try:
+        return await replace_plugin(**replace_kwargs)
+    except ReplacePluginError:
+        if rollback_install_source is not None:
+            await rollback_install_source()
+        raise
 
 
 def _market_entry_fingerprint(entry: object) -> tuple[object, ...]:
@@ -2974,6 +2980,7 @@ async def _do_upgrade(
         )
 
         source_write_attempted = False
+        source_restored = True
 
         async def install_new() -> dict[str, object]:
             nonlocal source_write_attempted
@@ -2981,9 +2988,26 @@ async def _do_upgrade(
             return await _cli_service.upload_and_install(
                 filename=_extract_filename(payload.package_url),
                 package_path=str(package_path),
+                profiles_root=str(profile_dir.parent),
+                _allow_external_profiles_root=True,
                 on_conflict="fail",
                 install_source_override=market_override,
             )
+
+        async def rollback_install_source() -> None:
+            nonlocal source_restored
+            restore_source = getattr(mgr, "restore_entry_for_rollback", None)
+            if not source_write_attempted or not callable(restore_source):
+                return
+            try:
+                await asyncio.to_thread(restore_source, entry)
+            except Exception as restore_exc:
+                source_restored = False
+                logger.error(
+                    "market install source rollback failed plugin_id={} err={}",
+                    installed_plugin_id,
+                    restore_exc,
+                )
 
         async def validate_new() -> None:
             actual_plugin_id = _read_plugin_toml_id(plugin_dir / "plugin.toml")
@@ -3029,6 +3053,7 @@ async def _do_upgrade(
                 original_entry=entry,
                 original_entry_fingerprint=entry_fingerprint,
                 installed_package_id=installed_package_id,
+                rollback_install_source=rollback_install_source,
                 replace_kwargs={
                     "layout": resolve_plugin_layout(installed_plugin_id, plugin_dir),
                     "install_new": install_new,
@@ -3043,18 +3068,6 @@ async def _do_upgrade(
                 },
             )
         except ReplacePluginError as exc:
-            source_restored = True
-            restore_source = getattr(mgr, "restore_entry_for_rollback", None)
-            if source_write_attempted and callable(restore_source):
-                try:
-                    await asyncio.to_thread(restore_source, entry)
-                except Exception as restore_exc:
-                    source_restored = False
-                    logger.error(
-                        "market install source rollback failed plugin_id={} err={}",
-                        installed_plugin_id,
-                        restore_exc,
-                    )
             rollback_ok = exc.rollback_status == "completed" and source_restored
             cause_code = exc.cause.code if isinstance(exc.cause, InstallSourceError) else None
             cause_message = (

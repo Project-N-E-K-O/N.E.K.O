@@ -131,12 +131,14 @@ class PluginCliService:
         package: str,
         plugins_root: str | None = None,
         profiles_root: str | None = None,
+        _allow_external_profiles_root: bool = False,
     ) -> dict[str, object]:
         return await asyncio.to_thread(
             self._plan_install_sync,
             package=package,
             plugins_root=plugins_root,
             profiles_root=profiles_root,
+            _allow_external_profiles_root=_allow_external_profiles_root,
         )
 
     @serialized_plugin_operation
@@ -152,11 +154,13 @@ class PluginCliService:
         install_source: Literal["imported"] | None = None,
         confirm_upgrade: bool = False,
         confirmation_token: str | None = None,
+        _allow_external_profiles_root: bool = False,
     ) -> dict[str, object]:
         plan_dict = await self.plan_install(
             package=package,
             plugins_root=plugins_root,
             profiles_root=profiles_root,
+            _allow_external_profiles_root=_allow_external_profiles_root,
         )
         action = str(plan_dict["action"])
         if action == "blocked":
@@ -175,6 +179,7 @@ class PluginCliService:
                 on_conflict=on_conflict,
                 use_staging=use_staging,
                 forced_directory_name=forced_directory_name,
+                _allow_external_profiles_root=_allow_external_profiles_root,
             )
             return await self._record_requested_install_source(
                 install_result=result,
@@ -213,13 +218,17 @@ class PluginCliService:
         )
         target_dir = target_root / directory_name
         profiles_root_path = (
-            _require_within(
-                Path(profiles_root).expanduser().resolve(),
-                policy.package_profiles_root,
-                field="profiles_root",
+            Path(profiles_root).expanduser().resolve()
+            if profiles_root and _allow_external_profiles_root
+            else (
+                _require_within(
+                    Path(profiles_root).expanduser().resolve(),
+                    policy.package_profiles_root,
+                    field="profiles_root",
+                )
+                if profiles_root
+                else policy.package_profiles_root
             )
-            if profiles_root
-            else policy.package_profiles_root
         )
         _require_safe_directory_name(
             str(plan_dict["package_id"]),
@@ -248,6 +257,7 @@ class PluginCliService:
                 on_conflict="fail",
                 use_staging=use_staging,
                 forced_directory_name=forced_directory_name,
+                _allow_external_profiles_root=_allow_external_profiles_root,
             )
 
         async def validate_new() -> None:
@@ -356,6 +366,8 @@ class PluginCliService:
         filename: str,
         content: bytes | None = None,
         package_path: str | None = None,
+        profiles_root: str | None = None,
+        _allow_external_profiles_root: bool = False,
         on_conflict: str = "fail",
         install_source_override: dict[str, Any] | None = None,
     ) -> dict[str, object]:
@@ -430,8 +442,10 @@ class PluginCliService:
             try:
                 install_result = await self.install(
                     package=str(saved["path"]),
+                    profiles_root=profiles_root,
                     on_conflict=on_conflict,
                     use_staging=True,
+                    _allow_external_profiles_root=_allow_external_profiles_root,
                 )
                 unpacked_target_dirs = self._extract_unpack_target_dirs(install_result)
                 unpacked_profile_dirs = self._extract_unpack_profile_dirs(install_result)
@@ -502,7 +516,7 @@ class PluginCliService:
             unpack_result = await self.install(
                 package=saved_path,
                 plugins_root=None,
-                profiles_root=None,
+                profiles_root=profiles_root,
                 on_conflict=on_conflict,
                 use_staging=use_staging,
                 forced_directory_name=(
@@ -510,6 +524,7 @@ class PluginCliService:
                     if isinstance(forced_directory_name, str)
                     else None
                 ),
+                _allow_external_profiles_root=_allow_external_profiles_root,
             )
             unpacked_target_dirs = self._extract_unpack_target_dirs(unpack_result)
             unpacked_profile_dirs = self._extract_unpack_profile_dirs(unpack_result)
@@ -1070,6 +1085,7 @@ class PluginCliService:
         package: str,
         plugins_root: str | None,
         profiles_root: str | None,
+        _allow_external_profiles_root: bool = False,
     ) -> dict[str, object]:
         try:
             policy = self._path_policy()
@@ -1083,13 +1099,17 @@ class PluginCliService:
                 else policy.user_plugins_root
             )
             profiles_root_path = (
-                _require_within(
-                    Path(profiles_root).expanduser().resolve(),
-                    policy.package_profiles_root,
-                    field="profiles_root",
+                Path(profiles_root).expanduser().resolve()
+                if profiles_root and _allow_external_profiles_root
+                else (
+                    _require_within(
+                        Path(profiles_root).expanduser().resolve(),
+                        policy.package_profiles_root,
+                        field="profiles_root",
+                    )
+                    if profiles_root
+                    else policy.package_profiles_root
                 )
-                if profiles_root
-                else policy.package_profiles_root
             )
             plan = self._apply_installed_package_identity(
                 build_install_plan(
@@ -1144,6 +1164,7 @@ class PluginCliService:
         on_conflict: str,
         use_staging: bool = True,
         forced_directory_name: str | None = None,
+        _allow_external_profiles_root: bool = False,
     ) -> dict[str, object]:
         try:
             policy = self._path_policy()
@@ -1155,9 +1176,17 @@ class PluginCliService:
                 else install_plugins_root
             )
             profiles_root_path = (
-                _require_within(Path(profiles_root).expanduser().resolve(), install_profiles_root, field="profiles_root")
-                if profiles_root
-                else install_profiles_root
+                Path(profiles_root).expanduser().resolve()
+                if profiles_root and _allow_external_profiles_root
+                else (
+                    _require_within(
+                        Path(profiles_root).expanduser().resolve(),
+                        install_profiles_root,
+                        field="profiles_root",
+                    )
+                    if profiles_root
+                    else install_profiles_root
+                )
             )
             package_path = self._resolve_package_path(package)
             if use_staging:

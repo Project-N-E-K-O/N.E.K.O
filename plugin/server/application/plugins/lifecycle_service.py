@@ -375,6 +375,8 @@ def _delete_plugin_directory_sync(plugin_dir: Path) -> bool:
 
 
 def _profile_path_from_entry_sync(entry: object, profiles_root: Path) -> Path | None:
+    if getattr(entry, "channel", "") not in {"imported", "market"}:
+        return None
     if getattr(entry, "profile_installed", None) is False:
         return None
     package_id = str(getattr(entry, "package_id", "") or getattr(entry, "plugin_id", ""))

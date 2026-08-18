@@ -86,6 +86,7 @@ class _FakeInstallSourceManager:
         active_profile_dirs: tuple[str, ...] = (),
         active_root_ids: tuple[str, ...] = (),
         active_directory_names: tuple[str, ...] = (),
+        active_channels: tuple[str, ...] = (),
         list_entries_error: Exception | None = None,
     ) -> None:
         self.package_id = package_id
@@ -97,6 +98,7 @@ class _FakeInstallSourceManager:
         self.active_profile_dirs = active_profile_dirs
         self.active_root_ids = active_root_ids
         self.active_directory_names = active_directory_names
+        self.active_channels = active_channels
         self.list_entries_error = list_entries_error
         self.marked_removed: list[Path] = []
 
@@ -146,6 +148,11 @@ class _FakeInstallSourceManager:
                 package_id=package_id,
                 profile_dir=(self.active_profile_dirs[index] if index < len(self.active_profile_dirs) else ""),
                 profile_installed=None,
+                channel=(
+                    self.active_channels[index]
+                    if index < len(self.active_channels)
+                    else "imported"
+                ),
                 root_id=(self.active_root_ids[index] if index < len(self.active_root_ids) else "user"),
                 directory_name=(
                     self.active_directory_names[index]
@@ -2349,6 +2356,32 @@ def test_delete_keeps_profile_shared_by_same_named_plugin_in_another_root(
 
     assert module._stage_orphaned_package_profile_sync(plugin_dir) is None
     assert profile_dir.is_dir()
+
+
+@pytest.mark.plugin_unit
+def test_delete_does_not_treat_manual_plugin_as_package_profile_owner(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    plugin_dir = tmp_path / "imported_plugin"
+    profiles_root = tmp_path / "profiles"
+    profile_dir = profiles_root / "shared_package"
+    profile_dir.mkdir(parents=True)
+    install_source_manager = _FakeInstallSourceManager(
+        package_id="shared_package",
+        profile_dir=str(profile_dir),
+        active_package_ids=("shared_package",),
+        active_profile_dirs=(str(profile_dir),),
+        active_channels=("manual",),
+    )
+    monkeypatch.setattr(module, "get_install_source_manager", lambda: install_source_manager)
+    monkeypatch.setattr(module, "get_user_package_profiles_root", lambda: profiles_root)
+
+    staged_profile = module._stage_orphaned_package_profile_sync(plugin_dir)
+
+    assert staged_profile is not None
+    assert module._finalize_staged_package_profile_sync(staged_profile) == profile_dir
+    assert profile_dir.exists() is False
 
 
 @pytest.mark.plugin_unit
