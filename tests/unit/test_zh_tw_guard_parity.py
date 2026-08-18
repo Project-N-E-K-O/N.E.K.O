@@ -4736,6 +4736,21 @@ def test_except_after_constraint_is_not_preservation_scope():
     assert router._chat_preserved_target_keys(text, ['avatar']) == set()
 
 
+def test_unpunctuated_contrast_constraint_does_not_preserve_except_target():
+    import main_routers.card_assist_router as router
+
+    text = 'Rewrite all fields but make everything concise except avatar'
+    assert router._chat_preserved_target_keys(text, ['avatar']) == set()
+
+
+@pytest.mark.parametrize('connector', ['再', '，再', ',再'])
+def test_consent_condition_allows_optional_comma_only_before_execution(connector):
+    import main_routers.card_assist_router as router
+
+    text = f'请重写整张卡并说明，用户同意后{connector}执行'
+    assert router._chat_text_requests_full_rewrite(text) is False
+
+
 def test_conditional_english_prohibition_does_not_preserve_target():
     import main_routers.card_assist_router as router
 

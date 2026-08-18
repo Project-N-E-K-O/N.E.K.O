@@ -1634,10 +1634,10 @@ _CHAT_SCOPED_SIGNAL_BRIDGE_RE = re.compile(
 _CHAT_GOVERNING_CONDITION_PATTERN = (
     r"(?:(?:如果|假如|若是|要是|倘若|万一|萬一|假若)"
     r"[^。，、！？,.!?;；]*?(?:[，,]\s*)?(?:再|才|就)"
-    r"|只有\s*在?\s*(?:用户|用戶)\s*(?:确认|確認|同意)后\s*才(?:能|可)?"
-    r"|等\s*(?:用户|用戶)\s*(?:确认|確認|同意)后\s*再"
-    r"|(?:用户|用戶)\s*(?:确认|確認|同意)后\s*(?:再|才(?:能|可)?)"
-    r"|(?:用户|用戶)\s*(?:确认|確認|同意)后\s*方可)\s*"
+    r"|只有\s*在?\s*(?:用户|用戶)\s*(?:确认|確認|同意)后\s*[，,]?\s*才(?:能|可)?"
+    r"|等\s*(?:用户|用戶)\s*(?:确认|確認|同意)后\s*[，,]?\s*再"
+    r"|(?:用户|用戶)\s*(?:确认|確認|同意)后\s*[，,]?\s*(?:再|才(?:能|可)?)"
+    r"|(?:用户|用戶)\s*(?:确认|確認|同意)后\s*[，,]?\s*方可)\s*"
     r"(?:执行|執行|应用|應用|采用|採用|进行|進行|"
     + _CHAT_ZH_COMMAND_HEAD
     + r")"
@@ -3063,7 +3063,7 @@ def _chat_preserved_target_keys(
         prefix = _CHAT_CLAUSE_SPLIT_RE.split(
             (instruction or "")[:except_match.start()]
         )[-1]
-        clause_prefix = _CHAT_CLAUSE_SPLIT_RE.split(prefix)[-1]
+        clause_prefix = _CHAT_PRESERVATION_CONTRAST_SPLIT_RE.split(prefix)[-1]
         if _CHAT_PRESERVATION_ALL_BUT_RE.search(prefix):
             except_lookup = {key.casefold() for key, _, _ in except_targets}
             candidates.extend(
