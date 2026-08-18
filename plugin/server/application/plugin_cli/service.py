@@ -530,6 +530,7 @@ class PluginCliService:
                     saved_filename=str(saved["name"]),
                     actual_sha256=actual_sha256,
                     package_id=str(unpack_result.get("package_id") or ""),
+                    profile_dir=str(unpack_result.get("profile_dir") or ""),
                 )
                 return self._compose_install_result(
                     saved=saved,
@@ -777,6 +778,7 @@ class PluginCliService:
         saved_filename: str,
         actual_sha256: str,
         package_id: str,
+        profile_dir: str,
     ) -> dict[str, Any]:
         """Fall back to recording the install as ``channel="imported"``.
 
@@ -793,6 +795,7 @@ class PluginCliService:
                 package_filename=saved_filename,
                 package_sha256=actual_sha256,
                 package_id=package_id,
+                profile_dir=profile_dir,
             )
 
         await asyncio.to_thread(_record)

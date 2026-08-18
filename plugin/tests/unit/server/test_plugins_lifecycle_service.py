@@ -79,6 +79,7 @@ class _FakeInstallSourceManager:
         *,
         package_id: str,
         profile_dir: str = "",
+        profile_installed: bool | None = None,
         channel: str = "imported",
         root_id: str = "user",
         active_package_ids: tuple[str, ...] = (),
@@ -89,6 +90,7 @@ class _FakeInstallSourceManager:
     ) -> None:
         self.package_id = package_id
         self.profile_dir = profile_dir
+        self.profile_installed = profile_installed
         self.channel = channel
         self.root_id = root_id
         self.active_package_ids = active_package_ids
@@ -121,6 +123,7 @@ class _FakeInstallSourceManager:
             package_id=self.package_id,
             plugin_id=directory_path.name,
             profile_dir=self.profile_dir,
+            profile_installed=self.profile_installed,
             channel=self.channel,
             root_id=self.root_id,
             directory_name=directory_path.name,
@@ -142,6 +145,7 @@ class _FakeInstallSourceManager:
             SimpleNamespace(
                 package_id=package_id,
                 profile_dir=(self.active_profile_dirs[index] if index < len(self.active_profile_dirs) else ""),
+                profile_installed=None,
                 root_id=(self.active_root_ids[index] if index < len(self.active_root_ids) else "user"),
                 directory_name=(
                     self.active_directory_names[index]
@@ -2266,6 +2270,60 @@ def test_delete_does_not_infer_profile_ownership_for_manual_plugin(
 
     assert module._stage_orphaned_package_profile_sync(plugin_dir) is None
     assert profile_dir.is_dir()
+
+
+@pytest.mark.plugin_unit
+def test_delete_does_not_infer_profile_ownership_for_new_profileless_package(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    plugin_dir = tmp_path / "profileless_plugin"
+    profiles_root = tmp_path / "profiles"
+    profile_dir = profiles_root / "profileless_package"
+    profile_dir.mkdir(parents=True)
+    install_source_manager = _FakeInstallSourceManager(
+        package_id="profileless_package",
+        profile_installed=False,
+    )
+    monkeypatch.setattr(module, "get_install_source_manager", lambda: install_source_manager)
+    monkeypatch.setattr(module, "get_user_package_profiles_root", lambda: profiles_root)
+
+    assert module._stage_orphaned_package_profile_sync(plugin_dir) is None
+    assert profile_dir.is_dir()
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_delete_plugin_serializes_profile_ownership_transactions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started = asyncio.Event()
+    release = asyncio.Event()
+    calls: list[str] = []
+
+    async def _blocked_delete(_self: object, plugin_id: str) -> dict[str, object]:
+        calls.append(plugin_id)
+        if len(calls) == 1:
+            started.set()
+            await release.wait()
+        return {"plugin_id": plugin_id}
+
+    monkeypatch.setattr(
+        module.PluginLifecycleService,
+        "_delete_plugin_unlocked",
+        _blocked_delete,
+    )
+    service = module.PluginLifecycleService()
+    first = asyncio.create_task(service.delete_plugin("first"))
+    await started.wait()
+    second = asyncio.create_task(service.delete_plugin("second"))
+    await asyncio.sleep(0)
+
+    assert calls == ["first"]
+    release.set()
+    assert await first == {"plugin_id": "first"}
+    assert await second == {"plugin_id": "second"}
+    assert calls == ["first", "second"]
 
 
 @pytest.mark.plugin_unit

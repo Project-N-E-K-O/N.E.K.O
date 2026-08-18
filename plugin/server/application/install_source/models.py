@@ -96,6 +96,11 @@ class LockEntry:
     # Absolute profile location selected at install time. Empty on legacy
     # rows, which use the default profile root and package_id fallback.
     profile_dir: str = ""
+    # ``None`` denotes a legacy row written before profile ownership was
+    # tracked. New package installs write ``True`` only when they unpacked a
+    # profile, so deletion never mistakes a later user-created directory for
+    # package-owned configuration.
+    profile_installed: bool | None = None
 
     @property
     def primary_key(self) -> tuple[str, str]:

@@ -71,6 +71,10 @@ logger = get_logger("server.application.plugins.lifecycle")
 _PLUGIN_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
 _PLUGIN_STARTUP_TIMEOUT_MAX = 300.0
 plugin_registry_service = PluginRegistryService()
+# The profile sharing decision and install-source soft-removal must form one
+# operation.  Serializing deletions prevents two members of the same package
+# from both observing the other as active and orphaning the shared profile.
+_PLUGIN_DELETE_LOCK = asyncio.Lock()
 
 
 def _persist_user_runtime_intent(
@@ -373,6 +377,8 @@ def _delete_plugin_directory_sync(plugin_dir: Path) -> bool:
 
 
 def _profile_path_from_entry_sync(entry: object, profiles_root: Path) -> Path | None:
+    if getattr(entry, "profile_installed", None) is False:
+        return None
     package_id = str(getattr(entry, "package_id", "") or getattr(entry, "plugin_id", ""))
     if not package_id:
         return None
@@ -444,6 +450,8 @@ def _stage_orphaned_package_profile_sync(plugin_dir: Path) -> _StagedPackageProf
     if not package_id:
         return None
     recorded_profile_dir = str(getattr(current_entry, "profile_dir", "") or "")
+    if getattr(current_entry, "profile_installed", None) is False:
+        return None
 
     try:
         profiles_root = get_user_package_profiles_root().resolve()
@@ -1398,6 +1406,11 @@ class PluginLifecycleService:
         }
 
     async def delete_plugin(self, plugin_id: str) -> dict[str, object]:
+        """Delete one plugin while serializing package-profile ownership changes."""
+        async with _PLUGIN_DELETE_LOCK:
+            return await self._delete_plugin_unlocked(plugin_id)
+
+    async def _delete_plugin_unlocked(self, plugin_id: str) -> dict[str, object]:
         plugin_meta = await asyncio.to_thread(_get_plugin_meta_sync, plugin_id)
         if plugin_meta is None:
             raise _to_domain_error(

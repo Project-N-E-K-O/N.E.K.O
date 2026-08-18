@@ -641,6 +641,10 @@ def _parse_entry(  # noqa: C901 — 10-step flow is intentionally explicit
     package_id = raw_package_id.strip() if isinstance(raw_package_id, str) else ""
     raw_profile_dir = raw.get("profile_dir", "")
     profile_dir = raw_profile_dir.strip() if isinstance(raw_profile_dir, str) else ""
+    raw_profile_installed = raw.get("profile_installed")
+    profile_installed = (
+        raw_profile_installed if isinstance(raw_profile_installed, bool) else None
+    )
 
     # —— Timestamps ——
     installed_at = _normalize_ts(raw.get("installed_at"), now=now)
@@ -679,6 +683,7 @@ def _parse_entry(  # noqa: C901 — 10-step flow is intentionally explicit
         source_detail=source_detail,
         package_id=package_id,
         profile_dir=profile_dir,
+        profile_installed=profile_installed,
     )
 
 
@@ -891,6 +896,8 @@ def _serialize_entry_for_json(entry: LockEntry) -> dict[str, Any]:
         out["package_id"] = entry.package_id
     if entry.profile_dir:
         out["profile_dir"] = entry.profile_dir
+    if entry.profile_installed is not None:
+        out["profile_installed"] = entry.profile_installed
 
     # removed_at only present when removed=True.
     if entry.removed:
@@ -1445,6 +1452,7 @@ class InstallSourceManager:
                     source_detail=detail,
                     package_id=package_id,
                     profile_dir=profile_dir,
+                    profile_installed=bool(profile_dir),
                 )
             else:
                 # Idempotent overwrite: preserve installed_at (Req 9.4)
@@ -1460,7 +1468,8 @@ class InstallSourceManager:
                     removed=False,
                     removed_at=None,
                     package_id=package_id or existing.package_id,
-                    profile_dir=profile_dir or existing.profile_dir,
+                    profile_dir=profile_dir,
+                    profile_installed=bool(profile_dir),
                 )
 
             new_lock = self._replace_entry(
@@ -1613,6 +1622,7 @@ class InstallSourceManager:
                     source_detail=detail,
                     package_id=package_id,
                     profile_dir=profile_dir,
+                    profile_installed=bool(profile_dir),
                 )
             else:
                 # Idempotent overwrite: preserve installed_at (Req 10.4)
@@ -1630,7 +1640,8 @@ class InstallSourceManager:
                     removed=False,
                     removed_at=None,
                     package_id=package_id or existing.package_id,
-                    profile_dir=profile_dir or existing.profile_dir,
+                    profile_dir=profile_dir,
+                    profile_installed=bool(profile_dir),
                 )
 
             new_lock = self._replace_entry(
@@ -1770,7 +1781,8 @@ class InstallSourceManager:
                 removed_at=None,
                 source_detail=detail,
                 package_id=package_id or (existing.package_id if existing is not None else ""),
-                profile_dir=profile_dir or (existing.profile_dir if existing is not None else ""),
+                profile_dir=profile_dir,
+                profile_installed=bool(profile_dir),
             )
 
             try:
