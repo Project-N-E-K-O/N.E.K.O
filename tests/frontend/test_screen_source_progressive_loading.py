@@ -547,6 +547,57 @@ def test_window_selection_and_toggle_bound_the_remembered_title(page: Page) -> N
 
 
 @pytest.mark.frontend
+def test_remember_toggle_uses_current_explicit_title_not_hidden_picker(
+    page: Page,
+) -> None:
+    _install_screen_source_harness(page, source_enumeration_may_prompt=True)
+    assert page.evaluate(
+        """async () => window.renderFloatingScreenSourceList(
+            document.getElementById('live2d-popup-screen')
+        )"""
+    ) is True
+
+    result = page.evaluate(
+        """async () => {
+            const hiddenPicker = document.createElement('div');
+            hiddenPicker.style.display = 'none';
+            hiddenPicker.innerHTML = `
+                <button class="screen-source-option"
+                    data-source-id="window:2"
+                    data-source-name="Old Editor"></button>
+            `;
+            document.getElementById('live2d-popup-screen')
+                .insertAdjacentElement('beforebegin', hiddenPicker);
+
+            document.querySelector(
+                '#live2d-popup-screen '
+                + '.screen-source-option[data-source-id="window:2"]'
+            ).click();
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            window.setScreenSourceTitleMatchEnabled(true);
+            const rememberedAfterEnable = window.__storedValues.get(
+                'selectedScreenWindowTitle'
+            );
+            const resolution = window.appScreen.reconcileRememberedWindowSource([
+                { id: 'window:2', name: 'Editor' },
+                { id: 'window:3', name: 'Old Editor' },
+            ]);
+            return {
+                rememberedAfterEnable,
+                status: resolution.status,
+                selectedId: window.appState.selectedScreenSourceId,
+            };
+        }"""
+    )
+
+    assert result == {
+        "rememberedAfterEnable": "Editor",
+        "status": "matched",
+        "selectedId": "window:2",
+    }
+
+
+@pytest.mark.frontend
 def test_screen_source_prompt_provider_skips_thumbnail_reenumeration(
     page: Page,
 ) -> None:
@@ -1936,6 +1987,81 @@ def test_manual_share_rejects_unowned_restored_window_on_prompting_provider(
                         captureCalls.push(
                             constraints.video.mandatory.chromeMediaSourceId
                         );
+                        return unrelatedStream;
+                    },
+                },
+            });
+
+            await window.startScreenSharing();
+            const state = {
+                captureCalls,
+                selectedId: window.appState.selectedScreenSourceId,
+                unrelatedStreamInstalled:
+                    window.appState.screenCaptureStream === unrelatedStream,
+                trackStoppedBeforeCleanup: track.stopped,
+            };
+            await window.stopScreenSharing(true);
+            return state;
+        }"""
+    )
+
+    assert result == {
+        "captureCalls": [],
+        "selectedId": "window:reused",
+        "unrelatedStreamInstalled": False,
+        "trackStoppedBeforeCleanup": False,
+    }
+
+
+@pytest.mark.frontend
+def test_manual_share_rejects_unowned_titleless_window_when_enumeration_fails(
+    page: Page,
+) -> None:
+    _install_screen_source_harness(
+        page,
+        initial_storage={
+            "screenSourceTitleMatchEnabled": "true",
+            "selectedScreenSourceId": "window:reused",
+        },
+    )
+
+    result = page.evaluate(
+        """async () => {
+            document.body.insertAdjacentHTML('beforeend', `
+                <div id="live2d-container"></div>
+                <button id="micButton"></button><button id="muteButton"></button>
+                <button id="screenButton"></button><button id="stopButton" disabled></button>
+                <button id="resetSessionButton"></button>
+            `);
+            window.appState.isRecording = true;
+            window.appState.voiceChatActive = true;
+            window.appState.audioPlayerContext = { state: 'running' };
+            window.__desktopProvider.getSources = async () => {
+                throw new Error('enumeration failed');
+            };
+            const captureCalls = [];
+            const track = {
+                readyState: 'live',
+                stopped: false,
+                stop() { this.stopped = true; this.readyState = 'ended'; },
+                addEventListener() {},
+            };
+            const unrelatedStream = {
+                active: true,
+                getVideoTracks() { return [track]; },
+                getTracks() { return [track]; },
+            };
+            Object.defineProperty(navigator, 'mediaDevices', {
+                configurable: true,
+                value: {
+                    async getUserMedia(constraints) {
+                        captureCalls.push(
+                            constraints.video.mandatory.chromeMediaSourceId
+                        );
+                        return unrelatedStream;
+                    },
+                    async getDisplayMedia() {
+                        captureCalls.push('getDisplayMedia');
                         return unrelatedStream;
                     },
                 },

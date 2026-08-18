@@ -111,13 +111,16 @@
     function rememberCurrentlySelectedWindowFromDom() {
         var selectedId = S.selectedScreenSourceId;
         if (!selectedId || !selectedId.startsWith('window:')) return;
+        if (!currentExplicitScreenSourceSelectionMatches('')) return;
         var options = document.querySelectorAll('.screen-source-option');
         for (var i = 0; i < options.length; i += 1) {
-            if (options[i].dataset.sourceId === selectedId) {
+            if (options[i].dataset.sourceId === selectedId
+                && options[i].getClientRects().length > 0) {
                 storeRememberedWindowTitle(options[i].dataset.sourceName || '');
                 return;
             }
         }
+        storeRememberedWindowTitle(explicitScreenSourceSelectionTitle);
     }
 
     function setScreenSourceTitleMatchEnabled(enabled) {
@@ -1907,7 +1910,10 @@
                                 console.warn('[屏幕源] 来源选择已变化，停止过期的屏幕分享启动');
                                 return;
                             }
-                            if (hasRememberedWindowTitle) {
+                            if (rememberedWindowWasBounded
+                                && !currentExplicitScreenSourceSelectionMatches(
+                                    manualResolutionTitle
+                                )) {
                                 selectedSourceId = null;
                                 rememberedWindowNeedsSelection = true;
                                 console.warn('[屏幕源] 记忆窗口来源验证失败，停止本次启动:', validateErr);
