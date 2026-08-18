@@ -287,6 +287,55 @@ async def test_second_region_and_window_capture_fail_fast_while_region_active():
 
     with pytest.raises(capture_bridge.CaptureBridgeError, match="timeout"):
         await region_task
+
+    assert capture_bridge._snapshot_for_tests()["interactive_capture_active"] is True
+    with pytest.raises(capture_bridge.CaptureBridgeError, match="capture_busy"):
+        await capture_bridge.request_capture_region({}, timeout=0.1)
+    with pytest.raises(capture_bridge.CaptureBridgeError, match="interactive_capture_busy"):
+        await capture_bridge.request_capture_screenshot(
+            {"target_id": "1", "pid": 100, "title": "t"}, timeout=0.1
+        )
+
+    import json
+
+    request = json.loads(sock.sent[-1])
+    capture_bridge.resolve_capture_response(
+        "neko",
+        {"request_id": request["request_id"], "success": False, "canceled": True},
+    )
+    for _ in range(3):
+        await asyncio.sleep(0)
+    assert capture_bridge._snapshot_for_tests()["interactive_capture_active"] is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cancelled_region_wait_stays_busy_until_renderer_reply():
+    sock = _Sock()
+    capture_bridge.mark_capture_client("neko", sock, _payload(True))
+    region_task = asyncio.create_task(
+        capture_bridge.request_capture_region(
+            {"session_timeout_ms": 45000},
+            timeout=1.0,
+        )
+    )
+    await sock.send_event.wait()
+
+    region_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await region_task
+
+    assert capture_bridge._snapshot_for_tests()["interactive_capture_active"] is True
+
+    import json
+
+    request = json.loads(sock.sent[-1])
+    capture_bridge.resolve_capture_response(
+        "neko",
+        {"request_id": request["request_id"], "success": False, "canceled": True},
+    )
+    for _ in range(3):
+        await asyncio.sleep(0)
     assert capture_bridge._snapshot_for_tests()["interactive_capture_active"] is False
 
 

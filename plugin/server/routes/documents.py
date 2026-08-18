@@ -71,7 +71,10 @@ async def _parse_document_form(request: Request) -> FormData:
             detail={"code": "document_too_large"},
         ) from exc
     except MultiPartException as exc:
-        raise HTTPException(status_code=400, detail=exc.message) from exc
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "document_parse_failed"},
+        ) from exc
 
 
 @router.post("/parse")

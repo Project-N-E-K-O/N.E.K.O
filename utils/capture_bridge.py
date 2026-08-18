@@ -90,6 +90,8 @@ _pending_by_client: dict[str, dict[str, asyncio.Future]] = {}
 _capture_semaphore = asyncio.Semaphore(1)
 _interactive_state_lock = asyncio.Lock()
 _interactive_capture_active = False
+_interactive_capture_token: str | None = None
+_background_tasks: set[asyncio.Task] = set()
 
 
 def _coerce_bool(value: Any) -> bool:
@@ -349,7 +351,7 @@ async def request_capture_region(
     selection may be active, and ordinary background captures fail fast while
     its overlay is visible so they cannot accidentally capture that overlay.
     """
-    global _interactive_capture_active
+    global _interactive_capture_active, _interactive_capture_token
 
     if not isinstance(payload, dict):
         raise CaptureBridgeError("region payload must be object")
@@ -372,11 +374,14 @@ async def request_capture_region(
     if preflight_client is None:
         raise CaptureBridgeError("no renderer available")
 
+    capture_token = uuid.uuid4().hex
     async with _interactive_state_lock:
         if _interactive_capture_active:
             raise CaptureBridgeError("capture_busy")
         _interactive_capture_active = True
+        _interactive_capture_token = capture_token
 
+    release_on_return = True
     try:
         async with _capture_semaphore:
             client = _pick_region_capture_client(target_lanlan)
@@ -384,6 +389,7 @@ async def request_capture_region(
                 raise CaptureBridgeError("no renderer available")
             request_id = uuid.uuid4().hex
             loop = asyncio.get_running_loop()
+            overlay_started_at = loop.time()
             future: asyncio.Future = loop.create_future()
             _pending_by_client.setdefault(client.lanlan_name, {})[request_id] = future
             request_payload: dict[str, Any] = {
@@ -400,18 +406,81 @@ async def request_capture_region(
                 raise CaptureBridgeError(f"failed to send request: {exc}") from exc
 
             try:
-                response = await asyncio.wait_for(future, timeout=timeout)
+                response = await asyncio.wait_for(
+                    asyncio.shield(future),
+                    timeout=timeout,
+                )
             except asyncio.TimeoutError as exc:
+                release_on_return = False
+                _retain_region_busy_until_renderer_stops(
+                    capture_token=capture_token,
+                    lanlan_name=client.lanlan_name,
+                    request_id=request_id,
+                    future=future,
+                    session_timeout_seconds=max(
+                        0.0,
+                        session_timeout_ms / 1000 - (loop.time() - overlay_started_at),
+                    ),
+                )
                 raise CaptureBridgeError("renderer response timeout") from exc
+            except asyncio.CancelledError:
+                release_on_return = False
+                _retain_region_busy_until_renderer_stops(
+                    capture_token=capture_token,
+                    lanlan_name=client.lanlan_name,
+                    request_id=request_id,
+                    future=future,
+                    session_timeout_seconds=max(
+                        0.0,
+                        session_timeout_ms / 1000 - (loop.time() - overlay_started_at),
+                    ),
+                )
+                raise
             finally:
-                _pending_by_client.get(client.lanlan_name, {}).pop(request_id, None)
+                if release_on_return:
+                    _pending_by_client.get(client.lanlan_name, {}).pop(request_id, None)
 
             if isinstance(response, dict) and response.get("canceled") is True:
                 return {"success": False, "canceled": True}
             return _validate_response_payload(response)
     finally:
-        async with _interactive_state_lock:
-            _interactive_capture_active = False
+        if release_on_return:
+            await _release_interactive_capture(capture_token)
+
+
+def _retain_region_busy_until_renderer_stops(
+    *,
+    capture_token: str,
+    lanlan_name: str,
+    request_id: str,
+    future: asyncio.Future,
+    session_timeout_seconds: float,
+) -> None:
+    async def wait_for_renderer() -> None:
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(future),
+                timeout=session_timeout_seconds,
+            )
+        except (asyncio.CancelledError, asyncio.TimeoutError, CaptureBridgeError):
+            pass
+        finally:
+            _pending_by_client.get(lanlan_name, {}).pop(request_id, None)
+            await _release_interactive_capture(capture_token)
+
+    task = asyncio.create_task(wait_for_renderer())
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+
+async def _release_interactive_capture(capture_token: str) -> None:
+    global _interactive_capture_active, _interactive_capture_token
+
+    async with _interactive_state_lock:
+        if _interactive_capture_token != capture_token:
+            return
+        _interactive_capture_active = False
+        _interactive_capture_token = None
 
 
 def resolve_capture_response(lanlan_name: str, payload: dict[str, Any]) -> None:
@@ -462,16 +531,21 @@ def _validate_response_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 def _reset_for_tests() -> None:
     """Wipe registry state. Tests only."""
-    global _capture_semaphore, _interactive_state_lock, _interactive_capture_active
+    global _capture_semaphore, _interactive_state_lock
+    global _interactive_capture_active, _interactive_capture_token
     _clients.clear()
     for pendings in list(_pending_by_client.values()):
         for fut in pendings.values():
             if not fut.done():
                 fut.cancel()
     _pending_by_client.clear()
+    for task in list(_background_tasks):
+        task.cancel()
+    _background_tasks.clear()
     _capture_semaphore = asyncio.Semaphore(1)
     _interactive_state_lock = asyncio.Lock()
     _interactive_capture_active = False
+    _interactive_capture_token = None
 
 
 def _snapshot_for_tests() -> dict[str, Any]:

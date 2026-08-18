@@ -186,6 +186,18 @@ async def test_documents_parse_stops_streaming_when_file_part_exceeds_limit():
 
 
 @pytest.mark.unit
+def test_documents_parse_returns_public_code_for_multipart_shape_errors():
+    response = _client(documents_router).post(
+        "/api/documents/parse",
+        data={"unexpected": "field"},
+        files={"file": ("notes.pdf", _blank_pdf_bytes(), "application/pdf")},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == {"code": "document_parse_failed"}
+
+
+@pytest.mark.unit
 def test_documents_parse_allows_loopback_browser_origin():
     # Keep this at route level for the same storage-root isolation guarantee.
     client = TestClient(

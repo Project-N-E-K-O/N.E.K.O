@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import uuid
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -1720,11 +1721,35 @@ class PluginUiQueryService:
                     plugin_id,
                     resolved_action_id,
                 )
-                result = await host.trigger(
-                    resolved_action_id,
-                    dict(args or {}),
-                    timeout=entry_timeout,
+                trigger_args = dict(args or {})
+                raw_context = trigger_args.get("_ctx")
+                trigger_context = (
+                    dict(raw_context) if isinstance(raw_context, Mapping) else {}
                 )
+                hosted_run_id = uuid.uuid4().hex
+                trigger_context["run_id"] = hosted_run_id
+                trigger_args["_ctx"] = trigger_context
+                try:
+                    result = await host.trigger(
+                        resolved_action_id,
+                        trigger_args,
+                        timeout=entry_timeout,
+                    )
+                except asyncio.CancelledError:
+                    cancel_run = getattr(host, "cancel_run", None)
+                    if callable(cancel_run):
+                        try:
+                            await cancel_run(hosted_run_id)
+                        except Exception as cancel_error:
+                            logger.warning(
+                                "Hosted UI action cancellation propagation failed: "
+                                "plugin_id={}, action_id={}, err_type={}, err={}",
+                                plugin_id,
+                                resolved_action_id,
+                                type(cancel_error).__name__,
+                                str(cancel_error),
+                            )
+                    raise
             except PluginExecutionError as exc:
                 message = exc.error if isinstance(exc.error, str) and exc.error else str(exc)
                 logger.warning(
