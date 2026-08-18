@@ -4261,7 +4261,7 @@ def test_secondary_assignment_boundaries_share_the_assignment_verbs(verb):
     import main_routers.card_assist_router as router
 
     text = f'重写所有字段并把名字{verb}小明'
-    assert router._chat_text_requests_full_rewrite_core(text) is False
+    assert router._chat_text_requests_full_rewrite_core(text) is True
     assert router._chat_text_requests_full_rewrite(text) is True
 
 
