@@ -2567,18 +2567,58 @@ async def _complete_full_rewrite_actions(
     return actions[:_CHAT_MAX_ACTIONS]
 
 
+_CHAT_PRESERVATION_CLAUSE_RE = re.compile(
+    r"(?P<verb>保留|保持|维持|維持|(?i:\b(?:preserve|keep)\b))"
+    r"[^。，、！？,.!?;；]*"
+)
+_CHAT_PRESERVATION_NEGATION_RE = re.compile(
+    r"(?:(?:不要|别|別|不|无需|無需|不必|请勿|請勿)\s*"
+    r"(?:再|继续|繼續)?|(?i:\b(?:do\s+not|don't|never|not)))\s*$"
+)
+_CHAT_IDENTIFIER_KEY_RE = re.compile(r"[A-Za-z0-9_]")
+
+
 def _chat_preserved_target_keys(
     instruction: str, target_keys: list[str]
 ) -> set[str]:
     """Return target keys explicitly named in a preservation clause."""
-    clauses = re.findall(
-        r"(?:保留|保持|(?i:\b(?:preserve|keep)\b))[^。，、！？,.!?;；]*",
-        instruction or "",
-    )
+    candidates: list[tuple[str, int, int]] = []
+    for clause_match in _CHAT_PRESERVATION_CLAUSE_RE.finditer(instruction or ""):
+        prefix = _CHAT_CLAUSE_SPLIT_RE.split(
+            (instruction or "")[:clause_match.start()]
+        )[-1]
+        if _CHAT_PRESERVATION_NEGATION_RE.search(prefix):
+            continue
+        clause = clause_match.group(0)
+        if clause_match.group("verb") in {"维持", "維持"} and not re.search(
+            r"不(?:变|變)", clause
+        ):
+            continue
+        for raw_key in target_keys:
+            key = str(raw_key)
+            if not key:
+                continue
+            if _CHAT_IDENTIFIER_KEY_RE.search(key):
+                key_pattern = re.compile(
+                    rf"(?<![A-Za-z0-9_]){re.escape(key)}(?![A-Za-z0-9_])",
+                    re.IGNORECASE,
+                )
+            else:
+                key_pattern = re.compile(re.escape(key))
+            candidates.extend(
+                (raw_key, clause_match.start() + match.start(),
+                 clause_match.start() + match.end())
+                for match in key_pattern.finditer(clause)
+            )
     return {
         key
-        for key in target_keys
-        if any(str(key).casefold() in clause.casefold() for clause in clauses)
+        for key, start, end in candidates
+        if not any(
+            other_start <= start
+            and end <= other_end
+            and (other_start, other_end) != (start, end)
+            for _, other_start, other_end in candidates
+        )
     }
 
 

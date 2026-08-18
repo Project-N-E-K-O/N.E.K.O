@@ -211,6 +211,27 @@ async def test_full_rewrite_completion_excludes_explicitly_preserved_fields(monk
     assert [action["field_key"] for action in actions] == ["名字"]
 
 
+@pytest.mark.parametrize(
+    ('instruction', 'target_keys', 'expected'),
+    [
+        ('Please rewrite all fields and keep the cage clean', ['Age'], set()),
+        ('Please rewrite all fields and preserve the embrace', ['Race'], set()),
+        ('重寫所有欄位並維持頭像不變', ['頭像'], {'頭像'}),
+        ('不要保留头像，重写所有字段', ['头像'], set()),
+        ('重写所有字段并保留心理年龄', ['年龄', '心理年龄'], {'心理年龄'}),
+        (
+            '重写所有字段并保留年龄和心理年龄',
+            ['年龄', '心理年龄'],
+            {'年龄', '心理年龄'},
+        ),
+    ],
+)
+def test_preserved_target_keys_respect_names_scope_and_negation(
+    instruction, target_keys, expected
+):
+    assert car._chat_preserved_target_keys(instruction, target_keys) == expected
+
+
 def test_chat_empty_actions_recovers_actions_without_replacing_reply(monkeypatch):
     monkeypatch.setattr(car, "_reject_untrusted_card_assist", lambda *_args, **_kwargs: None)
 
