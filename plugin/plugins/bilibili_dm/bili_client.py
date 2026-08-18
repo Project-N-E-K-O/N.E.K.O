@@ -10,7 +10,7 @@ import base64
 import json
 import os
 import time
-from collections import deque
+from collections import OrderedDict, deque
 from typing import Any, Callable, Dict, List, Optional
 
 import httpx
@@ -27,6 +27,7 @@ class BiliDMClient:
     NOTIFICATION_MAX_RETRY_ATTEMPTS = 5
     SESSION_RESTART_INITIAL_DELAY_SECONDS = 2
     SESSION_RESTART_MAX_DELAY_SECONDS = 60
+    VIDEO_CONTEXT_CACHE_LIMIT = 200
     BILIBILI_ACCEPT_ENCODING = "gzip, deflate"
 
     def __init__(
@@ -68,7 +69,8 @@ class BiliDMClient:
         self._notification_pending: deque[tuple[str, Dict[str, Any]]] = deque()
         self._notification_backlog_limit = self.NOTIFICATION_BACKLOG_LIMIT
         self._current_uid = str(dedeuserid or "").strip()
-        self._video_info_cache: Dict[int, Dict[str, str]] = {}
+        self._video_info_cache: OrderedDict[int, Dict[str, str]] = OrderedDict()
+        self._video_info_cache_limit = self.VIDEO_CONTEXT_CACHE_LIMIT
         self._user_info_cache: Dict[int, Dict[str, Any]] = {}
         self._message_queue: asyncio.Queue = asyncio.Queue(maxsize=1000)
 
@@ -296,6 +298,7 @@ class BiliDMClient:
             return None
         cached = self._video_info_cache.get(aid)
         if cached is not None:
+            self._video_info_cache.move_to_end(aid)
             return dict(cached)
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
@@ -330,12 +333,27 @@ class BiliDMClient:
                 if isinstance(owner, dict)
                 else "",
             }
-            self._video_info_cache[aid] = context
+            self._cache_video_context(aid, context)
             return dict(context)
         except Exception as exc:
             if self.logger:
                 self.logger.warning(f"获取 B站视频信息失败 aid={aid}: {exc}")
             return None
+
+    def _cache_video_context(self, aid: int, context: Dict[str, str]) -> None:
+        """Keep video contexts bounded while retaining recently used entries."""
+        self._video_info_cache[aid] = context
+        self._video_info_cache.move_to_end(aid)
+        cache_limit = max(
+            1,
+            int(
+                getattr(
+                    self, "_video_info_cache_limit", self.VIDEO_CONTEXT_CACHE_LIMIT
+                )
+            ),
+        )
+        while len(self._video_info_cache) > cache_limit:
+            self._video_info_cache.popitem(last=False)
 
     @staticmethod
     def _notification_identity(item: Dict[str, Any]) -> str:
@@ -931,8 +949,11 @@ class BiliDMClient:
             try:
                 self._message_queue.put_nowait(message)
             except asyncio.QueueFull:
-                # 队列满时丢弃最旧的消息
-                _ = self._message_queue.get_nowait()
+                # 队列满时丢弃最旧的私信，但评论通知的 claim 不能静默
+                # 丢失，须重新进入受限的退避队列。
+                evicted = self._message_queue.get_nowait()
+                if str(evicted.get("notification_identity") or "").strip():
+                    self.retry_comment_notification(evicted)
                 self._message_queue.put_nowait(message)
 
             if self.logger:

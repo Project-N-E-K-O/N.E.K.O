@@ -1530,13 +1530,13 @@ class BiliDMPlugin(NekoPluginBase):
             if permission_level != "admin"
             else ""
         )
-        if permission_level == "admin":
+        if channel_kind == "comment":
+            identity_target = f"- 当前对话对象：{user_title}，这是当前公开评论对象\n"
+        elif permission_level == "admin":
             identity_target = (
                 f"- 当前对话对象：{user_title}（B站UID: {sender_uid}），"
                 "这就是主人/管理员本人\n"
             )
-        elif channel_kind == "comment":
-            identity_target = f"- 当前对话对象：{user_title}，这是当前公开评论对象\n"
         else:
             identity_target = (
                 f"- 当前对话对象：{user_title}（B站UID: {sender_uid}），"

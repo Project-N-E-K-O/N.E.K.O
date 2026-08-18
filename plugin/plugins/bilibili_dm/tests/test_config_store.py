@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections import deque
+from collections import OrderedDict, deque
 from pathlib import Path
 from types import SimpleNamespace
 import tomllib
@@ -988,6 +988,55 @@ async def test_private_and_comment_prompts_are_separate(tmp_path, monkeypatch):
     assert "B站公开评论环境" in comment_prompt
     assert "不是私信对话" in comment_prompt
     assert "B站私聊环境" not in comment_prompt
+
+    admin_comment_prompt = await plugin._build_session_instructions(
+        **{**args, "permission_level": "admin"}, channel_kind="comment"
+    )
+    assert "B站UID: 42" not in admin_comment_prompt
+
+
+def test_video_context_cache_is_bounded_and_keeps_recent_entries():
+    client = object.__new__(BiliDMClient)
+    client._video_info_cache = OrderedDict()
+    client._video_info_cache_limit = 2
+
+    client._cache_video_context(1, {"title": "oldest"})
+    client._cache_video_context(2, {"title": "middle"})
+    assert client._video_info_cache[1]["title"] == "oldest"
+    client._cache_video_context(3, {"title": "newest"})
+
+    assert list(client._video_info_cache) == [2, 3]
+
+
+@pytest.mark.asyncio
+async def test_dm_queue_eviction_retries_claimed_comment_notification():
+    client = object.__new__(BiliDMClient)
+    client._message_queue = asyncio.Queue(maxsize=1)
+    client._notification_inflight = {"comment:1:2:3"}
+    client._notification_retries = {}
+    client._notification_seen = []
+    client._notification_seen_set = set()
+    client._notification_backlog_limit = 500
+    client.logger = None
+    await client._message_queue.put(
+        {
+            "sender_uid": "42",
+            "notification_identity": "comment:1:2:3",
+            "notification_attempt": 0,
+        }
+    )
+    client._get_user_nickname = AsyncMock(return_value="sender")
+    event = SimpleNamespace(
+        sender_uid=7,
+        msg_key=9,
+        timestamp=1,
+        content="private message",
+    )
+
+    await client._enqueue_event(event, "text")
+
+    assert "comment:1:2:3" in client._notification_retries
+    assert client._message_queue.get_nowait()["sender_uid"] == "7"
 
 
 @pytest.mark.asyncio
