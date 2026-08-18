@@ -4712,6 +4712,15 @@ def test_later_positive_preservation_survives_earlier_revocation():
     assert router._chat_preserved_target_keys(text, ['avatar', 'name']) == {'name'}
 
 
+def test_positive_preservation_is_not_guarded_by_later_english_prohibition():
+    import main_routers.card_assist_router as router
+
+    text = 'Rewrite all fields; preserve name but do not change avatar'
+    assert router._chat_preserved_target_keys(text, ['avatar', 'name']) == {
+        'name',
+    }
+
+
 @pytest.mark.parametrize(
     'text',
     [
@@ -4839,6 +4848,30 @@ async def test_preserved_actions_are_filtered_case_insensitively(monkeypatch):
         target_keys=['Nickname'],
     )
     assert actions == []
+
+
+@pytest.mark.asyncio
+async def test_later_remove_action_revokes_preservation_for_same_field(monkeypatch):
+    import main_routers.card_assist_router as router
+
+    async def fail_complete_missing_fields(**kwargs):
+        raise AssertionError('explicit removal should satisfy the target')
+
+    monkeypatch.setattr(
+        router,
+        '_complete_missing_fields_by_refine',
+        fail_complete_missing_fields,
+    )
+    actions = await router._complete_full_rewrite_actions(
+        lang='en',
+        locale_code='en-US',
+        actions=[{'type': 'remove_field', 'field_key': 'avatar'}],
+        user_instruction='Rewrite all fields except avatar, but delete avatar',
+        current_card={'avatar': 'old', 'name': 'old'},
+        current_card_text='avatar: old\nname: old',
+        target_keys=['avatar', 'name'],
+    )
+    assert actions == [{'type': 'remove_field', 'field_key': 'avatar'}]
 
 
 def test_full_rewrite_before_sequential_assignment_remains_active():

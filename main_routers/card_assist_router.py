@@ -2694,6 +2694,7 @@ async def _complete_full_rewrite_actions(
             for action in actions
             if str(action.get("field_key") or "").strip().casefold()
             not in preserved_lookup
+            or str(action.get("type") or "").strip() == "remove_field"
         ]
     present = {
         str(a.get("field_key") or "").strip()
@@ -2892,6 +2893,7 @@ def _chat_preservation_sentence_has_governing_guard(
     instruction: str,
     clause_start: int,
     *,
+    scope_end: int | None = None,
     reset_after_preservation_negation: bool = False,
 ) -> bool:
     """Return whether a preservation phrase is inside a question or condition."""
@@ -2928,8 +2930,11 @@ def _chat_preservation_sentence_has_governing_guard(
     sentence_end = _CHAT_GOVERNING_PROHIBITION_SENTENCE_END_RE.search(
         instruction or "", clause_start
     )
+    sentence_limit = scope_end if scope_end is not None else len(instruction or "")
+    if sentence_end is not None:
+        sentence_limit = min(sentence_limit, sentence_end.end())
     sentence = (instruction or "")[
-        sentence_start:sentence_end.end() if sentence_end else len(instruction or "")
+        sentence_start:sentence_limit
     ]
     readable = _chat_clause_without_free_choice(_chat_clause_without_quotes(sentence))
     if re.search(
@@ -3012,7 +3017,7 @@ def _chat_preserved_target_keys(
         ):
             continue
         if _chat_preservation_sentence_has_governing_guard(
-            instruction or "", except_match.start()
+            instruction or "", except_match.start(), scope_end=except_match.end()
         ):
             continue
         except_keys = (
@@ -3064,6 +3069,7 @@ def _chat_preserved_target_keys(
         if _chat_preservation_sentence_has_governing_guard(
             instruction or "",
             clause_match.start(),
+            scope_end=clause_match.end(),
             reset_after_preservation_negation=True,
         ):
             continue
@@ -3151,7 +3157,7 @@ def _chat_preserved_target_keys(
         ):
             continue
         if _chat_preservation_sentence_has_governing_guard(
-            instruction or "", clause_match.start()
+            instruction or "", clause_match.start(), scope_end=clause_match.end()
         ):
             continue
         prefix = _chat_preservation_local_prefix(
@@ -3183,7 +3189,7 @@ def _chat_preserved_target_keys(
             continue
         if (
             _chat_preservation_sentence_has_governing_guard(
-                instruction or "", clause_match.start()
+                instruction or "", clause_match.start(), scope_end=clause_match.end()
             )
             and (
                 clause_match.group("keys_after") is None
