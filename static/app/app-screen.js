@@ -1910,10 +1910,7 @@
                                 console.warn('[屏幕源] 来源选择已变化，停止过期的屏幕分享启动');
                                 return;
                             }
-                            if (rememberedWindowWasBounded
-                                && !currentExplicitScreenSourceSelectionMatches(
-                                    manualResolutionTitle
-                                )) {
+                            if (rememberedWindowWasBounded) {
                                 selectedSourceId = null;
                                 rememberedWindowNeedsSelection = true;
                                 console.warn('[屏幕源] 记忆窗口来源验证失败，停止本次启动:', validateErr);

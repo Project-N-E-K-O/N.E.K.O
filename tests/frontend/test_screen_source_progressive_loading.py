@@ -2089,6 +2089,77 @@ def test_manual_share_rejects_unowned_titleless_window_when_enumeration_fails(
 
 
 @pytest.mark.frontend
+def test_manual_share_fails_closed_when_owned_window_enumeration_fails(
+    page: Page,
+) -> None:
+    _install_screen_source_harness(
+        page,
+        initial_storage={
+            "screenSourceTitleMatchEnabled": "true",
+        },
+    )
+
+    result = page.evaluate(
+        """async () => {
+            document.body.insertAdjacentHTML('beforeend', `
+                <div id="live2d-container"></div>
+                <button id="micButton"></button><button id="muteButton"></button>
+                <button id="screenButton"></button><button id="stopButton" disabled></button>
+                <button id="resetSessionButton"></button>
+            `);
+            window.appState.isRecording = true;
+            window.appState.voiceChatActive = true;
+            window.appState.audioPlayerContext = { state: 'running' };
+            await window.selectScreenSource('window:reused', 'Editor', 'Editor');
+            window.__desktopProvider.getSources = async () => {
+                throw new Error('enumeration failed after source-id reuse');
+            };
+            const captureCalls = [];
+            const track = {
+                readyState: 'live',
+                stopped: false,
+                stop() { this.stopped = true; this.readyState = 'ended'; },
+                addEventListener() {},
+            };
+            const unrelatedStream = {
+                active: true,
+                getVideoTracks() { return [track]; },
+                getTracks() { return [track]; },
+            };
+            Object.defineProperty(navigator, 'mediaDevices', {
+                configurable: true,
+                value: {
+                    async getUserMedia(constraints) {
+                        captureCalls.push(
+                            constraints.video.mandatory.chromeMediaSourceId
+                        );
+                        return unrelatedStream;
+                    },
+                },
+            });
+
+            await window.startScreenSharing();
+            const state = {
+                captureCalls,
+                selectedId: window.appState.selectedScreenSourceId,
+                unrelatedStreamInstalled:
+                    window.appState.screenCaptureStream === unrelatedStream,
+                trackStoppedBeforeCleanup: track.stopped,
+            };
+            await window.stopScreenSharing(true);
+            return state;
+        }"""
+    )
+
+    assert result == {
+        "captureCalls": [],
+        "selectedId": "window:reused",
+        "unrelatedStreamInstalled": False,
+        "trackStoppedBeforeCleanup": False,
+    }
+
+
+@pytest.mark.frontend
 def test_remembered_source_rejection_releases_proactive_cached_stream(
     page: Page,
 ) -> None:
