@@ -5075,6 +5075,15 @@ def test_meta_request_example_does_not_explicitly_remove_preserved_field():
     assert router._chat_instruction_explicitly_removes_field(text, 'Age') is False
 
 
+def test_consent_condition_with_standalone_edit_verb_governs_rewrite():
+    import main_routers.card_assist_router as router
+
+    text = '请重写整张卡并说明，用户同意后再改'
+
+    assert router._chat_text_requests_full_rewrite_core(text) is False
+    assert router._chat_text_requests_full_rewrite(text) is False
+
+
 @pytest.mark.parametrize(
     'text',
     [
