@@ -715,6 +715,21 @@ def test_at_feed_without_at_details_is_not_discarded():
     assert client._is_at_current_user({"item": {}}) is True
 
 
+def test_bilibili_api_transport_explicitly_disables_brotli(monkeypatch):
+    client = object.__new__(BiliDMClient)
+    client.logger = None
+    session = SimpleNamespace(headers={})
+    transport = SimpleNamespace(get_wrapped_session=lambda: session)
+
+    monkeypatch.setattr(
+        "bilibili_api.utils.network.get_client", lambda: transport
+    )
+
+    client._disable_brotli_for_bilibili_api()
+
+    assert session.headers["Accept-Encoding"] == "gzip, deflate"
+
+
 @pytest.mark.asyncio
 async def test_permission_change_invalidates_all_user_sessions(tmp_path):
     plugin = make_plugin(tmp_path)

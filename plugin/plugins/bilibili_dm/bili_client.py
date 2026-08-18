@@ -27,6 +27,7 @@ class BiliDMClient:
     NOTIFICATION_MAX_RETRY_ATTEMPTS = 5
     SESSION_RESTART_INITIAL_DELAY_SECONDS = 2
     SESSION_RESTART_MAX_DELAY_SECONDS = 60
+    BILIBILI_ACCEPT_ENCODING = "gzip, deflate"
 
     def __init__(
         self,
@@ -86,6 +87,7 @@ class BiliDMClient:
             )
 
         try:
+            self._disable_brotli_for_bilibili_api()
             # DedeUserID 是可选提示，不能当作当前 SESSDATA 所属账号的权威值。
             # 每次连接都向 B站重新确认，避免替换 Cookie 后沿用旧账号 UID。
             await self._resolve_current_uid(force=True)
@@ -188,6 +190,17 @@ class BiliDMClient:
         if self._credential.dedeuserid:
             cookies["DedeUserID"] = self._credential.dedeuserid
         return cookies
+
+    def _disable_brotli_for_bilibili_api(self) -> None:
+        """Prevent bilibili-api's shared transport from negotiating Brotli."""
+        try:
+            from bilibili_api.utils.network import get_client
+
+            session = get_client().get_wrapped_session()
+            session.headers["Accept-Encoding"] = self.BILIBILI_ACCEPT_ENCODING
+        except Exception as exc:
+            if self.logger:
+                self.logger.warning(f"设置 B站请求 Accept-Encoding 失败: {exc}")
 
     async def _resolve_current_uid(self, *, force: bool = False) -> bool:
         """解析当前登录账号 UID；通知处理依赖它来排除账号自身。"""
@@ -293,6 +306,7 @@ class BiliDMClient:
                     headers={
                         "Referer": "https://www.bilibili.com/",
                         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36",
+                        "Accept-Encoding": self.BILIBILI_ACCEPT_ENCODING,
                     },
                 )
             response.raise_for_status()
@@ -606,6 +620,7 @@ class BiliDMClient:
                 headers={
                     "Referer": "https://message.bilibili.com/",
                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36",
+                    "Accept-Encoding": self.BILIBILI_ACCEPT_ENCODING,
                 },
             )
             response.raise_for_status()
@@ -962,6 +977,7 @@ class BiliDMClient:
                     cookies=self._cookies(),
                     headers={
                         "Referer": "https://www.bilibili.com",
+                        "Accept-Encoding": self.BILIBILI_ACCEPT_ENCODING,
                         "User-Agent": (
                             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                             "AppleWebKit/537.36 (KHTML, like Gecko) "
