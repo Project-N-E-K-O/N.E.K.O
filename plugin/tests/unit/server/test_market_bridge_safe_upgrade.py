@@ -110,6 +110,52 @@ async def test_market_upgrade_delegates_file_replacement_to_shared_transaction(
 
 
 @pytest.mark.asyncio
+async def test_market_upgrade_holds_operation_lock_for_entire_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugins_root = tmp_path / "plugins"
+    profiles_root = tmp_path / "profiles"
+    plugin_dir = plugins_root / "demo"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "plugin.toml").write_text("id = 'demo'\n", encoding="utf-8")
+    package_path = tmp_path / "demo.neko-plugin"
+    package_path.write_bytes(b"package")
+
+    _configure_paths(monkeypatch, plugins_root=plugins_root, profiles_root=profiles_root)
+    monkeypatch.setattr(market_bridge, "_download_package", lambda _url, _task: _async_value(package_path))
+    monkeypatch.setattr(market_bridge, "_verify_sha256_file", lambda *args, **kwargs: "passed")
+    monkeypatch.setattr(market_bridge, "_cleanup_download_file", lambda _path: None)
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    calls: list[dict[str, Any]] = []
+
+    async def blocked_replace(**kwargs: Any) -> SimpleNamespace:
+        calls.append(kwargs)
+        if len(calls) == 1:
+            entered.set()
+            await release.wait()
+        return SimpleNamespace(
+            install_result={"operation": "upgrade"},
+            restarted=False,
+            rollback_status="not_needed",
+            backup_dir=tmp_path / "backup",
+        )
+
+    monkeypatch.setattr(market_bridge, "replace_plugin", blocked_replace)
+    first = asyncio.create_task(market_bridge._do_upgrade({}, _payload(), {}))
+    await entered.wait()
+    second = asyncio.create_task(market_bridge._do_upgrade({}, _payload(), {}))
+    await asyncio.sleep(0)
+    assert len(calls) == 1
+
+    release.set()
+    await asyncio.gather(first, second)
+    assert len(calls) == 2
+
+
+@pytest.mark.asyncio
 async def test_market_upgrade_rolls_back_plugin_profile_with_plugin_directory(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

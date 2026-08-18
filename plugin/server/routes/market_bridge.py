@@ -41,6 +41,7 @@ from plugin.server.application.install_source import (
 )
 from plugin.server.application.plugin_cli import PluginCliService
 from plugin.server.application.plugin_cli.paths import PluginCliPathPolicy
+from plugin.server.application.plugins.operation_lock import serialized_plugin_operation
 from plugin.server.application.plugins.upgrade_support import (
     ReplacePluginError,
     plugin_is_running,
@@ -2812,6 +2813,7 @@ async def _do_install(
         task["install_source_warning"] = result["install_source_warning"]
 
 
+@serialized_plugin_operation
 async def _do_upgrade(
     task: dict[str, Any],
     payload: MarketInstallRequest,
