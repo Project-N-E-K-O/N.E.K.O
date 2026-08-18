@@ -1072,6 +1072,140 @@ def test_permission_enumeration_cannot_overwrite_a_newer_devicechange_result(
 
 
 @pytest.mark.frontend
+def test_newer_enumeration_reconciles_after_an_older_route_is_blocked(
+    page: Page,
+) -> None:
+    device_change_source = _device_change_source()
+    page.set_content("<main>media enumeration reconciliation ownership harness</main>")
+    page.add_script_tag(
+        content=(
+            r"""
+            (() => {
+                const pendingEnumerations = [];
+                const reconcileCalls = [];
+                let deviceChangeListener = null;
+                let releaseFirstReconciliation;
+                const firstReconciliationGate = new Promise((resolve) => {
+                    releaseFirstReconciliation = resolve;
+                });
+                let reconciliationTail = Promise.resolve();
+                let effectiveDevices = [];
+                Object.defineProperty(navigator, 'mediaDevices', {
+                    configurable: true,
+                    value: {
+                        async getUserMedia() {
+                            return { getTracks: () => [{ stop() {} }] };
+                        },
+                        enumerateDevices() {
+                            return new Promise((resolve) => {
+                                pendingEnumerations.push(resolve);
+                            });
+                        },
+                        addEventListener(type, listener) {
+                            if (type === 'devicechange') deviceChangeListener = listener;
+                        },
+                    },
+                });
+                var micPermissionGranted = false;
+                var cachedMicDevices = null;
+                var cachedSpeakerDevices = null;
+                var mediaDeviceChangeGeneration = 0;
+                var mediaDeviceEnumerationGeneration = 0;
+                var latestMediaDeviceEnumerationPromise = Promise.resolve(null);
+                window.reconcileSelectedSpeakerDevices = (devices) => {
+                    const deviceIds = devices.map((device) => device.deviceId);
+                    const operation = reconciliationTail.then(async () => {
+                        reconcileCalls.push(deviceIds);
+                        if (reconcileCalls.length === 1) {
+                            await firstReconciliationGate;
+                        }
+                        effectiveDevices = deviceIds;
+                    });
+                    reconciliationTail = operation.catch(() => {});
+                    return operation;
+                };
+                window.renderFloatingMicList = async () => true;
+                __DEVICE_CHANGE_SOURCE__
+                window.__mediaReconciliationTest = {
+                    startPermission: () => ensureMicrophonePermission(),
+                    emitDeviceChange: () => deviceChangeListener(),
+                    pendingCount: () => pendingEnumerations.length,
+                    reconcileCount: () => reconcileCalls.length,
+                    resolve(index, devices) {
+                        pendingEnumerations[index](devices);
+                    },
+                    releaseFirstReconciliation() {
+                        releaseFirstReconciliation();
+                    },
+                    result: () => ({
+                        microphones: (cachedMicDevices || []).map(
+                            (device) => device.deviceId
+                        ),
+                        speakers: (cachedSpeakerDevices || []).map(
+                            (device) => device.deviceId
+                        ),
+                        reconcileCalls: reconcileCalls.slice(),
+                        effectiveDevices: effectiveDevices.slice(),
+                    }),
+                };
+            })();
+            """.replace("__DEVICE_CHANGE_SOURCE__", device_change_source)
+        )
+    )
+
+    result = page.evaluate(
+        """async () => {
+            const test = window.__mediaReconciliationTest;
+            const waitFor = async (predicate, message) => {
+                for (let attempt = 0; attempt < 1000; attempt += 1) {
+                    if (predicate()) return;
+                    await new Promise((resolve) => setTimeout(resolve, 0));
+                }
+                throw new Error(message);
+            };
+
+            const deviceChange = test.emitDeviceChange();
+            await waitFor(
+                () => test.pendingCount() >= 1,
+                'expected the devicechange enumeration'
+            );
+            test.resolve(0, [
+                { kind: 'audioinput', deviceId: 'mic-old' },
+                { kind: 'audiooutput', deviceId: 'default' },
+            ]);
+            await waitFor(
+                () => test.reconcileCount() === 1,
+                'expected the older reconciliation to block'
+            );
+
+            const permission = test.startPermission();
+            await waitFor(
+                () => test.pendingCount() >= 2,
+                'expected the newer permission enumeration'
+            );
+            test.resolve(1, [
+                { kind: 'audioinput', deviceId: 'mic-new' },
+                { kind: 'audiooutput', deviceId: 'default' },
+                { kind: 'audiooutput', deviceId: 'preferred-speaker' },
+            ]);
+            test.releaseFirstReconciliation();
+            await Promise.all([deviceChange, permission]);
+            return test.result();
+        }"""
+    )
+
+    assert result == {
+        "microphones": ["mic-new"],
+        "speakers": ["default", "preferred-speaker"],
+        "reconcileCalls": [
+            ["mic-old", "default"],
+            ["mic-new", "default", "preferred-speaker"],
+        ],
+        "effectiveDevices": ["mic-new", "default", "preferred-speaker"],
+    }
+
+
+@pytest.mark.frontend
 def test_voice_action_uses_shared_260ms_hover_collapse(page: Page) -> None:
     _install_voice_popover_harness(page, deferred_permission=False)
     page.evaluate(

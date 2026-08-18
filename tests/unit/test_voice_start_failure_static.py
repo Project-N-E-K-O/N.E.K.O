@@ -339,7 +339,14 @@ def test_mic_capture_failure_restores_composer_without_outer_voice_start_lifecyc
     assert "S.voiceStartPending = false;" not in failure
     assert "window.isMicStarting = false;" not in failure
     assert "const hasOuterVoiceStartLifecycle = !!(S.voiceStartPending || window.isMicStarting);" in failure
-    restore_start = failure.index("if (!hasOuterVoiceStartLifecycle) {")
+    assert (
+        "const ownsPendingMicUi = "
+        "pendingMicStartUiOwnerToken === micStartToken;"
+        in failure
+    )
+    restore_start = failure.index(
+        "if (!hasOuterVoiceStartLifecycle && ownsPendingMicUi) {"
+    )
     throw_index = failure.index("throw err;")
     restore_block = failure[restore_start:throw_index]
     assert "S.isRecording = false;" in restore_block

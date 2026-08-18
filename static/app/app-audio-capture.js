@@ -35,6 +35,12 @@
     // compares equal again and commits -- re-claiming through refreshMicLease()
     // the exact lease this counter exists to protect.
     let micStartGeneration = 0;
+    // Shared microphone controls can be painted before the capture pipeline
+    // commits. Keep exactly one bounded owner token so a stale attempt cannot
+    // restore the composer or clear the recording affordance while a newer
+    // attempt is still pending. The owner is released by that attempt's
+    // finally block on every success, cancellation and failure path.
+    let pendingMicStartUiOwnerToken = null;
     // Device ids are not a sufficient change token: a rapid A -> B -> A
     // sequence ends at the same id while still superseding the in-flight
     // selection attempt. Increment this on every authoritative selection write
@@ -1725,12 +1731,18 @@
         );
     }
 
-    function finishCancelledMicStart(micElement) {
+    function finishCancelledMicStart(micElement, micStartToken) {
         // A newer attempt may already own the shared pipeline and UI. In that
         // case the stale caller must report the live winner without repainting
         // the controls as stopped.
         if (hasLiveCommittedMicrophonePipeline()) {
             return true;
+        }
+        if (
+            pendingMicStartUiOwnerToken !== null
+            && pendingMicStartUiOwnerToken !== micStartToken
+        ) {
+            return false;
         }
         S.isRecording = false;
         window.isRecording = false;
@@ -1913,6 +1925,7 @@
         // getUserMedia() half of the window as well.
         micStartGeneration += 1;
         const micStartToken = micStartGeneration;
+        pendingMicStartUiOwnerToken = micStartToken;
         const _mic = micButton();
         const _mute = muteButton();
         const _screen = screenButton();
@@ -1955,7 +1968,7 @@
                 micStartToken !== micStartGeneration
                 || S.voiceInputRouteBlocked === true
             ) {
-                return finishCancelledMicStart(_mic);
+                return finishCancelledMicStart(_mic, micStartToken);
             }
 
             if (S.audioPlayerContext.state === 'suspended') {
@@ -1964,7 +1977,7 @@
                     micStartToken !== micStartGeneration
                     || S.voiceInputRouteBlocked === true
                 ) {
-                    return finishCancelledMicStart(_mic);
+                    return finishCancelledMicStart(_mic, micStartToken);
                 }
             }
 
@@ -2001,7 +2014,7 @@
                 // getUserMedia. Its pipeline and UI are shared globals, so the
                 // late loser must report the live winner instead of painting
                 // "not recording" over it.
-                return finishCancelledMicStart(_mic);
+                return finishCancelledMicStart(_mic, micStartToken);
             }
             ownStream = microphoneOpenResult.stream;
 
@@ -2050,7 +2063,7 @@
                 // A normal cancellation has no device/worklet error to
                 // propagate, but the outer voice starter must distinguish it
                 // from a committed capture before publishing session success.
-                return finishCancelledMicStart(_mic);
+                return finishCancelledMicStart(_mic, micStartToken);
             }
             if (
                 microphoneOpenResult.fallbackFromMicrophoneId
@@ -2118,11 +2131,12 @@
 
             const hasOuterVoiceStartLifecycle = !!(S.voiceStartPending || window.isMicStarting);
 
-            if (_mic) {
+            const ownsPendingMicUi = pendingMicStartUiOwnerToken === micStartToken;
+            if (_mic && ownsPendingMicUi) {
                 _mic.classList.remove('recording');
                 _mic.classList.remove('active');
             }
-            if (!hasOuterVoiceStartLifecycle) {
+            if (!hasOuterVoiceStartLifecycle && ownsPendingMicUi) {
                 S.isRecording = false;
                 window.isRecording = false;
                 S.voiceChatActive = false;
@@ -2136,6 +2150,10 @@
             }
             stopGameVoiceSttGate({ restoreOrdinaryMic: false });
             throw err;
+        } finally {
+            if (pendingMicStartUiOwnerToken === micStartToken) {
+                pendingMicStartUiOwnerToken = null;
+            }
         }
     }
 
@@ -2715,12 +2733,22 @@
 
     async function enumerateAndCacheMediaDevices() {
         var enumerationGeneration = ++mediaDeviceEnumerationGeneration;
-        var ownEnumerationPromise = navigator.mediaDevices.enumerateDevices().then(function (devices) {
+        var ownEnumerationPromise = navigator.mediaDevices.enumerateDevices().then(async function (devices) {
             if (enumerationGeneration !== mediaDeviceEnumerationGeneration) {
                 return null;
             }
             cachedMicDevices = devices.filter(function (device) { return device.kind === 'audioinput'; });
             cachedSpeakerDevices = devices.filter(function (device) { return device.kind === 'audiooutput'; });
+            // Cache ownership and speaker reconciliation form one transition.
+            // If a newer enumeration starts while this route is queued, it
+            // also queues its own reconciliation on the playback module's
+            // bounded transaction tail and therefore becomes the final route.
+            if (typeof window.reconcileSelectedSpeakerDevices === 'function') {
+                await window.reconcileSelectedSpeakerDevices(devices);
+            }
+            if (enumerationGeneration !== mediaDeviceEnumerationGeneration) {
+                return null;
+            }
             return {
                 devices: devices,
                 generation: enumerationGeneration
@@ -2769,10 +2797,6 @@
             try {
                 var enumerationResult = await enumerateAndCacheMediaDevices();
                 if (deviceChangeGeneration !== mediaDeviceChangeGeneration) return;
-                var devices = enumerationResult.devices;
-                if (typeof window.reconcileSelectedSpeakerDevices === 'function') {
-                    await window.reconcileSelectedSpeakerDevices(devices);
-                }
                 if (
                     deviceChangeGeneration !== mediaDeviceChangeGeneration
                     || enumerationResult.generation !== mediaDeviceEnumerationGeneration

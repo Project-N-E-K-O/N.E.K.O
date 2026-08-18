@@ -274,6 +274,7 @@ function loadModule() {
   // The floating mic button is the observable half of the caller-side UI
   // restore: both the commit path and the unwind path drive it.
   const micButtonStates = [];
+  const composerHiddenStates = [];
   sandbox.window = {
     appState,
     appConst: {},
@@ -284,7 +285,7 @@ function loadModule() {
     showStatusToast(...args) { statusToasts.push(args); }, t: (key) => key,
     localStorage: sandbox.localStorage,
     syncFloatingMicButtonState(on) { micButtonStates.push(on); },
-    syncVoiceChatComposerHidden() {},
+    syncVoiceChatComposerHidden(hidden) { composerHiddenStates.push(hidden); },
   };
   sandbox.globalThis = sandbox;
 
@@ -299,6 +300,7 @@ function loadModule() {
     workletNodes,
     nodes,
     micButtonStates,
+    composerHiddenStates,
     getUserMediaCalls,
     statusToasts,
     removedStorageKeys,
@@ -759,6 +761,35 @@ async function playbackSetupCancellationAvoidsMicrophoneOpenCase() {
          'playback-setup cancellation must restore the microphone UI');
 }
 
+async function stalePlaybackSetupCancellationPreservesNewerPendingUiCase() {
+  const env = loadModule();
+  const release = env.parkAudioPlayerSetup();
+  const olderAttempt = env.mod.startMicCapture();
+  await settle();
+  const newerAttempt = env.mod.startMicCapture();
+  await settle();
+
+  assert(env.composerHiddenStates.length === 2,
+         'both pending starts should claim the shared composer UI');
+  assert(env.composerHiddenStates.every((hidden) => hidden === true),
+         'pending starts must keep the composer hidden before playback setup resolves');
+
+  release();
+  const [olderStarted, newerStarted] = await Promise.all([
+    olderAttempt,
+    newerAttempt,
+  ]);
+
+  assert(olderStarted === false,
+         'the older playback-setup continuation must remain cancelled');
+  assert(newerStarted === true && env.S.isRecording === true,
+         'the newer pending start must commit normally');
+  assert(env.composerHiddenStates.every((hidden) => hidden === true),
+         'the stale cancellation must not restore the newer start\'s composer');
+  assert(env.micButtonStates[env.micButtonStates.length - 1] === true,
+         'the newer committed start must keep the floating microphone UI active');
+}
+
 async function entryTeardownReconcilesIsRecordingCase() {
   // The entry teardown closes the previous pipeline before the token gate. It
   // used to leave S.isRecording true, describing a microphone that no longer
@@ -1163,6 +1194,7 @@ async function fallbackOwnershipChangeDuringWorkletCase() {
   await addModuleFailureCase();
   await stopRecordingCancelsAnInFlightStartCase();
   await playbackSetupCancellationAvoidsMicrophoneOpenCase();
+  await stalePlaybackSetupCancellationPreservesNewerPendingUiCase();
   await entryTeardownReconcilesIsRecordingCase();
   await staleRecordingFlagDoesNotMasqueradeAsWinnerCase();
   await rapidDeviceSwitchRetriesLatestSelectionCase();
