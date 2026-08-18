@@ -322,6 +322,18 @@ function loadModule() {
       getUserMediaGate = parked;
       return release;
     },
+    parkAudioPlayerSetup() {
+      let release;
+      const parked = new Promise((resolve) => { release = resolve; });
+      sandbox.window.ensureAudioPlayerContext = async () => {
+        await parked;
+        if (!appState.audioPlayerContext) {
+          appState.audioPlayerContext = new FakeAudioContext();
+        }
+        return appState.audioPlayerContext;
+      };
+      return release;
+    },
     unparkGetUserMedia() {
       getUserMediaGate = Promise.resolve();
     },
@@ -723,6 +735,26 @@ async function stopRecordingCancelsAnInFlightStartCase() {
   assert(env.S.stream === null, 'a cancelled start must not publish its stream');
   assert(started === false,
          'stopRecording cancellation must propagate to the outer voice starter');
+}
+
+async function playbackSetupCancellationAvoidsMicrophoneOpenCase() {
+  const env = loadModule();
+  const release = env.parkAudioPlayerSetup();
+  const attempt = env.mod.startMicCapture();
+  await settle();
+  assert(env.getUserMediaCalls.length === 0,
+         'microphone acquisition must wait for playback sink setup');
+
+  env.mod.stopRecording({ notifyServer: false });
+  release();
+  const started = await attempt;
+
+  assert(started === false,
+         'a start cancelled during playback setup must remain cancelled');
+  assert(env.getUserMediaCalls.length === 0,
+         'a cancelled playback setup must not open or prompt for the microphone');
+  assert(env.streams.length === 0,
+         'no microphone stream may be created after playback-setup cancellation');
 }
 
 async function entryTeardownReconcilesIsRecordingCase() {
@@ -1128,6 +1160,7 @@ async function fallbackOwnershipChangeDuringWorkletCase() {
   await restartThenFailClosedCase();
   await addModuleFailureCase();
   await stopRecordingCancelsAnInFlightStartCase();
+  await playbackSetupCancellationAvoidsMicrophoneOpenCase();
   await entryTeardownReconcilesIsRecordingCase();
   await staleRecordingFlagDoesNotMasqueradeAsWinnerCase();
   await rapidDeviceSwitchRetriesLatestSelectionCase();

@@ -960,6 +960,7 @@
         "noDevices": "No playback devices detected",
         "switchFailed": "Failed to switch playback device",
         "unavailableFallback": "Selected device unavailable; using system default",
+        "unavailableFallbackFailed": "Selected device unavailable; unable to switch to system default",
         "spatialAudioLabel": "Spatial Audio",
         "spatialAudioHint": "Stereo panning and distance falloff based on the character window's position relative to your primary monitor"
     },

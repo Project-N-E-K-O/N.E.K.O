@@ -1725,6 +1725,32 @@
         );
     }
 
+    function finishCancelledMicStart(micElement) {
+        // A newer attempt may already own the shared pipeline and UI. In that
+        // case the stale caller must report the live winner without repainting
+        // the controls as stopped.
+        if (hasLiveCommittedMicrophonePipeline()) {
+            return true;
+        }
+        S.isRecording = false;
+        window.isRecording = false;
+        if (micElement) {
+            micElement.classList.remove('recording');
+            micElement.classList.remove('active');
+        }
+        const cancelledTextInputArea = document.getElementById('text-input-area');
+        if (cancelledTextInputArea) {
+            cancelledTextInputArea.classList.remove('hidden');
+        }
+        if (typeof window.syncVoiceChatComposerHidden === 'function') {
+            window.syncVoiceChatComposerHidden(false);
+        }
+        if (typeof window.syncFloatingMicButtonState === 'function') {
+            window.syncFloatingMicButtonState(false);
+        }
+        return false;
+    }
+
     async function requestUsableMicrophoneStream(constraints) {
         const stream = await navigator.mediaDevices.getUserMedia(constraints);
         if (hasLiveMicrophoneTrack(stream)) {
@@ -1925,9 +1951,24 @@
                     window.syncAudioGlobals();
                 }
             }
+            if (
+                micStartToken !== micStartGeneration
+                || S.voiceInputRouteBlocked === true
+            ) {
+                // Stop/teardown already restored the UI. A newer start may be
+                // waiting on this same setup, so this stale attempt must not
+                // repaint shared controls before that successor can commit.
+                return hasLiveCommittedMicrophonePipeline();
+            }
 
             if (S.audioPlayerContext.state === 'suspended') {
                 await S.audioPlayerContext.resume();
+                if (
+                    micStartToken !== micStartGeneration
+                    || S.voiceInputRouteBlocked === true
+                ) {
+                    return hasLiveCommittedMicrophonePipeline();
+                }
             }
 
             // 获取麦克风流，使用选择的麦克风设备ID
@@ -1963,26 +2004,7 @@
                 // getUserMedia. Its pipeline and UI are shared globals, so the
                 // late loser must report the live winner instead of painting
                 // "not recording" over it.
-                if (hasLiveCommittedMicrophonePipeline()) {
-                    return true;
-                }
-                S.isRecording = false;
-                window.isRecording = false;
-                if (_mic) {
-                    _mic.classList.remove('recording');
-                    _mic.classList.remove('active');
-                }
-                const cancelledTextInputArea = document.getElementById('text-input-area');
-                if (cancelledTextInputArea) {
-                    cancelledTextInputArea.classList.remove('hidden');
-                }
-                if (typeof window.syncVoiceChatComposerHidden === 'function') {
-                    window.syncVoiceChatComposerHidden(false);
-                }
-                if (typeof window.syncFloatingMicButtonState === 'function') {
-                    window.syncFloatingMicButtonState(false);
-                }
-                return false;
+                return finishCancelledMicStart(_mic);
             }
             ownStream = microphoneOpenResult.stream;
 
@@ -2028,29 +2050,10 @@
                 // global, same as the S.* fields the unwind is careful about,
                 // and painting "not recording" over a window that is recording
                 // is the display-plane half of the same bug.
-                if (hasLiveCommittedMicrophonePipeline()) {
-                    return true;
-                }
-                S.isRecording = false;
-                window.isRecording = false;
-                if (_mic) {
-                    _mic.classList.remove('recording');
-                    _mic.classList.remove('active');
-                }
-                const cancelledTextInputArea = document.getElementById('text-input-area');
-                if (cancelledTextInputArea) {
-                    cancelledTextInputArea.classList.remove('hidden');
-                }
-                if (typeof window.syncVoiceChatComposerHidden === 'function') {
-                    window.syncVoiceChatComposerHidden(false);
-                }
-                if (typeof window.syncFloatingMicButtonState === 'function') {
-                    window.syncFloatingMicButtonState(false);
-                }
                 // A normal cancellation has no device/worklet error to
                 // propagate, but the outer voice starter must distinguish it
                 // from a committed capture before publishing session success.
-                return false;
+                return finishCancelledMicStart(_mic);
             }
             if (
                 microphoneOpenResult.fallbackFromMicrophoneId
@@ -3929,6 +3932,17 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 return option;
             }
 
+            function updateSpeakerOptionSelection() {
+                document.querySelectorAll('.speaker-option').forEach(function (entry) {
+                    var selected = entry.dataset.deviceId === S.selectedSpeakerId;
+                    entry.classList.toggle('selected', selected);
+                    entry.setAttribute('aria-pressed', selected ? 'true' : 'false');
+                    entry.style.background = selected ? 'var(--neko-popup-selected-bg)' : 'transparent';
+                    entry.style.color = selected ? '#4f8cff' : 'var(--neko-popup-text)';
+                    entry.style.fontWeight = selected ? '500' : '400';
+                });
+            }
+
             function createSpeakerDeviceOption(label, deviceId) {
                 var option = document.createElement('button');
                 option.type = 'button';
@@ -3949,14 +3963,7 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                         }
                         var applied = await window.selectSpeakerDevice(deviceId);
                         if (applied === false) return;
-                        document.querySelectorAll('.speaker-option').forEach(function (entry) {
-                            var selected = entry.dataset.deviceId === S.selectedSpeakerId;
-                            entry.classList.toggle('selected', selected);
-                            entry.setAttribute('aria-pressed', selected ? 'true' : 'false');
-                            entry.style.background = selected ? 'var(--neko-popup-selected-bg)' : 'transparent';
-                            entry.style.color = selected ? '#4f8cff' : 'var(--neko-popup-text)';
-                            entry.style.fontWeight = selected ? '500' : '400';
-                        });
+                        updateSpeakerOptionSelection();
                         document.querySelectorAll('[data-neko-mic-main-action="speaker-device"] .neko-mic-action-sub-label').forEach(function (labelEl) {
                             labelEl.textContent = label;
                         });
@@ -4183,6 +4190,11 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                     S.selectedSpeakerId !== (C.DEFAULT_SPEAKER_DEVICE_ID || 'default')
                     && S.selectedSpeakerAvailable === false
                 ) {
+                    if (S.effectiveSpeakerId !== (C.DEFAULT_SPEAKER_DEVICE_ID || 'default')) {
+                        return window.t
+                            ? window.t('speaker.unavailableFallbackFailed')
+                            : '所选设备不可用，且无法切换到系统默认播放设备';
+                    }
                     return window.t
                         ? window.t('speaker.unavailableFallback')
                         : '所选设备不可用，正使用系统默认播放设备';
@@ -4264,6 +4276,7 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 speakerSummary.title = currentSpeakerLabel;
             }
             addVoiceWindowListener('neko:speaker-device-changed', function () {
+                updateSpeakerOptionSelection();
                 if (!speakerSummary) return;
                 var nextLabel = getCurrentSpeakerLabel();
                 speakerSummary.textContent = nextLabel;

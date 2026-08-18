@@ -960,6 +960,7 @@
         "noDevices": "再生デバイスが検出されませんでした",
         "switchFailed": "再生デバイスの切り替えに失敗しました",
         "unavailableFallback": "選択したデバイスを利用できないため、システムのデフォルトを使用中",
+        "unavailableFallbackFailed": "選択したデバイスを利用できず、システムのデフォルトにも切り替えられません",
         "spatialAudioLabel": "空間オーディオ",
         "spatialAudioHint": "キャラクターウィンドウのメインモニターに対する位置からステレオ定位と距離減衰を適用"
     },

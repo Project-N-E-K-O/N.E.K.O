@@ -960,6 +960,7 @@
         "noDevices": "Nenhum dispositivo de reprodução detectado",
         "switchFailed": "Falha ao trocar o dispositivo de reprodução",
         "unavailableFallback": "O dispositivo selecionado está indisponível; usando o padrão do sistema",
+        "unavailableFallbackFailed": "O dispositivo selecionado está indisponível; não foi possível mudar para o padrão do sistema",
         "spatialAudioLabel": "Áudio espacial",
         "spatialAudioHint": "Panorâmica estéreo e atenuação por distância conforme a posição da janela do personagem em relação ao monitor principal"
     },

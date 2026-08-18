@@ -729,6 +729,9 @@ def test_playback_device_summary_uses_the_latest_cached_devices(
                 '.neko-mic-action-sub-label'
             );
             const beforeRestore = summary.textContent;
+            test.state.effectiveSpeakerId = 'restored-speaker';
+            window.dispatchEvent(new CustomEvent('neko:speaker-device-changed'));
+            const failedFallback = summary.textContent;
             test.setCachedSpeakerDevices([
                 { kind: 'audiooutput', deviceId: 'default', label: 'Default' },
                 {
@@ -741,6 +744,7 @@ def test_playback_device_summary_uses_the_latest_cached_devices(
             window.dispatchEvent(new CustomEvent('neko:speaker-device-changed'));
             return {
                 beforeRestore,
+                failedFallback,
                 afterRestore: summary.textContent,
             };
         }"""
@@ -748,8 +752,42 @@ def test_playback_device_summary_uses_the_latest_cached_devices(
 
     assert result == {
         "beforeRestore": "speaker.unavailableFallback",
+        "failedFallback": "speaker.unavailableFallbackFailed",
         "afterRestore": "Restored Speaker",
     }
+
+
+@pytest.mark.frontend
+def test_playback_device_event_refreshes_open_option_selection(
+    page: Page,
+) -> None:
+    _install_voice_popover_harness(page, deferred_permission=False)
+
+    result = page.evaluate(
+        """async () => {
+            const test = window.__voicePopoverTest;
+            await window.renderFloatingMicList(test.popup());
+            test.action('speaker-device').click();
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            test.state.selectedSpeakerId = 'speaker-b';
+            test.state.selectedSpeakerAvailable = true;
+            test.state.effectiveSpeakerId = 'speaker-b';
+            window.dispatchEvent(new CustomEvent('neko:speaker-device-changed'));
+            return Array.from(
+                test.panel('speaker-device').querySelectorAll('.speaker-option')
+            ).map((option) => ({
+                deviceId: option.dataset.deviceId,
+                selected: option.classList.contains('selected'),
+                pressed: option.getAttribute('aria-pressed'),
+            }));
+        }"""
+    )
+
+    assert result == [
+        {"deviceId": "default", "selected": False, "pressed": "false"},
+        {"deviceId": "speaker-a", "selected": False, "pressed": "false"},
+        {"deviceId": "speaker-b", "selected": True, "pressed": "true"},
+    ]
 
 
 @pytest.mark.frontend

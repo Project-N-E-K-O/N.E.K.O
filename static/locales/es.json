@@ -960,6 +960,7 @@
         "noDevices": "No se detectaron dispositivos de reproducción",
         "switchFailed": "No se pudo cambiar el dispositivo de reproducción",
         "unavailableFallback": "El dispositivo seleccionado no está disponible; se usa el predeterminado del sistema",
+        "unavailableFallbackFailed": "El dispositivo seleccionado no está disponible; no se pudo cambiar al predeterminado del sistema",
         "spatialAudioLabel": "Audio espacial",
         "spatialAudioHint": "Paneo estéreo y atenuación por distancia según la posición de la ventana del personaje respecto al monitor principal"
     },

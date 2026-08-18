@@ -960,6 +960,7 @@
         "noDevices": "没有检测到播放设备",
         "switchFailed": "切换播放设备失败",
         "unavailableFallback": "所选设备不可用，正使用系统默认播放设备",
+        "unavailableFallbackFailed": "所选设备不可用，且无法切换到系统默认播放设备",
         "spatialAudioLabel": "空间音频",
         "spatialAudioHint": "根据猫娘窗口相对主屏的位置做立体声与距离衰减"
     },

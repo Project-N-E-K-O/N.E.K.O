@@ -960,6 +960,7 @@
         "noDevices": "沒有檢測到播放裝置",
         "switchFailed": "切換播放裝置失敗",
         "unavailableFallback": "所選裝置無法使用，正使用系統預設播放裝置",
+        "unavailableFallbackFailed": "所選裝置無法使用，且無法切換到系統預設播放裝置",
         "spatialAudioLabel": "空間音訊",
         "spatialAudioHint": "依貓娘視窗相對主螢幕的位置做立體聲與距離衰減"
     },

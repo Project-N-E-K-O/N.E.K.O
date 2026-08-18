@@ -1225,6 +1225,7 @@
                     window.syncAudioGlobals();
                 }
             }
+            if (discardCancelledScreenSharingStart(attempt)) return;
 
             // 如果上下文被暂停，则恢复它
             if (S.audioPlayerContext.state === 'suspended') {
