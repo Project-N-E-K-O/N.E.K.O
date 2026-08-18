@@ -817,6 +817,53 @@ async def test_failed_comment_generation_schedules_notification_retry(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_message_processor_reserves_capacity_before_spawning_handlers(tmp_path):
+    plugin = make_plugin(tmp_path)
+    plugin._running = True
+    plugin._max_concurrent_messages = 1
+    plugin._message_concurrency = asyncio.Semaphore(1)
+    plugin.permission_mgr.add_user("42", "trusted")
+
+    handler_started = asyncio.Event()
+    keep_handler_running = asyncio.Event()
+    receive_calls = 0
+
+    async def receive_message(*, timeout):
+        nonlocal receive_calls
+        del timeout
+        receive_calls += 1
+        if receive_calls == 1:
+            return {"sender_uid": "42", "content": "first"}
+        return {"sender_uid": "42", "content": "second"}
+
+    async def handle_message(_message):
+        handler_started.set()
+        await keep_handler_running.wait()
+        return True
+
+    plugin.bili_client = SimpleNamespace(receive_message=receive_message)
+    plugin._handle_message = handle_message
+    processor = asyncio.create_task(plugin._process_messages())
+
+    await handler_started.wait()
+    await asyncio.sleep(0)
+
+    # One additional message may be held by the consumer while it waits for a
+    # slot, but it must not create another handler task.
+    assert receive_calls == 2
+    assert len(plugin._handler_tasks) == 1
+
+    processor.cancel()
+    await processor
+
+    for task in list(plugin._handler_tasks):
+        task.cancel()
+    await asyncio.gather(*plugin._handler_tasks, return_exceptions=True)
+
+    assert plugin._message_concurrency.locked() is False
+
+
+@pytest.mark.asyncio
 async def test_comment_retry_checks_existing_reply_before_resending(tmp_path):
     plugin = make_plugin(tmp_path)
     plugin.permission_mgr.add_user("42", "trusted")

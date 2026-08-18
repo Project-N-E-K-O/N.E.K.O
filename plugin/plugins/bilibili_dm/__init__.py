@@ -325,15 +325,20 @@ class BiliDMPlugin(NekoPluginBase):
         except Exception as exc:
             self.logger.error(f"消息处理任务失败: {exc}")
 
-    async def _run_message_handler(self, message: Dict[str, Any]) -> None:
-        if not self._running:
-            return
-        notification_identity = str(message.get("notification_identity") or "").strip()
-        session_key = self._build_session_key(
-            message["sender_uid"], str(message.get("conversation_key") or "dm")
-        )
+    async def _run_message_handler(
+        self, message: Dict[str, Any], *, concurrency_reserved: bool = False
+    ) -> None:
         try:
-            async with self._message_concurrency:
+            if not self._running:
+                return
+            notification_identity = str(
+                message.get("notification_identity") or ""
+            ).strip()
+            session_key = self._build_session_key(
+                message["sender_uid"], str(message.get("conversation_key") or "dm")
+            )
+
+            if concurrency_reserved:
                 session_lock = await self._get_session_lock(session_key)
                 try:
                     async with session_lock:
@@ -342,6 +347,16 @@ class BiliDMPlugin(NekoPluginBase):
                         completed = await self._handle_message(message)
                 finally:
                     await self._release_session_lock(session_key, session_lock)
+            else:
+                async with self._message_concurrency:
+                    session_lock = await self._get_session_lock(session_key)
+                    try:
+                        async with session_lock:
+                            if not self._running:
+                                return
+                            completed = await self._handle_message(message)
+                    finally:
+                        await self._release_session_lock(session_key, session_lock)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -356,6 +371,9 @@ class BiliDMPlugin(NekoPluginBase):
                     )
                 else:
                     self.bili_client.retry_comment_notification(message)
+        finally:
+            if concurrency_reserved:
+                self._message_concurrency.release()
 
     async def _wait_session_response_complete(
         self, session: Any, timeout: float = 30.0
@@ -1031,7 +1049,18 @@ class BiliDMPlugin(NekoPluginBase):
             try:
                 message = await self.bili_client.receive_message(timeout=1.0)
                 if message:
-                    task = asyncio.create_task(self._run_message_handler(message))
+                    # Reserve capacity before spawning.  Otherwise a rapid producer can
+                    # create unbounded handler tasks that merely wait on the semaphore.
+                    await self._message_concurrency.acquire()
+                    try:
+                        task = asyncio.create_task(
+                            self._run_message_handler(
+                                message, concurrency_reserved=True
+                            )
+                        )
+                    except Exception:
+                        self._message_concurrency.release()
+                        raise
                     self._track_handler_task(task)
             except asyncio.CancelledError:
                 break
