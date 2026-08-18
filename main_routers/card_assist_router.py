@@ -2676,6 +2676,22 @@ async def _complete_missing_fields_by_refine(
     return completed
 
 
+def _chat_instruction_explicitly_removes_field(
+    instruction: str, field_key: str
+) -> bool:
+    """Return whether the user explicitly requests removal of this field."""
+    if not instruction or not field_key:
+        return False
+    key = re.escape(field_key)
+    return bool(
+        re.search(rf"(?:删除|刪除|移除)\s*{key}(?![A-Za-z0-9_])", instruction)
+        or re.search(
+            rf"(?i:\b(?:delete|remove)\b)\s+{key}(?![A-Za-z0-9_])",
+            instruction,
+        )
+    )
+
+
 async def _complete_full_rewrite_actions(
     *,
     lang: str,
@@ -2694,10 +2710,16 @@ async def _complete_full_rewrite_actions(
             for action in actions
             if str(action.get("field_key") or "").strip().casefold()
             not in preserved_lookup
-            or str(action.get("type") or "").strip() == "remove_field"
+            or (
+                str(action.get("type") or "").strip() == "remove_field"
+                and _chat_instruction_explicitly_removes_field(
+                    user_instruction,
+                    str(action.get("field_key") or "").strip(),
+                )
+            )
         ]
     present = {
-        str(a.get("field_key") or "").strip()
+        str(a.get("field_key") or "").strip().casefold()
         for a in actions
         if (
             str(a.get("type") or "").strip()
@@ -2706,7 +2728,11 @@ async def _complete_full_rewrite_actions(
     }
     missing = [
         k for k in target_keys
-        if k not in present and k not in preserved and not _is_reserved_card_field(k)
+        if (
+            k.casefold() not in present
+            and k not in preserved
+            and not _is_reserved_card_field(k)
+        )
     ]
     if missing:
         fields = await _complete_missing_fields_by_refine(
@@ -2774,7 +2800,7 @@ _CHAT_FIELD_EDIT_PROHIBITION_RE = re.compile(
     r"(?:改|修改|更改|重写|重寫|改写|改寫|调整|調整)\s*"
     r"(?P<keys_zh_after>[^。，、！？,.!?;；]+?)"
     r"|(?i:(?:do\s+not|don't|never)\s+"
-    r"(?:change|rewrite|revise|regenerate|redo|refresh)\s+"
+    r"(?:change|update|edit|modify|rewrite|revise|regenerate|redo|refresh)\s+"
     r"(?P<keys_after>[^。，、！？,.!?;；]+?))"
     r")"
     r"(?=(?:但|但是|可是|不过|不過)\s*[^。，、！？,.!?;；]{0,24}?"
@@ -2788,7 +2814,7 @@ _CHAT_PRESERVATION_EXCEPT_RE = re.compile(
     r"(?:"
     r"(?:除|除了)\s*(?P<keys_zh>[^，。！？；;]+?)\s*(?:以外|之外)"
     r"|(?i:\bexcept(?:\s+for)?\s+)(?P<keys_en>[^，。！？；,.!?;“”‘’\"']+?)"
-    r"(?=(?i:\b(?:but|however)\s*(?:rewrite|revise|regenerate|redo|refresh)\b)"
+    r"(?=(?i:\b(?:but|however)\s*(?:change|update|edit|modify|rewrite|revise|regenerate|redo|refresh|delete)\b)"
     r"|[，。！？；,.!?;“”‘’\"']|$)"
     r")"
 )

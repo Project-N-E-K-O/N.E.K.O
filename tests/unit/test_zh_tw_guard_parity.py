@@ -4705,6 +4705,14 @@ def test_field_edit_prohibition_stops_before_contrastive_adjustment():
     assert router._chat_preserved_target_keys(text, ['头像', '名字']) == {'头像'}
 
 
+@pytest.mark.parametrize('verb', ['edit', 'modify', 'update'])
+def test_english_edit_prohibitions_preserve_targets(verb):
+    import main_routers.card_assist_router as router
+
+    text = f'Rewrite all fields, but do not {verb} avatar'
+    assert router._chat_preserved_target_keys(text, ['avatar']) == {'avatar'}
+
+
 def test_later_positive_preservation_survives_earlier_revocation():
     import main_routers.card_assist_router as router
 
@@ -4718,6 +4726,7 @@ def test_positive_preservation_is_not_guarded_by_later_english_prohibition():
     text = 'Rewrite all fields; preserve name but do not change avatar'
     assert router._chat_preserved_target_keys(text, ['avatar', 'name']) == {
         'name',
+        'avatar',
     }
 
 
@@ -4867,11 +4876,61 @@ async def test_later_remove_action_revokes_preservation_for_same_field(monkeypat
         locale_code='en-US',
         actions=[{'type': 'remove_field', 'field_key': 'avatar'}],
         user_instruction='Rewrite all fields except avatar, but delete avatar',
-        current_card={'avatar': 'old', 'name': 'old'},
-        current_card_text='avatar: old\nname: old',
-        target_keys=['avatar', 'name'],
+        current_card={'avatar': 'old'},
+        current_card_text='avatar: old',
+        target_keys=['avatar'],
     )
     assert actions == [{'type': 'remove_field', 'field_key': 'avatar'}]
+
+
+@pytest.mark.asyncio
+async def test_preserved_remove_action_is_filtered_without_explicit_removal(monkeypatch):
+    import main_routers.card_assist_router as router
+
+    async def fail_complete_missing_fields(**kwargs):
+        raise AssertionError('preserved fields must not be completed')
+
+    monkeypatch.setattr(
+        router,
+        '_complete_missing_fields_by_refine',
+        fail_complete_missing_fields,
+    )
+    actions = await router._complete_full_rewrite_actions(
+        lang='en',
+        locale_code='en-US',
+        actions=[{'type': 'remove_field', 'field_key': 'avatar'}],
+        user_instruction='Rewrite all fields except avatar',
+        current_card={'avatar': 'old'},
+        current_card_text='avatar: old',
+        target_keys=['avatar'],
+    )
+    assert actions == []
+
+
+@pytest.mark.asyncio
+async def test_present_action_keys_are_case_insensitive(monkeypatch):
+    import main_routers.card_assist_router as router
+
+    async def fail_complete_missing_fields(**kwargs):
+        raise AssertionError('case-insensitive action key is already present')
+
+    monkeypatch.setattr(
+        router,
+        '_complete_missing_fields_by_refine',
+        fail_complete_missing_fields,
+    )
+    actions = await router._complete_full_rewrite_actions(
+        lang='en',
+        locale_code='en-US',
+        actions=[{'type': 'refine_field', 'field_key': 'nickname', 'value': 'new'}],
+        user_instruction='Rewrite all fields',
+        current_card={'Nickname': 'old'},
+        current_card_text='Nickname: old',
+        target_keys=['Nickname'],
+    )
+    assert actions == [
+        {'type': 'refine_field', 'field_key': 'nickname', 'value': 'new'}
+    ]
 
 
 def test_full_rewrite_before_sequential_assignment_remains_active():
