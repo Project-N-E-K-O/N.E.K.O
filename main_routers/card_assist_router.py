@@ -1490,7 +1490,7 @@ _CHAT_SCOPED_RECOVERY_BOUNDARY_RE = re.compile(
     r"|(?P<trailing_en>(?<![A-Za-z])(?:if|when)(?![A-Za-z]))"
     # `但是否…` 必须按裸 `但` 切，让后件保留完整的疑问标记 `是否`。
     # 左界同时排除添加关系的 `不但/非但`，它们不能把前面的疑问守卫切掉。
-    r"|(?P<contrast>(?<![不非])(?:但是(?!否)|但)|可是|不过|不過)",
+    r"|(?P<contrast>(?<![不非])(?:但是(?!否)|但)|可是|不过|不過|(?i:(?<![A-Za-z])(?:but|however)(?![A-Za-z])))",
     re.IGNORECASE,
 )
 _CHAT_EN_TRAILING_COMMAND_RE = re.compile(
@@ -1560,7 +1560,7 @@ _CHAT_SCOPED_NEXT_COMMAND_RE = re.compile(
 )
 _CHAT_GOVERNING_INSTRUCTION_PROHIBITION_RE = re.compile(
     r"(?:(?:不要|别|別|请勿|請勿|禁止|不能|不可)\s*"
-    r"(?:(?:执行|執行|遵循|照做|做|采用|採用|应用|應用|重写|重寫)\s*"
+    r"(?:(?:执行|執行|遵循|照做|做|采用|採用|应用|應用|重写|重寫|保存|儲存|存档|存檔|提交|送出|写入|寫入|(?i:save|submit|commit))\s*"
     r"(?:这|這|以下|下面|下列|上述|上面|接下来的?|接下來的?)?\s*"
     r"(?:条|條|个|個)?\s*"
     r"(?:指令|命令|修改|要求|内容|內容)"
@@ -1572,7 +1572,7 @@ _CHAT_GOVERNING_INSTRUCTION_PROHIBITION_RE = re.compile(
     r"|(?:以下|下面|下列|接下来的?|接下來的?)\s*"
     r"(?:修改|操作|指令|命令|要求|内容|內容)\s*"
     r"(?:不要|别|別|请勿|請勿|禁止|不能|不可)\s*"
-    r"(?:执行|執行|遵循|照做|做|采用|採用|应用|應用))"
+    r"(?:执行|執行|遵循|照做|做|采用|採用|应用|應用|保存|儲存|存档|存檔|提交|送出|写入|寫入|(?i:save|submit|commit)))"
 )
 _CHAT_GOVERNING_PROHIBITION_SENTENCE_END_RE = re.compile(r"[。！？.!?;；]+")
 _CHAT_GOVERNING_FOLLOWING_LIST_MARKER_RE = re.compile(
@@ -1608,7 +1608,7 @@ _CHAT_SCOPED_NEW_REQUEST_RE = re.compile(
 )
 _CHAT_SCOPED_META_REQUEST_RE = re.compile(
     r"^\s*(?:(?:请|請|帮我|幫我)\s*)?"
-    r"(?:翻译|翻譯|解释|解釋|分析|说明|說明|总结|總結|评估|評估)\s*"
+    r"(?:翻译|翻譯|解释|解釋|分析|说明|說明|总结|總結|评估|評估|校对|校對|复述|復述)\s*"
     r"(?:一下\s*)?(?:以下|下面|此)?\s*"
     r"(?:这段|這段|这句话|這句話)?\s*"
     r"(?:内容|內容|文字|句子|指令|命令|要求|修改)?\s*[：:,，]",
@@ -1635,7 +1635,7 @@ _CHAT_GOVERNING_CONDITION_RE = re.compile(
 _CHAT_GOVERNING_EXECUTION_QUESTION_RE = re.compile(
     r"^\s*(?:(?:请问|請問|你觉得|你覺得|我想知道)\s*)?"
     r"(?:"
-    r"(?:是否|能否|可否|要不要|该不该|該不該|需不需要|应不应该|應不應該)\s*"
+    r"(?:是否|能否|可否|要不要|该不该|該不該|需不需要|应不应该|應不應該)\s*(?:要\s*)?"
     r"(?:执行|執行|应用|應用|采用|採用|进行|進行)\s*"
     r"(?:以下|下面|上述|上面|这些|這些)?\s*(?:修改|操作|指令|命令|要求|内容|內容)?"
     r"|(?:(?:要|应该|應該|需要|可以)\s*)?(?:执行|執行|应用|應用|采用|採用|进行|進行)\s*"
@@ -2626,7 +2626,11 @@ async def _complete_full_rewrite_actions(
 
 _CHAT_PRESERVATION_CLAUSE_RE = re.compile(
     r"(?P<verb>保留|保持|维持|維持|(?i:\b(?:preserve|keep)\b))"
-    r"[^。，、！？,.!?;；]*"
+    r"[^。，、！？,.!?;；]*?"
+    r"(?=(?:但|但是|可是|不过|不過)\s*(?:重写|重寫|改写|改寫|修改|rewrite|revise|regenerate|redo|refresh)\b|[。！？,.!?;；]|$)"
+)
+_CHAT_PRESERVATION_EXCEPT_RE = re.compile(
+    r"(?:除|除了)\s*(?P<keys>[^，。！？；;]+?)\s*(?:以外|之外)"
 )
 _CHAT_PRESERVATION_NEGATION_RE = re.compile(
     r"(?:(?:不要|别|別|不需要|不須要|不|无需|無需|不必|请勿|請勿)\s*"
@@ -2657,7 +2661,15 @@ def _chat_preserved_target_keys(
 ) -> set[str]:
     """Return target keys explicitly named in a preservation clause."""
     candidates: list[tuple[str, int, int]] = []
+    meta_request = _CHAT_SCOPED_META_REQUEST_RE.search(instruction or "")
+    for except_match in _CHAT_PRESERVATION_EXCEPT_RE.finditer(instruction or ""):
+        for raw_key in target_keys:
+            key = str(raw_key)
+            if key and re.search(re.escape(key), except_match.group("keys"), re.IGNORECASE):
+                candidates.append((raw_key, except_match.start(), except_match.end()))
     for clause_match in _CHAT_PRESERVATION_CLAUSE_RE.finditer(instruction or ""):
+        if meta_request and clause_match.start() >= meta_request.end():
+            continue
         if _chat_preservation_clause_is_reported(
             instruction or "", clause_match.start()
         ):
