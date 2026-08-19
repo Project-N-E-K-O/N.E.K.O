@@ -6182,3 +6182,94 @@ def test_pending_line_content_survives_retry_and_clears_after_delivery() -> None
     )
 
     assert state.get("pending_line_occurrences") == {}
+
+
+@pytest.mark.plugin_unit
+def test_superseded_archive_owner_drops_pending_line_occurrences() -> None:
+    tracker = AgentSceneTracker(seen_line_limit=8)
+
+    for index in range(1, 3):
+        key = f"line-{index}"
+        assert tracker.remember_scene_line(
+            "scene-a",
+            key,
+            route_id="route-a",
+            seq=index,
+            ts=f"2026-04-21T08:35:{index:02d}Z",
+            occurrence={
+                "event_key": key,
+                "seq": index,
+                "line": {
+                    "scene_id": "scene-a",
+                    "route_id": "route-a",
+                    "text": f"older pending {index}",
+                    "ts": f"2026-04-21T08:35:{index:02d}Z",
+                },
+            },
+        )
+    older_owner = tracker.mark_scene_summary_scheduled(
+        "scene-a",
+        route_id="route-a",
+        seq=2,
+    )
+
+    for index in range(3, 5):
+        key = f"line-{index}"
+        assert tracker.remember_scene_line(
+            "scene-a",
+            key,
+            route_id="route-a",
+            seq=index,
+            ts=f"2026-04-21T08:35:{index:02d}Z",
+            occurrence={
+                "event_key": key,
+                "seq": index,
+                "line": {
+                    "scene_id": "scene-a",
+                    "route_id": "route-a",
+                    "text": f"newer pending {index}",
+                    "ts": f"2026-04-21T08:35:{index:02d}Z",
+                },
+            },
+        )
+    newer_owner = tracker.mark_scene_summary_scheduled(
+        "scene-a",
+        route_id="route-a",
+        seq=4,
+    )
+
+    tracker.restore_scene_summary_schedule(
+        "scene-a",
+        route_id="route-a",
+        seq=2,
+        lines_since_push=2,
+        owner_token=older_owner,
+    )
+
+    state = tracker.state_for_scene("scene-a", route_id="route-a")
+    assert state["lines_since_push"] == 0
+    assert state.get("pending_line_occurrences") == {}
+    assert state.get("scheduled_line_occurrences_by_owner") == {
+        newer_owner: {
+            "line-3": {
+                "event_key": "line-3",
+                "seq": 3,
+                "line": {
+                    "scene_id": "scene-a",
+                    "route_id": "route-a",
+                    "text": "newer pending 3",
+                    "ts": "2026-04-21T08:35:03Z",
+                },
+            },
+            "line-4": {
+                "event_key": "line-4",
+                "seq": 4,
+                "line": {
+                    "scene_id": "scene-a",
+                    "route_id": "route-a",
+                    "text": "newer pending 4",
+                    "ts": "2026-04-21T08:35:04Z",
+                },
+            },
+        }
+    }

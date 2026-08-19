@@ -191,7 +191,7 @@ class AgentStatusMixin:
             or runtime.get("effective_window_title")
             or ""
         ).strip()
-        pid = int(runtime.get("pid") or 0)
+        pid = AgentStatusMixin._normalized_numeric_identity(runtime.get("pid"))
         parts = []
         if process_name:
             parts.append(process_name)
@@ -385,6 +385,28 @@ class AgentStatusMixin:
     def _normalized_identity_text(value: object) -> str:
         return re.sub(r"\s+", " ", str(value or "").strip().lower())
 
+    @staticmethod
+    def _normalized_numeric_identity(value: object) -> int:
+        if value is None:
+            return 0
+        if isinstance(value, bool):
+            return int(value)
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return 0
+            sign = 1
+            if text[0] in {"-", "+"}:
+                sign = -1 if text[0] == "-" else 1
+                text = text[1:]
+            return sign * int(text) if text.isdecimal() else 0
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return 0
+
     def _session_fingerprint(self, shared: dict[str, Any]) -> dict[str, Any]:
         meta = shared.get("active_session_meta")
         meta_obj = meta if isinstance(meta, dict) else {}
@@ -408,7 +430,7 @@ class AgentStatusMixin:
                 or runtime_obj.get("process_name")
                 or ""
             ),
-            "pid": int(
+            "pid": self._normalized_numeric_identity(
                 metadata_obj.get("game_pid")
                 or runtime_obj.get("pid")
                 or locked_target_obj.get("pid")
@@ -421,7 +443,9 @@ class AgentStatusMixin:
                 or locked_target_obj.get("title")
                 or ""
             ),
-            "target_hwnd": int(runtime_obj.get("target_hwnd") or locked_target_obj.get("hwnd") or 0),
+            "target_hwnd": self._normalized_numeric_identity(
+                runtime_obj.get("target_hwnd") or locked_target_obj.get("hwnd") or 0
+            ),
             "target_window_visible": bool(runtime_obj.get("target_window_visible")),
             "target_window_minimized": bool(runtime_obj.get("target_window_minimized")),
             "ocr_detail": str(runtime_obj.get("detail") or ""),
@@ -441,7 +465,7 @@ class AgentStatusMixin:
                 str(fp.get("active_game_id") or ""),
                 self._normalized_identity_text(fp.get("process_name")),
                 self._normalized_identity_text(fp.get("window_title")),
-                str(int(fp.get("target_hwnd") or 0)),
+                str(self._normalized_numeric_identity(fp.get("target_hwnd"))),
             ]
         else:
             parts = [
@@ -467,12 +491,16 @@ class AgentStatusMixin:
             "current_data_source": str(current.get("active_data_source") or ""),
             "previous_process_name": str(previous.get("process_name") or ""),
             "current_process_name": str(current.get("process_name") or ""),
-            "previous_pid": int(previous.get("pid") or 0),
-            "current_pid": int(current.get("pid") or 0),
+            "previous_pid": self._normalized_numeric_identity(previous.get("pid")),
+            "current_pid": self._normalized_numeric_identity(current.get("pid")),
             "previous_window_title": str(previous.get("window_title") or ""),
             "current_window_title": str(current.get("window_title") or ""),
-            "previous_target_hwnd": int(previous.get("target_hwnd") or 0),
-            "current_target_hwnd": int(current.get("target_hwnd") or 0),
+            "previous_target_hwnd": self._normalized_numeric_identity(
+                previous.get("target_hwnd")
+            ),
+            "current_target_hwnd": self._normalized_numeric_identity(
+                current.get("target_hwnd")
+            ),
             "ocr_detail": str(current.get("ocr_detail") or ""),
             "ocr_context_state": str(current.get("ocr_context_state") or ""),
         }

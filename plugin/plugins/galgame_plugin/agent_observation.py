@@ -85,8 +85,12 @@ class AgentObservationMixin:
                 return bool(previous and current and previous != current)
 
             def _numeric_conflicts(previous_key: str, current_key: str) -> bool:
-                previous = int(transition_fields.get(previous_key) or 0)
-                current = int(transition_fields.get(current_key) or 0)
+                previous = self._normalized_numeric_identity(
+                    transition_fields.get(previous_key)
+                )
+                current = self._normalized_numeric_identity(
+                    transition_fields.get(current_key)
+                )
                 return bool(previous and current and previous != current)
 
             same_game = _identity_matches("previous_game_id", "current_game_id")

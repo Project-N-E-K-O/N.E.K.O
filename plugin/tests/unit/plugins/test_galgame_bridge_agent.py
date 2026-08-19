@@ -5512,6 +5512,73 @@ async def test_process_name_only_ocr_jitter_can_resume_on_transition_tick(
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
+async def test_ocr_session_transition_tolerates_bad_numeric_identity(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(ctx),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    runtime = {
+        "effective_process_name": "game.exe",
+        "effective_window_title": "Demo Game",
+        "pid": "0x4242",
+        "target_hwnd": "unknown",
+        "target_window_visible": True,
+        "locked_target": {"pid": "also-unknown", "hwnd": "0x100"},
+    }
+    first_line = _summary_test_line("scene-a", 1)
+    first = _shared_state(
+        mode="companion",
+        session_id="ocr-session-a",
+        active_data_source=DATA_SOURCE_OCR_READER,
+        ocr_reader_runtime=runtime,
+        snapshot=_session_state(
+            text=str(first_line["text"]),
+            scene_id="scene-a",
+            line_id=str(first_line["line_id"]),
+        ),
+        history_lines=[first_line],
+    )
+    first["active_session_meta"] = {
+        "metadata": {"game_pid": "unknown"},
+    }
+
+    await agent.tick(first)
+    await _drain_agent_summary_tasks(agent)
+    assert agent._observed_session_fingerprint["pid"] == 0
+    assert agent._observed_session_fingerprint["target_hwnd"] == 0
+
+    second_line = _summary_test_line("scene-a", 2)
+    changed = _shared_state(
+        mode="companion",
+        session_id="ocr-session-b",
+        active_data_source=DATA_SOURCE_OCR_READER,
+        ocr_reader_runtime=runtime,
+        snapshot=_session_state(
+            text=str(second_line["text"]),
+            scene_id="scene-a",
+            line_id=str(second_line["line_id"]),
+        ),
+        history_lines=[first_line, second_line],
+    )
+    changed["active_session_meta"] = {
+        "metadata": {"game_pid": "unknown"},
+    }
+
+    await agent.tick(changed)
+    await _drain_agent_summary_tasks(agent)
+
+    assert agent._last_session_transition_type == "ocr_transient_session_reset"
+    assert len(ctx.pushed_messages) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
 async def test_trusted_source_handoff_submits_new_suffix_on_transition_tick(
     tmp_path: Path,
 ) -> None:
