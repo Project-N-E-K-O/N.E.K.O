@@ -21,9 +21,13 @@ export function getPlugins(
   locale?: string,
   config?: AxiosRequestConfig & { preserveMessagesOn404?: boolean },
 ): Promise<{ plugins: PluginMeta[]; message: string }> {
+  const params = {
+    ...(config?.params || {}),
+    ...(locale ? { locale } : {}),
+  }
   return get('/plugins', {
-    ...(locale ? { params: { locale } } : {}),
     ...(config || {}),
+    params,
   })
 }
 
