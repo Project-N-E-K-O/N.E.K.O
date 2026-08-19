@@ -10,6 +10,7 @@ import pytest
 import websockets
 from websockets.frames import Close
 
+import main_logic.core.lifecycle as lifecycle_module
 from main_logic.core import LLMSessionManager
 from main_logic.omni_realtime_client import OmniRealtimeClient, TurnDetectionMode
 from main_logic.omni_realtime_client._transport import _classify_peer_close
@@ -490,6 +491,66 @@ async def test_both_failure_paths_classify_the_same_text_identically(
 
     assert manager_code == expected_code
     assert close_code == expected_code
+
+
+@pytest.mark.asyncio
+async def test_a_close_that_cannot_finish_detached_is_never_cut_short(monkeypatch):
+    # Bounding the WAIT is only safe when the close keeps running without a
+    # waiter. An offline client's close is a plain coroutine: cancelling it
+    # skips `self.llm = None` and the threaded genai close, leaking the
+    # connection pools it exists to release. Such a session must be awaited
+    # to completion however long it takes.
+    monkeypatch.setattr(lifecycle_module, "SESSION_CLOSE_TIMEOUT_SECONDS", 0.01)
+
+    class _UnshieldedSession:
+        def __init__(self):
+            self.fully_closed = False
+
+        async def close(self):
+            await asyncio.sleep(0.05)
+            self.fully_closed = True
+
+    manager = _make_manager()
+    session = _UnshieldedSession()
+    await LLMSessionManager._close_session_within_budget(
+        manager, session, "Unshielded"
+    )
+
+    assert session.fully_closed is True, (
+        "a close that cannot finish detached must not be cancelled by the budget"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_shielded_close_is_bounded_by_the_budget(monkeypatch):
+    # The dual: the realtime client declares close_finishes_detached, so
+    # giving up on the wait leaves its teardown running and the caller is
+    # released instead of parking on a wedged peer.
+    monkeypatch.setattr(lifecycle_module, "SESSION_CLOSE_TIMEOUT_SECONDS", 0.01)
+
+    class _ShieldedSession:
+        close_finishes_detached = True
+
+        def __init__(self):
+            self.fully_closed = False
+
+        async def close(self):
+            await asyncio.sleep(0.05)
+            self.fully_closed = True
+
+    manager = _make_manager()
+    session = _ShieldedSession()
+    await LLMSessionManager._close_session_within_budget(
+        manager, session, "Shielded"
+    )
+
+    assert session.fully_closed is False, "the budget must release the caller"
+
+
+def test_the_realtime_client_declares_a_detachable_close():
+    # The contract the bounded wait reads. Asserted on the class, because it
+    # is what makes the timeout above safe on this implementation.
+    assert OmniRealtimeClient.close_finishes_detached is True
 
 
 def test_provider_failure_keywords_are_defined_in_exactly_one_place():

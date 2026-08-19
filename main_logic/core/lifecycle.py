@@ -2766,18 +2766,16 @@ class LifecycleMixin:
         """Close a retired session without letting a slow peer stall the caller.
 
         Both callers sit on a teardown path other work is blocked behind, so
-        the wait needs a ceiling of its own. It deliberately does not borrow
-        the transport's: the realtime client bounds its close handshake with
-        the websockets ``close_timeout``, but an offline client, a wedged SDK
-        teardown, or a close that never reaches a socket at all is bounded by
-        nothing. The ceiling sits above ``close_timeout`` on purpose — on the
-        realtime path that bound still fires first, and this one only catches
-        the case where the close is stuck somewhere else entirely.
-
-        Giving up on the wait is not giving up on the close: the realtime
-        ``close()`` seizes its socket synchronously and awaits the teardown
-        through a shield, so a caller that stops waiting leaves the closing
-        running rather than orphaning a live socket.
+        the wait wants a ceiling. Only some closes can safely be given one:
+        abandoning the WAIT is only harmless when the close itself keeps
+        running, and that is a property of the implementation, not of ours to
+        assume. ``close_finishes_detached`` is where an implementation says so
+        — the realtime client seizes its socket synchronously and awaits the
+        teardown behind a shield, so a cancelled waiter leaves the closing
+        intact. An offline client's close is a plain coroutine: cancelling it
+        skips ``self.llm = None`` and the threaded genai client close, leaking
+        the very connection pools it exists to release. Those stay unbounded,
+        exactly as they were before this ceiling existed.
 
         ``asyncio.timeout``, NOT ``asyncio.wait_for``: wait_for runs the
         coroutine in a CHILD task, so ``asyncio.current_task()`` inside
@@ -2789,6 +2787,9 @@ class LifecycleMixin:
         """
 
         try:
+            if not getattr(session, "close_finishes_detached", False):
+                await session.close()
+                return
             async with asyncio.timeout(SESSION_CLOSE_TIMEOUT_SECONDS):
                 await session.close()
         except asyncio.TimeoutError:

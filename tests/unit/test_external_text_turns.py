@@ -1149,10 +1149,22 @@ async def test_strict_route_does_not_accept_content_in_place_of_announcement():
     )
     ticket = await arbiter.enqueue(
         source="tool_result",
-        response_started_timeout=0.02,
+        response_started_timeout=0.2,
         cancel_timeout=0.01,
     )
     await asyncio.wait_for(ticket.sent, 0.2)
+
+    # The refusal has to be observed while the owner is still legitimately
+    # waiting. With a 20ms allowance a slow CI tick (GC pause, loaded runner)
+    # could let the started timeout fire first, and notify_response_content
+    # would then return False because the owner is GONE rather than because
+    # the route is strict — every assertion below still passes, so the test
+    # would go on succeeding while testing nothing.
+    owner = arbiter._response_owner
+    assert owner is not None and not owner.ticket.started.done(), (
+        "the owner must still be awaiting its announcement for this refusal "
+        "to mean what the test claims"
+    )
 
     assert not arbiter.notify_response_content(
         {"type": "response.audio.delta", "response_id": "resp-unannounced"}

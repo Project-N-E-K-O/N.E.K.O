@@ -39,6 +39,17 @@ _API_KEY_REJECTED_KEYWORDS = (
     "api key is invalid",
 )
 
+# Mostly Gemini's ``finishReason`` / ``blockReason`` enum, lowercased, plus the
+# OpenAI and Azure spellings. The primary caller (_streaming's
+# ``_is_safety_violation_signal(finish_reason, block_reason)``) matches against
+# those enum VALUES, not against free-form prose — which is why entries like
+# "language" and "recitation" are single common words and must stay: they are
+# Gemini's LANGUAGE and RECITATION finish reasons verbatim, and dropping one
+# sends that block into the unknown-error fallback instead of the policy toast.
+# The free-text callers (a provider error message, a WebSocket close reason)
+# inherit the same table and therefore the same substring behaviour they have
+# always had; tightening THAT is a matching-strategy change for all callers at
+# once, not a keyword edit.
 _SAFETY_VIOLATION_KEYWORDS = (
     "safety",
     "content_filter",
